@@ -77,7 +77,10 @@ impl EditorAccess {
 
     // Approval — the headline seam. Blocks until the user decides.
     async fn review_diff(&self, req: DiffReviewRequest) -> Result<DiffOutcome, AgentError>;
-    async fn close_session_diffs(&self, session: SessionOrigin);
+
+    // Session-scoped teardown. Rides the *write* bus (→ `Effect::CloseSessionDiffs`
+    // / `CloseAllSessionDiffs`, applied host-side), NOT `ProgrammaticDiffBus`.
+    async fn close_session_diffs(&self, origin_session: u64, tab_name: Option<String>);
 }
 ```
 
@@ -114,7 +117,10 @@ consumer and resolver.** That drain is irreducibly host-side and does not move.
 Session-scoped teardown — reject and close every diff an origin session opened,
 once that session dies — is written once. For MCP that fires on WebSocket
 disconnect; for ACP it fires when the supervisor observes the child exit. Same
-code, two triggers.
+code, two triggers. Note this teardown is a *write*, not a diff-bus operation:
+it sends `InboundKind::CloseAllDiffTabs` on the write bus, which the host maps
+to `Effect::CloseAllSessionDiffs { origin_session }` and applies against its
+programmatic-diff state.
 
 ## 3. How Claude Code is built on the port
 
@@ -204,13 +210,12 @@ the conversation UI proves untenable.
 ## 6. Crate layout and dependency discipline
 
 ```
-lattice-agent/            # the port. zero protocol dependencies.
+lattice-agent/            # the port. no *agent-protocol* dependencies.
   editor_access.rs        # the capability handle
-  diff_review.rs          # ProgrammaticDiffBus producer + awaiter + session teardown
-  supervisor.rs           # Handle = cmd_tx + ArcSwap<State>, idle tokio task
+  diff_review.rs          # ProgrammaticDiffBus producer + awaiter
+  state_cache.rs          # open-buffer set + active selection, fed by the event bus
   log/                    # AiLogger, LogRing, SessionKey, AiLogPushed, buffer names, log mode
-  commands.rs             # ex-command registration helpers
-  install.rs              # shared boot wiring
+  commands.rs             # parse_no_args + ex-command registration helpers
   error.rs                # AgentError
 
 lattice-ai/               # the integrations
@@ -229,9 +234,26 @@ terminal command and the environment (`CLAUDE_CODE_SSE_PORT`,
 subsystem.
 
 `lattice-agent` must not depend on `agent-client-protocol`, `tokio-tungstenite`,
-or `lattice-lsp`. A third party adding an integration depends on the port alone.
-That constraint is why the port is its own crate rather than a module inside
-`lattice-ai`.
+`dirs`, `getrandom`, or `lattice-lsp`. A third party adding an integration
+depends on the port alone. That constraint is why the port is its own crate
+rather than a module inside `lattice-ai`.
+
+It *does* depend on lattice's own internal crates — `lattice-protocol`,
+`lattice-mode`, `lattice-grammar`, `lattice-runtime`, `lattice-core`,
+`lattice-diff`, `lattice-config` — and on `linkme`, because `AiLogPushed` is
+registered as a typed bus event via `register_event!`, whose `linkme`
+distributed-slice expansion also requires `#![allow(unsafe_code)]` in the
+declaring module. "Protocol-free" means free of *agent wire protocols*, not of
+lattice's internals.
+
+**What is deliberately NOT extracted: the supervisor.** `AiClientHandle` is
+`cmd_tx` + `ArcSwap<AiState>`, spawned as `impl AiClientHandle::spawn`.
+`ClaudeCodeServerHandle` carries ten fields — dispatch context, notification
+broadcast sender, status signals, review and mention trackers — and is spawned
+by a free function taking a `ServerConfig` and an `EventBus`. They share the
+`ArcSwap`-snapshot *idea*, not code. Unifying them would be an abstraction with
+no concrete merit win, which heuristic #1 forbids. Each adapter keeps its own
+supervisor; only `parse_no_args` (byte-identical in both crates today) moves.
 
 Diagnostics are the interesting case: `getDiagnostics` needs LSP data, but the
 port must stay LSP-free. `EditorAccess::diagnostics()` returns a neutral
@@ -288,8 +310,9 @@ dead subprocess report "protocol error".
   third-party integration depends on `lattice-agent` alone.
 - **#3 Modal editing.** Diff review is the existing `:diff-accept` /
   `:diff-reject` grammar. No agent-specific chords.
-- **#4 Asynchronicity.** One supervisor pattern (`cmd_tx` + `ArcSwap<State>` +
-  an idle tokio task), shared by both adapters.
+- **#4 Asynchronicity.** Each adapter owns an idle tokio supervisor task driven
+  by a command channel, publishing a wait-free `ArcSwap<State>` snapshot. The
+  *pattern* is shared; the code is not, and deliberately so (§6).
 
 **UX is the higher court**, and it decided §5: post-hoc revert-based review was
 rejected because the file mutates under the user before they consent, colliding
@@ -310,6 +333,11 @@ know from Claude Code, and it is worth the conversation-UI cost.
   abstracting before a second is exactly the "abstraction without a concrete
   merit win" that heuristic #1 forbids. Adapters are tested against in-memory
   seams.
+- **Extract a shared supervisor / client-handle.** Rejected on inspection. The
+  two handles differ in arity (2 fields vs 10), in what they supervise (a child
+  process vs a TCP listener), and in construction (`impl ... ::spawn` vs a free
+  fn taking a `ServerConfig` + `EventBus`). Only `parse_no_args` is genuinely
+  shared. Revisit if a third adapter lands and the shape recurs.
 - **Extend the MCP-server topology to opencode.** Rejected — *not possible*.
   See §5: opencode has no outbound editor callback, and will not route native
   edits through an MCP tool we expose.

@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::Result;
+use crate::mcp::error::Result;
 
 /// Body of a `<port>.lock` discovery file. `camelCase` on the wire to
 /// match the VS Code schema the `claude` CLI expects.
@@ -31,7 +31,7 @@ pub struct LockfileContents {
     /// Transport discriminator; always `"ws"` for the loopback WebSocket.
     pub transport: String,
     /// Per-session authorization token (also required in the handshake
-    /// header). See [`crate::auth`].
+    /// header). See [`crate::mcp::auth`].
     pub auth_token: String,
     /// Whether the host runs on Windows (affects path handling on the
     /// agent side). Defaults to `false` when absent.

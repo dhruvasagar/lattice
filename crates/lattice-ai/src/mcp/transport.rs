@@ -11,8 +11,8 @@ use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
 use tokio_tungstenite::tungstenite::http::StatusCode;
 
-use crate::auth;
-use crate::error::Result;
+use crate::mcp::auth;
+use crate::mcp::error::Result;
 
 /// Accept a WebSocket connection on `stream`, requiring the
 /// `x-claude-code-ide-authorization` header to match `expected_token`

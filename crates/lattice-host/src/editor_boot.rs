@@ -513,15 +513,18 @@ impl Editor {
         // builtins are not subsystems and register inline by design — the
         // earlier "two-list, `*_mut` removed" goal was falsified on inspection.
         //
-        // claude-code (I-series): server spawn + `:claude-code-*` ex-commands +
-        // `claude-code-mode` + the `ClaudeCodeServerHandle` service + the I2
-        // read tools (buffer-store + diagnostics via `boot.service`) + the I3
-        // write bus (`boot.inbound`, whose drain token rides `into_registrations`
-        // into the Editor below).
-        lattice_claude_code::install(&mut boot);
-        // AI (AI-1b): AiLogger + supervisor + AiLogMode + :opencode/:ai-prompt/
-        // :ai-stop + AiClientHandle/AiLogger services. Agent output streams into
-        // per-session *ai:<provider>:<index>* rings (the :ai-log picker view is 12b).
+        // AI (AI-1b / AG-4): the single `lattice-ai` install wires BOTH agent
+        // transports (the AG-4 fold collapsed the former `lattice-claude-code`
+        // crate into `lattice_ai::mcp`):
+        //   - ACP client: AiLogger + supervisor + AiLogMode + :opencode /
+        //     :ai-prompt / :ai-stop + AiClientHandle/AiLogger services. Agent
+        //     output streams into per-session *ai:<provider>:<index>* rings
+        //     (the :ai-log picker view is 12b).
+        //   - MCP IDE peer: server spawn + `:claude-code-*` ex-commands +
+        //     `claude-code-mode` + the `ClaudeCodeServerHandle` service + the I2
+        //     read tools (buffer-store + diagnostics via `boot.service`) + the I3
+        //     write bus (`boot.inbound`, whose drain token rides
+        //     `into_registrations` into the Editor below).
         lattice_ai::install(&mut boot);
         // terminal (BC.4): `terminal-mode` (+ Normal / Insert) registration. Its
         // `TerminalStoreHandle` service is a host-published primitive (in the

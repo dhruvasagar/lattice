@@ -45,7 +45,7 @@ pub async fn open_diff(
     // D-fix.6 follow-up: the shared pending-review tracker. A guard is held
     // across the blocking `await` so the modeline shows a `◆ review` badge
     // while the agent is blocked on the user, cleared on any outcome.
-    review: &crate::status::ReviewHandle,
+    review: &crate::mcp::status::ReviewHandle,
 ) -> Value {
     let Some(bus) = bus else {
         return error_result("openDiff unavailable: IDE server not fully initialized");
@@ -131,8 +131,8 @@ mod tests {
     use tokio::sync::Notify;
 
     /// A throwaway pending-review tracker for the openDiff tests.
-    fn review() -> crate::status::ReviewHandle {
-        crate::status::ReviewState::new(Arc::new(Notify::new()))
+    fn review() -> crate::mcp::status::ReviewHandle {
+        crate::mcp::status::ReviewState::new(Arc::new(Notify::new()))
     }
 
     #[tokio::test]

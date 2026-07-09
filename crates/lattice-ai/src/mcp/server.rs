@@ -31,11 +31,11 @@ use lattice_runtime::EventBus;
 
 use lattice_agent::{EditorAccess, EditorStateHandle, EditorWriteRequest};
 
-use crate::dispatch::{self, DispatchContext, Outgoing};
-use crate::error::Result;
-use crate::lockfile::{Lockfile, LockfileContents};
-use crate::reads::ReadContext;
-use crate::{auth, transport};
+use crate::mcp::dispatch::{self, DispatchContext, Outgoing};
+use crate::mcp::error::Result;
+use crate::mcp::lockfile::{Lockfile, LockfileContents};
+use crate::mcp::reads::ReadContext;
+use crate::mcp::{auth, transport};
 
 /// IDE name reported in the discovery lockfile.
 const IDE_NAME: &str = "Lattice";
@@ -106,14 +106,14 @@ pub struct ClaudeCodeServerHandle {
     /// I7: buffers showing the `claude-code` status segment (the agent
     /// terminals). `claude-code-mode`'s `on_activate` registers its buffer; the
     /// Guard unregisters on deactivate. The status publisher reads this set.
-    ide_buffers: crate::status::IdeBuffers,
+    ide_buffers: crate::mcp::status::IdeBuffers,
     /// D-fix.6 follow-up: the shared pending-review tracker. Held so
     /// `install_services` can re-seat it on the rebuilt dispatch context (it
     /// must be the SAME instance the publisher reads + `openDiff` increments).
-    review: crate::status::ReviewHandle,
+    review: crate::mcp::status::ReviewHandle,
     /// D-fix.6 follow-up: the transient `@sent` echo tracker; pinged by
     /// `:claude-send` via [`Self::ping_mention`].
-    mention: crate::status::MentionHandle,
+    mention: crate::mcp::status::MentionHandle,
 }
 
 impl ClaudeCodeServerHandle {
@@ -291,10 +291,10 @@ pub fn spawn(
     // `install_services`'s rebuilt context all share ONE tracker (the count is
     // global across connections).
     let signals = StatusSignals::new();
-    let review = crate::status::ReviewState::new(signals.changed.clone());
+    let review = crate::mcp::status::ReviewState::new(signals.changed.clone());
     // D-fix.6 follow-up: the transient `@sent` echo tracker (its `ping` wakes
     // the same status `changed`).
-    let mention = crate::status::MentionState::new(signals.changed.clone());
+    let mention = crate::mcp::status::MentionState::new(signals.changed.clone());
     // I2.2: start with a deps-less dispatch context (cache + config only);
     // `install_read_services` upgrades it once boot wires the generic
     // buffer-store / diagnostics handles.
@@ -321,20 +321,20 @@ pub fn spawn(
     // I6.1: the notification task — coalesces SelectionsChanged + broadcasts
     // selection_changed / didChangeActiveEditor frames. Crate-owned (reads the
     // same generic event bus + read cache the read tools use).
-    crate::notifications::spawn_notifier(&event_bus, notify_tx.clone(), cache.clone(), rt);
+    crate::mcp::notifications::spawn_notifier(&event_bus, notify_tx.clone(), cache.clone(), rt);
     // I7: the modeline status segment. The publisher republishes running/port +
     // conn-count + project + pending-review badge to each registered IDE buffer
     // when the wake fires (start/stop, a connection open/close, a review
     // begin/end, a buffer register/unregister).
-    let ide_buffers: crate::status::IdeBuffers =
+    let ide_buffers: crate::mcp::status::IdeBuffers =
         Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
-    crate::status::spawn_status_publisher(
+    crate::mcp::status::spawn_status_publisher(
         event_bus.clone(),
         state.clone(),
         signals.conn_count.clone(),
         // The project the agent runs for — the workspace basename, static
         // for the server's lifetime.
-        crate::status::project_name(&config.workspace_folders),
+        crate::mcp::status::project_name(&config.workspace_folders),
         review.count_handle(),
         mention.clone(),
         ide_buffers.clone(),
@@ -688,7 +688,7 @@ async fn serve_connection(
         // always spawn.
         let editor = ctx.reads.editor.clone();
         tokio::spawn(async move {
-            let _ = crate::writes::close_all_diff_tabs(&editor, conn_id).await;
+            let _ = crate::mcp::writes::close_all_diff_tabs(&editor, conn_id).await;
         });
     }
     blocking.abort_all();

@@ -315,8 +315,8 @@ mod tests {
     }
 
     /// AI-1b boot-presence guard: `lattice_ai::install` runs in
-    /// `Editor::boot`'s Phase-B list (mirrors `lattice_claude_code::install`
-    /// immediately above it), so a freshly-booted `App` must already have
+    /// `Editor::boot`'s Phase-B list (and, post AG‑4, installs both agent
+    /// transports), so a freshly-booted `App` must already have
     /// `:opencode` registered and an `AiClientHandle` service available --
     /// without either, `:opencode` would silently no-op at the parser layer
     /// and any future modeline/UI reaching for the handle would find

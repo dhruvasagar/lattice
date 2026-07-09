@@ -26,9 +26,9 @@ use lattice_mode::{
 use lattice_runtime::EventBus;
 use tokio::sync::Notify;
 
-use crate::server::ServerState;
+use crate::mcp::server::ServerState;
 
-/// Modeline element id — owned by `lattice-claude-code`
+/// Modeline element id — owned by the MCP adapter (`lattice_ai::mcp`)
 /// (`feedback_mode_owns_its_surface`; the namespace is the owner key).
 pub const STATUS_ELEMENT: &str = "claude-code";
 

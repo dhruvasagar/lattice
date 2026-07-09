@@ -1,14 +1,14 @@
-//! AI-1b: the crate-owned `install(boot)` entry point.
+//! AI-1b / AG‑4: the crate-owned `install(boot)` entry point.
 //!
-//! Mirrors `lattice_claude_code::install` (the crate collapses everything it
-//! owns -- logger construction + config-seed, publisher wiring, mode
-//! registration, supervisor spawn, ex-commands, services -- into this single
-//! call). The host's Phase-B install list holds one line --
-//! `lattice_ai::install(&mut boot)` -- and zero host internals (no
-//! `Editor::` method, no host `Effect`/`Action` variant, no `Editor` field
-//! for the logger).
+//! After the AG‑4 fold, `lattice-ai` owns both agent transports, so the
+//! single host-facing `lattice_ai::install(&mut boot)` line wires **both**:
+//! the ACP agent client (`install_acp`, below) and the MCP IDE peer
+//! (`crate::mcp::install`). The host's Phase-B install list holds one line
+//! and zero host internals (no `Editor::` method, no host `Effect`/`Action`
+//! variant, no `Editor` field for the logger). AG‑5 relocates `install_acp`
+//! under `crate::acp` and puts each call behind its `#[cfg(feature = …)]`.
 //!
-//! The `:ai-log` picker that OPENS a buffer is a later task; this `install`
+//! The `:ai-log` picker that OPENS a buffer is a later task; `install_acp`
 //! only wires the producer side (`AiLogger`), the supervisor, the ex-commands,
 //! and `AiLogMode` (which seeds/streams into a buffer once one is opened by
 //! name).
@@ -23,8 +23,15 @@ use lattice_agent::{AiLogLevel, AiLogMode, AiLogger};
 use crate::commands::register_ai_ex_commands;
 use crate::handle::AiClientHandle;
 
-/// Wire the AI (ACP agent client) subsystem into the editor at boot.
+/// Wire both AI agent transports into the editor at boot: the ACP agent
+/// client and the MCP (Claude Code) IDE peer.
 pub fn install(boot: &mut impl SubsystemBoot) {
+    install_acp(boot);
+    crate::mcp::install::install(boot);
+}
+
+/// Wire the AI (ACP agent client) subsystem into the editor at boot.
+fn install_acp(boot: &mut impl SubsystemBoot) {
     // 1. Construct the logger; seed defaults from the `ai.*` config options
     // (registered Phase-A, before this Phase-B `install` runs -- see
     // `lattice_claude_code::install`'s doc comment for the same ordering

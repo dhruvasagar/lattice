@@ -14,9 +14,9 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use futures::{SinkExt, StreamExt};
-use lattice_claude_code::auth::AUTH_HEADER;
-use lattice_claude_code::lockfile::LockfileContents;
-use lattice_claude_code::{ServerConfig, spawn};
+use lattice_ai::mcp::auth::AUTH_HEADER;
+use lattice_ai::mcp::lockfile::LockfileContents;
+use lattice_ai::mcp::{ServerConfig, spawn};
 use lattice_protocol::jsonrpc::{Message, Request, RequestId};
 use lattice_runtime::EventBus;
 use std::sync::Arc;

@@ -4,7 +4,7 @@
 //! bursts (cursor moves fire at ~30 Hz under a held key), and broadcasts
 //! `selection_changed` — plus a `didChangeActiveEditor` when the active buffer
 //! changes — to every connected agent through the server's broadcast sender
-//! ([`crate::server::ClaudeCodeServerHandle::notify_sender`]). Each connection's
+//! ([`crate::mcp::server::ClaudeCodeServerHandle::notify_sender`]). Each connection's
 //! forwarder relays the frame to its WS writer; a lagged connection skips
 //! dropped frames (coalescing — latest wins).
 //!

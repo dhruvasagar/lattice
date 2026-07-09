@@ -4,8 +4,9 @@
 //! `editor_boot` sites (server spawn, ex-command registration, mode
 //! registration, the `ClaudeCodeServerHandle` service register, and the late
 //! `install_services` read/write wiring) into this single call against the
-//! generic [`SubsystemBoot`] surface. The host's Phase-B install list holds one
-//! line — `lattice_claude_code::install(&mut boot)` — and zero host internals
+//! generic [`SubsystemBoot`] surface. Called by the unified
+//! `lattice_ai::install` (the AG‑4 fold), so the host's Phase-B install list
+//! holds one line — `lattice_ai::install(&mut boot)` — and zero host internals
 //! (no `Editor::` method, no host `Effect`/`Action` variant): mode-ownership,
 //! and the property that keeps host churn flat as modes scale.
 
@@ -13,8 +14,8 @@ use lattice_mode::SubsystemBoot;
 
 use lattice_agent::{EditorWriteRequest, make_handler};
 
-use crate::server::{self, ClaudeCodeServerHandle, ServerConfig};
-use crate::{commands, lockfile, modes};
+use crate::mcp::server::{self, ClaudeCodeServerHandle, ServerConfig};
+use crate::mcp::{commands, lockfile, modes};
 
 /// Wire the Claude Code IDE peer into the editor at boot.
 pub fn install(boot: &mut impl SubsystemBoot) {

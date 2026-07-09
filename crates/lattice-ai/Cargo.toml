@@ -15,23 +15,31 @@ lattice-core = { path = "../lattice-core" }
 lattice-diff = { path = "../lattice-diff" }
 lattice-config = { path = "../lattice-config" }
 lattice-agent = { path = "../lattice-agent" }
+# mcp: read tools report LSP diagnostics to the agent (`getDiagnostics`),
+# consuming the `DiagnosticsQuery` service + `Diagnostic` type.
+lattice-lsp = { path = "../lattice-lsp" }
 # `ai_log.rs`'s `register_event!(AiLogPushed, ...)` expands to a
 # `#[linkme::distributed_slice(...)]` static -- same mechanism
 # `lattice-lsp` / `lattice-config` use for their registries.
 linkme = { workspace = true }
-tokio = { workspace = true, features = ["sync", "rt", "rt-multi-thread", "macros", "process", "io-util", "time"] }
+tokio = { workspace = true, features = ["sync", "rt", "rt-multi-thread", "macros", "process", "net", "io-util", "time"] }
 # Adapts tokio's AsyncRead/AsyncWrite to the futures-io traits agent-client-protocol's
 # `ByteStreams` transport expects (see src/connection.rs "Threading" doc comment).
 tokio-util = { version = "0.7", features = ["compat"] }
+# mcp: the loopback WebSocket transport the external `claude` CLI dials into.
+tokio-tungstenite = { workspace = true }
 futures = { workspace = true }
 arc-swap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+# mcp: discovery-lockfile home dir + ephemeral auth-token entropy.
+dirs = { workspace = true }
+getrandom = { workspace = true }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["test-util", "time", "macros", "rt", "io-util"] }
+tokio = { workspace = true, features = ["test-util", "time", "macros", "rt", "net", "io-util"] }
 futures = { workspace = true }
 
 [lints]

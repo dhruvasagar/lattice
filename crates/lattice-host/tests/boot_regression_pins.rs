@@ -170,7 +170,7 @@ fn claude_code_service_present_at_boot() {
     assert!(
         boot()
             .services
-            .get::<lattice_claude_code::ClaudeCodeServerHandle>()
+            .get::<lattice_ai::mcp::ClaudeCodeServerHandle>()
             .is_some(),
         "ClaudeCodeServerHandle must be registered"
     );

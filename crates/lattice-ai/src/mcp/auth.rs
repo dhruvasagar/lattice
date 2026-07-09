@@ -8,7 +8,7 @@
 //! compared in constant time so a local attacker can't time-side-channel
 //! it byte by byte.
 
-use crate::error::{ClaudeCodeError, Result};
+use crate::mcp::error::{ClaudeCodeError, Result};
 
 /// The handshake header the agent must present, carrying the token read
 /// from the discovery lockfile. Matches the VS Code IDE-integration

@@ -14,6 +14,12 @@ pub mod providers;
 pub mod session;
 pub mod supervisor;
 
+// AG-4: the MCP adapter (formerly the `lattice-claude-code` crate) folded in
+// as a submodule. The external `claude` CLI dials into a loopback WebSocket;
+// this half serves the shared editor-capability port (`lattice-agent`) over
+// that transport. AG-5 gates it behind `feature = "mcp"`.
+pub mod mcp;
+
 // AG-3: the per-process agent-log substrate (AiLogger, LogRing, SessionKey,
 // AiLogPushed, the `*ai:<provider>:<index>*` buffer names, and AiLogMode)
 // moved into the protocol-neutral `lattice-agent` port under `log/`, so the

@@ -27,7 +27,7 @@ use lattice_grammar::command::LatencyClass;
 use lattice_grammar::effect::{EchoLevel, Effect};
 use lattice_grammar::registry::{CommandRegistry, ExCommandSpec, SurfaceForm};
 
-use crate::server::ClaudeCodeServerHandle;
+use crate::mcp::server::ClaudeCodeServerHandle;
 
 /// Register `:claude-code-start` / `:claude-code-stop` against `registry`,
 /// wiring each to `server`. Called once from editor boot.
@@ -119,7 +119,7 @@ pub fn register_claude_code_ex_commands(
                             .open_buffers
                             .get(&active.buffer)
                             .and_then(|b| b.path.clone());
-                        crate::notifications::at_mentioned_frame(
+                        crate::mcp::notifications::at_mentioned_frame(
                             &active.selections,
                             path.as_deref(),
                         )
@@ -194,7 +194,7 @@ pub fn register_claude_code_ex_commands(
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
-    use crate::server::{self, ServerConfig};
+    use crate::mcp::server::{self, ServerConfig};
     use lattice_grammar::args::Args;
     use lattice_grammar::registry::ExCommandContext;
     use lattice_grammar::{CancellationToken, Count, Register};

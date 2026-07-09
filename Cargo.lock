@@ -3870,12 +3870,15 @@ version = "0.1.0"
 dependencies = [
  "agent-client-protocol",
  "arc-swap",
+ "dirs 5.0.1",
  "futures",
+ "getrandom 0.2.17",
  "lattice-agent",
  "lattice-config",
  "lattice-core",
  "lattice-diff",
  "lattice-grammar",
+ "lattice-lsp",
  "lattice-mode",
  "lattice-protocol",
  "lattice-runtime",
@@ -3884,6 +3887,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-tungstenite",
  "tokio-util",
  "tracing",
 ]
@@ -3893,30 +3897,6 @@ name = "lattice-cells"
 version = "0.1.0"
 dependencies = [
  "criterion",
-]
-
-[[package]]
-name = "lattice-claude-code"
-version = "0.1.0"
-dependencies = [
- "arc-swap",
- "dirs 5.0.1",
- "futures",
- "getrandom 0.2.17",
- "lattice-agent",
- "lattice-core",
- "lattice-diff",
- "lattice-grammar",
- "lattice-lsp",
- "lattice-mode",
- "lattice-protocol",
- "lattice-runtime",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tokio-tungstenite",
- "tracing",
 ]
 
 [[package]]
@@ -4075,7 +4055,6 @@ dependencies = [
  "ignore",
  "lattice-ai",
  "lattice-cells",
- "lattice-claude-code",
  "lattice-completion",
  "lattice-config",
  "lattice-core",

@@ -29,7 +29,6 @@ members = [
 	"crates/lattice-cli",
 	"crates/lattice-diff",
 	"crates/lattice-agent",
-	"crates/lattice-claude-code",
 	"crates/lattice-plugin-host",
 ]
 
@@ -117,7 +116,7 @@ ignore = "0.4"
 lsp-types = "0.97"
 serde_json = "1.0"
 
-# Claude Code IDE peer (lattice-claude-code, IDE-protocol phase).
+# Claude Code IDE peer (the MCP adapter in lattice-ai, folded in by AG-4).
 # `tokio-tungstenite` is the loopback WebSocket transport for the MCP
 # JSON-RPC connection to an external `claude` CLI; default features only
 # (no TLS — the bind is 127.0.0.1 + token-gated). `getrandom` mints the

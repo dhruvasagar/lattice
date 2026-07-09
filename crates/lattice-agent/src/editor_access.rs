@@ -5,7 +5,7 @@
 //! dirty) — into Rust-typed answers for `current_selection` /
 //! `open_editors` / `workspace_folders` / `document_dirty`. It carries no
 //! wire-protocol shape (no JSON, no MCP envelope): that translation is each
-//! adapter's job (`lattice-claude-code::reads`, and `lattice-ai`'s ACP
+//! adapter's job (`lattice_ai::mcp::reads`, and `lattice-ai`'s ACP
 //! mapping).
 //!
 //! Not a trait — one implementation exists. Tests construct it over
@@ -201,7 +201,7 @@ fn core_id(id: DocumentId) -> lattice_core::BufferId {
 }
 
 /// A `file://` URI for `path`. Used by adapters building a selection result
-/// (`lattice-claude-code::reads::selection_result`) alongside `file_path`.
+/// (`lattice_ai::mcp::reads::selection_result`) alongside `file_path`.
 pub fn path_to_uri(path: &Path) -> String {
     format!("file://{}", path.display())
 }
@@ -230,7 +230,7 @@ fn slice_selection(text: &str, sel: &Selection) -> String {
 }
 
 /// `(start, end)` in document order. Used by adapters building a selection
-/// result (`lattice-claude-code::reads::selection_result`) as well as
+/// result (`lattice_ai::mcp::reads::selection_result`) as well as
 /// internally by [`slice_selection`].
 pub fn ordered(sel: &Selection) -> (Position, Position) {
     if sel.anchor <= sel.head {

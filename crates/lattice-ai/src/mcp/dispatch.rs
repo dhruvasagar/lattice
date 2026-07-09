@@ -16,14 +16,14 @@ use lattice_protocol::jsonrpc::{
     Message, Notification, Request, RequestId, Response, ResponseError, error_codes,
 };
 
-use crate::diff;
-use crate::protocol;
-use crate::reads;
-use crate::writes;
+use crate::mcp::diff;
+use crate::mcp::protocol;
+use crate::mcp::reads;
+use crate::mcp::writes;
 use lattice_diff::ProgrammaticDiffBus;
 
 /// The state the dispatcher needs to answer `tools/call`: the read tools'
-/// [`ReadContext`](crate::reads::ReadContext) + the write bus. Built once at
+/// [`ReadContext`](crate::mcp::reads::ReadContext) + the write bus. Built once at
 /// server spawn and shared (behind an `Arc`) across connections. The I1
 /// methods (`initialize` / `tools/list` / `prompts/list`) ignore it.
 #[derive(Clone)]
@@ -50,7 +50,7 @@ pub struct DispatchContext {
     /// its blocking `await` with `review.begin()`, so the modeline shows a
     /// `◆ review` badge while the agent is blocked on the user — derived
     /// entirely from claude-code's own openDiff lifecycle (no host signal).
-    pub review: crate::status::ReviewHandle,
+    pub review: crate::mcp::status::ReviewHandle,
 }
 
 /// A frame the server should send back to the agent in response to an
@@ -87,7 +87,7 @@ pub async fn dispatch_frame(bytes: &[u8], ctx: &DispatchContext) -> Vec<Outgoing
 }
 
 /// True if `frame` is a `tools/call` request for the blocking `openDiff`
-/// tool — the only tool whose handler ([`crate::diff::open_diff`]) awaits an
+/// tool — the only tool whose handler ([`crate::mcp::diff::open_diff`]) awaits an
 /// unbounded, user-paced verdict with no timeout. The connection dispatches
 /// these on their OWN task so the per-connection read loop is never blocked by
 /// a pending review: it keeps polling the socket + shutdown signal (so a
@@ -220,7 +220,7 @@ mod tests {
     fn test_ctx() -> DispatchContext {
         DispatchContext {
             conn_id: 0,
-            reads: crate::reads::ReadContext {
+            reads: crate::mcp::reads::ReadContext {
                 editor: lattice_agent::EditorAccess::new(
                     std::sync::Arc::new(std::sync::Mutex::new(
                         lattice_agent::EditorStateCache::default(),
@@ -232,7 +232,9 @@ mod tests {
                 diagnostics: None,
             },
             diff: None,
-            review: crate::status::ReviewState::new(std::sync::Arc::new(tokio::sync::Notify::new())),
+            review: crate::mcp::status::ReviewState::new(std::sync::Arc::new(
+                tokio::sync::Notify::new(),
+            )),
         }
     }
 

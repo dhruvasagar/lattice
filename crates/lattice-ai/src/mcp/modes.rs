@@ -12,7 +12,7 @@ use lattice_mode::{
     ActivationPolicy, Keymap, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind,
 };
 
-use crate::server::ClaudeCodeServerHandle;
+use crate::mcp::server::ClaudeCodeServerHandle;
 
 /// The Claude Code IDE minor mode.
 pub struct ClaudeCodeMode;
@@ -60,7 +60,7 @@ impl Mode for ClaudeCodeMode {
     /// K.2.4 path: the `<C-c>` interrupt chord, contributed by the mode
     /// itself and picked up by `translate_mode_keymaps` at boot. Resolves
     /// `"ex:claude-interrupt"` against the `CommandRegistry` (registered in
-    /// `crate::commands`). K.1.c gates it to `claude-code-mode` buffers, and —
+    /// `crate::mcp::commands`). K.1.c gates it to `claude-code-mode` buffers, and —
     /// because it binds in `Normal` binding-mode — it only fires in
     /// Normal-in-terminal; in Terminal-Insert `<C-c>` still reaches the shell
     /// as SIGINT. This is the one-key complement to the `:claude-interrupt`
@@ -72,7 +72,7 @@ impl Mode for ClaudeCodeMode {
     /// I7: register this buffer to show the IDE status segment. The server
     /// handle is a boot service; absent it (tests), the mode degrades to a
     /// no-op Guard. The status content itself is published off-thread by the
-    /// crate's status publisher (`crate::status`).
+    /// crate's status publisher (`crate::mcp::status`).
     fn on_activate(&self, ctx: ModeContext) -> LifecycleFuture<'_, ClaudeCodeStatusGuard> {
         Box::pin(async move {
             // Register the `claude-code` modeline descriptor (idempotent,
@@ -80,7 +80,7 @@ impl Mode for ClaudeCodeMode {
             // registers the `ModelineServiceHandle` after the Phase-B install
             // list runs — by activation time (runtime) it is present.
             if let Some(svc) = ctx.service::<lattice_mode::ModelineServiceHandle>() {
-                crate::status::register_status_descriptor(&svc);
+                crate::mcp::status::register_status_descriptor(&svc);
             }
             let buffer = lattice_core::BufferId(ctx.buffer_id().0 as u32);
             let inner = ctx.service::<ClaudeCodeServerHandle>().map(|handle| {

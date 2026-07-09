@@ -50,12 +50,12 @@ features.
 
 | Slice | Deliverable | Status |
 |-------|-------------|--------|
-| **AG‑0** | `lattice-agent` crate + `AgentError` + `parse_no_args`; both crates consume it | ⬜ not started |
-| **AG‑1** | `diff_review` extracted; `openDiff` becomes MCP marshalling over it | ⬜ not started |
-| **AG‑2** | `EditorAccess` (reads + writes + state cache) extracted | ⬜ not started |
-| **AG‑3** | `AiLogger` / `LogRing` / `SessionKey` / `AiLogPushed` / buffer names / `AiLogMode` → `lattice-agent` | ⬜ not started |
-| **AG‑4** | Fold `lattice-claude-code` into `lattice-ai/mcp/`; delete the crate; one boot line | ⬜ not started |
-| **AG‑5** | Restructure ACP code into `lattice-ai/acp/`; feature-gate both adapters | ⬜ not started |
+| **AG‑0** | `lattice-agent` crate + `AgentError` + `parse_no_args`; both crates consume it | ✅ done |
+| **AG‑1** | `diff_review` extracted; `openDiff` becomes MCP marshalling over it | ✅ done |
+| **AG‑2** | `EditorAccess` (reads + writes + state cache) extracted (AG‑2a reads, AG‑2b writes) | ✅ done |
+| **AG‑3** | `AiLogger` / `LogRing` / `SessionKey` / `AiLogPushed` / buffer names / `AiLogMode` → `lattice-agent` | ✅ done |
+| **AG‑4** | Fold `lattice-claude-code` into `lattice-ai/mcp/`; delete the crate; one boot line | 🚧 in progress |
+| **AG‑5** | Restructure ACP code into `lattice-ai/acp/`; feature-gate both adapters | 📝 planned |
 
 **Ordering rationale.** AG‑1 comes first among the extractions because it is the
 highest-value move (it *is* AI‑2's deliverable) and the smallest self-contained

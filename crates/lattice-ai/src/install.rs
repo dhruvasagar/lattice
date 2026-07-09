@@ -18,10 +18,10 @@ use std::sync::Arc;
 use lattice_config::ConfigRegistry;
 use lattice_mode::SubsystemBoot;
 
-use crate::ai_log::{AiLogLevel, AiLogger};
+use lattice_agent::{AiLogLevel, AiLogMode, AiLogger};
+
 use crate::commands::register_ai_ex_commands;
 use crate::handle::AiClientHandle;
-use crate::modes::AiLogMode;
 
 /// Wire the AI (ACP agent client) subsystem into the editor at boot.
 pub fn install(boot: &mut impl SubsystemBoot) {

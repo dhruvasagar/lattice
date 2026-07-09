@@ -19,10 +19,10 @@
 
 use std::sync::Arc;
 
-use crate::ai_log::SessionKey;
+use super::ai_log::SessionKey;
 
 /// Build the synthetic name for the per-session AI log buffer
-/// owned by [`crate::modes::AiLogMode`].
+/// owned by [`super::modes::AiLogMode`].
 ///
 /// Format: `*ai:<provider>:<index>*`.
 pub fn ai_log_name(session: &SessionKey) -> String {

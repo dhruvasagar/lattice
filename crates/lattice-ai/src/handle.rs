@@ -12,7 +12,8 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 use tokio::sync::mpsc;
 
-use crate::ai_log::SessionKey;
+use lattice_agent::SessionKey;
+
 use crate::providers::ProviderConfig;
 
 /// Editor-visible snapshot of the active AI session, if any. Cheap to clone

@@ -23,9 +23,18 @@ pub mod editor_access;
 
 pub mod write_bus;
 
+pub mod log;
+
 pub use commands::{parse_no_args, parse_rest_as_text};
 pub use diff_review::{DiffReviewRequest, review_diff};
 pub use editor_access::{EditorAccess, OpenEditor, SelectionInfo};
 pub use error::{AgentError, Result};
 pub use state_cache::{EditorStateCache, EditorStateHandle};
 pub use write_bus::{EditorWriteRequest, InboundKind, InboundReply, make_handler};
+
+pub use log::ai_log::{
+    AiLogEventPublisher, AiLogLevel, AiLogPushed, AiLogRecord, AiLogSource, AiLogger, LogRing,
+    SessionKey, format_ai_log_line, level_tag,
+};
+pub use log::buffer_names::{ai_log_name, parse_ai_log_name};
+pub use log::modes::AiLogMode;

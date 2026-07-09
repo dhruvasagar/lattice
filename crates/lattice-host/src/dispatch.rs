@@ -23825,7 +23825,7 @@ impl Editor {
         let name = lattice_ai::ai_log_name(key);
         let id = self.ensure_named_synthetic_document(
             &name,
-            lattice_ai::modes::AiLogMode::mode_id(),
+            lattice_ai::AiLogMode::mode_id(),
             crate::synthetic_buffers::SYNTHETIC_BUFFER_FLAGS,
         );
         self.activate_buffer(id);

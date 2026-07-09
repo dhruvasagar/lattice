@@ -3,18 +3,18 @@
 //! - `ai-log-mode` (major) -- the read-only buffer backing the
 //!   per-process `*ai:<provider>:<index>*` log view. Mirrors
 //!   `lattice_lsp::modes::LspServerLogMode`: `on_activate` derives
-//!   its [`SessionKey`](crate::ai_log::SessionKey) identity by
+//!   its [`SessionKey`](super::ai_log::SessionKey) identity by
 //!   parsing the buffer's synthetic name, seeds from the
-//!   [`AiLogger`](crate::ai_log::AiLogger) ring, subscribes to
-//!   [`AiLogPushed`](crate::ai_log::AiLogPushed), and spawns a
+//!   [`AiLogger`](super::ai_log::AiLogger) ring, subscribes to
+//!   [`AiLogPushed`](super::ai_log::AiLogPushed), and spawns a
 //!   drain task that appends matching records live. The returned
 //!   `Subscription` guard unsubscribes on drop.
 //!
 //! The boot wiring that registers this mode, registers the
-//! [`AiLogger`](crate::ai_log::AiLogger) *service* (there is no
+//! [`AiLogger`](super::ai_log::AiLogger) *service* (there is no
 //! `Editor` field -- modes reach it through the service registry),
 //! wires the `AiLogPushed` publisher onto the runtime bus, and
-//! creates/opens the buffers lives in [`crate::install`]. This
+//! creates/opens the buffers lives in `lattice_ai::install`. This
 //! module only builds the mode itself, unit-testable without a
 //! booted app (every missing service / unparseable name short-
 //! circuits `on_activate` to `Ok(None)`).
@@ -61,7 +61,7 @@ impl Mode for AiLogMode {
             let Some(name) = store.name_for(buffer_id) else {
                 return Ok(None);
             };
-            let Some(key) = crate::buffer_names::parse_ai_log_name(&name) else {
+            let Some(key) = super::buffer_names::parse_ai_log_name(&name) else {
                 return Ok(None);
             };
             let Some(handle) = store.handle_for(buffer_id) else {
@@ -75,14 +75,14 @@ impl Mode for AiLogMode {
             // pre-existing records are visible immediately. No
             // trace-filtering distinction -- one buffer per
             // session carries every record for that session.
-            if let Some(logger) = ctx.service::<crate::ai_log::AiLogger>() {
+            if let Some(logger) = ctx.service::<super::ai_log::AiLogger>() {
                 let snap = logger.snapshot_session(&key);
                 let mut text = String::new();
                 for record in snap.iter() {
-                    let line = crate::ai_log::format_ai_log_line(
+                    let line = super::ai_log::format_ai_log_line(
                         record.timestamp,
                         Some(&key),
-                        crate::ai_log::level_tag(record.level),
+                        super::ai_log::level_tag(record.level),
                         record.source.tag(),
                         &record.message,
                     );
@@ -105,16 +105,16 @@ impl Mode for AiLogMode {
                 }
             }
 
-            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<crate::ai_log::AiLogPushed>();
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<super::ai_log::AiLogPushed>();
             let sub_id = ctx
                 .events()
-                .subscribe_typed::<crate::ai_log::AiLogPushed>(tx);
+                .subscribe_typed::<super::ai_log::AiLogPushed>(tx);
             let bus_handle = ctx.events_handle();
 
             let filter_key = key.clone();
             runtime.spawn(async move {
                 while let Some(first) = rx.recv().await {
-                    let mut batch: Vec<crate::ai_log::AiLogPushed> = vec![first];
+                    let mut batch: Vec<super::ai_log::AiLogPushed> = vec![first];
                     while let Ok(more) = rx.try_recv() {
                         batch.push(more);
                     }
@@ -123,7 +123,7 @@ impl Mode for AiLogMode {
                         .iter()
                         .filter(|e| e.session.as_ref() == Some(&filter_key))
                     {
-                        let line = crate::ai_log::format_ai_log_line(
+                        let line = super::ai_log::format_ai_log_line(
                             event.timestamp,
                             Some(&filter_key),
                             &event.level,

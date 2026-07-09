@@ -14,8 +14,9 @@ use agent_client_protocol::schema::v1::{ContentBlock, SessionUpdate};
 use arc_swap::ArcSwap;
 use tokio::sync::mpsc;
 
+use lattice_agent::{AiLogLevel, AiLogSource, AiLogger, SessionKey};
+
 use crate::Result;
-use crate::ai_log::{AiLogLevel, AiLogSource, AiLogger, SessionKey};
 use crate::connection::{Connection, SessionId, SessionNotification};
 use crate::error::AiError;
 use crate::handle::{AiClientHandle, AiCmd, AiState};
@@ -317,8 +318,9 @@ mod tests {
     };
     use tokio::sync::mpsc;
 
+    use lattice_agent::AiLogRecord;
+
     use super::*;
-    use crate::ai_log::AiLogRecord;
 
     fn text_update(text: &str, thought: bool) -> SessionUpdate {
         let chunk = ContentChunk::new(ContentBlock::Text(TextContent::new(text)));

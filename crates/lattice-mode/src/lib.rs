@@ -134,7 +134,9 @@ pub use crate::error::ModeActivationError;
 pub use crate::event::ModeEvent;
 pub use crate::guards::{GuardStore, GuardStoreHandle};
 pub use crate::locals::{BufferLocal, BufferLocals, LocalDescriptor};
-pub use crate::mode::{ActivationPolicy, DynMode, LifecycleFuture, Mode, ModeId, ModeKind};
+pub use crate::mode::{
+    ActivationPolicy, DynMode, EditableTail, LifecycleFuture, Mode, ModeId, ModeKind,
+};
 pub use crate::modes::{
     ActiveCompletionSources, BufferWordsMode, CompletionMode, CompletionPopupMode, HelpMode,
     HoverMode, MessagesMode, PathCompletionMode, TextMode, register_foundation_modes,

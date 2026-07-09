@@ -14728,12 +14728,54 @@ impl Editor {
     /// content is intentionally separate so `:w` can diff against a
     /// snapshot and translate into filesystem operations. LSP
     /// `didChange` is intentionally not fired for oil edits.
+    /// AU‑3: the active document's declared editable tail, if its major mode
+    /// contributes one (the comint prompt of an owner-written buffer). Read
+    /// from the mode registry rather than a per-buffer slot: the tail is a
+    /// static mode declaration expressed relative to the buffer end, so it
+    /// needs no seeding and stays valid as the owner appends content.
+    fn active_editable_tail(&self) -> Option<lattice_mode::EditableTail> {
+        let major = self.active_modes.get(&self.document_buffer_id)?.major()?;
+        self.mode_registry.get(major)?.editable_tail()
+    }
+
+    /// AU‑3: should this keystroke edit be rejected by the read-only gate?
+    ///
+    /// - Not read-only (`ReadOnly` resolves false) → never rejected.
+    /// - Read-only + no editable tail → always rejected (fully read-only:
+    ///   `*messages*`, `*ai:log*`, help — history is unmutable).
+    /// - Read-only + editable tail → rejected iff the edit's earliest
+    ///   affected position falls outside the tail (the comint pattern: the
+    ///   agent-conversation prompt is editable, the transcript above is not).
+    ///
+    /// Cold path: the `ReadOnly` bool short-circuits every normal Document
+    /// edit before the mode-registry lookup or snapshot runs.
+    fn read_only_edit_rejected(&self, edit: &lattice_protocol::edit::Edit) -> bool {
+        if !*self.resolved_option::<lattice_config::ReadOnly>(self.document_buffer_id) {
+            return false;
+        }
+        match self.active_editable_tail() {
+            Some(tail) => {
+                let line_count = self.document.snapshot().buffer.line_count();
+                let start = edit.range.start;
+                !tail.permits(start.line, start.byte, line_count)
+            }
+            None => true,
+        }
+    }
+
     pub fn apply_edit_blocking(
         &mut self,
         edit: lattice_protocol::edit::Edit,
     ) -> Result<lattice_core::buffer::AppliedEdit, lattice_runtime::RuntimeError> {
         if matches!(self.active_buffer, BufferKind::Oil) {
             return self.apply_edit_to_oil(edit);
+        }
+        // AU‑3: read-only edit gate with editable-tail exception. Only
+        // keystroke-originated edits reach `apply_edit_blocking`; owner
+        // projections write through the runtime document handle directly and
+        // bypass this gate (the standing "owner writes bypass" rule).
+        if self.read_only_edit_rejected(&edit) {
+            return Err(lattice_runtime::RuntimeError::ReadOnly);
         }
         let result = block_on(self.document.apply_edit(edit));
         if let Ok(applied) = result.as_ref() {
@@ -14762,6 +14804,12 @@ impl Editor {
                 applied.push(self.apply_edit_to_oil(edit)?);
             }
             return Ok(applied);
+        }
+        // AU‑3: read-only edit gate — reject the whole batch if ANY edit
+        // lands outside the editable tail (keystroke path only; owner
+        // projections bypass via the runtime handle).
+        if edits.iter().any(|e| self.read_only_edit_rejected(e)) {
+            return Err(lattice_runtime::RuntimeError::ReadOnly);
         }
         let result = block_on(self.document.apply_edit_batch(edits));
         if let Ok(applied) = result.as_ref() {

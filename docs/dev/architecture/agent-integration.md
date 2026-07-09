@@ -61,11 +61,10 @@ agent may exercise on the editor:
 
 ```rust
 impl EditorAccess {
-    // Reads — served from the buffer store + a diagnostics source.
+    // Reads — served from the state cache + the buffer store.
     async fn current_selection(&self) -> Option<Selection>;
     async fn open_editors(&self) -> Vec<OpenEditor>;
-    async fn workspace_folders(&self) -> Vec<PathBuf>;
-    async fn diagnostics(&self, path: Option<&Path>) -> Vec<AgentDiagnostic>;
+    async fn workspace_folders(&self) -> Vec<String>;
     async fn document_dirty(&self, path: &Path) -> bool;
     async fn read_text_file(&self, path: &Path, line: Option<u32>, limit: Option<u32>)
         -> Result<String, AgentError>;
@@ -91,13 +90,23 @@ sender, `ProgrammaticDiffBus`, a `DiagnosticsSource`), so adapters are tested
 against in-memory seams without a trait. If a second host ever exists, extract
 the trait then, and not before.
 
-`EditorAccess` is the complete surface; **each adapter exposes only the subset
-its protocol names.** MCP maps ten tools onto it. ACP maps `fs/*` and
-`session/request_permission`. Methods no ACP agent asks for (`open_editors`,
-`diagnostics`, `document_dirty`) are not dead — the context-push command
+`EditorAccess` is the surface an agent can exercise on the editor; **each adapter
+exposes only the subset its protocol names.** MCP maps its tools onto it. ACP
+maps `fs/*` and `session/request_permission`. Methods no ACP agent asks for
+(`open_editors`, `document_dirty`) are not dead — the context-push command
 (`:ai-send` today, `:agent-send` after the naming slice) builds prompt resource
 blocks out of `current_selection()`, the same method backing
 `getCurrentSelection`.
+
+**`getDiagnostics` is deliberately NOT in the port.** It has no ACP counterpart,
+and its natural payload is `lsp_types::Diagnostic`. Putting it in an LSP-free
+port would mean declaring a parallel `AgentDiagnostic` mirroring nine fields, and
+preserving its JSON shape byte-for-byte, purely to launder a type across a crate
+boundary for a single consumer that already holds the real handle. That is
+abstraction without a merit win (heuristic #1). `getDiagnostics` stays in the MCP
+adapter, reading `lattice_lsp::modes::DiagnosticsQueryHandle` directly, and the
+`DiagnosticsSource` trait this document once proposed does not exist. Revisit
+only if `:agent-send` genuinely needs diagnostics as prompt context.
 
 ### `review_diff` is the unification
 
@@ -255,11 +264,9 @@ by a free function taking a `ServerConfig` and an `EventBus`. They share the
 no concrete merit win, which heuristic #1 forbids. Each adapter keeps its own
 supervisor; only `parse_no_args` (byte-identical in both crates today) moves.
 
-Diagnostics are the interesting case: `getDiagnostics` needs LSP data, but the
-port must stay LSP-free. `EditorAccess::diagnostics()` returns a neutral
-`AgentDiagnostic`, backed by an injected `DiagnosticsSource` that `install`
-wires from the LSP handle. `lattice-lsp` therefore sits behind `feature = "mcp"`
-and never reaches a port-only consumer.
+`lattice-lsp` sits behind `feature = "mcp"` and never reaches a port-only
+consumer, because `getDiagnostics` — the only thing that wants it — stays in the
+MCP adapter (§2).
 
 `lattice-claude-code` is deleted; its contents split between `lattice-agent`
 (the port implementation, extracted from `reads.rs`, `writes.rs`, `inbound.rs`,

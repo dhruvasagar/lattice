@@ -720,61 +720,131 @@ This is AI-2's deliverable, landed early and proven by claude-code's 73 tests."
 
 ---
 
-## AG‑2: Extract `EditorAccess` (reads + writes + state cache)
+## AG‑2: Extract `EditorAccess` — split into AG‑2a (reads) and AG‑2b (writes)
 
-**Contract.** `lattice-agent` gains:
+> **Design amendment (2026‑07‑09, user-approved).** `getDiagnostics` is **not**
+> in the port, and the `DiagnosticsSource` trait this plan once proposed does not
+> exist. Diagnostics has no ACP counterpart and its natural payload is
+> `lsp_types::Diagnostic`; an LSP-free port would need a parallel
+> `AgentDiagnostic` mirroring nine fields with a byte-identical JSON shape, purely
+> to launder a type for one consumer that already holds the real handle —
+> abstraction without a merit win (heuristic #1). `get_diagnostics` stays in
+> claude-code, reading `lattice_lsp::modes::DiagnosticsQueryHandle` as it does
+> today. Design fragment §2 and §6 amended to match.
 
-- `state_cache.rs` ← `claude-code/src/snapshot.rs`. The open-buffer set and
-  active selection, fed by the generic event bus. Rename
-  `ClaudeCodeReadState` → `EditorStateCache`, `ReadStateHandle` → `EditorStateHandle`.
-- `editor_access.rs` ← the *editor-facing* halves of `claude-code/src/reads.rs`,
-  `writes.rs`, and `inbound.rs`. A concrete clone-able `EditorAccess` struct:
+### Shared constraints for both sub-slices
+
+- **`serde_json` must not appear anywhere in `lattice-agent`.** The tool fns in
+  `reads.rs` / `writes.rs` return `serde_json::Value` because that is MCP's
+  `CallToolResult` envelope. The port returns Rust types; the MCP adapter keeps
+  the `*_result` builders that wrap them. **This is the line that decides whether
+  the port is real or is MCP wearing a hat.** Verify with
+  `grep -rn serde_json crates/lattice-agent/src/` → must be empty.
+- `lattice-agent` gains no direct dependency on `lattice-lsp`,
+  `agent-client-protocol`, `tokio-tungstenite`, `dirs`, or `getrandom`.
+- **`lattice-claude-code`'s 73 tests (67 unit + 6 integration) must pass
+  unchanged.** They are the safety net. A red test means the port changed
+  behavior — stop and diagnose; never edit a test to match new behavior.
+- Neither sub-slice moves a crate. `lattice-claude-code` still exists and still
+  compiles; it consumes the port.
+- `boot.inbound::<T, H>(handler)` is the only inbound API a subsystem can call
+  (`inbound_raw` is a host-only `BootContext` inherent method). The write bus
+  stays handler-drained; the diff bus stays a host-registered service.
+- Never run `cargo fmt -p`. Verify with `rustfmt --edition 2024 --check <file>`.
+
+### AG‑2a: state cache + reads
+
+`lattice-agent` gains:
+
+- `state_cache.rs` ← `claude-code/src/snapshot.rs`, moved with its tests.
+  `ClaudeCodeReadState` → `EditorStateCache`; `ReadStateHandle` → `EditorStateHandle`.
+  The event-bus subscription (`DocumentOpened` / `DocumentClosed` /
+  `SelectionsChanged`) moves verbatim.
+- `editor_access.rs` — a concrete, clone-able struct. **Not a trait**: one
+  implementation exists, and tests construct it over in-memory seams.
 
 ```rust
+#[derive(Clone)]
 pub struct EditorAccess {
     cache: EditorStateHandle,
     buffer_store: Option<lattice_mode::BufferStoreHandle>,
-    diagnostics: Option<DiagnosticsSource>,
-    writes: Option<lattice_mode::inbound::InboundBus<EditorWriteRequest>>,
-    diff: Option<lattice_diff::ProgrammaticDiffBus>,
     workspace_folders: Vec<String>,
+    // AG-2b adds: writes, diff
+}
+
+impl EditorAccess {
+    pub fn current_selection(&self) -> Option<SelectionInfo>;
+    pub fn open_editors(&self) -> Vec<OpenEditor>;
+    pub fn workspace_folders(&self) -> &[String];
+    pub fn document_dirty(&self, path: &str) -> bool;
+}
+
+/// The active selection plus the text it covers.
+pub struct SelectionInfo {
+    pub file_path: Option<std::path::PathBuf>,
+    pub selected_text: String,
+    pub selection: Option<lattice_protocol::position::Selection>,
+}
+
+pub struct OpenEditor {
+    pub path: String,
+    pub is_active: bool,
 }
 ```
 
-**Constraints specific to this slice:**
+`claude-code/src/reads.rs` keeps `ReadContext` (now holding an `EditorAccess`
+plus the `DiagnosticsQueryHandle`), keeps `get_diagnostics` whole, and reduces
+`get_current_selection` / `get_open_editors` / `get_workspace_folders` /
+`check_document_dirty` to *envelope builders over the port*. The `*_result`
+functions stay exactly as they are.
 
-- **`serde_json::Value` must not appear in `lattice-agent`.** `reads.rs`'s tool
-  fns return `Value` because that is MCP's `CallToolResult` envelope. The port
-  returns Rust types (`Option<Selection>`, `Vec<OpenEditor>`, `bool`,
-  `Vec<AgentDiagnostic>`); the MCP adapter keeps the `*_result` builders that
-  wrap them into JSON. This is the line that decides whether the port is real or
-  is MCP wearing a hat.
-- **Diagnostics must not pull `lattice-lsp` into the port.** Define
-  `pub trait DiagnosticsSource: Send + Sync` in `lattice-agent` with
-  `for_uri(&str) -> Vec<AgentDiagnostic>` and `uris_with_diagnostics() -> Vec<String>`,
-  and `pub type DiagnosticsSourceHandle = Arc<dyn DiagnosticsSource>`. The MCP
-  adapter's `install` adapts `lattice_lsp::modes::DiagnosticsQueryHandle` to it.
-  `AgentDiagnostic` is a neutral struct — do not re-export `lsp_types::Diagnostic`.
-  *(This is the one trait the design permits, because a second implementation —
-  the test fake — exists on day one, and the alternative is an LSP dependency in
-  the port.)*
-- `EditorWriteRequest` is `claude-code/src/inbound.rs`'s `ClaudeCodeInboundRequest`
-  renamed; `InboundKind` moves verbatim. `make_handler` moves with it, still
-  returning `Vec<Effect>` — the mapping to `Effect::OpenBufferAtColumn`,
-  `SaveBuffer`, `CloseSessionDiffs`, `CloseAllSessionDiffs` is protocol-neutral.
-- `boot.inbound::<T, H>(handler)` is the only inbound API available to a
-  subsystem (`inbound_raw` is a host-only `BootContext` inherent method). The
-  write bus stays handler-drained; the diff bus stays a host-registered service.
+**Move with them, unchanged:** `abs_offset`, `slice_selection`, `ordered`,
+`core_id`, `path_to_uri`. These are `lattice_protocol::position` operations and
+are protocol-neutral. `pos_json` stays in claude-code — it builds JSON.
 
-**Exit criteria:** `lattice-claude-code`'s 73 tests pass **unchanged**.
-`cargo tree -p lattice-agent | grep -E 'lattice-lsp|tungstenite|agent-client-protocol'`
-returns nothing. `grep -rn 'serde_json' crates/lattice-agent/src/` returns nothing.
+**Highest-risk part of the slice.** The selection helpers do UTF‑16-aware offset
+arithmetic. Move their tests with them and do not "clean them up" en route.
 
-**Risk:** `reads.rs` slices selection text out of the buffer store using
-UTF‑16-aware helpers (`abs_offset`, `slice_selection`, `ordered`). These are
-`lattice_protocol::position::Position` / `Selection` operations, protocol-neutral,
-and move cleanly — but they are the fiddliest part of the slice and carry the
-most subtle off-by-one risk. Move them with their tests.
+**Exit criteria:** claude-code 73 unchanged; `lattice-agent` tests grow by the
+moved `snapshot.rs` tests plus new direct tests for `current_selection` /
+`document_dirty`; `grep -rn serde_json crates/lattice-agent/src/` empty.
+
+### AG‑2b: writes + the inbound bus
+
+`lattice-agent` gains:
+
+- `write_bus.rs` ← `claude-code/src/inbound.rs`, moved with its tests.
+  `ClaudeCodeInboundRequest` → `EditorWriteRequest`. `InboundKind`,
+  `InboundReply`, `make_handler`, `active_path`, `map_request` move verbatim —
+  the mapping to `Effect::OpenBufferAtColumn` / `SaveBuffer` /
+  `CloseSessionDiffs` / `CloseAllSessionDiffs` is already protocol-neutral.
+- `EditorAccess` gains the write half:
+
+```rust
+impl EditorAccess {
+    pub async fn open_file(&self, path: PathBuf, column: Option<Utf16Pos>) -> Result<()>;
+    pub async fn save_document(&self, path: PathBuf) -> Result<()>;
+    pub async fn close_tab(&self, origin_session: u64, tab_name: String) -> Result<()>;
+    pub async fn close_session_diffs(&self, origin_session: u64) -> Result<()>;
+    pub async fn review_diff(&self, req: DiffReviewRequest) -> Result<DiffOutcome>;
+}
+```
+
+`run_write`'s 5-second `WRITE_TIMEOUT` backstop moves with it. Failures become
+`AgentError::Bus` (dropped receiver) and `AgentError::Io` (timeout / editor did
+not respond); `claude-code/src/writes.rs` maps them back to its existing
+`result(false, "…")` envelopes with the **same message strings**, so the MCP
+replies are byte-identical.
+
+`review_diff` on `EditorAccess` is a thin delegate to the free
+`lattice_agent::review_diff` landed in AG‑1 — it exists so an adapter holds one
+handle rather than a handle plus a loose bus. `claude-code/src/diff.rs` may keep
+calling the free function; do not churn it.
+
+**Exit criteria:** claude-code 73 unchanged; `lattice-agent` gains the moved
+inbound tests plus direct tests for the timeout and dropped-receiver paths;
+`grep -rn serde_json crates/lattice-agent/src/` empty; `cargo tree -p lattice-agent`
+shows no `lattice-lsp`.
 
 ---
 

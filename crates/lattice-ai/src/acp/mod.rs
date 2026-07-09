@@ -13,6 +13,7 @@
 pub mod commands;
 pub mod connection;
 pub mod conversation;
+pub mod conversation_mode;
 pub mod error;
 pub mod handle;
 pub mod install;

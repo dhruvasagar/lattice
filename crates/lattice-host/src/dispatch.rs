@@ -23831,6 +23831,21 @@ impl Editor {
         self.activate_buffer(id);
     }
 
+    /// Open (or focus) a named synthetic buffer under `mode_id` -- the generic
+    /// primitive behind
+    /// [`Effect::OpenSyntheticBuffer`](lattice_grammar::Effect::OpenSyntheticBuffer).
+    /// The emitting mode's command supplies the name + mode id; the host only
+    /// runs the generic open, so no provider-specific host method is needed. The
+    /// mode must be registered at boot.
+    pub fn open_synthetic_buffer(&mut self, name: &str, mode_id: &str) {
+        let id = self.ensure_named_synthetic_document(
+            name,
+            lattice_mode::ModeId::new(mode_id),
+            crate::synthetic_buffers::SYNTHETIC_BUFFER_FLAGS,
+        );
+        self.activate_buffer(id);
+    }
+
     /// `:ai-log [provider]` -- open the AI log buffer. 0 known
     /// sessions echoes a hint; exactly 1 (after the optional
     /// `provider` prefilter) opens directly; >1 raises a picker so
@@ -28905,6 +28920,7 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         | Effect::PrevDiagnostic
         | Effect::OpenLspLog { .. }
         | Effect::OpenAiLog { .. }
+        | Effect::OpenSyntheticBuffer { .. }
         | Effect::OpenMessages
         | Effect::OpenDashboard
         | Effect::ToggleLspTrace { .. }
@@ -29027,6 +29043,7 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         | Effect::PrevDiagnostic
         | Effect::OpenLspLog { .. }
         | Effect::OpenAiLog { .. }
+        | Effect::OpenSyntheticBuffer { .. }
         | Effect::OpenMessages
         | Effect::OpenDashboard
         | Effect::ToggleLspTrace { .. }

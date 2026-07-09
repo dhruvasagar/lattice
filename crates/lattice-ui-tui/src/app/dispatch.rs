@@ -1012,6 +1012,9 @@ impl App {
             Effect::PrevDiagnostic => self.do_prev_diagnostic(),
             Effect::OpenLspLog { server_id } => self.do_open_lsp_log(server_id.as_deref()),
             Effect::OpenAiLog { session } => self.do_open_ai_log(session.as_deref()),
+            Effect::OpenSyntheticBuffer { name, mode_id } => {
+                self.open_synthetic_buffer(&name, &mode_id)
+            }
             Effect::OpenMessages => self.do_open_messages(),
             // DB.2: host-applied via handle_effect (like DiffOpen); the
             // peer has nothing to do.
@@ -1240,6 +1243,7 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::PrevDiagnostic
         | Effect::OpenLspLog { .. }
         | Effect::OpenAiLog { .. }
+        | Effect::OpenSyntheticBuffer { .. }
         | Effect::OpenMessages
         | Effect::ToggleLspTrace { .. }
         | Effect::OpenLspTraceLog { .. }
@@ -1360,6 +1364,7 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::PrevDiagnostic
         | Effect::OpenLspLog { .. }
         | Effect::OpenAiLog { .. }
+        | Effect::OpenSyntheticBuffer { .. }
         | Effect::OpenMessages
         | Effect::ToggleLspTrace { .. }
         | Effect::OpenLspTraceLog { .. }

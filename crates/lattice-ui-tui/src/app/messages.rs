@@ -69,6 +69,16 @@ impl App {
         self.mutate_editor(move |e| e.do_open_ai_log(provider.as_deref()));
     }
 
+    /// `Effect::OpenSyntheticBuffer` -- open a named synthetic buffer under a
+    /// major mode. Thin peer forwarder to
+    /// [`lattice_host::editor::Editor::open_synthetic_buffer`]; the GPUI peer
+    /// reaches the same method.
+    pub fn open_synthetic_buffer(&mut self, name: &str, mode_id: &str) {
+        let name = name.to_string();
+        let mode_id = mode_id.to_string();
+        self.mutate_editor(move |e| e.open_synthetic_buffer(&name, &mode_id));
+    }
+
     /// Thin wrapper around
     /// [`lattice_host::editor::Editor::ensure_messages_buffer`]
     /// (Phase 5.7.B.9 migration). The find-or-create body +

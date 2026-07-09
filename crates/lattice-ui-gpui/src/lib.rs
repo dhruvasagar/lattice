@@ -1248,6 +1248,9 @@ impl GpuiApp {
             Effect::OpenAiLog { session } => {
                 self.mutate_editor(move |e| e.do_open_ai_log(session.as_deref()));
             }
+            Effect::OpenSyntheticBuffer { name, mode_id } => {
+                self.mutate_editor(move |e| e.open_synthetic_buffer(&name, &mode_id));
+            }
             Effect::OpenLspTraceLog { server_id } => {
                 self.mutate_editor(move |e| e.do_open_lsp_trace_log(server_id.as_deref()));
             }

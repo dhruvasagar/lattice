@@ -13,6 +13,7 @@ use lattice_mode::SubsystemBoot;
 
 use crate::acp::commands::register_ai_ex_commands;
 use crate::acp::conversation::ConversationStore;
+use crate::acp::conversation_mode::AiConversationMode;
 use crate::acp::handle::AiClientHandle;
 
 /// Wire the ACP (Agent Client Protocol) transport into the editor at boot. The
@@ -25,6 +26,12 @@ pub fn install(boot: &mut impl SubsystemBoot, logger: &AiLogger) {
     // mode can read snapshots.
     let bus = boot.event_bus().clone();
     let conv_store = ConversationStore::new(Arc::new(move |event| bus.publish_typed(event)));
+
+    // The `ai-conversation` major mode backs the `*ai:opencode*` buffer; it
+    // reads the ConversationStore service and live-tails via ConversationUpdated.
+    boot.modes_mut()
+        .register(AiConversationMode)
+        .expect("ai-conversation-mode register");
 
     // Spawn the supervisor with a logger clone (trace) + the conversation store.
     let handle = AiClientHandle::spawn(boot.runtime_handle(), logger.clone(), conv_store.clone());

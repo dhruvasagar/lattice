@@ -35,9 +35,15 @@ pub fn register_ai_ex_commands(registry: &mut CommandRegistry, handle: AiClientH
             parse_args: Box::new(parse_no_args),
             apply: Box::new(move |_ctx| {
                 start.start(ProviderConfig::opencode());
-                Ok(Effect::Echo {
-                    level: EchoLevel::Info,
-                    text: "opencode: starting agent".to_string(),
+                // Start AND open the conversation buffer (the user's decision):
+                // a generic open of the `*ai:opencode*` synthetic buffer under
+                // the `ai-conversation` mode. The mode's `on_activate` seeds +
+                // live-tails from the ConversationStore.
+                Ok(Effect::OpenSyntheticBuffer {
+                    name: crate::acp::conversation_mode::conversation_buffer_name(),
+                    mode_id: crate::acp::conversation_mode::AiConversationMode::mode_id()
+                        .as_str()
+                        .to_string(),
                 })
             }),
             args_schema: vec![],
@@ -127,7 +133,7 @@ mod tests {
     }
 
     #[test]
-    fn opencode_registers_and_starts() {
+    fn opencode_starts_and_opens_the_conversation_buffer() {
         let (handle, mut rx) = test_handle();
         let mut registry = CommandRegistry::new();
         register_ai_ex_commands(&mut registry, handle);
@@ -138,9 +144,14 @@ mod tests {
         let spec = registry.ex_command_spec(id).expect("spec present");
         let effect = (spec.apply)(&ctx_with(Args::None)).expect("apply ok");
 
+        // AU-2: `:opencode` both starts the agent AND opens the `*ai:opencode*`
+        // conversation buffer under the `ai-conversation` mode.
         match effect {
-            Effect::Echo { level, .. } => assert_eq!(level, EchoLevel::Info),
-            other => panic!("expected an Echo, got {other:?}"),
+            Effect::OpenSyntheticBuffer { name, mode_id } => {
+                assert_eq!(name, "*ai:opencode*");
+                assert_eq!(mode_id, "ai-conversation-mode");
+            }
+            other => panic!("expected OpenSyntheticBuffer, got {other:?}"),
         }
         match rx.try_recv().expect("AiCmd sent") {
             AiCmd::Start(_) => {}

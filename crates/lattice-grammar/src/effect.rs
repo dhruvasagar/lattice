@@ -533,6 +533,17 @@ pub enum Effect {
     OpenAiLog {
         session: Option<String>,
     },
+    /// Open (or focus) a named synthetic buffer under a given major mode --
+    /// the generic primitive behind provider-owned buffer views (e.g. the
+    /// `ai-conversation` `*ai:opencode*` buffer). The emitter (a mode's
+    /// command handler) supplies the buffer name + the mode id; the host owns
+    /// only the generic `ensure_named_synthetic_document` open, so no
+    /// provider-specific host method is added. `mode_id` is the mode's string
+    /// id (`ModeId::new(&mode_id)`); the mode must be registered at boot.
+    OpenSyntheticBuffer {
+        name: String,
+        mode_id: String,
+    },
     /// `:messages` -- open the `*messages*` buffer (the emacs
     /// `*Messages*` analogue). Renders a chronological view
     /// of every echo / minibuffer notification; live-tails as

@@ -1,5 +1,6 @@
 //! IDE-protocol I1.3 integration test: a real in-process WebSocket
-//! round-trip against the spawned server.
+//! round-trip against the spawned MCP server. Compiled only with the `mcp`
+//! feature (it drives `lattice_ai::mcp`).
 //!
 //! Spawns the server supervisor, starts it, reads the discovery lockfile
 //! to learn the ephemeral port + token, connects a `tokio-tungstenite`
@@ -7,6 +8,7 @@
 //! Also covers auth rejection and the lockfile start/stop lifecycle —
 //! the parts of `transport` + `server` not reachable by the pure
 //! unit tests.
+#![cfg(feature = "mcp")]
 #![allow(clippy::unwrap_used, clippy::panic, clippy::collapsible_if)]
 
 use std::path::{Path, PathBuf};

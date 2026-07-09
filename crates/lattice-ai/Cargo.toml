@@ -5,8 +5,17 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+default = ["acp", "mcp"]
+# ACP agent-client transport (opencode et al): the JSON-RPC `connection`,
+# `session`, `providers`, the `supervisor` + `AiClientHandle`, and the
+# `:opencode` / `:ai-prompt` / `:ai-stop` ex-commands.
+acp = ["dep:agent-client-protocol", "dep:tokio-util", "tokio/process"]
+# MCP IDE-peer transport (Claude Code, folded in by AG-4): the loopback
+# WebSocket server + the read / write / diff tools it exposes.
+mcp = ["dep:tokio-tungstenite", "dep:dirs", "dep:getrandom", "dep:lattice-lsp", "tokio/net"]
+
 [dependencies]
-agent-client-protocol = "1.2.0"
 lattice-protocol = { path = "../lattice-protocol" }
 lattice-mode = { path = "../lattice-mode" }
 lattice-grammar = { path = "../lattice-grammar" }
@@ -15,28 +24,32 @@ lattice-core = { path = "../lattice-core" }
 lattice-diff = { path = "../lattice-diff" }
 lattice-config = { path = "../lattice-config" }
 lattice-agent = { path = "../lattice-agent" }
+# acp: the Agent Client Protocol schema + JSON-RPC types the connection speaks.
+agent-client-protocol = { version = "1.2.0", optional = true }
+# acp: adapts tokio's AsyncRead/AsyncWrite to the futures-io traits
+# agent-client-protocol's `ByteStreams` transport expects (see
+# src/connection.rs "Threading" doc comment).
+tokio-util = { version = "0.7", features = ["compat"], optional = true }
 # mcp: read tools report LSP diagnostics to the agent (`getDiagnostics`),
 # consuming the `DiagnosticsQuery` service + `Diagnostic` type.
-lattice-lsp = { path = "../lattice-lsp" }
-# `ai_log.rs`'s `register_event!(AiLogPushed, ...)` expands to a
-# `#[linkme::distributed_slice(...)]` static -- same mechanism
-# `lattice-lsp` / `lattice-config` use for their registries.
-linkme = { workspace = true }
-tokio = { workspace = true, features = ["sync", "rt", "rt-multi-thread", "macros", "process", "net", "io-util", "time"] }
-# Adapts tokio's AsyncRead/AsyncWrite to the futures-io traits agent-client-protocol's
-# `ByteStreams` transport expects (see src/connection.rs "Threading" doc comment).
-tokio-util = { version = "0.7", features = ["compat"] }
+lattice-lsp = { path = "../lattice-lsp", optional = true }
 # mcp: the loopback WebSocket transport the external `claude` CLI dials into.
-tokio-tungstenite = { workspace = true }
+tokio-tungstenite = { workspace = true, optional = true }
+# mcp: discovery-lockfile home dir + ephemeral auth-token entropy.
+dirs = { workspace = true, optional = true }
+getrandom = { workspace = true, optional = true }
+# `process` (acp subprocess spawn) and `net` (mcp WebSocket) ride their
+# feature's `tokio/…` activation above; the base set is shared.
+tokio = { workspace = true, features = ["sync", "rt", "rt-multi-thread", "macros", "io-util", "time"] }
+# Shared by both transports: acp's connection + mcp's server both use the
+# futures Sink/Stream traits and arc-swap snapshots; serde covers acp session
+# frames + mcp protocol envelopes.
 futures = { workspace = true }
 arc-swap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-# mcp: discovery-lockfile home dir + ephemeral auth-token entropy.
-dirs = { workspace = true }
-getrandom = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "time", "macros", "rt", "net", "io-util"] }

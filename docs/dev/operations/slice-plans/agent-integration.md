@@ -54,8 +54,8 @@ features.
 | **AG‑1** | `diff_review` extracted; `openDiff` becomes MCP marshalling over it | ✅ done |
 | **AG‑2** | `EditorAccess` (reads + writes + state cache) extracted (AG‑2a reads, AG‑2b writes) | ✅ done |
 | **AG‑3** | `AiLogger` / `LogRing` / `SessionKey` / `AiLogPushed` / buffer names / `AiLogMode` → `lattice-agent` | ✅ done |
-| **AG‑4** | Fold `lattice-claude-code` into `lattice-ai/mcp/`; delete the crate; one boot line | 🚧 in progress |
-| **AG‑5** | Restructure ACP code into `lattice-ai/acp/`; feature-gate both adapters | 📝 planned |
+| **AG‑4** | Fold `lattice-claude-code` into `lattice-ai/mcp/`; delete the crate; one boot line (AG‑4a fold, AG‑4b feature gates — all four combos build) | ✅ done |
+| **AG‑5** | Relocate ACP modules into `lattice-ai/acp/`; clean `commands.rs` file-split (gates already in AG‑4b) | 🚧 in progress |
 
 **Ordering rationale.** AG‑1 comes first among the extractions because it is the
 highest-value move (it *is* AI‑2's deliverable) and the smallest self-contained
@@ -952,6 +952,19 @@ Named explicitly so a later reader does not mistake silence for oversight:
 - **No logging for the MCP path.** Claude Code still logs via `tracing::debug!`
   only. Wiring it into the shared `AiLogger` is a follow-up, and it is the slice
   that should also rename `*ai:…*` buffers.
+- **No agent-output-surface redesign.** `AiLogger`'s `AiLogSource` conflates two
+  concerns: **conversation** (`AgentText` / `Reasoning` / `ToolCall` — streamed
+  assistant output) and **diagnostic trace** (`Client` / `Lifecycle` — handshake,
+  permission requests, decode failures, session lifecycle). The single
+  `*ai:<provider>:<index>*` buffer today does both jobs because AI‑1b built the
+  logger before any agent UI existed. The right end-state (a follow-up slice, and
+  the one that also builds the agent-interaction UI): **conversation** streams into
+  the agent UI (its own mode/panel); **trace** stays a read-only diagnostic buffer
+  (the `:lsp-server-log` analog). AG‑4b deliberately keeps the substrate
+  transport-neutral and `:ai-log` unconditional so this split is unblocked without
+  a mid-refactor behavior change. The transport-neutrality (both an ACP agent and
+  an MCP agent can emit trace + conversation) is why `:ai-log` is not gated behind
+  either feature.
 - **No AI‑2.** This plan *enables* AI‑2 by landing `review_diff` and
   `EditorAccess`; the ACP `session/request_permission` handler and the
   `fs/read_text_file` / `fs/write_text_file` handlers are AI‑2's own slice, which

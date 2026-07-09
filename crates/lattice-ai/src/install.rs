@@ -20,22 +20,32 @@ use lattice_mode::SubsystemBoot;
 
 use lattice_agent::{AiLogLevel, AiLogMode, AiLogger};
 
-use crate::commands::register_ai_ex_commands;
-use crate::handle::AiClientHandle;
+use crate::commands::register_ai_log_command;
 
-/// Wire both AI agent transports into the editor at boot: the ACP agent
-/// client and the MCP (Claude Code) IDE peer.
+/// Wire the AI subsystem into the editor at boot. The transport-neutral log
+/// substrate (`AiLogger` + `AiLogMode` + `:ai-log`) is always installed; each
+/// agent transport is wired only when its feature is enabled.
 pub fn install(boot: &mut impl SubsystemBoot) {
-    install_acp(boot);
+    let logger = install_ai_log(boot);
+
+    #[cfg(feature = "acp")]
+    install_acp(boot, &logger);
+
+    #[cfg(feature = "mcp")]
     crate::mcp::install::install(boot);
+
+    // `AiLogger` is a port-level service (`AiLogMode`'s `on_activate` reads it
+    // via `ctx.service::<AiLogger>()`, as does the `:ai-log` picker) -- register
+    // it regardless of which transport(s) produce records. This consumes the
+    // logger; the ACP supervisor above took a clone.
+    boot.register_service::<AiLogger>(logger);
 }
 
-/// Wire the AI (ACP agent client) subsystem into the editor at boot.
-fn install_acp(boot: &mut impl SubsystemBoot) {
-    // 1. Construct the logger; seed defaults from the `ai.*` config options
-    // (registered Phase-A, before this Phase-B `install` runs -- see
-    // `lattice_claude_code::install`'s doc comment for the same ordering
-    // guarantee via `boot.service::<Arc<ConfigRegistry>>()`).
+/// Port-level: construct the `AiLogger` (seeded from the `ai.*` config options,
+/// registered Phase-A before this Phase-B `install` runs), wire its event
+/// publisher, register the `AiLogMode` major, and register the transport-neutral
+/// `:ai-log` command. Returns the logger for the ACP supervisor to clone.
+fn install_ai_log(boot: &mut impl SubsystemBoot) -> AiLogger {
     let logger = AiLogger::with_defaults();
     if let Some(config) = boot.service::<Arc<ConfigRegistry>>() {
         // ai.log_level -> default min level.
@@ -52,27 +62,38 @@ fn install_acp(boot: &mut impl SubsystemBoot) {
         }
     }
 
-    // 2. Publisher: every append -> runtime bus (AiLogMode's drain task
-    // subscribes to refresh open `*ai:<provider>:<index>*` buffers).
+    // Publisher: every append -> runtime bus (AiLogMode's drain task subscribes
+    // to refresh open `*ai:<provider>:<index>*` buffers).
     let bus = boot.event_bus().clone();
     logger.set_event_publisher(Arc::new(move |event| bus.publish_typed(event)));
 
-    // 3. Register the AiLogMode major (mirrors `register_lsp_log_modes`).
+    // Register the AiLogMode major (mirrors `register_lsp_log_modes`).
     boot.modes_mut()
         .register(AiLogMode)
         .expect("ai-log-mode register");
 
-    // 4. Spawn the supervisor with a logger clone -- it owns the provider
-    // child process, the ACP connection, and the active session for the
-    // program's lifetime (until every handle clone is dropped).
+    // The transport-neutral `:ai-log` command (no ACP handle needed).
+    register_ai_log_command(boot.commands_mut());
+
+    logger
+}
+
+/// Wire the ACP (Agent Client Protocol) transport: spawn the supervisor, wire
+/// the `:opencode` / `:ai-prompt` / `:ai-stop` ex-commands, and register the
+/// `AiClientHandle` service. AG-5 relocates this under `crate::acp`.
+#[cfg(feature = "acp")]
+fn install_acp(boot: &mut impl SubsystemBoot, logger: &AiLogger) {
+    use crate::commands::register_ai_ex_commands;
+    use crate::handle::AiClientHandle;
+
+    // Spawn the supervisor with a logger clone -- it owns the provider child
+    // process, the ACP connection, and the active session for the program's
+    // lifetime (until every handle clone is dropped).
     let handle = AiClientHandle::spawn(boot.runtime_handle(), logger.clone());
 
-    // 5. Crate-owned ex-commands: `:opencode` / `:ai-prompt` / `:ai-stop`.
+    // Crate-owned ex-commands: `:opencode` / `:ai-prompt` / `:ai-stop`.
     register_ai_ex_commands(boot.commands_mut(), handle.clone());
 
-    // 6. Services. `AiClientHandle` for a future modeline/UI; `AiLogger` for
-    // `AiLogMode`'s `on_activate` (`ctx.service::<AiLogger>()`) and the
-    // later `:ai-log` picker.
+    // `AiClientHandle` service for a future modeline/UI.
     boot.register_service::<AiClientHandle>(handle);
-    boot.register_service::<AiLogger>(logger);
 }

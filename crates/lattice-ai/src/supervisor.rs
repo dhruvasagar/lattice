@@ -37,10 +37,58 @@ impl AiClientHandle {
     }
 }
 
+/// Something the supervisor loop reacts to: a command from the editor, or
+/// the provider child exiting without being asked to.
+enum SupervisorEvent {
+    Cmd(AiCmd),
+    /// The provider process exited on its own (crashed, was killed out of
+    /// band, or quit). It has already been reaped by the `wait` that
+    /// observed it.
+    ChildExited,
+}
+
+/// Await whichever comes first: the next editor command, or the provider
+/// child's death.
+///
+/// Both branches are cancel-safe -- `mpsc::UnboundedReceiver::recv` and
+/// `tokio::process::Child::wait` both document that losing a `select!` race
+/// leaves their state intact -- so a command is never dropped and the
+/// child's exit is never missed. Returning an owned event (rather than
+/// selecting inline) keeps the `&mut child` borrow scoped to this function,
+/// leaving the caller free to mutate `child` in the handler.
+async fn next_event(
+    cmd_rx: &mut mpsc::UnboundedReceiver<AiCmd>,
+    child: &mut Option<tokio::process::Child>,
+) -> Option<SupervisorEvent> {
+    match child.as_mut() {
+        Some(child) => {
+            tokio::select! {
+                cmd = cmd_rx.recv() => cmd.map(SupervisorEvent::Cmd),
+                _ = child.wait() => Some(SupervisorEvent::ChildExited),
+            }
+        }
+        None => cmd_rx.recv().await.map(SupervisorEvent::Cmd),
+    }
+}
+
+/// Kill the provider child and reap it in the background.
+///
+/// `start_kill` only *sends* the signal; without a subsequent `wait` the
+/// process lingers as a zombie. The child is moved into a detached task that
+/// does that `wait`, so the supervisor never blocks on a dying process.
+fn kill_child(mut child: tokio::process::Child) {
+    let _ = child.start_kill();
+    tokio::spawn(async move {
+        let _ = child.wait().await;
+    });
+}
+
 /// The supervisor's command loop. Owns the live connection/session state
 /// across iterations; each `AiCmd` is handled to completion (or, for
 /// `Prompt`, fired off as its own task) before the next is pulled off the
-/// channel.
+/// channel. Between commands it also watches the provider child, so an agent
+/// that dies on its own tears its session down instead of leaving a phantom
+/// running `AiState` behind.
 async fn supervisor_loop(
     mut cmd_rx: mpsc::UnboundedReceiver<AiCmd>,
     state: Arc<ArcSwap<AiState>>,
@@ -59,9 +107,28 @@ async fn supervisor_loop(
     // exit criterion.
     let mut indices: HashMap<&'static str, u32> = HashMap::new();
 
-    while let Some(cmd) = cmd_rx.recv().await {
-        match cmd {
-            AiCmd::Start(provider) => {
+    while let Some(event) = next_event(&mut cmd_rx, &mut child).await {
+        match event {
+            // The provider died without being asked to. Nothing is left to
+            // kill (the `wait` that observed the exit already reaped it), so
+            // just tear the session down: the published `AiState` must stop
+            // claiming a live session the moment the process backing it is
+            // gone, or the modeline lies and every later `:ai-prompt` is
+            // silently dropped until the user runs `:ai-stop`.
+            SupervisorEvent::ChildExited => {
+                logger.log(
+                    active_key.as_ref(),
+                    AiLogLevel::Warn,
+                    AiLogSource::Lifecycle,
+                    "agent exited",
+                );
+                child = None;
+                conn = None;
+                sess = None;
+                active_key = None;
+                state.store(Arc::new(AiState::default()));
+            }
+            SupervisorEvent::Cmd(AiCmd::Start(provider)) => {
                 // Tear down any existing session/process before starting a
                 // new one -- the supervisor owns lifecycle end-to-end, so an
                 // old child must never keep running (or keep its drain task
@@ -74,8 +141,8 @@ async fn supervisor_loop(
                 // republishes the new running state. This is a no-op on the
                 // very first `Start` (no existing child, state already
                 // default).
-                if let Some(mut c) = child.take() {
-                    let _ = c.start_kill();
+                if let Some(c) = child.take() {
+                    kill_child(c);
                 }
                 conn = None;
                 sess = None;
@@ -121,7 +188,7 @@ async fn supervisor_loop(
                     }
                 }
             }
-            AiCmd::Prompt(text) => {
+            SupervisorEvent::Cmd(AiCmd::Prompt(text)) => {
                 if let (Some(c), Some(s)) = (conn.clone(), sess.clone()) {
                     let key = active_key.clone();
                     let logger = logger.clone();
@@ -144,15 +211,15 @@ async fn supervisor_loop(
                     );
                 }
             }
-            AiCmd::Stop => {
+            SupervisorEvent::Cmd(AiCmd::Stop) => {
                 logger.log(
                     active_key.as_ref(),
                     AiLogLevel::Info,
                     AiLogSource::Lifecycle,
                     "stopped",
                 );
-                if let Some(mut c) = child.take() {
-                    let _ = c.start_kill();
+                if let Some(c) = child.take() {
+                    kill_child(c);
                 }
                 conn = None;
                 sess = None;
@@ -212,6 +279,12 @@ async fn start_provider(
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
+        // The explicit `kill_child` calls cover `Stop` and replace-`Start`,
+        // but not the supervisor task simply going away -- when the last
+        // `AiClientHandle` clone drops, the command channel closes and
+        // `supervisor_loop` returns, dropping this `Child`. Without this, the
+        // agent (a billed process) outlives the editor that spawned it.
+        .kill_on_drop(true)
         .spawn()
         .map_err(|e| AiError::Process(e.to_string()))?;
 
@@ -379,6 +452,102 @@ mod tests {
             AiState::default(),
             "state must be idle after a failed Start"
         );
+    }
+
+    /// A mock ACP agent, expressed as a `sh -c` script: it answers
+    /// `initialize`, answers `session/new`, then exits -- standing in for a
+    /// provider that dies on its own once a session is open. Deterministic
+    /// and dependency-free (no agent binary, no network, no fixed timings).
+    ///
+    /// `agent-client-protocol` assigns each request a UUID *string* id
+    /// (`"id":"39977f74-..."`), so `sed` lifts it back out verbatim and the
+    /// canned replies quote it -- a numeric-id mock is silently ignored by
+    /// the client and the handshake hangs.
+    const MOCK_AGENT_EXITS_AFTER_SESSION: &str = r#"
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '{"jsonrpc":"2.0","id":"%s","result":{"protocolVersion":1}}\n' "$id" ;;
+    *'"method":"session/new"'*)
+      printf '{"jsonrpc":"2.0","id":"%s","result":{"sessionId":"sess-1"}}\n' "$id"
+      exit 0 ;;
+  esac
+done
+"#;
+
+    fn mock_agent_provider() -> ProviderConfig {
+        ProviderConfig {
+            command: "/bin/sh".into(),
+            args: vec!["-c".into(), MOCK_AGENT_EXITS_AFTER_SESSION.into()],
+            env: vec![],
+            display_name: "mockprov",
+        }
+    }
+
+    /// Poll until `session`'s ring holds a record containing `needle`.
+    ///
+    /// The mock agent exits the instant it answers `session/new`, so the
+    /// running `AiState` exists for only microseconds -- polling
+    /// `handle.snapshot()` for it would be inherently racy. The log ring is
+    /// append-only, so a record that was ever written stays observable.
+    async fn wait_for_record(logger: &AiLogger, session: &SessionKey, needle: &str) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let records = logger.snapshot_session(session);
+            if records.iter().any(|r| r.message.contains(needle)) {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for a {needle:?} record on {session:?}, got {records:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    /// An agent that exits on its own (crash, `/exit`, OOM-kill) must not
+    /// leave a phantom running `AiState` behind: the supervisor watches the
+    /// child and tears the session down when it dies. Without this, the
+    /// modeline claims a live session forever and `:ai-prompt` is silently
+    /// dropped until the user happens to run `:ai-stop`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn unexpected_child_exit_resets_state_and_logs() {
+        let logger = AiLogger::with_defaults();
+        let handle = AiClientHandle::spawn(&tokio::runtime::Handle::current(), logger.clone());
+        let key = SessionKey::new("mockprov", 1);
+
+        handle.start(mock_agent_provider());
+
+        // The mock answers the handshake, so a session really does open ...
+        wait_for_record(&logger, &key, "session opened").await;
+        // ... and then the mock exits, which must tear that session down.
+        wait_for_record(&logger, &key, "agent exited").await;
+
+        assert_eq!(
+            handle.snapshot(),
+            AiState::default(),
+            "state must be idle after the agent exits on its own"
+        );
+    }
+
+    /// After the child dies, a subsequent `Start` must open a *fresh* session
+    /// at the next index rather than resurrecting the dead one's key.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn start_after_child_exit_opens_the_next_session() {
+        let logger = AiLogger::with_defaults();
+        let handle = AiClientHandle::spawn(&tokio::runtime::Handle::current(), logger.clone());
+        let first = SessionKey::new("mockprov", 1);
+        let second = SessionKey::new("mockprov", 2);
+
+        handle.start(mock_agent_provider());
+        wait_for_record(&logger, &first, "agent exited").await;
+
+        handle.start(mock_agent_provider());
+        wait_for_record(&logger, &second, "session opened").await;
+        wait_for_record(&logger, &second, "agent exited").await;
+
+        assert_eq!(handle.snapshot(), AiState::default());
     }
 
     /// Live end-to-end check against a real `opencode acp` subprocess,

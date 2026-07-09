@@ -236,7 +236,13 @@ breadth.
 
 - **Extend `lattice-claude-code` to opencode (MCP-server topology).** opencode's
   TUI can't call `openDiff` back, so lattice-native accept/reject is
-  unreachable that way. Rejected (§1).
+  unreachable that way. Rejected (§1). **Re-verified 2026-07-09 and still true:**
+  opencode is itself a server (editors connect *in* over HTTP/SSE); it has no
+  lockfile discovery and no outbound editor callback, and it edits files with
+  its built-in `edit`/`write`/`patch` tools, so an `openDiff` tool we expose over
+  MCP would never intercept a native edit. All three of opencode's own editor
+  plugins confirm this — only the Zed integration gets pre-write approval, and it
+  does so over ACP. See `agent-integration.md` §5.
 - **Per-agent REST/SSE clients (opencode's own server API).** Works, but is
   opencode-specific; ACP gets Claude/Gemini/Codex/Copilot for the same effort.
   Rejected in favor of the standard.
@@ -244,8 +250,16 @@ breadth.
   a terminal buffer but then diff review lives in *that* UI, defeating the shared
   `openDiff` goal. Rejected (§1); a terminal-host mode may return later as an
   alternate, not the core.
-- **Fold `lattice-claude-code` into `lattice-ai`.** Mixes two topologies in one
-  crate. Rejected; kept separate (§1).
+- ~~**Fold `lattice-claude-code` into `lattice-ai`.** Mixes two topologies in one
+  crate. Rejected; kept separate (§1).~~ **OVERTURNED 2026-07-09 — see
+  `agent-integration.md`.** This rejection reasoned about *transport direction*.
+  The shared substance is the **capability surface** an agent exercises on the
+  editor (read selection, write file, review diff), which is
+  direction-independent: MCP serves it, ACP serves it *and* drives a
+  conversation. The two topologies survive as two adapters over one
+  `EditorAccess` port; they do not survive as two subsystems. Keeping them
+  disjoint would have had AI‑2 write a second `ProgrammaticDiffBus` producer
+  against the same bus.
 
 ## 9. Open questions / risks
 

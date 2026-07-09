@@ -118,15 +118,52 @@ branch added.
 **Goal.** An editable prompt region at the buffer tail; Insert relocates the
 cursor there; Enter sends; `Ctrl-C` interrupts the turn.
 
+**Mode-ownership design (researched 2026-07-09).** Uses the `DiffMode` template
+(`crates/lattice-diff/src/mode.rs`): the mode declares `Mode::keymap()` entries
+and `Mode::action_handlers()` closures; the host walks every registered mode at
+boot, so **zero `Editor::` methods and zero `Action` variants are added**. Split:
+
+- **Generic host primitive (not provider-specific):** a buffer-local
+  `EditableRange(Range)` (mirrors `DocumentFolds` in `lattice-host/src/modes.rs`)
+  + one exception in the read-only gate. Today `run_read_only_motion`
+  (`dispatch.rs:30612`) rejects Insert/operators in a `ReadOnly` buffer with
+  "buffer is read-only"; the exception: if the buffer carries an `EditableRange`
+  and the edit/cursor is inside it, allow the edit. One cold-path
+  `range.contains` check; no hot-path cost for normal buffers. Any buffer kind
+  can carry it (the comint pattern) — future `*scratch*`/REPL buffers reuse it.
+- **Mode-owned (`lattice-ai/acp`):**
+  - `AiConversationMode::keymap()` → `KeymapEntry`s: `{mode: Normal, chord: "i"/"a"/"o"/"A"/"I"/"O", command: "action:ai-conv-focus-prompt"}`; `{mode: Insert, chord: "<CR>", command: "action:ai-conv-send"}`; `{mode: Insert, chord: "<C-c>", command: "action:ai-conv-interrupt"}`.
+  - `AiConversationMode::action_handlers()` → three `ActionHandler` closures
+    (`Fn(&ActionContext) -> Option<Effect>`), bodies in `lattice-ai/acp`:
+    - `focus-prompt`: returns an `Effect` placing the cursor at the end of the
+      prompt line and entering Insert (reuse an existing cursor-move + EnterMode
+      effect; do NOT add a new `Action`).
+    - `send`: reads the prompt text via
+      `ctx.services.get::<BufferStoreHandle>()?.handle_for(ctx.buffer_id)` (the
+      last line after the `> ` marker), calls `AiClientHandle::prompt(text)`
+      (`ctx.services.get::<AiClientHandle>()`), returns a clear-edit `Effect`
+      that resets the prompt region.
+    - `interrupt`: `ctx.services.get::<AiClientHandle>()?.interrupt()`, returns
+      `None`.
+- **Projection change (`conversation_mode.rs`):** the buffer layout becomes
+  `<conversation>\n> <prompt>`; the drain task re-projects ONLY the conversation
+  zone (above the `> ` prompt line), preserving the user's in-progress prompt,
+  and (re)sets the `EditableRange` buffer-local to the prompt tail after each
+  re-projection (positions shift as the conversation grows).
+- **Interrupt plumbing:** `AiCmd::Interrupt` + `AiClientHandle::interrupt`;
+  supervisor sends ACP `session/cancel` for the active turn without ending the
+  session.
+
+`ActionContext` exposes `{buffer_id, cursor, services, events}` only (no direct
+buffer text) — the `send` handler reaches text through `BufferStoreHandle`.
+
 **Files.**
-- Create/Modify `crates/lattice-host/src/` — the generic **editable-tail** buffer
-  capability (a buffer-local marking a range editable in an owner-written buffer),
-  consumed uniformly by the dispatcher's Insert/operator read-only enforcement.
-- Modify `crates/lattice-ai/src/acp/conversation_mode.rs` — mark the prompt region;
-  bind insert-entering chords to relocate-to-prompt; bind Enter→send, `Ctrl-C`→interrupt.
+- Create/Modify `crates/lattice-host/src/modes.rs` + `dispatch.rs` — the generic
+  `EditableRange` buffer-local + the `run_read_only_motion` exception.
+- Modify `crates/lattice-ai/src/acp/conversation_mode.rs` — `keymap()` +
+  `action_handlers()`; projection preserves the prompt region + sets the range.
 - Modify `crates/lattice-ai/src/acp/handle.rs` + `supervisor.rs` — add
-  `AiCmd::Interrupt` + `AiClientHandle::interrupt`; supervisor cancels the active
-  turn (ACP `session/cancel`) without ending the session.
+  `AiCmd::Interrupt` + `AiClientHandle::interrupt`; supervisor `session/cancel`.
 
 **Interfaces (produced).**
 - Buffer-local `EditableTail(pub Range<usize>)` (or a `prompt_region` accessor) +

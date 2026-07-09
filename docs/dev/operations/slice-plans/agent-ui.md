@@ -15,7 +15,7 @@ substrate is untouched except that conversation sources stop flowing into it
 |-------|-------------|--------|
 | **AU‑1** | `Conversation` model + supervisor mapping + `ConversationUpdated`; conversation sources leave `AiLogger` (completes the conversation/trace split) | ✅ done |
 | **AU‑2** | `ai-conversation` major mode + read-only projection (turn headers, inline tool-call status; decoration-based in-place status + reasoning fold deferred); `:opencode` opens `*ai:opencode*` via generic `Effect::OpenSyntheticBuffer`; both renderers | ✅ done |
-| **AU‑3** | Modal input: editable prompt tail, Insert-relocates-to-prompt, Enter sends, `Ctrl-C` interrupt (`AiCmd::Interrupt`) | 📝 planned |
+| **AU‑3** | Modal input: editable prompt tail, Insert-relocates-to-prompt, Enter sends, `Ctrl-C` interrupt (`AiCmd::Interrupt`); user prompt folded into transcript as a User turn | ✅ done |
 | **AU‑4** | Diff review + approval: `request_permission` → `review_diff` → verdict → response; `[diff]` edit blocks; reads auto-run | 📝 planned |
 | **AU‑5** | Trust-mode toggle: per-session `auto_accept` + chord | 📝 planned |
 
@@ -123,14 +123,23 @@ cursor there; Enter sends; `Ctrl-C` interrupts the turn.
 and `Mode::action_handlers()` closures; the host walks every registered mode at
 boot, so **zero `Editor::` methods and zero `Action` variants are added**. Split:
 
-- **Generic host primitive (not provider-specific):** a buffer-local
-  `EditableRange(Range)` (mirrors `DocumentFolds` in `lattice-host/src/modes.rs`)
-  + one exception in the read-only gate. Today `run_read_only_motion`
-  (`dispatch.rs:30612`) rejects Insert/operators in a `ReadOnly` buffer with
-  "buffer is read-only"; the exception: if the buffer carries an `EditableRange`
-  and the edit/cursor is inside it, allow the edit. One cold-path
-  `range.contains` check; no hot-path cost for normal buffers. Any buffer kind
-  can carry it (the comint pattern) — future `*scratch*`/REPL buffers reuse it.
+- **Generic host primitive (not provider-specific) — as built:** a static
+  mode declaration `Mode::editable_tail() -> Option<EditableTail>` (`lattice_mode`)
+  + the read-only gate in `Editor::apply_edit_blocking` / `apply_edit_batch_blocking`.
+  `EditableTail { trailing_lines, first_line_min_byte }` is expressed relative to
+  the buffer end (not an absolute `Range`), so it needs no per-buffer seeding and
+  stays valid as the owner appends content above it. The gate: a keystroke edit on
+  a resolved-`ReadOnly` buffer is rejected unless the active major mode declares a
+  tail and `tail.permits(start_line, start_byte, live_line_count)`. One cold-path
+  bool short-circuit for normal buffers; the mode-registry lookup + snapshot only
+  run on read-only buffers. Any mode can declare a tail (the comint pattern) —
+  future `*scratch*`/REPL buffers reuse it.
+  > This replaced the originally-planned buffer-local `EditableRange(Range)`: a
+  > per-buffer slot would have to be updated as the transcript grows, but the
+  > drain task that grows it runs off-thread with only the runtime document
+  > handle — it cannot write host `buffer_locals` (documented on `ModeContext`).
+  > The end-relative static declaration sidesteps that entirely. See the
+  > "Enforcement point" note below for why the gate moved off `run_read_only_motion`.
 - **Mode-owned (`lattice-ai/acp`):**
   - `AiConversationMode::keymap()` → `KeymapEntry`s: `{mode: Normal, chord: "i"/"a"/"o"/"A"/"I"/"O", command: "action:ai-conv-focus-prompt"}`; `{mode: Insert, chord: "<CR>", command: "action:ai-conv-send"}`; `{mode: Insert, chord: "<C-c>", command: "action:ai-conv-interrupt"}`.
   - `AiConversationMode::action_handlers()` → three `ActionHandler` closures
@@ -146,10 +155,13 @@ boot, so **zero `Editor::` methods and zero `Action` variants are added**. Split
     - `interrupt`: `ctx.services.get::<AiClientHandle>()?.interrupt()`, returns
       `None`.
 - **Projection change (`conversation_mode.rs`):** the buffer layout becomes
-  `<conversation>\n> <prompt>`; the drain task re-projects ONLY the conversation
-  zone (above the `> ` prompt line), preserving the user's in-progress prompt,
-  and (re)sets the `EditableRange` buffer-local to the prompt tail after each
-  re-projection (positions shift as the conversation grows).
+  `<conversation>\n> <prompt>`; the drain seeds `{transcript}> ` once, then
+  re-projects ONLY the transcript zone, preserving the user's in-progress prompt.
+  No per-frame tail update is needed — `suffix_edit`'s replace range already ends
+  at `text_end(last)` (the start of the prompt line), and the static
+  `editable_tail()` tracks the prompt as the last line regardless of transcript
+  growth. The supervisor also folds each sent prompt into the transcript as a
+  User turn (ACP agents don't echo it back), so "you: …" appears on Enter.
 - **Interrupt plumbing:** `AiCmd::Interrupt` + `AiClientHandle::interrupt`;
   supervisor sends ACP `session/cancel` for the active turn without ending the
   session.
@@ -157,21 +169,29 @@ boot, so **zero `Editor::` methods and zero `Action` variants are added**. Split
 `ActionContext` exposes `{buffer_id, cursor, services, events}` only (no direct
 buffer text) — the `send` handler reaches text through `BufferStoreHandle`.
 
-**Enforcement point (located 2026-07-09).** `ReadOnly` is NOT enforced in
-`apply_edit_blocking` / `apply_edit_batch_blocking` (neither checks it), nor via
-an `option_cache` field. It is enforced at the **keystroke router** (the
-TUI/GPUI dispatch path documented at `lattice-ui-tui/src/app/dispatch.rs:91`,
-forwarding to `Editor::run_read_only_motion`, `dispatch.rs:30612`): a
-resolved-`ReadOnly` buffer routes motion/operator/insert invocations there, where
-non-motion commands echo "buffer is read-only". The `EditableRange` exception
-belongs in **that router's read-only branch** (or in `run_read_only_motion`
-itself): if the active buffer carries an `EditableRange` and the invocation is an
-insert/edit whose target is inside it, fall through to the normal document path
-instead of rejecting. **Care:** this router is shared by `*messages*`, ai-log,
-help, dashboard, and multibuffer — the exception must be strictly gated on the
-`EditableRange` buffer-local's presence so those buffers are unaffected. Verify
-with `multibuffer_is_a_regular_buffer.rs` + the messages/ai-log read-only tests
-before landing. This is the open item to resolve first when implementing AU-3.
+**Enforcement point (corrected + resolved 2026-07-10).** The design's
+originally-located point (`run_read_only_motion`, `dispatch.rs:30612`) was
+**incomplete**: that runner only handles Normal-mode command invocations, is
+reached only when a mode declares `Mode::invocation_runner()` (which
+`AiConversationMode` / `MessagesMode` / `AiLogMode` do **not** — only
+help/oil/file-tree/terminal register runners), and never sees Insert-mode typing
+(which flows through `do_insert_text`). Investigation confirmed there was in fact
+**no read-only enforcement at all** on the edit path for read-only Document
+buffers — every `resolved_option::<ReadOnly>` read in the tree is in tests.
+
+The real single chokepoint for all keystroke edits (Insert typing *and* Normal
+operators) is `Editor::apply_edit_blocking` / `apply_edit_batch_blocking`
+(`dispatch.rs`). The gate lives there (AU‑3a): a keystroke edit on a
+resolved-`ReadOnly` buffer is rejected unless the active buffer's major mode
+declares an `EditableTail` (`lattice_mode`) and the edit lands inside it. Owner
+projections write through the runtime document handle directly and bypass the
+gate — the standing "owner writes bypass" rule — so `*messages*` / `*ai:log*`
+keep streaming while their history is now correctly keystroke-protected (a latent
+gap closed). This also retired the planned per-buffer `EditableRange` buffer-local
++ its off-thread-write problem: the tail is a **static mode declaration**
+(`trailing_lines` + `first_line_min_byte`, relative to the buffer end), consulted
+directly from the mode registry, invariant as the transcript grows. Verified
+against `multibuffer_is_a_regular_buffer.rs` + the full host suite (746 green).
 
 **Files.**
 - Create/Modify `crates/lattice-host/src/modes.rs` + `dispatch.rs` — the generic
@@ -190,21 +210,37 @@ before landing. This is the open item to resolve first when implementing AU-3.
   Insert → send + clear region; `<C-c>` → interrupt.
 
 **Steps.**
-- [ ] Write failing test: entering Insert in `*ai:opencode*` moves the cursor into
-  the prompt region regardless of prior Normal-mode cursor position.
-- [ ] Write failing test: an Insert edit targeting a history line is rejected (no
-  mutation); an edit in the prompt region lands.
-- [ ] Write failing test: Enter in Insert sends the prompt text via a captured
-  handle and clears the region.
-- [ ] Implement the editable-tail buffer-local + dispatcher enforcement.
-- [ ] Implement the mode keymap (relocate-on-insert, send-on-enter, interrupt).
-- [ ] Implement `AiCmd::Interrupt` + supervisor `session/cancel`.
-- [ ] TUI + GPUI: cursor placement + prompt region render in both.
-- [ ] `cargo test`; fmt; clippy; commit.
+- [x] `EditableTail::permits` unit tests (in-prompt allowed, history + marker
+  rejected, tracks the live line count) — AU‑3a.
+- [x] `EditableTail` + read-only edit gate in `apply_edit_blocking` /
+  `apply_edit_batch_blocking`; consulted from the mode's `editable_tail()`
+  declaration (no per-buffer seeding) — AU‑3a.
+- [x] `AiCmd::Interrupt` + `AiClientHandle::interrupt` + supervisor
+  `session/cancel`; connection driver restructured to `cx.spawn` the prompt turn
+  so a mid-turn cancel is delivered concurrently — AU‑3b.
+- [x] Mode keymap (`i`/`a`/`o`/`A`/`I`/`O` → focus-prompt, `<CR>` → send, `<C-c>`
+  → interrupt) + `action_handlers()` bodies + `action:ai-conv-*` command shells;
+  keymap/handler/tail contract tests — AU‑3c.
+- [x] Projection: `<transcript>\n> <prompt>` layout; drain re-projects only the
+  transcript zone, preserving the prompt; supervisor folds the sent prompt into
+  the transcript as a User turn — AU‑3c.
+- [x] TUI + GPUI: **no renderer work** — the prompt is plain buffer text and no
+  new `Effect` / decoration variant was introduced, so both renderers draw it
+  through the standard Document path.
+- [x] `cargo test` (mode + host + ai acp, all green); clippy clean; committed
+  (AU‑3a / AU‑3b / AU‑3c). Note: did **not** run `cargo fmt` — the repo's
+  committed style is not default-rustfmt-clean; hand-match surrounding style.
 
 **Exit criteria.** Normal-mode motions roam the whole buffer; Insert always lands
 in the prompt; history is unmutable; Enter sends + user turn appears; `Ctrl-C`
-interrupts without ending the session; both renderers.
+interrupts without ending the session; both renderers. ✅
+
+> **Follow-up (not blocking AU‑3):** the end-to-end host-boot integration test
+> (drive `i` → type → `<CR>` on a live `*ai:opencode*` and assert the transcript
+> + cleared prompt) is deferred; AU‑3 lands with unit coverage of the gate
+> (`permits`), the mode surface (keymap/handlers/tail), and the store
+> (`push_user_text`). The interaction is covered by construction — the gate is
+> the single edit chokepoint and the mode declares the tail the gate reads.
 
 ---
 

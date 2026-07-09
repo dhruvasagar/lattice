@@ -125,10 +125,13 @@ not a hard text barrier:
   turn (a new `AiCmd::Interrupt`; `Stop` still ends the session).
 
 This is the one **new reusable primitive**: an editable region at the tail of an
-otherwise owner-written buffer (the comint pattern). It is a per-buffer property,
-not an `ai-conversation`-specific render path — future `*scratch*` / REPL buffers
-want the same capability, so it lives as a generic buffer feature the mode opts
-into, consumed uniformly by the renderer.
+otherwise owner-written buffer (the comint pattern). It is a generic
+`Mode::editable_tail()` declaration (`EditableTail`, structural — trailing lines +
+first-line min byte, relative to the buffer end), not an
+`ai-conversation`-specific render path — future `*scratch*` / REPL buffers declare
+their own tail. The host's read-only edit gate
+(`Editor::apply_edit_blocking`) consults it uniformly; the renderer needs no
+special path, since the prompt is plain buffer text.
 
 ## Diff review + approval
 

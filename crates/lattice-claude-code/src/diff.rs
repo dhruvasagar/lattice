@@ -6,11 +6,12 @@
 //! whose host-side machinery is irreducibly `&mut Editor` + lattice-diff types.
 //! So it rides a SECOND, host-drained bus
 //! ([`lattice_diff::ProgrammaticDiffBus`], built via `boot.inbound_raw` and
-//! registered as a service): this tool builds a
+//! registered as a service): this tool delegates to
+//! [`lattice_agent::review_diff`], which builds a
 //! [`lattice_diff::ProgrammaticDiffRequest`], `send`s it (which wakes the
-//! editor), and `await`s the request's completion oneshot — with **no timeout**
-//! (the user reviews at their own pace). The host opens a side-by-side diff,
-//! binds the oneshot to the session, and fires the
+//! editor), and `await`s the request's completion oneshot — with **no
+//! timeout** (the user reviews at their own pace). The host opens a
+//! side-by-side diff, binds the oneshot to the session, and fires the
 //! [`DiffOutcome`](lattice_diff::subsystem::DiffOutcome) on
 //! `:diff-accept` / `:diff-reject` (or a close-tab cancel, which drops the
 //! sender → a graceful reject here).
@@ -23,10 +24,10 @@
 use std::path::PathBuf;
 
 use serde_json::{Value, json};
-use tokio::sync::oneshot;
 
+use lattice_agent::{AgentError, DiffReviewRequest, review_diff};
+use lattice_diff::ProgrammaticDiffBus;
 use lattice_diff::subsystem::DiffOutcome;
-use lattice_diff::{ProgrammaticDiffBus, ProgrammaticDiffRequest};
 
 /// `openDiff`: open an interactive diff between `old_file_path`'s on-disk
 /// content and `new_file_contents`, blocking until the user resolves it.
@@ -66,35 +67,27 @@ pub async fn open_diff(
         .and_then(|v| v.as_str())
         .unwrap_or("openDiff");
 
-    let (tx, rx) = oneshot::channel::<DiffOutcome>();
-    let request = ProgrammaticDiffRequest {
+    let request = DiffReviewRequest {
         old_file_path: PathBuf::from(old),
         new_file_path: PathBuf::from(new_path),
         new_contents: contents.to_string(),
         tab_name: tab.to_string(),
         origin_session: conn_id,
-        response: tx,
     };
-    if bus.send(request).is_err() {
-        // Receiver dropped — the editor/server is gone.
-        return error_result("openDiff failed: editor not reachable");
-    }
 
     // D-fix.6 follow-up: a review is now pending for the modeline badge. The
-    // guard clears it on ANY exit below — resolve, cancel, or the task being
-    // dropped — so the count can never leak high.
+    // guard clears it on ANY exit below -- resolve, cancel, or the task being
+    // dropped -- so the count can never leak high. The badge is a modeline
+    // concern, so it stays adapter-side rather than moving into the port.
     let _review = review.begin();
 
-    // Block until the user resolves the diff. NO timeout (design §I4): the user
-    // reviews at their own pace; a dropped sender (the session was cancelled —
-    // a close-tab, `:diffoff`, or the editor went away) surfaces as a recv
-    // error, which we map to a reject so the agent never hangs.
-    match rx.await {
+    match review_diff(bus, request).await {
         Ok(DiffOutcome::Accept) => saved_result(),
-        // Reject, a dropped sender (the session was cancelled), or any future
-        // `DiffOutcome` variant (the enum is `#[non_exhaustive]`) → "not saved":
-        // a reject reply, so the agent never hangs.
-        _ => rejected_result(tab),
+        // Reject, a cancelled review (dropped sender), or any future
+        // `DiffOutcome` variant (the enum is `#[non_exhaustive]`) -> "not
+        // saved": a reject reply, so the agent never hangs.
+        Ok(_) | Err(AgentError::Cancelled(_)) => rejected_result(tab),
+        Err(_) => error_result("openDiff failed: editor not reachable"),
     }
 }
 
@@ -131,6 +124,7 @@ fn text_result(text: &str, is_error: bool) -> Value {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+    use lattice_diff::ProgrammaticDiffRequest;
     use lattice_mode::inbound::make_inbound_raw;
     use std::sync::Arc;
     use std::time::Duration;

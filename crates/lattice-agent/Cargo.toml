@@ -8,6 +8,12 @@ license.workspace = true
 [dependencies]
 thiserror = { workspace = true }
 lattice-grammar = { path = "../lattice-grammar" }
+lattice-diff = { path = "../lattice-diff" }
+lattice-mode = { path = "../lattice-mode" }
+tokio = { workspace = true, features = ["sync", "rt", "macros"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "time", "macros", "rt"] }
 
 [lints]
 workspace = true

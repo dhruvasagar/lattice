@@ -3851,8 +3851,11 @@ dependencies = [
 name = "lattice-agent"
 version = "0.1.0"
 dependencies = [
+ "lattice-diff",
  "lattice-grammar",
+ "lattice-mode",
  "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]

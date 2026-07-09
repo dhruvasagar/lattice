@@ -4,16 +4,27 @@
 
 **Goal:** Stand up `lattice-ai` as an ACP client that spawns an agent
 subprocess (opencode), completes the `initialize → session/new → session/prompt`
-handshake, and streams the agent's `session/update` reply text into the
-`*messages*` buffer — driven by `:opencode` / `:ai-prompt`.
+handshake, and streams the agent's `session/update` reply text into a dedicated
+per-process `*ai:<provider>:<index>*` log buffer — driven by `:opencode` /
+`:ai-prompt` / `:ai-stop` / `:ai-log`.
+
+> Originally this slice streamed replies into `*messages*`. The 2026-07-08
+> re-slice (commit `63310541`) replaced that with per-process log buffers
+> mirroring `lattice-lsp`'s logging, so agent chatter never pollutes the shared
+> `*messages*` buffer. Passages below that still say `*messages*` are marked
+> SUPERSEDED and retained only for their interface/test contracts.
 
 **Architecture:** A clone-able `AiClientHandle` drives an idle tokio supervisor
 (mirroring `lattice-claude-code`'s `server.rs`) that spawns the provider process
-and wires its stdio to an ACP JSON-RPC connection actor. All protocol I/O is
-off the editor thread; the editor thread only sends commands (channel) and reads
-a wait-free `ArcSwap<AiState>` snapshot. Agent output reaches the editor through
-a `SubsystemBoot::inbound` bus whose handler emits `tracing` events into
-`*messages*`. Wire types come from Zed's official `agent-client-protocol` crate.
+and wires its stdio to an ACP connection (the `agent-client-protocol` crate
+frames JSON-RPC itself). All protocol I/O is off the editor thread; the editor
+thread only sends commands (channel) and reads a wait-free `ArcSwap<AiState>`
+snapshot. The supervisor also watches the child, so an agent that dies on its
+own tears its session down rather than leaving a phantom running state. Agent
+output reaches the editor through an `AiLogger` (per-session rings) that
+publishes `AiLogPushed` onto the runtime event bus; `AiLogMode` seeds from the
+ring and live-tails the bus into the buffer. Wire types come from Zed's official
+`agent-client-protocol` crate.
 
 **Tech Stack:** Rust, tokio (process, io-util, sync), the `agent-client-protocol`
 crate, serde/serde_json, tracing, the lattice `SubsystemBoot` / `InboundBus` /
@@ -21,14 +32,24 @@ crate, serde/serde_json, tracing, the lattice `SubsystemBoot` / `InboundBus` /
 
 ## Global Constraints
 
-- Mode-ownership: the crate adds **zero** `Editor::` methods and **zero** new
-  `Effect` / `Action` variants. All host contact is through the existing
-  `SubsystemBoot` surface and existing `Effect` variants (`Echo`,
-  `OpenMessages`). (`ai-agent-protocol.md` §2.)
+- Mode-ownership: the crate adds **zero** `Editor` **fields** — `AiLogger` and
+  `AiClientHandle` are reached through the boot-registered `ServiceRegistry`,
+  never a field. Zero new host `Action` variants. (`ai-agent-protocol.md` §2.)
+  - **Approved exception (post-reslice, ledger T12b):** `:ai-log` must open a
+    synthetic buffer by name, which no existing `Effect` does. It ships one
+    bespoke `Effect::OpenAiLog { session }` plus three host `Editor` methods
+    (`snapshot_ai_sessions`, `open_ai_log_in_pane`, `do_open_ai_log`) — a
+    faithful mirror of how `:lsp-server-log` is wired. The original text of
+    this bullet ("zero `Editor::` methods, zero new `Effect` variants, output
+    via `Echo` / `OpenMessages`") was written when agent output went to
+    `*messages*`; the 2026-07-08 re-slice to per-process log buffers made it
+    stale. `OpenMessages` is no longer used by this crate at all.
 - One Phase-B boot line only: `lattice_ai::install(&mut boot)`.
-- Ex-commands are registered **bare + dashed** (`opencode`, `ai-prompt`,
-  `ai-stop`), resolved via `id_by_name`; each `apply` captures the
-  `AiClientHandle`. (Mirror `lattice-claude-code::commands`.)
+- Ex-commands get exactly **one dashed-namespaced registration each** —
+  `:opencode`, `:ai-prompt`, `:ai-stop`, `:ai-log` — resolved via `id_by_name`.
+  No collapsed aliases (`aiprompt`), per CLAUDE.md's standing naming rule. The
+  first three capture the `AiClientHandle` in their `apply`; `:ai-log` captures
+  nothing and emits `Effect::OpenAiLog`. (Mirror `lattice-claude-code::commands`.)
 - All protocol I/O off the editor thread; editor thread does channel-send +
   wait-free snapshot read only.
 - `edition`, `rust-version`, `license`, and `[lints] workspace = true` inherited
@@ -38,8 +59,14 @@ crate, serde/serde_json, tracing, the lattice `SubsystemBoot` / `InboundBus` /
   in / `claude login` done out of band). The in-protocol `authenticate` flow is
   AI‑4. (`ai-agent-protocol.md` §5b.)
 - TDD: every task is red → green → commit. Unit tests use `tokio::io::duplex`
-  in-memory streams + a scripted mock agent; no test spawns a real subprocess
-  except the one explicitly `#[ignore]`-gated integration test.
+  in-memory streams + a scripted mock agent. No test spawns a real *agent*
+  binary except the explicitly `#[ignore]`-gated live integration tests.
+  - The supervisor's child-lifecycle tests do spawn a subprocess, but it is a
+    `sh -c` mock ACP agent (answers `initialize` + `session/new`, then exits) —
+    deterministic, no network, no agent binary. Testing "the supervisor tears
+    the session down when the child dies" needs a real OS process to die.
+    Note the client assigns **UUID string** JSON-RPC ids; a numeric-id mock is
+    silently ignored and the handshake hangs.
 
 ## Slice roadmap (this feature)
 
@@ -120,7 +147,17 @@ their implementers on a standard model, not the cheap tier.
 
 ---
 
-## File Structure (AI‑1)
+## File Structure (AI‑1) — ⚠️ SUPERSEDED, see note
+
+> **This is the pre-implementation map, not the shipped module list.** The
+> post-spike revision replaced the hand-rolled transport (`acp.rs` codec +
+> `connection.rs` actor) with a thin adapter over the `agent-client-protocol`
+> crate, and the re-slice replaced `inbound.rs` (`session/update` → `tracing`
+> → `*messages*`) with `ai_log.rs` + `buffer_names.rs` + `modes.rs`. **As
+> shipped:** `lib.rs`, `error.rs`, `providers.rs`, `connection.rs`,
+> `session.rs`, `supervisor.rs`, `handle.rs`, `ai_log.rs`, `buffer_names.rs`,
+> `modes.rs`, `commands.rs`, `install.rs`. There is no `acp.rs` and no
+> `inbound.rs`.
 
 - Create `crates/lattice-ai/Cargo.toml` — crate manifest.
 - Create `crates/lattice-ai/src/lib.rs` — module decls + re-exports.
@@ -408,7 +445,12 @@ git commit -m "feat(ai): AI-1 provider config + opencode launch spec"
 
 ---
 
-## Task 3: ACP frame codec (JSONL over stdio)
+## Task 3: ACP frame codec (JSONL over stdio) — ⚠️ SUPERSEDED
+
+> Retained for its **interface contract and test shape only**. The
+> `agent-client-protocol` crate frames JSON-RPC itself, so no `acp.rs` /
+> `Frame` / hand-rolled codec was written. See "Post-spike revision (Option
+> A)" above, which governs; `connection.rs` is a thin adapter over the crate.
 
 **Files:**
 - Create: `crates/lattice-ai/src/acp.rs`
@@ -548,7 +590,12 @@ git commit -m "feat(ai): AI-1 JSON-RPC frame codec (JSONL)"
 
 ---
 
-## Task 4: Connection actor over async stdio
+## Task 4: Connection actor over async stdio — ⚠️ SUPERSEDED
+
+> Retained for its **interface contract and test shape only**. No pending-request
+> map / `request(method, Value)` actor was written; the crate's typed request
+> methods are called through a driver task. See "Post-spike revision (Option A)",
+> which governs. Task 4 became "handshake + live smoke test".
 
 **Files:**
 - Create: `crates/lattice-ai/src/connection.rs`
@@ -752,7 +799,11 @@ git commit -m "feat(ai): AI-1 JSON-RPC connection actor over async stdio"
 
 ---
 
-## Task 5: Session handshake + prompt
+## Task 5: Session handshake + prompt — ⚠️ FOLDED INTO TASKS 3–4
+
+> `session.rs` ships as free `handshake()` / `prompt()` fns composing
+> `Connection`'s methods, plus a `SessionId` re-export. See "Post-spike
+> revision (Option A)", which governs.
 
 **Files:**
 - Create: `crates/lattice-ai/src/session.rs`
@@ -883,7 +934,15 @@ git commit -m "feat(ai): AI-1 session handshake + prompt"
 
 ---
 
-## Task 6: Inbound event + handler (session/update → *messages*)
+## Task 6: Inbound event + handler (session/update → *messages*) — ⚠️ SUPERSEDED
+
+> **The `*messages*` destination was abandoned.** The 2026-07-08 re-slice
+> (commit `63310541`) routes agent output into dedicated per-process
+> `*ai:<provider>:<index>*` log buffers instead — no `inbound.rs`, no
+> `AiInboundEvent`, no `tracing::info!` fan-out into `*messages*`. As shipped,
+> Task 6 is `ai_log.rs` (`AiLogger`, mirroring `lattice_lsp::logging`) and the
+> pure `supervisor::agent_log_entry` extractor. See the AI‑1 re-slice section
+> of `.superpowers/sdd/progress.md`.
 
 **Files:**
 - Create: `crates/lattice-ai/src/inbound.rs`
@@ -1594,12 +1653,22 @@ git commit -m "feat(ai): AI-1 boot install + host wiring (:opencode end to end)"
 
 ---
 
-## Self-Review (completed)
+## Self-Review (completed) — ⚠️ SUPERSEDED
+
+> **This section reviewed the pre-implementation plan, and two of its
+> conclusions were later reversed.** It is retained as a record of the
+> plan-time reasoning, not as a description of the shipped code. Both the
+> 2026-07-08 re-slice (output → per-process log buffers, not `*messages*`)
+> and the approved `Effect::OpenAiLog` post-date it. For what actually
+> shipped, read **Global Constraints** above and the AI‑1 re-slice section
+> in `.superpowers/sdd/progress.md`.
 
 - **Spec coverage:** AI‑1 row of the umbrella (§7) — transport (Tasks 3–4),
   session skeleton (Task 5), opencode provider (Task 2), reply → `*messages*`
-  (Tasks 6, 9). Mode-ownership constraint (§2) — no new `Effect`/`Editor`
-  (Tasks 6, 8, 9 use only `Echo`/`OpenMessages` + `SubsystemBoot`). Auth
+  (Tasks 6, 9). ~~Mode-ownership constraint (§2) — no new `Effect`/`Editor`
+  (Tasks 6, 8, 9 use only `Echo`/`OpenMessages` + `SubsystemBoot`).~~ **Both
+  struck: output goes to `*ai:<provider>:<index>*` buffers, and `:ai-log` ships
+  a bespoke `Effect::OpenAiLog` + three host `Editor` methods.** Auth
   pre-auth assumption (§5b) — Global Constraints + Task 7 integration note.
   §5b in-protocol auth, §4 diff review, §6 `AiChat` buffer are explicitly
   **out of AI‑1** (AI‑2/3/4) — not gaps.

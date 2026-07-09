@@ -157,6 +157,22 @@ boot, so **zero `Editor::` methods and zero `Action` variants are added**. Split
 `ActionContext` exposes `{buffer_id, cursor, services, events}` only (no direct
 buffer text) — the `send` handler reaches text through `BufferStoreHandle`.
 
+**Enforcement point (located 2026-07-09).** `ReadOnly` is NOT enforced in
+`apply_edit_blocking` / `apply_edit_batch_blocking` (neither checks it), nor via
+an `option_cache` field. It is enforced at the **keystroke router** (the
+TUI/GPUI dispatch path documented at `lattice-ui-tui/src/app/dispatch.rs:91`,
+forwarding to `Editor::run_read_only_motion`, `dispatch.rs:30612`): a
+resolved-`ReadOnly` buffer routes motion/operator/insert invocations there, where
+non-motion commands echo "buffer is read-only". The `EditableRange` exception
+belongs in **that router's read-only branch** (or in `run_read_only_motion`
+itself): if the active buffer carries an `EditableRange` and the invocation is an
+insert/edit whose target is inside it, fall through to the normal document path
+instead of rejecting. **Care:** this router is shared by `*messages*`, ai-log,
+help, dashboard, and multibuffer — the exception must be strictly gated on the
+`EditableRange` buffer-local's presence so those buffers are unaffected. Verify
+with `multibuffer_is_a_regular_buffer.rs` + the messages/ai-log read-only tests
+before landing. This is the open item to resolve first when implementing AU-3.
+
 **Files.**
 - Create/Modify `crates/lattice-host/src/modes.rs` + `dispatch.rs` — the generic
   `EditableRange` buffer-local + the `run_read_only_motion` exception.

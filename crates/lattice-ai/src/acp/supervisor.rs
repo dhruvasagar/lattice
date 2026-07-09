@@ -1,16 +1,16 @@
 //! The AI supervisor: an idle tokio task owning the provider child process,
 //! the ACP [`Connection`], and the active [`SessionId`] (AI-1b).
 //!
-//! Agent output flows ONLY into the [`AiLogger`]'s dedicated per-process
-//! rings -- never into `*messages*`, never through `tracing::info!`, never
-//! through an inbound event bus. [`AiClientHandle::spawn`] is the crate's
-//! entry point: it starts this task and returns the clone-able,
+//! Agent *conversation* output (message/thought chunks, tool calls) folds into
+//! the structured [`ConversationStore`] (AU‑1); *trace* (session lifecycle,
+//! handshake, errors) flows into the [`AiLogger`]'s per-process rings -- never
+//! into `*messages*`, never through `tracing::info!`. [`AiClientHandle::spawn`]
+//! is the crate's entry point: it starts this task and returns the clone-able,
 //! non-blocking handle the editor thread talks to.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use agent_client_protocol::schema::v1::{ContentBlock, SessionUpdate};
 use arc_swap::ArcSwap;
 use tokio::sync::mpsc;
 
@@ -18,6 +18,7 @@ use lattice_agent::{AiLogLevel, AiLogSource, AiLogger, SessionKey};
 
 use crate::Result;
 use crate::acp::connection::{Connection, SessionId, SessionNotification};
+use crate::acp::conversation::ConversationStore;
 use crate::acp::error::AiError;
 use crate::acp::handle::{AiClientHandle, AiCmd, AiState};
 use crate::acp::providers::ProviderConfig;
@@ -30,10 +31,14 @@ impl AiClientHandle {
     /// returned handle is dropped, which closes the command channel). All
     /// protocol I/O happens on the supervisor task, never on the caller's
     /// thread.
-    pub fn spawn(runtime: &tokio::runtime::Handle, logger: AiLogger) -> AiClientHandle {
+    pub fn spawn(
+        runtime: &tokio::runtime::Handle,
+        logger: AiLogger,
+        conv_store: ConversationStore,
+    ) -> AiClientHandle {
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<AiCmd>();
         let state = Arc::new(ArcSwap::from_pointee(AiState::default()));
-        runtime.spawn(supervisor_loop(cmd_rx, state.clone(), logger));
+        runtime.spawn(supervisor_loop(cmd_rx, state.clone(), logger, conv_store));
         AiClientHandle { cmd_tx, state }
     }
 }
@@ -94,6 +99,7 @@ async fn supervisor_loop(
     mut cmd_rx: mpsc::UnboundedReceiver<AiCmd>,
     state: Arc<ArcSwap<AiState>>,
     logger: AiLogger,
+    conv_store: ConversationStore,
 ) {
     let mut conn: Option<Arc<Connection>> = None;
     let mut sess: Option<SessionId> = None;
@@ -161,7 +167,7 @@ async fn supervisor_loop(
                     format!("starting {}", provider.display_name),
                 );
 
-                match start_provider(&provider, key.clone(), logger.clone()).await {
+                match start_provider(&provider, key.clone(), conv_store.clone()).await {
                     Ok((new_conn, new_sess, new_child)) => {
                         conn = Some(new_conn);
                         sess = Some(new_sess);
@@ -231,48 +237,29 @@ async fn supervisor_loop(
     }
 }
 
-/// Extract the `(source, text)` pair worth logging from one `session/update`
-/// payload, or `None` for updates the AI log doesn't render as text
-/// (tool calls, plans, mode changes, ...). Pure and unit-testable -- no I/O.
-///
-/// `SessionUpdate` and `ContentBlock` are both `#[non_exhaustive]`, so every
-/// arm keeps a `_ => None` catch-all rather than an exhaustive match.
-pub(crate) fn agent_log_entry(update: &SessionUpdate) -> Option<(AiLogSource, String)> {
-    match update {
-        SessionUpdate::AgentMessageChunk(chunk) => match &chunk.content {
-            ContentBlock::Text(t) => Some((AiLogSource::AgentText, t.text.clone())),
-            _ => None,
-        },
-        SessionUpdate::AgentThoughtChunk(chunk) => match &chunk.content {
-            ContentBlock::Text(t) => Some((AiLogSource::Reasoning, t.text.clone())),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-/// Drain `session/update` notifications into `session`'s `AiLogger` ring
-/// until the sender side closes. This is the ONLY place agent output is
-/// recorded -- never `*messages*`, never `tracing::info!`.
+/// Drain `session/update` notifications into the structured [`ConversationStore`]
+/// for `session` until the sender side closes. This is the ONLY place agent
+/// *conversation* output is recorded (AU‑1 moved it off the `AiLogger` text
+/// ring); the store publishes `ConversationUpdated` so the `ai-conversation`
+/// mode can live-tail. Lifecycle / client *trace* still flows to `AiLogger` via
+/// the supervisor's direct `logger.log` calls.
 pub(crate) async fn drain_notifications(
     mut rx: mpsc::UnboundedReceiver<SessionNotification>,
-    logger: AiLogger,
+    conv_store: ConversationStore,
     session: SessionKey,
 ) {
     while let Some(notification) = rx.recv().await {
-        if let Some((source, text)) = agent_log_entry(&notification.update) {
-            logger.log(Some(&session), AiLogLevel::Info, source, text);
-        }
+        conv_store.apply(&session, &notification.update);
     }
 }
 
 /// Spawn `provider` as a stdio subprocess, wire it into a [`Connection`],
-/// drain its notifications into `logger`'s `session` ring, and run the ACP
-/// handshake.
+/// drain its notifications into the `session`'s [`ConversationStore`], and run
+/// the ACP handshake.
 async fn start_provider(
     provider: &ProviderConfig,
     session: SessionKey,
-    logger: AiLogger,
+    conv_store: ConversationStore,
 ) -> Result<(Arc<Connection>, SessionId, tokio::process::Child)> {
     let mut child = tokio::process::Command::new(&provider.command)
         .args(&provider.args)
@@ -299,7 +286,7 @@ async fn start_provider(
         .ok_or_else(|| AiError::Process("no stdout".to_string()))?;
 
     let (conn, notif_rx) = Connection::spawn(stdout, stdin);
-    tokio::spawn(drain_notifications(notif_rx, logger, session));
+    tokio::spawn(drain_notifications(notif_rx, conv_store, session));
 
     let cwd = std::env::current_dir()
         .map(|p| p.display().to_string())
@@ -314,11 +301,9 @@ mod tests {
     use std::time::Duration;
 
     use agent_client_protocol::schema::v1::{
-        ContentChunk, SessionId as AcpSessionId, TextContent, ToolCall,
+        ContentBlock, ContentChunk, SessionId as AcpSessionId, SessionUpdate, TextContent,
     };
     use tokio::sync::mpsc;
-
-    use lattice_agent::AiLogRecord;
 
     use super::*;
 
@@ -331,27 +316,15 @@ mod tests {
         }
     }
 
-    #[test]
-    fn agent_log_entry_extracts_message_and_thought() {
-        let message = text_update("hi", false);
-        assert_eq!(
-            agent_log_entry(&message),
-            Some((AiLogSource::AgentText, "hi".to_string()))
-        );
-
-        let thought = text_update("thinking", true);
-        assert_eq!(
-            agent_log_entry(&thought),
-            Some((AiLogSource::Reasoning, "thinking".to_string()))
-        );
-
-        let tool_call = SessionUpdate::ToolCall(ToolCall::new("tc-1", "search files"));
-        assert_eq!(agent_log_entry(&tool_call), None);
+    /// A `ConversationStore` with a no-op publisher, for supervisor tests that
+    /// don't need the `ConversationUpdated` event (only the folded state).
+    fn test_conv_store() -> ConversationStore {
+        ConversationStore::new(Arc::new(|_| {}))
     }
 
     #[tokio::test]
-    async fn drain_logs_agent_text_into_session_ring() {
-        let logger = AiLogger::with_defaults();
+    async fn drain_applies_agent_text_to_conversation_store() {
+        let store = test_conv_store();
         let (tx, rx) = mpsc::unbounded_channel();
         let key = SessionKey::new("opencode", 1);
 
@@ -360,14 +333,16 @@ mod tests {
         tx.send(notification).expect("send should succeed");
         drop(tx);
 
-        drain_notifications(rx, logger.clone(), key.clone()).await;
+        drain_notifications(rx, store.clone(), key.clone()).await;
 
-        let records = logger.snapshot_session(&key);
-        assert!(
-            records
-                .iter()
-                .any(|r: &AiLogRecord| r.source == AiLogSource::AgentText && r.message == "pong"),
-            "expected an AgentText \"pong\" record, got {records:?}"
+        // AU-1: agent text lands in the structured conversation, NOT the AiLogger
+        // text ring.
+        let conv = store.snapshot();
+        assert_eq!(conv.turns.len(), 1);
+        assert_eq!(
+            conv.turns[0].blocks,
+            vec![crate::acp::conversation::Block::Text("pong".to_string())],
+            "expected a single assistant Text block \"pong\", got {conv:?}"
         );
     }
 
@@ -381,7 +356,11 @@ mod tests {
     #[tokio::test]
     async fn start_failure_still_increments_index_and_logs_per_session() {
         let logger = AiLogger::with_defaults();
-        let handle = AiClientHandle::spawn(&tokio::runtime::Handle::current(), logger.clone());
+        let handle = AiClientHandle::spawn(
+            &tokio::runtime::Handle::current(),
+            logger.clone(),
+            test_conv_store(),
+        );
         let cfg = ProviderConfig {
             command: "/nonexistent/definitely-not-a-real-binary".into(),
             args: vec![],
@@ -425,7 +404,11 @@ mod tests {
     #[tokio::test]
     async fn start_failure_leaves_idle_state() {
         let logger = AiLogger::with_defaults();
-        let handle = AiClientHandle::spawn(&tokio::runtime::Handle::current(), logger.clone());
+        let handle = AiClientHandle::spawn(
+            &tokio::runtime::Handle::current(),
+            logger.clone(),
+            test_conv_store(),
+        );
         let cfg = ProviderConfig {
             command: "/nonexistent/definitely-not-a-real-binary".into(),
             args: vec![],
@@ -516,7 +499,11 @@ done
     #[tokio::test(flavor = "multi_thread")]
     async fn unexpected_child_exit_resets_state_and_logs() {
         let logger = AiLogger::with_defaults();
-        let handle = AiClientHandle::spawn(&tokio::runtime::Handle::current(), logger.clone());
+        let handle = AiClientHandle::spawn(
+            &tokio::runtime::Handle::current(),
+            logger.clone(),
+            test_conv_store(),
+        );
         let key = SessionKey::new("mockprov", 1);
 
         handle.start(mock_agent_provider());
@@ -538,7 +525,11 @@ done
     #[tokio::test(flavor = "multi_thread")]
     async fn start_after_child_exit_opens_the_next_session() {
         let logger = AiLogger::with_defaults();
-        let handle = AiClientHandle::spawn(&tokio::runtime::Handle::current(), logger.clone());
+        let handle = AiClientHandle::spawn(
+            &tokio::runtime::Handle::current(),
+            logger.clone(),
+            test_conv_store(),
+        );
         let first = SessionKey::new("mockprov", 1);
         let second = SessionKey::new("mockprov", 2);
 
@@ -561,8 +552,12 @@ done
     #[tokio::test(flavor = "multi_thread")]
     async fn opencode_supervisor_end_to_end() {
         let logger = AiLogger::with_defaults();
-        let handle = AiClientHandle::spawn(&tokio::runtime::Handle::current(), logger.clone());
-        let key = SessionKey::new("opencode", 1);
+        let store = test_conv_store();
+        let handle = AiClientHandle::spawn(
+            &tokio::runtime::Handle::current(),
+            logger.clone(),
+            store.clone(),
+        );
 
         handle.start(ProviderConfig::opencode());
 
@@ -582,16 +577,19 @@ done
 
         let deadline = std::time::Instant::now() + Duration::from_secs(30);
         loop {
-            let has_agent_text = logger
-                .snapshot_session(&key)
-                .iter()
-                .any(|r| r.source == AiLogSource::AgentText);
+            // AU-1: agent text lands in the structured conversation store.
+            let has_agent_text = store.snapshot().turns.iter().any(|t| {
+                t.role == crate::acp::conversation::Role::Assistant
+                    && t.blocks
+                        .iter()
+                        .any(|b| matches!(b, crate::acp::conversation::Block::Text(_)))
+            });
             if has_agent_text {
                 break;
             }
             assert!(
                 std::time::Instant::now() < deadline,
-                "no AgentText record arrived before the timeout"
+                "no assistant text arrived in the conversation before the timeout"
             );
             tokio::time::sleep(Duration::from_millis(200)).await;
         }

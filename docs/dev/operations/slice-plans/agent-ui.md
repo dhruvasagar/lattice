@@ -13,7 +13,7 @@ substrate is untouched except that conversation sources stop flowing into it
 
 | Slice | Deliverable | Status |
 |-------|-------------|--------|
-| **AU‑1** | `Conversation` model + supervisor mapping + `ConversationUpdated`; conversation sources leave `AiLogger` (completes the conversation/trace split) | 📝 planned |
+| **AU‑1** | `Conversation` model + supervisor mapping + `ConversationUpdated`; conversation sources leave `AiLogger` (completes the conversation/trace split) | ✅ done |
 | **AU‑2** | `ai-conversation` major mode + read-only projection (turn headers, tool-call status, reasoning fold); `:opencode` opens `*ai:opencode*`; both renderers | 📝 planned |
 | **AU‑3** | Modal input: editable prompt tail, Insert-relocates-to-prompt, Enter sends, `Ctrl-C` interrupt (`AiCmd::Interrupt`) | 📝 planned |
 | **AU‑4** | Diff review + approval: `request_permission` → `review_diff` → verdict → response; `[diff]` edit blocks; reads auto-run | 📝 planned |

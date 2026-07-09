@@ -10,7 +10,7 @@ default = ["acp", "mcp"]
 # ACP agent-client transport (opencode et al): the JSON-RPC `connection`,
 # `session`, `providers`, the `supervisor` + `AiClientHandle`, and the
 # `:opencode` / `:ai-prompt` / `:ai-stop` ex-commands.
-acp = ["dep:agent-client-protocol", "dep:tokio-util", "tokio/process"]
+acp = ["dep:agent-client-protocol", "dep:tokio-util", "dep:linkme", "tokio/process"]
 # MCP IDE-peer transport (Claude Code, folded in by AG-4): the loopback
 # WebSocket server + the read / write / diff tools it exposes.
 mcp = ["dep:tokio-tungstenite", "dep:dirs", "dep:getrandom", "dep:lattice-lsp", "tokio/net"]
@@ -30,6 +30,10 @@ agent-client-protocol = { version = "1.2.0", optional = true }
 # agent-client-protocol's `ByteStreams` transport expects (see
 # src/connection.rs "Threading" doc comment).
 tokio-util = { version = "0.7", features = ["compat"], optional = true }
+# acp: `conversation.rs`'s `register_event!(ConversationUpdated, ...)` expands to
+# a `#[linkme::distributed_slice(...)]` static; the macro names `linkme` by bare
+# path, so it must be a direct dep (same mechanism `lattice-agent` uses).
+linkme = { workspace = true, optional = true }
 # mcp: read tools report LSP diagnostics to the agent (`getDiagnostics`),
 # consuming the `DiagnosticsQuery` service + `Diagnostic` type.
 lattice-lsp = { path = "../lattice-lsp", optional = true }

@@ -12,6 +12,7 @@
 
 pub mod commands;
 pub mod connection;
+pub mod conversation;
 pub mod error;
 pub mod handle;
 pub mod install;
@@ -21,5 +22,8 @@ pub mod supervisor;
 
 pub use commands::register_ai_ex_commands;
 pub use connection::{Connection, SessionId};
+pub use conversation::{
+    Block, Conversation, ConversationStore, ConversationUpdated, EditStatus, Role, ToolStatus, Turn,
+};
 pub use error::{AiError, Result};
 pub use handle::{AiClientHandle, AiState};

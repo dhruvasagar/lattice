@@ -86,13 +86,23 @@ impl SessionKey {
 /// <source>: <message>`. Trailing newline is the caller's
 /// responsibility (the drain batches many records into one
 /// buffer-append).
+///
+/// `timestamp` is the record's own emission time, not the format
+/// time: `:ai-log` seeds a buffer from history, and stamping at
+/// format time would render every historical line with the moment
+/// the buffer happened to be opened.
+///
+/// The clock is UTC (`(secs / 3600) % 24`), matching
+/// `lattice_lsp::logging::format_log_event_line`; rendering local
+/// time would need a timezone dependency neither logger carries.
 pub fn format_ai_log_line(
+    timestamp: SystemTime,
     session: Option<&SessionKey>,
     level: &str,
     source: &str,
     message: &str,
 ) -> String {
-    let elapsed = SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok();
+    let elapsed = timestamp.duration_since(std::time::UNIX_EPOCH).ok();
     let secs = elapsed.map(|d| d.as_secs()).unwrap_or(0);
     let ms = elapsed.map(|d| d.subsec_millis()).unwrap_or(0);
     let hh = (secs / 3600) % 24;
@@ -305,6 +315,10 @@ impl LogRing {
 /// `lattice_lsp::events::LspLogPushed`.
 #[derive(Debug, Clone)]
 pub struct AiLogPushed {
+    /// Wall-clock time of emission, carried so a live-tailing buffer
+    /// renders the same timestamp the record will show once it is
+    /// replayed from history by a later `:ai-log`.
+    pub timestamp: SystemTime,
     /// `None` for subsystem-wide records; `Some(key)` per-session.
     pub session: Option<SessionKey>,
     /// Severity tag (`"trace"`, `"debug"`, `"info"`, `"warn"`,
@@ -464,6 +478,7 @@ impl AiLogger {
         // push. Payload is a typed `AiLogPushed`; subscribers use
         // `session` to route to the correct per-process buffer.
         let publish_payload = AiLogPushed {
+            timestamp: record.timestamp,
             session: record.session.clone(),
             level: level_tag(record.level).to_string(),
             source: record.source.tag().to_string(),
@@ -585,6 +600,8 @@ impl std::fmt::Debug for AiLogger {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
     fn key(provider: &str, index: u32) -> SessionKey {
@@ -810,7 +827,13 @@ mod tests {
     #[test]
     fn format_ai_log_line_shape() {
         let session = key("opencode", 2);
-        let line = format_ai_log_line(Some(&session), "info", "agent", "hello\nworld");
+        let line = format_ai_log_line(
+            SystemTime::now(),
+            Some(&session),
+            "info",
+            "agent",
+            "hello\nworld",
+        );
         // HH:MM:SS.mmm [opencode:2] info  agent: hello world
         assert!(
             line.contains("[opencode:2]"),
@@ -827,10 +850,65 @@ mod tests {
         );
         assert!(!line.contains('\n'), "no embedded newline: {line}");
 
-        let global_line = format_ai_log_line(None, "warn", "client", "no session");
+        let global_line =
+            format_ai_log_line(SystemTime::now(), None, "warn", "client", "no session");
         assert!(
             !global_line.contains('['),
             "subsystem-wide line has no session prefix: {global_line}"
+        );
+    }
+
+    /// The rendered clock must come from the record's own emission time,
+    /// not from the moment the line happens to be formatted. `:ai-log`
+    /// seeds a buffer by replaying history, so a format-time clock would
+    /// stamp every historical line with the buffer's open time.
+    #[test]
+    fn format_ai_log_line_renders_the_records_own_timestamp() {
+        // 01:01:01.500 UTC on the epoch day.
+        let stamp = std::time::UNIX_EPOCH + Duration::from_millis(3_661_500);
+        let line = format_ai_log_line(stamp, None, "info", "agent", "pong");
+        assert!(
+            line.starts_with("01:01:01.500 "),
+            "line must render the record's timestamp, got {line}"
+        );
+
+        // A different record time renders a different clock, even though
+        // both lines are formatted at the same instant.
+        let later = std::time::UNIX_EPOCH + Duration::from_millis(7_322_250);
+        let later_line = format_ai_log_line(later, None, "info", "agent", "pong");
+        assert!(later_line.starts_with("02:02:02.250 "), "got {later_line}");
+    }
+
+    /// The bus event carries the record's timestamp, so a live-tailing
+    /// buffer and a later history replay render the same clock for the
+    /// same record.
+    #[test]
+    fn published_event_carries_the_records_timestamp() {
+        let logger = AiLogger::with_defaults();
+        let seen: Arc<Mutex<Vec<AiLogPushed>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        logger.set_event_publisher(Arc::new(move |event: AiLogPushed| {
+            sink.lock().expect("sink lock").push(event);
+        }));
+
+        let session = key("opencode", 1);
+        logger.log(
+            Some(&session),
+            AiLogLevel::Info,
+            AiLogSource::AgentText,
+            "hi",
+        );
+
+        let events = seen.lock().expect("sink lock");
+        let published = events.first().expect("one published event");
+        let record = logger
+            .snapshot_session(&session)
+            .first()
+            .cloned()
+            .expect("one ring record");
+        assert_eq!(
+            published.timestamp, record.timestamp,
+            "the published event and the ring record must agree on emission time"
         );
     }
 }

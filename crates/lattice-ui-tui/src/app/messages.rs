@@ -60,7 +60,7 @@ impl App {
 
     /// `:ai-log [provider]` -- open the per-session AI log buffer
     /// (AI-1b, T12b). Thin peer forwarder: the count logic (0 →
-    /// error echo, 1 → open, >1 → picker) + the buffer open live
+    /// info hint, 1 → open, >1 → picker) + the buffer open live
     /// host-side in [`lattice_host::editor::Editor::do_open_ai_log`];
     /// the GPUI peer reaches the same method. Mirrors
     /// `do_open_lsp_log`.

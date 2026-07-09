@@ -523,7 +523,7 @@ pub enum Effect {
     },
     /// `:ai-log [provider]` (AI-1b) -- open the per-session AI log
     /// buffer (`*ai:<provider>:<index>*`). With no known session,
-    /// echoes an error; with exactly one, opens it directly; with
+    /// echoes an info hint; with exactly one, opens it directly; with
     /// more (optionally narrowed by the `session` provider
     /// prefilter), raises a picker. Peer-applied via the host's
     /// `do_open_ai_log`, exactly like [`Effect::OpenLspLog`]. The

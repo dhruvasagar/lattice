@@ -357,4 +357,50 @@ mod tests {
             "empty-session `:ai-log` must not switch buffers"
         );
     }
+
+    /// `:ai-log <provider>` that matches nothing, while some *other*
+    /// provider's session is live, must name what is running rather than
+    /// telling the user to start an agent that already started. Mirrors
+    /// `open_lsp_picker`'s "(running: ...)" listing.
+    #[test]
+    fn ai_log_unmatched_provider_lists_the_running_sessions() {
+        let mut app = App::new(Document::from_text("hello\n"));
+        let logger = app
+            .editor
+            .services
+            .get::<lattice_ai::AiLogger>()
+            .expect("App::new must leave an AiLogger registered");
+
+        // A record under this key is what makes the session "known".
+        let key = lattice_ai::SessionKey::new(std::sync::Arc::<str>::from("opencode"), 1);
+        logger.log(
+            Some(&key),
+            lattice_ai::AiLogLevel::Info,
+            lattice_ai::AiLogSource::Lifecycle,
+            "session opened",
+        );
+
+        let before = app.editor.active_pane_buffer_id();
+        app.do_open_ai_log(Some("bogus"));
+
+        let message = app
+            .editor
+            .last_message
+            .as_ref()
+            .map(|m| m.text.clone())
+            .unwrap_or_default();
+        assert!(
+            message.contains("opencode:1"),
+            "unmatched provider must list the live sessions, got {message:?}"
+        );
+        assert!(
+            !message.contains(":opencode`)"),
+            "must not tell the user to start an agent that is already running, got {message:?}"
+        );
+        assert_eq!(
+            app.editor.active_pane_buffer_id(),
+            before,
+            "an unmatched `:ai-log` must not switch buffers"
+        );
+    }
 }

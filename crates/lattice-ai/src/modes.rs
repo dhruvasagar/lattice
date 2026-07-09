@@ -10,9 +10,11 @@
 //!   drain task that appends matching records live. The returned
 //!   `Subscription` guard unsubscribes on drop.
 //!
-//! The App/boot wiring that registers this mode, adds
-//! `Editor.ai_logger`, wires the `AiLogPushed` publisher onto the
-//! runtime bus, and creates/opens the buffers is Task 12 -- this
+//! The boot wiring that registers this mode, registers the
+//! [`AiLogger`](crate::ai_log::AiLogger) *service* (there is no
+//! `Editor` field -- modes reach it through the service registry),
+//! wires the `AiLogPushed` publisher onto the runtime bus, and
+//! creates/opens the buffers lives in [`crate::install`]. This
 //! module only builds the mode itself, unit-testable without a
 //! booted app (every missing service / unparseable name short-
 //! circuits `on_activate` to `Ok(None)`).
@@ -78,6 +80,7 @@ impl Mode for AiLogMode {
                 let mut text = String::new();
                 for record in snap.iter() {
                     let line = crate::ai_log::format_ai_log_line(
+                        record.timestamp,
                         Some(&key),
                         crate::ai_log::level_tag(record.level),
                         record.source.tag(),
@@ -121,6 +124,7 @@ impl Mode for AiLogMode {
                         .filter(|e| e.session.as_ref() == Some(&filter_key))
                     {
                         let line = crate::ai_log::format_ai_log_line(
+                            event.timestamp,
                             Some(&filter_key),
                             &event.level,
                             &event.source,

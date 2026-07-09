@@ -7,9 +7,11 @@
 //! send), returning an `Effect::Echo` for user feedback. The host's only
 //! role is calling [`register_ai_ex_commands`] once at boot.
 //!
-//! `:ai-log` (opening the per-process log buffer) is intentionally NOT
-//! registered here -- it needs host buffer-opening support and is handled
-//! by a later task.
+//! `:ai-log` is registered here too, but is the one command that captures
+//! no handle: opening the per-process `*ai:<provider>:<index>*` buffer needs
+//! host buffer-open machinery, so it emits `Effect::OpenAiLog` and the host
+//! resolves it (0 known sessions echo a hint, 1 opens directly, >1 raises a
+//! picker) -- exactly how `:lsp-server-log` is wired.
 
 use lattice_grammar::args::Args;
 use lattice_grammar::command::LatencyClass;

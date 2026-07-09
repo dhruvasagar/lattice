@@ -23838,14 +23838,27 @@ impl Editor {
     /// [`open_lsp_picker`](Self::open_lsp_picker) count logic.
     /// AI-1b (T12b).
     pub fn do_open_ai_log(&mut self, provider: Option<&str>) {
-        let rows: Vec<lattice_picker::AiSessionRow> = self
-            .snapshot_ai_sessions()
-            .into_iter()
+        let all = self.snapshot_ai_sessions();
+        let rows: Vec<lattice_picker::AiSessionRow> = all
+            .iter()
             .filter(|r| provider.is_none_or(|want| r.provider == want))
+            .cloned()
             .collect();
         match rows.len() {
             0 => {
+                // Name the sessions that *are* live when the prefilter is
+                // what excluded them -- telling a user to `:opencode` while
+                // opencode is already running is worse than saying nothing.
+                // Mirrors `open_lsp_picker`'s "(running: ...)" listing.
                 let hint = match provider {
+                    Some(p) if !all.is_empty() => {
+                        let listing = all
+                            .iter()
+                            .map(|r| format!("{}:{}", r.provider, r.index))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        format!("no AI session for provider `{p}` (running: {listing})")
+                    }
                     Some(p) => format!("no AI session for provider `{p}` (run `:opencode`)"),
                     None => "no AI session running (run `:opencode`)".to_string(),
                 };

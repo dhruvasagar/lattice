@@ -13,22 +13,13 @@
 //! See `docs/dev/architecture/agent-integration.md`.
 
 // Transport-neutral: `:ai-log` + `register_ai_log_command` live here always;
-// the ACP lifecycle commands are gated inside on `feature = "acp"`.
+// the ACP lifecycle commands live in `acp::commands`.
 pub mod commands;
 
-// ACP (Agent Client Protocol) transport, gated on `feature = "acp"`.
+// AG-5: the ACP adapter, gated on `feature = "acp"`. Symmetric with `mcp`: both
+// transport adapters are self-contained submodules under this crate.
 #[cfg(feature = "acp")]
-pub mod connection;
-#[cfg(feature = "acp")]
-pub mod error;
-#[cfg(feature = "acp")]
-pub mod handle;
-#[cfg(feature = "acp")]
-pub mod providers;
-#[cfg(feature = "acp")]
-pub mod session;
-#[cfg(feature = "acp")]
-pub mod supervisor;
+pub mod acp;
 
 // Unified boot entry point; wires the port-neutral log substrate always and
 // each transport behind its own `#[cfg(feature = …)]`.
@@ -56,12 +47,9 @@ pub use lattice_agent::{
 };
 pub use lattice_agent::{ai_log_name, parse_ai_log_name};
 
-// ACP-transport public surface.
+// ACP-transport public surface (re-exported from the `acp` submodule so the
+// crate-root API -- `lattice_ai::AiClientHandle` etc. -- is unchanged).
 #[cfg(feature = "acp")]
-pub use commands::register_ai_ex_commands;
-#[cfg(feature = "acp")]
-pub use connection::{Connection, SessionId};
-#[cfg(feature = "acp")]
-pub use error::{AiError, Result};
-#[cfg(feature = "acp")]
-pub use handle::{AiClientHandle, AiState};
+pub use acp::{
+    AiClientHandle, AiError, AiState, Connection, Result, SessionId, register_ai_ex_commands,
+};

@@ -14,7 +14,7 @@ use tokio::sync::mpsc;
 
 use lattice_agent::SessionKey;
 
-use crate::providers::ProviderConfig;
+use crate::acp::providers::ProviderConfig;
 
 /// Editor-visible snapshot of the active AI session, if any. Cheap to clone
 /// and compare; read via [`AiClientHandle::snapshot`].

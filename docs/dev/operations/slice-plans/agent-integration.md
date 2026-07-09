@@ -55,7 +55,7 @@ features.
 | **AG‑2** | `EditorAccess` (reads + writes + state cache) extracted (AG‑2a reads, AG‑2b writes) | ✅ done |
 | **AG‑3** | `AiLogger` / `LogRing` / `SessionKey` / `AiLogPushed` / buffer names / `AiLogMode` → `lattice-agent` | ✅ done |
 | **AG‑4** | Fold `lattice-claude-code` into `lattice-ai/mcp/`; delete the crate; one boot line (AG‑4a fold, AG‑4b feature gates — all four combos build) | ✅ done |
-| **AG‑5** | Relocate ACP modules into `lattice-ai/acp/`; clean `commands.rs` file-split (gates already in AG‑4b) | 🚧 in progress |
+| **AG‑5** | Relocate ACP modules into `lattice-ai/acp/`; clean `commands.rs` / `install.rs` file-split (gates already in AG‑4b); symmetric with `mcp/` | ✅ done |
 
 **Ordering rationale.** AG‑1 comes first among the extractions because it is the
 highest-value move (it *is* AI‑2's deliverable) and the smallest self-contained

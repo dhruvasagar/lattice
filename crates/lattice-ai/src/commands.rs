@@ -1,21 +1,15 @@
-//! Ex-commands owned by the AI subsystem.
+//! The transport-neutral `:ai-log` ex-command.
 //!
-//! `:opencode` / `:ai-prompt` / `:ai-stop` control the ACP agent's lifecycle
-//! and are gated behind `feature = "acp"`. Per `feedback_mode_owns_its_surface`,
-//! BOTH the binding (the command name) AND the handler body live in this crate:
-//! each `apply` closure captures the [`AiClientHandle`] and drives it directly
-//! (a non-blocking `cmd_tx` send), returning an `Effect::Echo` for user
-//! feedback. The host's only role is calling [`register_ai_ex_commands`] once
-//! at boot.
+//! `:ai-log` is always registered ([`register_ai_log_command`], no `#[cfg]`):
+//! the log substrate lives in the `lattice-agent` port (AG‑3), so the command
+//! is meaningful for whichever transport(s) are compiled in. It captures no
+//! handle: opening the per-process `*ai:<provider>:<index>*` buffer needs host
+//! buffer-open machinery, so it emits `Effect::OpenAiLog` and the host resolves
+//! it (0 known sessions echo a hint, 1 opens directly, >1 raises a picker) --
+//! exactly how `:lsp-server-log` is wired.
 //!
-//! `:ai-log` is **transport-neutral** and always registered
-//! ([`register_ai_log_command`], no `#[cfg]`): the log substrate lives in the
-//! `lattice-agent` port (AG‑3), so the command is meaningful for whichever
-//! transport(s) are compiled in. It captures no handle: opening the per-process
-//! `*ai:<provider>:<index>*` buffer needs host buffer-open machinery, so it
-//! emits `Effect::OpenAiLog` and the host resolves it (0 known sessions echo a
-//! hint, 1 opens directly, >1 raises a picker) -- exactly how `:lsp-server-log`
-//! is wired.
+//! The ACP lifecycle commands (`:opencode` / `:ai-prompt` / `:ai-stop`) live in
+//! [`crate::acp::commands`], gated with the rest of the ACP transport.
 
 use lattice_grammar::args::Args;
 use lattice_grammar::command::LatencyClass;
@@ -43,89 +37,6 @@ pub fn register_ai_log_command(registry: &mut CommandRegistry) {
                     _ => None,
                 };
                 Ok(Effect::OpenAiLog { session })
-            }),
-            args_schema: vec![],
-            surface_form: SurfaceForm::Keyword,
-        },
-    );
-}
-
-/// Register `:opencode` / `:ai-prompt` / `:ai-stop` against `registry`,
-/// wiring each to `handle`. Called once from editor boot (ACP transport only).
-#[cfg(feature = "acp")]
-pub fn register_ai_ex_commands(
-    registry: &mut CommandRegistry,
-    handle: crate::handle::AiClientHandle,
-) {
-    use lattice_agent::{parse_no_args, parse_rest_as_text};
-    use lattice_grammar::effect::EchoLevel;
-
-    use crate::providers::ProviderConfig;
-
-    let start = handle.clone();
-    registry.register_ex_command(
-        "opencode",
-        "Launch the opencode agent over ACP and open a session wired to this \
-         editor.",
-        ExCommandSpec {
-            latency_class: LatencyClass::Reflex,
-            accepts_bang: false,
-            accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(move |_ctx| {
-                start.start(ProviderConfig::opencode());
-                Ok(Effect::Echo {
-                    level: EchoLevel::Info,
-                    text: "opencode: starting agent".to_string(),
-                })
-            }),
-            args_schema: vec![],
-            surface_form: SurfaceForm::Keyword,
-        },
-    );
-
-    let prompt = handle.clone();
-    registry.register_ex_command(
-        "ai-prompt",
-        "Send the rest of the line to the running AI agent as a prompt.",
-        ExCommandSpec {
-            latency_class: LatencyClass::Reflex,
-            accepts_bang: false,
-            accepts_range: false,
-            parse_args: Box::new(parse_rest_as_text),
-            apply: Box::new(move |ctx| match &ctx.args {
-                Args::String(t) if !t.is_empty() => {
-                    prompt.prompt(t.clone());
-                    Ok(Effect::Echo {
-                        level: EchoLevel::Info,
-                        text: "ai-prompt: sent".to_string(),
-                    })
-                }
-                _ => Ok(Effect::Echo {
-                    level: EchoLevel::Error,
-                    text: "ai-prompt: empty prompt".to_string(),
-                }),
-            }),
-            args_schema: vec![],
-            surface_form: SurfaceForm::Keyword,
-        },
-    );
-
-    let stop = handle;
-    registry.register_ex_command(
-        "ai-stop",
-        "Stop the running AI agent and close its session.",
-        ExCommandSpec {
-            latency_class: LatencyClass::Reflex,
-            accepts_bang: false,
-            accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(move |_ctx| {
-                stop.stop();
-                Ok(Effect::Echo {
-                    level: EchoLevel::Info,
-                    text: "ai: stopping agent".to_string(),
-                })
             }),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
@@ -185,115 +96,6 @@ mod tests {
         match effect {
             Effect::OpenAiLog { session } => assert_eq!(session.as_deref(), Some("opencode")),
             other => panic!("expected OpenAiLog, got {other:?}"),
-        }
-    }
-
-    // The `:opencode` / `:ai-prompt` / `:ai-stop` lifecycle commands exist only
-    // with the ACP transport compiled in.
-    #[cfg(feature = "acp")]
-    mod acp {
-        use super::ctx_with;
-        use crate::commands::register_ai_ex_commands;
-        use crate::handle::{AiClientHandle, AiCmd, AiState};
-        use arc_swap::ArcSwap;
-        use lattice_grammar::args::Args;
-        use lattice_grammar::effect::{EchoLevel, Effect};
-        use lattice_grammar::registry::CommandRegistry;
-        use std::sync::Arc;
-
-        fn test_handle() -> (AiClientHandle, tokio::sync::mpsc::UnboundedReceiver<AiCmd>) {
-            let (cmd_tx, rx) = tokio::sync::mpsc::unbounded_channel();
-            (
-                AiClientHandle {
-                    cmd_tx,
-                    state: Arc::new(ArcSwap::from_pointee(AiState::default())),
-                },
-                rx,
-            )
-        }
-
-        #[test]
-        fn opencode_registers_and_starts() {
-            let (handle, mut rx) = test_handle();
-            let mut registry = CommandRegistry::new();
-            register_ai_ex_commands(&mut registry, handle);
-
-            let id = registry
-                .id_by_name("opencode")
-                .expect("`:opencode` is registered");
-            let spec = registry.ex_command_spec(id).expect("spec present");
-            let effect = (spec.apply)(&ctx_with(Args::None)).expect("apply ok");
-
-            match effect {
-                Effect::Echo { level, .. } => assert_eq!(level, EchoLevel::Info),
-                other => panic!("expected an Echo, got {other:?}"),
-            }
-            match rx.try_recv().expect("AiCmd sent") {
-                AiCmd::Start(_) => {}
-                _ => panic!("expected AiCmd::Start"),
-            }
-        }
-
-        #[test]
-        fn ai_prompt_sends_text() {
-            let (handle, mut rx) = test_handle();
-            let mut registry = CommandRegistry::new();
-            register_ai_ex_commands(&mut registry, handle);
-
-            let id = registry
-                .id_by_name("ai-prompt")
-                .expect("`:ai-prompt` is registered");
-            let spec = registry.ex_command_spec(id).expect("spec present");
-            let effect = (spec.apply)(&ctx_with(Args::String("hi".to_string()))).expect("apply ok");
-
-            match effect {
-                Effect::Echo { level, .. } => assert_eq!(level, EchoLevel::Info),
-                other => panic!("expected an Echo, got {other:?}"),
-            }
-            match rx.try_recv().expect("AiCmd sent") {
-                AiCmd::Prompt(t) => assert_eq!(t, "hi"),
-                _ => panic!("expected AiCmd::Prompt"),
-            }
-        }
-
-        #[test]
-        fn ai_prompt_rejects_empty() {
-            let (handle, _rx) = test_handle();
-            let mut registry = CommandRegistry::new();
-            register_ai_ex_commands(&mut registry, handle);
-
-            let id = registry
-                .id_by_name("ai-prompt")
-                .expect("`:ai-prompt` is registered");
-            let spec = registry.ex_command_spec(id).expect("spec present");
-            let effect = (spec.apply)(&ctx_with(Args::String(String::new()))).expect("apply ok");
-
-            match effect {
-                Effect::Echo { level, .. } => assert_eq!(level, EchoLevel::Error),
-                other => panic!("expected an Echo, got {other:?}"),
-            }
-        }
-
-        #[test]
-        fn ai_stop_stops() {
-            let (handle, mut rx) = test_handle();
-            let mut registry = CommandRegistry::new();
-            register_ai_ex_commands(&mut registry, handle);
-
-            let id = registry
-                .id_by_name("ai-stop")
-                .expect("`:ai-stop` is registered");
-            let spec = registry.ex_command_spec(id).expect("spec present");
-            let effect = (spec.apply)(&ctx_with(Args::None)).expect("apply ok");
-
-            match effect {
-                Effect::Echo { level, .. } => assert_eq!(level, EchoLevel::Info),
-                other => panic!("expected an Echo, got {other:?}"),
-            }
-            match rx.try_recv().expect("AiCmd sent") {
-                AiCmd::Stop => {}
-                _ => panic!("expected AiCmd::Stop"),
-            }
         }
     }
 }

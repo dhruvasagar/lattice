@@ -46,7 +46,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
-use crate::error::{AiError, Result};
+use crate::acp::error::{AiError, Result};
 
 /// Re-exported so callers (Task 6) can match on `session/update` payloads without depending
 /// on `agent-client-protocol` directly.

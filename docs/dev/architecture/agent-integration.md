@@ -227,14 +227,20 @@ lattice-agent/            # the port. no *agent-protocol* dependencies.
   commands.rs             # parse_no_args + ex-command registration helpers
   error.rs                # AgentError
 
-lattice-ai/               # the integrations
-  acp/                    # feature = "acp": connection, session, ACP adapter
+lattice-ai/               # the integrations (both transports, feature-gated)
+  acp/                    # feature = "acp": connection, session, providers,
+                          #   handle, supervisor, error, install, ACP ex-commands
   mcp/                    # feature = "mcp": server, transport, auth, lockfile,
-                          #   protocol, dispatch, notifications, status
-  providers/              # launch specs: opencode/gemini/codex (ACP stdio
-                          #   ProviderConfig) and claude-code (terminal + env)
-  install.rs              # one Phase-B boot line
+                          #   protocol, dispatch, notifications, status, reads,
+                          #   writes, diff, install, MCP ex-commands
+  commands.rs             # transport-neutral :ai-log (register_ai_log_command)
+  install.rs              # one Phase-B boot line: the port log substrate always,
+                          #   each transport behind its #[cfg(feature = …)]
 ```
+
+A "provider" is a launch spec, not a protocol — `acp/providers.rs` holds the
+ACP `ProviderConfig`s (opencode/gemini/codex); the Claude Code launch spec
+(terminal command + env) lives with the MCP adapter.
 
 A "provider" is a launch spec, not a protocol. `ProviderConfig { command, args,
 env, display_name }` describes an ACP child; the Claude Code entry describes the

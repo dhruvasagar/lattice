@@ -1,10 +1,10 @@
 //! ACP session lifecycle: the `initialize -> session/new` handshake and prompt,
 //! as free functions over a `Connection` (Tasks 6/7 import these paths).
 
-use crate::connection::Connection;
-use crate::error::Result;
+use crate::acp::connection::Connection;
+use crate::acp::error::Result;
 
-pub use crate::connection::SessionId;
+pub use crate::acp::connection::SessionId;
 
 /// Run the ACP handshake and open a session rooted at `cwd`.
 pub async fn handshake(conn: &Connection, cwd: &str) -> Result<SessionId> {
@@ -27,7 +27,7 @@ mod tests {
     use tokio::sync::mpsc;
 
     use super::*;
-    use crate::connection::SessionNotification;
+    use crate::acp::connection::SessionNotification;
 
     /// Drives the "agent" side of a mocked duplex ACP connection: reads
     /// newline-delimited JSON-RPC requests and replies with canned responses.

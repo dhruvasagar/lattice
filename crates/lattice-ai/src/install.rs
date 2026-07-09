@@ -29,7 +29,7 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     let logger = install_ai_log(boot);
 
     #[cfg(feature = "acp")]
-    install_acp(boot, &logger);
+    crate::acp::install::install(boot, &logger);
 
     #[cfg(feature = "mcp")]
     crate::mcp::install::install(boot);
@@ -76,24 +76,4 @@ fn install_ai_log(boot: &mut impl SubsystemBoot) -> AiLogger {
     register_ai_log_command(boot.commands_mut());
 
     logger
-}
-
-/// Wire the ACP (Agent Client Protocol) transport: spawn the supervisor, wire
-/// the `:opencode` / `:ai-prompt` / `:ai-stop` ex-commands, and register the
-/// `AiClientHandle` service. AG-5 relocates this under `crate::acp`.
-#[cfg(feature = "acp")]
-fn install_acp(boot: &mut impl SubsystemBoot, logger: &AiLogger) {
-    use crate::commands::register_ai_ex_commands;
-    use crate::handle::AiClientHandle;
-
-    // Spawn the supervisor with a logger clone -- it owns the provider child
-    // process, the ACP connection, and the active session for the program's
-    // lifetime (until every handle clone is dropped).
-    let handle = AiClientHandle::spawn(boot.runtime_handle(), logger.clone());
-
-    // Crate-owned ex-commands: `:opencode` / `:ai-prompt` / `:ai-stop`.
-    register_ai_ex_commands(boot.commands_mut(), handle.clone());
-
-    // `AiClientHandle` service for a future modeline/UI.
-    boot.register_service::<AiClientHandle>(handle);
 }

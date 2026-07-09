@@ -17,10 +17,10 @@ use tokio::sync::mpsc;
 use lattice_agent::{AiLogLevel, AiLogSource, AiLogger, SessionKey};
 
 use crate::Result;
-use crate::connection::{Connection, SessionId, SessionNotification};
-use crate::error::AiError;
-use crate::handle::{AiClientHandle, AiCmd, AiState};
-use crate::providers::ProviderConfig;
+use crate::acp::connection::{Connection, SessionId, SessionNotification};
+use crate::acp::error::AiError;
+use crate::acp::handle::{AiClientHandle, AiCmd, AiState};
+use crate::acp::providers::ProviderConfig;
 
 impl AiClientHandle {
     /// Spawn the supervisor task on `runtime` and return a handle onto it.
@@ -194,7 +194,7 @@ async fn supervisor_loop(
                     let key = active_key.clone();
                     let logger = logger.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = crate::session::prompt(&c, &s, &text).await {
+                        if let Err(e) = crate::acp::session::prompt(&c, &s, &text).await {
                             logger.log(
                                 key.as_ref(),
                                 AiLogLevel::Error,
@@ -304,7 +304,7 @@ async fn start_provider(
     let cwd = std::env::current_dir()
         .map(|p| p.display().to_string())
         .unwrap_or_default();
-    let session_id = crate::session::handshake(&conn, &cwd).await?;
+    let session_id = crate::acp::session::handshake(&conn, &cwd).await?;
 
     Ok((conn, session_id, child))
 }

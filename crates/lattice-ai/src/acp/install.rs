@@ -39,6 +39,11 @@ pub fn install(boot: &mut impl SubsystemBoot, logger: &AiLogger) {
     // Crate-owned ex-commands: `:opencode` / `:ai-prompt` / `:ai-stop`.
     register_ai_ex_commands(boot.commands_mut(), handle.clone());
 
+    // AU‑3: the modal-input action commands (`action:ai-conv-*`) the mode's
+    // keymap binds. Declaration here (mode owns its surface); the handler
+    // bodies live in `AiConversationMode::action_handlers`.
+    crate::acp::conversation_mode::register_ai_conversation_actions(boot.commands_mut());
+
     // Services: `AiClientHandle` for a future modeline/UI; `ConversationStore`
     // for the `ai-conversation` mode's projection.
     boot.register_service::<AiClientHandle>(handle);

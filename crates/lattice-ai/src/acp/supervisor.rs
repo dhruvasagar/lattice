@@ -197,6 +197,12 @@ async fn supervisor_loop(
             }
             SupervisorEvent::Cmd(AiCmd::Prompt(text)) => {
                 if let (Some(c), Some(s)) = (conn.clone(), sess.clone()) {
+                    // AU‑3: fold the user's prompt into the transcript as a User
+                    // turn immediately (ACP agents don't echo it back), so the
+                    // conversation buffer shows "you: …" the moment Enter fires.
+                    if let Some(key) = active_key.as_ref() {
+                        conv_store.push_user_text(key, &text);
+                    }
                     let key = active_key.clone();
                     let logger = logger.clone();
                     tokio::spawn(async move {

@@ -128,6 +128,16 @@ impl Conversation {
         }
     }
 
+    /// AU‑3: append a complete user prompt as a new `User` turn. Each Enter is
+    /// a distinct turn (the terminal-REPL model), so — unlike chunk-streamed
+    /// agent output — this always opens a fresh turn rather than extending.
+    pub fn push_user_text(&mut self, text: &str) {
+        self.turns.push(Turn {
+            role: Role::User,
+            blocks: vec![Block::Text(text.to_string())],
+        });
+    }
+
     /// Append `text` to the last block if it is `Text` in a turn of `role`;
     /// otherwise open a new block / turn as needed.
     fn extend_text(&mut self, role: Role, text: &str) {
@@ -231,6 +241,20 @@ impl ConversationStore {
         });
     }
 
+    /// AU‑3: fold a locally-composed user prompt into the conversation as a
+    /// `User` turn, then publish. ACP agents don't echo the user's prompt back,
+    /// so the supervisor calls this when it sends a prompt to make the user's
+    /// turn appear in the transcript immediately.
+    pub fn push_user_text(&self, session: &SessionKey, text: &str) {
+        {
+            let mut conv = self.inner.lock().expect("conversation mutex poisoned");
+            conv.push_user_text(text);
+        }
+        (self.publish)(ConversationUpdated {
+            session: session.clone(),
+        });
+    }
+
     /// Cheap-ish clone of the current conversation for projection.
     pub fn snapshot(&self) -> Conversation {
         self.inner
@@ -260,6 +284,42 @@ mod tests {
         assert_eq!(c.turns.len(), 1);
         assert_eq!(c.turns[0].role, Role::Assistant);
         assert_eq!(c.turns[0].blocks, vec![Block::Text("hi there".to_string())]);
+    }
+
+    /// AU‑3: a user prompt lands as its own `User` turn (the REPL model:
+    /// each Enter is distinct, never merged into agent output).
+    #[test]
+    fn push_user_text_appends_a_user_turn() {
+        let mut c = Conversation::default();
+        c.apply(&SessionUpdate::AgentMessageChunk(text_chunk("hello")));
+        c.push_user_text("refactor parse_args");
+        assert_eq!(c.turns.len(), 2);
+        assert_eq!(c.turns[1].role, Role::User);
+        assert_eq!(
+            c.turns[1].blocks,
+            vec![Block::Text("refactor parse_args".to_string())]
+        );
+        // Two consecutive prompts are two distinct turns, not merged.
+        c.push_user_text("again");
+        assert_eq!(c.turns.len(), 3);
+        assert_eq!(c.turns[2].role, Role::User);
+    }
+
+    /// AU‑3: `ConversationStore::push_user_text` mutates the shared store and
+    /// publishes a `ConversationUpdated` so the mode's drain re-projects.
+    #[test]
+    fn store_push_user_text_mutates_and_publishes() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let published = Arc::new(AtomicUsize::new(0));
+        let p = published.clone();
+        let store = ConversationStore::new(Arc::new(move |_ev| {
+            p.fetch_add(1, Ordering::SeqCst);
+        }));
+        store.push_user_text(&SessionKey::new("opencode", 1), "hi");
+        assert_eq!(published.load(Ordering::SeqCst), 1, "one publish");
+        let snap = store.snapshot();
+        assert_eq!(snap.turns.len(), 1);
+        assert_eq!(snap.turns[0].role, Role::User);
     }
 
     #[test]

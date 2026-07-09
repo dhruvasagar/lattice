@@ -14,12 +14,24 @@
 //! change rewrites only from its line down (AU‑2 shows status inline as text; a
 //! decoration-based in-place update is a follow-up).
 
+use std::sync::{Arc, OnceLock};
+
+use lattice_grammar::ModalState;
+use lattice_grammar::effect::Effect;
 use lattice_mode::{
-    CapabilitySet, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, OptionOverrideSet,
-    Subscription,
+    ActionContext, ActionHandler, ActionHandlerContribution, BufferStoreHandle, CapabilitySet,
+    EditableTail, Keymap, KeymapEntry, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind,
+    OptionOverrideSet, Subscription, keymap_entry,
 };
 
 use crate::acp::conversation::{Block, Conversation, ConversationStore, ConversationUpdated, Role};
+use crate::acp::handle::AiClientHandle;
+
+/// AU‑3: the prompt marker rendered at the head of the editable tail line.
+/// Two bytes, so [`EditableTail::first_line_min_byte`] is `2`: the marker
+/// itself is not user-editable (backspace at the prompt start is refused by
+/// the read-only gate), only the text after it.
+const PROMPT_MARKER: &str = "> ";
 
 /// The synthetic buffer name for the (single, v1) opencode conversation.
 pub fn conversation_buffer_name() -> String {
@@ -152,6 +164,47 @@ impl Mode for AiConversationMode {
         CapabilitySet::empty()
     }
 
+    /// AU‑3: the prompt is the single trailing line, editable only after the
+    /// `"> "` marker (2 bytes). Consulted by the host's read-only edit gate so
+    /// Insert/operator keystrokes land only in the prompt; the transcript above
+    /// stays owner-written.
+    fn editable_tail(&self) -> Option<EditableTail> {
+        Some(EditableTail {
+            trailing_lines: 1,
+            first_line_min_byte: PROMPT_MARKER.len() as u32,
+        })
+    }
+
+    /// AU‑3: the modal-input surface. Insert-entering chords relocate the
+    /// cursor into the prompt first (so Insert only ever edits the prompt, and
+    /// history is unreachable from Insert); `<CR>` sends; `<C-c>` interrupts.
+    /// The host's K.2.4 translate pass pushes these under
+    /// `MajorMode(ai-conversation-mode)`, gated by K.1.c to this buffer.
+    fn keymap(&self) -> Keymap {
+        Keymap::from_entries(ai_conversation_keymap_entries())
+    }
+
+    /// AU‑3: the handler bodies for the chords above, mode-owned (no host
+    /// `Editor::` method, no `Action` variant). Bound at boot by the host's
+    /// `register_mode_action_handlers` walk. Each reads the buffer / services
+    /// from the [`ActionContext`] and returns an [`Effect`] the host applies.
+    fn action_handlers(&self) -> Vec<ActionHandlerContribution> {
+        vec![
+            ActionHandlerContribution {
+                action_name: "action:ai-conv-focus-prompt",
+                handler: focus_prompt_handler(),
+            },
+            ActionHandlerContribution {
+                action_name: "action:ai-conv-send",
+                handler: send_handler(),
+            },
+            ActionHandlerContribution {
+                action_name: "action:ai-conv-interrupt",
+                handler: interrupt_handler(),
+            },
+        ]
+    }
+
     fn on_activate(&self, ctx: ModeContext) -> LifecycleFuture<'_, Self::Guard> {
         Box::pin(async move {
             let buffer_id = lattice_core::BufferId(ctx.buffer_id().0 as u32);
@@ -172,8 +225,14 @@ impl Mode for AiConversationMode {
             // (handles a fresh OR reopened buffer uniformly). `last` then tracks
             // the buffer content so subsequent updates diff self-consistently --
             // no fragile buffer-text round-trip.
+            // AU‑3: `last` tracks the *conversation zone* only; the buffer is
+            // `{conversation}{PROMPT_MARKER}` with the editable prompt as the
+            // trailing line. Seeding appends the marker once; the update path
+            // below is unchanged because `suffix_edit`'s replace range ends at
+            // `text_end(last)` — the start of the prompt line — so re-projecting
+            // the transcript never rewrites the user's in-progress prompt.
             let mut last = render_conversation(&conv_store.snapshot());
-            full_replace(&handle, &last).await;
+            full_replace(&handle, &format!("{last}{PROMPT_MARKER}")).await;
 
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<ConversationUpdated>();
             let sub_id = ctx.events().subscribe_typed::<ConversationUpdated>(tx);
@@ -232,6 +291,143 @@ fn suffix_edit(last: &str, new: &str) -> Option<lattice_protocol::edit::Edit> {
     ))
 }
 
+// ──────────────────────────────────────────────────────────────
+// AU‑3: modal-input surface — keymap entries + action handlers
+// ──────────────────────────────────────────────────────────────
+
+/// The Normal- and Insert-mode chords the `ai-conversation` mode contributes.
+/// Normal-mode insert-entering chords (`i`/`a`/`o`/`A`/`I`/`O`) all route to
+/// `focus-prompt` so entering Insert always relocates the cursor into the
+/// prompt — history is unreachable from Insert and so cannot be mutated.
+/// `<CR>` sends; `<C-c>` interrupts.
+fn ai_conversation_keymap_entries() -> &'static [KeymapEntry] {
+    static ENTRIES: OnceLock<Vec<KeymapEntry>> = OnceLock::new();
+    ENTRIES.get_or_init(|| {
+        let focus = |chord: &'static str| keymap_entry! {
+            mode: Normal, chord: chord,
+            doc: "ai-conversation: move the cursor into the prompt and enter Insert",
+            cmd: "action:ai-conv-focus-prompt"
+        };
+        vec![
+            focus("i"),
+            focus("a"),
+            focus("o"),
+            focus("A"),
+            focus("I"),
+            focus("O"),
+            keymap_entry! {
+                mode: Insert, chord: "<CR>",
+                doc: "ai-conversation: send the prompt to the agent",
+                cmd: "action:ai-conv-send"
+            },
+            keymap_entry! {
+                mode: Insert, chord: "<C-c>",
+                doc: "ai-conversation: interrupt the active turn",
+                cmd: "action:ai-conv-interrupt"
+            },
+        ]
+    })
+}
+
+/// `action:ai-conv-focus-prompt` — place the cursor at the end of the prompt
+/// line and enter Insert. Reuses the generic `SelectionChange` + `EnterMode`
+/// effects (no new `Action`); reads the buffer through the `BufferStoreHandle`
+/// service since the `ActionContext` carries no buffer text.
+fn focus_prompt_handler() -> ActionHandler {
+    Arc::new(|ctx: &ActionContext<'_>| -> Option<Effect> {
+        let store = ctx.services.get::<BufferStoreHandle>()?;
+        let buffer_id = lattice_core::BufferId(ctx.buffer_id.0 as u32);
+        let handle = store.handle_for(buffer_id)?;
+        let snap = handle.snapshot();
+        let last_line = snap.buffer.line_count().saturating_sub(1);
+        let end_byte = snap
+            .buffer
+            .line(last_line)
+            .unwrap_or_default()
+            .trim_end_matches('\n')
+            .len() as u32;
+        let pos = lattice_protocol::position::Position::new(last_line, end_byte);
+        Some(Effect::Many(vec![
+            Effect::SelectionChange(lattice_protocol::selection::SelectionSet::single(
+                lattice_protocol::selection::Selection::cursor(pos),
+            )),
+            Effect::EnterMode(ModalState::Insert),
+        ]))
+    })
+}
+
+/// `action:ai-conv-send` — read the prompt (the tail line after `PROMPT_MARKER`),
+/// hand it to the agent via the `AiClientHandle` service, clear the prompt
+/// region, and drop back to Normal. An empty prompt is a no-op (Enter does
+/// nothing). The clear edit lands inside the editable tail, so the read-only
+/// gate permits it; owner re-projection preserves the now-empty prompt line.
+fn send_handler() -> ActionHandler {
+    Arc::new(|ctx: &ActionContext<'_>| -> Option<Effect> {
+        let store = ctx.services.get::<BufferStoreHandle>()?;
+        let buffer_id = lattice_core::BufferId(ctx.buffer_id.0 as u32);
+        let handle = store.handle_for(buffer_id)?;
+        let snap = handle.snapshot();
+        let last_line = snap.buffer.line_count().saturating_sub(1);
+        let line = snap.buffer.line(last_line).unwrap_or_default();
+        let line = line.trim_end_matches('\n');
+        let prompt = line.strip_prefix(PROMPT_MARKER).unwrap_or(line);
+        if prompt.trim().is_empty() {
+            return None;
+        }
+        if let Some(ai) = ctx.services.get::<AiClientHandle>() {
+            ai.prompt(prompt.to_string());
+        }
+        // Clear the prompt region: [marker_end, line_end) on the prompt line.
+        let clear = lattice_protocol::edit::Edit::replace(
+            lattice_protocol::Range::new(
+                lattice_protocol::position::Position::new(last_line, PROMPT_MARKER.len() as u32),
+                lattice_protocol::position::Position::new(last_line, line.len() as u32),
+            ),
+            String::new(),
+        );
+        Some(Effect::Many(vec![
+            Effect::ApplyEdit { target: buffer_id, edit: clear, cursor: None },
+            Effect::EnterMode(ModalState::Normal),
+        ]))
+    })
+}
+
+/// `action:ai-conv-interrupt` — forward an interrupt to the agent (ACP
+/// `session/cancel`) via the `AiClientHandle` service, without leaving Insert.
+fn interrupt_handler() -> ActionHandler {
+    Arc::new(|ctx: &ActionContext<'_>| -> Option<Effect> {
+        if let Some(ai) = ctx.services.get::<AiClientHandle>() {
+            ai.interrupt();
+        }
+        None
+    })
+}
+
+/// AU‑3: register the `ai-conversation` action commands so the mode's keymap
+/// `cmd` names resolve (the diff subsystem's `register_diff_actions` pattern).
+/// The specs are pure shells returning `Effect::None`: the real bodies live in
+/// [`AiConversationMode::action_handlers`], consulted before the CommandSpec.
+pub fn register_ai_conversation_actions(registry: &mut lattice_grammar::CommandRegistry) {
+    use lattice_grammar::registry::ActionSpec;
+    for (name, doc) in [
+        (
+            "action:ai-conv-focus-prompt",
+            "ai-conversation: move the cursor into the prompt and enter Insert.",
+        ),
+        ("action:ai-conv-send", "ai-conversation: send the prompt to the agent."),
+        ("action:ai-conv-interrupt", "ai-conversation: interrupt the active turn."),
+    ] {
+        registry.register_action(
+            name,
+            doc,
+            ActionSpec {
+                apply: Box::new(|_| Ok(Effect::None)),
+                args_schema: vec![],
+            },
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
@@ -251,6 +447,74 @@ mod tests {
             AiConversationMode::mode_id(),
             ModeId::new("ai-conversation-mode")
         );
+    }
+
+    /// AU‑3: the mode declares a single-line prompt tail editable after the
+    /// 2-byte `"> "` marker — the input the host's read-only gate consults.
+    #[test]
+    fn editable_tail_is_single_prompt_line() {
+        assert_eq!(
+            <AiConversationMode as Mode>::editable_tail(&AiConversationMode),
+            Some(EditableTail { trailing_lines: 1, first_line_min_byte: 2 }),
+        );
+    }
+
+    /// AU‑3: every Normal-mode insert-entering chord routes to `focus-prompt`
+    /// (so Insert always relocates to the prompt), `<CR>` sends, `<C-c>`
+    /// interrupts. Catches a dropped chord or a name swap.
+    #[test]
+    fn keymap_binds_insert_entry_to_focus_and_cr_to_send() {
+        let pairs: Vec<(&str, Option<&str>)> = ai_conversation_keymap_entries()
+            .iter()
+            .map(|e| (e.chord, e.command))
+            .collect();
+        assert_eq!(
+            pairs,
+            vec![
+                ("i", Some("action:ai-conv-focus-prompt")),
+                ("a", Some("action:ai-conv-focus-prompt")),
+                ("o", Some("action:ai-conv-focus-prompt")),
+                ("A", Some("action:ai-conv-focus-prompt")),
+                ("I", Some("action:ai-conv-focus-prompt")),
+                ("O", Some("action:ai-conv-focus-prompt")),
+                ("<CR>", Some("action:ai-conv-send")),
+                ("<C-c>", Some("action:ai-conv-interrupt")),
+            ],
+        );
+    }
+
+    /// AU‑3: the mode contributes exactly the three handler bodies, keyed to
+    /// the SAME names the keymap binds, so the host's boot walk resolves each.
+    #[test]
+    fn action_handlers_contribute_focus_send_interrupt() {
+        let names: Vec<&str> = AiConversationMode
+            .action_handlers()
+            .iter()
+            .map(|c| c.action_name)
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "action:ai-conv-focus-prompt",
+                "action:ai-conv-send",
+                "action:ai-conv-interrupt",
+            ],
+        );
+    }
+
+    /// AU‑3: `register_ai_conversation_actions` registers all three action
+    /// commands so the keymap `cmd` names resolve at boot.
+    #[test]
+    fn registers_the_three_action_commands() {
+        let mut registry = lattice_grammar::CommandRegistry::new();
+        register_ai_conversation_actions(&mut registry);
+        for name in [
+            "action:ai-conv-focus-prompt",
+            "action:ai-conv-send",
+            "action:ai-conv-interrupt",
+        ] {
+            assert!(registry.id_by_name(name).is_some(), "{name} registered");
+        }
     }
 
     #[test]

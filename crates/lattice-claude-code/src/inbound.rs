@@ -21,11 +21,10 @@
 
 use std::path::PathBuf;
 
+use lattice_agent::EditorStateHandle;
 use lattice_grammar::effect::Effect;
 use lattice_grammar::Utf16Pos;
 use tokio::sync::oneshot;
-
-use crate::snapshot::ReadStateHandle;
 
 /// A write request's payload.
 #[derive(Debug)]
@@ -95,7 +94,7 @@ pub struct ClaudeCodeInboundRequest {
 /// returns the effect(s) for the host to apply. The generic bus owns the
 /// channel, the per-tick `try_recv` loop, and the off-keystroke wake.
 pub fn make_handler(
-    cache: ReadStateHandle,
+    cache: EditorStateHandle,
 ) -> impl FnMut(ClaudeCodeInboundRequest) -> Vec<Effect> + Send + 'static {
     move |req| {
         let (effect, reply) = map_request(&req.kind, &cache);
@@ -106,14 +105,14 @@ pub fn make_handler(
 }
 
 /// The active buffer's path, if any (option-C targeting).
-fn active_path(cache: &ReadStateHandle) -> Option<PathBuf> {
+fn active_path(cache: &EditorStateHandle) -> Option<PathBuf> {
     let g = cache.lock().unwrap_or_else(|e| e.into_inner());
     let active = g.active.as_ref()?;
     g.open_buffers.get(&active.buffer).and_then(|b| b.path.clone())
 }
 
 /// Map a write request to an existing Effect + an optimistic reply.
-fn map_request(kind: &InboundKind, cache: &ReadStateHandle) -> (Option<Effect>, InboundReply) {
+fn map_request(kind: &InboundKind, cache: &EditorStateHandle) -> (Option<Effect>, InboundReply) {
     match kind {
         InboundKind::OpenFile { path, column } => (
             // BC.8c follow-up: host-applied open (works on the inbound tick
@@ -168,15 +167,15 @@ fn map_request(kind: &InboundKind, cache: &ReadStateHandle) -> (Option<Effect>, 
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
-    use crate::snapshot::ClaudeCodeReadState;
+    use lattice_agent::EditorStateCache;
     use lattice_mode::inbound::make_inbound;
     use lattice_protocol::ids::DocumentId;
     use lattice_protocol::{Event, SelectionSet};
     use std::sync::{Arc, Mutex};
     use tokio::sync::Notify;
 
-    fn cache_with_active(path: &str) -> ReadStateHandle {
-        let mut s = ClaudeCodeReadState::default();
+    fn cache_with_active(path: &str) -> EditorStateHandle {
+        let mut s = EditorStateCache::default();
         s.apply_event(&Event::DocumentOpened {
             id: DocumentId::new(1),
             path: Some(PathBuf::from(path)),
@@ -191,8 +190,8 @@ mod tests {
         Arc::new(Mutex::new(s))
     }
 
-    fn empty_cache() -> ReadStateHandle {
-        Arc::new(Mutex::new(ClaudeCodeReadState::default()))
+    fn empty_cache() -> EditorStateHandle {
+        Arc::new(Mutex::new(EditorStateCache::default()))
     }
 
     #[test]

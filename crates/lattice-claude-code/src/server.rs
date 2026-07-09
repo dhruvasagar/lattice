@@ -29,12 +29,13 @@ use lattice_diff::ProgrammaticDiffBus;
 use lattice_mode::inbound::InboundBus;
 use lattice_runtime::EventBus;
 
+use lattice_agent::{EditorAccess, EditorStateHandle};
+
 use crate::dispatch::{self, DispatchContext, Outgoing};
 use crate::inbound::ClaudeCodeInboundRequest;
 use crate::error::Result;
 use crate::lockfile::{Lockfile, LockfileContents};
 use crate::reads::ReadContext;
-use crate::snapshot::ReadStateHandle;
 use crate::{auth, transport};
 
 /// IDE name reported in the discovery lockfile.
@@ -88,7 +89,7 @@ pub struct ClaudeCodeServerHandle {
     state: Arc<ArcSwap<ServerState>>,
     /// The crate-owned read cache (subscription set up at spawn). Shared
     /// into the [`DispatchContext`] built by `install_read_services`.
-    cache: ReadStateHandle,
+    cache: EditorStateHandle,
     /// Workspace folders from the config (for `getWorkspaceFolders`).
     workspace_folders: Vec<String>,
     /// The live dispatch context connections read. Starts with no generic
@@ -234,7 +235,7 @@ impl ClaudeCodeServerHandle {
     /// inbound handler ([`crate::inbound::make_handler`]) — the per-item closure
     /// the generic `boot.inbound` bus drains, which maps write requests against
     /// the same cache the read tools snapshot.
-    pub fn read_cache(&self) -> ReadStateHandle {
+    pub fn read_cache(&self) -> EditorStateHandle {
         self.cache.clone()
     }
 
@@ -257,10 +258,12 @@ impl ClaudeCodeServerHandle {
             // connection's own `conn_id` (D-fix.6).
             conn_id: 0,
             reads: ReadContext {
-                cache: self.cache.clone(),
-                buffer_store,
+                editor: EditorAccess::new(
+                    self.cache.clone(),
+                    buffer_store,
+                    self.workspace_folders.clone(),
+                ),
                 diagnostics,
-                workspace_folders: self.workspace_folders.clone(),
             },
             writes: Some(writes),
             diff,
@@ -281,7 +284,7 @@ pub fn spawn(
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
     let state = Arc::new(ArcSwap::from_pointee(ServerState::default()));
     // I2.1: the read cache subscribes to the generic event bus here.
-    let cache = crate::snapshot::spawn_read_cache(&event_bus, rt);
+    let cache = lattice_agent::state_cache::spawn_read_cache(&event_bus, rt);
     // I7 / D-fix.6 follow-up: the status wake + the shared pending-review
     // tracker. Created up front so the dispatch context, the publisher, and
     // `install_services`'s rebuilt context all share ONE tracker (the count is
@@ -299,10 +302,8 @@ pub fn spawn(
         // `serve_connection` (D-fix.6).
         conn_id: 0,
         reads: ReadContext {
-            cache: cache.clone(),
-            buffer_store: None,
+            editor: EditorAccess::new(cache.clone(), None, config.workspace_folders.clone()),
             diagnostics: None,
-            workspace_folders: config.workspace_folders.clone(),
         },
         // I3.2 wires the real inbound bus here; until then write tools report
         // a graceful "not initialized".

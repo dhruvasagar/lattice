@@ -7,6 +7,9 @@ license.workspace = true
 
 [dependencies]
 thiserror = { workspace = true }
+lattice-protocol = { path = "../lattice-protocol" }
+lattice-core = { path = "../lattice-core" }
+lattice-runtime = { path = "../lattice-runtime" }
 lattice-grammar = { path = "../lattice-grammar" }
 lattice-diff = { path = "../lattice-diff" }
 lattice-mode = { path = "../lattice-mode" }

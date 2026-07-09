@@ -22,6 +22,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use lattice_agent::EditorStateHandle;
 use lattice_protocol::ids::DocumentId;
 use lattice_protocol::position::Position;
 use lattice_protocol::{Event, EventKind, SelectionSet};
@@ -29,14 +30,12 @@ use lattice_runtime::{EventBus, EventFilter, SubscriptionTarget};
 use serde_json::json;
 use tokio::sync::broadcast;
 
-use crate::snapshot::ReadStateHandle;
-
 /// Subscribe to `SelectionsChanged` and spawn the notification task. The task
 /// coalesces bursts and broadcasts notification frames through `notify_tx`.
 pub fn spawn_notifier(
     bus: &Arc<EventBus>,
     notify_tx: broadcast::Sender<String>,
-    cache: ReadStateHandle,
+    cache: EditorStateHandle,
     rt: &tokio::runtime::Handle,
 ) {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Event>();

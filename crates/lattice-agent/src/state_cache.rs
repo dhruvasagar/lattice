@@ -1,16 +1,15 @@
-//! IDE-protocol I2.1: the crate-owned read-state cache.
+//! AG-2a: the protocol-neutral editor read-state cache.
 //!
 //! Per mode-ownership ([[feedback_mode_owns_its_surface]]), the read state
-//! the IDE tools answer from belongs to **this crate**, not the host. The
-//! host exposes only *generic* primitives; here the crate subscribes to the
-//! generic event bus (`DocumentOpened` / `DocumentClosed` /
-//! `SelectionsChanged`) and folds those events into a `ClaudeCodeReadState`
-//! cache. A dedicated updater task owns the writes; the WS task reads the
-//! cache off the editor thread. The editor thread pays nothing new — it
-//! already `publish`es these events.
+//! the agent read tools answer from belongs to **this crate**, not the host
+//! and not any one agent-protocol adapter. Adapters subscribe to the generic
+//! event bus (`DocumentOpened` / `DocumentClosed` / `SelectionsChanged`) and
+//! fold those events into an `EditorStateCache`. A dedicated updater task
+//! owns the writes; agent tasks read the cache off the editor thread. The
+//! editor thread pays nothing new — it already `publish`es these events.
 //!
 //! On-demand text / path / dirty come from the generic `BufferStore`
-//! service at read time (I2.2), not this cache — the cache only tracks the
+//! service at read time, not this cache — the cache only tracks the
 //! open-editor *set* and the active selection, which aren't otherwise
 //! queryable off-thread.
 
@@ -46,16 +45,16 @@ pub struct ActiveSelection {
 /// Crate-owned snapshot of the editor state the read tools answer from.
 /// Holds **no host types** — only protocol-level ids / selections / paths.
 /// Mutated solely by the updater task (draining generic events); read by
-/// the WS task under the [`ReadStateHandle`] mutex.
+/// consumers under the [`EditorStateHandle`] mutex.
 #[derive(Debug, Default)]
-pub struct ClaudeCodeReadState {
+pub struct EditorStateCache {
     /// Open editor buffers keyed by id.
     pub open_buffers: HashMap<DocumentId, OpenBuffer>,
     /// The active buffer + selection, if any buffer is active.
     pub active: Option<ActiveSelection>,
 }
 
-impl ClaudeCodeReadState {
+impl EditorStateCache {
     /// Fold one generic editor event into the cache. The subscription
     /// filters to the three relevant kinds; the catch-all keeps this a
     /// total, defensive match.
@@ -98,16 +97,16 @@ impl ClaudeCodeReadState {
 }
 
 /// Thread-safe handle to the read cache, shared between the updater task
-/// (writer) and the WS task (reader). A plain `Mutex` — updates are O(1)
+/// (writer) and agent tasks (readers). A plain `Mutex` — updates are O(1)
 /// in-place (no per-event clone) and reads are rare (agent-initiated), so
 /// there's no contention worth a wait-free structure.
-pub type ReadStateHandle = Arc<Mutex<ClaudeCodeReadState>>;
+pub type EditorStateHandle = Arc<Mutex<EditorStateCache>>;
 
 /// Subscribe to the generic event bus and spawn the cache-updater task.
 /// Returns the shared cache handle. Fully crate-owned: the host only
 /// publishes the (generic) events; this task + cache live here.
-pub fn spawn_read_cache(bus: &Arc<EventBus>, rt: &tokio::runtime::Handle) -> ReadStateHandle {
-    let cache: ReadStateHandle = Arc::new(Mutex::new(ClaudeCodeReadState::default()));
+pub fn spawn_read_cache(bus: &Arc<EventBus>, rt: &tokio::runtime::Handle) -> EditorStateHandle {
+    let cache: EditorStateHandle = Arc::new(Mutex::new(EditorStateCache::default()));
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
     bus.subscribe(
         EventFilter::kinds(vec![
@@ -149,7 +148,7 @@ mod tests {
 
     #[test]
     fn document_opened_adds_to_open_set_with_path() {
-        let mut s = ClaudeCodeReadState::default();
+        let mut s = EditorStateCache::default();
         s.apply_event(&opened(1, "/work/a.rs"));
         assert_eq!(s.open_buffers.len(), 1);
         assert_eq!(
@@ -160,7 +159,7 @@ mod tests {
 
     #[test]
     fn selections_changed_sets_active_buffer_and_version() {
-        let mut s = ClaudeCodeReadState::default();
+        let mut s = EditorStateCache::default();
         s.apply_event(&opened(1, "/work/a.rs"));
         s.apply_event(&Event::SelectionsChanged {
             id: doc(1),
@@ -174,7 +173,7 @@ mod tests {
 
     #[test]
     fn document_closed_removes_from_set_and_clears_active() {
-        let mut s = ClaudeCodeReadState::default();
+        let mut s = EditorStateCache::default();
         s.apply_event(&opened(1, "/work/a.rs"));
         s.apply_event(&Event::SelectionsChanged {
             id: doc(1),
@@ -189,7 +188,7 @@ mod tests {
 
     #[test]
     fn closing_a_non_active_buffer_keeps_active() {
-        let mut s = ClaudeCodeReadState::default();
+        let mut s = EditorStateCache::default();
         s.apply_event(&opened(1, "/work/a.rs"));
         s.apply_event(&opened(2, "/work/b.rs"));
         s.apply_event(&Event::SelectionsChanged {
@@ -204,7 +203,7 @@ mod tests {
 
     #[test]
     fn unrelated_event_is_a_noop() {
-        let mut s = ClaudeCodeReadState::default();
+        let mut s = EditorStateCache::default();
         s.apply_event(&Event::DocumentSaved {
             id: doc(1),
             path: PathBuf::from("/work/a.rs"),

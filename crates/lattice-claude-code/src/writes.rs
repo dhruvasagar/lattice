@@ -162,12 +162,12 @@ mod tests {
     #[tokio::test]
     async fn open_file_round_trips_through_a_live_bus() {
         use crate::inbound::make_handler;
-        use crate::snapshot::ClaudeCodeReadState;
+        use lattice_agent::EditorStateCache;
         use lattice_mode::inbound::make_inbound;
         use std::sync::{Arc, Mutex};
         use tokio::sync::Notify;
 
-        let cache = Arc::new(Mutex::new(ClaudeCodeReadState::default()));
+        let cache = Arc::new(Mutex::new(EditorStateCache::default()));
         let (bus, mut drain) = make_inbound(Arc::new(Notify::new()), make_handler(cache));
 
         // The write awaits the reply; here we drive the drain (the "tick") that

@@ -17,6 +17,12 @@ pub mod commands;
 
 pub mod diff_review;
 
+pub mod state_cache;
+
+pub mod editor_access;
+
 pub use commands::{parse_no_args, parse_rest_as_text};
 pub use diff_review::{DiffReviewRequest, review_diff};
+pub use editor_access::{EditorAccess, OpenEditor, SelectionInfo};
 pub use error::{AgentError, Result};
+pub use state_cache::{EditorStateCache, EditorStateHandle};

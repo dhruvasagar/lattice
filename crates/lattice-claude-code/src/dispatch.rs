@@ -225,12 +225,14 @@ mod tests {
         DispatchContext {
             conn_id: 0,
             reads: crate::reads::ReadContext {
-                cache: std::sync::Arc::new(std::sync::Mutex::new(
-                    crate::snapshot::ClaudeCodeReadState::default(),
-                )),
-                buffer_store: None,
+                editor: lattice_agent::EditorAccess::new(
+                    std::sync::Arc::new(std::sync::Mutex::new(
+                        lattice_agent::EditorStateCache::default(),
+                    )),
+                    None,
+                    vec!["/work".to_string()],
+                ),
                 diagnostics: None,
-                workspace_folders: vec!["/work".to_string()],
             },
             writes: None,
             diff: None,

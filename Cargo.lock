@@ -3851,9 +3851,12 @@ dependencies = [
 name = "lattice-agent"
 version = "0.1.0"
 dependencies = [
+ "lattice-core",
  "lattice-diff",
  "lattice-grammar",
  "lattice-mode",
+ "lattice-protocol",
+ "lattice-runtime",
  "thiserror 2.0.18",
  "tokio",
 ]

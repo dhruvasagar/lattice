@@ -14,9 +14,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use lattice_protocol::edit::{Edit, EditKind};
 use lattice_protocol::ids::DocumentId;
 use lattice_protocol::position::Range;
-use lattice_protocol::selection::SelectionSet;
+use lattice_protocol::selection::{Selection, SelectionSet};
 
-use crate::buffer::{AppliedEdit, Buffer};
+use crate::buffer::{transform_position, AppliedEdit, Buffer};
 use crate::error::{CoreError, CoreResult};
 use crate::undo::{UndoEntry, UndoStack};
 
@@ -204,9 +204,11 @@ impl Document {
 
     /// Apply an edit, push its inverse onto the undo stack, bump the version.
     /// Returns a structural description of what changed (suitable for
-    /// `Event::DocumentChanged`).
+    /// `Event::DocumentChanged`). Transforms selections across the edit
+    /// so the caret survives owner writes (§4 of owner-write-caret.md).
     pub fn apply_edit(&mut self, edit: Edit) -> CoreResult<AppliedEdit> {
         let applied = self.buffer.apply_edit(&edit)?;
+        self.transform_selections(&applied);
         let inverse = inverse_edit(&applied);
         self.record_inverses(vec![inverse]);
         self.version += 1;
@@ -215,12 +217,14 @@ impl Document {
     }
 
     /// Apply a batch of edits as a single undoable unit. Edits are applied in
-    /// order; undo reverts them all.
+    /// order; undo reverts them all. Transforms selections across each edit
+    /// so the caret survives owner writes (§4 of owner-write-caret.md).
     pub fn apply_edit_batch(&mut self, edits: Vec<Edit>) -> CoreResult<Vec<AppliedEdit>> {
         let mut applied_set = Vec::with_capacity(edits.len());
         let mut inverses = Vec::with_capacity(edits.len());
         for edit in edits {
             let applied = self.buffer.apply_edit(&edit)?;
+            self.transform_selections(&applied);
             inverses.push(inverse_edit(&applied));
             applied_set.push(applied);
         }
@@ -250,6 +254,25 @@ impl Document {
     pub fn end_undo_group(&mut self) {
         self.coalescing = false;
         self.group_has_entry = false;
+    }
+
+    /// Transform this document's selections across an applied edit.
+    /// Every selection's anchor and head are independently transformed
+    /// so the caret survives owner writes. Called from `apply_edit`
+    /// and `apply_edit_batch`.
+    fn transform_selections(&mut self, applied: &AppliedEdit) {
+        let all: Vec<Selection> = self
+            .selections
+            .all()
+            .iter()
+            .map(|sel| Selection {
+                anchor: transform_position(sel.anchor, applied),
+                head: transform_position(sel.head, applied),
+                visual: sel.visual,
+            })
+            .collect();
+        let primary = self.selections.primary_index();
+        self.selections = SelectionSet::from_parts(all, primary);
     }
 
     /// Route a just-applied operation's inverse edits onto the undo
@@ -285,6 +308,7 @@ impl Document {
         let mut redo_inverses = Vec::with_capacity(entry.inverse_edits.len());
         for edit in &entry.inverse_edits {
             let a = self.buffer.apply_edit(edit)?;
+            self.transform_selections(&a);
             redo_inverses.push(inverse_edit(&a));
             applied.push(a);
         }
@@ -304,6 +328,7 @@ impl Document {
         let mut undo_inverses = Vec::with_capacity(entry.inverse_edits.len());
         for edit in &entry.inverse_edits {
             let a = self.buffer.apply_edit(edit)?;
+            self.transform_selections(&a);
             undo_inverses.push(inverse_edit(&a));
             applied.push(a);
         }

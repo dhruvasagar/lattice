@@ -216,7 +216,7 @@ flowchart TD
 | `lattice-diff`         | Two-way and three-way hunk computation over `ropey::Rope` inputs (Histogram algorithm via `imara-diff`). Pure data; no I/O. | 🚧 active   |
 | `lattice-terminal`     | Terminal emulator state machine + cell grid (`alacritty_terminal`). Backs the terminal buffer kind.     | 🚧 active   |
 | `lattice-agent`        | The direction-independent agent capability surface: the `EditorAccess` port, the shared `review_diff` seam, per-process trace-log rings. Backs both agent integrations. | 🚧 active   |
-| `lattice-ai`           | Agent adapters: opencode over ACP (`acp/` — spawn `opencode acp`, drive it, own the `*ai:opencode*` conversation buffer + diff review + trust mode) and Claude Code over MCP (`mcp/`). Feature-gated per transport. | 🚧 active   |
+| `lattice-ai`           | Agent adapters: opencode's native TUI in a terminal buffer (`opencode/` — `:opencode` + `opencode-mode`, the v1 path), the headless-ACP buffer conversation (`acp/` — `:opencode-acp`, kept for future IDE-native review), and Claude Code over MCP (`mcp/`). | 🚧 active   |
 | `lattice-host`         | Renderer-agnostic substrate. Owns `Editor`, dispatch, mode lifecycle, options cascade, `RenderState`, `PerBufferCache`, LSP watcher task, cells/virtual-rows workers. | ✅ stable   |
 | `lattice-ui-tui`       | Terminal UI peer: crossterm + ratatui, modal cursor, gutter, hlsearch, soft-wrap, command line, popups, picker UI. | ✅ stable   |
 | `lattice-ui-gpui`      | GPU UI peer (feature `window`): GPUI + blade rendering. Full edit + LSP against rust-analyzer; Phase 5.8 feature-parity in progress. | 🚧 active   |
@@ -320,7 +320,7 @@ In the running editor:
 - `:set wrap` — enable soft-wrap; long lines reflow at the pane width across both TUI and GPUI
 - `:set ui.dim_inactive=off` — turn off the inactive-pane DIM overlay (inactive panes keep full syntax + inlay hints; only opacity changes)
 - `:diffsplit other.rs` — side-by-side diff; `]c` / `[c` navigate hunks, `do` / `dp` transfer them; `:diffthis` / `:diff` for inline-vs-disk
-- `:opencode` — launch the opencode agent; talk to it in the `*ai:opencode*` conversation buffer (Normal-mode scrollback, Insert-mode prompt), review its edits as diffs, `<C-t>` toggles trust mode
+- `:opencode` — launch the opencode agent's native TUI in a terminal buffer (its full interface: prompt, `/` commands, model switching, edit review), with `opencode-mode` for lattice navigation; `:opencode-acp` is the buffer-native alternative that reviews edits in lattice's diff view
 - `:help` — open the topic index; `:help folding` / `:help buffers` / `:help opencode` for deep-dive docs (`<Tab>` completes)
 
 ---

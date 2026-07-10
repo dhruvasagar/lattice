@@ -5430,14 +5430,22 @@ conversation UI). Slice plans archived under
 
 | Area | Status | Notes |
 |---|---|---|
-| **Claude Code (MCP)** | ✅ | `claude` CLI attaches over a loopback WebSocket; runs its TUI in a terminal buffer; edits via `openDiff`. `lattice-claude-code` / `lattice-ai/mcp`. User doc: `../../user/claude-code.md`. |
-| **opencode (ACP transport)** | ✅ | `lattice` spawns `opencode acp`, drives `initialize → session/new → session/prompt`, consumes `session/update`. Crate-owned `install(boot)`; `agent-client-protocol` crate handles framing. `lattice-ai/acp`. |
-| **Conversation buffer (AU-1…AU-3)** | ✅ | `*ai:opencode*` Document with an `ai-conversation` major mode; structured `Conversation` store + `ConversationUpdated`; Normal-mode scrollback, Insert-mode prompt (the comint editable-tail via `Mode::editable_tail()` + the read-only edit gate in `apply_edit_blocking`); `<C-c>` interrupt (`session/cancel`); user turn folded into the transcript. User doc: `../../user/opencode.md`. |
-| **Diff review + approval (AU-4a)** | ✅ | Agent→client `session/request_permission` routed to the supervisor; reads auto-run, file-edits → `review_diff` (shared with MCP `openDiff`) → verdict-gated response. **Fail closed**: un-reviewable mutating ops (commands, edits with no diff) are **denied** in review mode — a background security review flagged the original auto-allow as a permission bypass. |
-| **Trust mode (AU-5)** | ✅ | Per-session `auto_accept` (default off = review); `<C-t>` toggles + echoes; the permission tasks read an `Arc<AtomicBool>` live; resets to review on each `Start`. |
-| **Split conversation vs trace** | ✅ | Conversation sources → `Conversation` store → `*ai:opencode*`; trace sources (handshake, permissions, lifecycle, errors) → `AiLogger` ring → `:ai-log` (the `:lsp-log` analog). |
+| **Claude Code (MCP)** | ✅ | `claude` CLI attaches over a loopback WebSocket; runs its TUI in a terminal buffer; edits via `openDiff`. `lattice-ai/mcp`. User doc: `../../user/claude-code.md`. |
+| **opencode — v1 (terminal TUI)** | ✅ | `:opencode` runs opencode's native TUI in a terminal buffer (`Effect::SpawnTerminal` + `opencode-mode` minor over `terminal-mode`), the same topology as Claude Code. opencode's TUI provides readline / `/` commands / model switching / history / edit review; lattice reimplements none of it. `lattice-ai/opencode` (always compiled). User doc: `../../user/opencode.md`. |
+| **opencode — ACP buffer conversation (`:opencode-acp`)** | ✅ kept | The AU-1…AU-5 headless-ACP path, **repositioned as the alternative**: `lattice` spawns `opencode acp`, folds `session/update` into a `Conversation` store, projects it into the `*ai:opencode*` Document (`ai-conversation` mode, comint editable-tail via `Mode::editable_tail()` + the read-only edit gate), `<C-c>` interrupt (`session/cancel`), user turn folded in. Its distinguishing win: **lattice-owned diff review**. Kept for the future IDE-native-review direction. `lattice-ai/acp` (feature `acp`). Design: `agent-ui.md`. |
+| **ACP diff review + approval (AU-4a)** | ✅ | (`:opencode-acp`) agent→client `session/request_permission` → supervisor; reads auto-run, file-edits → `review_diff` (shared with MCP `openDiff`) → verdict-gated. **Fail closed**: un-reviewable mutating ops denied in review mode (a background security review flagged the original auto-allow as a permission bypass). |
+| **ACP trust mode (AU-5)** | ✅ | (`:opencode-acp`) per-session `auto_accept` (default off = review); `<C-t>` toggles + echoes; permission tasks read an `Arc<AtomicBool>` live; resets on each `Start`. |
+| **Split conversation vs trace** | ✅ | (`:opencode-acp`) conversation sources → `Conversation` store → `*ai:opencode*`; trace → `AiLogger` ring → `:ai-log` (the `:lsp-log` analog). `:ai-log` / `AiLogger` are kept as generic infra even for the terminal path (no producer there yet). |
 
 **Deferred / follow-ups (not blocking; tracked here since the slice plans are archived):**
+- **opencode terminal path — IDE-native edit review.** For v1 the terminal
+  `:opencode` reviews edits in opencode's own TUI (Plan/Build + `/undo`); lattice
+  does not intercept them. A native integration (opencode's edits opening in
+  lattice's diff view while its TUI runs) is the planned follow-up, and is the
+  reason the `:opencode-acp` machinery (which already does lattice-owned diff
+  review) is kept rather than deleted. Whether it's built by co-attaching ACP to
+  the TUI's session, or an MCP-style callback like Claude Code, is an open spike.
+- The items below are `:opencode-acp` (ACP buffer path) follow-ups:
 - **AU-4b — `[diff]` Edit-block reflection.** Deferred as redundant: an agent
   file-edit already streams as a `Block::ToolCall`, so a separate `Block::Edit`
   double-represents it. Revisit by annotating the ToolCall block if the explicit

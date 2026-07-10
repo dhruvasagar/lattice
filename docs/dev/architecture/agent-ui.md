@@ -14,6 +14,17 @@ AU-1…AU-5 slices are complete).
 
 ## Implementation status (2026-07-10)
 
+**Repositioned as the alternative path.** As of the opencode v1 topology
+decision (see `agent-integration.md`), this buffer-native conversation UI is
+**not** the default opencode experience — `:opencode` now runs opencode's
+native TUI in a terminal buffer instead (opencode is terminal-native; its TUI
+already gives readline / `/` commands / model switching / edit review for
+free). This conversation UI is **kept intact** as `:opencode-acp`: the
+headless-ACP path whose one distinguishing win is **lattice-owned diff
+review** (the agent's edits open in lattice's diff view, not opencode's). It
+is the substrate for the future IDE-native-review direction. Everything below
+still describes the shipped `:opencode-acp` code.
+
 The conversation loop is implemented (AU-1…AU-5). Where the build diverged
 from this fragment's initial sketch below, reality is:
 

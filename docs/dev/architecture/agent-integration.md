@@ -1,15 +1,24 @@
 # Agent integration — the `EditorAccess` port, and the adapters built on it
 
-> **Status:** implemented (2026-07-10). The `EditorAccess` port and both
-> adapters (Claude Code / MCP, opencode / ACP) are live in `lattice-agent`
-> and `lattice-ai`; the ACP adapter additionally owns the conversation UI
-> (see `agent-ui.md`) with interactive diff review and trust mode.
+> **Status:** implemented (2026-07-10). The `EditorAccess` port and the
+> adapters are live in `lattice-agent` / `lattice-ai`.
+>
+> **opencode v1 topology (2026-07-10):** `:opencode` now runs opencode's
+> **native TUI in a terminal buffer** (the same terminal topology as Claude
+> Code — `Effect::SpawnTerminal` + an `opencode-mode` minor), because
+> opencode is a terminal-native agent whose TUI already provides readline,
+> `/` commands, model switching, history, and edit review; reimplementing
+> that over ACP was a treadmill. The headless-ACP buffer-conversation adapter
+> (`agent-ui.md`, AU-1…5 — interactive lattice-owned diff review + trust
+> mode) is **kept intact** as the `:opencode-acp` alternative for the future
+> IDE-native-review direction, not deleted. So opencode spans *both*
+> topologies in this crate; Claude Code remains terminal-only.
+>
 > Sequencing lived in
-> `docs/dev/operations/slice-plans/archive/agent-integration.md` (now
-> archived — all slices complete). This fragment supersedes
-> `ai-agent-protocol.md` §1, §3 and §8; that document remains authoritative
-> for the ACP wire contract (§5), auth (§5b), and the per-process log
-> buffers (§6).
+> `docs/dev/operations/slice-plans/archive/agent-integration.md` (archived —
+> all slices complete). This fragment supersedes `ai-agent-protocol.md` §1,
+> §3 and §8; that document remains authoritative for the ACP wire contract
+> (§5), auth (§5b), and the per-process log buffers (§6).
 
 lattice integrates two coding agents today — Claude Code and opencode — over two
 different protocols, in two opposite directions. This document explains why that

@@ -1,32 +1,32 @@
 ---
-summary: ":opencode launches the opencode agent over ACP and opens a conversation buffer — you read the transcript as scrollback in Normal mode and type prompts in Insert mode; the agent edits your code through reviewable diffs you accept or reject."
-related: [opencode, ai-prompt, ai-stop, ai-log, ai-conv-toggle-trust]
+summary: ":opencode launches the opencode agent's native TUI in a terminal buffer inside lattice — you get opencode's full interface (prompt, / commands, model switching, history, edit review) with opencode-mode layered on for lattice navigation."
+related: [opencode, opencode-acp]
 ---
 
 # opencode agent
 
-Lattice drives the **opencode** coding agent as a child process over the
-Agent Client Protocol (ACP) and surfaces the whole conversation in a
-**buffer** — `*ai:opencode*`. You read the transcript as scrollback with
-ordinary vim motions in Normal mode, and you type prompts to the agent in
-Insert mode, as if the buffer were a terminal REPL. When the agent wants
-to change a file it opens a reviewable side-by-side diff you accept or
-reject; nothing is written until you do.
+`:opencode` runs the **opencode** coding agent's native terminal UI in a
+lattice terminal buffer. You get opencode's complete interface — its
+prompt with line editing, `/` commands, model switching, session
+management, history, and its own diff-based edit review — running inside
+lattice, with a thin `opencode-mode` layered on top for lattice-side
+navigation. This is the same shape as the [Claude Code](claude-code.md)
+integration: the agent runs its own TUI in a terminal buffer, and lattice
+provides the surrounding editor.
 
-This is the mirror image of the [Claude Code](claude-code.md)
-integration. There, the `claude` CLI connects *into* lattice and runs its
-own TUI in a terminal buffer. Here, **lattice is the client**: it spawns
-`opencode acp`, drives it, and owns the conversation UI itself — so the
-agent's output is a normal Document you can search, yank, and fold, not a
-terminal grid. Which one to reach for is a matter of which agent you want;
-the review-the-diff workflow is the same in both.
+Why this shape: opencode is a terminal-native agent, and its TUI *is* the
+product — readline-style input, a model picker, `/`-command autocomplete,
+snapshot undo. Running that real TUI gives you all of it for free, exactly
+as its authors intended, instead of lattice reimplementing a weaker copy.
 
-> **Status:** the conversation loop — launch, prompt, streamed reply,
-> edit-via-diff, accept/reject, interrupt, trust toggle — is implemented.
-> The transcript renders the agent's message text, reasoning, and tool
-> calls; a few polish items (in-place decoration-based tool-call status, a
-> headerline mode indicator, a command-confirmation prompt for non-file
-> operations) are tracked follow-ups. The user workflow below is stable.
+> **Also available:** `:opencode-acp` drives opencode *headlessly* over the
+> Agent Client Protocol and renders the conversation as a lattice **buffer**
+> with a modal prompt, and — its one distinguishing feature — opens the
+> agent's proposed edits in **lattice's own diff view** (`]c`/`do`/`dp`,
+> your theme) rather than opencode's. It's the buffer-native alternative,
+> kept for people who want edits reviewed in lattice; see
+> [The ACP buffer alternative](#the-acp-buffer-alternative). For v1 the
+> terminal `:opencode` above is the recommended experience.
 
 ---
 
@@ -34,15 +34,11 @@ the review-the-diff workflow is the same in both.
 
 | Command / key | Behavior |
 |---|---|
-| `:opencode` | Start the opencode agent and open the `*ai:opencode*` conversation buffer |
-| `i` / `a` / `o` / `A` / `I` / `O` (Normal) | Jump into the prompt and enter Insert — you always land in the prompt, never in the transcript |
-| `<Enter>` (Insert) | Send the prompt to the agent and clear the input line |
-| `<C-c>` (Insert) | Interrupt the active turn — the agent stops, the session stays open |
-| `<C-t>` (Normal) | Toggle **trust mode** (auto-accept every edit) vs **review mode** (diff-gated) |
-| `:diff-accept` / `:diff-reject` | Resolve a proposed edit (see [Reviewing edits](#reviewing-proposed-edits)) |
-| `:ai-prompt <text>` | Send a prompt without the buffer — the headless / scriptable path |
-| `:ai-stop` | Stop the agent and end the session |
-| `:ai-log [opencode]` | Open the per-session **trace** log (handshake, permissions, errors) |
+| `:opencode` | Launch opencode's TUI in a terminal buffer (opencode-mode active) |
+| *(in the terminal, Insert)* | Every key goes to opencode — type prompts, run `/` commands, drive its UI as normal |
+| `<Esc>` | Drop to Normal-in-terminal to scroll / search the scrollback with vim motions |
+| `i` / `a` | Return to Insert (forward keys to opencode again) |
+| `:opencode-acp` | The alternative: headless ACP + a lattice conversation buffer with lattice-owned diff review |
 
 ---
 
@@ -52,172 +48,110 @@ the review-the-diff workflow is the same in both.
 :opencode
 ```
 
-`:opencode` does two things in one step: it launches `opencode acp` as a
-child process and opens the `*ai:opencode*` conversation buffer in the
-current pane. The buffer is where you talk to the agent.
+This opens a terminal buffer running `opencode` in the current directory
+and activates `opencode-mode` on it. From here you're in opencode's own
+interface — type a prompt and press Enter, run `/models` to switch models,
+`/undo` to roll back, and so on. Everything opencode's TUI does works,
+because it *is* opencode's TUI.
 
-The buffer behaves like a terminal REPL split across the two vim modes:
-
-- **Normal mode is the scrollback.** The cursor roams the whole
-  transcript. Every motion works — `j`/`k`, `<C-d>`/`<C-u>`, `gg`/`G`,
-  `/` search, `y` yank. Reading is unrestricted, and nothing you do in
-  Normal mode changes the conversation.
-- **Insert mode is the prompt.** Pressing `i` (or `a`/`o`/`A`/`I`/`O`)
-  drops you into Insert **at the prompt line** — the `> ` at the bottom of
-  the buffer — no matter where the cursor was. You can only ever edit the
-  prompt; the transcript above it is not user-editable.
-
-Type your message and press `<Enter>` to send it. Your turn appears in the
-transcript as `you:`, the agent's reply streams in below as `opencode:`,
-and the prompt clears for your next message.
-
-The transcript is a normal read-only Document. It shows up in `:ls`, you
-reach it by name with `:b *ai:opencode*`, and it renders through the same
-path as any other buffer — so search, folding, and yank all work on the
-agent's output.
+Because the agent runs in a lattice **terminal buffer**, it's a first-class
+buffer: it shows up in `:ls`, you can split it alongside your code, and you
+can switch to Normal-in-terminal to scroll back through the conversation
+with `j`/`k`, `<C-u>`/`<C-d>`, and `/` search — then drop back into Insert
+to keep talking to the agent.
 
 ---
 
-## Talking to the agent
+## Driving opencode
 
-### Sending a prompt
+opencode's TUI owns the interaction, so its own documentation is the
+reference for prompts, commands, and shortcuts. The lattice-specific part
+is just the two-mode terminal wrapper (`opencode-mode` over
+[`terminal-mode`](terminal.md)):
 
-From Normal mode, press `i` to enter the prompt, type, and press
-`<Enter>`. Each `<Enter>` is one turn — there is no multi-line prompt in
-the buffer; a message is a single line sent on Enter. (For scripted or
-multi-line input, `:ai-prompt <text>` sends a prompt without touching the
-buffer.)
+- **Insert-in-terminal** (the default when you open it) forwards every
+  keystroke straight to opencode — including `<C-c>`, arrow keys, and `/`.
+  This is where you do all your work with the agent.
+- **`<Esc>`** switches to **Normal-in-terminal**: the keystrokes stop going
+  to opencode and instead drive lattice — vim motions over the scrollback,
+  `/` to search it, `y` to yank. Press `i` or `a` to hand keys back to
+  opencode.
 
-Because the insert-entering chords always relocate you to the prompt, you
-never have to navigate there by hand, and you can never accidentally type
-into the transcript.
+That's the whole lattice surface for v1. There are no lattice keybindings
+competing with opencode's — in Insert, opencode has the keyboard.
 
-### Interrupting a turn
+### Models, `/` commands, and configuration
 
-If the agent is heading the wrong way, press `<C-c>` while in Insert mode
-to interrupt the active turn. This forwards an ACP `session/cancel`: the
-agent stops what it is doing, but the **session stays open** — your next
-prompt continues the same conversation. To end the session entirely (and
-stop the `opencode` process), use `:ai-stop`.
+All of these are **opencode's**, not lattice's:
 
----
+- **Switch models** with opencode's own `/models` picker (or whatever it
+  binds), and set your default model / provider in opencode's config
+  (`~/.config/opencode/`).
+- **`/` commands** (sessions, undo, help, …) are opencode's — type them at
+  its prompt as you would in any terminal.
+- **Line editing / history** come from opencode's prompt (`<C-w>`, `<C-u>`,
+  up-arrow history, etc.), because a real program is driving the PTY.
 
-## Reviewing proposed edits
-
-When the agent wants to change a file, it asks for permission and lattice
-opens the change as an interactive **side-by-side diff** — the original on
-the left, the agent's proposed content on the right. This is the same diff
-engine described in [Diff & merge](diff.md), so the sign column, both-pane
-hunk tints, and `]c` / `[c` hunk navigation all work, and it opens folded
-to just the changes with the cursor on the first one.
-
-You resolve the proposal with:
-
-| Command | Outcome |
-|---|---|
-| `:diff-accept` | Accept the change — it's written, and the agent is told the edit was applied |
-| `:diff-reject` | Discard it — nothing is written, and the agent is told the edit was denied |
-
-The agent's request **blocks on your verdict** — there is no timeout, so
-you review at your own pace. Both panes are editable, exactly as with
-`:diffsplit`: you can tweak the agent's proposal on the right before
-accepting, and accept writes the live right-hand content.
-
-### What runs without asking
-
-Not every agent action opens a diff. In **review mode** (the default):
-
-- **Reads auto-run.** Reading files, searching, and fetching don't change
-  anything, so the agent does them without prompting you.
-- **File edits open a diff** — the review flow above.
-- **Everything else is denied.** A command execution, or any other
-  mutating operation lattice can't show you as a diff, is **refused** in
-  review mode. This is deliberate: there's no way to run arbitrary
-  commands on your machine without your say-so. If you want the agent to
-  run freely, turn on trust mode.
+Lattice deliberately doesn't wrap or shadow any of it.
 
 ---
 
-## Trust mode
+## Reviewing edits
 
-**Trust mode** is the opt-in that lets the agent act without the diff gate.
-Press `<C-t>` in Normal mode (in the conversation buffer) to toggle it; the
-mode echoes which state you flipped to:
+In the terminal `:opencode`, **opencode reviews its own edits** — its
+Plan/Build flow, per-step approval, and snapshot-based `/undo`, shown in
+its TUI. Lattice does not intercept the edits for v1; the agent applies
+them to disk and lattice picks up the changes like any external edit
+(reload with `:e` if a buffer you have open changed underneath you).
 
-```
-ai: trust mode on — edits auto-accepted
-ai: review mode — edits gated on diff review
-```
-
-| Mode | Edits | Commands / other mutations | Reads |
-|---|---|---|---|
-| **Review** (default) | Open a diff you accept/reject | Denied | Auto-run |
-| **Trust** | Auto-accepted, no diff | Auto-allowed | Auto-run |
-
-Trust mode is **per session** and starts **off** every time you
-`:opencode` — it never silently carries over from a previous session, so a
-fresh agent always begins in review mode. Toggle it back to review with
-`<C-t>` at any time; the change takes effect on the agent's next request.
+If you specifically want the agent's edits to open in **lattice's** diff
+view instead, that's exactly what `:opencode-acp` is for — see below. A
+native, deeper edit-review integration for the terminal path (lattice's
+diff view while opencode's TUI runs) is a planned follow-up.
 
 ---
 
-## The headless commands
+## The ACP buffer alternative
 
-The conversation buffer is the primary way to use the agent, but the same
-session is reachable without it — useful for scripts, mappings, or a quick
-one-off:
+`:opencode-acp` is a different topology for the same agent: lattice drives
+`opencode acp` **headlessly** (no opencode TUI) and renders the conversation
+as a lattice buffer, `*ai:opencode*`.
 
-| Command | Behavior |
-|---|---|
-| `:ai-prompt <text>` | Send `<text>` to the running agent as a prompt (no buffer interaction) |
-| `:ai-stop` | Stop the agent and close the session |
-| `:ai-log [opencode]` | Open the per-session trace log buffer |
+| | `:opencode` (terminal) | `:opencode-acp` (buffer) |
+|---|---|---|
+| Interface | opencode's native TUI | a lattice Document (Normal scrollback, Insert-mode prompt) |
+| Prompt line editing, `/` commands, model picker | ✅ native | ✗ (would be lattice's to build) |
+| Edit review | opencode's TUI | **lattice's diff view** (`]c`/`do`/`dp`, accept/reject) |
+| Interrupt | opencode's `<C-c>` | `<C-c>` (Insert) → `session/cancel` |
+| Trust vs review | opencode's Plan/Build | `<C-t>` toggles a lattice review/trust gate |
 
-`:ai-prompt` requires a running session (`:opencode` first). It's the
-scriptable equivalent of typing in the prompt and pressing `<Enter>`.
-
----
-
-## The trace log vs the conversation
-
-Lattice keeps two separate surfaces for the agent, and it's worth knowing
-which is which:
-
-- **The conversation** (`*ai:opencode*`, opened by `:opencode`) is what
-  you read and talk to — message text, reasoning, tool calls.
-- **The trace log** (`*ai:opencode:<n>*`, opened by `:ai-log`) is the
-  diagnostic stream — the ACP handshake, permission requests, decode
-  failures, and session lifecycle. It's the agent equivalent of
-  [`:lsp-log`](lsp.md): you open it when something misbehaves, not to hold
-  a conversation.
-
-This split means the conversation buffer stays clean (just the dialogue)
-while every protocol detail is still one `:ai-log` away when you need to
-debug.
+Use `:opencode-acp` when reviewing the agent's edits **in lattice's own
+diff UI** matters more to you than opencode's full TUI. It's the earlier
+buffer-native design, kept intact; the terminal path is the recommended
+default because it gives opencode's complete experience for free.
 
 ---
 
 ## Lifecycle and security
 
-- **`:opencode`** starts the `opencode acp` child process and opens the
-  conversation. **`:ai-stop`** ends the session and stops the process.
-- **The agent runs as a child process** driven over stdio — no network
-  server is opened, and no third-party code runs inside lattice's address
-  space. (This is the opposite topology from [Claude Code](claude-code.md),
-  which binds a loopback WebSocket the agent dials into.)
-- **Edits are gated by review mode by default** — the agent cannot write a
-  file until you accept its diff, and it cannot run commands at all unless
-  you turn on trust mode. Trust is an explicit, per-session choice.
+- **`:opencode`** starts `opencode` as a child process in a terminal buffer;
+  closing the terminal ends it (opencode's own `/exit` works too).
+- **The agent runs as a normal child process** in the terminal — no network
+  server is opened by lattice for this path, and no third-party code runs
+  inside lattice's address space.
+- **Edit approval is opencode's** in the terminal path (its Plan/Build +
+  `/undo`); if you want lattice to gate edits behind its own diff review,
+  use `:opencode-acp`.
 
 ---
 
 ## Related
 
-- [`claude-code.md`](claude-code.md) — the other agent integration (the
-  `claude` CLI as an IDE peer over WebSocket/MCP).
-- [`diff.md`](diff.md) — the side-by-side diff UI used to review edits.
-- [`buffers.md`](buffers.md) — the buffer registry the conversation lives in.
-- [`docs/dev/architecture/agent-ui.md`](../dev/architecture/agent-ui.md)
-  — developer reference for the conversation buffer's design.
+- [`claude-code.md`](claude-code.md) — the other terminal-topology agent
+  (the `claude` CLI as an IDE peer over WebSocket/MCP).
+- [`terminal.md`](terminal.md) — the terminal buffer opencode runs in, and
+  the Normal/Insert-in-terminal model `opencode-mode` builds on.
+- [`diff.md`](diff.md) — the side-by-side diff UI `:opencode-acp` uses to
+  review edits.
 - [`docs/dev/architecture/agent-integration.md`](../dev/architecture/agent-integration.md)
-  — why the two agents share one capability surface.
+  — why the two agents (and the two opencode topologies) share one design.

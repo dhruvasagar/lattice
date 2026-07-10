@@ -85,7 +85,7 @@ mod tests {
     ) {
         let (ours, mock) = tokio::io::duplex(8192);
         let (reader, writer) = tokio::io::split(ours);
-        let (connection, notif_rx) = Connection::spawn(reader, writer);
+        let (connection, notif_rx, _perm_rx) = Connection::spawn(reader, writer);
         tokio::spawn(run_mock_peer(mock));
         (connection, notif_rx)
     }
@@ -121,7 +121,7 @@ mod tests {
         let stdin = child.stdin.take().expect("child stdin should be piped");
         let stdout = child.stdout.take().expect("child stdout should be piped");
 
-        let (connection, mut notif_rx) = Connection::spawn(stdout, stdin);
+        let (connection, mut notif_rx, _perm_rx) = Connection::spawn(stdout, stdin);
 
         let session = handshake(&connection, ".")
             .await

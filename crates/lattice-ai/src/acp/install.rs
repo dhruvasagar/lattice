@@ -33,8 +33,22 @@ pub fn install(boot: &mut impl SubsystemBoot, logger: &AiLogger) {
         .register(AiConversationMode)
         .expect("ai-conversation-mode register");
 
-    // Spawn the supervisor with a logger clone (trace) + the conversation store.
-    let handle = AiClientHandle::spawn(boot.runtime_handle(), logger.clone(), conv_store.clone());
+    // AU‑4: the host-registered programmatic-diff bus (the `review_diff`
+    // producer side), shared with MCP's `openDiff`. `None` if absent → edit
+    // permissions can't be reviewed and are denied (graceful). The host owns
+    // the receiver and resolves verdicts on `:diff-accept` / `:diff-reject`.
+    let diff_bus = boot
+        .service::<lattice_diff::ProgrammaticDiffBus>()
+        .map(|h| (*h).clone());
+
+    // Spawn the supervisor with a logger clone (trace) + the conversation store
+    // + the diff bus (edit review).
+    let handle = AiClientHandle::spawn(
+        boot.runtime_handle(),
+        logger.clone(),
+        conv_store.clone(),
+        diff_bus,
+    );
 
     // Crate-owned ex-commands: `:opencode` / `:ai-prompt` / `:ai-stop`.
     register_ai_ex_commands(boot.commands_mut(), handle.clone());

@@ -40,9 +40,9 @@ use std::sync::Arc;
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
     CancelNotification, ContentBlock, InitializeRequest, NewSessionRequest, PromptRequest,
-    TextContent,
+    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse, TextContent,
 };
-use agent_client_protocol::{ByteStreams, Client};
+use agent_client_protocol::{ByteStreams, Client, Responder};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
@@ -52,6 +52,20 @@ use crate::acp::error::{AiError, Result};
 /// Re-exported so callers (Task 6) can match on `session/update` payloads without depending
 /// on `agent-client-protocol` directly.
 pub use agent_client_protocol::schema::v1::SessionNotification;
+/// Re-exported so the supervisor (AU‑4) can inspect the permission request +
+/// build the response without depending on `agent-client-protocol` directly.
+pub use agent_client_protocol::schema::v1::RequestPermissionRequest as PermissionRequestPayload;
+
+/// AU‑4: an agent→client `session/request_permission` request routed out to the
+/// supervisor, carrying the [`Responder`] it must answer. The supervisor
+/// classifies the tool call (auto-allow reads / review file edits) and calls
+/// `responder.respond(...)` — possibly much later, after a diff verdict. The
+/// [`Responder`] is `Send + 'static` (its `send_fn` is a boxed `FnOnce + Send`),
+/// so answering off the connection's dispatch loop is sound.
+pub struct PermissionRequest {
+    pub request: RequestPermissionRequest,
+    pub responder: Responder<RequestPermissionResponse>,
+}
 
 /// A lattice-local session identifier.
 ///
@@ -109,14 +123,17 @@ impl Connection {
     /// Spawn a driver task that adapts `reader`/`writer` into an ACP transport and drives
     /// the `agent-client-protocol` client connection over it.
     ///
-    /// Returns a `Connection` handle plus a receiver that yields every `session/update`
-    /// notification the agent sends for the lifetime of the connection.
+    /// Returns a `Connection` handle plus two receivers: one that yields every
+    /// `session/update` notification, and one (AU‑4) that yields every
+    /// agent→client `session/request_permission` request the supervisor must
+    /// answer.
     pub fn spawn<R, W>(
         reader: R,
         writer: W,
     ) -> (
         Arc<Connection>,
         mpsc::UnboundedReceiver<SessionNotification>,
+        mpsc::UnboundedReceiver<PermissionRequest>,
     )
     where
         R: AsyncRead + Unpin + Send + 'static,
@@ -132,6 +149,12 @@ impl Connection {
         // would avoid blocking but let streaming chunks complete out of order, corrupting
         // assistant message text; unbounded `send` is both non-blocking and order-preserving.
         let (notif_tx, notif_rx) = mpsc::unbounded_channel::<SessionNotification>();
+        // AU‑4: agent→client `session/request_permission` requests. Same
+        // unbounded, order-preserving, synchronous-send rationale as the
+        // notification channel: the `on_receive_request` handler runs inside the
+        // dispatch loop and must not await. The supervisor answers each via the
+        // carried `Responder`.
+        let (perm_tx, perm_rx) = mpsc::unbounded_channel::<PermissionRequest>();
 
         tokio::spawn(async move {
             let transport = ByteStreams::new(writer.compat_write(), reader.compat());
@@ -149,6 +172,23 @@ impl Connection {
                         Ok(())
                     },
                     agent_client_protocol::on_receive_notification!(),
+                )
+                .on_receive_request(
+                    async move |request: RequestPermissionRequest, responder, _cx| {
+                        // Route to the supervisor (never await in-loop). If the
+                        // receiver is gone we MUST still answer, or the agent hangs
+                        // its turn forever — respond `Cancelled` (the protocol's
+                        // "no decision" outcome).
+                        match perm_tx.send(PermissionRequest { request, responder }) {
+                            Ok(()) => Ok(()),
+                            Err(mpsc::error::SendError(PermissionRequest { responder, .. })) => {
+                                responder.respond(RequestPermissionResponse::new(
+                                    RequestPermissionOutcome::Cancelled,
+                                ))
+                            }
+                        }
+                    },
+                    agent_client_protocol::on_receive_request!(),
                 )
                 .connect_with(transport, async move |cx| {
                     while let Some(cmd) = cmd_rx.recv().await {
@@ -227,7 +267,7 @@ impl Connection {
             }
         });
 
-        (Arc::new(Connection { commands: cmd_tx }), notif_rx)
+        (Arc::new(Connection { commands: cmd_tx }), notif_rx, perm_rx)
     }
 
     /// Send the ACP `initialize` handshake.
@@ -372,7 +412,7 @@ mod tests {
     ) {
         let (ours, mock) = tokio::io::duplex(8192);
         let (reader, writer) = tokio::io::split(ours);
-        let (connection, notif_rx) = Connection::spawn(reader, writer);
+        let (connection, notif_rx, _perm_rx) = Connection::spawn(reader, writer);
         tokio::spawn(run_mock_peer(mock));
         (connection, notif_rx)
     }

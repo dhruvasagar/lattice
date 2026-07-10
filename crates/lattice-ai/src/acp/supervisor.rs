@@ -14,10 +14,18 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 use tokio::sync::mpsc;
 
-use lattice_agent::{AiLogLevel, AiLogSource, AiLogger, SessionKey};
+use agent_client_protocol::Responder;
+use agent_client_protocol::schema::v1::{
+    PermissionOption, PermissionOptionId, PermissionOptionKind, RequestPermissionOutcome,
+    RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome, ToolCallContent,
+    ToolKind,
+};
+use lattice_agent::{AiLogLevel, AiLogSource, AiLogger, DiffReviewRequest, SessionKey, review_diff};
+use lattice_diff::ProgrammaticDiffBus;
+use lattice_diff::subsystem::DiffOutcome;
 
 use crate::Result;
-use crate::acp::connection::{Connection, SessionId, SessionNotification};
+use crate::acp::connection::{Connection, PermissionRequest, SessionId, SessionNotification};
 use crate::acp::conversation::ConversationStore;
 use crate::acp::error::AiError;
 use crate::acp::handle::{AiClientHandle, AiCmd, AiState};
@@ -35,10 +43,11 @@ impl AiClientHandle {
         runtime: &tokio::runtime::Handle,
         logger: AiLogger,
         conv_store: ConversationStore,
+        diff_bus: Option<ProgrammaticDiffBus>,
     ) -> AiClientHandle {
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<AiCmd>();
         let state = Arc::new(ArcSwap::from_pointee(AiState::default()));
-        runtime.spawn(supervisor_loop(cmd_rx, state.clone(), logger, conv_store));
+        runtime.spawn(supervisor_loop(cmd_rx, state.clone(), logger, conv_store, diff_bus));
         AiClientHandle { cmd_tx, state }
     }
 }
@@ -100,6 +109,7 @@ async fn supervisor_loop(
     state: Arc<ArcSwap<AiState>>,
     logger: AiLogger,
     conv_store: ConversationStore,
+    diff_bus: Option<ProgrammaticDiffBus>,
 ) {
     let mut conn: Option<Arc<Connection>> = None;
     let mut sess: Option<SessionId> = None;
@@ -167,7 +177,9 @@ async fn supervisor_loop(
                     format!("starting {}", provider.display_name),
                 );
 
-                match start_provider(&provider, key.clone(), conv_store.clone()).await {
+                match start_provider(&provider, key.clone(), conv_store.clone(), diff_bus.clone())
+                    .await
+                {
                     Ok((new_conn, new_sess, new_child)) => {
                         conn = Some(new_conn);
                         sess = Some(new_sess);
@@ -286,6 +298,151 @@ pub(crate) async fn drain_notifications(
     }
 }
 
+/// AU‑4: drain agent→client `session/request_permission` requests, answering
+/// each on its OWN spawned task so a long diff review never blocks the next
+/// permission request (or a `Stop`/`Interrupt` on the supervisor loop). The
+/// task ends when the connection drops the sender (session torn down).
+async fn drain_permissions(
+    mut rx: mpsc::UnboundedReceiver<PermissionRequest>,
+    diff_bus: Option<ProgrammaticDiffBus>,
+    origin_session: u64,
+) {
+    while let Some(pr) = rx.recv().await {
+        tokio::spawn(handle_permission(pr, diff_bus.clone(), origin_session));
+    }
+}
+
+/// Answer one permission request. Read-class tool calls auto-allow; a file edit
+/// carrying a diff opens a `review_diff` and gates the response on the verdict.
+/// A dropped diff channel / dismissed review answers `Cancelled` (the agent
+/// stops the turn) rather than hanging.
+async fn handle_permission(
+    pr: PermissionRequest,
+    diff_bus: Option<ProgrammaticDiffBus>,
+    origin_session: u64,
+) {
+    let PermissionRequest { request, responder } = pr;
+    match classify_permission(&request, origin_session) {
+        PermissionDecision::AutoAllow => {
+            respond(responder, allow_outcome(&request.options));
+        }
+        PermissionDecision::Review(review) => {
+            let Some(bus) = diff_bus else {
+                // No diff bus wired (boot misconfiguration): we cannot show the
+                // edit for review, so deny rather than silently apply.
+                tracing::debug!("ACP edit permission denied: no programmatic diff bus");
+                respond(responder, deny_outcome(&request.options));
+                return;
+            };
+            let outcome = match review_diff(&bus, review).await {
+                Ok(DiffOutcome::Accept) => allow_outcome(&request.options),
+                Ok(DiffOutcome::Reject) => deny_outcome(&request.options),
+                // Dismissed / cancelled / an unknown non-exhaustive verdict →
+                // the turn is no longer being decided; tell the agent so.
+                _ => RequestPermissionOutcome::Cancelled,
+            };
+            respond(responder, outcome);
+        }
+    }
+}
+
+/// AU‑4: what to do with a permission request.
+enum PermissionDecision {
+    /// Read-only / non-mutating: auto-run.
+    AutoAllow,
+    /// A file edit carrying a diff: open a review, gate on the verdict.
+    Review(DiffReviewRequest),
+}
+
+/// Classify a permission request. Read-class tool kinds auto-run; a tool call
+/// carrying a `ToolCallContent::Diff` goes to review. Anything else (execute /
+/// unknown / an edit without a diff payload) auto-allows — there is no diff to
+/// show, and blocking would wedge the agent. A dedicated command-confirmation
+/// surface for non-file operations is a follow-up.
+fn classify_permission(
+    request: &RequestPermissionRequest,
+    origin_session: u64,
+) -> PermissionDecision {
+    let kind = request.tool_call.fields.kind.unwrap_or_default();
+    let read_only = matches!(
+        kind,
+        ToolKind::Read | ToolKind::Search | ToolKind::Fetch | ToolKind::Think | ToolKind::SwitchMode
+    );
+    if read_only {
+        return PermissionDecision::AutoAllow;
+    }
+    match diff_review_from(request, origin_session) {
+        Some(review) => PermissionDecision::Review(review),
+        None => PermissionDecision::AutoAllow,
+    }
+}
+
+/// Build a [`DiffReviewRequest`] from the first `ToolCallContent::Diff` in a
+/// tool call, or `None` when the call carries no diff (nothing to review).
+fn diff_review_from(
+    request: &RequestPermissionRequest,
+    origin_session: u64,
+) -> Option<DiffReviewRequest> {
+    let title = request
+        .tool_call
+        .fields
+        .title
+        .clone()
+        .unwrap_or_else(|| "agent edit".to_string());
+    request
+        .tool_call
+        .fields
+        .content
+        .as_ref()?
+        .iter()
+        .find_map(|content| match content {
+            ToolCallContent::Diff(diff) => Some(DiffReviewRequest {
+                old_file_path: diff.path.clone(),
+                new_file_path: diff.path.clone(),
+                new_contents: diff.new_text.clone(),
+                tab_name: title.clone(),
+                origin_session,
+            }),
+            _ => None,
+        })
+}
+
+/// Pick the first offered option matching an allow (`true`) or reject (`false`)
+/// kind, preferring the "once" variant over the "always" variant.
+fn pick_option(options: &[PermissionOption], allow: bool) -> Option<PermissionOptionId> {
+    let (once, always) = if allow {
+        (PermissionOptionKind::AllowOnce, PermissionOptionKind::AllowAlways)
+    } else {
+        (PermissionOptionKind::RejectOnce, PermissionOptionKind::RejectAlways)
+    };
+    options
+        .iter()
+        .find(|o| o.kind == once)
+        .or_else(|| options.iter().find(|o| o.kind == always))
+        .map(|o| o.option_id.clone())
+}
+
+/// Selected-allow outcome, or `Cancelled` if the agent offered no allow option.
+fn allow_outcome(options: &[PermissionOption]) -> RequestPermissionOutcome {
+    match pick_option(options, true) {
+        Some(id) => RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(id)),
+        None => RequestPermissionOutcome::Cancelled,
+    }
+}
+
+/// Selected-reject outcome, or `Cancelled` if the agent offered no reject option.
+fn deny_outcome(options: &[PermissionOption]) -> RequestPermissionOutcome {
+    match pick_option(options, false) {
+        Some(id) => RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(id)),
+        None => RequestPermissionOutcome::Cancelled,
+    }
+}
+
+/// Answer a permission request. Ignores a send error (the agent went away).
+fn respond(responder: Responder<RequestPermissionResponse>, outcome: RequestPermissionOutcome) {
+    let _ = responder.respond(RequestPermissionResponse::new(outcome));
+}
+
 /// Spawn `provider` as a stdio subprocess, wire it into a [`Connection`],
 /// drain its notifications into the `session`'s [`ConversationStore`], and run
 /// the ACP handshake.
@@ -293,6 +450,7 @@ async fn start_provider(
     provider: &ProviderConfig,
     session: SessionKey,
     conv_store: ConversationStore,
+    diff_bus: Option<ProgrammaticDiffBus>,
 ) -> Result<(Arc<Connection>, SessionId, tokio::process::Child)> {
     let mut child = tokio::process::Command::new(&provider.command)
         .args(&provider.args)
@@ -318,8 +476,13 @@ async fn start_provider(
         .take()
         .ok_or_else(|| AiError::Process("no stdout".to_string()))?;
 
-    let (conn, notif_rx) = Connection::spawn(stdout, stdin);
+    let (conn, notif_rx, perm_rx) = Connection::spawn(stdout, stdin);
+    // AU‑4: `origin_session` tags any diff opened for this session's edits so a
+    // later session-scoped teardown keys on it; the per-process index is a
+    // stable, non-zero-per-session id.
+    let origin_session = u64::from(session.index);
     tokio::spawn(drain_notifications(notif_rx, conv_store, session));
+    tokio::spawn(drain_permissions(perm_rx, diff_bus, origin_session));
 
     let cwd = std::env::current_dir()
         .map(|p| p.display().to_string())
@@ -339,6 +502,91 @@ mod tests {
     use tokio::sync::mpsc;
 
     use super::*;
+    use agent_client_protocol::schema::v1::{
+        Diff, ToolCallContent, ToolCallId, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
+    };
+
+    // ── AU‑4: permission-classification + response helpers ──
+
+    fn perm_options() -> Vec<PermissionOption> {
+        vec![
+            PermissionOption::new("allow-once", "Allow", PermissionOptionKind::AllowOnce),
+            PermissionOption::new("allow-always", "Always", PermissionOptionKind::AllowAlways),
+            PermissionOption::new("reject-once", "Reject", PermissionOptionKind::RejectOnce),
+        ]
+    }
+
+    fn perm_req(kind: ToolKind, content: Option<Vec<ToolCallContent>>) -> RequestPermissionRequest {
+        let fields = ToolCallUpdateFields::new()
+            .kind(Some(kind))
+            .title(Some("edit parse.rs".to_string()))
+            .content(content);
+        RequestPermissionRequest::new(
+            "s",
+            ToolCallUpdate::new(ToolCallId::new("t1"), fields),
+            perm_options(),
+        )
+    }
+
+    #[test]
+    fn read_class_kinds_auto_allow() {
+        for kind in [ToolKind::Read, ToolKind::Search, ToolKind::Fetch, ToolKind::Think] {
+            assert!(matches!(
+                classify_permission(&perm_req(kind, None), 1),
+                PermissionDecision::AutoAllow
+            ));
+        }
+    }
+
+    #[test]
+    fn edit_with_diff_goes_to_review_with_path_and_contents() {
+        let content = vec![ToolCallContent::Diff(Diff::new("/w/parse.rs", "fn new() {}\n"))];
+        match classify_permission(&perm_req(ToolKind::Edit, Some(content)), 7) {
+            PermissionDecision::Review(dr) => {
+                assert_eq!(dr.old_file_path, std::path::PathBuf::from("/w/parse.rs"));
+                assert_eq!(dr.new_file_path, std::path::PathBuf::from("/w/parse.rs"));
+                assert_eq!(dr.new_contents, "fn new() {}\n");
+                assert_eq!(dr.tab_name, "edit parse.rs");
+                assert_eq!(dr.origin_session, 7);
+            }
+            _ => panic!("expected a Review decision"),
+        }
+    }
+
+    #[test]
+    fn edit_without_diff_falls_back_to_auto_allow() {
+        // An Edit-kind call carrying no diff payload has nothing to review.
+        assert!(matches!(
+            classify_permission(&perm_req(ToolKind::Edit, None), 1),
+            PermissionDecision::AutoAllow
+        ));
+    }
+
+    #[test]
+    fn allow_and_deny_pick_matching_options_preferring_once() {
+        let opts = perm_options();
+        // Allow prefers AllowOnce over AllowAlways.
+        match allow_outcome(&opts) {
+            RequestPermissionOutcome::Selected(sel) => {
+                assert_eq!(sel.option_id, PermissionOptionId::new("allow-once"));
+            }
+            _ => panic!("expected a Selected allow outcome"),
+        }
+        match deny_outcome(&opts) {
+            RequestPermissionOutcome::Selected(sel) => {
+                assert_eq!(sel.option_id, PermissionOptionId::new("reject-once"));
+            }
+            _ => panic!("expected a Selected reject outcome"),
+        }
+    }
+
+    #[test]
+    fn missing_option_kind_yields_cancelled() {
+        // No allow option offered → we cannot allow; Cancelled is the fallback.
+        let only_reject =
+            vec![PermissionOption::new("r", "Reject", PermissionOptionKind::RejectOnce)];
+        assert!(matches!(allow_outcome(&only_reject), RequestPermissionOutcome::Cancelled));
+    }
 
     fn text_update(text: &str, thought: bool) -> SessionUpdate {
         let chunk = ContentChunk::new(ContentBlock::Text(TextContent::new(text)));
@@ -393,6 +641,7 @@ mod tests {
             &tokio::runtime::Handle::current(),
             logger.clone(),
             test_conv_store(),
+            None,
         );
         let cfg = ProviderConfig {
             command: "/nonexistent/definitely-not-a-real-binary".into(),
@@ -441,6 +690,7 @@ mod tests {
             &tokio::runtime::Handle::current(),
             logger.clone(),
             test_conv_store(),
+            None,
         );
         let cfg = ProviderConfig {
             command: "/nonexistent/definitely-not-a-real-binary".into(),
@@ -536,6 +786,7 @@ done
             &tokio::runtime::Handle::current(),
             logger.clone(),
             test_conv_store(),
+            None,
         );
         let key = SessionKey::new("mockprov", 1);
 
@@ -562,6 +813,7 @@ done
             &tokio::runtime::Handle::current(),
             logger.clone(),
             test_conv_store(),
+            None,
         );
         let first = SessionKey::new("mockprov", 1);
         let second = SessionKey::new("mockprov", 2);
@@ -590,6 +842,7 @@ done
             &tokio::runtime::Handle::current(),
             logger.clone(),
             store.clone(),
+            None,
         );
 
         handle.start(ProviderConfig::opencode());

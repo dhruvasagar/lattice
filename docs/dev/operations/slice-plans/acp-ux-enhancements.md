@@ -121,7 +121,7 @@ static `"Thinking…"` first; animation is a follow-up.
 
 ---
 
-## Slice AUX-4 — Queue status
+## Slice AUX-4 — Queue status ✅
 
 **Design ref:** §4.4 (queue architecture, `QueuedPrompt`, drain).
 
@@ -129,9 +129,9 @@ static `"Thinking…"` first; animation is a follow-up.
 
 | File | Change |
 |---|---|
-| `crates/lattice-ai/src/acp/handle.rs` | Add `prompt_queue: mpsc::UnboundedSender<QueuedPrompt>` and `queue_len: Arc<AtomicUsize>` to `AiClientHandle`. `prompt()` checks `state.running` → if true, push to queue, return `Ok(queued_id)`. |
-| `crates/lattice-ai/src/acp/supervisor.rs` | `driver_task`: after `session/prompt` response received (any `StopReason`), try to receive next from the queue channel. If present, send as next prompt, decrement `queue_len`, publish `AiStateChanged`. |
-| `crates/lattice-ai/src/acp/conversation_mode.rs` | Extend `HeaderlineProvider`: read `handle.queue_len`, show `"⌛ N queued"` when > 0. Subscribe to `AiStateChanged` for queue_len changes. |
+| `crates/lattice-ai/src/acp/handle.rs` | Add `queue_len: Arc<AtomicUsize>` + `queue_len()` to `AiClientHandle`. Add `queue_len: usize` to `AiState`. |
+| `crates/lattice-ai/src/acp/supervisor.rs` | Add `VecDeque` queue, `prompt_in_flight` flag, and `prompt_done_tx/rx` channel to supervisor loop. `AiCmd::Prompt` queues when in-flight, sends immediately otherwise. Completion signals drain the next queued prompt. Queue cleared on `Stop`/`ChildExited`/`Start`. |
+| `crates/lattice-ai/src/acp/conversation_mode.rs` | Extend `ConversationHeaderline` with `queue_len: Arc<AtomicUsize>`. `render()` appends `"⌛ N queued"` when > 0. |
 
 **Queue cap:** Safety limit of 64 entries on the queue (bounded `mpsc::channel(64)`).
 

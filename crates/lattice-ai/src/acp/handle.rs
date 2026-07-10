@@ -8,6 +8,7 @@
 //! `supervisor.rs`.
 
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 
 use arc_swap::ArcSwap;
 use tokio::sync::mpsc;
@@ -29,6 +30,8 @@ pub struct AiState {
     /// are gated on a diff verdict and un-reviewable mutating ops are denied.
     /// `true` auto-grants every permission request without the diff gate.
     pub auto_accept: bool,
+    /// AUX‑4: number of prompts currently queued behind an in-flight one.
+    pub queue_len: usize,
 }
 
 /// Commands the handle sends into the supervisor's command loop.
@@ -53,9 +56,16 @@ pub(crate) enum AiCmd {
 pub struct AiClientHandle {
     pub(crate) cmd_tx: mpsc::UnboundedSender<AiCmd>,
     pub(crate) state: Arc<ArcSwap<AiState>>,
+    /// AUX‑4: shared with the supervisor loop; read by the headerline renderer.
+    pub queue_len: Arc<AtomicUsize>,
 }
 
 impl AiClientHandle {
+    /// AUX‑4: expose the live queue length for the headerline.
+    pub fn queue_len(&self) -> usize {
+        self.queue_len.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// Ask the supervisor to start `provider`. Non-blocking; the result
     /// surfaces later via [`AiClientHandle::snapshot`] and the provider's
     /// `AiLogger` ring.
@@ -112,7 +122,11 @@ mod tests {
     fn idle_snapshot_and_nonblocking_sends() {
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         let state = Arc::new(ArcSwap::from_pointee(AiState::default()));
-        let handle = AiClientHandle { cmd_tx, state };
+        let handle = AiClientHandle {
+            cmd_tx,
+            state,
+            queue_len: Arc::new(AtomicUsize::new(0)),
+        };
 
         assert_eq!(handle.snapshot(), AiState::default());
 
@@ -129,7 +143,11 @@ mod tests {
     fn toggle_auto_accept_flips_and_sends() {
         let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel();
         let state = Arc::new(ArcSwap::from_pointee(AiState::default()));
-        let handle = AiClientHandle { cmd_tx, state };
+        let handle = AiClientHandle {
+            cmd_tx,
+            state,
+            queue_len: Arc::new(AtomicUsize::new(0)),
+        };
 
         // Default is review mode (false) → toggling turns trust on.
         assert!(handle.toggle_auto_accept());
@@ -139,5 +157,32 @@ mod tests {
         handle.state.store(Arc::new(AiState { auto_accept: true, ..AiState::default() }));
         assert!(!handle.toggle_auto_accept());
         assert!(matches!(cmd_rx.try_recv(), Ok(AiCmd::SetAutoAccept(false))));
+    }
+
+    // ── AUX‑4: queue_len ──
+
+    #[test]
+    fn queue_len_defaults_zero() {
+        let handle = AiClientHandle {
+            cmd_tx: mpsc::unbounded_channel().0,
+            state: Arc::new(ArcSwap::from_pointee(AiState::default())),
+            queue_len: Arc::new(AtomicUsize::new(0)),
+        };
+        assert_eq!(handle.queue_len(), 0);
+        assert_eq!(handle.snapshot().queue_len, 0);
+    }
+
+    #[test]
+    fn queue_len_accessible_on_handle() {
+        let ql = Arc::new(AtomicUsize::new(3));
+        let handle = AiClientHandle {
+            cmd_tx: mpsc::unbounded_channel().0,
+            state: Arc::new(ArcSwap::from_pointee(AiState::default())),
+            queue_len: ql.clone(),
+        };
+        assert_eq!(handle.queue_len(), 3);
+        // Mutating the atomic is reflected in the handle's live reader.
+        ql.store(5, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(handle.queue_len(), 5);
     }
 }

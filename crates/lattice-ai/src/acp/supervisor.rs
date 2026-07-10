@@ -8,9 +8,9 @@
 //! is the crate's entry point: it starts this task and returns the clone-able,
 //! non-blocking handle the editor thread talks to.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use arc_swap::ArcSwap;
 use tokio::sync::mpsc;
@@ -48,8 +48,10 @@ impl AiClientHandle {
     ) -> AiClientHandle {
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<AiCmd>();
         let state = Arc::new(ArcSwap::from_pointee(AiState::default()));
-        runtime.spawn(supervisor_loop(cmd_rx, state.clone(), logger, conv_store, diff_bus));
-        AiClientHandle { cmd_tx, state }
+        let queue_len = Arc::new(AtomicUsize::new(0));
+        let ql = queue_len.clone();
+        runtime.spawn(supervisor_loop(cmd_rx, state.clone(), ql, logger, conv_store, diff_bus));
+        AiClientHandle { cmd_tx, state, queue_len }
     }
 }
 
@@ -108,6 +110,7 @@ fn kill_child(mut child: tokio::process::Child) {
 async fn supervisor_loop(
     mut cmd_rx: mpsc::UnboundedReceiver<AiCmd>,
     state: Arc<ArcSwap<AiState>>,
+    queue_len: Arc<AtomicUsize>,
     logger: AiLogger,
     conv_store: ConversationStore,
     diff_bus: Option<ProgrammaticDiffBus>,
@@ -128,6 +131,12 @@ async fn supervisor_loop(
     // on their own spawned tasks and read it live). Reset to review mode on each
     // `Start` so trust never silently carries across sessions.
     let auto_accept = Arc::new(AtomicBool::new(false));
+    // AUX‑4: prompt queue and in-flight tracker.
+    let mut prompt_queue: VecDeque<String> = VecDeque::new();
+    let mut prompt_in_flight = false;
+    // Internal channel: each spawned prompt task sends `()` on completion
+    // so the supervisor can drain the next queued prompt.
+    let (prompt_done_tx, mut prompt_done_rx) = mpsc::unbounded_channel::<()>();
 
     while let Some(event) = next_event(&mut cmd_rx, &mut child).await {
         match event {
@@ -138,6 +147,10 @@ async fn supervisor_loop(
             // gone, or the modeline lies and every later `:ai-prompt` is
             // silently dropped until the user runs `:ai-stop`.
             SupervisorEvent::ChildExited => {
+                // AUX‑4: clear the queue — the session is dead.
+                prompt_queue.clear();
+                prompt_in_flight = false;
+                queue_len.store(0, Ordering::Relaxed);
                 logger.log(
                     active_key.as_ref(),
                     AiLogLevel::Warn,
@@ -151,6 +164,10 @@ async fn supervisor_loop(
                 state.store(Arc::new(AiState::default()));
             }
             SupervisorEvent::Cmd(AiCmd::Start(provider)) => {
+                // AUX‑4: a new session resets the queue.
+                prompt_queue.clear();
+                prompt_in_flight = false;
+                queue_len.store(0, Ordering::Relaxed);
                 // Tear down any existing session/process before starting a
                 // new one -- the supervisor owns lifecycle end-to-end, so an
                 // old child must never keep running (or keep its drain task
@@ -205,6 +222,7 @@ async fn supervisor_loop(
                             provider: Some(provider.display_name),
                             session: Some(key.clone()),
                             auto_accept: false,
+                            queue_len: 0,
                         }));
                         logger.log(
                             Some(&key),
@@ -231,18 +249,30 @@ async fn supervisor_loop(
                     if let Some(key) = active_key.as_ref() {
                         conv_store.push_user_text(key, &text);
                     }
-                    let key = active_key.clone();
-                    let logger = logger.clone();
-                    tokio::spawn(async move {
-                        if let Err(e) = crate::acp::session::prompt(&c, &s, &text).await {
-                            logger.log(
-                                key.as_ref(),
-                                AiLogLevel::Error,
-                                AiLogSource::Lifecycle,
-                                format!("prompt failed: {e}"),
-                            );
-                        }
-                    });
+                    if prompt_in_flight {
+                        // AUX‑4: queue the prompt behind the in-flight one.
+                        let ql = queue_len.fetch_add(1, Ordering::Relaxed) + 1;
+                        prompt_queue.push_back(text);
+                        logger.log(
+                            active_key.as_ref(),
+                            AiLogLevel::Info,
+                            AiLogSource::Lifecycle,
+                            format!("prompt queued ({} pending)", ql),
+                        );
+                        // Republish AiState so any UI sees the new queue_len.
+                        let mut next = (**state.load()).clone();
+                        next.queue_len = ql;
+                        state.store(Arc::new(next));
+                    } else {
+                        // AUX‑4: no in-flight prompt — send immediately.
+                        prompt_in_flight = true;
+                        let done_tx = prompt_done_tx.clone();
+                        tokio::spawn(async move {
+                            let _ = crate::acp::session::prompt(&c, &s, &text).await;
+                            // Signal completion regardless of success/failure.
+                            let _ = done_tx.send(());
+                        });
+                    }
                 } else {
                     logger.log(
                         None,
@@ -259,6 +289,7 @@ async fn supervisor_loop(
                 auto_accept.store(on, Ordering::Relaxed);
                 let mut next = (**state.load()).clone();
                 next.auto_accept = on;
+                next.queue_len = queue_len.load(Ordering::Relaxed);
                 state.store(Arc::new(next));
                 logger.log(
                     active_key.as_ref(),
@@ -295,6 +326,10 @@ async fn supervisor_loop(
                 }
             }
             SupervisorEvent::Cmd(AiCmd::Stop) => {
+                // AUX‑4: clear the queue — the session is being torn down.
+                prompt_queue.clear();
+                prompt_in_flight = false;
+                queue_len.store(0, Ordering::Relaxed);
                 logger.log(
                     active_key.as_ref(),
                     AiLogLevel::Info,
@@ -308,6 +343,37 @@ async fn supervisor_loop(
                 sess = None;
                 active_key = None;
                 state.store(Arc::new(AiState::default()));
+            }
+        }
+        // AUX‑4: non-blockingly drain prompt completion signals.
+        while prompt_done_rx.try_recv().is_ok() {
+            prompt_in_flight = false;
+            let next_text = prompt_queue.pop_front();
+            if let Some(text) = next_text {
+                let ql = queue_len.fetch_sub(1, Ordering::Relaxed).saturating_sub(1);
+                prompt_in_flight = true;
+                if let (Some(c), Some(s)) = (conn.clone(), sess.clone()) {
+                    let done_tx = prompt_done_tx.clone();
+                    tokio::spawn(async move {
+                        let _ = crate::acp::session::prompt(&c, &s, &text).await;
+                        let _ = done_tx.send(());
+                    });
+                    logger.log(
+                        active_key.as_ref(),
+                        AiLogLevel::Info,
+                        AiLogSource::Lifecycle,
+                        format!("dequeued prompt ({} remaining)", ql),
+                    );
+                }
+                // Republish state with updated queue_len.
+                let mut next = (**state.load()).clone();
+                next.queue_len = ql;
+                state.store(Arc::new(next));
+            } else {
+                // Queue empty: publish cleared state.
+                let mut next = (**state.load()).clone();
+                next.queue_len = 0;
+                state.store(Arc::new(next));
             }
         }
     }

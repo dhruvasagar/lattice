@@ -14,7 +14,7 @@
 //! change rewrites only from its line down (AU‑2 shows status inline as text; a
 //! decoration-based in-place update is a follow-up).
 
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use agent_client_protocol::schema::v1::PermissionOptionKind;
@@ -39,11 +39,12 @@ use crate::acp::handle::AiClientHandle;
 /// tag so the host can unregister it on buffer teardown.
 const CONV_HEADERLINE_PROVIDER_ID: ProviderId = 0x4155_0002;
 
-/// AUX‑2: headerline that reads the usage snapshot from the
-/// [`ConversationStore`] and formats it as a sticky row above the buffer.
+/// AUX‑2/4: headerline that reads the usage snapshot, processing status, and
+/// queue length, and formats them as a sticky row above the buffer.
 struct ConversationHeaderline {
     store: ConversationStore,
     version: Arc<AtomicU64>,
+    queue_len: Arc<AtomicUsize>,
 }
 
 impl Headerline for ConversationHeaderline {
@@ -56,12 +57,18 @@ impl Headerline for ConversationHeaderline {
         let mut text = String::new();
         // AUX‑3: status prefix.
         text.push_str(&snap.status.to_string());
+        // AUX‑4: queue count when prompts are queued.
+        let ql = self.queue_len.load(Ordering::Relaxed);
+        if ql > 0 {
+            use std::fmt::Write;
+            let _ = write!(text, " \u{231B} {} queued", ql); // ⌛ N queued
+        }
         // AUX‑2: usage suffix (tokens/cost).
         if let Some(usage) = &snap.usage {
             use std::fmt::Write;
-            let _ = write!(text, " │ CPU: {}", format_tokens(usage.used, usage.size));
+            let _ = write!(text, " \u{2502} CPU: {}", format_tokens(usage.used, usage.size));
             if let Some(cost) = &usage.cost {
-                let _ = write!(&mut text, " · ${:.3} {}", cost.amount, cost.currency);
+                let _ = write!(&mut text, " \u{00B7} ${:.3} {}", cost.amount, cost.currency);
             }
         }
         let cells: Arc<[Cell]> = text
@@ -485,9 +492,14 @@ impl Mode for AiConversationMode {
             // cloning the Arc gives another reference to the same store.
             let hl_version = self.headerline_version.clone();
             if let Some(registrar) = ctx.service::<Arc<dyn VirtualRowRegistrar>>() {
+                let queue_len = ctx
+                    .service::<AiClientHandle>()
+                    .map(|h| h.queue_len.clone())
+                    .unwrap_or_default();
                 let headerline = ConversationHeaderline {
                     store: (*conv_store).clone(),
                     version: hl_version.clone(),
+                    queue_len,
                 };
                 let provider = Arc::new(
                     HeaderlineProvider::new(
@@ -1229,6 +1241,7 @@ mod tests {
         let hl = ConversationHeaderline {
             store: ConversationStore::new(Arc::new(|_| {})),
             version: Arc::new(AtomicU64::new(0)),
+            queue_len: Arc::new(AtomicUsize::new(0)),
         };
         let row = hl.render().expect("status always present → headerline row");
         let text: String = row.cells.iter().map(|c| char::from_u32(c.codepoint).unwrap_or('�')).collect();
@@ -1255,6 +1268,7 @@ mod tests {
         let hl = ConversationHeaderline {
             store,
             version: Arc::new(AtomicU64::new(1)),
+            queue_len: Arc::new(AtomicUsize::new(0)),
         };
         let row = hl.render().expect("headerline row");
         let text: String = row.cells.iter().map(|c| char::from_u32(c.codepoint).unwrap_or('�')).collect();
@@ -1279,6 +1293,7 @@ mod tests {
         let hl = ConversationHeaderline {
             store,
             version: Arc::new(AtomicU64::new(1)),
+            queue_len: Arc::new(AtomicUsize::new(0)),
         };
         let row = hl.render().expect("usage present");
         let text: String = row.cells.iter().map(|c| char::from_u32(c.codepoint).unwrap_or('�')).collect();
@@ -1300,6 +1315,7 @@ mod tests {
         let hl = ConversationHeaderline {
             store,
             version: Arc::new(AtomicU64::new(1)),
+            queue_len: Arc::new(AtomicUsize::new(0)),
         };
         let row = hl.render().expect("headerline row");
         let text: String = row.cells.iter().map(|c| char::from_u32(c.codepoint).unwrap_or('�')).collect();
@@ -1319,6 +1335,7 @@ mod tests {
         let hl = ConversationHeaderline {
             store,
             version: Arc::new(AtomicU64::new(1)),
+            queue_len: Arc::new(AtomicUsize::new(0)),
         };
         let row = hl.render().expect("headerline row");
         let text: String = row.cells.iter().map(|c| char::from_u32(c.codepoint).unwrap_or('�')).collect();
@@ -1335,9 +1352,38 @@ mod tests {
         let hl = ConversationHeaderline {
             store,
             version: Arc::new(AtomicU64::new(1)),
+            queue_len: Arc::new(AtomicUsize::new(0)),
         };
         let row = hl.render().expect("headerline row");
         let text: String = row.cells.iter().map(|c| char::from_u32(c.codepoint).unwrap_or('�')).collect();
         assert!(text.contains("Awaiting your approval"), "headerline shows awaiting: {text}");
+    }
+
+    // ── AUX‑4: queue-in-headerline tests ──
+
+    #[test]
+    fn headerline_shows_queue_count() {
+        let hl = ConversationHeaderline {
+            store: ConversationStore::new(Arc::new(|_| {})),
+            version: Arc::new(AtomicU64::new(0)),
+            queue_len: Arc::new(AtomicUsize::new(2)),
+        };
+        let row = hl.render().expect("headerline row");
+        let text: String = row.cells.iter().map(|c| char::from_u32(c.codepoint).unwrap_or('�')).collect();
+        assert!(text.contains("⌛"), "queue icon present: {text}");
+        assert!(text.contains("2 queued"), "queue count shown: {text}");
+    }
+
+    #[test]
+    fn headerline_hides_queue_when_empty() {
+        let hl = ConversationHeaderline {
+            store: ConversationStore::new(Arc::new(|_| {})),
+            version: Arc::new(AtomicU64::new(0)),
+            queue_len: Arc::new(AtomicUsize::new(0)),
+        };
+        let row = hl.render().expect("headerline row");
+        let text: String = row.cells.iter().map(|c| char::from_u32(c.codepoint).unwrap_or('�')).collect();
+        assert!(!text.contains("queued"), "no queued text when empty: {text}");
+        assert!(text.contains("Ready"), "still shows status: {text}");
     }
 }

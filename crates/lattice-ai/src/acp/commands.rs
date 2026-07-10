@@ -115,6 +115,7 @@ mod tests {
     use lattice_grammar::registry::ExCommandContext;
     use lattice_grammar::{CancellationToken, Count, Register};
     use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
 
     fn test_handle() -> (AiClientHandle, tokio::sync::mpsc::UnboundedReceiver<AiCmd>) {
         let (cmd_tx, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -122,6 +123,7 @@ mod tests {
             AiClientHandle {
                 cmd_tx,
                 state: Arc::new(ArcSwap::from_pointee(AiState::default())),
+                queue_len: Arc::new(AtomicUsize::new(0)),
             },
             rx,
         )

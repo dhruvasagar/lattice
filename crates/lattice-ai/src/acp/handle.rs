@@ -25,6 +25,10 @@ pub struct AiState {
     /// Active session key (provider + per-provider index), if a session is
     /// open.
     pub session: Option<SessionKey>,
+    /// AU‑5: trust mode. `false` (the default) is **review** mode — file edits
+    /// are gated on a diff verdict and un-reviewable mutating ops are denied.
+    /// `true` auto-grants every permission request without the diff gate.
+    pub auto_accept: bool,
 }
 
 /// Commands the handle sends into the supervisor's command loop.
@@ -34,6 +38,9 @@ pub(crate) enum AiCmd {
     /// AU‑3: interrupt the active turn without ending the session. The
     /// supervisor forwards an ACP `session/cancel`; the session stays open.
     Interrupt,
+    /// AU‑5: set trust mode. `true` auto-grants every permission request; `false`
+    /// restores review mode (diff-gated edits, denied un-reviewable ops).
+    SetAutoAccept(bool),
     Stop,
 }
 
@@ -72,6 +79,20 @@ impl AiClientHandle {
         let _ = self.cmd_tx.send(AiCmd::Interrupt);
     }
 
+    /// AU‑5: set trust mode. Non-blocking; the supervisor applies the flag and
+    /// republishes `AiState`.
+    pub fn set_auto_accept(&self, on: bool) {
+        let _ = self.cmd_tx.send(AiCmd::SetAutoAccept(on));
+    }
+
+    /// AU‑5: flip trust mode, returning the value it was flipped to (from the
+    /// current snapshot). Non-blocking; the supervisor applies + republishes.
+    pub fn toggle_auto_accept(&self) -> bool {
+        let next = !self.snapshot().auto_accept;
+        self.set_auto_accept(next);
+        next
+    }
+
     /// Ask the supervisor to stop the active session. Non-blocking.
     pub fn stop(&self) {
         let _ = self.cmd_tx.send(AiCmd::Stop);
@@ -100,5 +121,23 @@ mod tests {
         drop(cmd_rx);
         handle.prompt("hi".into());
         handle.stop();
+    }
+
+    /// AU‑5: `toggle_auto_accept` flips against the current snapshot, returns
+    /// the new value, and sends a matching `SetAutoAccept`.
+    #[test]
+    fn toggle_auto_accept_flips_and_sends() {
+        let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel();
+        let state = Arc::new(ArcSwap::from_pointee(AiState::default()));
+        let handle = AiClientHandle { cmd_tx, state };
+
+        // Default is review mode (false) → toggling turns trust on.
+        assert!(handle.toggle_auto_accept());
+        assert!(matches!(cmd_rx.try_recv(), Ok(AiCmd::SetAutoAccept(true))));
+
+        // Reflect the applied state, then toggle back off.
+        handle.state.store(Arc::new(AiState { auto_accept: true, ..AiState::default() }));
+        assert!(!handle.toggle_auto_accept());
+        assert!(matches!(cmd_rx.try_recv(), Ok(AiCmd::SetAutoAccept(false))));
     }
 }

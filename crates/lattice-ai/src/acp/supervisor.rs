@@ -10,6 +10,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use arc_swap::ArcSwap;
 use tokio::sync::mpsc;
@@ -123,6 +124,10 @@ async fn supervisor_loop(
     // second is index 2, etc. -- the `*ai:opencode:1*` / `*ai:opencode:2*`
     // exit criterion.
     let mut indices: HashMap<&'static str, u32> = HashMap::new();
+    // AU‑5: trust mode, shared with the per-request permission tasks (which run
+    // on their own spawned tasks and read it live). Reset to review mode on each
+    // `Start` so trust never silently carries across sessions.
+    let auto_accept = Arc::new(AtomicBool::new(false));
 
     while let Some(event) = next_event(&mut cmd_rx, &mut child).await {
         match event {
@@ -164,6 +169,9 @@ async fn supervisor_loop(
                 conn = None;
                 sess = None;
                 active_key = None;
+                // AU‑5: a new session starts in review mode; trust never carries
+                // across sessions.
+                auto_accept.store(false, Ordering::Relaxed);
                 state.store(Arc::new(AiState::default()));
 
                 let idx = indices.entry(provider.display_name).or_insert(0);
@@ -177,8 +185,14 @@ async fn supervisor_loop(
                     format!("starting {}", provider.display_name),
                 );
 
-                match start_provider(&provider, key.clone(), conv_store.clone(), diff_bus.clone())
-                    .await
+                match start_provider(
+                    &provider,
+                    key.clone(),
+                    conv_store.clone(),
+                    diff_bus.clone(),
+                    auto_accept.clone(),
+                )
+                .await
                 {
                     Ok((new_conn, new_sess, new_child)) => {
                         conn = Some(new_conn);
@@ -189,6 +203,7 @@ async fn supervisor_loop(
                             running: true,
                             provider: Some(provider.display_name),
                             session: Some(key.clone()),
+                            auto_accept: false,
                         }));
                         logger.log(
                             Some(&key),
@@ -235,6 +250,21 @@ async fn supervisor_loop(
                         "prompt dropped: no active session",
                     );
                 }
+            }
+            SupervisorEvent::Cmd(AiCmd::SetAutoAccept(on)) => {
+                // AU‑5: flip trust mode. The atomic is what the per-request
+                // permission tasks read; also republish `AiState` so any UI
+                // (modeline / headerline) reflecting the mode updates.
+                auto_accept.store(on, Ordering::Relaxed);
+                let mut next = (**state.load()).clone();
+                next.auto_accept = on;
+                state.store(Arc::new(next));
+                logger.log(
+                    active_key.as_ref(),
+                    AiLogLevel::Info,
+                    AiLogSource::Lifecycle,
+                    if on { "trust mode on (auto-accept)" } else { "review mode" },
+                );
             }
             SupervisorEvent::Cmd(AiCmd::Interrupt) => {
                 // AU‑3: interrupt the active turn without ending the session.
@@ -306,9 +336,15 @@ async fn drain_permissions(
     mut rx: mpsc::UnboundedReceiver<PermissionRequest>,
     diff_bus: Option<ProgrammaticDiffBus>,
     origin_session: u64,
+    auto_accept: Arc<AtomicBool>,
 ) {
     while let Some(pr) = rx.recv().await {
-        tokio::spawn(handle_permission(pr, diff_bus.clone(), origin_session));
+        tokio::spawn(handle_permission(
+            pr,
+            diff_bus.clone(),
+            origin_session,
+            auto_accept.clone(),
+        ));
     }
 }
 
@@ -320,9 +356,13 @@ async fn handle_permission(
     pr: PermissionRequest,
     diff_bus: Option<ProgrammaticDiffBus>,
     origin_session: u64,
+    auto_accept: Arc<AtomicBool>,
 ) {
     let PermissionRequest { request, responder } = pr;
-    match classify_permission(&request, origin_session) {
+    // AU‑5: trust mode is read live (so a toggle mid-turn takes effect on the
+    // next request) and folded over the classification.
+    let trusted = auto_accept.load(Ordering::Relaxed);
+    match resolve_decision(trusted, &request, origin_session) {
         PermissionDecision::AutoAllow => {
             respond(responder, allow_outcome(&request.options));
         }
@@ -362,6 +402,21 @@ enum PermissionDecision {
     /// edit with no diff payload): deny (fail closed). Trust mode (AU‑5) is the
     /// opt-in that turns these into auto-allow.
     Deny,
+}
+
+/// AU‑5: fold trust mode over the classification. Trust auto-allows every
+/// request without the diff gate; review mode defers to [`classify_permission`].
+/// Pure, so the trust bypass is unit-testable without a live [`Responder`].
+fn resolve_decision(
+    trusted: bool,
+    request: &RequestPermissionRequest,
+    origin_session: u64,
+) -> PermissionDecision {
+    if trusted {
+        PermissionDecision::AutoAllow
+    } else {
+        classify_permission(request, origin_session)
+    }
 }
 
 /// Classify a permission request.
@@ -469,6 +524,7 @@ async fn start_provider(
     session: SessionKey,
     conv_store: ConversationStore,
     diff_bus: Option<ProgrammaticDiffBus>,
+    auto_accept: Arc<AtomicBool>,
 ) -> Result<(Arc<Connection>, SessionId, tokio::process::Child)> {
     let mut child = tokio::process::Command::new(&provider.command)
         .args(&provider.args)
@@ -500,7 +556,7 @@ async fn start_provider(
     // stable, non-zero-per-session id.
     let origin_session = u64::from(session.index);
     tokio::spawn(drain_notifications(notif_rx, conv_store, session));
-    tokio::spawn(drain_permissions(perm_rx, diff_bus, origin_session));
+    tokio::spawn(drain_permissions(perm_rx, diff_bus, origin_session, auto_accept));
 
     let cwd = std::env::current_dir()
         .map(|p| p.display().to_string())
@@ -603,6 +659,40 @@ mod tests {
             }
             _ => panic!("expected a Selected reject outcome"),
         }
+    }
+
+    #[test]
+    fn trust_mode_auto_allows_without_review() {
+        // AU‑5: with trust on, an edit that would otherwise open a diff review
+        // (and a command that would otherwise be denied) both auto-allow.
+        let content = vec![ToolCallContent::Diff(Diff::new("/w/a.rs", "x\n"))];
+        assert!(matches!(
+            resolve_decision(true, &perm_req(ToolKind::Edit, Some(content)), 1),
+            PermissionDecision::AutoAllow
+        ));
+        assert!(matches!(
+            resolve_decision(true, &perm_req(ToolKind::Execute, None), 1),
+            PermissionDecision::AutoAllow
+        ));
+    }
+
+    #[test]
+    fn review_mode_defers_to_classification() {
+        // AU‑5: with trust off, the decision is exactly the classification —
+        // reads allow, edits-with-diff review, un-reviewable ops deny.
+        assert!(matches!(
+            resolve_decision(false, &perm_req(ToolKind::Read, None), 1),
+            PermissionDecision::AutoAllow
+        ));
+        let content = vec![ToolCallContent::Diff(Diff::new("/w/a.rs", "x\n"))];
+        assert!(matches!(
+            resolve_decision(false, &perm_req(ToolKind::Edit, Some(content)), 1),
+            PermissionDecision::Review(_)
+        ));
+        assert!(matches!(
+            resolve_decision(false, &perm_req(ToolKind::Execute, None), 1),
+            PermissionDecision::Deny
+        ));
     }
 
     #[test]

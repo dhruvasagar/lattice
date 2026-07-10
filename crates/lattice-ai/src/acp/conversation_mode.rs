@@ -17,7 +17,7 @@
 use std::sync::{Arc, OnceLock};
 
 use lattice_grammar::ModalState;
-use lattice_grammar::effect::Effect;
+use lattice_grammar::effect::{EchoLevel, Effect};
 use lattice_mode::{
     ActionContext, ActionHandler, ActionHandlerContribution, BufferStoreHandle, CapabilitySet,
     EditableTail, Keymap, KeymapEntry, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind,
@@ -202,6 +202,10 @@ impl Mode for AiConversationMode {
                 action_name: "action:ai-conv-interrupt",
                 handler: interrupt_handler(),
             },
+            ActionHandlerContribution {
+                action_name: "action:ai-conv-toggle-trust",
+                handler: toggle_trust_handler(),
+            },
         ]
     }
 
@@ -325,6 +329,15 @@ fn ai_conversation_keymap_entries() -> &'static [KeymapEntry] {
                 doc: "ai-conversation: interrupt the active turn",
                 cmd: "action:ai-conv-interrupt"
             },
+            // AU‑5: trust-mode toggle. `<C-t>` (Normal) mirrors the
+            // agent-TUI convention of a single chord cycling the permission
+            // mode (Claude Code's Shift-Tab / opencode's Tab); a Ctrl chord
+            // is chosen for portable representation and is mode-scoped.
+            keymap_entry! {
+                mode: Normal, chord: "<C-t>",
+                doc: "ai-conversation: toggle trust mode (auto-accept vs review)",
+                cmd: "action:ai-conv-toggle-trust"
+            },
         ]
     })
 }
@@ -403,6 +416,24 @@ fn interrupt_handler() -> ActionHandler {
     })
 }
 
+/// `action:ai-conv-toggle-trust` (AU‑5) — flip trust mode via the
+/// `AiClientHandle` service and echo the new state. No buffer edit; the
+/// per-request permission tasks read the flag live.
+fn toggle_trust_handler() -> ActionHandler {
+    Arc::new(|ctx: &ActionContext<'_>| -> Option<Effect> {
+        let ai = ctx.services.get::<AiClientHandle>()?;
+        let on = ai.toggle_auto_accept();
+        Some(Effect::Echo {
+            level: EchoLevel::Info,
+            text: if on {
+                "ai: trust mode on — edits auto-accepted".to_string()
+            } else {
+                "ai: review mode — edits gated on diff review".to_string()
+            },
+        })
+    })
+}
+
 /// AU‑3: register the `ai-conversation` action commands so the mode's keymap
 /// `cmd` names resolve (the diff subsystem's `register_diff_actions` pattern).
 /// The specs are pure shells returning `Effect::None`: the real bodies live in
@@ -416,6 +447,10 @@ pub fn register_ai_conversation_actions(registry: &mut lattice_grammar::CommandR
         ),
         ("action:ai-conv-send", "ai-conversation: send the prompt to the agent."),
         ("action:ai-conv-interrupt", "ai-conversation: interrupt the active turn."),
+        (
+            "action:ai-conv-toggle-trust",
+            "ai-conversation: toggle trust mode (auto-accept vs diff review).",
+        ),
     ] {
         registry.register_action(
             name,
@@ -479,6 +514,7 @@ mod tests {
                 ("O", Some("action:ai-conv-focus-prompt")),
                 ("<CR>", Some("action:ai-conv-send")),
                 ("<C-c>", Some("action:ai-conv-interrupt")),
+                ("<C-t>", Some("action:ai-conv-toggle-trust")),
             ],
         );
     }
@@ -498,20 +534,22 @@ mod tests {
                 "action:ai-conv-focus-prompt",
                 "action:ai-conv-send",
                 "action:ai-conv-interrupt",
+                "action:ai-conv-toggle-trust",
             ],
         );
     }
 
-    /// AU‑3: `register_ai_conversation_actions` registers all three action
-    /// commands so the keymap `cmd` names resolve at boot.
+    /// AU‑3/AU‑5: `register_ai_conversation_actions` registers every action
+    /// command so the keymap `cmd` names resolve at boot.
     #[test]
-    fn registers_the_three_action_commands() {
+    fn registers_the_action_commands() {
         let mut registry = lattice_grammar::CommandRegistry::new();
         register_ai_conversation_actions(&mut registry);
         for name in [
             "action:ai-conv-focus-prompt",
             "action:ai-conv-send",
             "action:ai-conv-interrupt",
+            "action:ai-conv-toggle-trust",
         ] {
             assert!(registry.id_by_name(name).is_some(), "{name} registered");
         }

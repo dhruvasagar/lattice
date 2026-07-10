@@ -644,9 +644,11 @@ struct BrandingPaint {
     /// amber, straight from the cell fg. Absent grid cells (the cut
     /// corners) simply have no tile, so the negative space is preserved.
     tiles: Vec<(u32, u32, u32)>,
-    /// The wordmark + tagline as `(text, rgb)`, parsed from the row group.
+    /// The wordmark + tagline + version as `(text, rgb)`, parsed from the
+    /// row group. The version is shaped at base font size (not 3.7x).
     wordmark: (String, u32),
     tagline: (String, u32),
+    version: (String, u32),
 }
 
 /// The full-block glyph the branding provider uses for a mark cell (both
@@ -664,44 +666,84 @@ fn build_branding_paint(
 ) -> Option<BrandingPaint> {
     let first_row = rows.first()?.0;
     let mut tiles: Vec<(u32, u32, u32)> = Vec::new();
-    let mut texts: Vec<(usize, String, u32)> = Vec::new();
+    // Text segments keyed by (row_index, segment_index) — a segment
+    // covers a run of printable cells with the same FG colour. Color
+    // changes (e.g. the brand-blue wordmark → default-fg version) produce
+    // adjacent segments rather than one merged string, so each one
+    // retains its own theme-resolved colour.
+    let mut segments: Vec<(usize, String, u32)> = Vec::new();
     for (gi, (_, cells)) in rows.iter().enumerate() {
-        let mut text = String::new();
-        let mut text_color = 0u32;
+        let mut seg_text = String::new();
+        let mut seg_color = 0u32;
         for (col, cell) in cells.iter().enumerate() {
             if cell.codepoint == BRANDING_MARK_GLYPH {
                 tiles.push((gi as u32, col as u32, cell.fg));
             } else if let Some(ch) = char::from_u32(cell.codepoint) {
                 if ch == ' ' {
-                    // Interior spaces only (skip the leading mark/gap run).
-                    if !text.is_empty() {
-                        text.push(' ');
+                    if !seg_text.is_empty() {
+                        seg_text.push(' ');
                     }
                 } else if !ch.is_control() {
-                    text.push(ch);
-                    if text_color == 0 && cell.fg != 0 {
-                        text_color = cell.fg;
+                    // Colour changed from the current segment?  Finalise
+                    // the old segment and start a new one with the new
+                    // colour so each themed run stays distinct.
+                    if seg_color != cell.fg && !seg_text.is_empty() && seg_color != 0 {
+                        let trimmed = seg_text.trim_end().to_string();
+                        if !trimmed.is_empty() {
+                            segments.push((gi, trimmed, seg_color));
+                        }
+                        seg_text.clear();
+                        seg_color = cell.fg;
                     }
+                    if seg_color == 0 && cell.fg != 0 {
+                        seg_color = cell.fg;
+                    }
+                    seg_text.push(ch);
                 }
             }
         }
-        let trimmed = text.trim_end();
+        let trimmed = seg_text.trim_end();
         if !trimmed.is_empty() {
-            texts.push((gi, trimmed.to_string(), text_color));
+            segments.push((gi, trimmed.to_string(), seg_color));
         }
     }
     if tiles.is_empty() {
         return None;
     }
+
+    // DB.4-tui-double: the TUI dashboard mark doubles its column count
+    // (10 vs 5 logical) to compensate for the terminal cell aspect ratio
+    // (~2:1 height:width). The GPUI peer renders with square tiles, so
+    // halve the column resolution — keep only even columns and divide by
+    // 2 — to restore the logical 5×6 proportion. A width >= 8 cols is
+    // well beyond the original 5-col mark, so it serves as the detector.
+    if tiles.iter().any(|t| t.1 >= 8) {
+        tiles.retain(|t| t.1 % 2 == 0);
+        for t in tiles.iter_mut() {
+            t.1 /= 2;
+        }
+    }
+
     let min_row = tiles.iter().map(|t| t.0).min().unwrap_or(0);
     let max_row = tiles.iter().map(|t| t.0).max().unwrap_or(0);
     let max_col = tiles.iter().map(|t| t.1).max().unwrap_or(0);
     for t in tiles.iter_mut() {
         t.0 -= min_row;
     }
-    texts.sort_by_key(|t| t.0);
-    let wordmark = texts.first().map(|t| (t.1.clone(), t.2)).unwrap_or_default();
-    let tagline = texts.get(1).map(|t| (t.1.clone(), t.2)).unwrap_or_default();
+    // Segments are already in row-then-column order (produced by the
+    // cell scan above). Wordmark = first segment; version = second
+    // segment on the same row (if any); tagline = first segment on the
+    // next row (if any).
+    let wordmark = segments.first().map(|s| (s.1.clone(), s.2)).unwrap_or_default();
+    let first_seg_row = segments.first().map(|s| s.0);
+    let version = first_seg_row
+        .and_then(|row| segments.get(1).filter(|s| s.0 == row))
+        .map(|s| (s.1.clone(), s.2))
+        .unwrap_or_default();
+    let tagline = first_seg_row
+        .and_then(|row| segments.iter().find(|s| s.0 != row))
+        .map(|s| (s.1.clone(), s.2))
+        .unwrap_or_default();
     Some(BrandingPaint {
         first_row,
         row_count: rows.len(),
@@ -710,6 +752,7 @@ fn build_branding_paint(
         tiles,
         wordmark,
         tagline,
+        version,
     })
 }
 
@@ -2286,6 +2329,33 @@ impl Element for EditorElement {
                 None,
             );
 
+            // Shape the version string at base font size (not the 3.7×
+            // wordmark scale) so it reads as regular body-sized text.
+            let ver_color = if b.version.1 == 0 {
+                self.theme.foreground
+            } else {
+                b.version.1
+            };
+            let ver_text = if b.version.0.is_empty() {
+                " ".to_string()
+            } else {
+                b.version.0.clone()
+            };
+            let ver_run = TextRun {
+                len: ver_text.len(),
+                font: prepaint.font.clone(),
+                color: rgb(ver_color).into(),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
+            let ver_shaped = window.text_system().shape_line(
+                SharedString::from(ver_text),
+                prepaint.font_size,
+                &[ver_run],
+                None,
+            );
+
             // Tight (no built-in leading padding) glyph extents: painting
             // at `line_height == ascent - descent` makes `ShapedLine::paint`
             // put the glyph top EXACTLY at the given origin (zero padding),
@@ -2300,11 +2370,10 @@ impl Element for EditorElement {
             let tag_h = tag_shaped.ascent - tag_shaped.descent;
             let title_subtitle_gap = word_h * 0.4; // push the subtitle clearly onto its own line
 
-            // The mark matches the wordmark's cap-height EXACTLY (derived,
-            // not independently tuned): same number of rows, so `tile_h`
-            // falls out of `word_h`. Square cells; no gap between them (the
-            // SVG mark is solid bars, not dashed).
-            let mark_h = word_h;
+            // The mark is scaled up 1.5× from the wordmark cap height so the
+            // logo tiles are visibly larger and balanced against the large
+            // 3.7× wordmark. Square tiles; no gap between them.
+            let mark_h = word_h * 1.5;
             let tile_h = mark_h * (1.0 / b.mark_rows.max(1) as f32);
             let tile_w = tile_h;
             let mark_w = tile_w * (b.mark_cols as f32);
@@ -2345,6 +2414,17 @@ impl Element for EditorElement {
             // exact, not approximate).
             let text_x = mark_x + mark_w + mark_text_gap;
             let _ = word_shaped.paint(point(text_x, block_top), word_h, window, cx);
+
+            // Version — base font size, painted after the wordmark with
+            // a small gap, baselines aligned so the text sits on the same
+            // invisible line as the bottom of the brand name.
+            if !b.version.0.is_empty() {
+                let ver_gap = px(6.0);
+                let ver_x = text_x + word_shaped.width + ver_gap;
+                let ver_h = ver_shaped.ascent - ver_shaped.descent;
+                let ver_y = block_top + word_shaped.ascent - ver_shaped.ascent;
+                let _ = ver_shaped.paint(point(ver_x, ver_y), ver_h, window, cx);
+            }
 
             // Subtitle — same pen origin `text_x` is not quite enough: a
             // larger font's left side-bearing (the gap between the pen

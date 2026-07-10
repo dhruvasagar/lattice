@@ -3663,13 +3663,13 @@ pub(crate) fn compose_pane_lines(
                 std::sync::Arc::new(lattice_cells::VirtualRowMatrix::empty())
             })
     };
-    // Sticky rows occupy the top of the pane; shrink the visible window
-    // so document line 0 (at scroll=0) always renders BELOW the header
-    // and the bottom of the viewport doesn't lose content silently.
-    let sticky_count = virtual_rows_matrix.sticky_rows().count();
-    if sticky_count > 0 {
-        visible.truncate(visible.len().saturating_sub(sticky_count));
-    }
+    // Sticky rows occupy the top of the pane, but they are NOT paid for
+    // here: the host reserves them once in the scroll budget
+    // (`ensure_cursor_visible`'s `effective_height`), and the fill loop
+    // below counts the sticky pre-pass rows against `height`. Shrinking
+    // `visible` as well would reserve the row twice and silently delete
+    // the last document line — which, for a buffer whose final line is an
+    // editable prompt (the ACP conversation buffer), is always the prompt.
     let body_col_width = buffer_w;
     // W.4 (soft-wrap): `:set wrap`. When on, the per-line body is
     // kept at full width (truncation below is skipped) so
@@ -6222,6 +6222,55 @@ mod tests {
             styled_link,
             "floating popup must render a span with the resolved Style::Link style \
              (got the unstyled plain-text fallback — link styling regressed)"
+        );
+    }
+
+    /// A sticky headerline must not cost a document line. The host already
+    /// reserves the sticky row in the scroll budget (`ensure_cursor_visible`'s
+    /// `effective_height`), and the fill loop below the sticky pre-pass already
+    /// caps at `height` — so shrinking `visible` on top of that deletes a real
+    /// line. For a buffer whose last line is an editable prompt (the ACP
+    /// conversation buffer) the deleted line is always the prompt.
+    #[test]
+    fn sticky_headerline_does_not_clip_the_last_document_line() {
+        let mut a = app_with("alpha\nbravo\n> ", 6);
+        a.editor.publish_render_state();
+        let buffer_id = a.ad().document_buffer_id;
+
+        let handle = lattice_cells::SimpleHeaderlineHandle::new((), |_: &()| {
+            let cells: std::sync::Arc<[lattice_cells::Cell]> =
+                vec![lattice_cells::Cell::new('H' as u32, 0xff_ff_ff, 0, 0)].into();
+            Some(lattice_cells::HeaderlineRow { cells, bg: None })
+        });
+        a.editor
+            .virtual_row_providers
+            .register(buffer_id, std::sync::Arc::new(handle.provider(7)));
+
+        let mut state = lattice_host::virtual_rows_worker::VirtualRowsWorkerState::new();
+        lattice_host::virtual_rows_worker::recompute(
+            &mut state,
+            &a.editor.render_state,
+            &a.editor.virtual_row_providers,
+        );
+
+        let snap = a.ad().snapshot.clone();
+        let lines = compose_visible_lines(&a, &snap, 6, 40);
+        let rendered: Vec<String> = lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+            .collect();
+
+        assert!(
+            rendered.iter().any(|l| l.contains('H')),
+            "sticky headerline should paint: {rendered:#?}"
+        );
+        assert!(
+            rendered.iter().any(|l| l.contains("bravo")),
+            "last transcript line should paint: {rendered:#?}"
+        );
+        assert!(
+            rendered.iter().any(|l| l.trim_end().ends_with('>')),
+            "the prompt (last document line) must still be painted: {rendered:#?}"
         );
     }
 

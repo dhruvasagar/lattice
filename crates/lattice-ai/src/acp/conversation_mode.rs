@@ -14,6 +14,7 @@
 //! change rewrites only from its line down (AU‑2 shows status inline as text; a
 //! decoration-based in-place update is a follow-up).
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use lattice_grammar::ModalState;
@@ -21,7 +22,8 @@ use lattice_grammar::effect::{EchoLevel, Effect};
 use lattice_mode::{
     ActionContext, ActionHandler, ActionHandlerContribution, BufferStoreHandle, CapabilitySet,
     EditableTail, Keymap, KeymapEntry, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind,
-    OptionOverrideSet, Subscription, keymap_entry,
+    OptionOverrideSet, Subscription, TickCallbackRegistration, TickCallbackRegistryHandle,
+    keymap_entry,
 };
 
 use crate::acp::conversation::{Block, Conversation, ConversationStore, ConversationUpdated, Role};
@@ -146,8 +148,17 @@ pub struct LineSuffixReplace {
     pub replacement: String,
 }
 
+/// AU‑3+ activation guard: the `ConversationUpdated` subscription plus the
+/// per-tick prompt-focus callback registration. Dropping it on deactivation
+/// unsubscribes AND removes the callback, so a stopped mode contributes no
+/// further per-tick work.
+pub struct AiConversationGuard {
+    _subscription: Subscription,
+    _focus_tick: Option<TickCallbackRegistration>,
+}
+
 impl Mode for AiConversationMode {
-    type Guard = Option<Subscription>;
+    type Guard = Option<AiConversationGuard>;
     fn id(&self) -> ModeId {
         Self::mode_id()
     }
@@ -240,10 +251,51 @@ impl Mode for AiConversationMode {
             let mut last_user_turns = user_turn_count(&seed);
             full_replace(&handle, &format!("{last}{PROMPT_MARKER}")).await;
 
+            // AU‑3+: after a send, the async re-projection grows the transcript
+            // above the prompt and shifts the (now-cleared) prompt line down.
+            // The host clamps but does NOT move the caret to follow an
+            // owner-write edit, so it would go stale in the read-only
+            // transcript. `<CR>` deliberately stays in Insert (vim / `:terminal`
+            // / `:claude` parity — only <Esc> leaves); this per-tick callback
+            // re-parks the caret at the fresh prompt tail once the drain signals
+            // a send-triggered re-projection landed. The callback runs on the
+            // host thread, so it can read the post-edit buffer and emit a
+            // `SelectionChange`; the flag is the drain→host handoff. Set only on
+            // a User turn, which is added only when the user just sent from THIS
+            // buffer, so the buffer is guaranteed active when it fires.
+            let focus_flag = Arc::new(AtomicBool::new(false));
+            let focus_tick = ctx.service::<TickCallbackRegistryHandle>().map(|registry| {
+                let flag = focus_flag.clone();
+                let store = store.clone();
+                registry.register(Box::new(move || {
+                    if !flag.swap(false, Ordering::AcqRel) {
+                        return Vec::new();
+                    }
+                    let Some(h) = store.handle_for(buffer_id) else {
+                        return Vec::new();
+                    };
+                    let snap = h.snapshot();
+                    let last_line = snap.buffer.line_count().saturating_sub(1);
+                    let end_byte = snap
+                        .buffer
+                        .line(last_line)
+                        .unwrap_or_default()
+                        .trim_end_matches('\n')
+                        .len() as u32;
+                    let pos = lattice_protocol::position::Position::new(last_line, end_byte);
+                    vec![Effect::SelectionChange(
+                        lattice_protocol::selection::SelectionSet::single(
+                            lattice_protocol::selection::Selection::cursor(pos),
+                        ),
+                    )]
+                }))
+            });
+
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<ConversationUpdated>();
             let sub_id = ctx.events().subscribe_typed::<ConversationUpdated>(tx);
             let bus_handle = ctx.events_handle();
 
+            let drain_flag = focus_flag;
             runtime.spawn(async move {
                 // Coalesce a burst of updates into one re-projection.
                 while rx.recv().await.is_some() {
@@ -259,13 +311,22 @@ impl Mode for AiConversationMode {
                     // the prompt line down) and land on the wrong, now-read-only
                     // line. On agent-only updates we leave the user's in-progress
                     // prompt untouched.
-                    reproject(&handle, &last, &new, user_turns > last_user_turns).await;
+                    let did_clear = user_turns > last_user_turns;
+                    reproject(&handle, &last, &new, did_clear).await;
+                    if did_clear {
+                        // Prompt just reset — ask the host to re-park the caret
+                        // at the fresh prompt tail on the next tick.
+                        drain_flag.store(true, Ordering::Release);
+                    }
                     last = new;
                     last_user_turns = user_turns;
                 }
             });
 
-            Ok(Some(Subscription::new(bus_handle, sub_id)))
+            Ok(Some(AiConversationGuard {
+                _subscription: Subscription::new(bus_handle, sub_id),
+                _focus_tick: focus_tick,
+            }))
         })
     }
 }
@@ -404,11 +465,13 @@ fn focus_prompt_handler() -> ActionHandler {
     })
 }
 
-/// `action:ai-conv-send` — read the prompt (the tail line after `PROMPT_MARKER`),
-/// hand it to the agent via the `AiClientHandle` service, clear the prompt
-/// region, and drop back to Normal. An empty prompt is a no-op (Enter does
-/// nothing). The clear edit lands inside the editable tail, so the read-only
-/// gate permits it; owner re-projection preserves the now-empty prompt line.
+/// `action:ai-conv-send` — read the prompt (the tail line after `PROMPT_MARKER`)
+/// and hand it to the agent via the `AiClientHandle` service, staying in Insert
+/// at the prompt (only <Esc> returns to Normal). An empty prompt is a no-op
+/// (Enter does nothing); with no running session it echoes an error and keeps
+/// the prompt. The prompt clear + caret re-park are owned by the drain's
+/// re-projection and the per-tick focus callback (see `on_activate`), not by
+/// this handler — so there is no clear edit here to race the re-projection.
 fn send_handler() -> ActionHandler {
     Arc::new(|ctx: &ActionContext<'_>| -> Option<Effect> {
         let store = ctx.services.get::<BufferStoreHandle>()?;
@@ -436,12 +499,16 @@ fn send_handler() -> ActionHandler {
             });
         }
         ai.prompt(prompt.to_string());
-        // The prompt is cleared by the mode's projection when the resulting User
-        // turn lands (see `reproject` in `on_activate`), NOT by a clear edit
-        // here. A separate clear would race the transcript re-projection — which
-        // shifts the prompt line down as it inserts the User turn — and land on
-        // the wrong, now-read-only line, so the prompt would keep its text.
-        Some(Effect::EnterMode(ModalState::Normal))
+        // AU‑3+: stay in Insert at the prompt (vim / `:terminal` / `:claude`
+        // parity — only <Esc> returns to Normal). `<CR>` resolved to a mode
+        // handler, so returning `None` consumes the key WITHOUT inserting a
+        // newline, and leaves the modal state untouched (Insert). The prompt is
+        // cleared and the caret re-parked at the fresh prompt by the drain's
+        // re-projection + the per-tick focus callback (see `on_activate`), which
+        // fire once the resulting User turn lands — NOT by a clear edit here (a
+        // separate clear would race the re-projection that shifts the prompt
+        // line down, and land on the wrong, now-read-only line).
+        None
     })
 }
 

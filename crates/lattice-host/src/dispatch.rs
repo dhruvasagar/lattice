@@ -379,6 +379,11 @@ impl Editor {
             self.cancel_position_anchored_lsp_requests();
         }
 
+        // OWC: write through — keep the active document's selections
+        // in sync with `Editor::cursor` so the next owner-write
+        // transform uses the correct base position.
+        self.write_through_caret();
+
         // Phase 5.8.AF.5 / Slice 3a: publish the renderer's read
         // contract at the end of every dispatch. Naive rebuild
         // (every sub-state Arc is fresh); sub-states 3b/3c
@@ -486,6 +491,11 @@ impl Editor {
             .lock()
             .expect("publish_cache mutex poisoned")
             .publish_batch_depth += 1;
+        // OWC: adopt any owner-write position change before processing
+        // this keystroke. The document's selections were transformed
+        // in-core when the owner write applied; the host now picks up
+        // the result.
+        self.maybe_adopt_owner_write();
         let outcome = self.dispatch(action);
         let can_fuse = !outcome.consumed
             && outcome.effects.is_empty()
@@ -1007,21 +1017,23 @@ impl Editor {
                 builtins: self.builtins,
                 keymap: self.keymap.clone(),
                 partial_chord: std::sync::Arc::from(self.partial_chord.clone().into_boxed_slice()),
-                // D.5.b: per-publish snapshot of the active
-                // buffer's minor-mode set. K.1.c's
-                // `lookup_with_context` reads this so chord
-                // bindings registered against
-                // `MinorMode(ModeId)` layers (D.5.b's
-                // `diff-mode`, future per-mode bindings) only
-                // fire on buffers where the mode is in
-                // `ActiveModes.minors()`. Empty when no
-                // ActiveModes entry exists for the active
-                // buffer (mid-boot / read-only synthetic
-                // buffers without minors).
+                // Per-publish snapshot of the active buffer's
+                // keymap-gated mode set: the active major first,
+                // then the minors in activation order.
+                // `lookup_with_context` reads this so chord bindings
+                // registered against `MajorMode(ModeId)` and
+                // `MinorMode(ModeId)` layers only fire on buffers
+                // where that mode is active. The major MUST be
+                // included — it was omitted historically (this held
+                // only `minors()`), which left major-mode chords
+                // ungated: `ai-conversation`'s `i` → focus-prompt
+                // fired in every buffer (the dashboard-jumps-to-EOF
+                // regression). Empty when no ActiveModes entry
+                // exists for the active buffer (mid-boot).
                 active_minor_modes: self
                     .active_modes
                     .get(&self.document_buffer_id)
-                    .map(|am| std::sync::Arc::from(am.minors().to_vec().into_boxed_slice()))
+                    .map(|am| std::sync::Arc::from(am.keymap_gated_ids().into_boxed_slice()))
                     .unwrap_or_else(|| std::sync::Arc::from(Vec::new().into_boxed_slice())),
             }),
             // Slice 3c.final.B (group 6): lifecycle flags + theme.
@@ -2000,7 +2012,7 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
     // block. `_out.consumed` short-circuits the renderer's
     // post-dispatch match (App::apply); 5.5.G removes the field once
     // App's match collapses entirely.
-    if matches!(editor.active_buffer, BufferKind::Help) && action_is_document_mutation(&action) {
+    if matches!(editor.active_buffer, BufferKind::Help | BufferKind::Dashboard) && action_is_document_mutation(&action) {
         editor.set_message(EchoLevel::Info, "buffer is read-only".to_string());
         editor.ensure_cursor_visible();
         editor.maybe_reparse_syntax();
@@ -7457,10 +7469,14 @@ impl Editor {
         partial_chord: &mut Vec<crate::chord::KeyChord>,
     ) -> Action {
         let active_buffer_id = self.active_buffer_id();
+        // The keymap lookup gates BOTH major- and minor-mode layers
+        // by the active-mode slice, so include the active major
+        // (first, lowest priority) or a major mode's chords would
+        // fire in every buffer.
         let active_minors: Vec<lattice_mode::ModeId> = self
             .active_modes
             .get(&active_buffer_id)
-            .map(|m| m.minors().to_vec())
+            .map(|m| m.keymap_gated_ids())
             .unwrap_or_default();
 
         let ctx = crate::input::TranslateContext {
@@ -14781,6 +14797,10 @@ impl Editor {
         }
         let result = block_on(self.document.apply_edit(edit));
         if let Ok(applied) = result.as_ref() {
+            // OWC: record the text version so the host knows it issued
+            // this edit (not an owner write).
+            let snap = self.document.snapshot();
+            self.last_seen_text_version.insert(self.document_buffer_id, snap.text_version);
             self.publish_document_changed(std::slice::from_ref(applied));
         }
         result
@@ -14815,6 +14835,10 @@ impl Editor {
         }
         let result = block_on(self.document.apply_edit_batch(edits));
         if let Ok(applied) = result.as_ref() {
+            // OWC: record the text version so the host knows it issued
+            // this edit (not an owner write).
+            let snap = self.document.snapshot();
+            self.last_seen_text_version.insert(self.document_buffer_id, snap.text_version);
             self.publish_document_changed(applied);
         }
         result
@@ -14859,6 +14883,8 @@ impl Editor {
         };
         let applied = block_on(handle.apply_edit(edit))?;
         let snap = handle.snapshot();
+        // OWC: record the text version for peer edits too.
+        self.last_seen_text_version.insert(target, snap.text_version);
         let path = snap.path().map(|p| p.to_path_buf());
         let edit_event = lattice_protocol::event::AppliedEdit {
             original_range: applied.original_range,
@@ -15491,6 +15517,42 @@ impl Editor {
             version: snap.version,
             selections: (*snap.selections).clone(),
         });
+    }
+
+    /// OWC: write `Editor::cursor` (and, in Visual/Select mode, the full
+    /// selection extent) into the active document's selections. This keeps
+    /// the document's selections a faithful base for the next owner-write
+    /// transform. Called at the end of each input dispatch.
+    pub(crate) fn write_through_caret(&mut self) {
+        let selections = if let Some(anchor) = self.visual_anchor {
+            let visual = match self.modal {
+                ModalState::Visual(k) | ModalState::Select(k) => {
+                    Some(visual_kind_to_mode(k))
+                }
+                _ => None,
+            };
+            SelectionSet::single(Selection { anchor, head: self.cursor, visual })
+        } else {
+            SelectionSet::single(Selection::cursor(self.cursor))
+        };
+        let _ = block_on(self.document.set_selections(selections));
+    }
+
+    /// OWC: if the active document's text_version has advanced beyond
+    /// `last_seen_text_version`, an owner write happened. Adopt the
+    /// document's primary selection head into `Editor::cursor`. Called
+    /// at the start of each input dispatch (before the keystroke is
+    /// processed) and on buffer activation.
+    fn maybe_adopt_owner_write(&mut self) {
+        let buf_id = self.document_buffer_id;
+        let snap = self.document.snapshot();
+        let doc_tv = snap.text_version;
+        let last_seen = self.last_seen_text_version.get(&buf_id).copied().unwrap_or(0);
+        if doc_tv > last_seen {
+            let head = snap.selections.primary().head;
+            self.cursor = head;
+            self.last_seen_text_version.insert(buf_id, doc_tv);
+        }
     }
 
     /// 5.5.G.1: vim's `zo` / `zc` / `za` -- toggle, open, or close

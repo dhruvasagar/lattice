@@ -669,6 +669,11 @@ pub struct Editor {
     /// request so the worker can verify edits apply to the
     /// correct tree baseline.
     pub last_synced_syntax_version: u64,
+    /// OWC: per-buffer text version last seen after a host-issued
+    /// edit. Used to detect owner writes: when the active document's
+    /// `text_version` exceeds this, the host did not issue the edit
+    /// and should adopt the document's primary selection head.
+    pub last_seen_text_version: HashMap<BufferId, u64>,
     /// Pane tree (DESIGN.md §5.9). Always represents the
     /// ACTIVE tab's panes — when switching tabs we
     /// `mem::swap` between this field and `tabs[target].panes`.

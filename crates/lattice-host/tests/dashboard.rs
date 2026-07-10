@@ -733,3 +733,125 @@ mod idle_frame_does_no_recompose {
 
 
 
+
+#[cfg(test)]
+mod major_gating {
+    use super::*;
+    use lattice_protocol::position::Position;
+    use lattice_protocol::{KeyChord, parse_chord_sequence};
+
+    fn chord(s: &str) -> KeyChord {
+        parse_chord_sequence(s).expect("parse").into_iter().next().expect("one")
+    }
+
+    /// Regression: the ai-conversation major mode binds all of
+    /// `i a o A I O` to focus-prompt, which jumps the cursor to the END OF
+    /// CONTENT (the last line) and enters Insert. Because major-mode
+    /// keymaps were folded into the always-on merge, those bindings fired
+    /// in EVERY buffer — pressing one on the dashboard jumped to the last
+    /// line and dragged the viewport to the bottom. With major layers
+    /// gated by the active major, none of them may move the cursor off
+    /// its line (a builtin `A`/`I` still moves within line 0, which is
+    /// fine — it is not the focus-prompt EOF jump).
+    #[test]
+    fn focus_prompt_chords_do_not_leak_onto_dashboard() {
+        for key in ["i", "a", "o", "A", "I", "O"] {
+            let mut editor = boot();
+            editor.viewport_height = 20;
+            editor.do_open_dashboard();
+            assert_eq!(editor.cursor, Position::ZERO, "dashboard opens at top");
+            let last_line = editor.active_text().line_count().saturating_sub(1);
+            assert!(last_line > 1, "dashboard has multi-line content");
+            let mut partial: Vec<KeyChord> = Vec::new();
+            editor.dispatch_chord(chord(key), &mut partial);
+            assert_eq!(
+                editor.cursor.line, 0,
+                "`{key}` must NOT jump the cursor to the end of content on the \
+                 dashboard (ai-conversation focus-prompt leaked via an ungated \
+                 MajorMode layer); landed on line {}",
+                editor.cursor.line
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod insert_still_works {
+    use super::*;
+    use lattice_protocol::position::Position;
+    use lattice_protocol::{KeyChord, parse_chord_sequence};
+
+    fn chord(s: &str) -> KeyChord {
+        parse_chord_sequence(s).expect("parse").into_iter().next().expect("one")
+    }
+
+    /// Non-regression: `i` on a normal editable buffer still enters Insert
+    /// AT THE CURSOR (no jump to EOF). The major-gating fix must not have
+    /// disabled the builtin `i`.
+    #[test]
+    fn i_on_editable_buffer_enters_insert_at_cursor() {
+        let mut editor = boot(); // scratch "scratch\n", editable
+        editor.viewport_height = 20;
+        editor.cursor = Position::new(0, 3);
+        let mut partial: Vec<KeyChord> = Vec::new();
+        editor.dispatch_chord(chord("i"), &mut partial);
+        assert!(
+            matches!(editor.modal, lattice_grammar::ModalState::Insert),
+            "i must still enter Insert on a normal buffer"
+        );
+        assert_eq!(
+            editor.cursor,
+            Position::new(0, 3),
+            "i must enter Insert AT THE CURSOR, not jump to EOF"
+        );
+    }
+}
+
+#[cfg(test)]
+mod owc_adopt {
+    use super::*;
+    use lattice_protocol::position::Position;
+
+    /// Regression: opening the dashboard must leave BOTH `Editor::cursor` AND
+    /// the document's selection at the top. Populating the dashboard content is
+    /// an owner write, which OWC's in-core transform clamps the document
+    /// selection to EOF. `do_open_dashboard` forces the caret to the top, but
+    /// if it leaves the document selection at EOF, the next dispatch's
+    /// `maybe_adopt_owner_write` adopts EOF back into `Editor::cursor` — the
+    /// whole buffer scrolls to the bottom on launch.
+    #[test]
+    fn dashboard_open_leaves_document_selection_at_top() {
+        let mut editor = boot();
+        editor.viewport_height = 20;
+        editor.do_open_dashboard();
+        assert_eq!(editor.cursor, Position::ZERO, "editor cursor at top");
+        assert_eq!(
+            editor.document.snapshot().selections.primary().head,
+            Position::ZERO,
+            "document selection must also be at the top — otherwise the OWC \
+             owner-write adopt drags the cursor to EOF on the next keystroke \
+             (the dashboard-scrolls-to-bottom regression)"
+        );
+    }
+
+    /// The end-to-end guarantee: after opening the dashboard, the FIRST
+    /// keystroke (which runs `maybe_adopt_owner_write` before dispatch) must
+    /// NOT move the cursor to EOF.
+    #[test]
+    fn keystroke_after_dashboard_open_does_not_jump_to_eof() {
+        use lattice_host::action::Action;
+        let mut editor = boot();
+        editor.viewport_height = 20;
+        editor.do_open_dashboard();
+        // `dispatch_fused` is the real per-keystroke entry; it runs the OWC
+        // adopt. `Action::None` is an inert keystroke.
+        let pre = editor.active_buffer;
+        let _ = editor.dispatch_fused(Action::None, pre, false);
+        assert_eq!(
+            editor.cursor.line, 0,
+            "first keystroke after dashboard open must not adopt an owner-write \
+             EOF position; landed on line {}",
+            editor.cursor.line
+        );
+    }
+}

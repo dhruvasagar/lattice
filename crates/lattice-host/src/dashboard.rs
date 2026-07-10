@@ -77,6 +77,25 @@ impl Editor {
         self.activate_minor_by_id(id, lattice_mode::HelpMode::mode_id());
         self.recompute_options_for_buffer(id);
         self.rebuild_option_cache();
+        // Dashboard is a static splash page: force cursor + scroll to
+        // the top so the user lands on the branding on every open.
+        // Without this, `activate_document`'s `load_active_pane`
+        // restores the stale pane cursor from the previous buffer
+        // (snapshot_active_pane writes it, then load_active_pane
+        // overrides the explicit ZERO set at dispatch.rs:27914).
+        self.cursor = lattice_protocol::position::Position::ZERO;
+        self.scroll = 0;
+        // OWC: populating the dashboard body is an owner write, which the
+        // in-core selection transform clamps to EOF (owner-write-caret.md
+        // §4.1: a caret inside a fully-replaced range lands at the
+        // replacement's end). The forced top-of-page caret above must be
+        // authoritative, so sync it through to the document's selection and
+        // mark the text version seen — otherwise the next keystroke's
+        // `maybe_adopt_owner_write` adopts that EOF selection back into
+        // `Editor::cursor` and the whole buffer scrolls to the bottom.
+        self.write_through_caret();
+        self.last_seen_text_version
+            .insert(id, self.document.snapshot().text_version);
         signals
     }
 

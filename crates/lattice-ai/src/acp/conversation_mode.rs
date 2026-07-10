@@ -26,7 +26,9 @@ use lattice_mode::{
     keymap_entry,
 };
 
-use crate::acp::conversation::{Block, Conversation, ConversationStore, ConversationUpdated, Role};
+use crate::acp::conversation::{
+    Block, Conversation, ConversationProjected, ConversationStore, ConversationUpdated, Role,
+};
 use crate::acp::handle::AiClientHandle;
 
 /// AU‑3: the prompt marker rendered at the head of the editable tail line.
@@ -294,6 +296,9 @@ impl Mode for AiConversationMode {
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<ConversationUpdated>();
             let sub_id = ctx.events().subscribe_typed::<ConversationUpdated>(tx);
             let bus_handle = ctx.events_handle();
+            // A separate handle for the drain to *publish* `ConversationProjected`
+            // once its edit lands (see below).
+            let projected_bus = ctx.events_handle();
 
             let drain_flag = focus_flag;
             runtime.spawn(async move {
@@ -312,11 +317,19 @@ impl Mode for AiConversationMode {
                     // line. On agent-only updates we leave the user's in-progress
                     // prompt untouched.
                     let did_clear = user_turns > last_user_turns;
-                    reproject(&handle, &last, &new, did_clear).await;
+                    let changed = reproject(&handle, &last, &new, did_clear).await;
                     if did_clear {
                         // Prompt just reset — ask the host to re-park the caret
                         // at the fresh prompt tail on the next tick.
                         drain_flag.store(true, Ordering::Release);
+                    }
+                    // Wake the editor actor now that the edit has LANDED, so the
+                    // streamed response repaints (and the focus tick callback
+                    // runs) WITHOUT a keystroke. Published after the await — not
+                    // via `ConversationUpdated`, which fires before the buffer is
+                    // re-projected — so the wake never repaints stale content.
+                    if changed {
+                        projected_bus.publish_typed(ConversationProjected);
                     }
                     last = new;
                     last_user_turns = user_turns;
@@ -366,14 +379,17 @@ fn user_turn_count(conv: &Conversation) -> usize {
 /// drain owns the prompt's lifecycle, so there is no separate clear edit to race
 /// this re-projection. Otherwise the edit ends at the prompt-line start, leaving
 /// the user's in-progress prompt intact while the agent streams.
+/// Returns `true` when an edit was applied (the transcript changed), `false`
+/// when `last == new` and the buffer was left untouched. The drain uses this to
+/// wake the render loop only when something actually changed.
 async fn reproject(
     handle: &std::sync::Arc<dyn lattice_runtime::Document>,
     last: &str,
     new: &str,
     clear_prompt: bool,
-) {
+) -> bool {
     let Some(rep) = suffix_replace(last, new) else {
-        return; // transcript text unchanged
+        return false; // transcript text unchanged
     };
     let (end, replacement) = if clear_prompt {
         let snap = handle.snapshot();
@@ -389,6 +405,7 @@ async fn reproject(
     );
     let edit = lattice_protocol::edit::Edit::replace(range, replacement);
     let _ = handle.apply_edit_batch(vec![edit]).await;
+    true
 }
 
 // ──────────────────────────────────────────────────────────────

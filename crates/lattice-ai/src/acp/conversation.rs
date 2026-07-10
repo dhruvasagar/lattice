@@ -212,6 +212,26 @@ lattice_protocol::register_event!(
     "lattice-ai",
 );
 
+/// Fired by the `ai-conversation` mode's drain AFTER a re-projection edit has
+/// LANDED in the buffer. Boot wakes the editor actor on this (via
+/// `wake_on_event`) so a streamed agent response repaints WITHOUT a keystroke,
+/// and the per-tick prompt-focus callback runs.
+///
+/// Distinct from [`ConversationUpdated`], which the supervisor fires when the
+/// *model* changes — that is BEFORE the drain re-projects the buffer, so waking
+/// on it would repaint stale content. Sequencing the wake after the owner-write
+/// edit (this event) is what makes the last streamed chunk paint reliably.
+#[derive(Debug, Clone, Default)]
+pub struct ConversationProjected;
+
+lattice_protocol::register_event!(
+    ConversationProjected,
+    "ai.conversation-projected",
+    "Fired after the *ai:<provider>* conversation buffer is re-projected; wakes \
+     the render loop so streamed agent responses repaint without a keystroke.",
+    "lattice-ai",
+);
+
 /// Shared, mutable conversation state plus a bus publisher. The supervisor holds
 /// one clone and calls [`ConversationStore::apply`]; the `ai-conversation` mode
 /// reads [`ConversationStore::snapshot`] on each `ConversationUpdated`.

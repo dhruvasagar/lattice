@@ -62,4 +62,11 @@ pub fn install(boot: &mut impl SubsystemBoot, logger: &AiLogger) {
     // for the `ai-conversation` mode's projection.
     boot.register_service::<AiClientHandle>(handle);
     boot.register_service::<ConversationStore>(conv_store);
+
+    // Repaint wake: the `ai-conversation` drain fires `ConversationProjected`
+    // AFTER each re-projection edit lands. Wake the editor actor on it so a
+    // streamed agent response repaints (and the prompt-focus tick callback runs)
+    // without needing a keystroke. Sequenced after the edit — via this event,
+    // not `ConversationUpdated` — so the wake never paints stale content.
+    boot.wake_on_event::<crate::acp::conversation::ConversationProjected>();
 }

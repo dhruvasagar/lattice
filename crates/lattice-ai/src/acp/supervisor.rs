@@ -326,6 +326,12 @@ async fn handle_permission(
         PermissionDecision::AutoAllow => {
             respond(responder, allow_outcome(&request.options));
         }
+        PermissionDecision::Deny => {
+            // Fail closed: a mutating operation review mode can't show for review
+            // (a command / an edit with no diff payload) is denied, not silently
+            // run. Trust mode (AU‑5) is the opt-in that flips these to allow.
+            respond(responder, deny_outcome(&request.options));
+        }
         PermissionDecision::Review(review) => {
             let Some(bus) = diff_bus else {
                 // No diff bus wired (boot misconfiguration): we cannot show the
@@ -352,13 +358,25 @@ enum PermissionDecision {
     AutoAllow,
     /// A file edit carrying a diff: open a review, gate on the verdict.
     Review(DiffReviewRequest),
+    /// A mutating operation review mode can't show for review (a command, or an
+    /// edit with no diff payload): deny (fail closed). Trust mode (AU‑5) is the
+    /// opt-in that turns these into auto-allow.
+    Deny,
 }
 
-/// Classify a permission request. Read-class tool kinds auto-run; a tool call
-/// carrying a `ToolCallContent::Diff` goes to review. Anything else (execute /
-/// unknown / an edit without a diff payload) auto-allows — there is no diff to
-/// show, and blocking would wedge the agent. A dedicated command-confirmation
-/// surface for non-file operations is a follow-up.
+/// Classify a permission request.
+///
+/// - Read-class tool kinds (Read/Search/Fetch/Think/SwitchMode) auto-run —
+///   they don't mutate state, so running them without a prompt is safe and is
+///   the design's explicit safe-list.
+/// - A tool call carrying a `ToolCallContent::Diff` goes to review: the user
+///   rules on the concrete change in the diff view.
+/// - Everything else — a command execution, or a mutating tool call with no
+///   diff payload we can render — is **denied** (fail closed). There is no
+///   confirmation surface for non-file operations yet, and auto-allowing them
+///   would let the agent run arbitrary commands with no user consent. A
+///   dedicated command-confirmation surface, and trust mode's opt-in
+///   auto-allow (AU‑5), are the ways to permit them deliberately.
 fn classify_permission(
     request: &RequestPermissionRequest,
     origin_session: u64,
@@ -373,7 +391,7 @@ fn classify_permission(
     }
     match diff_review_from(request, origin_session) {
         Some(review) => PermissionDecision::Review(review),
-        None => PermissionDecision::AutoAllow,
+        None => PermissionDecision::Deny,
     }
 }
 
@@ -554,12 +572,19 @@ mod tests {
     }
 
     #[test]
-    fn edit_without_diff_falls_back_to_auto_allow() {
-        // An Edit-kind call carrying no diff payload has nothing to review.
-        assert!(matches!(
-            classify_permission(&perm_req(ToolKind::Edit, None), 1),
-            PermissionDecision::AutoAllow
-        ));
+    fn mutating_op_without_diff_is_denied_fail_closed() {
+        // A mutating tool call review mode can't show for review is denied, not
+        // silently run — the security-correct default. Trust mode (AU‑5) is the
+        // opt-in that would allow it.
+        for kind in [ToolKind::Edit, ToolKind::Execute, ToolKind::Delete, ToolKind::Other] {
+            assert!(
+                matches!(
+                    classify_permission(&perm_req(kind, None), 1),
+                    PermissionDecision::Deny
+                ),
+                "{kind:?} without a diff must be denied",
+            );
+        }
     }
 
     #[test]

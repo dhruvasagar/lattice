@@ -23,6 +23,14 @@ pub enum PtyHandleError {
     Closed,
 }
 
+/// The master PTY writer, shared between the **input path**
+/// ([`PtyHandle::write`], user keystrokes) and the terminal's
+/// **VT-query responder** (the reader thread writing DSR / DA /
+/// DECRQM / colour replies back so query-driven TUIs render —
+/// see `reader::PtyResponder`). One shared `Mutex` serialises
+/// the two writers so their bytes never interleave mid-sequence.
+pub(crate) type SharedPtyWriter = Arc<Mutex<Box<dyn Write + Send>>>;
+
 /// Inner state behind the Arc. Keeps the master PTY + the
 /// writer handle alive together.
 struct PtyHandleInner {
@@ -30,10 +38,11 @@ struct PtyHandleInner {
     /// all fit. Held to keep the PTY alive (close on drop).
     master: Mutex<Box<dyn MasterPty + Send>>,
     /// Pre-extracted writer — `take_writer` consumes from the
-    /// master at spawn time. parking_lot::Mutex keeps the
-    /// write path lock-free of a tokio runtime; the OS pipe
-    /// is the actual backpressure mechanism.
-    writer: Mutex<Box<dyn Write + Send>>,
+    /// master at spawn time. Shared with the reader thread's
+    /// VT-query responder via [`SharedPtyWriter`]. parking_lot's
+    /// Mutex keeps the write path lock-free of a tokio runtime;
+    /// the OS pipe is the actual backpressure mechanism.
+    writer: SharedPtyWriter,
     /// Stashed last-known size; used to detect no-op resizes.
     last_size: Mutex<(u16, u16)>,
 }
@@ -60,14 +69,14 @@ impl PtyHandle {
     /// [`crate::spawner::spawn`] only.
     pub(crate) fn new(
         master: Box<dyn MasterPty + Send>,
-        writer: Box<dyn Write + Send>,
+        writer: SharedPtyWriter,
         rows: u16,
         cols: u16,
     ) -> Self {
         Self {
             inner: Arc::new(PtyHandleInner {
                 master: Mutex::new(master),
-                writer: Mutex::new(writer),
+                writer,
                 last_size: Mutex::new((rows, cols)),
             }),
         }

@@ -360,6 +360,7 @@ interface types {
         register: register,
         content: string,
         kind: yank-kind,
+        explicit-yank: bool,
     }
     record quit-payload {
         force: bool,
@@ -378,6 +379,10 @@ interface types {
         path: option<string>,
         column: option<utf16-pos>,
         force: bool,
+    }
+    record open-synthetic-buffer-payload {
+        name: string,
+        mode-id: string,
     }
     record spawn-terminal-payload {
         cmd-line: option<string>,
@@ -521,6 +526,9 @@ interface types {
         toggle-mode(string),
         app-action(app-effect),
         record-jump,
+        open-ai-log(option<string>),
+        open-synthetic-buffer(open-synthetic-buffer-payload),
+        open-dashboard,
     }
 
     // ---- The `app-effect` variant mirror (PH7.3b2) ----
@@ -540,6 +548,20 @@ interface types {
     variant scroll-pos { top, center, bottom }
     /// Mirrors `lattice_grammar::app_effect::PaneDirection`.
     variant pane-direction { left, down, up, right }
+    /// Mirrors `lattice_grammar::app_effect::InsertLineEdit` — the `<C-a>`,
+    /// `<C-e>`, `<C-b>`, `<C-f>`, `<C-w>`, `<C-u>`, `<C-k>`, `<C-t>`, `<C-d>`
+    /// readline/vim line-editing family within Insert mode.
+    variant insert-line-edit {
+        cursor-line-start,
+        cursor-line-end,
+        cursor-char-left,
+        cursor-char-right,
+        delete-word-backward,
+        delete-to-line-start,
+        kill-to-line-end,
+        indent-line,
+        dedent-line,
+    }
     /// Mirrors `lattice_grammar::app_effect::HScroll` (vim `z{l,h,L,H,s,e}`).
     /// Each arm's bool is the native struct field: `columns`/`half-screen`
     /// carry `right`, `cursor-to-edge` carries `end`.
@@ -616,6 +638,7 @@ interface types {
         jump-viewport(viewport-pos),
         scroll-cursor-to(scroll-pos),
         horizontal-scroll(hscroll),
+        insert-line-edit(insert-line-edit),
         join-lines(bool),
         find-repeat(bool),
         insert-newline,
@@ -765,6 +788,14 @@ interface types {
         lsp-code-lens(u32),
         color-presentation(u32),
         colorscheme(string),
+        ai-session(ai-session-payload),
+    }
+
+    /// Mirrors `lattice_picker::RoutingPayload::AiSession` — the
+    /// `(provider, index)` key for opening the per-session AI log buffer.
+    record ai-session-payload {
+        provider: string,
+        index: u32,
     }
 
     // ---- The owned `PickerContext` projection (§4.2) ----

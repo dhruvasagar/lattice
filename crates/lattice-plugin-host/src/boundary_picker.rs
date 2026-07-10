@@ -48,7 +48,8 @@ use crate::lattice::plugin_host::types::{
     OpenTarget as WitOpenTarget, PickerContext as WitPickerContext,
     PickerSourceSpec as WitPickerSourceSpec, PositionEntry as WitPositionEntry,
     PositionSource as WitPositionSource, ResolveDiffPayload as WitResolveDiffPayload,
-    RoutingPayload as WitRoutingPayload, ShowMessageActionPayload as WitShowMessageActionPayload,
+    RoutingPayload as WitRoutingPayload, AiSessionPayload as WitAiSessionPayload,
+    ShowMessageActionPayload as WitShowMessageActionPayload,
     SpecialKey as WitSpecialKey, SymbolLocation as WitSymbolLocation,
 };
 
@@ -432,6 +433,13 @@ impl WitBoundary for NativeRoutingPayload {
             NativeRoutingPayload::Colorscheme { name } => {
                 WitRoutingPayload::Colorscheme(name.clone())
             }
+            NativeRoutingPayload::AiSession {
+                provider,
+                index,
+            } => WitRoutingPayload::AiSession(WitAiSessionPayload {
+                provider: provider.clone(),
+                index: *index,
+            }),
         })
     }
 
@@ -483,6 +491,10 @@ impl WitBoundary for NativeRoutingPayload {
                 NativeRoutingPayload::ColorPresentation { index }
             }
             WitRoutingPayload::Colorscheme(name) => NativeRoutingPayload::Colorscheme { name },
+            WitRoutingPayload::AiSession(p) => NativeRoutingPayload::AiSession {
+                provider: p.provider,
+                index: p.index,
+            },
         })
     }
 }

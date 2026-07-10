@@ -24,7 +24,8 @@ use crate::lattice::plugin_host::types::{
     LspRequest as WitLspRequest, ModalState as WitModalState,
     OpenBufferAtColumnPayload as WitOpenBufferAtColumnPayload,
     OpenBufferAtPayload as WitOpenBufferAtPayload, OpenBufferPayload as WitOpenBufferPayload,
-    OpenPickerPayload as WitOpenPickerPayload, Position as WitPosition,
+    OpenPickerPayload as WitOpenPickerPayload, OpenSyntheticBufferPayload as WitOpenSyntheticBufferPayload,
+    Position as WitPosition,
     QuitPayload as WitQuitPayload, QuitScope as WitQuitScope, Range as WitRange,
     Register as WitRegister, SearchDirection as WitSearchDirection, Selection as WitSelection,
     SelectionSet as WitSelectionSet, SetLspLogLevelPayload as WitSetLspLogLevelPayload,
@@ -516,10 +517,12 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
             register,
             content,
             kind,
+            explicit_yank,
         } => WitEffect::Yank(WitYankPayload {
             register: register.to_wit()?,
             content: content.clone(),
             kind: kind.to_wit()?,
+            explicit_yank: *explicit_yank,
         }),
         NativeEffect::EnterMode(state) => WitEffect::EnterMode(state.to_wit()?),
         NativeEffect::SaveBuffer { path } => WitEffect::SaveBuffer(opt_path_to_wit(path)?),
@@ -705,6 +708,16 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
         // NarrowTrigger-carrying AppEffect still propagates its typed error).
         NativeEffect::AppAction(app) => WitEffect::AppAction(app.to_wit()?),
         NativeEffect::RecordJump => WitEffect::RecordJump,
+        NativeEffect::OpenAiLog { session } => {
+            WitEffect::OpenAiLog(session.clone())
+        }
+        NativeEffect::OpenSyntheticBuffer { name, mode_id } => {
+            WitEffect::OpenSyntheticBuffer(WitOpenSyntheticBufferPayload {
+                name: name.clone(),
+                mode_id: mode_id.clone(),
+            })
+        }
+        NativeEffect::OpenDashboard => WitEffect::OpenDashboard,
         NativeEffect::Many(_) => {
             return Err(
                 "Effect::Many is flattened to list<effect> at the boundary and must not \
@@ -738,6 +751,7 @@ fn effect_from_wit(w: WitEffect) -> Result<NativeEffect, String> {
             register: NativeRegister::from_wit(p.register)?,
             content: p.content,
             kind: NativeYankKind::from_wit(p.kind)?,
+            explicit_yank: p.explicit_yank,
         },
         WitEffect::EnterMode(state) => NativeEffect::EnterMode(NativeModalState::from_wit(state)?),
         WitEffect::SaveBuffer(path) => NativeEffect::SaveBuffer {
@@ -890,6 +904,12 @@ fn effect_from_wit(w: WitEffect) -> Result<NativeEffect, String> {
         WitEffect::ToggleMode(mode_name) => NativeEffect::ToggleMode { mode_name },
         WitEffect::AppAction(app) => NativeEffect::AppAction(NativeAppEffect::from_wit(app)?),
         WitEffect::RecordJump => NativeEffect::RecordJump,
+        WitEffect::OpenAiLog(session) => NativeEffect::OpenAiLog { session },
+        WitEffect::OpenSyntheticBuffer(p) => NativeEffect::OpenSyntheticBuffer {
+            name: p.name,
+            mode_id: p.mode_id,
+        },
+        WitEffect::OpenDashboard => NativeEffect::OpenDashboard,
     })
 }
 

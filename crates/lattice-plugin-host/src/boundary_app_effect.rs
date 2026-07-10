@@ -17,11 +17,13 @@
 
 use crate::WitBoundary;
 use crate::lattice::plugin_host::types::{
-    AppEffect as WitAppEffect, Hscroll as WitHscroll, NarrowLinesPayload as WitNarrowLinesPayload,
+    AppEffect as WitAppEffect, Hscroll as WitHscroll, InsertLineEdit as WitInsertLineEdit,
+    NarrowLinesPayload as WitNarrowLinesPayload,
     PaneDirection as WitPaneDirection, ScrollPos as WitScrollPos, ViewportPos as WitViewportPos,
 };
 use lattice_grammar::app_effect::{
-    AppEffect as NativeAppEffect, HScroll as NativeHScroll, PaneDirection as NativePaneDirection,
+    AppEffect as NativeAppEffect, HScroll as NativeHScroll,
+    InsertLineEdit as NativeInsertLineEdit, PaneDirection as NativePaneDirection,
     ScrollPos as NativeScrollPos, ViewportPos as NativeViewportPos,
 };
 use lattice_grammar::modal::{
@@ -84,6 +86,36 @@ impl WitBoundary for NativePaneDirection {
             WitPaneDirection::Down => NativePaneDirection::Down,
             WitPaneDirection::Up => NativePaneDirection::Up,
             WitPaneDirection::Right => NativePaneDirection::Right,
+        })
+    }
+}
+
+impl WitBoundary for NativeInsertLineEdit {
+    type Wit = WitInsertLineEdit;
+    fn to_wit(&self) -> Result<WitInsertLineEdit, String> {
+        Ok(match self {
+            NativeInsertLineEdit::CursorLineStart => WitInsertLineEdit::CursorLineStart,
+            NativeInsertLineEdit::CursorLineEnd => WitInsertLineEdit::CursorLineEnd,
+            NativeInsertLineEdit::CursorCharLeft => WitInsertLineEdit::CursorCharLeft,
+            NativeInsertLineEdit::CursorCharRight => WitInsertLineEdit::CursorCharRight,
+            NativeInsertLineEdit::DeleteWordBackward => WitInsertLineEdit::DeleteWordBackward,
+            NativeInsertLineEdit::DeleteToLineStart => WitInsertLineEdit::DeleteToLineStart,
+            NativeInsertLineEdit::KillToLineEnd => WitInsertLineEdit::KillToLineEnd,
+            NativeInsertLineEdit::IndentLine => WitInsertLineEdit::IndentLine,
+            NativeInsertLineEdit::DedentLine => WitInsertLineEdit::DedentLine,
+        })
+    }
+    fn from_wit(w: WitInsertLineEdit) -> Result<Self, String> {
+        Ok(match w {
+            WitInsertLineEdit::CursorLineStart => NativeInsertLineEdit::CursorLineStart,
+            WitInsertLineEdit::CursorLineEnd => NativeInsertLineEdit::CursorLineEnd,
+            WitInsertLineEdit::CursorCharLeft => NativeInsertLineEdit::CursorCharLeft,
+            WitInsertLineEdit::CursorCharRight => NativeInsertLineEdit::CursorCharRight,
+            WitInsertLineEdit::DeleteWordBackward => NativeInsertLineEdit::DeleteWordBackward,
+            WitInsertLineEdit::DeleteToLineStart => NativeInsertLineEdit::DeleteToLineStart,
+            WitInsertLineEdit::KillToLineEnd => NativeInsertLineEdit::KillToLineEnd,
+            WitInsertLineEdit::IndentLine => NativeInsertLineEdit::IndentLine,
+            WitInsertLineEdit::DedentLine => NativeInsertLineEdit::DedentLine,
         })
     }
 }
@@ -259,6 +291,9 @@ impl WitBoundary for NativeAppEffect {
                         .to_string(),
                 );
             }
+            NativeAppEffect::InsertLineEdit(edit) => {
+                WitAppEffect::InsertLineEdit(edit.to_wit()?)
+            }
         })
     }
 
@@ -416,6 +451,9 @@ impl WitBoundary for NativeAppEffect {
             WitAppEffect::SearchTrigger(query) => NativeAppEffect::SearchTrigger { query },
             WitAppEffect::SearchJumpToSource => NativeAppEffect::SearchJumpToSource,
             WitAppEffect::SearchRefresh => NativeAppEffect::SearchRefresh,
+            WitAppEffect::InsertLineEdit(edit) => {
+                NativeAppEffect::InsertLineEdit(NativeInsertLineEdit::from_wit(edit)?)
+            }
         })
     }
 }

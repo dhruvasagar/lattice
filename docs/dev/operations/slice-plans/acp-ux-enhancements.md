@@ -32,7 +32,15 @@ Create this architecture fragment and slice plan. (This slice.)
 
 ---
 
-## Slice AUX-1 — Permission surfacing for non-edit operations
+## Slice AUX-1 — Permission surfacing for non-edit operations 🚧
+
+**Status:** the model, supervisor branch, oneshot plumbing and
+`render_conversation` arm all landed and work. The slice is NOT complete: the
+allow/deny action handlers are registered but **bound to nothing**, so a pending
+permission renders as inert text. `ai_conversation_keymap_entries` adds no
+chord, and the `:ai-allow` / `:ai-deny` ex-commands the code comment references
+were never registered. The rendered `(a)/(A)/(r)/(R)` hints additionally collide
+with the focus-prompt bindings. See "Post-landing fixes" below.
 
 **Design ref:** §3.2 (`Block::Permission`), §3.3 (`pending_permissions` map),
 §4.1 (flow, `classify_permission` third branch), §5.3 (keymap).
@@ -187,3 +195,171 @@ without AUX-1; `AwaitingPermission` is additive once AUX-1 lands.
    patterns established by earlier slices.
 
 Or in parallel: AUX-2 ‖ AUX-3 ‖ AUX-4 for independent teams; AUX-1 follows.
+
+---
+
+## Post-landing fixes
+
+Three defects surfaced on first real use of the AUX slices. All three were
+integration-seam bugs: every unit test passed, because none of the seams was
+covered end to end.
+
+### F.1 — Sticky headerline deleted the prompt line (TUI only) ✅
+
+AUX-2 registered the first sticky headerline on a buffer whose cursor lives on
+the **last** line, which exposed a latent double-reservation. The host reserves
+the sticky row once, in the scroll budget (`Editor::ensure_cursor_visible`'s
+`effective_height`); `compose_pane_lines` then reserved it *again* by truncating
+the visible-line window (`visible.truncate(len - sticky_count)`). The fill loop
+below the sticky pre-pass already caps at `height`, so the truncation only ever
+deleted a real document line — always the prompt.
+
+The buffer model was untouched, so `<CR>` still submitted while the prompt row
+painted as an empty `~` marker with the caret parked on it.
+
+Fixed by removing the truncation in `crates/lattice-ui-tui/src/render.rs`.
+GPUI never had the bug (it pushes sticky rows, then fills to `viewport_height`,
+dropping only genuine overflow), so no peer change was needed — parity verified,
+not assumed. Guarded by
+`render::tests::sticky_headerline_does_not_clip_the_last_document_line`.
+
+### F.2 — Headerline never repainted, so tokens/cost never appeared ✅
+
+The full data path was correct: opencode emits `usage_update`, it deserializes,
+and it reaches `ConversationStore` (all three now covered — see
+`usage_update_from_opencode_wire_json` and the live e2e
+`opencode_supervisor_end_to_end`). The drain, however, published its repaint
+wake (`ConversationProjected`) only when the transcript **text** changed.
+
+Status, usage, cost and queue length live *only* in the headerline and never in
+the transcript, so a `usage_update` re-projected to byte-identical text, bumped
+`headerline_version`, and woke nobody. `ConversationProjected` is the only event
+wired to `virtual_rows_wake` (`install.rs`), so the headerline froze at its last
+text-driven repaint — permanently showing `Ready`.
+
+Fixed by publishing `ConversationProjected` unconditionally after each
+re-projection. The invariant is pinned by
+`usage_only_update_moves_headerline_but_not_transcript`.
+
+### F.3 — Caret did not follow the prompt during streaming ✅
+
+The prompt-focus tick callback re-parked the caret only on `did_clear` (a new
+*user* turn), so it fired after a send but never while streamed agent output
+grew the transcript above the prompt and pushed it down. The host clamps the
+caret across an owner-write edit but does not move it, leaving the caret
+stranded in the read-only transcript.
+
+Fixed by re-parking whenever the prompt line moved, gated on modal state:
+`should_repark_caret(did_clear, text_changed, in_insert)`. The mode now tracks
+Insert by subscribing to `Event::ModalModeChanged`. In Normal the user is
+reading or navigating and the cursor stays put.
+
+**Known limitation (accepted):** the tick callback cannot tell whether the
+conversation buffer is still active, so if the user switches to another buffer
+*and* enters Insert there while the agent streams, the re-park would move that
+buffer's cursor. Switching buffers is a Normal-mode action, so the Insert gate
+suppresses the common case. A proper fix needs an active-buffer signal the host
+does not currently expose to modes.
+
+### F.4 — Headerline provider leaked across re-activation ✅
+
+`CONV_HEADERLINE_PROVIDER_ID` is a fixed tag, `register()` refuses to replace a
+live id, and the return value was discarded — so a re-opened `:opencode` kept
+the stale provider. `AiConversationGuard` now owns the registration and
+unregisters on drop (mode owns its full surface), and re-registration clears any
+stale entry first.
+
+### F.5 — Caret does not ride streamed content ✅
+
+F.3 fixed the symptom with a modal-state flag and a tick callback. That is a
+mechanism bolted beside the content, and it was superseded by slice OWC below,
+which deletes it. (Both F.5 and OWC shipped together.)
+
+### Testing gap this exposed
+
+Every one of F.1–F.4 lives at a seam between two components that were each
+individually well tested. Specifically: no TUI test had ever registered a
+virtual-row provider, and no test drove `usage_update` from wire JSON through to
+a rendered headerline. Unit coverage of both halves of a seam is not coverage of
+the seam.
+
+---
+
+## Follow-on slices
+
+Design refs: [owner-write-caret.md](../../architecture/owner-write-caret.md),
+[popup-api.md](../../architecture/popup-api.md),
+[acp-ux-enhancements.md](../../architecture/acp-ux-enhancements.md) §5.3–§5.4.
+
+Sequenced so each lands green and independently useful. OWC is first because it
+fixes what is actively wrong; PU-A is the largest and riskiest; TCF depends on
+nothing and can be pulled forward if PU-A stalls.
+
+### Slice OWC — Owner-write caret survival ✅
+
+**Design ref:** owner-write-caret.md.
+**Depends on:** nothing. **Deletes:** F.3's mechanism.
+
+| File | Change |
+|---|---|
+| `crates/lattice-core/src/document.rs` | `apply_edit_batch` transforms `self.selections` across each `AppliedEdit`. |
+| `crates/lattice-core/src/{buffer,position}.rs` | `transform_position(Position, &AppliedEdit) -> Position` (§4.1 rule), pure + total. |
+| `crates/lattice-host/src/dispatch.rs` | Write the caret through to the active document's selections at end of input dispatch (one site). Adopt the document's primary head on an owner-write version bump (per-buffer `last_seen_text_version`). |
+| `crates/lattice-ai/src/acp/conversation_mode.rs` | Pure deletion: `should_repark_caret`, `in_insert`, the `ModalModeChanged` subscription, `_modal_subscription`, the prompt-focus tick callback and `drain_flag`. `reproject` is already minimal (see owner-write-caret.md §5) and is not touched. |
+
+Tests: owner-write-caret.md §8. The `apply_targeted_edit`-never-moves-the-cursor
+and keystroke-no-double-move regressions are the ones that catch a wrong design.
+
+**Risk:** touches `lattice-core`'s edit path, which everything sits on. Mitigated
+by the transform being pure and the host adopting only for edits it did not issue.
+
+### Slice PU-A — Generic popup primitive 📝
+
+**Design ref:** popup-api.md. **Depends on:** nothing. **Ships no user feature.**
+
+| File | Change |
+|---|---|
+| `crates/lattice-core/src/ui/popup.rs` | Add `PopupFocus { Steal, Passive }`. |
+| `crates/lattice-host/src/dispatch.rs` | `open_popup_buffer(BufferId, PopupPlacement, PopupFocus)`. Rework `open_popup` / `open_floating_popup` into callers. Fix State-A dismissal restoring `BufferKind::Document` (popup-api.md §5). |
+| `crates/lattice-host/src/state.rs` | `PrevPaneState` gains `modal: ModalState`; `dismiss_popup` restores it. `PopupFocus::Steal` sets `ModalState::Normal` on open (without it the popup's bindings never fire — Insert eats the keystroke). Rename `prev_pane_for_help` → `prev_pane_for_popup`. |
+| `crates/lattice-host/src/popup.rs`, `crates/lattice-help/` | Move `PopupSnapshot` + `HelpMetadata` + `popup_back_stack` into `lattice-help`. |
+| `crates/lattice-grammar/src/effect.rs` | Add `Effect::OpenPopup { buffer, placement, focus }`. Rename `CloseHover` → `DismissPopup`. |
+| `crates/lattice-ui-tui/src/{render.rs,app/dispatch.rs}` | Title from buffer name, not `help.title`. New effect arm. |
+| `crates/lattice-ui-gpui/src/{lib.rs,window.rs}` | Same, in lockstep (exhaustive match ⇒ compile error if missed). |
+| `wit/types.wit`, `crates/lattice-plugin-host/src/boundary_effect.rs` | `effect` variant + `to_wit` / `from_wit` arms. |
+
+Tests: popup-api.md §7. The Help regressions (`:help`, `q`/`<Esc>`, `<C-o>`
+back-stack, floating hover) are the acceptance gate — this slice must be
+invisible to the user.
+
+**Risk:** highest of the four. It refactors a working, widely-used surface and
+ships nothing new. Land it green and separately so a regression bisects cleanly.
+
+### Slice PU-B — ACP permission menu 📝
+
+**Design ref:** acp-ux-enhancements.md §5.3. **Depends on:** PU-A.
+**Closes:** AUX-1 (🚧).
+
+| File | Change |
+|---|---|
+| `crates/lattice-ai/src/acp/permission_mode.rs` (new) | `ai-permission-mode`: projects the request into `*ai-permission*`, binds `1..=N` at activation from the agent's option list, `<CR>` on an option line, `Esc`/`q` dismiss. Handler resolves via `store.resolve_permission(id, option_id)`. |
+| `crates/lattice-ai/src/acp/conversation_mode.rs` | Drain flags a newly-pending id; tick callback returns `Effect::OpenPopup`. Delete the unreachable `action:ai-conv-allow` / `-deny` handlers and the misleading `(a)/(A)/(r)/(R)` hints in `render_conversation`. |
+| `crates/lattice-ai/src/acp/commands.rs` | `:ai-permission` reopens the oldest pending request. |
+| `crates/lattice-ai/src/acp/install.rs` | Register the new mode. |
+
+Queue behaviour follows `lsp.rs::open_next_queued_show_message_request`.
+
+### Slice TCF — Tool-call folds 📝
+
+**Design ref:** acp-ux-enhancements.md §5.4. **Depends on:** nothing.
+
+| File | Change |
+|---|---|
+| `crates/lattice-ai/src/acp/conversation.rs` | `Block::ToolCall` gains `kind`, `raw_input`, `raw_output`, `content`, `locations`. `update_tool_status` → `merge_tool_update` folding every `Some` field from `ToolCallUpdateFields`. |
+| `crates/lattice-ai/src/acp/conversation_mode.rs` | `render_conversation` always emits detail rows under the summary line. |
+| `crates/lattice-ai/src/acp/tool_fold.rs` (new) | `ToolCallFoldSource: FoldSource`, `identity = hash(tool_call_id)`, `closed: true`. Registered/unregistered via `FoldOverlayServiceHandle` on activate/guard-drop, mirroring `DiffMode::on_activate`. |
+| `crates/lattice-ai/src/acp/conversation.rs` | Reasoning blocks become a second fold consumer; fix the `Block::Reasoning` doc comment that claims folding it does not do. |
+
+Ingest capture (`Block::ToolCall` fields + `merge_tool_update`) is independently
+useful and can land first — it stops discarding wire data even before folds
+render.

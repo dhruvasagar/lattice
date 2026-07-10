@@ -288,10 +288,18 @@ block updates in place (decoration update, not content rewrite):
 
 `✓` (U+2713) for allowed, `✗` (U+2717) for denied.
 
-The options are rendered as a numbered list with keybind hints. The mode
-installs a transient keymap on permission-block focus: `a` = allow once,
-`A` = allow always, `r` = reject once, `R` = reject always. Or the user can
-use a generic `:ai-allow` / `:ai-deny` ex-command.
+The inline block renders the request and its resolution for the transcript
+record. It is **not** the interaction surface — see §5.3.
+
+Superseded: earlier revisions of this document specified a transient keymap on
+permission-block focus (`a` / `A` / `r` / `R`) plus `:ai-allow` / `:ai-deny`
+ex-commands. That design hardcoded the four `PermissionOptionKind` values. The
+wire does not work that way: `session/request_permission` carries an
+**agent-supplied `Vec<PermissionOption>`**, each with its own `option_id`
+(an opaque `String`), human-readable `name`, and a `kind` that is only a *hint*.
+A fixed four-chord keymap cannot express an option list it does not know, and
+those chords would exist in the conversation buffer at all times for an
+interaction that is inherently momentary.
 
 ### 4.2 AUX-2 — Cost/token metadata
 
@@ -449,27 +457,98 @@ Permission blocks are `Block` variants rendered by `render_conversation` — a
 pure function that produces `(content_lines, decorations)`. Both renderers
 consume the same projection. The TUI and GPUI peers move in lockstep.
 
-### 5.3 Permission keymap
+### 5.3 Permission menu
 
-The `ai-conversation` mode registers action handlers for allow/deny:
+A permission request is a momentary interaction over a dynamic option list. It
+gets a momentary surface: a popup whose buffer *is* the menu. See
+[popup-api.md](./popup-api.md) for the surface; this section covers only what
+`lattice-ai` contributes.
 
-```rust
-actions!(AiConversationMode, [AiAllow, AiDeny, AiAllowAlways, AiDenyAlways]);
+**The buffer.** On the first `Block::Permission { status: Pending }`, the mode
+registers a synthetic `*ai-permission*` buffer with major mode
+`ai-permission-mode` and projects the request into it: title, optional
+description, and one line per `PermissionOption`, numbered in wire order.
+
+```
+Allow `cargo test`?
+
+  1  Allow once
+  2  Allow always
+  3  Reject once
+  4  Reject always
+
+  Esc  decide later
 ```
 
-Default keybindings at `KeymapLayer::MinorMode(ai_conversation)`:
+The lines are generated from the agent's list. Four options is the common case,
+not the contract.
 
-| Key | Action |
-|-----|--------|
-| `a` | `AiAllow` |
-| `A` | `AiAllowAlways` |
-| `r` | `AiDeny` |
-| `R` | `AiDenyAlways` |
+**The keymap.** `ai-permission-mode` binds `1..=N` at activation, where `N` is
+the number of options in *this* request — the same shape as
+`completion_popup_layer_bindings`, which computes its bindings when the
+completion popup appears. Nothing is bound in the conversation buffer. When the
+popup buffer is dismissed the bindings cease to exist, because the buffer does.
 
-These actions are NO-OPs when no permission block is pending. They call
-`store.resolve_permission(current_permission_id, outcome)`. The current
-permission ID is stored in the mode's `State` struct, set by the projection
-drain when it encounters a `Block::Permission { status: Pending }`.
+`<CR>` on an option line resolves it too, so the menu also works by cursor —
+the file-tree / oil `entry_at_line` model.
+
+**Resolution.** The handler maps the chosen line to its `PermissionOption` and
+calls `store.resolve_permission(id, option_id)`, which fires the
+`oneshot::Sender<PermissionOutcome>` the supervisor is parked on
+(`handle_permission`, `PermissionDecision::AskUser`). The supervisor answers ACP
+with `RequestPermissionOutcome::Selected(option_id)`. The popup dismisses; focus
+and modal state return to the prompt (see popup-api.md §5 — restoring Insert is
+a fix the primitive must carry).
+
+**Opening.** The drain flags a newly-pending id; the mode's tick callback returns
+`Effect::OpenPopup { buffer, Centered, PopupFocus::Steal }`. The agent is blocked
+awaiting the answer, so stealing focus costs the user nothing they could
+otherwise be doing with the agent — and `Esc` defers without answering.
+
+**Deferral and queueing.** `Esc` dismisses the popup and leaves the request
+`Pending`; the inline block keeps rendering it, and `:ai-permission` reopens the
+menu for the oldest pending request. Concurrent requests queue and the next opens
+on resolve, following the LSP `showMessageRequest` precedent
+(`lsp.rs::open_next_queued_show_message_request`).
+
+**Trust mode.** Unchanged: `<C-t>` auto-allow short-circuits in
+`resolve_decision` before `AskUser`, so no block is pushed and no popup opens.
+
+### 5.4 Tool-call expansion
+
+Tool calls render collapsed and expand to show their detail.
+
+**Ingest currently discards the detail.** `Conversation::apply` keeps only
+`{ id, title, status }` from `SessionUpdate::ToolCall`, and only `status` from
+`ToolCallUpdate`. The ACP schema carries `kind`, `raw_input`, `raw_output`,
+`content: Vec<ToolCallContent>` (text / **diff** / terminal), and `locations` —
+on both the initial call *and* on updates, since detail commonly arrives
+incrementally. `Block::ToolCall` grows those fields; `update_tool_status`
+generalises to a `merge_tool_update` that folds every `Some` field.
+
+**Expansion is a real fold, not a projection toggle.** `render_conversation`
+always emits the detail rows beneath the summary line. A `ToolCallFoldSource`
+(`FoldSource`, registered through `FoldOverlayServiceHandle` exactly as
+`DiffMode::on_activate` registers its hunk sources) returns one `Fold` per tool
+call over its detail range, `closed: true` by default.
+
+The streaming-coherence problem solves itself: `Fold::identity` exists precisely
+to "carry closed-state across recomputes … so that adding or removing lines
+elsewhere in the buffer doesn't reopen this fold". Set
+`identity = hash(tool_call_id)`. The transcript may grow arbitrarily above a
+tool call on every token; its expansion state is keyed to the call, not to a
+line range.
+
+Consequences worth naming:
+
+- `za` toggles. No new chord, no line→block span map, no mode-owned expansion
+  set — the fold *is* the state, and it is per-buffer, where it belongs.
+- Folded rows are elided at the cell layer, so a collapsed transcript costs the
+  renderer nothing per hidden detail line (paramount #1).
+- The `Block::Reasoning` doc comment claims reasoning is "folded by default in
+  the projection". It is not — the projection merely prefixes each line with
+  `│`. Reasoning becomes a second `FoldSource` consumer, and the comment becomes
+  true.
 
 ---
 
@@ -499,6 +578,16 @@ drain when it encounters a `Block::Permission { status: Pending }`.
   stored. Send second `session/prompt` while first active → assert queued.
 - **Queue (integration):** drive two `prompt` calls → first starts, second
   queued. Headerline shows `⌛ 1 queued`. On first completion, second auto-sends.
-- **Permission keymap (integration):** focus permission block → press `a` →
-  block resolves to `Allowed`. Press `r` → block resolves to `Denied`.
-  No pending permission → `AiAllow` is no-op.
+- **Permission menu (integration):** a `Pending` block opens the `*ai-permission*`
+  popup with one line per agent-supplied option. Pressing `2` resolves the
+  request with that option's `option_id` and dismisses the popup; focus and
+  modal state return to the prompt. `Esc` dismisses and leaves the block
+  `Pending`; `:ai-permission` reopens it. Two concurrent requests queue; the
+  second opens when the first resolves.
+- **Permission menu (unit):** the keymap binds exactly `1..=N` for an N-option
+  request — a three-option and a five-option request both bind correctly, so
+  nothing depends on `PermissionOptionKind` having four values.
+- **Tool-call folds (integration):** a tool call renders collapsed; `za` expands
+  it to show `raw_input` / `raw_output` / diff content. A streamed chunk that
+  grows the transcript above an expanded call leaves it expanded (fold identity
+  is keyed on `tool_call_id`, not on the line range).

@@ -191,6 +191,7 @@ async fn supervisor_loop(
                     conv_store.clone(),
                     diff_bus.clone(),
                     auto_accept.clone(),
+                    logger.clone(),
                 )
                 .await
                 {
@@ -525,13 +526,17 @@ async fn start_provider(
     conv_store: ConversationStore,
     diff_bus: Option<ProgrammaticDiffBus>,
     auto_accept: Arc<AtomicBool>,
+    logger: AiLogger,
 ) -> Result<(Arc<Connection>, SessionId, tokio::process::Child)> {
     let mut child = tokio::process::Command::new(&provider.command)
         .args(&provider.args)
         .envs(provider.env.iter().cloned())
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
+        // Capture stderr (not `null`): a crashing agent -- e.g. `opencode acp`
+        // dying on startup with a SQLite "no such column: name" -- otherwise
+        // exits silently, leaving the user with a dead session and no clue.
+        .stderr(std::process::Stdio::piped())
         // The explicit `kill_child` calls cover `Stop` and replace-`Start`,
         // but not the supervisor task simply going away -- when the last
         // `AiClientHandle` clone drops, the command channel closes and
@@ -549,6 +554,25 @@ async fn start_provider(
         .stdout
         .take()
         .ok_or_else(|| AiError::Process("no stdout".to_string()))?;
+
+    // Drain the agent's stderr into `:ai-log` so a startup crash surfaces a
+    // diagnostic (e.g. `opencode acp`'s "no such column: name") instead of a
+    // silent dead session.
+    if let Some(stderr) = child.stderr.take() {
+        let logger = logger.clone();
+        let key = session.clone();
+        tokio::spawn(async move {
+            use tokio::io::AsyncBufReadExt;
+            let mut lines = tokio::io::BufReader::new(stderr).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
+                }
+                logger.log(Some(&key), AiLogLevel::Warn, AiLogSource::Client, line.to_string());
+            }
+        });
+    }
 
     let (conn, notif_rx, perm_rx) = Connection::spawn(stdout, stdin);
     // AU‑4: `origin_session` tags any diff opened for this session's edits so a

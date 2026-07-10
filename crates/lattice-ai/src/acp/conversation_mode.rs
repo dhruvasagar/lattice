@@ -422,9 +422,20 @@ fn send_handler() -> ActionHandler {
         if prompt.trim().is_empty() {
             return None;
         }
-        if let Some(ai) = ctx.services.get::<AiClientHandle>() {
-            ai.prompt(prompt.to_string());
+        let ai = ctx.services.get::<AiClientHandle>()?;
+        // Surface the "no running agent" case instead of silently dropping the
+        // prompt: without a live session the supervisor discards `prompt(..)`, so
+        // Enter would appear to do nothing. Stay in Insert with the prompt intact
+        // so the user can retry after fixing the agent.
+        if !ai.snapshot().running {
+            return Some(Effect::Echo {
+                level: EchoLevel::Error,
+                text: "opencode: no running session — run :opencode; if it fails to \
+                       start, see :ai-log"
+                    .to_string(),
+            });
         }
+        ai.prompt(prompt.to_string());
         // The prompt is cleared by the mode's projection when the resulting User
         // turn lands (see `reproject` in `on_activate`), NOT by a clear edit
         // here. A separate clear would race the transcript re-projection — which

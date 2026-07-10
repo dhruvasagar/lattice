@@ -218,21 +218,29 @@ impl RegistryInner {
         &mut self.layers[pos]
     }
 
-    /// K.1.c (2026-05-30): merge **only** the always-on
-    /// layers (Builtin + MajorMode + User + Buffer). MinorMode
-    /// layers are excluded — they're folded in per-keystroke
-    /// based on the active buffer's mode set (see
+    /// Merge **only** the always-on layers (Builtin + User +
+    /// Buffer). Both `MajorMode` and `MinorMode` layers are
+    /// excluded — they're folded in per-keystroke based on the
+    /// active buffer's mode set (see
     /// [`KeymapHandle::lookup_with_context`]).
     ///
     /// Pre-K.1.c the merge included every layer regardless of
-    /// activation, which made the lookup path miss the
-    /// "minor-mode bindings only fire when the mode is
-    /// active on the active buffer" semantics emacs-style
-    /// composability demands.
+    /// activation. K.1.c excluded `MinorMode`. A major mode was
+    /// still folded in unconditionally, which was harmless only
+    /// while every major returned an empty `keymap()`. The first
+    /// major with real bindings (`ai-conversation`'s `i` →
+    /// focus-prompt) then fired its chords in EVERY buffer —
+    /// pressing `i` on the read-only dashboard jumped the cursor to
+    /// EOF and entered Insert. A major-mode keymap must be gated by
+    /// the active major exactly as a minor-mode keymap is gated by
+    /// active minors.
     fn build_always_on_merged(&self) -> MergedKeymap {
         let mut merged = MergedKeymap::default();
         for layer in &self.layers {
-            if matches!(layer.layer, KeymapLayer::MinorMode(_)) {
+            if matches!(
+                layer.layer,
+                KeymapLayer::MinorMode(_) | KeymapLayer::MajorMode(_)
+            ) {
                 continue;
             }
             for (mode, trie) in &layer.modes {
@@ -243,18 +251,23 @@ impl RegistryInner {
         merged
     }
 
-    /// K.1.c (2026-05-30): snapshot the per-`ModeId` minor-mode
-    /// tries for the read-side cache. Each value is the full
-    /// per-`BindingMode` trie set for that mode's keymap layer.
-    /// The keystroke path consults this map for each active
-    /// `ModeId` (in reverse activation order, last-wins) when
-    /// composing the merged trie.
-    fn build_minor_mode_tries(&self) -> HashMap<ModeId, Arc<HashMap<BindingMode, KeymapTrie>>> {
+    /// Snapshot the per-`ModeId` gated tries for the read-side
+    /// cache — both `MajorMode` and `MinorMode` layers, keyed by
+    /// their `ModeId`. Each value is the full per-`BindingMode`
+    /// trie set for that mode's keymap layer. The keystroke path
+    /// consults this map for each entry of the active-mode slice
+    /// (the active major first, then minors in activation order —
+    /// last-wins) when composing the merged trie. A `ModeId`
+    /// identifies exactly one registered mode, which has exactly
+    /// one kind, so major and minor entries never collide.
+    fn build_gated_mode_tries(&self) -> HashMap<ModeId, Arc<HashMap<BindingMode, KeymapTrie>>> {
         let mut out = HashMap::new();
         for layer in &self.layers {
-            if let KeymapLayer::MinorMode(mode_id) = layer.layer {
-                out.insert(mode_id, Arc::new(layer.modes.clone()));
-            }
+            let mode_id = match layer.layer {
+                KeymapLayer::MajorMode(id) | KeymapLayer::MinorMode(id) => id,
+                _ => continue,
+            };
+            out.insert(mode_id, Arc::new(layer.modes.clone()));
         }
         out
     }
@@ -282,7 +295,7 @@ pub struct KeymapRegistry {
     /// order, last-wins) by
     /// [`KeymapHandle::lookup_with_context`]. Rebuilt by
     /// writers alongside `merged`.
-    minor_mode_tries: Arc<ArcSwap<HashMap<ModeId, Arc<HashMap<BindingMode, KeymapTrie>>>>>,
+    gated_mode_tries: Arc<ArcSwap<HashMap<ModeId, Arc<HashMap<BindingMode, KeymapTrie>>>>>,
     /// MARG.2 (2026-06-03): reverse cache for the keybinding
     /// annotator surface. Indexes Normal-mode bindings by
     /// [`CommandId`] so `:` line command completion can show
@@ -319,7 +332,7 @@ impl KeymapRegistry {
         Arc::new(Self {
             inner: Mutex::new(RegistryInner::new()),
             merged: Arc::new(ArcSwap::from_pointee(MergedKeymap::default())),
-            minor_mode_tries: Arc::new(ArcSwap::from_pointee(HashMap::new())),
+            gated_mode_tries: Arc::new(ArcSwap::from_pointee(HashMap::new())),
             reverse_cache: Arc::new(ArcSwap::from_pointee(HashMap::new())),
         })
     }
@@ -343,7 +356,7 @@ impl Default for KeymapRegistry {
         Self {
             inner: Mutex::new(RegistryInner::new()),
             merged: Arc::new(ArcSwap::from_pointee(MergedKeymap::default())),
-            minor_mode_tries: Arc::new(ArcSwap::from_pointee(HashMap::new())),
+            gated_mode_tries: Arc::new(ArcSwap::from_pointee(HashMap::new())),
             reverse_cache: Arc::new(ArcSwap::from_pointee(HashMap::new())),
         }
     }
@@ -441,7 +454,7 @@ impl KeymapHandle {
     /// `active_modes`. D.5 wires diff-mode through that
     /// path; other modes migrate as their consumers care.
     pub fn lookup(&self, mode: BindingMode, chords: &[KeyChord]) -> LookupResult {
-        let minors = self.registry.minor_mode_tries.load();
+        let minors = self.registry.gated_mode_tries.load();
         let mut sorted: Vec<ModeId> = minors.keys().copied().collect();
         sorted.sort();
         self.lookup_with_context(mode, chords, &sorted)
@@ -473,7 +486,7 @@ impl KeymapHandle {
     ///    minor-mode-precedence-over-global semantics.
     ///
     /// Wait-free reads: two `ArcSwap::load` calls
-    /// (`merged`, `minor_mode_tries`) + per-`active_modes`
+    /// (`merged`, `gated_mode_tries`) + per-`active_modes`
     /// merge work. Typical `active_modes.len()` is 0-3 so
     /// the overhead is small.
     pub fn lookup_with_context(
@@ -483,7 +496,7 @@ impl KeymapHandle {
         active_modes: &[ModeId],
     ) -> LookupResult {
         let always_on = self.registry.merged.load();
-        // Fast path: no minor modes active → use the cached
+        // Fast path: no gated modes active → use the cached
         // always-on trie directly, no per-tick allocation.
         if active_modes.is_empty() {
             return match always_on.by_mode.get(&mode) {
@@ -491,15 +504,18 @@ impl KeymapHandle {
                 None => LookupResult::Unbound,
             };
         }
-        // Per-tick fold: start from always-on, overlay each
-        // active minor mode in activation order (last wins).
-        let minors = self.registry.minor_mode_tries.load();
+        // Per-tick fold: start from always-on (Builtin + User +
+        // Buffer), then overlay each gated mode in `active_modes`
+        // order — the caller supplies the active major first, then
+        // minors in activation order, so a minor overlays (wins
+        // over) the major and later minors win over earlier ones.
+        let gated = self.registry.gated_mode_tries.load();
         let mut composite = KeymapTrie::new();
         if let Some(base) = always_on.by_mode.get(&mode) {
             composite.merge_over(base);
         }
         for mode_id in active_modes {
-            if let Some(per_mode) = minors.get(mode_id) {
+            if let Some(per_mode) = gated.get(mode_id) {
                 if let Some(trie) = per_mode.get(&mode) {
                     composite.merge_over(trie);
                 }
@@ -561,11 +577,11 @@ impl KeymapHandle {
             }
             (
                 inner.build_always_on_merged(),
-                inner.build_minor_mode_tries(),
+                inner.build_gated_mode_tries(),
             )
         };
         self.registry.merged.store(Arc::new(merged));
-        self.registry.minor_mode_tries.store(Arc::new(minors));
+        self.registry.gated_mode_tries.store(Arc::new(minors));
         self.registry.rebuild_reverse_cache();
     }
 
@@ -589,14 +605,14 @@ impl KeymapHandle {
             layer_ref.modes.entry(mode).or_default().insert(path, bound);
             (
                 inner.build_always_on_merged(),
-                inner.build_minor_mode_tries(),
+                inner.build_gated_mode_tries(),
             )
         };
         self.registry.merged.store(Arc::new(merged));
-        self.registry.minor_mode_tries.store(Arc::new(minors));
+        self.registry.gated_mode_tries.store(Arc::new(minors));
         // MARG.2: keep the reverse-cache in lockstep with the
         // merged trie. Every site that stores `merged` /
-        // `minor_mode_tries` must also rebuild the reverse
+        // `gated_mode_tries` must also rebuild the reverse
         // cache or the keybinding annotator will surface
         // stale chord text.
         self.registry.rebuild_reverse_cache();
@@ -621,14 +637,14 @@ impl KeymapHandle {
             (
                 dropped,
                 inner.build_always_on_merged(),
-                inner.build_minor_mode_tries(),
+                inner.build_gated_mode_tries(),
             )
         };
         self.registry.merged.store(Arc::new(merged));
-        self.registry.minor_mode_tries.store(Arc::new(minors));
+        self.registry.gated_mode_tries.store(Arc::new(minors));
         // MARG.2: keep the reverse-cache in lockstep with the
         // merged trie. Every site that stores `merged` /
-        // `minor_mode_tries` must also rebuild the reverse
+        // `gated_mode_tries` must also rebuild the reverse
         // cache or the keybinding annotator will surface
         // stale chord text.
         self.registry.rebuild_reverse_cache();
@@ -701,14 +717,14 @@ impl KeymapHandle {
             (
                 id,
                 inner.build_always_on_merged(),
-                inner.build_minor_mode_tries(),
+                inner.build_gated_mode_tries(),
             )
         };
         self.registry.merged.store(Arc::new(merged));
-        self.registry.minor_mode_tries.store(Arc::new(minors));
+        self.registry.gated_mode_tries.store(Arc::new(minors));
         // MARG.2: keep the reverse-cache in lockstep with the
         // merged trie. Every site that stores `merged` /
-        // `minor_mode_tries` must also rebuild the reverse
+        // `gated_mode_tries` must also rebuild the reverse
         // cache or the keybinding annotator will surface
         // stale chord text.
         self.registry.rebuild_reverse_cache();
@@ -727,14 +743,14 @@ impl KeymapHandle {
             }
             (
                 inner.build_always_on_merged(),
-                inner.build_minor_mode_tries(),
+                inner.build_gated_mode_tries(),
             )
         };
         self.registry.merged.store(Arc::new(merged));
-        self.registry.minor_mode_tries.store(Arc::new(minors));
+        self.registry.gated_mode_tries.store(Arc::new(minors));
         // MARG.2: keep the reverse-cache in lockstep with the
         // merged trie. Every site that stores `merged` /
-        // `minor_mode_tries` must also rebuild the reverse
+        // `gated_mode_tries` must also rebuild the reverse
         // cache or the keybinding annotator will surface
         // stale chord text.
         self.registry.rebuild_reverse_cache();
@@ -987,14 +1003,14 @@ impl KeymapHandle {
             (
                 removed,
                 inner.build_always_on_merged(),
-                inner.build_minor_mode_tries(),
+                inner.build_gated_mode_tries(),
             )
         };
         self.registry.merged.store(Arc::new(merged));
-        self.registry.minor_mode_tries.store(Arc::new(minors));
+        self.registry.gated_mode_tries.store(Arc::new(minors));
         // MARG.2: keep the reverse-cache in lockstep with the
         // merged trie. Every site that stores `merged` /
-        // `minor_mode_tries` must also rebuild the reverse
+        // `gated_mode_tries` must also rebuild the reverse
         // cache or the keybinding annotator will surface
         // stale chord text.
         self.registry.rebuild_reverse_cache();
@@ -1926,6 +1942,60 @@ mod tests {
         let neither =
             h.lookup_with_context(BindingMode::Normal, &[pressed('d'), pressed('o')], &[]);
         assert!(matches!(neither, LookupResult::Unbound));
+    }
+
+    /// A `MajorMode` layer must be gated by the active major,
+    /// exactly like a `MinorMode` layer is gated by active minors.
+    /// Regression: major-mode keymaps were folded into the
+    /// always-on merge, so the first major with a real keymap
+    /// (`ai-conversation`'s `i` → focus-prompt) fired its chords in
+    /// EVERY buffer — pressing `i` on the read-only dashboard jumped
+    /// the cursor to EOF and entered Insert.
+    #[test]
+    fn lookup_with_context_gates_major_mode_by_active_major() {
+        let h = KeymapHandle::new();
+        let convo = ModeId::new("ai-conversation-mode");
+        // ai-conversation binds `i` → command 156 (focus-prompt),
+        // registered as a MAJOR-mode layer.
+        let mut bindings = HashMap::new();
+        let mut trie = KeymapTrie::new();
+        trie.insert(
+            &[lit('i')],
+            Arc::new(BoundCommand::from_invocation(
+                invocation(156),
+                src("ai-conversation.focus-prompt"),
+                KeymapLayer::MajorMode(convo),
+            )),
+        );
+        bindings.insert(BindingMode::Normal, trie);
+        h.push_layer(PushLayerKind::MajorMode(convo), "ai-conversation-mode", bindings);
+
+        // A buffer whose active major is NOT ai-conversation (e.g. the
+        // dashboard) must NOT resolve `i` to focus-prompt.
+        let other_major = ModeId::new("dashboard-mode");
+        let on_dashboard =
+            h.lookup_with_context(BindingMode::Normal, &[pressed('i')], &[other_major]);
+        assert!(
+            matches!(on_dashboard, LookupResult::Unbound),
+            "major-mode `i` must NOT fire when a different major is active, got {on_dashboard:?}"
+        );
+
+        // Empty active modes (no major resolved yet) — also must not fire.
+        let no_modes = h.lookup_with_context(BindingMode::Normal, &[pressed('i')], &[]);
+        assert!(
+            matches!(no_modes, LookupResult::Unbound),
+            "major-mode `i` must NOT fire with no active major, got {no_modes:?}"
+        );
+
+        // The ai-conversation buffer (its major active) DOES resolve it.
+        let on_convo =
+            h.lookup_with_context(BindingMode::Normal, &[pressed('i')], &[convo]);
+        match on_convo {
+            LookupResult::Bound { command, .. } => {
+                assert_eq!(command.command.command, CommandId::new(156));
+            }
+            other => panic!("expected focus-prompt bound on ai-conversation, got {other:?}"),
+        }
     }
 
     /// K.1.c: "last-activated wins" for overlapping minor-mode

@@ -2214,6 +2214,7 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         Action::OverwriteChar(c) => editor.do_overwrite_char(c),
         Action::ReplaceUndoLast => editor.do_replace_undo_last(),
         Action::DeleteCharBackward => editor.do_delete_char_backward(),
+        Action::InsertLineEdit(kind) => editor.do_insert_line_edit(kind),
         // 5.5.G.4: pure-editor scroll / viewport / page / bracket
         // / redraw arms. Bodies migrated to [`Editor`].
         Action::JumpViewport(vp) => editor.do_jump_viewport(vp),
@@ -6810,6 +6811,7 @@ impl Editor {
             AppEffect::DisplayLineEnd => out.next_actions.push(Action::DisplayLineEnd),
             AppEffect::CreateFoldFromVisual => out.next_actions.push(Action::CreateFoldFromVisual),
             AppEffect::DeleteCharBackward => out.next_actions.push(Action::DeleteCharBackward),
+            AppEffect::InsertLineEdit(kind) => out.next_actions.push(Action::InsertLineEdit(kind)),
             AppEffect::CompletionTrigger => out.next_actions.push(Action::CompletionTrigger),
             // SN.3c.1 (2026-06-14): `AppEffect::SnippetExpand` removed
             // — `<C-x><C-s>` no longer round-trips through a host Action.
@@ -16206,6 +16208,123 @@ impl Editor {
             }
         }
     }
+
+    /// Insert-mode line editing (`<C-a>`/`<C-e>`/`<C-b>`/`<C-f>`/`<C-w>`/
+    /// `<C-u>`/`<C-k>`/`<C-t>`/`<C-d>`) — the readline/vim family the built-in
+    /// Insert keymap binds in every buffer. Cursor moves are char-boundary-safe
+    /// within the current line and use Insert semantics (`<C-e>` lands *past*
+    /// the last byte). Deletes route through `apply_edit_blocking`, so the
+    /// read-only / editable-tail gate still applies (e.g. the agent prompt).
+    /// Indent/dedent mirror the `>`/`<` operators' `INDENT_UNIT` (4 spaces).
+    pub fn do_insert_line_edit(&mut self, kind: lattice_grammar::InsertLineEdit) {
+        use lattice_grammar::InsertLineEdit as K;
+        const INDENT_UNIT: &str = "    ";
+        let line = self.cursor.line;
+        let text = self.document.snapshot().buffer.line(line).unwrap_or_default();
+        let text = text.trim_end_matches('\n').to_string();
+        let len = text.len() as u32;
+        let cur = self.cursor.byte.min(len);
+        match kind {
+            K::CursorLineStart => self.cursor.byte = 0,
+            K::CursorLineEnd => self.cursor.byte = len,
+            K::CursorCharLeft => {
+                let mut b = cur as usize;
+                while b > 0 {
+                    b -= 1;
+                    if text.is_char_boundary(b) {
+                        break;
+                    }
+                }
+                self.cursor.byte = b as u32;
+            }
+            K::CursorCharRight => {
+                let mut b = cur as usize;
+                while b < text.len() {
+                    b += 1;
+                    if text.is_char_boundary(b) {
+                        break;
+                    }
+                }
+                self.cursor.byte = b as u32;
+            }
+            K::DeleteWordBackward => {
+                let start = word_start_before(&text, cur as usize) as u32;
+                self.delete_on_current_line(start, cur);
+            }
+            K::DeleteToLineStart => self.delete_on_current_line(0, cur),
+            K::KillToLineEnd => self.delete_on_current_line(cur, len),
+            K::IndentLine => {
+                let at = lattice_protocol::position::Position::new(line, 0);
+                if self
+                    .apply_edit_blocking(lattice_protocol::edit::Edit::insert(at, INDENT_UNIT))
+                    .is_ok()
+                {
+                    self.cursor.byte = self.cursor.byte.saturating_add(INDENT_UNIT.len() as u32);
+                }
+            }
+            K::DedentLine => {
+                let bytes = text.as_bytes();
+                let strip = if bytes.first() == Some(&b'\t') {
+                    1
+                } else {
+                    let mut s = 0usize;
+                    while s < INDENT_UNIT.len() && bytes.get(s) == Some(&b' ') {
+                        s += 1;
+                    }
+                    s
+                };
+                if strip > 0 {
+                    let cursor_byte = self.cursor.byte;
+                    let range = lattice_protocol::position::Range::new(
+                        lattice_protocol::position::Position::new(line, 0),
+                        lattice_protocol::position::Position::new(line, strip as u32),
+                    );
+                    if self
+                        .apply_edit_blocking(lattice_protocol::edit::Edit::delete(range))
+                        .is_ok()
+                    {
+                        self.cursor.byte = cursor_byte.saturating_sub(strip as u32);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Delete `[start, end)` bytes on the caret's current line (the deletes
+    /// behind `<C-w>` / `<C-u>` / `<C-k>`) and park the caret at `start`.
+    /// Routes through `apply_edit_blocking` so the read-only gate applies.
+    fn delete_on_current_line(&mut self, start: u32, end: u32) {
+        if start >= end {
+            return;
+        }
+        let line = self.cursor.line;
+        let range = lattice_protocol::position::Range::new(
+            lattice_protocol::position::Position::new(line, start),
+            lattice_protocol::position::Position::new(line, end),
+        );
+        if self
+            .apply_edit_blocking(lattice_protocol::edit::Edit::delete(range))
+            .is_ok()
+        {
+            self.cursor.byte = start;
+        }
+    }
+}
+
+/// readline `<C-w>` (unix-word-rubout): the byte where the whitespace-delimited
+/// word before `cursor` begins. Skips a run of trailing whitespace, then the
+/// run of non-whitespace, both leftward. Lands on a char boundary (it only
+/// stops at ASCII whitespace or the line start).
+fn word_start_before(text: &str, cursor: usize) -> usize {
+    let bytes = text.as_bytes();
+    let mut i = cursor.min(bytes.len());
+    while i > 0 && bytes[i - 1].is_ascii_whitespace() {
+        i -= 1;
+    }
+    while i > 0 && !bytes[i - 1].is_ascii_whitespace() {
+        i -= 1;
+    }
+    i
 }
 
 /// 5.5.G.3: unicode-aware backward step. Mirrors
@@ -37436,6 +37555,68 @@ mod tests {
         editor.do_enter_insert_first_non_blank();
         assert_eq!(editor.cursor.byte, 0);
         assert!(matches!(editor.modal, lattice_grammar::ModalState::Insert));
+    }
+
+    fn line0(editor: &Editor) -> String {
+        editor
+            .document
+            .snapshot()
+            .buffer
+            .line(0)
+            .unwrap_or_default()
+            .trim_end_matches('\n')
+            .to_string()
+    }
+
+    /// `<C-a>`/`<C-e>`/`<C-b>`/`<C-f>` — Insert cursor moves, with `<C-e>`
+    /// landing PAST the last byte (Insert semantics, unlike `$`).
+    #[test]
+    fn insert_line_edit_cursor_moves() {
+        use lattice_grammar::InsertLineEdit::*;
+        let mut editor = Editor::boot(lattice_core::Document::from_text("hello world\n"));
+        editor.cursor = lattice_protocol::position::Position::new(0, 5);
+        editor.do_insert_line_edit(CursorLineStart);
+        assert_eq!(editor.cursor.byte, 0);
+        editor.do_insert_line_edit(CursorLineEnd);
+        assert_eq!(editor.cursor.byte, 11, "past the last char");
+        editor.do_insert_line_edit(CursorCharLeft);
+        assert_eq!(editor.cursor.byte, 10);
+        editor.do_insert_line_edit(CursorCharRight);
+        assert_eq!(editor.cursor.byte, 11);
+    }
+
+    /// `<C-w>` deletes the whitespace-delimited word before the caret.
+    #[test]
+    fn insert_line_edit_delete_word_backward() {
+        let mut editor = Editor::boot(lattice_core::Document::from_text("hello world\n"));
+        editor.cursor = lattice_protocol::position::Position::new(0, 11);
+        editor.do_insert_line_edit(lattice_grammar::InsertLineEdit::DeleteWordBackward);
+        assert_eq!(line0(&editor), "hello ");
+        assert_eq!(editor.cursor.byte, 6);
+    }
+
+    /// `<C-k>` kills to line end; `<C-u>` deletes to line start.
+    #[test]
+    fn insert_line_edit_kill_and_delete_to_start() {
+        let mut editor = Editor::boot(lattice_core::Document::from_text("hello world\n"));
+        editor.cursor = lattice_protocol::position::Position::new(0, 6);
+        editor.do_insert_line_edit(lattice_grammar::InsertLineEdit::KillToLineEnd);
+        assert_eq!(line0(&editor), "hello ");
+        editor.do_insert_line_edit(lattice_grammar::InsertLineEdit::DeleteToLineStart);
+        assert_eq!(line0(&editor), "");
+        assert_eq!(editor.cursor.byte, 0);
+    }
+
+    /// `<C-t>`/`<C-d>` indent / dedent the current line by one `INDENT_UNIT`.
+    #[test]
+    fn insert_line_edit_indent_and_dedent() {
+        let mut editor = Editor::boot(lattice_core::Document::from_text("x\n"));
+        editor.cursor = lattice_protocol::position::Position::new(0, 0);
+        editor.do_insert_line_edit(lattice_grammar::InsertLineEdit::IndentLine);
+        assert_eq!(line0(&editor), "    x");
+        assert_eq!(editor.cursor.byte, 4);
+        editor.do_insert_line_edit(lattice_grammar::InsertLineEdit::DedentLine);
+        assert_eq!(line0(&editor), "x");
     }
 
     #[test]

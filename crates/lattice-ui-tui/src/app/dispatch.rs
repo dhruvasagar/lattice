@@ -324,6 +324,7 @@ impl App {
             | Action::OverwriteChar(_)
             | Action::ReplaceUndoLast
             | Action::DeleteCharBackward
+            | Action::InsertLineEdit(_)
             // 5.5.G.4: pure-editor scroll / viewport / page / bracket
             // / redraw arms migrated to `Editor::dispatch`.
             | Action::JumpViewport(_)

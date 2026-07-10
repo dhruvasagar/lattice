@@ -83,6 +83,9 @@ pub enum Action {
     Insert(String),
     /// Delete the byte before the cursor (Insert-mode backspace).
     DeleteCharBackward,
+    /// Insert-mode line editing (readline/vim `<C-a>`, `<C-e>`, `<C-w>`,
+    /// `<C-u>`, `<C-k>`, `<C-t>`, `<C-d>`, …) — general across all buffers.
+    InsertLineEdit(lattice_grammar::InsertLineEdit),
     /// Move into a different modal state (Insert, Normal, ...).
     EnterMode(ModalState),
     /// Vim's `a`: move cursor one byte right (clamped) and enter Insert.

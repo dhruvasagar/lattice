@@ -92,6 +92,33 @@ pub enum HScroll {
 /// App-side typed effect produced by a `CommandKind::Action`
 /// dispatch (DESIGN.md §5.2.1, see also `docs/dev/notes/8i-approach.md`).
 ///
+/// Insert-mode line-editing operations — the general readline/vim chords
+/// available in **every** buffer (part of the built-in grammar keymap, not a
+/// mode). Distinct from Normal-mode motions/operators because Insert cursor
+/// semantics differ (the caret sits *between* bytes and may rest past the last
+/// char), so `<C-e>` lands after the last byte where `$` would land on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum InsertLineEdit {
+    /// `<C-a>`: caret to the start of the line (byte 0).
+    CursorLineStart,
+    /// `<C-e>`: caret to the end of the line (past the last byte).
+    CursorLineEnd,
+    /// `<C-b>`: caret one byte left (stops at line start).
+    CursorCharLeft,
+    /// `<C-f>`: caret one byte right (stops past the last byte).
+    CursorCharRight,
+    /// `<C-w>`: delete the word before the caret.
+    DeleteWordBackward,
+    /// `<C-u>`: delete from the line start to the caret.
+    DeleteToLineStart,
+    /// `<C-k>`: delete from the caret to the line end.
+    KillToLineEnd,
+    /// `<C-t>`: indent the current line by one shiftwidth.
+    IndentLine,
+    /// `<C-d>`: dedent the current line by one shiftwidth.
+    DedentLine,
+}
+
 /// Variants are added incrementally during slice 8.i as each
 /// historical `Action` variant is promoted from the legacy
 /// `bind_legacy` bridge to a typed `CommandInvocation`.
@@ -280,6 +307,11 @@ pub enum AppEffect {
     /// Promoted from `Action::DeleteCharBackward` in slice
     /// 8.i.1.g.
     DeleteCharBackward,
+    /// Insert-mode line editing — the readline/vim chords (`<C-a>`, `<C-e>`,
+    /// `<C-w>`, `<C-u>`, `<C-k>`, `<C-t>`, `<C-d>`, …) available in every
+    /// buffer. One grouped effect keyed by [`InsertLineEdit`] so the whole
+    /// family shares a single host handler.
+    InsertLineEdit(InsertLineEdit),
     /// Insert mode's `<C-Space>` and `<C-x><C-o>`. Trigger the
     /// completion popup (omni-completion alias). Promoted from
     /// `Action::CompletionTrigger` in slice 8.i.1.g. The

@@ -38,7 +38,9 @@ pub mod registry;
 pub mod source;
 pub mod target;
 
-pub use crate::app_effect::{AppEffect, HScroll, PaneDirection, ScrollPos, ViewportPos};
+pub use crate::app_effect::{
+    AppEffect, HScroll, InsertLineEdit, PaneDirection, ScrollPos, ViewportPos,
+};
 pub use crate::args::{ArgDefault, ArgKind, ArgSpec, ArgValue, Args};
 pub use crate::cancel::{CancellationToken, CheckCancelled};
 pub use crate::command::{CommandInvocation, CommandKind, CommandSpec, Count, LatencyClass};

@@ -177,6 +177,23 @@ pub fn register_insert_bindings(handle: &KeymapHandle, actions: &ActionIds) {
         CommandInvocation::of(actions.completion_trigger),
         source(),
     );
+    // Readline/vim Insert-mode line editing — general across every buffer.
+    // <C-a>/<C-e> line ends, <C-b>/<C-f> char nav, <C-w>/<C-u>/<C-k> deletes,
+    // <C-t>/<C-d> indent/dedent. (<C-a>/<C-e>/<C-k> deliberately take the
+    // readline meaning over vim's rarely-used Insert bindings.)
+    for (ch, id) in [
+        ('a', actions.insert_cursor_line_start),
+        ('e', actions.insert_cursor_line_end),
+        ('b', actions.insert_cursor_char_left),
+        ('f', actions.insert_cursor_char_right),
+        ('w', actions.insert_delete_word_backward),
+        ('u', actions.insert_delete_to_line_start),
+        ('k', actions.insert_kill_to_line_end),
+        ('t', actions.insert_indent_line),
+        ('d', actions.insert_dedent_line),
+    ] {
+        handle.bind(layer, mode, &[lit(KeyChord::ctrl(ch))], CommandInvocation::of(id), source());
+    }
     // CSM.K1: `<C-x><C-o>` (vim omni-completion) retired.
     // `<C-Space>` is the sole popup-open trigger; per-source
     // filter chords live inside `completion-popup-mode` (CSM.K2).

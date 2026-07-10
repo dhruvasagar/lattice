@@ -4039,6 +4039,7 @@ dependencies = [
  "futures",
  "getrandom 0.2.17",
  "lattice-agent",
+ "lattice-cells",
  "lattice-config",
  "lattice-core",
  "lattice-diff",

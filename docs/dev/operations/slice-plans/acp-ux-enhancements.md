@@ -61,7 +61,7 @@ Create this architecture fragment and slice plan. (This slice.)
 
 ---
 
-## Slice AUX-2 — Cost/token metadata display
+## Slice AUX-2 — Cost/token metadata display ✅
 
 **Design ref:** §3.1 (`UsageSnapshot` in `Conversation`), §4.2 (accumulation,
 headerline display).
@@ -71,7 +71,10 @@ headerline display).
 | File | Change |
 |---|---|
 | `crates/lattice-ai/src/acp/conversation.rs` | Add `UsageSnapshot` struct, `Cost` struct. Add `usage: Option<UsageSnapshot>` to `Conversation`. Match `SessionUpdate::UsageUpdate(u)` in `Conversation::apply` → set `self.usage`. |
-| `crates/lattice-ai/src/acp/conversation_mode.rs` | Add `HeaderlineProvider` impl for `AiConversationMode` (or reuse existing if one exists). Read `store.snapshot().usage`, format as `"31.4K/200K · $0.045"`. Publish headerline update on `ConversationUpdated`. |
+| `crates/lattice-ai/src/acp/conversation_mode.rs` | Add `ConversationHeaderline` (`Headerline` impl), register via `VirtualRowRegistrar` in `on_activate`, bump version in drain. Format as `"CPU: 31.4K/200K · $0.045 USD"`. |
+| `crates/lattice-mode/src/activator.rs` | Add `VirtualRowRegistrar` trait. |
+| `crates/lattice-host/src/editor_boot.rs` | Create `VirtualRowProviderRegistry` in Phase A, register as `Arc<dyn VirtualRowRegistrar>` service. |
+| `crates/lattice-host/src/virtual_rows_worker.rs` | `impl VirtualRowRegistrar for VirtualRowProviderRegistry`. |
 
 **No supervisor changes** — `SessionUpdate` already flows through
 `Conversation::apply`.

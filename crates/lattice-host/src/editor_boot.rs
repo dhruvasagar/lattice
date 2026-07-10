@@ -525,6 +525,14 @@ impl Editor {
         //     read tools (buffer-store + diagnostics via `boot.service`) + the I3
         //     write bus (`boot.inbound`, whose drain token rides
         //     `into_registrations` into the Editor below).
+        // AUX‑2: create VirtualRowProviderRegistry and register as a service so
+        // subsystem installs can register headerline providers.
+        let vrp: std::sync::Arc<
+            crate::virtual_rows_worker::VirtualRowProviderRegistry,
+        > = std::sync::Arc::default();
+        boot.register_service::<Arc<dyn lattice_mode::VirtualRowRegistrar>>(
+            vrp.clone() as Arc<dyn lattice_mode::VirtualRowRegistrar>,
+        );
         lattice_ai::install(&mut boot);
         // terminal (BC.4): `terminal-mode` (+ Normal / Insert) registration. Its
         // `TerminalStoreHandle` service is a host-published primitive (in the
@@ -1144,20 +1152,11 @@ impl Editor {
             map.insert(document_buffer_id, virtual_rows_matrix_cell.clone());
             std::sync::Arc::new(std::sync::Mutex::new(map))
         };
-        let virtual_row_providers: std::sync::Arc<
-            crate::virtual_rows_worker::VirtualRowProviderRegistry,
-        > = std::sync::Arc::default();
-        // D.4.d.2.1.c (2026-05-30): `run` no longer takes the
-        // `virtual_rows_matrix_cell` directly — the worker
-        // writes per-pane via `pane.virtual_rows_matrix`
-        // sourced from `Editor::virtual_rows_matrices` at
-        // publish (D.4.d.2.1.b). The active-pane Arc-identity
-        // invariant (D.4.d.2.0 boot seed) means worker writes
-        // for the active pane still land on
-        // `virtual_rows_matrix_cell`, preserving the existing
-        // renderer read path through
-        // `RenderState.virtual_rows.matrix` until D.4.d.2.1.d
-        // swaps in a per-pane lookup.
+        // Reuse the VirtualRowProviderRegistry created during Phase A (the
+        // `vrp` binding above). Cloning the `Arc` shares the same registry,
+        // so the service registration, the worker below, and the Editor field
+        // all see the same providers.
+        let virtual_row_providers = vrp.clone();
         runtime_handle.spawn(crate::virtual_rows_worker::run(
             render_state_arc.clone(),
             virtual_rows_wake.clone(),

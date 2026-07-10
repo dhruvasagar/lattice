@@ -116,7 +116,7 @@ pub use crate::action_handler_registry::{
     ActionHandlerRegistry, ActionHandlerRegistryHandle,
 };
 pub use crate::active::ActiveModes;
-pub use crate::activator::ModeActivator;
+pub use crate::activator::{ModeActivator, VirtualRowRegistrar};
 pub use crate::binding_mode::BindingMode;
 pub use crate::tick_callback::{
     TickCallback, TickCallbackRegistration, TickCallbackRegistry, TickCallbackRegistryHandle,

@@ -14,18 +14,19 @@
 //! change rewrites only from its line down (AU‑2 shows status inline as text; a
 //! decoration-based in-place update is a follow-up).
 
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use agent_client_protocol::schema::v1::PermissionOptionKind;
 
+use lattice_cells::{Cell, Headerline, HeaderlineProvider, HeaderlineRow, ProviderId, VirtualRowProvider};
 use lattice_grammar::ModalState;
 use lattice_grammar::effect::{EchoLevel, Effect};
 use lattice_mode::{
     ActionContext, ActionHandler, ActionHandlerContribution, BufferStoreHandle, CapabilitySet,
     EditableTail, Keymap, KeymapEntry, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind,
     OptionOverrideSet, Subscription, TickCallbackRegistration, TickCallbackRegistryHandle,
-    keymap_entry,
+    VirtualRowRegistrar, keymap_entry,
 };
 
 use crate::acp::conversation::{
@@ -33,6 +34,56 @@ use crate::acp::conversation::{
     PermissionOutcome, PermissionStatus, Role,
 };
 use crate::acp::handle::AiClientHandle;
+
+/// AUX‑2: provider id for the conversation headerline. Derived from a fixed
+/// tag so the host can unregister it on buffer teardown.
+const CONV_HEADERLINE_PROVIDER_ID: ProviderId = 0x4155_0002;
+
+/// AUX‑2: headerline that reads the usage snapshot from the
+/// [`ConversationStore`] and formats it as a sticky row above the buffer.
+struct ConversationHeaderline {
+    store: ConversationStore,
+    version: Arc<AtomicU64>,
+}
+
+impl Headerline for ConversationHeaderline {
+    fn version(&self) -> u64 {
+        self.version.load(Ordering::Acquire)
+    }
+
+    fn render(&self) -> Option<HeaderlineRow> {
+        let snap = self.store.snapshot();
+        let usage = snap.usage.as_ref()?;
+        let mut text = format!("CPU: {}", format_tokens(usage.used, usage.size));
+        if let Some(cost) = &usage.cost {
+            use std::fmt::Write;
+            let _ = write!(&mut text, " · ${:.3} {}", cost.amount, cost.currency);
+        }
+        let cells: Arc<[Cell]> = text
+            .chars()
+            .map(|c| Cell::new(c as u32, 0, 0, 0))
+            .collect::<Vec<_>>()
+            .into();
+        Some(HeaderlineRow { cells, bg: None })
+    }
+}
+
+/// Format token count in human-readable form: `31.4K` or `1.2M`.
+fn format_tokens(used: u64, size: u64) -> String {
+    let used_s = humanize(used);
+    let size_s = humanize(size);
+    format!("{used_s}/{size_s}")
+}
+
+fn humanize(n: u64) -> String {
+    if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{:.1}K", n as f64 / 1_000.0)
+    } else {
+        n.to_string()
+    }
+}
 
 /// AU‑3: the prompt marker rendered at the head of the editable tail line.
 /// Two bytes, so [`EditableTail::first_line_min_byte`] is `2`: the marker
@@ -57,10 +108,13 @@ pub fn conversation_buffer_name() -> String {
 /// AUX‑1: `current_permission_id` tracks the most recently projected pending
 /// permission block, set by the drain on each re-projection. The allow/deny
 /// action handlers read it to resolve the right permission request.
+/// AUX‑2: `headerline_version` is bumped by the drain on each re-projection so
+/// the `ConversationHeaderline` widget republishes its row when usage changes.
 #[derive(Clone)]
 pub struct AiConversationMode {
     anchor: Arc<AtomicU32>,
     current_permission_id: Arc<Mutex<Option<String>>>,
+    headerline_version: Arc<AtomicU64>,
 }
 
 impl Default for AiConversationMode {
@@ -68,6 +122,7 @@ impl Default for AiConversationMode {
         Self {
             anchor: Arc::new(AtomicU32::new(0)),
             current_permission_id: Arc::new(Mutex::new(None)),
+            headerline_version: Arc::new(AtomicU64::new(0)),
         }
     }
 }
@@ -420,6 +475,24 @@ impl Mode for AiConversationMode {
                 }))
             });
 
+            // AUX‑2: register the conversation headerline (token/cost display).
+            // `conv_store` is `Arc<ConversationStore>` from the service lookup;
+            // cloning the Arc gives another reference to the same store.
+            let hl_version = self.headerline_version.clone();
+            if let Some(registrar) = ctx.service::<Arc<dyn VirtualRowRegistrar>>() {
+                let headerline = ConversationHeaderline {
+                    store: (*conv_store).clone(),
+                    version: hl_version.clone(),
+                };
+                let provider = Arc::new(
+                    HeaderlineProvider::new(
+                        CONV_HEADERLINE_PROVIDER_ID,
+                        Arc::new(headerline),
+                    ),
+                );
+                registrar.register(buffer_id, provider as Arc<dyn VirtualRowProvider>);
+            }
+
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<ConversationUpdated>();
             let sub_id = ctx.events().subscribe_typed::<ConversationUpdated>(tx);
             let bus_handle = ctx.events_handle();
@@ -430,6 +503,7 @@ impl Mode for AiConversationMode {
             let drain_flag = focus_flag;
             let drain_anchor = anchor;
             let drain_perm_id = self.current_permission_id.clone();
+            let drain_hl_version = hl_version;
             runtime.spawn(async move {
                 // Coalesce a burst of updates into one re-projection.
                 while rx.recv().await.is_some() {
@@ -471,6 +545,11 @@ impl Mode for AiConversationMode {
                         // at the fresh prompt tail on the next tick.
                         drain_flag.store(true, Ordering::Release);
                     }
+                    // AUX‑2: bump the headerline version on every re-projection so
+                    // the ConversationHeaderline widget republishes its row (usage
+                    // may have changed).
+                    drain_hl_version.fetch_add(1, Ordering::Release);
+
                     // Wake the editor actor now that the edit has LANDED, so the
                     // streamed response repaints (and the focus tick callback
                     // runs) WITHOUT a keystroke. Published after the await — not
@@ -830,6 +909,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
     use crate::acp::conversation::{Conversation, ToolStatus, Turn};
+    use lattice_agent::SessionKey;
 
     fn text_turn(role: Role, text: &str) -> Turn {
         Turn {
@@ -849,6 +929,7 @@ mod tests {
                 text_turn(Role::Assistant, "on it"),
                 text_turn(Role::User, "also add tests"),
             ],
+            ..Default::default()
         };
         assert_eq!(user_turn_count(&conv), 2);
         assert_eq!(user_turn_count(&Conversation::default()), 0);
@@ -992,6 +1073,7 @@ mod tests {
                     ],
                 },
             ],
+            ..Default::default()
         };
         let text = render_conversation(&conv);
         assert!(text.contains("you:\nrefactor parse_args\n"));
@@ -1023,6 +1105,7 @@ mod tests {
                     },
                 ],
             }],
+            ..Default::default()
         };
         let before = render_conversation(&conv);
         if let Block::ToolCall { status, .. } = &mut conv.turns[0].blocks[1] {
@@ -1066,6 +1149,7 @@ mod tests {
                     status: PS::Pending,
                 }],
             }],
+            ..Default::default()
         };
         let text = render_conversation(&conv);
         assert!(text.contains("\u{25cc} Allow cargo test? [pending]"));
@@ -1086,6 +1170,7 @@ mod tests {
                     status: PS::Allowed,
                 }],
             }],
+            ..Default::default()
         };
         let text = render_conversation(&conv);
         assert!(text.contains("\u{2713} Allow cargo test? [allowed]"));
@@ -1105,8 +1190,91 @@ mod tests {
                     status: PS::Denied,
                 }],
             }],
+            ..Default::default()
         };
         let text = render_conversation(&conv);
         assert!(text.contains("\u{2717} Allow cargo test? [denied]"));
+    }
+
+    // ── AUX‑2: headerline / humanize tests ──
+
+    #[test]
+    fn humanize_thousands() {
+        assert_eq!(humanize(0), "0");
+        assert_eq!(humanize(500), "500");
+        assert_eq!(humanize(1000), "1.0K");
+        assert_eq!(humanize(31400), "31.4K");
+        assert_eq!(humanize(200000), "200.0K");
+    }
+
+    #[test]
+    fn humanize_millions() {
+        assert_eq!(humanize(1_000_000), "1.0M");
+        assert_eq!(humanize(2_500_000), "2.5M");
+    }
+
+    #[test]
+    fn format_tokens_joins_used_and_size() {
+        assert_eq!(format_tokens(31400, 200000), "31.4K/200.0K");
+        assert_eq!(format_tokens(0, 1000), "0/1.0K");
+    }
+
+    #[test]
+    fn headerline_empty_without_usage() {
+        let hl = ConversationHeaderline {
+            store: ConversationStore::new(Arc::new(|_| {})),
+            version: Arc::new(AtomicU64::new(0)),
+        };
+        assert!(hl.render().is_none(), "no usage → no headerline row");
+    }
+
+    #[test]
+    fn headerline_shows_usage() {
+        let store = {
+            let published = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let p = published.clone();
+            let store = ConversationStore::new(Arc::new(move |_| {
+                p.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }));
+            let u = agent_client_protocol::schema::v1::UsageUpdate::new(31400, 200000)
+                .cost(agent_client_protocol::schema::v1::Cost::new(0.045, "USD"));
+            store.apply(
+                &SessionKey::new("test", 0),
+                &agent_client_protocol::schema::v1::SessionUpdate::UsageUpdate(u),
+            );
+            store
+        };
+        let hl = ConversationHeaderline {
+            store,
+            version: Arc::new(AtomicU64::new(1)),
+        };
+        let row = hl.render().expect("usage present → headerline row");
+        let text: String = row.cells.iter().map(|c| char::from_u32(c.codepoint).unwrap_or('�')).collect();
+        assert!(text.contains("31.4K"), "headerline shows used tokens: {text}");
+        assert!(text.contains("200.0K"), "headerline shows context size: {text}");
+        assert!(text.contains("$0.045"), "headerline shows cost: {text}");
+        assert!(text.contains("USD"), "headerline shows currency: {text}");
+    }
+
+    #[test]
+    fn headerline_omits_cost_when_missing() {
+        let store = {
+            let store = ConversationStore::new(Arc::new(|_| {}));
+            let u = agent_client_protocol::schema::v1::UsageUpdate::new(5000, 16000);
+            store.apply(
+                &SessionKey::new("test", 0),
+                &agent_client_protocol::schema::v1::SessionUpdate::UsageUpdate(u),
+            );
+            store
+        };
+        let hl = ConversationHeaderline {
+            store,
+            version: Arc::new(AtomicU64::new(1)),
+        };
+        let row = hl.render().expect("usage present");
+        let text: String = row.cells.iter().map(|c| char::from_u32(c.codepoint).unwrap_or('�')).collect();
+        assert!(text.contains("CPU:"), "headerline has CPU prefix: {text}");
+        assert!(text.contains("5.0K/16.0K"), "headerline shows tokens: {text}");
+        assert!(!text.contains("$"), "no cost segment: {text}");
     }
 }

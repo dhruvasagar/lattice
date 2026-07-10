@@ -77,6 +77,21 @@ pub enum PermissionOutcome {
     DenyAlways,
 }
 
+/// AUX‑2: token usage snapshot from a `UsageUpdate` notification.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Cost {
+    pub amount: f64,
+    pub currency: String,
+}
+
+/// AUX‑2: latest token and cost snapshot from the ACP `usage_update`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UsageSnapshot {
+    pub used: u64,
+    pub size: u64,
+    pub cost: Option<Cost>,
+}
+
 /// One renderable unit within a turn.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Block {
@@ -111,9 +126,11 @@ pub struct Turn {
 
 /// The full conversation as a turn/block tree. Streaming *extends* the last
 /// block; earlier turns are never rewritten.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Conversation {
     pub turns: Vec<Turn>,
+    /// AUX‑2: latest token usage snapshot from `usage_update` notifications.
+    pub usage: Option<UsageSnapshot>,
 }
 
 impl Conversation {
@@ -152,6 +169,17 @@ impl Conversation {
                         ToolStatus::from_acp(status),
                     );
                 }
+            }
+            // AUX‑2: accumulate the latest usage snapshot.
+            SessionUpdate::UsageUpdate(u) => {
+                self.usage = Some(UsageSnapshot {
+                    used: u.used,
+                    size: u.size,
+                    cost: u.cost.as_ref().map(|c| Cost {
+                        amount: c.amount,
+                        currency: c.currency.clone(),
+                    }),
+                });
             }
             _ => {}
         }
@@ -672,5 +700,51 @@ mod tests {
         // No pending permission with this id → no-op, no publish
         store.resolve_permission("nonexistent", PermissionOutcome::AllowOnce);
         assert_eq!(published.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    // ── AUX‑2: usage update tests ──
+
+    fn update(used: u64, size: u64, cost: Option<(f64, &str)>) -> SessionUpdate {
+        let mut u = agent_client_protocol::schema::v1::UsageUpdate::new(used, size);
+        if let Some((amt, cur)) = cost {
+            u = u.cost(agent_client_protocol::schema::v1::Cost::new(amt, cur));
+        }
+        SessionUpdate::UsageUpdate(u)
+    }
+
+    #[test]
+    fn usage_update_stored() {
+        let mut c = Conversation::default();
+        c.apply(&update(53000, 200000, Some((0.045, "USD"))));
+        assert_eq!(
+            c.usage,
+            Some(UsageSnapshot {
+                used: 53000,
+                size: 200000,
+                cost: Some(Cost {
+                    amount: 0.045,
+                    currency: "USD".to_string(),
+                }),
+            }),
+        );
+    }
+
+    #[test]
+    fn usage_update_overwrites() {
+        let mut c = Conversation::default();
+        c.apply(&update(1000, 200000, None));
+        assert!(c.usage.as_ref().unwrap().cost.is_none());
+        // Second update overwrites
+        c.apply(&update(53000, 200000, Some((0.045, "USD"))));
+        assert_eq!(c.usage.unwrap().used, 53000);
+    }
+
+    #[test]
+    fn usage_update_no_cost() {
+        let mut c = Conversation::default();
+        c.apply(&update(53000, 200000, None));
+        assert_eq!(c.usage.as_ref().unwrap().used, 53000);
+        assert_eq!(c.usage.as_ref().unwrap().size, 200000);
+        assert!(c.usage.as_ref().unwrap().cost.is_none());
     }
 }

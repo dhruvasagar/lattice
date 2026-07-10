@@ -23,6 +23,7 @@ lattice-runtime = { path = "../lattice-runtime" }
 lattice-core = { path = "../lattice-core" }
 lattice-diff = { path = "../lattice-diff" }
 lattice-config = { path = "../lattice-config" }
+lattice-cells = { path = "../lattice-cells" }
 lattice-agent = { path = "../lattice-agent" }
 # acp: the Agent Client Protocol schema + JSON-RPC types the connection speaks.
 agent-client-protocol = { version = "1.2.0", optional = true }

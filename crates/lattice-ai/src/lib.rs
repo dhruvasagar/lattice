@@ -17,9 +17,17 @@
 pub mod commands;
 
 // AG-5: the ACP adapter, gated on `feature = "acp"`. Symmetric with `mcp`: both
-// transport adapters are self-contained submodules under this crate.
+// transport adapters are self-contained submodules under this crate. Drives
+// `opencode acp` headlessly and owns the conversation as a buffer -- kept for
+// the future IDE-native-review direction, reachable via `:opencode-acp`.
 #[cfg(feature = "acp")]
 pub mod acp;
+
+// The v1 opencode integration: `:opencode` runs the opencode **TUI** in a
+// terminal buffer + `opencode-mode` (the terminal topology, like the MCP peer).
+// Always compiled -- a terminal spawn + a marker minor mode, no heavy deps --
+// so opencode is available regardless of the `acp` transport feature.
+pub mod opencode;
 
 // Unified boot entry point; wires the port-neutral log substrate always and
 // each transport behind its own `#[cfg(feature = …)]`.

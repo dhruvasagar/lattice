@@ -25,9 +25,14 @@ use crate::acp::providers::ProviderConfig;
 pub fn register_ai_ex_commands(registry: &mut CommandRegistry, handle: AiClientHandle) {
     let start = handle.clone();
     registry.register_ex_command(
-        "opencode",
-        "Launch the opencode agent over ACP and open a session wired to this \
-         editor.",
+        // The buffer-conversation path over headless ACP. `:opencode` (the
+        // default) runs opencode's native TUI in a terminal instead (see
+        // `crate::opencode`); this adapter is the alternative kept for the
+        // future IDE-native-review direction, so it takes the `-acp` name.
+        "opencode-acp",
+        "Launch the opencode agent over headless ACP and open the *ai:opencode* \
+         conversation buffer (the buffer-native alternative to the terminal \
+         `:opencode`).",
         ExCommandSpec {
             latency_class: LatencyClass::Reflex,
             accepts_bang: false,
@@ -139,12 +144,12 @@ mod tests {
         register_ai_ex_commands(&mut registry, handle);
 
         let id = registry
-            .id_by_name("opencode")
-            .expect("`:opencode` is registered");
+            .id_by_name("opencode-acp")
+            .expect("`:opencode-acp` is registered");
         let spec = registry.ex_command_spec(id).expect("spec present");
         let effect = (spec.apply)(&ctx_with(Args::None)).expect("apply ok");
 
-        // AU-2: `:opencode` both starts the agent AND opens the `*ai:opencode*`
+        // `:opencode-acp` both starts the agent AND opens the `*ai:opencode*`
         // conversation buffer under the `ai-conversation` mode.
         match effect {
             Effect::OpenSyntheticBuffer { name, mode_id } => {

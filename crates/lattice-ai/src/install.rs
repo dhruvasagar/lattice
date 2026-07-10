@@ -28,6 +28,12 @@ use crate::commands::register_ai_log_command;
 pub fn install(boot: &mut impl SubsystemBoot) {
     let logger = install_ai_log(boot);
 
+    // The v1 opencode integration: `:opencode` runs opencode's TUI in a
+    // terminal buffer. Always wired (no transport feature) -- it's the primary
+    // opencode experience. The `acp` adapter below is the alternative
+    // buffer-conversation path (`:opencode-acp`).
+    crate::opencode::install(boot);
+
     #[cfg(feature = "acp")]
     crate::acp::install::install(boot, &logger);
 

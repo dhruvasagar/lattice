@@ -235,7 +235,9 @@ impl Mode for AiConversationMode {
             // below is unchanged because `suffix_edit`'s replace range ends at
             // `text_end(last)` — the start of the prompt line — so re-projecting
             // the transcript never rewrites the user's in-progress prompt.
-            let mut last = render_conversation(&conv_store.snapshot());
+            let seed = conv_store.snapshot();
+            let mut last = render_conversation(&seed);
+            let mut last_user_turns = user_turn_count(&seed);
             full_replace(&handle, &format!("{last}{PROMPT_MARKER}")).await;
 
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<ConversationUpdated>();
@@ -246,11 +248,20 @@ impl Mode for AiConversationMode {
                 // Coalesce a burst of updates into one re-projection.
                 while rx.recv().await.is_some() {
                     while rx.try_recv().is_ok() {}
-                    let new = render_conversation(&conv_store.snapshot());
-                    if let Some(edit) = suffix_edit(&last, &new) {
-                        let _ = handle.apply_edit_batch(vec![edit]).await;
-                        last = new;
-                    }
+                    let snap = conv_store.snapshot();
+                    let new = render_conversation(&snap);
+                    let user_turns = user_turn_count(&snap);
+                    // A new User turn means the user just sent a prompt. Rewrite
+                    // the tail through EOF and re-append an empty prompt marker,
+                    // clearing the prompt *atomically* with the transcript update.
+                    // The send handler deliberately emits no clear edit: a
+                    // separate clear would race this re-projection (which shifts
+                    // the prompt line down) and land on the wrong, now-read-only
+                    // line. On agent-only updates we leave the user's in-progress
+                    // prompt untouched.
+                    reproject(&handle, &last, &new, user_turns > last_user_turns).await;
+                    last = new;
+                    last_user_turns = user_turns;
                 }
             });
 
@@ -279,20 +290,44 @@ async fn full_replace(handle: &std::sync::Arc<dyn lattice_runtime::Document>, te
     let _ = handle.apply_edit_batch(vec![edit]).await;
 }
 
-/// The minimal buffer edit turning `last` (== current buffer content) into
-/// `new`, or `None` if unchanged. Positions come from `last`, which the caller
-/// keeps in lockstep with the buffer -- self-consistent, no buffer round-trip.
-fn suffix_edit(last: &str, new: &str) -> Option<lattice_protocol::edit::Edit> {
-    let rep = suffix_replace(last, new)?;
-    let (end_line, end_col) = text_end(last);
+/// Number of `User`-role turns in the conversation. A send is the only thing
+/// that adds one (`ConversationStore::push_user_text`), so an increase between
+/// re-projections is the drain's reliable "the prompt was just sent" signal.
+fn user_turn_count(conv: &Conversation) -> usize {
+    conv.turns.iter().filter(|t| t.role == Role::User).count()
+}
+
+/// Re-project the transcript zone `last` → `new` into the buffer with one edit.
+///
+/// When `clear_prompt` (a send just added a User turn) the edit extends through
+/// the *current* prompt line to EOF and re-appends an empty `PROMPT_MARKER`, so
+/// the transcript grows and the prompt resets in a single atomic edit — the
+/// drain owns the prompt's lifecycle, so there is no separate clear edit to race
+/// this re-projection. Otherwise the edit ends at the prompt-line start, leaving
+/// the user's in-progress prompt intact while the agent streams.
+async fn reproject(
+    handle: &std::sync::Arc<dyn lattice_runtime::Document>,
+    last: &str,
+    new: &str,
+    clear_prompt: bool,
+) {
+    let Some(rep) = suffix_replace(last, new) else {
+        return; // transcript text unchanged
+    };
+    let (end, replacement) = if clear_prompt {
+        let snap = handle.snapshot();
+        let last_line = snap.buffer.line_count().saturating_sub(1);
+        let last_len = snap.buffer.line(last_line).unwrap_or_default().len() as u32;
+        ((last_line, last_len), format!("{}{}", rep.replacement, PROMPT_MARKER))
+    } else {
+        (text_end(last), rep.replacement)
+    };
     let range = lattice_protocol::Range::new(
         lattice_protocol::position::Position::new(rep.first_diff_line as u32, 0),
-        lattice_protocol::position::Position::new(end_line, end_col),
+        lattice_protocol::position::Position::new(end.0, end.1),
     );
-    Some(lattice_protocol::edit::Edit::replace(
-        range,
-        rep.replacement,
-    ))
+    let edit = lattice_protocol::edit::Edit::replace(range, replacement);
+    let _ = handle.apply_edit_batch(vec![edit]).await;
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -390,18 +425,12 @@ fn send_handler() -> ActionHandler {
         if let Some(ai) = ctx.services.get::<AiClientHandle>() {
             ai.prompt(prompt.to_string());
         }
-        // Clear the prompt region: [marker_end, line_end) on the prompt line.
-        let clear = lattice_protocol::edit::Edit::replace(
-            lattice_protocol::Range::new(
-                lattice_protocol::position::Position::new(last_line, PROMPT_MARKER.len() as u32),
-                lattice_protocol::position::Position::new(last_line, line.len() as u32),
-            ),
-            String::new(),
-        );
-        Some(Effect::Many(vec![
-            Effect::ApplyEdit { target: buffer_id, edit: clear, cursor: None },
-            Effect::EnterMode(ModalState::Normal),
-        ]))
+        // The prompt is cleared by the mode's projection when the resulting User
+        // turn lands (see `reproject` in `on_activate`), NOT by a clear edit
+        // here. A separate clear would race the transcript re-projection — which
+        // shifts the prompt line down as it inserts the User turn — and land on
+        // the wrong, now-read-only line, so the prompt would keep its text.
+        Some(Effect::EnterMode(ModalState::Normal))
     })
 }
 
@@ -474,6 +503,22 @@ mod tests {
             role,
             blocks: vec![Block::Text(text.to_string())],
         }
+    }
+
+    /// The drain clears the prompt exactly when the User-turn count rises (a
+    /// send), so this count is the load-bearing signal for the clear-vs-preserve
+    /// branch — agent turns must not trip it.
+    #[test]
+    fn user_turn_count_counts_only_user_turns() {
+        let conv = Conversation {
+            turns: vec![
+                text_turn(Role::User, "refactor"),
+                text_turn(Role::Assistant, "on it"),
+                text_turn(Role::User, "also add tests"),
+            ],
+        };
+        assert_eq!(user_turn_count(&conv), 2);
+        assert_eq!(user_turn_count(&Conversation::default()), 0);
     }
 
     #[test]

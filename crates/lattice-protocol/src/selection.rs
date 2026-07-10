@@ -61,6 +61,22 @@ impl SelectionSet {
         Self::single(Selection::cursor(Position::ZERO))
     }
 
+    /// Reconstruct a set from its parts — the counterpart to [`Self::all`] +
+    /// [`Self::primary_index`], used to rebuild a `SelectionSet` that was
+    /// projected into an owned form (e.g. the plugin-host WIT boundary). The
+    /// non-empty invariant is preserved: an empty `selections` collapses to a
+    /// single origin cursor, and `primary` is clamped into range.
+    pub fn from_parts(selections: Vec<Selection>, primary: usize) -> Self {
+        if selections.is_empty() {
+            return Self::cursor_at_origin();
+        }
+        let primary = primary.min(selections.len() - 1);
+        Self {
+            selections,
+            primary,
+        }
+    }
+
     pub fn primary(&self) -> &Selection {
         // SAFETY-equivalent: every constructor and mutator preserves the
         // non-empty invariant, so primary is always a valid index.
@@ -132,6 +148,29 @@ mod tests {
         assert_eq!(s.primary_index(), 0);
         assert!(s.primary().is_cursor());
         assert_eq!(s.primary().head, Position::ZERO);
+    }
+
+    #[test]
+    fn from_parts_preserves_selections_and_primary() {
+        let a = Selection::cursor(Position::new(0, 0));
+        let b = Selection::cursor(Position::new(2, 3));
+        let s = SelectionSet::from_parts(vec![a, b], 1);
+        assert_eq!(s.all().len(), 2);
+        assert_eq!(s.primary_index(), 1);
+        assert_eq!(s.primary(), &b);
+    }
+
+    #[test]
+    fn from_parts_clamps_out_of_range_primary_and_repairs_empty() {
+        // Out-of-range primary clamps to the last selection (invariant kept).
+        let only = Selection::cursor(Position::new(1, 1));
+        let clamped = SelectionSet::from_parts(vec![only], 9);
+        assert_eq!(clamped.primary_index(), 0);
+        // Empty input collapses to a single origin cursor (never empty).
+        let repaired = SelectionSet::from_parts(vec![], 3);
+        assert_eq!(repaired.all().len(), 1);
+        assert_eq!(repaired.primary_index(), 0);
+        assert!(repaired.primary().is_cursor());
     }
 
     #[test]

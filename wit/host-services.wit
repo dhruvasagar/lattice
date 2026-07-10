@@ -1,7 +1,12 @@
 package lattice:plugin-host@0.1.0;
 
 /// Mirrors the native host services: tree-sitter, ripgrep, regex, fs, net,
-/// proc (plugin-host.md §5). Guest→host calls, capability-gated at the WASI
-/// layer (PH7.2). Populated as its seams land (fs/net for PH7.4's
-/// `fuzzy-finder`; tree-sitter query shape is design.md §15 Q15).
+/// proc (plugin-host.md §5). Guest→host calls, capability-gated against the
+/// plugin's `CapabilityGrant` (PH7.2). Note the enforcement split PH7.2 landed:
+/// filesystem access is *also* bounded at the WASI layer (the `Store`'s
+/// preopens are built from the grant's `fs:*` prefixes), whereas `net:http` /
+/// `proc:spawn` are enforced *here* — these host-services calls check the
+/// grant's allowlist / tier — not by a raw WASI socket/subprocess view.
+/// Populated as its seams land (fs/net for PH7.4's `fuzzy-finder`; tree-sitter
+/// query shape is design.md §15 Q15).
 interface host-services {}

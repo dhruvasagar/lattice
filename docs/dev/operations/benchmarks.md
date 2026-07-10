@@ -2004,6 +2004,54 @@ hit/miss + lazy load via `tests/cache.rs` (correctness, not benches). The
 per-call overhead ratchet and the cold-start gate from `plugin-host.md` §7
 land at PH7.5.
 
+## Plugin host — boundary conversion (`crates/lattice-plugin-host/benches/boundary.rs`)
+
+PH7.3a/b bench. Measures the per-value **marshalling** cost of the
+`WitBoundary` adapter (`to_wit` then `from_wit`) for the representative
+boundary types. This is only the *marshalling* component of the §7 "typed host
+function call" budget (< 100 ns p50 / < 500 ns p99); the **end-to-end
+guest↔host typed-call** gate — which also pays the wasmtime canonical-ABI
+lift/lower + the async suspend — lands with the call machinery at PH7.3d, where
+there is an actual call to measure. Not a gated CI budget yet (that is PH7.5);
+this row exists so the marshalling surface is measured from day one
+(four-artefact discipline).
+
+⚠️ **Provisional — off-box numbers.** Same caveat as the instantiation smoke
+above: captured on a macOS dev machine, not comparable to the §8.2 hardware
+baseline. Order-of-magnitude only until re-run on the canonical box.
+
+| Workload | Provisional (macOS) | Notes |
+| ------------------------------------- | ------------------- | ----- |
+| `boundary_args_round_trip` (PH7.3a) | ~21–47 ns | A 4-element `Args::List` (string/int/bool/chord). |
+| `boundary_raw_candidate_round_trip` (PH7.3a) | ~21–47 ns | A `RawCandidate` with a `File` data payload. |
+| `boundary_picker_outcome_round_trip` (PH7.3a) | ~21–47 ns | A `PickerAcceptOutcome::JumpToLocation`. |
+| `boundary_effect_round_trip` (PH7.3b1b) | ~92 ns | A composite `Effect::Many` of 4 arms (RecordJump + OpenBufferAt + QuitEditor + Echo) — exercises the `list<effect>` flatten/rebuild + a spread of payload records. The cost an operator/ex-command guest export pays to return an effect. |
+| `boundary_app_effect_round_trip` (PH7.3b2) | ~13 ns | A single `AppEffect` (`EnterVisual(Linewise)`) — the payload of the `Effect::AppAction` arm. Exercises the reused `ModalState`/`VisualKind` mirrors + the `app-effect` variant a chord-bound plugin action marshals. |
+| `document_get_text_range_one_line` (PH7.3c) | ~400 ns | The `document` resource slicing one line out of a **10k-line** buffer. Demonstrates "zero-copy at the slice level" (§9.6): the cost is O(log n) locate + O(slice) copy, NOT O(document) — the whole rope is never materialised across the boundary. |
+| `boundary_picker_candidate_with_marginalia_round_trip` (PH7.4a) | ~290 ns | A picker `RawCandidate` carrying a `Styled` permission cell (2 slot-keyed segments) + a `Custom` size cell — the shape a plugin file source emits per row. Marshals the whole marginalia surface the picker seam adds (the `Annotation` enum crosses so plugin sources define columns). |
+| `boundary_routing_payload_round_trip` (PH7.4a) | ~5–10 ns | The per-candidate `RoutingPayload::OpenFile` a file source emits + consumes in `accept`. |
+
+## Plugin host — end-to-end typed call (`crates/lattice-plugin-host/benches/trampoline.rs`)
+
+PH7.3d bench — the §7 **headline** gate "typed host function call < 100 ns p50 /
+< 500 ns p99", deferred from PH7.3a (which benched only the marshalling
+component) to here, where a **real `wasm32-wasip2` guest export** exists to call.
+This is the full round trip the §4.1 trampoline pays: a host→guest call across
+the canonical ABI (lower the `args`, run the guest, lift the returned
+`list<effect>`), measured WARM (the guest is instantiated once, the call runs in
+a tight loop — so it is per-call overhead, not instantiation). It validates the
+whole `effect` mirror crossing a live component boundary (§14's highest risk),
+not a stub. Skips when the `wasm32-wasip2` target isn't installed (see
+`build.rs`); CI installs it so the gate runs. Not a CI ratchet yet (PH7.5).
+
+⚠️ **Provisional — off-box.** Captured on the same non-canonical box as the rows
+above; order-of-magnitude only until re-run on the §8.2 hardware.
+
+| Workload | Provisional | Notes |
+| ------------------------------------- | ----------- | ----- |
+| `trampoline_apply_effect_warm_call` (PH7.3d) | ~437 ns median | `args` in → `list<effect>` out through the fixture guest — the operator/motion `apply` shape. Right at the < 500 ns p99 target for a real end-to-end typed call. |
+| `trampoline_next_batch_warm_call` (PH7.3d) | ~sub-µs | One `next-batch` pull (the §4.3 result-carrier's per-batch call); same order as the apply call. |
+
 ---
 
 ## What's NOT here

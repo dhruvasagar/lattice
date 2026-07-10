@@ -5,6 +5,9 @@ Cargo.lock.bak
 *.swp
 *.swo
 
+# Stray output from backgrounded processes (e.g. `nohup cargo run &`).
+nohup.out
+
 # Override global asdf/mise ignores -- the toolchain pin is part
 # of the repo so contributors get a reproducible build.
 !.tool-versions

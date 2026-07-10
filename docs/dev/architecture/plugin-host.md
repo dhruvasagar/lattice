@@ -290,6 +290,17 @@ exactly the surface `lattice_lsp` and friends already reach. (Watch the document
   `proc:spawn`, plus editor capabilities via the existing `CapabilitySet`
   (`Mode::required_capabilities`). The runtime enforces via wasmtime's WASI configuration —
   a plugin's `Store` is built with exactly its granted `wasi:filesystem`/`wasi:http` view.
+  > **Refined (PH7.2, 2026-07-01):** WASI-layer enforcement covers **filesystem only**. Each
+  > `Store`'s `WasiCtx` is built from the grant's `fs:*` preopens (data dir writable + each granted
+  > prefix at its declared perms); a path outside the grant is unreachable because WASI has no
+  > ambient authority. `net:http` and `proc:spawn` are carried on the `CapabilityGrant` as metadata
+  > but are **not** wired into the raw WASI view — a `net:http` grant does not enable raw
+  > `wasi:sockets`, and `proc:spawn` does not enable subprocess spawning at the WASI layer. Both are
+  > serviced (and allowlist-/tier-checked) by the capability-gated `host-services` calls (PH7.3+),
+  > which read the *same* grant. Enabling raw sockets/subprocess for those grants would leak
+  > authority the host-services check exists to contain. So the original "`wasi:filesystem`/
+  > `wasi:http` view" is, in v1, a `wasi:filesystem` view; `net`/`proc` enforcement lives at the
+  > host-services seam, not the WASI view. See the PH7.2 slice + `capability.rs`.
 - **Per-plugin data dir.** `${XDG_DATA_HOME}/lattice/plugins/<plugin-id>/data/` is mounted;
   writes outside it require an explicit broader grant (§5.5.6 prerequisite 2).
 - **Trust tiers.** *Bundled* plugins inherit the editor's trust (capabilities pre-granted at

@@ -1,0 +1,827 @@
+package lattice:plugin-host@0.1.0;
+
+/// Shared boundary records/variants — the owned, WIT-serializable mirrors of
+/// the native grammar + picker/completion types (plugin-host.md §4). Every
+/// interface that crosses one of these `use`s it from here; the host
+/// round-trips native ↔ these generated types via the `WitBoundary` adapter
+/// trait (`boundary.rs`, PH7.3a). Bulk rope text never rides these records —
+/// it crosses via the `buffer` `document` resource handle (PH7.3c).
+///
+/// Populated incrementally across PH7.3: `args`/`arg-value` (PH7.3a),
+/// `raw-candidate` + `picker-accept-outcome` (PH7.3a), the `effect` variant
+/// mirror (PH7.3b). Types whose native form carries a nested
+/// `CommandInvocation` (e.g. `arg-value::invocation`) are deferred to the
+/// command mirror (§4.1) and cross as a typed error until then.
+interface types {
+    /// Mirrors `lattice_grammar::args::ArgValue`. The native
+    /// `Invocation(Box<CommandInvocation>)` variant is intentionally absent
+    /// until the command mirror lands (§4.1); crossing it before then is a
+    /// typed `WitBoundary` error, never a lossy encoding.
+    variant arg-value {
+        %string(string),
+        %char(char),
+        %bool(bool),
+        int(s64),
+        pattern(string),
+        chord(string),
+        raw(string),
+    }
+
+    /// Mirrors `lattice_grammar::args::Args`. `bytes` is the msgpack escape
+    /// hatch (`Args::Bytes`) retained for now; typed calls prefer `list`.
+    variant args {
+        none,
+        %char(char),
+        %string(string),
+        bytes(list<u8>),
+        %list(list<arg-value>),
+    }
+
+    /// Mirrors `lattice_completion::candidate::CandidateKind`.
+    variant candidate-kind {
+        command,
+        %option,
+        file,
+        directory,
+        pattern,
+        buffer,
+        register,
+        mark,
+        chord,
+        plain,
+        /// Plugin-defined kind; the u32 is the registered kind tag.
+        extension(u32),
+    }
+
+    /// Mirrors `lattice_completion::candidate::CandidateData`. The native
+    /// `Command { .., source: SourceLocation }` variant is intentionally
+    /// absent: `SourceLocation` is recursive (`DotRepeat(Box<Self>)`), which a
+    /// WIT variant cannot express directly, and command candidates are a
+    /// native-generator concern, not a plugin one. Crossing it is a typed
+    /// `WitBoundary` error until the provenance mirror lands — never lossy.
+    variant candidate-data {
+        file(candidate-file),
+        %option(candidate-option),
+        option-value(candidate-option-value),
+        chord(candidate-chord),
+        register(candidate-register),
+        mark(candidate-mark),
+        plain,
+        /// Plugin-defined arbitrary payload (the `Extension` hatch): the
+        /// `kind-id` routes to the registering plugin's annotator, which
+        /// decodes `payload`.
+        extension(candidate-extension),
+    }
+
+    record candidate-file {
+        path: string,
+        is-dir: bool,
+        size: option<u64>,
+    }
+    record candidate-option {
+        name: string,
+        current-value: string,
+        doc: string,
+    }
+    record candidate-option-value {
+        option-name: string,
+        value: string,
+        doc: string,
+    }
+    record candidate-chord {
+        chord: string,
+        mode-label: string,
+        doc: string,
+    }
+    record candidate-register {
+        name: char,
+        preview: string,
+    }
+    record candidate-mark {
+        name: char,
+        position: string,
+    }
+    record candidate-extension {
+        kind-id: u32,
+        payload: list<u8>,
+    }
+
+    // ---- Marginalia annotations (PH7.4a, marginalia.md §8 / MARG.1) ----
+    // The whole closed `Annotation` enum crosses so a plugin picker source can
+    // define + populate marginalia columns (the user's PH7.4 requirement). The
+    // host lays out `AnnotationColumns` from the visible set (a render-consumed
+    // projection), so only the per-candidate annotations cross, never the column
+    // layout. `slot` / `category` are theme element KEYS resolved at paint, never
+    // baked colors, so a `:colorscheme` swap recolors plugin marginalia live.
+
+    /// Mirrors `lattice_protocol::chord::SpecialKey`. `f` carries the function-key
+    /// number (`1..=24`; `0` is invalid and rejected at the boundary).
+    variant special-key {
+        esc, enter, tab, backspace, space,
+        up, down, left, right,
+        home, end, page-up, page-down, insert, delete,
+        f(u8),
+    }
+    /// Mirrors `lattice_protocol::chord::KeyKind`.
+    variant key-kind {
+        %char(char),
+        special(special-key),
+    }
+    /// Mirrors `lattice_protocol::chord::KeyChord`. `mods` is the raw `KeyMods`
+    /// bitfield (Ctrl=1, Shift=2, Alt=4, Super=8) — structural, not lossy.
+    record key-chord {
+        key: key-kind,
+        mods: u8,
+    }
+
+    /// Mirrors `lattice_completion::candidate::AnnotationSegment` — one run of
+    /// marginalia text sharing a theme `slot` key.
+    record annotation-segment {
+        text: string,
+        slot: string,
+    }
+    /// Payload of `annotation::custom` (the plugin escape hatch): pre-formatted
+    /// `text` + a theme `slot` key.
+    record annotation-custom {
+        text: string,
+        slot: string,
+    }
+    /// Payload of `annotation::styled` (§8: a multi-slot column cell) — a `category`
+    /// key plus per-segment slot-keyed runs (file-permission strings, size+unit, …).
+    record annotation-styled {
+        category: string,
+        segments: list<annotation-segment>,
+    }
+    /// Mirrors `lattice_completion::candidate::Annotation` (whole closed enum).
+    variant annotation {
+        kind(string),
+        doc-snippet(string),
+        keybinding(list<key-chord>),
+        source(string),
+        custom(annotation-custom),
+        styled(annotation-styled),
+    }
+
+    /// Mirrors the crossable core of `lattice_completion::candidate::RawCandidate`
+    /// **plus marginalia** (PH7.4a). `accept_action` and `display_spans` remain
+    /// host-only (`#[serde(skip)]`, reconstructed host-side, §4.4); `annotations`
+    /// now crosses so plugin sources contribute themed columns. `source` is the
+    /// optional source id.
+    record raw-candidate {
+        text: string,
+        display: string,
+        source: option<string>,
+        kind: candidate-kind,
+        data: candidate-data,
+        annotations: list<annotation>,
+    }
+
+    /// Mirrors `lattice_picker::outcome::PickerAcceptOutcome`. All flat pure
+    /// data; paths cross as strings; `invoke-command` reuses `args`.
+    variant picker-accept-outcome {
+        open-file(string),
+        switch-buffer(u32),
+        jump-in-buffer(jump-target),
+        jump-to-mark(char),
+        jump-to-location(location),
+        invoke-command(command-ref),
+        paste-register(char),
+        expand-snippet(string),
+        open-lsp-log(string),
+        open-lsp-trace-log(string),
+        apply-lsp-code-action(lsp-code-action-ref),
+        apply-lsp-completion(u32),
+        apply-colorscheme(string),
+        no-op,
+    }
+
+    record jump-target {
+        buffer-id: u32,
+        line: u32,
+        col: u32,
+    }
+    record location {
+        path: string,
+        line: u32,
+        col: u32,
+    }
+    record command-ref {
+        id: string,
+        args: args,
+    }
+    record lsp-code-action-ref {
+        handle: u64,
+        index: u32,
+    }
+
+    // ---- Effect payload mirrors (PH7.3b1a) ----
+    // The nested payload types the `effect` variant (PH7.3b1b) composes.
+
+    /// Mirrors `lattice_protocol::position::Position`.
+    record position {
+        line: u32,
+        byte: u32,
+    }
+    /// Mirrors `lattice_protocol::position::Range`.
+    record range {
+        start: position,
+        end: position,
+    }
+
+    /// Mirrors `lattice_protocol::edit::EditKind`.
+    variant edit-kind {
+        replace(string),
+    }
+    /// Mirrors `lattice_protocol::edit::Edit`.
+    record edit {
+        range: range,
+        kind: edit-kind,
+    }
+    /// Mirrors `lattice_protocol::edit::EditDelta`.
+    record edit-delta {
+        start-byte: u32,
+        old-end-byte: u32,
+        new-end-byte: u32,
+        start-position: position,
+        old-end-position: position,
+        new-end-position: position,
+    }
+    /// Mirrors `lattice_core::buffer::AppliedEdit`.
+    record applied-edit {
+        original-range: range,
+        inserted-range: range,
+        replaced-text: string,
+        inserted-text: string,
+        delta: edit-delta,
+    }
+
+    /// Mirrors `lattice_protocol::selection::VisualMode`.
+    variant visual-mode {
+        charwise,
+        linewise,
+        blockwise,
+    }
+    /// Mirrors `lattice_protocol::selection::Selection`.
+    record selection {
+        anchor: position,
+        head: position,
+        visual: option<visual-mode>,
+    }
+    /// Mirrors `lattice_protocol::selection::SelectionSet` (reconstructed via
+    /// `SelectionSet::from_parts`). Always non-empty; `primary` indexes
+    /// `selections`.
+    record selection-set {
+        selections: list<selection>,
+        primary: u32,
+    }
+
+    /// Mirrors `lattice_grammar::modal::VisualKind`.
+    variant visual-kind {
+        charwise,
+        linewise,
+        blockwise,
+    }
+    /// Mirrors `lattice_grammar::modal::SearchDirection`.
+    variant search-direction {
+        forward,
+        backward,
+    }
+    /// Mirrors `lattice_grammar::modal::ModalState`.
+    variant modal-state {
+        normal,
+        insert,
+        visual(visual-kind),
+        %select(visual-kind),
+        operator-pending,
+        command,
+        search(search-direction),
+        %replace,
+    }
+
+    /// Mirrors `lattice_grammar::register::Register`.
+    variant register {
+        unnamed,
+        named(char),
+        system,
+        black-hole,
+        expression,
+        read-only(char),
+        numbered(u8),
+    }
+
+    /// Mirrors `lattice_grammar::effect::YankKind`.
+    variant yank-kind {
+        charwise,
+        linewise,
+        blockwise,
+    }
+
+    // ---- The `effect` variant mirror (PH7.3b1b) ----
+    // Mirrors the whole crossable surface of `lattice_grammar::effect::Effect`
+    // (§4.4: the closed "host boundary vocabulary"). Three arms are absent by
+    // design and cross as typed `WitBoundary` errors (never lossy):
+    //   - `Effect::Many(Vec<Effect>)` — WIT value types cannot be recursive, so
+    //     `Many` is not an arm. The boundary crosses `list<effect>` instead:
+    //     `to_wit` flattens `Many` (associative composition), `from_wit`
+    //     rebuilds `Many` when the list has >1 element.
+    //   - `Effect::Global { body: Box<CommandInvocation>, .. }` — needs the
+    //     command mirror (§4.1); typed error until then.
+    //   - `Effect::AppAction(AppEffect)` — needs the `AppEffect` mirror (PH7.3b2);
+    //     typed error until then.
+
+    /// Mirrors `lattice_grammar::effect::QuitScope`.
+    variant quit-scope { pane, all }
+    /// Mirrors `lattice_grammar::effect::EchoLevel`.
+    variant echo-level { trace, debug, info, warn, error }
+    /// Mirrors `lattice_grammar::effect::SubstituteScope`.
+    variant substitute-scope { current-line, whole }
+    /// Mirrors `lattice_grammar::effect::Utf16Pos`.
+    record utf16-pos { line: u32, col: u32 }
+    /// Mirrors `lattice_grammar::effect::LspRequest`.
+    variant lsp-request {
+        hover,
+        definition,
+        declaration,
+        type-definition,
+        implementation,
+        references,
+        follow-link,
+    }
+
+    // Payload records for the multi-field `effect` arms. Paths cross as
+    // `option<string>` / `string` (a non-UTF-8 path is a typed error, §4.4).
+    record apply-edit-payload {
+        /// The target `BufferId` (its inner `u32`).
+        target: u32,
+        edit: edit,
+        cursor: option<u32>,
+    }
+    record yank-payload {
+        register: register,
+        content: string,
+        kind: yank-kind,
+    }
+    record quit-payload {
+        force: bool,
+        scope: quit-scope,
+    }
+    record open-buffer-payload {
+        path: option<string>,
+        force: bool,
+    }
+    record open-buffer-at-payload {
+        path: option<string>,
+        position: position,
+        force: bool,
+    }
+    record open-buffer-at-column-payload {
+        path: option<string>,
+        column: option<utf16-pos>,
+        force: bool,
+    }
+    record spawn-terminal-payload {
+        cmd-line: option<string>,
+        env: list<tuple<string, string>>,
+        activate-minor: option<string>,
+    }
+    record echo-payload {
+        level: echo-level,
+        text: string,
+    }
+    record substitute-payload {
+        scope: substitute-scope,
+        pattern: string,
+        replacement: string,
+        global: bool,
+    }
+    record describe-command-payload {
+        name: string,
+        anchor: option<string>,
+    }
+    record open-picker-payload {
+        source: string,
+        args: list<string>,
+    }
+    record set-lsp-log-level-payload {
+        server-id: option<string>,
+        level: string,
+    }
+    record diffsplit-payload {
+        path: string,
+        remote: option<string>,
+    }
+    record close-session-diffs-payload {
+        origin-session: u64,
+        tab-name: string,
+    }
+
+    /// Mirrors `lattice_grammar::effect::Effect` (§4.4). Every arm is pure data;
+    /// `Many`/`Global`/`AppAction` are absent by design (see the note above).
+    variant effect {
+        none,
+        edits(list<applied-edit>),
+        apply-edit(apply-edit-payload),
+        selection-change(selection-set),
+        yank(yank-payload),
+        enter-mode(modal-state),
+        save-buffer(option<string>),
+        quit-editor(quit-payload),
+        open-buffer(open-buffer-payload),
+        open-buffer-at(open-buffer-at-payload),
+        open-external-uri(string),
+        open-buffer-at-column(open-buffer-at-column-payload),
+        spawn-terminal(spawn-terminal-payload),
+        terminal-input(list<u8>),
+        set-option(string),
+        set-local-option(string),
+        set-global-option(string),
+        clear-search-highlight,
+        set-colorscheme(string),
+        echo(echo-payload),
+        show-diagnostics-popup(list<tuple<string, u8>>),
+        lsp(lsp-request),
+        echo-registers,
+        echo-marks,
+        substitute(substitute-payload),
+        delete-current-line,
+        describe-command(describe-command-payload),
+        describe-buffer,
+        apropos(string),
+        describe-key(string),
+        list-keymap,
+        buffer-next,
+        buffer-prev,
+        list-buffers,
+        open-buffer-picker,
+        open-picker(open-picker-payload),
+        buffer-delete(bool),
+        open-file-tree(option<string>),
+        close-file-tree,
+        open-oil(option<string>),
+        describe-option(string),
+        describe-element(string),
+        list-options,
+        open-hover(string),
+        close-hover,
+        open-help-topic(option<string>),
+        list-diagnostics,
+        next-diagnostic,
+        prev-diagnostic,
+        open-lsp-log(option<string>),
+        open-messages,
+        toggle-lsp-trace(string),
+        open-lsp-trace-log(option<string>),
+        lsp-status,
+        lsp-server-log-listing,
+        lsp-restart(string),
+        lsp-progress-cancel(option<string>),
+        lsp-expand-region,
+        lsp-shrink-region,
+        set-lsp-log-level(set-lsp-log-level-payload),
+        lsp-log-clear(option<string>),
+        lsp-document-symbol,
+        lsp-workspace-symbol(string),
+        lsp-incoming-calls,
+        lsp-outgoing-calls,
+        lsp-supertypes,
+        lsp-subtypes,
+        lsp-moniker,
+        lsp-code-lens,
+        lsp-color-presentation,
+        lsp-format,
+        lsp-format-range,
+        lsp-signature-help,
+        lsp-complete,
+        lsp-rename(string),
+        lsp-code-action,
+        expand-snippet(range),
+        reload-snippets,
+        describe-events,
+        describe-diff,
+        diff-open,
+        diff-off(bool),
+        diffthis,
+        diffsplit(diffsplit-payload),
+        diff-get-cmd(option<u32>),
+        diff-put-cmd(option<u32>),
+        diff-accept,
+        diff-reject,
+        diff-accept-all,
+        diff-reject-all,
+        close-session-diffs(close-session-diffs-payload),
+        close-all-session-diffs(u64),
+        next-hunk,
+        prev-hunk,
+        describe-event(string),
+        list-modes,
+        describe-mode(string),
+        describe-option-resolution(string),
+        customize(option<string>),
+        tutor(option<u32>),
+        toggle-mode(string),
+        app-action(app-effect),
+        record-jump,
+    }
+
+    // ---- The `app-effect` variant mirror (PH7.3b2) ----
+    // Mirrors `lattice_grammar::app_effect::AppEffect` — the App-side typed
+    // effect carried by `Effect::AppAction` (chord-bound work with no grammar
+    // concept: `<Esc>`, `<C-w>v`, `o`, …). Pure, flat, non-recursive data. One
+    // arm is absent by design: `AppEffect::NarrowTrigger { range: Option<Range> }`
+    // carries `lattice_grammar::range::Range`, which is recursive
+    // (`RangeBound::Offset { base: Box<RangeBound> }`) and carries a plugin
+    // `RangeId` — WIT cannot express it, so `NarrowTrigger` crosses as a typed
+    // `WitBoundary` error until a range mirror lands (the `Global` precedent).
+    // `NarrowLines` (pre-resolved line span) crosses fine.
+
+    /// Mirrors `lattice_grammar::app_effect::ViewportPos` (`H`/`M`/`L`).
+    variant viewport-pos { top, middle, bottom }
+    /// Mirrors `lattice_grammar::app_effect::ScrollPos` (`zt`/`zz`/`zb`).
+    variant scroll-pos { top, center, bottom }
+    /// Mirrors `lattice_grammar::app_effect::PaneDirection`.
+    variant pane-direction { left, down, up, right }
+    /// Mirrors `lattice_grammar::app_effect::HScroll` (vim `z{l,h,L,H,s,e}`).
+    /// Each arm's bool is the native struct field: `columns`/`half-screen`
+    /// carry `right`, `cursor-to-edge` carries `end`.
+    variant hscroll {
+        columns(bool),
+        half-screen(bool),
+        cursor-to-edge(bool),
+    }
+    /// Mirrors `AppEffect::NarrowLines` (pre-resolved inclusive 0-based span).
+    record narrow-lines-payload {
+        start-line: u32,
+        end-line: u32,
+    }
+
+    /// Mirrors `lattice_grammar::app_effect::AppEffect` (PH7.3b2). `NarrowTrigger`
+    /// is absent by design (recursive `Range`; see the note above).
+    variant app-effect {
+        quit,
+        match-bracket,
+        toggle-case-at-cursor,
+        open-line-below,
+        open-line-above,
+        search-next,
+        search-previous,
+        jump-history-back,
+        jump-history-forward,
+        walk-mark-history-back,
+        walk-mark-history-forward,
+        tag-stack-pop,
+        open-fold-at-cursor,
+        close-fold-at-cursor,
+        toggle-fold-at-cursor,
+        open-all-folds,
+        close-all-folds,
+        cycle-fold-at-cursor,
+        cycle-folds-global,
+        goto-parent-fold,
+        delete-fold-at-cursor,
+        goto-next-fold,
+        goto-prev-fold,
+        toggle-fold-enable,
+        undo,
+        redo,
+        repeat-last-change,
+        page-down,
+        page-up,
+        scroll-line-up,
+        scroll-line-down,
+        redraw-screen,
+        open-command-picker,
+        enter-command-line,
+        oil-navigate-up,
+        reselect-last-visual,
+        swap-visual-ends,
+        paste-after,
+        paste-before,
+        enter-append,
+        enter-insert-first-non-blank,
+        enter-append-end-of-line,
+        display-line-down,
+        display-line-up,
+        display-line-start,
+        display-line-end,
+        create-fold-from-visual,
+        delete-char-backward,
+        completion-trigger,
+        exit-visual,
+        replace-undo-last,
+        enter-mode(modal-state),
+        enter-visual(visual-kind),
+        enter-select(visual-kind),
+        enter-search(search-direction),
+        search-word-under-cursor(search-direction),
+        jump-viewport(viewport-pos),
+        scroll-cursor-to(scroll-pos),
+        horizontal-scroll(hscroll),
+        join-lines(bool),
+        find-repeat(bool),
+        insert-newline,
+        insert-tab,
+        overwrite-char(char),
+        set-mark(char),
+        jump-to-mark-line(char),
+        jump-to-mark-exact(char),
+        select-register(register),
+        start-macro-record(char),
+        play-macro(char),
+        play-last-macro,
+        absorb-operator-prefix(u64),
+        split-pane-horizontal,
+        split-pane-vertical,
+        close-pane,
+        only-pane,
+        navigate-pane(pane-direction),
+        next-pane,
+        prev-pane,
+        next-tab,
+        prev-tab,
+        go-to-tab(u32),
+        new-tab,
+        new-tab-at(string),
+        terminal-spawn(option<string>),
+        terminal-spawn-in-new-tab(option<string>),
+        move-pane-to-new-tab,
+        close-tab,
+        only-tab,
+        move-tab(u32),
+        picker-accept-in-split,
+        picker-accept-in-vsplit,
+        picker-accept-in-tab,
+        equalize-panes,
+        grow-pane-height,
+        shrink-pane-height,
+        grow-pane-width,
+        shrink-pane-width,
+        completion-next,
+        completion-prev,
+        completion-accept,
+        completion-cancel,
+        completion-cancel-and-exit-insert,
+        completion-toggle-docs,
+        completion-docs-scroll-down,
+        completion-docs-scroll-up,
+        completion-accept-then-insert(char),
+        snippet-next-placeholder,
+        snippet-prev-placeholder,
+        completion-filter-to-source(string),
+        completion-filter-clear,
+        diff-get,
+        diff-put,
+        tutor-advance,
+        tutor-retreat,
+        multibuffer-expand(s32),
+        narrow-widen,
+        narrow-lines(narrow-lines-payload),
+        search-trigger(string),
+        search-jump-to-source,
+        search-refresh,
+    }
+
+    // ---- The picker-source seam (PH7.4a, §4.2 / §5 `picker-source`) ----
+    // Mirrors the data types a plugin picker source authors against:
+    // `PickerSourceSpec` (+`ArgSpec`), `RoutingPayload`, `OpenTarget`, and the
+    // owned `PickerContext` projection the host hands `init`. This is the
+    // plugin-facing API (the user's "expose the api, not sources"): native
+    // sources stay native Rust; a plugin implements a source against these types
+    // and registers through the same `PickerRegistry::register_generator` seam.
+    //
+    // The active buffer's bulk rope text and syntax-highlight overlay do NOT ride
+    // `active-buffer-snapshot`; they cross via the `buffer` `document` resource
+    // handle, wired with the `init(ctx)` guest export at PH7.4c.
+
+    /// Mirrors `lattice_grammar::args::ArgKind`.
+    variant arg-kind {
+        %string, %char, %bool, int, pattern, chord, body, raw,
+    }
+    /// Mirrors `lattice_grammar::args::ArgDefault`. `literal` reuses `arg-value`.
+    variant arg-default {
+        required,
+        none,
+        literal(arg-value),
+        use-selection,
+        use-cursor-word,
+        use-last-response,
+    }
+    /// Mirrors `lattice_grammar::args::ArgSpec`. Native `name`/`doc`/`prompt`/
+    /// `completion` are `&'static str`; the host adapter interns the plugin's
+    /// owned strings at registration (`Box::leak`, bounded by loaded-source count
+    /// — see the slice plan note on hot-reload).
+    record arg-spec {
+        name: string,
+        kind: arg-kind,
+        doc: string,
+        prompt: string,
+        default: arg-default,
+        completion: option<string>,
+    }
+    /// Mirrors `lattice_picker::source::PickerSourceSpec`. `live` opts the source
+    /// out of the picker's fuzzy refilter (the source owns filtering).
+    record picker-source-spec {
+        id: string,
+        doc: string,
+        args-schema: list<arg-spec>,
+        args-hint: string,
+        live: bool,
+    }
+
+    /// Mirrors `lattice_picker::outcome::OpenTarget` (`<CR>`/`<C-s>`/`<C-v>`/`<C-t>`).
+    variant open-target { default, split, vsplit, tab }
+
+    // Payload records for the multi-field `routing-payload` arms. `lsp-location`
+    // and `jump-in-buffer` reuse the shared `location` / `jump-target` records;
+    // `invoke-command` reuses `command-ref`.
+    record resolve-diff-payload {
+        primary: u32,
+        accept: bool,
+    }
+    record lsp-instance-payload {
+        server-id: string,
+        workspace: string,
+    }
+    record show-message-action-payload {
+        request-id: u32,
+        action-index: u32,
+    }
+    /// Mirrors `lattice_picker::RoutingPayload` — the opaque token a source emits
+    /// per candidate and consumes in `accept`. All flat pure data; paths cross as
+    /// strings (a non-UTF-8 path is a typed error, §4.4).
+    variant routing-payload {
+        buffer(u32),
+        resolve-diff(resolve-diff-payload),
+        lsp-instance(lsp-instance-payload),
+        lsp-location(location),
+        lsp-completion(u32),
+        lsp-code-action(u32),
+        open-file(string),
+        jump-in-buffer(jump-target),
+        invoke-command(command-ref),
+        paste-register(char),
+        jump-to-mark(char),
+        expand-snippet(string),
+        accept-show-message-action(show-message-action-payload),
+        lsp-code-lens(u32),
+        color-presentation(u32),
+        colorscheme(string),
+    }
+
+    // ---- The owned `PickerContext` projection (§4.2) ----
+    // Host→guest only: the host projects live borrows into these owned records at
+    // `init` time; the guest never sends a context back. So these mirror one-way
+    // (a `project_picker_context` fn, the `project_buffer_snapshot` precedent),
+    // no `from_wit`.
+
+    /// Mirrors `lattice_picker::context::BufferEntry`. `kind-label` is a display
+    /// string — the picker seam stays oblivious to `BufferKind` (CLAUDE.md rule).
+    record buffer-entry {
+        id: u32,
+        kind-label: string,
+        path: option<string>,
+        title: string,
+        dirty: bool,
+    }
+    /// Mirrors `lattice_picker::context::PositionSource`.
+    variant position-source {
+        auto-jump,
+        explicit-mark,
+        plugin-push,
+        named-mark(char),
+    }
+    /// Mirrors `lattice_picker::context::PositionEntry`.
+    record position-entry {
+        buffer-id: u32,
+        line: u32,
+        col: u32,
+        source: position-source,
+    }
+    /// One tree-sitter symbol location `(name, line, byte-col)` — the owned form
+    /// of `ActiveBufferSnapshot::syntax_symbols`.
+    record symbol-location {
+        name: string,
+        line: u32,
+        col: u32,
+    }
+    /// Mirrors `lattice_picker::context::ActiveBufferSnapshot` (metadata only).
+    /// `buffer` (the rope) + `syntax_highlights` are deferred to the `document`
+    /// resource wiring (PH7.4c); a fuzzy-finder needs neither.
+    record active-buffer-snapshot {
+        buffer-id: u32,
+        path: option<string>,
+        language: option<string>,
+        cursor: position,
+        selection: option<tuple<position, position>>,
+        syntax-symbols: list<symbol-location>,
+    }
+    /// Mirrors `lattice_picker::context::PickerContext` (the owned projection).
+    record picker-context {
+        active-buffer: active-buffer-snapshot,
+        workspace-root: string,
+        recent-files: list<string>,
+        position-history: list<position-entry>,
+        buffers: list<buffer-entry>,
+        marks: list<tuple<char, position>>,
+        registers: list<tuple<string, string>>,
+    }
+}

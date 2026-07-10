@@ -1,0 +1,25 @@
+# PH7.3d trampoline fixture guest — a minimal `wasm32-wasip2` component that
+# implements the `trampoline-fixture` world (§4.1 apply-effect + §4.3
+# next-batch). Built to a component by the host crate's build.rs and loaded by
+# `tests/trampoline.rs`. Standalone workspace (`[workspace]` below) so it is NOT
+# part of the parent workspace: it targets wasm32-wasip2, must not inherit the
+# host toolchain's lints/target, and must not be built by a plain
+# `cargo build --workspace`.
+[package]
+name = "trampoline-guest"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.58"
+
+[profile.release]
+# Small, fast-to-build component; strip for a lean artifact.
+opt-level = "s"
+strip = true
+
+[workspace]

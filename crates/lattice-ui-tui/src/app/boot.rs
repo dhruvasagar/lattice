@@ -316,21 +316,21 @@ mod tests {
 
     /// Agent boot-presence guard: `lattice_ai::install` runs in `Editor::boot`'s
     /// Phase-B list, so a freshly-booted `App` must have both opencode paths
-    /// wired: `:opencode` (the v1 terminal-TUI integration) and `:opencode-acp`
-    /// (the headless ACP buffer conversation, which owns the `AiClientHandle`
-    /// service). Without them the commands would silently no-op at the parser
-    /// layer. The `:ai-log` picker itself is a later task; this only pins that
-    /// boot wiring landed.
+    /// wired: `:opencode` (the primary ACP buffer conversation, which owns the
+    /// `AiClientHandle` service) and `:opencode-term` (the terminal-TUI spawn,
+    /// kept best-effort). Without them the commands would silently no-op at the
+    /// parser layer. The `:ai-log` picker itself is a later task; this only pins
+    /// that boot wiring landed.
     #[test]
     fn new_registers_ai_command_and_service_without_panicking() {
         let app = App::new(Document::from_text("hello\n"));
         assert!(
             app.editor.registry.id_by_name("opencode").is_some(),
-            "App::new must register the `:opencode` (terminal) ex-command"
+            "App::new must register the `:opencode` (ACP conversation) ex-command"
         );
         assert!(
-            app.editor.registry.id_by_name("opencode-acp").is_some(),
-            "App::new must register the `:opencode-acp` (ACP conversation) ex-command"
+            app.editor.registry.id_by_name("opencode-term").is_some(),
+            "App::new must register the `:opencode-term` (terminal) ex-command"
         );
         app.editor
             .services

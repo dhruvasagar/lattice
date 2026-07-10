@@ -16,10 +16,12 @@ use crate::opencode::modes::OpencodeMode;
 /// Register `:opencode` against `registry`. Called from [`super::install`].
 pub fn register_opencode_ex_commands(registry: &mut CommandRegistry) {
     registry.register_ex_command(
-        "opencode",
-        "Launch the opencode agent's TUI in a terminal buffer -- its native \
-         interface (prompt with readline, / commands, model switching, history, \
-         and edit review) -- with opencode-mode activated on the terminal.",
+        "opencode-term",
+        "Launch the opencode agent's native TUI in a terminal buffer, with \
+         opencode-mode activated. NOTE: opencode's TUI (opentui) needs modern- \
+         terminal image/capability features lattice's emulator doesn't yet \
+         provide, so it may not render here -- use `:opencode` (the ACP \
+         conversation) instead. Kept for agents whose TUIs degrade gracefully.",
         ExCommandSpec {
             latency_class: LatencyClass::Reflex,
             accepts_bang: false,
@@ -57,13 +59,13 @@ mod tests {
         }
     }
 
-    /// `:opencode` spawns the `opencode` TUI in a terminal and activates
+    /// `:opencode-term` spawns the `opencode` TUI in a terminal and activates
     /// `opencode-mode` on it (the terminal topology, like `:claude`).
     #[test]
-    fn opencode_spawns_terminal_and_activates_mode() {
+    fn opencode_term_spawns_terminal_and_activates_mode() {
         let mut registry = CommandRegistry::new();
         register_opencode_ex_commands(&mut registry);
-        let id = registry.id_by_name("opencode").expect("`:opencode` registered");
+        let id = registry.id_by_name("opencode-term").expect("`:opencode-term` registered");
         let spec = registry.ex_command_spec(id).expect("spec present");
         match (spec.apply)(&ctx()).expect("apply ok") {
             Effect::SpawnTerminal { cmd_line, activate_minor, .. } => {

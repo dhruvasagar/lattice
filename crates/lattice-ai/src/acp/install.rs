@@ -30,7 +30,7 @@ pub fn install(boot: &mut impl SubsystemBoot, logger: &AiLogger) {
     // The `ai-conversation` major mode backs the `*ai:opencode*` buffer; it
     // reads the ConversationStore service and live-tails via ConversationUpdated.
     boot.modes_mut()
-        .register(AiConversationMode)
+        .register(AiConversationMode::new())
         .expect("ai-conversation-mode register");
 
     // AU‑4: the host-registered programmatic-diff bus (the `review_diff`

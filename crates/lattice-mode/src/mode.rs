@@ -109,13 +109,32 @@ impl ActivationPolicy {
 ///   column 0.
 ///
 /// `Default` is the empty tail (`trailing_lines = 0`), i.e. nothing editable.
+///
+/// ## Bottom-relative vs. anchored
+///
+/// The bottom-relative `trailing_lines` encoding is correct for a *fixed-height*
+/// tail: it stays valid as the owner appends content ABOVE the tail, but breaks
+/// the moment the user grows the tail itself (a multi-line prompt), because the
+/// added lines push the marker line out of the region. For a prompt whose height
+/// changes with user newlines AND whose top drifts as a transcript streams above
+/// it, set [`first_editable_line`](Self::first_editable_line) to the ABSOLUTE
+/// line where the editable region begins (the transcript-end line); the owning
+/// mode updates it as the transcript grows. When set it overrides
+/// `trailing_lines`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct EditableTail {
-    /// Number of trailing lines forming the editable region.
+    /// Number of trailing lines forming the editable region. Ignored when
+    /// [`first_editable_line`](Self::first_editable_line) is `Some`.
     pub trailing_lines: u32,
     /// Minimum editable byte column on the first editable line (guards a
     /// text-rendered prompt marker). Ignored for lines after the first.
     pub first_line_min_byte: u32,
+    /// When `Some(anchor)`, the editable region is `anchor..EOF` (absolute),
+    /// overriding the bottom-relative `trailing_lines`. Lets a mode with a
+    /// multi-line, growing prompt anchor the region to the transcript end and
+    /// keep it correct as the user adds newlines. Clamped to the last line so a
+    /// stale-high anchor never freezes the whole buffer.
+    pub first_editable_line: Option<u32>,
 }
 
 impl EditableTail {
@@ -124,10 +143,17 @@ impl EditableTail {
     /// `line_count` lines? Pure + unit-testable: the host gate computes the
     /// live `line_count` from the document snapshot and delegates here.
     pub fn permits(&self, start_line: u32, start_byte: u32, line_count: u32) -> bool {
-        if self.trailing_lines == 0 {
-            return false;
-        }
-        let first_editable = line_count.saturating_sub(self.trailing_lines);
+        let first_editable = match self.first_editable_line {
+            // Absolute anchor: `anchor..EOF`, clamped so a stale-high anchor
+            // still leaves the last line editable rather than freezing the tail.
+            Some(anchor) => anchor.min(line_count.saturating_sub(1)),
+            None => {
+                if self.trailing_lines == 0 {
+                    return false;
+                }
+                line_count.saturating_sub(self.trailing_lines)
+            }
+        };
         if start_line < first_editable {
             return false;
         }
@@ -547,7 +573,11 @@ mod tests {
     /// tracks the prompt as the transcript grows.
     #[test]
     fn editable_tail_permits_prompt_and_rejects_history() {
-        let tail = EditableTail { trailing_lines: 1, first_line_min_byte: 2 };
+        let tail = EditableTail {
+            trailing_lines: 1,
+            first_line_min_byte: 2,
+            first_editable_line: None,
+        };
         // 5-line buffer: prompt is line 4 (`line_count - 1`).
         // In the prompt, at/after the marker → allowed.
         assert!(tail.permits(4, 2, 5));
@@ -561,6 +591,37 @@ mod tests {
         // Grow the transcript: prompt is now line 9; the same rule tracks it.
         assert!(tail.permits(9, 2, 10));
         assert!(!tail.permits(4, 2, 10));
+    }
+
+    /// AU‑3+ (`<C-j>` multi-line prompt): an absolute anchor makes the region
+    /// `anchor..EOF` regardless of the tail's height, so a growing multi-line
+    /// prompt stays fully editable while everything above the anchor is frozen.
+    #[test]
+    fn anchored_editable_tail_covers_a_multiline_prompt() {
+        // Transcript ends at line 3; the prompt is lines 3.. (marker on line 3).
+        let tail = EditableTail {
+            trailing_lines: 1,
+            first_line_min_byte: 2,
+            first_editable_line: Some(3),
+        };
+        // Marker line: at/after column 2 allowed, inside the marker rejected.
+        assert!(tail.permits(3, 2, 6));
+        assert!(!tail.permits(3, 0, 6));
+        // Continuation prompt lines (added via `<C-j>`) are fully editable,
+        // including column 0 (no marker there) — this is what a 1-line tail
+        // could not express.
+        assert!(tail.permits(4, 0, 6));
+        assert!(tail.permits(5, 0, 6));
+        // Transcript lines above the anchor stay frozen.
+        assert!(!tail.permits(2, 0, 6));
+        assert!(!tail.permits(0, 0, 6));
+        // A stale-high anchor clamps to the last line rather than freezing all.
+        let stale = EditableTail {
+            trailing_lines: 1,
+            first_line_min_byte: 2,
+            first_editable_line: Some(99),
+        };
+        assert!(stale.permits(5, 2, 6));
     }
 
     /// AU‑3: an empty tail (`trailing_lines = 0`, the `Default`) permits

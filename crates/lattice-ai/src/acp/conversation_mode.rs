@@ -14,7 +14,7 @@
 //! change rewrites only from its line down (AU‑2 shows status inline as text; a
 //! decoration-based in-place update is a follow-up).
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use lattice_grammar::ModalState;
@@ -43,12 +43,33 @@ pub fn conversation_buffer_name() -> String {
 }
 
 /// `ai-conversation-mode` -- major mode for the `*ai:opencode*` buffer.
-pub struct AiConversationMode;
+///
+/// Holds the prompt's editable-region `anchor`: the absolute line where the
+/// prompt begins (== the transcript line count). The drain updates it on each
+/// re-projection; [`editable_tail`](Mode::editable_tail) publishes it so the
+/// read-only gate lets the user edit a multi-line prompt (`<C-j>` inserts a
+/// newline) while the transcript above stays frozen. One instance backs the
+/// single (v1) conversation buffer, so one shared anchor suffices.
+#[derive(Clone, Default)]
+pub struct AiConversationMode {
+    anchor: Arc<AtomicU32>,
+}
 
 impl AiConversationMode {
+    pub fn new() -> Self {
+        Self::default()
+    }
     pub fn mode_id() -> ModeId {
         ModeId::new("ai-conversation-mode")
     }
+}
+
+/// The absolute line where the prompt begins for a given transcript: the
+/// transcript's line count (each rendered turn ends in `\n`, so the trailing
+/// `PROMPT_MARKER` lands on the next line). Pure — the seed and the drain both
+/// feed this into the mode's anchor.
+fn prompt_anchor_line(transcript: &str) -> u32 {
+    transcript.matches('\n').count() as u32
 }
 
 /// Render the whole conversation to plain text. Pure; the projection diffs this
@@ -185,6 +206,12 @@ impl Mode for AiConversationMode {
         Some(EditableTail {
             trailing_lines: 1,
             first_line_min_byte: PROMPT_MARKER.len() as u32,
+            // Absolute anchor = the transcript-end line, kept current by the
+            // drain. Lets the read-only gate cover a MULTI-line prompt (`<C-j>`):
+            // every line at or below the anchor is editable, the transcript
+            // above is frozen. The `trailing_lines: 1` above is the inert
+            // fallback for the first frame before the anchor is seeded.
+            first_editable_line: Some(self.anchor.load(Ordering::Relaxed)),
         })
     }
 
@@ -209,7 +236,11 @@ impl Mode for AiConversationMode {
             },
             ActionHandlerContribution {
                 action_name: "action:ai-conv-send",
-                handler: send_handler(),
+                handler: send_handler(self.anchor.clone()),
+            },
+            ActionHandlerContribution {
+                action_name: "action:ai-conv-newline",
+                handler: newline_handler(),
             },
             ActionHandlerContribution {
                 action_name: "action:ai-conv-interrupt",
@@ -252,6 +283,13 @@ impl Mode for AiConversationMode {
             let mut last = render_conversation(&seed);
             let mut last_user_turns = user_turn_count(&seed);
             full_replace(&handle, &format!("{last}{PROMPT_MARKER}")).await;
+
+            // AU‑3+ (`<C-j>` multi-line prompt): the editable-region anchor, the
+            // absolute line where the prompt begins. `editable_tail` publishes it
+            // to the read-only gate; the drain keeps it current as the transcript
+            // streams. Seed it from the initial transcript.
+            let anchor = self.anchor.clone();
+            anchor.store(prompt_anchor_line(&last), Ordering::Relaxed);
 
             // AU‑3+: after a send, the async re-projection grows the transcript
             // above the prompt and shifts the (now-cleared) prompt line down.
@@ -301,6 +339,7 @@ impl Mode for AiConversationMode {
             let projected_bus = ctx.events_handle();
 
             let drain_flag = focus_flag;
+            let drain_anchor = anchor;
             runtime.spawn(async move {
                 // Coalesce a burst of updates into one re-projection.
                 while rx.recv().await.is_some() {
@@ -308,6 +347,12 @@ impl Mode for AiConversationMode {
                     let snap = conv_store.snapshot();
                     let new = render_conversation(&snap);
                     let user_turns = user_turn_count(&snap);
+                    // Keep the editable-region anchor on the transcript-end line:
+                    // a re-projection may grow the transcript above the prompt
+                    // (streaming) or reset it (send), moving where the prompt
+                    // begins. Store before the edit so the gate is consistent
+                    // with the new content on the next keystroke.
+                    drain_anchor.store(prompt_anchor_line(&new), Ordering::Relaxed);
                     // A new User turn means the user just sent a prompt. Rewrite
                     // the tail through EOF and re-append an empty prompt marker,
                     // clearing the prompt *atomically* with the transcript update.
@@ -437,6 +482,14 @@ fn ai_conversation_keymap_entries() -> &'static [KeymapEntry] {
                 doc: "ai-conversation: send the prompt to the agent",
                 cmd: "action:ai-conv-send"
             },
+            // `<C-j>` inserts a literal newline in the prompt (multi-line
+            // input), matching the `:terminal` / `:claude` convention — `<CR>`
+            // is taken by send, so newline needs its own chord.
+            keymap_entry! {
+                mode: Insert, chord: "<C-j>",
+                doc: "ai-conversation: insert a newline in the prompt",
+                cmd: "action:ai-conv-newline"
+            },
             keymap_entry! {
                 mode: Insert, chord: "<C-c>",
                 doc: "ai-conversation: interrupt the active turn",
@@ -482,23 +535,47 @@ fn focus_prompt_handler() -> ActionHandler {
     })
 }
 
-/// `action:ai-conv-send` — read the prompt (the tail line after `PROMPT_MARKER`)
-/// and hand it to the agent via the `AiClientHandle` service, staying in Insert
-/// at the prompt (only <Esc> returns to Normal). An empty prompt is a no-op
-/// (Enter does nothing); with no running session it echoes an error and keeps
-/// the prompt. The prompt clear + caret re-park are owned by the drain's
-/// re-projection and the per-tick focus callback (see `on_activate`), not by
-/// this handler — so there is no clear edit here to race the re-projection.
-fn send_handler() -> ActionHandler {
-    Arc::new(|ctx: &ActionContext<'_>| -> Option<Effect> {
+/// Join the prompt lines (`anchor..=last`) into the text to send: strip the
+/// `PROMPT_MARKER` from the first (anchor) line, take continuation lines (added
+/// via `<C-j>`) verbatim, and join with `\n`. Pure so the multi-line read is
+/// unit-testable without a live buffer.
+fn assemble_prompt<I: IntoIterator<Item = String>>(lines: I) -> String {
+    lines
+        .into_iter()
+        .enumerate()
+        .map(|(i, line)| {
+            let line = line.trim_end_matches('\n');
+            if i == 0 {
+                line.strip_prefix(PROMPT_MARKER).unwrap_or(line).to_string()
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// `action:ai-conv-send` — read the full (possibly multi-line) prompt and hand
+/// it to the agent via the `AiClientHandle` service, staying in Insert at the
+/// prompt (only <Esc> returns to Normal). The prompt spans `anchor..EOF`: the
+/// anchor line carries the `PROMPT_MARKER` (stripped), continuation lines from
+/// `<C-j>` do not. An empty prompt is a no-op (Enter does nothing); with no
+/// running session it echoes an error and keeps the prompt. The prompt clear +
+/// caret re-park are owned by the drain's re-projection and the per-tick focus
+/// callback (see `on_activate`), not by this handler — so there is no clear edit
+/// here to race the re-projection.
+fn send_handler(anchor: Arc<AtomicU32>) -> ActionHandler {
+    Arc::new(move |ctx: &ActionContext<'_>| -> Option<Effect> {
         let store = ctx.services.get::<BufferStoreHandle>()?;
         let buffer_id = lattice_core::BufferId(ctx.buffer_id.0 as u32);
         let handle = store.handle_for(buffer_id)?;
         let snap = handle.snapshot();
         let last_line = snap.buffer.line_count().saturating_sub(1);
-        let line = snap.buffer.line(last_line).unwrap_or_default();
-        let line = line.trim_end_matches('\n');
-        let prompt = line.strip_prefix(PROMPT_MARKER).unwrap_or(line);
+        // The prompt is `anchor..=last_line` (marker on the anchor line,
+        // `<C-j>` continuation lines below).
+        let anchor_line = anchor.load(Ordering::Relaxed).min(last_line);
+        let prompt =
+            assemble_prompt((anchor_line..=last_line).map(|l| snap.buffer.line(l).unwrap_or_default()));
         if prompt.trim().is_empty() {
             return None;
         }
@@ -526,6 +603,24 @@ fn send_handler() -> ActionHandler {
         // separate clear would race the re-projection that shifts the prompt
         // line down, and land on the wrong, now-read-only line).
         None
+    })
+}
+
+/// `action:ai-conv-newline` — insert a literal newline at the cursor, growing
+/// the multi-line prompt. Bound to `<C-j>` (Insert) because `<CR>` is taken by
+/// send, matching the `:terminal` / `:claude` convention. Uses the generic
+/// `Effect::ApplyEdit` edit primitive; the caret parks at column 0 of the new
+/// line. The cursor is always within the prompt (Insert only edits the tail),
+/// so the insert stays inside the editable region.
+fn newline_handler() -> ActionHandler {
+    Arc::new(|ctx: &ActionContext<'_>| -> Option<Effect> {
+        let target = lattice_core::BufferId(ctx.buffer_id.0 as u32);
+        let edit = lattice_protocol::edit::Edit::insert(ctx.cursor, "\n".to_string());
+        Some(Effect::ApplyEdit {
+            target,
+            edit,
+            cursor: Some(ctx.cursor.line + 1),
+        })
     })
 }
 
@@ -570,6 +665,7 @@ pub fn register_ai_conversation_actions(registry: &mut lattice_grammar::CommandR
             "ai-conversation: move the cursor into the prompt and enter Insert.",
         ),
         ("action:ai-conv-send", "ai-conversation: send the prompt to the agent."),
+        ("action:ai-conv-newline", "ai-conversation: insert a newline in the prompt."),
         ("action:ai-conv-interrupt", "ai-conversation: interrupt the active turn."),
         (
             "action:ai-conv-toggle-trust",
@@ -624,13 +720,45 @@ mod tests {
         );
     }
 
-    /// AU‑3: the mode declares a single-line prompt tail editable after the
-    /// 2-byte `"> "` marker — the input the host's read-only gate consults.
+    /// AU‑3+ (`<C-j>`): the anchor is the transcript-end line — the number of
+    /// newlines in the rendered transcript (each turn ends in `\n`, so the
+    /// trailing prompt marker lands on the next line).
     #[test]
-    fn editable_tail_is_single_prompt_line() {
+    fn prompt_anchor_line_is_transcript_line_count() {
+        assert_eq!(prompt_anchor_line(""), 0); // empty ⇒ prompt on line 0
+        assert_eq!(prompt_anchor_line("you:\nhi\n"), 2); // prompt on line 2
+        assert_eq!(prompt_anchor_line("a\nb\nc\n"), 3);
+    }
+
+    /// AU‑3+ (`<C-j>`): the send read strips the marker from the first prompt
+    /// line, keeps continuation lines verbatim, and joins with newlines.
+    #[test]
+    fn assemble_prompt_reads_multiline_prompt() {
+        assert_eq!(assemble_prompt(["> hello".to_string()]), "hello");
         assert_eq!(
-            <AiConversationMode as Mode>::editable_tail(&AiConversationMode),
-            Some(EditableTail { trailing_lines: 1, first_line_min_byte: 2 }),
+            assemble_prompt(["> line1".to_string(), "line2".to_string(), "line3".to_string()]),
+            "line1\nline2\nline3",
+        );
+        // Per-line trailing newlines are trimmed; a bare (unmarked) first line
+        // is taken as-is.
+        assert_eq!(assemble_prompt(["> a\n".to_string(), "b\n".to_string()]), "a\nb");
+        assert_eq!(assemble_prompt(["plain".to_string()]), "plain");
+    }
+
+    /// AU‑3: the mode declares a prompt tail editable after the 2-byte `"> "`
+    /// marker — the input the host's read-only gate consults. The absolute
+    /// anchor (seeded by the drain to the transcript-end line) starts at 0 for a
+    /// fresh, empty conversation.
+    #[test]
+    fn editable_tail_is_anchored_prompt() {
+        let mode = AiConversationMode::new();
+        assert_eq!(
+            <AiConversationMode as Mode>::editable_tail(&mode),
+            Some(EditableTail {
+                trailing_lines: 1,
+                first_line_min_byte: 2,
+                first_editable_line: Some(0),
+            }),
         );
     }
 
@@ -653,17 +781,18 @@ mod tests {
                 ("I", Some("action:ai-conv-focus-prompt")),
                 ("O", Some("action:ai-conv-focus-prompt")),
                 ("<CR>", Some("action:ai-conv-send")),
+                ("<C-j>", Some("action:ai-conv-newline")),
                 ("<C-c>", Some("action:ai-conv-interrupt")),
                 ("<C-t>", Some("action:ai-conv-toggle-trust")),
             ],
         );
     }
 
-    /// AU‑3: the mode contributes exactly the three handler bodies, keyed to
-    /// the SAME names the keymap binds, so the host's boot walk resolves each.
+    /// AU‑3: the mode contributes exactly the handler bodies, keyed to the SAME
+    /// names the keymap binds, so the host's boot walk resolves each.
     #[test]
     fn action_handlers_contribute_focus_send_interrupt() {
-        let names: Vec<&str> = AiConversationMode
+        let names: Vec<&str> = AiConversationMode::new()
             .action_handlers()
             .iter()
             .map(|c| c.action_name)
@@ -673,6 +802,7 @@ mod tests {
             vec![
                 "action:ai-conv-focus-prompt",
                 "action:ai-conv-send",
+                "action:ai-conv-newline",
                 "action:ai-conv-interrupt",
                 "action:ai-conv-toggle-trust",
             ],

@@ -14,7 +14,7 @@
 //! change rewrites only from its line down (AU‑2 shows status inline as text; a
 //! decoration-based in-place update is a follow-up).
 
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use agent_client_protocol::schema::v1::PermissionOptionKind;
@@ -25,7 +25,7 @@ use lattice_grammar::effect::{EchoLevel, Effect};
 use lattice_mode::{
     ActionContext, ActionHandler, ActionHandlerContribution, BufferStoreHandle, CapabilitySet,
     EditableTail, Keymap, KeymapEntry, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind,
-    OptionOverrideSet, Subscription, TickCallbackRegistration, TickCallbackRegistryHandle,
+    OptionOverrideSet, Subscription,
     VirtualRowRegistrar, keymap_entry,
 };
 
@@ -309,13 +309,23 @@ pub struct LineSuffixReplace {
     pub replacement: String,
 }
 
-/// AU‑3+ activation guard: the `ConversationUpdated` subscription plus the
-/// per-tick prompt-focus callback registration. Dropping it on deactivation
-/// unsubscribes AND removes the callback, so a stopped mode contributes no
-/// further per-tick work.
+/// AU‑3+ activation guard: the `ConversationUpdated` subscription. Dropping
+/// it on deactivation unsubscribes, so a stopped mode contributes no further
+/// work.
 pub struct AiConversationGuard {
     _subscription: Subscription,
-    _focus_tick: Option<TickCallbackRegistration>,
+    /// AUX‑2: the headerline provider registration. Removed on deactivate so the
+    /// mode owns its full surface — nothing else in the host knows this provider
+    /// exists, so nothing else can clean it up.
+    headerline: Option<(Arc<dyn VirtualRowRegistrar>, lattice_core::BufferId)>,
+}
+
+impl Drop for AiConversationGuard {
+    fn drop(&mut self) {
+        if let Some((registrar, buffer_id)) = self.headerline.take() {
+            registrar.unregister(buffer_id, CONV_HEADERLINE_PROVIDER_ID);
+        }
+    }
 }
 
 impl Mode for AiConversationMode {
@@ -447,68 +457,35 @@ impl Mode for AiConversationMode {
             let anchor = self.anchor.clone();
             anchor.store(prompt_anchor_line(&last), Ordering::Relaxed);
 
-            // AU‑3+: after a send, the async re-projection grows the transcript
-            // above the prompt and shifts the (now-cleared) prompt line down.
-            // The host clamps but does NOT move the caret to follow an
-            // owner-write edit, so it would go stale in the read-only
-            // transcript. `<CR>` deliberately stays in Insert (vim / `:terminal`
-            // / `:claude` parity — only <Esc> leaves); this per-tick callback
-            // re-parks the caret at the fresh prompt tail once the drain signals
-            // a send-triggered re-projection landed. The callback runs on the
-            // host thread, so it can read the post-edit buffer and emit a
-            // `SelectionChange`; the flag is the drain→host handoff. Set only on
-            // a User turn, which is added only when the user just sent from THIS
-            // buffer, so the buffer is guaranteed active when it fires.
-            let focus_flag = Arc::new(AtomicBool::new(false));
-            let focus_tick = ctx.service::<TickCallbackRegistryHandle>().map(|registry| {
-                let flag = focus_flag.clone();
-                let store = store.clone();
-                registry.register(Box::new(move || {
-                    if !flag.swap(false, Ordering::AcqRel) {
-                        return Vec::new();
-                    }
-                    let Some(h) = store.handle_for(buffer_id) else {
-                        return Vec::new();
-                    };
-                    let snap = h.snapshot();
-                    let last_line = snap.buffer.line_count().saturating_sub(1);
-                    let end_byte = snap
-                        .buffer
-                        .line(last_line)
-                        .unwrap_or_default()
-                        .trim_end_matches('\n')
-                        .len() as u32;
-                    let pos = lattice_protocol::position::Position::new(last_line, end_byte);
-                    vec![Effect::SelectionChange(
-                        lattice_protocol::selection::SelectionSet::single(
-                            lattice_protocol::selection::Selection::cursor(pos),
-                        ),
-                    )]
-                }))
-            });
-
             // AUX‑2: register the conversation headerline (token/cost display).
             // `conv_store` is `Arc<ConversationStore>` from the service lookup;
             // cloning the Arc gives another reference to the same store.
             let hl_version = self.headerline_version.clone();
-            if let Some(registrar) = ctx.service::<Arc<dyn VirtualRowRegistrar>>() {
-                let queue_len = ctx
-                    .service::<AiClientHandle>()
-                    .map(|h| h.queue_len.clone())
-                    .unwrap_or_default();
-                let headerline = ConversationHeaderline {
-                    store: (*conv_store).clone(),
-                    version: hl_version.clone(),
-                    queue_len,
-                };
-                let provider = Arc::new(
-                    HeaderlineProvider::new(
+            let headerline_registration = ctx
+                .service::<Arc<dyn VirtualRowRegistrar>>()
+                .map(|registrar| {
+                    let queue_len = ctx
+                        .service::<AiClientHandle>()
+                        .map(|h| h.queue_len.clone())
+                        .unwrap_or_default();
+                    let headerline = ConversationHeaderline {
+                        store: (*conv_store).clone(),
+                        version: hl_version.clone(),
+                        queue_len,
+                    };
+                    let provider = Arc::new(HeaderlineProvider::new(
                         CONV_HEADERLINE_PROVIDER_ID,
                         Arc::new(headerline),
-                    ),
-                );
-                registrar.register(buffer_id, provider as Arc<dyn VirtualRowProvider>);
-            }
+                    ));
+                    let registrar: Arc<dyn VirtualRowRegistrar> = (*registrar).clone();
+                    // The provider id is a fixed tag, and `register` refuses to
+                    // replace a live id. Clear any registration a previous
+                    // activation left behind so a re-opened `:opencode` binds its
+                    // own headerline rather than silently keeping the stale one.
+                    registrar.unregister(buffer_id, CONV_HEADERLINE_PROVIDER_ID);
+                    registrar.register(buffer_id, provider as Arc<dyn VirtualRowProvider>);
+                    (registrar, buffer_id)
+                });
 
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<ConversationUpdated>();
             let sub_id = ctx.events().subscribe_typed::<ConversationUpdated>(tx);
@@ -517,7 +494,6 @@ impl Mode for AiConversationMode {
             // once its edit lands (see below).
             let projected_bus = ctx.events_handle();
 
-            let drain_flag = focus_flag;
             let drain_anchor = anchor;
             let drain_perm_id = self.current_permission_id.clone();
             let drain_hl_version = hl_version;
@@ -555,13 +531,8 @@ impl Mode for AiConversationMode {
                     // the prompt line down) and land on the wrong, now-read-only
                     // line. On agent-only updates we leave the user's in-progress
                     // prompt untouched.
-                    let did_clear = user_turns > last_user_turns;
-                    let changed = reproject(&handle, &last, &new, did_clear).await;
-                    if did_clear {
-                        // Prompt just reset — ask the host to re-park the caret
-                        // at the fresh prompt tail on the next tick.
-                        drain_flag.store(true, Ordering::Release);
-                    }
+                    let _did_clear = user_turns > last_user_turns;
+                    let _changed = reproject(&handle, &last, &new, _did_clear).await;
                     // AUX‑2: bump the headerline version on every re-projection so
                     // the ConversationHeaderline widget republishes its row (usage
                     // may have changed).
@@ -572,9 +543,14 @@ impl Mode for AiConversationMode {
                     // runs) WITHOUT a keystroke. Published after the await — not
                     // via `ConversationUpdated`, which fires before the buffer is
                     // re-projected — so the wake never repaints stale content.
-                    if changed {
-                        projected_bus.publish_typed(ConversationProjected);
-                    }
+                    //
+                    // AUX‑2: published unconditionally, NOT gated on the
+                    // transcript text changing. The headerline reads status,
+                    // usage and queue length — none of which appear in the
+                    // transcript — so a `usage_update` re-projects to identical
+                    // text yet must still repaint. Gating this on text change
+                    // froze the headerline at "Ready" forever.
+                    projected_bus.publish_typed(ConversationProjected);
                     last = new;
                     last_user_turns = user_turns;
                 }
@@ -582,7 +558,7 @@ impl Mode for AiConversationMode {
 
             Ok(Some(AiConversationGuard {
                 _subscription: Subscription::new(bus_handle, sub_id),
-                _focus_tick: focus_tick,
+                headerline: headerline_registration,
             }))
         })
     }
@@ -1277,6 +1253,53 @@ mod tests {
         assert!(text.contains("200.0K"), "headerline shows context size: {text}");
         assert!(text.contains("$0.045"), "headerline shows cost: {text}");
         assert!(text.contains("USD"), "headerline shows currency: {text}");
+    }
+
+    /// Why the drain must not gate its repaint wake on transcript-text change:
+    /// a `usage_update` moves the headerline but leaves `render_conversation`
+    /// byte-identical. Gating the wake on text change (the AUX‑2 bug) freezes
+    /// the headerline at its last text-driven repaint — "Ready", never a cost.
+    #[test]
+    fn usage_only_update_moves_headerline_but_not_transcript() {
+        fn row_text(hl: &ConversationHeaderline) -> String {
+            hl.render()
+                .expect("row")
+                .cells
+                .iter()
+                .map(|c| char::from_u32(c.codepoint).unwrap_or('�'))
+                .collect()
+        }
+
+        let store = ConversationStore::new(Arc::new(|_| {}));
+        store.push_user_text(&SessionKey::new("test", 0), "hello");
+        let hl = ConversationHeaderline {
+            store: store.clone(),
+            version: Arc::new(AtomicU64::new(0)),
+            queue_len: Arc::new(AtomicUsize::new(0)),
+        };
+
+        let transcript_before = render_conversation(&store.snapshot());
+        let headerline_before = row_text(&hl);
+
+        let u = agent_client_protocol::schema::v1::UsageUpdate::new(31400, 200000)
+            .cost(agent_client_protocol::schema::v1::Cost::new(0.045, "USD"));
+        store.apply(
+            &SessionKey::new("test", 0),
+            &agent_client_protocol::schema::v1::SessionUpdate::UsageUpdate(u),
+        );
+
+        assert_eq!(
+            transcript_before,
+            render_conversation(&store.snapshot()),
+            "usage never appears in the transcript text",
+        );
+        assert_ne!(
+            headerline_before,
+            row_text(&hl),
+            "usage DOES change the headerline — so a text-unchanged \
+             re-projection still has to wake the renderer",
+        );
+        assert!(row_text(&hl).contains("31.4K"), "{}", row_text(&hl));
     }
 
     #[test]

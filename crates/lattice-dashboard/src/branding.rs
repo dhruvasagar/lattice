@@ -43,23 +43,33 @@ const WORDMARK: &str = "Lattice";
 /// vary size) and renders every cell base-size. Kept modest so the shared
 /// row's growth stays subtle.
 const WORDMARK_SCALE: u16 = 150;
+/// Version string, compiled from `CARGO_PKG_VERSION` at build time.
+/// Displayed after the tagline on the dashboard branding block so GPUI
+/// shapes it at tagline scale (1.15x) rather than the wordmark's 3.7x.
+const VERSION: &str = concat!("v", env!("CARGO_PKG_VERSION"));
 
 /// The mark as a glyph grid: `L` = logo block, `C` = cursor block, ` ` =
-/// empty. **5 cols × 6 rows**, a faithful 20-unit rasterisation of
+/// empty. **10 cols × 6 rows**, a 10-unit rasterisation of
 /// `assets/lattice-mark.svg` (100×120 = 5:6 portrait): a hollow bracket
-/// with 1-cell-thick walls and a 3-wide interior, formed by the two
+/// with 2-cell-thick walls and a 6-wide interior, formed by the two
 /// interlocking SVG paths — the `L` foot (left wall x0-20 + bottom bar
 /// x0-80) and the `7` hook (top bar x20-100 + right wall x80-100). The two
 /// diagonally-opposite corners are cut (top-left and bottom-right open),
 /// giving the interlocking look. The amber cursor bar (`C`, SVG rect
-/// x40-60 y36-84) is 2 cells tall, dead-centre (col 2, rows 2-3).
+/// x40-60 y36-84) is 2 cells tall, centred at cols 4-5, rows 2-3.
+///
+/// The width is doubled from the original 5-col raster to compensate for
+/// the terminal cell aspect ratio (~2:1 height:width). With 10 columns × 6
+/// rows of full-block characters, the visual ratio matches the original
+/// SVG's 5:6 portrait proportion — the same square-tile appearance the
+/// GPUI peer achieves with its 2-D quad composition.
 const MARK: [&str; 6] = [
-    " LLLL", //  top bar (cols 1-4); top-left corner open
-    "L   L", //  left + right walls
-    "L C L", //  walls + amber cursor bar (upper)
-    "L C L", //  walls + amber cursor bar (lower)
-    "L   L", //  left + right walls
-    "LLLL ", //  bottom bar (cols 0-3); bottom-right corner open
+    "  LLLLLLLL", //  top bar (cols 2-9); top-left corner open at cols 0-1
+    "LL      LL", //  left wall (cols 0-1) + right wall (cols 8-9)
+    "LL  CC  LL", //  walls + amber cursor bar at cols 4-5
+    "LL  CC  LL", //  walls + amber cursor bar at cols 4-5
+    "LL      LL", //  left wall (cols 0-1) + right wall (cols 8-9)
+    "LLLLLLLL  ", //  bottom bar (cols 0-7); bottom-right corner open at cols 8-9
 ];
 /// Full block glyph for the mark segments.
 const BLOCK: char = '█';
@@ -141,6 +151,13 @@ impl VirtualRowProvider for DashboardBrandingProvider {
         let cursor_fg = fg_or(r, self.ids.cursor, BRAND_AMBER);
         let title_fg = fg_or(r, self.ids.title, BRAND_BLUE);
         let tagline_fg = fg_or(r, self.ids.tagline, Color::Rgb(0x93, 0x99, 0xb2));
+        // Version inherits the default foreground by default (fg = 0),
+        // but can be overridden through the dashboard.version theme element.
+        let version_fg = r
+            .map(|r| r.get(self.ids.version))
+            .and_then(|s| s.fg)
+            .map(|c| c.to_rgb_u32(0))
+            .unwrap_or(0);
 
         let gap = (" ".repeat(GAP), 0u32);
 
@@ -167,6 +184,10 @@ impl VirtualRowProvider for DashboardBrandingProvider {
                     runs.push(gap.clone());
                     wordmark_at = Some(runs.iter().map(|(t, _)| t.chars().count()).sum());
                     runs.push((WORDMARK.to_string(), title_fg));
+                    // Version in its own theme colour (defaults to regular
+                    // foreground, stylable via dashboard.version).
+                    runs.push(("  ".to_string(), 0));
+                    runs.push((VERSION.to_string(), version_fg));
                 }
                 3 => {
                     runs.push(gap.clone());
@@ -239,7 +260,7 @@ pub const BRANDING_ROW_COUNT: usize = MARK.len() + 2;
 /// banner and body share one centred margin.
 pub fn branding_block_width() -> u32 {
     let mark_w = MARK.iter().map(|r| r.chars().count()).max().unwrap_or(0);
-    let text_w = "Lattice".chars().count().max(TAGLINE.chars().count());
+    let text_w = WORDMARK.chars().count().max(TAGLINE.chars().count());
     (mark_w + GAP + text_w) as u32
 }
 
@@ -344,6 +365,7 @@ mod tests {
             key: ElementId::INVALID,
             link: ElementId::INVALID,
             body: ElementId::INVALID,
+            version: ElementId::INVALID,
         };
         let p = DashboardBrandingProvider::new(1, None, ids);
         let rows = p.collect();

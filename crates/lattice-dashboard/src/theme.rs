@@ -22,6 +22,7 @@ pub const ELEM_SECTION: &str = "dashboard.section";
 pub const ELEM_KEY: &str = "dashboard.key";
 pub const ELEM_LINK: &str = "dashboard.link";
 pub const ELEM_BODY: &str = "dashboard.body";
+pub const ELEM_VERSION: &str = "dashboard.version";
 
 /// Brand blue (`assets/lattice-mark.svg`).
 pub const BRAND_BLUE: Color = Color::Rgb(0x1f, 0x6f, 0xeb);
@@ -40,6 +41,7 @@ pub struct DashboardElementIds {
     pub key: ElementId,
     pub link: ElementId,
     pub body: ElementId,
+    pub version: ElementId,
 }
 
 /// Register the `dashboard.*` elements + defaults under `owner`. Idempotent by
@@ -93,6 +95,9 @@ pub fn register_dashboard_theme_elements(
         ),
         // Body inherits the default foreground.
         body: elem(ELEM_BODY, StyleSpec::new(), "Dashboard body text."),
+        // Version inherits the default foreground (regular text color)
+        // but can be overridden through the theme.
+        version: elem(ELEM_VERSION, StyleSpec::new(), "Dashboard version string."),
     }
 }
 
@@ -106,12 +111,12 @@ mod tests {
     }
 
     #[test]
-    fn registers_all_eight_under_mode_owner() {
+    fn registers_all_nine_under_mode_owner() {
         let reg = InMemoryThemeRegistry::new(default_palette());
         register_dashboard_theme_elements(&reg, mode_owner());
         for name in [
             ELEM_LOGO, ELEM_CURSOR, ELEM_TITLE, ELEM_TAGLINE, ELEM_SECTION, ELEM_KEY, ELEM_LINK,
-            ELEM_BODY,
+            ELEM_BODY, ELEM_VERSION,
         ] {
             let info = reg
                 .describe(&ElementName::from(name.to_string()))

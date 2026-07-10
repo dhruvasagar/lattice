@@ -784,6 +784,27 @@ mod tests {
         assert_eq!(c.usage.unwrap().used, 53000);
     }
 
+    /// The wire payload opencode 1.17.18 actually emits. The other usage tests
+    /// build `SessionUpdate` in Rust, so they never exercise deserialization —
+    /// the seam where a schema mismatch would silently drop the update.
+    #[test]
+    fn usage_update_from_opencode_wire_json() {
+        let raw = serde_json::json!({
+            "sessionUpdate": "usage_update",
+            "used": 27744,
+            "size": 200000,
+            "cost": { "amount": 0, "currency": "USD" }
+        });
+        let update: SessionUpdate =
+            serde_json::from_value(raw).expect("opencode usage_update should deserialize");
+        let mut c = Conversation::default();
+        c.apply(&update);
+        let usage = c.usage.expect("usage should be populated from the wire payload");
+        assert_eq!(usage.used, 27744);
+        assert_eq!(usage.size, 200000);
+        assert_eq!(usage.cost.map(|c| c.currency), Some("USD".to_string()));
+    }
+
     #[test]
     fn usage_update_no_cost() {
         let mut c = Conversation::default();

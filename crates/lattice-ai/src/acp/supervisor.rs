@@ -1356,5 +1356,20 @@ done
             );
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
+
+        // AUX‑2: opencode emits a `usage_update` notification per turn; it must
+        // land in the store or the headerline can never show tokens/cost.
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            if let Some(usage) = store.snapshot().usage {
+                assert!(usage.size > 0, "context size should be non-zero: {usage:?}");
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no usage_update reached the conversation store before the timeout"
+            );
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
     }
 }

@@ -16,8 +16,9 @@ substrate is untouched except that conversation sources stop flowing into it
 | **AU‑1** | `Conversation` model + supervisor mapping + `ConversationUpdated`; conversation sources leave `AiLogger` (completes the conversation/trace split) | ✅ done |
 | **AU‑2** | `ai-conversation` major mode + read-only projection (turn headers, inline tool-call status; decoration-based in-place status + reasoning fold deferred); `:opencode` opens `*ai:opencode*` via generic `Effect::OpenSyntheticBuffer`; both renderers | ✅ done |
 | **AU‑3** | Modal input: editable prompt tail, Insert-relocates-to-prompt, Enter sends, `Ctrl-C` interrupt (`AiCmd::Interrupt`); user prompt folded into transcript as a User turn | ✅ done |
-| **AU‑4** | Diff review + approval: `request_permission` → `review_diff` → verdict → response; `[diff]` edit blocks; reads auto-run | 📝 planned |
-| **AU‑5** | Trust-mode toggle: per-session `auto_accept` + chord | 📝 planned |
+| **AU‑4a** | Diff review + approval: agent→client `request_permission` routed to the supervisor; reads auto-run, file-edits → `review_diff` → verdict → response, un-reviewable mutating ops denied (fail closed) | ✅ done |
+| **AU‑4b** | `[diff]` Edit-block reflection in the transcript | ⏸ deferred (redundant with `Block::ToolCall`; see note) |
+| **AU‑5** | Trust-mode toggle: per-session `auto_accept` + `<C-t>` chord | ✅ done |
 
 ---
 
@@ -267,21 +268,44 @@ verdict; `Edit` blocks show `[diff]`. Reads auto-run.
 - Supervisor: `handle_permission(req) -> PermissionResponse` (async; awaits verdict
   in review mode).
 
-**Steps.**
-- [ ] Write failing test (mock connection): an edit `request_permission` opens a
-  diff request; accept → `Allow` response + `EditStatus::Accepted`; reject →
-  `Deny` + `Rejected`.
-- [ ] Write failing test: a `read_file` `request_permission` auto-allows without a
-  diff request.
-- [ ] Implement `handle_permission` in the supervisor (review path, verdict-gated).
-- [ ] Add `DiffSessionRef` to `Edit`; transition status on verdict; re-project.
-- [ ] `[diff]` decoration + open-diff effect in the mode.
-- [ ] TUI + GPUI: `[diff]` affordance in both.
-- [ ] `cargo test`; fmt; clippy; commit.
+**What landed (AU‑4a, 2026-07-10).** The agent→client `session/request_permission`
+direction, which the connection never handled before. `Connection::spawn`
+registers `on_receive_request::<RequestPermissionRequest>`, forwarding
+`(request, responder)` over a new unbounded channel (mirroring the notification
+path) and answering `Cancelled` itself if the receiver is gone. The supervisor's
+`drain_permissions` spawns a per-request task (so a long review never blocks the
+next request or a Stop/Interrupt); `resolve_decision` → `classify_permission`:
+- Read-class kinds (Read/Search/Fetch/Think/SwitchMode) auto-run.
+- A tool call carrying a `ToolCallContent::Diff` opens a `review_diff` (the shared
+  primitive MCP's openDiff uses) and gates the response on the verdict.
+- **Everything else is denied (fail closed)** — a background security review
+  flagged the original auto-allow fallback as a permission bypass (the agent could
+  run arbitrary commands with no consent). Trust mode (AU‑5) is the opt-in that
+  turns the denied set into auto-allow. A command-confirmation surface for
+  non-file operations is a follow-up.
 
-**Exit criteria.** An agent edit opens lattice's diff view; accept writes + marks
-`Accepted`, reject denies + marks `Rejected`; the permission response is gated on
-the verdict; reads auto-run; both renderers show `[diff]`.
+The diff bus is pulled from the service registry in `acp::install` exactly as MCP
+does. Classification / option-picking / diff-extraction / the trust fold are pure
+and unit-tested. `origin_session` tags diffs by the per-process session index.
+
+**AU‑4b (deferred — the `[diff]` Edit-block).** The design called for pushing a
+`Block::Edit { path, session, status }` on review-start and transitioning it on
+verdict, with a `[diff]` reopen affordance. On execution this proved **redundant
+with `Block::ToolCall`**: an agent file-edit already streams as a tool call
+(AU‑1 maps `SessionUpdate::ToolCall` → `Block::ToolCall` with a running→ok/err
+status), so a separate Edit block double-represents the same operation. Per
+heuristic #1 (don't add surface without a concrete merit win) the separate block
+is deferred; the review is already visible via the ToolCall block + the diff view
+that opens for it + AU‑5's mode echo. If real opencode usage shows the explicit
+accept/reject verdict (distinct from execution status) or a diff-reopen
+affordance is worth the redundancy, revisit — likely by annotating the existing
+ToolCall block rather than pushing a second block. `Block::Edit` stays in the
+model (AU‑1) unused for now.
+
+**Exit criteria (met for AU‑4a).** An agent edit opens lattice's diff view; the
+permission response is gated on the verdict (accept → allow, reject → deny);
+reads auto-run; un-reviewable mutating ops are denied. No renderer work (the
+diff view is the existing `DiffSession` surface).
 
 ---
 
@@ -301,17 +325,25 @@ auto-grants and edits apply without the diff gate. A mode chord flips it.
   `AiClientHandle::set_auto_accept(bool)`.
 - Mode chord (e.g. `<leader>ta` or a named action) → toggle + echo.
 
-**Steps.**
-- [ ] Write failing test: with `auto_accept=true`, an edit `request_permission`
-  auto-allows without opening a diff request.
-- [ ] Write failing test: the toggle chord flips `auto_accept` and echoes the state.
-- [ ] Implement `auto_accept` in session state + `handle_permission` branch.
-- [ ] Implement the toggle chord + headerline indicator.
-- [ ] TUI + GPUI: headerline mode indicator in both.
-- [ ] `cargo test`; fmt; clippy; commit.
+**What landed (2026-07-10).**
+- [x] `AiState.auto_accept` (default false = review mode) + `AiCmd::SetAutoAccept`
+  + `AiClientHandle::set_auto_accept` / `toggle_auto_accept`.
+- [x] Supervisor owns an `Arc<AtomicBool>` the per-request permission tasks read
+  live; `SetAutoAccept` updates it + republishes `AiState`; a new `Start` resets
+  it (trust never carries across sessions).
+- [x] `resolve_decision(trusted, request, origin)` folds trust over the
+  classification (pure, unit-tested): trust → auto-allow; else classify.
+- [x] Mode binds `<C-t>` (Normal) → `action:ai-conv-toggle-trust`; the handler
+  flips the flag and echoes the new mode.
+- [x] Trust-bypass + toggle-handle tests; combos build; clippy clean; committed.
+- [~] **Headerline mode indicator deferred.** The echo is the visible reflection;
+  a `review`/`auto` headerline row would be new renderer surface (both peers) and
+  is deferred — the same no-new-renderer-surface posture as AU‑3/AU‑4. `AiState`
+  already republishes `auto_accept`, so a future modeline/headerline element can
+  read it with no supervisor change.
 
-**Exit criteria.** Trust mode auto-applies edits without the diff gate; the chord
-flips it and the state is visible; review mode (AU‑4) unchanged when off.
+**Exit criteria (met).** Trust mode auto-grants without the diff gate; `<C-t>`
+flips it and echoes the state; review mode (AU‑4a) is unchanged when off. ✅
 
 ---
 

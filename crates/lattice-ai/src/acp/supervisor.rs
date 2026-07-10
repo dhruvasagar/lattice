@@ -27,7 +27,7 @@ use lattice_diff::subsystem::DiffOutcome;
 
 use crate::Result;
 use crate::acp::connection::{Connection, PermissionRequest, SessionId, SessionNotification};
-use crate::acp::conversation::ConversationStore;
+use crate::acp::conversation::{ConversationStore, PermissionOutcome};
 use crate::acp::error::AiError;
 use crate::acp::handle::{AiClientHandle, AiCmd, AiState};
 use crate::acp::providers::ProviderConfig;
@@ -333,8 +333,11 @@ pub(crate) async fn drain_notifications(
 /// each on its OWN spawned task so a long diff review never blocks the next
 /// permission request (or a `Stop`/`Interrupt` on the supervisor loop). The
 /// task ends when the connection drops the sender (session torn down).
+/// AUX‑1: `conv_store` and `session` are needed for the `AskUser` branch.
 async fn drain_permissions(
     mut rx: mpsc::UnboundedReceiver<PermissionRequest>,
+    conv_store: ConversationStore,
+    session: SessionKey,
     diff_bus: Option<ProgrammaticDiffBus>,
     origin_session: u64,
     auto_accept: Arc<AtomicBool>,
@@ -342,6 +345,8 @@ async fn drain_permissions(
     while let Some(pr) = rx.recv().await {
         tokio::spawn(handle_permission(
             pr,
+            conv_store.clone(),
+            session.clone(),
             diff_bus.clone(),
             origin_session,
             auto_accept.clone(),
@@ -352,9 +357,13 @@ async fn drain_permissions(
 /// Answer one permission request. Read-class tool calls auto-allow; a file edit
 /// carrying a diff opens a `review_diff` and gates the response on the verdict.
 /// A dropped diff channel / dismissed review answers `Cancelled` (the agent
-/// stops the turn) rather than hanging.
+/// stops the turn) rather than hanging. AUX‑1: non-read, non-edit operations
+/// surface inline via [`AskUser`](PermissionDecision::AskUser) through the
+/// [`ConversationStore`].
 async fn handle_permission(
     pr: PermissionRequest,
+    conv_store: ConversationStore,
+    session: SessionKey,
     diff_bus: Option<ProgrammaticDiffBus>,
     origin_session: u64,
     auto_accept: Arc<AtomicBool>,
@@ -372,6 +381,51 @@ async fn handle_permission(
             // (a command / an edit with no diff payload) is denied, not silently
             // run. Trust mode (AU‑5) is the opt-in that flips these to allow.
             respond(responder, deny_outcome(&request.options));
+        }
+        PermissionDecision::AskUser => {
+            // AUX‑1: surface the request inline for the user to decide.
+            let id = request.tool_call.tool_call_id.0.to_string();
+            let title = request
+                .tool_call
+                .fields
+                .title
+                .clone()
+                .unwrap_or_else(|| "agent action".to_string());
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            conv_store.push_permission_request(
+                &session,
+                id,
+                title,
+                None,
+                request.options.clone(),
+                tx,
+            );
+            let outcome = match rx.await {
+                Ok(PermissionOutcome::AllowOnce) => {
+                    pick_option_by_kind(&request.options, PermissionOptionKind::AllowOnce)
+                }
+                Ok(PermissionOutcome::AllowAlways) => {
+                    pick_option_by_kind(&request.options, PermissionOptionKind::AllowAlways)
+                }
+                Ok(PermissionOutcome::DenyOnce) => {
+                    pick_option_by_kind(&request.options, PermissionOptionKind::RejectOnce)
+                }
+                Ok(PermissionOutcome::DenyAlways) => {
+                    pick_option_by_kind(&request.options, PermissionOptionKind::RejectAlways)
+                }
+                Err(_) => None,
+            };
+            match outcome {
+                Some(option_id) => {
+                    respond(
+                        responder,
+                        RequestPermissionOutcome::Selected(
+                            SelectedPermissionOutcome::new(option_id),
+                        ),
+                    );
+                }
+                None => respond(responder, RequestPermissionOutcome::Cancelled),
+            }
         }
         PermissionDecision::Review(review) => {
             let Some(bus) = diff_bus else {
@@ -399,6 +453,9 @@ enum PermissionDecision {
     AutoAllow,
     /// A file edit carrying a diff: open a review, gate on the verdict.
     Review(DiffReviewRequest),
+    /// AUX‑1: surfacing a non-read, non-edit operation for the user to decide
+    /// inline in the conversation buffer.
+    AskUser,
     /// A mutating operation review mode can't show for review (a command, or an
     /// edit with no diff payload): deny (fail closed). Trust mode (AU‑5) is the
     /// opt-in that turns these into auto-allow.
@@ -427,12 +484,12 @@ fn resolve_decision(
 ///   the design's explicit safe-list.
 /// - A tool call carrying a `ToolCallContent::Diff` goes to review: the user
 ///   rules on the concrete change in the diff view.
-/// - Everything else — a command execution, or a mutating tool call with no
-///   diff payload we can render — is **denied** (fail closed). There is no
-///   confirmation surface for non-file operations yet, and auto-allowing them
-///   would let the agent run arbitrary commands with no user consent. A
-///   dedicated command-confirmation surface, and trust mode's opt-in
-///   auto-allow (AU‑5), are the ways to permit them deliberately.
+/// - Non-read, non-edit operations (Execute/Delete/Other) without a diff
+///   payload go to [`AskUser`](PermissionDecision::AskUser) — surfaced inline
+///   in the conversation buffer for the user to allow or deny (AUX‑1).
+/// - An `Edit` without a diff payload stays **denied** (fail closed): there is
+///   no diff to show for review, and auto-running a content edit the user
+///   can't inspect is unsafe.
 fn classify_permission(
     request: &RequestPermissionRequest,
     origin_session: u64,
@@ -447,7 +504,12 @@ fn classify_permission(
     }
     match diff_review_from(request, origin_session) {
         Some(review) => PermissionDecision::Review(review),
-        None => PermissionDecision::Deny,
+        None => match kind {
+            // Edit without a diff payload — deny (nothing to review).
+            ToolKind::Edit => PermissionDecision::Deny,
+            // Everything else (Execute, Delete, Other) → ask the user inline.
+            _ => PermissionDecision::AskUser,
+        },
     }
 }
 
@@ -479,6 +541,15 @@ fn diff_review_from(
             }),
             _ => None,
         })
+}
+
+/// AUX‑1: pick the first offered option matching a specific
+/// [`PermissionOptionKind`].
+fn pick_option_by_kind(
+    options: &[PermissionOption],
+    kind: PermissionOptionKind,
+) -> Option<PermissionOptionId> {
+    options.iter().find(|o| o.kind == kind).map(|o| o.option_id.clone())
 }
 
 /// Pick the first offered option matching an allow (`true`) or reject (`false`)
@@ -579,8 +650,16 @@ async fn start_provider(
     // later session-scoped teardown keys on it; the per-process index is a
     // stable, non-zero-per-session id.
     let origin_session = u64::from(session.index);
-    tokio::spawn(drain_notifications(notif_rx, conv_store, session));
-    tokio::spawn(drain_permissions(perm_rx, diff_bus, origin_session, auto_accept));
+    let session_for_perms = session.clone();
+    tokio::spawn(drain_notifications(notif_rx, conv_store.clone(), session));
+    tokio::spawn(drain_permissions(
+        perm_rx,
+        conv_store,
+        session_for_perms,
+        diff_bus,
+        origin_session,
+        auto_accept,
+    ));
 
     let cwd = std::env::current_dir()
         .map(|p| p.display().to_string())
@@ -652,17 +731,28 @@ mod tests {
     }
 
     #[test]
-    fn mutating_op_without_diff_is_denied_fail_closed() {
-        // A mutating tool call review mode can't show for review is denied, not
-        // silently run — the security-correct default. Trust mode (AU‑5) is the
-        // opt-in that would allow it.
-        for kind in [ToolKind::Edit, ToolKind::Execute, ToolKind::Delete, ToolKind::Other] {
+    fn edit_without_diff_is_denied_fail_closed() {
+        // An `Edit` without a diff payload is denied — nothing to review.
+        // `Execute`/`Delete`/`Other` now go through `AskUser` (AUX‑1) instead.
+        assert!(
+            matches!(
+                classify_permission(&perm_req(ToolKind::Edit, None), 1),
+                PermissionDecision::Deny
+            ),
+            "Edit without a diff must be denied",
+        );
+    }
+
+    #[test]
+    fn non_read_ops_without_diff_ask_user() {
+        // AUX‑1: non-read, non-edit operations surface inline for the user.
+        for kind in [ToolKind::Execute, ToolKind::Delete, ToolKind::Other] {
             assert!(
                 matches!(
                     classify_permission(&perm_req(kind, None), 1),
-                    PermissionDecision::Deny
+                    PermissionDecision::AskUser
                 ),
-                "{kind:?} without a diff must be denied",
+                "{kind:?} without a diff must be AskUser",
             );
         }
     }
@@ -715,7 +805,7 @@ mod tests {
         ));
         assert!(matches!(
             resolve_decision(false, &perm_req(ToolKind::Execute, None), 1),
-            PermissionDecision::Deny
+            PermissionDecision::AskUser
         ));
     }
 

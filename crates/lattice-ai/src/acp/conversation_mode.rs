@@ -15,7 +15,9 @@
 //! decoration-based in-place update is a follow-up).
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
+
+use agent_client_protocol::schema::v1::PermissionOptionKind;
 
 use lattice_grammar::ModalState;
 use lattice_grammar::effect::{EchoLevel, Effect};
@@ -27,7 +29,8 @@ use lattice_mode::{
 };
 
 use crate::acp::conversation::{
-    Block, Conversation, ConversationProjected, ConversationStore, ConversationUpdated, Role,
+    Block, Conversation, ConversationProjected, ConversationStore, ConversationUpdated,
+    PermissionOutcome, PermissionStatus, Role,
 };
 use crate::acp::handle::AiClientHandle;
 
@@ -50,9 +53,23 @@ pub fn conversation_buffer_name() -> String {
 /// read-only gate lets the user edit a multi-line prompt (`<C-j>` inserts a
 /// newline) while the transcript above stays frozen. One instance backs the
 /// single (v1) conversation buffer, so one shared anchor suffices.
-#[derive(Clone, Default)]
+///
+/// AUX‑1: `current_permission_id` tracks the most recently projected pending
+/// permission block, set by the drain on each re-projection. The allow/deny
+/// action handlers read it to resolve the right permission request.
+#[derive(Clone)]
 pub struct AiConversationMode {
     anchor: Arc<AtomicU32>,
+    current_permission_id: Arc<Mutex<Option<String>>>,
+}
+
+impl Default for AiConversationMode {
+    fn default() -> Self {
+        Self {
+            anchor: Arc::new(AtomicU32::new(0)),
+            current_permission_id: Arc::new(Mutex::new(None)),
+        }
+    }
 }
 
 impl AiConversationMode {
@@ -112,6 +129,42 @@ pub fn render_conversation(conv: &Conversation) -> String {
                     out.push_str(edit_tag(status));
                     out.push_str("]\n");
                 }
+                Block::Permission {
+                    title,
+                    description,
+                    options,
+                    status,
+                    ..
+                } => {
+                    out.push_str("  ");
+                    out.push_str(permission_prefix(status));
+                    out.push_str(title);
+                    out.push_str(" [");
+                    out.push_str(permission_tag(status));
+                    out.push_str("]\n");
+                    if let Some(desc) = description {
+                        out.push_str("    ");
+                        out.push_str(desc);
+                        out.push('\n');
+                    }
+                    if status == &PermissionStatus::Pending {
+                        for (i, opt) in options.iter().enumerate() {
+                            let key = match opt.kind {
+                                PermissionOptionKind::AllowOnce => "a",
+                                PermissionOptionKind::AllowAlways => "A",
+                                PermissionOptionKind::RejectOnce => "r",
+                                PermissionOptionKind::RejectAlways => "R",
+                                _ => "?",
+                            };
+                            out.push_str(&format!(
+                                "    {}: {} ({})\n",
+                                i + 1,
+                                opt.name,
+                                key,
+                            ));
+                        }
+                    }
+                }
             }
         }
         out.push('\n');
@@ -135,6 +188,24 @@ fn edit_tag(status: &crate::acp::conversation::EditStatus) -> &'static str {
         Proposed => "proposed",
         Accepted => "accepted",
         Rejected => "rejected",
+    }
+}
+
+fn permission_prefix(status: &PermissionStatus) -> &'static str {
+    use PermissionStatus::*;
+    match status {
+        Pending => "\u{25cc} ", // ◌
+        Allowed => "\u{2713} ", // ✓
+        Denied => "\u{2717} ",  // ✗
+    }
+}
+
+fn permission_tag(status: &PermissionStatus) -> &'static str {
+    use PermissionStatus::*;
+    match status {
+        Pending => "pending",
+        Allowed => "allowed",
+        Denied => "denied",
     }
 }
 
@@ -229,6 +300,7 @@ impl Mode for AiConversationMode {
     /// `register_mode_action_handlers` walk. Each reads the buffer / services
     /// from the [`ActionContext`] and returns an [`Effect`] the host applies.
     fn action_handlers(&self) -> Vec<ActionHandlerContribution> {
+        let pid = self.current_permission_id.clone();
         vec![
             ActionHandlerContribution {
                 action_name: "action:ai-conv-focus-prompt",
@@ -249,6 +321,23 @@ impl Mode for AiConversationMode {
             ActionHandlerContribution {
                 action_name: "action:ai-conv-toggle-trust",
                 handler: toggle_trust_handler(),
+            },
+            // AUX‑1: permission allow/deny
+            ActionHandlerContribution {
+                action_name: "action:ai-conv-allow",
+                handler: permission_handler(pid.clone(), PermissionOutcome::AllowOnce),
+            },
+            ActionHandlerContribution {
+                action_name: "action:ai-conv-allow-always",
+                handler: permission_handler(pid.clone(), PermissionOutcome::AllowAlways),
+            },
+            ActionHandlerContribution {
+                action_name: "action:ai-conv-deny",
+                handler: permission_handler(pid.clone(), PermissionOutcome::DenyOnce),
+            },
+            ActionHandlerContribution {
+                action_name: "action:ai-conv-deny-always",
+                handler: permission_handler(pid, PermissionOutcome::DenyAlways),
             },
         ]
     }
@@ -340,6 +429,7 @@ impl Mode for AiConversationMode {
 
             let drain_flag = focus_flag;
             let drain_anchor = anchor;
+            let drain_perm_id = self.current_permission_id.clone();
             runtime.spawn(async move {
                 // Coalesce a burst of updates into one re-projection.
                 while rx.recv().await.is_some() {
@@ -347,6 +437,19 @@ impl Mode for AiConversationMode {
                     let snap = conv_store.snapshot();
                     let new = render_conversation(&snap);
                     let user_turns = user_turn_count(&snap);
+                    // AUX‑1: track the most recent pending permission block id
+                    // so action handlers can resolve it.
+                    *drain_perm_id.lock().expect("perm id mutex poisoned") = snap
+                        .turns
+                        .iter()
+                        .rev()
+                        .flat_map(|t| t.blocks.iter().rev())
+                        .find_map(|b| match b {
+                            Block::Permission { id, status: PermissionStatus::Pending, .. } => {
+                                Some(id.clone())
+                            }
+                            _ => None,
+                        });
                     // Keep the editable-region anchor on the transcript-end line:
                     // a re-projection may grow the transcript above the prompt
                     // (streaming) or reset it (send), moving where the prompt
@@ -504,6 +607,11 @@ fn ai_conversation_keymap_entries() -> &'static [KeymapEntry] {
                 doc: "ai-conversation: toggle trust mode (auto-accept vs review)",
                 cmd: "action:ai-conv-toggle-trust"
             },
+            // AUX‑1: permission allow/deny chords are NOT in the static keymap
+            // because `a`/`A`/`r`/`R` conflict with existing focus-prompt and
+            // other chords. They are available as ex-commands
+            // (`:ai-allow` / `:ai-deny` etc.) and the action handlers are
+            // registered for a future transient-keymap gate.
         ]
     })
 }
@@ -653,6 +761,24 @@ fn toggle_trust_handler() -> ActionHandler {
     })
 }
 
+// ──────────────────────────────────────────────────────────────
+// AUX‑1: permission allow/deny action handlers
+// ──────────────────────────────────────────────────────────────
+
+/// Build an action handler that resolves the current pending permission with
+/// `outcome`. No-op when no permission is pending.
+fn permission_handler(
+    current_id: Arc<Mutex<Option<String>>>,
+    outcome: PermissionOutcome,
+) -> ActionHandler {
+    Arc::new(move |ctx: &ActionContext<'_>| -> Option<Effect> {
+        let store = ctx.services.get::<ConversationStore>()?;
+        let id = current_id.lock().ok()?.clone()?;
+        store.resolve_permission(&id, outcome);
+        None
+    })
+}
+
 /// AU‑3: register the `ai-conversation` action commands so the mode's keymap
 /// `cmd` names resolve (the diff subsystem's `register_diff_actions` pattern).
 /// The specs are pure shells returning `Effect::None`: the real bodies live in
@@ -670,6 +796,22 @@ pub fn register_ai_conversation_actions(registry: &mut lattice_grammar::CommandR
         (
             "action:ai-conv-toggle-trust",
             "ai-conversation: toggle trust mode (auto-accept vs diff review).",
+        ),
+        (
+            "action:ai-conv-allow",
+            "ai-conversation: allow the pending permission once.",
+        ),
+        (
+            "action:ai-conv-allow-always",
+            "ai-conversation: allow the pending permission always.",
+        ),
+        (
+            "action:ai-conv-deny",
+            "ai-conversation: deny the pending permission once.",
+        ),
+        (
+            "action:ai-conv-deny-always",
+            "ai-conversation: deny the pending permission always.",
         ),
     ] {
         registry.register_action(
@@ -805,6 +947,10 @@ mod tests {
                 "action:ai-conv-newline",
                 "action:ai-conv-interrupt",
                 "action:ai-conv-toggle-trust",
+                "action:ai-conv-allow",
+                "action:ai-conv-allow-always",
+                "action:ai-conv-deny",
+                "action:ai-conv-deny-always",
             ],
         );
     }
@@ -820,6 +966,10 @@ mod tests {
             "action:ai-conv-send",
             "action:ai-conv-interrupt",
             "action:ai-conv-toggle-trust",
+            "action:ai-conv-allow",
+            "action:ai-conv-allow-always",
+            "action:ai-conv-deny",
+            "action:ai-conv-deny-always",
         ] {
             assert!(registry.id_by_name(name).is_some(), "{name} registered");
         }
@@ -889,5 +1039,74 @@ mod tests {
     fn identical_render_yields_no_edit() {
         let t = "opencode:\nhi\n\n";
         assert_eq!(suffix_replace(t, t), None);
+    }
+
+    // ── AUX‑1: permission block rendering tests ──
+
+    use agent_client_protocol::schema::v1::{PermissionOption, PermissionOptionKind as POK};
+    use crate::acp::conversation::PermissionStatus as PS;
+
+    fn test_permission_option(id: &'static str, name: &'static str, kind: POK) -> PermissionOption {
+        PermissionOption::new(id, name, kind)
+    }
+
+    #[test]
+    fn render_permission_block_pending_shows_circle_and_options() {
+        let conv = Conversation {
+            turns: vec![Turn {
+                role: Role::Assistant,
+                blocks: vec![Block::Permission {
+                    id: "perm-1".to_string(),
+                    title: "Allow cargo test?".to_string(),
+                    description: None,
+                    options: vec![
+                        test_permission_option("a1", "Allow once", POK::AllowOnce),
+                        test_permission_option("r1", "Reject", POK::RejectOnce),
+                    ],
+                    status: PS::Pending,
+                }],
+            }],
+        };
+        let text = render_conversation(&conv);
+        assert!(text.contains("\u{25cc} Allow cargo test? [pending]"));
+        assert!(text.contains("1: Allow once (a)"));
+        assert!(text.contains("2: Reject (r)"));
+    }
+
+    #[test]
+    fn render_permission_block_allowed_shows_checkmark() {
+        let conv = Conversation {
+            turns: vec![Turn {
+                role: Role::Assistant,
+                blocks: vec![Block::Permission {
+                    id: "perm-1".to_string(),
+                    title: "Allow cargo test?".to_string(),
+                    description: None,
+                    options: vec![],
+                    status: PS::Allowed,
+                }],
+            }],
+        };
+        let text = render_conversation(&conv);
+        assert!(text.contains("\u{2713} Allow cargo test? [allowed]"));
+        assert!(!text.contains("1:"), "no options after resolution");
+    }
+
+    #[test]
+    fn render_permission_block_denied_shows_x() {
+        let conv = Conversation {
+            turns: vec![Turn {
+                role: Role::Assistant,
+                blocks: vec![Block::Permission {
+                    id: "perm-1".to_string(),
+                    title: "Allow cargo test?".to_string(),
+                    description: None,
+                    options: vec![],
+                    status: PS::Denied,
+                }],
+            }],
+        };
+        let text = render_conversation(&conv);
+        assert!(text.contains("\u{2717} Allow cargo test? [denied]"));
     }
 }

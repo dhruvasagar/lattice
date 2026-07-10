@@ -12,9 +12,13 @@
 //! [`ConversationStore`] wraps it with a shared mutex + a [`ConversationUpdated`]
 //! bus publish so the mode can live-tail.
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use agent_client_protocol::schema::v1::{ContentBlock, SessionUpdate, ToolCallStatus};
+use agent_client_protocol::schema::v1::{
+    ContentBlock, PermissionOption, SessionUpdate, ToolCallStatus,
+};
+use tokio::sync::oneshot;
 
 use lattice_agent::SessionKey;
 
@@ -56,6 +60,23 @@ pub enum EditStatus {
     Rejected,
 }
 
+/// AUX‑1: status of an inline permission request shown in the conversation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermissionStatus {
+    Pending,
+    Allowed,
+    Denied,
+}
+
+/// AUX‑1: the user's decision on a pending permission request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermissionOutcome {
+    AllowOnce,
+    AllowAlways,
+    DenyOnce,
+    DenyAlways,
+}
+
 /// One renderable unit within a turn.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Block {
@@ -71,6 +92,14 @@ pub enum Block {
     },
     /// An agent-proposed file edit (AU‑4 wires the diff review).
     Edit { path: String, status: EditStatus },
+    /// AUX‑1: an inline permission request awaiting or reflecting user action.
+    Permission {
+        id: String,
+        title: String,
+        description: Option<String>,
+        options: Vec<PermissionOption>,
+        status: PermissionStatus,
+    },
 }
 
 /// One turn: a role and its ordered blocks.
@@ -180,6 +209,46 @@ impl Conversation {
         }
     }
 
+    /// AUX‑1: push a `Permission` block onto the current (or a fresh) assistant turn.
+    fn push_permission_block(
+        &mut self,
+        id: String,
+        title: String,
+        description: Option<String>,
+        options: Vec<PermissionOption>,
+    ) {
+        let block = Block::Permission {
+            id,
+            title,
+            description,
+            options,
+            status: PermissionStatus::Pending,
+        };
+        match self.turns.last_mut() {
+            Some(turn) if turn.role == Role::Assistant => turn.blocks.push(block),
+            _ => self.turns.push(Turn {
+                role: Role::Assistant,
+                blocks: vec![block],
+            }),
+        }
+    }
+
+    /// AUX‑1: update the status of the `Permission` block with `id`.
+    fn update_permission_status(&mut self, id: &str, new_status: PermissionStatus) {
+        for turn in self.turns.iter_mut().rev() {
+            for block in turn.blocks.iter_mut().rev() {
+                if let Block::Permission {
+                    id: bid, status, ..
+                } = block
+                    && bid == id
+                {
+                    *status = new_status;
+                    return;
+                }
+            }
+        }
+    }
+
     /// Update the status of the tool-call block with `id` (searched newest-first).
     fn update_tool_status(&mut self, id: &str, new_status: ToolStatus) {
         for turn in self.turns.iter_mut().rev() {
@@ -239,6 +308,9 @@ lattice_protocol::register_event!(
 pub struct ConversationStore {
     inner: Arc<Mutex<Conversation>>,
     publish: Arc<dyn Fn(ConversationUpdated) + Send + Sync>,
+    /// AUX‑1: pending permission request responders keyed by tool-call id.
+    pending_permissions:
+        Arc<Mutex<HashMap<String, (SessionKey, oneshot::Sender<PermissionOutcome>)>>>,
 }
 
 impl ConversationStore {
@@ -247,6 +319,7 @@ impl ConversationStore {
         Self {
             inner: Arc::new(Mutex::new(Conversation::default())),
             publish,
+            pending_permissions: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -275,6 +348,60 @@ impl ConversationStore {
         });
     }
 
+    /// AUX‑1: push a permission block and register its oneshot responder. The
+    /// supervisor calls this when `classify_permission` returns `AskUser`; the
+    /// receiver is awaited in [`handle_permission`](supervisor::handle_permission).
+    pub fn push_permission_request(
+        &self,
+        session: &SessionKey,
+        id: String,
+        title: String,
+        description: Option<String>,
+        options: Vec<PermissionOption>,
+        responder: oneshot::Sender<PermissionOutcome>,
+    ) {
+        {
+            let mut conv = self.inner.lock().expect("conversation mutex poisoned");
+            conv.push_permission_block(id.clone(), title, description, options);
+            self.pending_permissions
+                .lock()
+                .expect("pending_permissions mutex poisoned")
+                .insert(id, (session.clone(), responder));
+        }
+        (self.publish)(ConversationUpdated {
+            session: session.clone(),
+        });
+    }
+
+    /// AUX‑1: resolve a pending permission request. Updates the block status and
+    /// sends the outcome through the oneshot channel, then publishes. No-op when
+    /// `id` is unknown (already resolved or never registered).
+    pub fn resolve_permission(&self, id: &str, outcome: PermissionOutcome) {
+        let status = match outcome {
+            PermissionOutcome::AllowOnce | PermissionOutcome::AllowAlways => {
+                PermissionStatus::Allowed
+            }
+            PermissionOutcome::DenyOnce | PermissionOutcome::DenyAlways => {
+                PermissionStatus::Denied
+            }
+        };
+        let session = {
+            let mut conv = self.inner.lock().expect("conversation mutex poisoned");
+            conv.update_permission_status(id, status);
+            let mut pending = self
+                .pending_permissions
+                .lock()
+                .expect("pending_permissions mutex poisoned");
+            let (session, sender) = match pending.remove(id) {
+                Some(entry) => entry,
+                None => return, // already resolved — no-op
+            };
+            let _ = sender.send(outcome);
+            session
+        };
+        (self.publish)(ConversationUpdated { session });
+    }
+
     /// Cheap-ish clone of the current conversation for projection.
     pub fn snapshot(&self) -> Conversation {
         self.inner
@@ -289,7 +416,8 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
     use agent_client_protocol::schema::v1::{
-        ContentChunk, TextContent, ToolCall as AcpToolCall, ToolCallUpdate, ToolCallUpdateFields,
+        ContentChunk, PermissionOptionKind, TextContent, ToolCall as AcpToolCall, ToolCallUpdate,
+        ToolCallUpdateFields,
     };
 
     fn text_chunk(text: &str) -> ContentChunk {
@@ -390,5 +518,159 @@ mod tests {
         assert_eq!(c.turns.len(), 1, "all assistant activity is one turn");
         assert_eq!(c.turns[0].blocks.len(), 3);
         assert_eq!(c.turns[0].blocks[2], Block::Text("after".to_string()));
+    }
+
+    // ── AUX‑1: permission block tests ──
+
+    fn test_permission_option(id: &'static str, name: &'static str, kind: PermissionOptionKind) -> PermissionOption {
+        PermissionOption::new(id, name, kind)
+    }
+
+    #[test]
+    fn permission_block_created_in_assistant_turn() {
+        let mut c = Conversation::default();
+        c.apply(&SessionUpdate::AgentMessageChunk(text_chunk("working")));
+        c.push_permission_block(
+            "perm-1".to_string(),
+            "Allow agent to run cargo test?".to_string(),
+            None,
+            vec![test_permission_option("a1", "Allow once", PermissionOptionKind::AllowOnce)],
+        );
+        assert_eq!(c.turns.len(), 1);
+        assert_eq!(c.turns[0].role, Role::Assistant);
+        assert_eq!(c.turns[0].blocks.len(), 2);
+        match &c.turns[0].blocks[1] {
+            Block::Permission {
+                id,
+                title,
+                status,
+                options,
+                ..
+            } => {
+                assert_eq!(id, "perm-1");
+                assert_eq!(title, "Allow agent to run cargo test?");
+                assert_eq!(*status, PermissionStatus::Pending);
+                assert_eq!(options.len(), 1);
+            }
+            other => panic!("expected Permission block, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn permission_block_opens_fresh_assistant_turn_when_no_previous() {
+        let mut c = Conversation::default();
+        c.push_permission_block(
+            "perm-1".to_string(),
+            "Allow?".to_string(),
+            None,
+            vec![],
+        );
+        assert_eq!(c.turns.len(), 1);
+        assert_eq!(c.turns[0].role, Role::Assistant);
+    }
+
+    #[test]
+    fn permission_block_updated_by_id() {
+        let mut c = Conversation::default();
+        c.push_permission_block(
+            "perm-1".to_string(),
+            "Allow?".to_string(),
+            None,
+            vec![],
+        );
+        c.update_permission_status("perm-1", PermissionStatus::Allowed);
+        match &c.turns[0].blocks[0] {
+            Block::Permission { status, .. } => assert_eq!(*status, PermissionStatus::Allowed),
+            other => panic!("expected Permission, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn store_push_permission_request_creates_block_and_registers_responder() {
+        let published = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let p = published.clone();
+        let store = ConversationStore::new(Arc::new(move |_ev| {
+            p.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }));
+        let session = SessionKey::new("opencode", 1);
+        let (tx, rx) = tokio::sync::oneshot::channel();
+
+        store.push_permission_request(
+            &session,
+            "perm-1".to_string(),
+            "Allow?".to_string(),
+            None,
+            vec![],
+            tx,
+        );
+
+        // One publish on push
+        assert_eq!(published.load(std::sync::atomic::Ordering::SeqCst), 1);
+        // Block exists in snapshot
+        let snap = store.snapshot();
+        assert_eq!(snap.turns.len(), 1);
+        assert!(matches!(
+            &snap.turns[0].blocks[0],
+            Block::Permission { id, status: PermissionStatus::Pending, .. } if id == "perm-1"
+        ));
+        // Responder is registered — dropping rx won't hang the test
+        drop(rx);
+    }
+
+    #[test]
+    fn store_resolve_permission_sends_outcome_and_publishes() {
+        let published = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let p = published.clone();
+        let store = ConversationStore::new(Arc::new(move |_ev| {
+            p.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }));
+        let session = SessionKey::new("opencode", 1);
+        let (tx, rx) = tokio::sync::oneshot::channel();
+
+        store.push_permission_request(
+            &session,
+            "perm-1".to_string(),
+            "Allow?".to_string(),
+            None,
+            vec![],
+            tx,
+        );
+
+        // Reset publish count — the push already fired once
+        published.store(0, std::sync::atomic::Ordering::SeqCst);
+
+        store.resolve_permission("perm-1", PermissionOutcome::AllowOnce);
+
+        // Block updated
+        let snap = store.snapshot();
+        match &snap.turns[0].blocks[0] {
+            Block::Permission { status, .. } => assert_eq!(*status, PermissionStatus::Allowed),
+            other => panic!("expected Permission, got {other:?}"),
+        }
+        // Oneshot delivered
+        assert_eq!(
+            rx.blocking_recv(),
+            Ok(PermissionOutcome::AllowOnce),
+            "responder must receive the outcome",
+        );
+        // Publish fired
+        assert_eq!(
+            published.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "resolve must publish",
+        );
+    }
+
+    #[test]
+    fn store_resolve_permission_noop_for_unknown_id() {
+        let published = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let p = published.clone();
+        let store = ConversationStore::new(Arc::new(move |_ev| {
+            p.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }));
+
+        // No pending permission with this id → no-op, no publish
+        store.resolve_permission("nonexistent", PermissionOutcome::AllowOnce);
+        assert_eq!(published.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 }

@@ -18,6 +18,7 @@ use std::sync::{Arc, Mutex};
 use agent_client_protocol::schema::v1::{
     ContentBlock, PermissionOption, SessionUpdate, ToolCallStatus,
 };
+use std::fmt;
 use tokio::sync::oneshot;
 
 use lattice_agent::SessionKey;
@@ -77,6 +78,35 @@ pub enum PermissionOutcome {
     DenyAlways,
 }
 
+/// AUX‑3: global processing status of the current agent session — shown in the
+/// conversation buffer's headerline.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum SessionStatus {
+    /// No active turn: the agent is not processing anything.
+    #[default]
+    Idle,
+    /// The agent is streaming a text/thought response.
+    Thinking,
+    /// The agent is executing a tool call.
+    Executing {
+        /// Human-readable tool name (e.g. "edit parse.rs").
+        tool: String,
+    },
+    /// The agent is awaiting the user's decision on a permission request.
+    AwaitingPermission,
+}
+
+impl fmt::Display for SessionStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SessionStatus::Idle => write!(f, "Ready"),
+            SessionStatus::Thinking => write!(f, "Thinking\u{2026}"),
+            SessionStatus::Executing { tool } => write!(f, "Working: {tool}"),
+            SessionStatus::AwaitingPermission => write!(f, "Awaiting your approval\u{2026}"),
+        }
+    }
+}
+
 /// AUX‑2: token usage snapshot from a `UsageUpdate` notification.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Cost {
@@ -131,6 +161,9 @@ pub struct Conversation {
     pub turns: Vec<Turn>,
     /// AUX‑2: latest token usage snapshot from `usage_update` notifications.
     pub usage: Option<UsageSnapshot>,
+    /// AUX‑3: global processing status derived by the supervisor from the active
+    /// turn's state. Set via [`ConversationStore::set_status`].
+    pub status: SessionStatus,
 }
 
 impl Conversation {
@@ -428,6 +461,18 @@ impl ConversationStore {
             session
         };
         (self.publish)(ConversationUpdated { session });
+    }
+
+    /// AUX‑3: set the global processing status and publish a
+    /// `ConversationUpdated` so the headerline re-renders.
+    pub fn set_status(&self, session: &SessionKey, status: SessionStatus) {
+        {
+            let mut conv = self.inner.lock().expect("conversation mutex poisoned");
+            conv.status = status;
+        }
+        (self.publish)(ConversationUpdated {
+            session: session.clone(),
+        });
     }
 
     /// Cheap-ish clone of the current conversation for projection.
@@ -746,5 +791,40 @@ mod tests {
         assert_eq!(c.usage.as_ref().unwrap().used, 53000);
         assert_eq!(c.usage.as_ref().unwrap().size, 200000);
         assert!(c.usage.as_ref().unwrap().cost.is_none());
+    }
+
+    // ── AUX‑3: status tests ──
+
+    #[test]
+    fn status_idle_default() {
+        let c = Conversation::default();
+        assert_eq!(c.status, SessionStatus::Idle);
+    }
+
+    #[test]
+    fn set_status_updates_and_publishes() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let published = Arc::new(AtomicUsize::new(0));
+        let p = published.clone();
+        let store = ConversationStore::new(Arc::new(move |_ev| {
+            p.fetch_add(1, Ordering::SeqCst);
+        }));
+        let session = SessionKey::new("opencode", 1);
+
+        store.set_status(&session, SessionStatus::Thinking);
+        assert_eq!(published.load(Ordering::SeqCst), 1);
+        assert_eq!(store.snapshot().status, SessionStatus::Thinking);
+
+        store.set_status(&session, SessionStatus::Idle);
+        assert_eq!(store.snapshot().status, SessionStatus::Idle);
+    }
+
+    #[test]
+    fn status_display_formats() {
+        assert_eq!(SessionStatus::Idle.to_string(), "Ready");
+        assert!(SessionStatus::Thinking.to_string().contains("Thinking"));
+        let exec = SessionStatus::Executing { tool: "edit".into() };
+        assert_eq!(exec.to_string(), "Working: edit");
+        assert!(SessionStatus::AwaitingPermission.to_string().contains("Awaiting"));
     }
 }

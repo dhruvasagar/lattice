@@ -18,8 +18,8 @@ use tokio::sync::mpsc;
 use agent_client_protocol::Responder;
 use agent_client_protocol::schema::v1::{
     PermissionOption, PermissionOptionId, PermissionOptionKind, RequestPermissionOutcome,
-    RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome, ToolCallContent,
-    ToolKind,
+    RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome,
+    SessionUpdate, ToolCallContent, ToolCallStatus, ToolKind,
 };
 use lattice_agent::{AiLogLevel, AiLogSource, AiLogger, DiffReviewRequest, SessionKey, review_diff};
 use lattice_diff::ProgrammaticDiffBus;
@@ -27,7 +27,7 @@ use lattice_diff::subsystem::DiffOutcome;
 
 use crate::Result;
 use crate::acp::connection::{Connection, PermissionRequest, SessionId, SessionNotification};
-use crate::acp::conversation::{ConversationStore, PermissionOutcome};
+use crate::acp::conversation::{ConversationStore, PermissionOutcome, SessionStatus};
 use crate::acp::error::AiError;
 use crate::acp::handle::{AiClientHandle, AiCmd, AiState};
 use crate::acp::providers::ProviderConfig;
@@ -324,9 +324,48 @@ pub(crate) async fn drain_notifications(
     conv_store: ConversationStore,
     session: SessionKey,
 ) {
+    // AUX‑3: track tool-call titles by id so we can set meaningful
+    // `Executing { tool }` status from `ToolCallUpdate` (which carries
+    // the id but not the title).
+    let mut tool_names: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     while let Some(notification) = rx.recv().await {
         conv_store.apply(&session, &notification.update);
+        // AUX‑3: derive processing status from the update type.
+        match &notification.update {
+            SessionUpdate::AgentMessageChunk(_) | SessionUpdate::AgentThoughtChunk(_) => {
+                conv_store.set_status(&session, SessionStatus::Thinking);
+            }
+            SessionUpdate::ToolCall(tc) => {
+                let title = tc.title.clone();
+                tool_names.insert(tc.tool_call_id.0.to_string(), title.clone());
+                conv_store
+                    .set_status(&session, SessionStatus::Executing { tool: title });
+            }
+            SessionUpdate::ToolCallUpdate(u) => {
+                let tid = u.tool_call_id.0.to_string();
+                if let Some(ToolCallStatus::InProgress) | Some(ToolCallStatus::Pending) =
+                    u.fields.status
+                {
+                    // Re‑use any title we cached from the initial ToolCall.
+                    let title = tool_names
+                        .get(&tid)
+                        .cloned()
+                        .unwrap_or_else(|| "tool".to_string());
+                    conv_store
+                        .set_status(&session, SessionStatus::Executing { tool: title });
+                } else if matches!(
+                    u.fields.status,
+                    Some(ToolCallStatus::Completed) | Some(ToolCallStatus::Failed)
+                ) {
+                    tool_names.remove(&tid);
+                    conv_store.set_status(&session, SessionStatus::Idle);
+                }
+            }
+            _ => {}
+        }
     }
+    // Notification stream closed → turn ended.
+    conv_store.set_status(&session, SessionStatus::Idle);
 }
 
 /// AU‑4: drain agent→client `session/request_permission` requests, answering
@@ -383,6 +422,9 @@ async fn handle_permission(
             respond(responder, deny_outcome(&request.options));
         }
         PermissionDecision::AskUser => {
+            // AUX‑3: signal to the user that the agent is waiting for their
+            // decision.
+            conv_store.set_status(&session, SessionStatus::AwaitingPermission);
             // AUX‑1: surface the request inline for the user to decide.
             let id = request.tool_call.tool_call_id.0.to_string();
             let title = request
@@ -426,6 +468,9 @@ async fn handle_permission(
                 }
                 None => respond(responder, RequestPermissionOutcome::Cancelled),
             }
+            // AUX‑3: the user decided — the agent resumes; show Thinking
+            // until the next update arrives.
+            conv_store.set_status(&session, SessionStatus::Thinking);
         }
         PermissionDecision::Review(review) => {
             let Some(bus) = diff_bus else {
@@ -672,6 +717,8 @@ async fn start_provider(
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
+
+    use std::sync::Mutex;
 
     use agent_client_protocol::schema::v1::{
         ContentBlock, ContentChunk, SessionId as AcpSessionId, SessionUpdate, TextContent,
@@ -1001,6 +1048,141 @@ done
             );
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
+    }
+
+    // ── AUX‑3: drain_notifications sets processing status ──
+    //
+    // These tests verify that drain_notifications transitions through the
+    // expected intermediate states.  Because the "message chunk → Thinking"
+    // and "tool call → Executing" transitions happen *during* the loop and
+    // are then overwritten by "stream closed → Idle" after the loop exits,
+    // we capture them via the store's publish callback (which fires on every
+    // `set_status` call).
+
+    /// Shared setup: a store whose publish callback records every status
+    /// transition into an `Arc<Mutex<Vec<SessionStatus>>>` so we can assert
+    /// the sequence, not just the final value.
+    fn tracing_conv_store() -> (ConversationStore, Arc<Mutex<Vec<SessionStatus>>>) {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        // Use a cell to defer the store reference: the closure captures
+        // the cell (a separate Arc) before the store is fully built, and
+        // reads the store from it at publish time (when the store *is*
+        // fully initialised and callers have already called `set_status`).
+        let cell = Arc::new(std::sync::Mutex::new(None::<ConversationStore>));
+        let c2 = cell.clone();
+        let s2 = seen.clone();
+        let store = ConversationStore::new(Arc::new(move |_ev| {
+            if let Some(ref store) = *c2.lock().unwrap() {
+                s2.lock().unwrap().push(store.snapshot().status);
+            }
+        }));
+        *cell.lock().unwrap() = Some(store.clone());
+        (store, seen)
+    }
+
+    #[tokio::test]
+    async fn drain_transitions_through_thinking_to_idle() {
+        let (store, seen) = tracing_conv_store();
+        let key = SessionKey::new("opencode", 1);
+        let (tx, rx) = mpsc::unbounded_channel();
+
+        // Send a message chunk (→ Thinking), then close the stream (→ Idle).
+        tx.send(SessionNotification::new(
+            AcpSessionId::new("sess-1"),
+            text_update("hello", false),
+        ))
+        .expect("send");
+        drop(tx);
+
+        drain_notifications(rx, store.clone(), key.clone()).await;
+
+        let trail: Vec<SessionStatus> = seen.lock().unwrap().clone();
+        assert!(
+            trail.contains(&SessionStatus::Thinking),
+            "must have passed through Thinking, got: {trail:?}",
+        );
+        assert_eq!(store.snapshot().status, SessionStatus::Idle, "final → Idle");
+    }
+
+    #[tokio::test]
+    async fn drain_transitions_through_executing_to_idle() {
+        use agent_client_protocol::schema::v1::ToolCall as AcpToolCall;
+        let (store, seen) = tracing_conv_store();
+        let key = SessionKey::new("opencode", 1);
+        let (tx, rx) = mpsc::unbounded_channel();
+
+        let mut tc = AcpToolCall::new("tc-1", "edit parse.rs");
+        tc.status = ToolCallStatus::InProgress;
+        tx.send(SessionNotification::new(
+            AcpSessionId::new("sess-1"),
+            SessionUpdate::ToolCall(tc),
+        ))
+        .expect("send");
+        drop(tx);
+
+        drain_notifications(rx, store.clone(), key.clone()).await;
+
+        let trail: Vec<SessionStatus> = seen.lock().unwrap().clone();
+        assert!(
+            trail.contains(&SessionStatus::Executing { tool: "edit parse.rs".into() }),
+            "must have passed through Executing, got: {trail:?}",
+        );
+        assert_eq!(store.snapshot().status, SessionStatus::Idle, "final → Idle");
+    }
+
+    #[tokio::test]
+    async fn drain_sets_idle_when_stream_ends() {
+        let store = test_conv_store();
+        let key = SessionKey::new("opencode", 1);
+        let (tx, rx) = mpsc::unbounded_channel();
+
+        tx.send(SessionNotification::new(
+            AcpSessionId::new("sess-1"),
+            text_update("working", false),
+        ))
+        .expect("send");
+        drop(tx);
+
+        drain_notifications(rx, store.clone(), key.clone()).await;
+
+        assert_eq!(store.snapshot().status, SessionStatus::Idle, "stream closed → Idle");
+    }
+
+    #[tokio::test]
+    async fn drain_ends_in_idle_when_tool_completed_and_stream_closed() {
+        use agent_client_protocol::schema::v1::{ToolCall as AcpToolCall, ToolCallUpdate, ToolCallUpdateFields};
+        let (store, seen) = tracing_conv_store();
+        let key = SessionKey::new("opencode", 1);
+        let (tx, rx) = mpsc::unbounded_channel();
+
+        let mut tc = AcpToolCall::new("tc-1", "edit");
+        tc.status = ToolCallStatus::InProgress;
+        tx.send(SessionNotification::new(
+            AcpSessionId::new("sess-1"),
+            SessionUpdate::ToolCall(tc),
+        ))
+        .expect("send");
+
+        let update = ToolCallUpdate::new(
+            "tc-1",
+            ToolCallUpdateFields::new().status(ToolCallStatus::Completed),
+        );
+        tx.send(SessionNotification::new(
+            AcpSessionId::new("sess-1"),
+            SessionUpdate::ToolCallUpdate(update),
+        ))
+        .expect("send");
+        drop(tx);
+
+        drain_notifications(rx, store.clone(), key.clone()).await;
+
+        let trail: Vec<SessionStatus> = seen.lock().unwrap().clone();
+        // Sequence: Executing → Idle (ToolCallUpdate Completed) → Idle (stream closed).
+        assert!(
+            trail.contains(&SessionStatus::Idle),
+            "must have Idle after tool completed, got: {trail:?}",
+        );
+        assert_eq!(store.snapshot().status, SessionStatus::Idle, "final → Idle");
     }
 
     /// An agent that exits on its own (crash, `/exit`, OOM-kill) must not

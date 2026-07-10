@@ -25,7 +25,7 @@ pub use commands::register_ai_ex_commands;
 pub use connection::{Connection, SessionId};
 pub use conversation::{
     Block, Conversation, ConversationStore, ConversationUpdated, Cost, EditStatus,
-    PermissionOutcome, PermissionStatus, Role, ToolStatus, Turn, UsageSnapshot,
+    PermissionOutcome, PermissionStatus, Role, SessionStatus, ToolStatus, Turn, UsageSnapshot,
 };
 pub use error::{AiError, Result};
 pub use handle::{AiClientHandle, AiState};

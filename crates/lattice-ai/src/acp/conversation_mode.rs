@@ -53,11 +53,16 @@ impl Headerline for ConversationHeaderline {
 
     fn render(&self) -> Option<HeaderlineRow> {
         let snap = self.store.snapshot();
-        let usage = snap.usage.as_ref()?;
-        let mut text = format!("CPU: {}", format_tokens(usage.used, usage.size));
-        if let Some(cost) = &usage.cost {
+        let mut text = String::new();
+        // AUX‑3: status prefix.
+        text.push_str(&snap.status.to_string());
+        // AUX‑2: usage suffix (tokens/cost).
+        if let Some(usage) = &snap.usage {
             use std::fmt::Write;
-            let _ = write!(&mut text, " · ${:.3} {}", cost.amount, cost.currency);
+            let _ = write!(text, " │ CPU: {}", format_tokens(usage.used, usage.size));
+            if let Some(cost) = &usage.cost {
+                let _ = write!(&mut text, " · ${:.3} {}", cost.amount, cost.currency);
+            }
         }
         let cells: Arc<[Cell]> = text
             .chars()
@@ -908,7 +913,7 @@ pub fn register_ai_conversation_actions(registry: &mut lattice_grammar::CommandR
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
-    use crate::acp::conversation::{Conversation, ToolStatus, Turn};
+    use crate::acp::conversation::{Conversation, SessionStatus, ToolStatus, Turn};
     use lattice_agent::SessionKey;
 
     fn text_turn(role: Role, text: &str) -> Turn {
@@ -1220,16 +1225,19 @@ mod tests {
     }
 
     #[test]
-    fn headerline_empty_without_usage() {
+    fn headerline_always_shows_status_without_usage() {
         let hl = ConversationHeaderline {
             store: ConversationStore::new(Arc::new(|_| {})),
             version: Arc::new(AtomicU64::new(0)),
         };
-        assert!(hl.render().is_none(), "no usage → no headerline row");
+        let row = hl.render().expect("status always present → headerline row");
+        let text: String = row.cells.iter().map(|c| char::from_u32(c.codepoint).unwrap_or('�')).collect();
+        assert!(text.contains("Ready"), "status shows Idle→Ready: {text}");
+        assert!(!text.contains("CPU:"), "no usage → no CPU segment: {text}");
     }
 
     #[test]
-    fn headerline_shows_usage() {
+    fn headerline_shows_status_and_usage() {
         let store = {
             let published = Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let p = published.clone();
@@ -1248,8 +1256,9 @@ mod tests {
             store,
             version: Arc::new(AtomicU64::new(1)),
         };
-        let row = hl.render().expect("usage present → headerline row");
+        let row = hl.render().expect("headerline row");
         let text: String = row.cells.iter().map(|c| char::from_u32(c.codepoint).unwrap_or('�')).collect();
+        assert!(text.contains("Ready"), "status prefix: {text}");
         assert!(text.contains("31.4K"), "headerline shows used tokens: {text}");
         assert!(text.contains("200.0K"), "headerline shows context size: {text}");
         assert!(text.contains("$0.045"), "headerline shows cost: {text}");
@@ -1273,8 +1282,62 @@ mod tests {
         };
         let row = hl.render().expect("usage present");
         let text: String = row.cells.iter().map(|c| char::from_u32(c.codepoint).unwrap_or('�')).collect();
+        assert!(text.contains("Ready"), "status prefix: {text}");
         assert!(text.contains("CPU:"), "headerline has CPU prefix: {text}");
         assert!(text.contains("5.0K/16.0K"), "headerline shows tokens: {text}");
         assert!(!text.contains("$"), "no cost segment: {text}");
+    }
+
+    // ── AUX‑3: status-in-headerline tests ──
+
+    #[test]
+    fn headerline_shows_thinking_status() {
+        let store = {
+            let store = ConversationStore::new(Arc::new(|_| {}));
+            store.set_status(&SessionKey::new("test", 0), SessionStatus::Thinking);
+            store
+        };
+        let hl = ConversationHeaderline {
+            store,
+            version: Arc::new(AtomicU64::new(1)),
+        };
+        let row = hl.render().expect("headerline row");
+        let text: String = row.cells.iter().map(|c| char::from_u32(c.codepoint).unwrap_or('�')).collect();
+        assert!(text.contains("Thinking"), "headerline shows Thinking: {text}");
+    }
+
+    #[test]
+    fn headerline_shows_executing_status() {
+        let store = {
+            let store = ConversationStore::new(Arc::new(|_| {}));
+            store.set_status(
+                &SessionKey::new("test", 0),
+                SessionStatus::Executing { tool: "edit parse.rs".into() },
+            );
+            store
+        };
+        let hl = ConversationHeaderline {
+            store,
+            version: Arc::new(AtomicU64::new(1)),
+        };
+        let row = hl.render().expect("headerline row");
+        let text: String = row.cells.iter().map(|c| char::from_u32(c.codepoint).unwrap_or('�')).collect();
+        assert!(text.contains("Working: edit parse.rs"), "headerline shows tool: {text}");
+    }
+
+    #[test]
+    fn headerline_shows_awaiting_permission() {
+        let store = {
+            let store = ConversationStore::new(Arc::new(|_| {}));
+            store.set_status(&SessionKey::new("test", 0), SessionStatus::AwaitingPermission);
+            store
+        };
+        let hl = ConversationHeaderline {
+            store,
+            version: Arc::new(AtomicU64::new(1)),
+        };
+        let row = hl.render().expect("headerline row");
+        let text: String = row.cells.iter().map(|c| char::from_u32(c.codepoint).unwrap_or('�')).collect();
+        assert!(text.contains("Awaiting your approval"), "headerline shows awaiting: {text}");
     }
 }

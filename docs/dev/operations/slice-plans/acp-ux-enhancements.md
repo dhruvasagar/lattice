@@ -92,7 +92,7 @@ headerline display).
 
 ---
 
-## Slice AUX-3 — Explicit processing status
+## Slice AUX-3 — Explicit processing status ✅
 
 **Design ref:** §3.1 (`SessionStatus` enum), §4.3 (derivation, rendering).
 

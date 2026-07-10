@@ -5419,6 +5419,44 @@ recorded numbers and the byte-range-restriction rationale.
 
 ---
 
+## Agent integration (Claude Code + opencode, ✅ core complete, 2026-07-10)
+
+Two coding agents over two protocols, one shared capability surface. Design:
+`../architecture/agent-integration.md` (the `EditorAccess` port + why one
+subsystem serves both), `../architecture/ai-agent-protocol.md` (ACP wire
+contract / auth / trace logs), `../architecture/agent-ui.md` (the
+conversation UI). Slice plans archived under
+`slice-plans/archive/{agent-integration,agent-ui,ai-agent-protocol}.md`.
+
+| Area | Status | Notes |
+|---|---|---|
+| **Claude Code (MCP)** | ✅ | `claude` CLI attaches over a loopback WebSocket; runs its TUI in a terminal buffer; edits via `openDiff`. `lattice-claude-code` / `lattice-ai/mcp`. User doc: `../../user/claude-code.md`. |
+| **opencode (ACP transport)** | ✅ | `lattice` spawns `opencode acp`, drives `initialize → session/new → session/prompt`, consumes `session/update`. Crate-owned `install(boot)`; `agent-client-protocol` crate handles framing. `lattice-ai/acp`. |
+| **Conversation buffer (AU-1…AU-3)** | ✅ | `*ai:opencode*` Document with an `ai-conversation` major mode; structured `Conversation` store + `ConversationUpdated`; Normal-mode scrollback, Insert-mode prompt (the comint editable-tail via `Mode::editable_tail()` + the read-only edit gate in `apply_edit_blocking`); `<C-c>` interrupt (`session/cancel`); user turn folded into the transcript. User doc: `../../user/opencode.md`. |
+| **Diff review + approval (AU-4a)** | ✅ | Agent→client `session/request_permission` routed to the supervisor; reads auto-run, file-edits → `review_diff` (shared with MCP `openDiff`) → verdict-gated response. **Fail closed**: un-reviewable mutating ops (commands, edits with no diff) are **denied** in review mode — a background security review flagged the original auto-allow as a permission bypass. |
+| **Trust mode (AU-5)** | ✅ | Per-session `auto_accept` (default off = review); `<C-t>` toggles + echoes; the permission tasks read an `Arc<AtomicBool>` live; resets to review on each `Start`. |
+| **Split conversation vs trace** | ✅ | Conversation sources → `Conversation` store → `*ai:opencode*`; trace sources (handshake, permissions, lifecycle, errors) → `AiLogger` ring → `:ai-log` (the `:lsp-log` analog). |
+
+**Deferred / follow-ups (not blocking; tracked here since the slice plans are archived):**
+- **AU-4b — `[diff]` Edit-block reflection.** Deferred as redundant: an agent
+  file-edit already streams as a `Block::ToolCall`, so a separate `Block::Edit`
+  double-represents it. Revisit by annotating the ToolCall block if the explicit
+  accept/reject verdict (distinct from execution status) or a diff-reopen
+  affordance proves worth it. `Block::Edit` / `EditStatus` stay in the model, unused.
+- **Decoration-based in-place tool-call status + reasoning folds.** The projection
+  is plain text today (turn headers + `▸ … [running]` lines, drain replaces only
+  the transcript zone). Decoration/virtual-row status is deferred polish.
+- **Trust-mode headerline indicator.** `AiState` already republishes `auto_accept`;
+  a `review`/`auto` modeline/headerline element can read it with no supervisor change.
+  The `<C-t>` echo is the visible reflection today.
+- **Command-confirmation surface.** Non-file mutating operations are denied in
+  review mode (fail closed); a confirmation prompt (so they can be reviewed rather
+  than only trust-allowed) is the real fix.
+- **Other ACP providers + `:ai-send` context push + in-protocol auth** (the
+  original AI-4 slice). Not started.
+
+---
+
 ## Conventions for updating this doc
 
 - Update the **Phase status** table whenever a phase advances.

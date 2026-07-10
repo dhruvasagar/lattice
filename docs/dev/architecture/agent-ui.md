@@ -8,8 +8,42 @@ through the ordinary Document path. This is the lattice analog of opencode's
 TUI, but expressed as vim modal editing over a Document rather than a bespoke
 full-screen widget.
 
-Design revision: v0.1 (initial). Slice sequencing lives in
-`docs/dev/operations/slice-plans/agent-ui.md`.
+Design revision: v0.1 (initial). Slice sequencing lived in
+`docs/dev/operations/slice-plans/archive/agent-ui.md` (now archived — the
+AU-1…AU-5 slices are complete).
+
+## Implementation status (2026-07-10)
+
+The conversation loop is implemented (AU-1…AU-5). Where the build diverged
+from this fragment's initial sketch below, reality is:
+
+- **The editable prompt tail** is a static `Mode::editable_tail()`
+  declaration (`EditableTail` — trailing lines + first-line min byte,
+  relative to the buffer end), consulted by the host's read-only edit gate
+  in `Editor::apply_edit_blocking`. It is NOT a per-buffer `EditableRange`
+  slot (the off-thread drain task couldn't have maintained one) and NOT
+  enforced in `run_read_only_motion` (which is Normal-mode-only and never
+  sees Insert typing). See the modal-input section below.
+- **The projection is plain text**, not decoration-based. Turn headers
+  (`you:` / `opencode:`), tool-call status (`▸ … [running]`), and edit
+  status render as text lines; the drain replaces only the transcript zone
+  above the prompt via `suffix_edit`. In-place decoration-based tool-call
+  status + reasoning folds are deferred polish.
+- **The `Block::Edit` review reflection (AU-4b) is deferred.** An agent
+  file-edit already streams as a `Block::ToolCall` (the `SessionUpdate`
+  tool-call stream), so a separate `Edit` block double-represents it. The
+  `Block::Edit`/`EditStatus` shape stays in the model but is unused; the
+  review is visible via the ToolCall block + the diff view + the trust-mode
+  echo. Revisit by annotating the ToolCall block if the explicit verdict or
+  a diff-reopen affordance proves worth it. The `[diff]` decoration and
+  `Edit { session: DiffSessionRef }` field in the data model below describe
+  that deferred design, not current code.
+- **The permission direction landed** — the supervisor handles agent→client
+  `session/request_permission` (reads auto-run, edits → `review_diff` →
+  verdict, un-reviewable mutating ops **denied**/fail-closed), and trust
+  mode (`<C-t>`, per-session `auto_accept`) is the opt-in that auto-grants.
+  A `review`/`auto` headerline indicator and a command-confirmation prompt
+  for non-file operations are follow-ups.
 
 ## Why this shape
 
@@ -18,7 +52,7 @@ The ACP supervisor already receives structured `SessionUpdate`s from the agent
 requests). Today it **flattens all of them to plain-text log records** in the
 `AiLogger` ring and surfaces them through `:ai-log`. That single buffer does two
 unrelated jobs — it is both the conversation and the diagnostic trace (see
-`docs/dev/operations/slice-plans/agent-integration.md`, "No agent-output-surface
+`docs/dev/operations/slice-plans/archive/agent-integration.md`, "No agent-output-surface
 redesign"). This feature performs that split:
 
 - **Conversation sources** (`AgentText` / `Reasoning` / `ToolCall`) feed a new

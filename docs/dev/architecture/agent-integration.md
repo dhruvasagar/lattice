@@ -1,10 +1,15 @@
 # Agent integration — the `EditorAccess` port, and the adapters built on it
 
-> **Status:** design fragment. Sequencing lives in
-> `docs/dev/operations/slice-plans/agent-integration.md`.
-> This fragment supersedes `ai-agent-protocol.md` §1, §3 and §8; that document
-> remains authoritative for the ACP wire contract (§5), auth (§5b), and the
-> per-process log buffers (§6).
+> **Status:** implemented (2026-07-10). The `EditorAccess` port and both
+> adapters (Claude Code / MCP, opencode / ACP) are live in `lattice-agent`
+> and `lattice-ai`; the ACP adapter additionally owns the conversation UI
+> (see `agent-ui.md`) with interactive diff review and trust mode.
+> Sequencing lived in
+> `docs/dev/operations/slice-plans/archive/agent-integration.md` (now
+> archived — all slices complete). This fragment supersedes
+> `ai-agent-protocol.md` §1, §3 and §8; that document remains authoritative
+> for the ACP wire contract (§5), auth (§5b), and the per-process log
+> buffers (§6).
 
 lattice integrates two coding agents today — Claude Code and opencode — over two
 different protocols, in two opposite directions. This document explains why that

@@ -1,5 +1,15 @@
 # AI agent protocol — implementation plan (slice AI‑1)
 
+> **ARCHIVED / SUPERSEDED (2026-07-10).** This was the original umbrella plan.
+> AI‑1 (the ACP transport + session skeleton + per-process log buffers) landed;
+> AI‑2 (shared diff review), AI‑3 (conversation buffer), and AI‑4 (context
+> push / other providers) were re-sequenced and delivered via the
+> `agent-integration` (AG‑*) and `agent-ui` (AU‑*) slice plans (also archived
+> here). For the current design see `docs/dev/architecture/agent-integration.md`,
+> `agent-ui.md`, and `ai-agent-protocol.md`; for status see the "Agent
+> integration" section of `docs/dev/operations/implementation.md`. Kept for the
+> AI‑1 task history and the still-useful wire-contract / spike notes.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Stand up `lattice-ai` as an ACP client that spawns an agent

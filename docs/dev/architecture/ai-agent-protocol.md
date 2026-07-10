@@ -16,8 +16,22 @@ Claude Code *IDE peer*) but with the **topology inverted** — see §2. It relat
 to `comparison-zed.md`: this is lattice adopting the same external-agent
 architecture Zed has standardized on.
 
-> **Status:** umbrella design (2026-07-08). Sequenced into four slices (§7),
-> each landing under its own slice-plan. No code yet.
+> **Status (updated 2026-07-10):** the umbrella design is **realized**. The
+> ACP transport, session lifecycle, streamed conversation, interactive diff
+> review (`session/request_permission` → `review_diff` → verdict), and trust
+> mode are implemented in `lattice-ai/acp`. This document is now partly
+> **superseded**:
+> - §1, §2, §3, §8 (why-one-integration, topology, crate seam) →
+>   `agent-integration.md` governs. It reframes the seam as the shared
+>   *capability surface* (`EditorAccess`), not the transport, and explains
+>   why Claude Code (MCP server) and opencode (ACP client) are one subsystem.
+> - The conversation UI (buffer, modal input, review, trust) →
+>   `agent-ui.md` governs.
+> - This document remains authoritative for the **ACP wire contract** (§5),
+>   **auth** (§5b), and the **per-process trace-log buffers** (§6).
+> The original four-slice roadmap (§7) is historical; the work actually
+> landed via the `agent-integration` and `agent-ui` slice plans (both
+> archived). See `docs/dev/operations/slice-plans/archive/`.
 
 ## 1. Why ACP (and why not extend the existing claude-code peer)
 

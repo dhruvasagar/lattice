@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use agent_client_protocol::schema::v1::{
-    ContentBlock, PermissionOption, SessionUpdate, ToolCallStatus,
+    ContentBlock, PermissionOption, SessionUpdate, ToolCallStatus, ToolKind,
 };
 use std::fmt;
 use tokio::sync::oneshot;
@@ -130,10 +130,19 @@ pub enum Block {
     /// Streamed reasoning / thinking; folded by default in the projection.
     Reasoning(String),
     /// A tool invocation and its live status.
+    ///
+    /// TCF: `kind`, `input` and `output` are the detail an expanded tool call
+    /// shows. `input`/`output` are the agent's raw JSON, pretty-printed at
+    /// ingest (stored as `String`, not `serde_json::Value`, so `Block` stays
+    /// `Eq`). Detail commonly arrives on a later `ToolCallUpdate`, not the
+    /// initial call, so it is merged in as it lands.
     ToolCall {
         id: String,
         title: String,
         status: ToolStatus,
+        kind: ToolKind,
+        input: Option<String>,
+        output: Option<String>,
     },
     /// An agent-proposed file edit (AU‑4 wires the diff review).
     Edit { path: String, status: EditStatus },
@@ -193,15 +202,19 @@ impl Conversation {
                     tc.tool_call_id.0.to_string(),
                     tc.title.clone(),
                     ToolStatus::from_acp(tc.status),
+                    tc.kind,
+                    tc.raw_input.as_ref().map(pretty_json),
+                    tc.raw_output.as_ref().map(pretty_json),
                 );
             }
             SessionUpdate::ToolCallUpdate(u) => {
-                if let Some(status) = u.fields.status {
-                    self.update_tool_status(
-                        &u.tool_call_id.0.to_string(),
-                        ToolStatus::from_acp(status),
-                    );
-                }
+                self.merge_tool_update(
+                    &u.tool_call_id.0.to_string(),
+                    u.fields.status.map(ToolStatus::from_acp),
+                    u.fields.kind,
+                    u.fields.raw_input.as_ref().map(pretty_json),
+                    u.fields.raw_output.as_ref().map(pretty_json),
+                );
             }
             // AUX‑2: accumulate the latest usage snapshot.
             SessionUpdate::UsageUpdate(u) => {
@@ -259,8 +272,17 @@ impl Conversation {
     }
 
     /// Push a new `ToolCall` block onto the current (or a fresh) assistant turn.
-    fn push_tool_call(&mut self, id: String, title: String, status: ToolStatus) {
-        let block = Block::ToolCall { id, title, status };
+    #[allow(clippy::too_many_arguments)]
+    fn push_tool_call(
+        &mut self,
+        id: String,
+        title: String,
+        status: ToolStatus,
+        kind: ToolKind,
+        input: Option<String>,
+        output: Option<String>,
+    ) {
+        let block = Block::ToolCall { id, title, status, kind, input, output };
         match self.turns.last_mut() {
             Some(turn) if turn.role == Role::Assistant => turn.blocks.push(block),
             _ => self.turns.push(Turn {
@@ -310,21 +332,53 @@ impl Conversation {
         }
     }
 
-    /// Update the status of the tool-call block with `id` (searched newest-first).
-    fn update_tool_status(&mut self, id: &str, new_status: ToolStatus) {
+    /// TCF: merge a `ToolCallUpdate` into the tool-call block with `id`
+    /// (searched newest-first). Each `Some` field overwrites; `None` leaves the
+    /// existing value — detail (input/output/kind) commonly arrives on an
+    /// update after the initial call, so this accumulates rather than replaces.
+    fn merge_tool_update(
+        &mut self,
+        id: &str,
+        new_status: Option<ToolStatus>,
+        new_kind: Option<ToolKind>,
+        new_input: Option<String>,
+        new_output: Option<String>,
+    ) {
         for turn in self.turns.iter_mut().rev() {
             for block in turn.blocks.iter_mut().rev() {
                 if let Block::ToolCall {
-                    id: bid, status, ..
+                    id: bid,
+                    status,
+                    kind,
+                    input,
+                    output,
+                    ..
                 } = block
                     && bid == id
                 {
-                    *status = new_status;
+                    if let Some(s) = new_status {
+                        *status = s;
+                    }
+                    if let Some(k) = new_kind {
+                        *kind = k;
+                    }
+                    if new_input.is_some() {
+                        *input = new_input;
+                    }
+                    if new_output.is_some() {
+                        *output = new_output;
+                    }
                     return;
                 }
             }
         }
     }
+}
+
+/// TCF: pretty-print a raw tool JSON payload for the expanded view. Falls back
+/// to the compact `Display` form if pretty-printing somehow fails.
+fn pretty_json(value: &serde_json::Value) -> String {
+    serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
 }
 
 /// Fired after the [`ConversationStore`] mutates. The `ai-conversation` mode
@@ -578,6 +632,41 @@ mod tests {
         assert_eq!(c.turns[0].blocks.len(), 1);
         match &c.turns[0].blocks[0] {
             Block::ToolCall { status, .. } => assert_eq!(*status, ToolStatus::Ok),
+            other => panic!("expected ToolCall, got {other:?}"),
+        }
+    }
+
+    /// TCF: the tool-call detail (args on the initial call, output on a later
+    /// update) is captured, pretty-printed, and merged in place — not
+    /// discarded. This is what the expanded view will show.
+    #[test]
+    fn tool_call_captures_and_merges_input_then_output() {
+        let mut c = Conversation::default();
+        let mut tc = AcpToolCall::new("tc-1", "bash");
+        tc.raw_input = Some(serde_json::json!({ "cmd": "echo hello" }));
+        c.apply(&SessionUpdate::ToolCall(tc));
+        match &c.turns[0].blocks[0] {
+            Block::ToolCall { input, output, .. } => {
+                let input = input.as_ref().expect("input captured on the initial call");
+                assert!(input.contains("\"cmd\""), "pretty JSON input: {input}");
+                assert!(input.contains("echo hello"), "input value: {input}");
+                assert!(output.is_none(), "no output yet");
+            }
+            other => panic!("expected ToolCall, got {other:?}"),
+        }
+
+        // Output arrives on a later update — must merge, not clobber the input.
+        let update = ToolCallUpdate::new(
+            "tc-1",
+            ToolCallUpdateFields::new().raw_output(serde_json::json!("hello\n")),
+        );
+        c.apply(&SessionUpdate::ToolCallUpdate(update));
+        match &c.turns[0].blocks[0] {
+            Block::ToolCall { input, output, .. } => {
+                assert!(input.is_some(), "input survives the update merge");
+                let output = output.as_ref().expect("output captured on the update");
+                assert!(output.contains("hello"), "output value: {output}");
+            }
             other => panic!("expected ToolCall, got {other:?}"),
         }
     }

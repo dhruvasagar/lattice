@@ -25307,16 +25307,14 @@ impl Editor {
         if !self.pane_tree.set_active(idx) {
             return;
         }
+        // Issue #38 (2026-05-22): the document swap that follows
+        // the destination pane's buffer_id now lives in
+        // `load_active_pane`'s tail (it and the view-restore are a
+        // pair — see that method's doc). Without it two panes
+        // showing different buffers become entangled: the active
+        // pane always shows whichever buffer editor.document was
+        // last set to ("splits are not independent").
         self.load_active_pane();
-        // Issue #38 (2026-05-22): swap editor.document to
-        // follow the destination pane's buffer_id. The active
-        // pane paints from `editor.document.snapshot()`
-        // (published as `ad().snapshot`); without this swap,
-        // two panes showing different buffers become entangled
-        // — the active pane always shows whichever buffer
-        // editor.document was last set to. Symptom: "splits
-        // are not independent".
-        self.sync_active_document_to_pane();
     }
 
     /// Issue #38 (2026-05-22): swap `editor.document` /
@@ -27708,6 +27706,22 @@ impl Editor {
     /// Also restores the help-popup mirror when the active pane is
     /// a help buffer pointing at a different popup than the one
     /// currently mirrored.
+    ///
+    /// Issue #38 (tab/close axis): re-pointing the pane view and
+    /// re-pointing `self.document` at the new pane's buffer are a
+    /// PAIR — the active pane renders/edits `self.document`, so
+    /// restoring the pane without swapping the document leaves the
+    /// pane painting the previously-active buffer ("splits/tabs are
+    /// not independent"). `activate_pane` originally ran the two as
+    /// separate calls; `do_switch_to_tab` / `do_close_tab` /
+    /// `do_close_pane` restored the view but forgot the document
+    /// swap, so the picker `<C-t>` / `<C-s>` / `<C-v>` targets
+    /// polluted the original pane on the way back. Folding the sync
+    /// into the tail here makes the pair atomic: any pane-focus path
+    /// that restores the view now also follows the document. The
+    /// sync is a guarded no-op when the pane's buffer already
+    /// matches `self.document_buffer_id` (the common case), so this
+    /// is free on the hot paths that already agree.
     pub fn load_active_pane(&mut self) {
         let pane = *self.pane_tree.active();
         self.active_buffer = pane.buffer;
@@ -27720,6 +27734,7 @@ impl Editor {
         {
             self.popup_buffer = Some(pane.buffer_id);
         }
+        self.sync_active_document_to_pane();
     }
 
     /// 5.5.F.4.2: push a tagged entry onto the position-history
@@ -35107,6 +35122,81 @@ mod tests {
         editor.pane_tree.leaves_mut()[2].buffer_id = buf2;
         let buf0 = editor.pane_tree.leaves()[0].buffer_id;
         (buf0, buf1, buf2)
+    }
+
+    /// Regression (Issue #38 on the tab axis): a tab switch must
+    /// re-point `self.document` at the newly-active pane's buffer.
+    /// Repro of the picker `<C-t>` pollution — open A in tab 0,
+    /// open B in a fresh tab, switch back to tab 0: the surviving
+    /// pane is restored to A, but the active pane renders/edits
+    /// `self.document`, which `do_switch_to_tab` left pointing at
+    /// B. `do_switch_to_tab` restores the pane view
+    /// (`load_active_pane`) without the companion
+    /// `sync_active_document_to_pane` that `activate_pane` runs.
+    #[tokio::test]
+    async fn switching_tabs_re_points_document_to_active_pane_buffer() {
+        let mut editor = crate::editor::Editor::boot(lattice_core::Document::empty());
+        let file_a = write_temp("aaa\n", "tabswitch-a");
+        let file_b = write_temp("bbb\n", "tabswitch-b");
+
+        let _ = editor.do_edit(Some(file_a.0.clone()), false);
+        let buf_a = editor.document_buffer_id;
+
+        // Picker `<C-t>`: new tab, then open B into it.
+        editor.do_new_tab();
+        let _ = editor.do_edit(Some(file_b.0.clone()), false);
+        let buf_b = editor.document_buffer_id;
+        assert_ne!(buf_a, buf_b, "A and B are distinct buffers");
+
+        // `gT` back to tab 0.
+        editor.do_prev_tab();
+
+        assert_eq!(
+            editor.pane_tree.active().buffer_id,
+            buf_a,
+            "tab 0's pane is restored to A"
+        );
+        assert_eq!(
+            editor.document_buffer_id, buf_a,
+            "self.document must follow the active pane after a tab \
+             switch — else tab 0 renders/edits B (the <C-t> pollution)"
+        );
+    }
+
+    /// Regression: closing a split must re-point `self.document`
+    /// at the surviving pane's buffer. Repro of the picker
+    /// `<C-s>`/`<C-v>` pollution — split-open B beside A, then
+    /// close B's pane: focus returns to A's pane, but
+    /// `do_close_pane` left `self.document` on B (same missing
+    /// `sync_active_document_to_pane` as the tab-switch path).
+    #[tokio::test]
+    async fn closing_split_re_points_document_to_surviving_pane_buffer() {
+        let mut editor = crate::editor::Editor::boot(lattice_core::Document::empty());
+        let file_a = write_temp("aaa\n", "closesplit-a");
+        let file_b = write_temp("bbb\n", "closesplit-b");
+
+        let _ = editor.do_edit(Some(file_a.0.clone()), false);
+        let buf_a = editor.document_buffer_id;
+
+        // Picker `<C-s>`: split (new pane inherits A), then open B.
+        let _ = editor.prepare_open_target_pane(lattice_picker::OpenTarget::Split);
+        let _ = editor.do_edit(Some(file_b.0.clone()), false);
+        let buf_b = editor.document_buffer_id;
+        assert_ne!(buf_a, buf_b, "A and B are distinct buffers");
+
+        // Focus is on B's pane; close it — focus returns to A's pane.
+        editor.do_close_pane();
+
+        assert_eq!(
+            editor.pane_tree.active().buffer_id,
+            buf_a,
+            "surviving pane is A"
+        );
+        assert_eq!(
+            editor.document_buffer_id, buf_a,
+            "self.document must follow the surviving pane after a pane \
+             close — else the original pane renders/edits B"
+        );
     }
 
     /// D.8.e: first `:diffthis` creates an N=1 dormant

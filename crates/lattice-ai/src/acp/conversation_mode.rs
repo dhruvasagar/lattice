@@ -34,6 +34,10 @@ use crate::acp::conversation::{
     PermissionOutcome, PermissionStatus, Role,
 };
 use crate::acp::handle::AiClientHandle;
+use crate::acp::tool_fold::{
+    ConversationFold, ConversationFoldKind, ReasoningFoldSource, ToolCallFoldSource,
+    reasoning_fold_identity, tool_fold_identity,
+};
 
 /// AUX‑2: provider id for the conversation headerline. Derived from a fixed
 /// tag so the host can unregister it on buffer teardown.
@@ -157,9 +161,37 @@ fn prompt_anchor_line(transcript: &str) -> u32 {
 }
 
 /// Render the whole conversation to plain text. Pure; the projection diffs this
-/// against the buffer to compute a minimal edit.
+/// against the buffer to compute a minimal edit. Thin wrapper over
+/// [`project_conversation`] — the text half.
 pub fn render_conversation(conv: &Conversation) -> String {
+    project_conversation(conv).0
+}
+
+/// TCF: project the conversation to `(transcript_text, fold_spans)` in a single
+/// pass, so a fold's line range can never drift from the rendered layout. The
+/// text half is what the drain diffs into the buffer; the span half is what the
+/// [`ToolCallFoldSource`](crate::acp::tool_fold::ToolCallFoldSource) and
+/// [`ReasoningFoldSource`](crate::acp::tool_fold::ReasoningFoldSource) read.
+///
+/// A tool call with captured `input`/`output` gains indented detail rows under
+/// its `▸ summary [status]` head; the fold spans the head through the last
+/// detail row (head stays visible when closed, detail hides). Each multi-line
+/// reasoning block folds the same way. Detail-less tool calls and single-line
+/// reasoning yield no span — a 1-line fold is a `z*` no-op.
+///
+/// Fold line indices are 0-based on the split-on-`\n` grid and align with the
+/// buffer's line numbers: the transcript occupies buffer lines `0..N` and the
+/// prompt marker is appended after it, so it never shifts a transcript line.
+pub fn project_conversation(conv: &Conversation) -> (String, Vec<ConversationFold>) {
     let mut out = String::new();
+    let mut folds: Vec<ConversationFold> = Vec::new();
+    // Current line index == number of `\n` pushed so far. Bumped on every line
+    // written, so `line` names the row the NEXT push lands on.
+    let mut line: u32 = 0;
+    // Reasoning blocks carry no wire id; their fold identity is keyed on this
+    // document-order ordinal, incremented for every reasoning block regardless
+    // of whether it is foldable so a given block's ordinal stays stable.
+    let mut reasoning_ordinal: usize = 0;
     for turn in &conv.turns {
         let who = match turn.role {
             Role::User => "you",
@@ -167,27 +199,72 @@ pub fn render_conversation(conv: &Conversation) -> String {
         };
         out.push_str(who);
         out.push_str(":\n");
+        line += 1;
         for block in &turn.blocks {
             match block {
                 Block::Text(s) => {
-                    for line in s.split('\n') {
-                        out.push_str(line);
+                    for l in s.split('\n') {
+                        out.push_str(l);
                         out.push('\n');
+                        line += 1;
                     }
                 }
                 Block::Reasoning(s) => {
-                    for line in s.split('\n') {
+                    let start = line;
+                    for l in s.split('\n') {
                         out.push_str("  \u{2502} ");
-                        out.push_str(line);
+                        out.push_str(l);
                         out.push('\n');
+                        line += 1;
                     }
+                    let end = line - 1;
+                    if end > start {
+                        folds.push(ConversationFold {
+                            start_line: start,
+                            end_line: end,
+                            identity: reasoning_fold_identity(reasoning_ordinal),
+                            kind: ConversationFoldKind::Reasoning,
+                        });
+                    }
+                    reasoning_ordinal += 1;
                 }
-                Block::ToolCall { title, status, .. } => {
+                Block::ToolCall {
+                    id,
+                    title,
+                    status,
+                    input,
+                    output,
+                    ..
+                } => {
+                    let start = line;
                     out.push_str("  \u{25b8} ");
                     out.push_str(title);
                     out.push_str(" [");
                     out.push_str(status_tag(status));
                     out.push_str("]\n");
+                    line += 1;
+                    for (label, body) in [("input", input), ("output", output)] {
+                        let Some(body) = body else { continue };
+                        out.push_str("    ");
+                        out.push_str(label);
+                        out.push_str(":\n");
+                        line += 1;
+                        for l in body.split('\n') {
+                            out.push_str("      ");
+                            out.push_str(l);
+                            out.push('\n');
+                            line += 1;
+                        }
+                    }
+                    let end = line - 1;
+                    if end > start {
+                        folds.push(ConversationFold {
+                            start_line: start,
+                            end_line: end,
+                            identity: tool_fold_identity(id),
+                            kind: ConversationFoldKind::ToolCall,
+                        });
+                    }
                 }
                 Block::Edit { path, status } => {
                     out.push_str("  \u{270e} ");
@@ -195,6 +272,7 @@ pub fn render_conversation(conv: &Conversation) -> String {
                     out.push_str(" [");
                     out.push_str(edit_tag(status));
                     out.push_str("]\n");
+                    line += 1;
                 }
                 Block::Permission {
                     title,
@@ -209,10 +287,12 @@ pub fn render_conversation(conv: &Conversation) -> String {
                     out.push_str(" [");
                     out.push_str(permission_tag(status));
                     out.push_str("]\n");
+                    line += 1;
                     if let Some(desc) = description {
                         out.push_str("    ");
                         out.push_str(desc);
                         out.push('\n');
+                        line += 1;
                     }
                     if status == &PermissionStatus::Pending {
                         for (i, opt) in options.iter().enumerate() {
@@ -229,14 +309,16 @@ pub fn render_conversation(conv: &Conversation) -> String {
                                 opt.name,
                                 key,
                             ));
+                            line += 1;
                         }
                     }
                 }
             }
         }
         out.push('\n');
+        line += 1;
     }
-    out
+    (out, folds)
 }
 
 fn status_tag(status: &crate::acp::conversation::ToolStatus) -> &'static str {
@@ -318,12 +400,20 @@ pub struct AiConversationGuard {
     /// mode owns its full surface — nothing else in the host knows this provider
     /// exists, so nothing else can clean it up.
     headerline: Option<(Arc<dyn VirtualRowRegistrar>, lattice_core::BufferId)>,
+    /// TCF: the tool-call + reasoning fold source registrations. Removed on
+    /// deactivate so the mode owns its full surface — the same Drop-based
+    /// lifecycle `DiffModeGuard` uses for its hunk/unchanged sources. Empty when
+    /// the fold service wasn't registered (some test harnesses) — Drop no-ops.
+    fold_registrations: Vec<(lattice_core::FoldOverlayServiceHandle, lattice_core::ProviderId)>,
 }
 
 impl Drop for AiConversationGuard {
     fn drop(&mut self) {
         if let Some((registrar, buffer_id)) = self.headerline.take() {
             registrar.unregister(buffer_id, CONV_HEADERLINE_PROVIDER_ID);
+        }
+        for (svc, id) in self.fold_registrations.drain(..) {
+            svc.remove_source(id);
         }
     }
 }
@@ -487,6 +577,28 @@ impl Mode for AiConversationMode {
                     (registrar, buffer_id)
                 });
 
+            // TCF: register the tool-call + reasoning fold sources. Each holds a
+            // `ConversationStore` clone and reads the published snapshot on every
+            // `recompute_folds` (driven by the drain's owner-write edits bumping
+            // the buffer version → `maybe_reparse_syntax`). Mirrors
+            // `DiffMode::on_activate`; the guard's Drop removes them. Distinct
+            // provider ids so each deregisters independently. `ctx.service`
+            // yields `Arc<FoldOverlayServiceHandle>` (an `Arc<Arc<dyn …>>`);
+            // unwrap one layer to the inner handle.
+            let fold_registrations = ctx
+                .service::<lattice_core::FoldOverlayServiceHandle>()
+                .map(|outer| {
+                    let svc = (*outer).clone();
+                    let tool: Arc<dyn lattice_core::FoldSource> =
+                        Arc::new(ToolCallFoldSource::new((*conv_store).clone(), buffer_id));
+                    let tool_id = svc.add_source(tool, buffer_id);
+                    let reasoning: Arc<dyn lattice_core::FoldSource> =
+                        Arc::new(ReasoningFoldSource::new((*conv_store).clone(), buffer_id));
+                    let reasoning_id = svc.add_source(reasoning, buffer_id);
+                    vec![(svc.clone(), tool_id), (svc, reasoning_id)]
+                })
+                .unwrap_or_default();
+
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<ConversationUpdated>();
             let sub_id = ctx.events().subscribe_typed::<ConversationUpdated>(tx);
             let bus_handle = ctx.events_handle();
@@ -559,6 +671,7 @@ impl Mode for AiConversationMode {
             Ok(Some(AiConversationGuard {
                 _subscription: Subscription::new(bus_handle, sub_id),
                 headerline: headerline_registration,
+                fold_registrations,
             }))
         })
     }
@@ -1075,6 +1188,128 @@ mod tests {
         assert!(text.contains("you:\nrefactor parse_args\n"));
         assert!(text.contains("opencode:\nI'll extract a helper.\n"));
         assert!(text.contains("\u{25b8} edit parse.rs [running]"));
+    }
+
+    // ── TCF: tool-call / reasoning fold projection ──
+
+    fn detailed_tool_call() -> Block {
+        Block::ToolCall {
+            id: "tc-1".to_string(),
+            title: "bash".to_string(),
+            status: ToolStatus::Ok,
+            kind: Default::default(),
+            input: Some("{\n  \"cmd\": \"echo hi\"\n}".to_string()),
+            output: Some("\"hi\"".to_string()),
+        }
+    }
+
+    /// A detailed tool call renders indented `input:` / `output:` rows beneath
+    /// its summary, and yields one fold spanning the summary head through the
+    /// last detail row — keyed on the tool-call id. The fold's `start_line`
+    /// lands on the `▸` summary line in the rendered text (head stays visible
+    /// when closed; the detail rows below hide).
+    #[test]
+    fn tool_call_detail_rows_render_and_fold_from_the_summary_head() {
+        let conv = Conversation {
+            turns: vec![Turn {
+                role: Role::Assistant,
+                blocks: vec![detailed_tool_call()],
+            }],
+            ..Default::default()
+        };
+        let (text, folds) = project_conversation(&conv);
+        assert!(text.contains("\u{25b8} bash [ok]"), "summary head: {text}");
+        assert!(text.contains("    input:\n"), "input label: {text}");
+        assert!(text.contains("      \"cmd\": \"echo hi\""), "indented input body: {text}");
+        assert!(text.contains("    output:\n"), "output label: {text}");
+
+        assert_eq!(folds.len(), 1);
+        let f = &folds[0];
+        assert_eq!(f.kind, ConversationFoldKind::ToolCall);
+        assert_eq!(f.identity, tool_fold_identity("tc-1"));
+        // The fold head is the summary line; the detail rows are its interior.
+        let lines: Vec<&str> = text.split('\n').collect();
+        assert!(
+            lines[f.start_line as usize].contains("\u{25b8} bash [ok]"),
+            "start_line is the summary head: {:?}",
+            lines[f.start_line as usize],
+        );
+        assert!(f.end_line > f.start_line, "detail rows form the interior");
+        // The last folded row is a detail row (the output body), not blank.
+        assert!(lines[f.end_line as usize].contains("\"hi\""), "end is the last detail row");
+    }
+
+    /// A tool call with no captured detail renders only its summary and yields
+    /// no fold — a 1-line region is a `z*` no-op.
+    #[test]
+    fn detail_less_tool_call_yields_no_fold() {
+        let conv = Conversation {
+            turns: vec![Turn {
+                role: Role::Assistant,
+                blocks: vec![Block::ToolCall {
+                    id: "t1".to_string(),
+                    title: "think".to_string(),
+                    status: ToolStatus::Running,
+                    kind: Default::default(),
+                    input: None,
+                    output: None,
+                }],
+            }],
+            ..Default::default()
+        };
+        let (_text, folds) = project_conversation(&conv);
+        assert!(folds.is_empty(), "no detail rows → nothing to fold");
+    }
+
+    /// A multi-line reasoning block folds (identity keyed on its document-order
+    /// ordinal); a single-line one does not.
+    #[test]
+    fn reasoning_folds_only_when_multiline() {
+        let multi = Conversation {
+            turns: vec![Turn {
+                role: Role::Assistant,
+                blocks: vec![Block::Reasoning("first thought\nsecond thought".to_string())],
+            }],
+            ..Default::default()
+        };
+        let (text, folds) = project_conversation(&multi);
+        assert!(text.contains("  \u{2502} first thought"), "reasoning prefix: {text}");
+        assert_eq!(folds.len(), 1);
+        assert_eq!(folds[0].kind, ConversationFoldKind::Reasoning);
+        assert_eq!(folds[0].identity, reasoning_fold_identity(0));
+
+        let single = Conversation {
+            turns: vec![Turn {
+                role: Role::Assistant,
+                blocks: vec![Block::Reasoning("just one line".to_string())],
+            }],
+            ..Default::default()
+        };
+        assert!(
+            project_conversation(&single).1.is_empty(),
+            "a single reasoning line is not foldable",
+        );
+    }
+
+    /// Fold line numbers are on the same split-on-`\n` grid the drain diffs and
+    /// the buffer uses: `render_conversation` and `project_conversation` share
+    /// one pass, so the text and the spans can never disagree.
+    #[test]
+    fn render_and_project_share_the_same_text() {
+        let conv = Conversation {
+            turns: vec![
+                text_turn(Role::User, "run it"),
+                Turn {
+                    role: Role::Assistant,
+                    blocks: vec![
+                        Block::Reasoning("planning\nthe\napproach".to_string()),
+                        detailed_tool_call(),
+                    ],
+                },
+            ],
+            ..Default::default()
+        };
+        assert_eq!(render_conversation(&conv), project_conversation(&conv).0);
     }
 
     #[test]

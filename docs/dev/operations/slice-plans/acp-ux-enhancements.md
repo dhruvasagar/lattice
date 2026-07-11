@@ -349,17 +349,46 @@ ships nothing new. Land it green and separately so a regression bisects cleanly.
 
 Queue behaviour follows `lsp.rs::open_next_queued_show_message_request`.
 
-### Slice TCF — Tool-call folds 📝
+### Slice TCF — Tool-call folds ✅
 
 **Design ref:** acp-ux-enhancements.md §5.4. **Depends on:** nothing.
 
-| File | Change |
-|---|---|
-| `crates/lattice-ai/src/acp/conversation.rs` | `Block::ToolCall` gains `kind`, `raw_input`, `raw_output`, `content`, `locations`. `update_tool_status` → `merge_tool_update` folding every `Some` field from `ToolCallUpdateFields`. |
-| `crates/lattice-ai/src/acp/conversation_mode.rs` | `render_conversation` always emits detail rows under the summary line. |
-| `crates/lattice-ai/src/acp/tool_fold.rs` (new) | `ToolCallFoldSource: FoldSource`, `identity = hash(tool_call_id)`, `closed: true`. Registered/unregistered via `FoldOverlayServiceHandle` on activate/guard-drop, mirroring `DiffMode::on_activate`. |
-| `crates/lattice-ai/src/acp/conversation.rs` | Reasoning blocks become a second fold consumer; fix the `Block::Reasoning` doc comment that claims folding it does not do. |
+| File | Change | Status |
+|---|---|---|
+| `crates/lattice-ai/src/acp/conversation.rs` | `Block::ToolCall` gains `kind`, `input`, `output` (pretty-printed raw JSON, stored as `String` so `Block` stays `Eq`). `update_tool_status` → `merge_tool_update` folding every `Some` field from `ToolCallUpdateFields`. | ✅ |
+| `crates/lattice-ai/src/acp/conversation_mode.rs` | `render_conversation` becomes a thin wrapper over a single-pass `project_conversation(conv) -> (String, Vec<ConversationFold>)`, so fold line ranges can never drift from the rendered text. A detailed tool call emits indented `input:`/`output:` rows under its `▸ summary [status]` head; the fold spans the head through the last detail row. | ✅ |
+| `crates/lattice-ai/src/acp/tool_fold.rs` (new) | `ToolCallFoldSource` + `ReasoningFoldSource` (`FoldSource`), `closed: true`, distinct `ProviderId` namespaces per buffer. `identity = hash("ai:tool", tool_call_id)` / `hash("ai:reasoning", ordinal)` — carries expansion state across a transcript growing above the call. Registered/unregistered via `FoldOverlayServiceHandle` in `AiConversationMode::on_activate` / guard `Drop`, mirroring `DiffMode`. | ✅ |
+| `crates/lattice-ai/src/acp/conversation.rs` | Reasoning blocks are the second fold consumer (`ReasoningFoldSource`); the `Block::Reasoning` doc comment is now accurate. | ✅ |
 
-Ingest capture (`Block::ToolCall` fields + `merge_tool_update`) is independently
-useful and can land first — it stops discarding wire data even before folds
-render.
+**Landed decisions:**
+
+- **Two fold sources, not one** (Dhruva, 2026-07-11). Tool-call and reasoning
+  folds are the same closed-by-default, identity-keyed behaviour, but ship as
+  two independently-registered `FoldSource`s (the `HunkFoldSource` /
+  `UnchangedFoldSource` precedent) so each deregisters on its own id. Both read
+  the shared `project_conversation` layout and filter to their `ConversationFold`
+  kind.
+- **No host wiring.** `maybe_reparse_syntax` already calls `recompute_folds()`
+  on every text-version bump, so the drain's owner-write re-projection triggers
+  a fold recompute automatically. TCF adds only the two overlay registrations.
+- **No renderer / GPUI peer change.** Folds are already a cross-renderer
+  primitive (`lattice_core::Fold`); no new `Effect`/`DiffSignKind` variant, so
+  the TUI and GPUI peers consume the folds identically with no lockstep edit.
+  Closed folds elide detail rows at the cell layer (paramount #1). No new bench:
+  fold recompute rides the existing `fold_recompute` bench path.
+
+**Test coverage.** The novel logic — the `project_conversation` layout, fold
+ranges, identities, the streaming-stability property (text growing above a call
+leaves its identity unchanged), and detail rendering — is covered by pure unit
+tests in `conversation_mode.rs` + `tool_fold.rs`. The generic
+`FoldSource → recompute_folds → editor.folds` seam is already pinned host-side
+by `recompute_folds_for_inactive_baseline_stashes_unchanged_folds` (any
+`FoldSource` flows identically through the adapter). The one seam a new test
+does **not** cover is `on_activate` actually registering the sources through the
+service — verified by construction (the `FoldOverlayServiceHandle` lookup type
+matches the boot registration, avoiding the ServiceRegistry TypeId pitfall) and
+by mirroring `DiffMode::on_activate` exactly. A `za`-through-host integration
+test over the `*ai:opencode*` buffer is the honest remaining gap.
+
+Ingest capture (`Block::ToolCall` fields + `merge_tool_update`) landed first —
+it stopped discarding wire data before folds rendered.

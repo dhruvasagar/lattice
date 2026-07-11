@@ -20,6 +20,7 @@ pub mod install;
 pub mod providers;
 pub mod session;
 pub mod supervisor;
+pub mod tool_fold;
 
 pub use commands::register_ai_ex_commands;
 pub use connection::{Connection, SessionId};

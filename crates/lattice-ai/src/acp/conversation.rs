@@ -127,7 +127,11 @@ pub struct UsageSnapshot {
 pub enum Block {
     /// Streamed message text.
     Text(String),
-    /// Streamed reasoning / thinking; folded by default in the projection.
+    /// Streamed reasoning / thinking. TCF: the projection prefixes each line
+    /// with `│`, and a multi-line block is folded **closed by default** via
+    /// [`ReasoningFoldSource`](crate::acp::tool_fold::ReasoningFoldSource) — the
+    /// fold keeps the head line visible and hides the rest until `za`. (Before
+    /// TCF this comment claimed folding the projection did not do.)
     Reasoning(String),
     /// A tool invocation and its live status.
     ///

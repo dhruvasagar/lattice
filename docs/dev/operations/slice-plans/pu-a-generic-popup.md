@@ -67,11 +67,22 @@ valid — a pure type relocation, no logic change. `popup_back_stack` stays a fi
 on `Editor` (a field can't move crates); its element type now resolves to the
 relocated `lattice_help::PopupSnapshot`. 219 popup/help tests green.
 
-### PU-A.3 — effects: `OpenPopup` + `DismissPopup` 📝
-- `Effect::OpenPopup { buffer, placement, focus }` (grammar).
-- Rename `Effect::CloseHover` → `Effect::DismissPopup` (generic already).
-- Both renderers' effect-classifier arms (lockstep, exhaustive match).
-- WIT `effect` variant + `to_wit`/`from_wit` arms (`boundary_effect.rs`).
+### PU-A.3a — rename `Effect::CloseHover` → `Effect::DismissPopup` 📝
+Cosmetic de-Help-ification of the dismiss effect (it already calls
+`dismiss_popup()` generically). Grammar `effect.rs` + `ex_commands.rs`, both
+renderers' effect arms, WIT `types.wit` (`close-hover` → `dismiss-popup`), and
+`boundary_effect.rs` `to_wit`/`from_wit` + round-trip test. Compiler-guarded but
+touches the WIT contract. `Action::CloseHover` is a separate layer — out of scope.
+
+### PU-A.3b — `Effect::OpenPopup { buffer, placement, focus }` ⏸ deferred to PU-B
+**Decision (2026-07):** the design puts this in PU-A, but it has NO producer or
+consumer until the ACP permission menu (PU-B) — the async opener returns it via a
+tick callback (popup-api.md §4.4). Landing an `Effect` variant + WIT round-trip +
+host handler that nothing exercises end-to-end is untested dead surface (heuristic
+#1 / YAGNI). Ship it WITH its consumer in PU-B, wrapping the already-generic
+`open_popup_buffer` primitive that PU-A.1b-ii landed. The layering payoff
+(popup-api.md §4.5) is preserved — the primitive is generic now; PU-B just wires
+the effect to it.
 
 ### PU-A.4 — chrome from the buffer name 📝
 Title from the buffer's synthetic name, not `help.title`; the `"Esc to dismiss"`

@@ -26993,10 +26993,18 @@ impl Editor {
         // Use active_buffer_id() so focused Multibuffer/Terminal/etc.
         // panes see their own mode contributions as active, not the
         // last-seen Document buffer's modes.
+        //
+        // `keymap_gated_ids()` (active major first, then active minors), NOT
+        // `minors()`: `resolve_trace` gates a `MajorMode` layer by this slice
+        // just like a `MinorMode` one, so dropping the active major here would
+        // mark the buffer's own major-mode chords as inactive — and, paired
+        // with the pre-fix `resolve_trace`, was why `:describe-key` reported
+        // every major's chords as globally active. Mirrors the dispatch path
+        // (dispatch.rs:1033, 7479).
         let active_modes: Vec<lattice_mode::mode::ModeId> = self
             .active_modes
             .get(&self.active_buffer_id())
-            .map(|m| m.minors().to_vec())
+            .map(|m| m.keymap_gated_ids())
             .unwrap_or_default();
 
         // Run trace(s).
@@ -27092,13 +27100,41 @@ impl Editor {
             if resolution.hits.len() > 1 {
                 lines.push(String::new());
                 lines.push("  All layers (ascending priority):".to_string());
+                // Which active hits actually FIRE: the highest-priority active
+                // hit (winner) fires; each active hit below it fires only while
+                // the one above is `fall_through`. Once a non-fall-through
+                // binding is reached, everything below it is SHADOWED — an
+                // active layer whose binding never runs because a
+                // higher-priority active layer overrides the same chord (e.g.
+                // ai-conversation's `i` → focus-prompt shadows Builtin `i` →
+                // enter-insert-mode). Shadowed ≠ inactive: the layer is active,
+                // the binding just doesn't win. Keyed by layer (one binding per
+                // layer per chord in a resolution).
+                let firing_layers: Vec<lattice_keymap::KeymapLayer> = {
+                    let active_desc: Vec<&lattice_keymap::LayerHit> =
+                        resolution.hits.iter().rev().filter(|h| h.active).collect();
+                    let mut firing = Vec::new();
+                    for (i, hit) in active_desc.iter().enumerate() {
+                        if i == 0 || active_desc[i - 1].command.fall_through {
+                            firing.push(hit.layer);
+                        } else {
+                            break;
+                        }
+                    }
+                    firing
+                };
                 for hit in &resolution.hits {
                     // SN.3c.2b: surface `fall_through` alongside activeness.
-                    let status = match (hit.active, hit.command.fall_through) {
-                        (true, true) => "[active · fall-through]",
-                        (true, false) => "[active]",
-                        (false, true) => "[inactive · fall-through]",
-                        (false, false) => "[inactive]",
+                    // A shadowed active hit is reported distinctly so
+                    // `:describe-key` never implies a binding fires when a
+                    // higher-priority layer overrides it.
+                    let fires = firing_layers.contains(&hit.layer);
+                    let status = match (hit.active, fires, hit.command.fall_through) {
+                        (true, true, true) => "[active · fall-through]",
+                        (true, true, false) => "[active]",
+                        (true, false, _) => "[shadowed]",
+                        (false, _, true) => "[inactive · fall-through]",
+                        (false, _, false) => "[inactive]",
                     };
                     let cmd_name = self
                         .registry

@@ -817,14 +817,24 @@ impl KeymapHandle {
             .into_iter()
             .map(|(layer, command)| {
                 let active = match layer {
-                    // MajorMode is always-on: it lives in the always_on
-                    // merged trie used by lookup_with_context, so its
-                    // bindings fire regardless of which modes are active.
-                    KeymapLayer::Builtin
-                    | KeymapLayer::MajorMode(_)
-                    | KeymapLayer::User
-                    | KeymapLayer::Buffer => true,
-                    KeymapLayer::MinorMode(id) => active_modes.contains(&id),
+                    // Builtin / User / Buffer are always-on (they live in the
+                    // always_on merged trie `lookup_with_context` starts from).
+                    KeymapLayer::Builtin | KeymapLayer::User | KeymapLayer::Buffer => true,
+                    // K.1.c fix (210da76c): a MajorMode layer is NOT always-on —
+                    // `build_always_on_merged` excludes it, and
+                    // `lookup_with_context` folds it in only when the buffer's
+                    // active-mode slice names it. So a major-mode binding is
+                    // active iff it is THIS buffer's active major. Gate it
+                    // exactly like a minor (the caller passes
+                    // `ActiveModes::keymap_gated_ids()` — active major first,
+                    // then active minors). The old code hard-coded MajorMode →
+                    // true, so `:describe-key` reported every major's chords as
+                    // firing in every buffer (`i` → ai-conv-focus-prompt shown
+                    // globally) — the introspection half of the same bug
+                    // 210da76c fixed on the dispatch side.
+                    KeymapLayer::MajorMode(id) | KeymapLayer::MinorMode(id) => {
+                        active_modes.contains(&id)
+                    }
                 };
                 LayerHit { layer, command, active }
             })
@@ -1996,6 +2006,70 @@ mod tests {
             }
             other => panic!("expected focus-prompt bound on ai-conversation, got {other:?}"),
         }
+    }
+
+    /// Introspection regression (the `:describe-key` half of 210da76c):
+    /// `resolve_trace` must mark a `MajorMode` hit `active` iff its id is the
+    /// buffer's active major — NOT unconditionally. The old code hard-coded
+    /// `MajorMode(_) => true` (a stale "majors are always-on" assumption), so
+    /// `:describe-key i` reported `ai-conversation`'s `i` → focus-prompt as
+    /// firing in EVERY buffer.
+    #[test]
+    fn resolve_trace_gates_major_mode_hit_by_active_major() {
+        let h = KeymapHandle::new();
+        let convo = ModeId::new("ai-conversation-mode");
+        // Builtin `i` (always-on) + a MajorMode(ai-conversation) `i`.
+        h.bind(
+            KeymapLayer::Builtin,
+            BindingMode::Normal,
+            &[lit('i')],
+            invocation(1),
+            src("builtin.insert"),
+        );
+        let mut bindings = HashMap::new();
+        let mut trie = KeymapTrie::new();
+        trie.insert(
+            &[lit('i')],
+            Arc::new(BoundCommand::from_invocation(
+                invocation(156),
+                src("ai-conversation.focus-prompt"),
+                KeymapLayer::MajorMode(convo),
+            )),
+        );
+        bindings.insert(BindingMode::Normal, trie);
+        h.push_layer(PushLayerKind::MajorMode(convo), "ai-conversation-mode", bindings);
+
+        let major_hit = |active_modes: &[ModeId]| -> bool {
+            let res = h.resolve_trace(BindingMode::Normal, &[pressed('i')], active_modes);
+            res.hits
+                .iter()
+                .find(|hit| matches!(hit.layer, KeymapLayer::MajorMode(id) if id == convo))
+                .map(|hit| hit.active)
+                .expect("the MajorMode(ai-conversation) hit is enumerated")
+        };
+
+        // A different active major (e.g. the dashboard) → NOT active.
+        assert!(
+            !major_hit(&[ModeId::new("dashboard-mode")]),
+            "a non-active major's binding must not be marked active in introspection",
+        );
+        // No active major → NOT active.
+        assert!(!major_hit(&[]), "no active major → the major hit is inactive");
+        // The ai-conversation buffer (its major active) → active.
+        assert!(
+            major_hit(&[convo]),
+            "the active major's binding IS active on its own buffer",
+        );
+
+        // The Builtin hit is always active regardless of the mode slice.
+        let res = h.resolve_trace(BindingMode::Normal, &[pressed('i')], &[]);
+        let builtin_active = res
+            .hits
+            .iter()
+            .find(|hit| matches!(hit.layer, KeymapLayer::Builtin))
+            .map(|hit| hit.active)
+            .expect("the Builtin hit is enumerated");
+        assert!(builtin_active, "Builtin is always-on");
     }
 
     /// K.1.c: "last-activated wins" for overlapping minor-mode

@@ -126,6 +126,21 @@ pub struct HelpMetadata {
     pub anchors: Vec<HelpAnchor>,
 }
 
+/// Renderer-agnostic snapshot of a help popup's content + view +
+/// metadata, pushed onto the `<C-o>` back-stack when following a help
+/// link swaps the popup's content in place. PU-A.2: moved here from
+/// `lattice-host` — this is help's back-stack history, not generic popup
+/// state, so it lives with the rest of the help model.
+#[derive(Debug, Clone)]
+pub struct PopupSnapshot {
+    pub title: String,
+    pub content: lattice_core::Buffer,
+    pub cursor: lattice_protocol::position::Position,
+    pub scroll: u32,
+    pub metadata: HelpMetadata,
+    pub placement: lattice_core::ui::popup::PopupPlacement,
+}
+
 /// M.3.2.c.5: pair of (slim help buffer, parsed metadata) returned
 /// from every help factory. The App splits this into:
 /// - `buffer` -> `App.popup_buffer` (the popup hot-path slot)

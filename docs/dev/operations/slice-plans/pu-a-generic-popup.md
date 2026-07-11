@@ -59,9 +59,13 @@ production opens funnel through `Editor::display_buffer` (dispatch.rs); no
 `BufferId` (aligning with `Effect::OpenSyntheticBuffer`'s "buffer exists; wire
 it" shape); each content kind registers its own `BufferData` variant.
 
-### PU-A.2 — move help state into `lattice-help` 📝
-Move `PopupSnapshot` + `HelpMetadata` + `popup_back_stack` out of `lattice-host`
-into `lattice-help` (they are help's `<C-o>` history, not popup state).
+### PU-A.2 — move help state into `lattice-help` ✅
+`PopupSnapshot` moved from `lattice-host::popup` into `lattice-help` (alongside
+`HelpMetadata`, which already lived there) and re-exported from
+`lattice-host::popup`, so every `crate::popup::PopupSnapshot` reference stays
+valid — a pure type relocation, no logic change. `popup_back_stack` stays a field
+on `Editor` (a field can't move crates); its element type now resolves to the
+relocated `lattice_help::PopupSnapshot`. 219 popup/help tests green.
 
 ### PU-A.3 — effects: `OpenPopup` + `DismissPopup` 📝
 - `Effect::OpenPopup { buffer, placement, focus }` (grammar).

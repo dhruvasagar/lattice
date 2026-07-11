@@ -16,7 +16,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use agent_client_protocol::schema::v1::{
-    ContentBlock, PermissionOption, SessionUpdate, ToolCallStatus, ToolKind,
+    ContentBlock, PermissionOption, PermissionOptionId, PermissionOptionKind, SessionUpdate,
+    ToolCallStatus, ToolKind,
 };
 use std::fmt;
 use tokio::sync::oneshot;
@@ -67,15 +68,6 @@ pub enum PermissionStatus {
     Pending,
     Allowed,
     Denied,
-}
-
-/// AUX‑1: the user's decision on a pending permission request.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PermissionOutcome {
-    AllowOnce,
-    AllowAlways,
-    DenyOnce,
-    DenyAlways,
 }
 
 /// AUX‑3: global processing status of the current agent session — shown in the
@@ -327,6 +319,32 @@ impl Conversation {
         }
     }
 
+    /// PU-B.2: kind of the option `option_id` within the `Permission` block
+    /// `id` (searched newest-first), or `None` if the block or option is gone.
+    /// Used by `resolve_permission` to derive the inline block status from the
+    /// agent's actual option rather than a fixed 4-way bucket.
+    fn permission_option_kind(
+        &self,
+        id: &str,
+        option_id: &PermissionOptionId,
+    ) -> Option<PermissionOptionKind> {
+        for turn in self.turns.iter().rev() {
+            for block in turn.blocks.iter().rev() {
+                if let Block::Permission {
+                    id: bid, options, ..
+                } = block
+                    && bid == id
+                {
+                    return options
+                        .iter()
+                        .find(|o| &o.option_id == option_id)
+                        .map(|o| o.kind);
+                }
+            }
+        }
+        None
+    }
+
     /// AUX‑1: update the status of the `Permission` block with `id`.
     fn update_permission_status(&mut self, id: &str, new_status: PermissionStatus) {
         for turn in self.turns.iter_mut().rev() {
@@ -435,8 +453,11 @@ pub struct ConversationStore {
     inner: Arc<Mutex<Conversation>>,
     publish: Arc<dyn Fn(ConversationUpdated) + Send + Sync>,
     /// AUX‑1: pending permission request responders keyed by tool-call id.
+    /// PU-B.2: the oneshot carries the agent's chosen `PermissionOptionId`
+    /// (wire order, any arity), not the fixed 4-way `PermissionOutcome` — the
+    /// menu resolves by the option the agent actually offered.
     pending_permissions:
-        Arc<Mutex<HashMap<String, (SessionKey, oneshot::Sender<PermissionOutcome>)>>>,
+        Arc<Mutex<HashMap<String, (SessionKey, oneshot::Sender<PermissionOptionId>)>>>,
 }
 
 impl ConversationStore {
@@ -484,7 +505,7 @@ impl ConversationStore {
         title: String,
         description: Option<String>,
         options: Vec<PermissionOption>,
-        responder: oneshot::Sender<PermissionOutcome>,
+        responder: oneshot::Sender<PermissionOptionId>,
     ) {
         {
             let mut conv = self.inner.lock().expect("conversation mutex poisoned");
@@ -499,18 +520,24 @@ impl ConversationStore {
         });
     }
 
-    /// AUX‑1: resolve a pending permission request. Updates the block status and
-    /// sends the outcome through the oneshot channel, then publishes. No-op when
-    /// `id` is unknown (already resolved or never registered).
-    pub fn resolve_permission(&self, id: &str, outcome: PermissionOutcome) {
-        let status = match outcome {
-            PermissionOutcome::AllowOnce | PermissionOutcome::AllowAlways => {
-                PermissionStatus::Allowed
-            }
-            PermissionOutcome::DenyOnce | PermissionOutcome::DenyAlways => PermissionStatus::Denied,
-        };
+    /// PU-B.2: resolve a pending permission request by the agent's chosen
+    /// `option_id`. Derives the inline block status from that option's `kind`,
+    /// updates the block, and sends the `option_id` through the oneshot the
+    /// supervisor is parked on (which answers ACP with `Selected(option_id)`),
+    /// then publishes. No-op when `id` is unknown (already resolved, deferred
+    /// and re-resolved, or never registered).
+    pub fn resolve_permission(&self, id: &str, option_id: PermissionOptionId) {
         let session = {
             let mut conv = self.inner.lock().expect("conversation mutex poisoned");
+            // Fail closed: an option whose kind we can't read (missing block, or
+            // a future `#[non_exhaustive]` kind) marks the request Denied rather
+            // than leaving it Pending or optimistically Allowed.
+            let status = match conv.permission_option_kind(id, &option_id) {
+                Some(PermissionOptionKind::AllowOnce | PermissionOptionKind::AllowAlways) => {
+                    PermissionStatus::Allowed
+                }
+                _ => PermissionStatus::Denied,
+            };
             conv.update_permission_status(id, status);
             let mut pending = self
                 .pending_permissions
@@ -520,7 +547,7 @@ impl ConversationStore {
                 Some(entry) => entry,
                 None => return, // already resolved — no-op
             };
-            let _ = sender.send(outcome);
+            let _ = sender.send(option_id);
             session
         };
         (self.publish)(ConversationUpdated { session });
@@ -796,19 +823,23 @@ mod tests {
         let session = SessionKey::new("opencode", 1);
         let (tx, rx) = tokio::sync::oneshot::channel();
 
+        // PU-B.2: resolve by the agent's actual option; the block status derives
+        // from that option's kind (AllowOnce → Allowed).
+        let opt = test_permission_option("a1", "Allow once", PermissionOptionKind::AllowOnce);
+        let chosen = opt.option_id.clone();
         store.push_permission_request(
             &session,
             "perm-1".to_string(),
             "Allow?".to_string(),
             None,
-            vec![],
+            vec![opt],
             tx,
         );
 
         // Reset publish count — the push already fired once
         published.store(0, std::sync::atomic::Ordering::SeqCst);
 
-        store.resolve_permission("perm-1", PermissionOutcome::AllowOnce);
+        store.resolve_permission("perm-1", chosen.clone());
 
         // Block updated
         let snap = store.snapshot();
@@ -816,11 +847,11 @@ mod tests {
             Block::Permission { status, .. } => assert_eq!(*status, PermissionStatus::Allowed),
             other => panic!("expected Permission, got {other:?}"),
         }
-        // Oneshot delivered
+        // Oneshot delivered the chosen option id
         assert_eq!(
             rx.blocking_recv(),
-            Ok(PermissionOutcome::AllowOnce),
-            "responder must receive the outcome",
+            Ok(chosen),
+            "responder must receive the chosen option id",
         );
         // Publish fired
         assert_eq!(
@@ -839,7 +870,8 @@ mod tests {
         }));
 
         // No pending permission with this id → no-op, no publish
-        store.resolve_permission("nonexistent", PermissionOutcome::AllowOnce);
+        let opt = test_permission_option("a1", "Allow once", PermissionOptionKind::AllowOnce);
+        store.resolve_permission("nonexistent", opt.option_id);
         assert_eq!(published.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 

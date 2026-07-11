@@ -29,7 +29,7 @@ use lattice_diff::subsystem::DiffOutcome;
 
 use crate::Result;
 use crate::acp::connection::{Connection, PermissionRequest, SessionId, SessionNotification};
-use crate::acp::conversation::{ConversationStore, PermissionOutcome, SessionStatus};
+use crate::acp::conversation::{ConversationStore, SessionStatus};
 use crate::acp::error::AiError;
 use crate::acp::handle::{AiClientHandle, AiCmd, AiState};
 use crate::acp::providers::ProviderConfig;
@@ -524,23 +524,12 @@ async fn handle_permission(
                 request.options.clone(),
                 tx,
             );
-            let outcome = match rx.await {
-                Ok(PermissionOutcome::AllowOnce) => {
-                    pick_option_by_kind(&request.options, PermissionOptionKind::AllowOnce)
-                }
-                Ok(PermissionOutcome::AllowAlways) => {
-                    pick_option_by_kind(&request.options, PermissionOptionKind::AllowAlways)
-                }
-                Ok(PermissionOutcome::DenyOnce) => {
-                    pick_option_by_kind(&request.options, PermissionOptionKind::RejectOnce)
-                }
-                Ok(PermissionOutcome::DenyAlways) => {
-                    pick_option_by_kind(&request.options, PermissionOptionKind::RejectAlways)
-                }
-                Err(_) => None,
-            };
-            match outcome {
-                Some(option_id) => {
+            // PU-B.2: the menu resolves by the agent's actual `option_id`, so
+            // the oneshot carries it directly — no `pick_option_by_kind`
+            // reverse-map. A dropped sender (Err) means the request was torn
+            // down without a decision → tell the agent it was cancelled.
+            match rx.await {
+                Ok(option_id) => {
                     respond(
                         responder,
                         RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
@@ -548,7 +537,7 @@ async fn handle_permission(
                         )),
                     );
                 }
-                None => respond(responder, RequestPermissionOutcome::Cancelled),
+                Err(_) => respond(responder, RequestPermissionOutcome::Cancelled),
             }
             // AUX‑3: the user decided — the agent resumes; show Thinking
             // until the next update arrives.
@@ -672,18 +661,6 @@ fn diff_review_from(
             }),
             _ => None,
         })
-}
-
-/// AUX‑1: pick the first offered option matching a specific
-/// [`PermissionOptionKind`].
-fn pick_option_by_kind(
-    options: &[PermissionOption],
-    kind: PermissionOptionKind,
-) -> Option<PermissionOptionId> {
-    options
-        .iter()
-        .find(|o| o.kind == kind)
-        .map(|o| o.option_id.clone())
 }
 
 /// Pick the first offered option matching an allow (`true`) or reject (`false`)

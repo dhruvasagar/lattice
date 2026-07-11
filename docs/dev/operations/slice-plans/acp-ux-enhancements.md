@@ -376,17 +376,35 @@ No host apply arm needed — `apply_effect_host`'s catch-all pushes it to
 `out.effects` for the renderer. Host-tested (register buffer → apply effect →
 assert popup state).
 
-#### PU-B.2 — `ai-permission-mode` + resolution model 📝
+#### PU-B.2a — resolution model + AUX-1 scaffold removal ✅
+The cleanly-separable, fully-invisible half of B.2 (no menu yet):
 | File | Change |
 |---|---|
-| `crates/lattice-ai/src/acp/conversation.rs` | Oneshot payload + `resolve_permission(id, option_id)` carry the agent `option_id`; block status derives from the chosen option's `kind`. |
-| `crates/lattice-ai/src/acp/supervisor.rs` | `AskUser` branch forwards `RequestPermissionOutcome::Selected(option_id)` directly; drop `pick_option_by_kind`. |
-| `crates/lattice-ai/src/acp/permission_mode.rs` (new) | `ai-permission-mode`: `on_activate` projects the oldest pending request into `*ai-permission*` (title, description, numbered options); binds `1`–`9` + `<CR>`-by-cursor + `Esc`/`q` dismiss; handler resolves via `store.resolve_permission(id, option_id)`. |
-| `crates/lattice-ai/src/acp/commands.rs` | `:ai-permission` opens the menu for the oldest pending request (returns `Effect::OpenPopup`). |
-| `crates/lattice-ai/src/acp/conversation_mode.rs` | Delete the unreachable `action:ai-conv-allow`/`-deny` handlers + specs + the stale `(a)/(A)/(r)/(R)` hints. |
+| `crates/lattice-ai/src/acp/conversation.rs` | Oneshot payload + `resolve_permission(id, option_id: PermissionOptionId)` carry the agent's chosen option; block status derives from that option's `kind` via a new `Conversation::permission_option_kind` (fail-closed → Denied on unknown/`#[non_exhaustive]` kind). `PermissionOutcome` enum removed. |
+| `crates/lattice-ai/src/acp/supervisor.rs` | `AskUser` branch forwards `Selected(option_id)` directly on `rx.await`; `pick_option_by_kind` deleted (orphaned). |
+| `crates/lattice-ai/src/acp/conversation_mode.rs` | Deleted the unreachable `action:ai-conv-allow`/`-deny` handlers + `permission_handler` + specs + `current_permission_id` (field/Default/drain) + the stale `(a)/(A)/(r)/(R)` hints. |
+| `crates/lattice-ai/src/acp/mod.rs` | Drop the `PermissionOutcome` re-export. |
+
+Green: `lattice-ai` 156 passed. `resolve_permission` now awaits its consumer (the mode).
+
+#### PU-B.2b — `ai-permission-mode` menu 📝 (blocked on render decision)
+| File | Change |
+|---|---|
+| `crates/lattice-ai/src/acp/permission_mode.rs` (new) | `ai-permission-mode`: `on_activate` projects the oldest pending request into `*ai-permission*`; binds `1`–`9` + `<CR>`-by-cursor + `Esc`/`q` dismiss; handler resolves via `store.resolve_permission(id, option_id)`. |
+| `crates/lattice-ai/src/acp/commands.rs` | `:ai-permission` opens the menu (returns `Effect::OpenPopup`). |
 | `crates/lattice-ai/src/acp/install.rs` | Register the new mode. |
 
-Proves the menu end-to-end via `:ai-permission` — no auto-open race yet.
+**Open decision — popup render is not content-agnostic.** The TUI popup path
+(`draw_help_popup` → `popup_help()` → `BufferRegistry::help_content_view`) returns
+`None` unless the buffer is `BufferData::Help` (`buffer_registry.rs:812`). PU-A made
+the *primitive* (`open_popup_buffer`) content-agnostic but left the *renderer*
+Help-gated. So the `*ai-permission*` buffer must either (A) ride `BufferData::Help`
+with `ai-permission-mode` as major (dashboard precedent; needs a new idempotent
+`ensure_named_popup_buffer` host primitive; zero renderer change), or (B) generalise
+the TUI+GPUI popup renderer to draw any `BufferData` variant (completes PU-A's stated
+goal; larger). Also folds in the confirmed name-based `Effect::OpenPopup { name,
+mode_id, placement, focus }` reshape (ex-command + tick-callback emitters have no
+services to supply a `BufferId`).
 
 #### PU-B.3 — auto-open + queue 📝
 Conversation drain flags a newly-pending id + ensures/projects `*ai-permission*`;

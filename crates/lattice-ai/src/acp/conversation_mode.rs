@@ -15,9 +15,7 @@
 //! decoration-based in-place update is a follow-up).
 
 use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
-
-use agent_client_protocol::schema::v1::PermissionOptionKind;
+use std::sync::{Arc, OnceLock};
 
 use lattice_cells::{
     Cell, Headerline, HeaderlineProvider, HeaderlineRow, ProviderId, VirtualRowProvider,
@@ -31,7 +29,7 @@ use lattice_mode::{
 
 use crate::acp::conversation::{
     Block, Conversation, ConversationProjected, ConversationStore, ConversationUpdated,
-    PermissionOutcome, PermissionStatus, Role,
+    PermissionStatus, Role,
 };
 use crate::acp::handle::AiClientHandle;
 use crate::acp::tool_fold::{
@@ -125,15 +123,11 @@ pub fn conversation_buffer_name() -> String {
 /// newline) while the transcript above stays frozen. One instance backs the
 /// single (v1) conversation buffer, so one shared anchor suffices.
 ///
-/// AUX‑1: `current_permission_id` tracks the most recently projected pending
-/// permission block, set by the drain on each re-projection. The allow/deny
-/// action handlers read it to resolve the right permission request.
 /// AUX‑2: `headerline_version` is bumped by the drain on each re-projection so
 /// the `ConversationHeaderline` widget republishes its row when usage changes.
 #[derive(Clone)]
 pub struct AiConversationMode {
     anchor: Arc<AtomicU32>,
-    current_permission_id: Arc<Mutex<Option<String>>>,
     headerline_version: Arc<AtomicU64>,
 }
 
@@ -141,7 +135,6 @@ impl Default for AiConversationMode {
     fn default() -> Self {
         Self {
             anchor: Arc::new(AtomicU32::new(0)),
-            current_permission_id: Arc::new(Mutex::new(None)),
             headerline_version: Arc::new(AtomicU64::new(0)),
         }
     }
@@ -299,15 +292,13 @@ pub fn project_conversation(conv: &Conversation) -> (String, Vec<ConversationFol
                         line += 1;
                     }
                     if status == &PermissionStatus::Pending {
+                        // PU-B.2: the inline block is a record, not the
+                        // interaction surface — the popup menu (`ai-permission-mode`)
+                        // owns the numbered selectors. List the offered options
+                        // without the old `(a)/(A)/(r)/(R)` key hints, which named
+                        // chords that were never bound.
                         for (i, opt) in options.iter().enumerate() {
-                            let key = match opt.kind {
-                                PermissionOptionKind::AllowOnce => "a",
-                                PermissionOptionKind::AllowAlways => "A",
-                                PermissionOptionKind::RejectOnce => "r",
-                                PermissionOptionKind::RejectAlways => "R",
-                                _ => "?",
-                            };
-                            out.push_str(&format!("    {}: {} ({})\n", i + 1, opt.name, key,));
+                            out.push_str(&format!("    {}: {}\n", i + 1, opt.name));
                             line += 1;
                         }
                     }
@@ -478,7 +469,6 @@ impl Mode for AiConversationMode {
     /// `register_mode_action_handlers` walk. Each reads the buffer / services
     /// from the [`ActionContext`] and returns an [`Effect`] the host applies.
     fn action_handlers(&self) -> Vec<ActionHandlerContribution> {
-        let pid = self.current_permission_id.clone();
         vec![
             ActionHandlerContribution {
                 action_name: "action:ai-conv-send",
@@ -495,23 +485,6 @@ impl Mode for AiConversationMode {
             ActionHandlerContribution {
                 action_name: "action:ai-conv-toggle-trust",
                 handler: toggle_trust_handler(),
-            },
-            // AUX‑1: permission allow/deny
-            ActionHandlerContribution {
-                action_name: "action:ai-conv-allow",
-                handler: permission_handler(pid.clone(), PermissionOutcome::AllowOnce),
-            },
-            ActionHandlerContribution {
-                action_name: "action:ai-conv-allow-always",
-                handler: permission_handler(pid.clone(), PermissionOutcome::AllowAlways),
-            },
-            ActionHandlerContribution {
-                action_name: "action:ai-conv-deny",
-                handler: permission_handler(pid.clone(), PermissionOutcome::DenyOnce),
-            },
-            ActionHandlerContribution {
-                action_name: "action:ai-conv-deny-always",
-                handler: permission_handler(pid, PermissionOutcome::DenyAlways),
             },
         ]
     }
@@ -614,7 +587,6 @@ impl Mode for AiConversationMode {
             let projected_bus = ctx.events_handle();
 
             let drain_anchor = anchor;
-            let drain_perm_id = self.current_permission_id.clone();
             let drain_hl_version = hl_version;
             runtime.spawn(async move {
                 // Coalesce a burst of updates into one re-projection.
@@ -623,21 +595,6 @@ impl Mode for AiConversationMode {
                     let snap = conv_store.snapshot();
                     let new = render_conversation(&snap);
                     let user_turns = user_turn_count(&snap);
-                    // AUX‑1: track the most recent pending permission block id
-                    // so action handlers can resolve it.
-                    *drain_perm_id.lock().expect("perm id mutex poisoned") = snap
-                        .turns
-                        .iter()
-                        .rev()
-                        .flat_map(|t| t.blocks.iter().rev())
-                        .find_map(|b| match b {
-                            Block::Permission {
-                                id,
-                                status: PermissionStatus::Pending,
-                                ..
-                            } => Some(id.clone()),
-                            _ => None,
-                        });
                     // Keep the editable-region anchor on the transcript-end line:
                     // a re-projection may grow the transcript above the prompt
                     // (streaming) or reset it (send), moving where the prompt
@@ -931,24 +888,6 @@ fn toggle_trust_handler() -> ActionHandler {
     })
 }
 
-// ──────────────────────────────────────────────────────────────
-// AUX‑1: permission allow/deny action handlers
-// ──────────────────────────────────────────────────────────────
-
-/// Build an action handler that resolves the current pending permission with
-/// `outcome`. No-op when no permission is pending.
-fn permission_handler(
-    current_id: Arc<Mutex<Option<String>>>,
-    outcome: PermissionOutcome,
-) -> ActionHandler {
-    Arc::new(move |ctx: &ActionContext<'_>| -> Option<Effect> {
-        let store = ctx.services.get::<ConversationStore>()?;
-        let id = current_id.lock().ok()?.clone()?;
-        store.resolve_permission(&id, outcome);
-        None
-    })
-}
-
 /// AU‑3: register the `ai-conversation` action commands so the mode's keymap
 /// `cmd` names resolve (the diff subsystem's `register_diff_actions` pattern).
 /// The specs are pure shells returning `Effect::None`: the real bodies live in
@@ -971,22 +910,6 @@ pub fn register_ai_conversation_actions(registry: &mut lattice_grammar::CommandR
         (
             "action:ai-conv-toggle-trust",
             "ai-conversation: toggle trust mode (auto-accept vs diff review).",
-        ),
-        (
-            "action:ai-conv-allow",
-            "ai-conversation: allow the pending permission once.",
-        ),
-        (
-            "action:ai-conv-allow-always",
-            "ai-conversation: allow the pending permission always.",
-        ),
-        (
-            "action:ai-conv-deny",
-            "ai-conversation: deny the pending permission once.",
-        ),
-        (
-            "action:ai-conv-deny-always",
-            "ai-conversation: deny the pending permission always.",
         ),
     ] {
         registry.register_action(
@@ -1143,10 +1066,6 @@ mod tests {
                 "action:ai-conv-newline",
                 "action:ai-conv-interrupt",
                 "action:ai-conv-toggle-trust",
-                "action:ai-conv-allow",
-                "action:ai-conv-allow-always",
-                "action:ai-conv-deny",
-                "action:ai-conv-deny-always",
             ],
         );
     }
@@ -1161,10 +1080,6 @@ mod tests {
             "action:ai-conv-send",
             "action:ai-conv-interrupt",
             "action:ai-conv-toggle-trust",
-            "action:ai-conv-allow",
-            "action:ai-conv-allow-always",
-            "action:ai-conv-deny",
-            "action:ai-conv-deny-always",
         ] {
             assert!(registry.id_by_name(name).is_some(), "{name} registered");
         }
@@ -1406,8 +1321,11 @@ mod tests {
         };
         let text = render_conversation(&conv);
         assert!(text.contains("\u{25cc} Allow cargo test? [pending]"));
-        assert!(text.contains("1: Allow once (a)"));
-        assert!(text.contains("2: Reject (r)"));
+        // PU-B.2: the inline record lists options without the old key hints —
+        // the popup menu owns the numbered selectors.
+        assert!(text.contains("1: Allow once"));
+        assert!(text.contains("2: Reject"));
+        assert!(!text.contains("(a)"), "no more misleading key hints");
     }
 
     #[test]

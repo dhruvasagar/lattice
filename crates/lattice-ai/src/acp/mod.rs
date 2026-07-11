@@ -25,8 +25,8 @@ pub mod tool_fold;
 pub use commands::register_ai_ex_commands;
 pub use connection::{Connection, SessionId};
 pub use conversation::{
-    Block, Conversation, ConversationStore, ConversationUpdated, Cost, EditStatus,
-    PermissionOutcome, PermissionStatus, Role, SessionStatus, ToolStatus, Turn, UsageSnapshot,
+    Block, Conversation, ConversationStore, ConversationUpdated, Cost, EditStatus, PermissionStatus,
+    Role, SessionStatus, ToolStatus, Turn, UsageSnapshot,
 };
 pub use error::{AiError, Result};
 pub use handle::{AiClientHandle, AiState};

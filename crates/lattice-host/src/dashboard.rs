@@ -86,16 +86,11 @@ impl Editor {
         self.cursor = lattice_protocol::position::Position::ZERO;
         self.scroll = 0;
         // OWC: populating the dashboard body is an owner write, which the
-        // in-core selection transform clamps to EOF (owner-write-caret.md
-        // §4.1: a caret inside a fully-replaced range lands at the
-        // replacement's end). The forced top-of-page caret above must be
-        // authoritative, so sync it through to the document's selection and
-        // mark the text version seen — otherwise the next keystroke's
-        // `maybe_adopt_owner_write` adopts that EOF selection back into
-        // `Editor::cursor` and the whole buffer scrolls to the bottom.
-        self.write_through_caret();
-        self.last_seen_text_version
-            .insert(id, self.document.snapshot().text_version);
+        // in-core selection transform clamps the document selection to EOF.
+        // The dashboard has no editable tail, so `maybe_adopt_owner_write`
+        // will NOT adopt that EOF back into `Editor::cursor` (see
+        // `should_adopt_owner_write`); the forced top-of-page caret stands
+        // without any per-site reconcile here.
         signals
     }
 

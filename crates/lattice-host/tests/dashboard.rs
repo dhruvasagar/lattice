@@ -810,33 +810,12 @@ mod insert_still_works {
 #[cfg(test)]
 mod owc_adopt {
     use super::*;
-    use lattice_protocol::position::Position;
-
-    /// Regression: opening the dashboard must leave BOTH `Editor::cursor` AND
-    /// the document's selection at the top. Populating the dashboard content is
-    /// an owner write, which OWC's in-core transform clamps the document
-    /// selection to EOF. `do_open_dashboard` forces the caret to the top, but
-    /// if it leaves the document selection at EOF, the next dispatch's
-    /// `maybe_adopt_owner_write` adopts EOF back into `Editor::cursor` — the
-    /// whole buffer scrolls to the bottom on launch.
-    #[test]
-    fn dashboard_open_leaves_document_selection_at_top() {
-        let mut editor = boot();
-        editor.viewport_height = 20;
-        editor.do_open_dashboard();
-        assert_eq!(editor.cursor, Position::ZERO, "editor cursor at top");
-        assert_eq!(
-            editor.document.snapshot().selections.primary().head,
-            Position::ZERO,
-            "document selection must also be at the top — otherwise the OWC \
-             owner-write adopt drags the cursor to EOF on the next keystroke \
-             (the dashboard-scrolls-to-bottom regression)"
-        );
-    }
 
     /// The end-to-end guarantee: after opening the dashboard, the FIRST
     /// keystroke (which runs `maybe_adopt_owner_write` before dispatch) must
-    /// NOT move the cursor to EOF.
+    /// NOT move the cursor to EOF. The dashboard has no editable tail, so the
+    /// OWC adopt is gated off — the forced top-of-page caret stands even though
+    /// the owner-write populate left the document selection at EOF.
     #[test]
     fn keystroke_after_dashboard_open_does_not_jump_to_eof() {
         use lattice_host::action::Action;

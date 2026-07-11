@@ -186,12 +186,39 @@ previously left behind:
   composed document. Unchanged.
 - **Undo/redo** — emits `AppliedEdit`s. The caret riding an undo to the restored
   text is correct and is what vim does.
-- **Read-only synthetic buffers** (`*messages*`, lsp-log, help) — strictly
-  better. A caret parked mid-log stops drifting when lines land above it.
+- **Read-only synthetic buffers** (dashboard, `*messages*`, lsp-log, help) —
+  the in-core selection *transform* still runs (a document's selection stays
+  self-consistent), but the host does **not adopt** it into `Editor::cursor`.
 
 The conversation buffer is the only buffer in the workspace that implements
-`EditableTail`, so it is the only place a user caret currently sits inside a
-buffer an owner writes to. Everywhere else this is latent correctness.
+`EditableTail`, so it is the only place a user caret sits inside a buffer an
+owner writes to.
+
+### 7.1 The adopt is gated on the editable tail
+
+An earlier revision let the host adopt an owner-write caret move for *any*
+active buffer, and claimed a read-only buffer would benefit ("a caret parked
+mid-log stops drifting"). That was wrong in practice. Populating a read-only
+synthetic buffer is itself an owner write: a whole-buffer replace clamps the
+caret into the replaced range, and even an append into an *empty* buffer moves
+a caret sitting at the `(0,0)` insertion point to EOF (the `pos >= end` branch
+of §4.1). The host then adopted that EOF into `Editor::cursor`, and the
+dashboard opened scrolled to the bottom.
+
+So the adopt (`maybe_adopt_owner_write`, gated by `should_adopt_owner_write`)
+fires only when the active buffer **has an editable tail** — the one buffer,
+the ACP conversation prompt, where an owner streams content while the user's
+caret lives in the buffer. Read-only buffers keep the caret the host or user
+placed; their document selection may transform to EOF underneath, but that is
+never copied to the visible cursor (and self-heals on the next
+`write_through_caret`). This closes the whole "populate + forced caret"
+class in one place, for append and replace alike, rather than making every
+host populate site remember to reconcile.
+
+The cost is the marginal "log tail-follow" the old revision imagined — a
+read-only buffer's caret no longer auto-rides appended content. That is
+acceptable (arguably better: a cursor that doesn't move on its own), and a
+future opt-in could restore it per buffer if wanted.
 
 ## 8. Testing
 

@@ -15523,7 +15523,7 @@ impl Editor {
     /// selection extent) into the active document's selections. This keeps
     /// the document's selections a faithful base for the next owner-write
     /// transform. Called at the end of each input dispatch.
-    pub(crate) fn write_through_caret(&mut self) {
+    fn write_through_caret(&mut self) {
         let selections = if let Some(anchor) = self.visual_anchor {
             let visual = match self.modal {
                 ModalState::Visual(k) | ModalState::Select(k) => {
@@ -15543,12 +15543,22 @@ impl Editor {
     /// document's primary selection head into `Editor::cursor`. Called
     /// at the start of each input dispatch (before the keystroke is
     /// processed) and on buffer activation.
+    ///
+    /// Gated to buffers with an editable tail — the ACP conversation prompt is
+    /// the only buffer where an owner streams content WHILE the user's caret
+    /// lives in the buffer, so it is the only one that should follow owner-write
+    /// caret movement. Read-only synthetic buffers (dashboard, help,
+    /// `*messages*`, `*ai:log*`, oil, file-tree) are populated/rewritten by
+    /// owner writes too, but the host or user places their caret deliberately;
+    /// adopting the owner write's transformed EOF there dragged the viewport to
+    /// the bottom on open (the dashboard-scrolls-to-bottom bug class).
     fn maybe_adopt_owner_write(&mut self) {
         let buf_id = self.document_buffer_id;
         let snap = self.document.snapshot();
         let doc_tv = snap.text_version;
         let last_seen = self.last_seen_text_version.get(&buf_id).copied().unwrap_or(0);
-        if doc_tv > last_seen {
+        let has_editable_tail = self.active_editable_tail().is_some();
+        if should_adopt_owner_write(has_editable_tail, doc_tv, last_seen) {
             let head = snap.selections.primary().head;
             self.cursor = head;
             self.last_seen_text_version.insert(buf_id, doc_tv);
@@ -30923,9 +30933,44 @@ fn cells_edit_delta_from_applied(
     }
 }
 
+/// OWC: should the active buffer adopt an owner-write caret move?
+///
+/// True only when the buffer has an editable tail AND its text advanced beyond
+/// what the host last issued. The editable-tail gate is the whole point: the
+/// ACP conversation prompt is the sole buffer where an owner streams content
+/// while the user's caret lives in the buffer, so it is the only one that
+/// should follow the owner write. Read-only synthetic buffers (dashboard,
+/// help, `*messages*`, `*ai:log*`, oil, file-tree) are populated by owner
+/// writes too — including an append into an *empty* buffer, which moves a
+/// caret sitting at the (0,0) insertion point to EOF — but the host or user
+/// places their caret deliberately there, so adopting the transformed EOF
+/// dragged the viewport to the bottom (the dashboard-scrolls-to-bottom bug).
+fn should_adopt_owner_write(has_editable_tail: bool, doc_text_version: u64, last_seen: u64) -> bool {
+    has_editable_tail && doc_text_version > last_seen
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── OWC: owner-write adopt gate ─────────────────────────────
+    #[test]
+    fn owc_adopts_only_editable_tail_buffer_on_owner_write() {
+        // Editable-tail buffer (the ACP conversation prompt) whose text
+        // advanced past the host's last-issued version → follow the stream.
+        assert!(should_adopt_owner_write(true, 5, 4));
+        // Same buffer, no new owner write → nothing to adopt.
+        assert!(!should_adopt_owner_write(true, 4, 4));
+    }
+
+    #[test]
+    fn owc_never_adopts_a_buffer_without_an_editable_tail() {
+        // Read-only synthetic buffers (dashboard, help, messages, log): even
+        // when an owner write advanced the text and moved the document
+        // selection to EOF, the caret the host placed must stand.
+        assert!(!should_adopt_owner_write(false, 5, 4));
+        assert!(!should_adopt_owner_write(false, 99, 0));
+    }
 
     // ── L7: Effect::Lsp classification ──────────────────────────
     #[test]

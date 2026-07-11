@@ -36,8 +36,11 @@ Split out from 1b (the §5 modal defect), landable independently of the primitiv
 Tests: `steal_popup_normalizes_modal_and_dismiss_restores_it`,
 `passive_popup_leaves_modal_untouched`.
 
-### PU-A.1b-ii — `open_popup_buffer` primitive + `PopupFocus` 📝
-The structural core (mapping done — see below).
+### PU-A.1b-ii — `open_popup_buffer` primitive + `PopupFocus` ✅
+The structural core (mapping done — see below). Tests:
+`open_popup_buffer_steal_focuses_arbitrary_buffer`,
+`open_popup_buffer_passive_does_not_steal_focus`; full help-regression gate
+green (2335). The refactor is invisible to the user.
 - Add `PopupFocus { Steal, Passive }` to `lattice-core::ui::popup`.
 - Add `Editor::open_popup_buffer(BufferId, PopupPlacement, PopupFocus)` — the
   content-agnostic entry (generic mechanics: dismiss-stale, position-history,

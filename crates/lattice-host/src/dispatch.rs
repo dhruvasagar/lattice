@@ -21753,7 +21753,6 @@ impl Editor {
         placement: crate::popup::PopupPlacement,
     ) -> Vec<RendererSignal> {
         use crate::buffers::BufferFlags;
-        let mut signals = Vec::new();
         // From within Help: reuse the same popup buffer by
         // swapping content; snapshot prior state for `<C-o>`.
         if matches!(self.active_buffer, BufferKind::Help) && self.popup_buffer.is_some() {
@@ -21761,44 +21760,14 @@ impl Editor {
                 self.popup_back_stack.push(snap);
             }
             self.swap_popup_content(content, placement);
-            return signals;
+            return Vec::new();
         }
         self.popup_back_stack.clear();
-        self.dismiss_stale_popup_registry();
-        if matches!(
-            self.active_buffer,
-            BufferKind::Document | BufferKind::Messages | BufferKind::Multibuffer
-        ) {
-            let cur = self.cursor;
-            self.push_position_history(cur, crate::state::PositionSource::AutoJump);
-        }
-        self.snapshot_active_pane();
-        if !matches!(self.active_buffer, BufferKind::Help) {
-            let active = self.pane_tree.active();
-            self.prev_pane_for_popup = Some(crate::state::PrevPaneState {
-                buffer: active.buffer,
-                buffer_id: active.buffer_id,
-                cursor: self.cursor,
-                scroll: self.scroll,
-                modal: self.modal,
-            });
-        }
-        // PU-A.1b: a focus-stealing popup (State B) is a Normal-mode
-        // surface — its major mode receives keys. Normalize modal so a
-        // popup opened mid-Insert gets its bindings; `dismiss_popup`
-        // restores the captured `prev.modal` (popup-api.md §5).
-        self.modal = ModalState::Normal;
-        // 2026-05-22 popup-anchor: capture current cursor BEFORE
-        // overwriting with the help buffer's stash. The CursorAnchored
-        // popup renderer reads this to paint the popup next to the
-        // symbol the user invoked from, even after motions.
-        self.popup_anchor = Some(self.cursor);
-        self.popup_doc_scroll_at_anchor = self.scroll;
         // PU.1a: help content is an actor-backed Document (unlisted +
-        // hidden so it never shows in `:ls` / `:bn`). `register_*`
-        // seeds the content + metadata. Preserve the content's initial
-        // scroll/cursor — a `:describe-*` arg anchor pre-scrolls the
-        // buffer (`content.buffer.scroll`) before opening.
+        // hidden so it never shows in `:ls` / `:bn`). Preserve the
+        // content's initial scroll/cursor — a `:describe-*` arg anchor
+        // pre-scrolls the buffer — and stash them in the popup view slots
+        // so the Steal path adopts them into the hot-path cursor/scroll.
         let init_scroll = content.buffer.scroll as u32;
         let init_cursor = content.buffer.cursor;
         let buffer_id = self.register_help_document(
@@ -21809,15 +21778,92 @@ impl Editor {
                 ephemeral: false,
             },
         );
-        self.popup_buffer = Some(buffer_id);
-        self.popup_placement = placement;
         self.popup_scroll = init_scroll;
         self.popup_cursor = init_cursor;
-        self.cursor = init_cursor;
-        self.scroll = init_scroll;
-        self.active_buffer = BufferKind::Help;
+        let mut signals =
+            self.open_popup_buffer(buffer_id, placement, crate::popup::PopupFocus::Steal);
         signals.extend(self.activate_major_for_buffer_kind(buffer_id, BufferKind::Help));
         signals
+    }
+
+    /// Show an already-registered `buffer` in a popup overlay at
+    /// `placement` with the given `focus` — the content-agnostic popup
+    /// primitive (popup-api.md §4.2). It owns no content: the caller
+    /// registers the buffer (help, permission menu, code-action list) and
+    /// hands over its id, having stashed the initial view in
+    /// `popup_cursor`/`popup_scroll`.
+    ///
+    /// `Steal` (State B) moves focus into the buffer — it becomes active,
+    /// adopts `popup_cursor`/`popup_scroll`, and modal resets to Normal,
+    /// with the prior pane + modal snapshotted so `dismiss_popup` restores
+    /// them. `Passive` (State A) floats it — the underlying buffer keeps
+    /// focus, caret, and modal, and nothing is captured. PU-A.1b.
+    pub fn open_popup_buffer(
+        &mut self,
+        buffer: BufferId,
+        placement: crate::popup::PopupPlacement,
+        focus: crate::popup::PopupFocus,
+    ) -> Vec<RendererSignal> {
+        use crate::popup::PopupFocus;
+        // Tear down any PRIOR popup's registry entry. `self.popup_buffer`
+        // still points at it here; the incoming `buffer` has a distinct id,
+        // so this never removes the new one.
+        self.dismiss_stale_popup_registry();
+        match focus {
+            PopupFocus::Steal => {
+                // Leaving a real buffer → record a jump.
+                if matches!(
+                    self.active_buffer,
+                    BufferKind::Document | BufferKind::Messages | BufferKind::Multibuffer
+                ) {
+                    let cur = self.cursor;
+                    self.push_position_history(cur, crate::state::PositionSource::AutoJump);
+                }
+                self.snapshot_active_pane();
+                // Snapshot the pane + modal for dismiss to restore. Skip
+                // when already Help — a help→help open keeps the original
+                // origin (the reuse branch handles same-buffer swaps).
+                if !matches!(self.active_buffer, BufferKind::Help) {
+                    let active = self.pane_tree.active();
+                    self.prev_pane_for_popup = Some(crate::state::PrevPaneState {
+                        buffer: active.buffer,
+                        buffer_id: active.buffer_id,
+                        cursor: self.cursor,
+                        scroll: self.scroll,
+                        modal: self.modal,
+                    });
+                }
+                // Anchor for CursorAnchored placement (renderer reads this).
+                self.popup_anchor = Some(self.cursor);
+                self.popup_doc_scroll_at_anchor = self.scroll;
+                self.popup_buffer = Some(buffer);
+                self.popup_placement = placement;
+                // Adopt the caller-stashed initial view; flip focus into
+                // the buffer. Focus-steal is a Normal-mode surface (see
+                // `PrevPaneState::modal`).
+                self.cursor = self.popup_cursor;
+                self.scroll = self.popup_scroll;
+                self.active_buffer = self.buffers.kind_of(buffer).unwrap_or(BufferKind::Help);
+                self.modal = ModalState::Normal;
+            }
+            PopupFocus::Passive => {
+                // State A: the doc keeps focus, caret, and modal — none of
+                // active_buffer / cursor / scroll / modal / prev is touched.
+                // For async openers (hover, signature help) the K-press
+                // cursor is carried via `pending_hover_anchor` (one-shot) so
+                // the popup pins to the invocation site even if the cursor
+                // drifted between request and response.
+                let (anchor_cursor, anchor_scroll) = self
+                    .pending_hover_anchor
+                    .take()
+                    .unwrap_or((self.cursor, self.scroll));
+                self.popup_anchor = Some(anchor_cursor);
+                self.popup_doc_scroll_at_anchor = anchor_scroll;
+                self.popup_buffer = Some(buffer);
+                self.popup_placement = placement;
+            }
+        }
+        Vec::new()
     }
 
     /// Open `content` as a *floating* popup over the active
@@ -21828,11 +21874,10 @@ impl Editor {
         placement: crate::popup::PopupPlacement,
     ) -> Vec<RendererSignal> {
         use crate::buffers::BufferFlags;
-        self.dismiss_stale_popup_registry();
-        // PU.1a: help content is an actor-backed Document. `register_*`
-        // seeds the content + metadata. Preserve the content's initial
-        // scroll/cursor as the popup's view state (State A — the doc
-        // keeps focus, so self.cursor/scroll are untouched).
+        // Preserve the content's initial scroll/cursor as the popup's view
+        // state (State A — the doc keeps focus, so self.cursor/scroll are
+        // untouched). `open_popup_buffer(Passive)` consumes the pending
+        // hover anchor and sets the overlay slots.
         let init_scroll = content.buffer.scroll as u32;
         let init_cursor = content.buffer.cursor;
         let buffer_id = self.register_help_document(
@@ -21845,24 +21890,12 @@ impl Editor {
         );
         self.popup_scroll = init_scroll;
         self.popup_cursor = init_cursor;
-        // 2026-05-22 popup-anchor: capture current cursor before
-        // any focus shuffle. Floating popups (State A) don't touch
-        // the cursor, but capturing here keeps the renderer's read
-        // path uniform between floating and focused popups.
-        //
-        // 2026-05-27: for async openers (LSP hover, signature help)
-        // the cursor may have drifted between request and response.
-        // `pending_hover_anchor` carries the K-press cursor through
-        // — consume it (one-shot) when set so the popup pins to the
-        // invocation site.
-        let (anchor_cursor, anchor_scroll) = self
-            .pending_hover_anchor
-            .take()
-            .unwrap_or((self.cursor, self.scroll));
-        self.popup_anchor = Some(anchor_cursor);
-        self.popup_doc_scroll_at_anchor = anchor_scroll;
-        self.popup_buffer = Some(buffer_id);
-        self.popup_placement = placement;
+        let _ = self.open_popup_buffer(buffer_id, placement, crate::popup::PopupFocus::Passive);
+        // Floating-popup mode wiring (markdown MAJOR + help MINOR + hover
+        // MINOR) — help/hover-content-specific, so it stays in this caller
+        // rather than the generic primitive. Without help-minor the float
+        // rendered WITH line numbers; hover-minor drives auto-dismiss on
+        // cursor motion.
         let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
         let mut active = self.active_modes.remove(&buffer_id).unwrap_or_default();
         // Markdown as the MAJOR (the content is markdown; highlighting also
@@ -35589,6 +35622,101 @@ mod tests {
         assert!(
             editor.prev_pane_for_popup.is_none(),
             "passive float captures no prev (nothing to restore)"
+        );
+    }
+
+    // ── PU-A.1b-ii: open_popup_buffer primitive ───────────────
+
+    fn register_test_popup_buffer(editor: &mut crate::editor::Editor) -> BufferId {
+        let content = lattice_help::parse_help_lines(
+            "menu",
+            vec!["1 allow".to_string(), "2 deny".to_string()],
+        );
+        editor.register_help_document(
+            content,
+            crate::buffers::BufferFlags {
+                listed: false,
+                hidden: true,
+                ephemeral: false,
+            },
+        )
+    }
+
+    /// PU-A.1b-ii: the content-agnostic primitive shows an already-
+    /// registered buffer and, for `Steal`, flips focus to it (active
+    /// buffer = the buffer's kind), normalizes modal, and captures the
+    /// prior pane; dismiss restores.
+    #[test]
+    fn open_popup_buffer_steal_focuses_arbitrary_buffer() {
+        let mut editor = crate::editor::Editor::boot(lattice_core::Document::empty());
+        editor.modal = ModalState::Insert;
+        let id = register_test_popup_buffer(&mut editor);
+        editor.popup_cursor = lattice_protocol::position::Position::ZERO;
+        editor.popup_scroll = 0;
+
+        editor.open_popup_buffer(
+            id,
+            crate::popup::PopupPlacement::Centered,
+            crate::popup::PopupFocus::Steal,
+        );
+
+        assert_eq!(
+            editor.popup_buffer,
+            Some(id),
+            "popup shows the passed buffer"
+        );
+        assert_eq!(
+            editor.active_buffer,
+            BufferKind::Help,
+            "Steal flips active_buffer to the buffer's kind"
+        );
+        assert_eq!(editor.modal, ModalState::Normal, "Steal normalizes modal");
+        assert!(
+            editor.prev_pane_for_popup.is_some(),
+            "prev captured for dismiss"
+        );
+
+        editor.dismiss_popup();
+        assert_eq!(editor.modal, ModalState::Insert, "dismiss restores modal");
+        assert_eq!(
+            editor.active_buffer,
+            BufferKind::Document,
+            "dismiss restores buffer"
+        );
+    }
+
+    /// PU-A.1b-ii: `Passive` shows the buffer without stealing focus —
+    /// the document keeps active-buffer, caret, and modal; no prev.
+    #[test]
+    fn open_popup_buffer_passive_does_not_steal_focus() {
+        let mut editor = crate::editor::Editor::boot(lattice_core::Document::empty());
+        editor.modal = ModalState::Insert;
+        let id = register_test_popup_buffer(&mut editor);
+
+        editor.open_popup_buffer(
+            id,
+            crate::popup::PopupPlacement::CursorAnchored,
+            crate::popup::PopupFocus::Passive,
+        );
+
+        assert_eq!(
+            editor.popup_buffer,
+            Some(id),
+            "popup shows the passed buffer"
+        );
+        assert_ne!(
+            editor.active_buffer,
+            BufferKind::Help,
+            "Passive keeps document focus"
+        );
+        assert_eq!(
+            editor.modal,
+            ModalState::Insert,
+            "Passive leaves modal untouched"
+        );
+        assert!(
+            editor.prev_pane_for_popup.is_none(),
+            "Passive captures no prev"
         );
     }
 

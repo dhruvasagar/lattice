@@ -24,19 +24,37 @@ Self-contained §5 fixes that don't need the primitive yet.
 Tests: `state_a_dismiss_preserves_underlying_buffer_kind`,
 `state_b_dismiss_restores_prev_pane` (non-regression).
 
-### PU-A.1b — `open_popup_buffer` primitive + `PopupFocus` 📝
-The structural core. Requires full mapping of `register_help_document`,
-`swap_popup_content`, `snapshot_current_popup`, `activate_help_in_pane`, and the
-async floating openers first.
+### PU-A.1b-i — modal set-on-open / restore-on-dismiss ✅
+Split out from 1b (the §5 modal defect), landable independently of the primitive.
+- `PrevPaneState` gains `modal: ModalState`, set at all three focus-steal capture
+  sites (`open_popup`, `focus_help_popup`, `activate_help_in_pane` — the last
+  inert, torn down by `do_close_pane`).
+- `open_popup` + `focus_help_popup` (the two overlay Steal paths) set
+  `ModalState::Normal` on open; `dismiss_popup` restores `prev.modal`. Passive
+  floats leave prev `None` and never touch modal.
+
+Tests: `steal_popup_normalizes_modal_and_dismiss_restores_it`,
+`passive_popup_leaves_modal_untouched`.
+
+### PU-A.1b-ii — `open_popup_buffer` primitive + `PopupFocus` 📝
+The structural core (mapping done — see below).
 - Add `PopupFocus { Steal, Passive }` to `lattice-core::ui::popup`.
 - Add `Editor::open_popup_buffer(BufferId, PopupPlacement, PopupFocus)` — the
-  content-agnostic entry. Rework `open_popup` (Steal) / `open_floating_popup`
-  (Passive) into thin `open_help_popup` callers that materialise the help buffer
-  + push the help back-stack, then delegate.
-- `PrevPaneState` gains `modal: ModalState`; `PopupFocus::Steal` sets
-  `ModalState::Normal` on open; `dismiss_popup` restores `prev.modal`. (Needed so
-  a popup opened mid-Insert — the ACP menu, PU-B — gets its bindings; carefully
-  traced against every capture/teardown site.)
+  content-agnostic entry (generic mechanics: dismiss-stale, position-history,
+  snapshot-active-pane, prev+modal capture, popup_anchor, set popup fields; Steal
+  additionally flips `active_buffer`/cursor/scroll/modal). Rework `open_popup`
+  (Steal) / `open_floating_popup` (Passive) into thin help callers that
+  materialise the help buffer via `register_help_document` + push the back-stack
+  + activate the help/hover modes, then delegate. In-pane help stays separate.
+
+**Map (verified):** the help-specific bits are the `active_buffer==Help` reuse
+branch + `snapshot_current_popup`/`popup_back_stack`/`swap_popup_content`,
+`register_help_document`, and the mode activation (Help-major for Steal;
+markdown+help+hover for Passive). Generic bits are everything else. All
+production opens funnel through `Editor::display_buffer` (dispatch.rs); no
+`lattice-ai` caller exists yet. `open_popup_buffer` takes an already-registered
+`BufferId` (aligning with `Effect::OpenSyntheticBuffer`'s "buffer exists; wire
+it" shape); each content kind registers its own `BufferData` variant.
 
 ### PU-A.2 — move help state into `lattice-help` 📝
 Move `PopupSnapshot` + `HelpMetadata` + `popup_back_stack` out of `lattice-host`

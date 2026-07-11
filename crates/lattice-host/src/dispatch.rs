@@ -6169,6 +6169,11 @@ impl Editor {
             pane.buffer = prev.buffer;
             pane.buffer_id = prev.buffer_id;
             self.active_buffer = prev.buffer;
+            // PU-A.1b: restore the modal state a focus-stealing popup
+            // normalized to Normal on open — a user mid-Insert returns to
+            // their prompt in Insert. Passive floats leave prev None (they
+            // never touched modal), so this block is skipped for them.
+            self.modal = prev.modal;
         }
         // PU-A.1a: State A (popup shown but never focused) leaves
         // `prev_pane_for_popup` as `None`. `active_buffer` was never
@@ -6588,6 +6593,7 @@ impl Editor {
             buffer_id: active.buffer_id,
             cursor: self.cursor,
             scroll: self.scroll,
+            modal: self.modal,
         });
         // Sync active pane's cursor / scroll stash *before*
         // swapping `active_buffer` to Help.
@@ -6595,6 +6601,9 @@ impl Editor {
         self.cursor = stash_cursor;
         self.scroll = stash_scroll;
         self.active_buffer = BufferKind::Help;
+        // PU-A.1b: promoting a passive float to focus (State A→B) is a
+        // focus-steal — Normal-mode surface; dismiss restores prev.modal.
+        self.modal = ModalState::Normal;
     }
 
     /// 5.5.LSP.4: signature help (Insert-mode auto-trigger).
@@ -21771,8 +21780,14 @@ impl Editor {
                 buffer_id: active.buffer_id,
                 cursor: self.cursor,
                 scroll: self.scroll,
+                modal: self.modal,
             });
         }
+        // PU-A.1b: a focus-stealing popup (State B) is a Normal-mode
+        // surface — its major mode receives keys. Normalize modal so a
+        // popup opened mid-Insert gets its bindings; `dismiss_popup`
+        // restores the captured `prev.modal` (popup-api.md §5).
+        self.modal = ModalState::Normal;
         // 2026-05-22 popup-anchor: capture current cursor BEFORE
         // overwriting with the help buffer's stash. The CursorAnchored
         // popup renderer reads this to paint the popup next to the
@@ -28321,6 +28336,11 @@ impl Editor {
                 buffer_id: active.buffer_id,
                 cursor: self.cursor,
                 scroll: self.scroll,
+                // PU-A.1b: in-pane help is torn down by `do_close_pane`,
+                // which ignores this snapshot — the modal value is inert
+                // here (captured only to satisfy the struct). In-pane help
+                // does not steal modal focus the way an overlay does.
+                modal: self.modal,
             });
         }
         self.snapshot_active_pane();
@@ -35519,6 +35539,57 @@ mod tests {
             "State-B dismiss restores the doc we came from"
         );
         assert_eq!(editor.pane_tree.active().buffer_id, doc_buf);
+    }
+
+    // ── PU-A.1b-i: modal set-on-open / restore-on-dismiss ─────
+
+    /// PU-A.1b: a focus-stealing popup normalizes `modal` to Normal on
+    /// open (so its bindings fire even when opened mid-Insert), and
+    /// dismiss restores the modal the user came from (popup-api.md §5).
+    #[test]
+    fn steal_popup_normalizes_modal_and_dismiss_restores_it() {
+        let mut editor = crate::editor::Editor::boot(lattice_core::Document::empty());
+        editor.modal = ModalState::Insert;
+        let content = lattice_help::parse_help_lines("t", vec!["h".to_string()]);
+        editor.open_popup(content, crate::popup::PopupPlacement::Centered);
+        assert_eq!(editor.active_buffer, BufferKind::Help);
+        assert_eq!(
+            editor.modal,
+            ModalState::Normal,
+            "focus-stealing popup normalizes modal to Normal on open"
+        );
+
+        editor.dismiss_popup();
+
+        assert_eq!(
+            editor.modal,
+            ModalState::Insert,
+            "dismiss restores the modal the user came from"
+        );
+    }
+
+    /// PU-A.1b: a passive (floating) popup never flips focus or modal —
+    /// the document keeps both, so there is nothing to restore.
+    #[test]
+    fn passive_popup_leaves_modal_untouched() {
+        let mut editor = crate::editor::Editor::boot(lattice_core::Document::empty());
+        editor.modal = ModalState::Insert;
+        let content = lattice_help::parse_help_lines("t", vec!["h".to_string()]);
+        editor.open_floating_popup(content, crate::popup::PopupPlacement::CursorAnchored);
+        assert_eq!(
+            editor.modal,
+            ModalState::Insert,
+            "passive float never touches modal"
+        );
+        assert_ne!(
+            editor.active_buffer,
+            BufferKind::Help,
+            "State A keeps document focus"
+        );
+        assert!(
+            editor.prev_pane_for_popup.is_none(),
+            "passive float captures no prev (nothing to restore)"
+        );
     }
 
     /// D.8.e: first `:diffthis` creates an N=1 dormant

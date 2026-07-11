@@ -142,6 +142,7 @@ pub(super) fn install_help(a: &mut App, h: HelpContent) {
         buffer_id: prev_id,
         cursor: a.editor.cursor,
         scroll: a.editor.scroll,
+        modal: a.editor.modal,
     });
     a.editor.popup_scroll = 0;
     a.editor.popup_cursor = lattice_protocol::position::Position::ZERO;

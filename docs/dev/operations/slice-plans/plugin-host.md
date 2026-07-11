@@ -3,7 +3,8 @@
 **Status:** 🚧 in progress (2026-07-03) — PH7.0 ✅, PH7.1 ✅ (7.1a + 7.1b), PH7.2 ✅, **PH7.3 ✅**
 (a + b(b1a+b1b+b2) + c + d); **PH7.4 🚧** (⭐ exit, decomposed a–e): **4a ✅** (picker boundary
 mirrors + marginalia + context projection), **4b ✅** (host-services `walk` seam — first
-guest→host call, capability-gated); 4c (host adapter, create path) next. Design fragment:
+guest→host call, capability-gated), **4c 🚧** (host adapter; **4c.1a ✅** picker-source world +
+async bindings, actor-task model locked); 4c.1b (per-plugin task) next. Design fragment:
 [`../../architecture/plugin-host.md`](../../architecture/plugin-host.md). Spec:
 `design.md` §5.5 / §9 / §13. This plan sequences *Phase 7 proper* (per the locked scope):
 the host runtime, capability model, the WIT interface set mirroring exercised native seams,
@@ -389,13 +390,46 @@ result; `OpenFile` outcome). Unregister the native `files` source; register the 
     PH7.3c "prove host-layer, defer the guest call to the real consumer" precedent).
   - **Tests (5, 65 lib green) + 16 integration green.**
 
-  #### PH7.4c — Host adapter (create path) 📝
-  Wrap a component's `picker-source` exports as `Arc<dyn PickerSourceGenerator>` (init/accept
-  via guest exports, `Stream` via `collect_batches`); wire the `document` resource
-  (`init(ctx)` is the first document-referencing signature — retires the PH7.3c deferral);
-  register via `install(boot)` → `register_generator` with a host-stamped
-  `SourceLayer::Plugin(id)`. **Depends:** PH7.4a, PH7.4b. **Acid test:** ZERO `Editor::`
-  methods, ZERO new `Action` variants.
+  #### PH7.4c — Host adapter (create path) 🚧
+  Wrap a component's `picker-source` exports as `Arc<dyn PickerSourceGenerator>` and register
+  via `install(boot)` → `register_generator` with a host-stamped `SourceLayer::Plugin(id)`.
+  **Depends:** PH7.4a, PH7.4b. **Acid test:** ZERO `Editor::` methods, ZERO new `Action`
+  variants. **Decomposed (2026-07-12)** — the Send+Sync adapter must call an async,
+  single-threaded, fuel-bounded guest export, so the Store-ownership model is the crux.
+  **Decision (locked with Dhruva, option A): the per-plugin actor task** — each plugin runs as
+  a dedicated async task owning its `Store`; the adapter holds an mpsc `Sender`; `init`/`accept`
+  send a request + await a oneshot reply (design §5.7; no lock, Store stays single-threaded,
+  per-call fuel arming in the task loop, and the bridge is reused by every future guest-backed
+  `Arc<dyn>` adapter — completion/grammar/modes). Over `Arc<async-mutex<Store>>` (B, a lock
+  across `.await` + a runtime dep in the lib, weaker foundation). Sub-sliced:
+
+    #### PH7.4c.1a — `picker-source` world + async export bindings ✅ (2026-07-12)
+    `wit/picker-source.wit` — the `picker-source` interface (`spec`/`init`/`accept` +
+    `candidate-pair`) + the `picker-source-plugin` world (import `host-services`, export
+    `picker-source`). `picker_host.rs` — the **second `bindgen!`** for that world, reusing the
+    `plugin` world's `types` + `host-services` via `with:` (the PH7.3d shared-types trick). 65
+    lib green.
+    - **The `document` handle is deferred — and reframed (Dhruva, 2026-07-12).** Its original
+      motivation ("faithfully mirror what native sources like `:picker lines` can read") is
+      **dropped: exposing built-in sources via WASM has no value.** Built-in sources stay native
+      Rust forever; the WASM picker API exists so **plugins create *custom* pickers**, not to
+      re-implement built-ins. Active-buffer *text* access is therefore not a mirroring
+      requirement but a **future plugin capability** (a custom picker that wants buffer content),
+      added — capability-gated, like `host-services` — only when a real plugin needs it ("the API
+      grows from real plugins", §5.5). The ⭐ exit needs none of it (`fuzzy-finder`/`files` walks
+      the fs). *Mechanics note for when it lands:* passing a **host-owned resource into a guest
+      export** has a bindgen subtlety (a resource referenced only by an exported signature is not
+      seen as a host `with`-mapped import); wasi-http is the precedent that it is solvable —
+      resolve the world shape then, not now. The PH7.3c `DocumentResource` backing stays ready.
+
+    #### PH7.4c.1b — Per-plugin actor task + call protocol 📝
+    The `PickerCall` enum + task loop owning the `Store<PluginState>` + the `Send+Sync` client
+    (the bridge). Proven by driving a fixture picker guest through the channel. **Depends:**
+    PH7.4c.1a.
+
+    #### PH7.4c.2 — `WasmPickerSource` adapter + registration 📝
+    `impl PickerSourceGenerator` over the client (`init`→`PickerInitResult::Future`, boundary
+    conversions via PH7.4a) + `install(boot)` → `register_generator`. **Depends:** PH7.4c.1b.
 
   #### PH7.4d — `fuzzy-finder` plugin + cutover ⭐ 📝
   The real `wasm32-wasip2` guest replicating `files`; unregister the native source, register

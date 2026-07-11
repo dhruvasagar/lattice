@@ -1,8 +1,57 @@
 package lattice:plugin-host@0.1.0;
 
-/// Mirrors `PickerSourceGenerator` (lattice-picker/src/source.rs). Guest
-/// exports spec/init/accept; the host wraps them as `Arc<dyn
-/// PickerSourceGenerator>` and registers via `PickerRegistry::register_generator`
-/// through the `SubsystemBoot` install seam. The ⭐ Phase-7-exit interface;
-/// populated in PH7.4 and validated by `plugins/fuzzy-finder`.
-interface picker-source {}
+/// Mirrors `PickerSourceGenerator` (lattice-picker/src/source.rs:294). A WASM
+/// picker source *exports* this interface; the host wraps its exports as an
+/// `Arc<dyn PickerSourceGenerator>` (PH7.4c.2) and registers it through the
+/// `SubsystemBoot` install seam → `PickerRegistry::register_generator`, so a
+/// plugin source is indistinguishable from a first-party one at the registry.
+/// The ⭐ Phase-7-exit interface; validated by `plugins/fuzzy-finder` (PH7.4d).
+interface picker-source {
+    use types.{picker-source-spec, raw-candidate, routing-payload, picker-context, picker-accept-outcome};
+
+    /// One `(candidate, routing)` pair — the WIT form of the native
+    /// `CandidateBatch` element (`Vec<(RawCandidate, RoutingPayload)>`). The
+    /// `routing` token is opaque to the picker; the source emits it here and
+    /// consumes it in `accept`.
+    record candidate-pair {
+        candidate: raw-candidate,
+        routing: routing-payload,
+    }
+
+    /// The source's declared metadata (`PickerSourceSpec`: id, doc, args schema,
+    /// live flag). The host calls this once at registration to populate
+    /// `:picker <Tab>` / `:describe-picker`.
+    spec: func() -> picker-source-spec;
+
+    /// Build the candidate set for `:picker <id> <args>`. `ctx` is the owned
+    /// `PickerContext` projection (§4.2). Returns the `(candidate, routing)`
+    /// pairs; an `err` string is echoed and the picker stays closed. (One-shot
+    /// list; the incremental `Stream` shape — the deferred §15 streaming
+    /// question — lands with a live source.)
+    ///
+    /// NB: the active buffer's bulk **text** rides a `borrow<document>` handle
+    /// (PH7.3c `DocumentResource`) that a text-reading source (`:picker lines`)
+    /// needs — deferred here (the `fuzzy-finder`/`files` exit reads no buffer
+    /// text, only walks the fs via `host-services`). Passing a host-owned
+    /// resource into a guest *export* has a bindgen-modeling subtlety to resolve;
+    /// tracked as a focused follow-up (see the slice plan).
+    init: func(ctx: picker-context, args: list<string>)
+        -> result<list<candidate-pair>, string>;
+
+    /// Translate the user's chosen `routing` token into a typed
+    /// `PickerAcceptOutcome` the host applies. A mismatch is an `err` (echoed).
+    accept: func(ctx: picker-context, routing: routing-payload)
+        -> result<picker-accept-outcome, string>;
+}
+
+/// The world a picker-source plugin implements: it exports `picker-source` and
+/// imports the host seams it needs — the `buffer` `document` resource (the host
+/// implements `HostDocument`; this `init(doc)` signature is what finally wires
+/// the resource, deferred since PH7.3c) and the capability-gated `host-services`
+/// (`walk`, PH7.4b). A second `bindgen!` reuses the `plugin` world's generated
+/// `types` + `host-services` via `with:` so the crossed values are the SAME Rust
+/// types the boundary round-trips.
+world picker-source-plugin {
+    import host-services;
+    export picker-source;
+}

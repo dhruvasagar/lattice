@@ -59,6 +59,7 @@ pub mod buffer;
 pub mod capability;
 pub mod host_services;
 pub mod manifest;
+pub mod picker_host;
 pub mod trampoline;
 
 pub use boundary::WitBoundary;

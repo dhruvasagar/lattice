@@ -1,12 +1,28 @@
 package lattice:plugin-host@0.1.0;
 
-/// Mirrors the native host services: tree-sitter, ripgrep, regex, fs, net,
-/// proc (plugin-host.md §5). Guest→host calls, capability-gated against the
-/// plugin's `CapabilityGrant` (PH7.2). Note the enforcement split PH7.2 landed:
-/// filesystem access is *also* bounded at the WASI layer (the `Store`'s
-/// preopens are built from the grant's `fs:*` prefixes), whereas `net:http` /
-/// `proc:spawn` are enforced *here* — these host-services calls check the
-/// grant's allowlist / tier — not by a raw WASI socket/subprocess view.
-/// Populated as its seams land (fs/net for PH7.4's `fuzzy-finder`; tree-sitter
-/// query shape is design.md §15 Q15).
-interface host-services {}
+/// Guest→host services (plugin-host.md §5). Capability-gated calls a plugin
+/// makes INTO the host, checked against its `CapabilityGrant` (PH7.2). Unlike
+/// the guest's WASI filesystem view — sandboxed by the `Store`'s preopens —
+/// these run host-side with full host authority, so each call re-checks the
+/// grant itself (the host is not sandboxed). Errors cross as strings (§4
+/// `result<_, string>` convention).
+///
+/// PH7.4b lands the first seam: `walk`, the capability-gated workspace
+/// enumeration the `fuzzy-finder` (PH7.4d) uses to replicate the native `files`
+/// picker. The `net:http` / `proc:spawn` / tree-sitter seams follow (design.md
+/// §15 Q15); the streaming `dir`-iterator shape (design.md §15, the deferred
+/// streaming-result question) lands when a real streaming consumer (live-grep)
+/// does — a bounded `walk` covers the fuzzy-finder.
+interface host-services {
+    /// Recursively enumerate files under `root`, returning absolute UTF-8 paths.
+    /// Host-side policy mirrors the native file picker (`walk_files_for_picker`):
+    /// a bounded entry count, skipping `.git`/`target`/`node_modules`/`dist`/
+    /// `.cache` and dotfiles. A non-UTF-8 path is skipped (it cannot cross as a
+    /// `string`), never an error — one oddly-named file must not fail the walk.
+    ///
+    /// Capability-gated: `root` must lie within one of the plugin's granted
+    /// `fs:read` (or `fs:write`) prefixes, else `err` — a plugin with no fs
+    /// grant reaches nothing. The check runs host-side because the host, unlike
+    /// the guest's WASI view, has ambient authority the grant must bound.
+    walk: func(root: string) -> result<list<string>, string>;
+}

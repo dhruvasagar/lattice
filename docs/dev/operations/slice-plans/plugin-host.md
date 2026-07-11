@@ -2,7 +2,8 @@
 
 **Status:** 🚧 in progress (2026-07-03) — PH7.0 ✅, PH7.1 ✅ (7.1a + 7.1b), PH7.2 ✅, **PH7.3 ✅**
 (a + b(b1a+b1b+b2) + c + d); **PH7.4 🚧** (⭐ exit, decomposed a–e): **4a ✅** (picker boundary
-mirrors + marginalia + context projection); 4b (host-services fs) next. Design fragment:
+mirrors + marginalia + context projection), **4b ✅** (host-services `walk` seam — first
+guest→host call, capability-gated); 4c (host adapter, create path) next. Design fragment:
 [`../../architecture/plugin-host.md`](../../architecture/plugin-host.md). Spec:
 `design.md` §5.5 / §9 / §13. This plan sequences *Phase 7 proper* (per the locked scope):
 the host runtime, capability model, the WIT interface set mirroring exercised native seams,
@@ -353,9 +354,40 @@ result; `OpenFile` outcome). Unregister the native `files` source; register the 
     picker-source-spec through intern; open-target; representative routing-payload arms;
     non-UTF-8 path typed error.
 
-  #### PH7.4b — `host-services` fs-walk seam 📝
-  First guest→host call: a capability-gated fs walk against the plugin's `CapabilityGrant`
-  (PH7.2). The `fuzzy-finder` walks the workspace through this. **Depends:** PH7.4a.
+  #### PH7.4b — `host-services` fs-walk seam ✅ (2026-07-11)
+  The first guest→host call direction: a capability-gated fs `walk` against the plugin's
+  `CapabilityGrant` (PH7.2). The `fuzzy-finder` (PH7.4d) walks the workspace through this.
+  **Depends:** PH7.4a. **Decision (locked with Dhruva, option A):** a bounded `host-services`
+  `walk` call (host runs the native walker, returns a path list) over raw WASI walk in the
+  guest (B, scatters walk policy per-plugin — heuristic #1) or a streaming `dir` resource (C,
+  the deferred §15 streaming shape — premature until a live-grep-class consumer lands).
+  Protects paramount-#2: the host centralizes walk policy so a plugin source enumerates
+  identically to the native `files` source.
+  - **Landed:** `wit/host-services.wit` — the `walk(root) -> result<list<string>, string>`
+    seam (replaces the empty stub). `wit/plugin.wit` — `import host-services;` so bindgen emits
+    the host `Host` trait + `add_to_linker`. New `host_services.rs` — `walk_within_grant`
+    (capability gate + native `walk_files_for_picker` policy + non-UTF-8 skip). `lib.rs` —
+    `PluginState` now carries the `CapabilityGrant` (threaded through `instantiate_inner`); the
+    `Host` impl forwards `walk`; `host_services::add_to_linker::<_, HasSelf<_>>` wires it into
+    the (async) linker (sync host func is fine — `walk` is bounded, no suspend).
+  - **The capability gate is host-side, mandatory (§6).** Unlike the guest's WASI fs view
+    (sandboxed by the `Store`'s preopens), a host-services call runs with full host authority,
+    so `walk` re-checks `root ⊆ grant.fs` itself; canonicalized both sides so `..` can't escape
+    a prefix; denial is a typed `Err` + an `info!` (user-actionable). Empty grant → reaches
+    nothing.
+  - **Bench:** cost is OS-bound (the native directory walk, which the native `files` source
+    already pays) + a negligible per-call gate; the `list<string>` marshalling is characterized
+    by the existing boundary benches. No dedicated fs microbench (it would measure the OS, not a
+    boundary overhead). The **guest→host call-overhead** bench lands at PH7.4d, where a real
+    guest calls `walk` (mirroring PH7.3d's host→guest bench precedent); the CI-gated per-call
+    budget is PH7.5.
+  - **Proof depth:** host-layer (the capability gate + walker: granted returns paths, denied
+    root / empty grant are typed errors, ignore-policy applies, sub-dir of a granted prefix
+    permitted — 5 tests) + the linker wiring proven by the existing instantiate/runtime
+    integration tests (a real component instantiates against the host-services-wired `plugin`
+    linker). The real guest→host `walk` *call* rides the `fuzzy-finder` consumer at PH7.4d (the
+    PH7.3c "prove host-layer, defer the guest call to the real consumer" precedent).
+  - **Tests (5, 65 lib green) + 16 integration green.**
 
   #### PH7.4c — Host adapter (create path) 📝
   Wrap a component's `picker-source` exports as `Arc<dyn PickerSourceGenerator>` (init/accept

@@ -2000,6 +2000,20 @@ whole `effect` mirror crossing a live component boundary (§14's highest risk),
 not a stub. Skips when the `wasm32-wasip2` target isn't installed (see
 `build.rs`); CI installs it so the gate runs. Not a CI ratchet yet (PH7.5).
 
+## Plugin host — `host-services` fs `walk` seam (PH7.4b)
+
+No dedicated microbench: the `walk` cost is **OS-bound** — it is the native
+directory traversal (`walk_files_for_picker`, the same the first-party `files`
+source already pays), plus a negligible per-call capability gate (a canonicalize
++ `starts_with` over the grant's fs prefixes). A criterion microbench would
+measure the operating system's `read_dir`, not any WASM-boundary overhead, so
+adding one would be misleading coverage rather than real coverage. The
+`list<string>` result marshalling is characterized by the boundary-conversion
+rows above (per-path ≈ single-digit ns). The **guest→host call overhead** — the
+part that is genuinely new and ours — is benched at **PH7.4d**, where the real
+`fuzzy-finder` guest calls `walk` across the canonical ABI (the PH7.3d host→guest
+precedent, from the other direction); the CI-gated per-call budget lands at PH7.5.
+
 ⚠️ **Provisional — off-box.** Captured on the same non-canonical box as the rows
 above; order-of-magnitude only until re-run on the §8.2 hardware.
 

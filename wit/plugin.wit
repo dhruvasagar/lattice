@@ -67,6 +67,13 @@ world plugin {
 	/// `document` handle (bindgen only generates a resource a signature uses).
 	use buffer.{buffer-snapshot};
 
+	/// Guest→host services (PH7.4b, §5). The host implements these; the guest
+	/// calls INTO them, capability-gated against its grant. The first seam is the
+	/// filesystem `walk` the `fuzzy-finder` (PH7.4d) uses. `import`ed (not `use`d)
+	/// so bindgen generates the host `Host` trait + `add_to_linker` the host wires
+	/// `PluginState` to. Guests that don't call it are unaffected.
+	import host-services;
+
 	/// Called once when the component is first instantiated. Runs config /
 	/// contribution registration for `init.rs`; no-op for the scaffold.
 	export activate: func();

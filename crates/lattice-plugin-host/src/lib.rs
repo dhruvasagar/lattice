@@ -57,6 +57,7 @@ pub mod boundary_effect;
 pub mod boundary_picker;
 pub mod buffer;
 pub mod capability;
+pub mod host_services;
 pub mod manifest;
 pub mod trampoline;
 
@@ -73,7 +74,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use lattice_grammar::SourceLayer;
-use wasmtime::component::{Component, Linker};
+use wasmtime::component::{Component, HasSelf, Linker};
 use wasmtime::{Cache, CacheConfig, Config, Engine, Store};
 use wasmtime_wasi::{ResourceTable, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
@@ -259,6 +260,11 @@ struct PluginState {
     /// The resource table WASI (and, at PH7.3d, the `document` handle)
     /// resources live in.
     table: ResourceTable,
+    /// The plugin's effective capability grant (PH7.2). Carried in the `Store`
+    /// state so guest→host `host-services` calls (PH7.4b) can enforce it: those
+    /// run host-side with full host authority, so the grant — not the WASI
+    /// sandbox — is what bounds them.
+    grant: CapabilityGrant,
 }
 
 impl WasiView for PluginState {
@@ -267,6 +273,18 @@ impl WasiView for PluginState {
             ctx: &mut self.wasi,
             table: &mut self.table,
         }
+    }
+}
+
+/// Host impl of the `host-services` guest→host seam (PH7.4b, §5). The generated
+/// `Host::walk` returns the WIT `result<list<string>, string>` directly as
+/// `Result<Vec<String>, String>` — a sync host func that cannot trap, so bindgen
+/// omits the outer `wasmtime::Result`. Walk logic + the capability gate live in
+/// [`host_services::walk_within_grant`]; the impl just forwards with the Store's
+/// grant.
+impl crate::lattice::plugin_host::host_services::Host for PluginState {
+    fn walk(&mut self, root: String) -> Result<Vec<String>, String> {
+        host_services::walk_within_grant(&self.grant, &root)
     }
 }
 
@@ -375,6 +393,13 @@ impl PluginHost {
         // never pins the caller's thread.
         wasmtime_wasi::p2::add_to_linker_async(&mut linker)
             .map_err(|e| PluginHostError::Linker(e.into()))?;
+        // The `host-services` guest→host seam (PH7.4b). Sync host funcs are fine
+        // in the async linker; `walk` is bounded, so it does not need to suspend.
+        crate::lattice::plugin_host::host_services::add_to_linker::<_, HasSelf<_>>(
+            &mut linker,
+            |state: &mut PluginState| state,
+        )
+        .map_err(|e| PluginHostError::Linker(e.into()))?;
         let epoch_ticker = EpochTicker::spawn(&engine, EPOCH_TICK_INTERVAL);
 
         Ok(Self {
@@ -433,9 +458,12 @@ impl PluginHost {
         component: &Component,
         budget: PluginBudget,
     ) -> Result<LoadedPlugin, PluginHostError> {
-        // No grant, no data dir: the guest reaches no filesystem at all.
+        // No grant, no data dir: the guest reaches no filesystem at all — and a
+        // host-services `walk` from such a plugin is denied (empty grant).
         let wasi = WasiCtxBuilder::new().build();
-        let (store, bindings) = self.instantiate_inner(component, wasi, budget).await?;
+        let (store, bindings) = self
+            .instantiate_inner(component, wasi, CapabilityGrant::default(), budget)
+            .await?;
         Ok(LoadedPlugin {
             store,
             bindings,
@@ -482,7 +510,9 @@ impl PluginHost {
             );
         }
         let wasi = build_wasi_ctx(&outcome.grant, &data_dir);
-        let (store, bindings) = self.instantiate_inner(component, wasi, budget).await?;
+        let (store, bindings) = self
+            .instantiate_inner(component, wasi, outcome.grant.clone(), budget)
+            .await?;
         Ok(LoadedPlugin {
             store,
             bindings,
@@ -501,11 +531,13 @@ impl PluginHost {
         &self,
         component: &Component,
         wasi: WasiCtx,
+        grant: CapabilityGrant,
         budget: PluginBudget,
     ) -> Result<(Store<PluginState>, Plugin), PluginHostError> {
         let state = PluginState {
             wasi,
             table: ResourceTable::new(),
+            grant,
         };
         let mut store = Store::new(&self.engine, state);
         store

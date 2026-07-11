@@ -3241,10 +3241,7 @@ mod tests {
         let handle = sub
             .schedule_recompute(
                 bid(1),
-                vec![
-                    baseline,
-                    Arc::new(StaticSource::new(Rope::from("alpha\nBETA\n"))),
-                ],
+                vec![baseline, Arc::new(StaticSource::new(current))],
             )
             .expect("registered buffer has a session");
         let result = handle.await.expect("blocking task didn't panic");

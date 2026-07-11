@@ -1120,6 +1120,7 @@ mod tests {
                 register: NativeRegister::Named('a'),
                 content: "text".into(),
                 kind: NativeYankKind::Linewise,
+                explicit_yank: true,
             },
             NativeEffect::EnterMode(NativeModalState::Visual(NativeVisualKind::Blockwise)),
             NativeEffect::SaveBuffer {

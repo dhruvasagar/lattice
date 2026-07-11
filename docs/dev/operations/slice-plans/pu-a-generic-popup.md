@@ -84,9 +84,13 @@ host handler that nothing exercises end-to-end is untested dead surface (heurist
 (popup-api.md §4.5) is preserved — the primitive is generic now; PU-B just wires
 the effect to it.
 
-### PU-A.4 — chrome from the buffer name 📝
+### PU-A.4 — chrome from the buffer name ✅
 Title from the buffer's synthetic name, not `help.title`; the `"Esc to dismiss"`
-hint stays. Both TUI + GPUI in lockstep.
+hint stays. GPUI already sourced the title from `name_of(popup_id)` (PU.1b-4b);
+this brought the TUI (`render.rs`) into line — it read `help.title`, now reads
+`app.buffers().registry.name_of(popup_id)`. `register_help_document` sets
+`name: Some(buffer.title)`, so the swap is invisible (PU-A gate). Full
+`lattice-ui-tui` suite green (1567).
 
 ## Sequencing
 1a → 1b → 2 → 3 → 4. 1a and 2 are independent cleanups; 1b is the load-bearing

@@ -1927,10 +1927,16 @@ fn draw_help_overlay(frame: &mut Frame, buffer_area: Rect, app: &App, snap: &Doc
     // `app.theme.popup_{title,hint}`) — same source the GPUI peer uses, so
     // the accent is themeable and identical across peers. GPUI additionally
     // bumps the title font size; no separator rule on either peer.
+    // PU-A.4: title = the popup buffer's registry name (the synthetic
+    // Document name slot), not `help.title` — de-Help-ifies the chrome to
+    // match the GPUI peer, which sources it from `name_of` since PU.1b-4b.
+    // `help.title` == this name today (`register_help_document` sets
+    // `name: Some(buffer.title)`), so the swap is invisible to the user.
+    let title = app.buffers().registry.name_of(popup_id).unwrap_or_default();
     let block = Block::default()
         .borders(Borders::ALL)
         .title(Line::from(vec![
-            Span::styled(format!(" {} ", help.title), app.theme.popup_title),
+            Span::styled(format!(" {} ", title), app.theme.popup_title),
             Span::styled("Esc to dismiss ", app.theme.popup_hint),
         ]));
     let inner = block.inner(popup);

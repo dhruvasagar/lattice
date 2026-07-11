@@ -217,6 +217,38 @@ YAGNI says do not parameterise it until a popup wants a different one.
 
 **`prev_pane_for_help`** is renamed `prev_pane_for_popup`.
 
+The next three were found while scoping PU-A and fixed ahead of it (slice plan
+`../operations/slice-plans/popup-input-caret.md`). Each is the same half-migration
+seen from a different axis: the popup is "active" for `active_buffer` /
+`active_buffer_id()` / cursor / scroll, but some slice of state still reads
+`document_buffer_id` (the buffer behind the overlay).
+
+**Caret walked the background document's matrix.** (PIC.1, fixed) The popup body
+and cursorline compose from the `PaneId::POPUP` matrix, but the TUI caret summed
+wrap-segment / virtual-row heights from the top-level `display_matrix` (=
+`document_buffer_id`, which `open_popup` never repoints) — so a wrapping line
+above the cursor drifted the caret below the cursorline, the error compounding per
+line. Fixed by threading `PaneId::POPUP` into `cursor_screen_position_at` /
+`buffer_line_to_visible_row_with`. GPUI was already correct.
+
+**Fold ops mutate the background buffer's folds.** (PIC.2, contained) `self.folds`
+is a hot-slot keyed to `document_buffer_id`, never swapped when a popup takes
+focus, and the org-cycle ops (`z<Space>` / `z<Tab>`) were absent from the
+read-only guard's mutation set — so they reached their handlers and mutated the
+*background* document's folds at the popup's cursor line. Contained by adding them
+to `action_is_document_mutation` (the guard now consumes every fold op in a
+read-only popup). The deeper fix — swapping `self.folds` to the focused buffer so
+a *writable* popup could fold — belongs with the generalisation.
+
+**Global chords escape a focused popup.** (PIC.2, fixed) `gt` / `<C-w>…` are
+universal `Builtin` chords with no popup gate, so they switched tabs / reshaped
+panes behind the overlay (and dragged the single-slot `popup_buffer` onto the new
+tab). The keymap trie has no consume-all and `HelpMode` binds nothing, so
+exclusive capture is a **dispatch-seam** concern, not a mode keymap layer:
+`action_escapes_focused_popup` + a guard in `handle_action` consume tab/pane nav
+while a popup is focused (alongside the read-only guard). The generalisation
+inherits the gate there.
+
 ## 6. Alternatives rejected
 
 **Picker source (`PickerSource` + `RoutingPayload::ResolvePermission`).** The

@@ -7,7 +7,7 @@ generalisation exists to finish: the popup is "active" for `active_buffer` /
 source, the fold hot-slot, or global-chord suppression — so those slices leak to
 the buffer behind the popup.
 
-**Status:** 🚧 in progress (PIC.1 ✅, PIC.2 ✅). **Design ref:** `../../architecture/popup-api.md` (§5
+**Status:** ✅ complete (PIC.1, PIC.2, PIC.3). **Design ref:** `../../architecture/popup-api.md` (§5
 defects). **Feeds:** PU-A (`acp-ux-enhancements.md`). **Ships no user feature** —
 these are correctness fixes; the acceptance gate is "popup behaves like a focused
 buffer, background is never touched."
@@ -92,13 +92,13 @@ suite green (762).
 **Risk:** medium. Touches the dispatch guard, a hot path — but the guard is
 already the sanctioned popup-aware seam; the change is additive and self-scoping.
 
-## Slice PIC.3 — Fold the defects into the design 📝
+## Slice PIC.3 — Fold the defects into the design ✅
 
 **Depends on:** PIC.1, PIC.2.
 
 | File | Change |
 |---|---|
-| `docs/dev/architecture/popup-api.md` | Add these three (caret-matrix source, `self.folds` popup mismatch, global-chord suppression) to §5 "Defects the generalisation must fix", and note the action-guard as the input-gate seam so PU-A's full generalisation inherits them. |
+| `docs/dev/architecture/popup-api.md` | Added the three (caret-matrix source, `self.folds` popup mismatch, global-chord suppression) to §5 "Defects the generalisation must fix", framed as facets of the same half-migration, and noted the action-guard as the input-gate seam so PU-A's full generalisation inherits them. |
 
 **Risk:** none (docs).
 

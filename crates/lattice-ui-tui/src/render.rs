@@ -593,7 +593,14 @@ fn draw_insert_completion_popup(
     let pane_rect = active_pane_content_rect(app, buffer_area).unwrap_or(buffer_area);
     let view = FrameView::from_app(app);
     let anchor_screen =
-        cursor_screen_position_at(&view, snap, pane_rect, app.ad().cursor, app.ad().scroll);
+        cursor_screen_position_at(
+            &view,
+            snap,
+            pane_rect,
+            app.ad().cursor,
+            app.ad().scroll,
+            app.panes().tree.active().id,
+        );
     let (anchor_x, anchor_y) = anchor_screen.unwrap_or((buffer_area.x, buffer_area.y));
     // Below if there's room, else above.
     let area_bottom = buffer_area.y + buffer_area.height;
@@ -865,7 +872,14 @@ fn completion_docs_popup_rect(
     let pane_rect = active_pane_content_rect(app, buffer_area).unwrap_or(buffer_area);
     let view = FrameView::from_app(app);
     let anchor_screen =
-        cursor_screen_position_at(&view, snap, pane_rect, app.ad().cursor, app.ad().scroll);
+        cursor_screen_position_at(
+            &view,
+            snap,
+            pane_rect,
+            app.ad().cursor,
+            app.ad().scroll,
+            app.panes().tree.active().id,
+        );
     let (anchor_x, anchor_y) = anchor_screen.unwrap_or((buffer_area.x, buffer_area.y));
     // Candidate popup geometry (mirrors `draw_insert_completion_popup`).
     let cand_width: u16 = 60u16.min(buffer_area.width.saturating_sub(2)).max(30);
@@ -1995,6 +2009,11 @@ fn draw_help_overlay(frame: &mut Frame, buffer_area: Rect, app: &App, snap: &Doc
             inner,
             app.ad().cursor,
             app.ad().scroll,
+            // PIC.1: the popup caret walks the POPUP pane's matrices —
+            // the same source `compose_pane_lines` uses for the body +
+            // cursorline above (`ctx.pane_id`). Reading the active
+            // document pane instead drifts the caret past the cursorline.
+            lattice_core::ui::pane::PaneId::POPUP,
         )
     {
         frame.set_cursor_position((screen_x, screen_y));
@@ -2167,7 +2186,9 @@ fn position_help_popup(
         }
     };
     let view = FrameView::from_app(app);
-    let Some((cx, cy)) = cursor_screen_position_at(&view, snap, pane_area, cursor, scroll) else {
+    let Some((cx, cy)) =
+        cursor_screen_position_at(&view, snap, pane_area, cursor, scroll, app.panes().tree.active().id)
+    else {
         return centered();
     };
     // Vertical: prefer below the cursor row; if the popup wouldn't
@@ -5862,6 +5883,15 @@ fn buffer_line_to_visible_row_with(
     // every kind of virtual textual height is summed here, matching
     // what `compose_visible_lines_inner` paints.
     wrap_width: u32,
+    // PIC.1: the pane whose matrices the walk must read — the caret
+    // must sum wrap-segment / virtual-row heights from the SAME pane
+    // the body + cursorline compose from (`compose_pane_lines`'s
+    // `ctx.pane_id`). For the active document pane this is
+    // `tree.active().id` (byte-identical to the top-level matrix); for
+    // a focused popup it is `PaneId::POPUP`, whose help-buffer line
+    // widths differ from the background document's — reading the wrong
+    // pane compounds a per-line wrap error and drifts the caret.
+    pane_id: lattice_core::ui::pane::PaneId,
 ) -> Option<u32> {
     if target < scroll {
         return None;
@@ -5869,14 +5899,19 @@ fn buffer_line_to_visible_row_with(
     // B2.4: per-line display width from the canonical `DisplayMatrix`
     // (tab-expanded col_count == what the renderer paints). Stale /
     // missing rows fall back to the rope line's char count.
-    let display_matrix = view
-        .app
-        .render_state
-        .load()
-        .cells
-        .load()
-        .display_matrix
-        .load_full();
+    // PIC.1: read THIS pane's matrix (keyed by `pane_id`), matching
+    // `compose_pane_lines`'s body/cursorline source. For the active
+    // document pane this entry is byte-identical to the top-level
+    // `cells.display_matrix`; for `PaneId::POPUP` it is the popup
+    // buffer's matrix, so the caret walks the same wrap widths the
+    // popup body paints.
+    let cells_rs = view.app.render_state.load().cells.load_full();
+    let display_matrix = cells_rs
+        .display_matrix_for_pane(pane_id)
+        .map(|cell| cell.load_full())
+        .unwrap_or_else(|| {
+            std::sync::Arc::new(lattice_host::display_matrix::DisplayMatrix::empty())
+        });
     let segment_rows = |line: u32| -> u32 {
         if wrap_width == 0 {
             return 1;
@@ -5907,9 +5942,8 @@ fn buffer_line_to_visible_row_with(
     // compose_visible_lines_inner.
     let virtual_rows_matrix = {
         let rs = view.app.render_state.load();
-        let active_pane_id = view.app.panes().tree.active().id;
         rs.virtual_rows
-            .matrix_for_pane(active_pane_id)
+            .matrix_for_pane(pane_id)
             .map(|cell| cell.load_full())
             .unwrap_or_else(|| std::sync::Arc::new(lattice_cells::VirtualRowMatrix::empty()))
     };
@@ -5982,7 +6016,14 @@ fn cursor_screen_position(
     snap: &DocumentSnapshot,
     area: Rect,
 ) -> Option<(u16, u16)> {
-    cursor_screen_position_at(view, snap, area, view.app.ad().cursor, view.app.ad().scroll)
+    cursor_screen_position_at(
+        view,
+        snap,
+        area,
+        view.app.ad().cursor,
+        view.app.ad().scroll,
+        view.app.panes().tree.active().id,
+    )
 }
 
 /// Same as [`cursor_screen_position`] but with explicit `cursor`
@@ -5997,6 +6038,10 @@ fn cursor_screen_position_at(
     area: Rect,
     cursor: lattice_protocol::Position,
     scroll: u32,
+    // PIC.1: the pane whose matrices back the caret walk — see
+    // `buffer_line_to_visible_row_with`. `tree.active().id` for the
+    // active document caret; `PaneId::POPUP` for a focused popup.
+    pane_id: lattice_core::ui::pane::PaneId,
 ) -> Option<(u16, u16)> {
     if cursor.line < scroll {
         return None;
@@ -6039,6 +6084,7 @@ fn cursor_screen_position_at(
         area.height as u32,
         scroll,
         wrap_width,
+        pane_id,
     )?;
     // `cursor.byte` is a UTF-8 byte offset into the line; the
     // terminal places glyphs by display width, not byte count. A
@@ -6090,7 +6136,6 @@ fn cursor_screen_position_at(
     // the correct physical row.
     let sticky_count = {
         let rs = view.app.render_state.load();
-        let pane_id = view.app.panes().tree.active().id;
         rs.virtual_rows
             .matrix_for_pane(pane_id)
             .map(|cell| cell.load_full().sticky_rows().count() as u32)
@@ -6252,6 +6297,129 @@ mod tests {
             styled_link,
             "floating popup must render a span with the resolved Style::Link style \
              (got the unstyled plain-text fallback — link styling regressed)"
+        );
+    }
+
+    /// PIC.1 regression: in a FOCUSED popup (State B) the terminal caret
+    /// must land on the cursorline row. The popup body + cursorline
+    /// compose from the `PaneId::POPUP` matrix, but the caret used to
+    /// walk the background document's top-level matrix — so a wrapping
+    /// line above the cursor drifted the caret below the cursorline
+    /// (they coincide on line 0, diverge going down). Here popup line 0
+    /// wraps into several segments while the background document's line 0
+    /// is a single segment: the caret for popup line 1 must sit on the
+    /// popup's cursorline row, NOT the (higher) row the document matrix
+    /// would put it on.
+    #[test]
+    fn focused_popup_caret_row_matches_cursorline_row() {
+        use lattice_core::ui::pane::PaneId;
+        // Background document: line 0 is a single wrap segment.
+        let mut a = App::new(Document::from_text("a\nb\nc\n"));
+        a.set_viewport_height(20);
+        // Focused popup whose line 0 is very wide (wraps into several
+        // segments), followed by two short lines.
+        let content = lattice_help::parse_help_lines(
+            "t",
+            vec!["x".repeat(200), "second".to_string(), "third".to_string()],
+        );
+        a.editor
+            .open_popup(content, lattice_host::popup::PopupPlacement::Centered);
+        let popup_id = a.editor.popup_buffer.expect("popup open");
+        // Wrap on so the caret's wrap-width (from `ad().option_cache`)
+        // matches the popup body's wrapping — isolates the matrix-source
+        // fix (PIC.1) from the separate wrap-flag source question.
+        a.editor.option_cache.wrap_lines = true;
+        // Cursor onto popup line 1, below the wrap of line 0.
+        a.editor.cursor = lattice_protocol::Position::new(1, 0);
+        a.editor.popup_viewport_height = 20;
+        a.editor.popup_viewport_width = 40;
+        a.editor.publish_render_state();
+        assert_eq!(
+            a.ad().buffer_kind,
+            crate::buffers::BufferKind::Help,
+            "open_popup is State B (focused)"
+        );
+        // Drive the cells worker for the synthetic popup pane so its
+        // DisplayMatrix is populated (sim async).
+        let cells = a.editor.render_state.load().cells.load_full();
+        let pop = cells
+            .panes
+            .iter()
+            .find(|p| p.pane_id == PaneId::POPUP)
+            .expect("synthetic popup pane present");
+        let ct = lattice_host::cells_worker::CellTheme {
+            resolved: &cells.resolved_theme,
+            ids: &cells.theme_ids,
+        };
+        let _ = lattice_host::cells_worker::recompute_pane(pop, ct, &cells.whitespace);
+
+        let handle = a
+            .buffers()
+            .registry
+            .document_handle(popup_id)
+            .expect("popup buffer in registry");
+        let snap = handle.snapshot();
+        let inner = Rect::new(0, 0, 40, 18);
+        let view = FrameView::for_buffer(&a, popup_id);
+
+        // Cursorline row: the cursor-line background is applied to every
+        // wrap segment of line 1, so its FIRST row is line 1 segment 0 —
+        // exactly where the caret (col 0) should land.
+        let ctx = PaneComposeCtx {
+            is_active: true,
+            pane_id: PaneId::POPUP,
+            buffer_id: popup_id,
+            cursor_line: 1,
+            cursor_line_highlight: true,
+            scroll: 0,
+            leftcol: 0,
+            display_line_numbers: handle.display_line_numbers(),
+        };
+        let lines = compose_pane_lines(&view, &snap, inner.height as u32, inner.width as u32, &ctx);
+        let cursor_line_bg = a.theme.cursor_line_bg;
+        let cursorline_row = lines
+            .iter()
+            .position(|l| l.spans.iter().any(|s| s.style.bg == Some(cursor_line_bg)))
+            .expect("cursorline row present");
+        assert!(
+            cursorline_row > 1,
+            "popup line 0 must wrap into multiple rows so the bug is exercised \
+             (line 1 at row {cursorline_row})"
+        );
+
+        // Caret from the POPUP matrix (the fix) lands on the cursorline row.
+        let (_, caret_y) = cursor_screen_position_at(
+            &view,
+            &snap,
+            inner,
+            lattice_protocol::Position::new(1, 0),
+            0,
+            PaneId::POPUP,
+        )
+        .expect("caret placed");
+        assert_eq!(
+            caret_y as usize, cursorline_row,
+            "focused-popup caret must land on the cursorline row (PIC.1)"
+        );
+
+        // Prove the drift source: walking the ACTIVE DOCUMENT pane's
+        // matrix (line 0 = one segment) puts the caret above the
+        // cursorline — the pre-fix behaviour.
+        let active_pane = a.panes().tree.active().id;
+        let (_, doc_y) = cursor_screen_position_at(
+            &view,
+            &snap,
+            inner,
+            lattice_protocol::Position::new(1, 0),
+            0,
+            active_pane,
+        )
+        .expect("caret placed");
+        assert!(
+            (doc_y as usize) < cursorline_row,
+            "the background document's line 0 is a single segment, so the \
+             pre-fix (document-matrix) caret drifts above the cursorline \
+             (doc_y {doc_y} vs cursorline {cursorline_row})"
         );
     }
 
@@ -7279,9 +7447,15 @@ mod tests {
 
         // Cursor on line 2 ("b"), below the 3-row wrap of line 1.
         // Display rows: line0 seg0 = 0; line1 segs = 1,2,3; line2 = 4.
-        let below =
-            cursor_screen_position_at(&view, &snap, area, lattice_protocol::Position::new(2, 0), 0)
-                .unwrap();
+        let below = cursor_screen_position_at(
+            &view,
+            &snap,
+            area,
+            lattice_protocol::Position::new(2, 0),
+            0,
+            app.panes().tree.active().id,
+        )
+        .unwrap();
         assert_eq!(below.1, 4, "line below a 3-row wrap sits at display row 4");
 
         // Cursor within the wrapped line, in its 3rd segment (byte
@@ -7293,6 +7467,7 @@ mod tests {
             area,
             lattice_protocol::Position::new(1, 68),
             0,
+            app.panes().tree.active().id,
         )
         .unwrap();
         assert_eq!(
@@ -7375,6 +7550,7 @@ mod tests {
             area,
             lattice_protocol::Position::new(0, 37),
             0,
+            app.panes().tree.active().id,
         )
         .unwrap();
         assert_eq!(pos.1, 1, "byte 37 sits on the first wrap continuation row");

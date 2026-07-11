@@ -516,10 +516,12 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
             register,
             content,
             kind,
+            explicit_yank,
         } => WitEffect::Yank(WitYankPayload {
             register: register.to_wit()?,
             content: content.clone(),
             kind: kind.to_wit()?,
+            explicit_yank: *explicit_yank,
         }),
         NativeEffect::EnterMode(state) => WitEffect::EnterMode(state.to_wit()?),
         NativeEffect::SaveBuffer { path } => WitEffect::SaveBuffer(opt_path_to_wit(path)?),
@@ -627,6 +629,7 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
         NativeEffect::PrevDiagnostic => WitEffect::PrevDiagnostic,
         NativeEffect::OpenLspLog { server_id } => WitEffect::OpenLspLog(server_id.clone()),
         NativeEffect::OpenMessages => WitEffect::OpenMessages,
+        NativeEffect::OpenDashboard => WitEffect::OpenDashboard,
         NativeEffect::ToggleLspTrace { server_id } => WitEffect::ToggleLspTrace(server_id.clone()),
         NativeEffect::OpenLspTraceLog { server_id } => {
             WitEffect::OpenLspTraceLog(server_id.clone())
@@ -738,6 +741,7 @@ fn effect_from_wit(w: WitEffect) -> Result<NativeEffect, String> {
             register: NativeRegister::from_wit(p.register)?,
             content: p.content,
             kind: NativeYankKind::from_wit(p.kind)?,
+            explicit_yank: p.explicit_yank,
         },
         WitEffect::EnterMode(state) => NativeEffect::EnterMode(NativeModalState::from_wit(state)?),
         WitEffect::SaveBuffer(path) => NativeEffect::SaveBuffer {
@@ -823,6 +827,7 @@ fn effect_from_wit(w: WitEffect) -> Result<NativeEffect, String> {
         WitEffect::PrevDiagnostic => NativeEffect::PrevDiagnostic,
         WitEffect::OpenLspLog(server_id) => NativeEffect::OpenLspLog { server_id },
         WitEffect::OpenMessages => NativeEffect::OpenMessages,
+        WitEffect::OpenDashboard => NativeEffect::OpenDashboard,
         WitEffect::ToggleLspTrace(server_id) => NativeEffect::ToggleLspTrace { server_id },
         WitEffect::OpenLspTraceLog(server_id) => NativeEffect::OpenLspTraceLog { server_id },
         WitEffect::LspStatus => NativeEffect::LspStatus,
@@ -1100,6 +1105,7 @@ mod tests {
                 register: NativeRegister::Named('a'),
                 content: "text".into(),
                 kind: NativeYankKind::Linewise,
+                explicit_yank: true,
             },
             NativeEffect::EnterMode(NativeModalState::Visual(NativeVisualKind::Blockwise)),
             NativeEffect::SaveBuffer {
@@ -1273,6 +1279,7 @@ mod tests {
             NativeEffect::NextDiagnostic,
             NativeEffect::PrevDiagnostic,
             NativeEffect::OpenMessages,
+            NativeEffect::OpenDashboard,
             NativeEffect::LspStatus,
             NativeEffect::LspServerLogListing,
             NativeEffect::LspExpandRegion,

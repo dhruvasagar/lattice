@@ -360,6 +360,10 @@ interface types {
         register: register,
         content: string,
         kind: yank-kind,
+        /// `true` for an explicit yank (`y`/`yy`/Visual `y`); `false` for the
+        /// register writes delete/change/`x` also perform. Drives the yank-only
+        /// system-clipboard mirror (clipboard.md §5).
+        explicit-yank: bool,
     }
     record quit-payload {
         force: bool,
@@ -469,6 +473,7 @@ interface types {
         prev-diagnostic,
         open-lsp-log(option<string>),
         open-messages,
+        open-dashboard,
         toggle-lsp-trace(string),
         open-lsp-trace-log(option<string>),
         lsp-status,

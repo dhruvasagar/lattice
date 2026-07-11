@@ -99,19 +99,34 @@ fn register_diff_actions(registry: &mut CommandRegistry) {
         },
     );
     for (name, doc) in [
-        ("action:diff-keep-ours", "diff-conflict `d2o`: keep the local (ours) side."),
+        (
+            "action:diff-keep-ours",
+            "diff-conflict `d2o`: keep the local (ours) side.",
+        ),
         (
             "action:diff-keep-theirs",
             "diff-conflict `d3o`: take the remote (theirs) side into local.",
         ),
-        ("action:diff-put-ours", "diff-conflict `d2p`: put local into the ours side."),
+        (
+            "action:diff-put-ours",
+            "diff-conflict `d2p`: put local into the ours side.",
+        ),
         (
             "action:diff-put-theirs",
             "diff-conflict `d3p`: put local into the remote (theirs) side.",
         ),
-        ("action:diff-keep-both", "diff-conflict `dB`: keep both — splice ours then theirs."),
-        ("action:hunk-next", "diff `]c`: jump the cursor to the next hunk start (wraps)."),
-        ("action:hunk-prev", "diff `[c`: jump the cursor to the previous hunk start (wraps)."),
+        (
+            "action:diff-keep-both",
+            "diff-conflict `dB`: keep both — splice ours then theirs.",
+        ),
+        (
+            "action:hunk-next",
+            "diff `]c`: jump the cursor to the next hunk start (wraps).",
+        ),
+        (
+            "action:hunk-prev",
+            "diff `[c`: jump the cursor to the previous hunk start (wraps).",
+        ),
     ] {
         registry.register_action(
             name,
@@ -349,7 +364,9 @@ fn parse_no_args(rest: &str, _bang: bool) -> GrammarResult<Args> {
     if rest.trim().is_empty() {
         Ok(Args::None)
     } else {
-        Err(CommandError::BadArgs("trailing characters after command".into()))
+        Err(CommandError::BadArgs(
+            "trailing characters after command".into(),
+        ))
     }
 }
 
@@ -409,9 +426,11 @@ fn apply_diffput(ctx: &ExCommandContext) -> GrammarResult<Effect> {
 fn parse_bufnr_arg(ctx: &ExCommandContext, cmd: &str) -> GrammarResult<Option<u32>> {
     match &ctx.args {
         Args::None => Ok(None),
-        Args::String(s) => Ok(Some(
-            s.parse::<u32>().map_err(|e| CommandError::BadArgs(format!("bufnr: {e}")))?,
-        )),
+        Args::String(s) => {
+            Ok(Some(s.parse::<u32>().map_err(|e| {
+                CommandError::BadArgs(format!("bufnr: {e}"))
+            })?))
+        }
         _ => Err(CommandError::BadArgs(format!(
             "expected optional bufnr (`:{cmd} [<bufnr>]`)"
         ))),

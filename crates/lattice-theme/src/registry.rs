@@ -24,8 +24,8 @@ use std::sync::{Arc, RwLock};
 use arc_swap::ArcSwap;
 
 use crate::element::{ColorRef, ElementId, ElementName, ElementOwner, StyleSpec, ThemeElement};
-use crate::palette::{default_palette, Palette};
-use crate::themes::{builtin_themes, NamedTheme};
+use crate::palette::{Palette, default_palette};
+use crate::themes::{NamedTheme, builtin_themes};
 use crate::{Color, FontScale, Style, Weight};
 
 /// Maximum `inherit` chain depth before resolution bails (cycle
@@ -312,7 +312,11 @@ impl ThemeRegistry for InMemoryThemeRegistry {
     }
 
     fn resolved(&self) -> Arc<ResolvedTheme> {
-        let dirty = self.inner.read().expect("theme registry lock poisoned").dirty;
+        let dirty = self
+            .inner
+            .read()
+            .expect("theme registry lock poisoned")
+            .dirty;
         if dirty {
             self.rebuild();
         }
@@ -643,14 +647,42 @@ pub fn register_builtins(reg: &dyn ThemeRegistry) {
     reg_one("terminal.ansi.5", spec().fg("pink"), "ANSI 5 — magenta.");
     reg_one("terminal.ansi.6", spec().fg("teal"), "ANSI 6 — cyan.");
     reg_one("terminal.ansi.7", spec().fg("subtext"), "ANSI 7 — white.");
-    reg_one("terminal.ansi.8", spec().fg("surface2"), "ANSI 8 — bright black.");
+    reg_one(
+        "terminal.ansi.8",
+        spec().fg("surface2"),
+        "ANSI 8 — bright black.",
+    );
     reg_one("terminal.ansi.9", spec().fg("red"), "ANSI 9 — bright red.");
-    reg_one("terminal.ansi.10", spec().fg("green"), "ANSI 10 — bright green.");
-    reg_one("terminal.ansi.11", spec().fg("yellow"), "ANSI 11 — bright yellow.");
-    reg_one("terminal.ansi.12", spec().fg("blue"), "ANSI 12 — bright blue.");
-    reg_one("terminal.ansi.13", spec().fg("pink"), "ANSI 13 — bright magenta.");
-    reg_one("terminal.ansi.14", spec().fg("teal"), "ANSI 14 — bright cyan.");
-    reg_one("terminal.ansi.15", spec().fg("text"), "ANSI 15 — bright white.");
+    reg_one(
+        "terminal.ansi.10",
+        spec().fg("green"),
+        "ANSI 10 — bright green.",
+    );
+    reg_one(
+        "terminal.ansi.11",
+        spec().fg("yellow"),
+        "ANSI 11 — bright yellow.",
+    );
+    reg_one(
+        "terminal.ansi.12",
+        spec().fg("blue"),
+        "ANSI 12 — bright blue.",
+    );
+    reg_one(
+        "terminal.ansi.13",
+        spec().fg("pink"),
+        "ANSI 13 — bright magenta.",
+    );
+    reg_one(
+        "terminal.ansi.14",
+        spec().fg("teal"),
+        "ANSI 14 — bright cyan.",
+    );
+    reg_one(
+        "terminal.ansi.15",
+        spec().fg("text"),
+        "ANSI 15 — bright white.",
+    );
 
     // ---- Diagnostics ----
     reg_one(
@@ -698,11 +730,7 @@ pub fn register_builtins(reg: &dyn ThemeRegistry) {
         "Timestamp column in *messages*.",
     );
     reg_one("messages.trace", spec().dim(), "TRACE-level message.");
-    reg_one(
-        "messages.debug",
-        spec().fg("cyan"),
-        "DEBUG-level message.",
-    );
+    reg_one("messages.debug", spec().fg("cyan"), "DEBUG-level message.");
     reg_one("messages.info", spec(), "INFO-level message.");
     reg_one(
         "messages.warn",
@@ -962,7 +990,11 @@ pub fn register_builtins(reg: &dyn ThemeRegistry) {
     );
 
     // ---- Syntax (mirrors host `Theme::syntax_style`) ----
-    reg_one("syntax.default", spec().fg("text"), "Default foreground text.");
+    reg_one(
+        "syntax.default",
+        spec().fg("text"),
+        "Default foreground text.",
+    );
     reg_one(
         "syntax.comment",
         spec().fg("overlay").italic(),
@@ -991,7 +1023,11 @@ pub fn register_builtins(reg: &dyn ThemeRegistry) {
         spec().fg("subtext"),
         "Punctuation / delimiters.",
     );
-    reg_one("syntax.attribute", spec().fg("red"), "Attributes / annotations.");
+    reg_one(
+        "syntax.attribute",
+        spec().fg("red"),
+        "Attributes / annotations.",
+    );
     // T.10: heading levels carry a rich-vocabulary `weight` (finer than
     // the bold modifier). The GPUI peer honors it in per-run font
     // shaping so headings render heavier than body bold; the TUI degrades
@@ -1010,7 +1046,12 @@ pub fn register_builtins(reg: &dyn ThemeRegistry) {
     // divergence like variable-pitch prose).
     reg_one(
         "syntax.heading.1",
-        spec().fg("red").bold().underline().weight(Weight::ExtraBold).scale(1.6),
+        spec()
+            .fg("red")
+            .bold()
+            .underline()
+            .weight(Weight::ExtraBold)
+            .scale(1.6),
         "Markup heading level 1.",
     );
     reg_one(
@@ -1038,9 +1079,21 @@ pub fn register_builtins(reg: &dyn ThemeRegistry) {
         spec().fg("purple").bold().scale(1.05),
         "Markup heading level 6.",
     );
-    reg_one("syntax.bold", spec().fg("maroon").bold(), "Strong / bold markup.");
-    reg_one("syntax.italic", spec().fg("pink").italic(), "Emphasis / italic markup.");
-    reg_one("syntax.link", spec().fg("blue").underline(), "Markup links.");
+    reg_one(
+        "syntax.bold",
+        spec().fg("maroon").bold(),
+        "Strong / bold markup.",
+    );
+    reg_one(
+        "syntax.italic",
+        spec().fg("pink").italic(),
+        "Emphasis / italic markup.",
+    );
+    reg_one(
+        "syntax.link",
+        spec().fg("blue").underline(),
+        "Markup links.",
+    );
     reg_one("syntax.url", spec().fg("cyan").underline(), "Bare URLs.");
     reg_one(
         "syntax.markup_raw",
@@ -1732,20 +1785,47 @@ mod tests {
         let resolved = reg.resolved();
 
         for (key, id) in [
-            ("completion.annotation.location.path", ids.completion_annotation_location_path),
-            ("completion.annotation.location.line", ids.completion_annotation_location_line),
-            ("completion.annotation.location.col", ids.completion_annotation_location_col),
-            ("completion.annotation.status.dirty", ids.completion_annotation_status_dirty),
-            ("completion.annotation.status.active", ids.completion_annotation_status_active),
-            ("completion.annotation.latency.reflex", ids.completion_annotation_latency_reflex),
-            ("completion.annotation.latency.display", ids.completion_annotation_latency_display),
+            (
+                "completion.annotation.location.path",
+                ids.completion_annotation_location_path,
+            ),
+            (
+                "completion.annotation.location.line",
+                ids.completion_annotation_location_line,
+            ),
+            (
+                "completion.annotation.location.col",
+                ids.completion_annotation_location_col,
+            ),
+            (
+                "completion.annotation.status.dirty",
+                ids.completion_annotation_status_dirty,
+            ),
+            (
+                "completion.annotation.status.active",
+                ids.completion_annotation_status_active,
+            ),
+            (
+                "completion.annotation.latency.reflex",
+                ids.completion_annotation_latency_reflex,
+            ),
+            (
+                "completion.annotation.latency.display",
+                ids.completion_annotation_latency_display,
+            ),
             (
                 "completion.annotation.latency.background",
                 ids.completion_annotation_latency_background,
             ),
             ("completion.annotation.args", ids.completion_annotation_args),
-            ("completion.annotation.buffer-id", ids.completion_annotation_buffer_id),
-            ("completion.annotation.register", ids.completion_annotation_register),
+            (
+                "completion.annotation.buffer-id",
+                ids.completion_annotation_buffer_id,
+            ),
+            (
+                "completion.annotation.register",
+                ids.completion_annotation_register,
+            ),
         ] {
             assert_ne!(id, ElementId::INVALID, "`{key}` should intern");
             assert_eq!(ids.annotation_slot(key), id, "annotation_slot maps `{key}`");
@@ -1824,17 +1904,30 @@ mod tests {
         let reg = reg();
         let ids = BuiltinElementIds::capture(&reg);
         let resolved = reg.resolved();
-        let fg = |i: usize| resolved.get(ids.terminal_ansi[i]).fg.map(|c| c.to_rgb_u32(0));
+        let fg = |i: usize| {
+            resolved
+                .get(ids.terminal_ansi[i])
+                .fg
+                .map(|c| c.to_rgb_u32(0))
+        };
         // red / green / yellow / blue map to the mocha accents — NOT the
         // dim VGA ANSI values (0xcd0000 / 0x00cd00 / 0x0000ee).
         assert_eq!(fg(1), Some(0x00f3_8ba8), "ANSI red = mocha red");
         assert_eq!(fg(2), Some(0x00a6_e3a1), "ANSI green = mocha green");
-        assert_eq!(fg(4), Some(0x0089_b4fa), "ANSI blue = mocha blue (not 0x0000ee)");
+        assert_eq!(
+            fg(4),
+            Some(0x0089_b4fa),
+            "ANSI blue = mocha blue (not 0x0000ee)"
+        );
         assert_eq!(fg(5), Some(0x00f5_c2e7), "ANSI magenta = pink");
         assert_eq!(fg(6), Some(0x0094_e2d5), "ANSI cyan = teal");
         // bright variants reuse the same accents; black/white brighten.
         assert_eq!(fg(9), fg(1), "bright red reuses red");
-        assert_ne!(fg(0), fg(8), "black (surface1) and bright black (surface2) differ");
+        assert_ne!(
+            fg(0),
+            fg(8),
+            "black (surface1) and bright black (surface2) differ"
+        );
     }
 
     #[test]
@@ -1844,14 +1937,27 @@ mod tests {
         // from mocha blue.
         let mocha = InMemoryThemeRegistry::with_defaults();
         let ids = BuiltinElementIds::capture(&mocha);
-        let mocha_blue = mocha.resolved().get(ids.terminal_ansi[4]).fg.unwrap().to_rgb_u32(0);
+        let mocha_blue = mocha
+            .resolved()
+            .get(ids.terminal_ansi[4])
+            .fg
+            .unwrap()
+            .to_rgb_u32(0);
 
         let gruv = InMemoryThemeRegistry::new(crate::palette::gruvbox_dark_palette());
         register_builtins(&gruv);
         let gids = BuiltinElementIds::capture(&gruv);
-        let gruv_blue = gruv.resolved().get(gids.terminal_ansi[4]).fg.unwrap().to_rgb_u32(0);
+        let gruv_blue = gruv
+            .resolved()
+            .get(gids.terminal_ansi[4])
+            .fg
+            .unwrap()
+            .to_rgb_u32(0);
 
-        assert_ne!(mocha_blue, gruv_blue, "terminal blue tracks the colorscheme");
+        assert_ne!(
+            mocha_blue, gruv_blue,
+            "terminal blue tracks the colorscheme"
+        );
     }
 
     #[test]
@@ -1892,11 +1998,21 @@ mod tests {
         let swap = |slot: &str| {
             let mocha = InMemoryThemeRegistry::with_defaults();
             let mids = BuiltinElementIds::capture(&mocha);
-            let m = mocha.resolved().get(mids.annotation_slot(slot)).fg.unwrap().to_rgb_u32(0);
+            let m = mocha
+                .resolved()
+                .get(mids.annotation_slot(slot))
+                .fg
+                .unwrap()
+                .to_rgb_u32(0);
             let gruv = InMemoryThemeRegistry::new(crate::palette::gruvbox_dark_palette());
             register_builtins(&gruv);
             let gids = BuiltinElementIds::capture(&gruv);
-            let g = gruv.resolved().get(gids.annotation_slot(slot)).fg.unwrap().to_rgb_u32(0);
+            let g = gruv
+                .resolved()
+                .get(gids.annotation_slot(slot))
+                .fg
+                .unwrap()
+                .to_rgb_u32(0);
             (m, g)
         };
         for slot in [
@@ -1919,7 +2035,10 @@ mod tests {
         let reg = reg();
         let ids = BuiltinElementIds::capture(&reg);
         let resolved = reg.resolved();
-        assert_eq!(resolved.get(ids.pane_inactive_overlay), Style::empty().dim());
+        assert_eq!(
+            resolved.get(ids.pane_inactive_overlay),
+            Style::empty().dim()
+        );
         assert_eq!(
             resolved.get(ids.file_tree_dir),
             Style::empty().fg(Color::Rgb(0x89, 0xb4, 0xfa)).bold()
@@ -2051,8 +2170,14 @@ mod tests {
             resolved.get(ids.syntax_heading_1).weight,
             Some(Weight::ExtraBold)
         );
-        assert_eq!(resolved.get(ids.syntax_heading_2).weight, Some(Weight::Bold));
-        assert_eq!(resolved.get(ids.syntax_heading_3).weight, Some(Weight::Bold));
+        assert_eq!(
+            resolved.get(ids.syntax_heading_2).weight,
+            Some(Weight::Bold)
+        );
+        assert_eq!(
+            resolved.get(ids.syntax_heading_3).weight,
+            Some(Weight::Bold)
+        );
         // heading.4-6 keep bold-only, no rich weight (unchanged).
         assert_eq!(resolved.get(ids.syntax_heading_4).weight, None);
         assert_eq!(resolved.get(ids.syntax_heading_5).weight, None);
@@ -2240,7 +2365,10 @@ mod tests {
         );
         let after = resolved_of(&reg, "syntax.keyword");
         assert_eq!(after.fg, Some(Color::Rgb(1, 2, 3)));
-        assert!(after.modifiers.bold, "default bold survives a fg-only override");
+        assert!(
+            after.modifiers.bold,
+            "default bold survives a fg-only override"
+        );
     }
 
     #[test]
@@ -2252,12 +2380,18 @@ mod tests {
             ElementName::from_static("syntax.string"),
             StyleSpec::new().fg(Color::Rgb(9, 9, 9)),
         );
-        assert_eq!(resolved_of(&reg, "syntax.string").fg, Some(Color::Rgb(9, 9, 9)));
+        assert_eq!(
+            resolved_of(&reg, "syntax.string").fg,
+            Some(Color::Rgb(9, 9, 9))
+        );
         // New theme: palette with a different `green`, no overrides.
         let palette = default_palette().with("green", Color::Rgb(4, 5, 6));
         reg.set_theme(palette, Vec::new());
         // string references `green` → now (4,5,6); the prior override is gone.
-        assert_eq!(resolved_of(&reg, "syntax.string").fg, Some(Color::Rgb(4, 5, 6)));
+        assert_eq!(
+            resolved_of(&reg, "syntax.string").fg,
+            Some(Color::Rgb(4, 5, 6))
+        );
     }
 
     #[test]
@@ -2358,7 +2492,10 @@ mod tests {
     #[test]
     fn describe_unknown_element_is_none() {
         let reg = reg();
-        assert!(reg.describe(&ElementName::from_static("no.such.element")).is_none());
+        assert!(
+            reg.describe(&ElementName::from_static("no.such.element"))
+                .is_none()
+        );
     }
 
     #[test]
@@ -2394,7 +2531,10 @@ mod tests {
             .describe(&ElementName::from_static("syntax.line_comment"))
             .expect("registered");
         assert_eq!(
-            info.default.inherit.as_ref().map(|n| n.as_str().to_string()),
+            info.default
+                .inherit
+                .as_ref()
+                .map(|n| n.as_str().to_string()),
             Some("syntax.comment".to_string())
         );
     }

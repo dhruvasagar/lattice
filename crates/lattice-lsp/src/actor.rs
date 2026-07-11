@@ -1471,10 +1471,7 @@ fn handle_server_notification(
                 Some(instance),
                 LogLevel::Debug,
                 LogSource::Client,
-                format!(
-                    "experimental/serverStatus: {}",
-                    compact_params(&n.params)
-                ),
+                format!("experimental/serverStatus: {}", compact_params(&n.params)),
             );
             if let (Some(bus), Some(update)) =
                 (event_bus, parse_server_status(server_id, n.params.as_ref()))
@@ -1634,14 +1631,8 @@ fn parse_server_status(
         Some("warning") => LspServerHealth::Warning,
         _ => LspServerHealth::Ok,
     };
-    let quiescent = p
-        .get("quiescent")
-        .and_then(Value::as_bool)
-        .unwrap_or(true);
-    let message = p
-        .get("message")
-        .and_then(Value::as_str)
-        .map(str::to_owned);
+    let quiescent = p.get("quiescent").and_then(Value::as_bool).unwrap_or(true);
+    let message = p.get("message").and_then(Value::as_str).map(str::to_owned);
     Some(LspServerStatusChanged {
         server_id: Arc::clone(server_id),
         quiescent,

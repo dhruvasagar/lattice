@@ -22,12 +22,14 @@ pub mod section;
 pub mod sections;
 pub mod theme;
 
-pub use branding::{branding_block_width, DashboardBrandingProvider, BRANDING_ROW_COUNT};
-pub use fragment::{Align, DashboardFragment, DashboardRole, DashboardRow, DashboardSpan, LinkTarget};
+pub use branding::{BRANDING_ROW_COUNT, DashboardBrandingProvider, branding_block_width};
+pub use fragment::{
+    Align, DashboardFragment, DashboardRole, DashboardRow, DashboardSpan, LinkTarget,
+};
 pub use install::install;
-pub use mode::{register_dashboard_modes, DashboardMode};
-pub use theme::{register_dashboard_theme_elements, DashboardElementIds};
+pub use mode::{DashboardMode, register_dashboard_modes};
 pub use options::{Dashboard, DashboardEnabled, DashboardSections, DashboardSource};
 pub use registry::{DashboardRegistry, SectionSelection};
 pub use section::{DashboardCtx, DashboardSection};
 pub use sections::builtin_registry;
+pub use theme::{DashboardElementIds, register_dashboard_theme_elements};

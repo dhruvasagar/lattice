@@ -53,9 +53,7 @@ mod tests {
     /// App's keymap registry — the same path boot wires into the
     /// live commands picker. Proves the end-to-end binding →
     /// annotation flow (e.g. `ex:help` bound to `<C-h><C-h>`).
-    fn app_reverse(
-        app: &crate::app::App,
-    ) -> Arc<dyn lattice_completion::KeymapReverseLookup> {
+    fn app_reverse(app: &crate::app::App) -> Arc<dyn lattice_completion::KeymapReverseLookup> {
         lattice_host::keymap_registry::KeymapReverseLookupHandle::new(
             &app.editor.keymap,
             app.editor.registry.clone(),
@@ -129,9 +127,17 @@ mod tests {
         // perm → size → mtime, each a Styled cell.
         let cats: Vec<&str> = cand.annotations.iter().map(|a| a.category()).collect();
         assert_eq!(cats, vec!["perm", "size", "mtime"]);
-        let size = cand.annotations.iter().find(|a| a.category() == "size").unwrap();
+        let size = cand
+            .annotations
+            .iter()
+            .find(|a| a.category() == "size")
+            .unwrap();
         assert_eq!(size.display_text(), "7", "7-byte file → size `7`");
-        let mtime = cand.annotations.iter().find(|a| a.category() == "mtime").unwrap();
+        let mtime = cand
+            .annotations
+            .iter()
+            .find(|a| a.category() == "mtime")
+            .unwrap();
         let mt = mtime.display_text();
         assert!(
             mt.contains("just now") || mt.contains("minute"),
@@ -176,8 +182,11 @@ mod tests {
     #[test]
     fn recent_source_emits_metadata_annotations() {
         let mut app = app_with("hi\n", 5);
-        let tmp = std::env::temp_dir()
-            .join(format!("lattice-recent-meta-{}-{:?}", std::process::id(), std::thread::current().id()));
+        let tmp = std::env::temp_dir().join(format!(
+            "lattice-recent-meta-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
         std::fs::write(&tmp, b"hello").unwrap();
         app.editor.push_recent_file(&tmp);
         let snap = app.ad().snapshot.clone();
@@ -231,7 +240,10 @@ mod tests {
         };
         // Buffer-id and kind cells present; active row has an active-status
         // marker (`•`).
-        assert_eq!(cat("buffer-id"), Some(format!("#{}", ctx.active_buffer.buffer_id)));
+        assert_eq!(
+            cat("buffer-id"),
+            Some(format!("#{}", ctx.active_buffer.buffer_id))
+        );
         assert!(cat("kind").is_some(), "kind cell missing");
         assert!(
             cat("status").is_some_and(|s| s.contains('•')),
@@ -397,10 +409,11 @@ mod tests {
             by_cat("doc")
         );
         // Every command-picker annotation is the expected typed shape.
-        assert!(cand.annotations.iter().all(|a| matches!(
-            a,
-            Annotation::Styled { .. } | Annotation::DocSnippet(_)
-        )));
+        assert!(
+            cand.annotations
+                .iter()
+                .all(|a| matches!(a, Annotation::Styled { .. } | Annotation::DocSnippet(_)))
+        );
     }
 
     /// MP.2b: a command with a bound chord carries a

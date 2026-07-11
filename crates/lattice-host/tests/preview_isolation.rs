@@ -165,7 +165,10 @@ fn mount_preview_isolates_read_only_options_from_origin() {
     );
     let b_modes = editor.active_modes.get(&b_id).expect("B has modes");
     assert!(
-        b_modes.minors().iter().any(|m| *m == PreviewMode::mode_id()),
+        b_modes
+            .minors()
+            .iter()
+            .any(|m| *m == PreviewMode::mode_id()),
         "preview-mode is on B's stack (the ephemeral marker)"
     );
 
@@ -180,7 +183,10 @@ fn mount_preview_isolates_read_only_options_from_origin() {
         a_modes_before,
         "A's active_modes are untouched"
     );
-    assert_eq!(editor.document_buffer_id, doc_before, "document_buffer_id unchanged");
+    assert_eq!(
+        editor.document_buffer_id, doc_before,
+        "document_buffer_id unchanged"
+    );
     assert_eq!(
         format!("{:?}", editor.option_cache),
         option_cache_before,

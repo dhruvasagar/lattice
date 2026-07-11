@@ -217,7 +217,9 @@ mod tests {
     fn link_target_parses_bare_url() {
         assert_eq!(
             LinkTarget::parse("https://github.com/dhruvasagar/lattice"),
-            Some(LinkTarget::Url("https://github.com/dhruvasagar/lattice".into()))
+            Some(LinkTarget::Url(
+                "https://github.com/dhruvasagar/lattice".into()
+            ))
         );
     }
 
@@ -241,8 +243,10 @@ mod tests {
 
     #[test]
     fn row_text_concatenates_spans() {
-        let row = DashboardRow::line("Open ", DashboardRole::Body)
-            .push(DashboardSpan::link(":tutor", LinkTarget::Command("tutor".into())));
+        let row = DashboardRow::line("Open ", DashboardRole::Body).push(DashboardSpan::link(
+            ":tutor",
+            LinkTarget::Command("tutor".into()),
+        ));
         assert_eq!(row.text(), "Open :tutor");
     }
 }

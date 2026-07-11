@@ -58,8 +58,8 @@
 
 use std::sync::{Arc, Mutex};
 
-use lattice_cells::{AnchorPosition, Cell, ProviderId, VirtualRow, VirtualRowProvider};
 use crate::{HunkIndex, HunkKind};
+use lattice_cells::{AnchorPosition, Cell, ProviderId, VirtualRow, VirtualRowProvider};
 
 use lattice_core::BufferId;
 use tokio::task::JoinHandle;
@@ -143,7 +143,10 @@ impl DiffSignMap {
     /// 0). Test-only: classified lines without a `HunkIndex` to walk.
     #[cfg(test)]
     pub(crate) fn from_entries(entries: Vec<(u32, DiffSignKind)>) -> Self {
-        Self { entries, revision: 0 }
+        Self {
+            entries,
+            revision: 0,
+        }
     }
 
     /// Lookup the sign for `line`, if any. `O(log n)` binary
@@ -617,8 +620,8 @@ mod tests {
 
     use std::sync::Arc;
 
-    use lattice_core::BufferId;
     use crate::{DiffAlgorithm, Hunk, HunkIndex, HunkKind, LineRange};
+    use lattice_core::BufferId;
     use smallvec::smallvec;
 
     fn bid(n: u32) -> BufferId {

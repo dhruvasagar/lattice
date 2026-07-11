@@ -372,10 +372,7 @@ mod tests {
         // variant — assert it here so the contract is locked in
         // before the annotator lands.
         use lattice_protocol::KeyChord;
-        let ann = Annotation::Keybinding(vec![
-            KeyChord::ctrl('w'),
-            KeyChord::char('v'),
-        ]);
+        let ann = Annotation::Keybinding(vec![KeyChord::ctrl('w'), KeyChord::char('v')]);
         assert_eq!(ann.display_text(), "<C-w> v");
         assert_eq!(ann.category(), "keybinding");
     }
@@ -421,10 +418,7 @@ mod tests {
     #[test]
     fn keybinding_annotator_pushes_chord_for_bound_command() {
         let mut lookup_map = std::collections::HashMap::new();
-        lookup_map.insert(
-            "ex:write".into(),
-            vec![KeyChord::ctrl('s')],
-        );
+        lookup_map.insert("ex:write".into(), vec![KeyChord::ctrl('s')]);
         let annot = KeybindingAnnotator::new(Arc::new(FakeLookup(lookup_map)));
         let mut c = rendered(
             "ex:write",
@@ -444,9 +438,8 @@ mod tests {
 
     #[test]
     fn keybinding_annotator_skips_unbound_command() {
-        let annot = KeybindingAnnotator::new(Arc::new(FakeLookup(
-            std::collections::HashMap::new(),
-        )));
+        let annot =
+            KeybindingAnnotator::new(Arc::new(FakeLookup(std::collections::HashMap::new())));
         let mut c = rendered(
             "ex:write",
             CandidateKind::Command,
@@ -470,10 +463,7 @@ mod tests {
         let mut lookup_map = std::collections::HashMap::new();
         // Even if a name happens to match a file's text, the
         // annotator must not synthesize a keybinding for it.
-        lookup_map.insert(
-            "file.rs".into(),
-            vec![KeyChord::char('q')],
-        );
+        lookup_map.insert("file.rs".into(), vec![KeyChord::char('q')]);
         let annot = KeybindingAnnotator::new(Arc::new(FakeLookup(lookup_map)));
         let mut c = rendered(
             "file.rs",

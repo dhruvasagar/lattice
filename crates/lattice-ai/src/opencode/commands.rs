@@ -65,10 +65,16 @@ mod tests {
     fn opencode_term_spawns_terminal_and_activates_mode() {
         let mut registry = CommandRegistry::new();
         register_opencode_ex_commands(&mut registry);
-        let id = registry.id_by_name("opencode-term").expect("`:opencode-term` registered");
+        let id = registry
+            .id_by_name("opencode-term")
+            .expect("`:opencode-term` registered");
         let spec = registry.ex_command_spec(id).expect("spec present");
         match (spec.apply)(&ctx()).expect("apply ok") {
-            Effect::SpawnTerminal { cmd_line, activate_minor, .. } => {
+            Effect::SpawnTerminal {
+                cmd_line,
+                activate_minor,
+                ..
+            } => {
                 assert_eq!(cmd_line.as_deref(), Some("opencode"));
                 assert_eq!(activate_minor.as_deref(), Some("opencode-mode"));
             }

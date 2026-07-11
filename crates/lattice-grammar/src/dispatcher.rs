@@ -92,18 +92,16 @@ pub fn execute_with_env(
         CommandKind::TextObject => {
             execute_text_object(document, cursor, &invocation, entry, cancel, env)
         }
-        CommandKind::Operator => {
-            execute_operator(
-                registry,
-                document,
-                buffer_id,
-                cursor,
-                &invocation,
-                entry,
-                cancel,
-                env,
-            )
-        }
+        CommandKind::Operator => execute_operator(
+            registry,
+            document,
+            buffer_id,
+            cursor,
+            &invocation,
+            entry,
+            cancel,
+            env,
+        ),
         CommandKind::ExCommand => execute_ex_command(&invocation, entry, cancel),
         CommandKind::Action => execute_action(&invocation, entry, cancel),
     }
@@ -300,18 +298,16 @@ fn execute_operator(
         (Some(grammar_range), _) => {
             resolve_grammar_range(document, grammar_range, cursor, motion_count.get())?
         }
-        (None, Some(target)) => {
-            resolve_target(
-                registry,
-                document,
-                buffer_id,
-                cursor,
-                target,
-                motion_count,
-                cancel,
-                env,
-            )?
-        }
+        (None, Some(target)) => resolve_target(
+            registry,
+            document,
+            buffer_id,
+            cursor,
+            target,
+            motion_count,
+            cancel,
+            env,
+        )?,
         (None, None) => return Err(CommandError::MissingTarget),
     };
 
@@ -837,7 +833,8 @@ mod tests {
         let eff = execute(
             &registry,
             &mut doc,
-            lattice_core::BufferId(0), Position::ZERO,
+            lattice_core::BufferId(0),
+            Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -902,7 +899,10 @@ mod tests {
                 // inner-word "bar" = bytes [4, 7); charwise head = 6.
                 assert_eq!(p.anchor, Position::new(0, 4), "anchor at word start");
                 assert_eq!(p.head, Position::new(0, 6), "head one byte before end");
-                assert!(p.visual.is_none(), "bare object leaves the kind to the host");
+                assert!(
+                    p.visual.is_none(),
+                    "bare object leaves the kind to the host"
+                );
             }
             other => panic!("expected Effect::SelectionChange, got {other:?}"),
         }
@@ -919,12 +919,22 @@ mod tests {
 
         struct FixedResolver;
         impl ScopeResolver for FixedResolver {
-            fn scope_at(&self, _l: u32, _c: u32, _s: &str) -> Option<lattice_protocol::position::Range> {
+            fn scope_at(
+                &self,
+                _l: u32,
+                _c: u32,
+                _s: &str,
+            ) -> Option<lattice_protocol::position::Range> {
                 None
             }
             fn scope_toward(
-                &self, _l: u32, _c: u32, _s: &str,
-                _d: NavDir, _b: NavBoundary, _n: u32,
+                &self,
+                _l: u32,
+                _c: u32,
+                _s: &str,
+                _d: NavDir,
+                _b: NavBoundary,
+                _n: u32,
             ) -> Option<lattice_protocol::Position> {
                 Some(lattice_protocol::Position::new(7, 0))
             }

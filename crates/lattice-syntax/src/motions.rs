@@ -217,10 +217,22 @@ mod tests {
         let mut registry = CommandRegistry::new();
         let ids = register_syntax_motions(&mut registry);
         let all = [
-            ids.next_function_start, ids.prev_function_start, ids.next_function_end, ids.prev_function_end,
-            ids.next_class_start,    ids.prev_class_start,    ids.next_class_end,    ids.prev_class_end,
-            ids.next_parameter_start,ids.prev_parameter_start,ids.next_parameter_end,ids.prev_parameter_end,
-            ids.next_loop_start,     ids.prev_loop_start,     ids.next_loop_end,     ids.prev_loop_end,
+            ids.next_function_start,
+            ids.prev_function_start,
+            ids.next_function_end,
+            ids.prev_function_end,
+            ids.next_class_start,
+            ids.prev_class_start,
+            ids.next_class_end,
+            ids.prev_class_end,
+            ids.next_parameter_start,
+            ids.prev_parameter_start,
+            ids.next_parameter_end,
+            ids.prev_parameter_end,
+            ids.next_loop_start,
+            ids.prev_loop_start,
+            ids.next_loop_end,
+            ids.prev_loop_end,
         ];
         let mut seen = std::collections::HashSet::new();
         for id in all {

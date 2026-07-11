@@ -286,7 +286,14 @@ impl Conversation {
         input: Option<String>,
         output: Option<String>,
     ) {
-        let block = Block::ToolCall { id, title, status, kind, input, output };
+        let block = Block::ToolCall {
+            id,
+            title,
+            status,
+            kind,
+            input,
+            output,
+        };
         match self.turns.last_mut() {
             Some(turn) if turn.role == Role::Assistant => turn.blocks.push(block),
             _ => self.turns.push(Turn {
@@ -500,9 +507,7 @@ impl ConversationStore {
             PermissionOutcome::AllowOnce | PermissionOutcome::AllowAlways => {
                 PermissionStatus::Allowed
             }
-            PermissionOutcome::DenyOnce | PermissionOutcome::DenyAlways => {
-                PermissionStatus::Denied
-            }
+            PermissionOutcome::DenyOnce | PermissionOutcome::DenyAlways => PermissionStatus::Denied,
         };
         let session = {
             let mut conv = self.inner.lock().expect("conversation mutex poisoned");
@@ -688,7 +693,11 @@ mod tests {
 
     // ── AUX‑1: permission block tests ──
 
-    fn test_permission_option(id: &'static str, name: &'static str, kind: PermissionOptionKind) -> PermissionOption {
+    fn test_permission_option(
+        id: &'static str,
+        name: &'static str,
+        kind: PermissionOptionKind,
+    ) -> PermissionOption {
         PermissionOption::new(id, name, kind)
     }
 
@@ -700,7 +709,11 @@ mod tests {
             "perm-1".to_string(),
             "Allow agent to run cargo test?".to_string(),
             None,
-            vec![test_permission_option("a1", "Allow once", PermissionOptionKind::AllowOnce)],
+            vec![test_permission_option(
+                "a1",
+                "Allow once",
+                PermissionOptionKind::AllowOnce,
+            )],
         );
         assert_eq!(c.turns.len(), 1);
         assert_eq!(c.turns[0].role, Role::Assistant);
@@ -725,12 +738,7 @@ mod tests {
     #[test]
     fn permission_block_opens_fresh_assistant_turn_when_no_previous() {
         let mut c = Conversation::default();
-        c.push_permission_block(
-            "perm-1".to_string(),
-            "Allow?".to_string(),
-            None,
-            vec![],
-        );
+        c.push_permission_block("perm-1".to_string(), "Allow?".to_string(), None, vec![]);
         assert_eq!(c.turns.len(), 1);
         assert_eq!(c.turns[0].role, Role::Assistant);
     }
@@ -738,12 +746,7 @@ mod tests {
     #[test]
     fn permission_block_updated_by_id() {
         let mut c = Conversation::default();
-        c.push_permission_block(
-            "perm-1".to_string(),
-            "Allow?".to_string(),
-            None,
-            vec![],
-        );
+        c.push_permission_block("perm-1".to_string(), "Allow?".to_string(), None, vec![]);
         c.update_permission_status("perm-1", PermissionStatus::Allowed);
         match &c.turns[0].blocks[0] {
             Block::Permission { status, .. } => assert_eq!(*status, PermissionStatus::Allowed),
@@ -892,7 +895,9 @@ mod tests {
             serde_json::from_value(raw).expect("opencode usage_update should deserialize");
         let mut c = Conversation::default();
         c.apply(&update);
-        let usage = c.usage.expect("usage should be populated from the wire payload");
+        let usage = c
+            .usage
+            .expect("usage should be populated from the wire payload");
         assert_eq!(usage.used, 27744);
         assert_eq!(usage.size, 200000);
         assert_eq!(usage.cost.map(|c| c.currency), Some("USD".to_string()));
@@ -937,8 +942,14 @@ mod tests {
     fn status_display_formats() {
         assert_eq!(SessionStatus::Idle.to_string(), "Ready");
         assert!(SessionStatus::Thinking.to_string().contains("Thinking"));
-        let exec = SessionStatus::Executing { tool: "edit".into() };
+        let exec = SessionStatus::Executing {
+            tool: "edit".into(),
+        };
         assert_eq!(exec.to_string(), "Working: edit");
-        assert!(SessionStatus::AwaitingPermission.to_string().contains("Awaiting"));
+        assert!(
+            SessionStatus::AwaitingPermission
+                .to_string()
+                .contains("Awaiting")
+        );
     }
 }

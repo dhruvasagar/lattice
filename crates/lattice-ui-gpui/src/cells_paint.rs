@@ -179,10 +179,9 @@ pub fn display_line_to_text_runs(
     // does (host theme `DarkGray`), so inlays render at the colour the
     // projected cells carried. Tracks the worker until the dedicated
     // `inlay_hint_style` theme slot lands (then both read that slot).
-    let inlay_fg = lattice_host::ui::theme::Color::Named(
-        lattice_host::ui::theme::NamedColor::DarkGray,
-    )
-    .to_rgb_u32(0);
+    let inlay_fg =
+        lattice_host::ui::theme::Color::Named(lattice_host::ui::theme::NamedColor::DarkGray)
+            .to_rgb_u32(0);
 
     let mut runs: Vec<TextRun> = Vec::new();
     // T.10: each run group carries the synthetic [`Cell`] (fg/bg/flags,
@@ -195,8 +194,7 @@ pub fn display_line_to_text_runs(
     let mut current: Option<(Cell, RichAttrs, usize)> = None;
     for run in line.runs.iter() {
         let run_len = run.len as usize;
-        let (cell, rich) =
-            display_run_to_synthetic_cell(run, resolved, ids, trailing_fg, inlay_fg);
+        let (cell, rich) = display_run_to_synthetic_cell(run, resolved, ids, trailing_fg, inlay_fg);
         match &mut current {
             Some((sample, sample_rich, len))
                 if style_key(sample) == style_key(&cell)
@@ -262,7 +260,10 @@ pub fn heading_scale_split(
             return Some((col, scale));
         }
         let end = (byte + run_bytes).min(text.len());
-        col += text.get(byte..end).map(|s| s.chars().count() as u32).unwrap_or(0);
+        col += text
+            .get(byte..end)
+            .map(|s| s.chars().count() as u32)
+            .unwrap_or(0);
         byte = end;
     }
     None
@@ -339,10 +340,16 @@ fn display_run_to_synthetic_cell(
     if is_inlay {
         // Inlay runs take the inlay fg with NO syntax modifiers — exactly
         // what `display_line_to_cell_row` emits. No rich attrs either.
-        (Cell::new(0, inlay_fg, 0, cell_flags::INLAY), RichAttrs::default())
+        (
+            Cell::new(0, inlay_fg, 0, cell_flags::INLAY),
+            RichAttrs::default(),
+        )
     } else if is_ws {
         let fg = if is_trailing { trailing_fg } else { style_fg };
-        (Cell::new(0, fg, 0, mods | cell_flags::WS_MARKER), RichAttrs::default())
+        (
+            Cell::new(0, fg, 0, mods | cell_flags::WS_MARKER),
+            RichAttrs::default(),
+        )
     } else {
         (Cell::new(0, style_fg, 0, mods), rich)
     }
@@ -434,12 +441,7 @@ fn cell_to_text_run(cell: &Cell, len: usize, font_base: &Font) -> TextRun {
 ///   `font_size` passed to `shape_line` sizes the whole line), and no
 ///   builtin element sets `scale`, so there is nothing to grow. See the
 ///   apply note below.
-fn rich_cell_to_text_run(
-    cell: &Cell,
-    rich: &RichAttrs,
-    len: usize,
-    font_base: &Font,
-) -> TextRun {
+fn rich_cell_to_text_run(cell: &Cell, rich: &RichAttrs, len: usize, font_base: &Font) -> TextRun {
     let mut run = cell_to_text_run(cell, len, font_base);
     // A resolved `Weight` wins over the bold-bool's `FontWeight::BOLD`.
     if let Some(weight) = rich.weight {
@@ -519,8 +521,8 @@ mod tests {
     fn display_line_resolves_keyword_and_inlay_runs() {
         use lattice_host::display_matrix::{DisplayLine, DisplayRun};
         use lattice_host::ui::theme::{
-            resolve_syntax_style, BuiltinElementIds, Color, InMemoryThemeRegistry, NamedColor,
-            ThemeRegistry as _,
+            BuiltinElementIds, Color, InMemoryThemeRegistry, NamedColor, ThemeRegistry as _,
+            resolve_syntax_style,
         };
         // T.5.b: resolve through the default registry's resolved table.
         let reg = InMemoryThemeRegistry::with_defaults();
@@ -560,9 +562,17 @@ mod tests {
         assert_eq!(combined, "fn: i32");
         assert_eq!(runs.len(), 2, "keyword + inlay → two runs");
         assert_eq!(runs[0].len, 2);
-        assert_eq!(runs[0].color, rgb(kw_fg).into(), "keyword run takes theme keyword fg");
+        assert_eq!(
+            runs[0].color,
+            rgb(kw_fg).into(),
+            "keyword run takes theme keyword fg"
+        );
         assert_eq!(runs[1].len, 5);
-        assert_eq!(runs[1].color, rgb(inlay_fg).into(), "inlay run takes the inlay-hint fg");
+        assert_eq!(
+            runs[1].color,
+            rgb(inlay_fg).into(),
+            "inlay run takes the inlay-hint fg"
+        );
         assert_eq!(offsets, vec![(2, 5)], "col_map transfers as inlay_offsets");
     }
 
@@ -573,7 +583,9 @@ mod tests {
     #[test]
     fn display_line_heading_run_takes_extrabold_weight() {
         use lattice_host::display_matrix::{DisplayLine, DisplayRun};
-        use lattice_host::ui::theme::{BuiltinElementIds, InMemoryThemeRegistry, ThemeRegistry as _};
+        use lattice_host::ui::theme::{
+            BuiltinElementIds, InMemoryThemeRegistry, ThemeRegistry as _,
+        };
         let reg = InMemoryThemeRegistry::with_defaults();
         let resolved = reg.resolved();
         let ids = BuiltinElementIds::capture(&reg);
@@ -622,8 +634,16 @@ mod tests {
             text: std::sync::Arc::from(text),
             runs: std::sync::Arc::from(
                 vec![
-                    DisplayRun { len: 3, style: lattice_syntax::Style::Default, flags: 0 },
-                    DisplayRun { len: 5, style: lattice_syntax::Style::Heading2, flags: 0 },
+                    DisplayRun {
+                        len: 3,
+                        style: lattice_syntax::Style::Default,
+                        flags: 0,
+                    },
+                    DisplayRun {
+                        len: 5,
+                        style: lattice_syntax::Style::Heading2,
+                        flags: 0,
+                    },
                 ]
                 .into_boxed_slice(),
             ),
@@ -634,14 +654,21 @@ mod tests {
         let (prefix_cols, title_scale) =
             heading_scale_split(&heading, &resolved, &ids).expect("heading splits");
         assert_eq!(prefix_cols, 3, "the '## ' markers are the base-size prefix");
-        assert!((title_scale - 1.4).abs() < 1e-3, "title scales at heading.2's 1.4x");
+        assert!(
+            (title_scale - 1.4).abs() < 1e-3,
+            "title scales at heading.2's 1.4x"
+        );
 
         let body = DisplayLine {
             source_line: 0,
             text: std::sync::Arc::from("plain"),
             runs: std::sync::Arc::from(
-                vec![DisplayRun { len: 5, style: lattice_syntax::Style::Default, flags: 0 }]
-                    .into_boxed_slice(),
+                vec![DisplayRun {
+                    len: 5,
+                    style: lattice_syntax::Style::Default,
+                    flags: 0,
+                }]
+                .into_boxed_slice(),
             ),
             col_map: std::sync::Arc::from([] as [(u32, u32); 0]),
             col_count: 5,
@@ -672,8 +699,16 @@ mod tests {
             text: std::sync::Arc::from(text),
             runs: std::sync::Arc::from(
                 vec![
-                    DisplayRun { len: 2, style: lattice_syntax::Style::Default, flags: 0 },
-                    DisplayRun { len: 2, style: lattice_syntax::Style::Heading1, flags: 0 },
+                    DisplayRun {
+                        len: 2,
+                        style: lattice_syntax::Style::Default,
+                        flags: 0,
+                    },
+                    DisplayRun {
+                        len: 2,
+                        style: lattice_syntax::Style::Heading1,
+                        flags: 0,
+                    },
                 ]
                 .into_boxed_slice(),
             ),
@@ -693,7 +728,9 @@ mod tests {
     #[test]
     fn display_line_different_weight_breaks_runs() {
         use lattice_host::display_matrix::{DisplayLine, DisplayRun};
-        use lattice_host::ui::theme::{BuiltinElementIds, InMemoryThemeRegistry, ThemeRegistry as _};
+        use lattice_host::ui::theme::{
+            BuiltinElementIds, InMemoryThemeRegistry, ThemeRegistry as _,
+        };
         let reg = InMemoryThemeRegistry::with_defaults();
         let resolved = reg.resolved();
         let ids = BuiltinElementIds::capture(&reg);
@@ -705,8 +742,16 @@ mod tests {
             text: std::sync::Arc::from(text),
             runs: std::sync::Arc::from(
                 vec![
-                    DisplayRun { len: 1, style: lattice_syntax::Style::Heading1, flags: 0 },
-                    DisplayRun { len: 1, style: lattice_syntax::Style::Heading2, flags: 0 },
+                    DisplayRun {
+                        len: 1,
+                        style: lattice_syntax::Style::Heading1,
+                        flags: 0,
+                    },
+                    DisplayRun {
+                        len: 1,
+                        style: lattice_syntax::Style::Heading2,
+                        flags: 0,
+                    },
                 ]
                 .into_boxed_slice(),
             ),
@@ -715,7 +760,11 @@ mod tests {
             fold: None,
         };
         let (_, runs, _) = display_line_to_text_runs(&line, &resolved, &ids, &font("monospace"));
-        assert_eq!(runs.len(), 2, "ExtraBold heading.1 and Bold heading.2 do not merge");
+        assert_eq!(
+            runs.len(),
+            2,
+            "ExtraBold heading.1 and Bold heading.2 do not merge"
+        );
         assert_eq!(runs[0].font.weight, FontWeight::EXTRA_BOLD);
         assert_eq!(runs[1].font.weight, FontWeight::BOLD);
     }
@@ -1035,7 +1084,12 @@ mod tests {
             Cell::new(b'a' as u32, fg, 0, 0),
             Cell::new(b'b' as u32, fg, 0, cell_flags::INLAY),
             Cell::new(b'c' as u32, fg, 0, cell_flags::WS_MARKER),
-            Cell::new(b'd' as u32, fg, 0, cell_flags::INLAY | cell_flags::WS_MARKER),
+            Cell::new(
+                b'd' as u32,
+                fg,
+                0,
+                cell_flags::INLAY | cell_flags::WS_MARKER,
+            ),
         ];
         let r = row(cells);
         let (text, runs, _) = cell_row_to_text_runs(&r, &font("monospace"));

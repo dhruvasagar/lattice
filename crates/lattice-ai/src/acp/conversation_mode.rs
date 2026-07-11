@@ -19,13 +19,14 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use agent_client_protocol::schema::v1::PermissionOptionKind;
 
-use lattice_cells::{Cell, Headerline, HeaderlineProvider, HeaderlineRow, ProviderId, VirtualRowProvider};
+use lattice_cells::{
+    Cell, Headerline, HeaderlineProvider, HeaderlineRow, ProviderId, VirtualRowProvider,
+};
 use lattice_grammar::effect::{EchoLevel, Effect};
 use lattice_mode::{
     ActionContext, ActionHandler, ActionHandlerContribution, BufferStoreHandle, CapabilitySet,
     EditableTail, Keymap, KeymapEntry, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind,
-    OptionOverrideSet, ReplMode, Subscription,
-    VirtualRowRegistrar, keymap_entry,
+    OptionOverrideSet, ReplMode, Subscription, VirtualRowRegistrar, keymap_entry,
 };
 
 use crate::acp::conversation::{
@@ -69,7 +70,11 @@ impl Headerline for ConversationHeaderline {
         // AUX‑2: usage suffix (tokens/cost).
         if let Some(usage) = &snap.usage {
             use std::fmt::Write;
-            let _ = write!(text, " \u{2502} CPU: {}", format_tokens(usage.used, usage.size));
+            let _ = write!(
+                text,
+                " \u{2502} CPU: {}",
+                format_tokens(usage.used, usage.size)
+            );
             if let Some(cost) = &usage.cost {
                 let _ = write!(&mut text, " \u{00B7} ${:.3} {}", cost.amount, cost.currency);
             }
@@ -302,12 +307,7 @@ pub fn project_conversation(conv: &Conversation) -> (String, Vec<ConversationFol
                                 PermissionOptionKind::RejectAlways => "R",
                                 _ => "?",
                             };
-                            out.push_str(&format!(
-                                "    {}: {} ({})\n",
-                                i + 1,
-                                opt.name,
-                                key,
-                            ));
+                            out.push_str(&format!("    {}: {} ({})\n", i + 1, opt.name, key,));
                             line += 1;
                         }
                     }
@@ -403,7 +403,10 @@ pub struct AiConversationGuard {
     /// deactivate so the mode owns its full surface — the same Drop-based
     /// lifecycle `DiffModeGuard` uses for its hunk/unchanged sources. Empty when
     /// the fold service wasn't registered (some test harnesses) — Drop no-ops.
-    fold_registrations: Vec<(lattice_core::FoldOverlayServiceHandle, lattice_core::ProviderId)>,
+    fold_registrations: Vec<(
+        lattice_core::FoldOverlayServiceHandle,
+        lattice_core::ProviderId,
+    )>,
 }
 
 impl Drop for AiConversationGuard {
@@ -555,31 +558,31 @@ impl Mode for AiConversationMode {
             // `conv_store` is `Arc<ConversationStore>` from the service lookup;
             // cloning the Arc gives another reference to the same store.
             let hl_version = self.headerline_version.clone();
-            let headerline_registration = ctx
-                .service::<Arc<dyn VirtualRowRegistrar>>()
-                .map(|registrar| {
-                    let queue_len = ctx
-                        .service::<AiClientHandle>()
-                        .map(|h| h.queue_len.clone())
-                        .unwrap_or_default();
-                    let headerline = ConversationHeaderline {
-                        store: (*conv_store).clone(),
-                        version: hl_version.clone(),
-                        queue_len,
-                    };
-                    let provider = Arc::new(HeaderlineProvider::new(
-                        CONV_HEADERLINE_PROVIDER_ID,
-                        Arc::new(headerline),
-                    ));
-                    let registrar: Arc<dyn VirtualRowRegistrar> = (*registrar).clone();
-                    // The provider id is a fixed tag, and `register` refuses to
-                    // replace a live id. Clear any registration a previous
-                    // activation left behind so a re-opened `:opencode` binds its
-                    // own headerline rather than silently keeping the stale one.
-                    registrar.unregister(buffer_id, CONV_HEADERLINE_PROVIDER_ID);
-                    registrar.register(buffer_id, provider as Arc<dyn VirtualRowProvider>);
-                    (registrar, buffer_id)
-                });
+            let headerline_registration =
+                ctx.service::<Arc<dyn VirtualRowRegistrar>>()
+                    .map(|registrar| {
+                        let queue_len = ctx
+                            .service::<AiClientHandle>()
+                            .map(|h| h.queue_len.clone())
+                            .unwrap_or_default();
+                        let headerline = ConversationHeaderline {
+                            store: (*conv_store).clone(),
+                            version: hl_version.clone(),
+                            queue_len,
+                        };
+                        let provider = Arc::new(HeaderlineProvider::new(
+                            CONV_HEADERLINE_PROVIDER_ID,
+                            Arc::new(headerline),
+                        ));
+                        let registrar: Arc<dyn VirtualRowRegistrar> = (*registrar).clone();
+                        // The provider id is a fixed tag, and `register` refuses to
+                        // replace a live id. Clear any registration a previous
+                        // activation left behind so a re-opened `:opencode` binds its
+                        // own headerline rather than silently keeping the stale one.
+                        registrar.unregister(buffer_id, CONV_HEADERLINE_PROVIDER_ID);
+                        registrar.register(buffer_id, provider as Arc<dyn VirtualRowProvider>);
+                        (registrar, buffer_id)
+                    });
 
             // TCF: register the tool-call + reasoning fold sources. Each holds a
             // `ConversationStore` clone and reads the published snapshot on every
@@ -628,9 +631,11 @@ impl Mode for AiConversationMode {
                         .rev()
                         .flat_map(|t| t.blocks.iter().rev())
                         .find_map(|b| match b {
-                            Block::Permission { id, status: PermissionStatus::Pending, .. } => {
-                                Some(id.clone())
-                            }
+                            Block::Permission {
+                                id,
+                                status: PermissionStatus::Pending,
+                                ..
+                            } => Some(id.clone()),
                             _ => None,
                         });
                     // Keep the editable-region anchor on the transcript-end line:
@@ -732,7 +737,10 @@ async fn reproject(
         let snap = handle.snapshot();
         let last_line = snap.buffer.line_count().saturating_sub(1);
         let last_len = snap.buffer.line(last_line).unwrap_or_default().len() as u32;
-        ((last_line, last_len), format!("{}{}", rep.replacement, PROMPT_MARKER))
+        (
+            (last_line, last_len),
+            format!("{}{}", rep.replacement, PROMPT_MARKER),
+        )
     } else {
         (text_end(last), rep.replacement)
     };
@@ -843,8 +851,9 @@ fn send_handler(anchor: Arc<AtomicU32>) -> ActionHandler {
         // The prompt is `anchor..=last_line` (marker on the anchor line,
         // `<C-j>` continuation lines below).
         let anchor_line = anchor.load(Ordering::Relaxed).min(last_line);
-        let prompt =
-            assemble_prompt((anchor_line..=last_line).map(|l| snap.buffer.line(l).unwrap_or_default()));
+        let prompt = assemble_prompt(
+            (anchor_line..=last_line).map(|l| snap.buffer.line(l).unwrap_or_default()),
+        );
         if prompt.trim().is_empty() {
             return None;
         }
@@ -947,9 +956,18 @@ fn permission_handler(
 pub fn register_ai_conversation_actions(registry: &mut lattice_grammar::CommandRegistry) {
     use lattice_grammar::registry::ActionSpec;
     for (name, doc) in [
-        ("action:ai-conv-send", "ai-conversation: send the prompt to the agent."),
-        ("action:ai-conv-newline", "ai-conversation: insert a newline in the prompt."),
-        ("action:ai-conv-interrupt", "ai-conversation: interrupt the active turn."),
+        (
+            "action:ai-conv-send",
+            "ai-conversation: send the prompt to the agent.",
+        ),
+        (
+            "action:ai-conv-newline",
+            "ai-conversation: insert a newline in the prompt.",
+        ),
+        (
+            "action:ai-conv-interrupt",
+            "ai-conversation: interrupt the active turn.",
+        ),
         (
             "action:ai-conv-toggle-trust",
             "ai-conversation: toggle trust mode (auto-accept vs diff review).",
@@ -1037,12 +1055,19 @@ mod tests {
     fn assemble_prompt_reads_multiline_prompt() {
         assert_eq!(assemble_prompt(["> hello".to_string()]), "hello");
         assert_eq!(
-            assemble_prompt(["> line1".to_string(), "line2".to_string(), "line3".to_string()]),
+            assemble_prompt([
+                "> line1".to_string(),
+                "line2".to_string(),
+                "line3".to_string()
+            ]),
             "line1\nline2\nline3",
         );
         // Per-line trailing newlines are trimmed; a bare (unmarked) first line
         // is taken as-is.
-        assert_eq!(assemble_prompt(["> a\n".to_string(), "b\n".to_string()]), "a\nb");
+        assert_eq!(
+            assemble_prompt(["> a\n".to_string(), "b\n".to_string()]),
+            "a\nb"
+        );
         assert_eq!(assemble_prompt(["plain".to_string()]), "plain");
     }
 
@@ -1084,7 +1109,9 @@ mod tests {
             ],
         );
         assert!(
-            !pairs.iter().any(|(chord, _)| matches!(*chord, "i" | "a" | "o" | "A" | "I" | "O")),
+            !pairs
+                .iter()
+                .any(|(chord, _)| matches!(*chord, "i" | "a" | "o" | "A" | "I" | "O")),
             "insert-entry keys must live in repl-mode, not the ai-conversation major",
         );
     }
@@ -1201,7 +1228,10 @@ mod tests {
         let (text, folds) = project_conversation(&conv);
         assert!(text.contains("\u{25b8} bash [ok]"), "summary head: {text}");
         assert!(text.contains("    input:\n"), "input label: {text}");
-        assert!(text.contains("      \"cmd\": \"echo hi\""), "indented input body: {text}");
+        assert!(
+            text.contains("      \"cmd\": \"echo hi\""),
+            "indented input body: {text}"
+        );
         assert!(text.contains("    output:\n"), "output label: {text}");
 
         assert_eq!(folds.len(), 1);
@@ -1217,7 +1247,10 @@ mod tests {
         );
         assert!(f.end_line > f.start_line, "detail rows form the interior");
         // The last folded row is a detail row (the output body), not blank.
-        assert!(lines[f.end_line as usize].contains("\"hi\""), "end is the last detail row");
+        assert!(
+            lines[f.end_line as usize].contains("\"hi\""),
+            "end is the last detail row"
+        );
     }
 
     /// A tool call with no captured detail renders only its summary and yields
@@ -1249,12 +1282,17 @@ mod tests {
         let multi = Conversation {
             turns: vec![Turn {
                 role: Role::Assistant,
-                blocks: vec![Block::Reasoning("first thought\nsecond thought".to_string())],
+                blocks: vec![Block::Reasoning(
+                    "first thought\nsecond thought".to_string(),
+                )],
             }],
             ..Default::default()
         };
         let (text, folds) = project_conversation(&multi);
-        assert!(text.contains("  \u{2502} first thought"), "reasoning prefix: {text}");
+        assert!(
+            text.contains("  \u{2502} first thought"),
+            "reasoning prefix: {text}"
+        );
         assert_eq!(folds.len(), 1);
         assert_eq!(folds[0].kind, ConversationFoldKind::Reasoning);
         assert_eq!(folds[0].identity, reasoning_fold_identity(0));
@@ -1341,8 +1379,8 @@ mod tests {
 
     // ── AUX‑1: permission block rendering tests ──
 
-    use agent_client_protocol::schema::v1::{PermissionOption, PermissionOptionKind as POK};
     use crate::acp::conversation::PermissionStatus as PS;
+    use agent_client_protocol::schema::v1::{PermissionOption, PermissionOptionKind as POK};
 
     fn test_permission_option(id: &'static str, name: &'static str, kind: POK) -> PermissionOption {
         PermissionOption::new(id, name, kind)
@@ -1442,7 +1480,11 @@ mod tests {
             queue_len: Arc::new(AtomicUsize::new(0)),
         };
         let row = hl.render().expect("status always present → headerline row");
-        let text: String = row.cells.iter().map(|c| char::from_u32(c.codepoint).unwrap_or('�')).collect();
+        let text: String = row
+            .cells
+            .iter()
+            .map(|c| char::from_u32(c.codepoint).unwrap_or('�'))
+            .collect();
         assert!(text.contains("Ready"), "status shows Idle→Ready: {text}");
         assert!(!text.contains("CPU:"), "no usage → no CPU segment: {text}");
     }
@@ -1469,10 +1511,20 @@ mod tests {
             queue_len: Arc::new(AtomicUsize::new(0)),
         };
         let row = hl.render().expect("headerline row");
-        let text: String = row.cells.iter().map(|c| char::from_u32(c.codepoint).unwrap_or('�')).collect();
+        let text: String = row
+            .cells
+            .iter()
+            .map(|c| char::from_u32(c.codepoint).unwrap_or('�'))
+            .collect();
         assert!(text.contains("Ready"), "status prefix: {text}");
-        assert!(text.contains("31.4K"), "headerline shows used tokens: {text}");
-        assert!(text.contains("200.0K"), "headerline shows context size: {text}");
+        assert!(
+            text.contains("31.4K"),
+            "headerline shows used tokens: {text}"
+        );
+        assert!(
+            text.contains("200.0K"),
+            "headerline shows context size: {text}"
+        );
         assert!(text.contains("$0.045"), "headerline shows cost: {text}");
         assert!(text.contains("USD"), "headerline shows currency: {text}");
     }
@@ -1541,10 +1593,17 @@ mod tests {
             queue_len: Arc::new(AtomicUsize::new(0)),
         };
         let row = hl.render().expect("usage present");
-        let text: String = row.cells.iter().map(|c| char::from_u32(c.codepoint).unwrap_or('�')).collect();
+        let text: String = row
+            .cells
+            .iter()
+            .map(|c| char::from_u32(c.codepoint).unwrap_or('�'))
+            .collect();
         assert!(text.contains("Ready"), "status prefix: {text}");
         assert!(text.contains("CPU:"), "headerline has CPU prefix: {text}");
-        assert!(text.contains("5.0K/16.0K"), "headerline shows tokens: {text}");
+        assert!(
+            text.contains("5.0K/16.0K"),
+            "headerline shows tokens: {text}"
+        );
         assert!(!text.contains("$"), "no cost segment: {text}");
     }
 
@@ -1563,8 +1622,15 @@ mod tests {
             queue_len: Arc::new(AtomicUsize::new(0)),
         };
         let row = hl.render().expect("headerline row");
-        let text: String = row.cells.iter().map(|c| char::from_u32(c.codepoint).unwrap_or('�')).collect();
-        assert!(text.contains("Thinking"), "headerline shows Thinking: {text}");
+        let text: String = row
+            .cells
+            .iter()
+            .map(|c| char::from_u32(c.codepoint).unwrap_or('�'))
+            .collect();
+        assert!(
+            text.contains("Thinking"),
+            "headerline shows Thinking: {text}"
+        );
     }
 
     #[test]
@@ -1573,7 +1639,9 @@ mod tests {
             let store = ConversationStore::new(Arc::new(|_| {}));
             store.set_status(
                 &SessionKey::new("test", 0),
-                SessionStatus::Executing { tool: "edit parse.rs".into() },
+                SessionStatus::Executing {
+                    tool: "edit parse.rs".into(),
+                },
             );
             store
         };
@@ -1583,15 +1651,25 @@ mod tests {
             queue_len: Arc::new(AtomicUsize::new(0)),
         };
         let row = hl.render().expect("headerline row");
-        let text: String = row.cells.iter().map(|c| char::from_u32(c.codepoint).unwrap_or('�')).collect();
-        assert!(text.contains("Working: edit parse.rs"), "headerline shows tool: {text}");
+        let text: String = row
+            .cells
+            .iter()
+            .map(|c| char::from_u32(c.codepoint).unwrap_or('�'))
+            .collect();
+        assert!(
+            text.contains("Working: edit parse.rs"),
+            "headerline shows tool: {text}"
+        );
     }
 
     #[test]
     fn headerline_shows_awaiting_permission() {
         let store = {
             let store = ConversationStore::new(Arc::new(|_| {}));
-            store.set_status(&SessionKey::new("test", 0), SessionStatus::AwaitingPermission);
+            store.set_status(
+                &SessionKey::new("test", 0),
+                SessionStatus::AwaitingPermission,
+            );
             store
         };
         let hl = ConversationHeaderline {
@@ -1600,8 +1678,15 @@ mod tests {
             queue_len: Arc::new(AtomicUsize::new(0)),
         };
         let row = hl.render().expect("headerline row");
-        let text: String = row.cells.iter().map(|c| char::from_u32(c.codepoint).unwrap_or('�')).collect();
-        assert!(text.contains("Awaiting your approval"), "headerline shows awaiting: {text}");
+        let text: String = row
+            .cells
+            .iter()
+            .map(|c| char::from_u32(c.codepoint).unwrap_or('�'))
+            .collect();
+        assert!(
+            text.contains("Awaiting your approval"),
+            "headerline shows awaiting: {text}"
+        );
     }
 
     // ── AUX‑4: queue-in-headerline tests ──
@@ -1614,7 +1699,11 @@ mod tests {
             queue_len: Arc::new(AtomicUsize::new(2)),
         };
         let row = hl.render().expect("headerline row");
-        let text: String = row.cells.iter().map(|c| char::from_u32(c.codepoint).unwrap_or('�')).collect();
+        let text: String = row
+            .cells
+            .iter()
+            .map(|c| char::from_u32(c.codepoint).unwrap_or('�'))
+            .collect();
         assert!(text.contains("⌛"), "queue icon present: {text}");
         assert!(text.contains("2 queued"), "queue count shown: {text}");
     }
@@ -1627,8 +1716,15 @@ mod tests {
             queue_len: Arc::new(AtomicUsize::new(0)),
         };
         let row = hl.render().expect("headerline row");
-        let text: String = row.cells.iter().map(|c| char::from_u32(c.codepoint).unwrap_or('�')).collect();
-        assert!(!text.contains("queued"), "no queued text when empty: {text}");
+        let text: String = row
+            .cells
+            .iter()
+            .map(|c| char::from_u32(c.codepoint).unwrap_or('�'))
+            .collect();
+        assert!(
+            !text.contains("queued"),
+            "no queued text when empty: {text}"
+        );
         assert!(text.contains("Ready"), "still shows status: {text}");
     }
 }

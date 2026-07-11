@@ -201,7 +201,15 @@ impl TutorSession {
                 .exercise_started_at
                 .map(|t| {
                     let s = t.elapsed().as_secs();
-                    if s < 10 { 100 } else if s < 30 { 50 } else if s < 60 { 25 } else { 0 }
+                    if s < 10 {
+                        100
+                    } else if s < 30 {
+                        50
+                    } else if s < 60 {
+                        25
+                    } else {
+                        0
+                    }
                 })
                 .unwrap_or(0);
             self.score = self.score.saturating_add(base + first_try + speed);
@@ -265,8 +273,7 @@ impl TutorSession {
 
 impl lattice_mode::BufferLocal for TutorSession {
     const NAME: &'static str = "tutor-mode.session";
-    const DOC: &'static str =
-        "Active tutor session: current lesson, exercise index, \
+    const DOC: &'static str = "Active tutor session: current lesson, exercise index, \
          anchor line positions, attempt count.";
     const OWNER_MODE: &'static str = "tutor-mode";
 
@@ -306,8 +313,11 @@ mod tests {
                     $n,
                     ".exercises.toml"
                 ));
-                TutorSession::load($n, TOTAL, lesson_text, exercises_toml)
-                    .expect(concat!("lesson-", $n, " sidecar should parse + all anchors found"));
+                TutorSession::load($n, TOTAL, lesson_text, exercises_toml).expect(concat!(
+                    "lesson-",
+                    $n,
+                    " sidecar should parse + all anchors found"
+                ));
             }
         };
     }
@@ -351,7 +361,10 @@ hint        = "type d a ("
         let s = TutorSession::load(2, TOTAL, lesson_text(), exercises_toml()).unwrap();
         assert_eq!(s.anchor_lines[0], 2);
         assert_eq!(s.anchor_lines[1], 4);
-        assert_eq!(s.initial_texts[0], "--->  The quick brown fox jumps over the lazy dog.");
+        assert_eq!(
+            s.initial_texts[0],
+            "--->  The quick brown fox jumps over the lazy dog."
+        );
     }
 
     #[test]

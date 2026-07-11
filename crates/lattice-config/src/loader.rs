@@ -168,7 +168,10 @@ pub fn config_home() -> Option<PathBuf> {
 
 /// Pure resolver behind [`config_home`], split out so the precedence logic is
 /// unit-testable without mutating process-global environment variables.
-fn resolve_config_home(xdg_config_home: Option<PathBuf>, fallback: Option<PathBuf>) -> Option<PathBuf> {
+fn resolve_config_home(
+    xdg_config_home: Option<PathBuf>,
+    fallback: Option<PathBuf>,
+) -> Option<PathBuf> {
     if let Some(xdg) = xdg_config_home
         && xdg.is_absolute()
     {

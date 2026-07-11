@@ -48,9 +48,7 @@ impl App {
         // Slice 3c.final.E.5e: clone `name` to owned `String` for
         // the `Send + 'static` closure. Return type `BufferId` is Copy.
         let name = name.to_string();
-        self.mutate_editor_with(move |e| {
-            e.ensure_named_synthetic_document(&name, major_id, flags)
-        })
+        self.mutate_editor_with(move |e| e.ensure_named_synthetic_document(&name, major_id, flags))
     }
 
     /// Re-export of the canonical

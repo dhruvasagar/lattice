@@ -167,7 +167,12 @@ impl OptionType for DiagnosticsSeverity {
         "diagnostics-severity"
     }
     fn enumerate() -> Option<Vec<&'static str>> {
-        Some(DiagnosticsSeverity::all().iter().map(|v| v.label()).collect())
+        Some(
+            DiagnosticsSeverity::all()
+                .iter()
+                .map(|v| v.label())
+                .collect(),
+        )
     }
     fn enumerate_with_docs() -> Option<Vec<EnumeratedValue>> {
         Some(

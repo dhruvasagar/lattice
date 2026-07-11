@@ -119,12 +119,29 @@ impl BindingMode {
     pub fn all() -> &'static [BindingMode] {
         use BindingMode::*;
         &[
-            Normal, Insert, Visual, Select, Replace, Command, Search,
-            OperatorPending, AfterG, AfterZ, AfterMark,
-            AfterJumpMarkLine, AfterJumpMarkExact, AfterRegister,
-            AfterMacroStart, AfterMacroPlay, AfterFindChar,
-            AfterTextObject, Help, AfterCtrlW, AfterCtrlX,
-            CompletionPopup, Snippet,
+            Normal,
+            Insert,
+            Visual,
+            Select,
+            Replace,
+            Command,
+            Search,
+            OperatorPending,
+            AfterG,
+            AfterZ,
+            AfterMark,
+            AfterJumpMarkLine,
+            AfterJumpMarkExact,
+            AfterRegister,
+            AfterMacroStart,
+            AfterMacroPlay,
+            AfterFindChar,
+            AfterTextObject,
+            Help,
+            AfterCtrlW,
+            AfterCtrlX,
+            CompletionPopup,
+            Snippet,
         ]
     }
 }
@@ -176,7 +193,10 @@ mod tests {
     fn display_equals_label() {
         assert_eq!(format!("{}", BindingMode::Normal), "Normal");
         assert_eq!(format!("{}", BindingMode::Insert), "Insert");
-        assert_eq!(format!("{}", BindingMode::OperatorPending), "Operator-Pending");
+        assert_eq!(
+            format!("{}", BindingMode::OperatorPending),
+            "Operator-Pending"
+        );
     }
 
     #[test]

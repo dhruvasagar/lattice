@@ -20,8 +20,8 @@ use std::sync::{Arc, Mutex};
 use arc_swap::ArcSwap;
 use lattice_core::BufferId;
 use lattice_mode::{
-    modeline::ROLE_MODE_ITEM, ElementContent, ElementId, ModelineElement, ModelineElementUpdate,
-    ModelineKey, ModelineRole, ModelineService, Zone,
+    ElementContent, ElementId, ModelineElement, ModelineElementUpdate, ModelineKey, ModelineRole,
+    ModelineService, Zone, modeline::ROLE_MODE_ITEM,
 };
 use lattice_runtime::EventBus;
 use tokio::sync::Notify;
@@ -316,7 +316,10 @@ mod tests {
         let c1 = status_content(&state(true, Some(8123)), 1, "lattice", 1, false);
         assert_eq!(c1.plain(), "● claude · lattice :8123 · 1 conn · ◆ review");
         let c2 = status_content(&state(true, Some(8123)), 1, "lattice", 2, false);
-        assert_eq!(c2.plain(), "● claude · lattice :8123 · 1 conn · ◆ 2 reviews");
+        assert_eq!(
+            c2.plain(),
+            "● claude · lattice :8123 · 1 conn · ◆ 2 reviews"
+        );
     }
 
     #[test]
@@ -326,7 +329,10 @@ mod tests {
         let c = status_content(&state(true, Some(8123)), 1, "lattice", 0, true);
         assert_eq!(c.plain(), "● claude · lattice :8123 · 1 conn · @sent");
         let c2 = status_content(&state(true, Some(8123)), 1, "lattice", 1, true);
-        assert_eq!(c2.plain(), "● claude · lattice :8123 · 1 conn · ◆ review · @sent");
+        assert_eq!(
+            c2.plain(),
+            "● claude · lattice :8123 · 1 conn · ◆ review · @sent"
+        );
     }
 
     #[test]
@@ -354,8 +360,14 @@ mod tests {
 
     #[test]
     fn project_name_takes_workspace_basename() {
-        assert_eq!(project_name(&["/home/me/src/lattice".to_string()]), "lattice");
-        assert_eq!(project_name(&["/home/me/src/lattice/".to_string()]), "lattice");
+        assert_eq!(
+            project_name(&["/home/me/src/lattice".to_string()]),
+            "lattice"
+        );
+        assert_eq!(
+            project_name(&["/home/me/src/lattice/".to_string()]),
+            "lattice"
+        );
         assert_eq!(project_name(&[]), "");
         assert_eq!(project_name(&["".to_string()]), "");
     }
@@ -373,10 +385,7 @@ mod tests {
         // Register the buffer + subscribe BEFORE spawning, so the publisher's
         // first iteration publishes for it (no wake race in the test).
         let buf = BufferId(7);
-        ide_buffers
-            .lock()
-            .unwrap()
-            .insert(buf);
+        ide_buffers.lock().unwrap().insert(buf);
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<ModelineElementUpdate>();
         bus.subscribe_typed(tx);
 

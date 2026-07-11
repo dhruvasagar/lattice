@@ -69,10 +69,26 @@ pub use lattice_mode::modeline::ROLE_MODE_ITEM;
 /// Priorities are uniform leftward→rightward in every zone; the
 /// renderer right-aligns the Right *block* (see [`Zone`]).
 pub fn register_builtin_elements(svc: &ModelineService) {
-    svc.register(ModelineElement::new(ElementId::new(CORE_MODE), Zone::Left, 0));
-    svc.register(ModelineElement::new(ElementId::new(CORE_PATH), Zone::Left, 10));
-    svc.register(ModelineElement::new(ElementId::new(CORE_POSITION), Zone::Right, 10));
-    svc.register(ModelineElement::new(ElementId::new(CORE_LANG), Zone::Right, 20));
+    svc.register(ModelineElement::new(
+        ElementId::new(CORE_MODE),
+        Zone::Left,
+        0,
+    ));
+    svc.register(ModelineElement::new(
+        ElementId::new(CORE_PATH),
+        Zone::Left,
+        10,
+    ));
+    svc.register(ModelineElement::new(
+        ElementId::new(CORE_POSITION),
+        Zone::Right,
+        10,
+    ));
+    svc.register(ModelineElement::new(
+        ElementId::new(CORE_LANG),
+        Zone::Right,
+        20,
+    ));
 }
 
 /// Modal-state short label for the active document, read from the
@@ -492,13 +508,16 @@ mod tests {
     fn resolve_layout_auto_pads_glyph_separator() {
         let reg = builtin_registry();
         let cfg = modeline_config();
-        cfg.parse_and_set_command("ui.modeline.separator=|").unwrap();
+        cfg.parse_and_set_command("ui.modeline.separator=|")
+            .unwrap();
         assert_eq!(resolve_layout(&reg, &cfg).separator, " | ");
         // ` | ` trims to `|` then re-pads to the same — no double space.
-        cfg.parse_and_set_command("ui.modeline.separator= | ").unwrap();
+        cfg.parse_and_set_command("ui.modeline.separator= | ")
+            .unwrap();
         assert_eq!(resolve_layout(&reg, &cfg).separator, " | ");
         // A blank separator stays a single space (the default look).
-        cfg.parse_and_set_command("ui.modeline.separator= ").unwrap();
+        cfg.parse_and_set_command("ui.modeline.separator= ")
+            .unwrap();
         assert_eq!(resolve_layout(&reg, &cfg).separator, " ");
     }
 
@@ -593,8 +612,7 @@ mod tests {
         let rs = editor.build_render_state();
         let pane = editor.pane_tree.active().clone();
 
-        let overridden =
-            resolve_builtin_content(CORE_PATH, &pane, true, &rs, Some("[tree] /root"));
+        let overridden = resolve_builtin_content(CORE_PATH, &pane, true, &rs, Some("[tree] /root"));
         assert_eq!(overridden.plain(), "[tree] /root");
 
         // No provider: a fresh scratch buffer has no path; the segment

@@ -77,7 +77,10 @@ pub enum GutterDecoration {
     /// Diff-sign column (between severity and line numbers).
     Diff { line: u32, kind: GutterDiffKind },
     /// LSP diagnostic severity column (leftmost gutter cell).
-    Severity { line: u32, level: GutterSeverityLevel },
+    Severity {
+        line: u32,
+        level: GutterSeverityLevel,
+    },
 }
 
 /// Read-only context passed to [`crate::Mode::gutter_decorations`].
@@ -91,12 +94,13 @@ pub struct DecorationCtx<'a> {
 
 impl<'a> DecorationCtx<'a> {
     pub fn new(buffer_id: BufferId, services: &'a ServiceRegistry) -> Self {
-        Self { buffer_id, services }
+        Self {
+            buffer_id,
+            services,
+        }
     }
 
-    pub fn service<T: std::any::Any + Send + Sync>(
-        &self,
-    ) -> Option<std::sync::Arc<T>> {
+    pub fn service<T: std::any::Any + Send + Sync>(&self) -> Option<std::sync::Arc<T>> {
         self.services.get::<T>()
     }
 }

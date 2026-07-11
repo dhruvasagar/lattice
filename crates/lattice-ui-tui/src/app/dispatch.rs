@@ -1154,8 +1154,7 @@ impl App {
             RendererSignal::DisplayBuffer(req) => {
                 let lattice_host::dispatch::DisplayBufferRequest { content, category } = *req;
                 self.display_buffer(content, category);
-            }
-            // 5.5.F.5.5: `BufferActivated` retired. The Bucket-A
+            } // 5.5.F.5.5: `BufferActivated` retired. The Bucket-A
               // `visible_highlights` / `pane_highlights` cache clear
               // lives on `Editor` as plain field writes, so the
               // post-activation tail (`activate_buffer_state`) runs
@@ -1592,7 +1591,10 @@ mod tests {
 
         let mut a = app_with("one\ntwo\nthree\nfour\nfive", 10);
         // First g: absorbs into partial_chord.
-        press(&mut a, KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE));
+        press(
+            &mut a,
+            KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE),
+        );
         assert_eq!(
             a.editor.partial_chord.len(),
             1,
@@ -1618,7 +1620,10 @@ mod tests {
         );
 
         // Second g resolves gg.
-        press(&mut a, KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE));
+        press(
+            &mut a,
+            KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE),
+        );
         assert_eq!(
             a.editor.cursor.line, 0,
             "gg should jump to line 0; partial_chord survived the inter-keystroke EnsureCursorVisible"
@@ -1666,10 +1671,8 @@ mod tests {
                 partial_chord: &translator.partial_chord,
                 active_minor_modes: &translator.active_minor_modes,
             };
-            let action = crate::input::translate(
-                ctx,
-                KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE),
-            );
+            let action =
+                crate::input::translate(ctx, KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE));
             a.apply(action);
         }
         press_g_via_rs(&mut a);
@@ -2377,7 +2380,9 @@ mod tests {
         // 5.5.LSP.1: hover request migrated to `Editor::dispatch`;
         // exercise the State A -> State B promote through the Action
         // path so the test covers the live dispatch wire too.
-        a.apply_effect(lattice_grammar::Effect::Lsp(lattice_grammar::LspRequest::Hover));
+        a.apply_effect(lattice_grammar::Effect::Lsp(
+            lattice_grammar::LspRequest::Hover,
+        ));
         assert!(
             a.editor.popup_buffer.is_some(),
             "popup stays up after focus"

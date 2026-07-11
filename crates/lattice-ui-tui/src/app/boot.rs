@@ -74,7 +74,9 @@ impl App {
         // `*dashboard*`. One publish per boot, TUI + GPUI both wire this at
         // their own post-boot seam; the subscription itself lives once in
         // `lattice-dashboard`.
-        editor.event_bus.publish_typed(lattice_mode::Startup { opened_file });
+        editor
+            .event_bus
+            .publish_typed(lattice_mode::Startup { opened_file });
         // Slice 3c.atomic.A: renderer-side clone of the editor's
         // RenderState cell, captured before Editor moves to the
         // actor thread.
@@ -82,8 +84,7 @@ impl App {
         // Perf plan B.2 slice B.2.a: clone the overlay worker's
         // output cell. display-line B4.2: the dead span/row prepaint
         // cell clones were deleted with the worker's span/row cache.
-        let syntax_static_overlay_quads_cell =
-            editor.syntax_static_overlay_quads_cell.clone();
+        let syntax_static_overlay_quads_cell = editor.syntax_static_overlay_quads_cell.clone();
         // Slice 3c.final.E.swap: run boot-time setup directly on
         // the owned Editor BEFORE handing it to the actor. Every
         // call below resolves to a host-side method; the App-side
@@ -211,11 +212,8 @@ impl App {
         // T.6.t: non-style chrome (glyphs, separator chars, dim/
         // nerd-fonts flags) sources from the published typed-options
         // registry; style fields from the resolved table.
-        self.theme = crate::theme::build_tui_theme(
-            &rs.options.config,
-            &rs.resolved_theme,
-            &rs.theme_ids,
-        );
+        self.theme =
+            crate::theme::build_tui_theme(&rs.options.config, &rs.resolved_theme, &rs.theme_ids);
     }
 
     /// Load `~/.editor.config/lattice/lattice.toml` (user) and

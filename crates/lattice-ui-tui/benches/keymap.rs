@@ -489,7 +489,7 @@ fn translate_ctx<'a>(
         terminal_esc_exits: false,
         terminal_app_cursor_keys: false,
         terminal_insert_exit_pending: false,
-            terminal_visual_active: false,
+        terminal_visual_active: false,
         keymap,
         partial_chord,
         active_minor_modes: &[],
@@ -579,7 +579,11 @@ fn push_synthetic_minor_layers(h: &KeymapHandle, n: usize) -> Vec<ModeId> {
         let mut by_mode: std::collections::HashMap<BindingMode, KeymapTrie> =
             std::collections::HashMap::new();
         by_mode.insert(BindingMode::Normal, trie);
-        h.push_layer(PushLayerKind::MinorMode(id), format!("synth-minor-{i}"), by_mode);
+        h.push_layer(
+            PushLayerKind::MinorMode(id),
+            format!("synth-minor-{i}"),
+            by_mode,
+        );
     }
     ids
 }
@@ -594,11 +598,8 @@ fn keymap_handle_lookup_with_one_minor(c: &mut Criterion) {
     let path = vec![KeyChord::char('j')];
     c.bench_function("keymap_handle_lookup_with_one_minor", |b| {
         b.iter(|| {
-            let r = h.lookup_with_context(
-                BindingMode::Normal,
-                black_box(&path),
-                black_box(&active),
-            );
+            let r =
+                h.lookup_with_context(BindingMode::Normal, black_box(&path), black_box(&active));
             black_box(r);
         });
     });
@@ -611,11 +612,8 @@ fn keymap_handle_lookup_with_two_minors(c: &mut Criterion) {
     let path = vec![KeyChord::char('j')];
     c.bench_function("keymap_handle_lookup_with_two_minors", |b| {
         b.iter(|| {
-            let r = h.lookup_with_context(
-                BindingMode::Normal,
-                black_box(&path),
-                black_box(&active),
-            );
+            let r =
+                h.lookup_with_context(BindingMode::Normal, black_box(&path), black_box(&active));
             black_box(r);
         });
     });
@@ -635,19 +633,13 @@ fn keymap_handle_lookup_with_three_minors_three_chord(c: &mut Criterion) {
         KeyChord::char('i'),
         KeyChord::char('w'),
     ];
-    c.bench_function(
-        "keymap_handle_lookup_with_three_minors_three_chord",
-        |b| {
-            b.iter(|| {
-                let r = h.lookup_with_context(
-                    BindingMode::Normal,
-                    black_box(&path),
-                    black_box(&active),
-                );
-                black_box(r);
-            });
-        },
-    );
+    c.bench_function("keymap_handle_lookup_with_three_minors_three_chord", |b| {
+        b.iter(|| {
+            let r =
+                h.lookup_with_context(BindingMode::Normal, black_box(&path), black_box(&active));
+            black_box(r);
+        });
+    });
 }
 
 /// Hot path with 3 minors registered but `active_modes`
@@ -666,11 +658,8 @@ fn keymap_handle_lookup_empty_minors_with_layers_registered(c: &mut Criterion) {
         "keymap_handle_lookup_empty_minors_with_layers_registered",
         |b| {
             b.iter(|| {
-                let r = h.lookup_with_context(
-                    BindingMode::Normal,
-                    black_box(&path),
-                    black_box(&empty),
-                );
+                let r =
+                    h.lookup_with_context(BindingMode::Normal, black_box(&path), black_box(&empty));
                 black_box(r);
             });
         },

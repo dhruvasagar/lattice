@@ -43,7 +43,9 @@ impl Decorations {
     pub fn doc(&self) -> &'static str {
         match self {
             Decorations::Full => "System titlebar and window controls (default)",
-            Decorations::None_ => "Borderless window: no titlebar or controls (non-resizable on macOS)",
+            Decorations::None_ => {
+                "Borderless window: no titlebar or controls (non-resizable on macOS)"
+            }
             Decorations::Transparent => {
                 "Frameless-looking but resizable: transparent titlebar, hidden controls"
             }
@@ -95,7 +97,10 @@ impl OptionType for Decorations {
         Some(
             Decorations::all()
                 .iter()
-                .map(|v| EnumeratedValue { form: v.label(), doc: v.doc() })
+                .map(|v| EnumeratedValue {
+                    form: v.label(),
+                    doc: v.doc(),
+                })
                 .collect(),
         )
     }

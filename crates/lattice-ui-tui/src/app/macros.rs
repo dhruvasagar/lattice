@@ -93,7 +93,9 @@ mod tests {
         a.apply(Action::EnterSelect(VisualKind::Charwise));
         // `e` (word_end) from col 0 lands on 'o' of "hello" (0,4); the
         // charwise selection then spans 0..5 ("hello", head-inclusive).
-        a.apply(Action::Invoke(CommandInvocation::of(a.editor.builtins.word_end.0)));
+        a.apply(Action::Invoke(CommandInvocation::of(
+            a.editor.builtins.word_end.0,
+        )));
         a.apply(Action::SelectOvertype('X'));
         a.apply(Action::StopMacroRecord);
         assert_eq!(
@@ -104,7 +106,12 @@ mod tests {
 
         // The novel surface is captured: the recorded stream carries the
         // overtype (and the Select entry), not raw keystrokes.
-        let recorded = a.editor.macros.get(&'a').cloned().expect("macro 'a' recorded");
+        let recorded = a
+            .editor
+            .macros
+            .get(&'a')
+            .cloned()
+            .expect("macro 'a' recorded");
         assert!(
             recorded
                 .iter()
@@ -131,7 +138,8 @@ mod tests {
             "hello world",
             "undo restores the whole overtyped span in one step"
         );
-        a.editor.set_cursor(lattice_protocol::position::Position::new(0, 0));
+        a.editor
+            .set_cursor(lattice_protocol::position::Position::new(0, 0));
         a.apply(Action::PlayMacro('a'));
         assert_eq!(
             a.editor.document.text(),

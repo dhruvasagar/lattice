@@ -69,11 +69,7 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     // `DocumentClosed` cleanup subscriber, which needs the event bus + the
     // registry handle. The subscriber spawns only when a tokio runtime is in
     // scope (production boot); test paths skip it gracefully.
-    crate::mode::register_multibuffer_modes(
-        boot.modes_mut(),
-        &event_bus,
-        registry_handle.clone(),
-    );
+    crate::mode::register_multibuffer_modes(boot.modes_mut(), &event_bus, registry_handle.clone());
     // N.1.1: narrow provider-minor mode (marker for narrow views). First-class.
     crate::providers::narrow::register_narrow_mode(boot.modes_mut());
     // M.6: project-search provider-minor mode (feature-gated with its provider).
@@ -86,10 +82,8 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     // references the motions by canonical name, resolved at the host's K.2.4
     // translation pass; the registration side-effect (the names in the
     // registry) is what keeps that lookup successful.
-    let _ = crate::motions::register_multibuffer_motions(
-        boot.commands_mut(),
-        registry_handle.clone(),
-    );
+    let _ =
+        crate::motions::register_multibuffer_motions(boot.commands_mut(), registry_handle.clone());
     crate::mode::register_multibuffer_ex_commands(boot.commands_mut());
     // N.1.1: `:narrow` + `:widen`. First-class — no feature gate.
     crate::providers::narrow::register_narrow_ex_commands(boot.commands_mut());

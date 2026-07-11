@@ -38,10 +38,7 @@ pub trait ErasedOption: Send + Sync {
     /// `ConfigRegistry::parse_for_buffer_local` to produce an
     /// `OptionOverride` for the buffer-local layer (BL.1) without
     /// touching the global registry.
-    fn parse_to_erased(
-        &self,
-        value: &str,
-    ) -> Result<Arc<dyn Any + Send + Sync>, String>;
+    fn parse_to_erased(&self, value: &str) -> Result<Arc<dyn Any + Send + Sync>, String>;
 
     /// Render the current value (`:set foo?` echo, customize
     /// buffer view).
@@ -92,7 +89,10 @@ pub trait ErasedOption: Send + Sync {
     /// when the concrete type isn't known at the call site. Returns
     /// `None` if `value` doesn't downcast to this option's `Value` type
     /// (caller falls back to `get_formatted()` in that case).
-    fn format_erased_value(&self, value: &std::sync::Arc<dyn std::any::Any + Send + Sync>) -> std::option::Option<String>;
+    fn format_erased_value(
+        &self,
+        value: &std::sync::Arc<dyn std::any::Any + Send + Sync>,
+    ) -> std::option::Option<String>;
 
     /// Project back to the concrete type for typed-handle reads.
 
@@ -133,10 +133,7 @@ impl<T: OptionType> ErasedOption for Option<T> {
         self.set(parsed)
     }
 
-    fn parse_to_erased(
-        &self,
-        value: &str,
-    ) -> Result<Arc<dyn Any + Send + Sync>, String> {
+    fn parse_to_erased(&self, value: &str) -> Result<Arc<dyn Any + Send + Sync>, String> {
         let parsed = T::parse(value)?;
         // Run the validator (if any) without writing to storage.
         if let Some(v) = self.validate
@@ -183,7 +180,10 @@ impl<T: OptionType> ErasedOption for Option<T> {
         self.set(neg)
     }
 
-    fn format_erased_value(&self, value: &std::sync::Arc<dyn std::any::Any + Send + Sync>) -> std::option::Option<String> {
+    fn format_erased_value(
+        &self,
+        value: &std::sync::Arc<dyn std::any::Any + Send + Sync>,
+    ) -> std::option::Option<String> {
         value.clone().downcast::<T>().ok().map(|v| v.format())
     }
 

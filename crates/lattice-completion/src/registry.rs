@@ -207,9 +207,7 @@ impl CompletionRegistry {
     /// Callers that need deterministic ordering should sort by
     /// `spec.id` themselves; v1 doesn't dictate ordering at
     /// the registry layer.
-    pub fn sources(
-        &self,
-    ) -> impl Iterator<Item = &crate::source_registration::SourceRegistration> {
+    pub fn sources(&self) -> impl Iterator<Item = &crate::source_registration::SourceRegistration> {
         self.sources.values()
     }
 
@@ -471,9 +469,7 @@ mod tests {
     #[test]
     fn register_source_round_trips_by_id() {
         use crate::candidate::{CandidateKind, RawCandidate};
-        use crate::source_registration::{
-            CandidateSourceKind, SourceRegistration, SourceSpec,
-        };
+        use crate::source_registration::{CandidateSourceKind, SourceRegistration, SourceSpec};
 
         let mut r = CompletionRegistry::new();
         assert_eq!(r.source_count(), 0);
@@ -510,9 +506,7 @@ mod tests {
     /// source's behaviour by re-registering under the same id.
     #[test]
     fn register_source_last_write_wins_on_duplicate_id() {
-        use crate::source_registration::{
-            CandidateSourceKind, SourceRegistration, SourceSpec,
-        };
+        use crate::source_registration::{CandidateSourceKind, SourceRegistration, SourceSpec};
 
         let mut r = CompletionRegistry::new();
         let first = SourceRegistration {

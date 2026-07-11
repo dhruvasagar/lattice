@@ -766,8 +766,11 @@ impl SyntaxSnapshot {
         // end_pos). N.1.4c: track byte-precise positions (line + byte
         // column), not just rows, so intra-line objects (`aa`/`ia`) are
         // charwise-accurate.
-        let mut best: Option<(usize, lattice_protocol::Position, lattice_protocol::Position)> =
-            None;
+        let mut best: Option<(
+            usize,
+            lattice_protocol::Position,
+            lattice_protocol::Position,
+        )> = None;
         while let Some(m) = matches.next() {
             for cap in m.captures {
                 let name = names[cap.index as usize];
@@ -887,7 +890,10 @@ impl SyntaxSnapshot {
                     (NavDir::Forward, NavBoundary::End) => b > cursor_byte,
                 };
                 if keep {
-                    cands.push((b, lattice_protocol::Position::new(pt.row as u32, pt.column as u32)));
+                    cands.push((
+                        b,
+                        lattice_protocol::Position::new(pt.row as u32, pt.column as u32),
+                    ));
                 }
             }
         }
@@ -899,7 +905,9 @@ impl SyntaxSnapshot {
             NavDir::Forward => cands,
             NavDir::Backward => cands.into_iter().rev().collect(),
         };
-        ordered.get((count as usize).saturating_sub(1)).map(|(_, p)| *p)
+        ordered
+            .get((count as usize).saturating_sub(1))
+            .map(|(_, p)| *p)
     }
 
     /// Compute styled spans for each line in `[start_line, end_line)`.
@@ -1672,7 +1680,10 @@ const MAX: i32 = 10;\n\
         assert_eq!(s.scope_at_cursor(0, 7, "parameter.outer"), rng(0, 7, 0, 13));
         assert_eq!(s.scope_at_cursor(0, 7, "parameter.inner"), rng(0, 7, 0, 13));
         // Cursor on the second parameter resolves the second span.
-        assert_eq!(s.scope_at_cursor(0, 15, "parameter.outer"), rng(0, 15, 0, 21));
+        assert_eq!(
+            s.scope_at_cursor(0, 15, "parameter.outer"),
+            rng(0, 15, 0, 21)
+        );
     }
 
     #[test]
@@ -1697,7 +1708,10 @@ const MAX: i32 = 10;\n\
         let src = "def greet(name):\n    msg = name\n    return msg\n";
         let mut s = Syntax::for_language(Lang::Python).unwrap().unwrap();
         s.parse(src);
-        assert_eq!(s.scope_at_cursor(0, 10, "parameter.outer"), rng(0, 10, 0, 14));
+        assert_eq!(
+            s.scope_at_cursor(0, 10, "parameter.outer"),
+            rng(0, 10, 0, 14)
+        );
         // Inner function = the suite body (delimiter-free in Python).
         assert_eq!(s.scope_at_cursor(1, 4, "function.inner"), rng(1, 4, 2, 14));
     }
@@ -1709,8 +1723,14 @@ const MAX: i32 = 10;\n\
         let src = "function add(x, y) { return x + y; }\n";
         let mut s = Syntax::for_language(Lang::JavaScript).unwrap().unwrap();
         s.parse(src);
-        assert_eq!(s.scope_at_cursor(0, 13, "parameter.outer"), rng(0, 13, 0, 14));
-        assert_eq!(s.scope_at_cursor(0, 16, "parameter.outer"), rng(0, 16, 0, 17));
+        assert_eq!(
+            s.scope_at_cursor(0, 13, "parameter.outer"),
+            rng(0, 13, 0, 14)
+        );
+        assert_eq!(
+            s.scope_at_cursor(0, 16, "parameter.outer"),
+            rng(0, 16, 0, 17)
+        );
     }
 
     #[test]
@@ -1801,7 +1821,14 @@ const MAX: i32 = 10;\n\
     fn scope_toward_forward_start_skips_enclosing() {
         let s = three_fns();
         // Cursor inside fn a (row 0) -> next function START is fn b (row 2).
-        let p = s.scope_toward(0, 3, "function.outer", NavDir::Forward, NavBoundary::Start, 1);
+        let p = s.scope_toward(
+            0,
+            3,
+            "function.outer",
+            NavDir::Forward,
+            NavBoundary::Start,
+            1,
+        );
         assert_eq!(p, Some(lattice_protocol::Position::new(2, 0)));
     }
 
@@ -1809,7 +1836,14 @@ const MAX: i32 = 10;\n\
     fn scope_toward_forward_start_count_two() {
         let s = three_fns();
         // From row 0, 2nd next function start is fn c (row 4).
-        let p = s.scope_toward(0, 3, "function.outer", NavDir::Forward, NavBoundary::Start, 2);
+        let p = s.scope_toward(
+            0,
+            3,
+            "function.outer",
+            NavDir::Forward,
+            NavBoundary::Start,
+            2,
+        );
         assert_eq!(p, Some(lattice_protocol::Position::new(4, 0)));
     }
 
@@ -1818,7 +1852,14 @@ const MAX: i32 = 10;\n\
         let s = three_fns();
         // Cursor inside fn b past its start (row 2, col 5) -> prev START is fn b's
         // OWN start (row 2, col 0), per the enclosing rule.
-        let p = s.scope_toward(2, 5, "function.outer", NavDir::Backward, NavBoundary::Start, 1);
+        let p = s.scope_toward(
+            2,
+            5,
+            "function.outer",
+            NavDir::Backward,
+            NavBoundary::Start,
+            1,
+        );
         assert_eq!(p, Some(lattice_protocol::Position::new(2, 0)));
     }
 
@@ -1829,7 +1870,14 @@ const MAX: i32 = 10;\n\
         // the PREVIOUS function (fn a, row 0), not no-op on fn b's own start.
         // A non-strict `<=` comparison would re-select fn b here.
         let s = three_fns();
-        let p = s.scope_toward(2, 0, "function.outer", NavDir::Backward, NavBoundary::Start, 1);
+        let p = s.scope_toward(
+            2,
+            0,
+            "function.outer",
+            NavDir::Backward,
+            NavBoundary::Start,
+            1,
+        );
         assert_eq!(p, Some(lattice_protocol::Position::new(0, 0)));
     }
 
@@ -1856,14 +1904,28 @@ const MAX: i32 = 10;\n\
     fn scope_toward_stops_at_boundary() {
         let s = three_fns();
         // From inside the LAST fn, forward-start has no next -> None (no wrap).
-        let p = s.scope_toward(4, 3, "function.outer", NavDir::Forward, NavBoundary::Start, 1);
+        let p = s.scope_toward(
+            4,
+            3,
+            "function.outer",
+            NavDir::Forward,
+            NavBoundary::Start,
+            1,
+        );
         assert_eq!(p, None);
     }
 
     #[test]
     fn scope_toward_none_without_tree() {
         let s = snapshot_plain("plain text no tree\n");
-        let p = s.scope_toward(0, 0, "function.outer", NavDir::Forward, NavBoundary::Start, 1);
+        let p = s.scope_toward(
+            0,
+            0,
+            "function.outer",
+            NavDir::Forward,
+            NavBoundary::Start,
+            1,
+        );
         assert_eq!(p, None);
     }
 
@@ -1874,10 +1936,24 @@ const MAX: i32 = 10;\n\
         // row 2: def c(): pass
         let s = snapshot_python("def a(): pass\ndef b(): pass\ndef c(): pass\n");
         // Cursor inside def a (row 0) -> next function START is def b (row 1).
-        let p = s.scope_toward(0, 3, "function.outer", NavDir::Forward, NavBoundary::Start, 1);
+        let p = s.scope_toward(
+            0,
+            3,
+            "function.outer",
+            NavDir::Forward,
+            NavBoundary::Start,
+            1,
+        );
         assert_eq!(p, Some(lattice_protocol::Position::new(1, 0)));
         // Count 2 -> def c (row 2).
-        let p2 = s.scope_toward(0, 3, "function.outer", NavDir::Forward, NavBoundary::Start, 2);
+        let p2 = s.scope_toward(
+            0,
+            3,
+            "function.outer",
+            NavDir::Forward,
+            NavBoundary::Start,
+            2,
+        );
         assert_eq!(p2, Some(lattice_protocol::Position::new(2, 0)));
     }
 
@@ -1889,7 +1965,14 @@ const MAX: i32 = 10;\n\
         // strictly before the cursor (`b < cursor_byte`), so fn b's own closing
         // brace (past the cursor) is skipped. "fn a() {}" -> end_position row 0,
         // col 9 (one past the `}`).
-        let p = s.scope_toward(2, 5, "function.outer", NavDir::Backward, NavBoundary::End, 1);
+        let p = s.scope_toward(
+            2,
+            5,
+            "function.outer",
+            NavDir::Backward,
+            NavBoundary::End,
+            1,
+        );
         assert_eq!(p, Some(lattice_protocol::Position::new(0, 9)));
     }
 
@@ -1897,7 +1980,14 @@ const MAX: i32 = 10;\n\
     fn scope_toward_count_zero_is_none() {
         let s = three_fns();
         // count == 0 has no "0th" candidate -> None (guard, never panics).
-        let p = s.scope_toward(0, 3, "function.outer", NavDir::Forward, NavBoundary::Start, 0);
+        let p = s.scope_toward(
+            0,
+            3,
+            "function.outer",
+            NavDir::Forward,
+            NavBoundary::Start,
+            0,
+        );
         assert_eq!(p, None);
     }
 

@@ -16,7 +16,7 @@ use lattice_protocol::ids::DocumentId;
 use lattice_protocol::position::Range;
 use lattice_protocol::selection::{Selection, SelectionSet};
 
-use crate::buffer::{transform_position, AppliedEdit, Buffer};
+use crate::buffer::{AppliedEdit, Buffer, transform_position};
 use crate::error::{CoreError, CoreResult};
 use crate::undo::{UndoEntry, UndoStack};
 
@@ -560,7 +560,8 @@ mod tests {
         // Guard against over-coalescing: normal-mode edits are individual.
         let mut d = Document::empty();
         d.apply_edit(Edit::insert(Position::ZERO, "a")).unwrap();
-        d.apply_edit(Edit::insert(Position::new(0, 1), "b")).unwrap();
+        d.apply_edit(Edit::insert(Position::new(0, 1), "b"))
+            .unwrap();
         d.undo().unwrap();
         assert_eq!(d.text(), "a", "only the last edit reverts");
     }
@@ -571,11 +572,14 @@ mod tests {
         let mut d = Document::empty();
         d.begin_undo_group();
         d.apply_edit(Edit::insert(Position::ZERO, "ab")).unwrap();
-        d.apply_edit(Edit::insert(Position::new(0, 2), "cd")).unwrap();
+        d.apply_edit(Edit::insert(Position::new(0, 2), "cd"))
+            .unwrap();
         d.end_undo_group();
         d.begin_undo_group();
-        d.apply_edit(Edit::insert(Position::new(0, 4), "ef")).unwrap();
-        d.apply_edit(Edit::insert(Position::new(0, 6), "gh")).unwrap();
+        d.apply_edit(Edit::insert(Position::new(0, 4), "ef"))
+            .unwrap();
+        d.apply_edit(Edit::insert(Position::new(0, 6), "gh"))
+            .unwrap();
         d.end_undo_group();
         assert_eq!(d.text(), "abcdefgh");
         d.undo().unwrap();
@@ -591,8 +595,10 @@ mod tests {
         let mut d = Document::empty();
         d.begin_undo_group();
         d.apply_edit(Edit::insert(Position::ZERO, "a")).unwrap();
-        d.apply_edit(Edit::insert(Position::new(0, 1), "b")).unwrap();
-        d.apply_edit(Edit::insert(Position::new(0, 2), "c")).unwrap();
+        d.apply_edit(Edit::insert(Position::new(0, 1), "b"))
+            .unwrap();
+        d.apply_edit(Edit::insert(Position::new(0, 2), "c"))
+            .unwrap();
         // Backspace the 'c'.
         d.apply_edit(Edit::replace(
             Range::new(Position::new(0, 2), Position::new(0, 3)),
@@ -611,7 +617,8 @@ mod tests {
         assert!(!d.dirty());
         d.begin_undo_group();
         d.apply_edit(Edit::insert(Position::ZERO, "x")).unwrap();
-        d.apply_edit(Edit::insert(Position::new(0, 1), "y")).unwrap();
+        d.apply_edit(Edit::insert(Position::new(0, 1), "y"))
+            .unwrap();
         d.end_undo_group();
         assert!(d.dirty());
         d.undo().unwrap();
@@ -639,7 +646,8 @@ mod tests {
             Edit::insert(Position::new(0, 2), "c"),
         ])
         .unwrap();
-        d.apply_edit(Edit::insert(Position::new(0, 3), "d")).unwrap();
+        d.apply_edit(Edit::insert(Position::new(0, 3), "d"))
+            .unwrap();
         d.end_undo_group();
         assert_eq!(d.text(), "abcd");
         d.undo().unwrap();

@@ -29,9 +29,8 @@ use lattice_core::{BufferKind, Document};
 use lattice_grammar::CommandRegistry;
 use lattice_grammar::builtins::populate as grammar_builtins_populate;
 use lattice_lsp::{
-    ApplyEditBus, ConfigurationBus, DiagnosticsLayer, InboundApplyEdit,
-    InboundShowMessageRequest, LspLogger, LspSupervisor, LspSupervisorHandle, ShowDocumentBus,
-    ShowMessageRequestBus,
+    ApplyEditBus, ConfigurationBus, DiagnosticsLayer, InboundApplyEdit, InboundShowMessageRequest,
+    LspLogger, LspSupervisor, LspSupervisorHandle, ShowDocumentBus, ShowMessageRequestBus,
 };
 use lattice_mode::{ModeRegistry, ServiceRegistry, SubsystemBoot};
 use lattice_picker::PickerRegistry;
@@ -258,8 +257,9 @@ impl Editor {
         // Phase 5.8.AF.5 / Slice 3a: the published render-state cell. The
         // overlay / cells / virtual-rows workers (spawned below) + every
         // `publish_render_state` share this exact Arc identity.
-        let render_state_arc: Arc<ArcSwap<crate::render_state::RenderState>> =
-            Arc::new(ArcSwap::from_pointee(crate::render_state::RenderState::default()));
+        let render_state_arc: Arc<ArcSwap<crate::render_state::RenderState>> = Arc::new(
+            ArcSwap::from_pointee(crate::render_state::RenderState::default()),
+        );
         // The buffer registry; created empty here and seeded with the initial
         // document at the spawn site below (`BufferRegistry` is `Clone` via an
         // inner Arc, so the handle handed to `boot` observes that seeding).
@@ -272,10 +272,9 @@ impl Editor {
             let store: Arc<dyn lattice_mode::BufferStore> = Arc::new(buffers.clone());
             lattice_mode::BufferStoreHandle::new(store)
         };
-        let diag_query: lattice_lsp::modes::DiagnosticsQueryHandle =
-            Arc::new(crate::diagnostics_query::HostDiagnosticsQuery::new(
-                render_state_arc.clone(),
-            ));
+        let diag_query: lattice_lsp::modes::DiagnosticsQueryHandle = Arc::new(
+            crate::diagnostics_query::HostDiagnosticsQuery::new(render_state_arc.clone()),
+        );
         // BC.3a (decision 2-b): `boot` owns the three registries during the
         // build phase. Every mode / command / service registration below runs
         // through `boot.modes_mut()` / `boot.commands_mut()` /
@@ -341,8 +340,7 @@ impl Editor {
         // `toml::Table` field was assigned. The SAME `Arc` is seated in the
         // `Editor.lsp_config_tree` field below (NOT `Editor::default()`'s fresh
         // one), so the handler and the editor observe one tree.
-        let lsp_config_tree =
-            std::sync::Arc::new(ArcSwap::from_pointee(toml::Table::new()));
+        let lsp_config_tree = std::sync::Arc::new(ArcSwap::from_pointee(toml::Table::new()));
         // BC.8b: wire the `workspace/configuration` bus as the generic inbound
         // primitive — `send` wakes the editor; the per-tick drain runs the
         // mode-owned `make_handler` (a pure read → reply, no Effect). Done in
@@ -369,8 +367,7 @@ impl Editor {
         // (the apply is irreducibly `&mut Editor` + `lsp_types`, so it can't be
         // a mode-owned handler); `send` wakes the editor so the edit lands
         // off-keystroke instead of on the next keypress.
-        let (lsp_apply_edit_bus, lsp_apply_edit_rx) =
-            boot.inbound_raw::<InboundApplyEdit>();
+        let (lsp_apply_edit_bus, lsp_apply_edit_rx) = boot.inbound_raw::<InboundApplyEdit>();
         // BC.8e: the show-message-request bus is likewise the host-drained
         // generic `InboundBus`. The request is a deferred user choice routed
         // through the host picker primitive, so the host seats the receiver on
@@ -465,8 +462,10 @@ impl Editor {
         // (registered in Phase A above), so no host-side handle threading.
         lattice_oil::register_oil_modes(boot.modes_mut());
         lattice_file_tree::register_file_tree_modes(boot.modes_mut());
-        snippet_activation_policy =
-            lattice_snippet::register_snippet_modes(boot.modes_mut(), snippet_registry_handle.clone());
+        snippet_activation_policy = lattice_snippet::register_snippet_modes(
+            boot.modes_mut(),
+            snippet_registry_handle.clone(),
+        );
         // BC.4: terminal-mode registration moved into
         // `lattice_terminal::install` (Phase-B list below).
         crate::modes::register_buffer_kind_modes(boot.modes_mut());
@@ -527,11 +526,10 @@ impl Editor {
         //     `into_registrations` into the Editor below).
         // AUX‑2: create VirtualRowProviderRegistry and register as a service so
         // subsystem installs can register headerline providers.
-        let vrp: std::sync::Arc<
-            crate::virtual_rows_worker::VirtualRowProviderRegistry,
-        > = std::sync::Arc::default();
+        let vrp: std::sync::Arc<crate::virtual_rows_worker::VirtualRowProviderRegistry> =
+            std::sync::Arc::default();
         boot.register_service::<Arc<dyn lattice_mode::VirtualRowRegistrar>>(
-            vrp.clone() as Arc<dyn lattice_mode::VirtualRowRegistrar>,
+            vrp.clone() as Arc<dyn lattice_mode::VirtualRowRegistrar>
         );
         lattice_ai::install(&mut boot);
         // terminal (BC.4): `terminal-mode` (+ Normal / Insert) registration. Its
@@ -855,7 +853,10 @@ impl Editor {
         // picker-marginalia slice plan (MP.2b).
         let keymap_handle = crate::keymap_registry::KeymapHandle::new();
         let keybinding_reverse: Arc<dyn lattice_completion::KeymapReverseLookup> =
-            crate::keymap_registry::KeymapReverseLookupHandle::new(&keymap_handle, registry.clone());
+            crate::keymap_registry::KeymapReverseLookupHandle::new(
+                &keymap_handle,
+                registry.clone(),
+            );
         // PH.3: the shared lang registry — created here (ahead of the
         // document `Syntax` below, which reuses it) so the grep picker's
         // preview highlighter selects grammars from the same set the
@@ -1238,8 +1239,7 @@ impl Editor {
             // dedicated subscription whose only job is to fire
             // `async_landed`; `drain_modeline_element_updates` (its own
             // channel) does the accumulation in `run_tick_pending`.
-            let (ml_tx, ml_rx) =
-                mpsc::unbounded_channel::<lattice_mode::ModelineElementUpdate>();
+            let (ml_tx, ml_rx) = mpsc::unbounded_channel::<lattice_mode::ModelineElementUpdate>();
             event_bus.subscribe_typed(ml_tx);
             runtime_handle.spawn(wake_on(ml_rx, async_landed.clone()));
         }
@@ -1329,12 +1329,11 @@ impl Editor {
         // `mode_action_handlers::register_mode_action_handlers`.
         let action_handlers: lattice_mode::ActionHandlerRegistryHandle =
             Arc::new(lattice_mode::ActionHandlerRegistry::new());
-        let global_action_handler_regs =
-            crate::mode_action_handlers::register_mode_action_handlers(
-                &action_handlers,
-                &mode_registry,
-                &registry,
-            );
+        let global_action_handler_regs = crate::mode_action_handlers::register_mode_action_handlers(
+            &action_handlers,
+            &mode_registry,
+            &registry,
+        );
 
         // IDE-protocol I1.1 / BC.3a: the per-tick drain-closure registry is a
         // Phase-A primitive (`tick_callbacks`, created up top, owned by
@@ -1413,8 +1412,7 @@ impl Editor {
         // Registered under `ClipboardHandle` per the ServiceRegistry Arc/TypeId
         // rule so the host register layer (CB.1) AND `terminal-mode` (CB.3)
         // look it up by that exact type.
-        let clipboard: lattice_core::ClipboardHandle =
-            Arc::new(lattice_core::FakeClipboard::new());
+        let clipboard: lattice_core::ClipboardHandle = Arc::new(lattice_core::FakeClipboard::new());
         boot.register_service(clipboard);
         boot.register_service(lsp_logger.clone());
         // L4b (lsp-architecture.md §15): the diagnostics-query service
@@ -1457,8 +1455,9 @@ impl Editor {
         // M.7: expose the fold-overlay service so `MultibufferMode::on_activate`
         // can register `ExcerptFoldProvider` without depending on
         // `lattice-host`. Same Arc as `fold_registry` above.
-        let fold_svc: lattice_core::FoldOverlayServiceHandle =
-            Arc::new(crate::fold_provider::FoldOverlayServiceImpl::new(fold_registry.clone()));
+        let fold_svc: lattice_core::FoldOverlayServiceHandle = Arc::new(
+            crate::fold_provider::FoldOverlayServiceImpl::new(fold_registry.clone()),
+        );
         boot.register_service::<lattice_core::FoldOverlayServiceHandle>(fold_svc);
         // DX.3-C7 (2026-06-24): publish the diff subsystem so
         // `DiffMode::on_activate` can look up a buffer's session and
@@ -1466,7 +1465,9 @@ impl Editor {
         // (mode-owned hunk folds, mirroring multibuffer's
         // `MultibufferRegistryHandle`). Same `Arc` as the
         // `Editor.diff_subsystem` field.
-        boot.register_service::<crate::diff::subsystem::DiffSubsystemHandle>(diff_subsystem.clone());
+        boot.register_service::<crate::diff::subsystem::DiffSubsystemHandle>(
+            diff_subsystem.clone(),
+        );
         // SN.2: register the live snippet session so `SnippetActiveMode`'s
         // `<Tab>`/`<S-Tab>` handlers can reach it from `on_activate`. Same Arc
         // as the `Editor.snippet_session` field (set below).

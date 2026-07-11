@@ -61,7 +61,11 @@ const LSP_ROLE: &str = "modeline.mode_item";
 /// Register the `lsp` descriptor (ML.3c). PaneLocal (content pushed per
 /// attached buffer), Right zone before `core.position` (priority 5).
 pub fn register_lsp_modeline_element(svc: &ModelineService) {
-    svc.register(ModelineElement::new(ElementId::new(LSP_ELEMENT), Zone::Right, 5));
+    svc.register(ModelineElement::new(
+        ElementId::new(LSP_ELEMENT),
+        Zone::Right,
+        5,
+    ));
 }
 
 /// The relocated LSP progress/status accumulator (decision A). The LSP
@@ -337,7 +341,10 @@ mod tests {
     #[test]
     fn badge_ok_when_quiescent() {
         let mut ss = HashMap::new();
-        ss.insert(Arc::<str>::from("rust"), status("rust", true, LspServerHealth::Ok));
+        ss.insert(
+            Arc::<str>::from("rust"),
+            status("rust", true, LspServerHealth::Ok),
+        );
         assert_eq!(lsp_content(&HashMap::new(), &ss).plain(), "lsp ✓");
     }
 
@@ -348,21 +355,39 @@ mod tests {
         let mut p = HashMap::new();
         p.insert(
             (Arc::<str>::from("rust"), "tok1".to_string()),
-            prog("rust", "tok1", LspProgressKind::Report, Some("indexing"), Some(40)),
+            prog(
+                "rust",
+                "tok1",
+                LspProgressKind::Report,
+                Some("indexing"),
+                Some(40),
+            ),
         );
         p.insert(
             (Arc::<str>::from("rust"), "tok2".to_string()),
-            prog("rust", "tok2", LspProgressKind::Begin, Some("building"), Some(80)),
+            prog(
+                "rust",
+                "tok2",
+                LspProgressKind::Begin,
+                Some("building"),
+                Some(80),
+            ),
         );
         // Highest percentage (80%) wins the detail.
-        assert_eq!(lsp_content(&p, &HashMap::new()).plain(), "lsp ⟳ building 80%");
+        assert_eq!(
+            lsp_content(&p, &HashMap::new()).plain(),
+            "lsp ⟳ building 80%"
+        );
     }
 
     /// Health error wins over busy/quiescent → `lsp ✗`.
     #[test]
     fn badge_error_takes_priority() {
         let mut ss = HashMap::new();
-        ss.insert(Arc::<str>::from("rust"), status("rust", false, LspServerHealth::Error));
+        ss.insert(
+            Arc::<str>::from("rust"),
+            status("rust", false, LspServerHealth::Error),
+        );
         assert_eq!(lsp_content(&HashMap::new(), &ss).plain(), "lsp ✗");
     }
 
@@ -371,11 +396,19 @@ mod tests {
     #[test]
     fn store_folds_progress_and_snapshots() {
         let store = LspProgressStore::new();
-        store.apply_progress(prog("rust", "t", LspProgressKind::Begin, Some("scan"), None));
+        store.apply_progress(prog(
+            "rust",
+            "t",
+            LspProgressKind::Begin,
+            Some("scan"),
+            None,
+        ));
         // Report without a title keeps the Begin title; adds percentage.
         store.apply_progress(prog("rust", "t", LspProgressKind::Report, None, Some(50)));
         let snap = store.progress_snapshot();
-        let entry = snap.get(&(Arc::<str>::from("rust"), "t".to_string())).unwrap();
+        let entry = snap
+            .get(&(Arc::<str>::from("rust"), "t".to_string()))
+            .unwrap();
         assert_eq!(entry.title.as_deref(), Some("scan"));
         assert_eq!(entry.percentage, Some(50));
         // The badge reflects the in-flight token (busy).
@@ -392,7 +425,10 @@ mod tests {
         let svc = ModelineService::new();
         register_lsp_modeline_element(&svc);
         let snap = svc.snapshot();
-        let el = snap.registry.get(&ElementId::new(LSP_ELEMENT)).expect("lsp descriptor");
+        let el = snap
+            .registry
+            .get(&ElementId::new(LSP_ELEMENT))
+            .expect("lsp descriptor");
         assert_eq!(el.zone, Zone::Right);
         assert_eq!(el.priority, 5);
     }

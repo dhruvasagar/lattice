@@ -74,10 +74,7 @@ impl CellChunk {
     /// 128-row chunk. Returns `None` if `target` is folded or
     /// outside the chunk's range.
     pub fn row_at_source_line(&self, target: u32) -> Option<&CellRow> {
-        match self
-            .rows
-            .binary_search_by_key(&target, |r| r.source_line)
-        {
+        match self.rows.binary_search_by_key(&target, |r| r.source_line) {
             Ok(idx) => self.rows.get(idx),
             Err(_) => None,
         }
@@ -228,11 +225,7 @@ mod tests {
     /// than wrapping.
     #[test]
     fn shifted_by_negative_saturates_at_zero() {
-        let c = CellChunk::new(
-            2,
-            vec![row(2, b'a'), row(3, b'b')],
-            MatrixVersion::ZERO,
-        );
+        let c = CellChunk::new(2, vec![row(2, b'a'), row(3, b'b')], MatrixVersion::ZERO);
         let s = c.shifted_by(-5, MatrixVersion::ZERO);
         assert_eq!(s.start_source_line, 0);
         let lines: Vec<u32> = s.rows.iter().map(|r| r.source_line).collect();

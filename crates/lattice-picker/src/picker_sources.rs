@@ -63,7 +63,10 @@ const SLOT_SIZE: &str = "completion.annotation.size";
 const SLOT_MTIME: &str = "completion.annotation.mtime";
 
 fn perm_seg(ch: char, slot: &str) -> AnnotationSegment {
-    AnnotationSegment { text: ch.to_string().into(), slot: slot.into() }
+    AnnotationSegment {
+        text: ch.to_string().into(),
+        slot: slot.into(),
+    }
 }
 
 /// MARG §8: build the `drwxr-xr-x` permission string as one segment
@@ -97,10 +100,18 @@ fn perm_segments(meta: &std::fs::Metadata) -> Vec<AnnotationSegment> {
         let mut out = Vec::with_capacity(10);
         out.push(perm_seg(kind, SLOT_PERM_TYPE));
         let rbit = |out: &mut Vec<AnnotationSegment>, set: bool| {
-            out.push(if set { perm_seg('r', SLOT_PERM_READ) } else { perm_seg('-', SLOT_PERM_NONE) });
+            out.push(if set {
+                perm_seg('r', SLOT_PERM_READ)
+            } else {
+                perm_seg('-', SLOT_PERM_NONE)
+            });
         };
         let wbit = |out: &mut Vec<AnnotationSegment>, set: bool| {
-            out.push(if set { perm_seg('w', SLOT_PERM_WRITE) } else { perm_seg('-', SLOT_PERM_NONE) });
+            out.push(if set {
+                perm_seg('w', SLOT_PERM_WRITE)
+            } else {
+                perm_seg('-', SLOT_PERM_NONE)
+            });
         };
         // exec-or-special: a set special bit (setuid/setgid/sticky)
         // shows `lower` when exec is also set, `upper` otherwise.
@@ -110,7 +121,10 @@ fn perm_segments(meta: &std::fs::Metadata) -> Vec<AnnotationSegment> {
                     lower: char,
                     upper: char| {
             if special {
-                out.push(perm_seg(if exec { lower } else { upper }, SLOT_PERM_SPECIAL));
+                out.push(perm_seg(
+                    if exec { lower } else { upper },
+                    SLOT_PERM_SPECIAL,
+                ));
             } else if exec {
                 out.push(perm_seg('x', SLOT_PERM_EXEC));
             } else {
@@ -130,7 +144,11 @@ fn perm_segments(meta: &std::fs::Metadata) -> Vec<AnnotationSegment> {
     }
     #[cfg(not(unix))]
     {
-        let label = if meta.permissions().readonly() { "<ro>" } else { "<rw>" };
+        let label = if meta.permissions().readonly() {
+            "<ro>"
+        } else {
+            "<rw>"
+        };
         label.chars().map(|c| perm_seg(c, SLOT_PERM_TYPE)).collect()
     }
 }
@@ -181,7 +199,10 @@ const SLOT_LATENCY_BACKGROUND: &str = "completion.annotation.latency.background"
 
 /// MARG §9: a marginalia segment from string text + a slot key.
 fn txt_seg(text: impl Into<String>, slot: &str) -> AnnotationSegment {
-    AnnotationSegment { text: text.into().into(), slot: slot.into() }
+    AnnotationSegment {
+        text: text.into().into(),
+        slot: slot.into(),
+    }
 }
 
 /// MARG §9: a colored `path:line:col` location cell — dim path, accent
@@ -652,9 +673,10 @@ impl PickerSourceGenerator for BuffersSource {
                 // cutover drops the parallel routing vec once
                 // the host routes accept through
                 // DefaultAcceptHandler.
-                cand.accept_action = Some(Box::new(lattice_completion::AcceptAction::SwitchBuffer {
-                    id: lattice_core::BufferId(e.id),
-                }));
+                cand.accept_action =
+                    Some(Box::new(lattice_completion::AcceptAction::SwitchBuffer {
+                        id: lattice_core::BufferId(e.id),
+                    }));
                 (cand, RoutingPayload::Buffer { id: e.id })
             })
             .collect();
@@ -737,7 +759,11 @@ impl PickerSourceGenerator for LinesSource {
             // trimmed display length (the trailing `\n` was stripped);
             // the renderer additionally guards char boundaries. No spans
             // for this line → plain preview.
-            cand.display_spans = display_spans_for_line(&ctx.active_buffer.syntax_highlights, line, cand.display.len());
+            cand.display_spans = display_spans_for_line(
+                &ctx.active_buffer.syntax_highlights,
+                line,
+                cand.display.len(),
+            );
             // Slice 7b.4: typed accept payload.
             cand.accept_action = Some(Box::new(lattice_completion::AcceptAction::JumpInBuffer {
                 buffer_id: lattice_core::BufferId(buffer_id),
@@ -851,11 +877,12 @@ impl PickerSourceGenerator for JumpsSource {
                     location_annotation(None, entry.line + 1, Some(entry.col + 1)),
                 ];
                 // Slice 7b.4: typed accept payload.
-                cand.accept_action = Some(Box::new(lattice_completion::AcceptAction::JumpInBuffer {
-                    buffer_id: lattice_core::BufferId(entry.buffer_id),
-                    line: entry.line,
-                    col: entry.col,
-                }));
+                cand.accept_action =
+                    Some(Box::new(lattice_completion::AcceptAction::JumpInBuffer {
+                        buffer_id: lattice_core::BufferId(entry.buffer_id),
+                        line: entry.line,
+                        col: entry.col,
+                    }));
                 (
                     cand,
                     RoutingPayload::JumpInBuffer {
@@ -1014,10 +1041,11 @@ impl PickerSourceGenerator for CommandsSource {
                 });
                 cand.annotations = annotations;
                 // Slice 7b.3: typed accept payload.
-                cand.accept_action = Some(Box::new(lattice_completion::AcceptAction::InvokeCommand {
-                    id: row.canonical.clone(),
-                    args: Args::None,
-                }));
+                cand.accept_action =
+                    Some(Box::new(lattice_completion::AcceptAction::InvokeCommand {
+                        id: row.canonical.clone(),
+                        args: Args::None,
+                    }));
                 (
                     cand,
                     RoutingPayload::InvokeCommand {
@@ -1099,7 +1127,9 @@ impl PickerSourceGenerator for RegistersSource {
                 }];
                 // Slice 7b.5: typed accept payload.
                 cand.accept_action =
-                    Some(Box::new(lattice_completion::AcceptAction::PasteRegister { name: ch }));
+                    Some(Box::new(lattice_completion::AcceptAction::PasteRegister {
+                        name: ch,
+                    }));
                 Some((cand, RoutingPayload::PasteRegister { name: ch }))
             })
             .collect();
@@ -1167,8 +1197,9 @@ impl PickerSourceGenerator for MarksSource {
                 cand.annotations =
                     vec![location_annotation(None, pos.line + 1, Some(pos.byte + 1))];
                 // Slice 7b.5: typed accept payload.
-                cand.accept_action =
-                    Some(Box::new(lattice_completion::AcceptAction::JumpToMark { name: *name }));
+                cand.accept_action = Some(Box::new(lattice_completion::AcceptAction::JumpToMark {
+                    name: *name,
+                }));
                 (cand, RoutingPayload::JumpToMark { name: *name })
             })
             .collect();
@@ -1218,7 +1249,11 @@ pub trait GrepPreviewHighlighter: Send + Sync {
     /// is the exact text shown as the candidate `display` (already
     /// trimmed), so returned spans are display-relative and need
     /// no offset. Empty result ⇒ plain preview.
-    fn highlight_line(&self, path: &std::path::Path, line: &str) -> Vec<lattice_completion::DisplaySpan>;
+    fn highlight_line(
+        &self,
+        path: &std::path::Path,
+        line: &str,
+    ) -> Vec<lattice_completion::DisplaySpan>;
 }
 
 pub struct GrepSource {
@@ -1345,11 +1380,13 @@ fn hits_to_pairs(
             // Slice 7b.6: typed accept payload. Grep hits jump
             // to file:line:col — same shape as LSP references /
             // definitions / diagnostics → JumpToFileLocation.
-            cand.accept_action = Some(Box::new(lattice_completion::AcceptAction::JumpToFileLocation {
-                path: hit.path.clone(),
-                line: hit.line,
-                col: hit.col,
-            }));
+            cand.accept_action = Some(Box::new(
+                lattice_completion::AcceptAction::JumpToFileLocation {
+                    path: hit.path.clone(),
+                    line: hit.line,
+                    col: hit.col,
+                },
+            ));
             (
                 cand,
                 RoutingPayload::LspLocation {
@@ -1659,11 +1696,12 @@ impl PickerSourceGenerator for OutlineSource {
                     name.len(),
                 );
                 // Slice 7b.4: typed accept payload.
-                cand.accept_action = Some(Box::new(lattice_completion::AcceptAction::JumpInBuffer {
-                    buffer_id: lattice_core::BufferId(buffer_id),
-                    line: *line,
-                    col: *col,
-                }));
+                cand.accept_action =
+                    Some(Box::new(lattice_completion::AcceptAction::JumpInBuffer {
+                        buffer_id: lattice_core::BufferId(buffer_id),
+                        line: *line,
+                        col: *col,
+                    }));
                 (
                     cand,
                     RoutingPayload::JumpInBuffer {
@@ -1874,8 +1912,11 @@ mod tests {
     fn perm_segments_map_bits_to_slots() {
         use std::os::unix::fs::PermissionsExt;
 
-        let tmp = std::env::temp_dir()
-            .join(format!("lattice-perms-{}-{:?}", std::process::id(), std::thread::current().id()));
+        let tmp = std::env::temp_dir().join(format!(
+            "lattice-perms-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
         std::fs::write(&tmp, b"x").unwrap();
         // 0o755: rwx r-x r-x on a regular file.
         std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -1912,8 +1953,11 @@ mod tests {
     #[test]
     fn metadata_annotations_yields_perm_size_mtime() {
         use lattice_completion::Annotation;
-        let tmp = std::env::temp_dir()
-            .join(format!("lattice-meta-{}-{:?}", std::process::id(), std::thread::current().id()));
+        let tmp = std::env::temp_dir().join(format!(
+            "lattice-meta-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
         std::fs::write(&tmp, b"hello").unwrap();
         let meta = std::fs::metadata(&tmp).unwrap();
         let anns = metadata_annotations(&meta);
@@ -1936,8 +1980,11 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn perm_segments_directory_type_char() {
-        let dir = std::env::temp_dir()
-            .join(format!("lattice-permdir-{}-{:?}", std::process::id(), std::thread::current().id()));
+        let dir = std::env::temp_dir().join(format!(
+            "lattice-permdir-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
         let _ = std::fs::create_dir(&dir);
         let meta = std::fs::metadata(&dir).unwrap();
         let segs = perm_segments(&meta);
@@ -1986,8 +2033,14 @@ mod tests {
     /// MP.1: each latency class maps to its own slot.
     #[test]
     fn latency_segment_maps_class_to_slot() {
-        assert_eq!(latency_segment(LatencyClass::Reflex).slot.as_ref(), SLOT_LATENCY_REFLEX);
-        assert_eq!(latency_segment(LatencyClass::Display).slot.as_ref(), SLOT_LATENCY_DISPLAY);
+        assert_eq!(
+            latency_segment(LatencyClass::Reflex).slot.as_ref(),
+            SLOT_LATENCY_REFLEX
+        );
+        assert_eq!(
+            latency_segment(LatencyClass::Display).slot.as_ref(),
+            SLOT_LATENCY_DISPLAY
+        );
         assert_eq!(
             latency_segment(LatencyClass::Background).slot.as_ref(),
             SLOT_LATENCY_BACKGROUND
@@ -2000,11 +2053,11 @@ mod tests {
     fn hits_to_pairs_emits_preview_and_location() {
         let pairs = hits_to_pairs(
             vec![GrepHit {
-            path: std::path::PathBuf::from("src/main.rs"),
-            line: 41,
-            col: 6,
-            preview: "    let x = 1;".to_string(),
-        }],
+                path: std::path::PathBuf::from("src/main.rs"),
+                line: 41,
+                col: 6,
+                preview: "    let x = 1;".to_string(),
+            }],
             None,
         );
         assert_eq!(pairs.len(), 1);
@@ -2019,7 +2072,11 @@ mod tests {
         assert_eq!(loc.display_text(), "src/main.rs:42:7");
         assert!(matches!(
             &pairs[0].1,
-            RoutingPayload::LspLocation { line: 41, col: 6, .. }
+            RoutingPayload::LspLocation {
+                line: 41,
+                col: 6,
+                ..
+            }
         ));
     }
 

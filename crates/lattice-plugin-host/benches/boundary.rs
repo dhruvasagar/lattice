@@ -179,13 +179,16 @@ fn boundary_round_trip(c: &mut Criterion) {
             slot: Arc::from("annotation_size"),
         },
     ];
-    c.bench_function("boundary_picker_candidate_with_marginalia_round_trip", |b| {
-        b.iter(|| {
-            let wit = black_box(&cand).to_wit().expect("to_wit");
-            let back = RawCandidate::from_wit(wit).expect("from_wit");
-            black_box(back);
-        })
-    });
+    c.bench_function(
+        "boundary_picker_candidate_with_marginalia_round_trip",
+        |b| {
+            b.iter(|| {
+                let wit = black_box(&cand).to_wit().expect("to_wit");
+                let back = RawCandidate::from_wit(wit).expect("from_wit");
+                black_box(back);
+            })
+        },
+    );
 
     // PH7.4a: the per-candidate `RoutingPayload` a file source emits (the token
     // it consumes in `accept`). `OpenFile` is the fuzzy-finder's arm.

@@ -467,10 +467,7 @@ impl App {
     /// for inactive documents it routes through `buffer_locals`.
     /// Returns `None` for `Lang::Plain` documents and for
     /// non-document buffers.
-    pub(crate) fn document_syntax_for(
-        &self,
-        id: BufferId,
-    ) -> Option<lattice_syntax::SyntaxHandle> {
+    pub(crate) fn document_syntax_for(&self, id: BufferId) -> Option<lattice_syntax::SyntaxHandle> {
         // Slice 3c.final.E.5e: returns owned `SyntaxHandle` (Clone;
         // cheap -- inner Arc<ArcSwap<_>> bump + mpsc sender bump) so
         // the `Send + 'static` closure body is satisfied.
@@ -663,7 +660,8 @@ mod tests {
         let before = a.editor.on_disk_fingerprints.get(&id).cloned().unwrap();
 
         // Dirty the buffer, then save.
-        a.apply_edit_blocking(Edit::insert(Position::new(0, 0), "new-")).unwrap();
+        a.apply_edit_blocking(Edit::insert(Position::new(0, 0), "new-"))
+            .unwrap();
         assert!(a.editor.document.dirty());
         a.save_blocking().unwrap();
 
@@ -1202,9 +1200,9 @@ mod tests {
         let mut app = app_with("hi\n", 5);
         let toml_text = "[lsp-mode]\nlog-level = \"debug\"\n";
         // BC.8b: `lsp_config_tree` is shared (`Arc<ArcSwap>`); `store` the tree.
-        app.editor
-            .lsp_config_tree
-            .store(std::sync::Arc::new(toml_text.parse::<toml::Table>().expect("toml parse")));
+        app.editor.lsp_config_tree.store(std::sync::Arc::new(
+            toml_text.parse::<toml::Table>().expect("toml parse"),
+        ));
         app.apply_persistent_lsp_editor_options();
         // Effect: a Debug-level record on an unattached server lands
         // in the ring. Default min-level is Info; without the TOML
@@ -1234,9 +1232,9 @@ mod tests {
         let mut app = app_with("hi\n", 5);
         let toml_text = "[lsp]\nlog-level = \"debug\"\n";
         // BC.8b: `lsp_config_tree` is shared (`Arc<ArcSwap>`); `store` the tree.
-        app.editor
-            .lsp_config_tree
-            .store(std::sync::Arc::new(toml_text.parse::<toml::Table>().expect("toml parse")));
+        app.editor.lsp_config_tree.store(std::sync::Arc::new(
+            toml_text.parse::<toml::Table>().expect("toml parse"),
+        ));
         app.apply_persistent_lsp_editor_options();
         let msg = app.editor.last_message.as_ref().expect("deprecation warn");
         assert_eq!(msg.level, crate::app::EchoLevel::Warn);
@@ -1272,9 +1270,9 @@ mod tests {
         let mut app = app_with("hi\n", 5);
         let toml_text = "[lsp]\nlog-level = \"trace\"\n[lsp-mode]\nlog-level = \"debug\"\n";
         // BC.8b: `lsp_config_tree` is shared (`Arc<ArcSwap>`); `store` the tree.
-        app.editor
-            .lsp_config_tree
-            .store(std::sync::Arc::new(toml_text.parse::<toml::Table>().expect("toml parse")));
+        app.editor.lsp_config_tree.store(std::sync::Arc::new(
+            toml_text.parse::<toml::Table>().expect("toml parse"),
+        ));
         app.apply_persistent_lsp_editor_options();
         // No deprecation echo when canonical is present.
         assert!(
@@ -1289,9 +1287,9 @@ mod tests {
         let mut app = app_with("hi\n", 5);
         let toml_text = "[lsp-mode]\nlog-level = \"babble\"\n";
         // BC.8b: `lsp_config_tree` is shared (`Arc<ArcSwap>`); `store` the tree.
-        app.editor
-            .lsp_config_tree
-            .store(std::sync::Arc::new(toml_text.parse::<toml::Table>().expect("toml parse")));
+        app.editor.lsp_config_tree.store(std::sync::Arc::new(
+            toml_text.parse::<toml::Table>().expect("toml parse"),
+        ));
         app.apply_persistent_lsp_editor_options();
         let msg = app.editor.last_message.as_ref().expect("warn echo");
         assert!(
@@ -1306,7 +1304,9 @@ mod tests {
         let mut app = app_with("hi\n", 5);
         app.editor.last_message = None;
         // Empty tree: nothing under [lsp].
-        app.editor.lsp_config_tree.store(std::sync::Arc::new(toml::Table::new()));
+        app.editor
+            .lsp_config_tree
+            .store(std::sync::Arc::new(toml::Table::new()));
         app.apply_persistent_lsp_editor_options();
         assert!(
             app.editor.last_message.is_none(),
@@ -1907,10 +1907,8 @@ mod tests {
         // `-` from a file buffer opens oil for the file's parent
         // with the cursor on the file you were editing (oil.nvim
         // behaviour), not at the origin row.
-        let tmp = std::env::temp_dir().join(format!(
-            "lattice-oil-focus-doc-test-{}",
-            std::process::id()
-        ));
+        let tmp =
+            std::env::temp_dir().join(format!("lattice-oil-focus-doc-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(tmp.join("adir")).expect("adir");
         std::fs::write(tmp.join("target.txt"), "x").expect("target");
@@ -1934,10 +1932,8 @@ mod tests {
         // `-` inside an oil buffer steps up to the parent listing
         // with the cursor on the child directory you stepped out
         // of, so `-` then `<CR>` round-trips to the same place.
-        let tmp = std::env::temp_dir().join(format!(
-            "lattice-oil-focus-up-test-{}",
-            std::process::id()
-        ));
+        let tmp =
+            std::env::temp_dir().join(format!("lattice-oil-focus-up-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         // Two dirs so "nested" is not row 0 after sorting
         // (dirs-first alpha: ["adir", "nested"]).
@@ -1949,7 +1945,10 @@ mod tests {
         assert_eq!(a.editor.active_buffer, BufferKind::Oil);
 
         a.apply(crate::app::Action::OilNavigateUp);
-        assert_eq!(a.oil_dir_for(a.active_pane_buffer_id()).unwrap_or_default(), tmp);
+        assert_eq!(
+            a.oil_dir_for(a.active_pane_buffer_id()).unwrap_or_default(),
+            tmp
+        );
         // "nested" is row 1 in the parent listing.
         assert_eq!(a.editor.cursor.line, 1);
 

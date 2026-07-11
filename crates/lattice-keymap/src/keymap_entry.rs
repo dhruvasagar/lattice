@@ -98,7 +98,10 @@ impl KeymapEntry {
         fall_through: bool,
         source: lattice_grammar::SourceLocation,
     ) -> Self {
-        debug_assert!(!modes.is_empty(), "keymap_entry! requires at least one mode");
+        debug_assert!(
+            !modes.is_empty(),
+            "keymap_entry! requires at least one mode"
+        );
         Self {
             chord,
             modes,
@@ -600,7 +603,10 @@ mod tests {
             cmd: "action:snippet-leave",
             fall_through: true
         };
-        assert_eq!(e.modes, [BindingMode::Insert, BindingMode::Select].as_slice());
+        assert_eq!(
+            e.modes,
+            [BindingMode::Insert, BindingMode::Select].as_slice()
+        );
         assert!(e.fall_through);
     }
 

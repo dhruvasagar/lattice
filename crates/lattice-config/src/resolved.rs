@@ -98,10 +98,7 @@ impl ResolvedOptions {
     /// TypeId-keyed origin lookup for sites that only have a runtime
     /// `TypeId` (e.g. the query echo path in `do_set`).
     pub fn get_origin_for_typeid(&self, type_id: TypeId) -> OptionOrigin {
-        self.origins
-            .get(&type_id)
-            .cloned()
-            .unwrap_or_default()
+        self.origins.get(&type_id).cloned().unwrap_or_default()
     }
 
     /// TypeId-keyed erased value lookup. Used by the query echo path

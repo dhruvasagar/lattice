@@ -36,8 +36,7 @@ use lattice_syntax::LangRegistry;
 
 use crate::registry::MultibufferRegistryHandle;
 use crate::{
-    Excerpt, MultibufferDocumentHandle, MultibufferExcerptHeaderProvider,
-    MultibufferStatusProvider,
+    Excerpt, MultibufferDocumentHandle, MultibufferExcerptHeaderProvider, MultibufferStatusProvider,
 };
 
 /// Atomic insert + activate-major for a multibuffer view. Returns
@@ -147,7 +146,13 @@ pub fn create_multibuffer_view(
     // Step 4: buffer-registry insert via H.1's primitive method.
     // Upcast to `Arc<dyn Document>`.
     let dyn_handle: Arc<dyn Document> = typed_handle.clone();
-    buffer_store.insert_document_buffer(buffer_id, BufferKind::Multibuffer, dyn_handle, flags, name);
+    buffer_store.insert_document_buffer(
+        buffer_id,
+        BufferKind::Multibuffer,
+        dyn_handle,
+        flags,
+        name,
+    );
 
     // K.4.6 (2026-06-02): excerpt-header provider — one VirtualRow per
     // excerpt (anchored Above the excerpt's first composed row).
@@ -170,7 +175,10 @@ pub fn create_multibuffer_view(
         .map(|outer| (*outer).clone());
     let theme_elements = theme_handle.as_ref().map(|theme| {
         let owner = lattice_theme::ElementOwner::Mode(
-            crate::MultibufferMode::mode_id().as_str().to_string().into(),
+            crate::MultibufferMode::mode_id()
+                .as_str()
+                .to_string()
+                .into(),
         );
         crate::register_multibuffer_theme_elements(theme.as_ref(), owner)
     });
@@ -199,7 +207,9 @@ pub fn create_multibuffer_view(
                     nerd_fonts,
                 ))
             }
-            _ => Arc::new(MultibufferExcerptHeaderProvider::new((*typed_handle).clone())),
+            _ => Arc::new(MultibufferExcerptHeaderProvider::new(
+                (*typed_handle).clone(),
+            )),
         };
     let registered = activator.register_virtual_row_provider(buffer_id, excerpt_header_provider);
     if !registered {
@@ -218,11 +228,9 @@ pub fn create_multibuffer_view(
     // `multibuffer.status.*` foregrounds (falls back to the no-theme
     // provider for test activators with no theme service).
     let status_provider = match (theme_handle, theme_elements) {
-        (Some(theme), Some(elements)) => MultibufferStatusProvider::with_theme(
-            (*typed_handle).clone(),
-            theme,
-            elements,
-        ),
+        (Some(theme), Some(elements)) => {
+            MultibufferStatusProvider::with_theme((*typed_handle).clone(), theme, elements)
+        }
         _ => MultibufferStatusProvider::new((*typed_handle).clone()),
     }
     .into_provider(buffer_id);

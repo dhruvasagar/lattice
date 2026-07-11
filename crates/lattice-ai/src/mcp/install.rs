@@ -22,7 +22,11 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     // Spawn the IDE server supervisor (idle until `:claude-code-start`), reusing
     // the shared async runtime + the generic event bus (the read cache
     // subscribes to DocumentOpened/Closed/SelectionsChanged on it).
-    let handle = server::spawn(default_config(), boot.event_bus().clone(), boot.runtime_handle());
+    let handle = server::spawn(
+        default_config(),
+        boot.event_bus().clone(),
+        boot.runtime_handle(),
+    );
 
     // `:claude-code-start` / `:claude-code-stop` (crate-owned ex-commands whose
     // `apply` drives the handle directly) + `claude-code-mode`.

@@ -98,14 +98,14 @@ use lattice_grammar::YankKind;
 // the submodule tests that build entries by hand.
 #[cfg(test)]
 use crate::buffer_registry::{BufferData, BufferEntry};
-use crate::buffers::{BufferId, BufferKind};
 #[cfg(test)]
 use crate::buffers::BufferFlags;
+use crate::buffers::{BufferId, BufferKind};
 pub use lattice_grammar::ModalState;
 pub use lattice_grammar::command::CommandInvocation;
-use lattice_protocol::position::Position;
 #[cfg(test)]
 use lattice_grammar::register::Register;
+use lattice_protocol::position::Position;
 #[cfg(test)]
 use lattice_protocol::selection::{Selection, SelectionSet};
 
@@ -338,9 +338,8 @@ pub struct App {
     /// `syntax_visible_rows_cell` clones were deleted with the
     /// overlay worker's span/row cache; this is the only worker
     /// output cell the App keeps a clone of now.
-    pub syntax_static_overlay_quads_cell: std::sync::Arc<
-        arc_swap::ArcSwap<lattice_host::render_state::StaticOverlayQuads>,
-    >,
+    pub syntax_static_overlay_quads_cell:
+        std::sync::Arc<arc_swap::ArcSwap<lattice_host::render_state::StaticOverlayQuads>>,
     /// Handle to the per-document actor (DESIGN.md §5.2.1, §5.7).
     /// The actor owns the writable `Document` (from `lattice-core`);
     /// mutations route through it; reads load a versioned snapshot.
@@ -993,9 +992,7 @@ impl App {
     /// severs the `Arc<Editor>` reference, the method body
     /// flips to read from a renderer-owned `render_state`
     /// field; call sites stay unchanged.
-    pub fn ad(
-        &self,
-    ) -> std::sync::Arc<lattice_host::render_state::ActiveDocumentRenderState> {
+    pub fn ad(&self) -> std::sync::Arc<lattice_host::render_state::ActiveDocumentRenderState> {
         // Slice 3c.atomic.A: read through the renderer-owned
         // `render_state` Arc rather than `self.editor.render_state`.
         // The two are the same `Arc<ArcSwap<RenderState>>` cell
@@ -1011,9 +1008,7 @@ impl App {
     /// `app.panes().tree.X()` instead of `app.editor.pane_tree.X()`.
     /// Body matches `ad()` — one Arc clone off the same
     /// `Arc<ArcSwap<RenderState>>` cell.
-    pub fn panes(
-        &self,
-    ) -> std::sync::Arc<lattice_host::render_state::PanesRenderState> {
+    pub fn panes(&self) -> std::sync::Arc<lattice_host::render_state::PanesRenderState> {
         self.render_state.load().panes.clone()
     }
 
@@ -1022,9 +1017,7 @@ impl App {
     /// reads `app.buffers().registry.X()` and
     /// `app.buffers().uris.get(&id)` instead of reaching through
     /// `app.editor.buffers.X()` / `app.editor.buffer_uris.get(...)`.
-    pub fn buffers(
-        &self,
-    ) -> std::sync::Arc<lattice_host::render_state::BuffersRenderState> {
+    pub fn buffers(&self) -> std::sync::Arc<lattice_host::render_state::BuffersRenderState> {
         self.render_state.load().buffers.clone()
     }
 
@@ -1033,9 +1026,7 @@ impl App {
     /// `app.picker_state().state.as_deref()` instead of
     /// `app.editor.picker.as_ref()`. Named to avoid colliding with
     /// the legacy `app.editor.picker` field name.
-    pub fn picker_state(
-        &self,
-    ) -> std::sync::Arc<lattice_host::render_state::PickerRenderState> {
+    pub fn picker_state(&self) -> std::sync::Arc<lattice_host::render_state::PickerRenderState> {
         self.render_state.load().picker.clone()
     }
 
@@ -1043,9 +1034,7 @@ impl App {
     /// snapshot of the completion sub-state. Carries both the
     /// in-buffer ghost popup (`insert`) and the cmdline
     /// completion popup (`state`).
-    pub fn completion(
-        &self,
-    ) -> std::sync::Arc<lattice_host::render_state::CompletionRenderState> {
+    pub fn completion(&self) -> std::sync::Arc<lattice_host::render_state::CompletionRenderState> {
         self.render_state.load().completion.clone()
     }
 
@@ -1053,44 +1042,34 @@ impl App {
     /// snapshot of the popup sub-state. Renderer code reads
     /// `app.popup().is_open()` / `.placement` / `.buffer_id`
     /// instead of `app.editor.popup_buffer.is_some()` etc.
-    pub fn popup(
-        &self,
-    ) -> std::sync::Arc<lattice_host::render_state::PopupRenderState> {
+    pub fn popup(&self) -> std::sync::Arc<lattice_host::render_state::PopupRenderState> {
         self.render_state.load().popup.clone()
     }
 
     /// Slice 3c.final.B.7: published echo-area state. Replaces
     /// `read_editor(|e| e.last_message.clone())` in render.rs.
-    pub fn messages(
-        &self,
-    ) -> std::sync::Arc<lattice_host::render_state::MessagesRenderState> {
+    pub fn messages(&self) -> std::sync::Arc<lattice_host::render_state::MessagesRenderState> {
         self.render_state.load().messages.clone()
     }
 
     /// Slice 3c.final.B.7: published modeline + cmdline + search
     /// state. Replaces the per-frame `read_editor` calls for
     /// `command_line`, `auto_submit_after_chord`, `search_line`.
-    pub fn modeline(
-        &self,
-    ) -> std::sync::Arc<lattice_host::render_state::ModelineRenderState> {
+    pub fn modeline(&self) -> std::sync::Arc<lattice_host::render_state::ModelineRenderState> {
         self.render_state.load().modeline.clone()
     }
 
     /// Slice 3c.final.B.10: published typed-options registry.
     /// Replaces `read_editor(|e| e.config.get_typed::<X>())` —
     /// caller does `app.options().config.get_typed::<X>()`.
-    pub fn options(
-        &self,
-    ) -> std::sync::Arc<lattice_host::render_state::OptionsRenderState> {
+    pub fn options(&self) -> std::sync::Arc<lattice_host::render_state::OptionsRenderState> {
         self.render_state.load().options.clone()
     }
 
     /// Slice 3c.final.B.11: published active-modes map.
     /// `app.modes().map.get(&buf)` replaces
     /// `read_editor(|e| e.active_modes.get(&buf).cloned())`.
-    pub fn modes(
-        &self,
-    ) -> std::sync::Arc<lattice_host::render_state::ModesRenderState> {
+    pub fn modes(&self) -> std::sync::Arc<lattice_host::render_state::ModesRenderState> {
         self.render_state.load().modes.clone()
     }
 
@@ -2559,7 +2538,9 @@ mod tests {
         // popup.
         let mut a = app_with("fn main() {}\n", 5);
         a.do_open_hover("line 1\nline 2\nline 3");
-        a.apply_effect(lattice_grammar::Effect::Lsp(lattice_grammar::LspRequest::Hover)); // -> State B (5.5.LSP.1)
+        a.apply_effect(lattice_grammar::Effect::Lsp(
+            lattice_grammar::LspRequest::Hover,
+        )); // -> State B (5.5.LSP.1)
         assert!(matches!(a.editor.active_buffer, BufferKind::Help));
         // Move within popup.
         let inv = lattice_grammar::CommandInvocation::of(a.editor.builtins.line_down.0);
@@ -3536,7 +3517,9 @@ mod tests {
         let mut a = app_with("fn main() {}\nlet x = 1;\n", 5);
         a.editor.cursor = lattice_protocol::Position::new(1, 4);
         a.do_open_hover("hover body");
-        a.apply_effect(lattice_grammar::Effect::Lsp(lattice_grammar::LspRequest::Hover)); // -> State B (5.5.LSP.1)
+        a.apply_effect(lattice_grammar::Effect::Lsp(
+            lattice_grammar::LspRequest::Hover,
+        )); // -> State B (5.5.LSP.1)
         // Move inside the popup.
         let inv = lattice_grammar::CommandInvocation::of(a.editor.builtins.line_down.0);
         a.apply(Action::Invoke(inv));

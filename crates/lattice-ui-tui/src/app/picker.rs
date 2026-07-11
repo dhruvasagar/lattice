@@ -37,7 +37,6 @@ use super::App;
 // peers reaches the host methods directly inside `Editor::dispatch`.
 
 impl App {
-
     /// Translate a picker source's typed outcome into App-state
     /// mutation. Single dispatch site -- adding a new outcome
     /// variant requires editing exactly this match.
@@ -1353,7 +1352,10 @@ mod tests {
             .as_ref()
             .expect("picker seated immediately, not parked unseated");
         assert_eq!(picker.query, "needle", "initial pattern visible at once");
-        assert!(picker.loading, "in-flight grep shows the searching indicator");
+        assert!(
+            picker.loading,
+            "in-flight grep shows the searching indicator"
+        );
         // The stash was consumed on the immediate seat.
         let live = app
             .editor

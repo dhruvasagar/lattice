@@ -64,9 +64,7 @@ impl MruRanker {
     /// a non-negative f64 added to its `MatchScore.get() as f64`
     /// for ranking. Returning 0.0 means "no MRU history; rank
     /// purely by match score."
-    pub fn new(
-        bonus_lookup: impl Fn(&RawCandidate) -> f64 + Send + Sync + 'static,
-    ) -> Self {
+    pub fn new(bonus_lookup: impl Fn(&RawCandidate) -> f64 + Send + Sync + 'static) -> Self {
         Self {
             bonus_lookup: Arc::new(bonus_lookup),
         }

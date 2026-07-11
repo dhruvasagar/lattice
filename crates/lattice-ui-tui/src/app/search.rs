@@ -45,8 +45,7 @@ impl App {
     /// compilation fails. Cleared explicitly by CommandLineCancel
     /// and by execute_ex_line on submit.
     pub(super) fn refresh_substitute_preview(&mut self) {
-        let parsed = match crate::excommand::try_parse_substitute_partial(&self.command_line())
-        {
+        let parsed = match crate::excommand::try_parse_substitute_partial(&self.command_line()) {
             Some(p) => p,
             None => {
                 self.mutate_editor(|e| e.substitute_preview = None);

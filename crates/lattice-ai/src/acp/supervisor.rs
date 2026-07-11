@@ -18,10 +18,12 @@ use tokio::sync::mpsc;
 use agent_client_protocol::Responder;
 use agent_client_protocol::schema::v1::{
     PermissionOption, PermissionOptionId, PermissionOptionKind, RequestPermissionOutcome,
-    RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome,
-    SessionUpdate, ToolCallContent, ToolCallStatus, ToolKind,
+    RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome, SessionUpdate,
+    ToolCallContent, ToolCallStatus, ToolKind,
 };
-use lattice_agent::{AiLogLevel, AiLogSource, AiLogger, DiffReviewRequest, SessionKey, review_diff};
+use lattice_agent::{
+    AiLogLevel, AiLogSource, AiLogger, DiffReviewRequest, SessionKey, review_diff,
+};
 use lattice_diff::ProgrammaticDiffBus;
 use lattice_diff::subsystem::DiffOutcome;
 
@@ -50,8 +52,19 @@ impl AiClientHandle {
         let state = Arc::new(ArcSwap::from_pointee(AiState::default()));
         let queue_len = Arc::new(AtomicUsize::new(0));
         let ql = queue_len.clone();
-        runtime.spawn(supervisor_loop(cmd_rx, state.clone(), ql, logger, conv_store, diff_bus));
-        AiClientHandle { cmd_tx, state, queue_len }
+        runtime.spawn(supervisor_loop(
+            cmd_rx,
+            state.clone(),
+            ql,
+            logger,
+            conv_store,
+            diff_bus,
+        ));
+        AiClientHandle {
+            cmd_tx,
+            state,
+            queue_len,
+        }
     }
 }
 
@@ -295,7 +308,11 @@ async fn supervisor_loop(
                     active_key.as_ref(),
                     AiLogLevel::Info,
                     AiLogSource::Lifecycle,
-                    if on { "trust mode on (auto-accept)" } else { "review mode" },
+                    if on {
+                        "trust mode on (auto-accept)"
+                    } else {
+                        "review mode"
+                    },
                 );
             }
             SupervisorEvent::Cmd(AiCmd::Interrupt) => {
@@ -393,7 +410,8 @@ pub(crate) async fn drain_notifications(
     // AUX‑3: track tool-call titles by id so we can set meaningful
     // `Executing { tool }` status from `ToolCallUpdate` (which carries
     // the id but not the title).
-    let mut tool_names: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut tool_names: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
     while let Some(notification) = rx.recv().await {
         conv_store.apply(&session, &notification.update);
         // AUX‑3: derive processing status from the update type.
@@ -404,8 +422,7 @@ pub(crate) async fn drain_notifications(
             SessionUpdate::ToolCall(tc) => {
                 let title = tc.title.clone();
                 tool_names.insert(tc.tool_call_id.0.to_string(), title.clone());
-                conv_store
-                    .set_status(&session, SessionStatus::Executing { tool: title });
+                conv_store.set_status(&session, SessionStatus::Executing { tool: title });
             }
             SessionUpdate::ToolCallUpdate(u) => {
                 let tid = u.tool_call_id.0.to_string();
@@ -417,8 +434,7 @@ pub(crate) async fn drain_notifications(
                         .get(&tid)
                         .cloned()
                         .unwrap_or_else(|| "tool".to_string());
-                    conv_store
-                        .set_status(&session, SessionStatus::Executing { tool: title });
+                    conv_store.set_status(&session, SessionStatus::Executing { tool: title });
                 } else if matches!(
                     u.fields.status,
                     Some(ToolCallStatus::Completed) | Some(ToolCallStatus::Failed)
@@ -527,9 +543,9 @@ async fn handle_permission(
                 Some(option_id) => {
                     respond(
                         responder,
-                        RequestPermissionOutcome::Selected(
-                            SelectedPermissionOutcome::new(option_id),
-                        ),
+                        RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
+                            option_id,
+                        )),
                     );
                 }
                 None => respond(responder, RequestPermissionOutcome::Cancelled),
@@ -608,7 +624,11 @@ fn classify_permission(
     let kind = request.tool_call.fields.kind.unwrap_or_default();
     let read_only = matches!(
         kind,
-        ToolKind::Read | ToolKind::Search | ToolKind::Fetch | ToolKind::Think | ToolKind::SwitchMode
+        ToolKind::Read
+            | ToolKind::Search
+            | ToolKind::Fetch
+            | ToolKind::Think
+            | ToolKind::SwitchMode
     );
     if read_only {
         return PermissionDecision::AutoAllow;
@@ -660,16 +680,25 @@ fn pick_option_by_kind(
     options: &[PermissionOption],
     kind: PermissionOptionKind,
 ) -> Option<PermissionOptionId> {
-    options.iter().find(|o| o.kind == kind).map(|o| o.option_id.clone())
+    options
+        .iter()
+        .find(|o| o.kind == kind)
+        .map(|o| o.option_id.clone())
 }
 
 /// Pick the first offered option matching an allow (`true`) or reject (`false`)
 /// kind, preferring the "once" variant over the "always" variant.
 fn pick_option(options: &[PermissionOption], allow: bool) -> Option<PermissionOptionId> {
     let (once, always) = if allow {
-        (PermissionOptionKind::AllowOnce, PermissionOptionKind::AllowAlways)
+        (
+            PermissionOptionKind::AllowOnce,
+            PermissionOptionKind::AllowAlways,
+        )
     } else {
-        (PermissionOptionKind::RejectOnce, PermissionOptionKind::RejectAlways)
+        (
+            PermissionOptionKind::RejectOnce,
+            PermissionOptionKind::RejectAlways,
+        )
     };
     options
         .iter()
@@ -751,7 +780,12 @@ async fn start_provider(
                 if line.is_empty() {
                     continue;
                 }
-                logger.log(Some(&key), AiLogLevel::Warn, AiLogSource::Client, line.to_string());
+                logger.log(
+                    Some(&key),
+                    AiLogLevel::Warn,
+                    AiLogSource::Client,
+                    line.to_string(),
+                );
             }
         });
     }
@@ -820,7 +854,12 @@ mod tests {
 
     #[test]
     fn read_class_kinds_auto_allow() {
-        for kind in [ToolKind::Read, ToolKind::Search, ToolKind::Fetch, ToolKind::Think] {
+        for kind in [
+            ToolKind::Read,
+            ToolKind::Search,
+            ToolKind::Fetch,
+            ToolKind::Think,
+        ] {
             assert!(matches!(
                 classify_permission(&perm_req(kind, None), 1),
                 PermissionDecision::AutoAllow
@@ -830,7 +869,10 @@ mod tests {
 
     #[test]
     fn edit_with_diff_goes_to_review_with_path_and_contents() {
-        let content = vec![ToolCallContent::Diff(Diff::new("/w/parse.rs", "fn new() {}\n"))];
+        let content = vec![ToolCallContent::Diff(Diff::new(
+            "/w/parse.rs",
+            "fn new() {}\n",
+        ))];
         match classify_permission(&perm_req(ToolKind::Edit, Some(content)), 7) {
             PermissionDecision::Review(dr) => {
                 assert_eq!(dr.old_file_path, std::path::PathBuf::from("/w/parse.rs"));
@@ -925,9 +967,15 @@ mod tests {
     #[test]
     fn missing_option_kind_yields_cancelled() {
         // No allow option offered → we cannot allow; Cancelled is the fallback.
-        let only_reject =
-            vec![PermissionOption::new("r", "Reject", PermissionOptionKind::RejectOnce)];
-        assert!(matches!(allow_outcome(&only_reject), RequestPermissionOutcome::Cancelled));
+        let only_reject = vec![PermissionOption::new(
+            "r",
+            "Reject",
+            PermissionOptionKind::RejectOnce,
+        )];
+        assert!(matches!(
+            allow_outcome(&only_reject),
+            RequestPermissionOutcome::Cancelled
+        ));
     }
 
     fn text_update(text: &str, thought: bool) -> SessionUpdate {
@@ -1190,7 +1238,9 @@ done
 
         let trail: Vec<SessionStatus> = seen.lock().unwrap().clone();
         assert!(
-            trail.contains(&SessionStatus::Executing { tool: "edit parse.rs".into() }),
+            trail.contains(&SessionStatus::Executing {
+                tool: "edit parse.rs".into()
+            }),
             "must have passed through Executing, got: {trail:?}",
         );
         assert_eq!(store.snapshot().status, SessionStatus::Idle, "final → Idle");
@@ -1211,12 +1261,18 @@ done
 
         drain_notifications(rx, store.clone(), key.clone()).await;
 
-        assert_eq!(store.snapshot().status, SessionStatus::Idle, "stream closed → Idle");
+        assert_eq!(
+            store.snapshot().status,
+            SessionStatus::Idle,
+            "stream closed → Idle"
+        );
     }
 
     #[tokio::test]
     async fn drain_ends_in_idle_when_tool_completed_and_stream_closed() {
-        use agent_client_protocol::schema::v1::{ToolCall as AcpToolCall, ToolCallUpdate, ToolCallUpdateFields};
+        use agent_client_protocol::schema::v1::{
+            ToolCall as AcpToolCall, ToolCallUpdate, ToolCallUpdateFields,
+        };
         let (store, seen) = tracing_conv_store();
         let key = SessionKey::new("opencode", 1);
         let (tx, rx) = mpsc::unbounded_channel();

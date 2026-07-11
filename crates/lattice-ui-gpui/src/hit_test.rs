@@ -87,19 +87,13 @@ pub fn col_to_x(advance: Pixels, col: u32) -> Pixels {
 /// 4. If `col` is exhausted on a source char, return that
 ///    char's start byte.
 /// 5. If `col` outruns the line, return `line.len()`.
-pub fn combined_col_to_byte(
-    line: &str,
-    col: u32,
-    inlay_offsets: &[(u32, u32)],
-) -> usize {
+pub fn combined_col_to_byte(line: &str, col: u32, inlay_offsets: &[(u32, u32)]) -> usize {
     let mut remaining = col;
     let mut inlay_idx = 0;
     for (b, ch) in line.char_indices() {
         // Splice any inlays anchored at this byte before
         // consuming the source char.
-        while inlay_idx < inlay_offsets.len()
-            && inlay_offsets[inlay_idx].0 as usize == b
-        {
+        while inlay_idx < inlay_offsets.len() && inlay_offsets[inlay_idx].0 as usize == b {
             let width = inlay_offsets[inlay_idx].1;
             if width > remaining {
                 // Click landed inside the inlay → snap to the

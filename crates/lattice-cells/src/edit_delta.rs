@@ -69,17 +69,29 @@ mod tests {
 
     #[test]
     fn net_delta_signs() {
-        let insert = EditDelta { start_line: 5, lines_removed: 0, lines_added: 3 };
+        let insert = EditDelta {
+            start_line: 5,
+            lines_removed: 0,
+            lines_added: 3,
+        };
         assert_eq!(insert.net_delta(), 3);
         assert_eq!(insert.pre_edit_end_line(), 5);
         assert_eq!(insert.post_edit_end_line(), 8);
 
-        let delete = EditDelta { start_line: 10, lines_removed: 4, lines_added: 0 };
+        let delete = EditDelta {
+            start_line: 10,
+            lines_removed: 4,
+            lines_added: 0,
+        };
         assert_eq!(delete.net_delta(), -4);
         assert_eq!(delete.pre_edit_end_line(), 14);
         assert_eq!(delete.post_edit_end_line(), 10);
 
-        let replace = EditDelta { start_line: 2, lines_removed: 2, lines_added: 5 };
+        let replace = EditDelta {
+            start_line: 2,
+            lines_removed: 2,
+            lines_added: 5,
+        };
         assert_eq!(replace.net_delta(), 3);
         assert_eq!(replace.pre_edit_end_line(), 4);
         assert_eq!(replace.post_edit_end_line(), 7);

@@ -29,9 +29,7 @@ fn build_fixture(rows: u16, cols: u16, scrollback: u32) -> SharedTerm {
     let total_lines = scrollback as usize + rows as usize;
     let mut bytes = Vec::with_capacity(total_lines * 90);
     for i in 0..total_lines {
-        let line = format!(
-            "  {i:>6}  the quick brown fox jumps over the lazy dog {i}\r\n",
-        );
+        let line = format!("  {i:>6}  the quick brown fox jumps over the lazy dog {i}\r\n",);
         bytes.extend_from_slice(line.as_bytes());
     }
     shared.feed_for_fixture(&bytes);
@@ -46,19 +44,14 @@ fn bench_term_snapshot_build(c: &mut Criterion) {
         ("stress_50k_400", 24u16, 400u16, 50_000u32),
     ] {
         let shared = build_fixture(rows, cols, scrollback);
-        let bytes_per_build =
-            (rows as u64 + scrollback as u64) * cols as u64;
+        let bytes_per_build = (rows as u64 + scrollback as u64) * cols as u64;
         g.throughput(Throughput::Bytes(bytes_per_build));
-        g.bench_with_input(
-            BenchmarkId::from_parameter(label),
-            &shared,
-            |bencher, s| {
-                bencher.iter(|| {
-                    let snap = s.build_normal_snapshot();
-                    criterion::black_box(snap);
-                });
-            },
-        );
+        g.bench_with_input(BenchmarkId::from_parameter(label), &shared, |bencher, s| {
+            bencher.iter(|| {
+                let snap = s.build_normal_snapshot();
+                criterion::black_box(snap);
+            });
+        });
     }
     g.finish();
 }

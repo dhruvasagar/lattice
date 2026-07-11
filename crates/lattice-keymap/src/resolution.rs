@@ -114,10 +114,10 @@ pub fn parse_describe_key_arg(s: &str) -> (Option<BindingMode>, &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
+    use crate::KeymapLayer;
     use lattice_grammar::{CommandInvocation, SourceLocation};
     use lattice_protocol::ids::CommandId;
-    use crate::KeymapLayer;
+    use std::sync::Arc;
 
     fn fake_bound(layer: KeymapLayer) -> Arc<BoundCommand> {
         Arc::new(BoundCommand::from_invocation(

@@ -24,8 +24,8 @@ use crate::lattice::plugin_host::types::{
     LspRequest as WitLspRequest, ModalState as WitModalState,
     OpenBufferAtColumnPayload as WitOpenBufferAtColumnPayload,
     OpenBufferAtPayload as WitOpenBufferAtPayload, OpenBufferPayload as WitOpenBufferPayload,
-    OpenPickerPayload as WitOpenPickerPayload, OpenSyntheticBufferPayload as WitOpenSyntheticBufferPayload,
-    Position as WitPosition,
+    OpenPickerPayload as WitOpenPickerPayload,
+    OpenSyntheticBufferPayload as WitOpenSyntheticBufferPayload, Position as WitPosition,
     QuitPayload as WitQuitPayload, QuitScope as WitQuitScope, Range as WitRange,
     Register as WitRegister, SearchDirection as WitSearchDirection, Selection as WitSelection,
     SelectionSet as WitSelectionSet, SetLspLogLevelPayload as WitSetLspLogLevelPayload,
@@ -708,9 +708,7 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
         // NarrowTrigger-carrying AppEffect still propagates its typed error).
         NativeEffect::AppAction(app) => WitEffect::AppAction(app.to_wit()?),
         NativeEffect::RecordJump => WitEffect::RecordJump,
-        NativeEffect::OpenAiLog { session } => {
-            WitEffect::OpenAiLog(session.clone())
-        }
+        NativeEffect::OpenAiLog { session } => WitEffect::OpenAiLog(session.clone()),
         NativeEffect::OpenSyntheticBuffer { name, mode_id } => {
             WitEffect::OpenSyntheticBuffer(WitOpenSyntheticBufferPayload {
                 name: name.clone(),

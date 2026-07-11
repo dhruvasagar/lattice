@@ -217,7 +217,11 @@ mod tests {
         let reasoning = ReasoningFoldSource::new(store, BufferId(7));
         assert_eq!(tool.id(), ProviderId(TOOL_FOLD_NAMESPACE | 7));
         assert_eq!(reasoning.id(), ProviderId(REASONING_FOLD_NAMESPACE | 7));
-        assert_ne!(tool.id(), reasoning.id(), "distinct ids so removal is independent");
+        assert_ne!(
+            tool.id(),
+            reasoning.id(),
+            "distinct ids so removal is independent"
+        );
     }
 
     /// A tool call with captured detail yields exactly one closed fold from the
@@ -232,7 +236,10 @@ mod tests {
         let mut tc = AcpToolCall::new("tc-1", "bash");
         tc.raw_input = Some(serde_json::json!({ "cmd": "echo hi" }));
         tc.raw_output = Some(serde_json::json!("hi\n"));
-        store.apply(&SessionKey::new("opencode", 1), &SessionUpdate::ToolCall(tc));
+        store.apply(
+            &SessionKey::new("opencode", 1),
+            &SessionUpdate::ToolCall(tc),
+        );
 
         let tool = ToolCallFoldSource::new(store.clone(), BufferId(1));
         let folds = tool.compute_folds();
@@ -288,7 +295,11 @@ mod tests {
             f_short.identity, f_tall.identity,
             "identity is keyed on tool_call_id, not the line range",
         );
-        assert_eq!(f_short.identity, tool_fold_identity("tc-1"), "identity is the id hash");
+        assert_eq!(
+            f_short.identity,
+            tool_fold_identity("tc-1"),
+            "identity is the id hash"
+        );
         // Sanity: the extra preamble lines pushed the fold down (otherwise the
         // test proves nothing).
         assert_eq!(

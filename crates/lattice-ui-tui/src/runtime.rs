@@ -522,8 +522,7 @@ fn main_loop(terminal: &mut Terminal<TermBackend>, mut app: App) -> Result<()> {
         // buffer area minus tabline/cmdline/candidate rows), so the matrix
         // and the painted box agree on width. Diff-then-send: a steady-state
         // popup fires zero RPCs; closing the popup pushes `None` once.
-        let popup_dims =
-            crate::render::popup_feedback_inner_dims(&app, size.width, buffer_height);
+        let popup_dims = crate::render::popup_feedback_inner_dims(&app, size.width, buffer_height);
         if last_popup_dims != popup_dims {
             if let Some((rows, cols)) = popup_dims {
                 app.set_popup_viewport(rows, cols);
@@ -570,9 +569,9 @@ fn main_loop(terminal: &mut Terminal<TermBackend>, mut app: App) -> Result<()> {
         // for rows present in both frames; only the vacated rows bleed.
         let active_buffer = app.active_buffer_id();
         let line_count = app.ad().snapshot.buffer.line_count() as usize;
-        if last_active_buffer
-            .is_some_and(|(prev_id, prev_lines)| prev_id != active_buffer && line_count < prev_lines)
-        {
+        if last_active_buffer.is_some_and(|(prev_id, prev_lines)| {
+            prev_id != active_buffer && line_count < prev_lines
+        }) {
             terminal.clear().context("clear terminal on shrink")?;
         }
         last_active_buffer = Some((active_buffer, line_count));
@@ -764,7 +763,10 @@ mod tests {
     fn esc_dismisses_floating_popup_in_state_a() {
         let mut app = App::new(Document::from_text("fn main() {}\n"));
         let content = crate::help::HelpContent::from_lines("hover", vec!["doc".to_string()]);
-        app.open_floating_popup(content, lattice_core::ui::popup::PopupPlacement::CursorAnchored);
+        app.open_floating_popup(
+            content,
+            lattice_core::ui::popup::PopupPlacement::CursorAnchored,
+        );
         assert!(app.popup().is_open(), "floating popup open");
         assert_ne!(
             app.ad().buffer_kind,

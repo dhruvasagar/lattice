@@ -37,10 +37,10 @@ pub use cell::{Cell, CellAttrs, CursorShape, NamedColor, TerminalColor};
 pub use handle::{PtyHandle, PtyHandleError};
 pub use install::install;
 pub use modes::{
-    register_terminal_modes, TerminalInsertMode, TerminalMode, TerminalNormalMode,
-    TerminalNormalModeGuard,
+    TerminalInsertMode, TerminalMode, TerminalNormalMode, TerminalNormalModeGuard,
+    register_terminal_modes,
 };
 pub use reader::{GridSearchHit, SearchDir, SharedTerm, TerminalScrollKind};
 pub use snapshot::TerminalSnapshot;
-pub use spawner::{spawn, SpawnConfig, SpawnError};
+pub use spawner::{SpawnConfig, SpawnError, spawn};
 pub use synthetic::{SyntheticDoc, TerminalStore, TerminalStoreHandle};

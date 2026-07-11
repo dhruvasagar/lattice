@@ -520,7 +520,10 @@ mod tests {
             &[KeyChord::char('g')],
             &ev(KeyCode::Char('d'), KeyModifiers::NONE),
         );
-        assert!(matches!(r, Action::None), "expected Action::None, got {r:?}");
+        assert!(
+            matches!(r, Action::None),
+            "expected Action::None, got {r:?}"
+        );
     }
 
     #[test]

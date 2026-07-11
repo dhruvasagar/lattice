@@ -63,6 +63,7 @@
 //! snapshot + cursor) follows in 5.7.B.3 / 5.7.B.4.
 
 use lattice_core::{BufferKind, Document};
+use lattice_host::Renderer;
 use lattice_host::action::Action;
 use lattice_host::chord::KeyChord;
 use lattice_host::dispatch::{DispatchOutcome, RendererSignal};
@@ -70,7 +71,6 @@ use lattice_host::editor::Editor;
 use lattice_host::input::TranslateContext;
 use lattice_host::pane_render::ProviderLookup;
 use lattice_host::render_state::{ActiveDocumentRenderState, RenderState};
-use lattice_host::Renderer;
 use lattice_mode::ModeId;
 use std::sync::Arc;
 
@@ -403,7 +403,9 @@ impl GpuiApp {
         }
         // DB.5: publish `Startup` once `editor` exists, right after `boot`
         // returns — see the TUI seam for the full rationale.
-        editor.event_bus.publish_typed(lattice_mode::Startup { opened_file });
+        editor
+            .event_bus
+            .publish_typed(lattice_mode::Startup { opened_file });
         let render_state = editor.render_state.clone();
         // Slice 3c.final.E.swap: run boot-time setup directly on
         // the owned Editor BEFORE handing it to the actor. The
@@ -954,7 +956,8 @@ impl GpuiApp {
         if let Some(size) = config.get_typed::<lattice_host::ui::theme_options::UiFontSize>() {
             self.theme.font_size_pt = (*size).max(4).min(96) as u32;
         }
-        if let Some(ligatures) = config.get_typed::<lattice_host::ui::theme_options::UiLigatures>() {
+        if let Some(ligatures) = config.get_typed::<lattice_host::ui::theme_options::UiLigatures>()
+        {
             self.theme.ligatures = *ligatures;
         }
     }
@@ -1667,16 +1670,28 @@ mod tests {
         assert!(app.theme.ligatures, "default ligatures should be true");
         // Override via the config registry that's already in the render state.
         let rs = app.render_state.load();
-        rs.options.config.parse_and_set_command("ui.ligatures=off").unwrap();
+        rs.options
+            .config
+            .parse_and_set_command("ui.ligatures=off")
+            .unwrap();
         drop(rs);
         app.rebuild_gpui_theme();
-        assert!(!app.theme.ligatures, "ligatures should be false after ui.ligatures=off");
+        assert!(
+            !app.theme.ligatures,
+            "ligatures should be false after ui.ligatures=off"
+        );
         // Toggle back on.
         let rs = app.render_state.load();
-        rs.options.config.parse_and_set_command("ui.ligatures=on").unwrap();
+        rs.options
+            .config
+            .parse_and_set_command("ui.ligatures=on")
+            .unwrap();
         drop(rs);
         app.rebuild_gpui_theme();
-        assert!(app.theme.ligatures, "ligatures should be true after ui.ligatures=on");
+        assert!(
+            app.theme.ligatures,
+            "ligatures should be true after ui.ligatures=on"
+        );
     }
 
     /// Slice 3c.atomic.K: `set_viewport_height` clamps height

@@ -192,7 +192,13 @@ pub fn register_insert_bindings(handle: &KeymapHandle, actions: &ActionIds) {
         ('t', actions.insert_indent_line),
         ('d', actions.insert_dedent_line),
     ] {
-        handle.bind(layer, mode, &[lit(KeyChord::ctrl(ch))], CommandInvocation::of(id), source());
+        handle.bind(
+            layer,
+            mode,
+            &[lit(KeyChord::ctrl(ch))],
+            CommandInvocation::of(id),
+            source(),
+        );
     }
     // CSM.K1: `<C-x><C-o>` (vim omni-completion) retired.
     // `<C-Space>` is the sole popup-open trigger; per-source
@@ -462,9 +468,11 @@ fn bound_or_fall_through(
     // Peel the binding's own mode out of the active set and re-resolve
     // the same chord against the layers below — the native binding.
     let peeled: Vec<ModeId> = match command.layer {
-        KeymapLayer::MinorMode(m) => {
-            active_minor_modes.iter().copied().filter(|x| *x != m).collect()
-        }
+        KeymapLayer::MinorMode(m) => active_minor_modes
+            .iter()
+            .copied()
+            .filter(|x| *x != m)
+            .collect(),
         // A fall_through binding on a non-minor layer has nothing above
         // it to peel; treat as no continuation (defensive — entries set
         // fall_through only on mode layers).

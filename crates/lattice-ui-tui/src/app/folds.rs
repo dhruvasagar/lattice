@@ -1128,7 +1128,10 @@ mod tests {
         let mut a = org_nested_app(); // parent[0,10] non-leaf; [2,4]/[6,8] leaves.
         // Mixed/shown → OVERVIEW (all closed).
         a.apply(Action::CycleFoldsGlobal);
-        assert!(a.editor.folds.iter().all(|f| f.closed), "OVERVIEW: all closed");
+        assert!(
+            a.editor.folds.iter().all(|f| f.closed),
+            "OVERVIEW: all closed"
+        );
         // → CONTENTS: structural (parent) open, leaves closed.
         a.apply(Action::CycleFoldsGlobal);
         assert!(
@@ -1137,10 +1140,16 @@ mod tests {
         );
         // → SHOW-ALL: all open.
         a.apply(Action::CycleFoldsGlobal);
-        assert!(a.editor.folds.iter().all(|f| !f.closed), "SHOW-ALL: all open");
+        assert!(
+            a.editor.folds.iter().all(|f| !f.closed),
+            "SHOW-ALL: all open"
+        );
         // → back to OVERVIEW.
         a.apply(Action::CycleFoldsGlobal);
-        assert!(a.editor.folds.iter().all(|f| f.closed), "cycles back to OVERVIEW");
+        assert!(
+            a.editor.folds.iter().all(|f| f.closed),
+            "cycles back to OVERVIEW"
+        );
     }
 
     #[test]
@@ -1184,7 +1193,10 @@ mod tests {
         a.apply(Action::GotoParentFold);
         assert_eq!(a.editor.cursor.line, 0, "zp at the top level stays put");
         let msg = a.editor.last_message.as_ref().unwrap().text.clone();
-        assert!(msg.contains("no parent"), "expected no-parent note, got {msg:?}");
+        assert!(
+            msg.contains("no parent"),
+            "expected no-parent note, got {msg:?}"
+        );
     }
 
     #[test]

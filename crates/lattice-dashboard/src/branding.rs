@@ -19,12 +19,11 @@
 use std::sync::Arc;
 
 use lattice_cells::{
-    AnchorPosition, Cell, ProviderId, VirtualRow, VirtualRowKind,
-    VirtualRowProvider, BASE_SCALE,
+    AnchorPosition, BASE_SCALE, Cell, ProviderId, VirtualRow, VirtualRowKind, VirtualRowProvider,
 };
 use lattice_theme::{Color, ElementId, ResolvedTheme, ThemeRegistryHandle};
 
-use crate::theme::{DashboardElementIds, BRAND_AMBER, BRAND_BLUE};
+use crate::theme::{BRAND_AMBER, BRAND_BLUE, DashboardElementIds};
 
 /// XOR tag mixed into the per-buffer [`ProviderId`] so the dashboard provider
 /// never collides with other providers on the same buffer.
@@ -171,8 +170,7 @@ impl VirtualRowProvider for DashboardBrandingProvider {
         // F.3: the "Lattice" run carries `WORDMARK_SCALE` in its per-column
         // `scales` (the mark blocks + gap stay base); GPUI renders it larger
         // via the shared-baseline per-token scaling path, the TUI ignores it.
-        let mut cell_rows: Vec<(Vec<Cell>, Option<Vec<u16>>)> =
-            Vec::with_capacity(MARK.len() + 2);
+        let mut cell_rows: Vec<(Vec<Cell>, Option<Vec<u16>>)> = Vec::with_capacity(MARK.len() + 2);
         cell_rows.push((Vec::new(), None)); // spacer above
         for (i, mark_row) in MARK.iter().enumerate() {
             let mut runs = mark_runs_for(mark_row, logo_fg, cursor_fg);
@@ -268,12 +266,14 @@ pub fn branding_block_width() -> u32 {
 mod tests {
     use super::*;
     use crate::theme::register_dashboard_theme_elements;
-    use lattice_theme::{default_palette, ElementOwner, InMemoryThemeRegistry};
+    use lattice_theme::{ElementOwner, InMemoryThemeRegistry, default_palette};
 
     fn provider_with_theme() -> DashboardBrandingProvider {
         let reg: ThemeRegistryHandle = Arc::new(InMemoryThemeRegistry::new(default_palette()));
-        let ids =
-            register_dashboard_theme_elements(reg.as_ref(), ElementOwner::Mode("dashboard-mode".into()));
+        let ids = register_dashboard_theme_elements(
+            reg.as_ref(),
+            ElementOwner::Mode("dashboard-mode".into()),
+        );
         DashboardBrandingProvider::new(0xABCD, Some(reg), ids)
     }
 
@@ -300,8 +300,14 @@ mod tests {
             .map(|c| c.fg)
             .collect();
         // The mark carries both brand blue (logo) and brand amber (cursor).
-        assert!(all_fgs.contains(&BRAND_BLUE.to_rgb_u32(0)), "logo blue present");
-        assert!(all_fgs.contains(&BRAND_AMBER.to_rgb_u32(0)), "cursor amber present");
+        assert!(
+            all_fgs.contains(&BRAND_BLUE.to_rgb_u32(0)),
+            "logo blue present"
+        );
+        assert!(
+            all_fgs.contains(&BRAND_AMBER.to_rgb_u32(0)),
+            "cursor amber present"
+        );
     }
 
     #[test]
@@ -339,8 +345,14 @@ mod tests {
         // The leading mark blocks + gap are base size.
         assert_eq!(scales[0], BASE_SCALE, "mark blocks stay base size");
         // The tagline row (row 4) and mark-only rows carry no scale channel.
-        assert!(rows[4].scales.is_none(), "tagline stays base (no scale channel)");
-        assert!(rows[1].scales.is_none(), "mark-only row has no scale channel");
+        assert!(
+            rows[4].scales.is_none(),
+            "tagline stays base (no scale channel)"
+        );
+        assert!(
+            rows[1].scales.is_none(),
+            "mark-only row has no scale channel"
+        );
     }
 
     #[test]

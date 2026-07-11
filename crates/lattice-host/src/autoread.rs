@@ -16,7 +16,9 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use notify::{Event as NotifyEvent, EventKind as NotifyEventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{
+    Event as NotifyEvent, EventKind as NotifyEventKind, RecommendedWatcher, RecursiveMode, Watcher,
+};
 use tokio::sync::mpsc;
 
 /// A fast, non-cryptographic hash of a buffer's text. Not stable across
@@ -175,7 +177,8 @@ pub struct AutoreadWatcherHandle {
 
 impl std::fmt::Debug for AutoreadWatcherHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AutoreadWatcherHandle").finish_non_exhaustive()
+        f.debug_struct("AutoreadWatcherHandle")
+            .finish_non_exhaustive()
     }
 }
 
@@ -195,8 +198,13 @@ impl AutoreadWatcherHandle {
 /// Spawn the autoread watcher task on the LSP runtime. Returns the handle
 /// `Editor` keeps plus the change receiver the host drains (AR.4). `Err` only
 /// if `notify` itself fails to construct the OS watcher.
-pub fn spawn_autoread_watcher_task(
-) -> Result<(AutoreadWatcherHandle, mpsc::UnboundedReceiver<AutoreadChange>), notify::Error> {
+pub fn spawn_autoread_watcher_task() -> Result<
+    (
+        AutoreadWatcherHandle,
+        mpsc::UnboundedReceiver<AutoreadChange>,
+    ),
+    notify::Error,
+> {
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<AutoreadWatcherCommand>();
     let (event_tx, event_rx) = mpsc::unbounded_channel::<NotifyEvent>();
     let (change_tx, change_rx) = mpsc::unbounded_channel::<AutoreadChange>();
@@ -409,8 +417,8 @@ mod tests {
 
     #[test]
     fn classify_maps_create_modify_remove_and_ignores_access() {
-        use notify::event::{AccessKind, CreateKind, ModifyKind, RemoveKind};
         use notify::EventKind;
+        use notify::event::{AccessKind, CreateKind, ModifyKind, RemoveKind};
         assert_eq!(
             classify_autoread(&NotifyEvent::new(EventKind::Create(CreateKind::File))),
             Some(AutoreadChangeKind::Modified)

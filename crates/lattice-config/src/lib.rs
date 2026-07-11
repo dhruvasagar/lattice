@@ -67,6 +67,7 @@ extern crate self as lattice_config;
 
 pub mod completion;
 pub mod core_options;
+mod decorations;
 mod diagnostics_options;
 mod domain;
 mod erased;
@@ -74,7 +75,6 @@ pub mod group;
 pub mod loader;
 mod modeline_zone;
 mod signcolumn;
-mod decorations;
 mod window_options;
 // `option` is `pub` so the proc macros' generated code can name
 // `::lattice_config::option::Option<T>` for runtime spec
@@ -121,23 +121,23 @@ pub use completion::OptionsGenerator;
 // instead of the longer `lattice_config::core_options::Tabstop`.
 pub use core_options::COMPLETION_SOURCE_SNIPPET_DEFAULT_PRIORITY;
 pub use core_options::{
-    CompletionAutoInsertSingle, CompletionExtraCommitChars, CompletionGhostText,
+    ClipboardEnabled, CompletionAutoInsertSingle, CompletionExtraCommitChars, CompletionGhostText,
     CompletionSourceBufferWordsPriority, CompletionSourceLspPriority, CompletionSourcePathPriority,
-    CompletionSourceSnippetPriority, CompletionSourceTreeSitterPriority, ClipboardEnabled, CursorLine,
-    DiagnosticsInlineOption, DiagnosticsMinSeverityOption, FoldEnable,
-    FoldMethodOption, HelpAproposDisplay, HelpDescribeDisplay, HelpListDisplay, HelpTopicDisplay,
-    HoverDisplay, IgnoreCase, LspLogDisplay, LspStatusDisplay, MessagesDisplay, MessagesFilter,
-    ModelineCenter, ModelineLeft, ModelinePadding, ModelineRight, ModelineSeparator,
-    NoFile, Number, PickerResultDisplay, ReadOnly, RelativeNumber, Scrollbind, Scrolloff,
-    Sidescroll, Sidescrolloff, SignColumnOption, SignatureDisplay,
-    TablineShowOption, Tabstop, TerminalEscExits, TerminalScrollbackLines, Whitespace,
-    WhitespaceEol, WhitespaceLeading, WhitespaceSpace, WhitespaceTab, WhitespaceTrailing, Wrap,
+    CompletionSourceSnippetPriority, CompletionSourceTreeSitterPriority, CursorLine,
+    DiagnosticsInlineOption, DiagnosticsMinSeverityOption, FoldEnable, FoldMethodOption,
+    HelpAproposDisplay, HelpDescribeDisplay, HelpListDisplay, HelpTopicDisplay, HoverDisplay,
+    IgnoreCase, LspLogDisplay, LspStatusDisplay, MessagesDisplay, MessagesFilter, ModelineCenter,
+    ModelineLeft, ModelinePadding, ModelineRight, ModelineSeparator, NoFile, Number,
+    PickerResultDisplay, ReadOnly, RelativeNumber, Scrollbind, Scrolloff, Sidescroll,
+    Sidescrolloff, SignColumnOption, SignatureDisplay, TablineShowOption, Tabstop,
+    TerminalEscExits, TerminalScrollbackLines, Whitespace, WhitespaceEol, WhitespaceLeading,
+    WhitespaceSpace, WhitespaceTab, WhitespaceTrailing, Wrap,
 };
 pub use erased::ErasedOption;
 pub use group::{
     Ai, Appearance, Completion, Diagnostics, Display, Editing, Editor, Filetree, GROUP_DECLS, Help,
-    Lsp, Messages, Modeline, Oil, OptionGroup, OptionGroupMetadata, Picker, Search, Snippet, Tabline,
-    Terminal, Window, ends_with_mode_suffix,
+    Lsp, Messages, Modeline, Oil, OptionGroup, OptionGroupMetadata, Picker, Search, Snippet,
+    Tabline, Terminal, Window, ends_with_mode_suffix,
 };
 pub use loader::{
     LoadMessage, LoadMessageLevel, LoadOutcome, config_home, default_user_config_path,

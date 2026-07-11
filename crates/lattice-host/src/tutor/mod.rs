@@ -6,8 +6,8 @@ pub mod scores;
 pub mod session;
 
 pub use mode::{
-    register_tutor_modes, render_tutor_headerline, TutorHeaderlineState, TutorHudKind, TutorMode,
-    TutorViewState, TUTOR_PROVIDER_TAG,
+    TUTOR_PROVIDER_TAG, TutorHeaderlineState, TutorHudKind, TutorMode, TutorViewState,
+    register_tutor_modes, render_tutor_headerline,
 };
 pub use scores::TutorScores;
-pub use session::{SuccessCondition, TutorExercise, TutorGameState, TutorSession, MAX_LIVES};
+pub use session::{MAX_LIVES, SuccessCondition, TutorExercise, TutorGameState, TutorSession};

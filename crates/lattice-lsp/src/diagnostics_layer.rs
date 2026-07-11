@@ -643,7 +643,11 @@ mod tests {
         let l = layer();
         let r0 = l.snapshot_revision();
         // No push → identical revision → a no-op publish won't paint.
-        assert_eq!(r0, l.snapshot_revision(), "revision must be stable while unchanged");
+        assert_eq!(
+            r0,
+            l.snapshot_revision(),
+            "revision must be stable while unchanged"
+        );
         // A server push swaps the snapshot Arc → revision moves.
         l.apply(ev(
             "rust",
@@ -652,7 +656,10 @@ mod tests {
             vec![diag(0, DiagnosticSeverity::ERROR, "boom")],
         ));
         let r1 = l.snapshot_revision();
-        assert_ne!(r0, r1, "a diagnostics push must change the snapshot revision");
+        assert_ne!(
+            r0, r1,
+            "a diagnostics push must change the snapshot revision"
+        );
         // The CLEAR (error fixed) is also a change.
         l.apply(ev("rust", "file:///x.rs", Some(2), vec![]));
         assert_ne!(

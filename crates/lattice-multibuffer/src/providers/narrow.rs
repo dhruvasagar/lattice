@@ -278,7 +278,12 @@ pub fn register_narrow_operator(registry: &mut CommandRegistry) -> lattice_gramm
 /// Backward narrows are rare; if they matter, the operator should thread
 /// the anchor through explicitly. `range_to_lines_reversed_is_ordered`
 /// pins the current behaviour.
-fn range_to_narrow_lines(start_line: u32, start_byte: u32, end_line: u32, end_byte: u32) -> (u32, u32) {
+fn range_to_narrow_lines(
+    start_line: u32,
+    start_byte: u32,
+    end_line: u32,
+    end_byte: u32,
+) -> (u32, u32) {
     let ((lo_line, _lo_byte), (hi_line, hi_byte)) = if start_line <= end_line {
         ((start_line, start_byte), (end_line, end_byte))
     } else {

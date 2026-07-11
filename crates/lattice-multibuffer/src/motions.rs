@@ -180,7 +180,10 @@ fn excerpts_for_buffer(
     ctx: &MotionContext,
 ) -> Result<Vec<Excerpt>, CommandError> {
     ctx.cancel.check()?;
-    Ok(mb.handle(ctx.buffer_id).map(|h| h.excerpts()).unwrap_or_default())
+    Ok(mb
+        .handle(ctx.buffer_id)
+        .map(|h| h.excerpts())
+        .unwrap_or_default())
 }
 
 // ──────────────────────────────────────────────────────────────

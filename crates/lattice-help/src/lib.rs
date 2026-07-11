@@ -221,10 +221,7 @@ pub fn parse_help_lines_and_anchors(
 ///
 /// Multi-line links (a label that wraps across a row break) push one
 /// span per affected line, each clipped to that line's byte width.
-fn overlay_link_styles(
-    highlights: &mut Vec<Vec<lattice_syntax::StyledSpan>>,
-    links: &[HelpLink],
-) {
+fn overlay_link_styles(highlights: &mut Vec<Vec<lattice_syntax::StyledSpan>>, links: &[HelpLink]) {
     for link in links {
         let r = &link.range;
         let start_line = r.start.line as usize;

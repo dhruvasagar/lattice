@@ -187,9 +187,7 @@ mod pal {
 /// Build colored HUD spans for the normal session display.
 ///
 /// Returns `(spans, row_bg)` where each span is `(text, 0xRRGGBB fg)`.
-fn tutor_headerline_spans(
-    session: &super::TutorSession,
-) -> (Vec<(String, u32)>, u32) {
+fn tutor_headerline_spans(session: &super::TutorSession) -> (Vec<(String, u32)>, u32) {
     use super::TutorGameState;
 
     let mut s: Vec<(String, u32)> = Vec::new();
@@ -279,9 +277,7 @@ fn tutor_headerline_spans(
 }
 
 /// STAGE CLEAR flash — shown when auto-detect fires, before `<CR>`.
-fn tutor_stage_clear_spans(
-    session: &super::TutorSession,
-) -> (Vec<(String, u32)>, u32) {
+fn tutor_stage_clear_spans(session: &super::TutorSession) -> (Vec<(String, u32)>, u32) {
     let ex_id = session
         .current_exercise()
         .map(|e| e.id.clone())
@@ -323,5 +319,8 @@ pub fn render_tutor_headerline(s: &TutorViewState) -> Option<HeaderlineRow> {
         })
         .collect::<Vec<_>>()
         .into();
-    Some(HeaderlineRow { cells, bg: Some(s.row_bg) })
+    Some(HeaderlineRow {
+        cells,
+        bg: Some(s.row_bg),
+    })
 }

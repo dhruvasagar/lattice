@@ -866,10 +866,13 @@ fn try_incremental_build(
     // large-file matrix rebuilds O(file) rows on an edit near the top. See
     // the matching fix + rationale in `try_incremental_display_build`. (Dead
     // parity oracle; mirrored to stay honest until B4 deletes the cell path.)
-    let rebuild_hi = suffix_chunks.first().map(|c| c.start_source_line).unwrap_or_else(|| {
-        ((published.covered_end_line() as i64 + net as i64).max(rebuild_lo as i64) as u32)
-            .min(new_line_count)
-    });
+    let rebuild_hi = suffix_chunks
+        .first()
+        .map(|c| c.start_source_line)
+        .unwrap_or_else(|| {
+            ((published.covered_end_line() as i64 + net as i64).max(rebuild_lo as i64) as u32)
+                .min(new_line_count)
+        });
 
     // --- Step 3: rebuild zone ---
     // Carve [rebuild_lo, rebuild_hi) into `chunk_size`-aligned
@@ -1129,7 +1132,12 @@ const WINDOW_CAP_LINES: u32 = 2048;
 /// crosses the window edge triggers a rebuild, and that rebuild is
 /// O(window). `chunk_size` is `> 0` here (chunked mode only;
 /// whole-doc mode never calls this).
-fn window_bounds(scroll: u32, viewport_height: u32, line_count: u32, chunk_size: u32) -> (u32, u32) {
+fn window_bounds(
+    scroll: u32,
+    viewport_height: u32,
+    line_count: u32,
+    chunk_size: u32,
+) -> (u32, u32) {
     if line_count <= WINDOW_CAP_LINES {
         return (0, line_count);
     }
@@ -1338,7 +1346,11 @@ fn build_row_cells(
             let fill = tabstop - (col % tabstop); // 1..=tabstop
             let is_trailing = byte >= trailing_start_byte;
             let marker = ws.show && ws.tab.is_some();
-            let cell_fg = if marker && is_trailing { trailing_fg } else { fg };
+            let cell_fg = if marker && is_trailing {
+                trailing_fg
+            } else {
+                fg
+            };
             let flags = if marker {
                 mods | lattice_cells::cell_flags::WS_MARKER
             } else {
@@ -1485,7 +1497,13 @@ fn build_display_row(
         while inlay_idx < line_inlays.len() && (line_inlays[inlay_idx].0 as usize) <= byte {
             let (orig_byte, t) = line_inlays[inlay_idx];
             col_map.push((orig_byte, t.chars().count() as u32));
-            push(&mut out, &mut runs, t, lattice_syntax::Style::Default, cell_flags::INLAY);
+            push(
+                &mut out,
+                &mut runs,
+                t,
+                lattice_syntax::Style::Default,
+                cell_flags::INLAY,
+            );
             col += t.chars().count() as u32;
             inlay_idx += 1;
         }
@@ -1500,12 +1518,22 @@ fn build_display_row(
             let is_trailing = byte >= trailing_start_byte;
             let flags = if marker {
                 cell_flags::WS_MARKER
-                    | if is_trailing { cell_flags::WS_TRAILING } else { 0 }
+                    | if is_trailing {
+                        cell_flags::WS_TRAILING
+                    } else {
+                        0
+                    }
             } else {
                 0
             };
             let first = if marker { ws.tab.unwrap_or(' ') } else { ' ' };
-            push(&mut out, &mut runs, first.encode_utf8(&mut tmp), style, flags);
+            push(
+                &mut out,
+                &mut runs,
+                first.encode_utf8(&mut tmp),
+                style,
+                flags,
+            );
             for _ in 1..fill {
                 push(&mut out, &mut runs, " ", style, flags);
             }
@@ -1528,14 +1556,12 @@ fn build_display_row(
                 // Space markers take trailing-fg iff trailing (the cell
                 // path keys trailing-fg on `is_trailing` for spaces).
                 let flags = cell_flags::WS_MARKER
-                    | if is_trailing { cell_flags::WS_TRAILING } else { 0 };
-                push(
-                    &mut out,
-                    &mut runs,
-                    g.encode_utf8(&mut tmp),
-                    style,
-                    flags,
-                );
+                    | if is_trailing {
+                        cell_flags::WS_TRAILING
+                    } else {
+                        0
+                    };
+                push(&mut out, &mut runs, g.encode_utf8(&mut tmp), style, flags);
                 col += 1;
                 emitted = true;
             }
@@ -1548,7 +1574,13 @@ fn build_display_row(
     while inlay_idx < line_inlays.len() {
         let (orig_byte, t) = line_inlays[inlay_idx];
         col_map.push((orig_byte, t.chars().count() as u32));
-        push(&mut out, &mut runs, t, lattice_syntax::Style::Default, cell_flags::INLAY);
+        push(
+            &mut out,
+            &mut runs,
+            t,
+            lattice_syntax::Style::Default,
+            cell_flags::INLAY,
+        );
         col += t.chars().count() as u32;
         inlay_idx += 1;
     }
@@ -1997,10 +2029,13 @@ fn try_incremental_display_build(
     // windowed coverage here; a scroll past the window then fails the
     // `covers` gate in `recompute_pane` and triggers a recentred (windowed)
     // full rebuild.
-    let rebuild_hi = suffix_chunks.first().map(|c| c.start_source_line).unwrap_or_else(|| {
-        ((published.covered_end_line() as i64 + net as i64).max(rebuild_lo as i64) as u32)
-            .min(new_line_count)
-    });
+    let rebuild_hi = suffix_chunks
+        .first()
+        .map(|c| c.start_source_line)
+        .unwrap_or_else(|| {
+            ((published.covered_end_line() as i64 + net as i64).max(rebuild_lo as i64) as u32)
+                .min(new_line_count)
+        });
 
     // Step 3: rebuild zone — ROW-LEVEL reuse (mirrors the whole-doc
     // branch above). Only the actually-edited line range
@@ -2451,10 +2486,7 @@ mod tests {
         MAP.with(|m| {
             let mut map = m.borrow_mut();
             if let Some((weak, disp)) = map.get(&key) {
-                if weak
-                    .upgrade()
-                    .is_some_and(|a| Arc::ptr_eq(&a, matrix_cell))
-                {
+                if weak.upgrade().is_some_and(|a| Arc::ptr_eq(&a, matrix_cell)) {
                     return disp.clone();
                 }
             }
@@ -2709,8 +2741,7 @@ mod tests {
         let handle = rust_handle(text, 1);
         let snap = snap_of_versioned(text, 1);
         let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
-        let rs =
-            rs_with_snapshot_themed(Some(snap), v(1), matrix_cell.clone(), Some(handle));
+        let rs = rs_with_snapshot_themed(Some(snap), v(1), matrix_cell.clone(), Some(handle));
         assert_eq!(recompute(&rs), WorkerDecision::Recomputed);
 
         let m = matrix_cell.load();
@@ -2783,8 +2814,7 @@ mod tests {
         let handle = rust_handle(text, 1);
         let snap = snap_of_versioned(text, 2);
         let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
-        let rs =
-            rs_with_snapshot_themed(Some(snap), v(1), matrix_cell.clone(), Some(handle));
+        let rs = rs_with_snapshot_themed(Some(snap), v(1), matrix_cell.clone(), Some(handle));
         assert_eq!(recompute(&rs), WorkerDecision::Recomputed);
 
         let (resolved, ids) = test_cell_theme();
@@ -3189,7 +3219,10 @@ mod tests {
     fn window_bounds_full_below_cap_windowed_above() {
         let cs = 128;
         // At/below cap → whole doc regardless of scroll.
-        assert_eq!(window_bounds(0, 50, WINDOW_CAP_LINES, cs), (0, WINDOW_CAP_LINES));
+        assert_eq!(
+            window_bounds(0, 50, WINDOW_CAP_LINES, cs),
+            (0, WINDOW_CAP_LINES)
+        );
         assert_eq!(
             window_bounds(900, 50, WINDOW_CAP_LINES, cs),
             (0, WINDOW_CAP_LINES)
@@ -3200,7 +3233,10 @@ mod tests {
         let (lo, hi) = window_bounds(2500, 50, 5000, cs);
         assert_eq!(lo % cs, 0, "lo chunk-aligned");
         assert_eq!(hi % cs, 0, "hi chunk-aligned");
-        assert!(lo <= 2450 && hi >= 2600, "window brackets the viewport+overscan");
+        assert!(
+            lo <= 2450 && hi >= 2600,
+            "window brackets the viewport+overscan"
+        );
         assert!(hi - lo < 5000, "window is a strict subset of the doc");
         // Window never exceeds the document.
         let (_, hi_eof) = window_bounds(4990, 50, 5000, cs);
@@ -3223,10 +3259,7 @@ mod tests {
         };
         let ws = WhitespaceConfig::default();
 
-        assert_eq!(
-            recompute_pane(&pane, ct, &ws),
-            WorkerDecision::Recomputed
-        );
+        assert_eq!(recompute_pane(&pane, ct, &ws), WorkerDecision::Recomputed);
         let m = matrix_cell.load();
         assert!(!m.is_whole_doc(), "large doc is chunked");
         assert_eq!(m.source_line_count, 5000, "true doc line count preserved");
@@ -3269,10 +3302,7 @@ mod tests {
         // First build at the top.
         let mut pane = pane_inputs(matrix_cell.clone(), Some(big_snap(5000)), v(1), 50);
         pane.scroll = 0;
-        assert_eq!(
-            recompute_pane(&pane, ct, &ws),
-            WorkerDecision::Recomputed
-        );
+        assert_eq!(recompute_pane(&pane, ct, &ws), WorkerDecision::Recomputed);
         assert!(matrix_cell.load().row_at_source_line(0).is_some());
 
         // Same version, jump far down. Pure-scroll past the window must
@@ -3306,10 +3336,7 @@ mod tests {
 
         let mut pane = pane_inputs(matrix_cell.clone(), Some(big_snap(5000)), v(1), 50);
         pane.scroll = 2500;
-        assert_eq!(
-            recompute_pane(&pane, ct, &ws),
-            WorkerDecision::Recomputed
-        );
+        assert_eq!(recompute_pane(&pane, ct, &ws), WorkerDecision::Recomputed);
         // A few lines of scroll stays inside the overscan window.
         pane.scroll = 2510;
         assert_eq!(
@@ -3702,8 +3729,7 @@ mod tests {
         };
         let v_b = MatrixVersion { theme: 0xbb, ..v_a };
 
-        let rs1 =
-            rs_with_snapshot_themed(Some(snap.clone()), v_a, matrix_cell.clone(), None);
+        let rs1 = rs_with_snapshot_themed(Some(snap.clone()), v_a, matrix_cell.clone(), None);
         assert_eq!(recompute(&rs1), WorkerDecision::Recomputed);
         let first_ptr = Arc::as_ptr(&matrix_cell.load_full());
 
@@ -4421,8 +4447,11 @@ mod tests {
         let dm_cell = display_cell_for(&matrix_cell);
         let d1 = dm_cell.load_full();
         assert_eq!(d1.chunks.len(), 2, "display matrix mirrors cell chunking");
-        let disp_chunk1_pre: Vec<Arc<str>> =
-            d1.chunks[1].rows.iter().map(|r| Arc::clone(&r.text)).collect();
+        let disp_chunk1_pre: Vec<Arc<str>> = d1.chunks[1]
+            .rows
+            .iter()
+            .map(|r| Arc::clone(&r.text))
+            .collect();
 
         // Insert one line at line 2.
         let text2: String = {
@@ -4613,7 +4642,10 @@ mod tests {
             !Arc::ptr_eq(&l5_text_pre, &l5_post.text),
             "edited line 5 must be rebuilt (fresh text Arc)"
         );
-        assert_eq!(&*l5_post.text, "EDITED", "edited line carries the new content");
+        assert_eq!(
+            &*l5_post.text, "EDITED",
+            "edited line carries the new content"
+        );
     }
 
     /// Eligibility falls back to full rebuild when `last_edit` is
@@ -5068,76 +5100,75 @@ mod tests {
 
             // Helper: build + atomically publish a fresh
             // RenderState (single-pane), then fire the wake.
-            let publish =
-                |text: &str, text_version: u64, last_edit: Option<lattice_cells::EditDelta>| {
-                    let snap = snap_of_versioned(text, text_version);
-                    let v = MatrixVersion {
-                        text: text_version,
-                        syntax: text_version,
-                        ..MatrixVersion::ZERO
-                    };
-                    let inputs = crate::render_state::PaneCellsInputs {
-                        pane_id: lattice_core::ui::pane::PaneId::default(),
-                        buffer_id: lattice_core::BufferId::default(),
-                        matrix: matrix_cell.clone(),
-                        display_matrix: Arc::new(ArcSwap::from_pointee(
-                            crate::display_matrix::DisplayMatrix::empty(),
-                        )),
-                        virtual_rows_matrix: Arc::new(ArcSwap::from_pointee(
-                            lattice_cells::VirtualRowMatrix::empty(),
-                        )),
-                        version: v,
-                        snapshot: Some(snap.clone()),
-                        syntax_handle: None,
-                        inlay_hints: Arc::from(
-                            Vec::<crate::render_state::InlayHintRow>::new().into_boxed_slice(),
-                        ),
-                        folds: Arc::from(Vec::<lattice_core::Fold>::new().into_boxed_slice()),
-                        viewport_height: 5,
-                        scroll: 0,
-                        viewport_width: 0,
-                        wrap: false,
-                        wrap_reserved_cols: 0,
-                        foldenable: true,
-                        last_edit,
-                        excerpt_syntax: Arc::from([]),
-                        extra_spans: Arc::from([]),
-                    };
-                    let cells = CellsRenderState {
-                        matrix: matrix_cell.clone(),
-                        version: v,
-                        snapshot: Some(snap),
-                        syntax_handle: None,
-                        inlay_hints: Arc::from(
-                            Vec::<crate::render_state::InlayHintRow>::new().into_boxed_slice(),
-                        ),
-                        folds: Arc::from(Vec::<lattice_core::Fold>::new().into_boxed_slice()),
-                        viewport_height: 5,
-                        foldenable: true,
-                        last_edit,
-                        resolved_theme: std::sync::Arc::new(
-                            crate::ui::theme::ResolvedTheme::default(),
-                        ),
-                        theme_ids: crate::ui::theme::BuiltinElementIds::default(),
-                        whitespace: WhitespaceConfig::default(),
-                        panes: Arc::from(vec![inputs.clone()].into_boxed_slice()),
-                        pane_matrices: {
-                            let mut m = std::collections::HashMap::new();
-                            m.insert(inputs.pane_id, inputs.matrix);
-                            Arc::new(m)
-                        },
-                        display_matrix: Arc::new(ArcSwap::from_pointee(
-                            crate::display_matrix::DisplayMatrix::empty(),
-                        )),
-                        display_pane_matrices: Arc::new(std::collections::HashMap::new()),
-                    };
-                    let rs = RenderState {
-                        cells: Arc::new(ArcSwap::from_pointee(cells)),
-                        ..RenderState::default()
-                    };
-                    render_state.store(Arc::new(rs));
-                    wake.0.notify_one();
+            let publish = |text: &str,
+                           text_version: u64,
+                           last_edit: Option<lattice_cells::EditDelta>| {
+                let snap = snap_of_versioned(text, text_version);
+                let v = MatrixVersion {
+                    text: text_version,
+                    syntax: text_version,
+                    ..MatrixVersion::ZERO
                 };
+                let inputs = crate::render_state::PaneCellsInputs {
+                    pane_id: lattice_core::ui::pane::PaneId::default(),
+                    buffer_id: lattice_core::BufferId::default(),
+                    matrix: matrix_cell.clone(),
+                    display_matrix: Arc::new(ArcSwap::from_pointee(
+                        crate::display_matrix::DisplayMatrix::empty(),
+                    )),
+                    virtual_rows_matrix: Arc::new(ArcSwap::from_pointee(
+                        lattice_cells::VirtualRowMatrix::empty(),
+                    )),
+                    version: v,
+                    snapshot: Some(snap.clone()),
+                    syntax_handle: None,
+                    inlay_hints: Arc::from(
+                        Vec::<crate::render_state::InlayHintRow>::new().into_boxed_slice(),
+                    ),
+                    folds: Arc::from(Vec::<lattice_core::Fold>::new().into_boxed_slice()),
+                    viewport_height: 5,
+                    scroll: 0,
+                    viewport_width: 0,
+                    wrap: false,
+                    wrap_reserved_cols: 0,
+                    foldenable: true,
+                    last_edit,
+                    excerpt_syntax: Arc::from([]),
+                    extra_spans: Arc::from([]),
+                };
+                let cells = CellsRenderState {
+                    matrix: matrix_cell.clone(),
+                    version: v,
+                    snapshot: Some(snap),
+                    syntax_handle: None,
+                    inlay_hints: Arc::from(
+                        Vec::<crate::render_state::InlayHintRow>::new().into_boxed_slice(),
+                    ),
+                    folds: Arc::from(Vec::<lattice_core::Fold>::new().into_boxed_slice()),
+                    viewport_height: 5,
+                    foldenable: true,
+                    last_edit,
+                    resolved_theme: std::sync::Arc::new(crate::ui::theme::ResolvedTheme::default()),
+                    theme_ids: crate::ui::theme::BuiltinElementIds::default(),
+                    whitespace: WhitespaceConfig::default(),
+                    panes: Arc::from(vec![inputs.clone()].into_boxed_slice()),
+                    pane_matrices: {
+                        let mut m = std::collections::HashMap::new();
+                        m.insert(inputs.pane_id, inputs.matrix);
+                        Arc::new(m)
+                    },
+                    display_matrix: Arc::new(ArcSwap::from_pointee(
+                        crate::display_matrix::DisplayMatrix::empty(),
+                    )),
+                    display_pane_matrices: Arc::new(std::collections::HashMap::new()),
+                };
+                let rs = RenderState {
+                    cells: Arc::new(ArcSwap::from_pointee(cells)),
+                    ..RenderState::default()
+                };
+                render_state.store(Arc::new(rs));
+                wake.0.notify_one();
+            };
 
             // Publish #1 — fresh document.
             publish("aa\nbb\ncc", 1, None);
@@ -5399,7 +5430,10 @@ mod tests {
         );
         let m = matrix_cell.load();
         assert_eq!(m.wrap_width, 8);
-        assert!(m.segment_count(0) > 1, "long line wraps into multiple segments");
+        assert!(
+            m.segment_count(0) > 1,
+            "long line wraps into multiple segments"
+        );
     }
 
     /// W.4.t: a hard tab expands to `tabstop` columns of cells, so
@@ -5433,9 +5467,7 @@ mod tests {
             "leading tab expands to 4 spaces"
         );
         assert!(
-            row.cells[..4]
-                .iter()
-                .all(|c| !c.is_ws_marker()),
+            row.cells[..4].iter().all(|c| !c.is_ws_marker()),
             "whitespace off ⇒ no marker flag"
         );
 
@@ -5648,8 +5680,7 @@ mod tests {
         let handle = rust_handle(text, 1);
         let snap = snap_of_versioned(text, 1);
         let matrix_cell: Arc<ArcSwap<CellMatrix>> = Arc::default();
-        let rs =
-            rs_with_snapshot_themed(Some(snap), v(1), matrix_cell.clone(), Some(handle));
+        let rs = rs_with_snapshot_themed(Some(snap), v(1), matrix_cell.clone(), Some(handle));
         assert_eq!(recompute(&rs), WorkerDecision::Recomputed);
 
         let m = matrix_cell.load();
@@ -5699,13 +5730,7 @@ mod tests {
         // territory. The cell-builder must NOT pick up BOLD on
         // the inlay's spliced cells.
         let hints = vec![inlay(0, 2, ":")];
-        let rs = rs_with_snapshot_full(
-            Some(snap),
-            v(1),
-            matrix_cell.clone(),
-            Some(handle),
-            hints,
-        );
+        let rs = rs_with_snapshot_full(Some(snap), v(1), matrix_cell.clone(), Some(handle), hints);
         assert_eq!(recompute(&rs), WorkerDecision::Recomputed);
 
         let m = matrix_cell.load();

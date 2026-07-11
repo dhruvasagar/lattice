@@ -49,28 +49,39 @@ mod tests {
     #[test]
     fn defaults_match_spec() {
         let r = reg();
-        assert_eq!(*r.get_typed::<WindowDecorationsOption>().unwrap(), Decorations::Full);
+        assert_eq!(
+            *r.get_typed::<WindowDecorationsOption>().unwrap(),
+            Decorations::Full
+        );
         assert!(!*r.get_typed::<StartMaximized>().unwrap());
     }
 
     #[test]
     fn set_decorations_none_parses() {
         let r = reg();
-        r.parse_and_set_command("ui.window.decorations=none").unwrap();
-        assert_eq!(*r.get_typed::<WindowDecorationsOption>().unwrap(), Decorations::None_);
+        r.parse_and_set_command("ui.window.decorations=none")
+            .unwrap();
+        assert_eq!(
+            *r.get_typed::<WindowDecorationsOption>().unwrap(),
+            Decorations::None_
+        );
     }
 
     #[test]
     fn set_start_maximized_true_parses() {
         let r = reg();
-        r.parse_and_set_command("ui.window.start-maximized=true").unwrap();
+        r.parse_and_set_command("ui.window.start-maximized=true")
+            .unwrap();
         assert!(*r.get_typed::<StartMaximized>().unwrap());
     }
 
     #[test]
     fn bad_decorations_value_errors() {
         let r = reg();
-        assert!(r.parse_and_set_command("ui.window.decorations=wat").is_err());
+        assert!(
+            r.parse_and_set_command("ui.window.decorations=wat")
+                .is_err()
+        );
     }
 
     // Regression: the `ui.window.*` options must resolve through the real TOML
@@ -90,11 +101,7 @@ mod tests {
         .unwrap();
         let out = crate::load_file(&r, &path, &[]);
         std::fs::remove_file(&path).ok();
-        assert!(
-            out.messages.is_empty(),
-            "load messages: {:?}",
-            out.messages
-        );
+        assert!(out.messages.is_empty(), "load messages: {:?}", out.messages);
         assert_eq!(
             *r.get_typed::<WindowDecorationsOption>().unwrap(),
             Decorations::None_,

@@ -141,7 +141,10 @@ impl CompletionPipeline {
         for r in &self.rankers {
             r.rank(&mut scored);
         }
-        scored.into_iter().map(RenderedCandidate::from_scored).collect()
+        scored
+            .into_iter()
+            .map(RenderedCandidate::from_scored)
+            .collect()
     }
 }
 

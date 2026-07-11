@@ -110,13 +110,17 @@ impl Editor {
             return;
         };
         let owner = lattice_theme::ElementOwner::Mode(
-            lattice_dashboard::DashboardMode::mode_id().as_str().to_string().into(),
+            lattice_dashboard::DashboardMode::mode_id()
+                .as_str()
+                .to_string()
+                .into(),
         );
         // Idempotent: returns the same interned ids on-activate already
         // registered.
         let ids = lattice_dashboard::register_dashboard_theme_elements(theme.as_ref(), owner);
         let provider = DashboardBrandingProvider::new(provider_id, Some(theme), ids);
-        self.virtual_row_providers.register(id, std::sync::Arc::new(provider));
+        self.virtual_row_providers
+            .register(id, std::sync::Arc::new(provider));
     }
 
     /// Compose the dashboard body into a `HelpContent`. `dashboard.source`
@@ -238,7 +242,9 @@ fn help_link_scheme(target: &LinkTarget) -> String {
 /// Convert composed fragments into a `HelpContent` titled `*dashboard*`
 /// (the title becomes the buffer name). Sections are separated by a blank
 /// spacer line.
-fn dashboard_fragments_to_help_content(fragments: Vec<DashboardFragment>) -> lattice_help::HelpContent {
+fn dashboard_fragments_to_help_content(
+    fragments: Vec<DashboardFragment>,
+) -> lattice_help::HelpContent {
     let mut lines: Vec<String> = Vec::new();
     for (i, fragment) in fragments.iter().enumerate() {
         if i > 0 {
@@ -261,8 +267,10 @@ mod tests {
         // `exec:` (not `execute:`) — the scheme `classify_link_url`
         // recognizes as "run this ex-command". `execute:` classifies as
         // Unresolved, i.e. a dead link.
-        let row = DashboardRow::line("Run ", DashboardRole::Body)
-            .push(DashboardSpan::link(":tutor", LinkTarget::Command("tutor".into())));
+        let row = DashboardRow::line("Run ", DashboardRole::Body).push(DashboardSpan::link(
+            ":tutor",
+            LinkTarget::Command("tutor".into()),
+        ));
         assert_eq!(render_row(&row), "Run [:tutor](exec:tutor)");
     }
 
@@ -270,8 +278,10 @@ mod tests {
     fn topic_link_becomes_help_scheme() {
         // `help:` (not `topic:`) — the scheme `classify_link_url` maps to
         // `HelpLinkTarget::Topic`, opening the `:help` page.
-        let row = DashboardRow::line("", DashboardRole::Body)
-            .push(DashboardSpan::link(":help modes", LinkTarget::Topic("modes".into())));
+        let row = DashboardRow::line("", DashboardRole::Body).push(DashboardSpan::link(
+            ":help modes",
+            LinkTarget::Topic("modes".into()),
+        ));
         assert_eq!(render_row(&row), "[:help modes](help:modes)");
     }
 

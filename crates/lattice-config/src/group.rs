@@ -245,8 +245,7 @@ impl OptionGroup for Search {
 pub struct Snippet;
 impl OptionGroup for Snippet {
     const NAME: &'static str = "snippet";
-    const DOC: &'static str =
-        "Snippet engine: activation policy + supported-language allowlist.";
+    const DOC: &'static str = "Snippet engine: activation policy + supported-language allowlist.";
 }
 
 /// Modeline (bottom per-pane status row) layout options. ML.5
@@ -339,8 +338,7 @@ static MESSAGES_GROUP_LINK: &OptionGroupMetadata = &OptionGroupMetadata::for_gro
 static TABLINE_GROUP_LINK: &OptionGroupMetadata = &OptionGroupMetadata::for_group::<Tabline>();
 
 #[linkme::distributed_slice(GROUP_DECLS)]
-static TERMINAL_GROUP_LINK: &OptionGroupMetadata =
-    &OptionGroupMetadata::for_group::<Terminal>();
+static TERMINAL_GROUP_LINK: &OptionGroupMetadata = &OptionGroupMetadata::for_group::<Terminal>();
 
 #[linkme::distributed_slice(GROUP_DECLS)]
 static SEARCH_GROUP_LINK: &OptionGroupMetadata = &OptionGroupMetadata::for_group::<Search>();

@@ -39,18 +39,18 @@ use crate::WitBoundary;
 use crate::boundary::path_to_wit;
 
 use crate::lattice::plugin_host::types::{
-    ActiveBufferSnapshot as WitActiveBufferSnapshot, Annotation as WitAnnotation,
-    AnnotationCustom as WitAnnotationCustom, AnnotationSegment as WitAnnotationSegment,
-    AnnotationStyled as WitAnnotationStyled, ArgDefault as WitArgDefault, ArgKind as WitArgKind,
-    ArgSpec as WitArgSpec, BufferEntry as WitBufferEntry, CommandRef as WitCommandRef,
-    JumpTarget as WitJumpTarget, KeyChord as WitKeyChord, KeyKind as WitKeyKind,
-    Location as WitLocation, LspInstancePayload as WitLspInstancePayload,
-    OpenTarget as WitOpenTarget, PickerContext as WitPickerContext,
-    PickerSourceSpec as WitPickerSourceSpec, PositionEntry as WitPositionEntry,
-    PositionSource as WitPositionSource, ResolveDiffPayload as WitResolveDiffPayload,
-    RoutingPayload as WitRoutingPayload, AiSessionPayload as WitAiSessionPayload,
-    ShowMessageActionPayload as WitShowMessageActionPayload,
-    SpecialKey as WitSpecialKey, SymbolLocation as WitSymbolLocation,
+    ActiveBufferSnapshot as WitActiveBufferSnapshot, AiSessionPayload as WitAiSessionPayload,
+    Annotation as WitAnnotation, AnnotationCustom as WitAnnotationCustom,
+    AnnotationSegment as WitAnnotationSegment, AnnotationStyled as WitAnnotationStyled,
+    ArgDefault as WitArgDefault, ArgKind as WitArgKind, ArgSpec as WitArgSpec,
+    BufferEntry as WitBufferEntry, CommandRef as WitCommandRef, JumpTarget as WitJumpTarget,
+    KeyChord as WitKeyChord, KeyKind as WitKeyKind, Location as WitLocation,
+    LspInstancePayload as WitLspInstancePayload, OpenTarget as WitOpenTarget,
+    PickerContext as WitPickerContext, PickerSourceSpec as WitPickerSourceSpec,
+    PositionEntry as WitPositionEntry, PositionSource as WitPositionSource,
+    ResolveDiffPayload as WitResolveDiffPayload, RoutingPayload as WitRoutingPayload,
+    ShowMessageActionPayload as WitShowMessageActionPayload, SpecialKey as WitSpecialKey,
+    SymbolLocation as WitSymbolLocation,
 };
 
 use lattice_completion::candidate::{
@@ -168,12 +168,13 @@ impl WitBoundary for NativeAnnotation {
         Ok(match self {
             NativeAnnotation::Kind(s) => WitAnnotation::Kind(s.to_string()),
             NativeAnnotation::DocSnippet(s) => WitAnnotation::DocSnippet(s.to_string()),
-            NativeAnnotation::Keybinding(chords) => WitAnnotation::Keybinding(
-                chords
-                    .iter()
-                    .map(WitBoundary::to_wit)
-                    .collect::<Result<Vec<_>, String>>()?,
-            ),
+            NativeAnnotation::Keybinding(chords) => {
+                WitAnnotation::Keybinding(chords.iter().map(WitBoundary::to_wit).collect::<Result<
+                    Vec<_>,
+                    String,
+                >>(
+                )?)
+            }
             NativeAnnotation::Source(s) => WitAnnotation::Source(s.to_string()),
             NativeAnnotation::Custom { text, slot } => WitAnnotation::Custom(WitAnnotationCustom {
                 text: text.to_string(),
@@ -433,13 +434,12 @@ impl WitBoundary for NativeRoutingPayload {
             NativeRoutingPayload::Colorscheme { name } => {
                 WitRoutingPayload::Colorscheme(name.clone())
             }
-            NativeRoutingPayload::AiSession {
-                provider,
-                index,
-            } => WitRoutingPayload::AiSession(WitAiSessionPayload {
-                provider: provider.clone(),
-                index: *index,
-            }),
+            NativeRoutingPayload::AiSession { provider, index } => {
+                WitRoutingPayload::AiSession(WitAiSessionPayload {
+                    provider: provider.clone(),
+                    index: *index,
+                })
+            }
         })
     }
 

@@ -179,7 +179,9 @@ pub fn spawn(config: SpawnConfig) -> Result<SpawnHandles, SpawnError> {
     // thread processes the child's first output must match the REAL spawn
     // geometry — see its doc comment for the clipping regression a
     // hardcoded 24×80 placeholder caused.
-    let snapshot = Arc::new(ArcSwap::from_pointee(TerminalSnapshot::empty_sized(rows, cols)));
+    let snapshot = Arc::new(ArcSwap::from_pointee(TerminalSnapshot::empty_sized(
+        rows, cols,
+    )));
     let term = spawn_reader(
         reader,
         Arc::clone(&snapshot),

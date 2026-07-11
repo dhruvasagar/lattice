@@ -105,7 +105,10 @@ fn make_candidates(n: usize) -> Vec<RenderedCandidate> {
 /// per-frame `AnnotationColumns` layout + `display_text` concat cost the
 /// renderer pays when a styled marginalia column is visible.
 fn seg(ch: char, slot: &'static str) -> AnnotationSegment {
-    AnnotationSegment { text: Arc::from(ch.to_string()), slot: Arc::from(slot) }
+    AnnotationSegment {
+        text: Arc::from(ch.to_string()),
+        slot: Arc::from(slot),
+    }
 }
 
 fn make_styled_file_candidates(n: usize) -> Vec<RenderedCandidate> {
@@ -145,7 +148,12 @@ fn make_styled_file_candidates(n: usize) -> Vec<RenderedCandidate> {
                 },
             ];
             let annotations = raw.annotations.clone();
-            RenderedCandidate { raw, score: MatchScore::PERFECT, match_ranges: Vec::new(), annotations }
+            RenderedCandidate {
+                raw,
+                score: MatchScore::PERFECT,
+                match_ranges: Vec::new(),
+                annotations,
+            }
         })
         .collect()
 }
@@ -156,7 +164,10 @@ fn make_styled_file_candidates(n: usize) -> Vec<RenderedCandidate> {
 /// non-file pickers. Used to lock the §9.5 "same O(visible × segments),
 /// no measurable cost" claim for the rollout families.
 fn tseg(text: &str, slot: &'static str) -> AnnotationSegment {
-    AnnotationSegment { text: Arc::from(text), slot: Arc::from(slot) }
+    AnnotationSegment {
+        text: Arc::from(text),
+        slot: Arc::from(slot),
+    }
 }
 
 fn make_styled_picker_candidates(n: usize) -> Vec<RenderedCandidate> {
@@ -187,7 +198,12 @@ fn make_styled_picker_candidates(n: usize) -> Vec<RenderedCandidate> {
                 },
             ];
             let annotations = raw.annotations.clone();
-            RenderedCandidate { raw, score: MatchScore::PERFECT, match_ranges: Vec::new(), annotations }
+            RenderedCandidate {
+                raw,
+                score: MatchScore::PERFECT,
+                match_ranges: Vec::new(),
+                annotations,
+            }
         })
         .collect()
 }

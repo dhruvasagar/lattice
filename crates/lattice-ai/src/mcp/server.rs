@@ -13,8 +13,8 @@
 //! wait-free [`ServerState`] snapshot.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tokio::sync::Notify;
 
@@ -548,7 +548,13 @@ async fn accept_loop(
                 let conn_guard = ConnGuard(signals.clone());
                 tokio::spawn(async move {
                     if let Err(e) = serve_connection(
-                        stream, token, ctx, conn_id, notify_rx, shutdown_rx, conn_guard,
+                        stream,
+                        token,
+                        ctx,
+                        conn_id,
+                        notify_rx,
+                        shutdown_rx,
+                        conn_guard,
                     )
                     .await
                     {

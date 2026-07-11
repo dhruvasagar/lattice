@@ -145,28 +145,46 @@ mod tests {
         )
         .await;
         assert_eq!(v["isError"], true);
-        assert!(v["content"][0]["text"]
-            .as_str()
-            .unwrap()
-            .contains("not fully initialized"));
+        assert!(
+            v["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("not fully initialized")
+        );
     }
 
     #[tokio::test]
     async fn missing_required_args_are_graceful_errors() {
         let (bus, _rx) = make_inbound_raw::<ProgrammaticDiffRequest>(Arc::new(Notify::new()));
         // Missing new_file_contents.
-        let v = open_diff(Some(&bus), &json!({ "old_file_path": "/a.rs" }), 0, &review()).await;
+        let v = open_diff(
+            Some(&bus),
+            &json!({ "old_file_path": "/a.rs" }),
+            0,
+            &review(),
+        )
+        .await;
         assert_eq!(v["isError"], true);
-        assert!(v["content"][0]["text"]
-            .as_str()
-            .unwrap()
-            .contains("missing new_file_contents"));
+        assert!(
+            v["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("missing new_file_contents")
+        );
         // Missing old_file_path.
-        let v = open_diff(Some(&bus), &json!({ "new_file_contents": "x" }), 0, &review()).await;
-        assert!(v["content"][0]["text"]
-            .as_str()
-            .unwrap()
-            .contains("missing old_file_path"));
+        let v = open_diff(
+            Some(&bus),
+            &json!({ "new_file_contents": "x" }),
+            0,
+            &review(),
+        )
+        .await;
+        assert!(
+            v["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("missing old_file_path")
+        );
     }
 
     #[tokio::test]
@@ -221,7 +239,11 @@ mod tests {
             }
         });
         let req = recv_soon(&mut rx).await;
-        assert_eq!(req.new_file_path, PathBuf::from("/b.rs"), "explicit new path");
+        assert_eq!(
+            req.new_file_path,
+            PathBuf::from("/b.rs"),
+            "explicit new path"
+        );
         req.response.send(DiffOutcome::Reject).unwrap();
 
         let v = call.await.unwrap();

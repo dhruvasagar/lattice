@@ -21,8 +21,8 @@ use lattice_ai::mcp::lockfile::LockfileContents;
 use lattice_ai::mcp::{ServerConfig, spawn};
 use lattice_protocol::jsonrpc::{Message, Request, RequestId};
 use lattice_runtime::EventBus;
-use std::sync::Arc;
 use serde_json::json;
+use std::sync::Arc;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::HeaderValue;
@@ -30,7 +30,12 @@ use tokio_tungstenite::tungstenite::http::HeaderValue;
 fn unique_dir(tag: &str) -> PathBuf {
     static COUNTER: AtomicU32 = AtomicU32::new(0);
     let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-    std::env::temp_dir().join(format!("lattice-cc-it-{}-{}-{}", tag, std::process::id(), n))
+    std::env::temp_dir().join(format!(
+        "lattice-cc-it-{}-{}-{}",
+        tag,
+        std::process::id(),
+        n
+    ))
 }
 
 /// A fresh, empty event bus — these tests exercise the handshake / auth /
@@ -256,10 +261,10 @@ async fn stop_closes_live_connections() {
     let closed = tokio::time::timeout(Duration::from_secs(3), async {
         loop {
             match ws.next().await {
-                None => return true,                          // stream ended
-                Some(Err(_)) => return true,                  // socket error
-                Some(Ok(f)) if f.is_close() => return true,   // close frame
-                Some(Ok(_)) => continue,                      // ignore stray frames
+                None => return true,                        // stream ended
+                Some(Err(_)) => return true,                // socket error
+                Some(Ok(f)) if f.is_close() => return true, // close frame
+                Some(Ok(_)) => continue,                    // ignore stray frames
             }
         }
     })

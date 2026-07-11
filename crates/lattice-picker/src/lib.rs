@@ -121,10 +121,7 @@ pub enum RoutingPayload {
     /// `SessionKey` to open `*ai:<provider>:<index>*`. Ephemeral
     /// (sessions come and go), so `routing_identity` returns
     /// `None` — no MRU recency.
-    AiSession {
-        provider: String,
-        index: u32,
-    },
+    AiSession { provider: String, index: u32 },
     /// `PickerAction::JumpToLspLocation` -- canonical `(path,
     /// line, col)` the host's `jump_to_file_line_col` consumes.
     /// LSP 0-based line + utf-8 byte column; the host already
@@ -615,12 +612,12 @@ impl Picker {
                 } = routing
                 {
                     raw.accept_action = match on_accept {
-                        PickerAction::OpenLspLog => Some(Box::new(
-                            lattice_completion::AcceptAction::OpenLspLog {
+                        PickerAction::OpenLspLog => {
+                            Some(Box::new(lattice_completion::AcceptAction::OpenLspLog {
                                 server_id: server_id.clone(),
                                 workspace: workspace.clone(),
-                            },
-                        )),
+                            }))
+                        }
                         PickerAction::OpenLspTraceLog => Some(Box::new(
                             lattice_completion::AcceptAction::OpenLspTraceLog {
                                 server_id: server_id.clone(),
@@ -865,8 +862,7 @@ impl AiSessionRow {
     /// reconstructs into a `SessionKey`.
     pub fn into_candidate_with_routing(self) -> (RawCandidate, RoutingPayload) {
         let label = format!("{}:{}", self.provider, self.index);
-        let mut raw =
-            RawCandidate::plain(label.clone(), lattice_completion::CandidateKind::Plain);
+        let mut raw = RawCandidate::plain(label.clone(), lattice_completion::CandidateKind::Plain);
         raw.display = label;
         let routing = RoutingPayload::AiSession {
             provider: self.provider,
@@ -1026,7 +1022,11 @@ mod tests {
 
         let (raw, _routing) = row.into_candidate_with_routing();
 
-        assert!(raw.display.ends_with(trimmed), "display = {:?}", raw.display);
+        assert!(
+            raw.display.ends_with(trimmed),
+            "display = {:?}",
+            raw.display
+        );
         let prefix = raw.display.len() - trimmed.len();
         assert_eq!(raw.display_spans.len(), 1);
         let span = &raw.display_spans[0];
@@ -1046,7 +1046,10 @@ mod tests {
         let mut row = LspLocationRow::from_path_line_col("notes.txt", 0, 0);
         row.preview = "just prose".to_string();
         let (raw, _routing) = row.into_candidate_with_routing();
-        assert!(raw.display_spans.is_empty(), "unhighlighted row stays plain");
+        assert!(
+            raw.display_spans.is_empty(),
+            "unhighlighted row stays plain"
+        );
     }
 
     /// Build a buffer-source-shaped raw candidate by hand. Mirrors

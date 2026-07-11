@@ -22,8 +22,8 @@
 //!
 //! `docs/dev/architecture/headerline.md`
 
-use std::sync::{Arc, RwLock};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, RwLock};
 
 use crate::cell::Cell;
 use crate::virtual_rows::{
@@ -225,7 +225,10 @@ mod tests {
     fn emits_sticky_row_at_line_zero() {
         let handle = SimpleHeaderlineHandle::<()>::new((), |_| {
             let cells: Arc<[Cell]> = vec![Cell::new('x' as u32, 0xffffff, 0, 0)].into();
-            Some(HeaderlineRow { cells, bg: Some(0x000000) })
+            Some(HeaderlineRow {
+                cells,
+                bg: Some(0x000000),
+            })
         });
         let provider = handle.provider(42);
         let rows = provider.collect();
@@ -256,7 +259,9 @@ mod tests {
     fn direct_headerline_impl_works() {
         struct Fixed;
         impl Headerline for Fixed {
-            fn version(&self) -> u64 { 1 }
+            fn version(&self) -> u64 {
+                1
+            }
             fn render(&self) -> Option<HeaderlineRow> {
                 let cells: Arc<[Cell]> = vec![Cell::new('!' as u32, 0, 0, 0)].into();
                 Some(HeaderlineRow { cells, bg: None })

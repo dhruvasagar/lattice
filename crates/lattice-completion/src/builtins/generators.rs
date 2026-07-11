@@ -380,8 +380,7 @@ mod tests {
         // in the prefix and filter remaining entries by the
         // basename suffix. Without this, `:e crates/latt<Tab>`
         // would fail to surface any candidates.
-        let tmp =
-            std::env::temp_dir().join(format!("lattice-files-nested-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("lattice-files-nested-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         let sub = tmp.join("sub");
         std::fs::create_dir_all(&sub).unwrap();

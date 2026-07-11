@@ -631,9 +631,7 @@ pub enum AppEffect {
     /// `range == None` (bare `:narrow`) narrows the current line in
     /// N.1.1 (N.1.2 widens this to the current paragraph / Visual
     /// selection).
-    NarrowTrigger {
-        range: Option<crate::range::Range>,
-    },
+    NarrowTrigger { range: Option<crate::range::Range> },
     /// N.1.1 (2026-06-10): `:widen` ex-command. The host arm closes
     /// the active narrow view (an editable one-excerpt multibuffer),
     /// restoring the full source buffer. No-op + echo when the
@@ -645,10 +643,7 @@ pub enum AppEffect {
     /// `[start_line, end_line]` (unlike `NarrowTrigger`, which carries
     /// an unresolved `Range`); the host arm narrows the active buffer
     /// to that span via the same `create_narrow_view` sink.
-    NarrowLines {
-        start_line: u32,
-        end_line: u32,
-    },
+    NarrowLines { start_line: u32, end_line: u32 },
     /// M.6 (2026-06-01): `:search <query>` ex-command. M.10.6
     /// (2026-06-03) inlined the work into the host's
     /// apply_effect arm — it calls

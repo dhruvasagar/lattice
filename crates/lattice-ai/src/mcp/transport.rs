@@ -23,10 +23,7 @@ use crate::mcp::error::Result;
 // (`http::Response<Option<String>>`) is inherently large, so we can't shrink
 // the Err variant here (clippy `result_large_err`).
 #[allow(clippy::result_large_err)]
-pub async fn accept(
-    stream: TcpStream,
-    expected_token: &str,
-) -> Result<WebSocketStream<TcpStream>> {
+pub async fn accept(stream: TcpStream, expected_token: &str) -> Result<WebSocketStream<TcpStream>> {
     let expected = expected_token.to_string();
     let callback = move |request: &Request,
                          response: Response|

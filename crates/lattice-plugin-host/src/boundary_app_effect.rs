@@ -18,13 +18,13 @@
 use crate::WitBoundary;
 use crate::lattice::plugin_host::types::{
     AppEffect as WitAppEffect, Hscroll as WitHscroll, InsertLineEdit as WitInsertLineEdit,
-    NarrowLinesPayload as WitNarrowLinesPayload,
-    PaneDirection as WitPaneDirection, ScrollPos as WitScrollPos, ViewportPos as WitViewportPos,
+    NarrowLinesPayload as WitNarrowLinesPayload, PaneDirection as WitPaneDirection,
+    ScrollPos as WitScrollPos, ViewportPos as WitViewportPos,
 };
 use lattice_grammar::app_effect::{
-    AppEffect as NativeAppEffect, HScroll as NativeHScroll,
-    InsertLineEdit as NativeInsertLineEdit, PaneDirection as NativePaneDirection,
-    ScrollPos as NativeScrollPos, ViewportPos as NativeViewportPos,
+    AppEffect as NativeAppEffect, HScroll as NativeHScroll, InsertLineEdit as NativeInsertLineEdit,
+    PaneDirection as NativePaneDirection, ScrollPos as NativeScrollPos,
+    ViewportPos as NativeViewportPos,
 };
 use lattice_grammar::modal::{
     ModalState as NativeModalState, SearchDirection as NativeSearchDirection,
@@ -291,9 +291,7 @@ impl WitBoundary for NativeAppEffect {
                         .to_string(),
                 );
             }
-            NativeAppEffect::InsertLineEdit(edit) => {
-                WitAppEffect::InsertLineEdit(edit.to_wit()?)
-            }
+            NativeAppEffect::InsertLineEdit(edit) => WitAppEffect::InsertLineEdit(edit.to_wit()?),
         })
     }
 

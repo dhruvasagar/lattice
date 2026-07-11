@@ -452,7 +452,11 @@ mod tests {
         a.apply(Action::EnterMode(ModalState::Normal));
         assert_eq!(a.editor.document.text(), "abcd");
         a.apply(Action::Undo);
-        assert_eq!(a.editor.document.text(), "ab", "second session reverts alone");
+        assert_eq!(
+            a.editor.document.text(),
+            "ab",
+            "second session reverts alone"
+        );
         a.apply(Action::Undo);
         assert_eq!(a.editor.document.text(), "", "first session reverts alone");
     }

@@ -90,8 +90,7 @@ impl App {
     /// "popup floats; doc keeps focus" shape.
     pub(crate) fn open_floating_popup(&mut self, content: HelpContent, placement: PopupPlacement) {
         // Slice 3c.final.E.3: route through `mutate_editor_with`.
-        let signals =
-            self.mutate_editor_with(move |e| e.open_floating_popup(content, placement));
+        let signals = self.mutate_editor_with(move |e| e.open_floating_popup(content, placement));
         for s in signals {
             self.handle_renderer_signal(s);
         }
@@ -246,9 +245,7 @@ impl App {
     }
 
     pub fn active_popup_placement(&self) -> Option<PopupPlacement> {
-        self.editor
-            .popup_buffer
-            .map(|_| self.popup().placement)
+        self.editor.popup_buffer.map(|_| self.popup().placement)
     }
 }
 
@@ -339,7 +336,10 @@ mod tests {
             .editor
             .buffers
             .with_entry(id, |entry| {
-                (entry.flags, entry.kind() == crate::buffers::BufferKind::Help)
+                (
+                    entry.flags,
+                    entry.kind() == crate::buffers::BufferKind::Help,
+                )
             })
             .expect("popup registered");
         assert!(!flags.listed);

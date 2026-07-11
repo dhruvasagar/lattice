@@ -582,7 +582,6 @@ fn virtual_row_matrix_carries_excerpt_headers() {
 ///    applied source-language highlights, not the plain fallback.
 #[test]
 fn syntax_highlights_per_excerpt_use_source_language() {
-    use std::sync::Arc;
     use arc_swap::ArcSwap;
     use lattice_cells::{CellMatrix, MatrixVersion, VirtualRowMatrix};
     use lattice_core::{Document as CoreDocument, DocumentBuilder};
@@ -590,6 +589,7 @@ fn syntax_highlights_per_excerpt_use_source_language() {
     use lattice_host::render_state::{ExcerptSyntax, PaneCellsInputs};
     use lattice_multibuffer::{Excerpt, MultibufferRegistryHandle, create_multibuffer_view};
     use lattice_runtime::{Document as RtDocument, spawn_document};
+    use std::sync::Arc;
 
     let mut editor = lattice_host::editor::Editor::boot(CoreDocument::from_text("scratch\n"));
     let lr = editor.lang_registry.clone();

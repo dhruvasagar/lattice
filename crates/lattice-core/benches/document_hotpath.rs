@@ -129,10 +129,7 @@ fn delete_at_middle(c: &mut Criterion) {
             bencher.iter_with_setup(
                 || build_doc(sz),
                 |mut d| {
-                    let range = Range::new(
-                        Position::new(mid, 0),
-                        Position::new(mid, 1),
-                    );
+                    let range = Range::new(Position::new(mid, 0), Position::new(mid, 1));
                     d.apply_edit(Edit::delete(black_box(range))).unwrap();
                 },
             );

@@ -34,11 +34,11 @@ use super::App;
 // `EffectiveCompletionConfig` are reached only from the
 // `#[cfg(test)] impl App` block + the `mod tests` block below.
 #[cfg(test)]
-use lattice_protocol::position::Position;
-#[cfg(test)]
 use super::SnippetCandidateMeta;
 #[cfg(test)]
 use lattice_host::dispatch::EffectiveCompletionConfig;
+#[cfg(test)]
+use lattice_protocol::position::Position;
 
 impl App {
     // SN.3c.1 (2026-06-14): the `do_snippet_expand_at_cursor` App
@@ -441,15 +441,21 @@ mod tests {
             "for",
             "for ${1:i} in ${2:iter} { $0 }",
         );
-        a.editor.expand_snippet_from_range(lattice_protocol::position::Range::new(
-            Position::new(0, 0),
-            Position::new(0, 3),
-        ));
+        a.editor
+            .expand_snippet_from_range(lattice_protocol::position::Range::new(
+                Position::new(0, 0),
+                Position::new(0, 3),
+            ));
         // Buffer text should be the rendered snippet.
         let text = a.editor.document.snapshot().buffer.as_string();
         assert_eq!(text, "for i in iter {  }");
         // Active snippet present, focused on $1.
-        let snippet_index = a.editor.snippet_session.with_mut(a.editor.document_buffer_id, |s| s.as_ref().expect("snippet active").current_index());
+        let snippet_index = a
+            .editor
+            .snippet_session
+            .with_mut(a.editor.document_buffer_id, |s| {
+                s.as_ref().expect("snippet active").current_index()
+            });
         assert_eq!(snippet_index, Some(1));
         // Cursor at start of `i`.
         assert_eq!(a.editor.cursor, Position::new(0, 4));
@@ -465,21 +471,32 @@ mod tests {
         a.editor.modal = ModalState::Insert;
         a.editor.cursor = Position::new(0, 3);
         install_snippet(&mut a, "*", "for-loop", "for", "for ${1:iter} {}");
-        a.editor.expand_snippet_from_range(lattice_protocol::position::Range::new(
-            Position::new(0, 0),
-            Position::new(0, 3),
-        ));
+        a.editor
+            .expand_snippet_from_range(lattice_protocol::position::Range::new(
+                Position::new(0, 0),
+                Position::new(0, 3),
+            ));
         // Rendered with the default; "iter" (bytes 4..8) is SELECTED and
         // the buffer is in Select mode.
-        assert_eq!(a.editor.document.snapshot().buffer.as_string(), "for iter {}");
+        assert_eq!(
+            a.editor.document.snapshot().buffer.as_string(),
+            "for iter {}"
+        );
         assert!(
-            matches!(a.editor.modal, ModalState::Select(lattice_grammar::VisualKind::Charwise)),
+            matches!(
+                a.editor.modal,
+                ModalState::Select(lattice_grammar::VisualKind::Charwise)
+            ),
             "first multi-char placeholder focuses in Select, got {:?}",
             a.editor.modal
         );
         let sel = *a.editor.document.selections().primary();
         assert_eq!(sel.anchor, Position::new(0, 4), "anchor at default start");
-        assert_eq!(sel.head, Position::new(0, 7), "head on the default's last byte");
+        assert_eq!(
+            sel.head,
+            Position::new(0, 7),
+            "head on the default's last byte"
+        );
 
         // A printable key overtypes the whole default and lands in Insert.
         a.apply(Action::SelectOvertype('x'));
@@ -499,17 +516,22 @@ mod tests {
         a.editor.modal = ModalState::Insert;
         a.editor.cursor = Position::new(0, 3);
         install_snippet(&mut a, "*", "call", "for", "foo($1)");
-        a.editor.expand_snippet_from_range(lattice_protocol::position::Range::new(
-            Position::new(0, 0),
-            Position::new(0, 3),
-        ));
+        a.editor
+            .expand_snippet_from_range(lattice_protocol::position::Range::new(
+                Position::new(0, 0),
+                Position::new(0, 3),
+            ));
         assert_eq!(a.editor.document.snapshot().buffer.as_string(), "foo()");
         assert!(
             matches!(a.editor.modal, ModalState::Insert),
             "empty tabstop keeps Insert, got {:?}",
             a.editor.modal
         );
-        assert_eq!(a.editor.cursor, Position::new(0, 4), "cursor inside the parens");
+        assert_eq!(
+            a.editor.cursor,
+            Position::new(0, 4),
+            "cursor inside the parens"
+        );
     }
 
     // SN.2b (2026-06-12): the placeholder-navigation tests
@@ -536,16 +558,25 @@ mod tests {
         let mut a = app_with("for", 10);
         a.editor.modal = ModalState::Insert;
         a.editor.cursor = Position::new(0, 3);
-        install_snippet(&mut a, "*", "for-loop", "for", "for ${1:i} in ${2:iter} { $0 }");
-        a.editor.expand_snippet_from_range(lattice_protocol::position::Range::new(
-            Position::new(0, 0),
-            Position::new(0, 3),
-        ));
+        install_snippet(
+            &mut a,
+            "*",
+            "for-loop",
+            "for",
+            "for ${1:i} in ${2:iter} { $0 }",
+        );
+        a.editor
+            .expand_snippet_from_range(lattice_protocol::position::Range::new(
+                Position::new(0, 0),
+                Position::new(0, 3),
+            ));
         // Reconcile session-backed minors so `active-snippet-mode`
         // activates on the buffer (mirrors the per-apply reconcile).
         a.sync_keymap_overlays();
         assert!(
-            a.editor.snippet_session.is_active(a.editor.document_buffer_id),
+            a.editor
+                .snippet_session
+                .is_active(a.editor.document_buffer_id),
             "snippet session live after expand"
         );
         let minors = a
@@ -563,7 +594,9 @@ mod tests {
         press(&mut a, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 
         assert!(
-            !a.editor.snippet_session.is_active(a.editor.document_buffer_id),
+            !a.editor
+                .snippet_session
+                .is_active(a.editor.document_buffer_id),
             "leave handler cleared the session"
         );
         assert_eq!(
@@ -585,11 +618,18 @@ mod tests {
         let mut a = app_with("for", 10);
         a.editor.modal = ModalState::Insert;
         a.editor.cursor = Position::new(0, 3);
-        install_snippet(&mut a, "*", "for-loop", "for", "for ${1:i} in ${2:iter} { $0 }");
-        a.editor.expand_snippet_from_range(lattice_protocol::position::Range::new(
-            Position::new(0, 0),
-            Position::new(0, 3),
-        ));
+        install_snippet(
+            &mut a,
+            "*",
+            "for-loop",
+            "for",
+            "for ${1:i} in ${2:iter} { $0 }",
+        );
+        a.editor
+            .expand_snippet_from_range(lattice_protocol::position::Range::new(
+                Position::new(0, 0),
+                Position::new(0, 3),
+            ));
         a.sync_keymap_overlays();
         assert_eq!(
             a.editor.document.snapshot().buffer.as_string(),
@@ -629,11 +669,16 @@ mod tests {
         let mut a = app_with("xyz", 10);
         a.editor.modal = ModalState::Insert;
         a.editor.cursor = Position::new(0, 3);
-        a.editor.expand_snippet_from_range(lattice_protocol::position::Range::new(
-            Position::new(0, 0),
-            Position::new(0, 3),
-        ));
-        assert!(!a.editor.snippet_session.is_active(a.editor.document_buffer_id));
+        a.editor
+            .expand_snippet_from_range(lattice_protocol::position::Range::new(
+                Position::new(0, 0),
+                Position::new(0, 3),
+            ));
+        assert!(
+            !a.editor
+                .snippet_session
+                .is_active(a.editor.document_buffer_id)
+        );
         // Buffer unchanged.
         assert_eq!(a.editor.document.snapshot().buffer.as_string(), "xyz");
     }
@@ -695,7 +740,12 @@ mod tests {
         // Popup closed; active snippet is in flight focused on
         // $1; buffer reflects expansion.
         assert!(a.editor.insert_completion.is_none());
-        let snippet_index = a.editor.snippet_session.with_mut(a.editor.document_buffer_id, |s| s.as_ref().expect("active snippet").current_index());
+        let snippet_index = a
+            .editor
+            .snippet_session
+            .with_mut(a.editor.document_buffer_id, |s| {
+                s.as_ref().expect("active snippet").current_index()
+            });
         assert_eq!(snippet_index, Some(1));
         let text = a.editor.document.snapshot().buffer.as_string();
         assert_eq!(text, "for i in iter {}");

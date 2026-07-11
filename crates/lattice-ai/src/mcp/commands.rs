@@ -229,7 +229,9 @@ mod tests {
         );
         register_claude_code_ex_commands(&mut registry, handle.clone());
 
-        let id = registry.id_by_name("claude").expect("`:claude` is registered");
+        let id = registry
+            .id_by_name("claude")
+            .expect("`:claude` is registered");
         let spec = registry.ex_command_spec(id).expect("spec present");
         let effect = (spec.apply)(&empty_ctx()).expect("apply ok");
 

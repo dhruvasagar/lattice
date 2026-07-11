@@ -20,8 +20,8 @@ use std::sync::OnceLock;
 
 use lattice_core::BufferKind;
 use lattice_mode::{
-    keymap_entry, BufferLocal, CapabilitySet, Keymap, KeymapEntry, LifecycleFuture, Mode,
-    ModeContext, ModeId, ModeKind, ModeRegistry,
+    BufferLocal, CapabilitySet, Keymap, KeymapEntry, LifecycleFuture, Mode, ModeContext, ModeId,
+    ModeKind, ModeRegistry, keymap_entry,
 };
 
 /// Major mode for oil-style directory-listing buffers. Any

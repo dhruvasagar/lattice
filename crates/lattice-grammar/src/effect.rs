@@ -742,7 +742,9 @@ pub enum Effect {
     /// teardown (`:diffoff!`). The handler reads the session's
     /// watch list as the source of truth for participants —
     /// the tab is not a grouping unit. D.3.a.1 / D.4.d.3.a.
-    DiffOff { force: bool },
+    DiffOff {
+        force: bool,
+    },
     /// `:diffthis` -- stage the active pane for a two-pane
     /// diff; the second `:diffthis` invocation in a different
     /// pane completes the session (creates a `DiffSession`

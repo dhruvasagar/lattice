@@ -71,8 +71,8 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tracing::debug;
 
-use lattice_core::BufferId;
 use crate::{DiffAlgorithm, HunkIndex, HunkKind, LineRange, compute_diff};
+use lattice_core::BufferId;
 use lattice_protocol::event::{Event, EventKind};
 use lattice_protocol::ids::DocumentId;
 use lattice_runtime::{EventBus, EventFilter, SubscriptionId, SubscriptionTarget};
@@ -716,13 +716,11 @@ fn hunk_nav_echo(text: &str) -> lattice_grammar::Effect {
 /// CR.6: a collapsed-cursor `Effect::SelectionChange` at `(row, 0)` — the
 /// generic cursor-move the host applies for hunk navigation.
 fn hunk_selection(row: u32) -> lattice_grammar::Effect {
-    lattice_grammar::Effect::SelectionChange(
-        lattice_protocol::selection::SelectionSet::single(
-            lattice_protocol::selection::Selection::cursor(
-                lattice_protocol::position::Position::new(row, 0),
-            ),
-        ),
-    )
+    lattice_grammar::Effect::SelectionChange(lattice_protocol::selection::SelectionSet::single(
+        lattice_protocol::selection::Selection::cursor(lattice_protocol::position::Position::new(
+            row, 0,
+        )),
+    ))
 }
 
 /// D.5.b helper: slice the rope at the given line range and
@@ -1251,9 +1249,7 @@ impl DiffSession {
             // fold to the side's EOF. `len_lines()` counts ropey's
             // trailing phantom line; the fold source's `>= 2`-line floor
             // + per-hunk context window absorb that off-by-one at EOF.
-            self.publish_slot_line_counts(
-                sources.iter().map(|r| r.len_lines() as u32).collect(),
-            );
+            self.publish_slot_line_counts(sources.iter().map(|r| r.len_lines() as u32).collect());
             Some(idx)
         } else {
             None
@@ -1606,7 +1602,11 @@ impl DiffSubsystem {
         let slot = self.participant_slot(buffer_id)?;
         let session = self.lookup_session_for(buffer_id)?;
         let hunks = session.current_hunks();
-        hunks.hunks.first().and_then(|h| h.ranges.get(slot)).map(|r| r.start)
+        hunks
+            .hunks
+            .first()
+            .and_then(|h| h.ranges.get(slot))
+            .map(|r| r.start)
     }
 
     /// D.5.b (2026-05-30): compute the edit the diff-mode `do`
@@ -2119,7 +2119,11 @@ impl DiffSubsystem {
         if rows.is_empty() {
             return Some(hunk_nav_echo("no hunks"));
         }
-        let row = rows.iter().copied().find(|&l| l > cursor_row).unwrap_or(rows[0]);
+        let row = rows
+            .iter()
+            .copied()
+            .find(|&l| l > cursor_row)
+            .unwrap_or(rows[0]);
         Some(hunk_selection(row))
     }
 
@@ -3095,11 +3099,16 @@ mod tests {
         // `UnchangedFoldSource` can bound its complement to each side's
         // EOF. Empty (None) before the first recompute.
         let s = DiffSession::new(bid(1), DiffAlgorithm::Histogram);
-        assert_eq!(s.slot_line_count(0), None, "no counts before first recompute");
+        assert_eq!(
+            s.slot_line_count(0),
+            None,
+            "no counts before first recompute"
+        );
         assert_eq!(s.slot_line_count(1), None);
         let a = Rope::from("alpha\nbeta\n"); // len_lines = 3 (incl. trailing)
         let b = Rope::from("alpha\nBETA\ngamma\ndelta\n"); // len_lines = 5
-        s.recompute_blocking(&[a.clone(), b.clone()]).expect("first publish takes");
+        s.recompute_blocking(&[a.clone(), b.clone()])
+            .expect("first publish takes");
         assert_eq!(s.slot_line_count(0), Some(a.len_lines() as u32));
         assert_eq!(s.slot_line_count(1), Some(b.len_lines() as u32));
         assert_eq!(s.slot_line_count(2), None, "no slot 2 in a two-way diff");
@@ -3116,9 +3125,21 @@ mod tests {
         // primary = current = bid(1) at slot 1; baseline = bid(2) at slot 0.
         let desc = descriptor(&provider, bid(2), bid(1));
         sub.register_with_sources(bid(1), DiffAlgorithm::Histogram, desc);
-        assert_eq!(sub.participant_slot(bid(1)), Some(1), "current side = slot 1");
-        assert_eq!(sub.participant_slot(bid(2)), Some(0), "baseline side = slot 0");
-        assert_eq!(sub.participant_slot(bid(99)), None, "non-participant = None");
+        assert_eq!(
+            sub.participant_slot(bid(1)),
+            Some(1),
+            "current side = slot 1"
+        );
+        assert_eq!(
+            sub.participant_slot(bid(2)),
+            Some(0),
+            "baseline side = slot 0"
+        );
+        assert_eq!(
+            sub.participant_slot(bid(99)),
+            None,
+            "non-participant = None"
+        );
     }
 
     #[test]
@@ -3142,7 +3163,11 @@ mod tests {
             revision: 1,
         }));
         assert_eq!(sub.first_change_line(bid(1)), Some(5), "current side start");
-        assert_eq!(sub.first_change_line(bid(2)), Some(3), "baseline side start");
+        assert_eq!(
+            sub.first_change_line(bid(2)),
+            Some(3),
+            "baseline side start"
+        );
     }
 
     #[test]
@@ -3239,10 +3264,7 @@ mod tests {
         let current = Rope::from("alpha\nBETA\n");
 
         let handle = sub
-            .schedule_recompute(
-                bid(1),
-                vec![baseline, Arc::new(StaticSource::new(current))],
-            )
+            .schedule_recompute(bid(1), vec![baseline, Arc::new(StaticSource::new(current))])
             .expect("registered buffer has a session");
         let result = handle.await.expect("blocking task didn't panic");
         let idx = result.expect("first recompute publishes");
@@ -5099,7 +5121,10 @@ mod tests {
                 edit,
                 post_cursor_row,
             } => {
-                assert_eq!(target_buffer_id, local, "keep-both edits the active/local side");
+                assert_eq!(
+                    target_buffer_id, local,
+                    "keep-both edits the active/local side"
+                );
                 assert_eq!(post_cursor_row, 0);
                 assert_eq!(edit.range.start.line, 0);
                 assert_eq!(edit.range.end.line, 1);
@@ -5165,7 +5190,11 @@ mod tests {
             }],
         );
         match sub.diff_keep_theirs_effect(local, 0) {
-            Some(lattice_grammar::Effect::ApplyEdit { target, edit, cursor }) => {
+            Some(lattice_grammar::Effect::ApplyEdit {
+                target,
+                edit,
+                cursor,
+            }) => {
                 assert_eq!(target, local, "keep-theirs edits the active/local side");
                 assert_eq!(cursor, Some(0));
                 match edit.kind {
@@ -5209,7 +5238,8 @@ mod tests {
     /// "full set, degenerate → echo" choice). Off-hunk → `None`.
     #[test]
     fn diff_keep_ours_effect_echoes_over_conflict_else_none() {
-        let (sub, _base, local, _remote) = fixture_three_pane("a\nb\n", "LOCAL\nb\n", "REMOTE\nb\n");
+        let (sub, _base, local, _remote) =
+            fixture_three_pane("a\nb\n", "LOCAL\nb\n", "REMOTE\nb\n");
         publish_hunks(
             &sub,
             local,
@@ -5279,9 +5309,17 @@ mod tests {
         };
         assert_eq!(row(sub.diff_next_hunk_effect(key, 0)), 1, "next from 0 → 1");
         assert_eq!(row(sub.diff_next_hunk_effect(key, 3)), 5, "next from 3 → 5");
-        assert_eq!(row(sub.diff_next_hunk_effect(key, 5)), 1, "next past last → wrap to 1");
+        assert_eq!(
+            row(sub.diff_next_hunk_effect(key, 5)),
+            1,
+            "next past last → wrap to 1"
+        );
         assert_eq!(row(sub.diff_prev_hunk_effect(key, 6)), 5, "prev from 6 → 5");
-        assert_eq!(row(sub.diff_prev_hunk_effect(key, 0)), 5, "prev before first → wrap to 5");
+        assert_eq!(
+            row(sub.diff_prev_hunk_effect(key, 0)),
+            5,
+            "prev before first → wrap to 5"
+        );
     }
 
     /// Target buffer that isn't a participant → `Nothing`.

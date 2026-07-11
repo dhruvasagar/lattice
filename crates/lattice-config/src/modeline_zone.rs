@@ -99,11 +99,7 @@ impl OptionType for ModelineZone {
     fn format(&self) -> String {
         match self {
             ModelineZone::Auto => AUTO_KEYWORD.to_string(),
-            ModelineZone::Ids(ids) => ids
-                .iter()
-                .map(|s| s.as_ref())
-                .collect::<Vec<_>>()
-                .join(","),
+            ModelineZone::Ids(ids) => ids.iter().map(|s| s.as_ref()).collect::<Vec<_>>().join(","),
         }
     }
 
@@ -165,7 +161,10 @@ mod tests {
     fn parse_empty_is_explicit_empty_not_auto() {
         // Distinct from Auto: an explicitly-blank zone renders nothing.
         assert_eq!(ModelineZone::parse("").unwrap(), ModelineZone::Ids(vec![]));
-        assert_eq!(ModelineZone::parse("   ").unwrap(), ModelineZone::Ids(vec![]));
+        assert_eq!(
+            ModelineZone::parse("   ").unwrap(),
+            ModelineZone::Ids(vec![])
+        );
     }
 
     #[test]
@@ -183,7 +182,10 @@ mod tests {
     #[test]
     fn format_auto_is_keyword_ids_are_comma_joined() {
         assert_eq!(ModelineZone::Auto.format(), "auto");
-        assert_eq!(ids(&["core.mode", "core.path"]).format(), "core.mode,core.path");
+        assert_eq!(
+            ids(&["core.mode", "core.path"]).format(),
+            "core.mode,core.path"
+        );
         assert_eq!(ModelineZone::Ids(vec![]).format(), "");
     }
 

@@ -190,7 +190,9 @@ impl Default for Theme {
             pane_status_active: Style::new()
                 .add_modifier(Modifier::REVERSED)
                 .add_modifier(Modifier::BOLD),
-            pane_status_inactive: Style::new().fg(Color::Rgb(0x6c, 0x70, 0x86)).add_modifier(Modifier::DIM),
+            pane_status_inactive: Style::new()
+                .fg(Color::Rgb(0x6c, 0x70, 0x86))
+                .add_modifier(Modifier::DIM),
             inactive_pane_overlay: Style::new().add_modifier(Modifier::DIM),
             dim_inactive_panes: true,
             pane_separator: Style::new().fg(Color::Rgb(0x6c, 0x70, 0x86)),
@@ -221,38 +223,62 @@ impl Default for Theme {
             // dot. Same shapes vim's nvim-lsp / VS Code use --
             // immediately readable, terminal-safe.
             diagnostic_error_glyph: '■',
-            diagnostic_error_style: Style::new().fg(Color::Rgb(0xf3, 0x8b, 0xa8)).add_modifier(Modifier::BOLD),
+            diagnostic_error_style: Style::new()
+                .fg(Color::Rgb(0xf3, 0x8b, 0xa8))
+                .add_modifier(Modifier::BOLD),
             diagnostic_warning_glyph: '▲',
-            diagnostic_warning_style: Style::new().fg(Color::Rgb(0xf9, 0xe2, 0xaf)).add_modifier(Modifier::BOLD),
+            diagnostic_warning_style: Style::new()
+                .fg(Color::Rgb(0xf9, 0xe2, 0xaf))
+                .add_modifier(Modifier::BOLD),
             diagnostic_info_glyph: '●',
             diagnostic_info_style: Style::new().fg(Color::Rgb(0x89, 0xb4, 0xfa)),
             diagnostic_hint_glyph: '·',
-            diagnostic_hint_style: Style::new().fg(Color::Rgb(0x6c, 0x70, 0x86)).add_modifier(Modifier::DIM),
-            file_tree_dir_style: Style::new().fg(Color::Rgb(0x89, 0xb4, 0xfa)).add_modifier(Modifier::BOLD),
-            file_tree_hidden_style: Style::new().fg(Color::Rgb(0x6c, 0x70, 0x86)).add_modifier(Modifier::DIM),
+            diagnostic_hint_style: Style::new()
+                .fg(Color::Rgb(0x6c, 0x70, 0x86))
+                .add_modifier(Modifier::DIM),
+            file_tree_dir_style: Style::new()
+                .fg(Color::Rgb(0x89, 0xb4, 0xfa))
+                .add_modifier(Modifier::BOLD),
+            file_tree_hidden_style: Style::new()
+                .fg(Color::Rgb(0x6c, 0x70, 0x86))
+                .add_modifier(Modifier::DIM),
             file_tree_file_style: Style::new(),
             // Default to the BMP fallback so the first frame works
             // in any terminal font. Users on a Nerd-Font-patched
             // terminal opt in via `:set ui.nerd_fonts on`.
             nerd_fonts: false,
             // M.7.3: whitespace + current-line defaults.
-            whitespace_style: Style::new().fg(Color::Rgb(0x6c, 0x70, 0x86)).add_modifier(Modifier::DIM),
+            whitespace_style: Style::new()
+                .fg(Color::Rgb(0x6c, 0x70, 0x86))
+                .add_modifier(Modifier::DIM),
             whitespace_trailing_style: Style::new().fg(Color::Rgb(0xf3, 0x8b, 0xa8)),
             cursor_line_bg: Color::Indexed(236),
             // msg-mode.3: matches the format produced by
             // `crate::app::messages::format_message_record`.
-            messages_timestamp_style: Style::new().fg(Color::Rgb(0x6c, 0x70, 0x86)).add_modifier(Modifier::DIM),
+            messages_timestamp_style: Style::new()
+                .fg(Color::Rgb(0x6c, 0x70, 0x86))
+                .add_modifier(Modifier::DIM),
             messages_trace_style: Style::new().add_modifier(Modifier::DIM),
             messages_debug_style: Style::new().fg(Color::Rgb(0x74, 0xc7, 0xec)),
             messages_info_style: Style::new(),
-            messages_warn_style: Style::new().fg(Color::Rgb(0xf9, 0xe2, 0xaf)).add_modifier(Modifier::BOLD),
-            messages_error_style: Style::new().fg(Color::Rgb(0xf3, 0x8b, 0xa8)).add_modifier(Modifier::BOLD),
+            messages_warn_style: Style::new()
+                .fg(Color::Rgb(0xf9, 0xe2, 0xaf))
+                .add_modifier(Modifier::BOLD),
+            messages_error_style: Style::new()
+                .fg(Color::Rgb(0xf3, 0x8b, 0xa8))
+                .add_modifier(Modifier::BOLD),
 
             // D.3.b.3 (2026-05-29): defaults mirror
             // `host_theme::Theme::default()` Diff section.
-            diff_add_sign_style: Style::new().fg(Color::Rgb(0xa6, 0xe3, 0xa1)).add_modifier(Modifier::BOLD),
-            diff_change_sign_style: Style::new().fg(Color::Rgb(0xf9, 0xe2, 0xaf)).add_modifier(Modifier::BOLD),
-            diff_remove_sign_style: Style::new().fg(Color::Rgb(0xf3, 0x8b, 0xa8)).add_modifier(Modifier::BOLD),
+            diff_add_sign_style: Style::new()
+                .fg(Color::Rgb(0xa6, 0xe3, 0xa1))
+                .add_modifier(Modifier::BOLD),
+            diff_change_sign_style: Style::new()
+                .fg(Color::Rgb(0xf9, 0xe2, 0xaf))
+                .add_modifier(Modifier::BOLD),
+            diff_remove_sign_style: Style::new()
+                .fg(Color::Rgb(0xf3, 0x8b, 0xa8))
+                .add_modifier(Modifier::BOLD),
             diff_conflict_sign_style: Style::new()
                 .fg(Color::Rgb(0xcb, 0xa6, 0xf7))
                 .add_modifier(Modifier::BOLD),
@@ -426,8 +452,7 @@ pub fn build_tui_theme(
 ) -> Theme {
     use lattice_host::ui::theme_options::{
         UiDiagnosticErrorGlyph, UiDiagnosticHintGlyph, UiDiagnosticInfoGlyph,
-        UiDiagnosticWarningGlyph, UiDimInactive, UiNerdFonts, UiSeparator,
-        UiSeparatorHorizontal,
+        UiDiagnosticWarningGlyph, UiDimInactive, UiNerdFonts, UiSeparator, UiSeparatorHorizontal,
     };
     // Read a single-char `ui.*` glyph option, falling back to `dflt`
     // (matches the deleted host `Theme::default()` literals).
@@ -438,7 +463,10 @@ pub fn build_tui_theme(
         .get_typed::<UiDimInactive>()
         .map(|v| *v)
         .unwrap_or(true);
-    let nerd_fonts = config.get_typed::<UiNerdFonts>().map(|v| *v).unwrap_or(false);
+    let nerd_fonts = config
+        .get_typed::<UiNerdFonts>()
+        .map(|v| *v)
+        .unwrap_or(false);
     let pane_separator_vertical = glyph(config.get_typed::<UiSeparator>(), '│');
     let pane_separator_horizontal = glyph(config.get_typed::<UiSeparatorHorizontal>(), '─');
     let diagnostic_error_glyph = glyph(config.get_typed::<UiDiagnosticErrorGlyph>(), '■');
@@ -456,72 +484,72 @@ pub fn build_tui_theme(
             .unwrap_or(Color::Reset)
     };
     Theme {
-            // T.9: pane chrome styles resolve through the elements;
-            // `:set ui.statusline_*_fg`/`separator_color` now write
-            // registry overrides (not host `Theme`).
-            pane_status_active: resolved_style(ids.pane_status_active),
-            pane_status_inactive: resolved_style(ids.pane_status_inactive),
-            // ML.1b: modeline per-role + bar styles from the resolved
-            // `modeline.*` elements (palette-driven across all themes).
-            modeline_active: resolved_style(ids.modeline_active),
-            modeline_inactive: resolved_style(ids.modeline_inactive),
-            modeline_mode: resolved_style(ids.modeline_mode),
-            modeline_path: resolved_style(ids.modeline_path),
-            modeline_position: resolved_style(ids.modeline_position),
-            modeline_lang: resolved_style(ids.modeline_lang),
-            modeline_mode_item: resolved_style(ids.modeline_mode_item),
-            // Popup header title / hint from the resolved `ui.popup.*`
-            // elements (palette-driven, shared with the GPUI peer).
-            popup_title: resolved_style(ids.ui_popup_title),
-            popup_hint: resolved_style(ids.ui_popup_hint),
-            // T.4.c: inactive-pane overlay + file-tree styles source
-            // from the resolved table. Separator chars + `dim`/
-            // `nerd_fonts` flags stay on `h` (non-style → T.6.t).
-            inactive_pane_overlay: resolved_style(ids.pane_inactive_overlay),
-            // T.6.t: non-style chrome from typed options (see locals above).
-            dim_inactive_panes,
-            pane_separator: resolved_style(ids.pane_separator),
-            pane_separator_vertical,
-            pane_separator_horizontal,
-            file_tree_dir_style: resolved_style(ids.file_tree_dir),
-            file_tree_hidden_style: resolved_style(ids.file_tree_hidden),
-            file_tree_file_style: resolved_style(ids.file_tree_file),
-            nerd_fonts,
-            // T.4.a: diagnostic styles source from the resolved table
-            // (`diagnostic.{error,warning,info,hint}`); T.6.t: glyphs
-            // from the `ui.diagnostic-*-glyph` typed options.
-            diagnostic_error_glyph,
-            diagnostic_error_style: resolved_style(ids.diagnostic_error),
-            diagnostic_warning_glyph,
-            diagnostic_warning_style: resolved_style(ids.diagnostic_warning),
-            diagnostic_info_glyph,
-            diagnostic_info_style: resolved_style(ids.diagnostic_info),
-            diagnostic_hint_glyph,
-            diagnostic_hint_style: resolved_style(ids.diagnostic_hint),
-            // T.4.d: whitespace stays on `h` (cell-path → T.5);
-            // current-line tint + *messages* levels source from the
-            // resolved table.
-            // T.5.c: whitespace markers source from the resolved table.
-            whitespace_style: resolved_style(ids.whitespace),
-            whitespace_trailing_style: resolved_style(ids.whitespace_trailing),
-            cursor_line_bg: resolved_bg(ids.editor_cursor_line),
-            messages_timestamp_style: resolved_style(ids.messages_timestamp),
-            messages_trace_style: resolved_style(ids.messages_trace),
-            messages_debug_style: resolved_style(ids.messages_debug),
-            messages_info_style: resolved_style(ids.messages_info),
-            messages_warn_style: resolved_style(ids.messages_warn),
-            messages_error_style: resolved_style(ids.messages_error),
-            // T.4.b: diff signs (fg) + line/block tints (bg) source
-            // from the resolved table (`diff.*`).
-            diff_add_sign_style: resolved_style(ids.diff_add_sign),
-            diff_change_sign_style: resolved_style(ids.diff_change_sign),
-            diff_remove_sign_style: resolved_style(ids.diff_remove_sign),
-            diff_conflict_sign_style: resolved_style(ids.diff_conflict_sign),
-            diff_add_line_bg: resolved_bg(ids.diff_add_line),
-            diff_change_line_bg: resolved_bg(ids.diff_change_line),
-            diff_remove_line_bg: resolved_bg(ids.diff_remove_line),
-            diff_deletion_block_bg: resolved_bg(ids.diff_deletion_block),
-            diff_conflict_line_bg: resolved_bg(ids.diff_conflict_line),
+        // T.9: pane chrome styles resolve through the elements;
+        // `:set ui.statusline_*_fg`/`separator_color` now write
+        // registry overrides (not host `Theme`).
+        pane_status_active: resolved_style(ids.pane_status_active),
+        pane_status_inactive: resolved_style(ids.pane_status_inactive),
+        // ML.1b: modeline per-role + bar styles from the resolved
+        // `modeline.*` elements (palette-driven across all themes).
+        modeline_active: resolved_style(ids.modeline_active),
+        modeline_inactive: resolved_style(ids.modeline_inactive),
+        modeline_mode: resolved_style(ids.modeline_mode),
+        modeline_path: resolved_style(ids.modeline_path),
+        modeline_position: resolved_style(ids.modeline_position),
+        modeline_lang: resolved_style(ids.modeline_lang),
+        modeline_mode_item: resolved_style(ids.modeline_mode_item),
+        // Popup header title / hint from the resolved `ui.popup.*`
+        // elements (palette-driven, shared with the GPUI peer).
+        popup_title: resolved_style(ids.ui_popup_title),
+        popup_hint: resolved_style(ids.ui_popup_hint),
+        // T.4.c: inactive-pane overlay + file-tree styles source
+        // from the resolved table. Separator chars + `dim`/
+        // `nerd_fonts` flags stay on `h` (non-style → T.6.t).
+        inactive_pane_overlay: resolved_style(ids.pane_inactive_overlay),
+        // T.6.t: non-style chrome from typed options (see locals above).
+        dim_inactive_panes,
+        pane_separator: resolved_style(ids.pane_separator),
+        pane_separator_vertical,
+        pane_separator_horizontal,
+        file_tree_dir_style: resolved_style(ids.file_tree_dir),
+        file_tree_hidden_style: resolved_style(ids.file_tree_hidden),
+        file_tree_file_style: resolved_style(ids.file_tree_file),
+        nerd_fonts,
+        // T.4.a: diagnostic styles source from the resolved table
+        // (`diagnostic.{error,warning,info,hint}`); T.6.t: glyphs
+        // from the `ui.diagnostic-*-glyph` typed options.
+        diagnostic_error_glyph,
+        diagnostic_error_style: resolved_style(ids.diagnostic_error),
+        diagnostic_warning_glyph,
+        diagnostic_warning_style: resolved_style(ids.diagnostic_warning),
+        diagnostic_info_glyph,
+        diagnostic_info_style: resolved_style(ids.diagnostic_info),
+        diagnostic_hint_glyph,
+        diagnostic_hint_style: resolved_style(ids.diagnostic_hint),
+        // T.4.d: whitespace stays on `h` (cell-path → T.5);
+        // current-line tint + *messages* levels source from the
+        // resolved table.
+        // T.5.c: whitespace markers source from the resolved table.
+        whitespace_style: resolved_style(ids.whitespace),
+        whitespace_trailing_style: resolved_style(ids.whitespace_trailing),
+        cursor_line_bg: resolved_bg(ids.editor_cursor_line),
+        messages_timestamp_style: resolved_style(ids.messages_timestamp),
+        messages_trace_style: resolved_style(ids.messages_trace),
+        messages_debug_style: resolved_style(ids.messages_debug),
+        messages_info_style: resolved_style(ids.messages_info),
+        messages_warn_style: resolved_style(ids.messages_warn),
+        messages_error_style: resolved_style(ids.messages_error),
+        // T.4.b: diff signs (fg) + line/block tints (bg) source
+        // from the resolved table (`diff.*`).
+        diff_add_sign_style: resolved_style(ids.diff_add_sign),
+        diff_change_sign_style: resolved_style(ids.diff_change_sign),
+        diff_remove_sign_style: resolved_style(ids.diff_remove_sign),
+        diff_conflict_sign_style: resolved_style(ids.diff_conflict_sign),
+        diff_add_line_bg: resolved_bg(ids.diff_add_line),
+        diff_change_line_bg: resolved_bg(ids.diff_change_line),
+        diff_remove_line_bg: resolved_bg(ids.diff_remove_line),
+        diff_deletion_block_bg: resolved_bg(ids.diff_deletion_block),
+        diff_conflict_line_bg: resolved_bg(ids.diff_conflict_line),
     }
 }
 

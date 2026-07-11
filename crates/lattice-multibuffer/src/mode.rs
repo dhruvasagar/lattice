@@ -168,8 +168,7 @@ impl Mode for MultibufferMode {
                 .service::<ThemeRegistryHandle>()
                 .map(|outer| (*outer).clone())
             {
-                let owner =
-                    ElementOwner::Mode(Self::mode_id().as_str().to_string().into());
+                let owner = ElementOwner::Mode(Self::mode_id().as_str().to_string().into());
                 let _ = crate::register_multibuffer_theme_elements(theme.as_ref(), owner);
             }
 

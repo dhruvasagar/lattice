@@ -303,7 +303,14 @@ fn bench_cache_hit(c: &mut Criterion) {
         );
         recompute(&rs_full);
 
-        let rs = rs_for(snapshot, version, None, matrix_cell.clone(), None, display_cell);
+        let rs = rs_for(
+            snapshot,
+            version,
+            None,
+            matrix_cell.clone(),
+            None,
+            display_cell,
+        );
 
         group.bench_with_input(
             BenchmarkId::from_parameter(format!("{line_count}_lines")),
@@ -372,7 +379,14 @@ fn bench_incremental_build_highlighted(c: &mut Criterion) {
 
         group.bench_with_input(
             BenchmarkId::from_parameter(format!("{line_count}_lines")),
-            &(snapshot, baseline_matrix, baseline_display, v2, edit, handle),
+            &(
+                snapshot,
+                baseline_matrix,
+                baseline_display,
+                v2,
+                edit,
+                handle,
+            ),
             |b, (snap, baseline, baseline_dm, ver, ed, handle)| {
                 b.iter(|| {
                     let matrix_cell: Arc<ArcSwap<CellMatrix>> =

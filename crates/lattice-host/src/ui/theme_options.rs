@@ -260,7 +260,8 @@ mod tests {
     fn diagnostic_glyph_options_accept_single_char_overrides() {
         let r = ConfigRegistry::new();
         r.init_from_linkme();
-        r.parse_and_set_command("ui.diagnostic-error-glyph=E").unwrap();
+        r.parse_and_set_command("ui.diagnostic-error-glyph=E")
+            .unwrap();
         assert_eq!(
             r.get_typed::<UiDiagnosticErrorGlyph>().unwrap().as_str(),
             "E"

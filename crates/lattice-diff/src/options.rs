@@ -23,7 +23,9 @@ fn validate_diff_context(n: &i64) -> Result<(), String> {
     if *n >= 0 && *n <= 1000 {
         Ok(())
     } else {
-        Err(format!("ui.diff.context must be in range [0, 1000], got {n}"))
+        Err(format!(
+            "ui.diff.context must be in range [0, 1000], got {n}"
+        ))
     }
 }
 

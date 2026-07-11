@@ -15,29 +15,29 @@ use smallvec::SmallVec;
 /// ~4 billion lines.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct LineRange {
-	pub start: u32,
-	pub end: u32,
+    pub start: u32,
+    pub end: u32,
 }
 
 impl LineRange {
-	/// Construct a new line range. Debug-asserts `start <= end`.
-	pub fn new(start: u32, end: u32) -> Self {
-		debug_assert!(
-			start <= end,
-			"LineRange::new: start {start} must be <= end {end}"
-		);
-		Self { start, end }
-	}
+    /// Construct a new line range. Debug-asserts `start <= end`.
+    pub fn new(start: u32, end: u32) -> Self {
+        debug_assert!(
+            start <= end,
+            "LineRange::new: start {start} must be <= end {end}"
+        );
+        Self { start, end }
+    }
 
-	/// `true` if the range covers zero lines.
-	pub fn is_empty(self) -> bool {
-		self.start == self.end
-	}
+    /// `true` if the range covers zero lines.
+    pub fn is_empty(self) -> bool {
+        self.start == self.end
+    }
 
-	/// Number of lines covered.
-	pub fn len(self) -> u32 {
-		self.end - self.start
-	}
+    /// Number of lines covered.
+    pub fn len(self) -> u32 {
+        self.end - self.start
+    }
 }
 
 /// What kind of change a hunk represents.
@@ -50,18 +50,18 @@ impl LineRange {
 /// overlapping base region.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum HunkKind {
-	/// Lines present only in the later side(s). Earlier side
-	/// range is empty.
-	Add,
-	/// Lines present only in the earlier side. Later side
-	/// range(s) is/are empty.
-	Remove,
-	/// Lines present in both, with differing content.
-	Change,
-	/// Three-way only: both local and remote modified the
-	/// same base region. Resolution is deferred to D.6 /
-	/// user.
-	Conflict,
+    /// Lines present only in the later side(s). Earlier side
+    /// range is empty.
+    Add,
+    /// Lines present only in the earlier side. Later side
+    /// range(s) is/are empty.
+    Remove,
+    /// Lines present in both, with differing content.
+    Change,
+    /// Three-way only: both local and remote modified the
+    /// same base region. Resolution is deferred to D.6 /
+    /// user.
+    Conflict,
 }
 
 /// Diff algorithm used by `imara-diff`.
@@ -71,23 +71,23 @@ pub enum HunkKind {
 /// boundaries land for ambiguous edits.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum DiffAlgorithm {
-	/// Git's default since 2.7. Best general-purpose results
-	/// on code; preferred for Lattice.
-	Histogram,
-	/// The classic Eugene Myers algorithm. Slightly weaker
-	/// results on rebraced code; included for completeness.
-	Myers,
-	/// Myers run with the `--minimal` post-process — finds
-	/// the smallest possible diff at extra CPU cost. Use when
-	/// you want the tightest output and don't mind a slower
-	/// recompute. Mapped to `imara_diff::Algorithm::MyersMinimal`.
-	MyersMinimal,
+    /// Git's default since 2.7. Best general-purpose results
+    /// on code; preferred for Lattice.
+    Histogram,
+    /// The classic Eugene Myers algorithm. Slightly weaker
+    /// results on rebraced code; included for completeness.
+    Myers,
+    /// Myers run with the `--minimal` post-process — finds
+    /// the smallest possible diff at extra CPU cost. Use when
+    /// you want the tightest output and don't mind a slower
+    /// recompute. Mapped to `imara_diff::Algorithm::MyersMinimal`.
+    MyersMinimal,
 }
 
 impl Default for DiffAlgorithm {
-	fn default() -> Self {
-		Self::Histogram
-	}
+    fn default() -> Self {
+        Self::Histogram
+    }
 }
 
 /// A single hunk: a contiguous region of change across the
@@ -102,8 +102,8 @@ impl Default for DiffAlgorithm {
 /// without allocation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Hunk {
-	pub kind: HunkKind,
-	pub ranges: SmallVec<[LineRange; 3]>,
+    pub kind: HunkKind,
+    pub ranges: SmallVec<[LineRange; 3]>,
 }
 
 /// Published hunk list with the algorithm used and a
@@ -116,59 +116,59 @@ pub struct Hunk {
 /// mapping, etc.).
 #[derive(Clone, Debug)]
 pub struct HunkIndex {
-	pub hunks: Vec<Hunk>,
-	pub algorithm: DiffAlgorithm,
-	pub revision: u64,
+    pub hunks: Vec<Hunk>,
+    pub algorithm: DiffAlgorithm,
+    pub revision: u64,
 }
 
 impl HunkIndex {
-	/// Construct an empty index with the given algorithm and
-	/// revision 0.
-	pub fn empty(algorithm: DiffAlgorithm) -> Self {
-		Self {
-			hunks: Vec::new(),
-			algorithm,
-			revision: 0,
-		}
-	}
+    /// Construct an empty index with the given algorithm and
+    /// revision 0.
+    pub fn empty(algorithm: DiffAlgorithm) -> Self {
+        Self {
+            hunks: Vec::new(),
+            algorithm,
+            revision: 0,
+        }
+    }
 
-	pub fn is_empty(&self) -> bool {
-		self.hunks.is_empty()
-	}
+    pub fn is_empty(&self) -> bool {
+        self.hunks.is_empty()
+    }
 
-	pub fn len(&self) -> usize {
-		self.hunks.len()
-	}
+    pub fn len(&self) -> usize {
+        self.hunks.len()
+    }
 }
 
 #[cfg(test)]
 mod tests {
-	use super::*;
+    use super::*;
 
-	#[test]
-	fn line_range_basics() {
-		let r = LineRange::new(3, 7);
-		assert_eq!(r.start, 3);
-		assert_eq!(r.end, 7);
-		assert_eq!(r.len(), 4);
-		assert!(!r.is_empty());
+    #[test]
+    fn line_range_basics() {
+        let r = LineRange::new(3, 7);
+        assert_eq!(r.start, 3);
+        assert_eq!(r.end, 7);
+        assert_eq!(r.len(), 4);
+        assert!(!r.is_empty());
 
-		let empty = LineRange::new(5, 5);
-		assert!(empty.is_empty());
-		assert_eq!(empty.len(), 0);
-	}
+        let empty = LineRange::new(5, 5);
+        assert!(empty.is_empty());
+        assert_eq!(empty.len(), 0);
+    }
 
-	#[test]
-	fn hunk_kind_default_for_diff_algorithm() {
-		assert_eq!(DiffAlgorithm::default(), DiffAlgorithm::Histogram);
-	}
+    #[test]
+    fn hunk_kind_default_for_diff_algorithm() {
+        assert_eq!(DiffAlgorithm::default(), DiffAlgorithm::Histogram);
+    }
 
-	#[test]
-	fn hunk_index_empty_helpers() {
-		let idx = HunkIndex::empty(DiffAlgorithm::Histogram);
-		assert!(idx.is_empty());
-		assert_eq!(idx.len(), 0);
-		assert_eq!(idx.algorithm, DiffAlgorithm::Histogram);
-		assert_eq!(idx.revision, 0);
-	}
+    #[test]
+    fn hunk_index_empty_helpers() {
+        let idx = HunkIndex::empty(DiffAlgorithm::Histogram);
+        assert!(idx.is_empty());
+        assert_eq!(idx.len(), 0);
+        assert_eq!(idx.algorithm, DiffAlgorithm::Histogram);
+        assert_eq!(idx.revision, 0);
+    }
 }

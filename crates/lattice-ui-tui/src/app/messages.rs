@@ -182,7 +182,10 @@ mod tests {
                 )
             })
             .expect("*messages* entry");
-        assert!(is_messages, "*messages* must be stored as BufferData::Messages");
+        assert!(
+            is_messages,
+            "*messages* must be stored as BufferData::Messages"
+        );
         assert_eq!(name.as_deref(), Some(MESSAGES_BUFFER_NAME));
         // Unlisted: `:bn`/`:bp` skip it.
         assert!(!listed);

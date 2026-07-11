@@ -21,7 +21,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use lattice_host::dispatch::{autoread_watch_fingerprint, bound_watch_set};
 
 /// Build a desired watch set of `n` distinct directories, each with one file —

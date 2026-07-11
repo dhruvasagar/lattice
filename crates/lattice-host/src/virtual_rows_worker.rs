@@ -172,11 +172,7 @@ impl VirtualRowProviderRegistry {
 /// AUX‑2: bridge so subsystems without access to
 /// `VirtualRowProviderRegistry` can register headerlines.
 impl lattice_mode::VirtualRowRegistrar for VirtualRowProviderRegistry {
-    fn register(
-        &self,
-        buffer: BufferId,
-        provider: Arc<dyn VirtualRowProvider>,
-    ) -> bool {
+    fn register(&self, buffer: BufferId, provider: Arc<dyn VirtualRowProvider>) -> bool {
         self.register(buffer, provider)
     }
 

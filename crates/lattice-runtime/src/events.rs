@@ -357,11 +357,7 @@ impl EventBus {
                     });
                 }
             }
-            None => inner.wildcard.push(Subscription {
-                id,
-                target,
-                extra,
-            }),
+            None => inner.wildcard.push(Subscription { id, target, extra }),
         }
         id
     }
@@ -1018,9 +1014,9 @@ mod tests {
     fn predicate_filter_gates_delivery() {
         let bus = EventBus::new();
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let pred: EventPredicate = Arc::new(|e: &Event| {
-            matches!(e, Event::DocumentSaved { path, .. } if path.ends_with("keep.rs"))
-        });
+        let pred: EventPredicate = Arc::new(
+            |e: &Event| matches!(e, Event::DocumentSaved { path, .. } if path.ends_with("keep.rs")),
+        );
         bus.subscribe(
             EventFilter::kind(EventKind::DocumentSaved).with_predicate(pred),
             SubscriptionTarget::Channel(tx),
@@ -1038,9 +1034,9 @@ mod tests {
         // path_glob AND predicate: both must pass.
         let bus = EventBus::new();
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let pred: EventPredicate = Arc::new(|e: &Event| {
-            matches!(e, Event::DocumentSaved { path, .. } if path.starts_with("src/"))
-        });
+        let pred: EventPredicate = Arc::new(
+            |e: &Event| matches!(e, Event::DocumentSaved { path, .. } if path.starts_with("src/")),
+        );
         bus.subscribe(
             EventFilter::kind(EventKind::DocumentSaved)
                 .with_path_glob(crate::compile_glob_set(["**/*.rs"]))

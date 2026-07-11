@@ -183,7 +183,10 @@ mod tests {
         assert!(s.active.is_some());
         s.apply_event(&Event::DocumentClosed { id: doc(1) });
         assert!(s.open_buffers.is_empty());
-        assert!(s.active.is_none(), "closing the active buffer clears active");
+        assert!(
+            s.active.is_none(),
+            "closing the active buffer clears active"
+        );
     }
 
     #[test]
@@ -198,7 +201,10 @@ mod tests {
         });
         s.apply_event(&Event::DocumentClosed { id: doc(1) });
         assert_eq!(s.open_buffers.len(), 1);
-        assert!(s.active.is_some(), "closing a non-active buffer leaves active");
+        assert!(
+            s.active.is_some(),
+            "closing a non-active buffer leaves active"
+        );
     }
 
     #[test]

@@ -236,16 +236,9 @@ impl Keymap {
     /// editor refuses to boot rather than silently dropping
     /// the binding.
     #[track_caller]
-    pub fn bind_chord(
-        self,
-        mode: BindingMode,
-        chord: &str,
-        command: CommandInvocation,
-    ) -> Self {
+    pub fn bind_chord(self, mode: BindingMode, chord: &str, command: CommandInvocation) -> Self {
         let chords = lattice_protocol::parse_chord_sequence(chord)
-            .unwrap_or_else(|e| {
-                panic!("bind_chord: chord {chord:?} failed to parse: {e}")
-            })
+            .unwrap_or_else(|e| panic!("bind_chord: chord {chord:?} failed to parse: {e}"))
             .into_iter()
             .map(ChordPattern::Literal)
             .collect();
@@ -271,9 +264,7 @@ impl Keymap {
         command: CommandInvocation,
     ) -> Self {
         let chords: Vec<ChordPattern> = lattice_protocol::parse_chord_sequence(chord)
-            .unwrap_or_else(|e| {
-                panic!("bind_chord_modes: chord {chord:?} failed to parse: {e}")
-            })
+            .unwrap_or_else(|e| panic!("bind_chord_modes: chord {chord:?} failed to parse: {e}"))
             .into_iter()
             .map(ChordPattern::Literal)
             .collect();
@@ -390,11 +381,7 @@ mod tests {
         // excerpt-next idiom). Ergonomic substitute for
         // building `vec![ChordPattern::Literal(...), ...]` by
         // hand.
-        let km = Keymap::new().bind_chord(
-            BindingMode::Normal,
-            "]e",
-            synthetic_invocation(),
-        );
+        let km = Keymap::new().bind_chord(BindingMode::Normal, "]e", synthetic_invocation());
         assert_eq!(km.bindings.len(), 1);
         assert_eq!(km.bindings[0].mode, BindingMode::Normal);
         assert_eq!(
@@ -410,11 +397,7 @@ mod tests {
     fn bind_chord_parses_modifier_notation() {
         // `<C-w>j` -- modifier-bearing first chord plus a bare
         // second chord. Same shape `keymap_entry!` accepts.
-        let km = Keymap::new().bind_chord(
-            BindingMode::Normal,
-            "<C-w>j",
-            synthetic_invocation(),
-        );
+        let km = Keymap::new().bind_chord(BindingMode::Normal, "<C-w>j", synthetic_invocation());
         assert_eq!(
             km.bindings[0].chords,
             vec![
@@ -431,11 +414,7 @@ mod tests {
         // (project-switch-project) takes once mapped into
         // Lattice's keymap. The trie indexes three nodes:
         // ctrl('x') -> char('p') -> char('p') (terminal).
-        let km = Keymap::new().bind_chord(
-            BindingMode::Normal,
-            "<C-x>pp",
-            synthetic_invocation(),
-        );
+        let km = Keymap::new().bind_chord(BindingMode::Normal, "<C-x>pp", synthetic_invocation());
         assert_eq!(
             km.bindings[0].chords,
             vec![
@@ -453,11 +432,7 @@ mod tests {
         // at the inside of `bind_chord` itself. That's what
         // makes the API ergonomic for mode tables.
         let expected_line = line!() + 1;
-        let km = Keymap::new().bind_chord(
-            BindingMode::Normal,
-            "j",
-            synthetic_invocation(),
-        );
+        let km = Keymap::new().bind_chord(BindingMode::Normal, "j", synthetic_invocation());
         match &km.bindings[0].source.kind {
             SourceKind::File { line, path } => {
                 assert_eq!(*line, Some(expected_line));
@@ -476,11 +451,7 @@ mod tests {
     fn bind_chord_panics_on_invalid_chord_string() {
         // Malformed chord string at a binding declaration is a
         // mode-impl bug -- surface at boot, not silently drop.
-        let _ = Keymap::new().bind_chord(
-            BindingMode::Normal,
-            "<Foo>",
-            synthetic_invocation(),
-        );
+        let _ = Keymap::new().bind_chord(BindingMode::Normal, "<Foo>", synthetic_invocation());
     }
 
     // ---- K.2.4.A.0.2: table-form contribution (`from_entries`) ----

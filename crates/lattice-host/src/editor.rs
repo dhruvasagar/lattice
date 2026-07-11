@@ -716,8 +716,10 @@ pub struct Editor {
     /// picker opened. `<Esc>` calls `ThemeRegistry::set_theme` with
     /// these to undo the preview; `<CR>` clears it (keeps the
     /// previewed theme). `None` when no colorscheme preview is in flight.
-    pub pending_theme_preview_restore:
-        Option<(lattice_theme::Palette, Vec<(lattice_theme::ElementName, lattice_theme::StyleSpec)>)>,
+    pub pending_theme_preview_restore: Option<(
+        lattice_theme::Palette,
+        Vec<(lattice_theme::ElementName, lattice_theme::StyleSpec)>,
+    )>,
 
     /// Handle to the per-document actor (or, in M.1+, a
     /// composing multibuffer handle) and its snapshot cache.
@@ -1288,8 +1290,7 @@ pub struct Editor {
     /// records watcher changes here (keyed by `BufferId`) and applies the
     /// *active* buffer's entry immediately; a background buffer's entry is
     /// applied when it next becomes active (vim's checktime-on-`BufEnter`).
-    pub autoread_pending:
-        std::collections::HashMap<BufferId, crate::autoread::AutoreadChange>,
+    pub autoread_pending: std::collections::HashMap<BufferId, crate::autoread::AutoreadChange>,
     /// AR.5: buffers with an open autoread **conflict diff** (on-disk change +
     /// unsaved edits). While a buffer is in this set autoread stays hands-off
     /// for it — no re-opened resolver, no reload — so a resolve-then-save

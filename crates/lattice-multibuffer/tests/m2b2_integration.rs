@@ -25,9 +25,7 @@ use std::sync::{Arc, Mutex};
 
 use lattice_core::{BufferFlags, BufferId, BufferKind};
 use lattice_grammar::CommandRegistry;
-use lattice_mode::{
-    BufferStore, BufferStoreHandle, ModeActivator, ModeId, ServiceRegistry,
-};
+use lattice_mode::{BufferStore, BufferStoreHandle, ModeActivator, ModeId, ServiceRegistry};
 use lattice_multibuffer::{
     Excerpt, InMemoryMultibufferRegistry, MultibufferRegistryHandle, create_multibuffer_view,
 };
@@ -46,12 +44,7 @@ impl BufferStore for StubBufferStore {
     fn find_by_name(&self, _name: &str) -> Option<BufferId> {
         None
     }
-    fn ensure_named_document(
-        &self,
-        _name: &str,
-        _major: ModeId,
-        _flags: BufferFlags,
-    ) -> BufferId {
+    fn ensure_named_document(&self, _name: &str, _major: ModeId, _flags: BufferFlags) -> BufferId {
         BufferId(0)
     }
     fn name_for(&self, _id: BufferId) -> Option<String> {
@@ -87,8 +80,7 @@ struct MockActivator {
 impl MockActivator {
     fn new() -> Self {
         let stub_store = Arc::new(StubBufferStore::default());
-        let mb_registry: MultibufferRegistryHandle =
-            Arc::new(InMemoryMultibufferRegistry::new());
+        let mb_registry: MultibufferRegistryHandle = Arc::new(InMemoryMultibufferRegistry::new());
 
         let mut services = ServiceRegistry::new();
         let store_dyn: Arc<dyn BufferStore> = stub_store.clone();

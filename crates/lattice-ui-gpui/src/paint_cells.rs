@@ -42,7 +42,9 @@
 
 use std::sync::Mutex;
 
-use gpui::{Bounds, Font, FontStyle, FontWeight, Hsla, Pixels, Point, Window, fill, point, px, rgb, size};
+use gpui::{
+    Bounds, Font, FontStyle, FontWeight, Hsla, Pixels, Point, Window, fill, point, px, rgb, size,
+};
 use lattice_cells::Cell;
 
 use crate::glyph_resolver::GlyphResolver;
@@ -221,10 +223,7 @@ pub fn paint_cells_row(
         let (fg_u32, bg_u32) = apply_color_modifiers(cell);
 
         if bg_u32 != 0 {
-            let bg_bounds = Bounds::new(
-                point(cell_x, line_origin.y),
-                size(advance, line_height),
-            );
+            let bg_bounds = Bounds::new(point(cell_x, line_origin.y), size(advance, line_height));
             window.paint_quad(fill(bg_bounds, rgb(bg_u32)));
         }
 
@@ -240,20 +239,13 @@ pub fn paint_cells_row(
             // around it.
             let cell_font = cell_font_variant(font, cell);
 
-            if let Some(resolved) =
-                resolver_guard.resolve(ch, &cell_font, font_size, window)
-            {
+            if let Some(resolved) = resolver_guard.resolve(ch, &cell_font, font_size, window) {
                 let baseline = point(cell_x, line_origin.y + ascent);
                 let final_fg = if fg_u32 != 0 { fg_u32 } else { default_fg };
                 let color: Hsla = rgb(final_fg).into();
 
                 let paint_result = if resolved.is_emoji {
-                    window.paint_emoji(
-                        baseline,
-                        resolved.font_id,
-                        resolved.glyph_id,
-                        font_size,
-                    )
+                    window.paint_emoji(baseline, resolved.font_id, resolved.glyph_id, font_size)
                 } else {
                     window.paint_glyph(
                         baseline,
@@ -288,10 +280,8 @@ pub fn paint_cells_row(
         // The underline colour follows fg (after REVERSE / DIM),
         // falling back to the host theme default when fg=0.
         if cell.is_underline() {
-            let underline_color =
-                if fg_u32 != 0 { fg_u32 } else { default_fg };
-            let underline_y =
-                line_origin.y + ascent + px(UNDERLINE_OFFSET_FROM_BASELINE);
+            let underline_color = if fg_u32 != 0 { fg_u32 } else { default_fg };
+            let underline_y = line_origin.y + ascent + px(UNDERLINE_OFFSET_FROM_BASELINE);
             let underline_bounds = Bounds::new(
                 point(cell_x, underline_y),
                 size(advance, px(UNDERLINE_THICKNESS_PX)),
@@ -342,12 +332,7 @@ mod tests {
     /// REVERSE bit swaps fg ↔ bg.
     #[test]
     fn apply_color_modifiers_reverse_swaps_fg_and_bg() {
-        let cell = Cell::new(
-            'a' as u32,
-            0xff0000,
-            0x00ff00,
-            cell_flags::REVERSE,
-        );
+        let cell = Cell::new('a' as u32, 0xff0000, 0x00ff00, cell_flags::REVERSE);
         assert_eq!(apply_color_modifiers(&cell), (0x00ff00, 0xff0000));
     }
 
@@ -363,12 +348,7 @@ mod tests {
     /// DIM attenuates fg and bg independently.
     #[test]
     fn apply_color_modifiers_dim_attenuates_both() {
-        let cell = Cell::new(
-            'a' as u32,
-            0xffffff,
-            0x808080,
-            cell_flags::DIM,
-        );
+        let cell = Cell::new('a' as u32, 0xffffff, 0x808080, cell_flags::DIM);
         assert_eq!(apply_color_modifiers(&cell), (0x999999, 0x4c4c4c));
     }
 
@@ -430,12 +410,7 @@ mod tests {
     #[test]
     fn cell_font_variant_bold_italic_compose() {
         let base = font("monospace");
-        let cell = Cell::new(
-            'a' as u32,
-            0,
-            0,
-            cell_flags::BOLD | cell_flags::ITALIC,
-        );
+        let cell = Cell::new('a' as u32, 0, 0, cell_flags::BOLD | cell_flags::ITALIC);
         let variant = cell_font_variant(&base, &cell);
         assert_eq!(variant.weight, FontWeight::BOLD);
         assert_eq!(variant.style, FontStyle::Italic);

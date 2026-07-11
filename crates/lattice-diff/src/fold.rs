@@ -37,8 +37,8 @@
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 
-use lattice_core::{BufferId, Fold, FoldSource, ProviderId};
 use crate::Hunk;
+use lattice_core::{BufferId, Fold, FoldSource, ProviderId};
 
 use crate::subsystem::DiffSession;
 
@@ -457,7 +457,11 @@ mod tests {
         let src = HunkFoldSource::new(Arc::clone(&session), BufferId(1), 1);
         assert!(src.compute_folds().is_empty(), "no publish yet → no folds");
         session.publish(Arc::new(HunkIndex {
-            hunks: vec![hunk(HunkKind::Add, LineRange::new(3, 3), LineRange::new(3, 7))],
+            hunks: vec![hunk(
+                HunkKind::Add,
+                LineRange::new(3, 3),
+                LineRange::new(3, 7),
+            )],
             algorithm: DiffAlgorithm::Histogram,
             revision: 1,
         }));
@@ -508,7 +512,11 @@ mod tests {
         // file of 100 lines. Kept window = [44, 58). Complement folds:
         // leading [0, 44) → fold lines 0..=43; trailing [58, 100) →
         // fold 58..=99.
-        let h = hunk(HunkKind::Change, LineRange::new(50, 52), LineRange::new(50, 52));
+        let h = hunk(
+            HunkKind::Change,
+            LineRange::new(50, 52),
+            LineRange::new(50, 52),
+        );
         let folds = compute_unchanged_folds(&[h], 1, 100, 6);
         assert_eq!(folds.len(), 2, "leading + trailing gap");
         assert_eq!((folds[0].start_line, folds[0].end_line), (0, 43));
@@ -526,8 +534,16 @@ mod tests {
         // (context preserved).
         let folds = compute_unchanged_folds(
             &[
-                hunk(HunkKind::Change, LineRange::new(20, 22), LineRange::new(20, 22)),
-                hunk(HunkKind::Change, LineRange::new(28, 30), LineRange::new(28, 30)),
+                hunk(
+                    HunkKind::Change,
+                    LineRange::new(20, 22),
+                    LineRange::new(20, 22),
+                ),
+                hunk(
+                    HunkKind::Change,
+                    LineRange::new(28, 30),
+                    LineRange::new(28, 30),
+                ),
             ],
             1,
             100,
@@ -545,7 +561,11 @@ mod tests {
         // gap (line_count 8 → trailing [7,8) = 1 line) the floor of 2
         // skips it. So: no folds.
         let folds = compute_unchanged_folds(
-            &[hunk(HunkKind::Add, LineRange::new(0, 0), LineRange::new(0, 1))],
+            &[hunk(
+                HunkKind::Add,
+                LineRange::new(0, 0),
+                LineRange::new(0, 1),
+            )],
             1,
             8,
             6,
@@ -559,7 +579,11 @@ mod tests {
         // an EMPTY range [40,40) at the insertion point. It still
         // anchors a kept window [34,46), so the deletion marker stays
         // visible and the surrounding code folds around it.
-        let h = hunk(HunkKind::Add, LineRange::new(40, 40), LineRange::new(40, 60));
+        let h = hunk(
+            HunkKind::Add,
+            LineRange::new(40, 40),
+            LineRange::new(40, 60),
+        );
         let folds = compute_unchanged_folds(&[h], 0, 100, 6);
         assert_eq!(folds.len(), 2);
         assert_eq!((folds[0].start_line, folds[0].end_line), (0, 33));
@@ -571,17 +595,21 @@ mod tests {
         // With a ConfigRegistry whose `ui.diff.fold-unchanged` is false,
         // the source emits nothing even when hunks + line counts exist.
         let session = Arc::new(DiffSession::new(BufferId(1), DiffAlgorithm::Histogram));
-        session.recompute_blocking(&[
-            ropey::Rope::from("a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\n"),
-            ropey::Rope::from("a\nb\nc\nd\ne\nXX\ng\nh\ni\nj\nk\nl\n"),
-        ])
-        .expect("publish");
+        session
+            .recompute_blocking(&[
+                ropey::Rope::from("a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\n"),
+                ropey::Rope::from("a\nb\nc\nd\ne\nXX\ng\nh\ni\nj\nk\nl\n"),
+            ])
+            .expect("publish");
         let cfg = Arc::new(lattice_config::ConfigRegistry::new());
         cfg.init_from_linkme();
         cfg.parse_and_set_command("ui.diff.fold-unchanged=false")
             .expect("toggle off");
         let src = UnchangedFoldSource::new(session, BufferId(1), 1, Some(cfg));
-        assert!(src.compute_folds().is_empty(), "toggle off → no unchanged folds");
+        assert!(
+            src.compute_folds().is_empty(),
+            "toggle off → no unchanged folds"
+        );
     }
 
     #[test]
@@ -616,7 +644,13 @@ mod tests {
         // The unchanged identity is namespaced away from the hunk
         // identity for the same span, and differs per side.
         assert_ne!(unchanged_fold_identity(1, 3, 6), hunk_fold_identity(3, 6));
-        assert_ne!(unchanged_fold_identity(0, 3, 6), unchanged_fold_identity(1, 3, 6));
-        assert_eq!(unchanged_fold_identity(1, 3, 6), unchanged_fold_identity(1, 3, 6));
+        assert_ne!(
+            unchanged_fold_identity(0, 3, 6),
+            unchanged_fold_identity(1, 3, 6)
+        );
+        assert_eq!(
+            unchanged_fold_identity(1, 3, 6),
+            unchanged_fold_identity(1, 3, 6)
+        );
     }
 }

@@ -87,7 +87,11 @@ impl SnippetSession {
     /// an `Option` so it can advance the focused tabstop *and* end the
     /// session (set it to `None`) in one critical section — setting it
     /// to `None` removes the buffer's entry from the map.
-    pub fn with_mut<R>(&self, buffer: BufferId, f: impl FnOnce(&mut Option<ActiveSnippet>) -> R) -> R {
+    pub fn with_mut<R>(
+        &self,
+        buffer: BufferId,
+        f: impl FnOnce(&mut Option<ActiveSnippet>) -> R,
+    ) -> R {
         let mut map = self.lock();
         // Present the entry as an `Option` so the existing closure
         // contract (`*s = None` ends the session) is preserved exactly.

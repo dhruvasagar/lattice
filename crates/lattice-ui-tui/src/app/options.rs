@@ -282,9 +282,7 @@ impl App {
         // Slice 3c.final.E.swap: mutating map remove via the
         // actor-routed seam.
         let full_path = full_path.to_string();
-        self.mutate_editor_with(move |e| {
-            e.pending_config_structural_sections.remove(&full_path)
-        })
+        self.mutate_editor_with(move |e| e.pending_config_structural_sections.remove(&full_path))
     }
 
     /// Iterate the dotted paths of every pending structural

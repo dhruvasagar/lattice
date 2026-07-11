@@ -49,12 +49,12 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use crate::acp::error::{AiError, Result};
 
-/// Re-exported so callers (Task 6) can match on `session/update` payloads without depending
-/// on `agent-client-protocol` directly.
-pub use agent_client_protocol::schema::v1::SessionNotification;
 /// Re-exported so the supervisor (AU‑4) can inspect the permission request +
 /// build the response without depending on `agent-client-protocol` directly.
 pub use agent_client_protocol::schema::v1::RequestPermissionRequest as PermissionRequestPayload;
+/// Re-exported so callers (Task 6) can match on `session/update` payloads without depending
+/// on `agent-client-protocol` directly.
+pub use agent_client_protocol::schema::v1::SessionNotification;
 
 /// AU‑4: an agent→client `session/request_permission` request routed out to the
 /// supervisor, carrying the [`Responder`] it must answer. The supervisor
@@ -181,11 +181,11 @@ impl Connection {
                         // "no decision" outcome).
                         match perm_tx.send(PermissionRequest { request, responder }) {
                             Ok(()) => Ok(()),
-                            Err(mpsc::error::SendError(PermissionRequest { responder, .. })) => {
-                                responder.respond(RequestPermissionResponse::new(
-                                    RequestPermissionOutcome::Cancelled,
-                                ))
-                            }
+                            Err(mpsc::error::SendError(PermissionRequest {
+                                responder, ..
+                            })) => responder.respond(RequestPermissionResponse::new(
+                                RequestPermissionOutcome::Cancelled,
+                            )),
                         }
                     },
                     agent_client_protocol::on_receive_request!(),

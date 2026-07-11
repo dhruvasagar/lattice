@@ -44,8 +44,10 @@ use arc_swap::ArcSwap;
 use lattice_grammar::{CommandId, CommandInvocation, SourceLocation};
 use lattice_protocol::chord::{ChordParseError, KeyChord, parse_chord_sequence};
 
-use crate::{BindingMode, BoundCommand, ChordPattern, KeymapLayer, KeymapTrie, LookupResult, ModeId};
 use crate::resolution::{KeymapResolution, LayerHit};
+use crate::{
+    BindingMode, BoundCommand, ChordPattern, KeymapLayer, KeymapTrie, LookupResult, ModeId,
+};
 
 /// Privilege bundle a writer presents when calling
 /// capability-gated bind APIs (slice 8.h). Mirrors the WIT
@@ -836,7 +838,11 @@ impl KeymapHandle {
                         active_modes.contains(&id)
                     }
                 };
-                LayerHit { layer, command, active }
+                LayerHit {
+                    layer,
+                    command,
+                    active,
+                }
             })
             .collect();
         KeymapResolution { mode, hits }
@@ -1262,9 +1268,7 @@ mod tests {
         h.bind(
             KeymapLayer::Builtin,
             BindingMode::Insert,
-            &[ChordPattern::Literal(KeyChord::special(
-                SpecialKey::Tab,
-            ))],
+            &[ChordPattern::Literal(KeyChord::special(SpecialKey::Tab))],
             invocation(1),
             src("builtin.tab"),
         );
@@ -1281,9 +1285,7 @@ mod tests {
             KeymapLayer::MinorMode(snippet_mode),
         ));
         t.insert(
-            &[ChordPattern::Literal(KeyChord::special(
-                SpecialKey::Tab,
-            ))],
+            &[ChordPattern::Literal(KeyChord::special(SpecialKey::Tab))],
             bound,
         );
         minor_modes.insert(BindingMode::Insert, t);
@@ -1294,10 +1296,7 @@ mod tests {
         );
 
         // <Tab> -> snippet.tab.
-        let r = h.lookup(
-            BindingMode::Insert,
-            &[KeyChord::special(SpecialKey::Tab)],
-        );
+        let r = h.lookup(BindingMode::Insert, &[KeyChord::special(SpecialKey::Tab)]);
         match r {
             LookupResult::Bound { command, .. } => {
                 assert_eq!(command.command.command, CommandId::new(99));
@@ -1307,10 +1306,7 @@ mod tests {
 
         // Pop the layer -> builtin.tab resurfaces.
         h.pop_layer(id);
-        let r = h.lookup(
-            BindingMode::Insert,
-            &[KeyChord::special(SpecialKey::Tab)],
-        );
+        let r = h.lookup(BindingMode::Insert, &[KeyChord::special(SpecialKey::Tab)]);
         match r {
             LookupResult::Bound { command, .. } => {
                 assert_eq!(command.command.command, CommandId::new(1));
@@ -1978,7 +1974,11 @@ mod tests {
             )),
         );
         bindings.insert(BindingMode::Normal, trie);
-        h.push_layer(PushLayerKind::MajorMode(convo), "ai-conversation-mode", bindings);
+        h.push_layer(
+            PushLayerKind::MajorMode(convo),
+            "ai-conversation-mode",
+            bindings,
+        );
 
         // A buffer whose active major is NOT ai-conversation (e.g. the
         // dashboard) must NOT resolve `i` to focus-prompt.
@@ -1998,8 +1998,7 @@ mod tests {
         );
 
         // The ai-conversation buffer (its major active) DOES resolve it.
-        let on_convo =
-            h.lookup_with_context(BindingMode::Normal, &[pressed('i')], &[convo]);
+        let on_convo = h.lookup_with_context(BindingMode::Normal, &[pressed('i')], &[convo]);
         match on_convo {
             LookupResult::Bound { command, .. } => {
                 assert_eq!(command.command.command, CommandId::new(156));
@@ -2037,7 +2036,11 @@ mod tests {
             )),
         );
         bindings.insert(BindingMode::Normal, trie);
-        h.push_layer(PushLayerKind::MajorMode(convo), "ai-conversation-mode", bindings);
+        h.push_layer(
+            PushLayerKind::MajorMode(convo),
+            "ai-conversation-mode",
+            bindings,
+        );
 
         let major_hit = |active_modes: &[ModeId]| -> bool {
             let res = h.resolve_trace(BindingMode::Normal, &[pressed('i')], active_modes);
@@ -2054,7 +2057,10 @@ mod tests {
             "a non-active major's binding must not be marked active in introspection",
         );
         // No active major → NOT active.
-        assert!(!major_hit(&[]), "no active major → the major hit is inactive");
+        assert!(
+            !major_hit(&[]),
+            "no active major → the major hit is inactive"
+        );
         // The ai-conversation buffer (its major active) → active.
         assert!(
             major_hit(&[convo]),

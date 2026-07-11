@@ -87,8 +87,7 @@ impl App {
     /// [`Self::handle_renderer_signal`].
     pub fn deactivate_mode_by_id(&mut self, buffer_id: BufferId, mode_id: ModeId) {
         // Slice 3c.final.E.2: route through `mutate_editor_with`.
-        let signals =
-            self.mutate_editor_with(move |e| e.deactivate_mode_by_id(buffer_id, mode_id));
+        let signals = self.mutate_editor_with(move |e| e.deactivate_mode_by_id(buffer_id, mode_id));
         for sig in signals {
             self.handle_renderer_signal(sig);
         }
@@ -253,7 +252,9 @@ mod tests {
         // scrollback. A single-token program + arg, because the spawn
         // command line is whitespace-split (no shell-quote parsing). `seq`
         // exits after printing; the grid retains its scrollback.
-        a.apply(crate::app::Action::TerminalSpawn(Some("seq 60".to_string())));
+        a.apply(crate::app::Action::TerminalSpawn(Some(
+            "seq 60".to_string(),
+        )));
         let id = a.editor.active_pane_buffer_id();
 
         // Wait for the child's output to build scrollback history.

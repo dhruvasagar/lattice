@@ -141,11 +141,7 @@ fn push_mode_keymap(
         lattice_mode::ModeKind::Minor => PushLayerKind::MinorMode(mode_id),
     };
 
-    handle.push_layer(
-        push_layer,
-        format!("{mode_id}"),
-        bindings_by_mode,
-    );
+    handle.push_layer(push_layer, format!("{mode_id}"), bindings_by_mode);
 }
 
 /// Group a slice of bindings into one [`KeymapTrie`] per
@@ -164,14 +160,10 @@ fn group_bindings_into_tries(
     let mut by_mode: HashMap<BindingMode, KeymapTrie> = HashMap::new();
     for binding in bindings {
         let bound = Arc::new(
-            BoundCommand::from_invocation(
-                binding.command.clone(),
-                binding.source.clone(),
-                layer,
-            )
-            // SN.3c.2b: propagate augment-and-continue onto the stored
-            // BoundCommand the lookup returns.
-            .with_fall_through(binding.fall_through),
+            BoundCommand::from_invocation(binding.command.clone(), binding.source.clone(), layer)
+                // SN.3c.2b: propagate augment-and-continue onto the stored
+                // BoundCommand the lookup returns.
+                .with_fall_through(binding.fall_through),
         );
         by_mode
             .entry(binding.mode)

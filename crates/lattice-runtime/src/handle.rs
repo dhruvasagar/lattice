@@ -272,7 +272,12 @@ impl RopeDocumentHandle {
         cursor: Position,
         cancel: CancellationToken,
     ) -> Pending<Effect> {
-        self.dispatch_with_env(invocation, cursor, cancel, crate::document::DispatchEnv::default())
+        self.dispatch_with_env(
+            invocation,
+            cursor,
+            cancel,
+            crate::document::DispatchEnv::default(),
+        )
     }
 
     /// N.1.4b / N.1.6 (2026-06-10): the env-carrying dispatch entry.
@@ -470,9 +475,12 @@ mod tests {
         // `crate::document::Document`.
         use crate::document::Document as DocumentTrait;
 
-        let handle = spawn_document(lattice_core::BufferId(0), Document::from_text("hello"), empty_registry());
-        let dyn_doc: std::sync::Arc<dyn DocumentTrait> =
-            std::sync::Arc::new(handle.clone());
+        let handle = spawn_document(
+            lattice_core::BufferId(0),
+            Document::from_text("hello"),
+            empty_registry(),
+        );
+        let dyn_doc: std::sync::Arc<dyn DocumentTrait> = std::sync::Arc::new(handle.clone());
 
         // Reads go through the trait method (default impl).
         assert_eq!(dyn_doc.text(), "hello");
@@ -493,7 +501,11 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn handle_clone_shares_actor() {
-        let h1 = spawn_document(lattice_core::BufferId(0), Document::from_text("a"), empty_registry());
+        let h1 = spawn_document(
+            lattice_core::BufferId(0),
+            Document::from_text("a"),
+            empty_registry(),
+        );
         let h2 = h1.clone();
         h1.apply_edit(Edit::insert(Position::new(0, 1), "b"))
             .await
@@ -507,7 +519,11 @@ mod tests {
     async fn save_as_updates_path_in_snapshot() {
         let dir = std::env::temp_dir();
         let target = dir.join("lattice-handle-save-as.txt");
-        let h = spawn_document(lattice_core::BufferId(0), Document::from_text("payload"), empty_registry());
+        let h = spawn_document(
+            lattice_core::BufferId(0),
+            Document::from_text("payload"),
+            empty_registry(),
+        );
         h.save_as(target.clone()).await.unwrap();
         let snap = h.snapshot();
         assert_eq!(snap.path(), Some(target.as_path()));

@@ -154,7 +154,10 @@ mod tests {
         assert!(matches!(cmd_rx.try_recv(), Ok(AiCmd::SetAutoAccept(true))));
 
         // Reflect the applied state, then toggle back off.
-        handle.state.store(Arc::new(AiState { auto_accept: true, ..AiState::default() }));
+        handle.state.store(Arc::new(AiState {
+            auto_accept: true,
+            ..AiState::default()
+        }));
         assert!(!handle.toggle_auto_accept());
         assert!(matches!(cmd_rx.try_recv(), Ok(AiCmd::SetAutoAccept(false))));
     }

@@ -207,7 +207,15 @@ mod tests {
         let h = KeymapHandle::new();
         let z = crate::keymap_trie::ChordPattern::Literal(KeyChord::char('z'));
         let n = crate::keymap_trie::ChordPattern::Literal(KeyChord::char('n'));
-        crate::keymap_normal::register_operator_bindings(&h, &[z, n.clone()], b.delete, n, &b, &so, &sm);
+        crate::keymap_normal::register_operator_bindings(
+            &h,
+            &[z, n.clone()],
+            b.delete,
+            n,
+            &b,
+            &so,
+            &sm,
+        );
 
         // Visual `zn`: `z` absorbs as a partial, `n` resolves the pair to
         // the operator carrying `Range::Selection`.

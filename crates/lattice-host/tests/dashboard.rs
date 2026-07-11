@@ -112,7 +112,10 @@ fn dashboard_help_topic_links_resolve_to_registered_topics() {
             }
         }
     }
-    assert!(checked > 0, "expected the dashboard to render some help-topic links");
+    assert!(
+        checked > 0,
+        "expected the dashboard to render some help-topic links"
+    );
 }
 
 // Following a dashboard link end-to-end: `<CR>` (Action::FollowLink) on a
@@ -124,10 +127,10 @@ fn dashboard_help_topic_links_resolve_to_registered_topics() {
 // (`dashboard_active_routes_enter_to_follow_link`).
 mod link_following {
     use lattice_grammar::Effect;
+    use lattice_help::HelpLinkTarget;
     use lattice_host::action::Action;
     use lattice_host::dispatch::RendererSignal;
     use lattice_host::modes::HelpLinks;
-    use lattice_help::HelpLinkTarget;
 
     use super::*;
 
@@ -156,9 +159,10 @@ mod link_following {
         // The tutor pointer is `LinkTarget::Command("tutor")` → seeded as
         // `Execute("tutor")` (runs `:tutor`), NOT `Command` (which would only
         // *describe* the command).
-        let target = cursor_on_link(&mut editor, |t| {
-            matches!(t, HelpLinkTarget::Execute(c) if c == "tutor")
-        });
+        let target = cursor_on_link(
+            &mut editor,
+            |t| matches!(t, HelpLinkTarget::Execute(c) if c == "tutor"),
+        );
         assert_eq!(target, HelpLinkTarget::Execute("tutor".to_string()));
 
         // Following the link runs `:tutor`, which resolves to
@@ -239,7 +243,8 @@ mod link_following {
             })
             .unwrap_or_default();
         assert!(
-            urls.iter().any(|u| u == "https://github.com/dhruvasagar/lattice"),
+            urls.iter()
+                .any(|u| u == "https://github.com/dhruvasagar/lattice"),
             "the GitHub link should seed as HelpLinkTarget::Url; got {urls:?}"
         );
         assert!(
@@ -259,16 +264,28 @@ fn dashboard_registers_branding_virtual_rows() {
     // DB.4: the branding provider is registered for the dashboard buffer and
     // emits the mark + wordmark rows, colored with the brand blue.
     let providers = editor.virtual_row_providers.snapshot(id);
-    assert!(!providers.is_empty(), "branding provider should be registered");
+    assert!(
+        !providers.is_empty(),
+        "branding provider should be registered"
+    );
     let brand_blue = lattice_theme::Color::Rgb(0x1f, 0x6f, 0xeb).to_rgb_u32(0);
     let has_blue_glyph = providers.iter().flat_map(|p| p.collect()).any(|row| {
-        row.cells.iter().any(|c| c.fg == brand_blue && c.codepoint != 0x20)
+        row.cells
+            .iter()
+            .any(|c| c.fg == brand_blue && c.codepoint != 0x20)
     });
     let has_wordmark = providers.iter().flat_map(|p| p.collect()).any(|row| {
-        let t: String = row.cells.iter().filter_map(|c| char::from_u32(c.codepoint)).collect();
+        let t: String = row
+            .cells
+            .iter()
+            .filter_map(|c| char::from_u32(c.codepoint))
+            .collect();
         t.contains("Lattice")
     });
-    assert!(has_blue_glyph, "branding should render brand-blue mark glyphs");
+    assert!(
+        has_blue_glyph,
+        "branding should render brand-blue mark glyphs"
+    );
     assert!(has_wordmark, "branding should render the Lattice wordmark");
 }
 
@@ -731,9 +748,6 @@ mod idle_frame_does_no_recompose {
     }
 }
 
-
-
-
 #[cfg(test)]
 mod major_gating {
     use super::*;
@@ -741,7 +755,11 @@ mod major_gating {
     use lattice_protocol::{KeyChord, parse_chord_sequence};
 
     fn chord(s: &str) -> KeyChord {
-        parse_chord_sequence(s).expect("parse").into_iter().next().expect("one")
+        parse_chord_sequence(s)
+            .expect("parse")
+            .into_iter()
+            .next()
+            .expect("one")
     }
 
     /// Regression: the ai-conversation major mode binds all of
@@ -782,7 +800,11 @@ mod insert_still_works {
     use lattice_protocol::{KeyChord, parse_chord_sequence};
 
     fn chord(s: &str) -> KeyChord {
-        parse_chord_sequence(s).expect("parse").into_iter().next().expect("one")
+        parse_chord_sequence(s)
+            .expect("parse")
+            .into_iter()
+            .next()
+            .expect("one")
     }
 
     /// Non-regression: `i` on a normal editable buffer still enters Insert

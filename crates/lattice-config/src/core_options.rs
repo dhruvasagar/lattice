@@ -924,14 +924,8 @@ mod tests {
     fn picker_display_accepts_popup_and_minibuffer() {
         let r = ConfigRegistry::new();
         r.init_from_linkme();
-        assert!(
-            r.set_typed::<PickerDisplay>(String::from("popup"))
-                .is_ok()
-        );
-        assert_eq!(
-            r.get_typed::<PickerDisplay>().unwrap().as_str(),
-            "popup"
-        );
+        assert!(r.set_typed::<PickerDisplay>(String::from("popup")).is_ok());
+        assert_eq!(r.get_typed::<PickerDisplay>().unwrap().as_str(), "popup");
         assert!(
             r.set_typed::<PickerDisplay>(String::from("minibuffer"))
                 .is_ok()

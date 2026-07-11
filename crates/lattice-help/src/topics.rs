@@ -189,7 +189,6 @@ pub fn builtin_topics() -> Arc<HelpTopicRegistry> {
     Arc::new(r)
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

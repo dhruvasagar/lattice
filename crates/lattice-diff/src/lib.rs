@@ -68,7 +68,7 @@ pub mod install;
 // produces it.
 pub mod programmatic;
 
-pub use compute::{compute_diff, DiffEngineError};
+pub use compute::{DiffEngineError, compute_diff};
 pub use install::install;
 pub use programmatic::{ProgrammaticDiffBus, ProgrammaticDiffRequest};
 pub use types::{DiffAlgorithm, Hunk, HunkIndex, HunkKind, LineRange};

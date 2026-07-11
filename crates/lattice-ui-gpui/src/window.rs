@@ -481,27 +481,39 @@ fn gpui_filter_chord_entries(
 ) -> Vec<GpuiFilterChordEntry> {
     let mut out: Vec<GpuiFilterChordEntry> = Vec::new();
     if sources_present.contains(lattice_completion::insert::BufferWordsSource::ID) {
-        out.push(GpuiFilterChordEntry { key: "b", label: "buf" });
+        out.push(GpuiFilterChordEntry {
+            key: "b",
+            label: "buf",
+        });
     }
     if sources_present.contains(lattice_completion::insert::LSP_COMPLETION_SOURCE_ID) {
-        out.push(GpuiFilterChordEntry { key: "o", label: "lsp" });
+        out.push(GpuiFilterChordEntry {
+            key: "o",
+            label: "lsp",
+        });
     }
     if sources_present.contains(lattice_completion::insert::PATH_SOURCE_ID) {
-        out.push(GpuiFilterChordEntry { key: "f", label: "path" });
+        out.push(GpuiFilterChordEntry {
+            key: "f",
+            label: "path",
+        });
     }
     if sources_present.contains(lattice_completion::insert::TREE_SITTER_SYMBOL_SOURCE_ID) {
-        out.push(GpuiFilterChordEntry { key: "t", label: "ts" });
+        out.push(GpuiFilterChordEntry {
+            key: "t",
+            label: "ts",
+        });
     }
     if sources_present.contains(lattice_completion::insert::SNIPPET_SOURCE_ID) {
-        out.push(GpuiFilterChordEntry { key: "s", label: "snip" });
+        out.push(GpuiFilterChordEntry {
+            key: "s",
+            label: "snip",
+        });
     }
     out
 }
 
-fn gpui_render_filter_chord_footer(
-    entries: &[GpuiFilterChordEntry],
-    width_cols: u16,
-) -> String {
+fn gpui_render_filter_chord_footer(entries: &[GpuiFilterChordEntry], width_cols: u16) -> String {
     if entries.is_empty() {
         return String::new();
     }
@@ -612,38 +624,37 @@ fn paint_candidate_row(
     // no match ranges AND no syntax spans → single child
     // (empty-query "show all" with a plain preview hits this
     // every row).
-    let display_div: gpui::Div = if cand.match_ranges.is_empty()
-        && cand.raw.display_spans.is_empty()
-    {
-        div().child(display.clone()).text_color(row_fg)
-    } else {
-        // PH.1: per-char composition — fuzzy-match highlight over
-        // the `display_spans` syntax overlay (match wins on
-        // overlap, picker-preview-highlight.md §5). Decision is a
-        // pure helper shared with the parity test; mirrors the TUI
-        // peer's `push_preview_run`.
-        let row_fg_u32 = if selected {
-            theme.status_foreground
+    let display_div: gpui::Div =
+        if cand.match_ranges.is_empty() && cand.raw.display_spans.is_empty() {
+            div().child(display.clone()).text_color(row_fg)
         } else {
-            theme.foreground
+            // PH.1: per-char composition — fuzzy-match highlight over
+            // the `display_spans` syntax overlay (match wins on
+            // overlap, picker-preview-highlight.md §5). Decision is a
+            // pure helper shared with the parity test; mirrors the TUI
+            // peer's `push_preview_run`.
+            let row_fg_u32 = if selected {
+                theme.status_foreground
+            } else {
+                theme.foreground
+            };
+            let cells: Vec<gpui::Div> = display
+                .char_indices()
+                .map(|(byte_idx, c)| {
+                    let fg = preview_char_color_rgb(
+                        byte_idx,
+                        &cand.match_ranges,
+                        &cand.raw.display_spans,
+                        resolved,
+                        ids,
+                        row_fg_u32,
+                        theme.picker_match_highlight,
+                    );
+                    div().child(c.to_string()).text_color(rgb(fg))
+                })
+                .collect();
+            div().flex().flex_row().children(cells)
         };
-        let cells: Vec<gpui::Div> = display
-            .char_indices()
-            .map(|(byte_idx, c)| {
-                let fg = preview_char_color_rgb(
-                    byte_idx,
-                    &cand.match_ranges,
-                    &cand.raw.display_spans,
-                    resolved,
-                    ids,
-                    row_fg_u32,
-                    theme.picker_match_highlight,
-                );
-                div().child(c.to_string()).text_color(rgb(fg))
-            })
-            .collect();
-        div().flex().flex_row().children(cells)
-    };
 
     // 2026-05-27 column-aligned annotations. Caller computes
     // `display_col_chars` as the widest display in the visible
@@ -677,7 +688,12 @@ fn paint_candidate_row(
     // compete with the display text.
     let kind_glyph = format!("{} ", cand.raw.kind.glyph());
     row = row
-        .child(div().text_color(marginalia_fg).flex_shrink_0().child(kind_glyph))
+        .child(
+            div()
+                .text_color(marginalia_fg)
+                .flex_shrink_0()
+                .child(kind_glyph),
+        )
         .child(display_div.flex_shrink_0());
     // MARG.5 (2026-06-03): per-category column-aligned
     // annotations. Walk `columns` (pre-computed per-visible-
@@ -703,17 +719,9 @@ fn paint_candidate_row(
         }
         for (i, (category, col_width)) in columns.iter().enumerate() {
             if i > 0 {
-                row = row.child(
-                    div()
-                        .text_color(marginalia_fg)
-                        .flex_shrink_0()
-                        .child("  "),
-                );
+                row = row.child(div().text_color(marginalia_fg).flex_shrink_0().child("  "));
             }
-            let ann_for_col = cand
-                .annotations
-                .iter()
-                .find(|a| a.category() == category);
+            let ann_for_col = cand.annotations.iter().find(|a| a.category() == category);
             match ann_for_col {
                 Some(ann) => {
                     let text_chars = ann.display_text().chars().count();
@@ -770,7 +778,11 @@ fn paint_candidate_row(
             }
         }
     }
-    if let Some(bg) = row_bg { row.bg(bg) } else { row }
+    if let Some(bg) = row_bg {
+        row.bg(bg)
+    } else {
+        row
+    }
 }
 
 /// MR.2 (2026-06-30): resolve one [`lattice_completion::AnnotationSegment`]'s
@@ -922,33 +934,33 @@ fn diagnostic_glyph_and_color(
     // *style* reads from the resolved table.
     let (glyph, style) = match severity {
         lattice_lsp::DiagnosticSeverity::ERROR => (
-            diagnostic_glyph_option::<
-                lattice_host::ui::theme_options::UiDiagnosticErrorGlyph,
-            >(config, '■'),
+            diagnostic_glyph_option::<lattice_host::ui::theme_options::UiDiagnosticErrorGlyph>(
+                config, '■',
+            ),
             resolved.get(ids.diagnostic_error),
         ),
         lattice_lsp::DiagnosticSeverity::WARNING => (
-            diagnostic_glyph_option::<
-                lattice_host::ui::theme_options::UiDiagnosticWarningGlyph,
-            >(config, '▲'),
+            diagnostic_glyph_option::<lattice_host::ui::theme_options::UiDiagnosticWarningGlyph>(
+                config, '▲',
+            ),
             resolved.get(ids.diagnostic_warning),
         ),
         lattice_lsp::DiagnosticSeverity::INFORMATION => (
-            diagnostic_glyph_option::<
-                lattice_host::ui::theme_options::UiDiagnosticInfoGlyph,
-            >(config, '●'),
+            diagnostic_glyph_option::<lattice_host::ui::theme_options::UiDiagnosticInfoGlyph>(
+                config, '●',
+            ),
             resolved.get(ids.diagnostic_info),
         ),
         lattice_lsp::DiagnosticSeverity::HINT => (
-            diagnostic_glyph_option::<
-                lattice_host::ui::theme_options::UiDiagnosticHintGlyph,
-            >(config, '·'),
+            diagnostic_glyph_option::<lattice_host::ui::theme_options::UiDiagnosticHintGlyph>(
+                config, '·',
+            ),
             resolved.get(ids.diagnostic_hint),
         ),
         _ => (
-            diagnostic_glyph_option::<
-                lattice_host::ui::theme_options::UiDiagnosticInfoGlyph,
-            >(config, '●'),
+            diagnostic_glyph_option::<lattice_host::ui::theme_options::UiDiagnosticInfoGlyph>(
+                config, '●',
+            ),
             resolved.get(ids.diagnostic_info),
         ),
     };
@@ -1304,7 +1316,10 @@ impl EditorView {
         } else {
             resolved.get(ids.modeline_inactive)
         };
-        let bar_bg = bar.bg.map(|c| c.to_rgb_u32(FALLBACK_BAR)).unwrap_or(FALLBACK_BAR);
+        let bar_bg = bar
+            .bg
+            .map(|c| c.to_rgb_u32(FALLBACK_BAR))
+            .unwrap_or(FALLBACK_BAR);
 
         // ML.5: the `ui.modeline.{left,center,right}` config drives zone
         // membership + order; `resolve_layout` returns the per-zone
@@ -1381,7 +1396,10 @@ impl EditorView {
                 } else {
                     resolved.get(ids.modeline_inactive)
                 };
-                let fg = style.fg.map(|c| c.to_rgb_u32(FALLBACK_FG)).unwrap_or(FALLBACK_FG);
+                let fg = style
+                    .fg
+                    .map(|c| c.to_rgb_u32(FALLBACK_FG))
+                    .unwrap_or(FALLBACK_FG);
                 let mut span = div().text_color(rgb(fg)).child(text);
                 if style.modifiers.bold {
                     span = span.font_weight(gpui::FontWeight::BOLD);
@@ -1478,8 +1496,7 @@ impl EditorView {
         // substitute). Active pane consumes this directly; inactive
         // panes fall through to the legacy per-frame bucket (only
         // doc_highlight is painted for them and N is small).
-        let active_overlay_quads_guard =
-            rs_guard.syntax.static_overlay_quads.load();
+        let active_overlay_quads_guard = rs_guard.syntax.static_overlay_quads.load();
         // Phase 5.8.AF.5 / Slice 3c.final.B (group 1): pane tree
         // + buffer registry read through `rs_guard.panes` /
         // `rs_guard.buffers` instead of `editor.X` directly.
@@ -1509,7 +1526,10 @@ impl EditorView {
             // Bound to THIS frame's fresh pane-row budget (falls back to the
             // published `viewport_height` if absent) so the terminal never
             // overflows a height-reduced (horizontal-split) pane.
-            let fresh_rows = pane_rows.get(&pane_idx).copied().unwrap_or(pane.viewport_height);
+            let fresh_rows = pane_rows
+                .get(&pane_idx)
+                .copied()
+                .unwrap_or(pane.viewport_height);
             let inner = self.build_terminal_inner(
                 pane,
                 &rs_guard,
@@ -1672,7 +1692,8 @@ impl EditorView {
             .min(total_lines);
 
         // Stage A.1: materialise only visible lines into a small Vec<String>.
-        let mut raw_lines: Vec<String> = Vec::with_capacity(visible_end.saturating_sub(visible_start));
+        let mut raw_lines: Vec<String> =
+            Vec::with_capacity(visible_end.saturating_sub(visible_start));
         for li in visible_start..visible_end {
             raw_lines.push(snapshot.buffer.line(li as u32).unwrap_or_default());
         }
@@ -1691,7 +1712,11 @@ impl EditorView {
         let total_lines_for_gutter = total_lines.max(1);
         // PU.1b-1a: reserve line-number digits only when `number` is set;
         // gutterless buffers (help / dashboard) get 0 (matches the TUI gate).
-        let show_line_numbers = rs_guard.active_document.load().option_cache.show_line_numbers;
+        let show_line_numbers = rs_guard
+            .active_document
+            .load()
+            .option_cache
+            .show_line_numbers;
         let gutter_width = if show_line_numbers {
             total_lines_for_gutter.to_string().len()
         } else {
@@ -1739,10 +1764,7 @@ impl EditorView {
         // resolves the per-buffer list (active → live `self.folds`; other →
         // published `cells.panes` entry). Shared with the TUI peer.
         let (pane_folds, pane_foldenable) = rs_guard.folds_for_buffer(pane.buffer_id);
-        let fold_index = lattice_host::folds::FoldIndex::from_folds(
-            &pane_folds,
-            pane_foldenable,
-        );
+        let fold_index = lattice_host::folds::FoldIndex::from_folds(&pane_folds, pane_foldenable);
         // K.4.6 follow-up (2026-06-02): cache the
         // display_line_numbers map outside the per-row closure.
         // None for regular Documents (gutter shows composed-row
@@ -1776,13 +1798,12 @@ impl EditorView {
             // LspDiagnosticsData: inject when URI resolves (lsp-mode gate is
             // implicit — LspMode::gutter_decorations returns empty when service absent).
             {
-                let diagnostics = uri
-                    .and_then(|u| render_state.diagnostics.layer.diagnostics_arc(u));
+                let diagnostics =
+                    uri.and_then(|u| render_state.diagnostics.layer.diagnostics_arc(u));
                 services.register(lattice_lsp::modes::LspDiagnosticsData { diagnostics });
             }
             let deco_ctx = DecorationCtx::new(pane.buffer_id, &services);
-            let mut diff_map: std::collections::HashMap<u32, GutterDiffKind> =
-                Default::default();
+            let mut diff_map: std::collections::HashMap<u32, GutterDiffKind> = Default::default();
             let mut sev_map: std::collections::HashMap<u32, GutterSeverityLevel> =
                 Default::default();
             if let Some(active) = rs_guard.modes.map.get(&pane.buffer_id) {
@@ -1863,31 +1884,31 @@ impl EditorView {
                     }
                 });
                 // MO.4.a: read from pre-built mode-walk map.
-                let severity = severity_gutter.get(&(line_idx as u32)).copied().map(|level| {
-                    use lattice_mode::GutterSeverityLevel;
-                    // T.6.t: glyph from the hoisted `ui.diagnostic-*-glyph`
-                    // option chars; style from the resolved table.
-                    let (glyph, style) = match level {
-                        GutterSeverityLevel::Error => (
-                            glyph_error,
-                            resolved_theme.get(theme_ids.diagnostic_error),
-                        ),
-                        GutterSeverityLevel::Warning => (
-                            glyph_warning,
-                            resolved_theme.get(theme_ids.diagnostic_warning),
-                        ),
-                        GutterSeverityLevel::Info => (
-                            glyph_info,
-                            resolved_theme.get(theme_ids.diagnostic_info),
-                        ),
-                        GutterSeverityLevel::Hint => (
-                            glyph_hint,
-                            resolved_theme.get(theme_ids.diagnostic_hint),
-                        ),
-                    };
-                    let color = style.fg.map(|c| c.to_rgb_u32(0x9399b2)).unwrap_or(0x9399b2);
-                    (glyph, color)
-                });
+                let severity = severity_gutter
+                    .get(&(line_idx as u32))
+                    .copied()
+                    .map(|level| {
+                        use lattice_mode::GutterSeverityLevel;
+                        // T.6.t: glyph from the hoisted `ui.diagnostic-*-glyph`
+                        // option chars; style from the resolved table.
+                        let (glyph, style) = match level {
+                            GutterSeverityLevel::Error => {
+                                (glyph_error, resolved_theme.get(theme_ids.diagnostic_error))
+                            }
+                            GutterSeverityLevel::Warning => (
+                                glyph_warning,
+                                resolved_theme.get(theme_ids.diagnostic_warning),
+                            ),
+                            GutterSeverityLevel::Info => {
+                                (glyph_info, resolved_theme.get(theme_ids.diagnostic_info))
+                            }
+                            GutterSeverityLevel::Hint => {
+                                (glyph_hint, resolved_theme.get(theme_ids.diagnostic_hint))
+                            }
+                        };
+                        let color = style.fg.map(|c| c.to_rgb_u32(0x9399b2)).unwrap_or(0x9399b2);
+                        (glyph, color)
+                    });
                 let display_line = display_line_numbers_for_meta
                     .as_ref()
                     .and_then(|m| m.get(line_idx).copied())
@@ -2053,8 +2074,16 @@ impl EditorView {
                     .map(|h| {
                         let start_line = h.range.start.line;
                         let end_line = h.range.end.line;
-                        let start_text = if (start_line as usize) < total_lines { snapshot.buffer.line(start_line).unwrap_or_default() } else { String::new() };
-                        let end_text = if (end_line as usize) < total_lines { snapshot.buffer.line(end_line).unwrap_or_default() } else { String::new() };
+                        let start_text = if (start_line as usize) < total_lines {
+                            snapshot.buffer.line(start_line).unwrap_or_default()
+                        } else {
+                            String::new()
+                        };
+                        let end_text = if (end_line as usize) < total_lines {
+                            snapshot.buffer.line(end_line).unwrap_or_default()
+                        } else {
+                            String::new()
+                        };
                         let start_byte = lattice_lsp::position::utf16_column_to_utf8_byte(
                             &start_text,
                             h.range.start.character,
@@ -2125,7 +2154,11 @@ impl EditorView {
                     .iter()
                     .map(|h| {
                         let line_idx = h.position.line;
-                        let line_text = if (line_idx as usize) < total_lines { snapshot.buffer.line(line_idx).unwrap_or_default() } else { String::new() };
+                        let line_text = if (line_idx as usize) < total_lines {
+                            snapshot.buffer.line(line_idx).unwrap_or_default()
+                        } else {
+                            String::new()
+                        };
                         let byte = lattice_lsp::position::utf16_column_to_utf8_byte(
                             &line_text,
                             h.position.character,
@@ -2160,8 +2193,16 @@ impl EditorView {
                     .map(|d| {
                         let start_line = d.range.start.line;
                         let end_line = d.range.end.line;
-                        let start_text = if (start_line as usize) < total_lines { snapshot.buffer.line(start_line).unwrap_or_default() } else { String::new() };
-                        let end_text = if (end_line as usize) < total_lines { snapshot.buffer.line(end_line).unwrap_or_default() } else { String::new() };
+                        let start_text = if (start_line as usize) < total_lines {
+                            snapshot.buffer.line(start_line).unwrap_or_default()
+                        } else {
+                            String::new()
+                        };
+                        let end_text = if (end_line as usize) < total_lines {
+                            snapshot.buffer.line(end_line).unwrap_or_default()
+                        } else {
+                            String::new()
+                        };
                         let start_byte = lattice_lsp::position::utf16_column_to_utf8_byte(
                             &start_text,
                             d.range.start.character,
@@ -2173,13 +2214,8 @@ impl EditorView {
                         let color = d
                             .severity
                             .map(|s| {
-                                diagnostic_glyph_and_color(
-                                    &config,
-                                    &resolved_theme,
-                                    &theme_ids,
-                                    s,
-                                )
-                                .1
+                                diagnostic_glyph_and_color(&config, &resolved_theme, &theme_ids, s)
+                                    .1
                             })
                             // Unknown severity: fall back to overlay2
                             // (matches `diagnostic_glyph_and_color`).
@@ -2228,7 +2264,8 @@ impl EditorView {
                         _ => lattice_lsp::DiagnosticSeverity::HINT,
                     };
                     let color =
-                        diagnostic_glyph_and_color(&config, &resolved_theme, &theme_ids, severity).1;
+                        diagnostic_glyph_and_color(&config, &resolved_theme, &theme_ids, severity)
+                            .1;
                     crate::editor_element::InlineDiagSummary {
                         line: *line,
                         text: format!("    {}", summary.text),
@@ -2315,9 +2352,7 @@ impl EditorView {
                 .virtual_rows
                 .matrix_for_pane(pane.id)
                 .map(|cell| cell.load_full())
-                .unwrap_or_else(|| {
-                    std::sync::Arc::new(lattice_cells::VirtualRowMatrix::empty())
-                }),
+                .unwrap_or_else(|| std::sync::Arc::new(lattice_cells::VirtualRowMatrix::empty())),
             scroll: pane_scroll,
             leftcol: pane_leftcol,
             viewport_height,
@@ -2519,7 +2554,9 @@ impl EditorView {
                 } else {
                     entry_fg(rs_guard, is_dir, is_hidden, icol, theme.foreground)
                 };
-                let mut row = div().text_color(rgb(fg)).child(format!("{glyph}{name_str}"));
+                let mut row = div()
+                    .text_color(rgb(fg))
+                    .child(format!("{glyph}{name_str}"));
                 if is_cursor {
                     row = row.bg(rgb(theme.cursor_background));
                 }
@@ -2557,7 +2594,10 @@ impl EditorView {
             return div()
                 .bg(rgb(theme.background))
                 .text_color(rgb(theme.foreground))
-                .child(format!("(file-tree buffer {:?} unavailable)", pane.buffer_id))
+                .child(format!(
+                    "(file-tree buffer {:?} unavailable)",
+                    pane.buffer_id
+                ))
                 .into_any_element();
         };
         let entries: Vec<lattice_file_tree::FileTreeEntry> = rs_guard
@@ -2653,15 +2693,18 @@ impl EditorView {
         // ML.2: returns the inner content only; the per-pane modeline row
         // is built uniformly by `Self::modeline_row` at the call site (no
         // kind-specific status, `feedback_buffers_no_special_case`).
-        let snap_opt = rs_guard.buffers.registry.with_terminal(pane.buffer_id, |t| {
-            (
-                t.snapshot.load_full(),
-                t.current_match,
-                t.visual,
-                t.all_matches.clone(),
-                t.nav_cursor,
-            )
-        });
+        let snap_opt = rs_guard
+            .buffers
+            .registry
+            .with_terminal(pane.buffer_id, |t| {
+                (
+                    t.snapshot.load_full(),
+                    t.current_match,
+                    t.visual,
+                    t.all_matches.clone(),
+                    t.nav_cursor,
+                )
+            });
         let Some((snap, current_match, mut visual, all_matches, mut nav_cursor)) = snap_opt else {
             return div()
                 .bg(rgb(theme.background))
@@ -2678,7 +2721,12 @@ impl EditorView {
         // active, which is the intentional cross-pane
         // preservation behaviour.
         if is_active {
-            if rs_guard.active_document.load().terminal_nav_cursor.is_some() {
+            if rs_guard
+                .active_document
+                .load()
+                .terminal_nav_cursor
+                .is_some()
+            {
                 nav_cursor = rs_guard.active_document.load().terminal_nav_cursor;
             }
             if rs_guard.active_document.load().terminal_visual.is_some() {
@@ -2767,7 +2815,11 @@ impl EditorView {
         let term_to_rgb = move |c: TerminalColor, is_fg: bool| -> u32 {
             match c {
                 TerminalColor::Default => {
-                    if is_fg { default_fg } else { default_bg }
+                    if is_fg {
+                        default_fg
+                    } else {
+                        default_bg
+                    }
                 }
                 TerminalColor::Named(n) => {
                     let idx = match n {
@@ -2791,9 +2843,7 @@ impl EditorView {
                     ansi_palette[idx]
                 }
                 TerminalColor::Indexed(i) => indexed_to_rgb(i, &ansi_palette),
-                TerminalColor::Rgb(r, g, b) => {
-                    ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
-                }
+                TerminalColor::Rgb(r, g, b) => ((r as u32) << 16) | ((g as u32) << 8) | (b as u32),
             }
         };
         // Coalesce adjacent cells with identical (fg, bg, attrs)
@@ -2830,7 +2880,7 @@ impl EditorView {
             fg: u32,
             bg: u32,
             attrs: CellAttrs,
-            cursor: bool, // true = cursor cell (forces its own run)
+            cursor: bool,    // true = cursor cell (forces its own run)
             highlight: bool, // T3.b.3: search-match cell
         }
         // T3.b.3: translate the current_match's alacritty grid
@@ -2872,18 +2922,11 @@ impl EditorView {
             // cmdline siblings off-screen when terminal was one of
             // a vsplit pair. `.flex_shrink_0()` prevents flex from
             // squishing the row below `row_px`.
-            let mut row_div = div()
-                .flex()
-                .flex_row()
-                .h(px(row_px))
-                .flex_shrink_0();
+            let mut row_div = div().flex().flex_row().h(px(row_px)).flex_shrink_0();
             let mut run_text = String::with_capacity(snap.cols as usize);
             let mut run_style: Option<CellStyle> = None;
             let flush =
-                |row_div: gpui::Div,
-                 text: &mut String,
-                 style: Option<CellStyle>|
-                 -> gpui::Div {
+                |row_div: gpui::Div, text: &mut String, style: Option<CellStyle>| -> gpui::Div {
                     if text.is_empty() {
                         return row_div;
                     }
@@ -2960,9 +3003,7 @@ impl EditorView {
                             return false;
                         }
                         let c_start = h.column;
-                        let c_end = h
-                            .column
-                            .saturating_add(h.len.min(u16::MAX as u32) as u16);
+                        let c_end = h.column.saturating_add(h.len.min(u16::MAX as u32) as u16);
                         c >= c_start && c < c_end
                     })
                 };
@@ -2979,10 +3020,7 @@ impl EditorView {
                             Vk::Block => {
                                 let (lo, hi) = v.line_range();
                                 let (lo_c, hi_c) = v.block_col_range();
-                                cell_line >= lo
-                                    && cell_line <= hi
-                                    && c >= lo_c
-                                    && c <= hi_c
+                                cell_line >= lo && cell_line <= hi && c >= lo_c && c <= hi_c
                             }
                             Vk::Char => {
                                 let ((sl, sc), (el, ec)) = v.char_endpoints();
@@ -3092,12 +3130,9 @@ impl Render for EditorView {
         //   3. The popup container's `.min_w()/.max_w()` +
         //      `.min_h()/.max_h()` lock so width never jumps when
         //      a long line scrolls into view.
-        let (popup_w_px, popup_h_px) = popup_outer_dims_px(
-            f32::from(viewport_px.width),
-            f32::from(viewport_px.height),
-        );
-        let popup_inner_rows =
-            popup_inner_height_rows(popup_h_px, rem, estimated_row_px);
+        let (popup_w_px, popup_h_px) =
+            popup_outer_dims_px(f32::from(viewport_px.width), f32::from(viewport_px.height));
+        let popup_inner_rows = popup_inner_height_rows(popup_h_px, rem, estimated_row_px);
         // 2026-05-27: lock the body div's height too. With only the
         // outer popup container size locked, the body's flex-grown
         // content could (under-estimated chrome) render more rows
@@ -3108,8 +3143,7 @@ impl Render for EditorView {
         // `popup_inner_rows × row_px` so the row count is the
         // single source of truth for both painting and cursor
         // clamping.
-        let popup_body_h_px =
-            popup_body_h_px(popup_h_px, rem, estimated_row_px);
+        let popup_body_h_px = popup_body_h_px(popup_h_px, rem, estimated_row_px);
         // Issue #17 (2026-05-22): the previous calc subtracted
         // exactly 1 row for the modeline/cmdline bottom strip and
         // ignored every other piece of non-buffer chrome — `.p_3()`
@@ -3140,8 +3174,7 @@ impl Render for EditorView {
         let pane_status_row_px = default_row_px; // status text line
         let global_bottom_padding_px = rem * 0.25 * 2.0; // .py_1() = 0.5rem
         let global_bottom_row_px = default_row_px; // cmdline-only content (Option-A: modal moved to per-pane)
-        let per_leaf_v_chrome_px =
-            pane_padding_v_px + pane_status_padding_px + pane_status_row_px;
+        let per_leaf_v_chrome_px = pane_padding_v_px + pane_status_padding_px + pane_status_row_px;
         let per_leaf_h_chrome_px = pane_padding_h_px;
         let global_chrome_v_px = global_bottom_padding_px + global_bottom_row_px;
         // Slice 3c.final.B (group 3): picker read via published
@@ -3213,8 +3246,8 @@ impl Render for EditorView {
                     .width,
             )
         };
-        let strip_rows_px = (picker_strip_rows + cmdline_completion_strip_rows) as f32
-            * estimated_row_px;
+        let strip_rows_px =
+            (picker_strip_rows + cmdline_completion_strip_rows) as f32 * estimated_row_px;
         // Issue #29 (2026-05-22): tabline claims one row at the
         // top when visible — subtract from available so per-pane
         // geometries see the correct buffer height.
@@ -3224,11 +3257,9 @@ impl Render for EditorView {
         } else {
             0.0
         };
-        let avail_h_px = (f32::from(viewport_px.height)
-            - global_chrome_v_px
-            - strip_rows_px
-            - tabline_h_px)
-            .max(0.0);
+        let avail_h_px =
+            (f32::from(viewport_px.height) - global_chrome_v_px - strip_rows_px - tabline_h_px)
+                .max(0.0);
         let avail_w_px = f32::from(viewport_px.width);
         let pane_tree_root = self.app.render_state.load().panes.tree.root().clone();
         let mut pane_geometries: Vec<(usize, u32, u32)> = Vec::new();
@@ -3320,8 +3351,10 @@ impl Render for EditorView {
         // on `Some` — the synthetic pane simply stops being built host-side).
         let popup_dims = {
             let rs = self.app.render_state.load();
-            let in_pane_help =
-                matches!(rs.panes.tree.active().buffer, lattice_core::BufferKind::Help);
+            let in_pane_help = matches!(
+                rs.panes.tree.active().buffer,
+                lattice_core::BufferKind::Help
+            );
             if rs.popup.is_open() && !in_pane_help {
                 Some((
                     popup_inner_rows,
@@ -3599,7 +3632,8 @@ impl Render for EditorView {
                             abs_idx == ic.selected,
                             &theme,
                             false,
-                            display_col_chars, &columns,
+                            display_col_chars,
+                            &columns,
                             &resolved_theme,
                             &theme_ids,
                         )
@@ -3649,11 +3683,7 @@ impl Render for EditorView {
                             .text_color(rgb(theme.popup_border))
                             .child(nav_hint),
                     )
-                    .child(
-                        div()
-                            .text_color(rgb(theme.popup_border))
-                            .child(footer_text),
-                    )
+                    .child(div().text_color(rgb(theme.popup_border)).child(footer_text))
             });
 
         // PU.5d: completion-docs side popup. GPUI had no docs popup before
@@ -3682,8 +3712,7 @@ impl Render for EditorView {
                         .registry
                         .document_handle(docs_id)
                         .map(|h| h.snapshot());
-                    let text_version =
-                        content_snap.as_ref().map(|s| s.text_version).unwrap_or(0);
+                    let text_version = content_snap.as_ref().map(|s| s.text_version).unwrap_or(0);
                     let body_string = content_snap
                         .as_ref()
                         .map(|s| s.buffer.as_string())
@@ -3720,8 +3749,8 @@ impl Render for EditorView {
                         // signcolumn=no ⇒ empty gutter (text-only walk).
                         gutter: Vec::new(),
                         gutter_width: 0,
-                content_left_pad: 0,
-                show_line_numbers: false,
+                        content_left_pad: 0,
+                        show_line_numbers: false,
                         sign_column: false,
                         // Docs popup is never focused — no cursor / overlays.
                         cursor: None,
@@ -3733,9 +3762,7 @@ impl Render for EditorView {
                         substitute_matches: Vec::new(),
                         doc_highlights: Vec::new(),
                         worker_static_overlay_quads: None,
-                        virtual_rows: std::sync::Arc::new(
-                            lattice_cells::VirtualRowMatrix::empty(),
-                        ),
+                        virtual_rows: std::sync::Arc::new(lattice_cells::VirtualRowMatrix::empty()),
                         diff_tint_per_row: Vec::new(),
                         cursorline_bg: 0,
                         cursorline_enabled: false,
@@ -3751,8 +3778,7 @@ impl Render for EditorView {
                         glyph_resolver: self.glyph_resolver.clone(),
                     };
                     let docs_body_h_px = inner_rows as f32 * estimated_row_px;
-                    let docs_h_px =
-                        popup_chrome_v_px(rem, estimated_row_px) + docs_body_h_px;
+                    let docs_h_px = popup_chrome_v_px(rem, estimated_row_px) + docs_body_h_px;
                     Some(
                         div()
                             .flex()
@@ -3770,19 +3796,15 @@ impl Render for EditorView {
                             .child(
                                 // Same header treatment as the main popup:
                                 // bold, larger title; no `───` separator.
-                                div()
-                                    .flex()
-                                    .flex_row()
-                                    .pb_2()
-                                    .child(
-                                        div()
-                                            .h(px(estimated_row_px * POPUP_TITLE_SCALE))
-                                            .flex_shrink_0()
-                                            .text_size(px(font_size_px * POPUP_TITLE_SCALE))
-                                            .font_weight(gpui::FontWeight::BOLD)
-                                            .text_color(rgb(theme.popup_title))
-                                            .child(" docs ".to_string()),
-                                    ),
+                                div().flex().flex_row().pb_2().child(
+                                    div()
+                                        .h(px(estimated_row_px * POPUP_TITLE_SCALE))
+                                        .flex_shrink_0()
+                                        .text_size(px(font_size_px * POPUP_TITLE_SCALE))
+                                        .font_weight(gpui::FontWeight::BOLD)
+                                        .text_color(rgb(theme.popup_title))
+                                        .child(" docs ".to_string()),
+                                ),
                             )
                             .child(
                                 div()
@@ -3812,114 +3834,114 @@ impl Render for EditorView {
         // recompute could subtract the strip's rows.
         // Slice 3c.final.B (group 3): picker via published
         // substate; reuse `picker_substate` bound at top of render.
-        let picker_overlay: Option<gpui::Div> = (!picker_use_minibuffer)
-            .then(|| picker_substate.state.as_deref())
-            .flatten()
-            .map(|picker| {
-            let max_visible = 30usize;
-            let total = picker.candidates.len();
-            let window_start = picker
-                .selected
-                .saturating_sub(max_visible / 2)
-                .min(total.saturating_sub(max_visible.min(total)));
-            let window_end = (window_start + max_visible).min(total);
-            // 5.8.AB.1: paint matched bytes in cursor_background
-            // so the user can see *why* each row matched their
-            // query. The TUI peer can't easily render styled
-            // per-character spans mid-row; GPUI walks the byte
-            // sequence and emits one cell-div per char with the
-            // matched ones tinted. `match_ranges` is half-open
-            // Slice 3c.unify.gpui-annotation-render: rows now flow
-            // through the shared `paint_candidate_row` helper that
-            // also paints the right-aligned annotations column.
-            // `padded: false` — the overlay container below
-            // applies its own `.p_2()`.
-            let display_col_chars = picker.candidates[window_start..window_end]
-                .iter()
-                .map(|c| c.raw.display.chars().count())
-                .max()
-                .unwrap_or(0);
-            // MARG.5: per-category column layout — see the
-            // first call site upstream for full rationale.
-            let columns = lattice_completion::AnnotationColumns::from_visible(
-                picker.candidates[window_start..window_end].iter(),
-            );
-            let visible_candidates: Vec<gpui::Div> = picker.candidates[window_start..window_end]
-                .iter()
-                .enumerate()
-                .map(|(i, cand)| {
-                    let abs_idx = window_start + i;
-                    paint_candidate_row(
-                        cand,
-                        abs_idx == picker.selected,
-                        &theme,
-                        false,
-                        display_col_chars, &columns,
-                        &resolved_theme,
-                        &theme_ids,
-                    )
-                })
-                .collect();
-            // Width sizing: file pickers carry long paths (often
-            // 60+ chars) and `:picker grep` adds a path:line
-            // prefix column. The previous 720px cap clipped both.
-            // Targeting ~80% of typical window width with a
-            // generous min_w keeps annotation columns (kind /
-            // detail) visible without dominating the screen on
-            // ultrawides.
-            div()
-                .flex()
-                .flex_col()
-                .min_w(px(720.0))
-                .w(px(1200.0))
-                .max_w(px(1400.0))
-                .max_h(px(640.0))
-                .p_4()
-                .bg(rgb(theme.popup_background))
-                .text_color(rgb(theme.foreground))
-                .border_2()
-                .border_color(rgb(theme.popup_border))
-                .child(
-                    div()
-                        .text_color(rgb(theme.popup_border))
-                        .pb_1()
-                        .child(format!(
-                            " {} ({} / {}){} ",
-                            picker.title,
-                            if total == 0 { 0 } else { picker.selected + 1 },
-                            total,
-                            if picker.loading { " searching…" } else { "" },
-                        )),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .pb_2()
-                        .child(div().text_color(rgb(theme.cursor_background)).child("> "))
-                        .child(div().child(picker.query.clone()))
-                        .child(
-                            div()
-                                .border_l_2()
-                                .border_color(rgb(theme.cursor_background))
-                                .child(" "),
-                        ),
-                )
-                .child(div().child("───────────────".to_string()))
-                .child(
+        let picker_overlay: Option<gpui::Div> =
+            (!picker_use_minibuffer)
+                .then(|| picker_substate.state.as_deref())
+                .flatten()
+                .map(|picker| {
+                    let max_visible = 30usize;
+                    let total = picker.candidates.len();
+                    let window_start = picker
+                        .selected
+                        .saturating_sub(max_visible / 2)
+                        .min(total.saturating_sub(max_visible.min(total)));
+                    let window_end = (window_start + max_visible).min(total);
+                    // 5.8.AB.1: paint matched bytes in cursor_background
+                    // so the user can see *why* each row matched their
+                    // query. The TUI peer can't easily render styled
+                    // per-character spans mid-row; GPUI walks the byte
+                    // sequence and emits one cell-div per char with the
+                    // matched ones tinted. `match_ranges` is half-open
+                    // Slice 3c.unify.gpui-annotation-render: rows now flow
+                    // through the shared `paint_candidate_row` helper that
+                    // also paints the right-aligned annotations column.
+                    // `padded: false` — the overlay container below
+                    // applies its own `.p_2()`.
+                    let display_col_chars = picker.candidates[window_start..window_end]
+                        .iter()
+                        .map(|c| c.raw.display.chars().count())
+                        .max()
+                        .unwrap_or(0);
+                    // MARG.5: per-category column layout — see the
+                    // first call site upstream for full rationale.
+                    let columns = lattice_completion::AnnotationColumns::from_visible(
+                        picker.candidates[window_start..window_end].iter(),
+                    );
+                    let visible_candidates: Vec<gpui::Div> = picker.candidates
+                        [window_start..window_end]
+                        .iter()
+                        .enumerate()
+                        .map(|(i, cand)| {
+                            let abs_idx = window_start + i;
+                            paint_candidate_row(
+                                cand,
+                                abs_idx == picker.selected,
+                                &theme,
+                                false,
+                                display_col_chars,
+                                &columns,
+                                &resolved_theme,
+                                &theme_ids,
+                            )
+                        })
+                        .collect();
+                    // Width sizing: file pickers carry long paths (often
+                    // 60+ chars) and `:picker grep` adds a path:line
+                    // prefix column. The previous 720px cap clipped both.
+                    // Targeting ~80% of typical window width with a
+                    // generous min_w keeps annotation columns (kind /
+                    // detail) visible without dominating the screen on
+                    // ultrawides.
                     div()
                         .flex()
                         .flex_col()
-                        .overflow_hidden()
-                        .children(visible_candidates),
-                )
-                .child(
-                    div()
-                        .pt_2()
-                        .text_color(rgb(theme.popup_border))
-                        .child("[ <C-n>/<C-p> navigate · <CR> accept · <Esc> cancel ]".to_string()),
-                )
-        });
+                        .min_w(px(720.0))
+                        .w(px(1200.0))
+                        .max_w(px(1400.0))
+                        .max_h(px(640.0))
+                        .p_4()
+                        .bg(rgb(theme.popup_background))
+                        .text_color(rgb(theme.foreground))
+                        .border_2()
+                        .border_color(rgb(theme.popup_border))
+                        .child(
+                            div()
+                                .text_color(rgb(theme.popup_border))
+                                .pb_1()
+                                .child(format!(
+                                    " {} ({} / {}){} ",
+                                    picker.title,
+                                    if total == 0 { 0 } else { picker.selected + 1 },
+                                    total,
+                                    if picker.loading { " searching…" } else { "" },
+                                )),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .pb_2()
+                                .child(div().text_color(rgb(theme.cursor_background)).child("> "))
+                                .child(div().child(picker.query.clone()))
+                                .child(
+                                    div()
+                                        .border_l_2()
+                                        .border_color(rgb(theme.cursor_background))
+                                        .child(" "),
+                                ),
+                        )
+                        .child(div().child("───────────────".to_string()))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .overflow_hidden()
+                                .children(visible_candidates),
+                        )
+                        .child(div().pt_2().text_color(rgb(theme.popup_border)).child(
+                            "[ <C-n>/<C-p> navigate · <CR> accept · <Esc> cancel ]".to_string(),
+                        ))
+                });
 
         // Vertico-style minibuffer strip (matches TUI when
         // `picker.display = "minibuffer"`). Two rows below the
@@ -3949,10 +3971,12 @@ impl Render for EditorView {
                 // strip has no surrounding container with its own
                 // horizontal padding.
                 let cand_rows: Vec<gpui::Div> = if total == 0 {
-                    vec![div()
-                        .px_2()
-                        .text_color(rgb(theme.popup_border))
-                        .child("  (no matches)".to_string())]
+                    vec![
+                        div()
+                            .px_2()
+                            .text_color(rgb(theme.popup_border))
+                            .child("  (no matches)".to_string()),
+                    ]
                 } else {
                     let display_col_chars = picker.candidates[scroll..window_end]
                         .iter()
@@ -3974,7 +3998,8 @@ impl Render for EditorView {
                                 abs_idx == picker.selected,
                                 &theme,
                                 true,
-                                display_col_chars, &columns,
+                                display_col_chars,
+                                &columns,
                                 &resolved_theme,
                                 &theme_ids,
                             )
@@ -4006,23 +4031,15 @@ impl Render for EditorView {
                             .border_color(rgb(theme.cursor_background))
                             .child(" "),
                     )
-                    .child(
-                        div()
-                            .text_color(rgb(theme.popup_border))
-                            .child(count),
-                    );
+                    .child(div().text_color(rgb(theme.popup_border)).child(count));
 
-                div()
-                    .flex()
-                    .flex_col()
-                    .child(prompt_row)
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .bg(rgb(theme.background))
-                            .children(cand_rows),
-                    )
+                div().flex().flex_col().child(prompt_row).child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .bg(rgb(theme.background))
+                        .children(cand_rows),
+                )
             });
 
         // Slice 3c.gpui-cmdline-completion: cmdline-completion
@@ -4072,7 +4089,8 @@ impl Render for EditorView {
                             abs_idx == state.selected,
                             &theme,
                             true,
-                            display_col_chars, &columns,
+                            display_col_chars,
+                            &columns,
                             &resolved_theme,
                             &theme_ids,
                         )
@@ -4124,7 +4142,8 @@ impl Render for EditorView {
                             abs_idx == state.selected,
                             &theme,
                             false,
-                            display_col_chars, &columns,
+                            display_col_chars,
+                            &columns,
                             &resolved_theme,
                             &theme_ids,
                         )
@@ -4196,7 +4215,11 @@ impl Render for EditorView {
             // when building the POPUP matrix (`build_cells_panes`): State B →
             // live `ad.scroll`; State A → the published popup view scroll.
             // Matching it keeps the matrix rows and the painted window aligned.
-            let popup_scroll: u32 = if popup_focused { ad.scroll } else { popup_substate.scroll };
+            let popup_scroll: u32 = if popup_focused {
+                ad.scroll
+            } else {
+                popup_substate.scroll
+            };
             // `EditorElement.text` carries the VISIBLE WINDOW from
             // `scroll` (the gutter-less walk indexes it by
             // `line_idx - scroll`); matrix lookups stay keyed by absolute
@@ -4400,9 +4423,8 @@ impl Render for EditorView {
                 cell = cell.child(label).on_mouse_down(
                     gpui::MouseButton::Left,
                     cx.listener(move |this, _event, _window, cx| {
-                        this.app.dispatch_action(
-                            lattice_host::action::Action::GoToTab(target_n),
-                        );
+                        this.app
+                            .dispatch_action(lattice_host::action::Action::GoToTab(target_n));
                         cx.notify();
                     }),
                 );
@@ -4569,8 +4591,10 @@ impl Render for EditorView {
                     // Use doc_scroll_at_anchor (fixed at popup-open time)
                     // rather than ad.scroll: in State B, ad.scroll is the
                     // POPUP's scroll, causing a frame-jump on second K.
-                    let cursor_screen_row =
-                        anchor.line.saturating_sub(popup_substate.doc_scroll_at_anchor) as f32;
+                    let cursor_screen_row = anchor
+                        .line
+                        .saturating_sub(popup_substate.doc_scroll_at_anchor)
+                        as f32;
                     let cursor_byte_col = anchor.byte as f32;
                     // 2026-05-27: the popup is positioned relative
                     // to the WINDOW (root container's top-left),
@@ -4583,8 +4607,7 @@ impl Render for EditorView {
                     let pane_pad_v = rem * 0.75;
                     let pane_pad_h = rem * 0.75;
                     let top_origin_px = tabline_h_px + pane_pad_v;
-                    let cursor_row_top =
-                        top_origin_px + cursor_screen_row * estimated_row_px;
+                    let cursor_row_top = top_origin_px + cursor_screen_row * estimated_row_px;
                     // Prefer placing the popup right below the
                     // cursor row; flip above when the locked popup
                     // height wouldn't fit below; if neither side
@@ -5027,18 +5050,30 @@ mod pane_geometry_split_tests {
             let avail_h = avail_h_int as f32;
             let mut correct_out = Vec::new();
             collect_pane_geometries(
-                &tree, avail_w, avail_h, correct_chrome, 0.0, row_px, col_px, &mut correct_out,
+                &tree,
+                avail_w,
+                avail_h,
+                correct_chrome,
+                0.0,
+                row_px,
+                col_px,
+                &mut correct_out,
             );
             let mut wrong_out = Vec::new();
             collect_pane_geometries(
-                &tree, avail_w, avail_h, wrong_chrome, 0.0, row_px, col_px, &mut wrong_out,
+                &tree,
+                avail_w,
+                avail_h,
+                wrong_chrome,
+                0.0,
+                row_px,
+                col_px,
+                &mut wrong_out,
             );
             correct_out.sort_by_key(|(idx, _, _)| *idx);
             wrong_out.sort_by_key(|(idx, _, _)| *idx);
 
-            for ((idx, correct_rows, _), (_, wrong_rows, _)) in
-                correct_out.iter().zip(&wrong_out)
-            {
+            for ((idx, correct_rows, _), (_, wrong_rows, _)) in correct_out.iter().zip(&wrong_out) {
                 assert!(
                     wrong_rows >= correct_rows,
                     "leaf {idx} at avail_h={avail_h}: the under-reserving estimate must \
@@ -5100,15 +5135,24 @@ mod modeline_tests {
         use lattice_host::ui::theme::{ElementName, StyleSpec, ThemeRegistry as _};
         let reg = InMemoryThemeRegistry::with_defaults();
         let ids = BuiltinElementIds::capture(&reg);
-        let before =
-            super::styled_segment_color_rgb("completion.annotation.perm.write", &reg.resolved(), &ids);
+        let before = super::styled_segment_color_rgb(
+            "completion.annotation.perm.write",
+            &reg.resolved(),
+            &ids,
+        );
         reg.set_override(
             ElementName::from_static("completion.annotation.perm.write"),
             StyleSpec::new().fg("green"),
         );
-        let after =
-            super::styled_segment_color_rgb("completion.annotation.perm.write", &reg.resolved(), &ids);
-        assert_ne!(before, after, "styled marginalia tracks the active theme on GPUI");
+        let after = super::styled_segment_color_rgb(
+            "completion.annotation.perm.write",
+            &reg.resolved(),
+            &ids,
+        );
+        assert_ne!(
+            before, after,
+            "styled marginalia tracks the active theme on GPUI"
+        );
     }
 
     /// PH.1: GPUI per-char preview composition — match-highlight
@@ -5186,7 +5230,11 @@ mod modeline_tests {
         let ids = BuiltinElementIds::capture(&reg);
 
         let mode = resolved.get(ids.modeline_mode);
-        assert_eq!(mode.fg.unwrap().to_rgb_u32(0), 0x0089_b4fa, "mode fg = blue");
+        assert_eq!(
+            mode.fg.unwrap().to_rgb_u32(0),
+            0x0089_b4fa,
+            "mode fg = blue"
+        );
         assert!(mode.modifiers.bold, "mode is bold");
         assert_eq!(
             resolved.get(ids.modeline_active).bg.unwrap().to_rgb_u32(0),
@@ -5194,8 +5242,16 @@ mod modeline_tests {
             "active bar bg = surface1"
         );
         let inactive = resolved.get(ids.modeline_inactive);
-        assert_eq!(inactive.bg.unwrap().to_rgb_u32(0), 0x0031_3244, "inactive bar = surface0");
-        assert_eq!(inactive.fg.unwrap().to_rgb_u32(0), 0x006c_7086, "inactive fg = overlay");
+        assert_eq!(
+            inactive.bg.unwrap().to_rgb_u32(0),
+            0x0031_3244,
+            "inactive bar = surface0"
+        );
+        assert_eq!(
+            inactive.fg.unwrap().to_rgb_u32(0),
+            0x006c_7086,
+            "inactive fg = overlay"
+        );
     }
 
     /// The bottom global row shows the in-progress `:` minibuffer in
@@ -5218,8 +5274,7 @@ mod modeline_tests {
         let modeline = ModelineRenderState::default();
 
         // Normal mode → the echo (this is what GPUI used to drop).
-        let (row, level) =
-            super::bottom_row_content(ModalState::Normal, &modeline, &echo);
+        let (row, level) = super::bottom_row_content(ModalState::Normal, &modeline, &echo);
         assert_eq!(row, "wrap=false");
         assert!(matches!(level, Some(EchoLevel::Info)));
 
@@ -5279,8 +5334,14 @@ mod modeline_tests {
     #[test]
     fn icon_color_to_rgb_maps_named_palette_and_passes_rgb_through() {
         use lattice_core::ui::icons::IconColor;
-        assert_eq!(super::icon_color_to_rgb(IconColor::Rgb(0xDEA584), 0x111111), 0xDEA584);
-        assert_eq!(super::icon_color_to_rgb(IconColor::Reset, 0x123456), 0x123456);
+        assert_eq!(
+            super::icon_color_to_rgb(IconColor::Rgb(0xDEA584), 0x111111),
+            0xDEA584
+        );
+        assert_eq!(
+            super::icon_color_to_rgb(IconColor::Reset, 0x123456),
+            0x123456
+        );
         assert_eq!(super::icon_color_to_rgb(IconColor::Blue, 0), 0x0089_b4fa);
         assert_eq!(super::icon_color_to_rgb(IconColor::Green, 0), 0x00a6_e3a1);
         assert_eq!(super::icon_color_to_rgb(IconColor::Yellow, 0), 0x00f9_e2af);
@@ -5303,7 +5364,10 @@ mod modeline_tests {
         assert!(dir.modifiers.bold, "file_tree.dir is bold");
 
         let hidden = resolved.get(ids.file_tree_hidden);
-        assert!(hidden.fg.is_some(), "file_tree.hidden must carry a themed fg");
+        assert!(
+            hidden.fg.is_some(),
+            "file_tree.hidden must carry a themed fg"
+        );
         assert_ne!(
             dir.fg.unwrap().to_rgb_u32(0),
             hidden.fg.unwrap().to_rgb_u32(0),

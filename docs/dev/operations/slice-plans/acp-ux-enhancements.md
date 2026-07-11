@@ -394,38 +394,29 @@ Green: `lattice-ai` 156 passed. `resolve_permission` now awaits its consumer (th
 | `crates/lattice-ai/src/acp/commands.rs` | `:ai-permission` opens the menu (returns `Effect::OpenPopup`). |
 | `crates/lattice-ai/src/acp/install.rs` | Register the new mode. |
 
-Sequenced into three execution-ready steps (all decisions confirmed 2026-07-12):
+Sequenced into steps (all decisions confirmed 2026-07-12):
 
-**PU-B.2b-i — content-agnostic popup render (TUI).** *Decision: degate the
-renderer (confirmed), NOT ride `BufferData::Help` — the standing rule forbids
-renderer kind-gates; this is the genuinely-better long-term design and completes
-PU-A's stated content-agnostic-popup goal.* The TUI popup draw returns `None`
-unless the buffer is `BufferData::Help` (`BufferRegistry::help_content_view`,
-`buffer_registry.rs:812`), reached via `popup_help()`. GPUI is **already agnostic**
-(`window.rs` gates the overlay on `popup_substate.buffer_id.map(..)`, content/title/
-line-count from the registry Document — zero GPUI change). Degate the **3 TUI
-`popup_help()` sites** in `render.rs`:
-  - `popup_feedback_inner_dims` (`:1886`) — `help.line_count()` → registry handle
-    snapshot `.buffer.line_count()`.
-  - `draw_help_overlay` (`:1900` gate, `:1914` line_count, `:1973` `help.scroll`) —
-    gate on `app.popup().buffer_id`; line_count from the handle snapshot; scroll
-    from `app.popup().scroll`.
-  - the third site (`:2827`).
-  Provably invisible: `HelpBuffer::line_count()` == `self.content.line_count()` ==
-  `Buffer::line_count()`, and content already composes through the shared document
-  path (`document_handle(popup_id)`, not Help storage). Verify with a help-popup
-  render snapshot test (pixel-identical) + the full `lattice-ui-tui` suite.
+**PU-B.2b-i — content-agnostic popup render — CANCELLED.** Investigation revealed
+`BufferKind::Help` is not just a *render* gate but the whole popup *focus + input*
+model: `active_buffer_id()` (`dispatch.rs:5948`) special-cases `Help → popup_buffer`,
+keymap selection reads `active_buffer_id()` (`:27151`), so a `Document`-kind popup
+would never receive its mode's keys — the coupling spans ~12 `dispatch.rs` sites +
+both renderers. *Decision (confirmed): ride `BufferKind::Help` with a distinct major
+mode, NOT generalise the model now.* `BufferKind::Help` is de-facto "the popup-surface
+kind" (help + hover + menus); the KIND names the surface, the MAJOR MODE names
+behaviour. A future slice may rename `Help → Popup`.
 
-**PU-B.2b-ii — name-based `Effect::OpenPopup`.** *Reshape (confirmed) from the
-PU-B.1 `{ buffer: BufferId }` to `{ name, mode_id, placement, focus }`* — the
-emitters (`:ai-permission` ex-command, the B.3 tick callback) have no services to
-supply/ensure a `BufferId`; a data-only name keeps the effect vocabulary the host
-boundary (`feedback_effect_vocabulary_is_host_boundary`, like `OpenSyntheticBuffer`).
-Host apply ensures a plain synthetic Document buffer (`ensure_named_synthetic_document`,
-idempotent, returns id) with `mode_id` as major, then `open_popup_buffer(id, ..)`.
-Update `effect.rs`, `wit/types.wit` (`open-popup-payload` → name/mode-id/placement/
-focus), `boundary_effect.rs` + round-trip, both renderer arms, and the
-`open_popup_effect_routes_to_renderer_tail` test.
+**PU-B.2b-ii — name-based `Effect::OpenPopup` + popup-buffer primitive ✅.** Reshaped
+`Effect::OpenPopup { buffer: BufferId }` → `{ name, mode_id, placement, focus }`
+(data-only; emitters have no services to supply an id — keeps the effect vocabulary
+the host boundary, like `OpenSyntheticBuffer`). New `Editor::open_popup_named` ensures
+an idempotent-by-name popup buffer via `ensure_named_popup_buffer` (a new
+`SyntheticDocVariant::Help` → `BufferData::Help`, so the popup renderer draws it, with
+`mode_id` as major so its keymap owns the buffer), then `open_popup_buffer`. Dismiss
+tears the buffer down (`dismiss_stale_popup_registry`), so each open is fresh and the
+mode re-projects on activation. Updated `effect.rs`, `wit/types.wit`, `boundary_effect.rs`
++ round-trip, both renderer arms (`open_popup_named`). Tests: `open_popup_named_*` +
+routing; grammar 212, host lib + boundary 13 + GPUI green.
 
 **PU-B.2b-iii — the mode.** `permission_mode.rs` (`ai-permission-mode`, Major):
 `on_activate` reads the oldest `Pending` permission from `ConversationStore` (turns/

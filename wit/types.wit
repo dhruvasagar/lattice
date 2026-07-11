@@ -354,10 +354,11 @@ interface types {
     enum popup-placement { centered, cursor-anchored }
     /// Mirrors `lattice_core::ui::popup::PopupFocus`.
     enum popup-focus { steal, passive }
-    /// Payload for the `open-popup` effect (popup-api.md §4.3).
+    /// Payload for the `open-popup` effect (popup-api.md §4.3). Name-based:
+    /// the host ensures a popup buffer named `name` under major mode `mode-id`.
     record open-popup-payload {
-        /// The popup `BufferId` (its inner `u32`).
-        buffer: u32,
+        name: string,
+        mode-id: string,
         placement: popup-placement,
         focus: popup-focus,
     }

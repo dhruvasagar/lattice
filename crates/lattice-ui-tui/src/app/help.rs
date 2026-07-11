@@ -138,19 +138,23 @@ impl App {
         self.dismiss_popup();
     }
 
-    /// Show an already-registered `buffer` in a popup overlay — the
-    /// content-agnostic `Effect::OpenPopup` arm (popup-api.md §4.3). Delegates
-    /// to the host primitive [`lattice_host::dispatch::Editor::open_popup_buffer`]
-    /// and drains any renderer signals, mirroring `do_open_hover`. The GPUI peer
-    /// reaches the same primitive via `mutate_editor`.
-    pub(super) fn open_popup_buffer(
+    /// Show a popup overlay for the (host-ensured) buffer named `name` under
+    /// major mode `mode_id` — the content-agnostic `Effect::OpenPopup` arm
+    /// (popup-api.md §4.3). Delegates to the host primitive
+    /// [`lattice_host::dispatch::Editor::open_popup_named`] and drains any
+    /// renderer signals, mirroring `do_open_hover`. The GPUI peer reaches the
+    /// same primitive via `mutate_editor`.
+    pub(super) fn open_popup_named(
         &mut self,
-        buffer: lattice_core::BufferId,
+        name: &str,
+        mode_id: &str,
         placement: lattice_core::ui::popup::PopupPlacement,
         focus: lattice_core::ui::popup::PopupFocus,
     ) {
+        let name = name.to_string();
+        let mode_id = mode_id.to_string();
         let signals =
-            self.mutate_editor_with(move |e| e.open_popup_buffer(buffer, placement, focus));
+            self.mutate_editor_with(move |e| e.open_popup_named(&name, &mode_id, placement, focus));
         for s in signals {
             self.handle_renderer_signal(s);
         }

@@ -1301,7 +1301,8 @@ impl GpuiApp {
                 self.dismiss_popup();
             }
             Effect::OpenPopup {
-                buffer,
+                name,
+                mode_id,
                 placement,
                 focus,
             } => {
@@ -1309,7 +1310,7 @@ impl GpuiApp {
                 // the host primitive, same as the TUI peer. Signals are always
                 // empty today, so the return is discarded.
                 self.mutate_editor(move |e| {
-                    e.open_popup_buffer(buffer, placement, focus);
+                    e.open_popup_named(&name, &mode_id, placement, focus);
                 });
             }
             Effect::Tutor { lesson } => {

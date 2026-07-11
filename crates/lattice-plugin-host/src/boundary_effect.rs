@@ -629,11 +629,13 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
         NativeEffect::OpenHover { markdown } => WitEffect::OpenHover(markdown.clone()),
         NativeEffect::DismissPopup => WitEffect::DismissPopup,
         NativeEffect::OpenPopup {
-            buffer,
+            name,
+            mode_id,
             placement,
             focus,
         } => WitEffect::OpenPopup(WitOpenPopupPayload {
-            buffer: buffer.0,
+            name: name.clone(),
+            mode_id: mode_id.clone(),
             placement: match placement {
                 NativePopupPlacement::Centered => WitPopupPlacement::Centered,
                 NativePopupPlacement::CursorAnchored => WitPopupPlacement::CursorAnchored,
@@ -849,7 +851,8 @@ fn effect_from_wit(w: WitEffect) -> Result<NativeEffect, String> {
         WitEffect::OpenHover(markdown) => NativeEffect::OpenHover { markdown },
         WitEffect::DismissPopup => NativeEffect::DismissPopup,
         WitEffect::OpenPopup(p) => NativeEffect::OpenPopup {
-            buffer: BufferId(p.buffer),
+            name: p.name,
+            mode_id: p.mode_id,
             placement: match p.placement {
                 WitPopupPlacement::Centered => NativePopupPlacement::Centered,
                 WitPopupPlacement::CursorAnchored => NativePopupPlacement::CursorAnchored,
@@ -1319,12 +1322,14 @@ mod tests {
             NativeEffect::ListOptions,
             NativeEffect::DismissPopup,
             NativeEffect::OpenPopup {
-                buffer: BufferId(7),
+                name: "*ai-permission*".to_string(),
+                mode_id: "ai-permission-mode".to_string(),
                 placement: NativePopupPlacement::Centered,
                 focus: NativePopupFocus::Steal,
             },
             NativeEffect::OpenPopup {
-                buffer: BufferId(9),
+                name: "hover".to_string(),
+                mode_id: "hover-mode".to_string(),
                 placement: NativePopupPlacement::CursorAnchored,
                 focus: NativePopupFocus::Passive,
             },

@@ -21866,6 +21866,33 @@ impl Editor {
         Vec::new()
     }
 
+    /// PU-B.2: the `Effect::OpenPopup { name, mode_id, .. }` entry point —
+    /// idempotently ensure a popup buffer named `name` under major mode
+    /// `mode_id` (stored as `BufferData::Help` so the popup renderer draws it),
+    /// then show it via [`Self::open_popup_buffer`]. Name-based (not id-based)
+    /// because the emitters — the `:ai-permission` ex-command and the async
+    /// tick callback — have no `&mut Editor`/services to register a buffer and
+    /// hand back its id; naming keeps the effect vocabulary the host boundary,
+    /// exactly like `Effect::OpenSyntheticBuffer`.
+    pub fn open_popup_named(
+        &mut self,
+        name: &str,
+        mode_id: &str,
+        placement: crate::popup::PopupPlacement,
+        focus: crate::popup::PopupFocus,
+    ) -> Vec<RendererSignal> {
+        let id = self.ensure_named_popup_buffer(
+            name,
+            lattice_mode::ModeId::new(mode_id),
+            lattice_core::BufferFlags {
+                listed: false,
+                hidden: true,
+                ephemeral: false,
+            },
+        );
+        self.open_popup_buffer(id, placement, focus)
+    }
+
     /// Open `content` as a *floating* popup over the active
     /// document. State A semantics (doc keeps focus). Phase 5.8.AE.
     pub fn open_floating_popup(
@@ -35722,21 +35749,21 @@ mod tests {
         );
     }
 
-    /// PU-B.1: `Effect::OpenPopup` has no host apply arm — it is
+    /// PU-B.1/2b: `Effect::OpenPopup` has no host apply arm — it is
     /// renderer-coupled, so `apply_effect_host` must push it onto
     /// `out.effects` (the tail the TUI / GPUI peers drain to call
-    /// `open_popup_buffer`) rather than swallow it. This pins the routing
+    /// `open_popup_named`) rather than swallow it. This pins the routing
     /// decision independent of any `lattice-ai` consumer.
     #[test]
     fn open_popup_effect_routes_to_renderer_tail() {
         let mut editor = crate::editor::Editor::boot(lattice_core::Document::empty());
-        let id = register_test_popup_buffer(&mut editor);
         let mut out = DispatchOutcome::default();
 
         apply_effect_host(
             &mut editor,
             lattice_grammar::Effect::OpenPopup {
-                buffer: id,
+                name: "*ai-permission*".to_string(),
+                mode_id: "ai-permission-mode".to_string(),
                 placement: crate::popup::PopupPlacement::Centered,
                 focus: crate::popup::PopupFocus::Steal,
             },
@@ -35746,9 +35773,42 @@ mod tests {
         assert!(
             out.effects.iter().any(|e| matches!(
                 e,
-                lattice_grammar::Effect::OpenPopup { buffer, .. } if *buffer == id
+                lattice_grammar::Effect::OpenPopup { name, .. } if name == "*ai-permission*"
             )),
             "OpenPopup reaches the renderer-coupled tail, not the host catch-all"
+        );
+    }
+
+    /// PU-B.2b: `open_popup_named` ensures a `BufferData::Help` popup buffer
+    /// under the given major mode (so the popup renderer draws it) and shows it
+    /// Steal-focused — the name-based `Effect::OpenPopup` entry point. Dismiss
+    /// tears the buffer down (`dismiss_stale_popup_registry`), so the next open
+    /// is a fresh buffer whose owning mode re-projects on activation.
+    #[test]
+    fn open_popup_named_ensures_help_buffer_and_steals_focus() {
+        let mut editor = crate::editor::Editor::boot(lattice_core::Document::empty());
+
+        editor.open_popup_named(
+            "*ai-permission*",
+            "ai-permission-mode",
+            crate::popup::PopupPlacement::Centered,
+            crate::popup::PopupFocus::Steal,
+        );
+
+        let id = editor.popup_buffer.expect("popup opened");
+        assert_eq!(
+            editor.buffers.kind_of(id),
+            Some(BufferKind::Help),
+            "popup buffer renders via the BufferData::Help path"
+        );
+        assert_eq!(editor.active_buffer, BufferKind::Help, "Steal focuses it");
+
+        editor.dismiss_popup();
+        assert_eq!(editor.popup_buffer, None, "dismiss clears the popup");
+        assert_eq!(
+            editor.buffers.kind_of(id),
+            None,
+            "dismiss tears the popup buffer down — next open is fresh"
         );
     }
 

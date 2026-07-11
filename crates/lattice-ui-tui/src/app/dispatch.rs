@@ -1006,10 +1006,11 @@ impl App {
             Effect::OpenHover { markdown } => self.do_open_hover(&markdown),
             Effect::DismissPopup => self.do_dismiss_popup(),
             Effect::OpenPopup {
-                buffer,
+                name,
+                mode_id,
                 placement,
                 focus,
-            } => self.open_popup_buffer(buffer, placement, focus),
+            } => self.open_popup_named(&name, &mode_id, placement, focus),
             Effect::OpenHelpTopic { topic } => self.do_open_help_topic(topic.as_deref()),
             // 5.5.F.7: `ListDiagnostics` migrated to
             // `Editor::handle_effect`; routed through the grouped

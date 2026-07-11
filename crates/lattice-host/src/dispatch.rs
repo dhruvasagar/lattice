@@ -29339,7 +29339,7 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         | Effect::DescribeElement { .. }
         | Effect::ListOptions
         | Effect::OpenHover { .. }
-        | Effect::CloseHover
+        | Effect::DismissPopup
         | Effect::OpenHelpTopic { .. }
         | Effect::ListDiagnostics
         | Effect::NextDiagnostic
@@ -29462,7 +29462,7 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         | Effect::DescribeElement { .. }
         | Effect::ListOptions
         | Effect::OpenHover { .. }
-        | Effect::CloseHover
+        | Effect::DismissPopup
         | Effect::OpenHelpTopic { .. }
         | Effect::ListDiagnostics
         | Effect::NextDiagnostic

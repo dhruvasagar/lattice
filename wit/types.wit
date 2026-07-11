@@ -467,7 +467,7 @@ interface types {
         describe-element(string),
         list-options,
         open-hover(string),
-        close-hover,
+        dismiss-popup,
         open-help-topic(option<string>),
         list-diagnostics,
         next-diagnostic,

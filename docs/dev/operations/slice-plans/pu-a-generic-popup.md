@@ -67,7 +67,7 @@ valid — a pure type relocation, no logic change. `popup_back_stack` stays a fi
 on `Editor` (a field can't move crates); its element type now resolves to the
 relocated `lattice_help::PopupSnapshot`. 219 popup/help tests green.
 
-### PU-A.3a — rename `Effect::CloseHover` → `Effect::DismissPopup` 📝
+### PU-A.3a — rename `Effect::CloseHover` → `Effect::DismissPopup` ✅
 Cosmetic de-Help-ification of the dismiss effect (it already calls
 `dismiss_popup()` generically). Grammar `effect.rs` + `ex_commands.rs`, both
 renderers' effect arms, WIT `types.wit` (`close-hover` → `dismiss-popup`), and

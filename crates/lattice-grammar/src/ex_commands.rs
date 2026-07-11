@@ -1319,7 +1319,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             accepts_bang: false,
             accepts_range: false,
             parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_| Ok(Effect::CloseHover)),
+            apply: Box::new(|_| Ok(Effect::DismissPopup)),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },

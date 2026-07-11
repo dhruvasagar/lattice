@@ -491,8 +491,9 @@ pub enum Effect {
     OpenHover {
         markdown: String,
     },
-    /// `:HoverClose` -- dismiss the active hover popup.
-    CloseHover,
+    /// Dismiss the active popup, whatever its content. Content-agnostic
+    /// (routes through `dismiss_popup`); produced today by `:HoverClose`.
+    DismissPopup,
     /// `:help [topic]` -- open a free-form help topic. With no
     /// topic the host renders the index (`docs/user/README.md`
     /// equivalent); with a topic the host looks it up in its

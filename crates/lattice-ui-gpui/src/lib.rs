@@ -1295,8 +1295,8 @@ impl GpuiApp {
                     self.handle_renderer_signal(s);
                 }
             }
-            Effect::CloseHover => {
-                // CloseHover is App-side popup state today; GPUI's
+            Effect::DismissPopup => {
+                // DismissPopup is App-side popup state today; GPUI's
                 // popup_content covers it directly.
                 self.dismiss_popup();
             }

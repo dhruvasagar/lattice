@@ -134,7 +134,7 @@ impl App {
     /// the unified `dismiss_popup` path so State A and State B
     /// both unwind cleanly (B restores via `prev_pane_for_popup`;
     /// A just drops the popup).
-    pub(super) fn do_close_hover(&mut self) {
+    pub(super) fn do_dismiss_popup(&mut self) {
         self.dismiss_popup();
     }
 

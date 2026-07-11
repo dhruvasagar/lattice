@@ -1300,6 +1300,18 @@ impl GpuiApp {
                 // popup_content covers it directly.
                 self.dismiss_popup();
             }
+            Effect::OpenPopup {
+                buffer,
+                placement,
+                focus,
+            } => {
+                // Content-agnostic popup open (popup-api.md §4.3): delegate to
+                // the host primitive, same as the TUI peer. Signals are always
+                // empty today, so the return is discarded.
+                self.mutate_editor(move |e| {
+                    e.open_popup_buffer(buffer, placement, focus);
+                });
+            }
             Effect::Tutor { lesson } => {
                 let signals = self.mutate_editor_with(move |e| e.do_tutor(lesson));
                 for s in signals {

@@ -24,8 +24,9 @@ use crate::lattice::plugin_host::types::{
     LspRequest as WitLspRequest, ModalState as WitModalState,
     OpenBufferAtColumnPayload as WitOpenBufferAtColumnPayload,
     OpenBufferAtPayload as WitOpenBufferAtPayload, OpenBufferPayload as WitOpenBufferPayload,
-    OpenPickerPayload as WitOpenPickerPayload,
-    OpenSyntheticBufferPayload as WitOpenSyntheticBufferPayload, Position as WitPosition,
+    OpenPickerPayload as WitOpenPickerPayload, OpenPopupPayload as WitOpenPopupPayload,
+    OpenSyntheticBufferPayload as WitOpenSyntheticBufferPayload, PopupFocus as WitPopupFocus,
+    PopupPlacement as WitPopupPlacement, Position as WitPosition,
     QuitPayload as WitQuitPayload, QuitScope as WitQuitScope, Range as WitRange,
     Register as WitRegister, SearchDirection as WitSearchDirection, Selection as WitSelection,
     SelectionSet as WitSelectionSet, SetLspLogLevelPayload as WitSetLspLogLevelPayload,
@@ -35,6 +36,9 @@ use crate::lattice::plugin_host::types::{
 };
 use lattice_core::BufferId;
 use lattice_core::buffer::AppliedEdit as NativeAppliedEdit;
+use lattice_core::ui::popup::{
+    PopupFocus as NativePopupFocus, PopupPlacement as NativePopupPlacement,
+};
 use lattice_grammar::app_effect::AppEffect as NativeAppEffect;
 use lattice_grammar::effect::{
     EchoLevel as NativeEchoLevel, Effect as NativeEffect, LspRequest as NativeLspRequest,
@@ -624,6 +628,21 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
         NativeEffect::ListOptions => WitEffect::ListOptions,
         NativeEffect::OpenHover { markdown } => WitEffect::OpenHover(markdown.clone()),
         NativeEffect::DismissPopup => WitEffect::DismissPopup,
+        NativeEffect::OpenPopup {
+            buffer,
+            placement,
+            focus,
+        } => WitEffect::OpenPopup(WitOpenPopupPayload {
+            buffer: buffer.0,
+            placement: match placement {
+                NativePopupPlacement::Centered => WitPopupPlacement::Centered,
+                NativePopupPlacement::CursorAnchored => WitPopupPlacement::CursorAnchored,
+            },
+            focus: match focus {
+                NativePopupFocus::Steal => WitPopupFocus::Steal,
+                NativePopupFocus::Passive => WitPopupFocus::Passive,
+            },
+        }),
         NativeEffect::OpenHelpTopic { topic } => WitEffect::OpenHelpTopic(topic.clone()),
         NativeEffect::ListDiagnostics => WitEffect::ListDiagnostics,
         NativeEffect::NextDiagnostic => WitEffect::NextDiagnostic,
@@ -829,6 +848,17 @@ fn effect_from_wit(w: WitEffect) -> Result<NativeEffect, String> {
         WitEffect::ListOptions => NativeEffect::ListOptions,
         WitEffect::OpenHover(markdown) => NativeEffect::OpenHover { markdown },
         WitEffect::DismissPopup => NativeEffect::DismissPopup,
+        WitEffect::OpenPopup(p) => NativeEffect::OpenPopup {
+            buffer: BufferId(p.buffer),
+            placement: match p.placement {
+                WitPopupPlacement::Centered => NativePopupPlacement::Centered,
+                WitPopupPlacement::CursorAnchored => NativePopupPlacement::CursorAnchored,
+            },
+            focus: match p.focus {
+                WitPopupFocus::Steal => NativePopupFocus::Steal,
+                WitPopupFocus::Passive => NativePopupFocus::Passive,
+            },
+        },
         WitEffect::OpenHelpTopic(topic) => NativeEffect::OpenHelpTopic { topic },
         WitEffect::ListDiagnostics => NativeEffect::ListDiagnostics,
         WitEffect::NextDiagnostic => NativeEffect::NextDiagnostic,
@@ -1288,6 +1318,16 @@ mod tests {
             NativeEffect::CloseFileTree,
             NativeEffect::ListOptions,
             NativeEffect::DismissPopup,
+            NativeEffect::OpenPopup {
+                buffer: BufferId(7),
+                placement: NativePopupPlacement::Centered,
+                focus: NativePopupFocus::Steal,
+            },
+            NativeEffect::OpenPopup {
+                buffer: BufferId(9),
+                placement: NativePopupPlacement::CursorAnchored,
+                focus: NativePopupFocus::Passive,
+            },
             NativeEffect::ListDiagnostics,
             NativeEffect::NextDiagnostic,
             NativeEffect::PrevDiagnostic,

@@ -340,17 +340,60 @@ ships nothing new. Land it green and separately so a regression bisects cleanly.
 
 ### Slice PU-B — ACP permission menu 📝
 
-**Design ref:** acp-ux-enhancements.md §5.3. **Depends on:** PU-A.
-**Closes:** AUX-1 (🚧).
+**Design ref:** acp-ux-enhancements.md §5.3, popup-api.md §4. **Depends on:** PU-A.
+**Closes:** AUX-1 (🚧). Decomposed into three landable-green sub-slices
+(2026-07-12) — the doc framed it as one, but it touches the WIT contract, the
+supervisor oneshot contract, and a new mode, so it slices like PU-A did for
+clean bisection.
 
+**Confirmed decisions (Dhruva, 2026-07-12):**
+- **Resolve by agent `option_id`, not the 4-way `PermissionOutcome` bucket.** The
+  menu presents the agent's actual option list (any arity, wire order) and
+  resolves by `option_id`; the supervisor's `pick_option_by_kind` reverse-map is
+  dropped. Respects the ACP protocol's dynamic options (heuristic #1: best
+  long-term fit; correct for agents offering ≠4 options).
+- **Digit accelerators bound `1`–`9` statically** in the permission Major-mode
+  keymap (scoped to the `*ai-permission*` buffer), plus `<CR>`-by-cursor always
+  available (the file-tree/oil `entry_at_line` model) for completeness and >9
+  options. No dynamic per-request rebinding — no such template exists
+  (`completion_popup_layer_bindings` binds a *fixed* set, not `1..=N`).
+- **Opening mechanism:** the drain calls `BufferStoreHandle::ensure_named_document`
+  (idempotent, returns the `BufferId`), projects the request, stashes id + a
+  needs-open flag; a **tick callback** (PU-B's is the first `lattice-ai`
+  tick-callback consumer) reads the flag and returns
+  `Effect::OpenPopup { buffer, Centered, Steal }`. `OpenPopup` keeps its
+  `{ buffer: BufferId, .. }` shape.
+
+#### PU-B.1 — `Effect::OpenPopup` plumbing ✅
+The deferred PU-A.3b, landed now that PU-B.2/.3 are its consumers (no longer dead
+surface). `Effect::OpenPopup { buffer: BufferId, placement: PopupPlacement, focus:
+PopupFocus }` in `lattice-grammar`; both renderer effect arms call the existing
+`Editor::open_popup_buffer` primitive (PU-A.1b-ii); WIT `types.wit` gains
+`popup-placement`/`popup-focus` enums + `open-popup(open-popup-payload)` (BufferId
+↔ u32, the `apply-edit-payload` precedent); `boundary_effect.rs` to_wit/from_wit +
+round-trip test; added to the four non-mutating classifier lists (2 host + 2 TUI).
+No host apply arm needed — `apply_effect_host`'s catch-all pushes it to
+`out.effects` for the renderer. Host-tested (register buffer → apply effect →
+assert popup state).
+
+#### PU-B.2 — `ai-permission-mode` + resolution model 📝
 | File | Change |
 |---|---|
-| `crates/lattice-ai/src/acp/permission_mode.rs` (new) | `ai-permission-mode`: projects the request into `*ai-permission*`, binds `1..=N` at activation from the agent's option list, `<CR>` on an option line, `Esc`/`q` dismiss. Handler resolves via `store.resolve_permission(id, option_id)`. |
-| `crates/lattice-ai/src/acp/conversation_mode.rs` | Drain flags a newly-pending id; tick callback returns `Effect::OpenPopup`. Delete the unreachable `action:ai-conv-allow` / `-deny` handlers and the misleading `(a)/(A)/(r)/(R)` hints in `render_conversation`. |
-| `crates/lattice-ai/src/acp/commands.rs` | `:ai-permission` reopens the oldest pending request. |
+| `crates/lattice-ai/src/acp/conversation.rs` | Oneshot payload + `resolve_permission(id, option_id)` carry the agent `option_id`; block status derives from the chosen option's `kind`. |
+| `crates/lattice-ai/src/acp/supervisor.rs` | `AskUser` branch forwards `RequestPermissionOutcome::Selected(option_id)` directly; drop `pick_option_by_kind`. |
+| `crates/lattice-ai/src/acp/permission_mode.rs` (new) | `ai-permission-mode`: `on_activate` projects the oldest pending request into `*ai-permission*` (title, description, numbered options); binds `1`–`9` + `<CR>`-by-cursor + `Esc`/`q` dismiss; handler resolves via `store.resolve_permission(id, option_id)`. |
+| `crates/lattice-ai/src/acp/commands.rs` | `:ai-permission` opens the menu for the oldest pending request (returns `Effect::OpenPopup`). |
+| `crates/lattice-ai/src/acp/conversation_mode.rs` | Delete the unreachable `action:ai-conv-allow`/`-deny` handlers + specs + the stale `(a)/(A)/(r)/(R)` hints. |
 | `crates/lattice-ai/src/acp/install.rs` | Register the new mode. |
 
-Queue behaviour follows `lsp.rs::open_next_queued_show_message_request`.
+Proves the menu end-to-end via `:ai-permission` — no auto-open race yet.
+
+#### PU-B.3 — auto-open + queue 📝
+Conversation drain flags a newly-pending id + ensures/projects `*ai-permission*`;
+tick callback (registered in `on_activate`) returns `Effect::OpenPopup`; the next
+pending request opens on resolve, following
+`lsp.rs::open_next_queued_show_message_request`. `Esc` defers (leaves it
+`Pending`, inline block keeps rendering it). Closes AUX-1.
 
 ### Slice TCF — Tool-call folds ✅
 

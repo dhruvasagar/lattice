@@ -350,6 +350,17 @@ interface types {
 
     // Payload records for the multi-field `effect` arms. Paths cross as
     // `option<string>` / `string` (a non-UTF-8 path is a typed error, §4.4).
+    /// Mirrors `lattice_core::ui::popup::PopupPlacement`.
+    enum popup-placement { centered, cursor-anchored }
+    /// Mirrors `lattice_core::ui::popup::PopupFocus`.
+    enum popup-focus { steal, passive }
+    /// Payload for the `open-popup` effect (popup-api.md §4.3).
+    record open-popup-payload {
+        /// The popup `BufferId` (its inner `u32`).
+        buffer: u32,
+        placement: popup-placement,
+        focus: popup-focus,
+    }
     record apply-edit-payload {
         /// The target `BufferId` (its inner `u32`).
         target: u32,
@@ -468,6 +479,7 @@ interface types {
         list-options,
         open-hover(string),
         dismiss-popup,
+        open-popup(open-popup-payload),
         open-help-topic(option<string>),
         list-diagnostics,
         next-diagnostic,

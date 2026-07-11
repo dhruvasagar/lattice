@@ -29340,6 +29340,7 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         | Effect::ListOptions
         | Effect::OpenHover { .. }
         | Effect::DismissPopup
+        | Effect::OpenPopup { .. }
         | Effect::OpenHelpTopic { .. }
         | Effect::ListDiagnostics
         | Effect::NextDiagnostic
@@ -29463,6 +29464,7 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         | Effect::ListOptions
         | Effect::OpenHover { .. }
         | Effect::DismissPopup
+        | Effect::OpenPopup { .. }
         | Effect::OpenHelpTopic { .. }
         | Effect::ListDiagnostics
         | Effect::NextDiagnostic
@@ -35717,6 +35719,36 @@ mod tests {
         assert!(
             editor.prev_pane_for_popup.is_none(),
             "Passive captures no prev"
+        );
+    }
+
+    /// PU-B.1: `Effect::OpenPopup` has no host apply arm — it is
+    /// renderer-coupled, so `apply_effect_host` must push it onto
+    /// `out.effects` (the tail the TUI / GPUI peers drain to call
+    /// `open_popup_buffer`) rather than swallow it. This pins the routing
+    /// decision independent of any `lattice-ai` consumer.
+    #[test]
+    fn open_popup_effect_routes_to_renderer_tail() {
+        let mut editor = crate::editor::Editor::boot(lattice_core::Document::empty());
+        let id = register_test_popup_buffer(&mut editor);
+        let mut out = DispatchOutcome::default();
+
+        apply_effect_host(
+            &mut editor,
+            lattice_grammar::Effect::OpenPopup {
+                buffer: id,
+                placement: crate::popup::PopupPlacement::Centered,
+                focus: crate::popup::PopupFocus::Steal,
+            },
+            &mut out,
+        );
+
+        assert!(
+            out.effects.iter().any(|e| matches!(
+                e,
+                lattice_grammar::Effect::OpenPopup { buffer, .. } if *buffer == id
+            )),
+            "OpenPopup reaches the renderer-coupled tail, not the host catch-all"
         );
     }
 

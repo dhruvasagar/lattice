@@ -494,6 +494,18 @@ pub enum Effect {
     /// Dismiss the active popup, whatever its content. Content-agnostic
     /// (routes through `dismiss_popup`); produced today by `:HoverClose`.
     DismissPopup,
+    /// Show an already-registered `buffer` in a popup overlay at `placement`
+    /// with the given `focus` (popup-api.md §4.3). Content-agnostic: the
+    /// emitter registers the buffer (e.g. the ACP permission menu registers
+    /// `*ai-permission*` via `BufferStoreHandle::ensure_named_document` and
+    /// hands over the id) and the host's `Editor::open_popup_buffer` does the
+    /// generic mechanics. No host apply arm — `apply_effect_host` routes it to
+    /// the renderer, which calls the primitive.
+    OpenPopup {
+        buffer: lattice_core::BufferId,
+        placement: lattice_core::ui::popup::PopupPlacement,
+        focus: lattice_core::ui::popup::PopupFocus,
+    },
     /// `:help [topic]` -- open a free-form help topic. With no
     /// topic the host renders the index (`docs/user/README.md`
     /// equivalent); with a topic the host looks it up in its

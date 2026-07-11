@@ -1005,6 +1005,11 @@ impl App {
             // grouped no-op above.
             Effect::OpenHover { markdown } => self.do_open_hover(&markdown),
             Effect::DismissPopup => self.do_dismiss_popup(),
+            Effect::OpenPopup {
+                buffer,
+                placement,
+                focus,
+            } => self.open_popup_buffer(buffer, placement, focus),
             Effect::OpenHelpTopic { topic } => self.do_open_help_topic(topic.as_deref()),
             // 5.5.F.7: `ListDiagnostics` migrated to
             // `Editor::handle_effect`; routed through the grouped
@@ -1237,6 +1242,7 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::ListOptions
         | Effect::OpenHover { .. }
         | Effect::DismissPopup
+        | Effect::OpenPopup { .. }
         | Effect::OpenHelpTopic { .. }
         | Effect::ListDiagnostics
         | Effect::NextDiagnostic
@@ -1358,6 +1364,7 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::ListOptions
         | Effect::OpenHover { .. }
         | Effect::DismissPopup
+        | Effect::OpenPopup { .. }
         | Effect::OpenHelpTopic { .. }
         | Effect::ListDiagnostics
         | Effect::NextDiagnostic

@@ -20,12 +20,11 @@ use std::sync::{Arc, Mutex, OnceLock};
 use agent_client_protocol::schema::v1::PermissionOptionKind;
 
 use lattice_cells::{Cell, Headerline, HeaderlineProvider, HeaderlineRow, ProviderId, VirtualRowProvider};
-use lattice_grammar::ModalState;
 use lattice_grammar::effect::{EchoLevel, Effect};
 use lattice_mode::{
     ActionContext, ActionHandler, ActionHandlerContribution, BufferStoreHandle, CapabilitySet,
     EditableTail, Keymap, KeymapEntry, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind,
-    OptionOverrideSet, Subscription,
+    OptionOverrideSet, ReplMode, Subscription,
     VirtualRowRegistrar, keymap_entry,
 };
 
@@ -436,6 +435,15 @@ impl Mode for AiConversationMode {
         CapabilitySet::empty()
     }
 
+    /// Pull in `repl-mode` on the conversation buffer: it owns the generic
+    /// insert-entry surface (`i`/`a`/`o`/… → jump-to-prompt-and-Insert). The
+    /// activation cascade turns it on wherever this major is active and off
+    /// when the buffer's major changes, so the affordance is scoped to the
+    /// REPL buffer without a bespoke keymap on this mode.
+    fn implies(&self) -> &[ModeId] {
+        ai_conversation_implies()
+    }
+
     /// AU‑3: the prompt is the single trailing line, editable only after the
     /// `"> "` marker (2 bytes). Consulted by the host's read-only edit gate so
     /// Insert/operator keystrokes land only in the prompt; the transcript above
@@ -469,10 +477,6 @@ impl Mode for AiConversationMode {
     fn action_handlers(&self) -> Vec<ActionHandlerContribution> {
         let pid = self.current_permission_id.clone();
         vec![
-            ActionHandlerContribution {
-                action_name: "action:ai-conv-focus-prompt",
-                handler: focus_prompt_handler(),
-            },
             ActionHandlerContribution {
                 action_name: "action:ai-conv-send",
                 handler: send_handler(self.anchor.clone()),
@@ -745,26 +749,25 @@ async fn reproject(
 // AU‑3: modal-input surface — keymap entries + action handlers
 // ──────────────────────────────────────────────────────────────
 
-/// The Normal- and Insert-mode chords the `ai-conversation` mode contributes.
-/// Normal-mode insert-entering chords (`i`/`a`/`o`/`A`/`I`/`O`) all route to
-/// `focus-prompt` so entering Insert always relocates the cursor into the
-/// prompt — history is unreachable from Insert and so cannot be mutated.
-/// `<CR>` sends; `<C-c>` interrupts.
+/// The Insert- and Normal-mode chords the `ai-conversation` mode contributes.
+/// The Normal-mode insert-entry chords (`i`/`a`/`o`/`A`/`I`/`O` →
+/// jump-to-prompt-and-Insert) are NOT here: that is the generic REPL input
+/// surface, owned by `repl-mode` (a minor mode this major pulls in via
+/// [`implies`](Mode::implies)). This keeps vim's universal insert keys off
+/// every ordinary buffer. `<CR>` sends; `<C-j>` inserts a newline; `<C-c>`
+/// interrupts; `<C-t>` toggles trust — all ACP-specific, so they stay here.
+/// The minor modes `ai-conversation-mode` implies: `repl-mode` (the generic
+/// REPL input surface). A process-wide static so [`Mode::implies`] can hand back
+/// a `&'static [ModeId]`.
+fn ai_conversation_implies() -> &'static [ModeId] {
+    static IMPLIES: OnceLock<Vec<ModeId>> = OnceLock::new();
+    IMPLIES.get_or_init(|| vec![ReplMode::mode_id()])
+}
+
 fn ai_conversation_keymap_entries() -> &'static [KeymapEntry] {
     static ENTRIES: OnceLock<Vec<KeymapEntry>> = OnceLock::new();
     ENTRIES.get_or_init(|| {
-        let focus = |chord: &'static str| keymap_entry! {
-            mode: Normal, chord: chord,
-            doc: "ai-conversation: move the cursor into the prompt and enter Insert",
-            cmd: "action:ai-conv-focus-prompt"
-        };
         vec![
-            focus("i"),
-            focus("a"),
-            focus("o"),
-            focus("A"),
-            focus("I"),
-            focus("O"),
             keymap_entry! {
                 mode: Insert, chord: "<CR>",
                 doc: "ai-conversation: send the prompt to the agent",
@@ -798,33 +801,6 @@ fn ai_conversation_keymap_entries() -> &'static [KeymapEntry] {
             // (`:ai-allow` / `:ai-deny` etc.) and the action handlers are
             // registered for a future transient-keymap gate.
         ]
-    })
-}
-
-/// `action:ai-conv-focus-prompt` — place the cursor at the end of the prompt
-/// line and enter Insert. Reuses the generic `SelectionChange` + `EnterMode`
-/// effects (no new `Action`); reads the buffer through the `BufferStoreHandle`
-/// service since the `ActionContext` carries no buffer text.
-fn focus_prompt_handler() -> ActionHandler {
-    Arc::new(|ctx: &ActionContext<'_>| -> Option<Effect> {
-        let store = ctx.services.get::<BufferStoreHandle>()?;
-        let buffer_id = lattice_core::BufferId(ctx.buffer_id.0 as u32);
-        let handle = store.handle_for(buffer_id)?;
-        let snap = handle.snapshot();
-        let last_line = snap.buffer.line_count().saturating_sub(1);
-        let end_byte = snap
-            .buffer
-            .line(last_line)
-            .unwrap_or_default()
-            .trim_end_matches('\n')
-            .len() as u32;
-        let pos = lattice_protocol::position::Position::new(last_line, end_byte);
-        Some(Effect::Many(vec![
-            Effect::SelectionChange(lattice_protocol::selection::SelectionSet::single(
-                lattice_protocol::selection::Selection::cursor(pos),
-            )),
-            Effect::EnterMode(ModalState::Insert),
-        ]))
     })
 }
 
@@ -971,10 +947,6 @@ fn permission_handler(
 pub fn register_ai_conversation_actions(registry: &mut lattice_grammar::CommandRegistry) {
     use lattice_grammar::registry::ActionSpec;
     for (name, doc) in [
-        (
-            "action:ai-conv-focus-prompt",
-            "ai-conversation: move the cursor into the prompt and enter Insert.",
-        ),
         ("action:ai-conv-send", "ai-conversation: send the prompt to the agent."),
         ("action:ai-conv-newline", "ai-conversation: insert a newline in the prompt."),
         ("action:ai-conv-interrupt", "ai-conversation: interrupt the active turn."),
@@ -1091,11 +1063,13 @@ mod tests {
         );
     }
 
-    /// AU‑3: every Normal-mode insert-entering chord routes to `focus-prompt`
-    /// (so Insert always relocates to the prompt), `<CR>` sends, `<C-c>`
-    /// interrupts. Catches a dropped chord or a name swap.
+    /// The ai-conversation mode contributes only its ACP-specific chords:
+    /// `<CR>` sends, `<C-j>` newline, `<C-c>` interrupts, `<C-t>` trust. The
+    /// insert-entry keys (`i`/`a`/`o`/…) are NOT here — `repl-mode` (implied)
+    /// owns that generic surface now. Catches a dropped chord or a name swap,
+    /// and a regression that re-adds the insert-entry keys to this major.
     #[test]
-    fn keymap_binds_insert_entry_to_focus_and_cr_to_send() {
+    fn keymap_binds_only_acp_chords_not_insert_entry() {
         let pairs: Vec<(&str, Option<&str>)> = ai_conversation_keymap_entries()
             .iter()
             .map(|e| (e.chord, e.command))
@@ -1103,17 +1077,26 @@ mod tests {
         assert_eq!(
             pairs,
             vec![
-                ("i", Some("action:ai-conv-focus-prompt")),
-                ("a", Some("action:ai-conv-focus-prompt")),
-                ("o", Some("action:ai-conv-focus-prompt")),
-                ("A", Some("action:ai-conv-focus-prompt")),
-                ("I", Some("action:ai-conv-focus-prompt")),
-                ("O", Some("action:ai-conv-focus-prompt")),
                 ("<CR>", Some("action:ai-conv-send")),
                 ("<C-j>", Some("action:ai-conv-newline")),
                 ("<C-c>", Some("action:ai-conv-interrupt")),
                 ("<C-t>", Some("action:ai-conv-toggle-trust")),
             ],
+        );
+        assert!(
+            !pairs.iter().any(|(chord, _)| matches!(*chord, "i" | "a" | "o" | "A" | "I" | "O")),
+            "insert-entry keys must live in repl-mode, not the ai-conversation major",
+        );
+    }
+
+    /// The major implies `repl-mode` — that is what brings the generic
+    /// insert-entry surface onto the conversation buffer.
+    #[test]
+    fn implies_repl_mode() {
+        let mode = AiConversationMode::new();
+        assert_eq!(
+            <AiConversationMode as Mode>::implies(&mode),
+            &[ReplMode::mode_id()],
         );
     }
 
@@ -1129,7 +1112,6 @@ mod tests {
         assert_eq!(
             names,
             vec![
-                "action:ai-conv-focus-prompt",
                 "action:ai-conv-send",
                 "action:ai-conv-newline",
                 "action:ai-conv-interrupt",
@@ -1149,7 +1131,6 @@ mod tests {
         let mut registry = lattice_grammar::CommandRegistry::new();
         register_ai_conversation_actions(&mut registry);
         for name in [
-            "action:ai-conv-focus-prompt",
             "action:ai-conv-send",
             "action:ai-conv-interrupt",
             "action:ai-conv-toggle-trust",

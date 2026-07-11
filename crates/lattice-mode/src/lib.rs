@@ -71,6 +71,7 @@ pub mod contributions;
 // foundation modes. The host keeps only the keymap-layer push (config + the
 // live `KeymapHandle`).
 pub mod emacs_keys_mode;
+pub mod repl_mode;
 pub mod error;
 pub mod event;
 pub mod guards;
@@ -148,6 +149,7 @@ pub use crate::subsystem_boot::SubsystemBoot;
 // config), calling `emacs_keys_layer_bindings`; `EmacsKeysMode::mode_id` keys
 // the layer + the K.1.c per-keystroke gate.
 pub use crate::emacs_keys_mode::{EmacsKeysMode, emacs_keys_layer_bindings};
+pub use crate::repl_mode::{ReplMode, register_repl_mode, register_repl_mode_actions};
 // ML.0a: configurable-modeline element model + descriptor registry.
 pub use crate::modeline::{
     ElementContent, ElementId, HoverSpec, Interaction, ModelineElement, ModelineElementUpdate,

@@ -592,6 +592,14 @@ impl Editor {
         // build typed `CommandInvocation`s for chord bindings.
         let action_ids = crate::actions::populate(boot.commands_mut(), &builtins);
 
+        // `repl-mode` (foundation minor, registered above) owns its
+        // `action:repl-focus-input` command. Register it here so
+        // `translate_mode_keymaps` resolves the mode's keymap `cmd` name and
+        // `register_mode_action_handlers` binds the handler — both run later in
+        // boot. The `register_ai_conversation_actions` pattern, kept with the
+        // mode's own crate.
+        lattice_mode::register_repl_mode_actions(boot.commands_mut());
+
         // BC.7 (2026-06-24): the multibuffer excerpt-jump motions
         // (`]e`/`[e`/`]E`/`[E`), the `:multibuffer-*` / `:narrow` / `:widen` /
         // `:search` ex-commands, AND the `zn` narrow operator SPEC are all

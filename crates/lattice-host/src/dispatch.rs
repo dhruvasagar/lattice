@@ -35436,11 +35436,7 @@ mod tests {
 
         assert!(out.consumed, "gt consumed while a popup is focused");
         assert_eq!(editor.active_tab, tab_before, "tab did not switch");
-        assert_eq!(
-            editor.active_buffer,
-            BufferKind::Help,
-            "popup keeps focus"
-        );
+        assert_eq!(editor.active_buffer, BufferKind::Help, "popup keeps focus");
     }
 
     /// PIC.2 non-regression: tab navigation still works when NO popup is

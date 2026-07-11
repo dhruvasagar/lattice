@@ -592,15 +592,14 @@ fn draw_insert_completion_popup(
     // the helper from the hover popup path.
     let pane_rect = active_pane_content_rect(app, buffer_area).unwrap_or(buffer_area);
     let view = FrameView::from_app(app);
-    let anchor_screen =
-        cursor_screen_position_at(
-            &view,
-            snap,
-            pane_rect,
-            app.ad().cursor,
-            app.ad().scroll,
-            app.panes().tree.active().id,
-        );
+    let anchor_screen = cursor_screen_position_at(
+        &view,
+        snap,
+        pane_rect,
+        app.ad().cursor,
+        app.ad().scroll,
+        app.panes().tree.active().id,
+    );
     let (anchor_x, anchor_y) = anchor_screen.unwrap_or((buffer_area.x, buffer_area.y));
     // Below if there's room, else above.
     let area_bottom = buffer_area.y + buffer_area.height;
@@ -871,15 +870,14 @@ fn completion_docs_popup_rect(
     // Anchor: same anchor as the candidate popup.
     let pane_rect = active_pane_content_rect(app, buffer_area).unwrap_or(buffer_area);
     let view = FrameView::from_app(app);
-    let anchor_screen =
-        cursor_screen_position_at(
-            &view,
-            snap,
-            pane_rect,
-            app.ad().cursor,
-            app.ad().scroll,
-            app.panes().tree.active().id,
-        );
+    let anchor_screen = cursor_screen_position_at(
+        &view,
+        snap,
+        pane_rect,
+        app.ad().cursor,
+        app.ad().scroll,
+        app.panes().tree.active().id,
+    );
     let (anchor_x, anchor_y) = anchor_screen.unwrap_or((buffer_area.x, buffer_area.y));
     // Candidate popup geometry (mirrors `draw_insert_completion_popup`).
     let cand_width: u16 = 60u16.min(buffer_area.width.saturating_sub(2)).max(30);
@@ -2186,9 +2184,14 @@ fn position_help_popup(
         }
     };
     let view = FrameView::from_app(app);
-    let Some((cx, cy)) =
-        cursor_screen_position_at(&view, snap, pane_area, cursor, scroll, app.panes().tree.active().id)
-    else {
+    let Some((cx, cy)) = cursor_screen_position_at(
+        &view,
+        snap,
+        pane_area,
+        cursor,
+        scroll,
+        app.panes().tree.active().id,
+    ) else {
         return centered();
     };
     // Vertical: prefer below the cursor row; if the popup wouldn't

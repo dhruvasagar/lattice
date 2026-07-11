@@ -694,8 +694,8 @@ pub struct App {
     // `editor.popup_buffer`.
     // Phase 5.B.20: `popup_back_stack` moved to
     // `editor.popup_back_stack`.
-    // Phase 5.B.10: `prev_pane_for_help` moved to
-    // `editor.prev_pane_for_help`.
+    // Phase 5.B.10: `prev_pane_for_popup` moved to
+    // `editor.prev_pane_for_popup`.
     // Phase 5.B.10: `popup_placement` moved to
     // `editor.popup_placement`.
     // Phase 5.B.19: `pending_insert_completion_lsp_rx/token`,
@@ -2533,7 +2533,7 @@ mod tests {
     fn focused_hover_does_not_auto_dismiss_on_motion() {
         // State B: cursor is *inside* the popup; motions move the
         // popup's cursor, not the doc's. The State-A auto-dismiss
-        // hook is gated on `prev_pane_for_help.is_none()` -- in
+        // hook is gated on `prev_pane_for_popup.is_none()` -- in
         // State B that field is Some, so motion doesn't drop the
         // popup.
         let mut a = app_with("fn main() {}\n", 5);
@@ -3529,7 +3529,7 @@ mod tests {
         assert!(a.editor.popup_buffer.is_none());
         assert!(matches!(a.editor.active_buffer, BufferKind::Document));
         assert_eq!(a.editor.cursor, lattice_protocol::Position::new(1, 4));
-        assert!(a.editor.prev_pane_for_help.is_none());
+        assert!(a.editor.prev_pane_for_popup.is_none());
     }
 
     #[test]

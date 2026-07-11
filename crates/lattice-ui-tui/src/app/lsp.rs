@@ -1905,8 +1905,8 @@ mod tests {
         let mut a = app_with("fn main() {}\nlet x = 1;\n", 5);
         a.do_open_hover("hover body");
         assert!(a.editor.popup_buffer.is_some());
-        // State A: focus still on doc, prev_pane_for_help is None.
-        assert!(a.editor.prev_pane_for_help.is_none());
+        // State A: focus still on doc, prev_pane_for_popup is None.
+        assert!(a.editor.prev_pane_for_popup.is_none());
         assert!(matches!(a.editor.active_buffer, BufferKind::Document));
         // Drive a real motion through `apply` (`l` -- char-right).
         let inv = lattice_grammar::CommandInvocation::of(a.editor.builtins.char_right.0);
@@ -1945,7 +1945,7 @@ mod tests {
         assert!(h.content.as_string().contains("documentation"));
         // State A: focus stays on doc.
         assert!(matches!(a.editor.active_buffer, BufferKind::Document));
-        assert!(a.editor.prev_pane_for_help.is_none());
+        assert!(a.editor.prev_pane_for_popup.is_none());
     }
 
     #[test]
@@ -2067,7 +2067,7 @@ mod tests {
         assert!(h.content.as_string().contains("**bold body**"));
         // State A entry: focus still on the doc.
         assert!(matches!(a.editor.active_buffer, BufferKind::Document));
-        assert!(a.editor.prev_pane_for_help.is_none());
+        assert!(a.editor.prev_pane_for_popup.is_none());
         assert!(
             a.editor.pending_hover_token.is_none(),
             "delivering the outcome should clear the in-flight token"

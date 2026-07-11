@@ -230,7 +230,7 @@ impl App {
         // M.4 hover-popup unification: gate the auto-dismiss-on-
         // doc-cursor-motion behaviour on `hover-mode` being active
         // on the popup buffer, instead of the structural
-        // `prev_pane_for_help.is_none()` check. State A (popup
+        // `prev_pane_for_popup.is_none()` check. State A (popup
         // shown, doc focused) is "hover-mode active + active is
         // Document"; State B (focused popup) is "active is Help"
         // -- the second clause stays as the State-A discriminator.
@@ -656,7 +656,7 @@ impl App {
         }
         self.maybe_reparse_syntax();
         // State-A hover-auto-dismiss: popup was shown, focus
-        // never moved into it (so `prev_pane_for_help` is None),
+        // never moved into it (so `prev_pane_for_popup` is None),
         // and the doc cursor moved. Drop the popup -- it's
         // anchored to the prior symbol and is now stale.
         if popup_in_state_a
@@ -2369,13 +2369,13 @@ mod tests {
         // First K opens the popup (State A: cursor in doc); second
         // K transfers focus into the popup (State B: cursor in
         // help). The buffer content is the same; only `active_buffer`
-        // and the cursor position change. `prev_pane_for_help`
+        // and the cursor position change. `prev_pane_for_popup`
         // captures pre-State-B state so dismiss restores cleanly.
         let mut a = app_with("fn main() {}\n", 5);
         a.do_open_hover("hover body line 1\nhover body line 2");
         assert!(a.editor.popup_buffer.is_some());
         assert!(matches!(a.editor.active_buffer, BufferKind::Document));
-        assert!(a.editor.prev_pane_for_help.is_none());
+        assert!(a.editor.prev_pane_for_popup.is_none());
         // Second K -> focus into popup.
         // 5.5.LSP.1: hover request migrated to `Editor::dispatch`;
         // exercise the State A -> State B promote through the Action
@@ -2388,7 +2388,10 @@ mod tests {
             "popup stays up after focus"
         );
         assert!(matches!(a.editor.active_buffer, BufferKind::Help));
-        let stash = a.editor.prev_pane_for_help.expect("State B captures stash");
+        let stash = a
+            .editor
+            .prev_pane_for_popup
+            .expect("State B captures stash");
         assert_eq!(stash.buffer, BufferKind::Document);
     }
 

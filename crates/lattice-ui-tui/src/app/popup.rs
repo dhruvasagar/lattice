@@ -277,7 +277,7 @@ mod tests {
         // M.4: do_open_hover activates `hover-mode` as a minor on
         // the popup buffer. Future hover-only behaviour gates on
         // this mode being active rather than the popup's state
-        // shape (`prev_pane_for_help.is_none()`).
+        // shape (`prev_pane_for_popup.is_none()`).
         let mut a = app_with("hello", 10);
         a.do_open_hover("hover body");
         let buffer_id = a.editor.popup_buffer.expect("popup open");

@@ -119,7 +119,7 @@ use lattice_protocol::position::Position as ProtoPosition;
 ///   `last_insert`, `recording_insert`,
 ///   `pending_block_insert`).
 /// - 5.B.10 -- popup (subset) (`popup_buffer`,
-///   `prev_pane_for_help`, `popup_placement`). Skipped:
+///   `prev_pane_for_popup`, `popup_placement`). Skipped:
 ///   `popup_back_stack` -- holds `PopupSnapshot` which still
 ///   lives in `lattice-ui-tui::app::popup`; follow-up slice
 ///   moves the snapshot type to host before migrating the
@@ -509,7 +509,7 @@ pub struct Editor {
     /// / cursor / scroll they came from. Set by both display
     /// paths (in-pane activation and popup overlay); cleared
     /// by dismiss.
-    pub prev_pane_for_help: Option<PrevPaneState>,
+    pub prev_pane_for_popup: Option<PrevPaneState>,
     /// Where the popup overlay sits on screen when one is
     /// open. Lives on the editor (not on the buffer) because
     /// the popup is a generic rectangular surface inside

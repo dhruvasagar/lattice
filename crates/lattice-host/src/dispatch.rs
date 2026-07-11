@@ -6162,19 +6162,20 @@ impl Editor {
         self.popup_doc_scroll_at_anchor = 0;
         // Restore pre-popup state if focus had moved into it
         // (State B for hover; in-pane mode for `:lsp-log` etc.).
-        // State A (popup shown but never focused) leaves
-        // `prev_pane_for_help` as `None` -- nothing to restore;
-        // active was never flipped to Help.
-        if let Some(prev) = self.prev_pane_for_help.take() {
+        if let Some(prev) = self.prev_pane_for_popup.take() {
             self.cursor = prev.cursor;
             self.scroll = prev.scroll;
             let pane = self.pane_tree.active_mut();
             pane.buffer = prev.buffer;
             pane.buffer_id = prev.buffer_id;
             self.active_buffer = prev.buffer;
-        } else {
-            self.active_buffer = BufferKind::Document;
         }
+        // PU-A.1a: State A (popup shown but never focused) leaves
+        // `prev_pane_for_popup` as `None`. `active_buffer` was never
+        // flipped to Help, so it still holds the underlying buffer's
+        // kind — leave it untouched. The old `else { active_buffer =
+        // Document }` clobbered a floating popup opened over oil /
+        // file-tree / dashboard back to Document (popup-api.md §5).
     }
 
     /// Tear down the registry / mode / option-cache state for the
@@ -6582,7 +6583,7 @@ impl Editor {
         let stash_scroll = help.scroll as u32;
         // Capture pre-State-B state so dismiss restores cleanly.
         let active = self.pane_tree.active();
-        self.prev_pane_for_help = Some(PrevPaneState {
+        self.prev_pane_for_popup = Some(PrevPaneState {
             buffer: active.buffer,
             buffer_id: active.buffer_id,
             cursor: self.cursor,
@@ -21765,7 +21766,7 @@ impl Editor {
         self.snapshot_active_pane();
         if !matches!(self.active_buffer, BufferKind::Help) {
             let active = self.pane_tree.active();
-            self.prev_pane_for_help = Some(crate::state::PrevPaneState {
+            self.prev_pane_for_popup = Some(crate::state::PrevPaneState {
                 buffer: active.buffer,
                 buffer_id: active.buffer_id,
                 cursor: self.cursor,
@@ -28315,7 +28316,7 @@ impl Editor {
         // preserve the original origin.
         if !matches!(self.active_buffer, BufferKind::Help) {
             let active = self.pane_tree.active();
-            self.prev_pane_for_help = Some(PrevPaneState {
+            self.prev_pane_for_popup = Some(PrevPaneState {
                 buffer: active.buffer,
                 buffer_id: active.buffer_id,
                 cursor: self.cursor,
@@ -35473,6 +35474,51 @@ mod tests {
              handler's 'no folds to cycle'), got: {}",
             msg.text
         );
+    }
+
+    // ── PU-A.1a: dismiss correctness ──────────────────────────
+
+    /// PU-A.1a: dismissing a State-A (never-focused) popup must NOT
+    /// clobber the underlying buffer kind. A floating popup over oil /
+    /// file-tree / dashboard used to be dropped back to `Document`.
+    #[test]
+    fn state_a_dismiss_preserves_underlying_buffer_kind() {
+        let mut editor = crate::editor::Editor::boot(lattice_core::Document::empty());
+        // State A: `active_buffer` never flips to Help, so
+        // `prev_pane_for_popup` stays None — the underlying buffer is a
+        // non-Document kind the dismiss must leave alone.
+        editor.active_buffer = BufferKind::FileTree;
+        assert!(editor.prev_pane_for_popup.is_none());
+
+        editor.dismiss_popup();
+
+        assert_eq!(
+            editor.active_buffer,
+            BufferKind::FileTree,
+            "State-A dismiss must preserve the underlying non-Document kind"
+        );
+    }
+
+    /// PU-A.1a non-regression: State-B dismiss still restores the prior
+    /// buffer from `prev_pane_for_popup` (the rename + dismiss edit did
+    /// not break the focused-popup restore path).
+    #[test]
+    fn state_b_dismiss_restores_prev_pane() {
+        let mut editor = crate::editor::Editor::boot(lattice_core::Document::empty());
+        let doc_buf = editor.document_buffer_id;
+        let content = lattice_help::parse_help_lines("t", vec!["h".to_string()]);
+        editor.open_popup(content, crate::popup::PopupPlacement::Centered);
+        assert_eq!(editor.active_buffer, BufferKind::Help);
+        assert!(editor.prev_pane_for_popup.is_some());
+
+        editor.dismiss_popup();
+
+        assert_eq!(
+            editor.active_buffer,
+            BufferKind::Document,
+            "State-B dismiss restores the doc we came from"
+        );
+        assert_eq!(editor.pane_tree.active().buffer_id, doc_buf);
     }
 
     /// D.8.e: first `:diffthis` creates an N=1 dormant

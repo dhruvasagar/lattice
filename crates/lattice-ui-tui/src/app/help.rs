@@ -132,7 +132,7 @@ impl App {
 
     /// `:HoverClose` -- dismiss the hover popup. Routes through
     /// the unified `dismiss_popup` path so State A and State B
-    /// both unwind cleanly (B restores via `prev_pane_for_help`;
+    /// both unwind cleanly (B restores via `prev_pane_for_popup`;
     /// A just drops the popup).
     pub(super) fn do_close_hover(&mut self) {
         self.dismiss_popup();

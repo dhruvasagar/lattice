@@ -7,7 +7,7 @@ generalisation exists to finish: the popup is "active" for `active_buffer` /
 source, the fold hot-slot, or global-chord suppression — so those slices leak to
 the buffer behind the popup.
 
-**Status:** 🚧 in progress (PIC.1 ✅). **Design ref:** `../../architecture/popup-api.md` (§5
+**Status:** 🚧 in progress (PIC.1 ✅, PIC.2 ✅). **Design ref:** `../../architecture/popup-api.md` (§5
 defects). **Feeds:** PU-A (`acp-ux-enhancements.md`). **Ships no user feature** —
 these are correctness fixes; the acceptance gate is "popup behaves like a focused
 buffer, background is never touched."
@@ -62,27 +62,32 @@ Full TUI suite green (1567).
 
 **Risk:** low. Isolated to the popup caret path; no input or state changes.
 
-## Slice PIC.2 — Popup input gate 📝
+## Slice PIC.2 — Popup input gate ✅
 
 **Depends on:** PIC.1 (independent, but sequenced after so a caret regression
-bisects cleanly).
+bisects cleanly). **Renderer-agnostic** (host `handle_action`; GPUI inherits it).
 
 | File | Change |
 |---|---|
-| `crates/lattice-host/src/dispatch.rs` | Extend the read-only-help action guard (2006): when a popup is focused (`active_buffer == Help`), consume actions that would escape it — tab nav (`NextTab`/`PrevTab`/`GoToTab`/tab new/close/move), pane nav (split/close/navigate/only/move-to-tab), and the missing fold-cycles (`CycleFoldAtCursor`/`CycleFoldsGlobal`) — alongside the existing document mutations. Motions/scroll/search/dismiss/follow-link keep flowing through onto the popup's cursor. |
-| `crates/lattice-host/src/dispatch.rs` (`open_popup`) | Normalize `self.modal = ModalState::Normal` on `PopupFocus::Steal` open (popup-api.md §5 defect) so the gate + dismiss/follow-link intercept fire when a popup is opened mid-Insert. |
+| `crates/lattice-host/src/dispatch.rs` | Added `CycleFoldAtCursor`/`CycleFoldsGlobal` to `action_is_document_mutation` (bug 2 — they mutate `self.folds`, so the existing read-only-help guard now consumes them like `zo`/`zc`/`za`). Added `action_escapes_focused_popup` (tab + pane-tree nav) and a second guard: when a popup is focused (`active_buffer == Help && popup_buffer.is_some()`), those escaping actions are silently consumed (bug 3). Gated on `popup_buffer.is_some()` so in-pane Help / Dashboard (real panes) keep normal nav. Motions/scroll/search/dismiss/follow-link flow through onto the popup's cursor. |
 
-Whitelist-vs-denylist is an implementation detail pinned at slice start: motions
-dispatch via `Action::Invoke(grammar)` (opaque at the guard), so a *pure*
-popup-safe whitelist is not cleanly expressible there — the tractable form is
-consuming the enumerable world-escaping action set (tab/pane/fold-cycle/mutation)
-and letting everything else through. Net user-visible behaviour matches the
-whitelist intent: only popup-meaningful keys act.
+Whitelist-vs-denylist: motions dispatch via `Action::Invoke(grammar)` (opaque at
+the guard), so a *pure* popup-safe whitelist is not cleanly expressible there —
+the implemented form consumes the enumerable world-escaping set and lets
+everything else through. Net user-visible behaviour matches the whitelist intent:
+only popup-meaningful keys act.
 
-Tests (`lattice-host`): with a popup focused, `gt`/`z<Tab>`/`z<Space>`/`i`/`dd`
-are consumed and the background buffer + `self.folds` are untouched; `j`/`/`
-/`Esc`/`<CR>` still act on the popup. Opening a popup from Insert leaves
-`modal == Normal`; dismiss restores the prior modal.
+**Deferred to PU-A:** `open_popup` modal normalization (`self.modal = Normal` on
+open + save/restore via `PrevPaneState`). Not needed for bugs 2 & 3 (both
+Normal-mode); it only matters for a popup auto-opened mid-Insert (the ACP menu,
+PU-B), and doing it right pulls in the `PrevPaneState { modal }` + `dismiss_popup`
+restore that belongs to the PU-A generalisation.
+
+Tests (`lattice-host`): `fold_cycles_are_document_mutations`,
+`escape_predicate_covers_tab_and_pane_nav_only`,
+`popup_focused_consumes_tab_switch`, `tab_switch_works_without_a_focused_popup`
+(non-regression), `popup_focused_consumes_fold_cycle_as_read_only`. Full host
+suite green (762).
 
 **Risk:** medium. Touches the dispatch guard, a hot path — but the guard is
 already the sanctioned popup-aware seam; the change is additive and self-scoping.

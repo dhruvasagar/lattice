@@ -1895,6 +1895,15 @@ pub fn action_is_document_mutation(action: &Action) -> bool {
             | Action::OpenAllFolds
             | Action::CloseAllFolds
             | Action::DeleteFoldAtCursor
+            // PIC.2: the org-cycle fold ops (`z<Space>` / `z<Tab>`) were
+            // absent here, so they skipped the read-only-help guard and
+            // their handlers mutated `self.folds` — a hot-slot keyed to
+            // `document_buffer_id` (the buffer BEHIND a focused popup),
+            // never swapped for the popup. Grouped with the sibling fold
+            // mutations so a read-only Help / Dashboard buffer consumes
+            // them like `zo` / `zc` / `za`.
+            | Action::CycleFoldAtCursor
+            | Action::CycleFoldsGlobal
             | Action::RepeatLastChange
             | Action::StartMacroRecord(_)
             | Action::StopMacroRecord
@@ -1915,6 +1924,48 @@ pub fn action_is_document_mutation(action: &Action) -> bool {
             | Action::WalkMarkHistoryForward
             | Action::GotoNextFold
             | Action::GotoPrevFold
+    )
+}
+
+/// PIC.2: actions that escape / reconfigure the world BEHIND a focused
+/// popup overlay — tab navigation and pane-tree management. A focused
+/// popup (State B) is an exclusive overlay surface, not a pane you can
+/// navigate away from; these chords are consumed while it holds focus so
+/// a stray `gt` / `<C-w>…` doesn't refocus or reshape the buffer behind
+/// it (and, for `gt`, drag the single-slot popup overlay onto the new
+/// tab). Motions / scroll / search / dismiss / follow-link are NOT here —
+/// they keep operating on the popup's own cursor.
+///
+/// Denylist rather than a popup-safe whitelist because motions/scroll
+/// dispatch via `Action::Invoke(grammar)` (opaque here), so the
+/// enumerable set is the escaping actions; everything else flows through
+/// onto the popup, matching the "only popup-meaningful keys act" intent.
+pub fn action_escapes_focused_popup(action: &Action) -> bool {
+    matches!(
+        action,
+        // Pane tree / window management.
+        Action::SplitPaneHorizontal
+            | Action::SplitPaneVertical
+            | Action::ClosePane
+            | Action::OnlyPane
+            | Action::NavigatePane(_)
+            | Action::NextPane
+            | Action::PrevPane
+            | Action::MovePaneToNewTab
+            | Action::EqualizePanes
+            | Action::GrowPaneHeight
+            | Action::ShrinkPaneHeight
+            | Action::GrowPaneWidth
+            | Action::ShrinkPaneWidth
+            // Tabs.
+            | Action::NextTab
+            | Action::PrevTab
+            | Action::GoToTab(_)
+            | Action::NewTab
+            | Action::NewTabAt(_)
+            | Action::CloseTab
+            | Action::OnlyTab
+            | Action::MoveTab(_)
     )
 }
 
@@ -2011,6 +2062,21 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         editor.set_message(EchoLevel::Info, "buffer is read-only".to_string());
         editor.ensure_cursor_visible();
         editor.maybe_reparse_syntax();
+        _out.consumed = true;
+        return;
+    }
+    // PIC.2: a FOCUSED popup (State B — `active_buffer == Help` with the
+    // overlay slot set) is an exclusive focus surface. Tab / pane / window
+    // nav chords are consumed here so they don't act on the buffer BEHIND
+    // the overlay (and so `gt` can't drag the single-slot popup onto
+    // another tab). Gated on `popup_buffer.is_some()` so in-pane Help and
+    // Dashboard — which are real panes you legitimately navigate away
+    // from — keep normal tab/pane navigation. Silent consume: `gt` in a
+    // popup has no sensible meaning, so it just no-ops.
+    if matches!(editor.active_buffer, BufferKind::Help)
+        && editor.popup_buffer.is_some()
+        && action_escapes_focused_popup(&action)
+    {
         _out.consumed = true;
         return;
     }
@@ -35311,6 +35377,105 @@ mod tests {
             editor.document_buffer_id, buf_a,
             "self.document must follow the surviving pane after a pane \
              close — else the original pane renders/edits B"
+        );
+    }
+
+    // ── PIC.2: popup input gate ───────────────────────────────
+
+    fn open_focused_popup(editor: &mut crate::editor::Editor) {
+        let content = lattice_help::parse_help_lines("t", vec!["help line".to_string()]);
+        editor.open_popup(content, crate::popup::PopupPlacement::Centered);
+        assert!(editor.popup_buffer.is_some(), "State B popup open");
+        assert_eq!(editor.active_buffer, BufferKind::Help);
+    }
+
+    /// PIC.2 (bug 2): the org-cycle fold ops are now document mutations,
+    /// so the read-only-help guard consumes them like `zo`/`zc`/`za`.
+    #[test]
+    fn fold_cycles_are_document_mutations() {
+        assert!(action_is_document_mutation(&Action::CycleFoldAtCursor));
+        assert!(action_is_document_mutation(&Action::CycleFoldsGlobal));
+    }
+
+    /// PIC.2 (bug 3): the escape predicate covers tab + pane-tree nav and
+    /// nothing else — motions/dismiss flow onto the popup.
+    #[test]
+    fn escape_predicate_covers_tab_and_pane_nav_only() {
+        for a in [
+            Action::NextTab,
+            Action::PrevTab,
+            Action::GoToTab(2),
+            Action::NewTab,
+            Action::CloseTab,
+            Action::SplitPaneHorizontal,
+            Action::SplitPaneVertical,
+            Action::ClosePane,
+            Action::OnlyPane,
+            Action::NextPane,
+            Action::PrevPane,
+        ] {
+            assert!(action_escapes_focused_popup(&a), "{a:?} must be an escape");
+        }
+        // Popup-meaningful / benign actions are NOT consumed.
+        assert!(!action_escapes_focused_popup(&Action::None));
+        assert!(!action_escapes_focused_popup(&Action::HelpDismiss));
+    }
+
+    /// PIC.2 (bug 3): `gt` is consumed while a popup is focused — the tab
+    /// does not switch and the popup keeps focus (it can't be dragged onto
+    /// another tab).
+    #[test]
+    fn popup_focused_consumes_tab_switch() {
+        let mut editor = crate::editor::Editor::boot(lattice_core::Document::empty());
+        editor.do_new_tab();
+        assert_eq!(editor.tabs.len(), 2);
+        let tab_before = editor.active_tab;
+        open_focused_popup(&mut editor);
+
+        let out = editor.dispatch(Action::NextTab);
+
+        assert!(out.consumed, "gt consumed while a popup is focused");
+        assert_eq!(editor.active_tab, tab_before, "tab did not switch");
+        assert_eq!(
+            editor.active_buffer,
+            BufferKind::Help,
+            "popup keeps focus"
+        );
+    }
+
+    /// PIC.2 non-regression: tab navigation still works when NO popup is
+    /// focused — the gate is popup-scoped, not a blanket suppression.
+    #[test]
+    fn tab_switch_works_without_a_focused_popup() {
+        let mut editor = crate::editor::Editor::boot(lattice_core::Document::empty());
+        editor.do_new_tab();
+        assert_eq!(editor.active_tab, 1);
+
+        let _ = editor.dispatch(Action::PrevTab);
+
+        assert_eq!(
+            editor.active_tab, 0,
+            "PrevTab switches tabs when no popup is focused"
+        );
+    }
+
+    /// PIC.2 (bug 2): `z<Tab>` in a focused popup is consumed by the
+    /// read-only guard (echoes read-only) instead of leaking to the
+    /// background document's fold model.
+    #[test]
+    fn popup_focused_consumes_fold_cycle_as_read_only() {
+        let mut editor = crate::editor::Editor::boot(lattice_core::Document::empty());
+        open_focused_popup(&mut editor);
+
+        let out = editor.dispatch(Action::CycleFoldsGlobal);
+
+        assert!(out.consumed, "fold-cycle consumed in a read-only popup");
+        let msg = editor.last_message.as_ref().expect("read-only echo");
+        assert!(
+            msg.text.contains("read-only"),
+            "fold-cycle in a read-only popup echoes read-only (not the \
+             handler's 'no folds to cycle'), got: {}",
+            msg.text
         );
     }
 

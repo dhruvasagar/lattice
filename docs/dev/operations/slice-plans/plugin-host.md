@@ -4,7 +4,8 @@
 (a + b(b1a+b1b+b2) + c + d); **PH7.4 🚧** (⭐ exit, decomposed a–e): **4a ✅** (picker boundary
 mirrors + marginalia + context projection), **4b ✅** (host-services `walk` seam — first
 guest→host call, capability-gated), **4c 🚧** (host adapter; **4c.1a ✅** picker-source world +
-async bindings, actor-task model locked); 4c.1b (per-plugin task) next. Design fragment:
+async bindings, **4c.1b ✅** per-plugin actor task + `PickerClient` bridge); 4c.2
+(`WasmPickerSource` adapter + registration) next. Design fragment:
 [`../../architecture/plugin-host.md`](../../architecture/plugin-host.md). Spec:
 `design.md` §5.5 / §9 / §13. This plan sequences *Phase 7 proper* (per the locked scope):
 the host runtime, capability model, the WIT interface set mirroring exercised native seams,
@@ -422,10 +423,33 @@ result; `OpenFile` outcome). Unregister the native `files` source; register the 
       seen as a host `with`-mapped import); wasi-http is the precedent that it is solvable —
       resolve the world shape then, not now. The PH7.3c `DocumentResource` backing stays ready.
 
-    #### PH7.4c.1b — Per-plugin actor task + call protocol 📝
-    The `PickerCall` enum + task loop owning the `Store<PluginState>` + the `Send+Sync` client
-    (the bridge). Proven by driving a fixture picker guest through the channel. **Depends:**
-    PH7.4c.1a.
+    #### PH7.4c.1b — Per-plugin actor task + call protocol ✅ (2026-07-12)
+    The bridge (`src/picker_task.rs`): the `PickerCall` enum (Spec/Init/Accept, each carrying a
+    `oneshot` reply), the `PickerActor` task loop owning the `Store<PluginState>` + picker
+    bindings (per-call fuel/epoch armed inside the loop via the extracted `arm_store`), and the
+    `Send+Sync` `PickerClient` (an mpsc `Sender` clone; serializes calls onto the single-consumer
+    loop the `!Sync` `Store` needs). `PluginHost::spawn_picker_source` instantiates the
+    `picker-source-plugin` world under the same grant/data-dir/WASI as `instantiate_plugin`
+    (shared `build_plugin_wasi` + `new_store` extraction) and returns `(PickerClient, PickerActor)`;
+    the **caller** drives `PickerActor::run` on its multi-thread runtime — the lib still owns no
+    runtime (`futures::channel`, chosen over `tokio::sync` to keep that invariant; `tokio` stays a
+    dev-dep). A closed channel surfaces as the new typed `PluginHostError::PluginGone` (the caller
+    stays live); a trap does not end the loop (the `Store` survives a clean fuel/epoch trap;
+    quarantine is PH7.12).
+    - **Proof:** a real `wasm32-wasip2` fixture guest (`tests/fixtures/picker-guest`, built by the
+      extended `build.rs` → `PICKER_GUEST_WASM`) driven through the channel by `tests/picker_actor.rs`
+      (3 tests): spec/init/accept round-trip with inputs (`args` + the `PickerContext` projection)
+      provably crossing (the fixture echoes them), the guest's own WIT `err` surfacing as the inner
+      `Err` (distinct from a host trap), and the `PluginGone` path after the actor ends. Skips
+      cleanly when the wasm target is absent (the trampoline-bench precedent).
+    - **Bench:** no new microbench — the per-call cost is the wasm typed call already characterized
+      by the PH7.3d trampoline bench; the channel adds a sub-µs mpsc+oneshot hop. The end-to-end
+      picker overhead bench rides the real `fuzzy-finder` consumer at PH7.4d (per this plan's §4b
+      note), CI-gated at PH7.5.
+    - **Public API note:** the picker WIT records the bridge traffics in are re-exported `pub` from
+      `picker_task` (`PickerContext`, `RawCandidate`-bearing `CandidatePair`, `RoutingPayload`,
+      `PickerAcceptOutcome`, `PickerSourceSpec`, + the `PickerContext` construction family) so
+      callers get a clean path, not `crate::lattice::…`. **Depends:** PH7.4c.1a.
 
     #### PH7.4c.2 — `WasmPickerSource` adapter + registration 📝
     `impl PickerSourceGenerator` over the client (`init`→`PickerInitResult::Future`, boundary

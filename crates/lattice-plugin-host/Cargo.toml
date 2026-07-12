@@ -70,6 +70,12 @@ lattice-runtime = { path = "../lattice-runtime" }
 # PH7.2: graceful-degradation logging -- a denied/inaccessible granted prefix
 # is skipped with a `warn!`, never a panic or a failed load.
 tracing = { workspace = true }
+# PH7.4c.1b: the per-plugin actor bridge (`picker_task`). `futures::channel`
+# gives runtime-agnostic mpsc + oneshot for the request/reply protocol, so the
+# lib stays executor-agnostic -- the caller spawns the returned actor future on
+# its own multi-thread runtime (the lib owns no runtime; `tokio` remains a
+# dev-dependency only). Chosen over `tokio::sync` to keep that invariant.
+futures = { workspace = true }
 
 [dev-dependencies]
 # Assembles the hand-written lifecycle components (no-op / busy / spin) from

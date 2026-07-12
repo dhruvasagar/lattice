@@ -4372,6 +4372,7 @@ dependencies = [
  "anyhow",
  "criterion",
  "dirs 5.0.1",
+ "futures",
  "lattice-completion",
  "lattice-core",
  "lattice-grammar",

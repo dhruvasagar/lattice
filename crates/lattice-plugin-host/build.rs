@@ -1,46 +1,60 @@
-//! Builds the PH7.3d trampoline fixture guest to a `wasm32-wasip2` component so
-//! `tests/trampoline.rs` can load it (a real guest↔host canonical-ABI call).
+//! Builds the fixture guests to `wasm32-wasip2` components so the tests/benches
+//! can load them (real guest↔host canonical-ABI calls):
+//!   - `trampoline-guest` (PH7.3d) → `TRAMPOLINE_GUEST_WASM`, used by
+//!     `benches/trampoline.rs` (the typed-call bench).
+//!   - `picker-guest` (PH7.4c.1b) → `PICKER_GUEST_WASM`, used by
+//!     `tests/picker_actor.rs` (drives the per-plugin actor bridge).
 //!
-//! The guest is a *standalone workspace* under `tests/fixtures/trampoline-guest`
-//! with its own `target/`, so building it here never contends with the host's
-//! build lock. On success we hand the test the component path via the
-//! `TRAMPOLINE_GUEST_WASM` env var. If the `wasm32-wasip2` target is missing or
-//! the guest build fails, we set the var *empty* and warn — the host build
-//! still succeeds and the trampoline test skips (with a clear message) rather
-//! than breaking every `cargo build` on a box without the wasm target.
+//! Each guest is a *standalone workspace* under `tests/fixtures/<name>` with its
+//! own `target/`, so building it here never contends with the host's build lock.
+//! On success we hand the consumer the component path via the named env var. If
+//! the `wasm32-wasip2` target is missing or a guest build fails, we set that
+//! var *empty* and warn — the host build still succeeds and the dependent
+//! test/bench skips (with a clear message) rather than breaking every
+//! `cargo build` on a box without the wasm target.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn main() {
     let manifest_dir = PathBuf::from(
         std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set by cargo"),
     );
-    let guest_dir = manifest_dir
-        .join("tests")
-        .join("fixtures")
-        .join("trampoline-guest");
+    let wit_dir = manifest_dir.join("..").join("..").join("wit");
+    // A change to the shared WIT (the worlds the guests target) rebuilds both.
+    println!("cargo:rerun-if-changed={}", wit_dir.display());
 
-    // Rebuild the fixture whenever its source, manifest, or the shared WIT
-    // (which defines the world it targets) changes.
+    // The `trampoline-guest` binary name uses an underscore (crate name
+    // `trampoline-guest` → artifact `trampoline_guest.wasm`); same for
+    // `picker-guest` → `picker_guest.wasm`.
+    build_guest(&manifest_dir, "trampoline-guest", "TRAMPOLINE_GUEST_WASM");
+    build_guest(&manifest_dir, "picker-guest", "PICKER_GUEST_WASM");
+}
+
+/// Build one standalone fixture guest to a `wasm32-wasip2` component and export
+/// its path via `env_var` (empty + a `warning` on any failure, so the dependent
+/// test/bench skips gracefully). `name` is the fixture dir *and* crate name; the
+/// artifact is `<name-with-underscores>.wasm`.
+fn build_guest(manifest_dir: &Path, name: &str, env_var: &str) {
+    let guest_dir = manifest_dir.join("tests").join("fixtures").join(name);
+
+    // Rebuild the fixture whenever its source or manifest changes (the shared
+    // WIT rerun is registered once in `main`).
     println!("cargo:rerun-if-changed={}", guest_dir.join("src").display());
     println!(
         "cargo:rerun-if-changed={}",
         guest_dir.join("Cargo.toml").display()
-    );
-    println!(
-        "cargo:rerun-if-changed={}",
-        manifest_dir.join("..").join("..").join("wit").display()
     );
 
     // The guest builds into its own workspace `target/`, pinned explicitly so a
     // leaked `CARGO_TARGET_DIR` can't redirect the output out from under the
     // path we check below.
     let target_dir = guest_dir.join("target");
+    let artifact = format!("{}.wasm", name.replace('-', "_"));
     let wasm = target_dir
         .join("wasm32-wasip2")
         .join("release")
-        .join("trampoline_guest.wasm");
+        .join(&artifact);
 
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
     let output = Command::new(&cargo)
@@ -65,24 +79,24 @@ fn main() {
 
     match output {
         Ok(o) if o.status.success() && wasm.exists() => {
-            println!("cargo:rustc-env=TRAMPOLINE_GUEST_WASM={}", wasm.display());
+            println!("cargo:rustc-env={env_var}={}", wasm.display());
         }
         Ok(o) => {
-            // Non-fatal: the test/bench skip when the var is empty. Surface the
+            // Non-fatal: the test/bench skips when the var is empty. Surface the
             // guest build's stderr so a real failure isn't silent; the common
             // benign cause is a missing `wasm32-wasip2` target (`rustup target
             // add wasm32-wasip2`) — CI installs it so the perf gate runs there.
             let err = String::from_utf8_lossy(&o.stderr);
             let tail: String = err.lines().rev().take(4).collect::<Vec<_>>().join(" | ");
             println!(
-                "cargo:warning=trampoline fixture guest not built (target missing or build \
-                 failed); PH7.3d trampoline test/bench will skip. Last stderr: {tail}"
+                "cargo:warning={name} fixture guest not built (target missing or build failed); \
+                 the dependent test/bench will skip. Last stderr: {tail}"
             );
-            println!("cargo:rustc-env=TRAMPOLINE_GUEST_WASM=");
+            println!("cargo:rustc-env={env_var}=");
         }
         Err(e) => {
-            println!("cargo:warning=could not run cargo for the trampoline guest: {e}");
-            println!("cargo:rustc-env=TRAMPOLINE_GUEST_WASM=");
+            println!("cargo:warning=could not run cargo for the {name} guest: {e}");
+            println!("cargo:rustc-env={env_var}=");
         }
     }
 }

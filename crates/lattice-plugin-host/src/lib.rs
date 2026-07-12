@@ -60,6 +60,7 @@ pub mod capability;
 pub mod host_services;
 pub mod manifest;
 pub mod picker_host;
+pub mod picker_task;
 pub mod trampoline;
 
 pub use boundary::WitBoundary;
@@ -67,6 +68,7 @@ pub use capability::{
     CapabilityGrant, FsGrant, GrantOutcome, PreopenSpec, TrustTier, build_wasi_ctx, grant,
 };
 pub use manifest::{Capability, CapabilityParseError, ManifestError, PluginManifest};
+pub use picker_task::{PickerActor, PickerClient};
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -199,10 +201,37 @@ pub enum PluginHostError {
         #[source]
         source: anyhow::Error,
     },
+
+    /// A guest call was routed to a per-plugin actor task
+    /// ([`picker_task`]) whose channel is closed — the task has ended and
+    /// dropped its `Store` (teardown, or a fatal error unwound the loop). The
+    /// call is a no-op with a typed error; the *caller* stays live. This is the
+    /// bridge's graceful surface for "the plugin is gone", distinct from
+    /// [`Trap`](Self::Trap) (the plugin ran but its call failed).
+    #[error("plugin actor for `{func}` is no longer running")]
+    PluginGone {
+        /// The export the caller was trying to reach (`"spec"` / `"init"` /
+        /// `"accept"`).
+        func: &'static str,
+    },
+}
+
+/// Re-arm a `Store`'s fuel + epoch budget before a call, so each call gets a
+/// fresh allowance rather than sharing a running total. Shared by the
+/// [`LoadedPlugin`] lifecycle path and the [`picker_task`] actor loop.
+pub(crate) fn arm_store(
+    store: &mut Store<PluginState>,
+    budget: PluginBudget,
+) -> Result<(), PluginHostError> {
+    store
+        .set_fuel(budget.fuel)
+        .map_err(|e| PluginHostError::Instantiate(e.into()))?;
+    store.set_epoch_deadline(budget.epoch_deadline);
+    Ok(())
 }
 
 /// Classify a wasmtime call error into a [`TrapKind`] for reporting.
-fn classify_trap(err: &wasmtime::Error) -> TrapKind {
+pub(crate) fn classify_trap(err: &wasmtime::Error) -> TrapKind {
     match err.downcast_ref::<wasmtime::Trap>() {
         Some(wasmtime::Trap::OutOfFuel) => TrapKind::Fuel,
         Some(wasmtime::Trap::Interrupt) => TrapKind::Epoch,
@@ -498,19 +527,7 @@ impl PluginHost {
         tier: TrustTier,
         budget: PluginBudget,
     ) -> Result<LoadedPlugin, PluginHostError> {
-        let outcome = grant(manifest, tier);
-        let data_dir = self.data_dir_base.join(&manifest.id).join("data");
-        // Best-effort: a data dir we cannot create degrades to "no data mount"
-        // (build_wasi_ctx then skips it) rather than failing the load — never
-        // fail boot on a recoverable filesystem error (fragment §6).
-        if let Err(err) = std::fs::create_dir_all(&data_dir) {
-            tracing::warn!(
-                path = %data_dir.display(),
-                error = %err,
-                "plugin data dir create failed; the data mount is degraded"
-            );
-        }
-        let wasi = build_wasi_ctx(&outcome.grant, &data_dir);
+        let (wasi, outcome, data_dir) = self.build_plugin_wasi(manifest, tier);
         let (store, bindings) = self
             .instantiate_inner(component, wasi, outcome.grant.clone(), budget)
             .await?;
@@ -535,6 +552,24 @@ impl PluginHost {
         grant: CapabilityGrant,
         budget: PluginBudget,
     ) -> Result<(Store<PluginState>, Plugin), PluginHostError> {
+        let mut store = self.new_store(wasi, grant, budget)?;
+        let bindings = Plugin::instantiate_async(&mut store, component, &self.linker)
+            .await
+            .map_err(|e| PluginHostError::Instantiate(e.into()))?;
+        Ok((store, bindings))
+    }
+
+    /// Build a per-plugin `Store` around `wasi` + `grant` and arm it with the
+    /// generous [`INSTANTIATION_FUEL`] + `budget`'s epoch (the start function's
+    /// allowance; per-call arming via [`arm_store`] happens before each export).
+    /// Shared by the lifecycle-world instantiation and the picker actor spawn
+    /// (`picker_task`) so both build the same scoped `Store`.
+    fn new_store(
+        &self,
+        wasi: WasiCtx,
+        grant: CapabilityGrant,
+        budget: PluginBudget,
+    ) -> Result<Store<PluginState>, PluginHostError> {
         let state = PluginState {
             wasi,
             table: ResourceTable::new(),
@@ -547,11 +582,31 @@ impl PluginHost {
         // Default epoch behaviour is to trap on deadline; arm it generously
         // for instantiation (per-call arming happens before each export).
         store.set_epoch_deadline(budget.epoch_deadline);
+        Ok(store)
+    }
 
-        let bindings = Plugin::instantiate_async(&mut store, component, &self.linker)
-            .await
-            .map_err(|e| PluginHostError::Instantiate(e.into()))?;
-        Ok((store, bindings))
+    /// Compute a plugin's grant from `manifest` + `tier`, create its private
+    /// data dir, and build the scoped WASI view — the front half of
+    /// [`instantiate_plugin`](Self::instantiate_plugin), factored out so the
+    /// picker actor spawn (`picker_task`) instantiates under the identical
+    /// capability model. A data dir that cannot be created degrades to "no data
+    /// mount" (a `warn!`, never a failed load — fragment §6).
+    fn build_plugin_wasi(
+        &self,
+        manifest: &PluginManifest,
+        tier: TrustTier,
+    ) -> (WasiCtx, GrantOutcome, PathBuf) {
+        let outcome = grant(manifest, tier);
+        let data_dir = self.data_dir_base.join(&manifest.id).join("data");
+        if let Err(err) = std::fs::create_dir_all(&data_dir) {
+            tracing::warn!(
+                path = %data_dir.display(),
+                error = %err,
+                "plugin data dir create failed; the data mount is degraded"
+            );
+        }
+        let wasi = build_wasi_ctx(&outcome.grant, &data_dir);
+        (wasi, outcome, data_dir)
     }
 }
 
@@ -605,11 +660,7 @@ impl LoadedPlugin {
     /// Re-arm the fuel + epoch budget before a lifecycle call, so each call
     /// gets a fresh allowance rather than sharing a running total.
     fn arm_budget(&mut self) -> Result<(), PluginHostError> {
-        self.store
-            .set_fuel(self.budget.fuel)
-            .map_err(|e| PluginHostError::Instantiate(e.into()))?;
-        self.store.set_epoch_deadline(self.budget.epoch_deadline);
-        Ok(())
+        arm_store(&mut self.store, self.budget)
     }
 
     /// Call the component's `activate` export. For `init.rs` this runs the

@@ -33,6 +33,13 @@ pub fn install(boot: &mut impl SubsystemBoot, logger: &AiLogger) {
         .register(AiConversationMode::new())
         .expect("ai-conversation-mode register");
 
+    // PU-B: the `ai-permission` major mode backs the `*ai-permission*` popup
+    // menu; its `on_activate` reads the ConversationStore and projects the
+    // oldest pending request.
+    boot.modes_mut()
+        .register(crate::acp::permission_mode::AiPermissionMode::new())
+        .expect("ai-permission-mode register");
+
     // AU‑4: the host-registered programmatic-diff bus (the `review_diff`
     // producer side), shared with MCP's `openDiff`. `None` if absent → edit
     // permissions can't be reviewed and are denied (graceful). The host owns
@@ -57,6 +64,9 @@ pub fn install(boot: &mut impl SubsystemBoot, logger: &AiLogger) {
     // keymap binds. Declaration here (mode owns its surface); the handler
     // bodies live in `AiConversationMode::action_handlers`.
     crate::acp::conversation_mode::register_ai_conversation_actions(boot.commands_mut());
+
+    // PU-B: the `ai-permission` menu's action commands (`action:ai-perm-*`).
+    crate::acp::permission_mode::register_ai_permission_actions(boot.commands_mut());
 
     // Services: `AiClientHandle` for a future modeline/UI; `ConversationStore`
     // for the `ai-conversation` mode's projection.

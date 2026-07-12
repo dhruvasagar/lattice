@@ -418,15 +418,29 @@ mode re-projects on activation. Updated `effect.rs`, `wit/types.wit`, `boundary_
 + round-trip, both renderer arms (`open_popup_named`). Tests: `open_popup_named_*` +
 routing; grammar 212, host lib + boundary 13 + GPUI green.
 
-**PU-B.2b-iii — the mode.** `permission_mode.rs` (`ai-permission-mode`, Major):
-`on_activate` reads the oldest `Pending` permission from `ConversationStore` (turns/
-blocks are ordered) and owner-writes the projection (title, description, numbered
-options) into `*ai-permission*`; keymap binds `1`–`9` → select-index, `<CR>` →
-select-at-cursor (file-tree `entry_at_line` model), `Esc`/`q` → `Effect::DismissPopup`;
-the select handler maps index→`PermissionOption` and calls
-`store.resolve_permission(id, option_id)` (PU-B.2a). `:ai-permission` (commands.rs)
-returns `Effect::OpenPopup { name: "*ai-permission*", mode_id, Centered, Steal }`.
-Register the mode in `install.rs`. Proves the menu end-to-end via `:ai-permission`.
+**PU-B.2b-iii — the mode ✅.** `permission_mode.rs` (`ai-permission-mode`, Major):
+`on_activate` reads `ConversationStore::oldest_pending_permission` (new; turns/blocks
+are wire-ordered) and owner-writes the projection (title, numbered options, optional
+description after the options so the cursor offset stays fixed) into `*ai-permission*`;
+keymap binds `<CR>` → select-at-cursor (file-tree/oil `entry_at_line` model),
+`Esc`/`q` → `Effect::DismissPopup`; the select handler maps `cursor.line -
+FIRST_OPTION_LINE` → `PermissionOption` and calls `store.resolve_permission(id,
+option_id)` (PU-B.2a). `:ai-permission` (commands.rs) returns `Effect::OpenPopup {
+name, mode_id, Centered, Steal }`. Mode + actions registered in `install.rs`; the
+stale `:ai-allow`/`:ai-deny` keymap comment removed. Tests: projection↔cursor-offset
+contract, oldest-pending ordering; `lattice-ai` 159 green, full TUI builds.
+
+**PU-B.2b-iv — `1`–`9` digit accelerators 📝 (deferred).** Bare digits parse as vim
+counts (`Action::PushDigit`) before any mode chord lookup — no mode overrides this
+today. Needs a count-override seam (a mode opting its digit chords out of count
+accumulation). The menu is fully usable via `<CR>`-by-cursor (the design's own cited
+model) without it.
+
+**Honest gap:** no end-to-end test that a live `<CR>` in the popup resolves through
+the host (the `za`-through-host class of gap TCF also noted). Covered by construction:
+`open_popup_named` makes it a `Help`-kind Steal popup so `active_buffer_id()` → the
+popup buffer → its `ai-permission-mode` keymap fires; the handler + resolution are
+unit-tested.
 
 #### PU-B.3 — auto-open + queue 📝
 Conversation drain flags a newly-pending id + ensures/projects `*ai-permission*`;

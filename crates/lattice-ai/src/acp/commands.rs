@@ -104,6 +104,33 @@ pub fn register_ai_ex_commands(registry: &mut CommandRegistry, handle: AiClientH
             surface_form: SurfaceForm::Keyword,
         },
     );
+
+    // PU-B: open the permission menu for the oldest pending request. Data-only
+    // — the host ensures the `*ai-permission*` popup buffer under
+    // `ai-permission-mode` and its `on_activate` projects the request. Steal
+    // focus (the agent is blocked awaiting the decision); `Esc` defers.
+    registry.register_ex_command(
+        "ai-permission",
+        "Open the permission menu for the oldest pending agent request.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_ctx| {
+                Ok(Effect::OpenPopup {
+                    name: crate::acp::permission_mode::PERMISSION_BUFFER_NAME.to_string(),
+                    mode_id: crate::acp::permission_mode::AiPermissionMode::mode_id()
+                        .as_str()
+                        .to_string(),
+                    placement: lattice_core::ui::popup::PopupPlacement::Centered,
+                    focus: lattice_core::ui::popup::PopupFocus::Steal,
+                })
+            }),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
 }
 
 #[cfg(test)]

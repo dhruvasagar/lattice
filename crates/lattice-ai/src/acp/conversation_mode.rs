@@ -760,11 +760,9 @@ fn ai_conversation_keymap_entries() -> &'static [KeymapEntry] {
                 doc: "ai-conversation: toggle trust mode (auto-accept vs review)",
                 cmd: "action:ai-conv-toggle-trust"
             },
-            // AUX‑1: permission allow/deny chords are NOT in the static keymap
-            // because `a`/`A`/`r`/`R` conflict with existing focus-prompt and
-            // other chords. They are available as ex-commands
-            // (`:ai-allow` / `:ai-deny` etc.) and the action handlers are
-            // registered for a future transient-keymap gate.
+            // PU-B: permission requests are decided in the `*ai-permission*`
+            // popup menu (`ai-permission-mode`), opened by `:ai-permission` or
+            // (PU-B.3) auto-opened — not by chords on the conversation buffer.
         ]
     })
 }

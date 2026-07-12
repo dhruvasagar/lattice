@@ -70,6 +70,19 @@ pub enum PermissionStatus {
     Denied,
 }
 
+/// PU-B.2b: a pending permission request projected for the popup menu.
+/// `ai-permission-mode`'s `on_activate` reads [`ConversationStore::
+/// oldest_pending_permission`] and renders `title`, optional `description`, and
+/// one line per `options` entry (wire order); the select handler maps the chosen
+/// line back to `options[i].option_id`.
+#[derive(Debug, Clone)]
+pub struct PendingPermissionView {
+    pub id: String,
+    pub title: String,
+    pub description: Option<String>,
+    pub options: Vec<PermissionOption>,
+}
+
 /// AUX‑3: global processing status of the current agent session — shown in the
 /// conversation buffer's headerline.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -553,6 +566,28 @@ impl ConversationStore {
         (self.publish)(ConversationUpdated { session });
     }
 
+    /// PU-B.2b: the oldest still-`Pending` permission request, projected for
+    /// the popup menu (`ai-permission-mode` reads it in `on_activate`). Turns
+    /// and blocks are in wire order, so the first `Pending` block is the oldest.
+    pub fn oldest_pending_permission(&self) -> Option<PendingPermissionView> {
+        let conv = self.inner.lock().expect("conversation mutex poisoned");
+        conv.turns.iter().flat_map(|t| t.blocks.iter()).find_map(|b| match b {
+            Block::Permission {
+                id,
+                title,
+                description,
+                options,
+                status: PermissionStatus::Pending,
+            } => Some(PendingPermissionView {
+                id: id.clone(),
+                title: title.clone(),
+                description: description.clone(),
+                options: options.clone(),
+            }),
+            _ => None,
+        })
+    }
+
     /// AUX‑3: set the global processing status and publish a
     /// `ConversationUpdated` so the headerline re-renders.
     pub fn set_status(&self, session: &SessionKey, status: SessionStatus) {
@@ -873,6 +908,44 @@ mod tests {
         let opt = test_permission_option("a1", "Allow once", PermissionOptionKind::AllowOnce);
         store.resolve_permission("nonexistent", opt.option_id);
         assert_eq!(published.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn oldest_pending_permission_returns_the_first_in_wire_order() {
+        let store = ConversationStore::new(Arc::new(|_| {}));
+        let session = SessionKey::new("opencode", 1);
+        let (tx1, _rx1) = tokio::sync::oneshot::channel();
+        let (tx2, _rx2) = tokio::sync::oneshot::channel();
+        store.push_permission_request(
+            &session,
+            "perm-1".to_string(),
+            "First?".to_string(),
+            None,
+            vec![test_permission_option("a", "Allow", PermissionOptionKind::AllowOnce)],
+            tx1,
+        );
+        store.push_permission_request(
+            &session,
+            "perm-2".to_string(),
+            "Second?".to_string(),
+            None,
+            vec![test_permission_option("b", "Allow", PermissionOptionKind::AllowOnce)],
+            tx2,
+        );
+
+        let oldest = store
+            .oldest_pending_permission()
+            .expect("a pending request exists");
+        assert_eq!(oldest.id, "perm-1", "oldest = first in wire order");
+        assert_eq!(oldest.title, "First?");
+        assert_eq!(oldest.options.len(), 1);
+
+        // Resolving the first surfaces the second as the new oldest.
+        store.resolve_permission("perm-1", oldest.options[0].option_id.clone());
+        assert_eq!(
+            store.oldest_pending_permission().map(|v| v.id),
+            Some("perm-2".to_string()),
+        );
     }
 
     // ── AUX‑2: usage update tests ──

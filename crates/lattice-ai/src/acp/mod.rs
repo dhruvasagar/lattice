@@ -15,6 +15,7 @@ pub mod connection;
 pub mod conversation;
 pub mod conversation_mode;
 pub mod error;
+pub mod permission_mode;
 pub mod handle;
 pub mod install;
 pub mod providers;
@@ -25,8 +26,8 @@ pub mod tool_fold;
 pub use commands::register_ai_ex_commands;
 pub use connection::{Connection, SessionId};
 pub use conversation::{
-    Block, Conversation, ConversationStore, ConversationUpdated, Cost, EditStatus, PermissionStatus,
-    Role, SessionStatus, ToolStatus, Turn, UsageSnapshot,
+    Block, Conversation, ConversationStore, ConversationUpdated, Cost, EditStatus,
+    PendingPermissionView, PermissionStatus, Role, SessionStatus, ToolStatus, Turn, UsageSnapshot,
 };
 pub use error::{AiError, Result};
 pub use handle::{AiClientHandle, AiState};

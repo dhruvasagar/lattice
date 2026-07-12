@@ -50,6 +50,11 @@ fn main() {
         "GRAMMAR_GUEST_WASM",
     );
     build_guest(
+        &fixtures.join("events-guest"),
+        "events-guest",
+        "EVENTS_GUEST_WASM",
+    );
+    build_guest(
         &manifest_dir
             .join("..")
             .join("..")

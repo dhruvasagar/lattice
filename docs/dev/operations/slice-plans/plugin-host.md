@@ -15,7 +15,10 @@ projections + marshalling bench), 7.7b ✅ (two-interface sync `grammar` world +
 `register-*` recording), 7.7c ✅ (sync trampoline + `register_plugin_*` cross-crate seam +
 `PluginBudget::grammar`, validated e2e through a real wasm fixture), 7.7d ✅ (`< 5 µs p99` gate:
 ~340 ns release round-trip; the bench caught the **F1** epoch false-positive → fuel-primary
-Reflex budget). **PH7.8–7.12** (WIT-seam hardening before ABI freeze) remain. A conformance
+Reflex budget). **PH7.8 ✅ COMPLETE** (event/hook seam — dedicated async `events-plugin` world +
+the reserved `SubscriptionTarget::Plugin` slot filled with a type-erased lock-dropped sink;
+`events-guest` fixture proves delivery + graceful trap-isolation e2e; `< 250 µs` gate at
+~3.75 µs debug). **PH7.9–7.12** (WIT-seam hardening before ABI freeze) remain. A conformance
 audit of the whole host is `../../audit/plugin-host-architecture.md` (8 findings; **F1
 resolved**). Design fragment:
 [`../../architecture/plugin-host.md`](../../architecture/plugin-host.md). Spec:
@@ -56,21 +59,21 @@ instantiates a component and calls its lifecycle exports.
   malformed bytes **and** bare-core-module → typed `PluginHostError::Compile`, no panic.
 - **Decisions (locked with Dhruva 2026-07-01):**
   - *No-op component = hand-written WAT assembled in-test via the `wat` crate* (not a real
-    `wit-bindgen` guest). No `wasm32-wasip2` target or separate guest build enters CI for the
-    scaffold; that toolchain arrives with the real Rust guest at PH7.4. Matches the slice's own
-    "hand-written no-op component" wording (heuristic #1: lightest honest tool, toolchain lands
-    when a real consumer needs it).
+	`wit-bindgen` guest). No `wasm32-wasip2` target or separate guest build enters CI for the
+	scaffold; that toolchain arrives with the real Rust guest at PH7.4. Matches the slice's own
+	"hand-written no-op component" wording (heuristic #1: lightest honest tool, toolchain lands
+	when a real consumer needs it).
   - *The `plugin` lifecycle world's first consumer is `init.rs`* (the user's config compiled to
-    WASM), **not** `fuzzy-finder`. The no-op component is the degenerate `init.rs`; PH7.4's
-    `fuzzy-finder` validates the picker seam. Reflected in `wit/plugin.wit` + the `Cargo.toml`
-    dep rationale. *Sequencing resolved (Dhruva 2026-07-01): framing only* — `init.rs` is the
-    primary motivating consumer, but its load path stays post-Phase-7 per fragment §12
-    (consumes PH7.12's reload seam); Phase-7 sequencing is unchanged and `fuzzy-finder` (PH7.4)
-    remains the exit gate.
+	WASM), **not** `fuzzy-finder`. The no-op component is the degenerate `init.rs`; PH7.4's
+	`fuzzy-finder` validates the picker seam. Reflected in `wit/plugin.wit` + the `Cargo.toml`
+	dep rationale. *Sequencing resolved (Dhruva 2026-07-01): framing only* — `init.rs` is the
+	primary motivating consumer, but its load path stays post-Phase-7 per fragment §12
+	(consumes PH7.12's reload seam); Phase-7 sequencing is unchanged and `fuzzy-finder` (PH7.4)
+	remains the exit gate.
   - *No WASI view / async ABI / fuel in the scaffold* — deferred to the slices that own them
-    (WASI → PH7.2; async + Store-per-plugin tasks + fuel + module cache → PH7.1). The scaffold
-    is synchronous and import-free; the `PluginHostError::Engine` variant is reserved for
-    PH7.1's custom engine config.
+	(WASI → PH7.2; async + Store-per-plugin tasks + fuel + module cache → PH7.1). The scaffold
+	is synchronous and import-free; the `PluginHostError::Engine` variant is reserved for
+	PH7.1's custom engine config.
 
 ### PH7.1 — Host runtime core (Store-per-plugin, async ABI, fuel/epoch, AOT cache, lazy) ✅ (2026-07-01)
 Split into two green-able steps (the slice bundled too much for one landing): **PH7.1a** async
@@ -141,13 +144,13 @@ vs user-install consent); host-issued `SourceLayer::Plugin(id)` provenance stamp
   `lattice-mode`, `tracing`.
 - **Decisions (locked with Dhruva 2026-07-01):**
   - *Enforcement proof depth:* host-layer at PH7.2 + guest-level e2e at PH7.4 (respects the PH7.0
-    toolchain deferral; heuristic #1 — the WASI OS-enforcement is upstream's, we test our mapping).
+	toolchain deferral; heuristic #1 — the WASI OS-enforcement is upstream's, we test our mapping).
   - *Manifest form:* committed TOML format **and** typed `PluginManifest` (fragment §6 "ships a
-    manifest"); trust tier stays a host-supplied input, never a self-declared manifest field.
+	manifest"); trust tier stays a host-supplied input, never a self-declared manifest field.
   - *WASI enforcement scope = filesystem only.* `net:http`/`proc:spawn` ride the grant as metadata
-    for the capability-gated `host-services` seam (PH7.3+); wiring raw WASI sockets/subprocess for a
-    `net`/`proc` grant would be *broader* than intended, so `build_wasi_ctx` leaves them disabled.
-    (Refines fragment §6's "`wasi:filesystem`/`wasi:http` view" — see the §6 note there.)
+	for the capability-gated `host-services` seam (PH7.3+); wiring raw WASI sockets/subprocess for a
+	`net`/`proc` grant would be *broader* than intended, so `build_wasi_ctx` leaves them disabled.
+	(Refines fragment §6's "`wasi:filesystem`/`wasi:http` view" — see the §6 note there.)
 - **Artefacts:** bench = n/a (correctness slice); test = 8 unit (`manifest`/`capability` mods:
   parse matrix + malformed rejection + grant/deny + preopen specs + graceful skip) + 6 integration
   (`tests/capability.rs`: grant load + data-dir mount, no-grant reaches no fs, proc-spawn tier
@@ -177,138 +180,138 @@ async result-carrier adapter (guest returns batches; host owns `Future`/stream).
   referenced payload records at `crate::lattice::plugin_host::types::*`); round-trips for `Args`,
   `RawCandidate`, `PickerAcceptOutcome`.
   - **Landed:** `wit/types.wit` (`args`/`arg-value` + `candidate-kind`/`candidate-data` (+ payload
-    records) + `raw-candidate` + `picker-accept-outcome` (+ `jump-target`/`location`/`command-ref`/
-    `lsp-code-action-ref`)); `boundary.rs` (`WitBoundary` + impls for `Args`/`ArgValue`,
-    `CandidateKind`/`CandidateData`/`RawCandidate`, `PickerAcceptOutcome`); `benches/boundary.rs`
-    (conversion microbench, ~21–47ns off-box). 7 boundary tests green; deps `lattice-picker` +
-    `lattice-completion` added.
+	records) + `raw-candidate` + `picker-accept-outcome` (+ `jump-target`/`location`/`command-ref`/
+	`lsp-code-action-ref`)); `boundary.rs` (`WitBoundary` + impls for `Args`/`ArgValue`,
+	`CandidateKind`/`CandidateData`/`RawCandidate`, `PickerAcceptOutcome`); `benches/boundary.rs`
+	(conversion microbench, ~21–47ns off-box). 7 boundary tests green; deps `lattice-picker` +
+	`lattice-completion` added.
   - **Typed-error (not lossy) boundaries:** nested `ArgValue::Invocation` (§4.1) and
-    `CandidateData::Command` (recursive `SourceLocation`, §4.4) cross only with the command /
-    provenance mirror — until then a `WitBoundary` `Err`. Non-serde `RawCandidate` fields
-    (`accept_action`/`annotations`/`display_spans`) do NOT cross (crossable core =
-    `text`/`display`/`source`/`kind`/`data`); a non-UTF-8 path is a typed error, never lossy.
+	`CandidateData::Command` (recursive `SourceLocation`, §4.4) cross only with the command /
+	provenance mirror — until then a `WitBoundary` `Err`. Non-serde `RawCandidate` fields
+	(`accept_action`/`annotations`/`display_spans`) do NOT cross (crossable core =
+	`text`/`display`/`source`/`kind`/`data`); a non-UTF-8 path is a typed error, never lossy.
   - **Deferred:** the headline **< 500ns p99 end-to-end typed-call bench** lands at PH7.3d, where an
-    actual guest↔host call exists to measure (the marshalling component is benched here at PH7.3a).
+	actual guest↔host call exists to measure (the marshalling component is benched here at PH7.3a).
 
   #### PH7.3b — The `Effect` variant mirror ✅ (PH7.3b1a ✅, PH7.3b1b ✅, PH7.3b2 ✅)
   Mirror the **whole** ~105-variant closed `Effect` enum (LOCKED with Dhruva 2026-07-01: whole-enum,
   not a subset — `Effect` is pure data, no `dyn`/`tokio`/`lsp_types`; §4.4 rejects any partial/opaque
   `effect` seam, §14 flags WIT-design-wrong as the highest risk).
   - **Recursion re-plan (LOCKED with Dhruva 2026-07-01):** `Effect` is *recursive* — `Many(Vec<Effect>)`,
-    `Global { body: Box<CommandInvocation> }` (and `CommandInvocation → Args → ArgValue::Invocation`),
-    plus `AppAction(AppEffect)` pulls in a peer-sized ~100-variant enum. WIT cannot express recursive
-    value types, so a literal 1:1 mirror is impossible for those arms. Resolution (Option A, chosen
-    over reviving the guest-producible subset): the boundary crosses **`list<effect>`** — `Many` is
-    associative composition, flattened non-lossily (`to_wit` flattens, `from_wit` rebuilds `Many` when
-    len>1); `Global` + `AppAction` + any `CommandInvocation`-carrying arm cross as typed `WitBoundary`
-    errors until their mirrors land (the `ArgValue::Invocation` precedent). No opaque blob — every
-    representable arm stays typed.
+	`Global { body: Box<CommandInvocation> }` (and `CommandInvocation → Args → ArgValue::Invocation`),
+	plus `AppAction(AppEffect)` pulls in a peer-sized ~100-variant enum. WIT cannot express recursive
+	value types, so a literal 1:1 mirror is impossible for those arms. Resolution (Option A, chosen
+	over reviving the guest-producible subset): the boundary crosses **`list<effect>`** — `Many` is
+	associative composition, flattened non-lossily (`to_wit` flattens, `from_wit` rebuilds `Many` when
+	len>1); `Global` + `AppAction` + any `CommandInvocation`-carrying arm cross as typed `WitBoundary`
+	errors until their mirrors land (the `ArgValue::Invocation` precedent). No opaque blob — every
+	representable arm stays typed.
   - **Staged:** **PH7.3b1a** = the ~12 nested payload record mirrors (`Position`/`Range`/`Edit`/
-    `EditKind`/`EditDelta`/`AppliedEdit`/`Register`/`ModalState`(+`VisualKind`/`SearchDirection`)/
-    `Selection`(+`VisualMode`)/`SelectionSet`) + their round-trips. Adds
-    `SelectionSet::from_parts(Vec<Selection>, usize)` to `lattice-protocol` (the boundary reconstruction
-    counterpart to `all()`/`primary_index()`; only `single()`/`cursor_at_origin()` existed). **PH7.3b1b
-    ✅ (2026-07-02)** = the ~101-arm `effect` variant using those records + the `list<effect>` flatten
-    + exhaustive round-trip + typed-error arms. **PH7.3b2 ✅ (2026-07-02)** = the `AppEffect` mirror (unblocks `AppAction`).
+	`EditKind`/`EditDelta`/`AppliedEdit`/`Register`/`ModalState`(+`VisualKind`/`SearchDirection`)/
+	`Selection`(+`VisualMode`)/`SelectionSet`) + their round-trips. Adds
+	`SelectionSet::from_parts(Vec<Selection>, usize)` to `lattice-protocol` (the boundary reconstruction
+	counterpart to `all()`/`primary_index()`; only `single()`/`cursor_at_origin()` existed). **PH7.3b1b
+	✅ (2026-07-02)** = the ~101-arm `effect` variant using those records + the `list<effect>` flatten
+	+ exhaustive round-trip + typed-error arms. **PH7.3b2 ✅ (2026-07-02)** = the `AppEffect` mirror (unblocks `AppAction`).
   - **PH7.3b2 landed:** `wit/types.wit` — the `app-effect` variant (~110 arms) + 4 helper enums
-    (`viewport-pos`/`scroll-pos`/`pane-direction`/`hscroll`) + `narrow-lines-payload`; the `effect`
-    variant grew an `app-action(app-effect)` arm. `wit/plugin.wit` — world `use` of the new types.
-    New module `boundary_app_effect.rs` — `WitBoundary for AppEffect` (compiler-exhaustive both ways)
-    + the 4 helper-enum impls, reusing the shared `ModalState`/`VisualKind`/`SearchDirection`/`Register`
-    mirrors. `boundary_effect.rs` — the `AppAction` arm now crosses (`app.to_wit()?` / `from_wit`),
-    replacing its PH7.3b1b typed error. `benches/boundary.rs` — `boundary_app_effect_round_trip`
-    (~13 ns off-box). `OperatorId → CommandId(u64)` crosses via `.0.raw()` / `OperatorId(CommandId::new)`.
-    - **Typed-error (not lossy) arm:** `AppEffect::NarrowTrigger { range: Option<Range> }` carries the
-      recursive ex-command `lattice_grammar::range::Range` (`RangeBound::Offset { base: Box<RangeBound> }`)
-      + a plugin `RangeId` — an `Err` until a range mirror lands (the `Global` precedent). It propagates
-      out of the `Effect::AppAction` arm, so an `AppAction(NarrowTrigger)` fails the whole effect cross.
-    - Tests (5 new, 45 lib green): AppEffect payload arms (4 helpers + shared mirrors + primitives + the
-      `OperatorId` round-trip), unit arms, helper enums, `NarrowTrigger` typed-error; and in
-      `boundary_effect.rs`, `AppAction` now round-trips (incl. a `Many` of AppActions) while
-      `AppAction(NarrowTrigger)` still errors (the `global_is_a_typed_error` test was split out).
+	(`viewport-pos`/`scroll-pos`/`pane-direction`/`hscroll`) + `narrow-lines-payload`; the `effect`
+	variant grew an `app-action(app-effect)` arm. `wit/plugin.wit` — world `use` of the new types.
+	New module `boundary_app_effect.rs` — `WitBoundary for AppEffect` (compiler-exhaustive both ways)
+	+ the 4 helper-enum impls, reusing the shared `ModalState`/`VisualKind`/`SearchDirection`/`Register`
+	mirrors. `boundary_effect.rs` — the `AppAction` arm now crosses (`app.to_wit()?` / `from_wit`),
+	replacing its PH7.3b1b typed error. `benches/boundary.rs` — `boundary_app_effect_round_trip`
+	(~13 ns off-box). `OperatorId → CommandId(u64)` crosses via `.0.raw()` / `OperatorId(CommandId::new)`.
+	- **Typed-error (not lossy) arm:** `AppEffect::NarrowTrigger { range: Option<Range> }` carries the
+	  recursive ex-command `lattice_grammar::range::Range` (`RangeBound::Offset { base: Box<RangeBound> }`)
+	  + a plugin `RangeId` — an `Err` until a range mirror lands (the `Global` precedent). It propagates
+	  out of the `Effect::AppAction` arm, so an `AppAction(NarrowTrigger)` fails the whole effect cross.
+	- Tests (5 new, 45 lib green): AppEffect payload arms (4 helpers + shared mirrors + primitives + the
+	  `OperatorId` round-trip), unit arms, helper enums, `NarrowTrigger` typed-error; and in
+	  `boundary_effect.rs`, `AppAction` now round-trips (incl. a `Many` of AppActions) while
+	  `AppAction(NarrowTrigger)` still errors (the `global_is_a_typed_error` test was split out).
   - **PH7.3b1b landed:** `wit/types.wit` — the `effect` variant (~101 crossable arms) + 5 helper types
-    (`quit-scope`/`echo-level`/`substitute-scope`/`utf16-pos`/`lsp-request`) + 14 multi-field payload
-    records (`apply-edit-payload`, `yank-payload`, …); `wit/plugin.wit` — world-level `use` of the new
-    types so `bindgen!` emits them. `boundary_effect.rs` — `WitBoundary for Effect` with
-    `type Wit = Vec<WitEffect>` (the `list<effect>` seam: `to_wit` flattens `Many` recursively,
-    `from_wit` rebuilds `Many` when len>1, collapses len==1 to the atom, empty→`None`) + `WitBoundary`
-    impls for the 5 helpers + `effect_to_wit`/`effect_from_wit` (both **compiler-exhaustive** — the real
-    "every variant covered" guarantee: a new `Effect` arm cannot land without a mapping here).
-    `benches/boundary.rs` — `boundary_effect_round_trip` (~92 ns off-box for a 4-arm `Many`).
-    - **Typed-error (not lossy) arms:** `Global` (Box<CommandInvocation>, §4.1), `AppAction` (AppEffect,
-      PH7.3b2), and defensively `Many` reaching `effect_to_wit` — each an `Err`, propagated out of the
-      whole `list<effect>` even when nested inside a `Many`. No opaque blob; every representable arm typed.
-    - Tests (6 new, 35 lib green): payload-arm round-trips (all 14 records + 5 helpers + path/option/list
-      arms), unit-arm round-trips, helper-enum round-trips, `Many` flatten+rebuild, single/empty
-      normalisation, `Global`/`AppAction` typed-error (incl. nested-in-`Many`).
+	(`quit-scope`/`echo-level`/`substitute-scope`/`utf16-pos`/`lsp-request`) + 14 multi-field payload
+	records (`apply-edit-payload`, `yank-payload`, …); `wit/plugin.wit` — world-level `use` of the new
+	types so `bindgen!` emits them. `boundary_effect.rs` — `WitBoundary for Effect` with
+	`type Wit = Vec<WitEffect>` (the `list<effect>` seam: `to_wit` flattens `Many` recursively,
+	`from_wit` rebuilds `Many` when len>1, collapses len==1 to the atom, empty→`None`) + `WitBoundary`
+	impls for the 5 helpers + `effect_to_wit`/`effect_from_wit` (both **compiler-exhaustive** — the real
+	"every variant covered" guarantee: a new `Effect` arm cannot land without a mapping here).
+	`benches/boundary.rs` — `boundary_effect_round_trip` (~92 ns off-box for a 4-arm `Many`).
+	- **Typed-error (not lossy) arms:** `Global` (Box<CommandInvocation>, §4.1), `AppAction` (AppEffect,
+	  PH7.3b2), and defensively `Many` reaching `effect_to_wit` — each an `Err`, propagated out of the
+	  whole `list<effect>` even when nested inside a `Many`. No opaque blob; every representable arm typed.
+	- Tests (6 new, 35 lib green): payload-arm round-trips (all 14 records + 5 helpers + path/option/list
+	  arms), unit-arm round-trips, helper-enum round-trips, `Many` flatten+rebuild, single/empty
+	  normalisation, `Global`/`AppAction` typed-error (incl. nested-in-`Many`).
 
   #### PH7.3c — `document` resource handle + owned-snapshot projection ✅ (2026-07-02)
   Borrows→owned records (§4.2); the `buffer` WIT `document` resource; `get-text-range` zero-copy
   slice callback so bulk rope text never rides a snapshot.
   - **Decisions (locked with Dhruva 2026-07-02):** *(A)* the `document` resource is backed by an
-    `Arc<DocumentSnapshot>` — a point-in-time immutable view; edits after the handle is minted never
-    shift byte ranges under the guest (chosen over a live `Arc<dyn Document>` = mutation-under-read
-    hazard, or a rope-only clone = drops the metadata the snapshot already carries). *(A)* prove at the
-    host layer, deferring the guest→host call through the canonical ABI to PH7.3d (the b-series
-    precedent). *(C)* `get-text-range(range) -> result<string,string>` (reuses the `range` record; OOB /
-    `end<start` is a typed error, mirroring `Buffer::slice`); metadata readers `line-count`/`byte-len`/
-    `line`; the owned `buffer-snapshot` record carries id/path/language/cursor/selection.
+	`Arc<DocumentSnapshot>` — a point-in-time immutable view; edits after the handle is minted never
+	shift byte ranges under the guest (chosen over a live `Arc<dyn Document>` = mutation-under-read
+	hazard, or a rope-only clone = drops the metadata the snapshot already carries). *(A)* prove at the
+	host layer, deferring the guest→host call through the canonical ABI to PH7.3d (the b-series
+	precedent). *(C)* `get-text-range(range) -> result<string,string>` (reuses the `range` record; OOB /
+	`end<start` is a typed error, mirroring `Buffer::slice`); metadata readers `line-count`/`byte-len`/
+	`line`; the owned `buffer-snapshot` record carries id/path/language/cursor/selection.
   - **Landed:** `wit/buffer.wit` — the `document` resource + `buffer-snapshot` record (fills the empty
-    stub). `wit/plugin.wit` — `use buffer.{buffer-snapshot}` (emits the record mirror the projection
-    targets). New `buffer.rs` — `DocumentResource` (the `Arc<DocumentSnapshot>` backing +
-    `get_text_range` slice / `line_count` / `byte_len` / `line_at`, native-typed + unit-tested) +
-    `project_buffer_snapshot(&ActiveBufferSnapshot) -> Result<BufferSnapshot, String>` (one-way borrows→
-    owned projection; non-UTF-8 path = typed error). Dep: +lattice-runtime (`DocumentSnapshot`).
-    `benches/boundary.rs` — `document_get_text_range_one_line` (~400 ns to slice one line out of a
-    10k-line buffer: O(log n) locate + O(slice) copy, NOT O(document) — the "zero-copy at the slice
-    level" claim, §9.6).
+	stub). `wit/plugin.wit` — `use buffer.{buffer-snapshot}` (emits the record mirror the projection
+	targets). New `buffer.rs` — `DocumentResource` (the `Arc<DocumentSnapshot>` backing +
+	`get_text_range` slice / `line_count` / `byte_len` / `line_at`, native-typed + unit-tested) +
+	`project_buffer_snapshot(&ActiveBufferSnapshot) -> Result<BufferSnapshot, String>` (one-way borrows→
+	owned projection; non-UTF-8 path = typed error). Dep: +lattice-runtime (`DocumentSnapshot`).
+	`benches/boundary.rs` — `document_get_text_range_one_line` (~400 ns to slice one line out of a
+	10k-line buffer: O(log n) locate + O(slice) copy, NOT O(document) — the "zero-copy at the slice
+	level" claim, §9.6).
   - **Deferred to PH7.4 (bindgen constraint, not a scope cut):** the resource's host `HostDocument`
-    trait impl + `with`-mapping (`document` → `DocumentResource`) + `add_to_linker`. bindgen only binds a
-    `with` entry for a resource that a *world function signature* references, and no signature takes a
-    `document` until the picker-source `init(ctx)` seam (PH7.4). (Originally slated for 3d, but 3d proved
-    the generic trampoline via the fixture world, which doesn't reference `document`.) `use buffer.{buffer-snapshot}` emits the
-    record mirror but does NOT satisfy that check; forcing it now (a premature guest fn, or stuffing the
-    handle into the snapshot record — which would couple the projection to a `Store` and break its
-    unit-testability) was rejected on heuristic #1. `DocumentResource` is the ready-to-`with`-map backing.
+	trait impl + `with`-mapping (`document` → `DocumentResource`) + `add_to_linker`. bindgen only binds a
+	`with` entry for a resource that a *world function signature* references, and no signature takes a
+	`document` until the picker-source `init(ctx)` seam (PH7.4). (Originally slated for 3d, but 3d proved
+	the generic trampoline via the fixture world, which doesn't reference `document`.) `use buffer.{buffer-snapshot}` emits the
+	record mirror but does NOT satisfy that check; forcing it now (a premature guest fn, or stuffing the
+	handle into the snapshot record — which would couple the projection to a `Store` and break its
+	unit-testability) was rejected on heuristic #1. `DocumentResource` is the ready-to-`with`-map backing.
   - **Tests (7, 47 lib green):** `get_text_range` slices the requested span; OOB + `end<start` typed
-    errors; metadata readers match the buffer (`Buffer::line` strips the trailing newline); snapshot
-    backing is immutable under a later edit (decision A); projection projects metadata-not-text +
-    handles absent optionals. Existing instantiate tests unaffected by the world change.
+	errors; metadata readers match the buffer (`Buffer::line` strips the trailing newline); snapshot
+	backing is immutable under a later edit (decision A); projection projects metadata-not-text +
+	handles absent optionals. Existing instantiate tests unaffected by the world change.
 
   #### PH7.3d — Callback-id ↔ guest-export dispatch + async result carrier ✅ (2026-07-02)
   The trampoline (§4.1) + the async result-carrier adapter (guest returns batches; host owns the
   loop, §4.3), proven **end-to-end against a real guest**.
   - **Decision (locked with Dhruva 2026-07-02, option A):** 3d's substance — a guest-export call
-    through the canonical ABI + the `<500ns` bench — cannot be stubbed (unlike a/b/c, there's no
-    host-only layer left; the projection is 3c, the effect back-map is 3b). So bring a **minimal
-    `wasm32-wasip2` fixture guest** forward (the toolchain PH7.0 deferred to PH7.4) rather than defer
-    again (B, leaves §14's highest risk — ABI-design-wrong — unvalidated two more slices) or merge into
-    a PH7.4 mega-slice (C). The fixture is the permanent ABI regression test.
+	through the canonical ABI + the `<500ns` bench — cannot be stubbed (unlike a/b/c, there's no
+	host-only layer left; the projection is 3c, the effect back-map is 3b). So bring a **minimal
+	`wasm32-wasip2` fixture guest** forward (the toolchain PH7.0 deferred to PH7.4) rather than defer
+	again (B, leaves §14's highest risk — ABI-design-wrong — unvalidated two more slices) or merge into
+	a PH7.4 mega-slice (C). The fixture is the permanent ABI regression test.
   - **Landed:** `wit/trampoline-fixture.wit` — a test-only world exporting `apply-effect(args) ->
-    list<effect>` (§4.1 shape) + `next-batch() -> list<string>` (§4.3 shape). `tests/fixtures/
-    trampoline-guest/` — a standalone-workspace guest crate (own `target/`, gitignored) built with
-    `wit-bindgen` to a `wasm32-wasip2` **component**. `build.rs` — builds the guest at host-compile time
-    (env-scrubbed nested cargo + pinned `--target-dir` so leaked `CARGO_ENCODED_RUSTFLAGS` /
-    `CARGO_TARGET_DIR` can't break the wasm build), hands the path via `TRAMPOLINE_GUEST_WASM`, and
-    **degrades gracefully** (empty var → test/bench skip) when the target is absent. `src/trampoline.rs`
-    — the generic `collect_batches` §4.3 carrier (host owns the loop; empty batch = exhausted) as real
-    lib machinery PH7.4's picker Stream reuses, + a `#[cfg(test)]` fixture module whose **second
-    `bindgen!` reuses the host's generated `types`** (`with:` → so the guest-returned `Effect` is the
-    SAME Rust type `WitBoundary::from_wit` consumes) driving real guest calls. `benches/trampoline.rs`
-    — the deferred `<500ns` headline: `trampoline_apply_effect_warm_call` ~437 ns median (a real warm
-    guest↔host typed call), retiring §14's highest risk with a real number.
+	list<effect>` (§4.1 shape) + `next-batch() -> list<string>` (§4.3 shape). `tests/fixtures/
+	trampoline-guest/` — a standalone-workspace guest crate (own `target/`, gitignored) built with
+	`wit-bindgen` to a `wasm32-wasip2` **component**. `build.rs` — builds the guest at host-compile time
+	(env-scrubbed nested cargo + pinned `--target-dir` so leaked `CARGO_ENCODED_RUSTFLAGS` /
+	`CARGO_TARGET_DIR` can't break the wasm build), hands the path via `TRAMPOLINE_GUEST_WASM`, and
+	**degrades gracefully** (empty var → test/bench skip) when the target is absent. `src/trampoline.rs`
+	— the generic `collect_batches` §4.3 carrier (host owns the loop; empty batch = exhausted) as real
+	lib machinery PH7.4's picker Stream reuses, + a `#[cfg(test)]` fixture module whose **second
+	`bindgen!` reuses the host's generated `types`** (`with:` → so the guest-returned `Effect` is the
+	SAME Rust type `WitBoundary::from_wit` consumes) driving real guest calls. `benches/trampoline.rs`
+	— the deferred `<500ns` headline: `trampoline_apply_effect_warm_call` ~437 ns median (a real warm
+	guest↔host typed call), retiring §14's highest risk with a real number.
   - **Toolchain:** `rustup target add wasm32-wasip2` (Rust 1.94 emits a component directly — no
-    `wasm-tools`/`cargo-component` needed). CI must add the target for the fixture test + perf gate to
-    run (they skip otherwise).
+	`wasm-tools`/`cargo-component` needed). CI must add the target for the fixture test + perf gate to
+	run (they skip otherwise).
   - **Tests (5, 52 lib green):** `collect_batches` aggregate + error-propagation (no guest); and 3
-    fixture tests through a REAL component — `apply-effect` round-trips an `Echo` payload arm (data
-    flows in), rebuilds `Many` from a `list<effect>`, and the `next-batch` carrier aggregates
-    `["a","b","c"]` host-side.
+	fixture tests through a REAL component — `apply-effect` round-trips an `Echo` payload arm (data
+	flows in), rebuilds `Many` from a `list<effect>`, and the `next-batch` carrier aggregates
+	`["a","b","c"]` host-side.
   - **NB — the PH7.3c `document` resource wiring lands at PH7.4, not here.** 3d proved the *generic*
-    trampoline/carrier mechanism via the fixture world; the `document` resource's `HostDocument` impl +
-    `with`-mapping + `add_to_linker` still need a *world function signature* that references a `document`
-    handle, which first appears in the picker-source `init(ctx)` seam (PH7.4). `DocumentResource` is the
-    ready backing.
+	trampoline/carrier mechanism via the fixture world; the `document` resource's `HostDocument` impl +
+	`with`-mapping + `add_to_linker` still need a *world function signature* that references a `document`
+	handle, which first appears in the picker-source `init(ctx)` seam (PH7.4). `DocumentResource` is the
+	ready backing.
 
 ### PH7.4 — Picker-source WIT seam + `fuzzy-finder` (⭐ the exit) 🚧
 The `picker-source` WIT interface mirroring `PickerSourceGenerator`; host adapter wrapping a
@@ -337,36 +340,36 @@ result; `OpenFile` outcome). Unregister the native `files` source; register the 
   round-trips" character, extended to the picker seam). Host-layer only — no guest, no
   host-services, no adapter, no cutover.
   - **Landed:** `wit/types.wit` — the marginalia mirrors (`annotation` variant + `key-chord`/
-    `key-kind`/`special-key` + `annotation-segment`/`-custom`/`-styled`), `annotations` added
-    to `raw-candidate`; the source-API records (`arg-kind`/`arg-default`/`arg-spec`,
-    `picker-source-spec`); `routing-payload` (+ `resolve-diff`/`lsp-instance`/`show-message-action`
-    payloads; reuses `location`/`jump-target`/`command-ref`) + `open-target`; the owned
-    `picker-context` projection (`active-buffer-snapshot`/`buffer-entry`/`position-entry`/
-    `position-source`/`symbol-location`). `wit/plugin.wit` — world-level `use` of the new types.
-    New `boundary_picker.rs` — `WitBoundary` for `KeyChord`/`SpecialKey`/`Annotation`/`ArgKind`/
-    `ArgDefault`/`ArgSpec`/`PickerSourceSpec`/`OpenTarget`/`RoutingPayload` (all compiler-
-    exhaustive both ways) + `project_picker_context` (one-way borrows→owned, the
-    `project_buffer_snapshot` precedent). `boundary.rs` — `RawCandidate` now round-trips
-    `annotations`. `benches/boundary.rs` — a marginalia-carrying candidate + a `RoutingPayload`
-    round-trip.
+	`key-kind`/`special-key` + `annotation-segment`/`-custom`/`-styled`), `annotations` added
+	to `raw-candidate`; the source-API records (`arg-kind`/`arg-default`/`arg-spec`,
+	`picker-source-spec`); `routing-payload` (+ `resolve-diff`/`lsp-instance`/`show-message-action`
+	payloads; reuses `location`/`jump-target`/`command-ref`) + `open-target`; the owned
+	`picker-context` projection (`active-buffer-snapshot`/`buffer-entry`/`position-entry`/
+	`position-source`/`symbol-location`). `wit/plugin.wit` — world-level `use` of the new types.
+	New `boundary_picker.rs` — `WitBoundary` for `KeyChord`/`SpecialKey`/`Annotation`/`ArgKind`/
+	`ArgDefault`/`ArgSpec`/`PickerSourceSpec`/`OpenTarget`/`RoutingPayload` (all compiler-
+	exhaustive both ways) + `project_picker_context` (one-way borrows→owned, the
+	`project_buffer_snapshot` precedent). `boundary.rs` — `RawCandidate` now round-trips
+	`annotations`. `benches/boundary.rs` — a marginalia-carrying candidate + a `RoutingPayload`
+	round-trip.
   - **The `&'static str` seam (finding):** native `PickerSourceSpec`/`ArgSpec` hold `&'static str`
-    (compile-time source ids); a WASM plugin supplies owned runtime strings, so the adapter
-    **interns** them (`Box::leak`, no `unsafe`) in `from_wit`. Bounded by loaded-source count —
-    each spec leaked once at registration; **unbounded re-registration (hot reload) is a PH7.12
-    concern.**
+	(compile-time source ids); a WASM plugin supplies owned runtime strings, so the adapter
+	**interns** them (`Box::leak`, no `unsafe`) in `from_wit`. Bounded by loaded-source count —
+	each spec leaked once at registration; **unbounded re-registration (hot reload) is a PH7.12
+	concern.**
   - **Deferred to PH7.4c (with the guest world):** the `document` resource wiring (the PH7.3c
-    `HostDocument` impl + `with`-map + `add_to_linker`) — it needs a *world function signature*
-    referencing `document`, which first appears in the `init(ctx)` guest export (4c). The
-    active buffer's rope text + `syntax_highlights` ride that resource, not the context
-    projection; a fuzzy-finder needs neither. `DocumentResource` (PH7.3c) is the ready backing.
+	`HostDocument` impl + `with`-map + `add_to_linker`) — it needs a *world function signature*
+	referencing `document`, which first appears in the `init(ctx)` guest export (4c). The
+	active buffer's rope text + `syntax_highlights` ride that resource, not the context
+	projection; a fuzzy-finder needs neither. `DocumentResource` (PH7.3c) is the ready backing.
   - **Utilize-an-existing-picker (finding):** the `effect` mirror already carries
-    `open-picker-payload` (`Effect::OpenPicker { source, args }`), so a plugin command handler
-    emitting that effect *already* opens an existing picker — the "utilize" path is largely free
-    via the effect vocabulary. PH7.4e only needs to formalise/validate it.
+	`open-picker-payload` (`Effect::OpenPicker { source, args }`), so a plugin command handler
+	emitting that effect *already* opens an existing picker — the "utilize" path is largely free
+	via the effect vocabulary. PH7.4e only needs to formalise/validate it.
   - **Tests (8, 60 lib green):** key-chord char/special/mods round-trip + `f(0)` typed error;
-    every `Annotation` variant (incl. `Styled` perms cell + `Keybinding`); arg-spec +
-    picker-source-spec through intern; open-target; representative routing-payload arms;
-    non-UTF-8 path typed error.
+	every `Annotation` variant (incl. `Styled` perms cell + `Keybinding`); arg-spec +
+	picker-source-spec through intern; open-target; representative routing-payload arms;
+	non-UTF-8 path typed error.
 
   #### PH7.4b — `host-services` fs-walk seam ✅ (2026-07-11)
   The first guest→host call direction: a capability-gated fs `walk` against the plugin's
@@ -378,29 +381,29 @@ result; `OpenFile` outcome). Unregister the native `files` source; register the 
   Protects paramount-#2: the host centralizes walk policy so a plugin source enumerates
   identically to the native `files` source.
   - **Landed:** `wit/host-services.wit` — the `walk(root) -> result<list<string>, string>`
-    seam (replaces the empty stub). `wit/plugin.wit` — `import host-services;` so bindgen emits
-    the host `Host` trait + `add_to_linker`. New `host_services.rs` — `walk_within_grant`
-    (capability gate + native `walk_files_for_picker` policy + non-UTF-8 skip). `lib.rs` —
-    `PluginState` now carries the `CapabilityGrant` (threaded through `instantiate_inner`); the
-    `Host` impl forwards `walk`; `host_services::add_to_linker::<_, HasSelf<_>>` wires it into
-    the (async) linker (sync host func is fine — `walk` is bounded, no suspend).
+	seam (replaces the empty stub). `wit/plugin.wit` — `import host-services;` so bindgen emits
+	the host `Host` trait + `add_to_linker`. New `host_services.rs` — `walk_within_grant`
+	(capability gate + native `walk_files_for_picker` policy + non-UTF-8 skip). `lib.rs` —
+	`PluginState` now carries the `CapabilityGrant` (threaded through `instantiate_inner`); the
+	`Host` impl forwards `walk`; `host_services::add_to_linker::<_, HasSelf<_>>` wires it into
+	the (async) linker (sync host func is fine — `walk` is bounded, no suspend).
   - **The capability gate is host-side, mandatory (§6).** Unlike the guest's WASI fs view
-    (sandboxed by the `Store`'s preopens), a host-services call runs with full host authority,
-    so `walk` re-checks `root ⊆ grant.fs` itself; canonicalized both sides so `..` can't escape
-    a prefix; denial is a typed `Err` + an `info!` (user-actionable). Empty grant → reaches
-    nothing.
+	(sandboxed by the `Store`'s preopens), a host-services call runs with full host authority,
+	so `walk` re-checks `root ⊆ grant.fs` itself; canonicalized both sides so `..` can't escape
+	a prefix; denial is a typed `Err` + an `info!` (user-actionable). Empty grant → reaches
+	nothing.
   - **Bench:** cost is OS-bound (the native directory walk, which the native `files` source
-    already pays) + a negligible per-call gate; the `list<string>` marshalling is characterized
-    by the existing boundary benches. No dedicated fs microbench (it would measure the OS, not a
-    boundary overhead). The **guest→host call-overhead** bench lands at PH7.4d, where a real
-    guest calls `walk` (mirroring PH7.3d's host→guest bench precedent); the CI-gated per-call
-    budget is PH7.5.
+	already pays) + a negligible per-call gate; the `list<string>` marshalling is characterized
+	by the existing boundary benches. No dedicated fs microbench (it would measure the OS, not a
+	boundary overhead). The **guest→host call-overhead** bench lands at PH7.4d, where a real
+	guest calls `walk` (mirroring PH7.3d's host→guest bench precedent); the CI-gated per-call
+	budget is PH7.5.
   - **Proof depth:** host-layer (the capability gate + walker: granted returns paths, denied
-    root / empty grant are typed errors, ignore-policy applies, sub-dir of a granted prefix
-    permitted — 5 tests) + the linker wiring proven by the existing instantiate/runtime
-    integration tests (a real component instantiates against the host-services-wired `plugin`
-    linker). The real guest→host `walk` *call* rides the `fuzzy-finder` consumer at PH7.4d (the
-    PH7.3c "prove host-layer, defer the guest call to the real consumer" precedent).
+	root / empty grant are typed errors, ignore-policy applies, sub-dir of a granted prefix
+	permitted — 5 tests) + the linker wiring proven by the existing instantiate/runtime
+	integration tests (a real component instantiates against the host-services-wired `plugin`
+	linker). The real guest→host `walk` *call* rides the `fuzzy-finder` consumer at PH7.4d (the
+	PH7.3c "prove host-layer, defer the guest call to the real consumer" precedent).
   - **Tests (5, 65 lib green) + 16 integration green.**
 
   #### PH7.4c — Host adapter (create path) 🚧
@@ -416,89 +419,89 @@ result; `OpenFile` outcome). Unregister the native `files` source; register the 
   `Arc<dyn>` adapter — completion/grammar/modes). Over `Arc<async-mutex<Store>>` (B, a lock
   across `.await` + a runtime dep in the lib, weaker foundation). Sub-sliced:
 
-    #### PH7.4c.1a — `picker-source` world + async export bindings ✅ (2026-07-12)
-    `wit/picker-source.wit` — the `picker-source` interface (`spec`/`init`/`accept` +
-    `candidate-pair`) + the `picker-source-plugin` world (import `host-services`, export
-    `picker-source`). `picker_host.rs` — the **second `bindgen!`** for that world, reusing the
-    `plugin` world's `types` + `host-services` via `with:` (the PH7.3d shared-types trick). 65
-    lib green.
-    - **The `document` handle is deferred — and reframed (Dhruva, 2026-07-12).** Its original
-      motivation ("faithfully mirror what native sources like `:picker lines` can read") is
-      **dropped: exposing built-in sources via WASM has no value.** Built-in sources stay native
-      Rust forever; the WASM picker API exists so **plugins create *custom* pickers**, not to
-      re-implement built-ins. Active-buffer *text* access is therefore not a mirroring
-      requirement but a **future plugin capability** (a custom picker that wants buffer content),
-      added — capability-gated, like `host-services` — only when a real plugin needs it ("the API
-      grows from real plugins", §5.5). The ⭐ exit needs none of it (`fuzzy-finder`/`files` walks
-      the fs). *Mechanics note for when it lands:* passing a **host-owned resource into a guest
-      export** has a bindgen subtlety (a resource referenced only by an exported signature is not
-      seen as a host `with`-mapped import); wasi-http is the precedent that it is solvable —
-      resolve the world shape then, not now. The PH7.3c `DocumentResource` backing stays ready.
+	#### PH7.4c.1a — `picker-source` world + async export bindings ✅ (2026-07-12)
+	`wit/picker-source.wit` — the `picker-source` interface (`spec`/`init`/`accept` +
+	`candidate-pair`) + the `picker-source-plugin` world (import `host-services`, export
+	`picker-source`). `picker_host.rs` — the **second `bindgen!`** for that world, reusing the
+	`plugin` world's `types` + `host-services` via `with:` (the PH7.3d shared-types trick). 65
+	lib green.
+	- **The `document` handle is deferred — and reframed (Dhruva, 2026-07-12).** Its original
+	  motivation ("faithfully mirror what native sources like `:picker lines` can read") is
+	  **dropped: exposing built-in sources via WASM has no value.** Built-in sources stay native
+	  Rust forever; the WASM picker API exists so **plugins create *custom* pickers**, not to
+	  re-implement built-ins. Active-buffer *text* access is therefore not a mirroring
+	  requirement but a **future plugin capability** (a custom picker that wants buffer content),
+	  added — capability-gated, like `host-services` — only when a real plugin needs it ("the API
+	  grows from real plugins", §5.5). The ⭐ exit needs none of it (`fuzzy-finder`/`files` walks
+	  the fs). *Mechanics note for when it lands:* passing a **host-owned resource into a guest
+	  export** has a bindgen subtlety (a resource referenced only by an exported signature is not
+	  seen as a host `with`-mapped import); wasi-http is the precedent that it is solvable —
+	  resolve the world shape then, not now. The PH7.3c `DocumentResource` backing stays ready.
 
-    #### PH7.4c.1b — Per-plugin actor task + call protocol ✅ (2026-07-12)
-    The bridge (`src/picker_task.rs`): the `PickerCall` enum (Spec/Init/Accept, each carrying a
-    `oneshot` reply), the `PickerActor` task loop owning the `Store<PluginState>` + picker
-    bindings (per-call fuel/epoch armed inside the loop via the extracted `arm_store`), and the
-    `Send+Sync` `PickerClient` (an mpsc `Sender` clone; serializes calls onto the single-consumer
-    loop the `!Sync` `Store` needs). `PluginHost::spawn_picker_source` instantiates the
-    `picker-source-plugin` world under the same grant/data-dir/WASI as `instantiate_plugin`
-    (shared `build_plugin_wasi` + `new_store` extraction) and returns `(PickerClient, PickerActor)`;
-    the **caller** drives `PickerActor::run` on its multi-thread runtime — the lib still owns no
-    runtime (`futures::channel`, chosen over `tokio::sync` to keep that invariant; `tokio` stays a
-    dev-dep). A closed channel surfaces as the new typed `PluginHostError::PluginGone` (the caller
-    stays live); a trap does not end the loop (the `Store` survives a clean fuel/epoch trap;
-    quarantine is PH7.12).
-    - **Proof:** a real `wasm32-wasip2` fixture guest (`tests/fixtures/picker-guest`, built by the
-      extended `build.rs` → `PICKER_GUEST_WASM`) driven through the channel by `tests/picker_actor.rs`
-      (3 tests): spec/init/accept round-trip with inputs (`args` + the `PickerContext` projection)
-      provably crossing (the fixture echoes them), the guest's own WIT `err` surfacing as the inner
-      `Err` (distinct from a host trap), and the `PluginGone` path after the actor ends. Skips
-      cleanly when the wasm target is absent (the trampoline-bench precedent).
-    - **Bench:** no new microbench — the per-call cost is the wasm typed call already characterized
-      by the PH7.3d trampoline bench; the channel adds a sub-µs mpsc+oneshot hop. The end-to-end
-      picker overhead bench rides the real `fuzzy-finder` consumer at PH7.4d (per this plan's §4b
-      note), CI-gated at PH7.5.
-    - **Public API note:** the picker WIT records the bridge traffics in are re-exported `pub` from
-      `picker_task` (`PickerContext`, `RawCandidate`-bearing `CandidatePair`, `RoutingPayload`,
-      `PickerAcceptOutcome`, `PickerSourceSpec`, + the `PickerContext` construction family) so
-      callers get a clean path, not `crate::lattice::…`. **Depends:** PH7.4c.1a.
+	#### PH7.4c.1b — Per-plugin actor task + call protocol ✅ (2026-07-12)
+	The bridge (`src/picker_task.rs`): the `PickerCall` enum (Spec/Init/Accept, each carrying a
+	`oneshot` reply), the `PickerActor` task loop owning the `Store<PluginState>` + picker
+	bindings (per-call fuel/epoch armed inside the loop via the extracted `arm_store`), and the
+	`Send+Sync` `PickerClient` (an mpsc `Sender` clone; serializes calls onto the single-consumer
+	loop the `!Sync` `Store` needs). `PluginHost::spawn_picker_source` instantiates the
+	`picker-source-plugin` world under the same grant/data-dir/WASI as `instantiate_plugin`
+	(shared `build_plugin_wasi` + `new_store` extraction) and returns `(PickerClient, PickerActor)`;
+	the **caller** drives `PickerActor::run` on its multi-thread runtime — the lib still owns no
+	runtime (`futures::channel`, chosen over `tokio::sync` to keep that invariant; `tokio` stays a
+	dev-dep). A closed channel surfaces as the new typed `PluginHostError::PluginGone` (the caller
+	stays live); a trap does not end the loop (the `Store` survives a clean fuel/epoch trap;
+	quarantine is PH7.12).
+	- **Proof:** a real `wasm32-wasip2` fixture guest (`tests/fixtures/picker-guest`, built by the
+	  extended `build.rs` → `PICKER_GUEST_WASM`) driven through the channel by `tests/picker_actor.rs`
+	  (3 tests): spec/init/accept round-trip with inputs (`args` + the `PickerContext` projection)
+	  provably crossing (the fixture echoes them), the guest's own WIT `err` surfacing as the inner
+	  `Err` (distinct from a host trap), and the `PluginGone` path after the actor ends. Skips
+	  cleanly when the wasm target is absent (the trampoline-bench precedent).
+	- **Bench:** no new microbench — the per-call cost is the wasm typed call already characterized
+	  by the PH7.3d trampoline bench; the channel adds a sub-µs mpsc+oneshot hop. The end-to-end
+	  picker overhead bench rides the real `fuzzy-finder` consumer at PH7.4d (per this plan's §4b
+	  note), CI-gated at PH7.5.
+	- **Public API note:** the picker WIT records the bridge traffics in are re-exported `pub` from
+	  `picker_task` (`PickerContext`, `RawCandidate`-bearing `CandidatePair`, `RoutingPayload`,
+	  `PickerAcceptOutcome`, `PickerSourceSpec`, + the `PickerContext` construction family) so
+	  callers get a clean path, not `crate::lattice::…`. **Depends:** PH7.4c.1a.
 
-    #### PH7.4c.2 — `WasmPickerSource` adapter + async-accept seam ✅ (2026-07-12)
-    `impl PickerSourceGenerator` over the `PickerClient` (`lattice-plugin-host/src/picker_source.rs`),
-    boundary conversions via PH7.4a. The trait is synchronous but the guest exports are async +
-    actor-bound, resolved per method: **`spec`** fetched + converted once at `connect` (cached,
-    so `spec(&self)` is a borrow); **`init`** → `PickerInitResult::Future` (sync prelude projects
-    `PickerContext`→WIT via `project_picker_context`, the `'static` future awaits `client.init`
-    off-thread + converts the candidate pairs back), dropping into the host's existing
-    `pending_picker_init` drain; **`accept`** via a **new generic async-accept seam** (below), with
-    the sync `accept` a defensive tripwire.
-    - **The async-accept seam (option C, locked with Dhruva).** `PickerSourceGenerator` gains
-      `accept_async(&self, ctx, routing) -> Option<AcceptFuture>` (default `None` — every native
-      source unchanged). A `Some` return is spawned on the LSP runtime exactly like the init
-      Future and committed by the new `Editor::drain_pending_picker_accept` on the shared
-      `async_landed` wake (`PendingPickerAccept` state; MRU + the accepted event fire at accept
-      time, only the outcome application defers). This keeps paramount #4 intact — no synchronous
-      path from a keystroke to plugin code, so a slow/hostile plugin accept can never freeze the
-      actor thread. Rejected: pre-resolving accept at init (O(N) guest calls + stale ctx) and
-      blocking the actor thread (a plugin could freeze the UI up to the epoch deadline). **No
-      renderer changes** — the drain rides the shared sequence + wake both TUI and GPUI already
-      run (parity automatic).
-    - **Proof:** `lattice-plugin-host/tests/picker_source.rs` (2) drives the fixture guest through
-      the adapter — spec convert + registry registration, `init` Future → native batch (inputs
-      echoed → provably crossed), `accept_async` Future → native outcome, and the guest WIT `err`
-      as the future's `Err`. `lattice-host` `async_accept_defers_then_drain_commits_the_outcome`
-      proves the host seam: an async source defers at accept (picker closes, pending set, nothing
-      applied sync) and `drain_pending_picker_accept` commits + clears it (one-shot open-target
-      invariant upheld on the async path).
-    - **Bench:** none new — the per-call cost is the wasm typed call (PH7.3d trampoline bench) plus
-      a sub-µs channel hop; the end-to-end picker overhead bench rides `fuzzy-finder` at PH7.4d,
-      CI-gated at PH7.5.
-    - **Scope calls:** (1) no `SourceLayer::Plugin` stamping at registration — a picker source's
-      identity is `spec().id`; provenance is a grammar-contribution concern (PH7.7). (2) The full
-      `install(boot)` SubsystemBoot picker seam + component discovery is deferred to PH7.4d — the
-      plugin host is not boot-wired yet and `SubsystemBoot` exposes no picker accessor; 4c.2 proves
-      registration via `PickerRegistry::register_generator` directly (+ the `connect_picker_source`
-      helper that wraps `Arc<dyn PickerSourceGenerator>`). **Depends:** PH7.4c.1b.
+	#### PH7.4c.2 — `WasmPickerSource` adapter + async-accept seam ✅ (2026-07-12)
+	`impl PickerSourceGenerator` over the `PickerClient` (`lattice-plugin-host/src/picker_source.rs`),
+	boundary conversions via PH7.4a. The trait is synchronous but the guest exports are async +
+	actor-bound, resolved per method: **`spec`** fetched + converted once at `connect` (cached,
+	so `spec(&self)` is a borrow); **`init`** → `PickerInitResult::Future` (sync prelude projects
+	`PickerContext`→WIT via `project_picker_context`, the `'static` future awaits `client.init`
+	off-thread + converts the candidate pairs back), dropping into the host's existing
+	`pending_picker_init` drain; **`accept`** via a **new generic async-accept seam** (below), with
+	the sync `accept` a defensive tripwire.
+	- **The async-accept seam (option C, locked with Dhruva).** `PickerSourceGenerator` gains
+	  `accept_async(&self, ctx, routing) -> Option<AcceptFuture>` (default `None` — every native
+	  source unchanged). A `Some` return is spawned on the LSP runtime exactly like the init
+	  Future and committed by the new `Editor::drain_pending_picker_accept` on the shared
+	  `async_landed` wake (`PendingPickerAccept` state; MRU + the accepted event fire at accept
+	  time, only the outcome application defers). This keeps paramount #4 intact — no synchronous
+	  path from a keystroke to plugin code, so a slow/hostile plugin accept can never freeze the
+	  actor thread. Rejected: pre-resolving accept at init (O(N) guest calls + stale ctx) and
+	  blocking the actor thread (a plugin could freeze the UI up to the epoch deadline). **No
+	  renderer changes** — the drain rides the shared sequence + wake both TUI and GPUI already
+	  run (parity automatic).
+	- **Proof:** `lattice-plugin-host/tests/picker_source.rs` (2) drives the fixture guest through
+	  the adapter — spec convert + registry registration, `init` Future → native batch (inputs
+	  echoed → provably crossed), `accept_async` Future → native outcome, and the guest WIT `err`
+	  as the future's `Err`. `lattice-host` `async_accept_defers_then_drain_commits_the_outcome`
+	  proves the host seam: an async source defers at accept (picker closes, pending set, nothing
+	  applied sync) and `drain_pending_picker_accept` commits + clears it (one-shot open-target
+	  invariant upheld on the async path).
+	- **Bench:** none new — the per-call cost is the wasm typed call (PH7.3d trampoline bench) plus
+	  a sub-µs channel hop; the end-to-end picker overhead bench rides `fuzzy-finder` at PH7.4d,
+	  CI-gated at PH7.5.
+	- **Scope calls:** (1) no `SourceLayer::Plugin` stamping at registration — a picker source's
+	  identity is `spec().id`; provenance is a grammar-contribution concern (PH7.7). (2) The full
+	  `install(boot)` SubsystemBoot picker seam + component discovery is deferred to PH7.4d — the
+	  plugin host is not boot-wired yet and `SubsystemBoot` exposes no picker accessor; 4c.2 proves
+	  registration via `PickerRegistry::register_generator` directly (+ the `connect_picker_source`
+	  helper that wraps `Arc<dyn PickerSourceGenerator>`). **Depends:** PH7.4c.1b.
 
   #### PH7.4d — `fuzzy-finder` validation plugin ⭐ ✅ (2026-07-12)
   The real `wasm32-wasip2` guest (`plugins/fuzzy-finder`) replicating the native `files`
@@ -507,27 +510,27 @@ result; `OpenFile` outcome). Unregister the native `files` source; register the 
   candidates via the `picker-source` world; the host drives it through the `WasmPickerSource`
   adapter (PH7.4c.2) + `PickerClient` bridge (PH7.4c.1b).
   - **Reframe (Dhruva, 2026-07-12) — NO cutover.** The original "unregister native `files`,
-    register the WASM one" is **dropped**: replacing a native built-in with a slower WASM
-    re-implementation has negative user value. **Built-in sources stay native Rust forever**
-    (§5.5 / the 4c.1a reframing — the WASM picker API exists so plugins author *custom* pickers,
-    not to re-implement built-ins). So `fuzzy-finder` is a **test/bench validation artifact**
-    only: never registered in the shipping editor, no boot wiring, no `PluginHost`-in-`Editor`.
-    The plugin uses a DISTINCT id (`"fuzzy-finder"`), so if ever loaded it is an *additive*
-    custom source, never a cutover. This satisfies the §13 exit *intent* (a plugin replicates
-    the file picker via generic seams + CI budgets) without shipping a worse picker.
+	register the WASM one" is **dropped**: replacing a native built-in with a slower WASM
+	re-implementation has negative user value. **Built-in sources stay native Rust forever**
+	(§5.5 / the 4c.1a reframing — the WASM picker API exists so plugins author *custom* pickers,
+	not to re-implement built-ins). So `fuzzy-finder` is a **test/bench validation artifact**
+	only: never registered in the shipping editor, no boot wiring, no `PluginHost`-in-`Editor`.
+	The plugin uses a DISTINCT id (`"fuzzy-finder"`), so if ever loaded it is an *additive*
+	custom source, never a cutover. This satisfies the §13 exit *intent* (a plugin replicates
+	the file picker via generic seams + CI budgets) without shipping a worse picker.
   - **Parity is by construction.** The host's `walk` reuses the SAME
-    `lattice_picker::picker_sources::walk_files_for_picker` the native `FilesSource` runs, so the
-    candidate set matches native exactly. `tests/fuzzy_finder_parity.rs` (2) formalises it: the
-    `(display, OpenFile-path)` sets are equal for a temp tree, and `accept` resolves the same
-    `OpenFile` outcome (through the async-accept seam). Skips cleanly without the wasm target.
+	`lattice_picker::picker_sources::walk_files_for_picker` the native `FilesSource` runs, so the
+	candidate set matches native exactly. `tests/fuzzy_finder_parity.rs` (2) formalises it: the
+	`(display, OpenFile-path)` sets are equal for a temp tree, and `accept` resolves the same
+	`OpenFile` outcome (through the async-accept seam). Skips cleanly without the wasm target.
   - **Overhead bench.** `benches/fuzzy_finder.rs` — the warm `init` through the bridge (channel
-    hop + guest export + guest→host `walk` round-trip + candidate marshalling): descriptive
-    baseline ≈110µs for a 50-file tree (the walk + 50-pair marshalling dominate; the per-call
-    bridge overhead is sub-µs). The guest→host call-overhead bench the plan reserved for here.
-    CI-gated at PH7.5.
+	hop + guest export + guest→host `walk` round-trip + candidate marshalling): descriptive
+	baseline ≈110µs for a 50-file tree (the walk + 50-pair marshalling dominate; the per-call
+	bridge overhead is sub-µs). The guest→host call-overhead bench the plan reserved for here.
+	CI-gated at PH7.5.
   - **Build.** `plugins/fuzzy-finder` is a standalone `[workspace]` crate (not a main-workspace
-    member, like the fixture guests), built by `build.rs`'s shared `build_guest` (generalised to
-    an explicit path) → `FUZZY_FINDER_WASM`.
+	member, like the fixture guests), built by `build.rs`'s shared `build_guest` (generalised to
+	an explicit path) → `FUZZY_FINDER_WASM`.
 
   > **⭐ Phase-7 exit gate MET:** a WASM plugin replicates the file picker using only generic
   > seams (zero bespoke host code, zero `Editor::` methods, zero `Action` variants); overhead is
@@ -634,139 +637,195 @@ so a runaway plugin motion no-ops with a warn (UX: no hang) without any async pl
 the keystroke path. Built-ins stay native and never pay it. **Depends:** PH7.3.
 **Gate:** grammar round-trip < 5μs p99 (PH7.7d).
 
-  #### PH7.7a — Grammar boundary type mirrors + projection ✅ (2026-07-12)
-  The owned WIT mirrors + host-side `boundary_grammar.rs` conversions, no guest yet.
-  - **What landed.** `wit/types.wit` += the grammar-extension section: the five dispatch
-    contexts (`motion-context`, `operator-context`, `text-object-context`,
-    `ex-command-context`, `action-context`), `motion-result`, the five spec-metadata records
-    (`motion-spec`/`operator-spec`/`text-object-spec`/`ex-command-spec`/`action-spec` — each
-    the native `*Spec` minus its `apply`/`parse_args` closure, since the behavior is a guest
-    export called back by callback-id at 7.7c, not a field), plus `count` (= `u32`),
-    `latency-class`, `surface-form`. `position`/`range`/`args`/`register`/`effect`/`arg-spec`
-    were already mirrored (PH7.3b/PH7.4a) and are reused. NB `%from` (a WIT keyword) is
-    escaped in `motion-context`.
-  - **`boundary_grammar.rs` (new).** `WitBoundary` for `LatencyClass`, `SurfaceForm`
-    (interned `&'static str` hint, the `boundary_picker::intern` precedent), and
-    `MotionResult`; five one-way `project_*` fns for the contexts (host→guest, the
-    `project_picker_context` precedent — contexts carry `&Buffer`/`&CancellationToken`/
-    `Option<&dyn ScopeResolver>` borrows so they can't round-trip; the guest never sends a
-    context back). Bulk buffer text never rides a context — it crosses via the `document`
-    handle (§4.2), so a projection reads only owned scalars. The WIT-record → native-`*Spec`
-    direction is 7.7c's trampoline job (needs the callback closure), so no spec `from_wit`
-    lands here. `ExCommandContext.range` (recursive grammar `Range`) is absent by design (the
-    `Global`/`NarrowTrigger` precedent).
-  - **Proof.** 8 unit tests (enum + `MotionResult` round-trips; each context projection).
-    `benches/grammar.rs` (5 marshalling benches) → `benchmarks.md` PH7.7a row: every
-    conversion is tens of ns (motion ctx ~41 ns, operator ctx ~42 ns, effect `from_wit`
-    ~31 ns, text-object ctx ~11 ns, motion-result round-trip ~314 ps) — < 1% of the 5 µs
-    budget, so the wasmtime call (7.7c/d) owns effectively the whole budget. 73 crate lib
-    tests green.
+#### PH7.7a — Grammar boundary type mirrors + projection ✅ (2026-07-12)
+The owned WIT mirrors + host-side `boundary_grammar.rs` conversions, no guest yet.
+- **What landed.** `wit/types.wit` += the grammar-extension section: the five dispatch
+  contexts (`motion-context`, `operator-context`, `text-object-context`,
+  `ex-command-context`, `action-context`), `motion-result`, the five spec-metadata records
+  (`motion-spec`/`operator-spec`/`text-object-spec`/`ex-command-spec`/`action-spec` — each
+  the native `*Spec` minus its `apply`/`parse_args` closure, since the behavior is a guest
+  export called back by callback-id at 7.7c, not a field), plus `count` (= `u32`),
+  `latency-class`, `surface-form`. `position`/`range`/`args`/`register`/`effect`/`arg-spec`
+  were already mirrored (PH7.3b/PH7.4a) and are reused. NB `%from` (a WIT keyword) is
+  escaped in `motion-context`.
+- **`boundary_grammar.rs` (new).** `WitBoundary` for `LatencyClass`, `SurfaceForm`
+  (interned `&'static str` hint, the `boundary_picker::intern` precedent), and
+  `MotionResult`; five one-way `project_*` fns for the contexts (host→guest, the
+  `project_picker_context` precedent — contexts carry `&Buffer`/`&CancellationToken`/
+  `Option<&dyn ScopeResolver>` borrows so they can't round-trip; the guest never sends a
+  context back). Bulk buffer text never rides a context — it crosses via the `document`
+  handle (§4.2), so a projection reads only owned scalars. The WIT-record → native-`*Spec`
+  direction is 7.7c's trampoline job (needs the callback closure), so no spec `from_wit`
+  lands here. `ExCommandContext.range` (recursive grammar `Range`) is absent by design (the
+  `Global`/`NarrowTrigger` precedent).
+- **Proof.** 8 unit tests (enum + `MotionResult` round-trips; each context projection).
+  `benches/grammar.rs` (5 marshalling benches) → `benchmarks.md` PH7.7a row: every
+  conversion is tens of ns (motion ctx ~41 ns, operator ctx ~42 ns, effect `from_wit`
+  ~31 ns, text-object ctx ~11 ns, motion-result round-trip ~314 ps) — < 1% of the 5 µs
+  budget, so the wasmtime call (7.7c/d) owns effectively the whole budget. 73 crate lib
+  tests green.
 
-  #### PH7.7b — `grammar` world + sync bindgen + `register-*` host imports ✅ (2026-07-12)
-  The WIT + the 4th `bindgen!` + the contribution-recording path. No guest yet (the
-  trampoline that calls the callbacks + registers into `CommandRegistry` is 7.7c).
-  - **The shape (option A, locked with Dhruva).** WIT can't import+export the same interface
-    name, so the seam is **two interfaces + a sync world**. `interface grammar` (host-provided,
-    guest **imports**) = the extension API: `register-{motion,operator,text-object,action}(name,
-    doc, spec, callback: u32)` + `register-ex-command(name, doc, spec, parse-callback,
-    apply-callback)`. `interface grammar-callbacks` (guest **exports**) = the behavior,
-    dispatched by callback-id (the PH7.3d trampoline): `apply-motion → result<motion-result>`,
-    `apply-{operator,action,ex-command} → result<list<effect>>` (the `Effect::Many`-flatten
-    boundary form), `apply-text-object → result<range>`, `parse-ex-args → result<args>`. `world
-    grammar-plugin { import grammar; export register-grammar: func(); export grammar-callbacks; }`.
-  - **Sync, no actor (the PH7.7 fork).** The `bindgen!` sets **no** `exports: { default: async }`
-    — `register-grammar` + the `apply-*` callbacks are sync-callable from the dispatch thread.
-    Registration entry is a dedicated sync `register-grammar()` export (option A over "drive via
-    async `plugin::activate`", option B) — keeps the whole grammar seam on one sync path, no
-    async/sync store mixing; matches how `picker-source`/`completion-source` carry their own
-    world export rather than driving registration through the async lifecycle. `buffer` is NOT
-    imported yet — a v1 motion computes from the projected context scalars; the `document` handle
-    for text-reading/structural motions is the deferred follow-on (picker's `init(doc)` precedent;
-    audit F4).
-  - **What landed.** `wit/grammar.wit` populated (the two interfaces + world). `grammar_host.rs`
-    (new) — the 4th `bindgen!` (sync; shared `types` via `with:`) + `RecordedContribution` (per-kind
-    name/doc/WIT-spec/callback) + `GrammarContributions` (the `record_*` accumulator, factored like
-    `host_services::walk_within_grant` so it unit-tests without a guest). `lib.rs` — `PluginState`
-    gains a `grammar_contributions` field; the generated `grammar::Host` is impl'd on `PluginState`
-    (the `register-*` bodies forward to the accumulator — sync + infallible, name-collision/registry
-    errors surface at drain, not here); the `grammar` import is wired into the shared linker (inert
-    for worlds that don't import it). **Acid test held:** ZERO `Editor::` methods, the register API
-    is the same imperative shape as native `register_*`.
-  - **Proof.** 1 unit test (records all five kinds through the accumulator, preserves callback ids,
-    `take()` drains). 74 crate lib tests green; full build clean (the 4th bindgen + `grammar::Host`
-    paths + linker wiring resolve). No bench this slice — no new hot path yet (the guest call is
-    7.7c; the `<5µs` round-trip gate is 7.7d). **Depends:** PH7.7a.
+#### PH7.7b — `grammar` world + sync bindgen + `register-*` host imports ✅ (2026-07-12)
+The WIT + the 4th `bindgen!` + the contribution-recording path. No guest yet (the
+trampoline that calls the callbacks + registers into `CommandRegistry` is 7.7c).
+- **The shape (option A, locked with Dhruva).** WIT can't import+export the same interface
+  name, so the seam is **two interfaces + a sync world**. `interface grammar` (host-provided,
+  guest **imports**) = the extension API: `register-{motion,operator,text-object,action}(name,
+  doc, spec, callback: u32)` + `register-ex-command(name, doc, spec, parse-callback,
+  apply-callback)`. `interface grammar-callbacks` (guest **exports**) = the behavior,
+  dispatched by callback-id (the PH7.3d trampoline): `apply-motion → result<motion-result>`,
+  `apply-{operator,action,ex-command} → result<list<effect>>` (the `Effect::Many`-flatten
+  boundary form), `apply-text-object → result<range>`, `parse-ex-args → result<args>`. `world
+  grammar-plugin { import grammar; export register-grammar: func(); export grammar-callbacks; }`.
+- **Sync, no actor (the PH7.7 fork).** The `bindgen!` sets **no** `exports: { default: async }`
+  — `register-grammar` + the `apply-*` callbacks are sync-callable from the dispatch thread.
+  Registration entry is a dedicated sync `register-grammar()` export (option A over "drive via
+  async `plugin::activate`", option B) — keeps the whole grammar seam on one sync path, no
+  async/sync store mixing; matches how `picker-source`/`completion-source` carry their own
+  world export rather than driving registration through the async lifecycle. `buffer` is NOT
+  imported yet — a v1 motion computes from the projected context scalars; the `document` handle
+  for text-reading/structural motions is the deferred follow-on (picker's `init(doc)` precedent;
+  audit F4).
+- **What landed.** `wit/grammar.wit` populated (the two interfaces + world). `grammar_host.rs`
+  (new) — the 4th `bindgen!` (sync; shared `types` via `with:`) + `RecordedContribution` (per-kind
+  name/doc/WIT-spec/callback) + `GrammarContributions` (the `record_*` accumulator, factored like
+  `host_services::walk_within_grant` so it unit-tests without a guest). `lib.rs` — `PluginState`
+  gains a `grammar_contributions` field; the generated `grammar::Host` is impl'd on `PluginState`
+  (the `register-*` bodies forward to the accumulator — sync + infallible, name-collision/registry
+  errors surface at drain, not here); the `grammar` import is wired into the shared linker (inert
+  for worlds that don't import it). **Acid test held:** ZERO `Editor::` methods, the register API
+  is the same imperative shape as native `register_*`.
+- **Proof.** 1 unit test (records all five kinds through the accumulator, preserves callback ids,
+  `take()` drains). 74 crate lib tests green; full build clean (the 4th bindgen + `grammar::Host`
+  paths + linker wiring resolve). No bench this slice — no new hot path yet (the guest call is
+  7.7c; the `<5µs` round-trip gate is 7.7d). **Depends:** PH7.7a.
 
-  #### PH7.7c — Host trampoline adapter + registry wiring ✅ (2026-07-12)
-  The sync trampoline + the cross-crate registration seam + the Reflex budget (F1) — proven
-  end to end through a real wasm guest (the fixture came forward from 7.7d to validate D2).
-  - **Decisions (A/A, locked with Dhruva).** **D1** — new public `lattice-grammar` seam:
-    `CommandRegistry::register_plugin_{motion,operator,text_object,ex_command,action}(plugin_id:
-    u32, name, doc, spec)` stamping `SourceLayer::Plugin(plugin_id)` via a new
-    `SourceLocation::plugin(id)` (forgery-safe: takes a `u32`, never a `SourceLocation`; the
-    "no public fn takes a SourceLocation" invariant holds — this is the deferred
-    "first-cross-crate-trusted-subsystem" seam §6 anticipated). **D2** — a **second linker**
-    (`grammar_linker`) on the shared engine with **sync WASI** (`add_to_linker_sync`) + the
-    sync `grammar` import, so a grammar guest's sync `instantiate` + `apply` have no async
-    host import to reach — the sync path is correct by construction, not luck (chosen over a
-    whole dedicated sync *engine*; the AOT cache stays shared). **D3** — `instantiate_grammar_plugin`
-    returns a `GrammarContributionSet`; the **caller** invokes `register_all(&mut registry)`
-    (mode-ownership; ZERO `Editor::` methods). **F1** — `PluginBudget::grammar()` = Reflex-class
-    (epoch 2 ticks ≈ 2ms, fuel 10M) armed before every `apply`, distinct from the ~1s
-    lifecycle budget so a plugin motion traps well inside a frame.
-  - **What landed.** `lattice-grammar`: `SourceLocation::plugin` + the 5 `register_plugin_*` +
-    `CommandError::Plugin(String)` (the graceful apply-failure class). `lattice-plugin-host`:
-    `grammar_trampoline.rs` — `GrammarGuest{store,bindings}` behind `Arc<Mutex<>>` (shared by
-    all a plugin's contribution closures, serializes the `!Sync` store); `run_callback` (lock
-    → arm Reflex budget → sync guest call → map trap/guest-err/conv-err → `CommandError::Plugin`,
-    graceful §8); `build_*_spec` (WIT spec → native `*Spec` with a sync trampoline `apply`/
-    `parse_args`); `GrammarContributionSet::register_all`; `instantiate_grammar_plugin` (sync
-    instantiate via `grammar_linker` → `call_register_grammar` → drain → build). `PluginBudget::grammar`
-    + `PluginHostError::GrammarSpec`.
-  - **Proof (D2 empirically resolved).** `tests/fixtures/grammar-guest` (a `wasm32-wasip2`
-    component: `register-grammar` contributes 2 motions + 1 text object; `apply-motion`
-    computes line+count from the projected context — no document handle) + `tests/grammar_source.rs`
-    (3): registration + host-stamped `Plugin(id)` provenance on all three; a plugin motion
-    **dispatches through `execute_motion_only`** — the sync trampoline fires into the guest,
-    the `motion-result` crosses back (line 1 + count 3 → line 4); a guest `err` → graceful
-    `CommandError::Plugin` no-op. **The sync guest↔host call works on the shared engine** (the
-    PH7.7 fork validated). 74 plugin-host lib + 212 grammar tests green; `lattice-host` (matches
-    `CommandError`) builds — the new variant is absorbed by its wildcard arm.
-  - **Deferred (unchanged):** text-reading/structural motions need the `document` handle +
-    `scope-resolver` callback (audit F4) — a v1 motion computes from context scalars.
-    **Depends:** PH7.7b.
+#### PH7.7c — Host trampoline adapter + registry wiring ✅ (2026-07-12)
+The sync trampoline + the cross-crate registration seam + the Reflex budget (F1) — proven
+end to end through a real wasm guest (the fixture came forward from 7.7d to validate D2).
+- **Decisions (A/A, locked with Dhruva).** **D1** — new public `lattice-grammar` seam:
+  `CommandRegistry::register_plugin_{motion,operator,text_object,ex_command,action}(plugin_id:
+  u32, name, doc, spec)` stamping `SourceLayer::Plugin(plugin_id)` via a new
+  `SourceLocation::plugin(id)` (forgery-safe: takes a `u32`, never a `SourceLocation`; the
+  "no public fn takes a SourceLocation" invariant holds — this is the deferred
+  "first-cross-crate-trusted-subsystem" seam §6 anticipated). **D2** — a **second linker**
+  (`grammar_linker`) on the shared engine with **sync WASI** (`add_to_linker_sync`) + the
+  sync `grammar` import, so a grammar guest's sync `instantiate` + `apply` have no async
+  host import to reach — the sync path is correct by construction, not luck (chosen over a
+  whole dedicated sync *engine*; the AOT cache stays shared). **D3** — `instantiate_grammar_plugin`
+  returns a `GrammarContributionSet`; the **caller** invokes `register_all(&mut registry)`
+  (mode-ownership; ZERO `Editor::` methods). **F1** — `PluginBudget::grammar()` = Reflex-class
+  (epoch 2 ticks ≈ 2ms, fuel 10M) armed before every `apply`, distinct from the ~1s
+  lifecycle budget so a plugin motion traps well inside a frame.
+- **What landed.** `lattice-grammar`: `SourceLocation::plugin` + the 5 `register_plugin_*` +
+  `CommandError::Plugin(String)` (the graceful apply-failure class). `lattice-plugin-host`:
+  `grammar_trampoline.rs` — `GrammarGuest{store,bindings}` behind `Arc<Mutex<>>` (shared by
+  all a plugin's contribution closures, serializes the `!Sync` store); `run_callback` (lock
+  → arm Reflex budget → sync guest call → map trap/guest-err/conv-err → `CommandError::Plugin`,
+  graceful §8); `build_*_spec` (WIT spec → native `*Spec` with a sync trampoline `apply`/
+  `parse_args`); `GrammarContributionSet::register_all`; `instantiate_grammar_plugin` (sync
+  instantiate via `grammar_linker` → `call_register_grammar` → drain → build). `PluginBudget::grammar`
+  + `PluginHostError::GrammarSpec`.
+- **Proof (D2 empirically resolved).** `tests/fixtures/grammar-guest` (a `wasm32-wasip2`
+  component: `register-grammar` contributes 2 motions + 1 text object; `apply-motion`
+  computes line+count from the projected context — no document handle) + `tests/grammar_source.rs`
+  (3): registration + host-stamped `Plugin(id)` provenance on all three; a plugin motion
+  **dispatches through `execute_motion_only`** — the sync trampoline fires into the guest,
+  the `motion-result` crosses back (line 1 + count 3 → line 4); a guest `err` → graceful
+  `CommandError::Plugin` no-op. **The sync guest↔host call works on the shared engine** (the
+  PH7.7 fork validated). 74 plugin-host lib + 212 grammar tests green; `lattice-host` (matches
+  `CommandError`) builds — the new variant is absorbed by its wildcard arm.
+- **Deferred (unchanged):** text-reading/structural motions need the `document` handle +
+  `scope-resolver` callback (audit F4) — a v1 motion computes from context scalars.
+  **Depends:** PH7.7b.
 
-  #### PH7.7d — grammar round-trip perf gate (`< 5 µs p99`) ✅ (2026-07-12)
-  The `< 5 µs p99` §7 row, now the seam exists — and the bench that caught the F1 budget bug.
-  - **What landed.** `benches/grammar_roundtrip.rs` (`grammar_motion_round_trip`) — the
-    descriptive end-to-end dispatch of `down-n` through the sync trampoline; **release median
-    ~340 ns**, ~15× under budget. `tests/perf_ratchet.rs::grammar_round_trip_stays_within_ceiling`
-    — the CI gate (debug median ~2.3 µs, generous 250 µs ceiling, the typed-call/picker ratchet
-    pattern). `benchmarks.md` PH7.7d row.
-  - **The bug the bench caught (F1 refinement).** The first `PluginBudget::grammar` used
-    `epoch_deadline: 2` (≈2 ms). The ratchet (2 000 iters) passed, but the **bench's** 3 s
-    warmup (millions of iters) hit a rare OS deschedule mid-guest-call and the 2 ms epoch
-    *false-positived* → trap. Insight: a grammar guest runs on the sync linker with **no async
-    import**, so it cannot block — it can only compute/spin, both **fuel**-bounded. So **fuel is
-    the primary Reflex bound** (10M ≈ one frame of compute); the **epoch is a jitter-proof
-    backstop** (raised to 50 ms), not a sub-ms tripwire. This is the correct resolution of
-    audit F1 — the keystroke bound is fuel (deterministic per-work), not a fragile wall-clock
-    deadline at epoch-tick granularity.
-  - **Proof.** Bench runs clean (no trap) at ~340 ns release; the ratchet gates it; full
-    plugin-host suite green (74 lib + all integration binaries). **Depends:** PH7.7c.
+#### PH7.7d — grammar round-trip perf gate (`< 5 µs p99`) ✅ (2026-07-12)
+The `< 5 µs p99` §7 row, now the seam exists — and the bench that caught the F1 budget bug.
+- **What landed.** `benches/grammar_roundtrip.rs` (`grammar_motion_round_trip`) — the
+  descriptive end-to-end dispatch of `down-n` through the sync trampoline; **release median
+  ~340 ns**, ~15× under budget. `tests/perf_ratchet.rs::grammar_round_trip_stays_within_ceiling`
+  — the CI gate (debug median ~2.3 µs, generous 250 µs ceiling, the typed-call/picker ratchet
+  pattern). `benchmarks.md` PH7.7d row.
+- **The bug the bench caught (F1 refinement).** The first `PluginBudget::grammar` used
+  `epoch_deadline: 2` (≈2 ms). The ratchet (2 000 iters) passed, but the **bench's** 3 s
+  warmup (millions of iters) hit a rare OS deschedule mid-guest-call and the 2 ms epoch
+  *false-positived* → trap. Insight: a grammar guest runs on the sync linker with **no async
+  import**, so it cannot block — it can only compute/spin, both **fuel**-bounded. So **fuel is
+  the primary Reflex bound** (10M ≈ one frame of compute); the **epoch is a jitter-proof
+  backstop** (raised to 50 ms), not a sub-ms tripwire. This is the correct resolution of
+  audit F1 — the keystroke bound is fuel (deterministic per-work), not a fragile wall-clock
+  deadline at epoch-tick granularity.
+- **Proof.** Bench runs clean (no trap) at ~340 ns release; the ratchet gates it; full
+  plugin-host suite green (74 lib + all integration binaries). **Depends:** PH7.7c.
 
-  **⇒ PH7.7 (grammar-extension seam) COMPLETE.** A WASM plugin contributes first-class vim
-  motions / operators / text-objects / ex-commands / actions through the same `register_*`
-  path builtins use, stamped `SourceLayer::Plugin(id)`, dispatched by the native (unchanged,
-  sync) grammar engine, bounded by a fuel-primary Reflex budget, crash-isolated. Residual
-  (audit F4, not blocking): text-reading / tree-sitter-structural motions await the `document`
-  handle + `scope-resolver` callback.
+**⇒ PH7.7 (grammar-extension seam) COMPLETE.** A WASM plugin contributes first-class vim
+motions / operators / text-objects / ex-commands / actions through the same `register_*`
+path builtins use, stamped `SourceLayer::Plugin(id)`, dispatched by the native (unchanged,
+sync) grammar engine, bounded by a fuel-primary Reflex budget, crash-isolated. Residual
+(audit F4, not blocking): text-reading / tree-sitter-structural motions await the `document`
+handle + `scope-resolver` callback.
 
-### PH7.8 — Event/hook WIT seam 📝
-Add `SubscriptionTarget::Plugin { plugin, handler }` delivery (host owns the mpsc; each
-`Event` serialized and delivered to the guest `on-event` export as a separate task); `:autocmd`
-from a plugin desugars to `subscribe`. **Depends:** PH7.3. (Before-class veto/mutation stays
-out — the native bus is observation-only in v1.)
+### PH7.8 — Event/hook WIT seam ✅ (2026-07-12)
+Fills the reserved `SubscriptionTarget::Plugin` slot: the host owns an mpsc, the native
+`EventBus` pushes each matched `Event` into it via a host-owned sink (lock dropped), and the
+per-plugin `EventActor` drives the guest `on-event` export off the keystroke path. `:autocmd`
+from a plugin desugars to the guest→host `events.subscribe`. **Depends:** PH7.3.
+(Before-class veto/mutation stays out — the native bus is observation-only in v1.)
+- **Decisions (locked with Dhruva 2026-07-12):**
+  - **D1 — bus routing = a new `SubscriptionTarget::Plugin { plugin, handler, sink }`,
+	direct-push (option A).** The sink is a **type-erased** `Arc<dyn Fn(Event) -> bool + Send +
+	Sync>` (`lattice_runtime::PluginEventSink`) so the bus stays channel-agnostic — the
+	plugin-host builds it over its own `futures` mpsc (the lib keeps `tokio` a dev-dep; the bus's
+	`Channel` uses `tokio` mpsc), so `lattice-runtime` grows NO plugin-host/channel dep. Chosen
+	over reusing `Channel` (can't carry the handler tag — needs a parallel merge layer) or an
+	id-only variant + per-tick drain (couples off-keystroke delivery to the App tick). Fills the
+	reserved slot with real provenance (`plugin`/`handler` for teardown + introspection); `false`
+	→ prune (the closed-`Channel` discipline). The sink runs in the audit-M1 **lock-dropped**
+	dispatch phase, so a slow handler never stalls the publisher or another subscriber.
+  - **D2 — a dedicated async `events-plugin` world (option A over "on the base `plugin`
+	world").** Originally locked as "on the `plugin` world" (design §8 calls `on-event` a
+	lifecycle export), **reversed mid-build**: a world's exports are mandatory, so adding
+	`on-event` to the base world would force every no-op WAT fixture (4 suites: instantiate /
+	runtime / cache / capability) + every non-observer plugin to implement it. The dedicated
+	world (`import events` + `import host-services` + `export register-events` + `export
+	on-event`) matches the picker/completion/grammar precedent exactly (each got its own world so
+	unrelated components don't implement its exports) and breaks nothing.
+  - **Guest-supplied handler id (the grammar `callback` precedent) + subscribe-only.** No host
+	id allocation, no return value; the guest's own dispatch key routes `on-event(handler, ev)`.
+	No `unsubscribe` in v1 — subscriptions live for the plugin's lifetime, torn down en masse on
+	deactivate/quarantine (PH7.12). The declarative filter (`kinds`/`path-globs`/`major-modes`)
+	crosses; the native `predicate` closure does not (a guest filters inside `on-event`).
+- **Sub-slices (all ✅):**
+  - **PH7.8a** — boundary mirrors (`boundary_event.rs`): `WitBoundary for Event` (compiler-
+	exhaustive both ways, reusing the PH7.3b `Range`/`SelectionSet` mirrors; ids→`u64`,
+	paths→`string` non-UTF-8-typed-error) + `EventKind` + `project_event_filter` (WIT→native
+	one-way). New `event`/`event-kind`/`event-filter` + payload records in `types.wit` (distinct
+	`event-applied-edit` — the event form carries no `delta`). 9 unit tests; marshalling
+	`~23 ns` (`benches/boundary.rs`). Host-layer only, no guest.
+  - **PH7.8b** — the `events` WIT (`subscribe`, guest imports) + the dedicated async
+	`events-plugin` world (`export register-events` + `export on-event`) + the **5th `bindgen!`**
+	(`events_host.rs`, shared `types`/`host-services` via `with:`) + `EventContributions`
+	accumulator + `events::Host` impl on `PluginState` (records subscribe) + linker wiring into
+	the async linker. 1 unit test; scaffold/runtime unaffected.
+  - **PH7.8c** — the `SubscriptionTarget::Plugin` variant (+ `PluginEventSink`, lock-dropped
+	dispatch + prune, in `lattice-runtime`; 3 bus tests) + the fire-and-forget `EventActor` +
+	`spawn_event_plugin` (`event_task.rs`: instantiate → `call_register_events` → drain → wire
+	each sub to the bus with a handler-tagging sink; the caller drives `run` + holds the
+	`SubscriptionId`s for teardown). Real `events-guest` wasm fixture + `tests/event_source.rs`
+	(2 e2e): happy delivery (subscribe → publish → bus → actor → guest `on-event` writes its
+	data-dir mount → test reads) + a **poison handler** that traps → graceful skip (host doesn't
+	panic, a native co-subscriber still receives the event — §8 isolation). **Finding:** a
+	component trap **taints its instance**, so the trapping plugin's later deliveries also fail
+	(logged + skipped) — the plugin is dead-until-reinstantiation (PH7.12); the guarantee held is
+	cross-plugin/host isolation, not within-plugin survival.
+  - **PH7.8d** — the §7 "major-mode event handler < 250 µs p99" gate: `PluginBudget::event()`
+	(fuel-primary 100M ≈ ~10 frames; epoch a generous ~1 s backstop because an event handler runs
+	on the async linker and may `await` `host-services`, unlike grammar's Reflex budget) +
+	`tests/perf_ratchet.rs::event_handler_stays_within_ceiling` (mean over 1 000 no-op deliveries,
+	**~3.75 µs debug**, 2 ms ceiling). No dedicated criterion bench — per-call cost decomposes
+	into 7.8a marshalling + the PH7.3d typed call + a sub-µs channel hop (the picker/completion
+	precedent). `benchmarks.md` PH7.8 row. CI `wasm32-wasip2` target already added (PH7.5) so the
+	fixture builds + the gate runs.
 
 ### PH7.9 — Decoration + UI-contribution WIT seam 📝
 Mirror `Mode::gutter_decorations` → per-line `GutterDecoration` data (no draw calls); status/

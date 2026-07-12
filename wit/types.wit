@@ -1034,4 +1034,126 @@ interface types {
     record action-spec {
         args-schema: list<arg-spec>,
     }
+
+    // --- Event / hook seam (PH7.8, plugin-host.md §5 `events`) -----------------
+    //
+    // Mirrors `lattice_runtime::EventBus` + the `lattice_protocol::Event` enum. A
+    // plugin subscribes (guest→host `events.subscribe`, an `event-filter`) and
+    // receives each matching event on its `on-event` export (host→guest, the
+    // owned `event` variant). Observation-only in v1 — no before-class veto (the
+    // native bus is observation-only, §5.10). The payloads reuse the PH7.3b
+    // mirrors (`range` / `selection-set`); ids cross as `u64` (`.raw()`).
+
+    /// Mirrors `lattice_protocol::event::AppliedEdit`. Distinct from the PH7.3b
+    /// `applied-edit` record: the event form carries NO `delta` (the tree-sitter
+    /// re-parse delta is a document-actor concern, not published to observers).
+    record event-applied-edit {
+        original-range: range,
+        inserted-range: range,
+        replaced-text: string,
+        inserted-text: string,
+    }
+
+    /// Mirrors `lattice_protocol::EventKind` — the discriminator a subscription
+    /// filters on. Each arm pairs 1:1 with an `event` variant arm.
+    enum event-kind {
+        document-opened,
+        document-closed,
+        before-save,
+        document-saved,
+        document-changed,
+        selections-changed,
+        modal-mode-changed,
+        before-quit,
+        option-changed,
+        major-entered,
+        major-exiting,
+        minor-activated,
+        minor-deactivated,
+    }
+
+    /// Mirrors `lattice_runtime::EventFilter` — the DECLARATIVE subset a plugin
+    /// can express at subscribe time. `kinds = none` is the wildcard (every
+    /// kind); `path-globs` / `major-modes` AND-combine on top (each `none` is
+    /// unconstrained), matching the native EF.1 semantics. The native
+    /// `predicate` (an arbitrary Rust closure) does NOT cross — a plugin that
+    /// needs custom logic filters inside its `on-event` handler (the grammar
+    /// typed-error-defer precedent).
+    record event-filter {
+        kinds: option<list<event-kind>>,
+        path-globs: option<list<string>>,
+        major-modes: option<list<string>>,
+    }
+
+    /// Mirrors `lattice_protocol::Event` (owned; delivered to `on-event`). Each
+    /// multi-field arm carries an explicit payload record (the `effect` mirror
+    /// precedent); ids cross as `u64`, paths as `string` (a non-UTF-8 path is a
+    /// typed boundary error, never lossy). Text-bearing arms (`document-opened`)
+    /// carry the initial content the native event already clones for observers.
+    variant event {
+        document-opened(event-document-opened),
+        document-closed(u64),
+        before-save(event-document-path),
+        document-saved(event-document-path),
+        document-changed(event-document-changed),
+        selections-changed(event-selections-changed),
+        modal-mode-changed(event-modal-mode-changed),
+        before-quit,
+        option-changed(event-option-changed),
+        major-entered(event-mode-lifecycle),
+        major-exiting(event-mode-lifecycle),
+        minor-activated(event-mode-lifecycle),
+        minor-deactivated(event-mode-lifecycle),
+    }
+
+    /// `Event::DocumentOpened` payload. `path` is `none` for scratch buffers.
+    record event-document-opened {
+        id: u64,
+        path: option<string>,
+        version: u64,
+        text: string,
+    }
+
+    /// `Event::BeforeSave` / `Event::DocumentSaved` payload — both always carry a
+    /// concrete path (a save target).
+    record event-document-path {
+        id: u64,
+        path: string,
+    }
+
+    /// `Event::DocumentChanged` payload. `path` is `none` for scratch buffers.
+    record event-document-changed {
+        id: u64,
+        path: option<string>,
+        version: u64,
+        edits: list<event-applied-edit>,
+    }
+
+    /// `Event::SelectionsChanged` payload.
+    record event-selections-changed {
+        id: u64,
+        version: u64,
+        selections: selection-set,
+    }
+
+    /// `Event::ModalModeChanged` payload — the previous / next modal-state labels.
+    record event-modal-mode-changed {
+        from-state: string,
+        to-state: string,
+    }
+
+    /// `Event::OptionChanged` payload. `old` is `none` on the first publish after
+    /// registration (default init, no prior value).
+    record event-option-changed {
+        name: string,
+        old: option<string>,
+        new-value: string,
+    }
+
+    /// `Event::{MajorEntered,MajorExiting,MinorActivated,MinorDeactivated}`
+    /// payload — the buffer + the mode's canonical name.
+    record event-mode-lifecycle {
+        buffer: u64,
+        mode: string,
+    }
 }

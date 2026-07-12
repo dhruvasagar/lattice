@@ -54,12 +54,15 @@
 pub mod boundary;
 pub mod boundary_app_effect;
 pub mod boundary_effect;
+pub mod boundary_event;
 pub mod boundary_grammar;
 pub mod boundary_picker;
 pub mod buffer;
 pub mod capability;
 pub mod host_services;
 pub mod completion_host;
+pub mod event_task;
+pub mod events_host;
 pub mod completion_source;
 pub mod completion_task;
 pub mod grammar_host;
@@ -173,6 +176,26 @@ impl PluginBudget {
         Self {
             fuel: 10_000_000,
             epoch_deadline: 50,
+        }
+    }
+
+    /// The budget for a plugin **event handler** (`on-event`, PH7.8c; §7 "major-
+    /// mode event handler"). Unlike grammar's Reflex budget, event delivery is
+    /// **off the keystroke path** (async, on the plugin's own actor task), and a
+    /// handler runs on the *async* linker — so it may legitimately `await` a
+    /// capability-gated `host-services` call. A tight sub-frame epoch would
+    /// false-trip such a suspend, so the **epoch is a generous backstop** (~1s,
+    /// the lifecycle default) and **fuel is the primary bound**: `100M` ≈ ~10
+    /// frames of compute, ample for a real hook (recolour a gutter, index a
+    /// symbol) yet a hard cap on a runaway loop. A trap is caught per-delivery by
+    /// the [`EventActor`](crate::event_task::EventActor) → the delivery is
+    /// skipped with a warn, the plugin stays subscribed, other subscribers are
+    /// untouched (§8). The marshalling+dispatch overhead itself is the CI-gated
+    /// `< 250µs p99` row (PH7.8d), distinct from this runaway guard.
+    pub fn event() -> Self {
+        Self {
+            fuel: 100_000_000,
+            epoch_deadline: 1_000,
         }
     }
 }
@@ -360,6 +383,12 @@ struct PluginState {
     /// and builds native `*Spec`s with trampoline `apply`s (PH7.7c). Empty for a
     /// plugin that registers no grammar (picker/completion plugins, the scaffold).
     grammar_contributions: grammar_host::GrammarContributions,
+    /// Event subscriptions the guest declares through the `events` `subscribe`
+    /// API during `register-events` (PH7.8b). The `events::Host` impl below
+    /// records into it; the host drains it after the registration export returns
+    /// and wires each subscription to the native `EventBus` (PH7.8c). Empty for a
+    /// plugin that observes no events.
+    event_subscriptions: events_host::EventContributions,
 }
 
 impl WasiView for PluginState {
@@ -451,6 +480,24 @@ impl crate::grammar_host::bindings::lattice::plugin_host::grammar::Host for Plug
             parse_callback,
             apply_callback,
         );
+    }
+}
+
+/// Host impl of the `events` guest→host subscription API (PH7.8b, §5). The guest
+/// calls `subscribe` (from its `register-events` export) to observe editor
+/// events; each records the `(filter, handler)` pair into the Store's
+/// [`events_host::EventContributions`] so the host can drain it after
+/// registration and wire each subscription to the native `EventBus` (PH7.8c).
+/// Sync + infallible (it only pushes — recording cannot trap), so bindgen omits
+/// the outer `wasmtime::Result` (the `grammar` / `host_services` shape). The
+/// filter stays WIT-typed here and projects to native at wire time.
+impl crate::events_host::bindings::lattice::plugin_host::events::Host for PluginState {
+    fn subscribe(
+        &mut self,
+        filter: crate::lattice::plugin_host::types::EventFilter,
+        handler: u32,
+    ) {
+        self.event_subscriptions.record(filter, handler);
     }
 }
 
@@ -571,6 +618,16 @@ impl PluginHost {
         // The `host-services` guest→host seam (PH7.4b). Sync host funcs are fine
         // in the async linker; `walk` is bounded, so it does not need to suspend.
         crate::lattice::plugin_host::host_services::add_to_linker::<_, HasSelf<_>>(
+            &mut linker,
+            |state: &mut PluginState| state,
+        )
+        .map_err(|e| PluginHostError::Linker(e.into()))?;
+        // The `events` guest→host subscription seam (PH7.8b). Wired into the
+        // ASYNC linker — the events-plugin world's `on-event` delivery is async
+        // (off the keystroke path), unlike the sync grammar seam. `subscribe` is
+        // a sync host func (it only records into `PluginState`) and is inert for
+        // worlds that don't import `events` (picker/completion/the scaffold).
+        crate::events_host::bindings::lattice::plugin_host::events::add_to_linker::<_, HasSelf<_>>(
             &mut linker,
             |state: &mut PluginState| state,
         )
@@ -736,6 +793,7 @@ impl PluginHost {
             table: ResourceTable::new(),
             grant,
             grammar_contributions: grammar_host::GrammarContributions::default(),
+            event_subscriptions: events_host::EventContributions::default(),
         };
         let mut store = Store::new(&self.engine, state);
         store

@@ -204,5 +204,49 @@ fn boundary_round_trip(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, boundary_round_trip);
+/// PH7.8a: the event/hook boundary marshalling — the cost the host pays to
+/// project each published `Event` into its WIT mirror before pushing it to a
+/// plugin's `on-event`. Two representative arms: `DocumentSaved` (the common
+/// path-bearing hook) and `SelectionsChanged` (carries the `selection-set`
+/// mirror). Marshalling is the fixed per-delivery overhead; the guest handler's
+/// own compute is bounded separately by the event budget (PH7.8d).
+fn event_round_trip(c: &mut Criterion) {
+    use lattice_protocol::Event;
+    use lattice_protocol::ids::DocumentId;
+    use lattice_protocol::selection::{Selection, SelectionSet};
+
+    let saved = Event::DocumentSaved {
+        id: DocumentId::new(1),
+        path: PathBuf::from("/home/user/project/src/main.rs"),
+    };
+    c.bench_function("boundary_event_saved_round_trip", |b| {
+        b.iter(|| {
+            let wit = black_box(&saved).to_wit().expect("to_wit");
+            let back = Event::from_wit(wit).expect("from_wit");
+            black_box(back);
+        })
+    });
+
+    let selections = Event::SelectionsChanged {
+        id: DocumentId::new(1),
+        version: 12,
+        selections: SelectionSet::from_parts(
+            vec![Selection {
+                anchor: Position { line: 0, byte: 0 },
+                head: Position { line: 2, byte: 4 },
+                visual: None,
+            }],
+            0,
+        ),
+    };
+    c.bench_function("boundary_event_selections_round_trip", |b| {
+        b.iter(|| {
+            let wit = black_box(&selections).to_wit().expect("to_wit");
+            let back = Event::from_wit(wit).expect("from_wit");
+            black_box(back);
+        })
+    });
+}
+
+criterion_group!(benches, boundary_round_trip, event_round_trip);
 criterion_main!(benches);

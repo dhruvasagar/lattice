@@ -67,6 +67,11 @@ lattice-core = { path = "../lattice-core" }
 # A -- a point-in-time immutable view; `get-text-range` slices this snapshot's
 # rope). `DocumentSnapshot` lives in lattice-runtime.
 lattice-runtime = { path = "../lattice-runtime" }
+# PH7.8: the event/hook seam. `EventFilter.major_modes` is `Vec<ModeId>` and the
+# native `EventFilter` / `SubscriptionTarget` live in `lattice-runtime`; a
+# plugin's declarative filter reconstructs `ModeId` from its string form, so the
+# `ModeId` type is named directly (already a transitive dep via grammar/mode).
+lattice-keymap = { path = "../lattice-keymap" }
 # PH7.2: graceful-degradation logging -- a denied/inaccessible granted prefix
 # is skipped with a `warn!`, never a panic or a failed load.
 tracing = { workspace = true }

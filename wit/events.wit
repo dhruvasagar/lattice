@@ -1,9 +1,62 @@
 package lattice:plugin-host@0.1.0;
 
-/// Mirrors `EventBus::subscribe` + the `Event` enum (lattice-runtime). The
-/// host owns the mpsc and delivers each serialized `Event` to the guest's
-/// `on-event` export as a separate task (a slow handler never delays other
-/// subscribers, §5.10.4). `:autocmd` from a plugin desugars to `subscribe`.
-/// Fills the reserved `SubscriptionTarget::Plugin` variant. Populated in PH7.8.
-/// (Before-class veto/mutation stays out — the bus is observation-only in v1.)
-interface events {}
+/// The event/hook **subscription** API (plugin-host.md §5 `events`, PH7.8). The
+/// surface a plugin calls to *observe* editor state transitions — mirroring
+/// `EventBus::subscribe` (lattice-runtime). The host provides this function; the
+/// guest **imports** it and calls it (from its `register-events` export). Each
+/// call records the `(handler, filter)` pair into `PluginState`; after
+/// `register-events` returns, the host wires each recorded subscription to the
+/// native `EventBus` with a host-owned `SubscriptionTarget::Plugin { plugin,
+/// handler, tx }` (PH7.8c) — so a plugin subscription is dispatched by the SAME
+/// bus a native subscriber uses (paramount #2). `:autocmd` from a plugin
+/// desugars to this call.
+///
+/// **Observation-only in v1** (the native bus is observation-only, §5.10): a
+/// plugin sees events, it does not veto or mutate them. The before-class
+/// veto/mutation seam is deferred with the bus's.
+///
+/// `handler` is the guest-chosen id the host passes back to the world's
+/// `on-event` export on delivery (the grammar `callback` precedent) — the
+/// guest's own dispatch key, so the host never allocates it and a plugin can
+/// route many `:autocmd`s to distinct handlers behind one `on-event`. No
+/// `unsubscribe` in v1: a plugin's subscriptions live for its lifetime and tear
+/// down en masse on deactivate/quarantine (the reload/lifecycle seam, PH7.12).
+interface events {
+    use types.{event-filter};
+
+    /// Subscribe `handler` to every event matching `filter` (the declarative
+    /// `kinds` / `path-globs` / `major-modes` subset; a custom predicate is the
+    /// guest filtering inside `on-event`). The host delivers each match to the
+    /// world's `on-event(handler, ev)` export.
+    subscribe: func(filter: event-filter, handler: u32);
+}
+
+/// The world an event-observing plugin implements (PH7.8). **Async** (unlike the
+/// sync grammar seam): event delivery is OFF the keystroke path — the host owns
+/// an mpsc and pushes each serialized `event` to `on-event` on the plugin's own
+/// task, so a slow handler never delays a keystroke or another subscriber
+/// (§5.10.4, paramount #4). Mirrors the picker/completion dedicated-world shape
+/// (a 5th `bindgen!` reusing the `plugin` world's `types` via `with:` so crossed
+/// values are the SAME Rust types `WitBoundary` round-trips, `boundary_event.rs`).
+///
+/// `register-events` is the host-called registration entry (the guest invokes the
+/// imported `subscribe` inside it — the grammar `register-grammar` precedent);
+/// `on-event` is the host→guest delivery. A plugin that observes nothing exports
+/// an empty `register-events` (and an `on-event` the host never calls).
+world events-plugin {
+    import events;
+    /// Capability-gated services a handler may reach (e.g. an fs `walk` from a
+    /// project-watcher hook). Inert for a handler that calls nothing.
+    import host-services;
+    use types.{event};
+
+    /// Called once by the host to drive subscription registration; the guest
+    /// calls the imported `events.subscribe(filter, handler)` inside it.
+    export register-events: func();
+
+    /// Deliver one matching event to `handler` (host→guest, async). An error /
+    /// trap is the graceful-degradation guard: the host logs + skips this
+    /// delivery, the plugin stays subscribed, other subscribers are untouched
+    /// (§8; PH7.8c bounds it with the event budget, PH7.8d).
+    export on-event: func(handler: u32, ev: event);
+}

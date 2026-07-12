@@ -58,6 +58,13 @@ world plugin {
 	use types.{routing-payload, open-target};
 	use types.{picker-context, active-buffer-snapshot, buffer-entry, position-entry, position-source};
 
+	/// The event/hook seam types (PH7.8a, §5 `events`): the owned `event` variant
+	/// delivered to the guest `on-event` export + the `event-filter` a plugin
+	/// subscribes with. Transitively-referenced payload records
+	/// (`event-document-opened`, `event-mode-lifecycle`, …) surface under
+	/// `crate::lattice::plugin_host::types::*` without a world-level `use`.
+	use types.{event, event-kind, event-filter};
+
 	/// The owned `buffer-snapshot` projection record (PH7.3c, §4.2). `use`d (not
 	/// `import`ed) so `bindgen!` emits the Rust mirror the host projects into
 	/// (`buffer.rs::project_buffer_snapshot`). The `document` **resource** is

@@ -236,8 +236,22 @@ impl ExtraFilter {
     }
 }
 
+/// A host-owned sink that delivers a matched [`Event`] to a plugin's `on-event`
+/// handler (PH7.8). Returns `false` when the plugin's receiver has closed (its
+/// actor task ended), so the bus prunes the subscription lazily — the same
+/// closed-`Channel` / `ForwardFn` discipline the rest of this module uses.
+///
+/// **The bus stays channel-agnostic.** The plugin host builds this closure over
+/// *its own* `futures::channel` mpsc (the plugin-host lib keeps `tokio` a
+/// dev-dependency; the bus's `Channel` variant uses `tokio` mpsc), so
+/// `SubscriptionTarget` never names a plugin-host or specific-channel type and
+/// `lattice-runtime` grows no dependency on either. The sink is invoked with the
+/// bus mutex **dropped** (the audit-M1 dispatch phase), so a slow plugin handler
+/// can never stall the publisher or another subscriber.
+pub type PluginEventSink = Arc<dyn Fn(Event) -> bool + Send + Sync>;
+
 /// What the bus does when a matching event arrives.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum SubscriptionTarget {
     /// Push the event onto an unbounded mpsc. Closed senders are
     /// pruned lazily on the next publish that hits this kind.
@@ -249,6 +263,42 @@ pub enum SubscriptionTarget {
     /// keeps the bus loop-free and side-effect-free with respect
     /// to document state.
     Invocation(CommandInvocation),
+    /// Deliver the event to a WASM plugin's `on-event` handler (PH7.8, filling
+    /// the reserved slot §5.10 anticipated). The host owns the `sink` (over the
+    /// plugin's actor channel); the bus calls it with the lock dropped, so a
+    /// slow plugin handler never delays the publisher or another subscriber.
+    /// `plugin` / `handler` identify the subscription for provenance and
+    /// teardown (the host unsubscribes a quarantined plugin's ids); `sink`
+    /// carries the delivery + the closed-receiver signal (`false` → prune).
+    Plugin {
+        /// The host-issued plugin id (the `u32` inside `SourceLayer::Plugin`).
+        plugin: u32,
+        /// The guest-chosen handler id, passed back to `on-event(handler, ev)`.
+        handler: u32,
+        /// The delivery sink (host-owned; runs lock-dropped).
+        sink: PluginEventSink,
+    },
+}
+
+impl std::fmt::Debug for SubscriptionTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // `sink` is an opaque closure; report the identifying fields and mark
+        // the sink's presence (mirrors `EventFilter`'s `predicate` handling).
+        match self {
+            SubscriptionTarget::Channel(tx) => f.debug_tuple("Channel").field(tx).finish(),
+            SubscriptionTarget::Invocation(inv) => {
+                f.debug_tuple("Invocation").field(inv).finish()
+            }
+            SubscriptionTarget::Plugin {
+                plugin, handler, ..
+            } => f
+                .debug_struct("Plugin")
+                .field("plugin", plugin)
+                .field("handler", handler)
+                .field("sink", &"<fn>")
+                .finish(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -423,10 +473,14 @@ impl EventBus {
         // bucket sizes are small (subscribers per kind, plus
         // wildcards) so this allocation is well under the cost of
         // even one downstream `tx.send`.
-        let channel_targets = {
+        let (channel_targets, plugin_targets) = {
             let mut inner = self.inner.lock().expect("EventBus poisoned");
             let mut channel_targets: Vec<(SubscriptionId, mpsc::UnboundedSender<Event>)> =
                 Vec::new();
+            // PH7.8: plugin sinks snapshotted alongside channel senders so they
+            // dispatch with the lock dropped too — a slow plugin handler's
+            // enqueue never runs under the bus mutex.
+            let mut plugin_targets: Vec<(SubscriptionId, PluginEventSink)> = Vec::new();
 
             // Borrow-checker note: split `inner` into independent
             // field borrows so we can read the bucket lists
@@ -440,17 +494,17 @@ impl EventBus {
             } = &mut *inner;
 
             if let Some(bucket) = by_kind.get(&kind) {
-                snapshot_bucket(bucket, &event, &mut channel_targets);
+                snapshot_bucket(bucket, &event, &mut channel_targets, &mut plugin_targets);
                 // Invocation targets: queue under the lock so we
                 // don't race with `drain_pending_invocations`.
                 // They never touch the network / channels so the
                 // cost is purely the clone, which is acceptable.
                 queue_invocations(bucket, &event, pending_invocations);
             }
-            snapshot_bucket(wildcard, &event, &mut channel_targets);
+            snapshot_bucket(wildcard, &event, &mut channel_targets, &mut plugin_targets);
             queue_invocations(wildcard, &event, pending_invocations);
 
-            channel_targets
+            (channel_targets, plugin_targets)
         };
 
         // Dispatch phase: lock dropped. Slow / bounded subscribers
@@ -459,6 +513,13 @@ impl EventBus {
         let mut dead: Vec<SubscriptionId> = Vec::new();
         for (id, tx) in channel_targets {
             if tx.send(event.clone()).is_err() {
+                dead.push(id);
+            }
+        }
+        // PH7.8: plugin sinks run lock-dropped too. A sink returning `false`
+        // (the plugin's actor channel closed) is pruned like a dead `Channel`.
+        for (id, sink) in plugin_targets {
+            if !sink(event.clone()) {
                 dead.push(id);
             }
         }
@@ -599,13 +660,19 @@ fn snapshot_bucket(
     bucket: &[Subscription],
     event: &Event,
     out: &mut Vec<(SubscriptionId, mpsc::UnboundedSender<Event>)>,
+    plugin_out: &mut Vec<(SubscriptionId, PluginEventSink)>,
 ) {
     for sub in bucket {
         if !sub.extra.matches(event) {
             continue;
         }
-        if let SubscriptionTarget::Channel(tx) = &sub.target {
-            out.push((sub.id, tx.clone()));
+        match &sub.target {
+            SubscriptionTarget::Channel(tx) => out.push((sub.id, tx.clone())),
+            // PH7.8: plugin sinks snapshot like channel senders (a cheap `Arc`
+            // clone) so the enqueue runs with the bus lock dropped.
+            SubscriptionTarget::Plugin { sink, .. } => plugin_out.push((sub.id, sink.clone())),
+            // Invocation targets are queued separately (`queue_invocations`).
+            SubscriptionTarget::Invocation(_) => {}
         }
     }
 }
@@ -787,6 +854,82 @@ mod tests {
         assert_eq!(bus.subscription_count(), 1);
         bus.publish(make_event());
         assert_eq!(bus.subscription_count(), 0);
+    }
+
+    // PH7.8: the `SubscriptionTarget::Plugin` delivery + prune surface.
+
+    #[test]
+    fn plugin_target_delivers_matching_event_lock_dropped() {
+        let bus = EventBus::new();
+        let seen: Arc<Mutex<Vec<Event>>> = Arc::new(Mutex::new(Vec::new()));
+        let seen_sink = Arc::clone(&seen);
+        let sink: crate::events::PluginEventSink = Arc::new(move |ev: Event| {
+            seen_sink.lock().expect("poisoned").push(ev);
+            true // receiver open
+        });
+        bus.subscribe(
+            EventFilter::kind(EventKind::DocumentSaved),
+            SubscriptionTarget::Plugin {
+                plugin: 3,
+                handler: 9,
+                sink,
+            },
+        );
+
+        // Non-matching kind: not delivered.
+        bus.publish(Event::BeforeQuit);
+        assert!(seen.lock().unwrap().is_empty());
+
+        // Matching kind: delivered.
+        bus.publish(make_event());
+        let got = seen.lock().unwrap();
+        assert_eq!(got.len(), 1);
+        assert!(matches!(got[0], Event::DocumentSaved { .. }));
+    }
+
+    #[test]
+    fn plugin_target_extra_filter_applies() {
+        // The declarative filter (path_glob) gates a plugin sink identically to
+        // a channel target (both flow through `ExtraFilter::matches`).
+        let bus = EventBus::new();
+        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count_sink = Arc::clone(&count);
+        let sink: crate::events::PluginEventSink = Arc::new(move |_ev| {
+            count_sink.fetch_add(1, Ordering::SeqCst);
+            true
+        });
+        bus.subscribe(
+            EventFilter::kind(EventKind::DocumentSaved)
+                .with_path_glob(crate::compile_glob_set(["**/*.rs"])),
+            SubscriptionTarget::Plugin {
+                plugin: 1,
+                handler: 1,
+                sink,
+            },
+        );
+
+        bus.publish(saved_with_path("notes.md")); // no match
+        bus.publish(saved_with_path("src/lib.rs")); // match
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn plugin_target_pruned_when_sink_reports_closed() {
+        // A sink returning `false` (the plugin's actor channel closed) is pruned
+        // lazily on the publish that observes it — the closed-`Channel` shape.
+        let bus = EventBus::new();
+        let sink: crate::events::PluginEventSink = Arc::new(|_ev| false /* receiver gone */);
+        bus.subscribe(
+            EventFilter::kind(EventKind::DocumentSaved),
+            SubscriptionTarget::Plugin {
+                plugin: 2,
+                handler: 4,
+                sink,
+            },
+        );
+        assert_eq!(bus.subscription_count(), 1);
+        bus.publish(make_event());
+        assert_eq!(bus.subscription_count(), 0, "closed plugin sink is pruned");
     }
 
     #[test]

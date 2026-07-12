@@ -129,6 +129,43 @@ this bench caught). Built-in motions stay native and pay none of this.
 
 ---
 
+## PH7.8 — event/hook delivery (the §7 "major-mode event handler" gate, 2026-07-12)
+
+The **off-keystroke** async cost a plugin hook pays per delivered event: the
+native `EventBus` sink pushes each matched `Event` into the plugin's actor channel
+(lock dropped) → the `EventActor` projects `Event` → WIT (`boundary_event`) and
+drives the guest `on-event` export (async canonical-ABI call). This is the §7
+**major-mode event handler < 250 µs p99** commitment. Measured through the
+`events-guest` fixture's no-op handler 4 (`DocumentChanged`, no fs), which isolates
+the dispatch path from any handler work.
+
+Marshalling (PH7.8a) — `benches/boundary.rs`:
+
+| Conversion | Value | Notes |
+|---|---|---|
+| `Event::DocumentSaved` round-trip | **~23 ns** | The common path-bearing hook; native ↔ WIT both ways. |
+| `Event::SelectionsChanged` round-trip | ~tens of ns | Carries the `selection-set` mirror (PH7.3b). |
+
+End-to-end delivery — CI gate `tests/perf_ratchet.rs`
+(`event_handler_stays_within_ceiling`):
+
+| Measure | Value | Notes |
+|---|---|---|
+| Debug mean / delivery (ratchet) | **~3.75 µs** | Mean over 1 000 deliveries (the actor drains a channel, so per-call samples aren't available); under `cargo test` (debug). |
+| CI gate ceiling | 2 ms mean | Orders of magnitude above the µs-scale debug dispatch, well under a per-delivery re-instantiation (~200 µs each) or an O(payload) marshalling blowup. |
+
+**Read:** event delivery decomposes into the ~23 ns marshalling + one async guest
+`on-event` call (≈ the PH7.3d ~437 ns typed call) + a sub-µs channel hop — so
+~3.75 µs debug mean is ~70× under the §7 250 µs budget *in debug*, before release
+optimization. No dedicated criterion bench: the per-call cost is fully
+characterized by the already-benched components (the picker/completion precedent).
+The handler's own compute is bounded separately by the **fuel-primary** off-key
+budget (`PluginBudget::event`: 100M fuel ≈ ~10 frames; the epoch is a generous ~1 s
+backstop because an event handler runs on the async linker and may legitimately
+`await` a `host-services` call — unlike the sync grammar Reflex budget).
+
+---
+
 ## TSM.5 — `scope_toward` structural-motion tree walk (2026-07-08)
 
 Tree-sitter structural motions, slice TSM.5 (design:

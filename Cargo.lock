@@ -4376,6 +4376,7 @@ dependencies = [
  "lattice-completion",
  "lattice-core",
  "lattice-grammar",
+ "lattice-keymap",
  "lattice-mode",
  "lattice-picker",
  "lattice-protocol",

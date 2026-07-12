@@ -1,10 +1,12 @@
 # Plugin Host (Phase 7) — WASM Component Model extension substrate
 
-**Status:** 🚧 in build (design 2026-07-01; last refreshed 2026-07-12). **PH7.0–7.6 + 7.7a
-have landed** — the `lattice-plugin-host` crate, the `wit/` package, the capability/WASI
-model, the boundary mirrors (`Effect`/picker/completion/grammar), the `fuzzy-finder`
-validation plugin (⭐ Phase-7 exit), and CI perf gates all exist; PH7.7 (grammar extension)
-is mid-flight, 7.8–7.12 pending. This fragment is the detailed "what/why" that expands
+**Status:** 🚧 in build (design 2026-07-01; last refreshed 2026-07-12). **PH7.0–7.8 have
+landed** — the `lattice-plugin-host` crate, the `wit/` package, the capability/WASI model, the
+boundary mirrors (`Effect`/picker/completion/grammar/event), the `fuzzy-finder` validation
+plugin (⭐ Phase-7 exit), the grammar-extension sync seam (PH7.7), the **event/hook seam**
+(PH7.8 — the dedicated async `events-plugin` world + the reserved `SubscriptionTarget::Plugin`
+slot), and CI perf gates all exist; 7.9–7.12 pending. This fragment is the detailed "what/why"
+that expands
 `design.md` §5.5 (Plugin Subsystem), §9 (Plugin API), §10 (extension tiers), §3.1
 (core-vs-plugin split), §14 (risks). Slice sequencing + landed status lives in
 `docs/dev/operations/slice-plans/plugin-host.md`; a conformance review of the whole host
@@ -270,7 +272,7 @@ against the full exercised set (§14 mitigation), and land as follow-on slices.
 | `completion-source` | `CandidateGenerator` (✅ PH7.6); `Matcher`/`Ranker`/`Annotator` type-mirrored only | guest exports **async `generate`**; host produces candidates off-keystroke (LSP pattern) → native `match_and_rank` | ➕ |
 | `grammar` | `register_{motion,text_object,operator,ex_command}` | guest exports apply/parse; host shim closures | ➕ |
 | `command` | `CommandRegistry` + `CommandInvocation` + `Effect` | guest→host `invoke`; host→guest apply | ➕ |
-| `events` | `EventBus::subscribe` + `Event` enum | host owns mpsc; forwards serialized `Event` to guest | ➕ |
+| `events` | `EventBus::subscribe` + `Event` enum (✅ PH7.8) | host owns mpsc + a type-erased sink; forwards each `Event` to the guest `on-event` off-keystroke | ➕ |
 | `decorations` | `Mode::gutter_decorations` + `GutterDecoration` | host→guest per trigger; guest returns per-line data | ➕ |
 | `modes` | `Mode` trait (`mode.rs:148`) + `ModeRegistry` | guest declares mode; host registers `Arc<dyn DynMode>` | ➕ |
 | `ui` | status/gutter segments, popups, notifications, sprites | guest→host emit data (no draw calls) | ➕ |
@@ -302,10 +304,21 @@ exactly the surface `lattice_lsp` and friends already reach. (Watch the document
   monomorphized) and is *not* reachable by a dyn plugin wrapper; the host uses `insert_*`.
 - Grammar/command: the `pub(crate) insert_*` path with a host-constructed
   `SourceLayer::Plugin(id)` (§4.1). The guest never supplies its own provenance.
-- Events: the host adds the missing `SubscriptionTarget::Plugin { plugin, handler }` delivery
-  (an mpsc the host owns; each `Event` is cloned, serialized, and delivered to the guest's
-  `on-event` export as a separate task so a slow handler never delays other subscribers —
-  §5.10.4).
+- Events (**✅ PH7.8**): the host filled the reserved `SubscriptionTarget::Plugin { plugin,
+  handler, sink }` slot. The `sink` is a **type-erased** `Arc<dyn Fn(Event) -> bool>`
+  (`lattice_runtime::PluginEventSink`) the plugin host builds over its own `futures` mpsc — so
+  the bus stays channel-agnostic (no plugin-host dep in `lattice-runtime`); the bus calls it in
+  the **lock-dropped** dispatch phase (audit M1) so a slow handler never delays the publisher or
+  another subscriber, and a `false` return prunes a closed sink. The per-plugin `EventActor`
+  drains the channel off the keystroke path and drives the guest `on-event` export. **The seam
+  is its own async `events-plugin` world** (`import events` + `export register-events` +
+  `on-event`), NOT the base `plugin` world — a world's exports are mandatory, so hanging
+  `on-event` off `plugin` would force every non-observer component (incl. the WAT scaffolds) to
+  implement it; the dedicated world matches the picker/completion/grammar precedent. A guest
+  subscribes with a self-chosen `handler` id (the grammar `callback` precedent); the declarative
+  filter crosses (a custom `predicate` is the guest filtering inside `on-event`). §5.10.4. *(A
+  component trap taints its instance, so a trapping plugin's later deliveries also fail —
+  dead-until-reinstantiation, PH7.12; the guarantee is cross-plugin/host isolation.)*
 - Modes: `ModeRegistry::register(Arc<dyn DynMode>)`.
 - Config: `ConfigRegistry::register_with_typeid::<T>` — the plugin declares
   name/type-label/default/doc; option **values round-trip as strings** (the `OptionType`

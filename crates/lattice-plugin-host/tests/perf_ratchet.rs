@@ -10,12 +10,12 @@
 //! Mirrors `lattice-host/tests/keystroke_publish_ratchet.rs`.
 //!
 //! Only the EXERCISED §7 rows are gated here (typed host call, the guest→host
-//! picker path, cold-start, **and the grammar-extension round-trip** now the seam
-//! exists, PH7.7). The still-forward-looking rows (status/gutter segment,
-//! picker-filter-per-item, major-mode event) map to seams that don't exist yet
-//! (PH7.9–7.11); each lands its own ratchet with its seam. Skips cleanly when the
-//! `wasm32-wasip2` guests weren't built (CI installs the target so the gate runs
-//! there — see build.rs).
+//! picker path, cold-start, the grammar-extension round-trip (PH7.7), **and the
+//! event-handler delivery path** now the seam exists, PH7.8). The still-forward-
+//! looking rows (status/gutter segment, picker-filter-per-item) map to seams that
+//! don't exist yet (PH7.9–7.11); each lands its own ratchet with its seam. Skips
+//! cleanly when the `wasm32-wasip2` guests weren't built (CI installs the target
+//! so the gate runs there — see build.rs).
 
 #![allow(clippy::unwrap_used, clippy::panic)]
 
@@ -315,5 +315,77 @@ fn grammar_round_trip_stays_within_ceiling() {
         "grammar round-trip median was {m:?}; expected < 250µs \
          (§7 release budget < 5µs p99). A gross regression in the sync grammar \
          trampoline (project → guest call → from_wit)."
+    );
+}
+
+// ── §7 row: major-mode event handler (< 50µs p50 / < 250µs p99 release) ───────
+// The OFF-keystroke async delivery path a plugin hook pays per event (PH7.8):
+// bus sink → actor channel → guest `on-event` (project `Event` → WIT, async
+// canonical-ABI call). Measured through the `events-guest` fixture's no-op
+// handler 4 (`DocumentChanged`), which isolates the DISPATCH cost (no fs, no
+// handler work). Per-delivery is a mean over N (the actor drains a channel; it
+// consumes itself in `run`, so per-call samples aren't available — a mean over a
+// large N is the honest gross-regression gate).
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn event_handler_stays_within_ceiling() {
+    use lattice_protocol::Event;
+    use lattice_protocol::ids::DocumentId;
+    use lattice_runtime::EventBus;
+
+    let path = env!("EVENTS_GUEST_WASM");
+    if path.is_empty() {
+        eprintln!("SKIP: event handler ratchet — events fixture not built");
+        return;
+    }
+    let dirs = tempfile::tempdir().unwrap();
+    let host = PluginHost::with_dirs(dirs.path().join("cache"), dirs.path().join("data")).unwrap();
+    let component = host.compile(&std::fs::read(path).unwrap()).unwrap();
+    let manifest = PluginManifest::new("events-fixture", Vec::new(), CapabilitySet::empty());
+    let bus = EventBus::new();
+    let (sub_ids, actor) = host
+        .spawn_event_plugin(
+            &component,
+            &manifest,
+            TrustTier::Bundled,
+            PluginBudget::event(),
+            &bus,
+        )
+        .await
+        .unwrap();
+
+    // Queue N deliveries to the no-op handler (handler 4 → DocumentChanged, no
+    // edits) so the measurement is the dispatch path, not handler work. Publish
+    // first, then unsubscribe (closes the channel) so `run` drains exactly N and
+    // returns.
+    let n = 1_000u32;
+    for v in 0..n {
+        bus.publish(Event::DocumentChanged {
+            id: DocumentId::new(1),
+            path: None,
+            version: v as u64,
+            edits: Vec::new(),
+        });
+    }
+    for id in sub_ids {
+        bus.unsubscribe(id);
+    }
+    let t = Instant::now();
+    actor.run().await;
+    let total = t.elapsed();
+    let per = total / n;
+    eprintln!("[ph7.8-ratchet] event_handler mean per delivery ({n} events, debug): {per:?}");
+
+    // §7 release budget: major-mode event handler < 250µs p99. The per-delivery
+    // DISPATCH cost decomposes into event marshalling (~23ns, PH7.8a) + one async
+    // guest `on-event` call (≈ the PH7.3d typed call) + a sub-µs channel hop —
+    // µs-scale in debug. 2ms mean is orders of magnitude above that yet well under
+    // a per-delivery re-instantiation (~200µs each, cold-start ratchet) sustained
+    // across N, or an O(payload) marshalling blowup.
+    assert!(
+        per < Duration::from_millis(2),
+        "event handler mean per-delivery was {per:?}; expected < 2ms \
+         (§7 release budget < 250µs p99). A gross regression in the event \
+         delivery path (bus sink → channel → guest on-event)."
     );
 }

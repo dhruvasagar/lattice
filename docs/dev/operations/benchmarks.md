@@ -2066,6 +2066,33 @@ above; order-of-magnitude only until re-run on the §8.2 hardware.
 | `trampoline_apply_effect_warm_call` (PH7.3d) | ~437 ns median | `args` in → `list<effect>` out through the fixture guest — the operator/motion `apply` shape. Right at the < 500 ns p99 target for a real end-to-end typed call. |
 | `trampoline_next_batch_warm_call` (PH7.3d) | ~sub-µs | One `next-batch` pull (the §4.3 result-carrier's per-batch call); same order as the apply call. |
 
+## Plugin host — `fuzzy-finder` picker path + §7 perf gates (`benches/fuzzy_finder.rs`, PH7.4d/7.5)
+
+The ⭐ Phase-7 exit-gate path: the `fuzzy-finder` validation plugin's warm `init`
+through the `PickerClient` bridge — channel hop + guest export + guest→host
+`walk` round-trip + candidate-pair marshalling back. PH7.5 turns the exercised §7
+rows into a **CI gate** — but the gate is a *test* (`tests/perf_ratchet.rs`), not a
+criterion compare: `cargo test --workspace` asserts a warm op stays under a
+generous absolute ceiling (orders of magnitude over the release cost, so it
+catches a gross regression without flapping on the ~20% GitHub-runner variance or
+debug inflation), mirroring `lattice-host`'s keystroke ratchet. The criterion
+numbers below stay the descriptive record. `wasm32-wasip2` is installed in the CI
+test job so the gate runs there; it skips gracefully without the target.
+
+⚠️ **Provisional — off-box.** Same caveat as the rows above.
+
+| Workload | Provisional | Notes |
+| ------------------------------------- | ----------- | ----- |
+| `fuzzy_finder_init_warm_50_files` (PH7.4d) | ~110 µs | Warm `init` over a 50-file tree through the full bridge. The `walk` + 50-pair marshalling dominate; the per-call bridge overhead (channel `mpsc` + `oneshot`) is sub-µs. The guest→host call-overhead baseline (`walk`), the PH7.3d trampoline from the other direction. |
+| `typed_call_stays_within_ceiling` **ratchet** (PH7.5) | debug ~2 µs / ceiling 50 µs | §7 typed host call (`< 500 ns p99` release). Gates the canonical-ABI lift/lower on the trampoline fixture. |
+| `picker_init_round_trip_stays_within_ceiling` **ratchet** (PH7.5) | debug ~130 µs / ceiling 20 ms | §7 guest→host picker path. Gates the channel + `walk` + marshalling against an O(file) blowup / lost-cache re-instantiation. |
+| `cold_start_50_instantiations_stays_within_ceiling` **ratchet** (PH7.5) | debug ~200 µs / ceiling 2 s | §7 cold-start (`50 plugins < 30 ms` release). Gates per-instantiation cost. Descriptive number: `instantiate.rs` `instantiate_50_plugins`. |
+| `renderers_do_not_directly_depend_on_the_plugin_host` **guard** (PH7.5) | structural | The no-per-frame-WASM rule (paramount #4): asserts `lattice-ui-tui`/`lattice-ui-gpui` don't name `lattice-plugin-host` as a runtime dep — a renderer that can't name a plugin can't call it on the tick. |
+
+Not gated yet (their seams don't exist): grammar-extension round-trip (PH7.7),
+status/gutter segment update (PH7.9), picker-filter-per-item, major-mode event
+handler — each lands its ratchet with its seam.
+
 ---
 
 ## What's NOT here

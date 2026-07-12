@@ -1,13 +1,15 @@
 # Slice plan — Plugin Host (Phase 7)
 
-**Status:** 🚧 in progress (2026-07-03) — PH7.0 ✅, PH7.1 ✅ (7.1a + 7.1b), PH7.2 ✅, **PH7.3 ✅**
-(a + b(b1a+b1b+b2) + c + d); **PH7.4 🚧** (⭐ exit, decomposed a–e): **4a ✅** (picker boundary
-mirrors + marginalia + context projection), **4b ✅** (host-services `walk` seam — first
-guest→host call, capability-gated), **4c ✅** (host adapter; **4c.1a ✅** picker-source world +
-async bindings, **4c.1b ✅** per-plugin actor task + `PickerClient` bridge, **4c.2 ✅**
-`WasmPickerSource` adapter + async-accept seam), **4d ✅ ⭐** (`fuzzy-finder` validation plugin
-— the Phase-7 exit gate MET, parity + overhead benched, no cutover). **PH7.5** (CI perf gates +
-ratchet) next. Design fragment:
+**Status:** **Phase-7 PROPER COMPLETE (PH7.0–PH7.5 ✅) — ⭐ exit reached (2026-07-12).** PH7.0 ✅,
+PH7.1 ✅ (7.1a + 7.1b), PH7.2 ✅, **PH7.3 ✅** (a + b(b1a+b1b+b2) + c + d); **PH7.4 ✅** (⭐ exit,
+a–e): **4a ✅** (picker boundary mirrors + marginalia + context projection), **4b ✅**
+(host-services `walk` seam — first guest→host call, capability-gated), **4c ✅** (host adapter;
+**4c.1a ✅** picker-source world + async bindings, **4c.1b ✅** per-plugin actor task +
+`PickerClient` bridge, **4c.2 ✅** `WasmPickerSource` adapter + async-accept seam), **4d ✅ ⭐**
+(`fuzzy-finder` validation plugin — exit gate MET, parity + overhead benched, no cutover);
+**PH7.5 ✅** (CI perf gates — ratchet TESTS on the exercised §7 rows + the no-per-frame-WASM
+dep-graph guard + `wasm32-wasip2` in CI). **PH7.6–7.12** (WIT-seam hardening before ABI freeze)
+remain. Design fragment:
 [`../../architecture/plugin-host.md`](../../architecture/plugin-host.md). Spec:
 `design.md` §5.5 / §9 / §13. This plan sequences *Phase 7 proper* (per the locked scope):
 the host runtime, capability model, the WIT interface set mirroring exercised native seams,
@@ -528,17 +530,39 @@ result; `OpenFile` outcome). Unregister the native `files` source; register the 
   source). Largely expressible today via `Effect::OpenPicker`; this slice proves it end-to-end
   and adds any missing surface. Post-exit (the exit gate doesn't require it). **Depends:** PH7.4c.
 
-### PH7.5 — Perf gates + CI ratchet 📝
-Land every §7 budget row as a CI-gated criterion bench with a ratchet (bar only moves down);
-cold-start budget; the no-per-frame-WASM guard (assert the renderer never calls a plugin on
-the UI tick).
-- **Depends:** PH7.4.
-- **Exit:** CI fails on any budget regression ≥ threshold; the picker-replication path is
-  under all budgets.
-- **Artefacts:** the benches themselves; test = a regression tripwire; doc = benchmarks.md
-  rows added.
+### PH7.5 — Perf gates + CI ratchet ✅ (2026-07-12)
+The CI gate on the §7 plugin budgets. The ratchet is a **test** (not a criterion compare),
+mirroring `lattice-host/tests/keystroke_publish_ratchet.rs`: `cargo test --workspace` (already
+the CI correctness gate) runs `tests/perf_ratchet.rs`, which measures a warm op inline and
+asserts a **generous absolute ceiling** — orders of magnitude above the real release cost, so it
+catches a *gross* regression (an O(file) term, a boundary blowup, a lost module cache) without
+flapping on the ~20% GitHub-runner variance or debug inflation. The criterion benches
+(`trampoline`, `fuzzy_finder`, `instantiate`) stay the descriptive record on `main`.
+- **Scope (locked with Dhruva) — gate the EXERCISED rows only.** Three §7 rows have real benches
+  today and are gated: **typed host call** (`typed_call_stays_within_ceiling`, on the trampoline
+  fixture — §7 `<500ns p99` release; debug median ≈2µs, ceiling 50µs), **guest→host picker path**
+  (`picker_init_round_trip_stays_within_ceiling`, the fuzzy-finder init round-trip; debug median
+  ≈130µs, ceiling 20ms), **cold-start** (`cold_start_50_instantiations_stays_within_ceiling` — §7
+  `50 plugins < 30ms` release; debug ≈200µs for 50, ceiling 2s). The forward-looking rows
+  (grammar round-trip, status/gutter segment, picker-filter-per-item, major-mode event) map to
+  seams that don't exist yet (PH7.6–7.11) — you can't bench non-existent code, so each lands its
+  own ratchet with its seam. PH7.5 establishes the pattern.
+- **No-per-frame-WASM guard (paramount #4, by construction).** `tests/no_per_frame_wasm_guard.rs`
+  asserts the renderer crates (`lattice-ui-tui`/`lattice-ui-gpui`) do not list `lattice-plugin-host`
+  as a **runtime** dependency — a renderer that cannot *name* the plugin host cannot call it on
+  the tick. Chosen (option a) over deferring: the plugin host is validation-only (no boot wiring),
+  so there is no per-frame plugin call to catch dynamically yet; the structural dep-graph guard is
+  the enforceable form NOW. Checks DIRECT runtime deps only — a transitive path renderer →
+  `lattice-host` → plugin-host is *expected* once plugins are boot-wired, and even then the
+  renderer reaches plugins only through `lattice-host`'s host-mediated + off-thread API.
+- **CI wiring.** `ci.yml` test job gains `targets: wasm32-wasip2` so `cargo test --workspace`
+  builds the plugin guests (via build.rs) and the ratchets/parity/picker tests actually run in CI
+  instead of skipping (they skip gracefully without the target — local boxes / forks unaffected).
+- **Artefacts:** ratchets = `tests/perf_ratchet.rs` (3) + `tests/no_per_frame_wasm_guard.rs` (1);
+  descriptive benches already exist; `benchmarks.md` §7 plugin-host rows added. **Depends:** PH7.4.
 
-> **Phase-7 exit reached at PH7.5.** The remaining slices harden the WIT.
+> **Phase-7 exit reached at PH7.5 ✅.** The remaining slices (PH7.6–7.12) harden the WIT against
+> the rest of the exercised seams before the ABI freeze.
 
 ---
 

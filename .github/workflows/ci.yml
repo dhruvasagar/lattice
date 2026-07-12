@@ -90,6 +90,13 @@ jobs:
         with:
           toolchain: stable
           components: clippy
+          # PH7.5: the plugin host builds its wasm32-wasip2 fixture guests +
+          # the `fuzzy-finder` validation plugin (via build.rs) for the
+          # picker/adapter tests, the parity test, and the perf RATCHETS
+          # (tests/perf_ratchet.rs — the CI gate on the §7 plugin budgets).
+          # Without the target those all SKIP gracefully; installing it here
+          # makes the gate actually run in CI.
+          targets: wasm32-wasip2
           # Disable the action's default `RUSTFLAGS=-D warnings`
           # injection -- see the top-of-file note.
           rustflags: ""

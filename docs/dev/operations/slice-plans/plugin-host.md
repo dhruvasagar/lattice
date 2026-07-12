@@ -5,8 +5,9 @@
 mirrors + marginalia + context projection), **4b ✅** (host-services `walk` seam — first
 guest→host call, capability-gated), **4c ✅** (host adapter; **4c.1a ✅** picker-source world +
 async bindings, **4c.1b ✅** per-plugin actor task + `PickerClient` bridge, **4c.2 ✅**
-`WasmPickerSource` adapter + async-accept seam); **4d** (`fuzzy-finder` plugin + cutover ⭐)
-next. Design fragment:
+`WasmPickerSource` adapter + async-accept seam), **4d ✅ ⭐** (`fuzzy-finder` validation plugin
+— the Phase-7 exit gate MET, parity + overhead benched, no cutover). **PH7.5** (CI perf gates +
+ratchet) next. Design fragment:
 [`../../architecture/plugin-host.md`](../../architecture/plugin-host.md). Spec:
 `design.md` §5.5 / §9 / §13. This plan sequences *Phase 7 proper* (per the locked scope):
 the host runtime, capability model, the WIT interface set mirroring exercised native seams,
@@ -489,10 +490,38 @@ result; `OpenFile` outcome). Unregister the native `files` source; register the 
       registration via `PickerRegistry::register_generator` directly (+ the `connect_picker_source`
       helper that wraps `Arc<dyn PickerSourceGenerator>`). **Depends:** PH7.4c.1b.
 
-  #### PH7.4d — `fuzzy-finder` plugin + cutover ⭐ 📝
-  The real `wasm32-wasip2` guest replicating `files`; unregister the native source, register
-  the WASM one; parity with the native picker tests + MRU-for-free; overhead benches.
-  **← Phase-7 exit gate.** **Depends:** PH7.4c.
+  #### PH7.4d — `fuzzy-finder` validation plugin ⭐ ✅ (2026-07-12)
+  The real `wasm32-wasip2` guest (`plugins/fuzzy-finder`) replicating the native `files`
+  picker, proving the plugin substrate end-to-end through ONLY the generic seams: it walks the
+  workspace via the capability-gated `host-services` `walk` (PH7.4b) and emits `OpenFile`
+  candidates via the `picker-source` world; the host drives it through the `WasmPickerSource`
+  adapter (PH7.4c.2) + `PickerClient` bridge (PH7.4c.1b).
+  - **Reframe (Dhruva, 2026-07-12) — NO cutover.** The original "unregister native `files`,
+    register the WASM one" is **dropped**: replacing a native built-in with a slower WASM
+    re-implementation has negative user value. **Built-in sources stay native Rust forever**
+    (§5.5 / the 4c.1a reframing — the WASM picker API exists so plugins author *custom* pickers,
+    not to re-implement built-ins). So `fuzzy-finder` is a **test/bench validation artifact**
+    only: never registered in the shipping editor, no boot wiring, no `PluginHost`-in-`Editor`.
+    The plugin uses a DISTINCT id (`"fuzzy-finder"`), so if ever loaded it is an *additive*
+    custom source, never a cutover. This satisfies the §13 exit *intent* (a plugin replicates
+    the file picker via generic seams + CI budgets) without shipping a worse picker.
+  - **Parity is by construction.** The host's `walk` reuses the SAME
+    `lattice_picker::picker_sources::walk_files_for_picker` the native `FilesSource` runs, so the
+    candidate set matches native exactly. `tests/fuzzy_finder_parity.rs` (2) formalises it: the
+    `(display, OpenFile-path)` sets are equal for a temp tree, and `accept` resolves the same
+    `OpenFile` outcome (through the async-accept seam). Skips cleanly without the wasm target.
+  - **Overhead bench.** `benches/fuzzy_finder.rs` — the warm `init` through the bridge (channel
+    hop + guest export + guest→host `walk` round-trip + candidate marshalling): descriptive
+    baseline ≈110µs for a 50-file tree (the walk + 50-pair marshalling dominate; the per-call
+    bridge overhead is sub-µs). The guest→host call-overhead bench the plan reserved for here.
+    CI-gated at PH7.5.
+  - **Build.** `plugins/fuzzy-finder` is a standalone `[workspace]` crate (not a main-workspace
+    member, like the fixture guests), built by `build.rs`'s shared `build_guest` (generalised to
+    an explicit path) → `FUZZY_FINDER_WASM`.
+
+  > **⭐ Phase-7 exit gate MET:** a WASM plugin replicates the file picker using only generic
+  > seams (zero bespoke host code, zero `Editor::` methods, zero `Action` variants); overhead is
+  > benched. PH7.5 turns the benches into CI-gated ratchets. **Depends:** PH7.4c.
 
   #### PH7.4e — "Utilize an existing picker" seam 📝
   Formalise/validate the guest→host open-picker path (a plugin opens/reuses an existing

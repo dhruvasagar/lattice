@@ -24,21 +24,38 @@ fn main() {
     // A change to the shared WIT (the worlds the guests target) rebuilds both.
     println!("cargo:rerun-if-changed={}", wit_dir.display());
 
-    // The `trampoline-guest` binary name uses an underscore (crate name
-    // `trampoline-guest` → artifact `trampoline_guest.wasm`); same for
-    // `picker-guest` → `picker_guest.wasm`.
-    build_guest(&manifest_dir, "trampoline-guest", "TRAMPOLINE_GUEST_WASM");
-    build_guest(&manifest_dir, "picker-guest", "PICKER_GUEST_WASM");
+    // Test fixtures live under `tests/fixtures/`; the `fuzzy-finder` validation
+    // plugin (PH7.4d) lives at the repo-root `plugins/`. All build the same way.
+    // Crate name uses a dash, artifact uses an underscore (`trampoline-guest` →
+    // `trampoline_guest.wasm`).
+    let fixtures = manifest_dir.join("tests").join("fixtures");
+    build_guest(
+        &fixtures.join("trampoline-guest"),
+        "trampoline-guest",
+        "TRAMPOLINE_GUEST_WASM",
+    );
+    build_guest(
+        &fixtures.join("picker-guest"),
+        "picker-guest",
+        "PICKER_GUEST_WASM",
+    );
+    build_guest(
+        &manifest_dir
+            .join("..")
+            .join("..")
+            .join("plugins")
+            .join("fuzzy-finder"),
+        "fuzzy-finder",
+        "FUZZY_FINDER_WASM",
+    );
 }
 
-/// Build one standalone fixture guest to a `wasm32-wasip2` component and export
-/// its path via `env_var` (empty + a `warning` on any failure, so the dependent
-/// test/bench skips gracefully). `name` is the fixture dir *and* crate name; the
-/// artifact is `<name-with-underscores>.wasm`.
-fn build_guest(manifest_dir: &Path, name: &str, env_var: &str) {
-    let guest_dir = manifest_dir.join("tests").join("fixtures").join(name);
-
-    // Rebuild the fixture whenever its source or manifest changes (the shared
+/// Build one standalone `wasm32-wasip2` guest crate at `guest_dir` to a
+/// component and export its path via `env_var` (empty + a `warning` on any
+/// failure, so the dependent test/bench skips gracefully). `name` is the crate
+/// name; the artifact is `<name-with-underscores>.wasm`.
+fn build_guest(guest_dir: &Path, name: &str, env_var: &str) {
+    // Rebuild the guest whenever its source or manifest changes (the shared
     // WIT rerun is registered once in `main`).
     println!("cargo:rerun-if-changed={}", guest_dir.join("src").display());
     println!(

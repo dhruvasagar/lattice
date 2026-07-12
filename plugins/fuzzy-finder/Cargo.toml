@@ -1,0 +1,33 @@
+# PH7.4d — the `fuzzy-finder` validation plugin (the Phase-7 exit-gate vehicle).
+#
+# A real `wasm32-wasip2` guest implementing the `picker-source-plugin` world: it
+# replicates the NATIVE `files` picker (walks the workspace via the capability-
+# gated `host-services` `walk`, emits `OpenFile` candidates) purely to PROVE the
+# plugin substrate works end-to-end with parity + budgeted overhead. It is NOT
+# shipped or registered in the editor — built-in sources stay native Rust
+# forever (design §5.5 / the 4c.1a reframing); the WASM picker API exists so
+# plugins author CUSTOM pickers, not to re-implement built-ins. This plugin is a
+# test/bench artifact only.
+#
+# Standalone workspace (`[workspace]` below) so it is NOT part of the parent
+# workspace: it targets wasm32-wasip2, must not inherit the host toolchain's
+# lints/target, and must not be built by a plain `cargo build --workspace`.
+# Built to a component by `crates/lattice-plugin-host/build.rs` (same
+# `build_guest` path as the test fixtures) → `FUZZY_FINDER_WASM`.
+[package]
+name = "fuzzy-finder"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.58"
+
+[profile.release]
+opt-level = "s"
+strip = true
+
+[workspace]

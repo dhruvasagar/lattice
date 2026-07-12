@@ -104,5 +104,12 @@ harness = false
 name = "trampoline"
 harness = false
 
+# PH7.4d: the guest→host call-overhead baseline — warm `fuzzy-finder` init
+# through the PickerClient bridge (channel + guest export + `walk` round-trip +
+# candidate marshalling). Skips when the wasm32-wasip2 plugin wasn't built.
+[[bench]]
+name = "fuzzy_finder"
+harness = false
+
 [lints]
 workspace = true

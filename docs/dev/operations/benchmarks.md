@@ -2084,6 +2084,7 @@ test job so the gate runs there; it skips gracefully without the target.
 | Workload | Provisional | Notes |
 | ------------------------------------- | ----------- | ----- |
 | `fuzzy_finder_init_warm_50_files` (PH7.4d) | ~110 µs | Warm `init` over a 50-file tree through the full bridge. The `walk` + 50-pair marshalling dominate; the per-call bridge overhead (channel `mpsc` + `oneshot`) is sub-µs. The guest→host call-overhead baseline (`walk`), the PH7.3d trampoline from the other direction. |
+| `completion_generate_warm` (PH7.6) | ~47 µs | Warm completion `generate` through the `CompletionClient` bridge (channel + guest export + 4-candidate marshalling, NO walk). The async-produce generator (option A) — a WASM completion source produces off the keystroke path, then the native `match_and_rank` runs. Lower than the fuzzy-finder row (no fs walk); isolates the bridge + produce cost. |
 | `typed_call_stays_within_ceiling` **ratchet** (PH7.5) | debug ~2 µs / ceiling 50 µs | §7 typed host call (`< 500 ns p99` release). Gates the canonical-ABI lift/lower on the trampoline fixture. |
 | `picker_init_round_trip_stays_within_ceiling` **ratchet** (PH7.5) | debug ~130 µs / ceiling 20 ms | §7 guest→host picker path. Gates the channel + `walk` + marshalling against an O(file) blowup / lost-cache re-instantiation. |
 | `cold_start_50_instantiations_stays_within_ceiling` **ratchet** (PH7.5) | debug ~200 µs / ceiling 2 s | §7 cold-start (`50 plugins < 30 ms` release). Gates per-instantiation cost. Descriptive number: `instantiate.rs` `instantiate_50_plugins`. |

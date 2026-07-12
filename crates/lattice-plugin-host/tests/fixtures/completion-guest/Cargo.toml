@@ -1,0 +1,25 @@
+# PH7.6 completion fixture guest — a minimal `wasm32-wasip2` component that
+# implements the `completion-source-plugin` world (exports `spec`/`generate`,
+# imports `host-services`). Built to a component by the host crate's build.rs
+# and loaded by `tests/completion_source.rs` to drive the completion bridge
+# (CompletionActor + CompletionClient) + the WasmCompletionSource adapter, then
+# feed the produced candidates through the NATIVE `match_and_rank` (option A).
+# Standalone workspace (`[workspace]` below) so it is NOT part of the parent
+# workspace. Mirrors the sibling `picker-guest` fixture's setup exactly.
+[package]
+name = "completion-guest"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.58"
+
+[profile.release]
+opt-level = "s"
+strip = true
+
+[workspace]

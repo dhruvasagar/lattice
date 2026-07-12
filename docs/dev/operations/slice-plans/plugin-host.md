@@ -8,8 +8,9 @@ a–e): **4a ✅** (picker boundary mirrors + marginalia + context projection), 
 `PickerClient` bridge, **4c.2 ✅** `WasmPickerSource` adapter + async-accept seam), **4d ✅ ⭐**
 (`fuzzy-finder` validation plugin — exit gate MET, parity + overhead benched, no cutover);
 **PH7.5 ✅** (CI perf gates — ratchet TESTS on the exercised §7 rows + the no-per-frame-WASM
-dep-graph guard + `wasm32-wasip2` in CI). **PH7.6–7.12** (WIT-seam hardening before ABI freeze)
-remain. Design fragment:
+dep-graph guard + `wasm32-wasip2` in CI); **PH7.6 ✅** (completion-source seam — generator-only,
+LSP-async pattern; the other 3 traits type-mirrored). **PH7.7–7.12** (WIT-seam hardening before
+ABI freeze) remain. Design fragment:
 [`../../architecture/plugin-host.md`](../../architecture/plugin-host.md). Spec:
 `design.md` §5.5 / §9 / §13. This plan sequences *Phase 7 proper* (per the locked scope):
 the host runtime, capability model, the WIT interface set mirroring exercised native seams,
@@ -571,10 +572,44 @@ flapping on the ~20% GitHub-runner variance or debug inflation. The criterion be
 Each mirrors one more exercised trait so the WIT is sized against the full set before any
 ABI-freeze (design.md §14). All reuse PH7.3 primitives; each is independently landable.
 
-### PH7.6 — Completion-source WIT seam 📝
-Mirror `Candidate{Generator,Matcher,Ranker,Annotator}`; host wraps as `Arc<dyn>` via the
-`insert_*` seam (not the generic `register_*`); reuse the `CandidateData::Extension` payload
-hatch for plugin candidate data. **Depends:** PH7.3.
+### PH7.6 — Completion-source WIT seam ✅ (2026-07-12)
+The completion analogue of the picker seam (PH7.4c), but **generator-only** — a design fork
+reviewed + locked with Dhruva.
+- **The fork.** The plan said "mirror `Candidate{Generator,Matcher,Ranker,Annotator}`; host wraps
+  as `Arc<dyn>` via `insert_*`." But the completion pipeline (`CompletionPipeline::run` /
+  `compute_completion_state`) is **synchronous on the keystroke path**, and `matches` + `annotate`
+  run **per candidate** (pipeline.rs:75,100) — crossing them to an async, actor-bound guest per
+  item = hundreds of boundary calls per keystroke (paramount #1). So all-four-via-`insert_*`
+  conflicts with reality. **Chosen: option A — generator-only, LSP-async pattern.** A WASM
+  completion source produces candidates *asynchronously off the keystroke path* (the LSP
+  precedent: `match_and_rank` "pre-supplies rows from async LSP responses"), and the host runs the
+  NATIVE matcher/ranker/annotator over them. Matching/ranking/annotation stay native (good
+  defaults plugins rarely override — "API grows from real plugins" §5.5); their data types are
+  still mirrored in `types.wit` so the WIT is sized against the whole trait set. Rejected: (B)
+  all-four with batch-reframed per-candidate calls (diverges from the native trait shape,
+  paramount #3), (C) type-mirror-only (the mirror shape depends on the A-vs-B choice, so it
+  doesn't avoid the fork).
+- **What landed.** `wit/completion-source.wit` — the `completion-source` interface (`spec` +
+  async `generate(ctx) -> result<list<raw-candidate>, string>`) + the `completion-source-plugin`
+  world (import `host-services`, export `completion-source`). `types.wit` += `generate-context`
+  (prefix + case-sensitive; `&Buffer`/`&CommandRegistry` don't cross — the document-handle
+  precedent) + `completion-source-spec` (id/doc). `completion_host.rs` — the THIRD `bindgen!`
+  (shared types via `with:`). `completion_task.rs` — the `CompletionActor`/`CompletionClient`
+  bridge (a focused DUPLICATE of `picker_task.rs`; rule-of-three — generalise the actor over the
+  bindings type at the 3rd consumer, grammar/PH7.7; reuses `arm_store`/`new_store`/
+  `build_plugin_wasi`). `completion_source.rs` — `WasmCompletionSource`, an **async producer**
+  (NOT `impl CandidateGenerator` — the sync trait can't await the guest): `connect` caches the
+  spec, `generate(prefix, case) -> Vec<RawCandidate>` drives the guest + converts. Candidates use
+  the `candidate-data.extension` hatch (the plugin-payload path).
+- **Proof.** `tests/completion_source.rs` (2): the fixture `completion-guest` produces 4 keyword
+  candidates (Extension data crossing verified), fed through the native `match_and_rank` — the
+  fuzzy matcher keeps only the `"al"`-matching ones (`alpha`/`alphabet`), proving the
+  produce→native-match flow; + the `PluginGone` path after the actor ends. `benches/completion.rs`
+  = warm `generate` overhead (no walk — isolates the bridge + produce cost). Skips without the
+  wasm target; `benchmarks.md` row added.
+- **Not executable (by design):** matcher/ranker/annotator as WASM guest exports — deferred until
+  a real plugin needs a custom matcher (and even then a batch-reframe, not per-candidate).
+  **Depends:** PH7.3.
 
 ### PH7.7 — Grammar-extension WIT seam (paramount #3) 📝
 Mirror `register_{motion,text_object,operator,ex_command}`; the six closure seams become

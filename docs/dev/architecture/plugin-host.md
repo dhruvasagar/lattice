@@ -239,7 +239,7 @@ against the full exercised set (§14 mitigation), and land as follow-on slices.
 | `host-services` | tree-sitter / ripgrep / regex / fs / net / proc | guest→host calls, capability-gated | ⭐ |
 | `picker-source` | `PickerSourceGenerator` (`source.rs:294`) | guest exports spec/init/accept; host wraps as `Arc<dyn>` | ⭐ |
 | `plugin` (lifecycle) | activate / deactivate / on-event | host→guest exports | ⭐ |
-| `completion-source` | `Candidate{Generator,Matcher,Ranker,Annotator}` | guest exports; host wraps as `Arc<dyn>` via `insert_*` | ➕ |
+| `completion-source` | `CandidateGenerator` (✅ PH7.6); `Matcher`/`Ranker`/`Annotator` type-mirrored only | guest exports **async `generate`**; host produces candidates off-keystroke (LSP pattern) → native `match_and_rank` | ➕ |
 | `grammar` | `register_{motion,text_object,operator,ex_command}` | guest exports apply/parse; host shim closures | ➕ |
 | `command` | `CommandRegistry` + `CommandInvocation` + `Effect` | guest→host `invoke`; host→guest apply | ➕ |
 | `events` | `EventBus::subscribe` + `Event` enum | host owns mpsc; forwards serialized `Event` to guest | ➕ |

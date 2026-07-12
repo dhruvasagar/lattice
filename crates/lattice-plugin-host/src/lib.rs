@@ -58,6 +58,9 @@ pub mod boundary_picker;
 pub mod buffer;
 pub mod capability;
 pub mod host_services;
+pub mod completion_host;
+pub mod completion_source;
+pub mod completion_task;
 pub mod manifest;
 pub mod picker_host;
 pub mod picker_source;
@@ -68,6 +71,8 @@ pub use boundary::WitBoundary;
 pub use capability::{
     CapabilityGrant, FsGrant, GrantOutcome, PreopenSpec, TrustTier, build_wasi_ctx, grant,
 };
+pub use completion_source::WasmCompletionSource;
+pub use completion_task::{CompletionActor, CompletionClient};
 pub use manifest::{Capability, CapabilityParseError, ManifestError, PluginManifest};
 pub use picker_source::WasmPickerSource;
 pub use picker_task::{PickerActor, PickerClient};

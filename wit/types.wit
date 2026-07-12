@@ -766,6 +766,25 @@ interface types {
         live: bool,
     }
 
+    /// Mirrors the crossable core of `lattice_completion::traits::GenerateContext`
+    /// (PH7.6). `buffer` (`&Buffer`) + `registry` (`&CommandRegistry`) do NOT
+    /// cross — a plugin generator that needs buffer text waits for the `document`
+    /// handle (the picker-source precedent); v1 carries the query prefix + the
+    /// case-sensitivity flag, which is all a produce-then-`match_and_rank`
+    /// generator needs (matching stays native — the sync-pipeline + paramount-#1
+    /// reason a plugin completion source is a GENERATOR, not four trait objects).
+    record generate-context {
+        prefix: string,
+        case-sensitive: bool,
+    }
+    /// A completion source's identity — the `(name, doc)` pair `insert_generator`
+    /// stamps (`registry.rs`). Mirrors nothing structural; the host interns the
+    /// owned strings at registration like `picker-source-spec`.
+    record completion-source-spec {
+        id: string,
+        doc: string,
+    }
+
     /// Mirrors `lattice_picker::outcome::OpenTarget` (`<CR>`/`<C-s>`/`<C-v>`/`<C-t>`).
     variant open-target { default, split, vsplit, tab }
 

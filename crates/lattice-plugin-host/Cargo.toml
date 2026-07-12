@@ -111,5 +111,11 @@ harness = false
 name = "fuzzy_finder"
 harness = false
 
+# PH7.6: warm completion `generate` through the CompletionClient bridge (channel
+# + guest export + candidate marshalling, no walk). Skips without the wasm target.
+[[bench]]
+name = "completion"
+harness = false
+
 [lints]
 workspace = true

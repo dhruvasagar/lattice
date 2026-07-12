@@ -60,6 +60,7 @@ pub mod capability;
 pub mod host_services;
 pub mod manifest;
 pub mod picker_host;
+pub mod picker_source;
 pub mod picker_task;
 pub mod trampoline;
 
@@ -68,6 +69,7 @@ pub use capability::{
     CapabilityGrant, FsGrant, GrantOutcome, PreopenSpec, TrustTier, build_wasi_ctx, grant,
 };
 pub use manifest::{Capability, CapabilityParseError, ManifestError, PluginManifest};
+pub use picker_source::WasmPickerSource;
 pub use picker_task::{PickerActor, PickerClient};
 
 use std::path::{Path, PathBuf};
@@ -214,6 +216,15 @@ pub enum PluginHostError {
         /// `"accept"`).
         func: &'static str,
     },
+
+    /// A value crossing the picker boundary could not be converted between its
+    /// WIT mirror and the native type — a malformed record the guest returned
+    /// (e.g. a non-UTF-8 path, §4.4), or a native value with no WIT
+    /// representation. Carries the boundary layer's message. Never lossy: a
+    /// conversion that cannot be represented is this typed error, not a silent
+    /// drop.
+    #[error("picker boundary conversion failed: {0}")]
+    Boundary(String),
 }
 
 /// Re-arm a `Store`'s fuel + epoch budget before a call, so each call gets a

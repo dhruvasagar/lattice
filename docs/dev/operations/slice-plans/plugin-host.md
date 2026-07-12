@@ -3,9 +3,10 @@
 **Status:** 🚧 in progress (2026-07-03) — PH7.0 ✅, PH7.1 ✅ (7.1a + 7.1b), PH7.2 ✅, **PH7.3 ✅**
 (a + b(b1a+b1b+b2) + c + d); **PH7.4 🚧** (⭐ exit, decomposed a–e): **4a ✅** (picker boundary
 mirrors + marginalia + context projection), **4b ✅** (host-services `walk` seam — first
-guest→host call, capability-gated), **4c 🚧** (host adapter; **4c.1a ✅** picker-source world +
-async bindings, **4c.1b ✅** per-plugin actor task + `PickerClient` bridge); 4c.2
-(`WasmPickerSource` adapter + registration) next. Design fragment:
+guest→host call, capability-gated), **4c ✅** (host adapter; **4c.1a ✅** picker-source world +
+async bindings, **4c.1b ✅** per-plugin actor task + `PickerClient` bridge, **4c.2 ✅**
+`WasmPickerSource` adapter + async-accept seam); **4d** (`fuzzy-finder` plugin + cutover ⭐)
+next. Design fragment:
 [`../../architecture/plugin-host.md`](../../architecture/plugin-host.md). Spec:
 `design.md` §5.5 / §9 / §13. This plan sequences *Phase 7 proper* (per the locked scope):
 the host runtime, capability model, the WIT interface set mirroring exercised native seams,
@@ -451,9 +452,42 @@ result; `OpenFile` outcome). Unregister the native `files` source; register the 
       `PickerAcceptOutcome`, `PickerSourceSpec`, + the `PickerContext` construction family) so
       callers get a clean path, not `crate::lattice::…`. **Depends:** PH7.4c.1a.
 
-    #### PH7.4c.2 — `WasmPickerSource` adapter + registration 📝
-    `impl PickerSourceGenerator` over the client (`init`→`PickerInitResult::Future`, boundary
-    conversions via PH7.4a) + `install(boot)` → `register_generator`. **Depends:** PH7.4c.1b.
+    #### PH7.4c.2 — `WasmPickerSource` adapter + async-accept seam ✅ (2026-07-12)
+    `impl PickerSourceGenerator` over the `PickerClient` (`lattice-plugin-host/src/picker_source.rs`),
+    boundary conversions via PH7.4a. The trait is synchronous but the guest exports are async +
+    actor-bound, resolved per method: **`spec`** fetched + converted once at `connect` (cached,
+    so `spec(&self)` is a borrow); **`init`** → `PickerInitResult::Future` (sync prelude projects
+    `PickerContext`→WIT via `project_picker_context`, the `'static` future awaits `client.init`
+    off-thread + converts the candidate pairs back), dropping into the host's existing
+    `pending_picker_init` drain; **`accept`** via a **new generic async-accept seam** (below), with
+    the sync `accept` a defensive tripwire.
+    - **The async-accept seam (option C, locked with Dhruva).** `PickerSourceGenerator` gains
+      `accept_async(&self, ctx, routing) -> Option<AcceptFuture>` (default `None` — every native
+      source unchanged). A `Some` return is spawned on the LSP runtime exactly like the init
+      Future and committed by the new `Editor::drain_pending_picker_accept` on the shared
+      `async_landed` wake (`PendingPickerAccept` state; MRU + the accepted event fire at accept
+      time, only the outcome application defers). This keeps paramount #4 intact — no synchronous
+      path from a keystroke to plugin code, so a slow/hostile plugin accept can never freeze the
+      actor thread. Rejected: pre-resolving accept at init (O(N) guest calls + stale ctx) and
+      blocking the actor thread (a plugin could freeze the UI up to the epoch deadline). **No
+      renderer changes** — the drain rides the shared sequence + wake both TUI and GPUI already
+      run (parity automatic).
+    - **Proof:** `lattice-plugin-host/tests/picker_source.rs` (2) drives the fixture guest through
+      the adapter — spec convert + registry registration, `init` Future → native batch (inputs
+      echoed → provably crossed), `accept_async` Future → native outcome, and the guest WIT `err`
+      as the future's `Err`. `lattice-host` `async_accept_defers_then_drain_commits_the_outcome`
+      proves the host seam: an async source defers at accept (picker closes, pending set, nothing
+      applied sync) and `drain_pending_picker_accept` commits + clears it (one-shot open-target
+      invariant upheld on the async path).
+    - **Bench:** none new — the per-call cost is the wasm typed call (PH7.3d trampoline bench) plus
+      a sub-µs channel hop; the end-to-end picker overhead bench rides `fuzzy-finder` at PH7.4d,
+      CI-gated at PH7.5.
+    - **Scope calls:** (1) no `SourceLayer::Plugin` stamping at registration — a picker source's
+      identity is `spec().id`; provenance is a grammar-contribution concern (PH7.7). (2) The full
+      `install(boot)` SubsystemBoot picker seam + component discovery is deferred to PH7.4d — the
+      plugin host is not boot-wired yet and `SubsystemBoot` exposes no picker accessor; 4c.2 proves
+      registration via `PickerRegistry::register_generator` directly (+ the `connect_picker_source`
+      helper that wraps `Arc<dyn PickerSourceGenerator>`). **Depends:** PH7.4c.1b.
 
   #### PH7.4d — `fuzzy-finder` plugin + cutover ⭐ 📝
   The real `wasm32-wasip2` guest replicating `files`; unregister the native source, register

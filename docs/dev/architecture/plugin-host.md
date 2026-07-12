@@ -187,6 +187,18 @@ pushes batches, or the host polls a guest `next-batch()` export. Either way the 
 `Inline`/`Future`/`Stream` trichotomy re-expressed in Component-Model record/future/stream
 terms (§9.4 already anticipates `stream<rg-match>`).
 
+The same async-carrier discipline extends to **`accept`**, which the native
+`PickerSourceGenerator::accept` declared *synchronous* — fine for a native source (accept is a
+pure routing→outcome translation) but not for a guest, whose `accept` export is `async` and
+bound to its actor task (§5.7). PH7.4c.2 adds a generic seam: `accept_async(&self, ctx,
+routing) -> Option<AcceptFuture>` (default `None`, so native sources are untouched). A `Some`
+return is spawned and drained the same way `init`'s `Future` is — the host owns the plumbing,
+the guest returns one outcome. This preserves the §3 guarantee **by construction**: there is no
+synchronous path from a keystroke to plugin `accept`, so a slow/hostile plugin accept can never
+freeze the actor thread. Blocking the actor on the guest call (the naive alternative) is
+rejected on exactly that ground; pre-resolving accept during `init` is rejected too (O(N) guest
+calls + it would carry the init-time context, not the accept-time one).
+
 ### 4.4 The `Effect` closed enum → WIT variant mirror; partial-serde fields → explicit records
 
 `Effect` is a **closed ~105-variant enum** in `lattice-grammar` (`effect.rs`), deliberately

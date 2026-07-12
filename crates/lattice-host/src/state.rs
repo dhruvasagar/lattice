@@ -322,6 +322,33 @@ impl std::fmt::Debug for PendingPickerInit {
     }
 }
 
+/// In-flight async picker *accept*. The future from
+/// `PickerSourceGenerator::accept_async` is spawned on the LSP
+/// runtime (a plugin source's accept is an async guest call
+/// bound to its actor task, so it must not block the actor
+/// thread); its resolved outcome lands here via `rx` and is
+/// applied by `drain_pending_picker_accept`. `target` is the
+/// open-target override consumed at accept time and re-applied
+/// when the outcome commits. Mirrors [`PendingPickerInit`]; the
+/// `cancel` token drops a superseded accept (a rapid second
+/// accept before this one drains).
+pub struct PendingPickerAccept {
+    pub source_id: String,
+    pub target: lattice_picker::OpenTarget,
+    pub rx: tokio::sync::mpsc::UnboundedReceiver<
+        lattice_picker::SourceResult<lattice_picker::outcome::PickerAcceptOutcome>,
+    >,
+    pub cancel: CancellationToken,
+}
+
+impl std::fmt::Debug for PendingPickerAccept {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PendingPickerAccept")
+            .field("source_id", &self.source_id)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Live-picker query state. Installed when `open_picker`
 /// resolves a source whose `spec().live` is true; survives
 /// until the picker is dismissed.

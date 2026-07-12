@@ -245,6 +245,17 @@ pub type CandidateFuture = Pin<Box<dyn Future<Output = SourceResult<CandidateBat
 /// live-LSP-completion).
 pub type CandidateStream = mpsc::UnboundedReceiver<SourceResult<CandidateBatch>>;
 
+/// One-shot async future a source returns from [`accept_async`] when
+/// translating the chosen routing payload requires off-thread work — the
+/// motivating case is a WASM plugin source whose `accept` is an async guest
+/// call bound to its actor task (`lattice-plugin-host`). Same `'static + Send`
+/// contract as [`CandidateFuture`]: the source extracts everything it needs
+/// (the projected context, the routing token) during the synchronous
+/// `accept_async` prelude and moves it into the closure.
+///
+/// [`accept_async`]: PickerSourceGenerator::accept_async
+pub type AcceptFuture = Pin<Box<dyn Future<Output = SourceResult<PickerAcceptOutcome>> + Send>>;
+
 /// Three init shapes covering every Phase 4-8 picker
 /// pattern. The choice is per-invocation -- a single source
 /// can return different shapes depending on args (e.g. a
@@ -323,6 +334,31 @@ pub trait PickerSourceGenerator: Send + Sync {
         ctx: &PickerContext<'_>,
         routing: &RoutingPayload,
     ) -> SourceResult<PickerAcceptOutcome>;
+
+    /// Async-accept hook. Default `None` means "this source resolves `accept`
+    /// synchronously" — every native source takes this path and is unchanged.
+    ///
+    /// A source whose accept translation requires off-thread work returns
+    /// `Some(future)`; the host spawns it (never blocking the actor thread) and
+    /// applies the resolved outcome via the pending-accept drain, exactly the
+    /// way [`init`](Self::init)'s [`PickerInitResult::Future`] is drained. The
+    /// motivating case is a WASM plugin source (`lattice-plugin-host`): its
+    /// guest `accept` export is async and bound to the plugin's actor task, so
+    /// there is no synchronous path from the keystroke to plugin code
+    /// (paramount #4) — a slow/hostile plugin accept can never freeze the UI.
+    ///
+    /// Like `init`, this is a **synchronous prelude**: read what's needed from
+    /// `ctx` + `routing`, project/clone into the returned `'static` future, and
+    /// release the borrows. A source that returns `Some` here still implements
+    /// the sync [`accept`](Self::accept) (the host prefers `accept_async` when
+    /// it returns `Some`, so that body is the fallback / tripwire only).
+    fn accept_async(
+        &self,
+        _ctx: &PickerContext<'_>,
+        _routing: &RoutingPayload,
+    ) -> Option<AcceptFuture> {
+        None
+    }
 
     /// Live-source hook: re-fetch candidates when the user's
     /// query changes. Default `None` means "static source --

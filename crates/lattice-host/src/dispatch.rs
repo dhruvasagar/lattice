@@ -9879,6 +9879,40 @@ impl Editor {
         }
     }
 
+    /// PH7.4c.2: commit an async picker accept (a WASM plugin source whose
+    /// `accept_async` returned a Future). Mirrors [`drain_pending_picker_init`]:
+    /// polled off the async-landed wake, non-blocking `try_recv`; on a resolved
+    /// outcome it re-installs the open-target override and applies the outcome
+    /// (the picker was already closed at accept time). A resolution error is
+    /// echoed; the editor stays live.
+    pub fn drain_pending_picker_accept(&mut self) -> Vec<RendererSignal> {
+        let Some(pending) = self.pending_picker_accept.as_mut() else {
+            return Vec::new();
+        };
+        let result = match pending.rx.try_recv() {
+            Ok(r) => r,
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => return Vec::new(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                self.pending_picker_accept = None;
+                return Vec::new();
+            }
+        };
+        let pending = self.pending_picker_accept.take().expect("guarded above");
+        match result {
+            Ok(outcome) => {
+                // Re-install the one-shot open-target override the inner
+                // `std::mem::take` in `apply_picker_outcome` observes (the same
+                // contract `do_picker_accept`'s sync path upholds).
+                self.picker_open_target = pending.target;
+                self.apply_picker_outcome(outcome).renderer_signals
+            }
+            Err(e) => {
+                self.set_message(EchoLevel::Error, format!("picker: {e}"));
+                Vec::new()
+            }
+        }
+    }
+
     /// Best-effort workspace root for picker sources. Active
     /// document's parent if it has one; current working directory
     /// otherwise; `.` if cwd resolution fails. Returned owned so
@@ -13154,6 +13188,9 @@ impl Editor {
         self.refresh_diff_folds();
         self.drain_pending_selection_range();
         signals.extend(self.drain_pending_picker_init());
+        // PH7.4c.2: commit any async plugin-source accept whose outcome landed
+        // (same async-landed wake as init; no renderer-specific wiring needed).
+        signals.extend(self.drain_pending_picker_accept());
         // 5.8.AF.5: `refresh_lsp_file_watcher` is now a
         // fingerprint-gated, non-blocking cmd-send. The actual
         // watcher + event fan-out runs on the LSP-runtime task
@@ -25200,6 +25237,56 @@ impl Editor {
             let source_id_owned = source_id.to_string();
             let snap = self.document.snapshot();
             let ctx = self.build_picker_context(&snap);
+            // PH7.4c.2: a source whose accept translation needs off-thread work
+            // (a WASM plugin — its `accept` is an async guest call bound to the
+            // plugin's actor task) returns `Some` here. Spawn it like the init
+            // Future rather than blocking the actor thread on plugin code
+            // (paramount #4); the resolved outcome commits via
+            // `drain_pending_picker_accept` on the async-landed wake. MRU + the
+            // accepted event fire NOW (the user has committed; neither depends
+            // on the resolved outcome), so only the outcome application defers.
+            if let Some(fut) = generator.accept_async(&ctx, &routing) {
+                drop(ctx);
+                drop(snap);
+                let mru_enabled = self
+                    .config
+                    .get_typed::<lattice_config::core_options::PickerMruEnabled>()
+                    .map(|b| *b)
+                    .unwrap_or(true);
+                let identity = lattice_picker::routing_identity(&routing);
+                if mru_enabled && let Some(identity) = identity.as_deref() {
+                    self.picker_mru.record(&source_id_owned, identity);
+                    self.persist_picker_mru_best_effort();
+                }
+                self.event_bus
+                    .publish_typed(lattice_picker::events::PickerAccepted {
+                        source_id: source_id_owned.clone(),
+                        identity,
+                        routing_payload_path: routing_payload_path(&routing),
+                        ts: std::time::SystemTime::now(),
+                    });
+                if let Some(prev) = self.pending_picker_accept.take() {
+                    prev.cancel.cancel();
+                }
+                let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+                let cancel = lattice_protocol::CancellationToken::new();
+                let cancel_clone = cancel.clone();
+                let async_landed = self.async_landed.clone();
+                lattice_runtime::runtime::spawn_on_lsp_runtime(async move {
+                    let result = fut.await;
+                    if !cancel_clone.is_cancelled() {
+                        let _ = tx.send(result);
+                        async_landed.notify_one();
+                    }
+                });
+                self.pending_picker_accept = Some(crate::state::PendingPickerAccept {
+                    source_id: source_id_owned,
+                    target,
+                    rx,
+                    cancel,
+                });
+                return DispatchOutcome::default();
+            }
             let outcome = match generator.accept(&ctx, &routing) {
                 Ok(o) => o,
                 Err(e) => {
@@ -32051,6 +32138,126 @@ mod tests {
             lattice_picker::OpenTarget::Default,
             "picker_open_target must reset after every do_picker_accept call \
              (slice 32 one-shot guarantee)"
+        );
+    }
+
+    /// PH7.4c.2: a test picker source whose `accept_async` returns `Some` —
+    /// the shape a WASM plugin source takes. `init` is `Inline` (irrelevant to
+    /// the accept seam); `accept_async` resolves after one runtime poll to the
+    /// requested outcome, proving the host defers accept off-thread and commits
+    /// it via `drain_pending_picker_accept`.
+    struct AsyncAcceptSource {
+        spec: lattice_picker::PickerSourceSpec,
+        outcome: lattice_picker::outcome::PickerAcceptOutcome,
+    }
+
+    impl AsyncAcceptSource {
+        fn new(outcome: lattice_picker::outcome::PickerAcceptOutcome) -> Self {
+            Self {
+                spec: lattice_picker::PickerSourceSpec::no_args(
+                    "async-accept-test",
+                    "Test-only source whose accept resolves off-thread.",
+                ),
+                outcome,
+            }
+        }
+    }
+
+    impl lattice_picker::PickerSourceGenerator for AsyncAcceptSource {
+        fn spec(&self) -> &lattice_picker::PickerSourceSpec {
+            &self.spec
+        }
+
+        fn init(
+            &self,
+            _ctx: &lattice_picker::context::PickerContext<'_>,
+            _args: &[String],
+        ) -> lattice_picker::SourceResult<lattice_picker::PickerInitResult> {
+            Ok(lattice_picker::PickerInitResult::Inline(Vec::new()))
+        }
+
+        fn accept(
+            &self,
+            _ctx: &lattice_picker::context::PickerContext<'_>,
+            _routing: &lattice_picker::RoutingPayload,
+        ) -> lattice_picker::SourceResult<lattice_picker::outcome::PickerAcceptOutcome> {
+            Err("must resolve via accept_async".to_string())
+        }
+
+        fn accept_async(
+            &self,
+            _ctx: &lattice_picker::context::PickerContext<'_>,
+            _routing: &lattice_picker::RoutingPayload,
+        ) -> Option<lattice_picker::AcceptFuture> {
+            let outcome = self.outcome.clone();
+            Some(Box::pin(async move {
+                // One poll so the future genuinely defers off-thread, like a
+                // real guest round-trip.
+                tokio::task::yield_now().await;
+                Ok(outcome)
+            }))
+        }
+    }
+
+    /// Seat a picker on `editor` with one candidate carrying `routing`, under
+    /// `source_id`. The candidate sets no `accept_action`, so accept falls
+    /// through to the trait path (where `accept_async` is consulted).
+    fn seat_one_candidate(
+        editor: &mut crate::editor::Editor,
+        source_id: &str,
+        routing: lattice_picker::RoutingPayload,
+    ) {
+        let cand = lattice_completion::candidate::RawCandidate::plain(
+            "x".to_string(),
+            lattice_completion::candidate::CandidateKind::Plain,
+        );
+        editor.seat_picker_from_pairs(source_id.to_string(), vec![(cand, routing)]);
+    }
+
+    /// PH7.4c.2: an async-accept source defers at accept time (picker closes,
+    /// `pending_picker_accept` set, nothing applied synchronously) and the
+    /// resolved outcome commits via `drain_pending_picker_accept`.
+    #[test]
+    fn async_accept_defers_then_drain_commits_the_outcome() {
+        use std::time::{Duration, Instant};
+
+        let document = lattice_core::Document::empty();
+        let mut editor = crate::editor::Editor::boot(document);
+        let mut reg = lattice_picker::PickerRegistry::new();
+        reg.register_generator(std::sync::Arc::new(AsyncAcceptSource::new(
+            lattice_picker::outcome::PickerAcceptOutcome::NoOp,
+        )));
+        editor.picker_registry = std::sync::Arc::new(reg);
+
+        seat_one_candidate(
+            &mut editor,
+            "async-accept-test",
+            lattice_picker::RoutingPayload::Buffer { id: 0 },
+        );
+        assert!(editor.picker.is_some(), "picker seated");
+
+        // Accept: the async source defers — no synchronous outcome application.
+        let _ = editor.do_picker_accept();
+        assert!(editor.picker.is_none(), "picker closes on accept");
+        assert!(
+            editor.pending_picker_accept.is_some(),
+            "async accept is deferred, not applied synchronously"
+        );
+
+        // Pump the drain until the outcome lands (spawned on the LSP runtime).
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline && editor.pending_picker_accept.is_some() {
+            let _ = editor.drain_pending_picker_accept();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            editor.pending_picker_accept.is_none(),
+            "drain committed + cleared the pending accept"
+        );
+        // One-shot open-target invariant holds on the async path too.
+        assert_eq!(
+            editor.picker_open_target,
+            lattice_picker::OpenTarget::Default
         );
     }
 

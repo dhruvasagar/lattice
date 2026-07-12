@@ -76,8 +76,8 @@ use crate::keymap_registry::{KeymapHandle, LayerId};
 use crate::pane::PaneTree;
 use crate::state::{
     CompletionState, LastFind, LastSearch, LastVisual, LivePickerQueryState, MacroRecording,
-    OptionCache, PendingBlockInsert, PendingPickerInit, PositionEntry, PrevPaneState, ReplaceEntry,
-    SearchLine, SubstitutePreview, TagStackEntry, UnnamedRegister,
+    OptionCache, PendingBlockInsert, PendingPickerAccept, PendingPickerInit, PositionEntry,
+    PrevPaneState, ReplaceEntry, SearchLine, SubstitutePreview, TagStackEntry, UnnamedRegister,
 };
 use crate::versioned::Versioned;
 use lattice_core::BufferKind;
@@ -826,6 +826,11 @@ pub struct Editor {
     /// In-flight async picker init, if the active picker
     /// source's `init` returned a Future.
     pub pending_picker_init: Option<PendingPickerInit>,
+    /// In-flight async picker accept, if the accepted source's
+    /// `accept_async` returned a Future (a WASM plugin source).
+    /// Its resolved outcome commits via
+    /// `drain_pending_picker_accept`.
+    pub pending_picker_accept: Option<PendingPickerAccept>,
     /// Live-picker query state -- present only when the
     /// active picker source has `spec().live == true`.
     pub live_picker_query: Option<LivePickerQueryState>,

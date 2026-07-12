@@ -21881,6 +21881,13 @@ impl Editor {
         placement: crate::popup::PopupPlacement,
         focus: crate::popup::PopupFocus,
     ) -> Vec<RendererSignal> {
+        // Reopen-safety: if a popup is already showing, dismiss it cleanly first.
+        // Otherwise the idempotent `ensure_named_popup_buffer` could hand back
+        // the currently-open buffer, which `open_popup_buffer` then tears down
+        // (`dismiss_stale_popup_registry`) and immediately re-references.
+        if self.popup_buffer.is_some() {
+            self.dismiss_popup();
+        }
         let id = self.ensure_named_popup_buffer(
             name,
             lattice_mode::ModeId::new(mode_id),

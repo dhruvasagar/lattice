@@ -68,6 +68,28 @@ pub fn install(boot: &mut impl SubsystemBoot, logger: &AiLogger) {
     // PU-B: the `ai-permission` menu's action commands (`action:ai-perm-*`).
     crate::acp::permission_mode::register_ai_permission_actions(boot.commands_mut());
 
+    // PU-B.3: the permission-menu auto-open coordinator (menu-open gate +
+    // Esc-deferred set), shared by `ai-permission-mode` and the auto-open tick
+    // callback below. Registered as a service (the `Arc<X>` handle convention).
+    let coordinator: crate::acp::permission_mode::PermissionMenuCoordinatorHandle =
+        Arc::new(crate::acp::permission_mode::PermissionMenuCoordinator::new());
+    boot.register_service::<crate::acp::permission_mode::PermissionMenuCoordinatorHandle>(
+        coordinator.clone(),
+    );
+
+    // PU-B.3: the auto-open tick callback. `run_tick_pending` runs it on the
+    // actor's `async_landed` wake (below) — no keystroke — so a permission that
+    // becomes pending while the user is idle opens the menu on its own. The body
+    // is mode-owned (`permission_mode::auto_open_tick`); the host only runs the
+    // closure + applies the returned `Effect::OpenPopup`.
+    {
+        let conv_store = conv_store.clone();
+        let coordinator = coordinator.clone();
+        boot.tick_callback(Box::new(move || {
+            crate::acp::permission_mode::auto_open_tick(&conv_store, &coordinator)
+        }));
+    }
+
     // Services: `AiClientHandle` for a future modeline/UI; `ConversationStore`
     // for the `ai-conversation` mode's projection.
     boot.register_service::<AiClientHandle>(handle);
@@ -79,4 +101,10 @@ pub fn install(boot: &mut impl SubsystemBoot, logger: &AiLogger) {
     // without needing a keystroke. Sequenced after the edit — via this event,
     // not `ConversationUpdated` — so the wake never paints stale content.
     boot.wake_on_event::<crate::acp::conversation::ConversationProjected>();
+
+    // PU-B.3: also wake on `ConversationUpdated` (fired by the supervisor's
+    // `push_permission_request`) so the auto-open tick callback runs the instant
+    // a permission goes pending — even when the `*ai:opencode*` buffer isn't
+    // focused, so its `ConversationProjected` drain isn't the one waking us.
+    boot.wake_on_event::<crate::acp::conversation::ConversationUpdated>();
 }

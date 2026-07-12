@@ -32,15 +32,16 @@ Create this architecture fragment and slice plan. (This slice.)
 
 ---
 
-## Slice AUX-1 — Permission surfacing for non-edit operations 🚧
+## Slice AUX-1 — Permission surfacing for non-edit operations ✅ (closed by PU-B)
 
-**Status:** the model, supervisor branch, oneshot plumbing and
-`render_conversation` arm all landed and work. The slice is NOT complete: the
-allow/deny action handlers are registered but **bound to nothing**, so a pending
-permission renders as inert text. `ai_conversation_keymap_entries` adds no
-chord, and the `:ai-allow` / `:ai-deny` ex-commands the code comment references
-were never registered. The rendered `(a)/(A)/(r)/(R)` hints additionally collide
-with the focus-prompt bindings. See "Post-landing fixes" below.
+**Status:** CLOSED by PU-B (2026-07-12). AUX-1 landed the model + supervisor
+branch + oneshot + inline `render_conversation` arm, but its allow/deny handlers
+were bound to nothing (inert text). PU-B replaced that with the `*ai-permission*`
+popup menu: PU-B.2a deleted the dead scaffold + moved resolution to the agent's
+`option_id`; PU-B.2b built the menu (`ai-permission-mode`, `:ai-permission`,
+`<CR>`-by-cursor); PU-B.3 auto-opens it keystroke-free on a pending request +
+queues concurrent requests. The inline block remains as a non-interactive record.
+See the PU-B sub-slices below.
 
 **Design ref:** §3.2 (`Block::Permission`), §3.3 (`pending_permissions` map),
 §4.1 (flow, `classify_permission` third branch), §5.3 (keymap).
@@ -338,10 +339,10 @@ invisible to the user.
 **Risk:** highest of the four. It refactors a working, widely-used surface and
 ships nothing new. Land it green and separately so a regression bisects cleanly.
 
-### Slice PU-B — ACP permission menu 📝
+### Slice PU-B — ACP permission menu ✅ (2b-iv digit accelerators deferred)
 
 **Design ref:** acp-ux-enhancements.md §5.3, popup-api.md §4. **Depends on:** PU-A.
-**Closes:** AUX-1 (🚧). Decomposed into three landable-green sub-slices
+**Closes:** AUX-1 ✅. Decomposed into three landable-green sub-slices
 (2026-07-12) — the doc framed it as one, but it touches the WIT contract, the
 supervisor oneshot contract, and a new mode, so it slices like PU-A did for
 clean bisection.
@@ -442,12 +443,32 @@ the host (the `za`-through-host class of gap TCF also noted). Covered by constru
 popup buffer → its `ai-permission-mode` keymap fires; the handler + resolution are
 unit-tested.
 
-#### PU-B.3 — auto-open + queue 📝
-Conversation drain flags a newly-pending id + ensures/projects `*ai-permission*`;
-tick callback (registered in `on_activate`) returns `Effect::OpenPopup`; the next
-pending request opens on resolve, following
-`lsp.rs::open_next_queued_show_message_request`. `Esc` defers (leaves it
-`Pending`, inline block keeps rendering it). Closes AUX-1.
+#### PU-B.3 — auto-open + queue ✅
+Full-queue auto-open (confirmed). PU-B's is the first `lattice-ai` tick-callback
+consumer.
+- **Coordinator** (`PermissionMenuCoordinator`, a service): `menu_open`
+  (AtomicBool) gates the queue — the tick callback opens only when no menu shows;
+  `deferred` (HashSet) holds `Esc`-deferred ids the callback skips.
+- **Auto-open tick callback** (registered at boot via `boot.tick_callback`, body
+  `permission_mode::auto_open_tick`): when `!menu_open` and an oldest
+  non-deferred `Pending` request exists → set `menu_open` optimistically (emit
+  once, not every tick) and return `Effect::OpenPopup { name, mode_id, Centered,
+  Steal }`.
+- **Keystroke-free**: `run_tick_pending` runs on the actor's `async_landed`
+  `select!` arm (`editor_actor.rs:616`), NOT only on keypress. Added
+  `boot.wake_on_event::<ConversationUpdated>()` so a pending permission (which
+  `push_permission_request` publishes) wakes the actor even when `*ai:opencode*`
+  isn't focused — the menu opens on its own.
+- **Queue advance**: the mode's guard `Drop` (dismiss tears down the buffer →
+  removes the active mode → drops the guard) clears `menu_open`, so the next
+  pending request opens on close (the `open_next_queued_show_message_request`
+  precedent). `Esc` defers via the dismiss handler (adds the id to `deferred`);
+  the inline block keeps rendering it and `:ai-permission` reopens it.
+- **Reopen-safety**: `Editor::open_popup_named` dismisses any open popup first,
+  so the idempotent ensure can't hand back a just-removed buffer.
+
+Tests: `auto_open_*` (emit-once/gate, skip-deferred, queue-advance, no-op).
+`lattice-ai` 163, host lib 677 green. **Closes AUX-1.**
 
 ### Slice TCF — Tool-call folds ✅
 

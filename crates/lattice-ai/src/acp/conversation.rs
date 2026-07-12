@@ -570,6 +570,16 @@ impl ConversationStore {
     /// the popup menu (`ai-permission-mode` reads it in `on_activate`). Turns
     /// and blocks are in wire order, so the first `Pending` block is the oldest.
     pub fn oldest_pending_permission(&self) -> Option<PendingPermissionView> {
+        self.oldest_pending_permission_where(|_| true)
+    }
+
+    /// PU-B.3: the oldest `Pending` request whose id satisfies `keep`. The
+    /// auto-open tick callback passes `|id| !deferred(id)` so an `Esc`-deferred
+    /// request is skipped (the queue advances past it) without re-opening it.
+    pub fn oldest_pending_permission_where(
+        &self,
+        keep: impl Fn(&str) -> bool,
+    ) -> Option<PendingPermissionView> {
         let conv = self.inner.lock().expect("conversation mutex poisoned");
         conv.turns.iter().flat_map(|t| t.blocks.iter()).find_map(|b| match b {
             Block::Permission {
@@ -578,7 +588,7 @@ impl ConversationStore {
                 description,
                 options,
                 status: PermissionStatus::Pending,
-            } => Some(PendingPermissionView {
+            } if keep(id) => Some(PendingPermissionView {
                 id: id.clone(),
                 title: title.clone(),
                 description: description.clone(),

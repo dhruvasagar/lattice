@@ -317,9 +317,9 @@ by the transform being pure and the host adopting only for edits it did not issu
 ### Slice PU-A — Generic popup primitive 🚧
 
 **Design ref:** popup-api.md. **Depends on:** nothing. **Ships no user feature.**
-**Sub-sliced in:** [pu-a-generic-popup.md](pu-a-generic-popup.md) (PU-A.1a ✅;
+**Sub-sliced in:** [pu-a-generic-popup.md](archive/pu-a-generic-popup.md) (PU-A.1a ✅;
 1b/2/3/4 planned). The pre-PU-A input/caret defects landed separately in
-[popup-input-caret.md](popup-input-caret.md).
+[popup-input-caret.md](archive/popup-input-caret.md).
 
 | File | Change |
 |---|---|

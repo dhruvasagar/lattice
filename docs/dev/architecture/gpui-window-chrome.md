@@ -5,7 +5,7 @@ window, and **maximize-on-launch** driven by the boot `Startup` event. Both are
 GPUI-peer concerns — the TUI has no OS window — surfaced as renderer-agnostic
 `ui.window.*` options that the TUI simply never reads.
 
-Slice plan: `docs/dev/operations/slice-plans/gpui-window-chrome.md` (sequencing,
+Slice plan: `docs/dev/operations/slice-plans/archive/gpui-window-chrome.md` (sequencing,
 status icons). This fragment carries the contracts, the per-platform mapping,
 and the rejected alternatives.
 

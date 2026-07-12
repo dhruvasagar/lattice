@@ -1,6 +1,6 @@
 # Picker preview syntax highlighting (PH)
 
-**Status:** ✅ complete (2026-07-01). PH.1 (substrate: `DisplaySpan` carrier + both-peer paint + match composition), PH.2 (Lines/Outline active-buffer producers + per-frame bench), and PH.3 (Grep arbitrary-file highlighting) all landed — `:picker lines` / `:picker outline` / `:picker grep` render syntax colors on both peers, recoloring on `:colorscheme`. The §4 dependency-cycle question resolved toward the primary semantic-`Style` design (`lattice-cells` is a leaf crate → no cycle). Slice plan: `docs/dev/operations/slice-plans/picker-marginalia.md` (PH series).
+**Status:** ✅ complete (2026-07-01). PH.1 (substrate: `DisplaySpan` carrier + both-peer paint + match composition), PH.2 (Lines/Outline active-buffer producers + per-frame bench), and PH.3 (Grep arbitrary-file highlighting) all landed — `:picker lines` / `:picker outline` / `:picker grep` render syntax colors on both peers, recoloring on `:colorscheme`. The §4 dependency-cycle question resolved toward the primary semantic-`Style` design (`lattice-cells` is a leaf crate → no cycle). Slice plan: `docs/dev/operations/slice-plans/archive/picker-marginalia.md` (PH series).
 
 A sibling surface to marginalia (`marginalia.md`), not part of it. Marginalia colors the trailing annotation *columns* (perm/size/location, §8–9 there). This feature colors the **source code inside the row** — the `preview` of a Grep hit, the line text of `:picker lines`, the symbol context of `:picker outline` — using tree-sitter, so a code snippet in a picker reads like it does in the buffer.
 
@@ -97,7 +97,7 @@ Rejected the original "cap by visible-window" sketch: with the per-language quer
 ## 10. Cross-references
 
 - Sibling surface (annotation columns), shares the candidate-render pipeline + colorscheme machinery: `docs/dev/architecture/marginalia.md` (esp. §3 slot-key invariant, §9 picker rollout)
-- Slice sequencing: `docs/dev/operations/slice-plans/picker-marginalia.md`
+- Slice sequencing: `docs/dev/operations/slice-plans/archive/picker-marginalia.md`
 - Syntax highlight substrate (`SyntaxSnapshot::highlight_lines`, `StyledSpan`, `Style`): `lattice-syntax`, `lattice-cells/src/style.rs`
 - Capture → theme resolution reused at the render seam: `lattice-syntax/src/theme_style.rs` (`resolve_syntax_style`, `syntax_element_id`)
 - Main-editor proof that `highlight_lines` against the live snapshot is the per-frame path: `lattice-host/src/cells_worker.rs`

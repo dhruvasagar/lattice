@@ -218,7 +218,7 @@ YAGNI says do not parameterise it until a popup wants a different one.
 **`prev_pane_for_help`** is renamed `prev_pane_for_popup`.
 
 The next three were found while scoping PU-A and fixed ahead of it (slice plan
-`../operations/slice-plans/popup-input-caret.md`). Each is the same half-migration
+`../operations/slice-plans/archive/popup-input-caret.md`). Each is the same half-migration
 seen from a different axis: the popup is "active" for `active_buffer` /
 `active_buffer_id()` / cursor / scroll, but some slice of state still reads
 `document_buffer_id` (the buffer behind the overlay).

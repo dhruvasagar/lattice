@@ -7,7 +7,7 @@ generalisation exists to finish: the popup is "active" for `active_buffer` /
 source, the fold hot-slot, or global-chord suppression — so those slices leak to
 the buffer behind the popup.
 
-**Status:** ✅ complete (PIC.1, PIC.2, PIC.3). **Design ref:** `../../architecture/popup-api.md` (§5
+**Status:** ✅ complete (PIC.1, PIC.2, PIC.3). **Design ref:** `../../../architecture/popup-api.md` (§5
 defects). **Feeds:** PU-A (`acp-ux-enhancements.md`). **Ships no user feature** —
 these are correctness fixes; the acceptance gate is "popup behaves like a focused
 buffer, background is never touched."

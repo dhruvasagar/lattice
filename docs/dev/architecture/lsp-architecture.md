@@ -962,7 +962,7 @@ would drain the pending result as a side effect. Slice **AW.1** fires
 `async_landed` after every `tx.send` on these paths (and converts `hover`
 from `paint_request` to `async_landed`), making the wake uniform across all
 arrival shapes and both renderers. Sequenced in
-[`../operations/slice-plans/lsp-async-wake.md`](../operations/slice-plans/lsp-async-wake.md).
+[`../operations/slice-plans/archive/lsp-async-wake.md`](../operations/slice-plans/archive/lsp-async-wake.md).
 
 > **`App::apply`-tail `run_tick_pending` (audit, AW.5).** The TUI/GPUI
 > keystroke path also runs `run_tick_pending` at the tail of `App::apply`

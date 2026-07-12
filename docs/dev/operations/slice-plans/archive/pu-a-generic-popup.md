@@ -1,7 +1,7 @@
 # PU-A — generic popup primitive (sub-slices)
 
 Decomposition of the PU-A slice (`acp-ux-enhancements.md` → "Slice PU-A") into
-landable, independently-green steps. **Design ref:** `../../architecture/popup-api.md`.
+landable, independently-green steps. **Design ref:** `../../../architecture/popup-api.md`.
 PU-A is the largest/riskiest of the follow-on slices — it refactors a working,
 widely-used surface and ships no user feature, so each sub-slice lands green and
 separately for clean bisection.
@@ -74,15 +74,16 @@ renderers' effect arms, WIT `types.wit` (`close-hover` → `dismiss-popup`), and
 `boundary_effect.rs` `to_wit`/`from_wit` + round-trip test. Compiler-guarded but
 touches the WIT contract. `Action::CloseHover` is a separate layer — out of scope.
 
-### PU-A.3b — `Effect::OpenPopup { buffer, placement, focus }` ⏸ deferred to PU-B
-**Decision (2026-07):** the design puts this in PU-A, but it has NO producer or
-consumer until the ACP permission menu (PU-B) — the async opener returns it via a
-tick callback (popup-api.md §4.4). Landing an `Effect` variant + WIT round-trip +
-host handler that nothing exercises end-to-end is untested dead surface (heuristic
-#1 / YAGNI). Ship it WITH its consumer in PU-B, wrapping the already-generic
-`open_popup_buffer` primitive that PU-A.1b-ii landed. The layering payoff
-(popup-api.md §4.5) is preserved — the primitive is generic now; PU-B just wires
-the effect to it.
+### PU-A.3b — `Effect::OpenPopup` ✅ (shipped in PU-B, 2026-07-12)
+**Decision (2026-07):** deferred out of PU-A because the effect had NO producer or
+consumer until the ACP permission menu — landing an `Effect` variant + WIT
+round-trip + host handler that nothing exercises end-to-end is untested dead
+surface (heuristic #1 / YAGNI). **Landed in PU-B** (`acp-ux-enhancements.md`
+PU-B.1 + PU-B.2b-ii) with its consumer: `Effect::OpenPopup { name, mode_id,
+placement, focus }` (reshaped from the `{ buffer: BufferId }` design shape — the
+emitters have no services to supply an id) wrapping the already-generic
+`open_popup_buffer` primitive PU-A.1b-ii landed. The layering payoff
+(popup-api.md §4.5) is preserved.
 
 ### PU-A.4 — chrome from the buffer name ✅
 Title from the buffer's synthetic name, not `help.title`; the `"Esc to dismiss"`

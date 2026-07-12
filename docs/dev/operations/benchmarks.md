@@ -71,6 +71,388 @@ target rather than just a slower number.
 
 ---
 
+## Full-suite baseline — Apple M1 Pro (2026-07-12)
+
+First full-suite run captured natively on the **local macOS dev
+machine**, not the WSL2 / Ryzen 7 9700X box the rest of this
+document is pinned to. This is a **new, independent baseline** — the
+numbers here are NOT a regression comparison against the Ryzen
+sections below and must not be read as one (a slower number here is
+not a regression; different silicon, different OS, and in several
+cases five weeks of code drift separate the two). It exists so that:
+
+1. future macOS runs have a same-hardware floor to regress against
+   (the same role the Ryzen sections play for the dev box), and
+2. we finally have the cross-hardware cross-validation the hardware
+   caveat's point #4 put on the wish list — a second machine that
+   tells us where the WSL2/Ryzen numbers mislead.
+
+Two per-feature macOS sections already exist and were **re-confirmed
+in this same run** rather than duplicated here: `scope_toward`
+(TSM.5) and the dashboard benches (DB.7). See those sections below.
+
+### Environment
+
+- Date: 2026-07-12
+- Host: Apple M1 Pro (8P+2E, 10-core), 32 GB unified memory,
+  macOS 14.5 (23F79) — **laptop-class, native (no VM layer)**.
+- Toolchain: Rust 1.94.0 stable (`aarch64-apple-darwin`).
+- Build profile: `bench` (`opt-level = 3`), criterion default mode
+  (100 samples), reported number is the median estimate.
+- **Not pinned.** No CPU-governor lock (macOS gives none), laptop
+  DVFS + thermal throttling apply, and the machine was not otherwise
+  quiesced. Treat ±10-15 % as noise, same posture as the WSL2 box.
+- Reproduce: `cargo bench --workspace` (plus the two feature-gated /
+  fixture-gated suites called out under "Coverage gaps" below).
+
+### Cross-hardware headline — three effects, not one
+
+Running the same suite on native Apple Silicon vs. the WSL2/Zen 5
+box separates three effects the dev-box numbers conflate:
+
+1. **The async round-trip path is ~10× faster native than on WSL2.**
+   `apply_edit_round_trip` and `dispatch_round_trip` (small buffer)
+   are mailbox + oneshot + `block_on` round-trips — dominated by
+   scheduler / syscall latency, not by any buffer work. On WSL2 that
+   costs ~77-91 µs; native macOS lands at **~7 µs**. This is the most
+   important finding of the run: the §8.2 "apply-edit round-trip
+   < 100 µs / today 77 µs" and "dispatch round-trip 79-91 µs" rows
+   are **WSL2-scheduler-bound, not code-bound** — real user-facing
+   round-trip latency has ~10× more headroom under the keystroke
+   budget than the dev-box numbers imply. The doc already suspected
+   WSL2 syscall overhead ("~5-15 %"); the true figure on this path is
+   an order of magnitude, not a few percent.
+
+2. **Pure single-thread compute is ~1.5-2× slower on the M1 Pro than
+   the Zen 5 Ryzen.** A 5 GHz Zen 5 core is simply faster per-clock
+   on tight scalar/branch-heavy loops than an M1 Pro P-core. Every
+   allocation-free microbench moves the same direction: status-segment
+   update 56 ns → 92 ns (1.6×), snapshot publish 95 ns → 122 ns
+   (1.3×), LSP `publishDiagnostics` decode 1.50 µs → 3.03 µs (2.0×),
+   utf-16 CJK column 21 ns → 33 ns (1.6×), search literal scan / 200k
+   749 µs → 1.41 ms (1.9×). This confirms the hardware-caveat
+   *direction* (typical non-dev-box hardware is slower on scalar
+   work) but puts a high-end laptop at the ~1.5-2× end, not 2-5×.
+
+3. **Memory-bandwidth-bound ops are faster on the M1 Pro.** Unified
+   LPDDR5 + wide load/store wins where the work is "stream a big
+   rope": open 100 MB 74 ms → **55 ms** (0.74×), `d_whole/50000`
+   ~3 ms → **2.38 ms** (but the Ryzen `d_whole/50k` number is itself
+   flagged as host-drift-affected below, so read that one loosely).
+
+**What this means for paramount goal #1.** Every keystroke-path row
+is far inside the one-frame ceiling (8.3 ms @ 120 Hz) on this machine
+too, and the round-trip path has *more* headroom natively than the
+WSL2 numbers show. The compute-bound rows being ~1.5-2× slower than
+the dev box is expected and still leaves large margin. Nothing here
+threatens a §8.2 commitment; the value is calibration, not alarm.
+
+### §8.2 commitments — M1 Pro readings
+
+`ratio` is M1 Pro ÷ Ryzen-doc; > 1 means slower on the M1 Pro.
+Ryzen values are this document's current "Today" numbers.
+
+| §8.2 row | Ryzen (doc) | M1 Pro | ratio | Note |
+|---|---|---|---|---|
+| Snapshot load (`load_full`) | 16 ns | **13.2 ns** | 0.82× | M1 faster |
+| Snapshot load (`Cache::load`, steady) | 290 ps | **451 ps** | 1.55× | still sub-ns |
+| Snapshot publish standalone | 95 ns | **122 ns** | 1.28× | Arc::new + atomic |
+| Status segment update | 56 ns | **92 ns** | 1.64× | scalar compute |
+| Apply-edit round-trip | 77 µs | **7.6 µs** | **0.10×** | WSL2 scheduler overhead — effect #1 |
+| Dispatch round-trip (small) | 79-91 µs | **6.9 µs** | **0.09×** | same |
+| Frame render TUI 80×24 (hl+compose) | ~199 µs | **~68 µs** | 0.34× | 54 µs viewport hl + 13 µs compose |
+| Frame render TUI 200×60 | ~307 µs | **~171 µs** | 0.56× | 139 µs + 32 µs |
+| Open 100 MB (rope) | 74 ms | **55 ms** | 0.74× | bandwidth-bound; M1 faster |
+| Search literal worst-case 200k | 749 µs | **1.41 ms** | 1.88× | scalar scan; M1 slower |
+| Tree-sitter incremental reparse (1600 / 16k) | 293 µs / 1.46 ms | **576 µs / 3.98 ms** | ~2.0× / 2.7× | scalar tree walk |
+| Highlight span cache hit | 21 ns | — | — | bench dropped from current render suite |
+| LSP framing parse (Content-Length) | 68 ns | **105 ns** | 1.54× | |
+| LSP encode `didChange` | 183 ns | **294 ns** | 1.61× | |
+| LSP decode `publishDiagnostics` | 1.50 µs | **3.03 µs** | 2.02× | |
+| LSP utf-16 column (CJK line) | 21 ns | **33 ns** | 1.59× | |
+
+### Runtime / actor
+
+The round-trip rows are effect #1 — WSL2-bound on the dev box, ~10×
+cheaper native.
+
+| Bench | M1 Pro | Ryzen (doc) | ratio | Note |
+|---|---|---|---|---|
+| `snapshot_publish_standalone/{10,1k,50k}` | 122 / 124 / 123 ns | ~95 ns | 1.29× | constant across sizes (O(1) clone), as on Ryzen |
+| `apply_edit_round_trip/{10,1k,50k}` | 7.6 / 9.5 / 7.7 µs | ~77 µs | **0.10×** | scheduler-bound; native ≫ WSL2 |
+| `dispatch_round_trip/{10,1k,50k}` | 6.9 / 24.0 / 1061 µs | 79 / 91 / 575 µs | 0.09× / 0.26× / 1.84× | small-buf = scheduler (M1 faster); 50k = the motion walk itself (M1 slower, scalar) |
+| `snapshot_publish_via_apply_edit/{10,1k,50k}` | 7.7 / 7.5 / 10.2 µs | 77 µs | 0.10-0.13× | envelope, tracks round-trip |
+| `snapshot_load/load_full` | 13.2 ns | ~16 ns | 0.82× | at floor |
+| `snapshot_load_cached/steady` | 451 ps | ~290 ps | 1.55× | sub-ns; renderer read path |
+| `snapshot_post_publish_read/{10,1k,50k}` | 92.9 / 13.5 / 13.8 ns | 71 / 17 / 20 ns | ~ | |
+| `status_segment_update` | 92.0 ns | ~56 ns | 1.64× | |
+| `event_filter_publish/kinds-only/{16,64,256}` | 0.96 / 3.7 / 16.3 µs | — | — | not in doc; O(subscribers) fan-out |
+| `event_filter_publish/path_glob/{16,64,256}` | 1.6 / 6.1 / 26.6 µs | — | — | glob-match adds ~1.6× over kinds-only |
+
+### Core — buffer / document hot-path
+
+| Bench | M1 Pro | Ryzen (doc) | ratio |
+|---|---|---|---|
+| `buffer::insert_at_origin/{10,1k,100k}` | 2.33 µs / 1.74 µs / 140 µs | 1.71 µs / 1.14 µs / 66 µs | ~1.4-2.1× |
+| `buffer::insert_at_middle/{10,1k,100k}` | 2.43 / 2.13 / 143 µs | 1.96 / 1.96 / 66 µs | ~1.2-2.2× |
+| `buffer::delete_one_byte/{10,1k,100k}` | 2.60 / 1.94 / 145 µs | 2.14 / 1.53 / 67 µs | ~1.2-2.2× |
+| `buffer::position_byte_round_trip/{10,1k,100k}` | 1.12 µs / 364 ns / 214 ns | 863 / 372 / 323 ns | ~ / flat / 0.66× |
+| `buffer::open_large/{10mb,100mb}` | 4.25 ms / **54.9 ms** | — / 74 ms | 0.74× (bandwidth win) |
+| `buffer::clone_vs_text/clone/{10,1k,100k}` | 9.8 / 9.8 / 10.0 ns | ~7.7 ns | 1.3× (Arc bump; flat, as designed) |
+| `buffer::clone_vs_text/as_string/100k` | 677 µs | 211 µs | 3.2× (falsification anchor; scalar copy) |
+| `input_edit_construction` | 3.52 ns | 1.82 ns | 1.93× |
+| `document_read_p99_us::viewport_walk/{10,1k,100k}` | 4.89 / 10.1 / 10.8 µs | 3.2 / 6.8 / 7.1 µs | ~1.5× |
+| `document_edit_p99_us::insert_at_middle/{10,1k,100k}` | 2.52 / 2.23 / 158 µs | 2.2 / 1.5 / 76 µs | ~1.1-2.1× |
+| `document_edit_p99_us::set_selections_motion/*` | 15.2 / 17.3 / 15.2 ns | ~4.2 ns | **3.6×** — still trivial; scalar field write + version bump |
+
+### Grammar — motions / operators (all Reflex-class)
+
+| Motion | M1 Pro (10 / 1k / 50k) | Ryzen (doc) |
+|---|---|---|
+| `word_forward` | 408 ns / 14.8 µs / 1.02 ms | 279 ns / 9.86 µs / 523 µs |
+| `word_backward` | 1.56 µs / 3.11 µs / 405 µs | 1.25 µs / 1.94 µs / 108 µs |
+| `word_end` | 1.35 µs / 2.85 µs / 394 µs | 1.13 µs / 1.59 µs / 103 µs |
+| `first_non_blank` (50k indented) | 342 µs | 226 µs |
+| `word_forward_count` (50 in 100×) | 1.01 µs | 611 ns |
+| `find_char_forward` (900-char line) | 445 ns | 279 ns |
+
+Motions are scalar character-class scans (effect #2): uniformly
+~1.5-4× the Ryzen numbers, all still ≪ the 2 ms Reflex budget. The
+50k cases (0.4-1.0 ms) are the memchr-optimization candidates the
+doc already flags.
+
+| Operator | M1 Pro (10 / 1k / 50k) | Ryzen (doc) | Note |
+|---|---|---|---|
+| `dw` | 5.58 µs / 20.4 µs / 1.35 ms | 4.97 µs / 17.3 µs / 670 µs | 50k ~2× |
+| `dd` | 6.15 µs / 35.4 µs / 1.78 ms | 5.43 µs / 15.9 µs / 840 µs | |
+| `d_whole` | 5.55 µs / 85.8 µs / **2.38 ms** | 5.15 µs / 20.6 µs / ~3 ms | Ryzen 50k is host-drift-flagged; M1 2.38 ms is a clean native number |
+| `yw` | 2.44 µs / 20.9 µs / 1.09 ms | 6.16 µs / 13.3 µs / 890 µs | |
+| `cw` | 5.62 µs / 21.2 µs / 1.36 ms | 4.93 µs / 13.4 µs / 687 µs | |
+| `diw` | 6.98 µs / 7.23 µs / 434 µs | 5.83 µs / 3.84 µs / 227 µs | |
+| `di_paren` (deep arg list) | 17.8 µs | 8.79 µs | 2.0× |
+| `replace_char/normal/{10,1k,50k}` | 5.69 / 6.29 / 418 µs | — | not in doc |
+
+`d_whole/50000` is the row the doc spends the most ink on (WSL2
+host-state drift, 1.23 ms → ~3 ms unreproducible). The clean native
+M1 Pro number is **2.38 ms** — the only operator over the 2 ms
+Reflex budget here, same as on the dev box, and for the same reason
+(it deletes the entire 50k-line buffer; ropey `remove` bandwidth
+dominates). A native regression threshold of ~5 ms is the watch line.
+
+### Syntax — highlight / reparse / folds
+
+| Bench | M1 Pro | Ryzen (doc) | Note |
+|---|---|---|---|
+| `highlight::rust/{10,200,2000}` | 172 µs / 3.57 ms / 37.7 ms | 142 µs / 2.93 ms / 38 ms | full-buffer; ~1.2× |
+| `highlight::rust_viewport/{24,60,120}` | **54.3 / 139 / 264 µs** | 184 / 261 / 359 µs | **0.30-0.74×** — M1 faster on the renderer's real call shape |
+| `highlight::python/{10,200,2000}` | 53.7 µs / 1.15 ms / 12.0 ms | — | not in main table |
+| `highlight::markdown/{10,100,500}` | 365 µs / 3.63 ms / 18.3 ms | — | injection-recursion path |
+| `tree_edit_single_char/{10,200,2000}` | 10.4 µs / 229 µs / 2.64 ms | 4.6 µs / 167 µs / 2.66 ms | large-tree edit flat vs Ryzen |
+| `reparse_incremental/{10,200,2000}` | 820 µs / 576 µs / 3.98 ms | 586 µs / 293 µs / 1.46 ms | ~2× (scalar); still beats full reparse at scale |
+| `reparse_full_baseline/{10,200,2000}` | 254 µs / 3.11 ms / 31.1 ms | 199 µs / 2.47 ms / 23.7 ms | falsification anchor; 2000 blows the 16 ms frame budget on both machines — why incremental matters |
+| `folds::compute_indent/{10,200,2000}` | 2.95 / 47.7 / 496 µs | 1.9 / 30 / 310 µs | linear; ~1.6× |
+| `folds::compute_markdown/{10,100,500}` | 1.51 / 10.2 / 51.3 µs | 1.0 / 6.7 / 30 µs | |
+| `folds::compute_syntax_rust/{10,200,2000}` | 76.6 µs / 1.53 ms / **15.7 ms** | 64 µs / 3.7 ms / 286 ms | 200-fn and 2000-fn **markedly faster** on M1 — likely code drift since the 2026-06 folds run, not pure hardware |
+| `scope_toward/{fwd,back}_start` | 1.67 / 1.68 ms | (see TSM.5) | re-confirmed this run; flat |
+
+The `rust_viewport` and large `compute_syntax_rust` rows moving the
+*opposite* direction from the scalar microbenches is a flag that
+those Ryzen numbers predate this run by ~1-5 weeks and reflect code
+changes, not just silicon — do not read those ratios as
+hardware-only.
+
+### Renderer — TUI compose + keymap + GPUI prepaint
+
+| Bench | M1 Pro | Ryzen (doc) | Note |
+|---|---|---|---|
+| `render::frame_24_lines/{10,200,2000}` | 13.4 / 13.4 / 13.9 µs | 15 µs (200) | flat across fn-count (compose is O(viewport)) |
+| `render::frame_60_lines/{10,200,2000}` | 32.2 / 32.1 / 32.2 µs | 46 µs (200) | 0.70× |
+| `render::frame_120_lines/{10,200,2000}` | 37.3 / 36.5 / 36.5 µs | 90 µs (200) | 0.41× |
+| `keymap_trie_lookup_{single,two,three}_chord` | 23.4 / 60.5 / 76.3 ns | — | not in doc; per-keystroke dispatch |
+| `keymap_handle_lookup_with_{one,two,three}_minors` | 1.78 / 1.93 / 2.21 µs | — | full layered lookup incl. minor modes |
+| `dispatch_translate_full_operator_motion` | 168 ns | — | grammar translate |
+| `editor_element_frame_pre_paint/{24,60,120}` | 14.4 / 35.7 / 71.5 µs | 90.1 µs (120, post-B.2) | 0.79× at 120 — GPUI prepaint |
+| `editor_element_frame_with_inlays/{24,60,120}` | 20.5 / 51.6 / 103 µs | 118.6 µs (120) | 0.87× |
+| `editor_element_frame_with_overlays/{24,60,120}` | 14.5 / 35.7 / 70.6 µs | 89.9 µs (120) | 0.79× |
+
+TUI compose and GPUI prepaint are both faster on the M1 Pro — the
+renderer paths lean on cache-resident row/attribute construction
+where Apple Silicon's memory subsystem helps, not on the tight scalar
+loops where Zen 5 wins.
+
+### Host workers — cells / overlay / dispatch-publish / diff / fold / preview
+
+Most of these come from dated 2026-06 slice sections; the bench
+bodies may have drifted, so these are recorded as a fresh M1 baseline
+rather than compared row-by-row.
+
+| Bench | M1 Pro |
+|---|---|
+| `cells_worker_full_build/{100,1k,5k}` | 228 µs / 1.01 ms / 250 µs |
+| `cells_worker_incremental_build/{100,1k,5k}` | 161 / 332 / 454 µs |
+| `cells_worker_incremental_highlighted/{100,1k,5k}` | 193 / 438 / 466 µs |
+| `cells_worker_windowed_build/{5k,20k,50k,100k}` | 1.49 / 1.86 / 1.83 / 1.44 ms — flat (O(window), not O(file), as designed) |
+| `cells_worker_cache_hit/{100,1k,5k}` | 46.8 / 46.8 / 47.4 ns |
+| `display_edit_path/{100,5k,100k}` | 149 / 372 / 375 µs |
+| `overlay_worker_cache_hit/{24,60,120}` | 39.3 / 47.9 / 39.3 ns |
+| `overlay_worker_recompute_on_scroll/{24,60,120}` | 16.4 / 21.3 / 30.9 µs |
+| `overlay_worker_stale_snapshot_hold/{24,60,120}` | 6.81 / 6.81 / 8.58 µs |
+| `dispatch_publish/steady_state` | 11.4 µs |
+| `dispatch_publish/{mutated_modes,mutated_all,unmemoised}` | 13.1 / 12.8 / 14.1 µs |
+| `dispatch_publish/keystroke_publish_{2000,100000}` | 12.5 / 12.8 µs |
+| `overlay_only_at_n_hunks/{0,10,100,1000}` | 185 ns / 574 ns / 5.15 µs / 267 µs |
+| `hunk_source_compute_pure/{0,10,100,1000}` | 14.9 ns / 283 ns / 2.02 µs / 17.6 µs |
+| `fold_identity_hash` | 22.1 ns |
+| `modeline_build/{0,8,32,128}` | 1.08 / 1.91 / 4.16 / 13.9 µs |
+| `autoread_watch_set/fingerprint/{10,100,1000}` | 1.53 / 28.5 / 439 µs |
+| `autoread_watch_set/bound_uncapped/{10,100,1000}` | 1.49 / 14.6 / 591 µs |
+| `clipboard_store_yank/{register_only,mirror_on,system_always}` | 101 / 118 / 137 ns |
+| `preview_reseat_same_buffer` | 32.4 ns |
+| `preview_enter_exit` | 17.0 µs |
+| `activate_swap_baseline` | 1.30 µs |
+| `pane_group_no_group` / `pane_group_identity_propagation` | 1.39 ns / 25.2 ns |
+| `hunk_row_map_p99_us` | 519 ns |
+| `dashboard_creation` / `dashboard_idle_tick` | 613 µs / 875 ns — see DB.7; re-confirmed |
+
+`dispatch_publish/steady_state` at **11.4 µs** (vs the doc's 3.23 µs
+on Ryzen, −52 % vs its own `unmemoised`) is the clearest
+allocator-bound outlier — the `Mutex<PublishCache>` lock + version
+compares + Arc clones cost more under the macOS system allocator.
+Still ~3 µs of net work on a no-op publish and far under any frame
+budget, but it is the one host-path row where the M1 Pro is notably
+(~3.5×) slower than the dev box.
+
+### Diff subsystem
+
+| Bench | M1 Pro |
+|---|---|
+| `diff_two_way/5k_x_80_1pct_edit/{Histogram,Myers,MyersMinimal}` | 12.0 / 12.0 / 12.0 ms |
+| `diff_two_way/50k_x_200_0.1pct_edit/Histogram` | **1.18 s** |
+| `diff_three_way/5k_x_80_two_sides_edited` | 25.6 ms |
+| `recompute_blocking/lines/{1k,5k,50k}` | 553 µs / 11.6 ms / **1.11 s** |
+| `recompute_blocking_three_way/lines/{1k,5k,50k}` | 1.22 ms / 24.7 ms / **2.31 s** |
+
+The 50k-line diff rows are the heaviest in the whole suite (1-2 s).
+These run off the keystroke path (async recompute on save / hunk
+refresh), but they are the standout candidates for a future
+large-file diff-cost pass on any hardware.
+
+### Multibuffer
+
+| Bench | M1 Pro | Ryzen (doc, M.2.c) |
+|---|---|---|
+| `multibuffer_motion/next_excerpt_start/{50,500,5000}` | 114 ns / 875 ns / 9.56 µs | 80 ns / 870 ns / 7.9 µs |
+| `multibuffer_motion/next_file_boundary/{50,500,5000}` | 320 ns / 1.61 µs / 20.0 µs | 120 ns / 1.5 µs / 12 µs |
+| `multibuffer_compose_50_excerpts` | 233 µs | (CI gate ≤ 200 µs / 50 excerpts) |
+| `multibuffer_translation_rebuild/excerpts/{100,1000}` | 249 µs / 1.17 ms | (gate ≤ 2000 µs / 20k rows) |
+| `multibuffer_append_excerpts/{50,500,5000}` | 38.7 / 65.9 / 306 µs | — |
+| `multibuffer_source_edit/excerpts/{100,1000}` | 24.7 / 24.8 µs | — |
+| `actor_max_probe_gap_ms_during_1k_scan` | 12.9 ms | — |
+| `project_search/first_batch_p99_ms_1k_files` | 126 ms | — |
+
+`multibuffer_compose_50_excerpts` at **233 µs** is just over the
+architecture-§7 CI gate of 200 µs / 50 excerpts on this machine —
+worth noting as the one place a documented gate is exceeded natively,
+though the gate was set on the dev box and compose is scalar-walk
+heavy (effect #2). Re-baseline the gate per-machine or confirm on the
+dev box before treating it as a real breach.
+
+### Terminal
+
+| Bench | M1 Pro |
+|---|---|
+| `term_snapshot_build/default_10k_200` | 5.24 ms |
+| `term_snapshot_build/stress_50k_400` | 67.8 ms |
+
+The doc's terminal Cargo note pins CI at p99 ≤ 2.0 ms at 10k×200; the
+median here is **5.24 ms**, ~2.6× over that pin. This is a
+laptop-native number on a bench the doc's §8.2-adjacent pin was
+written for the dev box — flag for review, not an automatic breach.
+
+### Plugin host (WASM Component Model)
+
+Backs paramount goal #2 (per-call WASM overhead < 500 ns p99).
+
+| Bench | M1 Pro | Note |
+|---|---|---|
+| `boundary_app_effect_round_trip` | 8.15 ns | in-process effect encode |
+| `boundary_args_round_trip` | 79.9 ns | |
+| `boundary_raw_candidate_round_trip` | 87.4 ns | |
+| `boundary_effect_round_trip` | 159 ns | |
+| `boundary_picker_outcome_round_trip` | 33.7 ns | |
+| `boundary_picker_candidate_with_marginalia_round_trip` | 412 ns | under the 500 ns typed-call budget |
+| `boundary_routing_payload_round_trip` | 31.6 ns | |
+| `document_get_text_range_one_line` | 492 ns | |
+| `plugin_instantiate_noop` | 2.12 µs | warm store instantiate |
+| `plugin_compile_instantiate_noop` | 316 µs | cold compile + instantiate |
+| `load_50_plugins_warm_cache` | 15.9 ms | ~318 µs/plugin |
+| `instantiate_50_plugins` | 96.9 µs | ~1.9 µs/plugin |
+
+All the per-call boundary round-trips clear the < 500 ns typed-call
+budget on this machine. The `trampoline` guest-fixture bench did NOT
+run — see Coverage gaps.
+
+### LSP / config / completion / picker
+
+| Bench | M1 Pro | Ryzen (doc) |
+|---|---|---|
+| `lsp::framing::parse_header_block` | 105 ns | 68 ns |
+| `lsp::encode::did_change` | 294 ns | 183 ns |
+| `lsp::decode::publish_diagnostics` | 3.03 µs | 1.50 µs |
+| `lsp::decode::small_response` | 897 ns | — |
+| `lsp::encode_decode::hover_request` | 1.77 µs | — |
+| `lsp::position::utf16_cjk_line` | 33.4 ns | 21 ns |
+| `lsp::position::utf16_to_byte_cjk` | 62.6 ns | — |
+| `lsp::position::utf8_passthrough` | 564 ps | — |
+| `lsp::logging::{log_info,log_trace_off,log_trace_on}` | 210 ns / 8.82 ns / 241 ns | — |
+| `lsp_mode::activate_deactivate/*` | ~8.07 µs | — |
+| `config::get_bool_via_handle` | 22.5 ns | — |
+| `config::resolved_get_typed` | 14.2 ns | — |
+| `config::resolve_into_10_layers` | 7.78 µs | — |
+| `annotate_pipeline_1000_3stage` | 195 µs | 167 µs (MARG.4) |
+| `keybinding_annotator_1000` | 36.7 µs | 59 µs |
+| `styled_marginalia_columns_1000` | 140 µs | 142 µs |
+| `styled_picker_columns_1000` | 179 µs | 183 µs |
+| `picker::open_inline/{100,500,5000}` | 33.0 / 190 / 2738 µs | ~1.94 ms (5000, post-8) |
+| `picker::refilter/n=5000,query={"","f","file_"}` | 1.57 / 2.33 / 2.73 ms | 801 µs / 1.43 / 1.61 ms (post-8) |
+| `picker::mru_snapshot/{100,500,5000}` | 14.4 / 74.9 / 830 µs | ~520 µs (5000, post-8) |
+| `picker::bonus_of` | 8.66 ns | — |
+
+The picker refilter hot path (per-keystroke) is ~1.7-2× the Ryzen
+post-slice-8 numbers — pure fuzzy-match scalar work (effect #2). The
+marginalia column-layout rows (`styled_*`) are essentially identical
+across machines (allocation-bound, not scalar-throughput-bound).
+
+### Coverage gaps + broken benches (this run)
+
+Two benches did **not** produce numbers. Both are pre-existing and
+platform-independent (they would fail on the dev box too); neither is
+a macOS artifact, and fixing them is out of scope for a bench run —
+recorded here so the gap is visible:
+
+1. **`lattice-mode` `activation_resolver` panics.** The fixture
+   registers mode IDs like `global-minor-0`, but `ModeRegistry::
+   register` now rejects IDs without a recognised suffix
+   (`MissingModeSuffix(ModeId("global-minor-0"))` at
+   `activation_resolver.rs:45`). The bench has been stale since that
+   validation landed. It aborts `cargo bench --workspace`, so the
+   full-suite run must be split per-crate (or the bench fixed /
+   `--exclude`d) to complete. `tick_callback` (the crate's other
+   bench) runs fine: `tick_callback_run_all/{0,1,8,32}` =
+   9.67 ns / 71 ns / 266 ns / 891 ns.
+2. **`lattice-plugin-host` `trampoline` fixture won't build.** The
+   WASM guest fixture fails to compile for `wasm32-wasip2`
+   (`could not compile bitflags … E0463`) even with the target
+   installed, so `PH7.3d` trampoline test/bench skips. The other
+   plugin-host benches (boundary, instantiate) run and are reported
+   above.
+
+The GPUI frame bench requires `--features window,bench-internals` and
+so is skipped by a plain `cargo bench --workspace`; it was run
+separately (`editor_element_frame*` above).
+
+---
+
 ## TSM.5 — `scope_toward` structural-motion tree walk (2026-07-08)
 
 Tree-sitter structural motions, slice TSM.5 (design:
@@ -89,6 +471,14 @@ file midpoint.
 |---|---|---|
 | `scope_toward/fwd_start` | ~1.717 ms | `Forward`/`Start` from the midpoint — scans `[cursor, EOF)` only, i.e. the second half of the file (~1000 functions). |
 | `scope_toward/back_start` | ~1.726 ms | `Backward`/`Start` from the same midpoint — scans `[0, cursor)` only, i.e. the first half of the file. Matches `fwd_start` closely, as expected: both directions scan a symmetric half of the fixture. |
+
+**Re-confirmed 2026-07-12** (same M1 Pro machine, full-suite run —
+see the "Full-suite baseline — Apple M1 Pro (2026-07-12)" section
+above): `fwd_start` **1.670 ms**, `back_start` **1.680 ms**. Flat
+within noise (~3 % under the recorded floor); the floor and the ~5 ms
+regression envelope both hold. Not bumped — a routine-run confirmation,
+not a deliberate perf change (see the snapshot-not-a-moving-record note
+at the top).
 
 **The byte-range restriction is the point of this bench.**
 `SyntaxSnapshot::scope_toward` calls `QueryCursor::set_byte_range` before
@@ -131,6 +521,13 @@ lattice-host --bench dashboard`.
 |---|---|---|
 | `dashboard_creation` | ~571 µs | Cold `Editor::do_open_dashboard` from a freshly booted, not-yet-opened editor — buffer creation + default-section compose + `HelpContent` seed + branding provider registration. Fires once per launch (or `:dashboard`), never per keystroke. |
 | `dashboard_idle_tick` | ~906 ns | `run_tick_pending` on an editor with the dashboard already open and nothing new published — the idle-frame cost. |
+
+**Re-confirmed 2026-07-12** (same M1 Pro machine, full-suite run —
+see the "Full-suite baseline — Apple M1 Pro (2026-07-12)" section
+above): `dashboard_creation` **613 µs** (+7 %, well inside the
+~1.5 ms envelope), `dashboard_idle_tick` **875 ns** (flat, under the
+~2 µs envelope). Both floors hold. Not bumped — a routine-run
+confirmation, not a deliberate perf change.
 
 > ⚠️ **Hardware note for this row only.** Captured on the local macOS
 > (Apple Silicon) dev machine, NOT the WSL2/Ryzen 7 9700X box the rest of

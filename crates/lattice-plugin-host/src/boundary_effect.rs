@@ -737,7 +737,6 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
                 mode_id: mode_id.clone(),
             })
         }
-        NativeEffect::OpenDashboard => WitEffect::OpenDashboard,
         NativeEffect::Many(_) => {
             return Err(
                 "Effect::Many is flattened to list<effect> at the boundary and must not \
@@ -942,7 +941,6 @@ fn effect_from_wit(w: WitEffect) -> Result<NativeEffect, String> {
             name: p.name,
             mode_id: p.mode_id,
         },
-        WitEffect::OpenDashboard => NativeEffect::OpenDashboard,
     })
 }
 

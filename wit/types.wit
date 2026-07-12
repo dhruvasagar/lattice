@@ -545,7 +545,6 @@ interface types {
         record-jump,
         open-ai-log(option<string>),
         open-synthetic-buffer(open-synthetic-buffer-payload),
-        open-dashboard,
     }
 
     // ---- The `app-effect` variant mirror (PH7.3b2) ----

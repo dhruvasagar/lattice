@@ -890,4 +890,148 @@ interface types {
         marks: list<tuple<char, position>>,
         registers: list<tuple<string, string>>,
     }
+
+    // ---- The grammar-extension seam (PH7.7, §4.1) ----
+    // Mirrors the data types a plugin authors against when it EXTENDS the vim
+    // grammar via `register_{motion,operator,text_object,ex_command,action}`.
+    // The grammar *handling* (dispatcher, `:`-line + chord parser, operator∘
+    // motion composition, ranges, counts, registers) stays native, sync, and
+    // untouched — a plugin only CONTRIBUTES entries through these types; it can
+    // neither observe nor reimplement dispatch. A plugin-registered command
+    // lands in the same `CommandRegistry` via the same `register_*` path,
+    // stamped `SourceLayer::Plugin(id)`, so it is indistinguishable from a
+    // builtin (paramount #3).
+    //
+    // Direction: each *context* is a one-way host→guest projection of the
+    // dispatch environment (a `project_*` fn, the `project_picker_context`
+    // precedent — no `from_wit`); the *result*/*effect*/*args* come back
+    // guest→host. Bulk buffer text never rides a context — it crosses via the
+    // `buffer` `document` resource handle (§4.2). The tree-sitter env
+    // (`scope_resolver` / `comment_syntax`) is host-owned trait objects a v1
+    // grammar plugin reaches through that handle, deferred like the picker's
+    // syntax overlay.
+    //
+    // The `apply` / `parse_args` closures are NOT fields on the spec records:
+    // the behavior is a sync guest export the host calls back by callback-id
+    // (PH7.7b/c), so each spec mirrors its native `*Spec` struct with the
+    // closure field dropped. `name` / `doc` are `register_*` arguments (PH7.7b),
+    // not spec fields, matching the native imperative API.
+
+    /// Mirrors `lattice_grammar::command::Count` — a repeat count. `Count(1)` is
+    /// the bare invocation; `has-explicit-count` on the motion context
+    /// disambiguates `G` from `1G`.
+    type count = u32;
+
+    /// Mirrors `lattice_grammar::command::LatencyClass` (§5.2.5 budget class).
+    enum latency-class { reflex, display, background }
+
+    /// Mirrors `lattice_grammar::registry::SurfaceForm`. `delimiter` carries the
+    /// canonical-syntax `hint` shown when the keyword form is (deliberately) a
+    /// hard error (`:s/pat/repl/`, `:g/pat/body`).
+    variant surface-form {
+        keyword,
+        delimiter(string),
+    }
+
+    /// Mirrors `lattice_grammar::registry::MotionContext` (owned projection).
+    /// `from` is the cursor the motion evaluates from; `buffer-id` is the active
+    /// buffer's registry identity (mode-state lookups). Buffer text + the
+    /// tree-sitter resolver ride the `document` handle, not this record.
+    record motion-context {
+        buffer-id: u32,
+        %from: position,
+        count: count,
+        has-explicit-count: bool,
+        args: args,
+    }
+
+    /// Mirrors `lattice_grammar::registry::MotionResult`. `linewise` expands the
+    /// resolved range to whole lines.
+    record motion-result {
+        target: position,
+        linewise: bool,
+    }
+
+    /// Mirrors `lattice_grammar::registry::OperatorContext` (owned projection).
+    /// The `&mut Document` is NOT a field — document mutation is expressed by the
+    /// returned `effect` (§4.5), and the operator reads text through the
+    /// `document` handle. `range` is the operator's target span (the
+    /// `lattice_protocol` position `range`, which crosses; the recursive grammar
+    /// `Range` is a dispatcher concern the guest never sees).
+    record operator-context {
+        range: range,
+        linewise: bool,
+        register: register,
+        count: count,
+        args: args,
+    }
+
+    /// Mirrors `lattice_grammar::registry::TextObjectContext` (owned
+    /// projection). `at` is the cursor; buffer text + the scope/comment env ride
+    /// the `document` handle.
+    record text-object-context {
+        at: position,
+        count: count,
+        args: args,
+    }
+
+    /// Mirrors `lattice_grammar::registry::ExCommandContext` (owned projection).
+    /// The native `range: option<lattice_grammar::range::Range>` is ABSENT by
+    /// design: the grammar `Range` is recursive (`RangeBound::Offset { base:
+    /// Box<..> }`) and carries a plugin `RangeId`, which a WIT record cannot
+    /// express (the `Global` / `NarrowTrigger` precedent). A v1 ex-command
+    /// plugin gets `bang` / `args` / `register` / `count`; the resolved range
+    /// lands with the range mirror.
+    record ex-command-context {
+        bang: bool,
+        args: args,
+        register: register,
+        count: count,
+    }
+
+    /// Mirrors `lattice_grammar::registry::ActionContext` (owned projection) —
+    /// the count/register prefixes typed before a chord-bound action.
+    record action-context {
+        args: args,
+        register: register,
+        count: count,
+    }
+
+    /// Mirrors `lattice_grammar::registry::MotionSpec` (metadata; `apply` is a
+    /// guest export, not a field).
+    record motion-spec {
+        jump: bool,
+        exclusive: bool,
+        args-schema: list<arg-spec>,
+    }
+
+    /// Mirrors `lattice_grammar::registry::OperatorSpec` (metadata; `apply` is a
+    /// guest export). `blockwise-per-row` is the block-visual dispatch hint.
+    record operator-spec {
+        repeatable: bool,
+        args-schema: list<arg-spec>,
+        blockwise-per-row: bool,
+    }
+
+    /// Mirrors `lattice_grammar::registry::TextObjectSpec` (metadata; `apply` is
+    /// a guest export).
+    record text-object-spec {
+        args-schema: list<arg-spec>,
+    }
+
+    /// Mirrors `lattice_grammar::registry::ExCommandSpec` (metadata; `parse_args`
+    /// + `apply` are two guest exports, not fields).
+    record ex-command-spec {
+        latency-class: latency-class,
+        accepts-bang: bool,
+        accepts-range: bool,
+        args-schema: list<arg-spec>,
+        surface-form: surface-form,
+    }
+
+    /// Mirrors `lattice_grammar::registry::ActionSpec` (metadata; `apply` is a
+    /// guest export).
+    record action-spec {
+        args-schema: list<arg-spec>,
+    }
 }

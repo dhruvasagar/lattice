@@ -26,6 +26,16 @@ pub enum CommandError {
     #[error("invalid ex-command args: {0}")]
     BadArgs(String),
 
+    /// A WASM-plugin grammar contribution failed at `apply` / `parse_args`
+    /// (PH7.7c): a guest-returned `err`, a fuel/epoch trap (the Reflex-budget
+    /// runaway guard), a boundary-conversion failure, or a dead plugin. The
+    /// dispatcher treats it like any evaluator error — **no `Effect` is
+    /// committed**, the contribution is a no-op (graceful degradation,
+    /// plugin-host.md §8), and the reason is logged. Built-in grammar never
+    /// produces this.
+    #[error("plugin grammar failed: {0}")]
+    Plugin(String),
+
     /// The evaluator observed a cancelled [`crate::CancellationToken`]
     /// and returned early. By DESIGN.md §5.2.5, no `Effect` is
     /// committed; the document is left at the version the keystroke

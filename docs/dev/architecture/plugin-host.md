@@ -1,10 +1,27 @@
 # Plugin Host (Phase 7) — WASM Component Model extension substrate
 
-**Status:** 📝 design (2026-07-01). Greenfield — no `lattice-plugin-host` crate, no
-`wit/`, no `plugins/`, no `wasmtime`/`wit-bindgen` dependency exists yet. This fragment
-is the detailed "what/why" that expands `design.md` §5.5 (Plugin Subsystem), §9 (Plugin
-API), §10 (extension tiers), §3.1 (core-vs-plugin split), §14 (risks). Slice sequencing
-lives in `docs/dev/operations/slice-plans/plugin-host.md`.
+**Status:** 🚧 in build (design 2026-07-01; last refreshed 2026-07-12). **PH7.0–7.6 + 7.7a
+have landed** — the `lattice-plugin-host` crate, the `wit/` package, the capability/WASI
+model, the boundary mirrors (`Effect`/picker/completion/grammar), the `fuzzy-finder`
+validation plugin (⭐ Phase-7 exit), and CI perf gates all exist; PH7.7 (grammar extension)
+is mid-flight, 7.8–7.12 pending. This fragment is the detailed "what/why" that expands
+`design.md` §5.5 (Plugin Subsystem), §9 (Plugin API), §10 (extension tiers), §3.1
+(core-vs-plugin split), §14 (risks). Slice sequencing + landed status lives in
+`docs/dev/operations/slice-plans/plugin-host.md`; a conformance review of the whole host
+against the paramount goals + the three extension goals (grammar / modes / rich UI) is
+`docs/dev/audit/plugin-host-architecture.md`.
+
+> **Superseded (PH7.7, 2026-07-12) — the grammar seam is synchronous, not async.** §3's
+> "Async ABI is canonical … no synchronous path from UI input to plugin code" and §4.1's
+> "the trampoline is async + fuel-bounded" describe the pre-PH7.7 assumption. They were
+> corrected when the grammar seam landed: a plugin **motion / operator / text-object must
+> resolve synchronously** to compose with its operator and to keep dot-repeat / macros
+> synchronous (async grammar would break operator∘motion atomicity and the keystroke
+> contract). So grammar is the **one bounded synchronous-on-keystroke seam** — the renderer
+> still never calls WASM (absolute), and every *other* seam (picker, completion, events,
+> decorations, ui, config) stays async / off-keystroke. The exact invariant + the
+> Reflex-class budget it requires are in the audit (I2 / F1). The paragraphs below are left
+> in place for provenance with an inline supersession marker.
 
 **Scope (locked with Dhruva, 2026-07-01):** *Phase 7 proper* — the host runtime, the
 capability/security model, the WIT interface set mirroring the **already-exercised** native
@@ -87,9 +104,14 @@ The `lattice-plugin-host` crate owns the wasmtime engine and the per-plugin life
   behavior). The editor actor is `current_thread`; plugin tasks run on the shared
   multi-thread runtime, never on the actor thread (paramount #4 + the CLAUDE.md
   no-UI-thread-work rule).
-- **Async ABI is canonical.** Host functions are async; a plugin host call suspends the WASM
-  stack and releases the OS thread. This is what makes "no plugin can stall the UI, ever"
-  hold *by construction*: there is no synchronous path from UI input to plugin code.
+- **Async ABI is canonical *for every seam except grammar*.** Host functions are async; a
+  plugin host call suspends the WASM stack and releases the OS thread. This is what makes "no
+  plugin can stall the UI, ever" hold *by construction* for picker, completion, events,
+  decorations, ui, and config: there is no synchronous path from UI input to those. **The one
+  exception is the grammar seam** (§4.1, PH7.7): a motion/operator/text-object `apply` resolves
+  *synchronously* on the dispatch thread (it must, to compose with its operator), bounded by a
+  Reflex-class fuel + epoch budget so a runaway traps well inside the frame. The renderer never
+  calls WASM regardless. See the supersession note at the top of this fragment + audit I2 / F1.
 - **AOT compile at install; module cache on disk.** Cranelift compiles the component ahead
   of time; the artifact is cached under `<user-cache>/lattice/plugin-cache/`
   (`${XDG_CACHE_HOME}` on Linux, Application Support on macOS, LocalAppData on Windows) so a
@@ -148,16 +170,22 @@ Inventory of every closure seam (from `lattice-grammar/src/registry.rs`):
 WIT mirror turns "spec carries a closure" into "the guest component *exports* a function; the
 host stores `(command_id → guest_export_ref)` and, on dispatch, calls the export by id." The
 host constructs the native spec with an `apply` closure that is a thin shim: it projects the
-dispatch context into an owned WIT record, calls the guest export (async, fuel-bounded),
-maps the returned WIT `effect` back to the native `Effect`. From the dispatcher's view
+dispatch context into an owned WIT record, calls the guest export (**synchronously** —
+superseded from "async"; fuel + epoch bounded, PH7.7), maps the returned WIT `effect` back to
+the native `Effect`. From the dispatcher's view
 (`dispatcher.rs`), nothing changes — it still looks up an entry by `CommandId` and calls a
 boxed `Fn`; the `Fn` just happens to trampoline into WASM.
 
-> **UX (higher court):** the trampoline is async + fuel-bounded, so a slow/looping plugin
-> motion cannot freeze the keystroke — it is cancelled and the motion is a no-op with a
-> logged warning, never a hang.
-> **Paramount #1:** grammar round-trip budget < 5μs p99 (§5.5.2) is the CI gate on this
-> trampoline; built-in motions stay native (`lattice-grammar`) and never pay it.
+> **UX (higher court) [superseded PH7.7 — sync, not async]:** the trampoline is
+> **synchronous** on the dispatch thread + fuel/epoch-bounded. A slow/looping plugin motion
+> cannot freeze the keystroke because the epoch deadline traps it well inside the frame — the
+> motion is a no-op with a logged warning, never a hang. This requires a **Reflex-class**
+> budget (sub-frame), distinct from the lifecycle/async budget — the default ~1s epoch would
+> let a plugin motion stall a keystroke (audit F1); PH7.7c sets the tight budget.
+> **Paramount #1:** grammar round-trip budget < 5μs p99 (§5.5.2) is the CI gate on the
+> *boundary marshalling* (measured ~40ns, PH7.7a); the guest's own compute is bounded by the
+> Reflex fuel/epoch budget, not this gate. Built-in motions stay native (`lattice-grammar`)
+> and never pay either.
 > **Paramount #3:** because registration is the *same* `insert_*` path with a host-supplied
 > `SourceLayer::Plugin(id)`, a plugin motion is indistinguishable from a builtin to the
 > grammar — first-class, per goal #3.

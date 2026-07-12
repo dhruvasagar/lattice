@@ -71,6 +71,64 @@ target rather than just a slower number.
 
 ---
 
+## PH7.7a — grammar-extension boundary marshalling (2026-07-12)
+
+The host-side marshalling half of the **grammar-extension round-trip < 5 µs p99**
+commitment (design §8.2 / plugin-host.md §4.1). PH7.7a lands only the boundary
+type mirrors + `boundary_grammar.rs` conversions; the end-to-end guest↔host
+trampoline (wasmtime canonical-ABI lift/lower + the sync guest call) lands and is
+gated at PH7.7c/d, where an actual guest call exists to measure. These numbers
+isolate the pure conversion cost so the 5 µs budget's marshalling share is
+visible from day one.
+
+Bench file: `crates/lattice-plugin-host/benches/grammar.rs`.
+Run: `cargo bench -p lattice-plugin-host --bench grammar`.
+
+| Bench | Median | What it measures |
+|---|---|---|
+| `grammar_project_motion_context` | ~41 ns | Host→guest projection of a `MotionContext` (`buffer-id`/`from`/`count`/`args` — an `Args::List` of 2; the string clones dominate). The per-dispatch hot path a plugin motion's trampoline runs. |
+| `grammar_project_operator_context` | ~42 ns | Projection of an `OperatorContext` (`range`/`register`/`count`/`Args::List`). |
+| `grammar_effect_from_wit` | ~31 ns | Guest→host `Effect::from_wit` (the operator/ex-command result the trampoline maps back). |
+| `grammar_project_text_object_context` | ~11 ns | Projection of a `TextObjectContext` (`Args::None` — no string clone). |
+| `grammar_motion_result_round_trip` | ~314 ps | `MotionResult` `to_wit` → `from_wit` (two `Position` u32s + a bool). |
+
+**Read:** every conversion is tens of nanoseconds — well under 1% of the 5 µs
+round-trip budget, so the trampoline's wasmtime call (PH7.7c/d) owns effectively
+the whole budget. Bulk buffer text never rides a context (it crosses via the
+`document` resource handle, §4.2), so projection cost is O(context scalars), not
+O(buffer). Not a ratcheted CI row yet — that is the PH7.7d gate.
+
+---
+
+## PH7.7d — grammar-extension round-trip (the §7 gate, 2026-07-12)
+
+The **end-to-end** cost a plugin motion pays on every dispatch (the PH7.7 sync
+fork): `execute_motion_only` → project the `MotionContext` → the **synchronous**
+guest `apply-motion` call (canonical-ABI lift/lower, no runtime) → `MotionResult::
+from_wit`. Measured through the `grammar-guest` fixture's `down-n` motion,
+registered into a real `CommandRegistry` and dispatched exactly as a builtin. This
+is the §8.2 / §7 **grammar-extension round-trip < 5 µs p99** commitment, now that
+the seam exists.
+
+Bench: `crates/lattice-plugin-host/benches/grammar_roundtrip.rs`
+(`grammar_motion_round_trip`). CI gate: `tests/perf_ratchet.rs`
+(`grammar_round_trip_stays_within_ceiling`).
+
+| Measure | Value | Notes |
+|---|---|---|
+| Release median (bench) | **~340 ns** | ~15× under the 5 µs p99 budget — the whole sync round-trip through a real wasm guest. |
+| Debug median (ratchet) | ~2.3 µs | Under `cargo test` (debug); the CI gate ceiling is a generous **250 µs** (≥100× headroom, catches a gross regression without tripping on runner variance). |
+
+**Read:** the sync trampoline is *fast* — the marshalling (PH7.7a, tens of ns) +
+the wasmtime typed call together land at ~340 ns release, comfortably inside the
+budget even before the motion does any work. The Reflex budget that bounds a
+*runaway* plugin motion is **fuel-primary** (`PluginBudget::grammar`: 10M fuel ≈
+one frame of compute; the epoch is a 50 ms jitter-proof backstop, not a tripwire —
+a 2 ms epoch false-positived on OS descheduling under the bench's warmup, the bug
+this bench caught). Built-in motions stay native and pay none of this.
+
+---
+
 ## TSM.5 — `scope_toward` structural-motion tree walk (2026-07-08)
 
 Tree-sitter structural motions, slice TSM.5 (design:

@@ -666,6 +666,74 @@ impl CommandRegistry {
         id
     }
 
+    // ---- Plugin-contribution registration (PH7.7c, §6) ----
+    // The forgery-safe cross-crate seam for a WASM plugin's grammar
+    // contributions. Each takes the **host-issued** `plugin_id` (a `u32`, never a
+    // `SourceLocation`) and always stamps `SourceLayer::Plugin(plugin_id)` via
+    // [`SourceLocation::plugin`] — so the "no public fn takes a `SourceLocation`"
+    // forgery invariant (`source.rs`) holds, and a plugin cannot forge builtin /
+    // user provenance. The `spec.apply` / `parse_args` are the plugin host's sync
+    // trampoline closures into the guest (`lattice-plugin-host::grammar_trampoline`);
+    // the registry, dispatcher, and every `:describe-*` view treat the entry
+    // exactly like a builtin (paramount #3 — a plugin motion is first-class
+    // grammar). These are the public counterpart to the `pub(crate) insert_*`
+    // path builtins use through `register_*`.
+
+    /// Register a plugin-contributed motion under `SourceLayer::Plugin(plugin_id)`.
+    pub fn register_plugin_motion(
+        &mut self,
+        plugin_id: u32,
+        name: &str,
+        doc: &str,
+        spec: MotionSpec,
+    ) -> MotionId {
+        self.insert_motion(name, doc, spec, SourceLocation::plugin(plugin_id))
+    }
+
+    /// Register a plugin-contributed operator under `SourceLayer::Plugin(plugin_id)`.
+    pub fn register_plugin_operator(
+        &mut self,
+        plugin_id: u32,
+        name: &str,
+        doc: &str,
+        spec: OperatorSpec,
+    ) -> OperatorId {
+        self.insert_operator(name, doc, spec, SourceLocation::plugin(plugin_id))
+    }
+
+    /// Register a plugin-contributed text object under `SourceLayer::Plugin(plugin_id)`.
+    pub fn register_plugin_text_object(
+        &mut self,
+        plugin_id: u32,
+        name: &str,
+        doc: &str,
+        spec: TextObjectSpec,
+    ) -> TextObjectId {
+        self.insert_text_object(name, doc, spec, SourceLocation::plugin(plugin_id))
+    }
+
+    /// Register a plugin-contributed ex-command under `SourceLayer::Plugin(plugin_id)`.
+    pub fn register_plugin_ex_command(
+        &mut self,
+        plugin_id: u32,
+        name: &str,
+        doc: &str,
+        spec: ExCommandSpec,
+    ) -> ExCommandId {
+        self.insert_ex_command(name, doc, spec, SourceLocation::plugin(plugin_id))
+    }
+
+    /// Register a plugin-contributed action under `SourceLayer::Plugin(plugin_id)`.
+    pub fn register_plugin_action(
+        &mut self,
+        plugin_id: u32,
+        name: &str,
+        doc: &str,
+        spec: ActionSpec,
+    ) -> CommandId {
+        self.insert_action(name, doc, spec, SourceLocation::plugin(plugin_id))
+    }
+
     pub fn lookup(&self, id: CommandId) -> Option<&CommandSpec> {
         self.by_id.get(&id).map(|e| &e.spec)
     }

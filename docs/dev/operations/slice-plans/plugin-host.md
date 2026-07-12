@@ -9,8 +9,15 @@ a–e): **4a ✅** (picker boundary mirrors + marginalia + context projection), 
 (`fuzzy-finder` validation plugin — exit gate MET, parity + overhead benched, no cutover);
 **PH7.5 ✅** (CI perf gates — ratchet TESTS on the exercised §7 rows + the no-per-frame-WASM
 dep-graph guard + `wasm32-wasip2` in CI); **PH7.6 ✅** (completion-source seam — generator-only,
-LSP-async pattern; the other 3 traits type-mirrored). **PH7.7–7.12** (WIT-seam hardening before
-ABI freeze) remain. Design fragment:
+LSP-async pattern; the other 3 traits type-mirrored). **PH7.7 ✅ COMPLETE** (grammar-extension
+seam — **sync trampoline, not the async actor**, fork locked): 7.7a ✅ (boundary mirrors +
+projections + marshalling bench), 7.7b ✅ (two-interface sync `grammar` world + 4th `bindgen!` +
+`register-*` recording), 7.7c ✅ (sync trampoline + `register_plugin_*` cross-crate seam +
+`PluginBudget::grammar`, validated e2e through a real wasm fixture), 7.7d ✅ (`< 5 µs p99` gate:
+~340 ns release round-trip; the bench caught the **F1** epoch false-positive → fuel-primary
+Reflex budget). **PH7.8–7.12** (WIT-seam hardening before ABI freeze) remain. A conformance
+audit of the whole host is `../../audit/plugin-host-architecture.md` (8 findings; **F1
+resolved**). Design fragment:
 [`../../architecture/plugin-host.md`](../../architecture/plugin-host.md). Spec:
 `design.md` §5.5 / §9 / §13. This plan sequences *Phase 7 proper* (per the locked scope):
 the host runtime, capability model, the WIT interface set mirroring exercised native seams,
@@ -611,12 +618,149 @@ reviewed + locked with Dhruva.
   a real plugin needs a custom matcher (and even then a batch-reframe, not per-candidate).
   **Depends:** PH7.3.
 
-### PH7.7 — Grammar-extension WIT seam (paramount #3) 📝
-Mirror `register_{motion,text_object,operator,ex_command}`; the six closure seams become
-guest exports called by command id (§4.1); `parse_args` + `apply` are two exports for
-ex-commands; host constructs the native spec with a trampoline `apply`. Validate with a
-`tree-sitter-motions`-style test plugin (a motion + a text object). **Depends:** PH7.3.
-**Gate:** grammar round-trip < 5μs p99.
+### PH7.7 — Grammar-extension WIT seam (paramount #3) 🚧
+The plugin-facing **extension API**: the guest→host surface a plugin calls to *contribute*
+new grammar (`register_{motion,operator,text_object,ex_command,action}`). The grammar
+*handling* — the dispatcher, the `:`-line + chord parser, operator∘motion composition,
+ranges, counts, registers — stays native, **sync**, and untouched; a plugin only adds
+entries. **The PH7.7 fork (locked with Dhruva):** unlike picker (PH7.4) / completion
+(PH7.6), which are async off-keystroke producers on a per-plugin actor task, grammar
+`apply` is **synchronous** on `dispatcher::execute` (a motion must return a `MotionResult`
+inline to compose with its operator). So the seam is a **sync trampoline**, not the async
+actor — the completion_task.rs "grammar is the 3rd async-actor / rule-of-three" premise is
+FALSIFIED (grammar is a different shape). wasmtime-46 makes sync guest calls available on
+the same engine (the PH7.3d trampoline-fixture proves it); fuel + epoch trap synchronously,
+so a runaway plugin motion no-ops with a warn (UX: no hang) without any async plumbing on
+the keystroke path. Built-ins stay native and never pay it. **Depends:** PH7.3.
+**Gate:** grammar round-trip < 5μs p99 (PH7.7d).
+
+  #### PH7.7a — Grammar boundary type mirrors + projection ✅ (2026-07-12)
+  The owned WIT mirrors + host-side `boundary_grammar.rs` conversions, no guest yet.
+  - **What landed.** `wit/types.wit` += the grammar-extension section: the five dispatch
+    contexts (`motion-context`, `operator-context`, `text-object-context`,
+    `ex-command-context`, `action-context`), `motion-result`, the five spec-metadata records
+    (`motion-spec`/`operator-spec`/`text-object-spec`/`ex-command-spec`/`action-spec` — each
+    the native `*Spec` minus its `apply`/`parse_args` closure, since the behavior is a guest
+    export called back by callback-id at 7.7c, not a field), plus `count` (= `u32`),
+    `latency-class`, `surface-form`. `position`/`range`/`args`/`register`/`effect`/`arg-spec`
+    were already mirrored (PH7.3b/PH7.4a) and are reused. NB `%from` (a WIT keyword) is
+    escaped in `motion-context`.
+  - **`boundary_grammar.rs` (new).** `WitBoundary` for `LatencyClass`, `SurfaceForm`
+    (interned `&'static str` hint, the `boundary_picker::intern` precedent), and
+    `MotionResult`; five one-way `project_*` fns for the contexts (host→guest, the
+    `project_picker_context` precedent — contexts carry `&Buffer`/`&CancellationToken`/
+    `Option<&dyn ScopeResolver>` borrows so they can't round-trip; the guest never sends a
+    context back). Bulk buffer text never rides a context — it crosses via the `document`
+    handle (§4.2), so a projection reads only owned scalars. The WIT-record → native-`*Spec`
+    direction is 7.7c's trampoline job (needs the callback closure), so no spec `from_wit`
+    lands here. `ExCommandContext.range` (recursive grammar `Range`) is absent by design (the
+    `Global`/`NarrowTrigger` precedent).
+  - **Proof.** 8 unit tests (enum + `MotionResult` round-trips; each context projection).
+    `benches/grammar.rs` (5 marshalling benches) → `benchmarks.md` PH7.7a row: every
+    conversion is tens of ns (motion ctx ~41 ns, operator ctx ~42 ns, effect `from_wit`
+    ~31 ns, text-object ctx ~11 ns, motion-result round-trip ~314 ps) — < 1% of the 5 µs
+    budget, so the wasmtime call (7.7c/d) owns effectively the whole budget. 73 crate lib
+    tests green.
+
+  #### PH7.7b — `grammar` world + sync bindgen + `register-*` host imports ✅ (2026-07-12)
+  The WIT + the 4th `bindgen!` + the contribution-recording path. No guest yet (the
+  trampoline that calls the callbacks + registers into `CommandRegistry` is 7.7c).
+  - **The shape (option A, locked with Dhruva).** WIT can't import+export the same interface
+    name, so the seam is **two interfaces + a sync world**. `interface grammar` (host-provided,
+    guest **imports**) = the extension API: `register-{motion,operator,text-object,action}(name,
+    doc, spec, callback: u32)` + `register-ex-command(name, doc, spec, parse-callback,
+    apply-callback)`. `interface grammar-callbacks` (guest **exports**) = the behavior,
+    dispatched by callback-id (the PH7.3d trampoline): `apply-motion → result<motion-result>`,
+    `apply-{operator,action,ex-command} → result<list<effect>>` (the `Effect::Many`-flatten
+    boundary form), `apply-text-object → result<range>`, `parse-ex-args → result<args>`. `world
+    grammar-plugin { import grammar; export register-grammar: func(); export grammar-callbacks; }`.
+  - **Sync, no actor (the PH7.7 fork).** The `bindgen!` sets **no** `exports: { default: async }`
+    — `register-grammar` + the `apply-*` callbacks are sync-callable from the dispatch thread.
+    Registration entry is a dedicated sync `register-grammar()` export (option A over "drive via
+    async `plugin::activate`", option B) — keeps the whole grammar seam on one sync path, no
+    async/sync store mixing; matches how `picker-source`/`completion-source` carry their own
+    world export rather than driving registration through the async lifecycle. `buffer` is NOT
+    imported yet — a v1 motion computes from the projected context scalars; the `document` handle
+    for text-reading/structural motions is the deferred follow-on (picker's `init(doc)` precedent;
+    audit F4).
+  - **What landed.** `wit/grammar.wit` populated (the two interfaces + world). `grammar_host.rs`
+    (new) — the 4th `bindgen!` (sync; shared `types` via `with:`) + `RecordedContribution` (per-kind
+    name/doc/WIT-spec/callback) + `GrammarContributions` (the `record_*` accumulator, factored like
+    `host_services::walk_within_grant` so it unit-tests without a guest). `lib.rs` — `PluginState`
+    gains a `grammar_contributions` field; the generated `grammar::Host` is impl'd on `PluginState`
+    (the `register-*` bodies forward to the accumulator — sync + infallible, name-collision/registry
+    errors surface at drain, not here); the `grammar` import is wired into the shared linker (inert
+    for worlds that don't import it). **Acid test held:** ZERO `Editor::` methods, the register API
+    is the same imperative shape as native `register_*`.
+  - **Proof.** 1 unit test (records all five kinds through the accumulator, preserves callback ids,
+    `take()` drains). 74 crate lib tests green; full build clean (the 4th bindgen + `grammar::Host`
+    paths + linker wiring resolve). No bench this slice — no new hot path yet (the guest call is
+    7.7c; the `<5µs` round-trip gate is 7.7d). **Depends:** PH7.7a.
+
+  #### PH7.7c — Host trampoline adapter + registry wiring ✅ (2026-07-12)
+  The sync trampoline + the cross-crate registration seam + the Reflex budget (F1) — proven
+  end to end through a real wasm guest (the fixture came forward from 7.7d to validate D2).
+  - **Decisions (A/A, locked with Dhruva).** **D1** — new public `lattice-grammar` seam:
+    `CommandRegistry::register_plugin_{motion,operator,text_object,ex_command,action}(plugin_id:
+    u32, name, doc, spec)` stamping `SourceLayer::Plugin(plugin_id)` via a new
+    `SourceLocation::plugin(id)` (forgery-safe: takes a `u32`, never a `SourceLocation`; the
+    "no public fn takes a SourceLocation" invariant holds — this is the deferred
+    "first-cross-crate-trusted-subsystem" seam §6 anticipated). **D2** — a **second linker**
+    (`grammar_linker`) on the shared engine with **sync WASI** (`add_to_linker_sync`) + the
+    sync `grammar` import, so a grammar guest's sync `instantiate` + `apply` have no async
+    host import to reach — the sync path is correct by construction, not luck (chosen over a
+    whole dedicated sync *engine*; the AOT cache stays shared). **D3** — `instantiate_grammar_plugin`
+    returns a `GrammarContributionSet`; the **caller** invokes `register_all(&mut registry)`
+    (mode-ownership; ZERO `Editor::` methods). **F1** — `PluginBudget::grammar()` = Reflex-class
+    (epoch 2 ticks ≈ 2ms, fuel 10M) armed before every `apply`, distinct from the ~1s
+    lifecycle budget so a plugin motion traps well inside a frame.
+  - **What landed.** `lattice-grammar`: `SourceLocation::plugin` + the 5 `register_plugin_*` +
+    `CommandError::Plugin(String)` (the graceful apply-failure class). `lattice-plugin-host`:
+    `grammar_trampoline.rs` — `GrammarGuest{store,bindings}` behind `Arc<Mutex<>>` (shared by
+    all a plugin's contribution closures, serializes the `!Sync` store); `run_callback` (lock
+    → arm Reflex budget → sync guest call → map trap/guest-err/conv-err → `CommandError::Plugin`,
+    graceful §8); `build_*_spec` (WIT spec → native `*Spec` with a sync trampoline `apply`/
+    `parse_args`); `GrammarContributionSet::register_all`; `instantiate_grammar_plugin` (sync
+    instantiate via `grammar_linker` → `call_register_grammar` → drain → build). `PluginBudget::grammar`
+    + `PluginHostError::GrammarSpec`.
+  - **Proof (D2 empirically resolved).** `tests/fixtures/grammar-guest` (a `wasm32-wasip2`
+    component: `register-grammar` contributes 2 motions + 1 text object; `apply-motion`
+    computes line+count from the projected context — no document handle) + `tests/grammar_source.rs`
+    (3): registration + host-stamped `Plugin(id)` provenance on all three; a plugin motion
+    **dispatches through `execute_motion_only`** — the sync trampoline fires into the guest,
+    the `motion-result` crosses back (line 1 + count 3 → line 4); a guest `err` → graceful
+    `CommandError::Plugin` no-op. **The sync guest↔host call works on the shared engine** (the
+    PH7.7 fork validated). 74 plugin-host lib + 212 grammar tests green; `lattice-host` (matches
+    `CommandError`) builds — the new variant is absorbed by its wildcard arm.
+  - **Deferred (unchanged):** text-reading/structural motions need the `document` handle +
+    `scope-resolver` callback (audit F4) — a v1 motion computes from context scalars.
+    **Depends:** PH7.7b.
+
+  #### PH7.7d — grammar round-trip perf gate (`< 5 µs p99`) ✅ (2026-07-12)
+  The `< 5 µs p99` §7 row, now the seam exists — and the bench that caught the F1 budget bug.
+  - **What landed.** `benches/grammar_roundtrip.rs` (`grammar_motion_round_trip`) — the
+    descriptive end-to-end dispatch of `down-n` through the sync trampoline; **release median
+    ~340 ns**, ~15× under budget. `tests/perf_ratchet.rs::grammar_round_trip_stays_within_ceiling`
+    — the CI gate (debug median ~2.3 µs, generous 250 µs ceiling, the typed-call/picker ratchet
+    pattern). `benchmarks.md` PH7.7d row.
+  - **The bug the bench caught (F1 refinement).** The first `PluginBudget::grammar` used
+    `epoch_deadline: 2` (≈2 ms). The ratchet (2 000 iters) passed, but the **bench's** 3 s
+    warmup (millions of iters) hit a rare OS deschedule mid-guest-call and the 2 ms epoch
+    *false-positived* → trap. Insight: a grammar guest runs on the sync linker with **no async
+    import**, so it cannot block — it can only compute/spin, both **fuel**-bounded. So **fuel is
+    the primary Reflex bound** (10M ≈ one frame of compute); the **epoch is a jitter-proof
+    backstop** (raised to 50 ms), not a sub-ms tripwire. This is the correct resolution of
+    audit F1 — the keystroke bound is fuel (deterministic per-work), not a fragile wall-clock
+    deadline at epoch-tick granularity.
+  - **Proof.** Bench runs clean (no trap) at ~340 ns release; the ratchet gates it; full
+    plugin-host suite green (74 lib + all integration binaries). **Depends:** PH7.7c.
+
+  **⇒ PH7.7 (grammar-extension seam) COMPLETE.** A WASM plugin contributes first-class vim
+  motions / operators / text-objects / ex-commands / actions through the same `register_*`
+  path builtins use, stamped `SourceLayer::Plugin(id)`, dispatched by the native (unchanged,
+  sync) grammar engine, bounded by a fuel-primary Reflex budget, crash-isolated. Residual
+  (audit F4, not blocking): text-reading / tree-sitter-structural motions await the `document`
+  handle + `scope-resolver` callback.
 
 ### PH7.8 — Event/hook WIT seam 📝
 Add `SubscriptionTarget::Plugin { plugin, handler }` delivery (host owns the mpsc; each

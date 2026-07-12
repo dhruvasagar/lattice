@@ -45,6 +45,11 @@ fn main() {
         "COMPLETION_GUEST_WASM",
     );
     build_guest(
+        &fixtures.join("grammar-guest"),
+        "grammar-guest",
+        "GRAMMAR_GUEST_WASM",
+    );
+    build_guest(
         &manifest_dir
             .join("..")
             .join("..")

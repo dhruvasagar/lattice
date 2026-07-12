@@ -1,8 +1,90 @@
 package lattice:plugin-host@0.1.0;
 
-/// Mirrors `register_{motion,text_object,operator,ex_command}`
-/// (lattice-grammar). The closure seams become guest exports called by
-/// command id (§4.1); the host constructs the native spec with a trampoline
-/// `apply` stamped `SourceLayer::Plugin(id)`. Paramount #3 (plugin motions
-/// are first-class grammar). Populated in PH7.7. Gate: round-trip < 5µs p99.
-interface grammar {}
+/// The grammar-**extension** API (plugin-host.md §4.1, PH7.7). This is the
+/// surface a plugin calls to *contribute* new vim grammar —
+/// `register_{motion,operator,text_object,ex_command,action}` — mirroring the
+/// native `CommandRegistry::register_*` imperative API. The host provides these
+/// functions; the guest **imports** them and calls them (from its
+/// `register-grammar` export). Each records the contribution into `PluginState`;
+/// after `register-grammar` returns, the host builds a native `*Spec` with a
+/// trampoline `apply` stamped `SourceLayer::Plugin(id)` and registers it into the
+/// SAME `CommandRegistry` a builtin lives in (PH7.7c) — so a plugin command is
+/// indistinguishable from a builtin to the dispatcher (paramount #3).
+///
+/// The grammar *handling* (dispatcher, `:`-line + chord parser, operator∘motion
+/// composition, ranges, counts, registers) stays native, sync, and untouched; a
+/// plugin only adds entries here. `spec` carries the metadata; the behavior is a
+/// guest export in `grammar-callbacks`, dispatched by a guest-chosen `callback`
+/// id (the PH7.3d trampoline pattern). Registration returns nothing — the guest
+/// dispatches by its own `callback`, and the host stamps the `CommandId` /
+/// provenance (a plugin cannot forge either, §6).
+interface grammar {
+    use types.{motion-spec, operator-spec, text-object-spec, ex-command-spec, action-spec};
+
+    /// Contribute a motion. `callback` is the id the host passes back to
+    /// `grammar-callbacks.apply-motion` on dispatch.
+    register-motion: func(name: string, doc: string, spec: motion-spec, callback: u32);
+    /// Contribute an operator. `callback` → `grammar-callbacks.apply-operator`.
+    register-operator: func(name: string, doc: string, spec: operator-spec, callback: u32);
+    /// Contribute a text object. `callback` → `grammar-callbacks.apply-text-object`.
+    register-text-object: func(name: string, doc: string, spec: text-object-spec, callback: u32);
+    /// Contribute a chord-bound action. `callback` → `grammar-callbacks.apply-action`.
+    register-action: func(name: string, doc: string, spec: action-spec, callback: u32);
+    /// Contribute an ex-command. TWO callbacks — `parse-callback` →
+    /// `grammar-callbacks.parse-ex-args` (the `:` line's rest → typed `args`),
+    /// `apply-callback` → `grammar-callbacks.apply-ex-command`.
+    register-ex-command: func(
+        name: string,
+        doc: string,
+        spec: ex-command-spec,
+        parse-callback: u32,
+        apply-callback: u32,
+    );
+}
+
+/// The behavior callbacks a grammar plugin **exports**; the host calls one by
+/// `callback` id on dispatch (the PH7.3d callback-id trampoline). **Synchronous**
+/// — a grammar `apply` resolves on the keystroke path (the PH7.7 fork: a motion
+/// must return inline to compose with its operator; async would break
+/// operator∘motion atomicity + dot-repeat/macros). Each maps its native
+/// evaluator's `GrammarResult<...>`: `ok` is the produced value; an `err` string
+/// is logged and the contribution is a no-op (graceful degradation, §8). A trap
+/// (fuel/epoch) is the runaway guard — the host catches it, logs, and the
+/// contribution no-ops, never a hang (a Reflex-class budget bounds it, PH7.7c).
+///
+/// An operator/ex-command/action returns `list<effect>` — the boundary form of
+/// the closed `Effect` enum (`Effect::Many` flattens to the list; §4.4). A text
+/// object returns the `range` it resolved; a motion its `motion-result`.
+interface grammar-callbacks {
+    use types.{
+        motion-context, motion-result, operator-context, text-object-context,
+        ex-command-context, action-context, range, effect, args,
+    };
+
+    apply-motion: func(callback: u32, ctx: motion-context) -> result<motion-result, string>;
+    apply-operator: func(callback: u32, ctx: operator-context) -> result<list<effect>, string>;
+    apply-text-object: func(callback: u32, ctx: text-object-context) -> result<range, string>;
+    apply-action: func(callback: u32, ctx: action-context) -> result<list<effect>, string>;
+    parse-ex-args: func(callback: u32, rest: string, bang: bool) -> result<args, string>;
+    apply-ex-command: func(callback: u32, ctx: ex-command-context) -> result<list<effect>, string>;
+}
+
+/// The world a grammar-extension plugin implements. **Fully synchronous** (the
+/// PH7.7 fork) — no `exports: { default: async }` in the host `bindgen!`, so the
+/// `register-grammar` + `grammar-callbacks` exports are sync-callable from the
+/// dispatch thread. Imports the `grammar` register API; exports `register-grammar`
+/// (the host calls it once to drive registration — the guest invokes the imported
+/// `register-*` inside it) + the `grammar-callbacks` behaviors.
+///
+/// A 4th `bindgen!` reuses the `plugin` world's generated `types` via `with:` so
+/// crossed values are the SAME Rust types `WitBoundary` round-trips
+/// (`boundary_grammar.rs`). The `buffer` `document` handle for text-reading
+/// motions (structural / word motions) is a deferred follow-on — the picker's
+/// `init(doc)` resource-wiring precedent — so a v1 motion computes from the
+/// projected context scalars (cursor / count / args); PH7.7d validates the
+/// trampoline with such a motion.
+world grammar-plugin {
+    import grammar;
+    export register-grammar: func();
+    export grammar-callbacks;
+}

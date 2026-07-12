@@ -54,6 +54,7 @@
 pub mod boundary;
 pub mod boundary_app_effect;
 pub mod boundary_effect;
+pub mod boundary_grammar;
 pub mod boundary_picker;
 pub mod buffer;
 pub mod capability;
@@ -61,6 +62,8 @@ pub mod host_services;
 pub mod completion_host;
 pub mod completion_source;
 pub mod completion_task;
+pub mod grammar_host;
+pub mod grammar_trampoline;
 pub mod manifest;
 pub mod picker_host;
 pub mod picker_source;
@@ -141,6 +144,39 @@ impl Default for PluginBudget {
     }
 }
 
+impl PluginBudget {
+    /// The Reflex-class budget for the **synchronous** grammar trampoline
+    /// (PH7.7c; plugin-host.md §7 + audit F1). Grammar `apply` / `parse_args`
+    /// run on the keystroke path (the PH7.7 fork), so — unlike the generous
+    /// lifecycle/async [`default`](Self::default) (~1s epoch) — a plugin
+    /// contribution must not stall the keystroke.
+    ///
+    /// **Fuel is the primary Reflex bound.** A grammar guest runs on the sync
+    /// linker with no async host import, so it cannot *block* (no I/O to await) —
+    /// it can only compute or spin, and both are fuel-bounded. `10M` fuel is
+    /// ~one display frame of compute (Cranelift-compiled), ample for a real
+    /// motion's arithmetic but a hard cap on a runaway loop; that is what keeps a
+    /// plugin motion off the keystroke's critical path.
+    ///
+    /// **Epoch is a jitter-proof wall-clock *backstop*, not the tripwire.** The
+    /// ticker granularity is 1ms ([`EPOCH_TICK_INTERVAL`]); a 2-tick deadline
+    /// false-positives when the OS deschedules the dispatch thread mid-call
+    /// (observed under a criterion warmup's millions of iterations). So the epoch
+    /// is set generously (`50` ticks ≈ 50ms) — it never trips on scheduling
+    /// jitter, and only catches the pathological case fuel somehow misses (near-
+    /// impossible for a sync compute guest). A trap of either kind is caught by
+    /// the trampoline → the contribution is a no-op with a warn
+    /// ([`CommandError::Plugin`](lattice_grammar::CommandError::Plugin)), never a
+    /// hang. Armed before every guest call — distinct from the lifecycle/producer
+    /// budget by design (audit F1).
+    pub fn grammar() -> Self {
+        Self {
+            fuel: 10_000_000,
+            epoch_deadline: 50,
+        }
+    }
+}
+
 /// Why a lifecycle call trapped. Fuel/epoch are the *expected* runaway-guard
 /// outcomes; `Other` is any genuine wasm trap (unreachable, OOB, a guest
 /// panic).
@@ -194,6 +230,13 @@ pub enum PluginHostError {
     /// import, or fuel exhausted during the start function).
     #[error("failed to instantiate the plugin component")]
     Instantiate(#[source] anyhow::Error),
+
+    /// A grammar plugin declared a malformed contribution spec (PH7.7c): an
+    /// `arg-spec` / `latency-class` / `surface-form` that could not cross the
+    /// boundary. Fails registration loudly (the spec is structurally wrong),
+    /// unlike a *runtime* `apply` failure, which degrades gracefully to a no-op.
+    #[error("plugin grammar spec is malformed: {0}")]
+    GrammarSpec(String),
 
     /// A lifecycle export trapped. Fuel/epoch exhaustion and genuine wasm
     /// traps all land here as a value — the call is a no-op with a typed
@@ -311,6 +354,12 @@ struct PluginState {
     /// run host-side with full host authority, so the grant — not the WASI
     /// sandbox — is what bounds them.
     grant: CapabilityGrant,
+    /// Grammar contributions the guest declares through the `grammar` register
+    /// API during `register-grammar` (PH7.7b). The `grammar::Host` impl below
+    /// records into it; the host drains it after the registration export returns
+    /// and builds native `*Spec`s with trampoline `apply`s (PH7.7c). Empty for a
+    /// plugin that registers no grammar (picker/completion plugins, the scaffold).
+    grammar_contributions: grammar_host::GrammarContributions,
 }
 
 impl WasiView for PluginState {
@@ -331,6 +380,77 @@ impl WasiView for PluginState {
 impl crate::lattice::plugin_host::host_services::Host for PluginState {
     fn walk(&mut self, root: String) -> Result<Vec<String>, String> {
         host_services::walk_within_grant(&self.grant, &root)
+    }
+}
+
+/// Host impl of the `grammar` guest→host register API (PH7.7b, §4.1). The guest
+/// calls these (from its `register-grammar` export) to contribute vim grammar;
+/// each records the declaration into the Store's [`grammar_host::GrammarContributions`]
+/// so the host can drain it after registration and build native `*Spec`s with
+/// trampoline `apply`s (PH7.7c). Sync + infallible (they only push — recording
+/// cannot trap; name collisions / registry errors surface at drain time, not
+/// here), so bindgen omits the outer `wasmtime::Result`. The bodies forward to
+/// the accumulator (the `host_services` `walk` shape).
+impl crate::grammar_host::bindings::lattice::plugin_host::grammar::Host for PluginState {
+    fn register_motion(
+        &mut self,
+        name: String,
+        doc: String,
+        spec: crate::lattice::plugin_host::types::MotionSpec,
+        callback: u32,
+    ) {
+        self.grammar_contributions
+            .record_motion(name, doc, spec, callback);
+    }
+
+    fn register_operator(
+        &mut self,
+        name: String,
+        doc: String,
+        spec: crate::lattice::plugin_host::types::OperatorSpec,
+        callback: u32,
+    ) {
+        self.grammar_contributions
+            .record_operator(name, doc, spec, callback);
+    }
+
+    fn register_text_object(
+        &mut self,
+        name: String,
+        doc: String,
+        spec: crate::lattice::plugin_host::types::TextObjectSpec,
+        callback: u32,
+    ) {
+        self.grammar_contributions
+            .record_text_object(name, doc, spec, callback);
+    }
+
+    fn register_action(
+        &mut self,
+        name: String,
+        doc: String,
+        spec: crate::lattice::plugin_host::types::ActionSpec,
+        callback: u32,
+    ) {
+        self.grammar_contributions
+            .record_action(name, doc, spec, callback);
+    }
+
+    fn register_ex_command(
+        &mut self,
+        name: String,
+        doc: String,
+        spec: crate::lattice::plugin_host::types::ExCommandSpec,
+        parse_callback: u32,
+        apply_callback: u32,
+    ) {
+        self.grammar_contributions.record_ex_command(
+            name,
+            doc,
+            spec,
+            parse_callback,
+            apply_callback,
+        );
     }
 }
 
@@ -369,6 +489,15 @@ fn default_data_dir_base() -> PathBuf {
 pub struct PluginHost {
     engine: Engine,
     linker: Linker<PluginState>,
+    // A second linker for the SYNCHRONOUS grammar seam (PH7.7c). The shared
+    // `linker` wires WASI *async* (picker/completion suspend at host calls); the
+    // grammar trampoline calls the guest *synchronously* on the dispatch thread,
+    // so its guest must never reach an async host import. This linker wires WASI
+    // *sync* (`add_to_linker_sync`) + the sync `grammar` register import, so a
+    // grammar guest's sync `instantiate` + `apply` calls have no async import to
+    // invoke — the sync path is correct by construction, not by luck. Same
+    // engine (shared AOT cache), just a different import table.
+    grammar_linker: Linker<PluginState>,
     // A clone of the cache handed to the engine config; kept so callers can
     // read hit/miss stats. `Cache` is a cheap Arc-backed handle.
     cache: Cache,
@@ -446,11 +575,27 @@ impl PluginHost {
             |state: &mut PluginState| state,
         )
         .map_err(|e| PluginHostError::Linker(e.into()))?;
+        // The grammar seam's SYNC linker (PH7.7b/c). The `grammar` register API
+        // (`register-*`) is guest→host sync host funcs (they only record into
+        // `PluginState`). It is wired into a SECOND linker whose WASI is `sync`
+        // — so a grammar guest instantiated here has no async host import, and
+        // the trampoline's synchronous `apply` calls on the dispatch thread are
+        // correct by construction (the PH7.7 fork). Same `engine`, so the AOT
+        // cache is shared; only the import table differs from the async `linker`.
+        let mut grammar_linker = Linker::new(&engine);
+        wasmtime_wasi::p2::add_to_linker_sync(&mut grammar_linker)
+            .map_err(|e| PluginHostError::Linker(e.into()))?;
+        crate::grammar_host::bindings::lattice::plugin_host::grammar::add_to_linker::<_, HasSelf<_>>(
+            &mut grammar_linker,
+            |state: &mut PluginState| state,
+        )
+        .map_err(|e| PluginHostError::Linker(e.into()))?;
         let epoch_ticker = EpochTicker::spawn(&engine, EPOCH_TICK_INTERVAL);
 
         Ok(Self {
             engine,
             linker,
+            grammar_linker,
             cache,
             data_dir_base: data_dir_base.into(),
             next_id: AtomicU32::new(0),
@@ -590,6 +735,7 @@ impl PluginHost {
             wasi,
             table: ResourceTable::new(),
             grant,
+            grammar_contributions: grammar_host::GrammarContributions::default(),
         };
         let mut store = Store::new(&self.engine, state);
         store

@@ -100,6 +100,22 @@ impl SourceLocation {
         }
     }
 
+    /// Provenance for a WASM-plugin contribution (Phase 7). The layer is
+    /// [`SourceLayer::Plugin`] carrying the **host-issued** `plugin_id` (§6 —
+    /// the guest never supplies it, so a plugin cannot forge a builtin/user
+    /// provenance); the kind is a synthetic `<plugin:N>` tag (a plugin has no
+    /// file/line the link follower could open — the plugin-manager view is the
+    /// eventual target). This is the *only* forgery-safe way a cross-crate
+    /// trusted subsystem stamps `Plugin` provenance: the public
+    /// `CommandRegistry::register_plugin_*` methods take a `u32`, never a
+    /// `SourceLocation`, and route through here.
+    pub fn plugin(plugin_id: u32) -> Self {
+        Self {
+            layer: SourceLayer::Plugin(plugin_id),
+            kind: SourceKind::Synthetic(format!("<plugin:{plugin_id}>")),
+        }
+    }
+
     /// Render as a markdown link for inclusion in a help body.
     /// Format: `[label](scheme:value)`. The link's URL portion is
     /// what `parse_help_links` (in `lattice-ui-tui::help`)

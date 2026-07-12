@@ -26,3 +26,9 @@ that's the signal to re-read the audit before "just patching it."
   terminal panes ghosted under auto-scroll; the "one grid column in → one
   display column out; never emit a `WIDE_CHAR_SPACER` cell as a character"
   invariant.
+- [`plugin-host-architecture.md`](plugin-host-architecture.md) — conformance
+  review of the WASM plugin host (PH7.x) against the paramount goals + the three
+  extension goals (grammar, modes, rich UI); the three invariants (same
+  registries; WASM off the keystroke path with grammar the one bounded sync
+  exception; guest emits data, host owns draw/dispatch) + 8 findings across the
+  pending seams.

@@ -1,0 +1,27 @@
+# PH7.7c grammar fixture guest — a minimal `wasm32-wasip2` component implementing
+# the `grammar-plugin` world: it imports the `grammar` register API and, from its
+# `register-grammar` export, contributes a motion + a text object; its
+# `grammar-callbacks` exports compute them from the projected context (no document
+# handle — pure arithmetic over cursor/count). Built to a component by the host
+# crate's build.rs and loaded by `tests/grammar_source.rs` to drive the sync
+# trampoline (`grammar_trampoline.rs`) through a real guest↔host sync call.
+# Standalone workspace (`[workspace]` below) so it is NOT part of the parent
+# workspace — it targets wasm32-wasip2 and must not inherit the host toolchain's
+# lints/target. Mirrors the sibling `picker-guest` fixture's setup exactly.
+[package]
+name = "grammar-guest"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.58"
+
+[profile.release]
+opt-level = "s"
+strip = true
+
+[workspace]

@@ -117,5 +117,20 @@ harness = false
 name = "completion"
 harness = false
 
+# PH7.7a: grammar-extension boundary marshalling — context projection +
+# result/effect `from_wit` (the < 5µs grammar round-trip budget's marshalling
+# component; the end-to-end guest↔host trampoline gate lands with PH7.7c/d).
+[[bench]]
+name = "grammar"
+harness = false
+
+# PH7.7d: grammar-extension end-to-end round-trip — a plugin motion dispatched
+# through the sync trampoline (project → sync guest call → from_wit). The
+# descriptive companion to the `grammar_round_trip` ratchet (§7 < 5µs p99). Skips
+# without the wasm target.
+[[bench]]
+name = "grammar_roundtrip"
+harness = false
+
 [lints]
 workspace = true

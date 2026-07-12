@@ -10,11 +10,12 @@
 //! Mirrors `lattice-host/tests/keystroke_publish_ratchet.rs`.
 //!
 //! Only the EXERCISED §7 rows are gated here (typed host call, the guest→host
-//! picker path, cold-start). The forward-looking rows (grammar round-trip,
-//! status/gutter segment, picker-filter-per-item, major-mode event) map to
-//! seams that don't exist yet (PH7.6–7.11); each lands its own ratchet with its
-//! seam. Skips cleanly when the `wasm32-wasip2` guests weren't built (CI installs
-//! the target so the gate runs there — see build.rs).
+//! picker path, cold-start, **and the grammar-extension round-trip** now the seam
+//! exists, PH7.7). The still-forward-looking rows (status/gutter segment,
+//! picker-filter-per-item, major-mode event) map to seams that don't exist yet
+//! (PH7.9–7.11); each lands its own ratchet with its seam. Skips cleanly when the
+//! `wasm32-wasip2` guests weren't built (CI installs the target so the gate runs
+//! there — see build.rs).
 
 #![allow(clippy::unwrap_used, clippy::panic)]
 
@@ -224,5 +225,95 @@ async fn cold_start_50_instantiations_stays_within_ceiling() {
         total < Duration::from_secs(2),
         "cold-start of {n} instantiations was {total:?}; expected < 2s \
          (§7 release budget: 50 plugins < 30ms). A per-instantiation regression."
+    );
+}
+
+// ── §7 row: grammar-extension round-trip (< 1µs p50 / < 5µs p99 release) ──────
+// The end-to-end SYNC path a plugin motion pays on every dispatch (the PH7.7
+// fork): `execute_motion_only` → project the `MotionContext` → the sync guest
+// `apply-motion` call (canonical-ABI lift/lower, no runtime) → `MotionResult::
+// from_wit`. Measured through the `grammar-guest` fixture's `down-n` motion,
+// registered into a real `CommandRegistry` and dispatched exactly as a builtin.
+
+#[test]
+fn grammar_round_trip_stays_within_ceiling() {
+    use lattice_core::buffer::Buffer;
+    use lattice_core::buffers::BufferId;
+    use lattice_grammar::CancellationToken;
+    use lattice_grammar::command::{CommandInvocation, Count};
+    use lattice_grammar::dispatcher::execute_motion_only;
+    use lattice_grammar::registry::{CommandRegistry, TextObjectEnv};
+    use lattice_protocol::position::Position as GrammarPos;
+
+    let path = env!("GRAMMAR_GUEST_WASM");
+    if path.is_empty() {
+        eprintln!("SKIP: grammar round-trip ratchet — grammar fixture not built");
+        return;
+    }
+
+    let dirs = tempfile::tempdir().unwrap();
+    let host = PluginHost::with_dirs(dirs.path().join("cache"), dirs.path().join("data")).unwrap();
+    let component = host.compile(&std::fs::read(path).unwrap()).unwrap();
+    let manifest = PluginManifest::new("grammar-fixture", Vec::new(), CapabilitySet::empty());
+    let set = host
+        .instantiate_grammar_plugin(&component, &manifest, TrustTier::Bundled)
+        .unwrap();
+    // Leak the host so its engine + epoch ticker outlive the dispatched closures
+    // (the trampoline holds the guest store for the plugin's life).
+    Box::leak(Box::new(host));
+
+    let mut registry = CommandRegistry::new();
+    set.register_all(&mut registry);
+    let motion_id = registry
+        .id_by_name("down-n")
+        .expect("fixture motion registered");
+
+    let buffer = Buffer::from_text("l0\nl1\nl2\nl3\nl4\nl5\n");
+    let cancel = CancellationToken::never();
+    let cursor = GrammarPos { line: 1, byte: 0 };
+    let invocation = CommandInvocation::of(motion_id).with_count(Count(3));
+
+    // Warm, then measure the median sync round-trip.
+    for _ in 0..100 {
+        let _ = execute_motion_only(
+            &registry,
+            &buffer,
+            BufferId(1),
+            cursor,
+            invocation.clone(),
+            &cancel,
+            TextObjectEnv::default(),
+        )
+        .unwrap();
+    }
+    let iters = 2_000usize;
+    let mut samples = Vec::with_capacity(iters);
+    for _ in 0..iters {
+        let t = Instant::now();
+        let out = execute_motion_only(
+            &registry,
+            &buffer,
+            BufferId(1),
+            cursor,
+            invocation.clone(),
+            &cancel,
+            TextObjectEnv::default(),
+        )
+        .unwrap();
+        samples.push(t.elapsed());
+        std::hint::black_box(out);
+    }
+    let m = median(samples);
+    eprintln!("[ph7.5-ratchet] grammar_round_trip median (debug): {m:?}");
+
+    // §7 release budget is < 5µs p99. Debug inflates the canonical-ABI lift/lower
+    // + the context projection + `from_wit`; 250µs is orders of magnitude above
+    // the real cost yet far under what a per-call blowup (a lost budget arm, an
+    // O(buffer) projection, a mutex-contention regression) would produce.
+    assert!(
+        m < Duration::from_micros(250),
+        "grammar round-trip median was {m:?}; expected < 250µs \
+         (§7 release budget < 5µs p99). A gross regression in the sync grammar \
+         trampoline (project → guest call → from_wit)."
     );
 }

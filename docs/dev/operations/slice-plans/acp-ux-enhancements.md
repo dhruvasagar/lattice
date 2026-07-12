@@ -431,11 +431,63 @@ name, mode_id, Centered, Steal }`. Mode + actions registered in `install.rs`; th
 stale `:ai-allow`/`:ai-deny` keymap comment removed. Tests: projection↔cursor-offset
 contract, oldest-pending ordering; `lattice-ai` 159 green, full TUI builds.
 
-**PU-B.2b-iv — `1`–`9` digit accelerators 📝 (deferred).** Bare digits parse as vim
-counts (`Action::PushDigit`) before any mode chord lookup — no mode overrides this
-today. Needs a count-override seam (a mode opting its digit chords out of count
-accumulation). The menu is fully usable via `<CR>`-by-cursor (the design's own cited
-model) without it.
+#### PU-B.2b-iv — `1`–`9` digit accelerators 📝 (deferred; detailed spec)
+
+**Goal.** Let the user press `1`/`2`/`3`… to select option N directly (the universal
+numbered-menu convention — Claude Code's own prompt, `fzf`, `gh`), instead of only
+`<CR>`-by-cursor. Polish, not a blocker: `<CR>`-by-cursor is fully functional.
+
+**Root cause (verified — the blocker).** In lattice a leading digit **is a vim
+count**. `crates/lattice-host/src/input.rs:662` (`compute_normal_action`) hoists a
+bare `1`–`9` to `Action::PushDigit` **before** the keymap trie is consulted:
+```rust
+let prefix_resolves_chord = matches!(prefix_action, Some(ref a) if !matches!(a, Action::None));
+if !prefix_resolves_chord
+    && let KeyKind::Char(c) = chord.key
+    && let Some(digit) = c.to_digit(10)
+    && (digit > 0 || pending_count > 0)
+{ return Action::PushDigit(digit as u8); }        // ← digit never reaches lookup_normal
+```
+So a mode that binds `"1"` never sees it (confirmed: no mode binds a bare digit).
+The hoist already has ONE escape hatch — `!prefix_resolves_chord` (an `<C-x>2`-style
+chord's literal second key wins). The fix adds a second, per-buffer, condition.
+
+**Approach — a per-buffer `CountPrefix` option (property, not `BufferKind` — the
+standing rule; note `TranslateContext` already carries `active_buffer: BufferKind`
+which must NOT be keyed on).** Default `true` (vim everywhere); a numbered-menu
+buffer resolves it `false`, which skips the hoist so bare digits fall through to
+`lookup_normal`, where the mode's `"1"`–`"9"` MajorMode bindings resolve. Reusable by
+any future in-buffer chooser (quickfix, `:ls`-picker) — the general primitive, not a
+permission-menu special case.
+
+| File | Change |
+|---|---|
+| `crates/lattice-config/src/core_options.rs` (~`:249`, next to `NoFile`) | Add `pub CountPrefix: bool = true;` (mode-driven like `ReadOnly`/`NoFile`, not user-customizable). |
+| `crates/lattice-config/src/lib.rs` (`:130`) | Export `CountPrefix` in the options re-export list. |
+| `crates/lattice-ai/src/acp/permission_mode.rs` (`options()`) | Add `lattice_config::CountPrefix = false` alongside `ReadOnly`/`NoFile`. |
+| `crates/lattice-host/src/input.rs` | `TranslateContext` (`:23`) gains `pub count_prefix: bool`; its build site resolves `CountPrefix` for the active buffer (`resolved_options.get_typed::<CountPrefix>()`); `translate_normal` (`:589`) + `compute_normal_action` (`:619`) take a `count_prefix: bool` param; the hoist condition (`:662`) gains `&& count_prefix`; call site (`:411`) passes `ctx.count_prefix`. |
+| `crates/lattice-ai/src/acp/permission_mode.rs` (keymap + handlers) | Bind `"1"`–`"9"` (Normal) → `action:ai-perm-1 … -9`; register the 9 actions; 9 handlers = `select_index_handler(menu, i)` reusing the resolve-and-dismiss path factored out of `select_at_cursor_handler`. Cap at 9; >9 options fall back to `<CR>`. |
+
+**Tests.**
+- `permission_menu_digit_selects_option` (lattice-ai / host integration): `2` in the
+  menu → resolves `options[1].option_id` + dismisses.
+- `count_prefix_off_lets_digit_reach_keymap` (host unit on `compute_normal_action`):
+  with `count_prefix=false` a bare `2` is NOT `PushDigit`; with `true` it is.
+- **Regression (load-bearing — input hot path):** `counts_still_work_in_document`
+  — `3j`, `2dw`, `5gg` in a normal buffer (default `count_prefix=true`) behave
+  exactly as today. Reuse the existing count tests; add one asserting the default.
+- `0` unaffected: with `count_prefix=false` and no in-progress count, `0` still
+  falls through (mode doesn't bind it → harmless line-start/no-op in a read-only menu).
+
+**Heuristic mapping.** UX: pure win (adds the accelerator; `<CR>` unchanged; other
+buffers untouched since default-on). Paramount #3 (vim grammar): makes "digits are
+counts" an opt-out *option*, not a hard-wired branch — grammar intact. Heuristic #1:
+`CountPrefix` is the genuinely-general primitive; special-casing the permission buffer
+in `input.rs` would be the forbidden kind-branch. Standing rule (property not kind):
+satisfied — `input.rs` learns nothing about permission menus.
+
+**Cost.** Moderate: touches `lattice-config` + the input hot path (`translate_normal`
+runs per keystroke) + the mode. The regression test is mandatory before landing.
 
 **Honest gap:** no end-to-end test that a live `<CR>` in the popup resolves through
 the host (the `za`-through-host class of gap TCF also noted). Covered by construction:

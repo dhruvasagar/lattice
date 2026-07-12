@@ -84,11 +84,11 @@ impl Editor {
                 }
             };
         // T.B: seed the HUD's HI: field from persisted scores.
-        session.high_score =
-            crate::tutor::TutorScores::load_or_default().high_score(lesson_num);
+        session.high_score = crate::tutor::TutorScores::load_or_default().high_score(lesson_num);
         // Provider — unregister any stale one (re-open path) then register fresh.
         let provider_id = buffer_id.0 as u64 ^ crate::tutor::TUTOR_PROVIDER_TAG;
-        self.virtual_row_providers.unregister(buffer_id, provider_id);
+        self.virtual_row_providers
+            .unregister(buffer_id, provider_id);
         let handle = lattice_cells::SimpleHeaderlineHandle::new(
             crate::tutor::TutorViewState::default(),
             crate::tutor::render_tutor_headerline,
@@ -148,7 +148,10 @@ impl Editor {
         // GameOver: <CR> skips — advance without scoring.
         if session.state == TutorGameState::GameOver {
             session.advance();
-            self.buffer_locals.entry(buffer_id).or_default().insert(session.clone());
+            self.buffer_locals
+                .entry(buffer_id)
+                .or_default()
+                .insert(session.clone());
             return self.tutor_after_advance(buffer_id, session);
         }
 
@@ -164,7 +167,10 @@ impl Editor {
 
         if is_manual {
             session.advance();
-            self.buffer_locals.entry(buffer_id).or_default().insert(session.clone());
+            self.buffer_locals
+                .entry(buffer_id)
+                .or_default()
+                .insert(session.clone());
             return self.tutor_after_advance(buffer_id, session);
         }
 
@@ -175,14 +181,20 @@ impl Editor {
 
         if session.is_condition_met(&lines) {
             session.advance();
-            self.buffer_locals.entry(buffer_id).or_default().insert(session.clone());
+            self.buffer_locals
+                .entry(buffer_id)
+                .or_default()
+                .insert(session.clone());
             return self.tutor_after_advance(buffer_id, session);
         }
 
         // Wrong answer: drain a life.
         session.drain_life();
         self.tutor_update_headerline(buffer_id, &session, crate::tutor::TutorHudKind::Normal);
-        self.buffer_locals.entry(buffer_id).or_default().insert(session);
+        self.buffer_locals
+            .entry(buffer_id)
+            .or_default()
+            .insert(session);
         Vec::new()
     }
 
@@ -211,7 +223,10 @@ impl Editor {
         let mut session = session;
         session.retreat();
         self.tutor_update_headerline(buffer_id, &session, crate::tutor::TutorHudKind::Normal);
-        self.buffer_locals.entry(buffer_id).or_default().insert(session);
+        self.buffer_locals
+            .entry(buffer_id)
+            .or_default()
+            .insert(session);
         Vec::new()
     }
 
@@ -226,7 +241,10 @@ impl Editor {
             return self.tutor_open_next_or_complete(session);
         }
         self.tutor_update_headerline(buffer_id, &session, crate::tutor::TutorHudKind::Normal);
-        self.buffer_locals.entry(buffer_id).or_default().insert(session);
+        self.buffer_locals
+            .entry(buffer_id)
+            .or_default()
+            .insert(session);
         Vec::new()
     }
 
@@ -252,7 +270,10 @@ impl Editor {
         let buffer_id = self.document_buffer_id;
         session.state = TutorGameState::AllComplete;
         self.tutor_update_headerline(buffer_id, &session, crate::tutor::TutorHudKind::Normal);
-        self.buffer_locals.entry(buffer_id).or_default().insert(session);
+        self.buffer_locals
+            .entry(buffer_id)
+            .or_default()
+            .insert(session);
         Vec::new()
     }
 

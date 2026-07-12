@@ -88,6 +88,82 @@ impl ActivationPolicy {
     }
 }
 
+/// AU‑3: an editable region at the **tail** of an otherwise read-only,
+/// owner-written buffer — the comint pattern (the agent-conversation prompt,
+/// future `*scratch*` / REPL input lines). A mode declares it via
+/// [`Mode::editable_tail`]; the host's read-only edit gate consults it so
+/// user keystrokes may edit only the tail while the owner's projection writes
+/// (which bypass the gate by going through the runtime document handle
+/// directly) keep the rest owner-controlled.
+///
+/// The region is expressed **structurally, relative to the buffer end**, not
+/// as an absolute position — so it stays valid as the owner appends content
+/// above the tail without any per-edit bookkeeping:
+///
+/// - `trailing_lines` — the number of trailing lines that form the region
+///   (`1` for a single-line prompt). The first editable line is
+///   `line_count - trailing_lines`.
+/// - `first_line_min_byte` — the minimum byte column on that first editable
+///   line, protecting a prompt marker rendered as buffer text (e.g. the
+///   `"> "` prefix ⇒ `2`). Lines strictly after the first are editable from
+///   column 0.
+///
+/// `Default` is the empty tail (`trailing_lines = 0`), i.e. nothing editable.
+///
+/// ## Bottom-relative vs. anchored
+///
+/// The bottom-relative `trailing_lines` encoding is correct for a *fixed-height*
+/// tail: it stays valid as the owner appends content ABOVE the tail, but breaks
+/// the moment the user grows the tail itself (a multi-line prompt), because the
+/// added lines push the marker line out of the region. For a prompt whose height
+/// changes with user newlines AND whose top drifts as a transcript streams above
+/// it, set [`first_editable_line`](Self::first_editable_line) to the ABSOLUTE
+/// line where the editable region begins (the transcript-end line); the owning
+/// mode updates it as the transcript grows. When set it overrides
+/// `trailing_lines`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct EditableTail {
+    /// Number of trailing lines forming the editable region. Ignored when
+    /// [`first_editable_line`](Self::first_editable_line) is `Some`.
+    pub trailing_lines: u32,
+    /// Minimum editable byte column on the first editable line (guards a
+    /// text-rendered prompt marker). Ignored for lines after the first.
+    pub first_line_min_byte: u32,
+    /// When `Some(anchor)`, the editable region is `anchor..EOF` (absolute),
+    /// overriding the bottom-relative `trailing_lines`. Lets a mode with a
+    /// multi-line, growing prompt anchor the region to the transcript end and
+    /// keep it correct as the user adds newlines. Clamped to the last line so a
+    /// stale-high anchor never freezes the whole buffer.
+    pub first_editable_line: Option<u32>,
+}
+
+impl EditableTail {
+    /// Is a keystroke edit whose earliest affected position is
+    /// `(start_line, start_byte)` permitted, given the buffer currently has
+    /// `line_count` lines? Pure + unit-testable: the host gate computes the
+    /// live `line_count` from the document snapshot and delegates here.
+    pub fn permits(&self, start_line: u32, start_byte: u32, line_count: u32) -> bool {
+        let first_editable = match self.first_editable_line {
+            // Absolute anchor: `anchor..EOF`, clamped so a stale-high anchor
+            // still leaves the last line editable rather than freezing the tail.
+            Some(anchor) => anchor.min(line_count.saturating_sub(1)),
+            None => {
+                if self.trailing_lines == 0 {
+                    return false;
+                }
+                line_count.saturating_sub(self.trailing_lines)
+            }
+        };
+        if start_line < first_editable {
+            return false;
+        }
+        if start_line == first_editable && start_byte < self.first_line_min_byte {
+            return false;
+        }
+        true
+    }
+}
+
 /// Pinned, boxed, send-able future for `Mode::on_activate`.
 ///
 /// The explicit `Pin<Box<dyn Future + Send>>` desugaring (rather
@@ -319,6 +395,21 @@ pub trait Mode: Send + Sync + 'static {
         ActivationPolicy::Manual
     }
 
+    /// AU‑3: the mode's editable tail on an otherwise read-only buffer, or
+    /// `None` (the default) for a fully read-only / fully writable buffer.
+    ///
+    /// A mode backing an owner-written buffer (the agent conversation,
+    /// future REPL / scratch buffers) declares a tail so the host's
+    /// read-only edit gate lets user keystrokes edit only the trailing
+    /// prompt region — the comint pattern. Consulted directly by the gate
+    /// (no per-buffer seeding): the tail is expressed relative to the buffer
+    /// end (see [`EditableTail`]), so it stays valid as the owner appends
+    /// content above it. Returning `None` leaves the read-only gate's
+    /// behaviour unchanged (edits rejected iff `ReadOnly` is resolved true).
+    fn editable_tail(&self) -> Option<EditableTail> {
+        None
+    }
+
     /// Lifecycle. Called once per (buffer, activation) cycle
     /// after the registry has applied the declarative
     /// contributions. Returns an owned [`Guard`](Self::Guard)
@@ -376,6 +467,7 @@ pub trait DynMode: Send + Sync + 'static {
     fn mirrors_option(&self) -> Option<&'static str>;
     fn invocation_runner(&self) -> Option<ModeId>;
     fn activation_policy(&self) -> ActivationPolicy;
+    fn editable_tail(&self) -> Option<EditableTail>;
 
     /// Type-erased lifecycle entry. Returns a future whose
     /// output is the typed Guard erased to `Box<dyn Any + Send>`.
@@ -433,6 +525,9 @@ impl<M: Mode> DynMode for M {
     fn activation_policy(&self) -> ActivationPolicy {
         <M as Mode>::activation_policy(self)
     }
+    fn editable_tail(&self) -> Option<EditableTail> {
+        <M as Mode>::editable_tail(self)
+    }
 
     fn on_activate_dyn<'a>(
         &'a self,
@@ -451,6 +546,92 @@ impl<M: Mode> DynMode for M {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+
+    /// AU‑3: the default `editable_tail()` is `None` (unchanged
+    /// read-only semantics for every existing mode).
+    #[test]
+    fn editable_tail_defaults_to_none() {
+        struct BareMode;
+        impl Mode for BareMode {
+            type Guard = ();
+            fn id(&self) -> ModeId {
+                ModeId::new("bare-mode")
+            }
+            fn kind(&self) -> ModeKind {
+                ModeKind::Minor
+            }
+            fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, ()> {
+                Box::pin(async { Ok(()) })
+            }
+        }
+        assert_eq!(<BareMode as Mode>::editable_tail(&BareMode), None);
+    }
+
+    /// AU‑3: a single-line prompt tail (`> ` marker ⇒ min byte 2) permits
+    /// edits on the last line at/after column 2 and rejects everything above
+    /// it or before the marker — computed against the live line count, so it
+    /// tracks the prompt as the transcript grows.
+    #[test]
+    fn editable_tail_permits_prompt_and_rejects_history() {
+        let tail = EditableTail {
+            trailing_lines: 1,
+            first_line_min_byte: 2,
+            first_editable_line: None,
+        };
+        // 5-line buffer: prompt is line 4 (`line_count - 1`).
+        // In the prompt, at/after the marker → allowed.
+        assert!(tail.permits(4, 2, 5));
+        assert!(tail.permits(4, 7, 5));
+        // In the prompt but inside the `> ` marker → rejected.
+        assert!(!tail.permits(4, 0, 5));
+        assert!(!tail.permits(4, 1, 5));
+        // Any history line → rejected.
+        assert!(!tail.permits(0, 0, 5));
+        assert!(!tail.permits(3, 9, 5));
+        // Grow the transcript: prompt is now line 9; the same rule tracks it.
+        assert!(tail.permits(9, 2, 10));
+        assert!(!tail.permits(4, 2, 10));
+    }
+
+    /// AU‑3+ (`<C-j>` multi-line prompt): an absolute anchor makes the region
+    /// `anchor..EOF` regardless of the tail's height, so a growing multi-line
+    /// prompt stays fully editable while everything above the anchor is frozen.
+    #[test]
+    fn anchored_editable_tail_covers_a_multiline_prompt() {
+        // Transcript ends at line 3; the prompt is lines 3.. (marker on line 3).
+        let tail = EditableTail {
+            trailing_lines: 1,
+            first_line_min_byte: 2,
+            first_editable_line: Some(3),
+        };
+        // Marker line: at/after column 2 allowed, inside the marker rejected.
+        assert!(tail.permits(3, 2, 6));
+        assert!(!tail.permits(3, 0, 6));
+        // Continuation prompt lines (added via `<C-j>`) are fully editable,
+        // including column 0 (no marker there) — this is what a 1-line tail
+        // could not express.
+        assert!(tail.permits(4, 0, 6));
+        assert!(tail.permits(5, 0, 6));
+        // Transcript lines above the anchor stay frozen.
+        assert!(!tail.permits(2, 0, 6));
+        assert!(!tail.permits(0, 0, 6));
+        // A stale-high anchor clamps to the last line rather than freezing all.
+        let stale = EditableTail {
+            trailing_lines: 1,
+            first_line_min_byte: 2,
+            first_editable_line: Some(99),
+        };
+        assert!(stale.permits(5, 2, 6));
+    }
+
+    /// AU‑3: an empty tail (`trailing_lines = 0`, the `Default`) permits
+    /// nothing — a fully read-only buffer.
+    #[test]
+    fn empty_editable_tail_permits_nothing() {
+        let tail = EditableTail::default();
+        assert!(!tail.permits(0, 0, 3));
+        assert!(!tail.permits(2, 5, 3));
+    }
 
     /// A bare `Mode` impl with `Guard = ()` and a trivial
     /// `on_activate`. Confirms `completion_sources()` defaults

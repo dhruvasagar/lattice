@@ -52,9 +52,9 @@
 
 use std::sync::Arc;
 
+use crate::{HunkIndex, HunkKind};
 use lattice_cells::{AnchorPosition, Cell, ProviderId, VirtualRow, VirtualRowProvider};
 use lattice_core::BufferId;
-use crate::{HunkIndex, HunkKind};
 
 use crate::subsystem::DiffSession;
 

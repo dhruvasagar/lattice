@@ -245,8 +245,7 @@ impl OptionGroup for Search {
 pub struct Snippet;
 impl OptionGroup for Snippet {
     const NAME: &'static str = "snippet";
-    const DOC: &'static str =
-        "Snippet engine: activation policy + supported-language allowlist.";
+    const DOC: &'static str = "Snippet engine: activation policy + supported-language allowlist.";
 }
 
 /// Modeline (bottom per-pane status row) layout options. ML.5
@@ -279,6 +278,17 @@ impl OptionGroup for Window {
     const NAME: &'static str = "window";
     const DOC: &'static str =
         "GPUI window options (borderless chrome, maximize on launch). GPUI peer only.";
+}
+
+/// AI-agent (ACP client) options. AI-1b: `ai.log` / `ai.log_level`
+/// gate/seed the per-process `AiLogger` log rings (mirroring the LSP
+/// log group above). Boot-time wiring into an `AiLogger` lands in a
+/// later task; this group only makes the options resolvable and
+/// `:set`-able.
+pub struct Ai;
+impl OptionGroup for Ai {
+    const NAME: &'static str = "ai";
+    const DOC: &'static str = "AI-agent (ACP client) options: per-process log capture + level.";
 }
 
 // linkme submissions for the built-in groups.
@@ -328,8 +338,7 @@ static MESSAGES_GROUP_LINK: &OptionGroupMetadata = &OptionGroupMetadata::for_gro
 static TABLINE_GROUP_LINK: &OptionGroupMetadata = &OptionGroupMetadata::for_group::<Tabline>();
 
 #[linkme::distributed_slice(GROUP_DECLS)]
-static TERMINAL_GROUP_LINK: &OptionGroupMetadata =
-    &OptionGroupMetadata::for_group::<Terminal>();
+static TERMINAL_GROUP_LINK: &OptionGroupMetadata = &OptionGroupMetadata::for_group::<Terminal>();
 
 #[linkme::distributed_slice(GROUP_DECLS)]
 static SEARCH_GROUP_LINK: &OptionGroupMetadata = &OptionGroupMetadata::for_group::<Search>();
@@ -346,6 +355,9 @@ static DIAGNOSTICS_GROUP_LINK: &OptionGroupMetadata =
 
 #[linkme::distributed_slice(GROUP_DECLS)]
 static WINDOW_GROUP_LINK: &OptionGroupMetadata = &OptionGroupMetadata::for_group::<Window>();
+
+#[linkme::distributed_slice(GROUP_DECLS)]
+static AI_GROUP_LINK: &OptionGroupMetadata = &OptionGroupMetadata::for_group::<Ai>();
 
 // Compile-time naming-rule assertions for the built-in groups.
 // Verifies the `groups!` macro convention even though these
@@ -370,6 +382,7 @@ const _: () = {
     assert!(!ends_with_mode_suffix(Modeline::NAME));
     assert!(!ends_with_mode_suffix(Diagnostics::NAME));
     assert!(!ends_with_mode_suffix(Window::NAME));
+    assert!(!ends_with_mode_suffix(Ai::NAME));
 };
 
 #[cfg(test)]

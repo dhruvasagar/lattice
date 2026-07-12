@@ -200,11 +200,7 @@ impl Clone for BufferLocals {
     /// each entry so the whole `BufferLocals` can be deep-cloned
     /// for `BufferLocalsRenderState` publishes.
     fn clone(&self) -> Self {
-        let map = self
-            .map
-            .iter()
-            .map(|(k, v)| (*k, v.clone_box()))
-            .collect();
+        let map = self.map.iter().map(|(k, v)| (*k, v.clone_box())).collect();
         Self { map }
     }
 }

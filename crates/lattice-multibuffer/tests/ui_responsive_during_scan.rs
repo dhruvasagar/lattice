@@ -55,8 +55,7 @@ fn synth_corpus(n: usize) -> (PathBuf, impl Drop) {
     std::fs::create_dir_all(&root).expect("create temp corpus dir");
     for i in 0..n {
         let path = root.join(format!("file_{i:04}.txt"));
-        std::fs::write(&path, "line one\nneedle here\nline three\n")
-            .expect("write probe file");
+        std::fs::write(&path, "line one\nneedle here\nline three\n").expect("write probe file");
     }
 
     struct Guard(PathBuf);

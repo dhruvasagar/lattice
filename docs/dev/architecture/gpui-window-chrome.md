@@ -5,7 +5,7 @@ window, and **maximize-on-launch** driven by the boot `Startup` event. Both are
 GPUI-peer concerns — the TUI has no OS window — surfaced as renderer-agnostic
 `ui.window.*` options that the TUI simply never reads.
 
-Slice plan: `docs/dev/operations/slice-plans/gpui-window-chrome.md` (sequencing,
+Slice plan: `docs/dev/operations/slice-plans/archive/gpui-window-chrome.md` (sequencing,
 status icons). This fragment carries the contracts, the per-platform mapping,
 and the rejected alternatives.
 
@@ -52,17 +52,25 @@ unset/`Server`.
 
 macOS is the one platform where the *public* API cannot produce a truly
 borderless (`NSBorderlessWindowMask`) window, and where `titlebar: None` drops
-the resizable style bit (GPUI only sets `NSResizableWindowMask` in the
-titlebar-`Some` branch). This is acceptable because:
+the resizable style bit — GPUI only sets `NSResizableWindowMask` in the
+titlebar-`Some` branch. The consequence is stronger than cosmetic: a borderless
+GPUI window on macOS is **non-resizable by every means** —
 
-1. External window managers (Raycast, yabai, Rectangle) resize/move the window
-   through the macOS Accessibility API, which does **not** depend on the
-   `NSResizableWindowMask` bit — the same reason a borderless kitty/emacs window
-   is still resizable via those tools.
-2. Removing rounded corners + shadow, or restoring internal edge-resize, would
-   require forking GPUI to thread `is_resizable` into the `None` branch and/or
-   expose a borderless mask. That maintenance cost buys only cosmetic corners on
-   one platform — not worth it (see Rejected alternatives).
+1. `zoom()`/maximize is a no-op — which is why `start-maximized` opens the
+   borderless window *pre-sized to the display* rather than maximizing it after
+   the fact (see Feature 2).
+2. Edge-drag resize is gone.
+3. Even external window managers (Raycast, yabai, Rectangle) **cannot** resize or
+   move it: the Accessibility `setFrame` is rejected by a non-resizable NSWindow
+   (observed in practice: Raycast reports "failed to set window rect in 3
+   attempts"). This *corrects* an earlier assumption in this design that AX tools
+   bypass the style bit — they do not.
+
+The only way to make a borderless macOS window resizable (edge-drag AND
+AX-controllable by Raycast/yabai) is to fork GPUI to thread `is_resizable` into
+the `titlebar: None` branch (add `NSResizableWindowMask`) — a minimal
+`[patch.crates-io.gpui]` fork; see Rejected alternatives. Absent that fork, a
+borderless macOS window is fixed at its creation size.
 
 ## Feature 1 — borderless window (`window.decorations`)
 
@@ -75,7 +83,7 @@ as they are for `Modeline` (NAME `"modeline"`, options `ui.modeline.left`):
 
 ```
 // lattice-config: window enum, modeled on SignColumn
-pub enum Decorations { Full, None }   // labels: "full" | "none"; default Full
+pub enum Decorations { Full, None_, Transparent }  // "full" | "none" | "transparent"; default Full
 
 // window_options.rs
 crate::options! {
@@ -84,6 +92,7 @@ crate::options! {
     /// OS window chrome. `full` (default) keeps the system titlebar and
     /// controls. `none` removes them for a borderless window (as in
     /// alacritty `decorations = none` / kitty / emacs `undecorated`).
+    /// `transparent` looks frameless but stays resizable.
     #[name("ui.window.decorations")]
     pub WindowDecorationsOption: Decorations = Decorations::Full;
 }
@@ -91,6 +100,26 @@ crate::options! {
 
 Enum name is `Decorations` (not `WindowDecorations`) to avoid colliding with
 `gpui::WindowDecorations` when both are in scope in the GPUI peer.
+
+**Three values, mapped by `window_chrome()`:**
+
+- `full` → `(Some(full_titlebar()), None)` — system chrome (default).
+- `none` → `(None, Some(WindowDecorations::Client))` — borderless. Per the
+  per-platform table above; **non-resizable on macOS** (no `NSResizableWindowMask`).
+- `transparent` → `Some(TitlebarOptions { appears_transparent: true, .. })` (buttons
+  left at their default position) + a post-open `hide_traffic_lights(window)` call
+  that sends `setHidden:` to the three standard buttons via gpui's raw window
+  handle. The titlebar is `Some`, so GPUI keeps `NSResizableWindowMask`: the window
+  stays **resizable** (edge-drag + AX tools like Raycast/yabai work) while the
+  transparent titlebar + hidden buttons make it look frameless. Critically, the
+  buttons are *hidden* (`setHidden:`), NOT *moved* — parking them off-screen breaks
+  the window's Accessibility geometry so Raycast can no longer set its frame (this
+  cost a real debugging round). Rounded corners + shadow remain (not truly
+  borderless); truly-frameless-and-resizable still needs the fork.
+  This is the macOS-friendly frameless option — the no-fork answer to "borderless
+  *and* Raycast-controllable" (the fork in Rejected alternatives is the only path
+  to truly-frameless *and* resizable). `is_borderless()` is `true` only for
+  `none`, so the maximize path treats `transparent` as a normal resizable window.
 
 **Application seam.** A pure, platform-cfg'd mapping function owns the
 translation, so it is unit-testable without opening a real window:
@@ -140,46 +169,34 @@ crate::options! {
 The `start-maximized` key is hyphenated to match the `ui.*` family's multi-word
 convention (`ui.diagnostics.inline-min-severity`, `ui.diff.fold-unchanged`).
 
-**Why a GPUI-local command queue, not a shared `Effect`.** Window control is
-inherently GPUI-only — the TUI owns no window. Adding an `Effect::WindowControl`
-variant to the shared cross-renderer enum would force a TUI no-op arm, exactly
-the "one peer must no-op a shared variant" smell the cross-renderer discipline
-warns against. Instead the mechanism lives entirely in the GPUI peer:
+**Mechanism: `WindowBounds` at `open_window`, not a runtime action.** Maximize is
+a window-*creation* state, so it is set on `WindowOptions` in `run()` from the
+same early standalone config read that resolves `decorations` — never applied
+after the window exists. The strategy branches on whether the window is resizable,
+which `decorations` determines:
 
-```
-// lattice-ui-gpui — extensible; only Maximize implemented now
-enum WindowCommand { Maximize }
+- **Decorated (`full`) → `WindowBounds::Maximized(restore)`.** The window is
+  resizable, so GPUI's maximized state (macOS zoom / X11 maximized / Windows
+  `SW_MAXIMIZE`, applied by GPUI during window construction) works.
+- **Borderless (`none`) → `WindowBounds::Windowed(display.bounds())`.** On macOS a
+  borderless window is non-resizable (see the macOS note), so `zoom()` is a no-op.
+  Instead the window opens already sized to the full display via
+  `cx.primary_display().bounds()` — the creation-time frame is honored regardless
+  of later resizability, so it fills the screen on every platform.
 
-// on GpuiApp: thread-safe queue drained on the UI thread
-window_commands: Arc<Mutex<VecDeque<WindowCommand>>>
-```
+Note: `display.bounds()` is the *full* display frame (GPUI does not expose the
+work area / `visibleFrame`), so a borderless maximized window covers the whole
+screen including the macOS menu-bar strip.
 
-**Trigger (in the GPUI boot seam).** The queue lives on `GpuiApp` (renderer
-side), so — unlike `lattice-dashboard`, which installs its `Startup` subscriber
-inside `install(&mut boot)` during `Editor::boot` — there is no boot subsystem
-seam that can see the queue, and no `boot.runtime_handle()` at that point. Two
-ordering facts settle the mechanism: `Startup` is published at `lib.rs:399`
-*before* `load_persistent_config` runs (~`lib.rs:415`), so the user's
-`ui.window.start-maximized` value is not resolved at publish time; and the boot
-seam runs synchronously on the construction thread before the editor actor
-spawns. So the peer does a **synchronous check-and-push in the boot seam right
-after `load_persistent_config`**: read `editor.config.get_typed::<StartMaximized>()`
-and, if `true`, push `WindowCommand::Maximize` onto the queue. No event
-subscription and no spawned task — a fire-once launch maximize does not warrant
-either (YAGNI). The `Startup` event remains the semantic boot signal; the
-maximize is simply sequenced into the same post-boot seam that publishes it.
-
-**Application (on the UI thread).** `EditorView::render` — which is handed
-`&mut Window` (`window.rs:3043`) — drains the queue at the top of the frame and
-calls `window.zoom_window()` per command. The queue is FIFO, drained-to-empty,
-so a command enqueued from the boot seam (or later from a `:maximize` handler)
-lands on the next paint. The drain never panics on an empty queue and logs at
-`debug!` if a future fallible variant is dropped.
-
-**Reusable API.** A future `:maximize` ex-command (or WASM-init call) pushes
-`WindowCommand::Maximize` onto the same queue from wherever it runs and fires
-`paint_request` to schedule the paint that drains it. That path is out of scope
-here (YAGNI) but the queue is the seam it would reuse — no new plumbing.
+**Rejected: a runtime `WindowCommand` queue + render-drain `zoom_window()`.** The
+first implementation pushed `WindowCommand::Maximize` onto a GPUI-local
+`Arc<Mutex<VecDeque<…>>>` in the boot seam and drained it in `render()` via
+`window.zoom_window()`. It did **not** work: `zoom_window()` → macOS `zoom()` is a
+no-op on the non-resizable borderless window, and applying window state from the
+render path fought GPUI's window lifecycle. The queue, the boot-seam push, and the
+render drain were all removed. A future runtime `:maximize` would set
+`WindowBounds` at open for the launch case, or call `zoom_window()` only on
+decorated (resizable) windows.
 
 ## Cross-renderer stance
 

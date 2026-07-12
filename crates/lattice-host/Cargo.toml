@@ -81,10 +81,14 @@ lattice-cells = { path = "../lattice-cells" }
 # reads. Compute lands D.2.b. See
 # `docs/dev/architecture/diff-system.md`.
 lattice-diff = { path = "../lattice-diff" }
-# IDE-protocol: the Claude Code IDE peer. Boot spawns its server
-# supervisor (idle until `:claude-code-start`), registers the handle as a
-# service, and wires `claude-code-mode` + the `:claude-code-*` ex-commands.
-lattice-claude-code = { path = "../lattice-claude-code" }
+# AI (AI-1b / AG-4): both agent transports. `lattice_ai::install` wires the
+# ACP agent client (opencode et al: supervisor idle until `:opencode`,
+# `AiClientHandle`/`AiLogger` services, `ai-log-mode`, `:opencode` /
+# `:ai-prompt` / `:ai-stop`) AND the folded-in MCP IDE peer (formerly the
+# `lattice-claude-code` crate: server supervisor idle until
+# `:claude-code-start`, `ClaudeCodeServerHandle` service, `claude-code-mode`,
+# the `:claude-code-*` ex-commands).
+lattice-ai = { path = "../lattice-ai" }
 # D.2.b (2026-05-28): `BaselineSource::snapshot(&self) -> Rope`
 # trait + `StaticBaseline` impl + `DiffSession::recompute_blocking`
 # (and `DiffSubsystem::schedule_recompute` on `spawn_blocking`)
@@ -249,6 +253,13 @@ harness = false
 # overhead to `store_yank` on the keystroke path (paramount #1).
 [[bench]]
 name = "clipboard_yank"
+harness = false
+
+# AR.6 (autoread.md): autoread watch-set cost. `fingerprint` + `bound`
+# steps of a refresh at 10/100/1000 open-buffer dirs — must stay cheap and
+# scale with open buffers, not project size. See `benches/autoread_watch_set.rs`.
+[[bench]]
+name = "autoread_watch_set"
 harness = false
 
 [features]

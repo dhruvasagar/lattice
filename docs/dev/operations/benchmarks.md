@@ -71,6 +71,50 @@ target rather than just a slower number.
 
 ---
 
+## TSM.5 — `scope_toward` structural-motion tree walk (2026-07-08)
+
+Tree-sitter structural motions, slice TSM.5 (design:
+`../architecture/treesitter-motions.md`; slice plan:
+`slice-plans/treesitter-motions.md`, TSM.0–TSM.5). `scope_toward` backs the
+16 `]f [f ]F [F ]c [c ]C [C ]a [a ]A [A ]l [l ]L [L`-style motions and runs
+on the core/actor thread on a deliberate keypress — never in
+`Render::render`, never per-frame (paramount #1).
+
+Bench file: `crates/lattice-syntax/benches/scope_toward.rs`. Run: `cargo
+bench -p lattice-syntax --bench scope_toward`. Fixture: 2000 top-level Rust
+functions (`fn fN() { let x = N; }`), queried for `@function.outer` from the
+file midpoint.
+
+| Bench | Median time | Notes |
+|---|---|---|
+| `scope_toward/fwd_start` | ~1.717 ms | `Forward`/`Start` from the midpoint — scans `[cursor, EOF)` only, i.e. the second half of the file (~1000 functions). |
+| `scope_toward/back_start` | ~1.726 ms | `Backward`/`Start` from the same midpoint — scans `[0, cursor)` only, i.e. the first half of the file. Matches `fwd_start` closely, as expected: both directions scan a symmetric half of the fixture. |
+
+**The byte-range restriction is the point of this bench.**
+`SyntaxSnapshot::scope_toward` calls `QueryCursor::set_byte_range` before
+running the `textobjects.scm` query: `Forward` restricts the cursor to
+`cursor_byte..source.len()`, `Backward` to `0..cursor_byte+1`. Without that
+restriction the query would walk the *whole* 2000-fn tree on every motion,
+regardless of direction; with it, each call only ever visits matches in one
+half of the file. The near-identical fwd/back numbers here are exactly what
+that symmetric halving predicts — the query cost scales with distance
+scanned, not total file size.
+
+> ⚠️ **Hardware note for this row only.** Captured on the local macOS
+> (Apple Silicon M1 Pro) dev machine, NOT the WSL2/Ryzen 7 9700X box the
+> rest of this document's numbers are pinned to (see the hardware caveat
+> above). First-recorded floor with no same-hardware predecessor; not
+> directly cross-comparable with the rest of this document. 2000 functions
+> is a stress fixture (a real "large file" is closer to a few hundred), so
+> ~1.7 ms here is a worst-case ceiling, not a typical per-keypress cost —
+> comfortably inside a deliberate-keypress budget (not a per-frame one) even
+> at this size.
+
+**Regression envelope:** either row past ~5 ms (≈3× the recorded floor)
+signals the byte-range restriction stopped bounding the scan — check that
+`set_byte_range` is still applied before `cursor.matches(...)` in
+`SyntaxSnapshot::scope_toward`.
+
 ## DB.7 — dashboard creation-time + idle-frame benches (2026-07-03)
 
 Dashboard feature, slice DB.7 (design: `../architecture/dashboard.md` §13;

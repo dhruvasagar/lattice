@@ -119,7 +119,7 @@ use lattice_protocol::position::Position as ProtoPosition;
 ///   `last_insert`, `recording_insert`,
 ///   `pending_block_insert`).
 /// - 5.B.10 -- popup (subset) (`popup_buffer`,
-///   `prev_pane_for_help`, `popup_placement`). Skipped:
+///   `prev_pane_for_popup`, `popup_placement`). Skipped:
 ///   `popup_back_stack` -- holds `PopupSnapshot` which still
 ///   lives in `lattice-ui-tui::app::popup`; follow-up slice
 ///   moves the snapshot type to host before migrating the
@@ -509,7 +509,7 @@ pub struct Editor {
     /// / cursor / scroll they came from. Set by both display
     /// paths (in-pane activation and popup overlay); cleared
     /// by dismiss.
-    pub prev_pane_for_help: Option<PrevPaneState>,
+    pub prev_pane_for_popup: Option<PrevPaneState>,
     /// Where the popup overlay sits on screen when one is
     /// open. Lives on the editor (not on the buffer) because
     /// the popup is a generic rectangular surface inside
@@ -669,6 +669,11 @@ pub struct Editor {
     /// request so the worker can verify edits apply to the
     /// correct tree baseline.
     pub last_synced_syntax_version: u64,
+    /// OWC: per-buffer text version last seen after a host-issued
+    /// edit. Used to detect owner writes: when the active document's
+    /// `text_version` exceeds this, the host did not issue the edit
+    /// and should adopt the document's primary selection head.
+    pub last_seen_text_version: HashMap<BufferId, u64>,
     /// Pane tree (DESIGN.md §5.9). Always represents the
     /// ACTIVE tab's panes — when switching tabs we
     /// `mem::swap` between this field and `tabs[target].panes`.
@@ -711,8 +716,10 @@ pub struct Editor {
     /// picker opened. `<Esc>` calls `ThemeRegistry::set_theme` with
     /// these to undo the preview; `<CR>` clears it (keeps the
     /// previewed theme). `None` when no colorscheme preview is in flight.
-    pub pending_theme_preview_restore:
-        Option<(lattice_theme::Palette, Vec<(lattice_theme::ElementName, lattice_theme::StyleSpec)>)>,
+    pub pending_theme_preview_restore: Option<(
+        lattice_theme::Palette,
+        Vec<(lattice_theme::ElementName, lattice_theme::StyleSpec)>,
+    )>,
 
     /// Handle to the per-document actor (or, in M.1+, a
     /// composing multibuffer handle) and its snapshot cache.
@@ -901,6 +908,14 @@ pub struct Editor {
     /// Per-buffer mode-resolved options cache. Refreshed
     /// eagerly on mode toggle and option write.
     pub resolved_options: HashMap<BufferId, ResolvedOptions>,
+    /// AR.0: on-disk fingerprint per file-backed Document buffer, stamped
+    /// on load and after the buffer's own `:w`. The autoread watcher (AR.2)
+    /// compares an incoming filesystem event against this to suppress
+    /// self-writes and skip no-op touches. Non-file buffers (oil, help,
+    /// synthetic) never get an entry — the map is keyed by the property
+    /// "has an on-disk backing", not by `BufferKind`. See
+    /// `docs/dev/architecture/autoread.md`.
+    pub on_disk_fingerprints: HashMap<BufferId, crate::autoread::OnDiskFingerprint>,
     /// PI.4: monotonic version bumped whenever [`Self::resolved_options`]
     /// changes. Keys the published `ResolvedOptionsRenderState` cache so
     /// both renderer peers read per-buffer resolved options through ONE
@@ -1257,6 +1272,31 @@ pub struct Editor {
     /// task's set so we can skip sending `SyncSubscriptions` when
     /// nothing changed.
     pub lsp_watcher_watched_roots: std::collections::HashSet<std::path::PathBuf>,
+    /// AR.3: handle to the autoread watcher task (spawned lazily on the
+    /// first file-backed buffer with `autoread` on; dropped → task exits
+    /// when the last such buffer closes). `Editor` only sends `Sync`
+    /// commands through it — no notify calls on the renderer thread. See
+    /// `docs/dev/architecture/autoread.md`.
+    pub autoread_watcher: Option<crate::autoread::AutoreadWatcherHandle>,
+    /// AR.3: the change stream from the watcher task, drained host-side by
+    /// AR.4's reload policy. `None` until the watcher is spawned.
+    pub autoread_changes:
+        Option<tokio::sync::mpsc::UnboundedReceiver<crate::autoread::AutoreadChange>>,
+    /// AR.3: order-independent hash of the last-synced desired watch set.
+    /// The cheap "did the watch set change?" gate on `refresh_autoread_watcher`
+    /// so buffer-switches that don't change the set skip the cmd-send.
+    pub autoread_watch_fingerprint: u64,
+    /// AR.4: the latest un-applied external change per buffer. The tick drain
+    /// records watcher changes here (keyed by `BufferId`) and applies the
+    /// *active* buffer's entry immediately; a background buffer's entry is
+    /// applied when it next becomes active (vim's checktime-on-`BufEnter`).
+    pub autoread_pending: std::collections::HashMap<BufferId, crate::autoread::AutoreadChange>,
+    /// AR.5: buffers with an open autoread **conflict diff** (on-disk change +
+    /// unsaved edits). While a buffer is in this set autoread stays hands-off
+    /// for it — no re-opened resolver, no reload — so a resolve-then-save
+    /// can't loop. Cleared when the buffer is reloaded (`:e!` → new id) or
+    /// closed.
+    pub autoread_conflict_open: std::collections::HashSet<BufferId>,
     /// Phase 5.8.AF.5 / Slice 3a: renderer's wait-free read
     /// contract. Published by `Editor::publish_render_state` at
     /// the end of every `dispatch()` tick. Renderers load via

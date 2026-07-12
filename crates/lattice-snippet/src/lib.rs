@@ -48,12 +48,11 @@ pub mod token;
 pub mod variables;
 
 pub use crate::activation::{
-    fold_activation_policy, SnippetActivation, SnippetActivationMode, SnippetActivationPolicyHandle,
-    SnippetLanguages,
+    SnippetActivation, SnippetActivationMode, SnippetActivationPolicyHandle, SnippetLanguages,
+    fold_activation_policy,
 };
 pub use crate::active::{ActiveSnippet, TabstopGroup};
 pub use crate::builtins::{builtin_packs, load_builtins, load_builtins_into};
-pub use crate::session::{snippet_active_predicate, SnippetSession, SnippetSessionHandle};
 pub use crate::load::{LoadError, load_pack, load_pack_from_str};
 pub use crate::modes::{
     SNIPPET_COMPLETION_SOURCE_ID, SNIPPET_PAYLOAD_KIND_ID, SnippetCompletionMode,
@@ -62,5 +61,6 @@ pub use crate::modes::{
 pub use crate::parse::{ParseError, parse};
 pub use crate::registry::{Snippet, SnippetMeta, SnippetRegistry};
 pub use crate::render::{RenderedSnippet, TabstopRange};
+pub use crate::session::{SnippetSession, SnippetSessionHandle, snippet_active_predicate};
 pub use crate::token::{ChoiceOption, SnippetBody, SnippetToken};
 pub use crate::variables::{VariableContext, builtin_variables};

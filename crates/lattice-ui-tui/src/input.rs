@@ -65,6 +65,7 @@ mod tests {
         Builtins,
         crate::actions::ActionIds,
         lattice_syntax::SyntaxTextObjectIds,
+        lattice_syntax::SyntaxMotionIds,
     ) {
         use std::sync::OnceLock;
         static INIT: OnceLock<(
@@ -72,6 +73,7 @@ mod tests {
             Builtins,
             crate::actions::ActionIds,
             lattice_syntax::SyntaxTextObjectIds,
+            lattice_syntax::SyntaxMotionIds,
         )> = OnceLock::new();
         INIT.get_or_init(|| {
             let mut r = CommandRegistry::new();
@@ -79,10 +81,11 @@ mod tests {
             let _ex = lattice_grammar::ex_commands::populate(&mut r);
             let a = crate::actions::populate(&mut r, &b);
             let so = lattice_syntax::register_syntax_text_objects(&mut r);
+            let sm = lattice_syntax::register_syntax_motions(&mut r);
             // Keep `r`: the snippet mode-keymap layer must translate
             // against the SAME registry that minted these ids
             // (`CommandId`s are stable only within one registry).
-            (r, b, a, so)
+            (r, b, a, so, sm)
         })
     }
 
@@ -102,6 +105,10 @@ mod tests {
         &shared_init().3
     }
 
+    fn shared_syntax_motions() -> &'static lattice_syntax::SyntaxMotionIds {
+        &shared_init().4
+    }
+
     /// Build a fresh `KeymapHandle` populated with every catalog
     /// the per-mode dispatchers consult: Replace, Visual, Insert,
     /// Normal. Each scenario-specific helper below starts from
@@ -111,10 +118,11 @@ mod tests {
         let b = shared_builtins();
         let a = shared_actions();
         let so = shared_syntax_textobjects();
+        let sm = shared_syntax_motions();
         crate::keymap_replace::register_replace_bindings(&h, a);
-        crate::keymap_visual::register_visual_bindings(&h, b, a, so);
+        crate::keymap_visual::register_visual_bindings(&h, b, a, so, sm);
         crate::keymap_insert::register_insert_bindings(&h, a);
-        crate::keymap_normal::register_normal_bindings(&h, b, a, so);
+        crate::keymap_normal::register_normal_bindings(&h, b, a, so, sm);
         h
     }
 
@@ -1748,19 +1756,21 @@ mod tests {
         // SN.3c.2a: the keymap AND its active-minor set move together —
         // Insert dispatch is K.1.c-gated now, so pushing a layer without
         // naming its mode active would leave the chord unresolved.
-        let (keymap_for_mode, active_for_mode): (&'static KeymapHandle, &'static [lattice_mode::ModeId]) =
-            if insert_completion_open {
-                (shared_keymap_with_popup(), popup_minor_modes())
-            } else if snippet_active {
-                (shared_keymap_with_snippet(), snippet_minor_modes())
-            } else {
-                // SN.3c.1: snippet-mode is Global, so a document buffer's
-                // base Insert keymap carries its `<C-x><C-s>` expand prefix.
-                // Use the base + snippet-mode layer (mode named active) so
-                // descriptors like `<C-x>` resolve (the partial node moved
-                // off Builtin).
-                (shared_keymap_base_with_snippet_mode(), snippet_mode_only())
-            };
+        let (keymap_for_mode, active_for_mode): (
+            &'static KeymapHandle,
+            &'static [lattice_mode::ModeId],
+        ) = if insert_completion_open {
+            (shared_keymap_with_popup(), popup_minor_modes())
+        } else if snippet_active {
+            (shared_keymap_with_snippet(), snippet_minor_modes())
+        } else {
+            // SN.3c.1: snippet-mode is Global, so a document buffer's
+            // base Insert keymap carries its `<C-x><C-s>` expand prefix.
+            // Use the base + snippet-mode layer (mode named active) so
+            // descriptors like `<C-x>` resolve (the partial node moved
+            // off Builtin).
+            (shared_keymap_base_with_snippet_mode(), snippet_mode_only())
+        };
         let mut partial_chord: Vec<crate::chord::KeyChord> = Vec::new();
         let mut last = Action::None;
         for event in parse_chord_for_test(chord) {
@@ -1781,7 +1791,7 @@ mod tests {
                 terminal_esc_exits: false,
                 terminal_app_cursor_keys: false,
                 terminal_insert_exit_pending: false,
-            terminal_visual_active: false,
+                terminal_visual_active: false,
                 partial_chord: &partial_chord,
                 active_minor_modes: active_for_mode,
             };
@@ -3980,7 +3990,7 @@ mod tests {
                 terminal_esc_exits: false,
                 terminal_app_cursor_keys: false,
                 terminal_insert_exit_pending: false,
-            terminal_visual_active: false,
+                terminal_visual_active: false,
                 keymap: test_keymap(),
                 partial_chord: &[],
                 active_minor_modes: &[],

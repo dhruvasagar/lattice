@@ -164,8 +164,11 @@ pub fn emacs_keys_layer_bindings(
 
     // Disabled => publish an empty Normal trie so a re-push clears any
     // prior bindings. `<C-x>` then resolves as plain Normal-mode input.
-    let bindings: &[&[(&str, &str)]] =
-        if enabled { &[TIER1_BINDINGS, TIER2_BINDINGS] } else { &[] };
+    let bindings: &[&[(&str, &str)]] = if enabled {
+        &[TIER1_BINDINGS, TIER2_BINDINGS]
+    } else {
+        &[]
+    };
     for (suffix, command) in bindings.iter().copied().flatten() {
         let chord_str = format!("{prefix}{suffix}");
         let seq = match lattice_protocol::parse_chord_sequence(&chord_str) {
@@ -180,7 +183,10 @@ pub fn emacs_keys_layer_bindings(
             }
         };
         let Some(id) = registry.id_by_name(command) else {
-            tracing::warn!(command, "emacs-keys: skipping binding -- command not registered");
+            tracing::warn!(
+                command,
+                "emacs-keys: skipping binding -- command not registered"
+            );
             continue;
         };
         let pattern: Vec<ChordPattern> = seq.into_iter().map(ChordPattern::Literal).collect();
@@ -302,9 +308,15 @@ mod tests {
         let modes = emacs_keys_layer_bindings(true, "<C-c>", &registry());
         let trie = modes.get(&BindingMode::Normal).unwrap();
         // The new prefix is live...
-        assert!(matches!(trie.lookup(&seq("<C-c><C-f>")), LookupResult::Bound { .. }));
+        assert!(matches!(
+            trie.lookup(&seq("<C-c><C-f>")),
+            LookupResult::Bound { .. }
+        ));
         // ...and the old one is gone.
-        assert!(matches!(trie.lookup(&seq("<C-x><C-f>")), LookupResult::Unbound));
+        assert!(matches!(
+            trie.lookup(&seq("<C-x><C-f>")),
+            LookupResult::Unbound
+        ));
     }
 
     #[test]
@@ -313,7 +325,10 @@ mod tests {
         // leaving an empty tribute rather than panicking on boot.
         let modes = emacs_keys_layer_bindings(true, "<C-", &registry());
         let trie = modes.get(&BindingMode::Normal).unwrap();
-        assert!(matches!(trie.lookup(&seq("<C-x><C-f>")), LookupResult::Unbound));
+        assert!(matches!(
+            trie.lookup(&seq("<C-x><C-f>")),
+            LookupResult::Unbound
+        ));
     }
 
     #[test]
@@ -324,7 +339,10 @@ mod tests {
         // toggle reclaims `<C-x>`.
         let modes = emacs_keys_layer_bindings(false, "<C-x>", &registry());
         let trie = modes.get(&BindingMode::Normal).unwrap();
-        assert!(matches!(trie.lookup(&seq("<C-x><C-f>")), LookupResult::Unbound));
+        assert!(matches!(
+            trie.lookup(&seq("<C-x><C-f>")),
+            LookupResult::Unbound
+        ));
         assert!(matches!(trie.lookup(&seq("<C-x>")), LookupResult::Unbound));
     }
 }

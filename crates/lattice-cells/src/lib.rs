@@ -55,18 +55,18 @@ pub mod virtual_rows;
 // this. See `docs/dev/architecture/headerline.md`.
 pub mod headerline;
 
-pub use cell::{flags as cell_flags, Cell};
+pub use cell::{Cell, flags as cell_flags};
 pub use chunk::CellChunk;
 pub use edit_delta::EditDelta;
+pub use headerline::{Headerline, HeaderlineProvider, HeaderlineRow, SimpleHeaderlineHandle};
 pub use matrix::{
-	wrap_segments, CellMatrix, CellSlice, CellSliceIter, DisplayRowEntry, DisplaySlice,
-	DisplaySliceIter, CHUNK_SIZE_WHOLE_DOC,
+    CHUNK_SIZE_WHOLE_DOC, CellMatrix, CellSlice, CellSliceIter, DisplayRowEntry, DisplaySlice,
+    DisplaySliceIter, wrap_segments,
 };
 pub use row::{CellRow, InlayOffset};
 pub use style::{ExcerptHighlight, ExcerptHighlighter, Style, StyledSpan};
 pub use version::MatrixVersion;
 pub use virtual_rows::{
-	coalesce_scales, AnchorPosition, ProviderId, ScaleRun, VirtualRow, VirtualRowKind,
-	VirtualRowMatrix, VirtualRowProvider, VirtualRowVersion, BASE_SCALE,
+    AnchorPosition, BASE_SCALE, ProviderId, ScaleRun, VirtualRow, VirtualRowKind, VirtualRowMatrix,
+    VirtualRowProvider, VirtualRowVersion, coalesce_scales,
 };
-pub use headerline::{Headerline, HeaderlineProvider, HeaderlineRow, SimpleHeaderlineHandle};

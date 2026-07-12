@@ -302,11 +302,19 @@ mod tests {
             .on_activate(ctx)
             .await
             .expect("activate ok");
-        assert_eq!(recording.installs(), 1, "install_synthetic should fire once on activate");
+        assert_eq!(
+            recording.installs(),
+            1,
+            "install_synthetic should fire once on activate"
+        );
         assert_eq!(recording.clears(), 0, "no clear before guard drop");
         // Guard dropped at end of scope below.
         drop(_guard);
-        assert_eq!(recording.clears(), 1, "clear_synthetic should fire on guard drop");
+        assert_eq!(
+            recording.clears(),
+            1,
+            "clear_synthetic should fire on guard drop"
+        );
     }
 
     #[tokio::test]

@@ -57,7 +57,9 @@ pub enum Capability {
 
 /// The string `s` was not a recognised capability form.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("unrecognised capability `{0}` (expected `fs:read:<p>` / `fs:write:<p>` / `net:http:<host>` / `proc:spawn`)")]
+#[error(
+    "unrecognised capability `{0}` (expected `fs:read:<p>` / `fs:write:<p>` / `net:http:<host>` / `proc:spawn`)"
+)]
 pub struct CapabilityParseError(pub String);
 
 impl FromStr for Capability {
@@ -147,7 +149,9 @@ pub enum ManifestError {
 
     /// An `editor_capabilities` entry was not a recognised editor-capability
     /// name.
-    #[error("unrecognised editor capability `{0}` (expected buffer-uri / lsp / tree-sitter / folds / writable / diagnostics)")]
+    #[error(
+        "unrecognised editor capability `{0}` (expected buffer-uri / lsp / tree-sitter / folds / writable / diagnostics)"
+    )]
     EditorCapability(String),
 
     /// The `id` field was empty — a plugin must have a non-empty id (it keys

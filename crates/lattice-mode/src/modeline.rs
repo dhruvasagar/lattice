@@ -275,7 +275,11 @@ impl ModelineRegistry {
     pub fn zone_ordered(&self, zone: Zone) -> Vec<&ModelineElement> {
         let mut v: Vec<&ModelineElement> =
             self.elements.values().filter(|e| e.zone == zone).collect();
-        v.sort_by(|a, b| a.priority.cmp(&b.priority).then_with(|| a.id.0.cmp(&b.id.0)));
+        v.sort_by(|a, b| {
+            a.priority
+                .cmp(&b.priority)
+                .then_with(|| a.id.0.cmp(&b.id.0))
+        });
         v
     }
 }
@@ -583,8 +587,15 @@ mod tests {
         assert_eq!(snap.zone(Zone::Left, bid(1)).len(), 1, "diff on its buffer");
         assert_eq!(snap.zone(Zone::Right, bid(1)).len(), 1, "global clock");
         // Pane on buffer 2: no diff content keyed for it; clock global.
-        assert!(snap.zone(Zone::Left, bid(2)).is_empty(), "diff hidden on other buffer");
-        assert_eq!(snap.zone(Zone::Right, bid(2)).len(), 1, "clock still global");
+        assert!(
+            snap.zone(Zone::Left, bid(2)).is_empty(),
+            "diff hidden on other buffer"
+        );
+        assert_eq!(
+            snap.zone(Zone::Right, bid(2)).len(),
+            1,
+            "clock still global"
+        );
     }
 
     /// ML.3: `apply` routes empty content to a clear, non-empty to an
@@ -616,7 +627,11 @@ mod tests {
         // descriptor exists but no content yet → hidden
         assert!(svc.snapshot().zone(Zone::Right, bid(0)).is_empty());
         // explicit empty content → still hidden
-        svc.update(ModelineKey::Buffer(bid(0)), ElementId::new("lsp"), ElementContent::default());
+        svc.update(
+            ModelineKey::Buffer(bid(0)),
+            ElementId::new("lsp"),
+            ElementContent::default(),
+        );
         assert!(svc.snapshot().zone(Zone::Right, bid(0)).is_empty());
     }
 
@@ -625,7 +640,11 @@ mod tests {
         let svc = ModelineService::new();
         let role = ModelineRole::new("r");
         svc.register(el("x", Zone::Left, 0));
-        svc.update(ModelineKey::Buffer(bid(0)), ElementId::new("x"), ElementContent::text("hi", role));
+        svc.update(
+            ModelineKey::Buffer(bid(0)),
+            ElementId::new("x"),
+            ElementContent::text("hi", role),
+        );
         assert_eq!(svc.snapshot().zone(Zone::Left, bid(0)).len(), 1);
         // clear content → hidden, but descriptor remains
         svc.clear(ModelineKey::Buffer(bid(0)), &ElementId::new("x"));

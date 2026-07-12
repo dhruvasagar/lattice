@@ -66,7 +66,7 @@ use std::sync::Arc;
 
 use gpui::{
     App, Bounds, DefiniteLength, Element, ElementId, FontFeatures, GlobalElementId,
-    InspectorElementId, IntoElement, LayoutId, Length, Pixels, SharedString, ShapedLine, Style,
+    InspectorElementId, IntoElement, LayoutId, Length, Pixels, ShapedLine, SharedString, Style,
     TextRun, Window, fill, point, px, rgb, size,
 };
 use lattice_cells::CellMatrix;
@@ -644,9 +644,11 @@ struct BrandingPaint {
     /// amber, straight from the cell fg. Absent grid cells (the cut
     /// corners) simply have no tile, so the negative space is preserved.
     tiles: Vec<(u32, u32, u32)>,
-    /// The wordmark + tagline as `(text, rgb)`, parsed from the row group.
+    /// The wordmark + tagline + version as `(text, rgb)`, parsed from the
+    /// row group. The version is shaped at base font size (not 3.7x).
     wordmark: (String, u32),
     tagline: (String, u32),
+    version: (String, u32),
 }
 
 /// The full-block glyph the branding provider uses for a mark cell (both
@@ -664,44 +666,87 @@ fn build_branding_paint(
 ) -> Option<BrandingPaint> {
     let first_row = rows.first()?.0;
     let mut tiles: Vec<(u32, u32, u32)> = Vec::new();
-    let mut texts: Vec<(usize, String, u32)> = Vec::new();
+    // Text segments keyed by (row_index, segment_index) — a segment
+    // covers a run of printable cells with the same FG colour. Color
+    // changes (e.g. the brand-blue wordmark → default-fg version) produce
+    // adjacent segments rather than one merged string, so each one
+    // retains its own theme-resolved colour.
+    let mut segments: Vec<(usize, String, u32)> = Vec::new();
     for (gi, (_, cells)) in rows.iter().enumerate() {
-        let mut text = String::new();
-        let mut text_color = 0u32;
+        let mut seg_text = String::new();
+        let mut seg_color = 0u32;
         for (col, cell) in cells.iter().enumerate() {
             if cell.codepoint == BRANDING_MARK_GLYPH {
                 tiles.push((gi as u32, col as u32, cell.fg));
             } else if let Some(ch) = char::from_u32(cell.codepoint) {
                 if ch == ' ' {
-                    // Interior spaces only (skip the leading mark/gap run).
-                    if !text.is_empty() {
-                        text.push(' ');
+                    if !seg_text.is_empty() {
+                        seg_text.push(' ');
                     }
                 } else if !ch.is_control() {
-                    text.push(ch);
-                    if text_color == 0 && cell.fg != 0 {
-                        text_color = cell.fg;
+                    // Colour changed from the current segment?  Finalise
+                    // the old segment and start a new one with the new
+                    // colour so each themed run stays distinct.
+                    if seg_color != cell.fg && !seg_text.is_empty() && seg_color != 0 {
+                        let trimmed = seg_text.trim_end().to_string();
+                        if !trimmed.is_empty() {
+                            segments.push((gi, trimmed, seg_color));
+                        }
+                        seg_text.clear();
+                        seg_color = cell.fg;
                     }
+                    if seg_color == 0 && cell.fg != 0 {
+                        seg_color = cell.fg;
+                    }
+                    seg_text.push(ch);
                 }
             }
         }
-        let trimmed = text.trim_end();
+        let trimmed = seg_text.trim_end();
         if !trimmed.is_empty() {
-            texts.push((gi, trimmed.to_string(), text_color));
+            segments.push((gi, trimmed.to_string(), seg_color));
         }
     }
     if tiles.is_empty() {
         return None;
     }
+
+    // DB.4-tui-double: the TUI dashboard mark doubles its column count
+    // (10 vs 5 logical) to compensate for the terminal cell aspect ratio
+    // (~2:1 height:width). The GPUI peer renders with square tiles, so
+    // halve the column resolution — keep only even columns and divide by
+    // 2 — to restore the logical 5×6 proportion. A width >= 8 cols is
+    // well beyond the original 5-col mark, so it serves as the detector.
+    if tiles.iter().any(|t| t.1 >= 8) {
+        tiles.retain(|t| t.1 % 2 == 0);
+        for t in tiles.iter_mut() {
+            t.1 /= 2;
+        }
+    }
+
     let min_row = tiles.iter().map(|t| t.0).min().unwrap_or(0);
     let max_row = tiles.iter().map(|t| t.0).max().unwrap_or(0);
     let max_col = tiles.iter().map(|t| t.1).max().unwrap_or(0);
     for t in tiles.iter_mut() {
         t.0 -= min_row;
     }
-    texts.sort_by_key(|t| t.0);
-    let wordmark = texts.first().map(|t| (t.1.clone(), t.2)).unwrap_or_default();
-    let tagline = texts.get(1).map(|t| (t.1.clone(), t.2)).unwrap_or_default();
+    // Segments are already in row-then-column order (produced by the
+    // cell scan above). Wordmark = first segment; version = second
+    // segment on the same row (if any); tagline = first segment on the
+    // next row (if any).
+    let wordmark = segments
+        .first()
+        .map(|s| (s.1.clone(), s.2))
+        .unwrap_or_default();
+    let first_seg_row = segments.first().map(|s| s.0);
+    let version = first_seg_row
+        .and_then(|row| segments.get(1).filter(|s| s.0 == row))
+        .map(|s| (s.1.clone(), s.2))
+        .unwrap_or_default();
+    let tagline = first_seg_row
+        .and_then(|row| segments.iter().find(|s| s.0 != row))
+        .map(|s| (s.1.clone(), s.2))
+        .unwrap_or_default();
     Some(BrandingPaint {
         first_row,
         row_count: rows.len(),
@@ -710,6 +755,7 @@ fn build_branding_paint(
         tiles,
         wordmark,
         tagline,
+        version,
     })
 }
 
@@ -801,23 +847,23 @@ impl Element for EditorElement {
         };
         let gutter_chars: usize = self.content_left_pad as usize
             + if self.gutter.is_empty() {
-            0
-        } else {
-            // PU.1b-1a: the leading `2` is the severity + diff sign
-            // cells — dropped when `signcolumn=no` so the px width
-            // tracks `format_gutter_text`'s gated output.
-            //
-            // The trailing `3` is the separator space after the digits
-            // (1) + the fold-marker cell (1) + the trailing gap after the
-            // glyph (1) — the `… 99 ▸ code` layout. This MUST match
-            // `format_gutter_text`'s full width (`{sev}{diff}{num:>width$}
-            // {fold} ` = sign + digits + 3) and the virtual-row
-            // reservation (`gutter_width + 3 + sign_cells`). If it
-            // undercounts, the code's first column lands inside the
-            // gutter and the line number runs flush against the code.
-            let sign_cells = if self.sign_column { 2 } else { 0 };
-            sign_cells + self.gutter_width + 3
-        };
+                0
+            } else {
+                // PU.1b-1a: the leading `2` is the severity + diff sign
+                // cells — dropped when `signcolumn=no` so the px width
+                // tracks `format_gutter_text`'s gated output.
+                //
+                // The trailing `3` is the separator space after the digits
+                // (1) + the fold-marker cell (1) + the trailing gap after the
+                // glyph (1) — the `… 99 ▸ code` layout. This MUST match
+                // `format_gutter_text`'s full width (`{sev}{diff}{num:>width$}
+                // {fold} ` = sign + digits + 3) and the virtual-row
+                // reservation (`gutter_width + 3 + sign_cells`). If it
+                // undercounts, the code's first column lands inside the
+                // gutter and the line number runs flush against the code.
+                let sign_cells = if self.sign_column { 2 } else { 0 };
+                sign_cells + self.gutter_width + 3
+            };
         let gutter_width_px: Pixels = glyph_advance * (gutter_chars as f32);
 
         let row_capacity = self.gutter.len().max(self.viewport_height as usize);
@@ -836,22 +882,18 @@ impl Element for EditorElement {
         let mut row_scale: Vec<f32> = Vec::with_capacity(row_capacity);
         // F.2: per-row heading split (None for ordinary rows).
         let mut row_split: Vec<Option<ScaledLine>> = Vec::with_capacity(row_capacity);
-        let mut inlay_offsets_per_row: Vec<Vec<(u32, u32)>> =
-            Vec::with_capacity(row_capacity);
+        let mut inlay_offsets_per_row: Vec<Vec<(u32, u32)>> = Vec::with_capacity(row_capacity);
         let mut diagnostic_segments_per_row: Vec<Vec<(u32, u32, u32)>> =
             Vec::with_capacity(row_capacity);
-        let mut overlay_quads_per_row: Vec<Vec<(u32, u32, u32)>> =
-            Vec::with_capacity(row_capacity);
+        let mut overlay_quads_per_row: Vec<Vec<(u32, u32, u32)>> = Vec::with_capacity(row_capacity);
         // DB.4-gpui: `(display_row, cells)` for each BrandingBlock virtual
         // row emitted this frame; parsed into a `BrandingPaint` below.
-        let mut branding_rows: Vec<(usize, std::sync::Arc<[lattice_cells::Cell]>)> =
-            Vec::new();
+        let mut branding_rows: Vec<(usize, std::sync::Arc<[lattice_cells::Cell]>)> = Vec::new();
         // D.3.b.1.gpui (2026-05-29): for each entry in
         // `self.gutter`, the shaped_text row index of the
         // corresponding doc row after virtual-row interleaving.
         // Cursor lookup remaps through this Vec.
-        let mut doc_to_shaped_row_local: Vec<u32> =
-            Vec::with_capacity(self.gutter.len());
+        let mut doc_to_shaped_row_local: Vec<u32> = Vec::with_capacity(self.gutter.len());
 
         // Slice X3.full.4: precompute per-line inlay-hint lists,
         // sorted by byte offset, so the per-row shaping loop just
@@ -875,10 +917,7 @@ impl Element for EditorElement {
         // `visible_rows` prepaint cache the fallback used to read was
         // deleted — the fallback now renders default-styled text.)
         let build_runs =
-            |line: &str,
-             _rel: usize,
-             line_idx: u32|
-             -> (String, Vec<TextRun>, Vec<(u32, u32)>) {
+            |line: &str, _rel: usize, line_idx: u32| -> (String, Vec<TextRun>, Vec<(u32, u32)>) {
                 // 2026-06-02: parity with TUI cells-empty fallback. A
                 // display row may exist but be empty (transient
                 // doc-switch / new-buffer publish race); in that case
@@ -935,39 +974,39 @@ impl Element for EditorElement {
         // `self.diagnostic_underlines` against (line_idx, line_text,
         // inlay_offsets); returns (col_start, col_end_excl, color)
         // tuples in combined-column space.
-        let diag_segments_for_row =
-            |line_idx: u32, line_text: &str, inlay_offsets: &[(u32, u32)]| -> Vec<(u32, u32, u32)> {
-                let mut segs = Vec::new();
-                let line_len = line_text.len();
-                for d in &self.diagnostic_underlines {
-                    let r = &d.range;
-                    if line_idx < r.start.line || line_idx > r.end.line {
-                        continue;
-                    }
-                    let start_byte = if line_idx == r.start.line {
-                        (r.start.byte as usize).min(line_len)
-                    } else {
-                        0
-                    };
-                    let end_byte = if line_idx == r.end.line {
-                        (r.end.byte as usize).min(line_len)
-                    } else {
-                        line_len
-                    };
-                    if end_byte <= start_byte {
-                        continue;
-                    }
-                    let col_start =
-                        byte_to_combined_col(line_text, start_byte, inlay_offsets) as u32;
-                    let col_end =
-                        byte_to_combined_col(line_text, end_byte, inlay_offsets) as u32;
-                    if col_end <= col_start {
-                        continue;
-                    }
-                    segs.push((col_start, col_end, d.color));
+        let diag_segments_for_row = |line_idx: u32,
+                                     line_text: &str,
+                                     inlay_offsets: &[(u32, u32)]|
+         -> Vec<(u32, u32, u32)> {
+            let mut segs = Vec::new();
+            let line_len = line_text.len();
+            for d in &self.diagnostic_underlines {
+                let r = &d.range;
+                if line_idx < r.start.line || line_idx > r.end.line {
+                    continue;
                 }
-                segs
-            };
+                let start_byte = if line_idx == r.start.line {
+                    (r.start.byte as usize).min(line_len)
+                } else {
+                    0
+                };
+                let end_byte = if line_idx == r.end.line {
+                    (r.end.byte as usize).min(line_len)
+                } else {
+                    line_len
+                };
+                if end_byte <= start_byte {
+                    continue;
+                }
+                let col_start = byte_to_combined_col(line_text, start_byte, inlay_offsets) as u32;
+                let col_end = byte_to_combined_col(line_text, end_byte, inlay_offsets) as u32;
+                if col_end <= col_start {
+                    continue;
+                }
+                segs.push((col_start, col_end, d.color));
+            }
+            segs
+        };
 
         // Perf-plan slice E.1: per-row overlay quads. Walks the
         // five overlay layers in fixed precedence and emits
@@ -993,10 +1032,12 @@ impl Element for EditorElement {
         // layers (`current_match`, `visual_range`) per frame.
         // Inactive panes fall through to the legacy per-frame walk
         // for the only static layer they paint — doc_highlight.
-        let worker_static_overlay_quads: Option<&[Vec<lattice_host::render_state::RowOverlayQuad>]> =
-            self.worker_static_overlay_quads
-                .as_ref()
-                .map(|q| q.quads.as_ref());
+        let worker_static_overlay_quads: Option<
+            &[Vec<lattice_host::render_state::RowOverlayQuad>],
+        > = self
+            .worker_static_overlay_quads
+            .as_ref()
+            .map(|q| q.quads.as_ref());
         // T.6: overlay layer colors resolve from the registered theme
         // elements (shared with the TUI peer; closes the prior drift).
         // `DocHighlight` maps to `doc_highlight.read`: the `OverlayLayer`
@@ -1040,153 +1081,40 @@ impl Element for EditorElement {
             .map(|c| c.to_rgb_u32(0x45475a))
             .unwrap_or(0x45475a);
         let diff_tint_per_row = &self.diff_tint_per_row;
-        let overlay_quads_for_row =
-            |line_idx: u32,
-             rel_row: usize,
-             line_text: &str,
-             inlay_offsets: &[(u32, u32)]|
-             -> Vec<(u32, u32, u32)> {
-                let mut quads: Vec<(u32, u32, u32)> = Vec::new();
-                // D.3.e: full-row diff tint, painted FIRST so
-                // every cursor / selection / search overlay
-                // composites OVER it. Width is the line's
-                // total combined columns (source chars +
-                // inlay-virtual-text chars). Zero-width rows
-                // (empty lines) get a 1-column tint so the
-                // backdrop is still visible.
-                if let Some(&Some(tint_color)) =
-                    diff_tint_per_row.get(rel_row)
+        let overlay_quads_for_row = |line_idx: u32,
+                                     rel_row: usize,
+                                     line_text: &str,
+                                     inlay_offsets: &[(u32, u32)]|
+         -> Vec<(u32, u32, u32)> {
+            let mut quads: Vec<(u32, u32, u32)> = Vec::new();
+            // D.3.e: full-row diff tint, painted FIRST so
+            // every cursor / selection / search overlay
+            // composites OVER it. Width is the line's
+            // total combined columns (source chars +
+            // inlay-virtual-text chars). Zero-width rows
+            // (empty lines) get a 1-column tint so the
+            // backdrop is still visible.
+            if let Some(&Some(tint_color)) = diff_tint_per_row.get(rel_row) {
+                let source_cols = line_text.chars().count() as u32;
+                let inlay_cols: u32 = inlay_offsets.iter().map(|(_, w)| *w).sum();
+                let total_cols = source_cols + inlay_cols;
+                let width = total_cols.max(1);
+                quads.push((0, width, tint_color));
+            }
+            if is_active {
+                // Worker bucket carries doc_highlight + all_matches +
+                // substitute already in combined-column space.
+                // Splice cursor-coupled layers in between AllMatches
+                // and Substitute to preserve the original precedence
+                // (doc_highlight → all_matches → current_match →
+                // visual → substitute).
+                if let Some(rows) = worker_static_overlay_quads
+                    && let Some(row) = rows.get(rel_row)
                 {
-                    let source_cols = line_text.chars().count() as u32;
-                    let inlay_cols: u32 =
-                        inlay_offsets.iter().map(|(_, w)| *w).sum();
-                    let total_cols = source_cols + inlay_cols;
-                    let width = total_cols.max(1);
-                    quads.push((0, width, tint_color));
-                }
-                if is_active {
-                    // Worker bucket carries doc_highlight + all_matches +
-                    // substitute already in combined-column space.
-                    // Splice cursor-coupled layers in between AllMatches
-                    // and Substitute to preserve the original precedence
-                    // (doc_highlight → all_matches → current_match →
-                    // visual → substitute).
-                    if let Some(rows) = worker_static_overlay_quads
-                        && let Some(row) = rows.get(rel_row)
-                    {
-                        for q in row {
-                            match q.layer {
-                                lattice_host::render_state::OverlayLayer::DocHighlight
-                                | lattice_host::render_state::OverlayLayer::AllMatches => {
-                                    let cs = byte_to_combined_col(
-                                        line_text,
-                                        q.source_byte_start as usize,
-                                        inlay_offsets,
-                                    ) as u32;
-                                    let ce = byte_to_combined_col(
-                                        line_text,
-                                        q.source_byte_end as usize,
-                                        inlay_offsets,
-                                    ) as u32;
-                                    if ce > cs {
-                                        quads.push((cs, ce, color_for_layer(q.layer)));
-                                    }
-                                }
-                                lattice_host::render_state::OverlayLayer::Substitute => {
-                                    // Defer substitute until after the
-                                    // cursor-coupled layers are pushed.
-                                }
-                            }
-                        }
-                    } else {
-                        // Worker bucket missing (boot before first
-                        // recompute, or buffer mismatch). Fall back to
-                        // the legacy per-frame walk so static overlays
-                        // still paint correctly.
-                        push_range_quads(
-                            &mut quads,
-                            doc_highlights,
-                            line_idx,
-                            line_text,
-                            inlay_offsets,
-                            color_for_layer(
-                                lattice_host::render_state::OverlayLayer::DocHighlight,
-                            ),
-                        );
-                        push_range_quads(
-                            &mut quads,
-                            all_matches,
-                            line_idx,
-                            line_text,
-                            inlay_offsets,
-                            color_for_layer(
-                                lattice_host::render_state::OverlayLayer::AllMatches,
-                            ),
-                        );
-                    }
-                    if let Some(r) = current_match {
-                        push_range_quads(
-                            &mut quads,
-                            std::slice::from_ref(r),
-                            line_idx,
-                            line_text,
-                            inlay_offsets,
-                            current_match_color,
-                        );
-                    }
-                    // Blockwise visual: per-line column band
-                    // [start_col, end_col]. Both ends are inclusive
-                    // byte columns — match TUI's
-                    // `apply_match_overlay` semantics (`end + 1`
-                    // exclusive). The band paints on every line in
-                    // [start_line, end_line]; lines short of
-                    // `start_col` paint nothing. Blockwise
-                    // suppresses the linear `visual_range` overlay
-                    // since the host still publishes a charwise-
-                    // shaped fallback for it.
-                    if let Some(b) = visual_block_extents {
-                        if line_idx >= b.start_line && line_idx <= b.end_line {
-                            let line_len = line_text.len();
-                            let start = (b.start_col as usize).min(line_len);
-                            let end = ((b.end_col as usize) + 1).min(line_len);
-                            if start < end {
-                                let cs = byte_to_combined_col(
-                                    line_text,
-                                    start,
-                                    inlay_offsets,
-                                ) as u32;
-                                let ce = byte_to_combined_col(
-                                    line_text,
-                                    end,
-                                    inlay_offsets,
-                                ) as u32;
-                                if ce > cs {
-                                    quads.push((cs, ce, selection_color));
-                                }
-                            }
-                        }
-                    } else if let Some(r) = visual_range {
-                        push_range_quads(
-                            &mut quads,
-                            std::slice::from_ref(r),
-                            line_idx,
-                            line_text,
-                            inlay_offsets,
-                            selection_color,
-                        );
-                    }
-                    // Push the deferred substitute layer last so it
-                    // sits on top of cursor + visual per the original
-                    // precedence. Worker bucket again preferred; legacy
-                    // walk fallback if no bucket exists.
-                    if let Some(rows) = worker_static_overlay_quads
-                        && let Some(row) = rows.get(rel_row)
-                    {
-                        for q in row {
-                            if matches!(
-                                q.layer,
-                                lattice_host::render_state::OverlayLayer::Substitute
-                            ) {
+                    for q in row {
+                        match q.layer {
+                            lattice_host::render_state::OverlayLayer::DocHighlight
+                            | lattice_host::render_state::OverlayLayer::AllMatches => {
                                 let cs = byte_to_combined_col(
                                     line_text,
                                     q.source_byte_start as usize,
@@ -1201,39 +1129,132 @@ impl Element for EditorElement {
                                     quads.push((cs, ce, color_for_layer(q.layer)));
                                 }
                             }
+                            lattice_host::render_state::OverlayLayer::Substitute => {
+                                // Defer substitute until after the
+                                // cursor-coupled layers are pushed.
+                            }
                         }
-                    } else {
-                        push_range_quads(
-                            &mut quads,
-                            substitute_matches,
-                            line_idx,
-                            line_text,
-                            inlay_offsets,
-                            color_for_layer(
-                                lattice_host::render_state::OverlayLayer::Substitute,
-                            ),
-                        );
                     }
                 } else {
-                    // Inactive pane: only doc_highlight is painted
-                    // (the other static layers + cursor-coupled
-                    // layers are active-pane state). Bucket isn't
-                    // available for inactive panes; per-frame walk
-                    // stays on the cheap N path (doc_highlight is
-                    // capped tiny by the LSP response).
+                    // Worker bucket missing (boot before first
+                    // recompute, or buffer mismatch). Fall back to
+                    // the legacy per-frame walk so static overlays
+                    // still paint correctly.
                     push_range_quads(
                         &mut quads,
                         doc_highlights,
                         line_idx,
                         line_text,
                         inlay_offsets,
-                        color_for_layer(
-                            lattice_host::render_state::OverlayLayer::DocHighlight,
-                        ),
+                        color_for_layer(lattice_host::render_state::OverlayLayer::DocHighlight),
+                    );
+                    push_range_quads(
+                        &mut quads,
+                        all_matches,
+                        line_idx,
+                        line_text,
+                        inlay_offsets,
+                        color_for_layer(lattice_host::render_state::OverlayLayer::AllMatches),
                     );
                 }
-                quads
-            };
+                if let Some(r) = current_match {
+                    push_range_quads(
+                        &mut quads,
+                        std::slice::from_ref(r),
+                        line_idx,
+                        line_text,
+                        inlay_offsets,
+                        current_match_color,
+                    );
+                }
+                // Blockwise visual: per-line column band
+                // [start_col, end_col]. Both ends are inclusive
+                // byte columns — match TUI's
+                // `apply_match_overlay` semantics (`end + 1`
+                // exclusive). The band paints on every line in
+                // [start_line, end_line]; lines short of
+                // `start_col` paint nothing. Blockwise
+                // suppresses the linear `visual_range` overlay
+                // since the host still publishes a charwise-
+                // shaped fallback for it.
+                if let Some(b) = visual_block_extents {
+                    if line_idx >= b.start_line && line_idx <= b.end_line {
+                        let line_len = line_text.len();
+                        let start = (b.start_col as usize).min(line_len);
+                        let end = ((b.end_col as usize) + 1).min(line_len);
+                        if start < end {
+                            let cs = byte_to_combined_col(line_text, start, inlay_offsets) as u32;
+                            let ce = byte_to_combined_col(line_text, end, inlay_offsets) as u32;
+                            if ce > cs {
+                                quads.push((cs, ce, selection_color));
+                            }
+                        }
+                    }
+                } else if let Some(r) = visual_range {
+                    push_range_quads(
+                        &mut quads,
+                        std::slice::from_ref(r),
+                        line_idx,
+                        line_text,
+                        inlay_offsets,
+                        selection_color,
+                    );
+                }
+                // Push the deferred substitute layer last so it
+                // sits on top of cursor + visual per the original
+                // precedence. Worker bucket again preferred; legacy
+                // walk fallback if no bucket exists.
+                if let Some(rows) = worker_static_overlay_quads
+                    && let Some(row) = rows.get(rel_row)
+                {
+                    for q in row {
+                        if matches!(
+                            q.layer,
+                            lattice_host::render_state::OverlayLayer::Substitute
+                        ) {
+                            let cs = byte_to_combined_col(
+                                line_text,
+                                q.source_byte_start as usize,
+                                inlay_offsets,
+                            ) as u32;
+                            let ce = byte_to_combined_col(
+                                line_text,
+                                q.source_byte_end as usize,
+                                inlay_offsets,
+                            ) as u32;
+                            if ce > cs {
+                                quads.push((cs, ce, color_for_layer(q.layer)));
+                            }
+                        }
+                    }
+                } else {
+                    push_range_quads(
+                        &mut quads,
+                        substitute_matches,
+                        line_idx,
+                        line_text,
+                        inlay_offsets,
+                        color_for_layer(lattice_host::render_state::OverlayLayer::Substitute),
+                    );
+                }
+            } else {
+                // Inactive pane: only doc_highlight is painted
+                // (the other static layers + cursor-coupled
+                // layers are active-pane state). Bucket isn't
+                // available for inactive panes; per-frame walk
+                // stays on the cheap N path (doc_highlight is
+                // capped tiny by the LSP response).
+                push_range_quads(
+                    &mut quads,
+                    doc_highlights,
+                    line_idx,
+                    line_text,
+                    inlay_offsets,
+                    color_for_layer(lattice_host::render_state::OverlayLayer::DocHighlight),
+                );
+            }
+            quads
+        };
 
         if self.gutter.is_empty() {
             // Slice 1 fallback (no gutter metadata supplied):
@@ -1263,10 +1284,8 @@ impl Element for EditorElement {
                 }
                 let line_idx = (self.scroll as usize).saturating_add(rel);
                 let line = raw_lines.get(rel).copied().unwrap_or("");
-                let (combined, runs, inlay_offsets) =
-                    build_runs(line, rel, line_idx as u32);
-                let full_diag =
-                    diag_segments_for_row(line_idx as u32, line, &inlay_offsets);
+                let (combined, runs, inlay_offsets) = build_runs(line, rel, line_idx as u32);
+                let full_diag = diag_segments_for_row(line_idx as u32, line, &inlay_offsets);
                 let full_overlay =
                     overlay_quads_for_row(line_idx as u32, rel, line, &inlay_offsets);
                 // W.5: source line → `seg_count` display rows. Take the
@@ -1435,12 +1454,9 @@ impl Element for EditorElement {
                 // `push_wrapped_doc_row`. The gutter-driven walk already
                 // pre-filters folded lines, so coverage gaps only occur
                 // on boot / buffer-switch (handled inside `build_runs`).
-                let (combined, runs, inlay_offsets) =
-                    build_runs(line, rel, meta.line_idx);
-                let full_diag =
-                    diag_segments_for_row(meta.line_idx, line, &inlay_offsets);
-                let full_overlay =
-                    overlay_quads_for_row(meta.line_idx, rel, line, &inlay_offsets);
+                let (combined, runs, inlay_offsets) = build_runs(line, rel, meta.line_idx);
+                let full_diag = diag_segments_for_row(meta.line_idx, line, &inlay_offsets);
+                let full_overlay = overlay_quads_for_row(meta.line_idx, rel, line, &inlay_offsets);
                 let cell_cols = self
                     .cell_matrix
                     .as_ref()
@@ -1453,7 +1469,12 @@ impl Element for EditorElement {
                 } else {
                     lattice_cells::wrap_segments(body_cols, wrap_width).max(1)
                 };
-                let gutter_text = format_gutter_text(meta, self.gutter_width, self.sign_column, self.show_line_numbers);
+                let gutter_text = format_gutter_text(
+                    meta,
+                    self.gutter_width,
+                    self.sign_column,
+                    self.show_line_numbers,
+                );
                 let gutter_runs =
                     build_gutter_runs(&gutter_text, meta, font.clone(), self.sign_column);
                 let shaped_g = window.text_system().shape_line(
@@ -1596,8 +1617,7 @@ impl Element for EditorElement {
                             .get(row as usize)
                             .map(Vec::as_slice)
                             .unwrap_or(&[]);
-                        let char_col =
-                            byte_to_combined_col(line, byte, cursor_row_inlays) as u32;
+                        let char_col = byte_to_combined_col(line, byte, cursor_row_inlays) as u32;
                         // W.5 (soft-wrap): the combined column splits
                         // into a segment index (which display row of the
                         // wrapped line the cursor sits on) and the column
@@ -1622,37 +1642,36 @@ impl Element for EditorElement {
                             // this only guards the transient overflow.
                             (None, None)
                         } else {
-                            let shaped = if matches!(c.shape, CursorShape::Block)
-                                && byte < line.len()
-                            {
-                                let rest = &line[byte..];
-                                let ch = rest.chars().next().unwrap_or(' ');
-                                let runs = vec![TextRun {
-                                    len: ch.len_utf8(),
-                                    font: font.clone(),
-                                    color: rgb(self.theme.cursor_foreground).into(),
-                                    background_color: None,
-                                    underline: None,
-                                    strikethrough: None,
-                                }];
-                                // F.2/F.3: a block cursor on a scaled row
-                                // shapes its covered char at that column's
-                                // scale — base over the markers, scaled
-                                // over the title — so the re-stamped glyph
-                                // matches the underlying text.
-                                let cur_scale = match row_split.get(cursor_row as usize) {
-                                    Some(Some(sl)) => sl.scale_at(body_col),
-                                    _ => 1.0,
+                            let shaped =
+                                if matches!(c.shape, CursorShape::Block) && byte < line.len() {
+                                    let rest = &line[byte..];
+                                    let ch = rest.chars().next().unwrap_or(' ');
+                                    let runs = vec![TextRun {
+                                        len: ch.len_utf8(),
+                                        font: font.clone(),
+                                        color: rgb(self.theme.cursor_foreground).into(),
+                                        background_color: None,
+                                        underline: None,
+                                        strikethrough: None,
+                                    }];
+                                    // F.2/F.3: a block cursor on a scaled row
+                                    // shapes its covered char at that column's
+                                    // scale — base over the markers, scaled
+                                    // over the title — so the re-stamped glyph
+                                    // matches the underlying text.
+                                    let cur_scale = match row_split.get(cursor_row as usize) {
+                                        Some(Some(sl)) => sl.scale_at(body_col),
+                                        _ => 1.0,
+                                    };
+                                    Some(window.text_system().shape_line(
+                                        SharedString::from(ch.to_string()),
+                                        font_size * cur_scale,
+                                        &runs,
+                                        None,
+                                    ))
+                                } else {
+                                    None
                                 };
-                                Some(window.text_system().shape_line(
-                                    SharedString::from(ch.to_string()),
-                                    font_size * cur_scale,
-                                    &runs,
-                                    None,
-                                ))
-                            } else {
-                                None
-                            };
                             (Some((body_col, cursor_row)), shaped)
                         }
                     }
@@ -1859,8 +1878,7 @@ impl Element for EditorElement {
             for (col_start, col_end, color) in quads {
                 let quad_x = col_x(row_idx, *col_start);
                 let quad_w = col_x(row_idx, *col_end) - quad_x;
-                let quad_bounds =
-                    Bounds::new(point(quad_x, row_y), size(quad_w, row_h(row_idx)));
+                let quad_bounds = Bounds::new(point(quad_x, row_y), size(quad_w, row_h(row_idx)));
                 window.paint_quad(fill(quad_bounds, rgb(*color)));
             }
         }
@@ -1883,8 +1901,7 @@ impl Element for EditorElement {
             // TUI peer gets this for free by folding the pad into `gutter_w`
             // and right-aligning the glyph. `content_left_pad` is 0 for
             // non-centred buffers, so this is a no-op off the dashboard.
-            let gutter_x =
-                bounds.origin.x + prepaint.glyph_advance * self.content_left_pad as f32;
+            let gutter_x = bounds.origin.x + prepaint.glyph_advance * self.content_left_pad as f32;
             let origin = point(gutter_x, line_y);
             if let Err(err) = shaped_g.paint(origin, row_h(i), window, cx) {
                 tracing::warn!(
@@ -1946,13 +1963,8 @@ impl Element for EditorElement {
                                 // slices `[seg·w, (seg+1)·w)`; with
                                 // `wrap_width == 0` segment 0 is the
                                 // whole row (byte-identical to pre-W.5).
-                                let seg = prepaint
-                                    .row_segment
-                                    .get(i)
-                                    .copied()
-                                    .unwrap_or(0);
-                                let seg_cells =
-                                    cell_row.segment(seg, prepaint.wrap_width);
+                                let seg = prepaint.row_segment.get(i).copied().unwrap_or(0);
+                                let seg_cells = cell_row.segment(seg, prepaint.wrap_width);
                                 // HS.1b: pan ordinary rows left by
                                 // `leftcol` cells (wrap off) so column
                                 // `leftcol` paints at `text_origin_x`.
@@ -1969,10 +1981,7 @@ impl Element for EditorElement {
                                 // whose fallback ShapedLine carries text
                                 // (column models diverged) falls through so
                                 // the ShapedLine segment paints it.
-                                if seg_cells.is_empty()
-                                    && seg > 0
-                                    && !line_text.is_empty()
-                                {
+                                if seg_cells.is_empty() && seg > 0 && !line_text.is_empty() {
                                     false
                                 } else {
                                     // F.2/F.3 (Thread F): a scaled row paints
@@ -1989,20 +1998,15 @@ impl Element for EditorElement {
                                             // Shared baseline = the tallest
                                             // piece's ascent, so base pieces
                                             // sit on the scaled baseline.
-                                            let shared_ascent =
-                                                prepaint.text_ascent * sl.max_scale;
+                                            let shared_ascent = prepaint.text_ascent * sl.max_scale;
                                             for p in &sl.pieces {
-                                                let start = (p.start_col as usize)
-                                                    .min(seg_cells.len());
-                                                let end = ((p.start_col + p.cols)
-                                                    as usize)
+                                                let start =
+                                                    (p.start_col as usize).min(seg_cells.len());
+                                                let end = ((p.start_col + p.cols) as usize)
                                                     .min(seg_cells.len());
                                                 let piece_cells = &seg_cells[start..end];
                                                 let piece_origin = point(
-                                                    origin.x + sl.x_offset(
-                                                        p.start_col,
-                                                        advance,
-                                                    ),
+                                                    origin.x + sl.x_offset(p.start_col, advance),
                                                     line_y,
                                                 );
                                                 if ligatures {
@@ -2092,14 +2096,8 @@ impl Element for EditorElement {
                         for p in &sl.pieces {
                             let piece_ad = p.shaped.ascent - p.shaped.descent;
                             let piece_y = line_y + (max_ad - piece_ad) * 0.5;
-                            let piece_x =
-                                text_origin_x + sl.x_offset(p.start_col, advance);
-                            let _ = p.shaped.paint(
-                                point(piece_x, piece_y),
-                                h,
-                                window,
-                                cx,
-                            );
+                            let piece_x = text_origin_x + sl.x_offset(p.start_col, advance);
+                            let _ = p.shaped.paint(point(piece_x, piece_y), h, window, cx);
                         }
                     }
                     _ => {
@@ -2137,8 +2135,7 @@ impl Element for EditorElement {
                 }
                 let quad_x = col_x(row_idx, *col_start);
                 let quad_w = col_x(row_idx, *col_end) - quad_x;
-                let quad_bounds =
-                    Bounds::new(point(quad_x, underline_y), size(quad_w, px(2.0)));
+                let quad_bounds = Bounds::new(point(quad_x, underline_y), size(quad_w, px(2.0)));
                 window.paint_quad(fill(quad_bounds, rgb(*color)));
             }
         }
@@ -2286,6 +2283,33 @@ impl Element for EditorElement {
                 None,
             );
 
+            // Shape the version string at base font size (not the 3.7×
+            // wordmark scale) so it reads as regular body-sized text.
+            let ver_color = if b.version.1 == 0 {
+                self.theme.foreground
+            } else {
+                b.version.1
+            };
+            let ver_text = if b.version.0.is_empty() {
+                " ".to_string()
+            } else {
+                b.version.0.clone()
+            };
+            let ver_run = TextRun {
+                len: ver_text.len(),
+                font: prepaint.font.clone(),
+                color: rgb(ver_color).into(),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
+            let ver_shaped = window.text_system().shape_line(
+                SharedString::from(ver_text),
+                prepaint.font_size,
+                &[ver_run],
+                None,
+            );
+
             // Tight (no built-in leading padding) glyph extents: painting
             // at `line_height == ascent - descent` makes `ShapedLine::paint`
             // put the glyph top EXACTLY at the given origin (zero padding),
@@ -2300,11 +2324,10 @@ impl Element for EditorElement {
             let tag_h = tag_shaped.ascent - tag_shaped.descent;
             let title_subtitle_gap = word_h * 0.4; // push the subtitle clearly onto its own line
 
-            // The mark matches the wordmark's cap-height EXACTLY (derived,
-            // not independently tuned): same number of rows, so `tile_h`
-            // falls out of `word_h`. Square cells; no gap between them (the
-            // SVG mark is solid bars, not dashed).
-            let mark_h = word_h;
+            // The mark is scaled up 1.5× from the wordmark cap height so the
+            // logo tiles are visibly larger and balanced against the large
+            // 3.7× wordmark. Square tiles; no gap between them.
+            let mark_h = word_h * 1.5;
             let tile_h = mark_h * (1.0 / b.mark_rows.max(1) as f32);
             let tile_w = tile_h;
             let mark_w = tile_w * (b.mark_cols as f32);
@@ -2345,6 +2368,17 @@ impl Element for EditorElement {
             // exact, not approximate).
             let text_x = mark_x + mark_w + mark_text_gap;
             let _ = word_shaped.paint(point(text_x, block_top), word_h, window, cx);
+
+            // Version — base font size, painted after the wordmark with
+            // a small gap, baselines aligned so the text sits on the same
+            // invisible line as the bottom of the brand name.
+            if !b.version.0.is_empty() {
+                let ver_gap = px(6.0);
+                let ver_x = text_x + word_shaped.width + ver_gap;
+                let ver_h = ver_shaped.ascent - ver_shaped.descent;
+                let ver_y = block_top + word_shaped.ascent - ver_shaped.ascent;
+                let _ = ver_shaped.paint(point(ver_x, ver_y), ver_h, window, cx);
+            }
 
             // Subtitle — same pen origin `text_x` is not quite enough: a
             // larger font's left side-bearing (the gap between the pen
@@ -2542,8 +2576,11 @@ impl<'a> LineRunBuilder<'a> {
         } else if color == self.current_color {
             self.current_len += s.len();
         } else {
-            self.runs
-                .push(make_run_with_color(self.current_color, self.current_len, self.font));
+            self.runs.push(make_run_with_color(
+                self.current_color,
+                self.current_len,
+                self.font,
+            ));
             self.current_color = color;
             self.current_len = s.len();
         }
@@ -3039,23 +3076,20 @@ fn push_virtual_row(
     let mut runs: Vec<TextRun> = Vec::new();
     let mut current_color: Option<u32> = None;
     let mut current_len: usize = 0;
-    let flush =
-        |color: Option<u32>, len: usize, runs: &mut Vec<TextRun>, font: &gpui::Font| {
-            if len == 0 {
-                return;
-            }
-            let resolved = color
-                .filter(|c| *c != 0)
-                .unwrap_or(body_color);
-            runs.push(TextRun {
-                len,
-                font: font.clone(),
-                color: rgb(resolved).into(),
-                background_color: None,
-                underline: None,
-                strikethrough: None,
-            });
-        };
+    let flush = |color: Option<u32>, len: usize, runs: &mut Vec<TextRun>, font: &gpui::Font| {
+        if len == 0 {
+            return;
+        }
+        let resolved = color.filter(|c| *c != 0).unwrap_or(body_color);
+        runs.push(TextRun {
+            len,
+            font: font.clone(),
+            color: rgb(resolved).into(),
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        });
+    };
     for cell in vrow.cells.iter() {
         let Some(ch) = char::from_u32(cell.codepoint) else {
             continue;
@@ -3093,16 +3127,13 @@ fn push_virtual_row(
     // `font_size * scale` on a shared baseline. A row with no scaled run
     // stays on the fast path (`None` + `row_scale = 1.0`). Built from
     // `&content` before it is moved into the base `shaped_body`.
-    let scaled_line = build_virtual_row_scaled_line(
-        vrow, &content, content_cols, &runs, font_size, window,
-    );
+    let scaled_line =
+        build_virtual_row_scaled_line(vrow, &content, content_cols, &runs, font_size, window);
     let row_scale_val = scaled_line.as_ref().map(|s| s.max_scale).unwrap_or(1.0);
-    let shaped_body = window.text_system().shape_line(
-        SharedString::from(content),
-        font_size,
-        &runs,
-        None,
-    );
+    let shaped_body =
+        window
+            .text_system()
+            .shape_line(SharedString::from(content), font_size, &runs, None);
     // Gutter: fully blank-padded to match
     // `format_gutter_text`'s virtual-row width.
     let blank_gutter: String = " ".repeat(gutter_width + 5);
@@ -3132,8 +3163,7 @@ fn push_virtual_row(
     // deletion-block backdrop for back-compat with
     // pre-D.6.i providers.
     let quads = match vrow.kind {
-        lattice_cells::VirtualRowKind::DeletionBlock
-        | lattice_cells::VirtualRowKind::Generic => {
+        lattice_cells::VirtualRowKind::DeletionBlock | lattice_cells::VirtualRowKind::Generic => {
             let backdrop_width = content_cols.max(1);
             // T.7 (2026-06-18): honor `vrow.bg` first, matching the TUI
             // peer (render.rs `vrow.bg.map(...).or_else(kind default)`).
@@ -3156,8 +3186,9 @@ fn push_virtual_row(
         // Filler: no backdrop (blank padding). BrandingBlock: no cell
         // backdrop either — the GPUI branding pass (DB.4-gpui) paints the
         // 2-D composition over these rows itself.
-        lattice_cells::VirtualRowKind::Filler
-        | lattice_cells::VirtualRowKind::BrandingBlock => Vec::new(),
+        lattice_cells::VirtualRowKind::Filler | lattice_cells::VirtualRowKind::BrandingBlock => {
+            Vec::new()
+        }
     };
     shaped_text.push(shaped_body);
     shaped_gutter.push(shaped_g);
@@ -3268,14 +3299,25 @@ fn build_gutter_runs(
     if sign_column {
         // Run: severity sign.
         let sev_color = meta.severity.map(|(_, c)| c).unwrap_or(GUTTER_NORMAL_COLOR);
-        let sev_len = text[bytes_consumed..].chars().next().unwrap_or(' ').len_utf8();
+        let sev_len = text[bytes_consumed..]
+            .chars()
+            .next()
+            .unwrap_or(' ')
+            .len_utf8();
         push(&mut runs, sev_len, sev_color);
         bytes_consumed += sev_len;
 
         // Run: D.3.d.2 diff sign (left of line number, between
         // severity and digits — Vim/Helix/Zed/VSCode convention).
-        let diff_color = meta.diff_sign.map(|(_, c)| c).unwrap_or(GUTTER_NORMAL_COLOR);
-        let diff_len = text[bytes_consumed..].chars().next().unwrap_or(' ').len_utf8();
+        let diff_color = meta
+            .diff_sign
+            .map(|(_, c)| c)
+            .unwrap_or(GUTTER_NORMAL_COLOR);
+        let diff_len = text[bytes_consumed..]
+            .chars()
+            .next()
+            .unwrap_or(' ')
+            .len_utf8();
         push(&mut runs, diff_len, diff_color);
         bytes_consumed += diff_len;
     }
@@ -3284,11 +3326,7 @@ fn build_gutter_runs(
     // second-to-last char and the trailing gap is the last. Slice from
     // the END so a multi-byte glyph (`▸`/`▾`, 3 bytes) or a blank space
     // are handled uniformly.
-    let trailing_len = text
-        .chars()
-        .next_back()
-        .map(char::len_utf8)
-        .unwrap_or(0);
+    let trailing_len = text.chars().next_back().map(char::len_utf8).unwrap_or(0);
     let before_trailing = &text[..text.len() - trailing_len];
     let fold_len = before_trailing
         .chars()
@@ -3300,7 +3338,10 @@ fn build_gutter_runs(
     push(&mut runs, mid_len, GUTTER_NORMAL_COLOR);
     // The fold glyph in its resolved colour (falls back to the normal
     // gutter tone for a blank non-fold row).
-    let fold_color = meta.fold_marker.map(|(_, c)| c).unwrap_or(GUTTER_NORMAL_COLOR);
+    let fold_color = meta
+        .fold_marker
+        .map(|(_, c)| c)
+        .unwrap_or(GUTTER_NORMAL_COLOR);
     push(&mut runs, fold_len, fold_color);
     // Trailing gap.
     let tail_len = trailing_len;
@@ -3405,12 +3446,16 @@ mod tests {
             let sign_cells = if sign { 2 } else { 0 };
             let reserved = sign_cells + gutter_width + 3;
             assert_eq!(
-                format_gutter_text(&doc, gutter_width, sign, true).chars().count(),
+                format_gutter_text(&doc, gutter_width, sign, true)
+                    .chars()
+                    .count(),
                 reserved,
                 "document gutter must fill the reserved width (sign={sign})"
             );
             assert_eq!(
-                format_gutter_text(&virt, gutter_width, sign, true).chars().count(),
+                format_gutter_text(&virt, gutter_width, sign, true)
+                    .chars()
+                    .count(),
                 reserved,
                 "virtual gutter must match the reserved width (sign={sign})"
             );
@@ -3521,8 +3566,7 @@ mod tests {
         assert_eq!(combined, line);
         assert_eq!(runs.len(), 1, "no-span line collapses to a single run");
         assert_eq!(runs[0].len, line.len());
-        let expected: gpui::Hsla =
-            rgb(syntax_color(SyntaxStyle::Default, &resolved, &ids)).into();
+        let expected: gpui::Hsla = rgb(syntax_color(SyntaxStyle::Default, &resolved, &ids)).into();
         assert_eq!(runs[0].color, expected);
     }
 
@@ -3713,7 +3757,10 @@ mod tests {
         // Cursor at byte 4 ("x") sits BEFORE the inlay -- no shift.
         assert_eq!(byte_to_combined_col(line, 4, &inlays), 4);
         // Cursor at EOL: shift still applies.
-        assert_eq!(byte_to_combined_col(line, line.len(), &inlays), line.chars().count() + 5);
+        assert_eq!(
+            byte_to_combined_col(line, line.len(), &inlays),
+            line.chars().count() + 5
+        );
     }
 
     #[test]
@@ -3819,7 +3866,11 @@ mod tests {
         let line_text = "abcdef";
         let mut out = Vec::new();
         push_range_quads(&mut out, &[range(4, 2, 6, 3)], 4, line_text, &[], 2);
-        assert_eq!(out, vec![(2, 6, 2)], "start row spans [start_byte, line_len)");
+        assert_eq!(
+            out,
+            vec![(2, 6, 2)],
+            "start row spans [start_byte, line_len)"
+        );
     }
 
     #[test]
@@ -3838,7 +3889,14 @@ mod tests {
         let line_text = "abcd";
         let inlay_offsets = [(2u32, 2u32)];
         let mut out = Vec::new();
-        push_range_quads(&mut out, &[range(0, 1, 0, 3)], 0, line_text, &inlay_offsets, 0x42);
+        push_range_quads(
+            &mut out,
+            &[range(0, 1, 0, 3)],
+            0,
+            line_text,
+            &inlay_offsets,
+            0x42,
+        );
         assert_eq!(out, vec![(1, 5, 0x42)]);
     }
 

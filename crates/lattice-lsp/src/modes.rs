@@ -24,17 +24,16 @@
 
 use std::sync::{Arc, OnceLock};
 
+use lattice_grammar::effect::{Effect, LspRequest};
 use lattice_mode::{
     ActionContext, ActionHandler, ActionHandlerContribution, BufferStoreHandle, CapabilitySet,
     DecorationCtx, GutterDecoration, GutterSeverityLevel, Keymap, KeymapEntry, LifecycleFuture,
     Mode, ModeActivationError, ModeContext, ModeId, ModeKind, ModeRegistry, OptionOverrideSet,
     Subscription, keymap_entry,
 };
-use lattice_grammar::effect::{Effect, LspRequest};
 use lattice_runtime::EventBus;
 
 use crate::supervisor::LspSupervisorHandle;
-
 
 /// `lsp-server-log-mode` -- major mode for the per-instance
 /// `*lsp:<server>:<workspace>*` buffer (B'.4 / B'.7).
@@ -635,8 +634,7 @@ impl Mode for LspMode {
         let Some(diags) = &data.diagnostics else {
             return Vec::new();
         };
-        let mut per_line: std::collections::HashMap<u32, GutterSeverityLevel> =
-            Default::default();
+        let mut per_line: std::collections::HashMap<u32, GutterSeverityLevel> = Default::default();
         for diag in diags.iter() {
             let level = match diag.severity {
                 Some(crate::DiagnosticSeverity::ERROR) => GutterSeverityLevel::Error,
@@ -764,8 +762,11 @@ pub trait DiagnosticsQuery: Send + Sync {
     /// Diagnostics overlapping `line` of `buffer_id`, in the layer's
     /// `(line, character)` order. Empty when the buffer has no URI
     /// mapped / no LSP attachment.
-    fn on_line(&self, buffer_id: lattice_protocol::ids::BufferId, line: u32)
-    -> Vec<crate::Diagnostic>;
+    fn on_line(
+        &self,
+        buffer_id: lattice_protocol::ids::BufferId,
+        line: u32,
+    ) -> Vec<crate::Diagnostic>;
 
     /// IDE-protocol I2.0: every diagnostic for the file `uri` (string form,
     /// e.g. `file:///x.rs`), in the layer's order. Empty when the uri has
@@ -918,13 +919,14 @@ impl Mode for LspDiagnosticsMode {
     /// hover popup pipeline. Global (buffer-agnostic) — registered
     /// once at boot; K.1.c scopes *where* `gl` fires.
     fn action_handlers(&self) -> Vec<ActionHandlerContribution> {
-        let handler: ActionHandler = std::sync::Arc::new(|ctx: &ActionContext<'_>| -> Option<Effect> {
-            let query = ctx.services.get::<DiagnosticsQueryHandle>()?;
-            let diags = query.on_line(ctx.buffer_id, ctx.cursor.line);
-            Some(Effect::ShowDiagnosticsPopup {
-                lines: format_diagnostic_popup_lines(&diags),
-            })
-        });
+        let handler: ActionHandler =
+            std::sync::Arc::new(|ctx: &ActionContext<'_>| -> Option<Effect> {
+                let query = ctx.services.get::<DiagnosticsQueryHandle>()?;
+                let diags = query.on_line(ctx.buffer_id, ctx.cursor.line);
+                Some(Effect::ShowDiagnosticsPopup {
+                    lines: format_diagnostic_popup_lines(&diags),
+                })
+            });
         vec![ActionHandlerContribution {
             action_name: "action:lsp-diagnostic-popup",
             handler,
@@ -1257,8 +1259,14 @@ mod tests {
     ) -> crate::Diagnostic {
         crate::Diagnostic {
             range: crate::lsp_types::Range {
-                start: crate::lsp_types::Position { line: 0, character: 0 },
-                end: crate::lsp_types::Position { line: 0, character: 1 },
+                start: crate::lsp_types::Position {
+                    line: 0,
+                    character: 0,
+                },
+                end: crate::lsp_types::Position {
+                    line: 0,
+                    character: 1,
+                },
             },
             severity: Some(sev),
             code: code.map(|c| crate::lsp_types::NumberOrString::String(c.to_string())),
@@ -1334,13 +1342,25 @@ mod tests {
         let loc = Location {
             uri: Uri::from_str("file:///x.rs").unwrap(),
             range: Range {
-                start: Position { line: 0, character: 0 },
-                end: Position { line: 0, character: 0 },
+                start: Position {
+                    line: 0,
+                    character: 0,
+                },
+                end: Position {
+                    line: 0,
+                    character: 0,
+                },
             },
         };
         d.related_information = Some(vec![
-            DiagnosticRelatedInformation { location: loc.clone(), message: "a".into() },
-            DiagnosticRelatedInformation { location: loc, message: "b".into() },
+            DiagnosticRelatedInformation {
+                location: loc.clone(),
+                message: "a".into(),
+            },
+            DiagnosticRelatedInformation {
+                location: loc,
+                message: "b".into(),
+            },
         ]);
         let lines = format_diagnostic_popup_lines(&[d]);
         assert!(lines[0].0.contains("(+2 related)"), "got {:?}", lines[0]);

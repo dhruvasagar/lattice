@@ -1,0 +1,83 @@
+//! BC.3b: the crate-owned `install(boot)` entry point.
+//!
+//! Boot-composition collapses claude-code's five formerly-scattered
+//! `editor_boot` sites (server spawn, ex-command registration, mode
+//! registration, the `ClaudeCodeServerHandle` service register, and the late
+//! `install_services` read/write wiring) into this single call against the
+//! generic [`SubsystemBoot`] surface. Called by the unified
+//! `lattice_ai::install` (the AG‑4 fold), so the host's Phase-B install list
+//! holds one line — `lattice_ai::install(&mut boot)` — and zero host internals
+//! (no `Editor::` method, no host `Effect`/`Action` variant): mode-ownership,
+//! and the property that keeps host churn flat as modes scale.
+
+use lattice_mode::SubsystemBoot;
+
+use lattice_agent::{EditorWriteRequest, make_handler};
+
+use crate::mcp::server::{self, ClaudeCodeServerHandle, ServerConfig};
+use crate::mcp::{commands, lockfile, modes};
+
+/// Wire the Claude Code IDE peer into the editor at boot.
+pub fn install(boot: &mut impl SubsystemBoot) {
+    // Spawn the IDE server supervisor (idle until `:claude-code-start`), reusing
+    // the shared async runtime + the generic event bus (the read cache
+    // subscribes to DocumentOpened/Closed/SelectionsChanged on it).
+    let handle = server::spawn(
+        default_config(),
+        boot.event_bus().clone(),
+        boot.runtime_handle(),
+    );
+
+    // `:claude-code-start` / `:claude-code-stop` (crate-owned ex-commands whose
+    // `apply` drives the handle directly) + `claude-code-mode`.
+    commands::register_claude_code_ex_commands(boot.commands_mut(), handle.clone());
+    modes::register_claude_code_modes(boot.modes_mut());
+    // I7 note: the `claude-code` modeline descriptor is registered lazily in
+    // `claude-code-mode::on_activate` (idempotent, last-write-wins), NOT here —
+    // this `install` runs in Phase B before the host registers the
+    // `ModelineServiceHandle` service, so the service isn't readable yet. By the
+    // time the mode activates (runtime) it is.
+
+    // I2 read tools: the generic buffer-store (trait accessor) + the LSP
+    // diagnostics handle (reached via the generic service lookup, so this crate
+    // needs no lattice-lsp accessor on the trait; the host registered it as a
+    // Phase-A service).
+    let buffer_store = Some(boot.buffer_store().clone());
+    let diagnostics = boot
+        .service::<lattice_lsp::modes::DiagnosticsQueryHandle>()
+        .map(|h| (*h).clone());
+
+    // I3 write tools: the generic inbound bus. `send` wakes the actor
+    // off-keystroke; the per-tick drain runs `make_handler` (maps each request
+    // to an `Effect` + resolves its oneshot). The drain's registration token
+    // rides `boot.into_registrations()` into the Editor for the program
+    // lifetime.
+    let writes = boot.inbound::<EditorWriteRequest, _>(make_handler(handle.read_cache()));
+
+    // I4 openDiff: the host registered the programmatic-diff bus (the openDiff
+    // producer side) as a Phase-A service so this crate names no host internals.
+    // Read it; `None` if absent → `openDiff` reports a graceful "not
+    // initialized". The host owns the matching receiver + drains it (the open is
+    // irreducibly `&mut Editor` + lattice-diff types).
+    let diff = boot
+        .service::<lattice_diff::ProgrammaticDiffBus>()
+        .map(|h| (*h).clone());
+
+    handle.install_services(buffer_store, diagnostics, writes, diff);
+
+    // Expose the handle so `claude-code-mode`'s `on_activate` (I5) reaches it.
+    boot.register_service::<ClaudeCodeServerHandle>(handle);
+}
+
+/// The default server config: workspace = cwd, lockfile dir = `~/.claude/ide`
+/// (temp-dir fallback). Built here so the host never names claude's config
+/// shape — adding/owning this is the crate's concern, not `editor_boot`'s.
+fn default_config() -> ServerConfig {
+    ServerConfig {
+        workspace_folders: std::env::current_dir()
+            .ok()
+            .map(|p| vec![p.display().to_string()])
+            .unwrap_or_default(),
+        lock_dir: lockfile::default_lock_dir().unwrap_or_else(std::env::temp_dir),
+    }
+}

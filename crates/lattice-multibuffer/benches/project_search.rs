@@ -36,12 +36,7 @@ impl BufferStore for StubBufferStore {
     fn find_by_name(&self, _name: &str) -> Option<BufferId> {
         None
     }
-    fn ensure_named_document(
-        &self,
-        _name: &str,
-        _major: ModeId,
-        _flags: BufferFlags,
-    ) -> BufferId {
+    fn ensure_named_document(&self, _name: &str, _major: ModeId, _flags: BufferFlags) -> BufferId {
         BufferId(0)
     }
     fn name_for(&self, _id: BufferId) -> Option<String> {
@@ -68,10 +63,8 @@ struct BenchActivator {
 impl BenchActivator {
     fn new(bus: Arc<EventBus>) -> Self {
         let stub_store: Arc<dyn BufferStore> = Arc::new(StubBufferStore::default());
-        let mb_registry: MultibufferRegistryHandle =
-            Arc::new(InMemoryMultibufferRegistry::new());
-        let search_svc: ProjectSearchServiceHandle =
-            Arc::new(InMemoryProjectSearchService::new());
+        let mb_registry: MultibufferRegistryHandle = Arc::new(InMemoryMultibufferRegistry::new());
+        let search_svc: ProjectSearchServiceHandle = Arc::new(InMemoryProjectSearchService::new());
         let mut services = ServiceRegistry::new();
         services.register(BufferStoreHandle::new(stub_store));
         services.register(mb_registry);

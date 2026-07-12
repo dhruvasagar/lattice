@@ -1,0 +1,30 @@
+[package]
+name = "lattice-agent"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+lattice-protocol = { path = "../lattice-protocol" }
+lattice-core = { path = "../lattice-core" }
+lattice-runtime = { path = "../lattice-runtime" }
+lattice-grammar = { path = "../lattice-grammar" }
+lattice-diff = { path = "../lattice-diff" }
+lattice-mode = { path = "../lattice-mode" }
+lattice-config = { path = "../lattice-config" }
+# `log/ai_log.rs`'s `register_event!(AiLogPushed, ...)` expands to a
+# `#[linkme::distributed_slice(...)]` static -- same mechanism
+# `lattice-lsp` / `lattice-config` use for their registries. The macro
+# expansion refers to `linkme` by bare path, so it must be a direct
+# dependency of this crate (not routed through a re-export).
+linkme = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true, features = ["sync", "rt", "macros", "time"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "time", "macros", "rt"] }
+
+[lints]
+workspace = true

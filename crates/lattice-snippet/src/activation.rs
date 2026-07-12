@@ -184,7 +184,10 @@ mod tests {
 
     #[test]
     fn activation_mode_default_is_global() {
-        assert_eq!(SnippetActivationMode::default(), SnippetActivationMode::Global);
+        assert_eq!(
+            SnippetActivationMode::default(),
+            SnippetActivationMode::Global
+        );
     }
 
     #[test]
@@ -225,10 +228,7 @@ mod tests {
             fold_activation_policy(SnippetActivationMode::SupportedLanguages, "rust, python ,");
         assert_eq!(
             policy,
-            ActivationPolicy::Majors(vec![
-                ModeId::new("rust-mode"),
-                ModeId::new("python-mode"),
-            ]),
+            ActivationPolicy::Majors(vec![ModeId::new("rust-mode"), ModeId::new("python-mode"),]),
             "trims whitespace + drops empty segments; appends `-mode`"
         );
     }

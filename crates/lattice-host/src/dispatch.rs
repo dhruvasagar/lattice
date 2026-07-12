@@ -379,6 +379,11 @@ impl Editor {
             self.cancel_position_anchored_lsp_requests();
         }
 
+        // OWC: write through — keep the active document's selections
+        // in sync with `Editor::cursor` so the next owner-write
+        // transform uses the correct base position.
+        self.write_through_caret();
+
         // Phase 5.8.AF.5 / Slice 3a: publish the renderer's read
         // contract at the end of every dispatch. Naive rebuild
         // (every sub-state Arc is fresh); sub-states 3b/3c
@@ -486,6 +491,11 @@ impl Editor {
             .lock()
             .expect("publish_cache mutex poisoned")
             .publish_batch_depth += 1;
+        // OWC: adopt any owner-write position change before processing
+        // this keystroke. The document's selections were transformed
+        // in-core when the owner write applied; the host now picks up
+        // the result.
+        self.maybe_adopt_owner_write();
         let outcome = self.dispatch(action);
         let can_fuse = !outcome.consumed
             && outcome.effects.is_empty()
@@ -662,14 +672,7 @@ impl Editor {
             self.buffers.version().hash(&mut h);
             h.finish()
         };
-        let (
-            panes_arc,
-            modes_arc,
-            buffer_locals_arc,
-            buffers_arc,
-            tabs_arc,
-            resolved_opts_arc,
-        ) = {
+        let (panes_arc, modes_arc, buffer_locals_arc, buffers_arc, tabs_arc, resolved_opts_arc) = {
             let mut cache = self
                 .publish_cache
                 .lock()
@@ -861,142 +864,144 @@ impl Editor {
             // clone is one Arc bump (rope is Arc-backed).
             active_document: std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(
                 ActiveDocumentRenderState {
-                buffer_kind: self.active_buffer,
-                document_buffer_id: self.document_buffer_id,
-                active_pane_buffer_id: self.active_pane_buffer_id(),
-                cursor: self.cursor,
-                scroll: self.scroll,
-                leftcol: self.leftcol,
-                viewport_height: self.viewport_height,
-                modal: self.modal,
-                visual_anchor: self.visual_anchor,
-                snapshot: self.document.snapshot(),
-                // Slice 3c.atomic.J: mirror translator-context
-                // fields so `runtime.rs` can build
-                // `TranslateContext` from the published snapshot
-                // instead of reading `app.editor.X` per keystroke.
-                pending_count: self.pending_count,
-                op_count: self.op_count,
-                macro_recording: self.macro_recording.is_some(),
-                completion_open: self.completion_state.is_some(),
-                picker_open: self.picker.is_some(),
-                chord_capture: self.chord_capture_active(),
-                snippet_active: self.snippet_session.is_active(self.document_buffer_id),
-                // Terminal-mode T2.a: published so the translate
-                // layer can build TranslateContext from the
-                // snapshot without reaching into active_modes.
-                terminal_insert_active: matches!(self.active_buffer, BufferKind::Terminal)
-                    && self
-                        .active_modes
-                        .get(&self.active_pane_buffer_id())
-                        .map(|m| m.is_active(lattice_terminal::TerminalInsertMode::mode_id()))
-                        .unwrap_or(false),
-                // Terminal-mode T2.b.0: published so translate
-                // can branch on the option without reaching into
-                // `editor.config` per keystroke. Read off the
-                // hot-path option cache (rebuilt by
-                // `rebuild_option_cache` whenever the option
-                // changes) so test fixtures using
-                // `Editor::default()` get the hardcoded fallback
-                // without panicking on an unregistered lookup.
-                // [[feedback_buffers_no_special_case]] —
-                // published uniformly regardless of buffer kind.
-                terminal_esc_exits: self.option_cache.terminal_esc_exits,
-                // Terminal-mode T3.b.2: derived from the active
-                // pane's buffer registry entry. Renderers and
-                // the modeline label key off this rather than
-                // reaching into the registry per frame.
-                terminal_visual_active: matches!(self.active_buffer, BufferKind::Terminal)
-                    && self
-                        .buffers
-                        .with_terminal(self.active_pane_buffer_id(), |t| t.visual.is_some())
-                        .unwrap_or(false),
-                // Terminal-mode T2.c: DECCKM bit from the active
-                // terminal's alacritty Term, snapshot'd so
-                // translate can read it without locking per
-                // keystroke. Sticks at `false` on non-Terminal
-                // buffers (irrelevant there).
-                terminal_app_cursor_keys: matches!(self.active_buffer, BufferKind::Terminal)
-                    && self
-                        .buffers
-                        .with_terminal(self.active_pane_buffer_id(), |t| {
-                            t.term.cursor_keys_application_mode()
-                        })
-                        .unwrap_or(false),
-                // Terminal-mode T2.c: <C-\> arming flag for the
-                // two-key exit chord.
-                terminal_insert_exit_pending: matches!(self.active_buffer, BufferKind::Terminal)
-                    && self
+                    buffer_kind: self.active_buffer,
+                    document_buffer_id: self.document_buffer_id,
+                    active_pane_buffer_id: self.active_pane_buffer_id(),
+                    cursor: self.cursor,
+                    scroll: self.scroll,
+                    leftcol: self.leftcol,
+                    viewport_height: self.viewport_height,
+                    modal: self.modal,
+                    visual_anchor: self.visual_anchor,
+                    snapshot: self.document.snapshot(),
+                    // Slice 3c.atomic.J: mirror translator-context
+                    // fields so `runtime.rs` can build
+                    // `TranslateContext` from the published snapshot
+                    // instead of reading `app.editor.X` per keystroke.
+                    pending_count: self.pending_count,
+                    op_count: self.op_count,
+                    macro_recording: self.macro_recording.is_some(),
+                    completion_open: self.completion_state.is_some(),
+                    picker_open: self.picker.is_some(),
+                    chord_capture: self.chord_capture_active(),
+                    snippet_active: self.snippet_session.is_active(self.document_buffer_id),
+                    // Terminal-mode T2.a: published so the translate
+                    // layer can build TranslateContext from the
+                    // snapshot without reaching into active_modes.
+                    terminal_insert_active: matches!(self.active_buffer, BufferKind::Terminal)
+                        && self
+                            .active_modes
+                            .get(&self.active_pane_buffer_id())
+                            .map(|m| m.is_active(lattice_terminal::TerminalInsertMode::mode_id()))
+                            .unwrap_or(false),
+                    // Terminal-mode T2.b.0: published so translate
+                    // can branch on the option without reaching into
+                    // `editor.config` per keystroke. Read off the
+                    // hot-path option cache (rebuilt by
+                    // `rebuild_option_cache` whenever the option
+                    // changes) so test fixtures using
+                    // `Editor::default()` get the hardcoded fallback
+                    // without panicking on an unregistered lookup.
+                    // [[feedback_buffers_no_special_case]] —
+                    // published uniformly regardless of buffer kind.
+                    terminal_esc_exits: self.option_cache.terminal_esc_exits,
+                    // Terminal-mode T3.b.2: derived from the active
+                    // pane's buffer registry entry. Renderers and
+                    // the modeline label key off this rather than
+                    // reaching into the registry per frame.
+                    terminal_visual_active: matches!(self.active_buffer, BufferKind::Terminal)
+                        && self
+                            .buffers
+                            .with_terminal(self.active_pane_buffer_id(), |t| t.visual.is_some())
+                            .unwrap_or(false),
+                    // Terminal-mode T2.c: DECCKM bit from the active
+                    // terminal's alacritty Term, snapshot'd so
+                    // translate can read it without locking per
+                    // keystroke. Sticks at `false` on non-Terminal
+                    // buffers (irrelevant there).
+                    terminal_app_cursor_keys: matches!(self.active_buffer, BufferKind::Terminal)
+                        && self
+                            .buffers
+                            .with_terminal(self.active_pane_buffer_id(), |t| {
+                                t.term.cursor_keys_application_mode()
+                            })
+                            .unwrap_or(false),
+                    // Terminal-mode T2.c: <C-\> arming flag for the
+                    // two-key exit chord.
+                    terminal_insert_exit_pending: matches!(
+                        self.active_buffer,
+                        BufferKind::Terminal
+                    ) && self
                         .buffers
                         .with_terminal(self.active_pane_buffer_id(), |t| t.insert_exit_pending)
                         .unwrap_or(false),
-                // 2026-05-25: surface the program basename on the
-                // modeline. Empty string when the active buffer
-                // isn't a terminal — the renderer keys off this
-                // and the `terminal_*_active` flags together so
-                // the per-frame branch stays kind-agnostic.
-                terminal_program_name: if matches!(self.active_buffer, BufferKind::Terminal) {
-                    self.buffers
-                        .with_terminal(self.active_pane_buffer_id(), |t| {
-                            std::sync::Arc::<str>::from(t.program_name.as_str())
-                        })
-                        .unwrap_or_else(|| std::sync::Arc::from(""))
-                } else {
-                    std::sync::Arc::from("")
-                },
-                // T-clean-1 Phase A.1 (2026-05-28): publisher
-                // derives the renderer-consumed cursor + visual
-                // from `self.cursor` (doc-space) + the buffer's
-                // `synthetic.origin_top_line`. Phase A.3
-                // (2026-05-28): publisher ALSO writes back to
-                // `t.nav_cursor` so the bespoke buffer field
-                // stays in sync as a renderer-convenience cache
-                // — motion paths stop writing it explicitly
-                // (single writer = publisher).
-                terminal_nav_cursor: if matches!(self.active_buffer, BufferKind::Terminal) {
-                    let cur = self.cursor;
-                    self.buffers
-                        .with_terminal_mut(self.active_pane_buffer_id(), |t| {
-                            let nav = t.synthetic.as_ref().map(|s| {
-                                let grid_line = s.origin_top_line + cur.line as i32;
-                                let grid_col = cur.byte as u16;
-                                (grid_line, grid_col)
-                            });
-                            t.nav_cursor = nav;
-                            nav
-                        })
-                        .flatten()
-                } else {
-                    None
-                },
-                terminal_visual: if matches!(self.active_buffer, BufferKind::Terminal) {
-                    self.buffers
-                        .with_terminal(self.active_pane_buffer_id(), |t| t.visual)
-                        .flatten()
-                } else {
-                    None
-                },
-                // Slice 3c.final.B (group 2): active-document
-                // decoration fields. Renderers read these
-                // through the published snapshot instead of
-                // `app.editor.X` directly.
-                folds: std::sync::Arc::from(self.folds.clone().into_boxed_slice()),
-                all_matches: std::sync::Arc::from(self.all_matches.clone().into_boxed_slice()),
-                current_match: self.current_match,
-                visual_range: self.visual_selection_range(),
-                visual_block_extents: self.visual_block_extents(),
-                substitute_preview: self.substitute_preview.clone().map(std::sync::Arc::new),
-                selections: self.document.selections(),
-                option_cache: self.option_cache,
-                // K.4.6 follow-up (2026-06-02): publish the
-                // composed→source row map for the gutter. None
-                // for regular Documents (gutter uses composed-row
-                // identity = source line), Some(arr) for
-                // Multibuffer (arr[composed_row] = source line in
-                // the originating file). Substrate-aligned via
-                // the Document trait method; no kind branch
-                // here.
-                display_line_numbers: self.document.display_line_numbers(),
+                    // 2026-05-25: surface the program basename on the
+                    // modeline. Empty string when the active buffer
+                    // isn't a terminal — the renderer keys off this
+                    // and the `terminal_*_active` flags together so
+                    // the per-frame branch stays kind-agnostic.
+                    terminal_program_name: if matches!(self.active_buffer, BufferKind::Terminal) {
+                        self.buffers
+                            .with_terminal(self.active_pane_buffer_id(), |t| {
+                                std::sync::Arc::<str>::from(t.program_name.as_str())
+                            })
+                            .unwrap_or_else(|| std::sync::Arc::from(""))
+                    } else {
+                        std::sync::Arc::from("")
+                    },
+                    // T-clean-1 Phase A.1 (2026-05-28): publisher
+                    // derives the renderer-consumed cursor + visual
+                    // from `self.cursor` (doc-space) + the buffer's
+                    // `synthetic.origin_top_line`. Phase A.3
+                    // (2026-05-28): publisher ALSO writes back to
+                    // `t.nav_cursor` so the bespoke buffer field
+                    // stays in sync as a renderer-convenience cache
+                    // — motion paths stop writing it explicitly
+                    // (single writer = publisher).
+                    terminal_nav_cursor: if matches!(self.active_buffer, BufferKind::Terminal) {
+                        let cur = self.cursor;
+                        self.buffers
+                            .with_terminal_mut(self.active_pane_buffer_id(), |t| {
+                                let nav = t.synthetic.as_ref().map(|s| {
+                                    let grid_line = s.origin_top_line + cur.line as i32;
+                                    let grid_col = cur.byte as u16;
+                                    (grid_line, grid_col)
+                                });
+                                t.nav_cursor = nav;
+                                nav
+                            })
+                            .flatten()
+                    } else {
+                        None
+                    },
+                    terminal_visual: if matches!(self.active_buffer, BufferKind::Terminal) {
+                        self.buffers
+                            .with_terminal(self.active_pane_buffer_id(), |t| t.visual)
+                            .flatten()
+                    } else {
+                        None
+                    },
+                    // Slice 3c.final.B (group 2): active-document
+                    // decoration fields. Renderers read these
+                    // through the published snapshot instead of
+                    // `app.editor.X` directly.
+                    folds: std::sync::Arc::from(self.folds.clone().into_boxed_slice()),
+                    all_matches: std::sync::Arc::from(self.all_matches.clone().into_boxed_slice()),
+                    current_match: self.current_match,
+                    visual_range: self.visual_selection_range(),
+                    visual_block_extents: self.visual_block_extents(),
+                    substitute_preview: self.substitute_preview.clone().map(std::sync::Arc::new),
+                    selections: self.document.selections(),
+                    option_cache: self.option_cache,
+                    // K.4.6 follow-up (2026-06-02): publish the
+                    // composed→source row map for the gutter. None
+                    // for regular Documents (gutter uses composed-row
+                    // identity = source line), Some(arr) for
+                    // Multibuffer (arr[composed_row] = source line in
+                    // the originating file). Substrate-aligned via
+                    // the Document trait method; no kind branch
+                    // here.
+                    display_line_numbers: self.document.display_line_numbers(),
                 },
             )),
             // Slice 3c.final.B (group 5): translator inputs.
@@ -1007,21 +1012,23 @@ impl Editor {
                 builtins: self.builtins,
                 keymap: self.keymap.clone(),
                 partial_chord: std::sync::Arc::from(self.partial_chord.clone().into_boxed_slice()),
-                // D.5.b: per-publish snapshot of the active
-                // buffer's minor-mode set. K.1.c's
-                // `lookup_with_context` reads this so chord
-                // bindings registered against
-                // `MinorMode(ModeId)` layers (D.5.b's
-                // `diff-mode`, future per-mode bindings) only
-                // fire on buffers where the mode is in
-                // `ActiveModes.minors()`. Empty when no
-                // ActiveModes entry exists for the active
-                // buffer (mid-boot / read-only synthetic
-                // buffers without minors).
+                // Per-publish snapshot of the active buffer's
+                // keymap-gated mode set: the active major first,
+                // then the minors in activation order.
+                // `lookup_with_context` reads this so chord bindings
+                // registered against `MajorMode(ModeId)` and
+                // `MinorMode(ModeId)` layers only fire on buffers
+                // where that mode is active. The major MUST be
+                // included — it was omitted historically (this held
+                // only `minors()`), which left major-mode chords
+                // ungated: `ai-conversation`'s `i` → focus-prompt
+                // fired in every buffer (the dashboard-jumps-to-EOF
+                // regression). Empty when no ActiveModes entry
+                // exists for the active buffer (mid-boot).
                 active_minor_modes: self
                     .active_modes
                     .get(&self.document_buffer_id)
-                    .map(|am| std::sync::Arc::from(am.minors().to_vec().into_boxed_slice()))
+                    .map(|am| std::sync::Arc::from(am.keymap_gated_ids().into_boxed_slice()))
                     .unwrap_or_else(|| std::sync::Arc::from(Vec::new().into_boxed_slice())),
             }),
             // Slice 3c.final.B (group 6): lifecycle flags + theme.
@@ -1732,11 +1739,7 @@ impl Editor {
             ids: &next_cells.theme_ids,
         };
         for pane in next_cells.panes.iter() {
-            crate::cells_worker::sync_rebuild_pane_on_edit(
-                pane,
-                next_ct,
-                &next_cells.whitespace,
-            );
+            crate::cells_worker::sync_rebuild_pane_on_edit(pane, next_ct, &next_cells.whitespace);
         }
         // §12 paint gate: capture the revision before `next` is moved
         // into the ArcSwap, then compare against the last real publish
@@ -1892,6 +1895,15 @@ pub fn action_is_document_mutation(action: &Action) -> bool {
             | Action::OpenAllFolds
             | Action::CloseAllFolds
             | Action::DeleteFoldAtCursor
+            // PIC.2: the org-cycle fold ops (`z<Space>` / `z<Tab>`) were
+            // absent here, so they skipped the read-only-help guard and
+            // their handlers mutated `self.folds` — a hot-slot keyed to
+            // `document_buffer_id` (the buffer BEHIND a focused popup),
+            // never swapped for the popup. Grouped with the sibling fold
+            // mutations so a read-only Help / Dashboard buffer consumes
+            // them like `zo` / `zc` / `za`.
+            | Action::CycleFoldAtCursor
+            | Action::CycleFoldsGlobal
             | Action::RepeatLastChange
             | Action::StartMacroRecord(_)
             | Action::StopMacroRecord
@@ -1912,6 +1924,48 @@ pub fn action_is_document_mutation(action: &Action) -> bool {
             | Action::WalkMarkHistoryForward
             | Action::GotoNextFold
             | Action::GotoPrevFold
+    )
+}
+
+/// PIC.2: actions that escape / reconfigure the world BEHIND a focused
+/// popup overlay — tab navigation and pane-tree management. A focused
+/// popup (State B) is an exclusive overlay surface, not a pane you can
+/// navigate away from; these chords are consumed while it holds focus so
+/// a stray `gt` / `<C-w>…` doesn't refocus or reshape the buffer behind
+/// it (and, for `gt`, drag the single-slot popup overlay onto the new
+/// tab). Motions / scroll / search / dismiss / follow-link are NOT here —
+/// they keep operating on the popup's own cursor.
+///
+/// Denylist rather than a popup-safe whitelist because motions/scroll
+/// dispatch via `Action::Invoke(grammar)` (opaque here), so the
+/// enumerable set is the escaping actions; everything else flows through
+/// onto the popup, matching the "only popup-meaningful keys act" intent.
+pub fn action_escapes_focused_popup(action: &Action) -> bool {
+    matches!(
+        action,
+        // Pane tree / window management.
+        Action::SplitPaneHorizontal
+            | Action::SplitPaneVertical
+            | Action::ClosePane
+            | Action::OnlyPane
+            | Action::NavigatePane(_)
+            | Action::NextPane
+            | Action::PrevPane
+            | Action::MovePaneToNewTab
+            | Action::EqualizePanes
+            | Action::GrowPaneHeight
+            | Action::ShrinkPaneHeight
+            | Action::GrowPaneWidth
+            | Action::ShrinkPaneWidth
+            // Tabs.
+            | Action::NextTab
+            | Action::PrevTab
+            | Action::GoToTab(_)
+            | Action::NewTab
+            | Action::NewTabAt(_)
+            | Action::CloseTab
+            | Action::OnlyTab
+            | Action::MoveTab(_)
     )
 }
 
@@ -2000,10 +2054,29 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
     // block. `_out.consumed` short-circuits the renderer's
     // post-dispatch match (App::apply); 5.5.G removes the field once
     // App's match collapses entirely.
-    if matches!(editor.active_buffer, BufferKind::Help) && action_is_document_mutation(&action) {
+    if matches!(
+        editor.active_buffer,
+        BufferKind::Help | BufferKind::Dashboard
+    ) && action_is_document_mutation(&action)
+    {
         editor.set_message(EchoLevel::Info, "buffer is read-only".to_string());
         editor.ensure_cursor_visible();
         editor.maybe_reparse_syntax();
+        _out.consumed = true;
+        return;
+    }
+    // PIC.2: a FOCUSED popup (State B — `active_buffer == Help` with the
+    // overlay slot set) is an exclusive focus surface. Tab / pane / window
+    // nav chords are consumed here so they don't act on the buffer BEHIND
+    // the overlay (and so `gt` can't drag the single-slot popup onto
+    // another tab). Gated on `popup_buffer.is_some()` so in-pane Help and
+    // Dashboard — which are real panes you legitimately navigate away
+    // from — keep normal tab/pane navigation. Silent consume: `gt` in a
+    // popup has no sensible meaning, so it just no-ops.
+    if matches!(editor.active_buffer, BufferKind::Help)
+        && editor.popup_buffer.is_some()
+        && action_escapes_focused_popup(&action)
+    {
         _out.consumed = true;
         return;
     }
@@ -2021,10 +2094,7 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
     //
     // goal_col (gj/gk sticky column): preserve only across
     // display-line vertical moves; any other action resets it.
-    if !matches!(
-        action,
-        Action::DisplayLineDown | Action::DisplayLineUp
-    ) {
+    if !matches!(action, Action::DisplayLineDown | Action::DisplayLineUp) {
         editor.goal_col = None;
     }
     match action {
@@ -2214,6 +2284,7 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         Action::OverwriteChar(c) => editor.do_overwrite_char(c),
         Action::ReplaceUndoLast => editor.do_replace_undo_last(),
         Action::DeleteCharBackward => editor.do_delete_char_backward(),
+        Action::InsertLineEdit(kind) => editor.do_insert_line_edit(kind),
         // 5.5.G.4: pure-editor scroll / viewport / page / bracket
         // / redraw arms. Bodies migrated to [`Editor`].
         Action::JumpViewport(vp) => editor.do_jump_viewport(vp),
@@ -3976,9 +4047,11 @@ impl Editor {
             .diff_subsystem
             .session_participants(session_key)
             .unwrap_or_default();
-        self.diff_subsystem
-            .mode_bridge()
-            .note_conflict_state(session_key, &participants, has_conflicts);
+        self.diff_subsystem.mode_bridge().note_conflict_state(
+            session_key,
+            &participants,
+            has_conflicts,
+        );
     }
 
     /// D.3.a.1 / D.4.d.3.a / D.6.g / **D.8.f (2026-05-31)** —
@@ -4044,7 +4117,11 @@ impl Editor {
     /// `Accept` signal on the channel.
     pub fn do_diff_accept(&mut self) {
         // accept = single-session teardown (`force = false`).
-        self.resolve_diff_verdict(false, crate::diff::subsystem::DiffOutcome::Accept, "Diff accepted");
+        self.resolve_diff_verdict(
+            false,
+            crate::diff::subsystem::DiffOutcome::Accept,
+            "Diff accepted",
+        );
     }
 
     /// D.6.e (2026-05-31): resolve the active pane's diff
@@ -4052,7 +4129,11 @@ impl Editor {
     /// equivalent to `:diffoff!` + signal Reject.
     pub fn do_diff_reject(&mut self) {
         // reject = force-cascade teardown (`force = true`, `:diffoff!` semantics).
-        self.resolve_diff_verdict(true, crate::diff::subsystem::DiffOutcome::Reject, "Diff rejected");
+        self.resolve_diff_verdict(
+            true,
+            crate::diff::subsystem::DiffOutcome::Reject,
+            "Diff rejected",
+        );
     }
 
     /// D-fix (registry-backed verdict): resolve a `:diff-accept` / `:diff-reject`
@@ -4109,7 +4190,10 @@ impl Editor {
         // No pending review — treat accept/reject as a close of the FOCUSED
         // diff view (`:diffsplit` / `:Gdiff`), preserving the historical force
         // semantics. No-op `finish_programmatic_diff_panes` (not programmatic).
-        if let Some(session) = self.diff_subsystem.lookup_session_for(self.document_buffer_id) {
+        if let Some(session) = self
+            .diff_subsystem
+            .lookup_session_for(self.document_buffer_id)
+        {
             let primary = session.buffer_id();
             self.tear_down_active_diff_session(force, Some(outcome), ok_message);
             self.finish_programmatic_diff_panes(primary);
@@ -4387,7 +4471,10 @@ impl Editor {
                     if let Err(e) = std::fs::write(&save_path, handle.text()) {
                         self.set_message(
                             EchoLevel::Error,
-                            format!("openDiff accept: failed to write {}: {e}", save_path.display()),
+                            format!(
+                                "openDiff accept: failed to write {}: {e}",
+                                save_path.display()
+                            ),
                         );
                     }
                 }
@@ -6075,19 +6162,25 @@ impl Editor {
         self.popup_doc_scroll_at_anchor = 0;
         // Restore pre-popup state if focus had moved into it
         // (State B for hover; in-pane mode for `:lsp-log` etc.).
-        // State A (popup shown but never focused) leaves
-        // `prev_pane_for_help` as `None` -- nothing to restore;
-        // active was never flipped to Help.
-        if let Some(prev) = self.prev_pane_for_help.take() {
+        if let Some(prev) = self.prev_pane_for_popup.take() {
             self.cursor = prev.cursor;
             self.scroll = prev.scroll;
             let pane = self.pane_tree.active_mut();
             pane.buffer = prev.buffer;
             pane.buffer_id = prev.buffer_id;
             self.active_buffer = prev.buffer;
-        } else {
-            self.active_buffer = BufferKind::Document;
+            // PU-A.1b: restore the modal state a focus-stealing popup
+            // normalized to Normal on open — a user mid-Insert returns to
+            // their prompt in Insert. Passive floats leave prev None (they
+            // never touched modal), so this block is skipped for them.
+            self.modal = prev.modal;
         }
+        // PU-A.1a: State A (popup shown but never focused) leaves
+        // `prev_pane_for_popup` as `None`. `active_buffer` was never
+        // flipped to Help, so it still holds the underlying buffer's
+        // kind — leave it untouched. The old `else { active_buffer =
+        // Document }` clobbered a floating popup opened over oil /
+        // file-tree / dashboard back to Document (popup-api.md §5).
     }
 
     /// Tear down the registry / mode / option-cache state for the
@@ -6103,6 +6196,7 @@ impl Editor {
         self.active_modes.remove(&prev);
         self.buffer_locals.remove(&prev);
         self.resolved_options.remove(&prev);
+        self.on_disk_fingerprints.remove(&prev);
     }
 
     /// Mode-owned syntax handle for `id`. For the active document
@@ -6138,6 +6232,250 @@ impl Editor {
     /// read.
     pub fn lsp_folding_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
         self.minor_mode_enabled_for(buffer_id, lattice_lsp::modes::LspFoldingMode::mode_id())
+    }
+
+    /// AR.1: whether external-change autoread is enabled for `buffer_id`,
+    /// resolving the per-buffer `autoread` option (default `true`). The
+    /// autoread watcher (AR.3) reads this to decide whether to watch the
+    /// buffer's file. Non-file buffers are excluded upstream by having no
+    /// on-disk path, not by this flag. See
+    /// `docs/dev/architecture/autoread.md`.
+    pub fn autoread_enabled_for(&self, buffer_id: BufferId) -> bool {
+        *self.resolved_option::<lattice_config::core_options::Autoread>(buffer_id)
+    }
+
+    /// AR.3: the parent-dir → basenames set the autoread watcher should
+    /// hold, built from open file-backed buffers with `autoread` on, deduped
+    /// by directory. Cost scales with OPEN BUFFERS, never project size — the
+    /// property that makes autoread scale-invariant (`autoread.md` §3). The
+    /// dir count is bounded by [`AUTOREAD_WATCH_DIR_CAP`]; excess dirs drop
+    /// to the on-activate `stat` fallback (AR.4). Dirs are left un-canonical
+    /// here — the watcher task canonicalizes its keys.
+    fn desired_autoread_watches(
+        &self,
+    ) -> std::collections::HashMap<std::path::PathBuf, std::collections::HashSet<String>> {
+        let mut watches: std::collections::HashMap<
+            std::path::PathBuf,
+            std::collections::HashSet<String>,
+        > = std::collections::HashMap::new();
+        for id in self.buffers.document_ids_sorted() {
+            if !self.autoread_enabled_for(id) {
+                continue;
+            }
+            let Some(path) = self.buffers.document_path(id) else {
+                continue;
+            };
+            let (Some(parent), Some(name)) =
+                (path.parent(), path.file_name().and_then(|n| n.to_str()))
+            else {
+                continue;
+            };
+            watches
+                .entry(parent.to_path_buf())
+                .or_default()
+                .insert(name.to_string());
+        }
+        let active_dir = self
+            .document
+            .path()
+            .and_then(|p| p.parent().map(std::path::Path::to_path_buf));
+        bound_watch_set(watches, active_dir.as_deref(), AUTOREAD_WATCH_DIR_CAP)
+    }
+
+    /// AR.3: recompute the desired autoread watch set and, if it changed,
+    /// push it to the watcher task (spawning the task lazily on the first
+    /// file-backed `autoread` buffer, tearing it down when the last one
+    /// closes). A cheap order-independent fingerprint gate skips the
+    /// cmd-send when a buffer switch didn't change the set. Non-blocking:
+    /// no notify calls run on the renderer thread. Call on buffer
+    /// open / close / activate.
+    pub fn refresh_autoread_watcher(&mut self) {
+        let desired = self.desired_autoread_watches();
+        let fp = autoread_watch_fingerprint(&desired);
+        if self.autoread_watcher.is_some() && fp == self.autoread_watch_fingerprint {
+            return;
+        }
+        if desired.is_empty() {
+            if let Some(handle) = self.autoread_watcher.take() {
+                handle.shutdown();
+            }
+            self.autoread_changes = None;
+            self.autoread_watch_fingerprint = 0;
+            return;
+        }
+        if self.autoread_watcher.is_none() {
+            match crate::autoread::spawn_autoread_watcher_task() {
+                Ok((handle, rx)) => {
+                    self.autoread_watcher = Some(handle);
+                    self.autoread_changes = Some(rx);
+                }
+                Err(e) => {
+                    tracing::debug!(error = %e, "autoread: watcher spawn failed");
+                    return;
+                }
+            }
+        }
+        if let Some(handle) = self.autoread_watcher.as_ref() {
+            handle.sync(desired);
+        }
+        self.autoread_watch_fingerprint = fp;
+    }
+
+    /// AR.4: per-tick drain of the autoread change stream. Pulls every
+    /// pending `AutoreadChange` from the watcher task, records it against its
+    /// buffer, then applies the *active* buffer's change now (a background
+    /// buffer's change waits until it becomes active — vim's
+    /// checktime-on-`BufEnter`). Runs on the actor thread, so the reload's
+    /// file read is off the renderer thread (same as `:e`). Called from
+    /// [`Self::run_tick_pending`].
+    pub fn drain_autoread_changes(&mut self) -> Vec<RendererSignal> {
+        if let Some(mut rx) = self.autoread_changes.take() {
+            let mut changes = Vec::new();
+            while let Ok(change) = rx.try_recv() {
+                changes.push(change);
+            }
+            self.autoread_changes = Some(rx);
+            for change in changes {
+                if let Some(id) = self.find_document_by_canonical_path(&change.path) {
+                    self.autoread_pending.insert(id, change);
+                }
+            }
+        }
+        self.apply_pending_autoread_for_active()
+    }
+
+    /// Resolve a (canonical, watcher-emitted) path to an open document buffer.
+    /// Compares raw paths first, then canonical forms — stored buffer paths may
+    /// not be canonical, while the watcher always emits canonical paths.
+    fn find_document_by_canonical_path(&self, path: &std::path::Path) -> Option<BufferId> {
+        let canon = std::fs::canonicalize(path).ok();
+        self.buffers.document_ids_sorted().into_iter().find(|&id| {
+            self.buffers.document_path(id).is_some_and(|bp| {
+                bp == path || (canon.is_some() && std::fs::canonicalize(&bp).ok() == canon)
+            })
+        })
+    }
+
+    /// AR.4: apply the active buffer's pending external change (if any) per the
+    /// autoread policy: clean buffer ⇒ silent reload (cursor/scroll preserved);
+    /// dirty buffer ⇒ warn without clobbering (AR.5 replaces this with a diff
+    /// resolver); deleted-on-disk ⇒ keep the buffer, warn. Self-writes and
+    /// no-op touches are suppressed by the fingerprint gate before any reload.
+    fn apply_pending_autoread_for_active(&mut self) -> Vec<RendererSignal> {
+        let id = self.document_buffer_id;
+        let Some(change) = self.autoread_pending.remove(&id) else {
+            return Vec::new();
+        };
+        if !self.autoread_enabled_for(id) {
+            return Vec::new();
+        }
+        // A conflict resolver is already open for this buffer — stay hands-off
+        // until it's reloaded (`:e!`) or closed, so resolve-then-save can't loop.
+        if self.autoread_conflict_open.contains(&id) {
+            return Vec::new();
+        }
+        // Autoread only manages buffers it has a fingerprint for (loaded from or
+        // saved to disk). Excludes in-memory buffers — notably the diff
+        // resolver's own panes.
+        if !self.on_disk_fingerprints.contains_key(&id) {
+            return Vec::new();
+        }
+        if matches!(change.kind, crate::autoread::AutoreadChangeKind::Deleted)
+            && !change.path.exists()
+        {
+            self.set_message(
+                EchoLevel::Warn,
+                format!(
+                    "\"{}\" no longer available on disk (buffer kept)",
+                    change.path.display()
+                ),
+            );
+            return Vec::new();
+        }
+        // Cheap `(mtime, size)` pre-gate: an unchanged file (our own write, or
+        // a bare touch) short-circuits before any read.
+        if self
+            .on_disk_fingerprints
+            .get(&id)
+            .is_some_and(|fp| fp.stat_unchanged(&change.path))
+        {
+            return Vec::new();
+        }
+        let Ok(disk_text) = std::fs::read_to_string(&change.path) else {
+            // Vanished between event and read — treat as a delete.
+            self.set_message(
+                EchoLevel::Warn,
+                format!(
+                    "\"{}\" no longer available on disk (buffer kept)",
+                    change.path.display()
+                ),
+            );
+            return Vec::new();
+        };
+        // Precise gate: content identical to what we last synced ⇒ self-write /
+        // no-op, nothing to reload.
+        let disk_fp =
+            crate::autoread::OnDiskFingerprint::from_path_and_text(&change.path, &disk_text);
+        if self
+            .on_disk_fingerprints
+            .get(&id)
+            .is_some_and(|fp| fp.same_content(&disk_fp))
+        {
+            return Vec::new();
+        }
+        if self.buffers.document_dirty(id) {
+            // Conflict: on-disk changed AND the buffer has unsaved edits. Never
+            // clobber — open a diff resolver (disk vs ours) instead (AR.5).
+            return self.open_autoread_conflict_diff(id, &change.path);
+        }
+        // Clean reload — reuse the tested force-reload path (preserves
+        // cursor + scroll, re-stamps the fingerprint, echoes "reloaded").
+        match self.do_edit(Some(change.path.clone()), true) {
+            DoEditOutcome::Reloaded(s) | DoEditOutcome::Opened(s) | DoEditOutcome::Activated(s) => {
+                s
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// AR.5: open a diff conflict resolver for buffer `id` — the on-disk file
+    /// changed while the buffer had unsaved edits. Left (read-only) = the
+    /// external on-disk content; right (editable) = our buffer's content;
+    /// Accept writes the reconciled right side back to `path`. Reuses the
+    /// `ProgrammaticDiffRequest` machinery (the same "open a diff, await a
+    /// verdict" primitive the IDE peer's openDiff uses); the verdict is
+    /// fire-and-forget for v1 — after resolving, the user reloads with `:e!`.
+    /// The buffer is flagged `autoread_conflict_open` so the drain won't
+    /// re-open or reload it until it's reloaded/closed.
+    fn open_autoread_conflict_diff(
+        &mut self,
+        id: BufferId,
+        path: &std::path::Path,
+    ) -> Vec<RendererSignal> {
+        let ours = self.document.text();
+        // v1: the user resolves + saves in the diff; the outcome isn't awaited,
+        // so drop the receiver (teardown's send then no-ops).
+        let (response, _rx) = tokio::sync::oneshot::channel();
+        let req = lattice_diff::ProgrammaticDiffRequest {
+            old_file_path: path.to_path_buf(),
+            new_file_path: path.to_path_buf(),
+            new_contents: ours,
+            tab_name: format!("autoread conflict: {}", path.display()),
+            origin_session: 0,
+            response,
+        };
+        self.autoread_conflict_open.insert(id);
+        // Open first, then set the message — `open_programmatic_diff` echoes
+        // its own, and the conflict explanation is what the user should see.
+        let signals = self.open_programmatic_diff(req);
+        self.set_message(
+            EchoLevel::Warn,
+            format!(
+                "\"{}\" changed on disk with unsaved edits — resolve in the diff (:e! to discard local)",
+                path.display()
+            ),
+        );
+        signals
     }
 
     /// 5.5.F.5.1: is `lsp-mode` active on `buffer_id`? Pure-editor
@@ -6250,11 +6588,12 @@ impl Editor {
         let stash_scroll = help.scroll as u32;
         // Capture pre-State-B state so dismiss restores cleanly.
         let active = self.pane_tree.active();
-        self.prev_pane_for_help = Some(PrevPaneState {
+        self.prev_pane_for_popup = Some(PrevPaneState {
             buffer: active.buffer,
             buffer_id: active.buffer_id,
             cursor: self.cursor,
             scroll: self.scroll,
+            modal: self.modal,
         });
         // Sync active pane's cursor / scroll stash *before*
         // swapping `active_buffer` to Help.
@@ -6262,6 +6601,9 @@ impl Editor {
         self.cursor = stash_cursor;
         self.scroll = stash_scroll;
         self.active_buffer = BufferKind::Help;
+        // PU-A.1b: promoting a passive float to focus (State A→B) is a
+        // focus-steal — Normal-mode surface; dismiss restores prev.modal.
+        self.modal = ModalState::Normal;
     }
 
     /// 5.5.LSP.4: signature help (Insert-mode auto-trigger).
@@ -6555,15 +6897,14 @@ impl Editor {
             AppEffect::EnterInsertFirstNonBlank => {
                 out.next_actions.push(Action::EnterInsertFirstNonBlank)
             }
-            AppEffect::EnterAppendEndOfLine => {
-                out.next_actions.push(Action::EnterAppendEndOfLine)
-            }
+            AppEffect::EnterAppendEndOfLine => out.next_actions.push(Action::EnterAppendEndOfLine),
             AppEffect::DisplayLineDown => out.next_actions.push(Action::DisplayLineDown),
             AppEffect::DisplayLineUp => out.next_actions.push(Action::DisplayLineUp),
             AppEffect::DisplayLineStart => out.next_actions.push(Action::DisplayLineStart),
             AppEffect::DisplayLineEnd => out.next_actions.push(Action::DisplayLineEnd),
             AppEffect::CreateFoldFromVisual => out.next_actions.push(Action::CreateFoldFromVisual),
             AppEffect::DeleteCharBackward => out.next_actions.push(Action::DeleteCharBackward),
+            AppEffect::InsertLineEdit(kind) => out.next_actions.push(Action::InsertLineEdit(kind)),
             AppEffect::CompletionTrigger => out.next_actions.push(Action::CompletionTrigger),
             // SN.3c.1 (2026-06-14): `AppEffect::SnippetExpand` removed
             // — `<C-x><C-s>` no longer round-trips through a host Action.
@@ -6579,9 +6920,7 @@ impl Editor {
             }
             AppEffect::JumpViewport(pos) => out.next_actions.push(Action::JumpViewport(pos)),
             AppEffect::ScrollCursorTo(pos) => out.next_actions.push(Action::ScrollCursorTo(pos)),
-            AppEffect::HorizontalScroll(k) => {
-                out.next_actions.push(Action::HorizontalScroll(k))
-            }
+            AppEffect::HorizontalScroll(k) => out.next_actions.push(Action::HorizontalScroll(k)),
             AppEffect::JoinLines { with_space } => {
                 out.next_actions.push(Action::JoinLines { with_space })
             }
@@ -6785,9 +7124,7 @@ impl Editor {
                                 }
                                 self.set_message(
                                     EchoLevel::Info,
-                                    format!(
-                                        "project-search: scanning for \"{query_for_echo}\"…"
-                                    ),
+                                    format!("project-search: scanning for \"{query_for_echo}\"…"),
                                 );
                             }
                             None => {
@@ -6881,8 +7218,7 @@ impl Editor {
             // (search / diff results).
             AppEffect::NarrowWiden => {
                 let active = self.active_pane_buffer_id();
-                let narrow_id =
-                    lattice_multibuffer::providers::narrow::NarrowMinorMode::mode_id();
+                let narrow_id = lattice_multibuffer::providers::narrow::NarrowMinorMode::mode_id();
                 if self.minor_mode_enabled_for(active, narrow_id) {
                     if self.do_buffer_delete(true) {
                         let signals = self.activate_buffer_state();
@@ -6890,10 +7226,7 @@ impl Editor {
                     }
                     self.set_message(EchoLevel::Info, "widened".to_string());
                 } else {
-                    self.set_message(
-                        EchoLevel::Warn,
-                        ":widen: not in a narrow view".to_string(),
-                    );
+                    self.set_message(EchoLevel::Warn, ":widen: not in a narrow view".to_string());
                 }
             }
             // N.1.3 (2026-06-10): the `zn` operator resolved its
@@ -7209,10 +7542,14 @@ impl Editor {
         partial_chord: &mut Vec<crate::chord::KeyChord>,
     ) -> Action {
         let active_buffer_id = self.active_buffer_id();
+        // The keymap lookup gates BOTH major- and minor-mode layers
+        // by the active-mode slice, so include the active major
+        // (first, lowest priority) or a major mode's chords would
+        // fire in every buffer.
         let active_minors: Vec<lattice_mode::ModeId> = self
             .active_modes
             .get(&active_buffer_id)
-            .map(|m| m.minors().to_vec())
+            .map(|m| m.keymap_gated_ids())
             .unwrap_or_default();
 
         let ctx = crate::input::TranslateContext {
@@ -10367,6 +10704,9 @@ impl Editor {
                     self.active_modes.remove(&old_id);
                     self.buffer_locals.remove(&old_id);
                     self.resolved_options.remove(&old_id);
+                    self.on_disk_fingerprints.remove(&old_id);
+                    self.autoread_pending.remove(&old_id);
+                    self.autoread_conflict_open.remove(&old_id);
                 }
                 return outcome;
             }
@@ -10495,6 +10835,10 @@ impl Editor {
             name: None,
         });
         self.seed_empty_document_locals(new_id);
+        // AR.0: stamp the on-disk fingerprint at load, against the freshly
+        // read text. This is the baseline the autoread watcher (AR.2)
+        // compares later filesystem events to.
+        self.stamp_on_disk_fingerprint(new_id, &target, &initial_text);
         self.snapshot_active_pane();
         self.snapshot_active_document();
         self.active_buffer = lattice_core::BufferKind::Document;
@@ -10560,6 +10904,9 @@ impl Editor {
         };
         self.set_message(EchoLevel::Info, msg);
         self.push_recent_file(&target);
+        // AR.3: a new file-backed buffer joined the registry — resync the
+        // autoread watch set (spawns the watcher on the first such buffer).
+        self.refresh_autoread_watcher();
         outcome
     }
 
@@ -11240,12 +11587,14 @@ impl Editor {
         // help is shown as an in-pane leaf (that case is a real leaf handled
         // by the per-leaf loop above).
         if let Some(popup_id) = self.popup_buffer {
-            let in_pane_help =
-                self.pane_tree.active().buffer == lattice_core::BufferKind::Help;
+            let in_pane_help = self.pane_tree.active().buffer == lattice_core::BufferKind::Help;
             if !in_pane_help && self.popup_viewport_width > 0 {
-                let popup_is_focused =
-                    matches!(self.active_buffer, lattice_core::BufferKind::Help);
-                let scroll = if popup_is_focused { self.scroll } else { self.popup_scroll };
+                let popup_is_focused = matches!(self.active_buffer, lattice_core::BufferKind::Help);
+                let scroll = if popup_is_focused {
+                    self.scroll
+                } else {
+                    self.popup_scroll
+                };
                 specs.push(PopupPaneSpec {
                     pane_id: PaneId::POPUP,
                     buffer_id: popup_id,
@@ -11361,6 +11710,7 @@ impl Editor {
         self.active_modes.remove(&id);
         self.buffer_locals.remove(&id);
         self.resolved_options.remove(&id);
+        self.on_disk_fingerprints.remove(&id);
     }
 
     fn build_cells_panes(
@@ -11487,7 +11837,11 @@ impl Editor {
             } else {
                 leaf.scroll
             };
-            let last_edit = if is_active_pane { last_edit_active } else { None };
+            let last_edit = if is_active_pane {
+                last_edit_active
+            } else {
+                None
+            };
             entries.push(self.build_one_pane_cells_input(
                 leaf.id,
                 buffer_id,
@@ -11595,33 +11949,31 @@ impl Editor {
         // trait — no BufferKind branch. excerpt_highlights() returns
         // empty for regular single-file buffers; MultibufferDocumentHandle
         // overrides to return one entry per syntax-bearing excerpt.
-        let doc_for_excerpts: Option<Arc<dyn lattice_runtime::Document>> =
-            if is_active_buffer {
-                Some(self.document.as_arc())
-            } else {
-                self.buffers.document_handle(buffer_id)
-            };
+        let doc_for_excerpts: Option<Arc<dyn lattice_runtime::Document>> = if is_active_buffer {
+            Some(self.document.as_arc())
+        } else {
+            self.buffers.document_handle(buffer_id)
+        };
         let excerpt_syntax_ver = doc_for_excerpts
             .as_ref()
             .map(|d| d.excerpt_syntax_version())
             .unwrap_or(0);
-        let excerpt_syntax: Arc<[crate::render_state::ExcerptSyntax]> =
-            doc_for_excerpts
-                .as_ref()
-                .map(|d| {
-                    d.excerpt_highlights()
-                        .into_iter()
-                        .map(|eh| crate::render_state::ExcerptSyntax {
-                            composed_start: eh.composed_start,
-                            composed_end: eh.composed_end,
-                            source_start: eh.source_start,
-                            handle: eh.highlighter,
-                        })
-                        .collect::<Vec<_>>()
-                        .into_boxed_slice()
-                        .into()
-                })
-                .unwrap_or_else(|| Arc::from([]));
+        let excerpt_syntax: Arc<[crate::render_state::ExcerptSyntax]> = doc_for_excerpts
+            .as_ref()
+            .map(|d| {
+                d.excerpt_highlights()
+                    .into_iter()
+                    .map(|eh| crate::render_state::ExcerptSyntax {
+                        composed_start: eh.composed_start,
+                        composed_end: eh.composed_end,
+                        source_start: eh.source_start,
+                        handle: eh.highlighter,
+                    })
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice()
+                    .into()
+            })
+            .unwrap_or_else(|| Arc::from([]));
 
         // PU.1b-2a: generic static extra-highlight spans for this
         // buffer (the `ExtraHighlights` local). Empty for every
@@ -11635,8 +11987,7 @@ impl Editor {
             .and_then(|l| l.get::<crate::modes::ExtraHighlights>())
             .map(|e| e.0.clone())
             .unwrap_or_default();
-        let extra_spans_ver =
-            crate::cells_worker::extra_spans_version(&extra_spans_vec);
+        let extra_spans_ver = crate::cells_worker::extra_spans_version(&extra_spans_vec);
         let extra_spans: Arc<[Vec<lattice_syntax::StyledSpan>]> =
             Arc::from(extra_spans_vec.into_boxed_slice());
 
@@ -11690,7 +12041,8 @@ impl Editor {
                 // unless all terms are zero.
                 base.wrapping_add(excerpt_syntax_ver)
                     .wrapping_add(
-                        excerpt_syntax.iter()
+                        excerpt_syntax
+                            .iter()
                             .map(|ex| ex.handle.highlight_version())
                             .fold(0u64, u64::wrapping_add),
                     )
@@ -11859,7 +12211,9 @@ impl Editor {
         // stay rendered meanwhile (see `drain_inlay_hint_refresh`).
         if let Some(cache) = self.lsp_inlay_hints_cache.get_for(self.document_buffer_id)
             && cache.document_version == version
-            && !self.inlay_refresh_pending.contains(&self.document_buffer_id)
+            && !self
+                .inlay_refresh_pending
+                .contains(&self.document_buffer_id)
             && viewport_first >= cache.requested_first_line
             && viewport_last <= cache.requested_last_line
         {
@@ -12724,6 +13078,7 @@ impl Editor {
 
     pub fn run_tick_pending(&mut self) -> Vec<RendererSignal> {
         let mut signals = Vec::new();
+        signals.extend(self.drain_autoread_changes());
         signals.extend(self.drain_option_changes());
         signals.extend(self.drain_pending_hover());
         signals.extend(self.drain_pending_signature_help());
@@ -14157,10 +14512,7 @@ impl Editor {
         // wake-driven `recompute_folds()` invocations).
         // M.7: lock once; the guard is dropped after `next` is built
         // so dispatch can mutate `self.folds` freely below.
-        let fold_reg = self
-            .fold_registry
-            .lock()
-            .expect("fold_registry poisoned");
+        let fold_reg = self.fold_registry.lock().expect("fold_registry poisoned");
         if matches!(fm, FoldMethod::Manual) && fold_reg.overlays().count() == 0 {
             // DX.3-C7 (2026-06-24): overlays are mode-owned now and drop
             // to zero when their owning mode deactivates (e.g. `:diffoff`
@@ -14306,7 +14658,12 @@ impl Editor {
             if let Some(locals) = self.buffer_locals.get_mut(&buffer_id) {
                 let kept: Vec<Fold> = locals
                     .get::<crate::modes::DocumentFolds>()
-                    .map(|df| df.0.iter().copied().filter(|f| f.identity.is_none()).collect())
+                    .map(|df| {
+                        df.0.iter()
+                            .copied()
+                            .filter(|f| f.identity.is_none())
+                            .collect()
+                    })
                     .unwrap_or_default();
                 locals.insert(crate::modes::DocumentFolds(kept));
             }
@@ -14470,6 +14827,41 @@ impl Editor {
     /// content is intentionally separate so `:w` can diff against a
     /// snapshot and translate into filesystem operations. LSP
     /// `didChange` is intentionally not fired for oil edits.
+    /// AU‑3: the active document's declared editable tail, if its major mode
+    /// contributes one (the comint prompt of an owner-written buffer). Read
+    /// from the mode registry rather than a per-buffer slot: the tail is a
+    /// static mode declaration expressed relative to the buffer end, so it
+    /// needs no seeding and stays valid as the owner appends content.
+    fn active_editable_tail(&self) -> Option<lattice_mode::EditableTail> {
+        let major = self.active_modes.get(&self.document_buffer_id)?.major()?;
+        self.mode_registry.get(major)?.editable_tail()
+    }
+
+    /// AU‑3: should this keystroke edit be rejected by the read-only gate?
+    ///
+    /// - Not read-only (`ReadOnly` resolves false) → never rejected.
+    /// - Read-only + no editable tail → always rejected (fully read-only:
+    ///   `*messages*`, `*ai:log*`, help — history is unmutable).
+    /// - Read-only + editable tail → rejected iff the edit's earliest
+    ///   affected position falls outside the tail (the comint pattern: the
+    ///   agent-conversation prompt is editable, the transcript above is not).
+    ///
+    /// Cold path: the `ReadOnly` bool short-circuits every normal Document
+    /// edit before the mode-registry lookup or snapshot runs.
+    fn read_only_edit_rejected(&self, edit: &lattice_protocol::edit::Edit) -> bool {
+        if !*self.resolved_option::<lattice_config::ReadOnly>(self.document_buffer_id) {
+            return false;
+        }
+        match self.active_editable_tail() {
+            Some(tail) => {
+                let line_count = self.document.snapshot().buffer.line_count();
+                let start = edit.range.start;
+                !tail.permits(start.line, start.byte, line_count)
+            }
+            None => true,
+        }
+    }
+
     pub fn apply_edit_blocking(
         &mut self,
         edit: lattice_protocol::edit::Edit,
@@ -14477,8 +14869,20 @@ impl Editor {
         if matches!(self.active_buffer, BufferKind::Oil) {
             return self.apply_edit_to_oil(edit);
         }
+        // AU‑3: read-only edit gate with editable-tail exception. Only
+        // keystroke-originated edits reach `apply_edit_blocking`; owner
+        // projections write through the runtime document handle directly and
+        // bypass this gate (the standing "owner writes bypass" rule).
+        if self.read_only_edit_rejected(&edit) {
+            return Err(lattice_runtime::RuntimeError::ReadOnly);
+        }
         let result = block_on(self.document.apply_edit(edit));
         if let Ok(applied) = result.as_ref() {
+            // OWC: record the text version so the host knows it issued
+            // this edit (not an owner write).
+            let snap = self.document.snapshot();
+            self.last_seen_text_version
+                .insert(self.document_buffer_id, snap.text_version);
             self.publish_document_changed(std::slice::from_ref(applied));
         }
         result
@@ -14505,8 +14909,19 @@ impl Editor {
             }
             return Ok(applied);
         }
+        // AU‑3: read-only edit gate — reject the whole batch if ANY edit
+        // lands outside the editable tail (keystroke path only; owner
+        // projections bypass via the runtime handle).
+        if edits.iter().any(|e| self.read_only_edit_rejected(e)) {
+            return Err(lattice_runtime::RuntimeError::ReadOnly);
+        }
         let result = block_on(self.document.apply_edit_batch(edits));
         if let Ok(applied) = result.as_ref() {
+            // OWC: record the text version so the host knows it issued
+            // this edit (not an owner write).
+            let snap = self.document.snapshot();
+            self.last_seen_text_version
+                .insert(self.document_buffer_id, snap.text_version);
             self.publish_document_changed(applied);
         }
         result
@@ -14551,6 +14966,9 @@ impl Editor {
         };
         let applied = block_on(handle.apply_edit(edit))?;
         let snap = handle.snapshot();
+        // OWC: record the text version for peer edits too.
+        self.last_seen_text_version
+            .insert(target, snap.text_version);
         let path = snap.path().map(|p| p.to_path_buf());
         let edit_event = lattice_protocol::event::AppliedEdit {
             original_range: applied.original_range,
@@ -14603,11 +15021,7 @@ impl Editor {
     /// effect drain to forward `next_actions`); any other effect (the
     /// error `Echo` for `TargetRequired` / `NoPeerBuffer`) routes through
     /// the host's `handle_effect`; `None` is a silent no-op.
-    pub fn apply_diff_effect_inline(
-        &mut self,
-        eff: Option<Effect>,
-        out: &mut DispatchOutcome,
-    ) {
+    pub fn apply_diff_effect_inline(&mut self, eff: Option<Effect>, out: &mut DispatchOutcome) {
         match eff {
             Some(Effect::ApplyEdit {
                 target,
@@ -15135,9 +15549,7 @@ impl Editor {
         let clipboard_on =
             *self.resolved_option::<lattice_config::ClipboardEnabled>(self.document_buffer_id);
         let mirror = matches!(register, Register::System) || (explicit_yank && clipboard_on);
-        if mirror
-            && let Some(cb) = self.services.get::<lattice_core::ClipboardHandle>()
-        {
+        if mirror && let Some(cb) = self.services.get::<lattice_core::ClipboardHandle>() {
             cb.write(content);
         }
     }
@@ -15183,6 +15595,58 @@ impl Editor {
             version: snap.version,
             selections: (*snap.selections).clone(),
         });
+    }
+
+    /// OWC: write `Editor::cursor` (and, in Visual/Select mode, the full
+    /// selection extent) into the active document's selections. This keeps
+    /// the document's selections a faithful base for the next owner-write
+    /// transform. Called at the end of each input dispatch.
+    fn write_through_caret(&mut self) {
+        let selections = if let Some(anchor) = self.visual_anchor {
+            let visual = match self.modal {
+                ModalState::Visual(k) | ModalState::Select(k) => Some(visual_kind_to_mode(k)),
+                _ => None,
+            };
+            SelectionSet::single(Selection {
+                anchor,
+                head: self.cursor,
+                visual,
+            })
+        } else {
+            SelectionSet::single(Selection::cursor(self.cursor))
+        };
+        let _ = block_on(self.document.set_selections(selections));
+    }
+
+    /// OWC: if the active document's text_version has advanced beyond
+    /// `last_seen_text_version`, an owner write happened. Adopt the
+    /// document's primary selection head into `Editor::cursor`. Called
+    /// at the start of each input dispatch (before the keystroke is
+    /// processed) and on buffer activation.
+    ///
+    /// Gated to buffers with an editable tail — the ACP conversation prompt is
+    /// the only buffer where an owner streams content WHILE the user's caret
+    /// lives in the buffer, so it is the only one that should follow owner-write
+    /// caret movement. Read-only synthetic buffers (dashboard, help,
+    /// `*messages*`, `*ai:log*`, oil, file-tree) are populated/rewritten by
+    /// owner writes too, but the host or user places their caret deliberately;
+    /// adopting the owner write's transformed EOF there dragged the viewport to
+    /// the bottom on open (the dashboard-scrolls-to-bottom bug class).
+    fn maybe_adopt_owner_write(&mut self) {
+        let buf_id = self.document_buffer_id;
+        let snap = self.document.snapshot();
+        let doc_tv = snap.text_version;
+        let last_seen = self
+            .last_seen_text_version
+            .get(&buf_id)
+            .copied()
+            .unwrap_or(0);
+        let has_editable_tail = self.active_editable_tail().is_some();
+        if should_adopt_owner_write(has_editable_tail, doc_tv, last_seen) {
+            let head = snap.selections.primary().head;
+            self.cursor = head;
+            self.last_seen_text_version.insert(buf_id, doc_tv);
+        }
     }
 
     /// 5.5.G.1: vim's `zo` / `zc` / `za` -- toggle, open, or close
@@ -15251,10 +15715,16 @@ impl Editor {
             self.do_cycle_folds_global();
             return;
         };
-        let (rs, re) = (self.folds[root_idx].start_line, self.folds[root_idx].end_line);
+        let (rs, re) = (
+            self.folds[root_idx].start_line,
+            self.folds[root_idx].end_line,
+        );
         // Snapshot ranges so containment math doesn't fight the borrow checker.
-        let ranges: Vec<(u32, u32)> =
-            self.folds.iter().map(|f| (f.start_line, f.end_line)).collect();
+        let ranges: Vec<(u32, u32)> = self
+            .folds
+            .iter()
+            .map(|f| (f.start_line, f.end_line))
+            .collect();
         let contains = |(os, oe): (u32, u32), (is_, ie): (u32, u32)| {
             os <= is_ && ie <= oe && !(os == is_ && oe == ie)
         };
@@ -15275,8 +15745,8 @@ impl Editor {
 
         // Infer the current state → pick the next. FOLDED→CHILDREN→SUBTREE→…
         let root_closed = self.folds[root_idx].closed;
-        let children_state = !direct_children.is_empty()
-            && direct_children.iter().all(|&i| self.folds[i].closed);
+        let children_state =
+            !direct_children.is_empty() && direct_children.iter().all(|&i| self.folds[i].closed);
         if root_closed {
             // FOLDED → CHILDREN: open the root, fold every descendant so only
             // the direct children's heading rows show.
@@ -15312,13 +15782,17 @@ impl Editor {
             self.set_message(EchoLevel::Error, "no folds to cycle".to_string());
             return;
         }
-        let ranges: Vec<(u32, u32)> =
-            self.folds.iter().map(|f| (f.start_line, f.end_line)).collect();
+        let ranges: Vec<(u32, u32)> = self
+            .folds
+            .iter()
+            .map(|f| (f.start_line, f.end_line))
+            .collect();
         let is_leaf = |i: usize| -> bool {
             let (s, e) = ranges[i];
-            !ranges.iter().enumerate().any(|(j, &(os, oe))| {
-                j != i && s <= os && oe <= e && !(s == os && e == oe)
-            })
+            !ranges
+                .iter()
+                .enumerate()
+                .any(|(j, &(os, oe))| j != i && s <= os && oe <= e && !(s == os && e == oe))
         };
         let has_nonleaf = (0..ranges.len()).any(|i| !is_leaf(i));
         let all_closed = self.folds.iter().all(|f| f.closed);
@@ -15685,13 +16159,14 @@ impl Editor {
         let goal = *self.goal_col.get_or_insert(cur_byte % wrap_width);
         let seg_count = {
             let bid = self.active_buffer_id();
-            self.cells_matrix_for(bid).load_full().segment_count(cur_line)
+            self.cells_matrix_for(bid)
+                .load_full()
+                .segment_count(cur_line)
         };
         if cur_seg + 1 < seg_count {
             // next segment on the same source line
             let next_start = (cur_seg + 1) * wrap_width;
-            let next_end = ((cur_seg + 2) * wrap_width)
-                .min(snap.buffer.line_byte_len(cur_line));
+            let next_end = ((cur_seg + 2) * wrap_width).min(snap.buffer.line_byte_len(cur_line));
             self.cursor.byte = (next_start + goal).min(next_end.saturating_sub(1).max(next_start));
         } else {
             // first segment of the next source line
@@ -15732,7 +16207,8 @@ impl Editor {
             let prev_end = cur_seg * wrap_width;
             let line_len = snap.buffer.line_byte_len(cur_line);
             let actual_end = prev_end.min(line_len);
-            self.cursor.byte = (prev_start + goal).min(actual_end.saturating_sub(1).max(prev_start));
+            self.cursor.byte =
+                (prev_start + goal).min(actual_end.saturating_sub(1).max(prev_start));
         } else {
             // last segment of the previous source line
             if cur_line == 0 {
@@ -15742,12 +16218,14 @@ impl Editor {
             let prev_len = snap.buffer.line_byte_len(prev_line);
             let prev_segs = {
                 let bid = self.active_buffer_id();
-                self.cells_matrix_for(bid).load_full().segment_count(prev_line)
+                self.cells_matrix_for(bid)
+                    .load_full()
+                    .segment_count(prev_line)
             };
             let last_seg_start = (prev_segs - 1) * wrap_width;
             self.cursor.line = prev_line;
-            self.cursor.byte = (last_seg_start + goal)
-                .min(prev_len.saturating_sub(1).max(last_seg_start));
+            self.cursor.byte =
+                (last_seg_start + goal).min(prev_len.saturating_sub(1).max(last_seg_start));
         }
         self.goal_col = Some(goal);
         self.ensure_cursor_visible();
@@ -15900,6 +16378,128 @@ impl Editor {
             }
         }
     }
+
+    /// Insert-mode line editing (`<C-a>`/`<C-e>`/`<C-b>`/`<C-f>`/`<C-w>`/
+    /// `<C-u>`/`<C-k>`/`<C-t>`/`<C-d>`) — the readline/vim family the built-in
+    /// Insert keymap binds in every buffer. Cursor moves are char-boundary-safe
+    /// within the current line and use Insert semantics (`<C-e>` lands *past*
+    /// the last byte). Deletes route through `apply_edit_blocking`, so the
+    /// read-only / editable-tail gate still applies (e.g. the agent prompt).
+    /// Indent/dedent mirror the `>`/`<` operators' `INDENT_UNIT` (4 spaces).
+    pub fn do_insert_line_edit(&mut self, kind: lattice_grammar::InsertLineEdit) {
+        use lattice_grammar::InsertLineEdit as K;
+        const INDENT_UNIT: &str = "    ";
+        let line = self.cursor.line;
+        let text = self
+            .document
+            .snapshot()
+            .buffer
+            .line(line)
+            .unwrap_or_default();
+        let text = text.trim_end_matches('\n').to_string();
+        let len = text.len() as u32;
+        let cur = self.cursor.byte.min(len);
+        match kind {
+            K::CursorLineStart => self.cursor.byte = 0,
+            K::CursorLineEnd => self.cursor.byte = len,
+            K::CursorCharLeft => {
+                let mut b = cur as usize;
+                while b > 0 {
+                    b -= 1;
+                    if text.is_char_boundary(b) {
+                        break;
+                    }
+                }
+                self.cursor.byte = b as u32;
+            }
+            K::CursorCharRight => {
+                let mut b = cur as usize;
+                while b < text.len() {
+                    b += 1;
+                    if text.is_char_boundary(b) {
+                        break;
+                    }
+                }
+                self.cursor.byte = b as u32;
+            }
+            K::DeleteWordBackward => {
+                let start = word_start_before(&text, cur as usize) as u32;
+                self.delete_on_current_line(start, cur);
+            }
+            K::DeleteToLineStart => self.delete_on_current_line(0, cur),
+            K::KillToLineEnd => self.delete_on_current_line(cur, len),
+            K::IndentLine => {
+                let at = lattice_protocol::position::Position::new(line, 0);
+                if self
+                    .apply_edit_blocking(lattice_protocol::edit::Edit::insert(at, INDENT_UNIT))
+                    .is_ok()
+                {
+                    self.cursor.byte = self.cursor.byte.saturating_add(INDENT_UNIT.len() as u32);
+                }
+            }
+            K::DedentLine => {
+                let bytes = text.as_bytes();
+                let strip = if bytes.first() == Some(&b'\t') {
+                    1
+                } else {
+                    let mut s = 0usize;
+                    while s < INDENT_UNIT.len() && bytes.get(s) == Some(&b' ') {
+                        s += 1;
+                    }
+                    s
+                };
+                if strip > 0 {
+                    let cursor_byte = self.cursor.byte;
+                    let range = lattice_protocol::position::Range::new(
+                        lattice_protocol::position::Position::new(line, 0),
+                        lattice_protocol::position::Position::new(line, strip as u32),
+                    );
+                    if self
+                        .apply_edit_blocking(lattice_protocol::edit::Edit::delete(range))
+                        .is_ok()
+                    {
+                        self.cursor.byte = cursor_byte.saturating_sub(strip as u32);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Delete `[start, end)` bytes on the caret's current line (the deletes
+    /// behind `<C-w>` / `<C-u>` / `<C-k>`) and park the caret at `start`.
+    /// Routes through `apply_edit_blocking` so the read-only gate applies.
+    fn delete_on_current_line(&mut self, start: u32, end: u32) {
+        if start >= end {
+            return;
+        }
+        let line = self.cursor.line;
+        let range = lattice_protocol::position::Range::new(
+            lattice_protocol::position::Position::new(line, start),
+            lattice_protocol::position::Position::new(line, end),
+        );
+        if self
+            .apply_edit_blocking(lattice_protocol::edit::Edit::delete(range))
+            .is_ok()
+        {
+            self.cursor.byte = start;
+        }
+    }
+}
+
+/// readline `<C-w>` (unix-word-rubout): the byte where the whitespace-delimited
+/// word before `cursor` begins. Skips a run of trailing whitespace, then the
+/// run of non-whitespace, both leftward. Lands on a char boundary (it only
+/// stops at ASCII whitespace or the line start).
+fn word_start_before(text: &str, cursor: usize) -> usize {
+    let bytes = text.as_bytes();
+    let mut i = cursor.min(bytes.len());
+    while i > 0 && bytes[i - 1].is_ascii_whitespace() {
+        i -= 1;
+    }
+    while i > 0 && !bytes[i - 1].is_ascii_whitespace() {
+        i -= 1;
+    }
+    i
 }
 
 /// 5.5.G.3: unicode-aware backward step. Mirrors
@@ -16480,7 +17080,9 @@ impl Editor {
             self.cells_matrix_for(buffer_id)
                 .store(std::sync::Arc::new(lattice_cells::CellMatrix::empty()));
             self.display_matrix_for(buffer_id)
-                .store(std::sync::Arc::new(crate::display_matrix::DisplayMatrix::empty()));
+                .store(std::sync::Arc::new(
+                    crate::display_matrix::DisplayMatrix::empty(),
+                ));
         }
         self.recompute_folds();
         self.pending_redraw = true;
@@ -16693,6 +17295,12 @@ impl Editor {
                 let Some(parent) = current_dir.parent().map(std::path::Path::to_path_buf) else {
                     return Vec::new();
                 };
+                // The directory we're stepping out of. oil.nvim
+                // places the cursor back on this entry in the parent
+                // listing so `-` round-trips to the row you left.
+                let came_from = current_dir
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned());
                 let reload_result = self.buffers.with_oil_mut(id, |oil| oil.reload(&parent));
                 match reload_result {
                     Some(Err(e)) => {
@@ -16702,6 +17310,9 @@ impl Editor {
                         self.set_oil_dir(id, parent);
                         self.cursor = lattice_protocol::Position::ZERO;
                         self.scroll = 0;
+                        if let Some(name) = came_from {
+                            self.focus_oil_entry(&name);
+                        }
                     }
                     None => {}
                 }
@@ -16710,28 +17321,81 @@ impl Editor {
             BufferKind::FileTree => {
                 let id = self.active_pane_buffer_id();
                 let line = self.cursor.line;
-                let dir = self.file_tree_entries_for(id).and_then(|entries| {
-                    lattice_file_tree::entry_at_line(&entries, line).map(|e| {
-                        if matches!(
-                            e.kind,
-                            lattice_file_tree::FileTreeEntryKind::Directory { .. }
-                        ) {
-                            e.path.clone()
-                        } else {
-                            e.path.parent().unwrap_or(&e.path).to_path_buf()
-                        }
+                // A file row opens oil at its parent, focused on the
+                // file. A directory row opens oil *inside* itself, so
+                // there's no came-from entry to land on.
+                let (dir, came_from) = self
+                    .file_tree_entries_for(id)
+                    .and_then(|entries| {
+                        lattice_file_tree::entry_at_line(&entries, line).map(|e| {
+                            if matches!(
+                                e.kind,
+                                lattice_file_tree::FileTreeEntryKind::Directory { .. }
+                            ) {
+                                (e.path.clone(), None)
+                            } else {
+                                let name =
+                                    e.path.file_name().map(|n| n.to_string_lossy().into_owned());
+                                (e.path.parent().unwrap_or(&e.path).to_path_buf(), name)
+                            }
+                        })
                     })
-                });
-                self.do_open_oil(dir)
+                    .map(|(d, n)| (Some(d), n))
+                    .unwrap_or((None, None));
+                let signals = self.do_open_oil(dir);
+                if matches!(self.active_buffer, BufferKind::Oil) {
+                    if let Some(name) = came_from {
+                        self.focus_oil_entry(&name);
+                    }
+                }
+                signals
             }
             _ => {
-                let dir = self
-                    .document
-                    .path()
-                    .and_then(|p| p.parent().map(Into::into));
-                self.do_open_oil(dir)
+                // From a file buffer, `-` opens oil for the file's
+                // parent with the cursor on the file you were editing.
+                let path = self.document.path();
+                let dir = path.as_ref().and_then(|p| p.parent().map(Into::into));
+                let came_from = path
+                    .as_ref()
+                    .and_then(|p| p.file_name())
+                    .map(|n| n.to_string_lossy().into_owned());
+                let signals = self.do_open_oil(dir);
+                if matches!(self.active_buffer, BufferKind::Oil) {
+                    if let Some(name) = came_from {
+                        self.focus_oil_entry(&name);
+                    }
+                }
+                signals
             }
         }
+    }
+
+    /// After a `-` navigation lands in an oil listing, place the
+    /// cursor on the entry the user came *from* -- the file they
+    /// were editing, or the child directory they stepped out of --
+    /// so `-` round-trips to that row (oil.nvim's behaviour). No-op
+    /// (cursor stays at the origin row) when `name` isn't in the
+    /// current listing. Assumes the active pane holds the oil buffer
+    /// being focused; scroll is reconciled so the row is visible.
+    fn focus_oil_entry(&mut self, name: &str) {
+        let id = self.active_pane_buffer_id();
+        let Some(line) = self
+            .buffers
+            .with_oil(id, |o| {
+                o.snapshot_entries()
+                    .iter()
+                    .position(|e| e.name == name)
+                    .map(|i| i as u32)
+            })
+            .flatten()
+        else {
+            return;
+        };
+        let pos = lattice_protocol::Position::new(line, 0);
+        self.cursor = pos;
+        self.pane_tree.active_mut().cursor = pos;
+        self.ensure_cursor_visible();
+        self.pane_tree.active_mut().scroll = self.scroll;
     }
 
     /// Write `FileTreeRoot`. Single chokepoint (M.3.2.c.5).
@@ -17391,10 +18055,7 @@ impl Editor {
     /// resolved options. GC of an ephemeral preview buffer is the caller's
     /// concern (the dismiss path). No-op if `pane` isn't previewing.
     #[must_use]
-    pub fn unmount_preview(
-        &mut self,
-        pane: lattice_core::ui::pane::PaneId,
-    ) -> Vec<RendererSignal> {
+    pub fn unmount_preview(&mut self, pane: lattice_core::ui::pane::PaneId) -> Vec<RendererSignal> {
         let Some(ov) = self.clear_preview_override(pane) else {
             return Vec::new();
         };
@@ -17621,10 +18282,7 @@ impl Editor {
         use lattice_picker::PickerAcceptOutcome;
         match outcome {
             PickerAcceptOutcome::ApplyColorscheme { name } => {
-                let Some(reg) = self
-                    .services
-                    .get::<crate::ui::theme::ThemeRegistryHandle>()
-                else {
+                let Some(reg) = self.services.get::<crate::ui::theme::ThemeRegistryHandle>() else {
                     return Vec::new();
                 };
                 // Capture the pre-open theme on the first preview so Esc can
@@ -18446,6 +19104,64 @@ fn step_byte(
 }
 
 /// 5.5.G.10: word-byte predicate used by `*` / `#`.
+/// AR.3: max distinct parent directories the autoread watcher holds live
+/// OS watches for. Beyond this the coldest dirs drop to the on-activate
+/// `stat` fallback (AR.4). Generous — well under any `inotify` descriptor
+/// limit; the common case (a handful of open buffers) never approaches it.
+const AUTOREAD_WATCH_DIR_CAP: usize = 128;
+
+/// AR.3: bound a desired watch set to at most `cap` directories. The active
+/// buffer's directory is always kept (the file you're looking at must be
+/// watched); the remainder fill deterministically (sorted) up to `cap`.
+/// Excess dirs are dropped — their buffers rely on the on-activate `stat`
+/// fallback. Pure, so the cap logic is unit-testable without a filesystem.
+pub fn bound_watch_set(
+    watches: std::collections::HashMap<std::path::PathBuf, std::collections::HashSet<String>>,
+    active_dir: Option<&std::path::Path>,
+    cap: usize,
+) -> std::collections::HashMap<std::path::PathBuf, std::collections::HashSet<String>> {
+    if watches.len() <= cap {
+        return watches;
+    }
+    let mut ordered: Vec<std::path::PathBuf> = watches.keys().cloned().collect();
+    ordered.sort();
+    // Active dir first so the cap can never evict the buffer in view.
+    if let Some(active) = active_dir {
+        if let Some(pos) = ordered.iter().position(|d| d.as_path() == active) {
+            ordered.remove(pos);
+            ordered.insert(0, active.to_path_buf());
+        }
+    }
+    let mut watches = watches;
+    ordered
+        .into_iter()
+        .take(cap)
+        .filter_map(|d| watches.remove(&d).map(|names| (d, names)))
+        .collect()
+}
+
+/// AR.3: order-independent fingerprint of a desired watch set, used as the
+/// cheap "did the set change since the last sync?" gate. Sorting the dirs
+/// and each dir's basenames makes the hash independent of `HashMap`
+/// iteration order.
+pub fn autoread_watch_fingerprint(
+    watches: &std::collections::HashMap<std::path::PathBuf, std::collections::HashSet<String>>,
+) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut items: Vec<(&std::path::PathBuf, Vec<&String>)> = watches
+        .iter()
+        .map(|(dir, names)| {
+            let mut ns: Vec<&String> = names.iter().collect();
+            ns.sort();
+            (dir, ns)
+        })
+        .collect();
+    items.sort_by(|a, b| a.0.cmp(b.0));
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    items.hash(&mut h);
+    h.finish()
+}
+
 fn is_word_char_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
@@ -18636,9 +19352,7 @@ impl Editor {
             None | Some(Register::Unnamed) => {
                 let clipboard_on = *self
                     .resolved_option::<lattice_config::ClipboardEnabled>(self.document_buffer_id);
-                if clipboard_on
-                    && let Some(reg) = read_clipboard()
-                {
+                if clipboard_on && let Some(reg) = read_clipboard() {
                     return Some(reg);
                 }
                 self.unnamed_register.clone()
@@ -20053,12 +20767,34 @@ impl Editor {
                 id: snap.id,
                 path: path.clone(),
             });
+            // AR.0: re-stamp the on-disk fingerprint after our own write so
+            // the autoread watcher (AR.2) recognises this save as ours and
+            // does not treat the resulting filesystem event as an external
+            // change. `save_blocking` writes to the buffer's OWN path, so
+            // the stamp is valid; `:w <other-path>` (save-as, a copy) goes
+            // through `save_as_blocking` and deliberately does NOT re-stamp
+            // (the buffer's backing file is unchanged). See the slice plan.
+            let text = self.document.text();
+            self.stamp_on_disk_fingerprint(self.document_buffer_id, path, &text);
             self.fire_did_save_notifications();
             if !pre_save_existed {
                 self.fire_did_create_files_notifications(path);
             }
         }
         result
+    }
+
+    /// AR.0: record `id`'s on-disk fingerprint `(mtime, size, content-hash)`
+    /// from `path` + the buffer's current `text`. The single seam both the
+    /// load path (`open_fresh_into_active_slot`) and the save path
+    /// (`save_blocking`) write through, and the baseline the autoread
+    /// watcher (AR.2) gates filesystem events against. See
+    /// `docs/dev/architecture/autoread.md`.
+    fn stamp_on_disk_fingerprint(&mut self, id: BufferId, path: &std::path::Path, text: &str) {
+        self.on_disk_fingerprints.insert(
+            id,
+            crate::autoread::OnDiskFingerprint::from_path_and_text(path, text),
+        );
     }
 
     /// `:w <path>` -- save the active document under a new path.
@@ -21017,7 +21753,6 @@ impl Editor {
         placement: crate::popup::PopupPlacement,
     ) -> Vec<RendererSignal> {
         use crate::buffers::BufferFlags;
-        let mut signals = Vec::new();
         // From within Help: reuse the same popup buffer by
         // swapping content; snapshot prior state for `<C-o>`.
         if matches!(self.active_buffer, BufferKind::Help) && self.popup_buffer.is_some() {
@@ -21025,38 +21760,14 @@ impl Editor {
                 self.popup_back_stack.push(snap);
             }
             self.swap_popup_content(content, placement);
-            return signals;
+            return Vec::new();
         }
         self.popup_back_stack.clear();
-        self.dismiss_stale_popup_registry();
-        if matches!(
-            self.active_buffer,
-            BufferKind::Document | BufferKind::Messages | BufferKind::Multibuffer
-        ) {
-            let cur = self.cursor;
-            self.push_position_history(cur, crate::state::PositionSource::AutoJump);
-        }
-        self.snapshot_active_pane();
-        if !matches!(self.active_buffer, BufferKind::Help) {
-            let active = self.pane_tree.active();
-            self.prev_pane_for_help = Some(crate::state::PrevPaneState {
-                buffer: active.buffer,
-                buffer_id: active.buffer_id,
-                cursor: self.cursor,
-                scroll: self.scroll,
-            });
-        }
-        // 2026-05-22 popup-anchor: capture current cursor BEFORE
-        // overwriting with the help buffer's stash. The CursorAnchored
-        // popup renderer reads this to paint the popup next to the
-        // symbol the user invoked from, even after motions.
-        self.popup_anchor = Some(self.cursor);
-        self.popup_doc_scroll_at_anchor = self.scroll;
         // PU.1a: help content is an actor-backed Document (unlisted +
-        // hidden so it never shows in `:ls` / `:bn`). `register_*`
-        // seeds the content + metadata. Preserve the content's initial
-        // scroll/cursor — a `:describe-*` arg anchor pre-scrolls the
-        // buffer (`content.buffer.scroll`) before opening.
+        // hidden so it never shows in `:ls` / `:bn`). Preserve the
+        // content's initial scroll/cursor — a `:describe-*` arg anchor
+        // pre-scrolls the buffer — and stash them in the popup view slots
+        // so the Steal path adopts them into the hot-path cursor/scroll.
         let init_scroll = content.buffer.scroll as u32;
         let init_cursor = content.buffer.cursor;
         let buffer_id = self.register_help_document(
@@ -21067,15 +21778,126 @@ impl Editor {
                 ephemeral: false,
             },
         );
-        self.popup_buffer = Some(buffer_id);
-        self.popup_placement = placement;
         self.popup_scroll = init_scroll;
         self.popup_cursor = init_cursor;
-        self.cursor = init_cursor;
-        self.scroll = init_scroll;
-        self.active_buffer = BufferKind::Help;
+        let mut signals =
+            self.open_popup_buffer(buffer_id, placement, crate::popup::PopupFocus::Steal);
         signals.extend(self.activate_major_for_buffer_kind(buffer_id, BufferKind::Help));
         signals
+    }
+
+    /// Show an already-registered `buffer` in a popup overlay at
+    /// `placement` with the given `focus` — the content-agnostic popup
+    /// primitive (popup-api.md §4.2). It owns no content: the caller
+    /// registers the buffer (help, permission menu, code-action list) and
+    /// hands over its id, having stashed the initial view in
+    /// `popup_cursor`/`popup_scroll`.
+    ///
+    /// `Steal` (State B) moves focus into the buffer — it becomes active,
+    /// adopts `popup_cursor`/`popup_scroll`, and modal resets to Normal,
+    /// with the prior pane + modal snapshotted so `dismiss_popup` restores
+    /// them. `Passive` (State A) floats it — the underlying buffer keeps
+    /// focus, caret, and modal, and nothing is captured. PU-A.1b.
+    pub fn open_popup_buffer(
+        &mut self,
+        buffer: BufferId,
+        placement: crate::popup::PopupPlacement,
+        focus: crate::popup::PopupFocus,
+    ) -> Vec<RendererSignal> {
+        use crate::popup::PopupFocus;
+        // Tear down any PRIOR popup's registry entry. `self.popup_buffer`
+        // still points at it here; the incoming `buffer` has a distinct id,
+        // so this never removes the new one.
+        self.dismiss_stale_popup_registry();
+        match focus {
+            PopupFocus::Steal => {
+                // Leaving a real buffer → record a jump.
+                if matches!(
+                    self.active_buffer,
+                    BufferKind::Document | BufferKind::Messages | BufferKind::Multibuffer
+                ) {
+                    let cur = self.cursor;
+                    self.push_position_history(cur, crate::state::PositionSource::AutoJump);
+                }
+                self.snapshot_active_pane();
+                // Snapshot the pane + modal for dismiss to restore. Skip
+                // when already Help — a help→help open keeps the original
+                // origin (the reuse branch handles same-buffer swaps).
+                if !matches!(self.active_buffer, BufferKind::Help) {
+                    let active = self.pane_tree.active();
+                    self.prev_pane_for_popup = Some(crate::state::PrevPaneState {
+                        buffer: active.buffer,
+                        buffer_id: active.buffer_id,
+                        cursor: self.cursor,
+                        scroll: self.scroll,
+                        modal: self.modal,
+                    });
+                }
+                // Anchor for CursorAnchored placement (renderer reads this).
+                self.popup_anchor = Some(self.cursor);
+                self.popup_doc_scroll_at_anchor = self.scroll;
+                self.popup_buffer = Some(buffer);
+                self.popup_placement = placement;
+                // Adopt the caller-stashed initial view; flip focus into
+                // the buffer. Focus-steal is a Normal-mode surface (see
+                // `PrevPaneState::modal`).
+                self.cursor = self.popup_cursor;
+                self.scroll = self.popup_scroll;
+                self.active_buffer = self.buffers.kind_of(buffer).unwrap_or(BufferKind::Help);
+                self.modal = ModalState::Normal;
+            }
+            PopupFocus::Passive => {
+                // State A: the doc keeps focus, caret, and modal — none of
+                // active_buffer / cursor / scroll / modal / prev is touched.
+                // For async openers (hover, signature help) the K-press
+                // cursor is carried via `pending_hover_anchor` (one-shot) so
+                // the popup pins to the invocation site even if the cursor
+                // drifted between request and response.
+                let (anchor_cursor, anchor_scroll) = self
+                    .pending_hover_anchor
+                    .take()
+                    .unwrap_or((self.cursor, self.scroll));
+                self.popup_anchor = Some(anchor_cursor);
+                self.popup_doc_scroll_at_anchor = anchor_scroll;
+                self.popup_buffer = Some(buffer);
+                self.popup_placement = placement;
+            }
+        }
+        Vec::new()
+    }
+
+    /// PU-B.2: the `Effect::OpenPopup { name, mode_id, .. }` entry point —
+    /// idempotently ensure a popup buffer named `name` under major mode
+    /// `mode_id` (stored as `BufferData::Help` so the popup renderer draws it),
+    /// then show it via [`Self::open_popup_buffer`]. Name-based (not id-based)
+    /// because the emitters — the `:ai-permission` ex-command and the async
+    /// tick callback — have no `&mut Editor`/services to register a buffer and
+    /// hand back its id; naming keeps the effect vocabulary the host boundary,
+    /// exactly like `Effect::OpenSyntheticBuffer`.
+    pub fn open_popup_named(
+        &mut self,
+        name: &str,
+        mode_id: &str,
+        placement: crate::popup::PopupPlacement,
+        focus: crate::popup::PopupFocus,
+    ) -> Vec<RendererSignal> {
+        // Reopen-safety: if a popup is already showing, dismiss it cleanly first.
+        // Otherwise the idempotent `ensure_named_popup_buffer` could hand back
+        // the currently-open buffer, which `open_popup_buffer` then tears down
+        // (`dismiss_stale_popup_registry`) and immediately re-references.
+        if self.popup_buffer.is_some() {
+            self.dismiss_popup();
+        }
+        let id = self.ensure_named_popup_buffer(
+            name,
+            lattice_mode::ModeId::new(mode_id),
+            lattice_core::BufferFlags {
+                listed: false,
+                hidden: true,
+                ephemeral: false,
+            },
+        );
+        self.open_popup_buffer(id, placement, focus)
     }
 
     /// Open `content` as a *floating* popup over the active
@@ -21086,11 +21908,10 @@ impl Editor {
         placement: crate::popup::PopupPlacement,
     ) -> Vec<RendererSignal> {
         use crate::buffers::BufferFlags;
-        self.dismiss_stale_popup_registry();
-        // PU.1a: help content is an actor-backed Document. `register_*`
-        // seeds the content + metadata. Preserve the content's initial
-        // scroll/cursor as the popup's view state (State A — the doc
-        // keeps focus, so self.cursor/scroll are untouched).
+        // Preserve the content's initial scroll/cursor as the popup's view
+        // state (State A — the doc keeps focus, so self.cursor/scroll are
+        // untouched). `open_popup_buffer(Passive)` consumes the pending
+        // hover anchor and sets the overlay slots.
         let init_scroll = content.buffer.scroll as u32;
         let init_cursor = content.buffer.cursor;
         let buffer_id = self.register_help_document(
@@ -21103,24 +21924,12 @@ impl Editor {
         );
         self.popup_scroll = init_scroll;
         self.popup_cursor = init_cursor;
-        // 2026-05-22 popup-anchor: capture current cursor before
-        // any focus shuffle. Floating popups (State A) don't touch
-        // the cursor, but capturing here keeps the renderer's read
-        // path uniform between floating and focused popups.
-        //
-        // 2026-05-27: for async openers (LSP hover, signature help)
-        // the cursor may have drifted between request and response.
-        // `pending_hover_anchor` carries the K-press cursor through
-        // — consume it (one-shot) when set so the popup pins to the
-        // invocation site.
-        let (anchor_cursor, anchor_scroll) = self
-            .pending_hover_anchor
-            .take()
-            .unwrap_or((self.cursor, self.scroll));
-        self.popup_anchor = Some(anchor_cursor);
-        self.popup_doc_scroll_at_anchor = anchor_scroll;
-        self.popup_buffer = Some(buffer_id);
-        self.popup_placement = placement;
+        let _ = self.open_popup_buffer(buffer_id, placement, crate::popup::PopupFocus::Passive);
+        // Floating-popup mode wiring (markdown MAJOR + help MINOR + hover
+        // MINOR) — help/hover-content-specific, so it stays in this caller
+        // rather than the generic primitive. Without help-minor the float
+        // rendered WITH line numbers; hover-minor drives auto-dismiss on
+        // cursor motion.
         let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
         let mut active = self.active_modes.remove(&buffer_id).unwrap_or_default();
         // Markdown as the MAJOR (the content is markdown; highlighting also
@@ -21383,7 +22192,8 @@ impl Editor {
         let mut out = DispatchOutcome::default();
         match outcome {
             OpenFile { path } => {
-                out.renderer_signals.extend(self.prepare_open_target_pane(target));
+                out.renderer_signals
+                    .extend(self.prepare_open_target_pane(target));
                 let edit_outcome = self.do_edit(Some(path), false);
                 match edit_outcome {
                     DoEditOutcome::Opened(s)
@@ -21400,7 +22210,8 @@ impl Editor {
                 if id != self.active_pane_buffer_id()
                     || !matches!(target, lattice_picker::OpenTarget::Default)
                 {
-                    out.renderer_signals.extend(self.prepare_open_target_pane(target));
+                    out.renderer_signals
+                        .extend(self.prepare_open_target_pane(target));
                     let needs_state = self.activate_buffer(id);
                     if needs_state {
                         out.renderer_signals.extend(self.activate_buffer_state());
@@ -21417,7 +22228,8 @@ impl Editor {
                 if id != self.active_pane_buffer_id()
                     || !matches!(target, lattice_picker::OpenTarget::Default)
                 {
-                    out.renderer_signals.extend(self.prepare_open_target_pane(target));
+                    out.renderer_signals
+                        .extend(self.prepare_open_target_pane(target));
                     let needs_state = self.activate_buffer(id);
                     if needs_state {
                         out.renderer_signals.extend(self.activate_buffer_state());
@@ -21430,8 +22242,10 @@ impl Editor {
                 self.cursor = lattice_protocol::Position::new(line, col);
             }
             JumpToLocation { path, line, col } => {
-                out.renderer_signals.extend(self.prepare_open_target_pane(target));
-                out.renderer_signals.extend(self.jump_to_file_line_col(&path, line, col));
+                out.renderer_signals
+                    .extend(self.prepare_open_target_pane(target));
+                out.renderer_signals
+                    .extend(self.jump_to_file_line_col(&path, line, col));
             }
             OpenLspLog { server_id } => self.open_lsp_log_in_pane(&server_id),
             OpenLspTraceLog { server_id } => self.open_lsp_trace_log_in_pane(&server_id),
@@ -21442,10 +22256,7 @@ impl Editor {
                 // rebuild their caches (same fan-out as the direct
                 // `:colorscheme <name>` swap).
                 self.pending_theme_preview_restore = None;
-                if let Some(reg) = self
-                    .services
-                    .get::<crate::ui::theme::ThemeRegistryHandle>()
-                {
+                if let Some(reg) = self.services.get::<crate::ui::theme::ThemeRegistryHandle>() {
                     if reg.apply_theme(&name) {
                         out.renderer_signals.push(RendererSignal::ThemeChanged);
                     } else {
@@ -22004,9 +22815,7 @@ impl Editor {
         if errors.is_empty() {
             self.set_message(
                 EchoLevel::Info,
-                format!(
-                    "reloaded {total} snippets ({builtin_total} built-in + {user_total} user)"
-                ),
+                format!("reloaded {total} snippets ({builtin_total} built-in + {user_total} user)"),
             );
         } else {
             self.set_message(
@@ -23398,6 +24207,109 @@ impl Editor {
         self.activate_buffer(id);
     }
 
+    /// Snapshot the AI subsystem's known sessions into pure-data
+    /// picker rows. Reads the boot-registered [`AiLogger`] service
+    /// (no `Editor` field — the AI crate stays zero-field);
+    /// returns empty when the subsystem is absent. AI-1b (T12b).
+    pub fn snapshot_ai_sessions(&self) -> Vec<lattice_picker::AiSessionRow> {
+        let Some(logger) = self.services.get::<lattice_ai::AiLogger>() else {
+            return Vec::new();
+        };
+        logger
+            .known_sessions()
+            .into_iter()
+            .map(|key| lattice_picker::AiSessionRow {
+                provider: key.provider.to_string(),
+                index: key.index,
+            })
+            .collect()
+    }
+
+    /// Activate the per-session `*ai:<provider>:<index>*` Document
+    /// buffer in the active pane. The buffer is created lazily
+    /// (like the LSP logs) — `AiLogMode::on_activate` seeds it from
+    /// the `AiLogger` ring and live-tails via `AiLogPushed`.
+    /// AI-1b (T12b).
+    pub fn open_ai_log_in_pane(&mut self, key: &lattice_ai::SessionKey) {
+        let name = lattice_ai::ai_log_name(key);
+        let id = self.ensure_named_synthetic_document(
+            &name,
+            lattice_ai::AiLogMode::mode_id(),
+            crate::synthetic_buffers::SYNTHETIC_BUFFER_FLAGS,
+        );
+        self.activate_buffer(id);
+    }
+
+    /// Open (or focus) a named synthetic buffer under `mode_id` -- the generic
+    /// primitive behind
+    /// [`Effect::OpenSyntheticBuffer`](lattice_grammar::Effect::OpenSyntheticBuffer).
+    /// The emitting mode's command supplies the name + mode id; the host only
+    /// runs the generic open, so no provider-specific host method is needed. The
+    /// mode must be registered at boot.
+    pub fn open_synthetic_buffer(&mut self, name: &str, mode_id: &str) {
+        let id = self.ensure_named_synthetic_document(
+            name,
+            lattice_mode::ModeId::new(mode_id),
+            crate::synthetic_buffers::SYNTHETIC_BUFFER_FLAGS,
+        );
+        self.activate_buffer(id);
+    }
+
+    /// `:ai-log [provider]` -- open the AI log buffer. 0 known
+    /// sessions echoes a hint; exactly 1 (after the optional
+    /// `provider` prefilter) opens directly; >1 raises a picker so
+    /// the user disambiguates. Mirrors `:lsp-server-log`'s
+    /// [`open_lsp_picker`](Self::open_lsp_picker) count logic.
+    /// AI-1b (T12b).
+    pub fn do_open_ai_log(&mut self, provider: Option<&str>) {
+        let all = self.snapshot_ai_sessions();
+        let rows: Vec<lattice_picker::AiSessionRow> = all
+            .iter()
+            .filter(|r| provider.is_none_or(|want| r.provider == want))
+            .cloned()
+            .collect();
+        match rows.len() {
+            0 => {
+                // Name the sessions that *are* live when the prefilter is
+                // what excluded them -- telling a user to `:opencode` while
+                // opencode is already running is worse than saying nothing.
+                // Mirrors `open_lsp_picker`'s "(running: ...)" listing.
+                let hint = match provider {
+                    Some(p) if !all.is_empty() => {
+                        let listing = all
+                            .iter()
+                            .map(|r| format!("{}:{}", r.provider, r.index))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        format!("no AI session for provider `{p}` (running: {listing})")
+                    }
+                    Some(p) => format!("no AI session for provider `{p}` (run `:opencode`)"),
+                    None => "no AI session running (run `:opencode`)".to_string(),
+                };
+                self.set_message(EchoLevel::Info, hint);
+            }
+            1 => {
+                let row = &rows[0];
+                let key = lattice_ai::SessionKey::new(
+                    std::sync::Arc::<str>::from(row.provider.as_str()),
+                    row.index,
+                );
+                self.open_ai_log_in_pane(&key);
+            }
+            _ => {
+                let mut p = lattice_picker::Picker::new(
+                    "ai-log",
+                    lattice_picker::PickerSource::AiSessions {
+                        prefilter: provider.map(|s| s.to_string()),
+                    },
+                    lattice_picker::PickerAction::OpenAiLog,
+                );
+                p.set_ai_sessions(rows);
+                self.set_active_picker(p);
+            }
+        }
+    }
+
     /// Activate the per-instance trace-log Document buffer.
     /// Phase 5.8.AD.2.
     pub fn open_lsp_trace_log_in_pane(&mut self, server_id: &str) {
@@ -24143,9 +25055,7 @@ impl Editor {
         // `ThemeChanged` makes BOTH renderers rebuild their caches.
         let mut theme_restore_signals = Vec::new();
         if let Some((palette, overrides)) = self.pending_theme_preview_restore.take()
-            && let Some(reg) = self
-                .services
-                .get::<crate::ui::theme::ThemeRegistryHandle>()
+            && let Some(reg) = self.services.get::<crate::ui::theme::ThemeRegistryHandle>()
         {
             reg.set_theme(palette, overrides);
             theme_restore_signals.push(RendererSignal::ThemeChanged);
@@ -24331,7 +25241,8 @@ impl Editor {
                 if id != self.active_pane_buffer_id()
                     || !matches!(target, lattice_picker::OpenTarget::Default)
                 {
-                    out.renderer_signals.extend(self.prepare_open_target_pane(target));
+                    out.renderer_signals
+                        .extend(self.prepare_open_target_pane(target));
                     let needs_state = self.activate_buffer(id);
                     if needs_state {
                         out.renderer_signals.extend(self.activate_buffer_state());
@@ -24354,12 +25265,31 @@ impl Editor {
                     }
                 }
             }
+            lattice_picker::RoutingPayload::AiSession { provider, index } => {
+                match picker.on_accept {
+                    lattice_picker::PickerAction::OpenAiLog => {
+                        let key = lattice_ai::SessionKey::new(
+                            std::sync::Arc::<str>::from(provider.as_str()),
+                            index,
+                        );
+                        self.open_ai_log_in_pane(&key);
+                    }
+                    _ => {
+                        self.set_message(
+                            EchoLevel::Error,
+                            "picker: ai-session routing on non-ai-log action".to_string(),
+                        );
+                    }
+                }
+            }
             lattice_picker::RoutingPayload::LspLocation { path, line, col } => {
                 if let Some(origin) = self.pending_tag_origin.take() {
                     self.tag_stack.push(origin);
                 }
-                out.renderer_signals.extend(self.prepare_open_target_pane(target));
-                out.renderer_signals.extend(self.jump_to_file_line_col(&path, line, col));
+                out.renderer_signals
+                    .extend(self.prepare_open_target_pane(target));
+                out.renderer_signals
+                    .extend(self.jump_to_file_line_col(&path, line, col));
             }
             lattice_picker::RoutingPayload::LspCompletion { index } => {
                 let Some(items) = self.pending_completion_items.take() else {
@@ -24386,10 +25316,12 @@ impl Editor {
                     );
                     return out;
                 };
-                out.renderer_signals.extend(self.apply_lsp_code_action(row, handle));
+                out.renderer_signals
+                    .extend(self.apply_lsp_code_action(row, handle));
             }
             lattice_picker::RoutingPayload::OpenFile { path } => {
-                out.renderer_signals.extend(self.prepare_open_target_pane(target));
+                out.renderer_signals
+                    .extend(self.prepare_open_target_pane(target));
                 let edit_outcome = self.do_edit(Some(path), false);
                 match edit_outcome {
                     DoEditOutcome::Opened(s)
@@ -24548,16 +25480,14 @@ impl Editor {
         if !self.pane_tree.set_active(idx) {
             return;
         }
+        // Issue #38 (2026-05-22): the document swap that follows
+        // the destination pane's buffer_id now lives in
+        // `load_active_pane`'s tail (it and the view-restore are a
+        // pair — see that method's doc). Without it two panes
+        // showing different buffers become entangled: the active
+        // pane always shows whichever buffer editor.document was
+        // last set to ("splits are not independent").
         self.load_active_pane();
-        // Issue #38 (2026-05-22): swap editor.document to
-        // follow the destination pane's buffer_id. The active
-        // pane paints from `editor.document.snapshot()`
-        // (published as `ad().snapshot`); without this swap,
-        // two panes showing different buffers become entangled
-        // — the active pane always shows whichever buffer
-        // editor.document was last set to. Symptom: "splits
-        // are not independent".
-        self.sync_active_document_to_pane();
     }
 
     /// Issue #38 (2026-05-22): swap `editor.document` /
@@ -24906,8 +25836,8 @@ impl Editor {
         match self.apply_edit_blocking(lattice_protocol::edit::Edit::replace(range, &*s)) {
             Ok(applied) => self.cursor = applied.inserted_range.end,
             Err(_) => {
-                if let Ok(applied) = self
-                    .apply_edit_blocking(lattice_protocol::edit::Edit::insert(self.cursor, &*s))
+                if let Ok(applied) =
+                    self.apply_edit_blocking(lattice_protocol::edit::Edit::insert(self.cursor, &*s))
                 {
                     self.cursor = applied.inserted_range.end;
                 }
@@ -25060,9 +25990,7 @@ impl Editor {
         // the theme registry (T.9.a). `set_override` marks the registry
         // dirty; the post-sync `RendererSignal::ThemeChanged` rebuilds
         // the renderer caches from the freshly-`resolved()` table.
-        let theme_reg = self
-            .services
-            .get::<crate::ui::theme::ThemeRegistryHandle>();
+        let theme_reg = self.services.get::<crate::ui::theme::ThemeRegistryHandle>();
         // ui.separator_color -- color name; host parser returned
         // Ok during validate so unwrap-via-fallback is safe.
         let sep_color = self
@@ -25257,7 +26185,8 @@ impl Editor {
         // can walk server-namespaced keys. BC.8b: shared (`Arc<ArcSwap>`), so
         // `store` the new tree — the mode-owned configuration handler holding a
         // clone of the same `ArcSwap` immediately sees the reloaded values.
-        self.lsp_config_tree.store(std::sync::Arc::new(outcome.raw_tree));
+        self.lsp_config_tree
+            .store(std::sync::Arc::new(outcome.raw_tree));
         self.apply_persistent_lsp_editor_options();
         // Emit a single echo summarising loader diagnostics.
         if !outcome.messages.is_empty() {
@@ -25362,21 +26291,27 @@ impl Editor {
         // Active modes (layers 4 + 3): walk in activation order
         // for minors, prepend major. Each entry carries its origin.
         let modes_snapshot = self.active_modes.get(&buffer).cloned().unwrap_or_default();
-        let mut mode_contributions: Vec<(lattice_config::OptionOverrideSet, lattice_config::OptionOrigin)> =
-            Vec::with_capacity(modes_snapshot.minors().len() + 1);
+        let mut mode_contributions: Vec<(
+            lattice_config::OptionOverrideSet,
+            lattice_config::OptionOrigin,
+        )> = Vec::with_capacity(modes_snapshot.minors().len() + 1);
         if let Some(major_id) = modes_snapshot.major()
             && let Some(major) = self.mode_registry.get(major_id)
         {
             mode_contributions.push((
                 major.options(),
-                lattice_config::OptionOrigin::ModeContribution { mode_id: major_id.to_string() },
+                lattice_config::OptionOrigin::ModeContribution {
+                    mode_id: major_id.to_string(),
+                },
             ));
         }
         for &minor_id in modes_snapshot.minors() {
             if let Some(minor) = self.mode_registry.get(minor_id) {
                 mode_contributions.push((
                     minor.options(),
-                    lattice_config::OptionOrigin::ModeContribution { mode_id: minor_id.to_string() },
+                    lattice_config::OptionOrigin::ModeContribution {
+                        mode_id: minor_id.to_string(),
+                    },
                 ));
             }
         }
@@ -25393,8 +26328,10 @@ impl Editor {
 
         // Build the origin-tagged layer list (highest priority first).
         // Layer 1: modal-state  Layer 2: buffer-local  Layers 3+: modes
-        let mut layered: Vec<(&lattice_config::OptionOverrideSet, lattice_config::OptionOrigin)> =
-            Vec::new();
+        let mut layered: Vec<(
+            &lattice_config::OptionOverrideSet,
+            lattice_config::OptionOrigin,
+        )> = Vec::new();
         layered.push((&modal_layer, lattice_config::OptionOrigin::Default));
         layered.push((&buffer_local, lattice_config::OptionOrigin::BufferLocal));
         for (set, origin) in mode_contributions.iter().rev() {
@@ -25981,7 +26918,10 @@ impl Editor {
                     ));
                 }
                 BufferKind::Dashboard => {
-                    let label = row.name.clone().unwrap_or_else(|| "*dashboard*".to_string());
+                    let label = row
+                        .name
+                        .clone()
+                        .unwrap_or_else(|| "*dashboard*".to_string());
                     lines.push(format!(
                         "  {active_marker}{listed_marker} #{:<3} dash     {label}",
                         id.0
@@ -26197,9 +27137,10 @@ impl Editor {
                 ));
             }
         }
-        Some(
-            lattice_help::HelpContent::from_lines(format!("apropos {pattern}"), lines),
-        )
+        Some(lattice_help::HelpContent::from_lines(
+            format!("apropos {pattern}"),
+            lines,
+        ))
     }
 
     /// 5.5.F.2: build the `:describe-key <chord>` content.
@@ -26213,16 +27154,13 @@ impl Editor {
     /// Infallible — an unbound or unparseable chord renders an
     /// explanatory message.
     pub fn build_describe_key_content(&self, chord: &str) -> lattice_help::HelpContent {
-        let (mode_filter, chord_str) =
-            lattice_keymap::parse_describe_key_arg(chord);
+        let (mode_filter, chord_str) = lattice_keymap::parse_describe_key_arg(chord);
 
         // Parse the chord. If parsing fails, show an error line.
         let parsed = match crate::chord::parse_chord_sequence(chord_str) {
             Ok(p) if !p.is_empty() => p,
             _ => {
-                let lines = vec![format!(
-                    "`{chord_str}` — cannot parse chord string."
-                )];
+                let lines = vec![format!("`{chord_str}` — cannot parse chord string.")];
                 return lattice_help::HelpContent::from_lines(
                     format!("describe-key {chord}"),
                     lines,
@@ -26234,10 +27172,18 @@ impl Editor {
         // Use active_buffer_id() so focused Multibuffer/Terminal/etc.
         // panes see their own mode contributions as active, not the
         // last-seen Document buffer's modes.
+        //
+        // `keymap_gated_ids()` (active major first, then active minors), NOT
+        // `minors()`: `resolve_trace` gates a `MajorMode` layer by this slice
+        // just like a `MinorMode` one, so dropping the active major here would
+        // mark the buffer's own major-mode chords as inactive — and, paired
+        // with the pre-fix `resolve_trace`, was why `:describe-key` reported
+        // every major's chords as globally active. Mirrors the dispatch path
+        // (dispatch.rs:1033, 7479).
         let active_modes: Vec<lattice_mode::mode::ModeId> = self
             .active_modes
             .get(&self.active_buffer_id())
-            .map(|m| m.minors().to_vec())
+            .map(|m| m.keymap_gated_ids())
             .unwrap_or_default();
 
         // Run trace(s).
@@ -26275,9 +27221,7 @@ impl Editor {
                     .registry
                     .lookup(winner.command.command.command)
                     .map(|spec| spec.name.clone())
-                    .unwrap_or_else(|| {
-                        format!("{:?}", winner.command.command.command)
-                    });
+                    .unwrap_or_else(|| format!("{:?}", winner.command.command.command));
                 // SN.3c.2b: a `fall_through` winner augments-and-continues
                 // — flag it and render the continuation chain below.
                 let fires = if winner.command.fall_through {
@@ -26290,10 +27234,7 @@ impl Editor {
                     "    layer: {}",
                     self.keymap.layer_label_string(winner.layer),
                 ));
-                lines.push(format!(
-                    "    source: {}",
-                    winner.command.source.as_link(),
-                ));
+                lines.push(format!("    source: {}", winner.command.source.as_link(),));
                 // SN.3c.2b: walk the fall-through continuation — each
                 // active hit below a `fall_through` one runs too, until
                 // a non-fall-through binding (or the bottom) stops it.
@@ -26333,29 +27274,52 @@ impl Editor {
             if resolution.hits.len() > 1 {
                 lines.push(String::new());
                 lines.push("  All layers (ascending priority):".to_string());
+                // Which active hits actually FIRE: the highest-priority active
+                // hit (winner) fires; each active hit below it fires only while
+                // the one above is `fall_through`. Once a non-fall-through
+                // binding is reached, everything below it is SHADOWED — an
+                // active layer whose binding never runs because a
+                // higher-priority active layer overrides the same chord (e.g.
+                // ai-conversation's `i` → focus-prompt shadows Builtin `i` →
+                // enter-insert-mode). Shadowed ≠ inactive: the layer is active,
+                // the binding just doesn't win. Keyed by layer (one binding per
+                // layer per chord in a resolution).
+                let firing_layers: Vec<lattice_keymap::KeymapLayer> = {
+                    let active_desc: Vec<&lattice_keymap::LayerHit> =
+                        resolution.hits.iter().rev().filter(|h| h.active).collect();
+                    let mut firing = Vec::new();
+                    for (i, hit) in active_desc.iter().enumerate() {
+                        if i == 0 || active_desc[i - 1].command.fall_through {
+                            firing.push(hit.layer);
+                        } else {
+                            break;
+                        }
+                    }
+                    firing
+                };
                 for hit in &resolution.hits {
                     // SN.3c.2b: surface `fall_through` alongside activeness.
-                    let status = match (hit.active, hit.command.fall_through) {
-                        (true, true) => "[active · fall-through]",
-                        (true, false) => "[active]",
-                        (false, true) => "[inactive · fall-through]",
-                        (false, false) => "[inactive]",
+                    // A shadowed active hit is reported distinctly so
+                    // `:describe-key` never implies a binding fires when a
+                    // higher-priority layer overrides it.
+                    let fires = firing_layers.contains(&hit.layer);
+                    let status = match (hit.active, fires, hit.command.fall_through) {
+                        (true, true, true) => "[active · fall-through]",
+                        (true, true, false) => "[active]",
+                        (true, false, _) => "[shadowed]",
+                        (false, _, true) => "[inactive · fall-through]",
+                        (false, _, false) => "[inactive]",
                     };
                     let cmd_name = self
                         .registry
                         .lookup(hit.command.command.command)
                         .map(|spec| spec.name.clone())
-                        .unwrap_or_else(|| {
-                            format!("{:?}", hit.command.command.command)
-                        });
+                        .unwrap_or_else(|| format!("{:?}", hit.command.command.command));
                     lines.push(format!(
                         "    {} → {cmd_name} {status}",
                         self.keymap.layer_label_string(hit.layer),
                     ));
-                    lines.push(format!(
-                        "      source: {}",
-                        hit.command.source.as_link(),
-                    ));
+                    lines.push(format!("      source: {}", hit.command.source.as_link(),));
                 }
             }
         }
@@ -26375,12 +27339,8 @@ impl Editor {
             }
         }
 
-        lattice_help::HelpContent::from_lines(
-            format!("describe-key {chord}"),
-            lines,
-        )
+        lattice_help::HelpContent::from_lines(format!("describe-key {chord}"), lines)
     }
-
 
     /// 5.5.F.2: build the `:list-keymap` content. Groups every
     /// registered binding ([`crate::keymap::entries`]) by mode in a
@@ -26471,9 +27431,10 @@ impl Editor {
         }
         lines.push(String::new());
         lines.push(spec.doc().to_string());
-        Some(
-            lattice_help::HelpContent::from_lines(format!("describe-option {name}"), lines),
-        )
+        Some(lattice_help::HelpContent::from_lines(
+            format!("describe-option {name}"),
+            lines,
+        ))
     }
 
     /// T.9.d: build the `:describe-element <name>` / `:describe-face`
@@ -26488,14 +27449,8 @@ impl Editor {
         &mut self,
         name: &str,
     ) -> Option<lattice_help::HelpContent> {
-        let Some(registry) = self
-            .services
-            .get::<crate::ui::theme::ThemeRegistryHandle>()
-        else {
-            self.set_message(
-                EchoLevel::Error,
-                "theme registry unavailable".to_string(),
-            );
+        let Some(registry) = self.services.get::<crate::ui::theme::ThemeRegistryHandle>() else {
+            self.set_message(EchoLevel::Error, "theme registry unavailable".to_string());
             return None;
         };
         let element_name = crate::ui::theme::ElementName::from(name.to_string());
@@ -26516,7 +27471,10 @@ impl Editor {
         let mut lines: Vec<String> = Vec::new();
         lines.push(format!("# {}", info.name));
         lines.push(format!("owner:    {owner}"));
-        lines.push(format!("resolved: {}", format_resolved_style(&info.resolved)));
+        lines.push(format!(
+            "resolved: {}",
+            format_resolved_style(&info.resolved)
+        ));
         lines.push(format!("spec:     {}", format_style_spec(&info.default)));
         lines.push(String::new());
         lines.push(if info.doc.is_empty() {
@@ -26525,9 +27483,10 @@ impl Editor {
             info.doc.to_string()
         });
 
-        Some(
-            lattice_help::HelpContent::from_lines(format!("describe-element {name}"), lines),
-        )
+        Some(lattice_help::HelpContent::from_lines(
+            format!("describe-element {name}"),
+            lines,
+        ))
     }
 
     /// 5.5.F.3: build the `:options` content. Live reference of
@@ -26617,9 +27576,7 @@ impl Editor {
                     .and_then(|erased| spec.as_ref().and_then(|o| o.format_erased_value(erased)));
                 match (&origin, &effective) {
                     (OptionOrigin::BufferLocal, Some(eff)) => {
-                        lines.push(format!(
-                            "  effective (this buffer): {eff}  [buffer-local]"
-                        ));
+                        lines.push(format!("  effective (this buffer): {eff}  [buffer-local]"));
                     }
                     (OptionOrigin::ModeContribution { mode_id }, Some(eff)) if eff != &current => {
                         lines.push(format!(
@@ -26766,12 +27723,10 @@ impl Editor {
                 .into(),
         );
 
-        Some(
-            lattice_help::HelpContent::from_lines(
-                format!("describe-option-resolution {name}"),
-                lines,
-            ),
-        )
+        Some(lattice_help::HelpContent::from_lines(
+            format!("describe-option-resolution {name}"),
+            lines,
+        ))
     }
 
     /// 5.5.F.3: build the `:describe-events` content. Walks
@@ -26913,6 +27868,22 @@ impl Editor {
     /// Also restores the help-popup mirror when the active pane is
     /// a help buffer pointing at a different popup than the one
     /// currently mirrored.
+    ///
+    /// Issue #38 (tab/close axis): re-pointing the pane view and
+    /// re-pointing `self.document` at the new pane's buffer are a
+    /// PAIR — the active pane renders/edits `self.document`, so
+    /// restoring the pane without swapping the document leaves the
+    /// pane painting the previously-active buffer ("splits/tabs are
+    /// not independent"). `activate_pane` originally ran the two as
+    /// separate calls; `do_switch_to_tab` / `do_close_tab` /
+    /// `do_close_pane` restored the view but forgot the document
+    /// swap, so the picker `<C-t>` / `<C-s>` / `<C-v>` targets
+    /// polluted the original pane on the way back. Folding the sync
+    /// into the tail here makes the pair atomic: any pane-focus path
+    /// that restores the view now also follows the document. The
+    /// sync is a guarded no-op when the pane's buffer already
+    /// matches `self.document_buffer_id` (the common case), so this
+    /// is free on the hot paths that already agree.
     pub fn load_active_pane(&mut self) {
         let pane = *self.pane_tree.active();
         self.active_buffer = pane.buffer;
@@ -26925,6 +27896,7 @@ impl Editor {
         {
             self.popup_buffer = Some(pane.buffer_id);
         }
+        self.sync_active_document_to_pane();
     }
 
     /// 5.5.F.4.2: push a tagged entry onto the position-history
@@ -27332,6 +28304,11 @@ impl Editor {
         // BufferId is still mapped.
         self.lsp_close_buffer(to_remove);
         self.buffers.remove(to_remove);
+        // AR.0: drop the autoread fingerprint for the closed buffer so the
+        // map tracks only live file-backed buffers.
+        self.on_disk_fingerprints.remove(&to_remove);
+        self.autoread_pending.remove(&to_remove);
+        self.autoread_conflict_open.remove(&to_remove);
         // Re-point any pane still referencing the removed buffer.
         let new_id = self.active_pane_buffer_id();
         let new_kind = self.active_buffer;
@@ -27342,6 +28319,9 @@ impl Editor {
             }
         }
         self.set_message(EchoLevel::Info, format!("buffer #{} deleted", to_remove.0));
+        // AR.3: a file-backed buffer left the registry — resync the
+        // autoread watch set (tears the watcher down if it was the last).
+        self.refresh_autoread_watcher();
         ran_full
     }
 
@@ -27418,11 +28398,16 @@ impl Editor {
         // preserve the original origin.
         if !matches!(self.active_buffer, BufferKind::Help) {
             let active = self.pane_tree.active();
-            self.prev_pane_for_help = Some(PrevPaneState {
+            self.prev_pane_for_popup = Some(PrevPaneState {
                 buffer: active.buffer,
                 buffer_id: active.buffer_id,
                 cursor: self.cursor,
                 scroll: self.scroll,
+                // PU-A.1b: in-pane help is torn down by `do_close_pane`,
+                // which ignores this snapshot — the modal value is inert
+                // here (captured only to satisfy the struct). In-pane help
+                // does not steal modal focus the way an overlay does.
+                modal: self.modal,
             });
         }
         self.snapshot_active_pane();
@@ -27475,9 +28460,10 @@ impl Editor {
              is the concrete event struct exported by the source crate."
                 .into(),
         );
-        Some(
-            lattice_help::HelpContent::from_lines(format!("describe-event {name}"), lines),
-        )
+        Some(lattice_help::HelpContent::from_lines(
+            format!("describe-event {name}"),
+            lines,
+        ))
     }
 
     /// 5.5.F.6: `:list-modes` (M.8) content builder — render every
@@ -27608,9 +28594,10 @@ impl Editor {
              see `:describe-option <name>`.",
         ));
 
-        Some(
-            lattice_help::HelpContent::from_lines(format!("describe-mode {name}"), lines),
-        )
+        Some(lattice_help::HelpContent::from_lines(
+            format!("describe-mode {name}"),
+            lines,
+        ))
     }
 
     /// 5.5.F.6: `:customize` (no args) (M.9.0) content builder —
@@ -27727,9 +28714,10 @@ impl Editor {
              the cmdline. Per-row edit affordances land in M.9.1."
                 .into(),
         );
-        Some(
-            lattice_help::HelpContent::from_lines(format!("customize {group_name}"), lines),
-        )
+        Some(lattice_help::HelpContent::from_lines(
+            format!("customize {group_name}"),
+            lines,
+        ))
     }
 
     /// 5.5.F.6: `:customize <mode-name>` content builder — every
@@ -27814,9 +28802,10 @@ impl Editor {
              the cmdline. Per-row edit affordances land in M.9.1."
                 .into(),
         );
-        Some(
-            lattice_help::HelpContent::from_lines(format!("customize {mode_name}"), lines),
-        )
+        Some(lattice_help::HelpContent::from_lines(
+            format!("customize {mode_name}"),
+            lines,
+        ))
     }
 
     /// 5.5.F.7: `:diagnostics` — open every published diagnostic
@@ -28095,11 +29084,7 @@ pub fn raw_buffer_candidates(
                 )
             }
             BufferData::Help(_) => (
-                format!(
-                    "#{:<3} {}",
-                    id.0,
-                    entry.name.clone().unwrap_or_default()
-                ),
+                format!("#{:<3} {}", id.0, entry.name.clone().unwrap_or_default()),
                 format!("help{active_marker}"),
             ),
             BufferData::Oil(_) => {
@@ -28138,7 +29123,10 @@ pub fn raw_buffer_candidates(
                 )
             }
             BufferData::Dashboard(_) => {
-                let label = entry.name.clone().unwrap_or_else(|| "*dashboard*".to_string());
+                let label = entry
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| "*dashboard*".to_string());
                 (
                     format!("#{:<3} {label}", id.0),
                     format!("dash{active_marker}"),
@@ -28385,12 +29373,15 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         | Effect::DescribeElement { .. }
         | Effect::ListOptions
         | Effect::OpenHover { .. }
-        | Effect::CloseHover
+        | Effect::DismissPopup
+        | Effect::OpenPopup { .. }
         | Effect::OpenHelpTopic { .. }
         | Effect::ListDiagnostics
         | Effect::NextDiagnostic
         | Effect::PrevDiagnostic
         | Effect::OpenLspLog { .. }
+        | Effect::OpenAiLog { .. }
+        | Effect::OpenSyntheticBuffer { .. }
         | Effect::OpenMessages
         | Effect::OpenDashboard
         | Effect::ToggleLspTrace { .. }
@@ -28506,12 +29497,15 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         | Effect::DescribeElement { .. }
         | Effect::ListOptions
         | Effect::OpenHover { .. }
-        | Effect::CloseHover
+        | Effect::DismissPopup
+        | Effect::OpenPopup { .. }
         | Effect::OpenHelpTopic { .. }
         | Effect::ListDiagnostics
         | Effect::NextDiagnostic
         | Effect::PrevDiagnostic
         | Effect::OpenLspLog { .. }
+        | Effect::OpenAiLog { .. }
+        | Effect::OpenSyntheticBuffer { .. }
         | Effect::OpenMessages
         | Effect::OpenDashboard
         | Effect::ToggleLspTrace { .. }
@@ -28891,9 +29885,12 @@ pub fn prefer_aliases_for_command_candidates(
         let alias = crate::excommand::preferred_alias_for(&canonical);
         // Fallback: strip the `ex:` namespace prefix so the user
         // sees `oil` not `ex:oil` when no short alias exists.
-        let new_text = alias
-            .map(|a| a.to_string())
-            .unwrap_or_else(|| canonical.strip_prefix("ex:").unwrap_or(&canonical).to_string());
+        let new_text = alias.map(|a| a.to_string()).unwrap_or_else(|| {
+            canonical
+                .strip_prefix("ex:")
+                .unwrap_or(&canonical)
+                .to_string()
+        });
         c.raw.text = new_text.clone();
         c.raw.display = new_text.clone();
         c.match_ranges = subsequence_match_ranges(&needle, &new_text);
@@ -29763,6 +30760,7 @@ impl Editor {
                     self.cursor,
                     motion_inv,
                     &cancel,
+                    lattice_grammar::TextObjectEnv::default(),
                 ) {
                     self.cursor = new_pos;
                     self.pane_tree.active_mut().cursor = new_pos;
@@ -29927,6 +30925,7 @@ impl Editor {
                 self.cursor,
                 motion_inv,
                 &cancel,
+                lattice_grammar::TextObjectEnv::default(),
             ) {
                 Ok(new_pos) => {
                     self.cursor = new_pos;
@@ -30110,6 +31109,7 @@ impl Editor {
             self.cursor,
             inv,
             &cancel,
+            lattice_grammar::TextObjectEnv::default(),
         ) {
             Ok(target) => {
                 self.cursor = target;
@@ -30159,9 +31159,48 @@ fn cells_edit_delta_from_applied(
     }
 }
 
+/// OWC: should the active buffer adopt an owner-write caret move?
+///
+/// True only when the buffer has an editable tail AND its text advanced beyond
+/// what the host last issued. The editable-tail gate is the whole point: the
+/// ACP conversation prompt is the sole buffer where an owner streams content
+/// while the user's caret lives in the buffer, so it is the only one that
+/// should follow the owner write. Read-only synthetic buffers (dashboard,
+/// help, `*messages*`, `*ai:log*`, oil, file-tree) are populated by owner
+/// writes too — including an append into an *empty* buffer, which moves a
+/// caret sitting at the (0,0) insertion point to EOF — but the host or user
+/// places their caret deliberately there, so adopting the transformed EOF
+/// dragged the viewport to the bottom (the dashboard-scrolls-to-bottom bug).
+fn should_adopt_owner_write(
+    has_editable_tail: bool,
+    doc_text_version: u64,
+    last_seen: u64,
+) -> bool {
+    has_editable_tail && doc_text_version > last_seen
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── OWC: owner-write adopt gate ─────────────────────────────
+    #[test]
+    fn owc_adopts_only_editable_tail_buffer_on_owner_write() {
+        // Editable-tail buffer (the ACP conversation prompt) whose text
+        // advanced past the host's last-issued version → follow the stream.
+        assert!(should_adopt_owner_write(true, 5, 4));
+        // Same buffer, no new owner write → nothing to adopt.
+        assert!(!should_adopt_owner_write(true, 4, 4));
+    }
+
+    #[test]
+    fn owc_never_adopts_a_buffer_without_an_editable_tail() {
+        // Read-only synthetic buffers (dashboard, help, messages, log): even
+        // when an owner write advanced the text and moved the document
+        // selection to EOF, the caret the host placed must stand.
+        assert!(!should_adopt_owner_write(false, 5, 4));
+        assert!(!should_adopt_owner_write(false, 99, 0));
+    }
 
     // ── L7: Effect::Lsp classification ──────────────────────────
     #[test]
@@ -30409,10 +31448,12 @@ mod tests {
 
         let small = "fn a() {}\n".repeat(20);
         assert!(small.len() <= crate::editor::Editor::SYNC_PARSE_MAX_BYTES);
-        let (h_small, sync_small) =
-            editor.build_open_syntax(lattice_syntax::Lang::Rust, &small, 1);
+        let (h_small, sync_small) = editor.build_open_syntax(lattice_syntax::Lang::Rust, &small, 1);
         assert!(h_small.is_some(), "rust grammar present");
-        assert!(sync_small, "a small file must parse synchronously (instant colour)");
+        assert!(
+            sync_small,
+            "a small file must parse synchronously (instant colour)"
+        );
 
         // ~180 KiB of valid Rust — above the 128 KiB threshold.
         let big = "fn a() { let x = 1; let y = x + 1; }\n".repeat(5000);
@@ -30421,8 +31462,7 @@ mod tests {
             "corpus must exceed the sync threshold ({} bytes)",
             big.len()
         );
-        let (h_big, sync_big) =
-            editor.build_open_syntax(lattice_syntax::Lang::Rust, &big, 1);
+        let (h_big, sync_big) = editor.build_open_syntax(lattice_syntax::Lang::Rust, &big, 1);
         assert!(h_big.is_some(), "rust grammar present");
         assert!(
             !sync_big,
@@ -30472,8 +31512,7 @@ mod tests {
             reg.resolved().get(kw).fg,
             Some(lattice_theme::Color::Rgb(0xcb, 0xa6, 0xf7))
         );
-        let out =
-            editor.handle_effect(Effect::SetColorscheme("catppuccin-macchiato".to_string()));
+        let out = editor.handle_effect(Effect::SetColorscheme("catppuccin-macchiato".to_string()));
         assert!(
             out.renderer_signals
                 .iter()
@@ -30531,8 +31570,10 @@ mod tests {
         let mut editor = crate::editor::Editor::boot(document);
         let old_token = lattice_protocol::CancellationToken::new();
         editor.pending_hover_token = Some(old_token.clone());
-        editor.pending_hover_anchor =
-            Some((lattice_protocol::position::Position::new(0, 3), editor.scroll));
+        editor.pending_hover_anchor = Some((
+            lattice_protocol::position::Position::new(0, 3),
+            editor.scroll,
+        ));
         // Cursor moved to a different column since the request fired.
         editor.cursor = lattice_protocol::position::Position::new(0, 7);
 
@@ -30562,7 +31603,11 @@ mod tests {
             Some("-- INSERT --")
         );
         let ring = editor.messages.lock().unwrap();
-        assert_eq!(ring.len(), ring_len_before, "showmode must not hit the ring");
+        assert_eq!(
+            ring.len(),
+            ring_len_before,
+            "showmode must not hit the ring"
+        );
         assert!(
             !ring.records().iter().any(|r| r.text.contains("INSERT")),
             "showmode text stays out of message history"
@@ -30635,9 +31680,11 @@ mod tests {
         let mut editor = crate::editor::Editor::boot(document);
         let buffer = editor.pane_tree.active().buffer_id;
 
-        editor
-            .modeline
-            .register(ModelineElement::new(ElementId::new("test.badge"), Zone::Right, 0));
+        editor.modeline.register(ModelineElement::new(
+            ElementId::new("test.badge"),
+            Zone::Right,
+            0,
+        ));
         editor.modeline.update(
             ModelineKey::Buffer(buffer),
             ElementId::new("test.badge"),
@@ -30685,9 +31732,11 @@ mod tests {
         let buffer = editor.pane_tree.active().buffer_id;
 
         // A producer registers its descriptor (mode `on_activate` shape).
-        editor
-            .modeline
-            .register(ModelineElement::new(ElementId::new("test.pushed"), Zone::Right, 0));
+        editor.modeline.register(ModelineElement::new(
+            ElementId::new("test.pushed"),
+            Zone::Right,
+            0,
+        ));
         // …and pushes per-buffer content over the bus, exactly as a mode
         // or plugin would (no direct store write).
         editor.event_bus.publish_typed(ModelineElementUpdate {
@@ -30831,7 +31880,8 @@ mod tests {
         // Firing the live-preview hook via preview_picker_selection.
         let sigs = editor.preview_picker_selection();
         assert!(
-            sigs.iter().any(|s| matches!(s, RendererSignal::ThemeChanged)),
+            sigs.iter()
+                .any(|s| matches!(s, RendererSignal::ThemeChanged)),
             "preview emits ThemeChanged"
         );
         // The editor really recolored: syntax.keyword now Macchiato mauve.
@@ -30928,7 +31978,10 @@ mod tests {
         // Authoring spec shows the palette-key reference, not the hex.
         // T.11.0a renamed the Catppuccin-specific key `mauve` → the
         // generic role-key `purple` (resolved value #cba6f7 unchanged).
-        assert!(body.contains("palette \"purple\""), "spec palette ref: {body}");
+        assert!(
+            body.contains("palette \"purple\""),
+            "spec palette ref: {body}"
+        );
         assert!(body.contains("Language keywords."), "doc: {body}");
     }
 
@@ -31331,7 +32384,11 @@ mod tests {
             .diff_subsystem
             .lookup_session_for(right_id)
             .expect("a diff session is registered for the proposed buffer");
-        assert_eq!(session.buffer_id(), right_id, "primary = the proposed buffer");
+        assert_eq!(
+            session.buffer_id(),
+            right_id,
+            "primary = the proposed buffer"
+        );
         assert_eq!(
             editor.programmatic_diff_accept_paths.get(&right_id),
             Some(&path),
@@ -31344,7 +32401,9 @@ mod tests {
             editor.diff_subsystem.is_empty(),
             "session torn down after accept"
         );
-        let outcome = rx.await.expect("completion fired before the sender dropped");
+        let outcome = rx
+            .await
+            .expect("completion fired before the sender dropped");
         assert_eq!(outcome, crate::diff::subsystem::DiffOutcome::Accept);
 
         // D-fix.1: the diff closes on accept and focus returns to claude.
@@ -31520,7 +32579,10 @@ mod tests {
             .and_then(|l| l.get::<crate::modes::DocumentFolds>())
             .map(|f| f.0.clone())
             .unwrap_or_default();
-        assert!(!folds.is_empty(), "inactive baseline gets unchanged folds stashed");
+        assert!(
+            !folds.is_empty(),
+            "inactive baseline gets unchanged folds stashed"
+        );
         assert!(
             folds.iter().all(|f| f.closed),
             "unchanged folds are closed by default"
@@ -31575,7 +32637,10 @@ mod tests {
 
         // >1 pending → the verdict opens a picker rather than resolving one.
         editor.do_diff_accept();
-        assert!(editor.picker.is_some(), ">1 reviews ⇒ diff-review picker opens");
+        assert!(
+            editor.picker.is_some(),
+            ">1 reviews ⇒ diff-review picker opens"
+        );
         assert_eq!(
             editor.diff_subsystem.sessions_awaiting_outcome().len(),
             2,
@@ -31614,10 +32679,16 @@ mod tests {
             origin_session: 0,
             response: tx,
         });
-        assert_eq!(editor.pane_tree.len(), 3, "claude pane + baseline + proposed");
+        assert_eq!(
+            editor.pane_tree.len(),
+            3,
+            "claude pane + baseline + proposed"
+        );
 
         editor.do_diff_reject();
-        let outcome = rx.await.expect("completion fired before the sender dropped");
+        let outcome = rx
+            .await
+            .expect("completion fired before the sender dropped");
         assert_eq!(outcome, crate::diff::subsystem::DiffOutcome::Reject);
         assert!(editor.diff_subsystem.is_empty());
 
@@ -31739,7 +32810,11 @@ mod tests {
         });
         let prop2 = editor.active_pane_buffer_id();
         assert_ne!(prop1, prop2);
-        assert_eq!(editor.programmatic_diff_panes.len(), 2, "both diffs registered");
+        assert_eq!(
+            editor.programmatic_diff_panes.len(),
+            2,
+            "both diffs registered"
+        );
 
         // Close connection 1's diffs only.
         let closed = editor.do_close_session_diffs(1);
@@ -31800,8 +32875,16 @@ mod tests {
         });
         assert_eq!(editor.programmatic_diff_panes.len(), 1);
 
-        assert_eq!(editor.do_close_session_diffs(0), 0, "the 0 sentinel matches nothing");
-        assert_eq!(editor.do_close_session_diffs(5), 0, "an unknown connection matches nothing");
+        assert_eq!(
+            editor.do_close_session_diffs(0),
+            0,
+            "the 0 sentinel matches nothing"
+        );
+        assert_eq!(
+            editor.do_close_session_diffs(5),
+            0,
+            "an unknown connection matches nothing"
+        );
         assert_eq!(
             editor.programmatic_diff_panes.len(),
             1,
@@ -32292,8 +33375,7 @@ mod tests {
         use lattice_diff::{Hunk, HunkIndex, HunkKind, LineRange};
         use smallvec::smallvec;
 
-        let mut editor =
-            boot_editor_with_diff_session("a\nb\nc\nd\ne\n", "a\nb\nc\nd\ne\n");
+        let mut editor = boot_editor_with_diff_session("a\nb\nc\nd\ne\n", "a\nb\nc\nd\ne\n");
         let bid = editor.document_buffer_id;
         let session = editor.diff_subsystem.lookup(bid).unwrap();
         let rev = session.allocate_revision();
@@ -33070,7 +34152,10 @@ mod tests {
         );
         // Global value must be unchanged.
         let global_after = *editor.config.get_typed::<lattice_config::Number>().unwrap();
-        assert!(global_after, "global number must remain true after :setlocal");
+        assert!(
+            global_after,
+            "global number must remain true after :setlocal"
+        );
     }
 
     /// Two buffers get independent local overrides.
@@ -33116,7 +34201,10 @@ mod tests {
         editor.do_set_local("number=false");
         editor.do_set_local("wrap=true");
         // Both overrides present.
-        assert_eq!(editor.buffer_local_overrides.get(&buf).map(|s| s.len()), Some(2));
+        assert_eq!(
+            editor.buffer_local_overrides.get(&buf).map(|s| s.len()),
+            Some(2)
+        );
         editor.do_set_local("&");
         assert!(
             !editor.buffer_local_overrides.contains_key(&buf),
@@ -33155,7 +34243,10 @@ mod tests {
         boot_config(&mut editor);
         let buf = editor.document_buffer_id;
         editor.do_set_local("number=false");
-        let resolved = editor.resolved_options.get(&buf).expect("must have resolved");
+        let resolved = editor
+            .resolved_options
+            .get(&buf)
+            .expect("must have resolved");
         let origin = resolved.get_origin::<lattice_config::Number>();
         assert_eq!(
             origin,
@@ -33172,7 +34263,10 @@ mod tests {
         let buf = editor.document_buffer_id;
         // Force a recompute with no local overrides.
         editor.recompute_options_for_buffer(buf);
-        let resolved = editor.resolved_options.get(&buf).expect("must have resolved");
+        let resolved = editor
+            .resolved_options
+            .get(&buf)
+            .expect("must have resolved");
         let origin = resolved.get_origin::<lattice_config::Number>();
         assert_eq!(
             origin,
@@ -33226,8 +34320,14 @@ mod tests {
         let content = editor.build_list_options_content();
         let text = content.buffer.content.as_string();
         // A few core options that must always be present.
-        assert!(text.contains("number"), "must contain `number`; got:\n{text}");
-        assert!(text.contains("tabstop"), "must contain `tabstop`; got:\n{text}");
+        assert!(
+            text.contains("number"),
+            "must contain `number`; got:\n{text}"
+        );
+        assert!(
+            text.contains("tabstop"),
+            "must contain `tabstop`; got:\n{text}"
+        );
         assert!(text.contains("wrap"), "must contain `wrap`; got:\n{text}");
     }
 
@@ -33580,7 +34680,10 @@ mod tests {
         editor.scroll = 0;
         editor.cursor = lattice_protocol::position::Position::new(100, 0);
         editor.ensure_cursor_visible();
-        assert_eq!(editor.scroll, 91, "empty matrix + scrolloff 0 ⇒ classic clamp");
+        assert_eq!(
+            editor.scroll, 91,
+            "empty matrix + scrolloff 0 ⇒ classic clamp"
+        );
     }
 
     /// The reported `G` bug: cursor on the last line of a
@@ -33609,7 +34712,10 @@ mod tests {
                 .virtual_rows_matrix_for(editor.active_buffer_id())
                 .load()
                 .virtual_rows_in_line_range(editor.scroll, 11);
-        assert!(display <= editor.viewport_height, "last line clears the modeline");
+        assert!(
+            display <= editor.viewport_height,
+            "last line clears the modeline"
+        );
     }
 
     /// `ensure_cursor_visible` must never scroll *up* when the
@@ -33622,7 +34728,10 @@ mod tests {
         seed_headers(&editor, &[6], 40);
         editor.cursor = lattice_protocol::position::Position::new(8, 0);
         editor.ensure_cursor_visible();
-        assert_eq!(editor.scroll, 5, "cursor already visible ⇒ no scroll change");
+        assert_eq!(
+            editor.scroll, 5,
+            "cursor already visible ⇒ no scroll change"
+        );
     }
 
     /// `zb` (`ScrollPos::Bottom`) shares the bottom clamp — the
@@ -33782,6 +34891,284 @@ mod tests {
         assert_eq!(editor.leftcol, 0, "wrap reflows ⇒ no horizontal scroll");
     }
 
+    #[test]
+    fn autoread_option_registered_and_default_true() {
+        // AR.1: `autoread` is registered and defaults to `true`.
+        let editor = crate::editor::Editor::boot(lattice_core::Document::from_text("hi\n"));
+        let v = editor
+            .config
+            .get_typed::<lattice_config::core_options::Autoread>()
+            .expect("autoread option registered");
+        assert!(*v, "global default is true");
+    }
+
+    #[test]
+    fn autoread_enabled_for_defaults_true() {
+        // AR.1: the per-buffer reader resolves to the default when no
+        // override is present.
+        let editor = crate::editor::Editor::boot(lattice_core::Document::from_text("hi\n"));
+        assert!(editor.autoread_enabled_for(editor.document_buffer_id));
+    }
+
+    #[test]
+    fn bound_watch_set_caps_and_always_keeps_active_dir() {
+        use std::collections::{HashMap, HashSet};
+        use std::path::{Path, PathBuf};
+        let mut w: HashMap<PathBuf, HashSet<String>> = HashMap::new();
+        for i in 0..5 {
+            w.insert(
+                PathBuf::from(format!("/d{i}")),
+                HashSet::from(["f.txt".to_string()]),
+            );
+        }
+        let bounded = bound_watch_set(w, Some(Path::new("/d3")), 2);
+        assert_eq!(bounded.len(), 2, "capped to 2 dirs");
+        assert!(
+            bounded.contains_key(Path::new("/d3")),
+            "active dir is never evicted by the cap"
+        );
+    }
+
+    #[test]
+    fn autoread_watch_fingerprint_is_order_independent() {
+        use std::collections::{HashMap, HashSet};
+        use std::path::PathBuf;
+        let mut a: HashMap<PathBuf, HashSet<String>> = HashMap::new();
+        a.insert(
+            PathBuf::from("/x"),
+            HashSet::from(["a".to_string(), "b".to_string()]),
+        );
+        a.insert(PathBuf::from("/y"), HashSet::from(["c".to_string()]));
+        let mut b: HashMap<PathBuf, HashSet<String>> = HashMap::new();
+        b.insert(PathBuf::from("/y"), HashSet::from(["c".to_string()]));
+        b.insert(
+            PathBuf::from("/x"),
+            HashSet::from(["b".to_string(), "a".to_string()]),
+        );
+        assert_eq!(
+            autoread_watch_fingerprint(&a),
+            autoread_watch_fingerprint(&b),
+            "same set, different insertion order ⇒ same fingerprint"
+        );
+    }
+
+    #[test]
+    fn autoread_desired_watches_dedupe_by_dir_and_spawn_on_open() {
+        // AR.3 scale invariant: the watch set tracks distinct parent dirs of
+        // OPEN buffers, not the file count. Three files across two dirs ⇒ two
+        // watch entries; the watcher spawns on the first file open.
+        let base = std::env::temp_dir().join(format!("lattice-ar3-{}", std::process::id()));
+        let sub = base.join("sub");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(base.join("a.txt"), "a").unwrap();
+        std::fs::write(base.join("b.txt"), "b").unwrap();
+        std::fs::write(sub.join("c.txt"), "c").unwrap();
+
+        let mut e = crate::editor::Editor::boot(lattice_core::Document::from_text("scratch"));
+        e.do_edit(Some(base.join("a.txt")), false);
+        e.do_edit(Some(base.join("b.txt")), false);
+        e.do_edit(Some(sub.join("c.txt")), false);
+
+        let w = e.desired_autoread_watches();
+        assert_eq!(w.len(), 2, "two distinct dirs, not three files");
+        let total: usize = w.values().map(|s| s.len()).sum();
+        assert_eq!(total, 3, "three files across the two dirs");
+        assert!(
+            w.values().any(|s| s.len() == 2),
+            "the base dir holds two files"
+        );
+        assert!(
+            e.autoread_watcher.is_some(),
+            "watcher spawned on the first file-backed buffer"
+        );
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// Open a file into a fresh Editor and return (editor, dir, path).
+    #[cfg(test)]
+    fn ar4_editor_with_file(
+        tag: &str,
+        contents: &str,
+    ) -> (Editor, std::path::PathBuf, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("lattice-ar4-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("f.txt");
+        std::fs::write(&path, contents).unwrap();
+        let mut e = crate::editor::Editor::boot(lattice_core::Document::from_text("scratch"));
+        e.do_edit(Some(path.clone()), false);
+        (e, dir, path)
+    }
+
+    fn inject_pending(
+        e: &mut Editor,
+        path: &std::path::Path,
+        kind: crate::autoread::AutoreadChangeKind,
+    ) {
+        let id = e.document_buffer_id;
+        e.autoread_pending.insert(
+            id,
+            crate::autoread::AutoreadChange {
+                path: path.to_path_buf(),
+                kind,
+            },
+        );
+    }
+
+    #[test]
+    fn autoread_clean_reload_updates_active_buffer() {
+        // AR.4: an external change to a clean active buffer reloads it.
+        let (mut e, dir, path) = ar4_editor_with_file("clean", "v1\n");
+        assert_eq!(e.document.text(), "v1\n");
+        std::fs::write(&path, "v2-external\n").unwrap();
+        inject_pending(&mut e, &path, crate::autoread::AutoreadChangeKind::Modified);
+        let _ = e.drain_autoread_changes();
+        assert_eq!(
+            e.document.text(),
+            "v2-external\n",
+            "clean buffer reloaded to on-disk content"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn autoread_suppresses_unchanged_file_no_reload() {
+        // AR.4: a change event for a file whose content matches the stored
+        // fingerprint (self-write / no-op touch) does not reload or echo.
+        let (mut e, dir, path) = ar4_editor_with_file("noop", "same\n");
+        inject_pending(&mut e, &path, crate::autoread::AutoreadChangeKind::Modified);
+        e.last_message = None;
+        let _ = e.drain_autoread_changes();
+        assert_eq!(e.document.text(), "same\n", "buffer untouched");
+        assert!(
+            e.last_message.is_none(),
+            "no spurious reload message on an unchanged file"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn autoread_conflict_opens_resolver_and_guards_buffer() {
+        // AR.5: on-disk change + unsaved local edits ⇒ open a diff resolver,
+        // never clobber, and guard the buffer so it can't loop.
+        let (mut e, dir, path) = ar4_editor_with_file("conflict", "v1\n");
+        let id = e.document_buffer_id;
+        e.apply_edit_blocking(lattice_protocol::edit::Edit::insert(
+            lattice_protocol::position::Position::new(0, 0),
+            "local-".to_string(),
+        ))
+        .unwrap();
+        assert!(e.document.dirty());
+        std::fs::write(&path, "v2-external\n").unwrap();
+        inject_pending(&mut e, &path, crate::autoread::AutoreadChangeKind::Modified);
+        // open_programmatic_diff needs ambient runtime context (the actor
+        // thread has one in production).
+        let guard = lattice_runtime::runtime::lsp_runtime().enter();
+        let _ = e.drain_autoread_changes();
+        drop(guard);
+        assert!(
+            e.autoread_conflict_open.contains(&id),
+            "conflict opens a resolver and guards the buffer"
+        );
+        assert_eq!(
+            e.last_message.as_ref().map(|m| m.level),
+            Some(EchoLevel::Warn),
+            "conflict warns"
+        );
+        // The original buffer was never reloaded — its local edits are intact.
+        assert!(
+            e.buffers.document_path(id).is_some(),
+            "original buffer still present (not clobbered)"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn autoread_guarded_buffer_is_hands_off() {
+        // AR.5: while a conflict resolver is open for a buffer, the drain does
+        // not reload or re-open it (resolve-then-save can't loop).
+        let (mut e, dir, path) = ar4_editor_with_file("guard", "v1\n");
+        let id = e.document_buffer_id;
+        e.autoread_conflict_open.insert(id);
+        std::fs::write(&path, "v2-external\n").unwrap();
+        inject_pending(&mut e, &path, crate::autoread::AutoreadChangeKind::Modified);
+        let _ = e.drain_autoread_changes();
+        assert_eq!(e.document.text(), "v1\n", "guarded buffer is not reloaded");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn autoread_delete_keeps_buffer_and_warns() {
+        // AR.4: file removed on disk ⇒ keep the buffer, warn, never wipe.
+        let (mut e, dir, path) = ar4_editor_with_file("delete", "v1\n");
+        std::fs::remove_file(&path).unwrap();
+        inject_pending(&mut e, &path, crate::autoread::AutoreadChangeKind::Deleted);
+        let _ = e.drain_autoread_changes();
+        assert_eq!(e.document.text(), "v1\n", "buffer content kept on delete");
+        assert_eq!(
+            e.last_message.as_ref().map(|m| m.level),
+            Some(EchoLevel::Warn),
+            "delete warns"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn autoread_unreadable_file_keeps_buffer_and_warns() {
+        // AR.6 hardening: a "modified" event for a file that can't be read as
+        // text (non-UTF-8, or vanished between event and read) must keep the
+        // buffer and warn — never panic, never wipe.
+        let (mut e, dir, path) = ar4_editor_with_file("unreadable", "v1\n");
+        // Overwrite with invalid UTF-8 so read_to_string fails.
+        std::fs::write(&path, [0xff, 0xfe, 0x00, 0x9f]).unwrap();
+        inject_pending(&mut e, &path, crate::autoread::AutoreadChangeKind::Modified);
+        let _ = e.drain_autoread_changes();
+        assert_eq!(
+            e.document.text(),
+            "v1\n",
+            "buffer kept when disk isn't readable text"
+        );
+        assert_eq!(
+            e.last_message.as_ref().map(|m| m.level),
+            Some(EchoLevel::Warn)
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn autoread_background_change_deferred_until_active() {
+        // AR.4: a change recorded for a NON-active buffer isn't applied until
+        // that buffer becomes active.
+        let (mut e, dir, path) = ar4_editor_with_file("bg", "v1\n");
+        let bg_id = e.document_buffer_id;
+        // Open a second file so `bg` is now backgrounded.
+        let other = dir.join("other.txt");
+        std::fs::write(&other, "other\n").unwrap();
+        e.do_edit(Some(other.clone()), false);
+        assert_ne!(e.document_buffer_id, bg_id);
+
+        // External change to the backgrounded file + a pending entry for it.
+        std::fs::write(&path, "v2-external\n").unwrap();
+        e.autoread_pending.insert(
+            bg_id,
+            crate::autoread::AutoreadChange {
+                path: path.clone(),
+                kind: crate::autoread::AutoreadChangeKind::Modified,
+            },
+        );
+        // Draining while `other` is active must NOT touch it, and the pending
+        // entry survives for `bg`.
+        let _ = e.drain_autoread_changes();
+        assert_eq!(e.document.text(), "other\n", "active buffer untouched");
+        assert!(
+            e.autoread_pending.contains_key(&bg_id),
+            "background change still pending"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// HS.2: `zl`/`zh` (count columns) + `zL`/`zH` (half body) move
     /// `leftcol` and keep the cursor inside the window.
     #[test]
@@ -33857,7 +35244,10 @@ mod tests {
         editor.scroll = 0;
         editor.cursor = lattice_protocol::position::Position::new(50, 0);
         editor.ensure_cursor_visible();
-        assert_eq!(editor.scroll, 36, "5 lines of context kept below the cursor");
+        assert_eq!(
+            editor.scroll, 36,
+            "5 lines of context kept below the cursor"
+        );
     }
 
     /// `scrolloff` keeps N lines above the cursor: moving up to
@@ -33870,7 +35260,10 @@ mod tests {
         editor.scroll = 40;
         editor.cursor = lattice_protocol::position::Position::new(40, 0);
         editor.ensure_cursor_visible();
-        assert_eq!(editor.scroll, 35, "5 lines of context kept above the cursor");
+        assert_eq!(
+            editor.scroll, 35,
+            "5 lines of context kept above the cursor"
+        );
     }
 
     /// Near EOF the bottom margin clamps to the last line — vim's
@@ -33941,7 +35334,10 @@ mod tests {
 
         editor.cursor = lattice_protocol::position::Position::new(11, 0);
         editor.ensure_cursor_visible();
-        assert_eq!(editor.scroll, 7, "5 wrapped lines (×2 rows) fill the 10-row viewport");
+        assert_eq!(
+            editor.scroll, 7,
+            "5 wrapped lines (×2 rows) fill the 10-row viewport"
+        );
     }
 
     // ── D.4.d.3.a: :diffthis + two-pane :diffoff ──────────────
@@ -33997,6 +35393,430 @@ mod tests {
         editor.pane_tree.leaves_mut()[2].buffer_id = buf2;
         let buf0 = editor.pane_tree.leaves()[0].buffer_id;
         (buf0, buf1, buf2)
+    }
+
+    /// Regression (Issue #38 on the tab axis): a tab switch must
+    /// re-point `self.document` at the newly-active pane's buffer.
+    /// Repro of the picker `<C-t>` pollution — open A in tab 0,
+    /// open B in a fresh tab, switch back to tab 0: the surviving
+    /// pane is restored to A, but the active pane renders/edits
+    /// `self.document`, which `do_switch_to_tab` left pointing at
+    /// B. `do_switch_to_tab` restores the pane view
+    /// (`load_active_pane`) without the companion
+    /// `sync_active_document_to_pane` that `activate_pane` runs.
+    #[tokio::test]
+    async fn switching_tabs_re_points_document_to_active_pane_buffer() {
+        let mut editor = crate::editor::Editor::boot(lattice_core::Document::empty());
+        let file_a = write_temp("aaa\n", "tabswitch-a");
+        let file_b = write_temp("bbb\n", "tabswitch-b");
+
+        let _ = editor.do_edit(Some(file_a.0.clone()), false);
+        let buf_a = editor.document_buffer_id;
+
+        // Picker `<C-t>`: new tab, then open B into it.
+        editor.do_new_tab();
+        let _ = editor.do_edit(Some(file_b.0.clone()), false);
+        let buf_b = editor.document_buffer_id;
+        assert_ne!(buf_a, buf_b, "A and B are distinct buffers");
+
+        // `gT` back to tab 0.
+        editor.do_prev_tab();
+
+        assert_eq!(
+            editor.pane_tree.active().buffer_id,
+            buf_a,
+            "tab 0's pane is restored to A"
+        );
+        assert_eq!(
+            editor.document_buffer_id, buf_a,
+            "self.document must follow the active pane after a tab \
+             switch — else tab 0 renders/edits B (the <C-t> pollution)"
+        );
+    }
+
+    /// Regression: closing a split must re-point `self.document`
+    /// at the surviving pane's buffer. Repro of the picker
+    /// `<C-s>`/`<C-v>` pollution — split-open B beside A, then
+    /// close B's pane: focus returns to A's pane, but
+    /// `do_close_pane` left `self.document` on B (same missing
+    /// `sync_active_document_to_pane` as the tab-switch path).
+    #[tokio::test]
+    async fn closing_split_re_points_document_to_surviving_pane_buffer() {
+        let mut editor = crate::editor::Editor::boot(lattice_core::Document::empty());
+        let file_a = write_temp("aaa\n", "closesplit-a");
+        let file_b = write_temp("bbb\n", "closesplit-b");
+
+        let _ = editor.do_edit(Some(file_a.0.clone()), false);
+        let buf_a = editor.document_buffer_id;
+
+        // Picker `<C-s>`: split (new pane inherits A), then open B.
+        let _ = editor.prepare_open_target_pane(lattice_picker::OpenTarget::Split);
+        let _ = editor.do_edit(Some(file_b.0.clone()), false);
+        let buf_b = editor.document_buffer_id;
+        assert_ne!(buf_a, buf_b, "A and B are distinct buffers");
+
+        // Focus is on B's pane; close it — focus returns to A's pane.
+        editor.do_close_pane();
+
+        assert_eq!(
+            editor.pane_tree.active().buffer_id,
+            buf_a,
+            "surviving pane is A"
+        );
+        assert_eq!(
+            editor.document_buffer_id, buf_a,
+            "self.document must follow the surviving pane after a pane \
+             close — else the original pane renders/edits B"
+        );
+    }
+
+    // ── PIC.2: popup input gate ───────────────────────────────
+
+    fn open_focused_popup(editor: &mut crate::editor::Editor) {
+        let content = lattice_help::parse_help_lines("t", vec!["help line".to_string()]);
+        editor.open_popup(content, crate::popup::PopupPlacement::Centered);
+        assert!(editor.popup_buffer.is_some(), "State B popup open");
+        assert_eq!(editor.active_buffer, BufferKind::Help);
+    }
+
+    /// PIC.2 (bug 2): the org-cycle fold ops are now document mutations,
+    /// so the read-only-help guard consumes them like `zo`/`zc`/`za`.
+    #[test]
+    fn fold_cycles_are_document_mutations() {
+        assert!(action_is_document_mutation(&Action::CycleFoldAtCursor));
+        assert!(action_is_document_mutation(&Action::CycleFoldsGlobal));
+    }
+
+    /// PIC.2 (bug 3): the escape predicate covers tab + pane-tree nav and
+    /// nothing else — motions/dismiss flow onto the popup.
+    #[test]
+    fn escape_predicate_covers_tab_and_pane_nav_only() {
+        for a in [
+            Action::NextTab,
+            Action::PrevTab,
+            Action::GoToTab(2),
+            Action::NewTab,
+            Action::CloseTab,
+            Action::SplitPaneHorizontal,
+            Action::SplitPaneVertical,
+            Action::ClosePane,
+            Action::OnlyPane,
+            Action::NextPane,
+            Action::PrevPane,
+        ] {
+            assert!(action_escapes_focused_popup(&a), "{a:?} must be an escape");
+        }
+        // Popup-meaningful / benign actions are NOT consumed.
+        assert!(!action_escapes_focused_popup(&Action::None));
+        assert!(!action_escapes_focused_popup(&Action::HelpDismiss));
+    }
+
+    /// PIC.2 (bug 3): `gt` is consumed while a popup is focused — the tab
+    /// does not switch and the popup keeps focus (it can't be dragged onto
+    /// another tab).
+    #[test]
+    fn popup_focused_consumes_tab_switch() {
+        let mut editor = crate::editor::Editor::boot(lattice_core::Document::empty());
+        editor.do_new_tab();
+        assert_eq!(editor.tabs.len(), 2);
+        let tab_before = editor.active_tab;
+        open_focused_popup(&mut editor);
+
+        let out = editor.dispatch(Action::NextTab);
+
+        assert!(out.consumed, "gt consumed while a popup is focused");
+        assert_eq!(editor.active_tab, tab_before, "tab did not switch");
+        assert_eq!(editor.active_buffer, BufferKind::Help, "popup keeps focus");
+    }
+
+    /// PIC.2 non-regression: tab navigation still works when NO popup is
+    /// focused — the gate is popup-scoped, not a blanket suppression.
+    #[test]
+    fn tab_switch_works_without_a_focused_popup() {
+        let mut editor = crate::editor::Editor::boot(lattice_core::Document::empty());
+        editor.do_new_tab();
+        assert_eq!(editor.active_tab, 1);
+
+        let _ = editor.dispatch(Action::PrevTab);
+
+        assert_eq!(
+            editor.active_tab, 0,
+            "PrevTab switches tabs when no popup is focused"
+        );
+    }
+
+    /// PIC.2 (bug 2): `z<Tab>` in a focused popup is consumed by the
+    /// read-only guard (echoes read-only) instead of leaking to the
+    /// background document's fold model.
+    #[test]
+    fn popup_focused_consumes_fold_cycle_as_read_only() {
+        let mut editor = crate::editor::Editor::boot(lattice_core::Document::empty());
+        open_focused_popup(&mut editor);
+
+        let out = editor.dispatch(Action::CycleFoldsGlobal);
+
+        assert!(out.consumed, "fold-cycle consumed in a read-only popup");
+        let msg = editor.last_message.as_ref().expect("read-only echo");
+        assert!(
+            msg.text.contains("read-only"),
+            "fold-cycle in a read-only popup echoes read-only (not the \
+             handler's 'no folds to cycle'), got: {}",
+            msg.text
+        );
+    }
+
+    // ── PU-A.1a: dismiss correctness ──────────────────────────
+
+    /// PU-A.1a: dismissing a State-A (never-focused) popup must NOT
+    /// clobber the underlying buffer kind. A floating popup over oil /
+    /// file-tree / dashboard used to be dropped back to `Document`.
+    #[test]
+    fn state_a_dismiss_preserves_underlying_buffer_kind() {
+        let mut editor = crate::editor::Editor::boot(lattice_core::Document::empty());
+        // State A: `active_buffer` never flips to Help, so
+        // `prev_pane_for_popup` stays None — the underlying buffer is a
+        // non-Document kind the dismiss must leave alone.
+        editor.active_buffer = BufferKind::FileTree;
+        assert!(editor.prev_pane_for_popup.is_none());
+
+        editor.dismiss_popup();
+
+        assert_eq!(
+            editor.active_buffer,
+            BufferKind::FileTree,
+            "State-A dismiss must preserve the underlying non-Document kind"
+        );
+    }
+
+    /// PU-A.1a non-regression: State-B dismiss still restores the prior
+    /// buffer from `prev_pane_for_popup` (the rename + dismiss edit did
+    /// not break the focused-popup restore path).
+    #[test]
+    fn state_b_dismiss_restores_prev_pane() {
+        let mut editor = crate::editor::Editor::boot(lattice_core::Document::empty());
+        let doc_buf = editor.document_buffer_id;
+        let content = lattice_help::parse_help_lines("t", vec!["h".to_string()]);
+        editor.open_popup(content, crate::popup::PopupPlacement::Centered);
+        assert_eq!(editor.active_buffer, BufferKind::Help);
+        assert!(editor.prev_pane_for_popup.is_some());
+
+        editor.dismiss_popup();
+
+        assert_eq!(
+            editor.active_buffer,
+            BufferKind::Document,
+            "State-B dismiss restores the doc we came from"
+        );
+        assert_eq!(editor.pane_tree.active().buffer_id, doc_buf);
+    }
+
+    // ── PU-A.1b-i: modal set-on-open / restore-on-dismiss ─────
+
+    /// PU-A.1b: a focus-stealing popup normalizes `modal` to Normal on
+    /// open (so its bindings fire even when opened mid-Insert), and
+    /// dismiss restores the modal the user came from (popup-api.md §5).
+    #[test]
+    fn steal_popup_normalizes_modal_and_dismiss_restores_it() {
+        let mut editor = crate::editor::Editor::boot(lattice_core::Document::empty());
+        editor.modal = ModalState::Insert;
+        let content = lattice_help::parse_help_lines("t", vec!["h".to_string()]);
+        editor.open_popup(content, crate::popup::PopupPlacement::Centered);
+        assert_eq!(editor.active_buffer, BufferKind::Help);
+        assert_eq!(
+            editor.modal,
+            ModalState::Normal,
+            "focus-stealing popup normalizes modal to Normal on open"
+        );
+
+        editor.dismiss_popup();
+
+        assert_eq!(
+            editor.modal,
+            ModalState::Insert,
+            "dismiss restores the modal the user came from"
+        );
+    }
+
+    /// PU-A.1b: a passive (floating) popup never flips focus or modal —
+    /// the document keeps both, so there is nothing to restore.
+    #[test]
+    fn passive_popup_leaves_modal_untouched() {
+        let mut editor = crate::editor::Editor::boot(lattice_core::Document::empty());
+        editor.modal = ModalState::Insert;
+        let content = lattice_help::parse_help_lines("t", vec!["h".to_string()]);
+        editor.open_floating_popup(content, crate::popup::PopupPlacement::CursorAnchored);
+        assert_eq!(
+            editor.modal,
+            ModalState::Insert,
+            "passive float never touches modal"
+        );
+        assert_ne!(
+            editor.active_buffer,
+            BufferKind::Help,
+            "State A keeps document focus"
+        );
+        assert!(
+            editor.prev_pane_for_popup.is_none(),
+            "passive float captures no prev (nothing to restore)"
+        );
+    }
+
+    // ── PU-A.1b-ii: open_popup_buffer primitive ───────────────
+
+    fn register_test_popup_buffer(editor: &mut crate::editor::Editor) -> BufferId {
+        let content = lattice_help::parse_help_lines(
+            "menu",
+            vec!["1 allow".to_string(), "2 deny".to_string()],
+        );
+        editor.register_help_document(
+            content,
+            crate::buffers::BufferFlags {
+                listed: false,
+                hidden: true,
+                ephemeral: false,
+            },
+        )
+    }
+
+    /// PU-A.1b-ii: the content-agnostic primitive shows an already-
+    /// registered buffer and, for `Steal`, flips focus to it (active
+    /// buffer = the buffer's kind), normalizes modal, and captures the
+    /// prior pane; dismiss restores.
+    #[test]
+    fn open_popup_buffer_steal_focuses_arbitrary_buffer() {
+        let mut editor = crate::editor::Editor::boot(lattice_core::Document::empty());
+        editor.modal = ModalState::Insert;
+        let id = register_test_popup_buffer(&mut editor);
+        editor.popup_cursor = lattice_protocol::position::Position::ZERO;
+        editor.popup_scroll = 0;
+
+        editor.open_popup_buffer(
+            id,
+            crate::popup::PopupPlacement::Centered,
+            crate::popup::PopupFocus::Steal,
+        );
+
+        assert_eq!(
+            editor.popup_buffer,
+            Some(id),
+            "popup shows the passed buffer"
+        );
+        assert_eq!(
+            editor.active_buffer,
+            BufferKind::Help,
+            "Steal flips active_buffer to the buffer's kind"
+        );
+        assert_eq!(editor.modal, ModalState::Normal, "Steal normalizes modal");
+        assert!(
+            editor.prev_pane_for_popup.is_some(),
+            "prev captured for dismiss"
+        );
+
+        editor.dismiss_popup();
+        assert_eq!(editor.modal, ModalState::Insert, "dismiss restores modal");
+        assert_eq!(
+            editor.active_buffer,
+            BufferKind::Document,
+            "dismiss restores buffer"
+        );
+    }
+
+    /// PU-A.1b-ii: `Passive` shows the buffer without stealing focus —
+    /// the document keeps active-buffer, caret, and modal; no prev.
+    #[test]
+    fn open_popup_buffer_passive_does_not_steal_focus() {
+        let mut editor = crate::editor::Editor::boot(lattice_core::Document::empty());
+        editor.modal = ModalState::Insert;
+        let id = register_test_popup_buffer(&mut editor);
+
+        editor.open_popup_buffer(
+            id,
+            crate::popup::PopupPlacement::CursorAnchored,
+            crate::popup::PopupFocus::Passive,
+        );
+
+        assert_eq!(
+            editor.popup_buffer,
+            Some(id),
+            "popup shows the passed buffer"
+        );
+        assert_ne!(
+            editor.active_buffer,
+            BufferKind::Help,
+            "Passive keeps document focus"
+        );
+        assert_eq!(
+            editor.modal,
+            ModalState::Insert,
+            "Passive leaves modal untouched"
+        );
+        assert!(
+            editor.prev_pane_for_popup.is_none(),
+            "Passive captures no prev"
+        );
+    }
+
+    /// PU-B.1/2b: `Effect::OpenPopup` has no host apply arm — it is
+    /// renderer-coupled, so `apply_effect_host` must push it onto
+    /// `out.effects` (the tail the TUI / GPUI peers drain to call
+    /// `open_popup_named`) rather than swallow it. This pins the routing
+    /// decision independent of any `lattice-ai` consumer.
+    #[test]
+    fn open_popup_effect_routes_to_renderer_tail() {
+        let mut editor = crate::editor::Editor::boot(lattice_core::Document::empty());
+        let mut out = DispatchOutcome::default();
+
+        apply_effect_host(
+            &mut editor,
+            lattice_grammar::Effect::OpenPopup {
+                name: "*ai-permission*".to_string(),
+                mode_id: "ai-permission-mode".to_string(),
+                placement: crate::popup::PopupPlacement::Centered,
+                focus: crate::popup::PopupFocus::Steal,
+            },
+            &mut out,
+        );
+
+        assert!(
+            out.effects.iter().any(|e| matches!(
+                e,
+                lattice_grammar::Effect::OpenPopup { name, .. } if name == "*ai-permission*"
+            )),
+            "OpenPopup reaches the renderer-coupled tail, not the host catch-all"
+        );
+    }
+
+    /// PU-B.2b: `open_popup_named` ensures a `BufferData::Help` popup buffer
+    /// under the given major mode (so the popup renderer draws it) and shows it
+    /// Steal-focused — the name-based `Effect::OpenPopup` entry point. Dismiss
+    /// tears the buffer down (`dismiss_stale_popup_registry`), so the next open
+    /// is a fresh buffer whose owning mode re-projects on activation.
+    #[test]
+    fn open_popup_named_ensures_help_buffer_and_steals_focus() {
+        let mut editor = crate::editor::Editor::boot(lattice_core::Document::empty());
+
+        editor.open_popup_named(
+            "*ai-permission*",
+            "ai-permission-mode",
+            crate::popup::PopupPlacement::Centered,
+            crate::popup::PopupFocus::Steal,
+        );
+
+        let id = editor.popup_buffer.expect("popup opened");
+        assert_eq!(
+            editor.buffers.kind_of(id),
+            Some(BufferKind::Help),
+            "popup buffer renders via the BufferData::Help path"
+        );
+        assert_eq!(editor.active_buffer, BufferKind::Help, "Steal focuses it");
+
+        editor.dismiss_popup();
+        assert_eq!(editor.popup_buffer, None, "dismiss clears the popup");
+        assert_eq!(
+            editor.buffers.kind_of(id),
+            None,
+            "dismiss tears the popup buffer down — next open is fresh"
+        );
     }
 
     /// D.8.e: first `:diffthis` creates an N=1 dormant
@@ -34527,7 +36347,10 @@ mod tests {
         let doc = editor.document_buffer_id;
         // Sanity: the boot buffer is a real document buffer (the
         // resolver's Global gate keys on this).
-        assert_eq!(editor.buffers.kind_of(doc), Some(lattice_core::BufferKind::Document));
+        assert_eq!(
+            editor.buffers.kind_of(doc),
+            Some(lattice_core::BufferKind::Document)
+        );
 
         let global_id = lattice_mode::ModeId::new("test-global-minor-mode");
         let rusty_id = lattice_mode::ModeId::new("test-rust-minor-mode");
@@ -34554,10 +36377,12 @@ mod tests {
 
         // A document enters its (text) major.
         let proto = lattice_protocol::ids::BufferId::new(doc.0 as u64);
-        editor.event_bus.publish(lattice_protocol::Event::MajorEntered {
-            buffer: proto,
-            major: "text-mode".into(),
-        });
+        editor
+            .event_bus
+            .publish(lattice_protocol::Event::MajorEntered {
+                buffer: proto,
+                major: "text-mode".into(),
+            });
         let _ = editor.drain_minor_activation();
 
         assert!(
@@ -34587,10 +36412,12 @@ mod tests {
         // Clear boot-queued events, then publish a clean MajorEntered.
         let _ = editor.drain_minor_activation();
         let proto = lattice_protocol::ids::BufferId::new(doc.0 as u64);
-        editor.event_bus.publish(lattice_protocol::Event::MajorEntered {
-            buffer: proto,
-            major: "text-mode".into(),
-        });
+        editor
+            .event_bus
+            .publish(lattice_protocol::Event::MajorEntered {
+                buffer: proto,
+                major: "text-mode".into(),
+            });
         let _ = editor.drain_minor_activation();
 
         assert!(
@@ -34598,7 +36425,11 @@ mod tests {
             "snippet-mode (Global) auto-activates on a document"
         );
         assert!(
-            minor_active_on(&editor, doc, lattice_snippet::SnippetCompletionMode::mode_id()),
+            minor_active_on(
+                &editor,
+                doc,
+                lattice_snippet::SnippetCompletionMode::mode_id()
+            ),
             "implied snippet-completion-mode rides snippet-mode's gate"
         );
     }
@@ -35250,7 +37081,10 @@ mod tests {
     /// them.)
     #[tokio::test]
     async fn edit_bang_preserves_cursor_position() {
-        let file = write_temp("line0\nline1\nline2\nline3\nline4\nline5\nline6\n", "ebang-keep");
+        let file = write_temp(
+            "line0\nline1\nline2\nline3\nline4\nline5\nline6\n",
+            "ebang-keep",
+        );
         let mut editor = crate::editor::Editor::boot(lattice_core::Document::empty());
         editor.viewport_height = 5;
         // Open the file into the active slot.
@@ -35265,10 +37099,7 @@ mod tests {
             editor.cursor.line, 5,
             "`:e!` must keep the cursor on its line, not jump to the top"
         );
-        assert_eq!(
-            editor.cursor.byte, 3,
-            "`:e!` must keep the cursor column"
-        );
+        assert_eq!(editor.cursor.byte, 3, "`:e!` must keep the cursor column");
         assert!(
             editor.scroll <= 5 && editor.cursor.line >= editor.scroll,
             "cursor must stay visible after reload (scroll={}, line={})",
@@ -35611,7 +37442,10 @@ mod tests {
         // path as the keystroke `dw`, resolving the motion as a range and
         // committing the edit. Both the space-separated and canonical
         // forms parse to the same operator+motion invocation.
-        for line in ["operator delete word-forward", "operator:delete motion:word-forward"] {
+        for line in [
+            "operator delete word-forward",
+            "operator:delete motion:word-forward",
+        ] {
             let document = lattice_core::Document::from_text("hello world\n");
             let mut editor = Editor::boot(document);
             editor.cursor = lattice_protocol::position::Position::new(0, 0);
@@ -35946,17 +37780,26 @@ mod tests {
     fn set_wrap_updates_option_cache_and_pane_cells_inputs() {
         let doc = lattice_core::Document::from_text("hello world\n");
         let mut editor = Editor::boot(doc);
-        assert!(!editor.option_cache.wrap_lines, "wrap must default to false");
+        assert!(
+            !editor.option_cache.wrap_lines,
+            "wrap must default to false"
+        );
 
         let _signals = editor.do_set("wrap");
-        assert!(editor.option_cache.wrap_lines, "option_cache must reflect :set wrap");
+        assert!(
+            editor.option_cache.wrap_lines,
+            "option_cache must reflect :set wrap"
+        );
 
         // do_set is a direct call; publish_render_state is normally called by
         // the dispatch() wrapper. Drive it explicitly here.
         editor.publish_render_state();
         let cells = editor.render_state.load_full().cells.load_full();
         let pane = cells.panes.first().expect("at least one pane");
-        assert!(pane.wrap, "PaneCellsInputs.wrap must be true after :set wrap");
+        assert!(
+            pane.wrap,
+            "PaneCellsInputs.wrap must be true after :set wrap"
+        );
     }
 
     #[test]
@@ -35969,7 +37812,10 @@ mod tests {
         editor.publish_render_state();
         let cells = editor.render_state.load_full().cells.load_full();
         let pane = cells.panes.first().expect("at least one pane");
-        assert!(!pane.wrap, "PaneCellsInputs.wrap must be false after :set nowrap");
+        assert!(
+            !pane.wrap,
+            "PaneCellsInputs.wrap must be false after :set nowrap"
+        );
     }
 
     /// PU.5c: the ephemeral completion-docs buffer lifecycle, reconciled
@@ -36061,8 +37907,7 @@ mod tests {
     /// they can't corrupt the terminal or leave leftover characters.
     #[test]
     fn read_preview_text_handles_binary_and_control_chars() {
-        let dir = std::env::temp_dir()
-            .join(format!("lattice-preview-bin-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("lattice-preview-bin-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let bin = dir.join("img.bin");
         let txt = dir.join("esc.txt");
@@ -36088,8 +37933,7 @@ mod tests {
     /// syntax never reached the rendered matrix.
     #[test]
     fn preview_renders_syntax_highlighting() {
-        let dir = std::env::temp_dir()
-            .join(format!("lattice-preview-hl-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("lattice-preview-hl-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let txt = dir.join("plain.txt");
         let md = dir.join("doc.md");
@@ -36142,7 +37986,11 @@ mod tests {
         // Not armed → no capture.
         e.publish_render_state();
         assert!(
-            !e.render_state.load_full().active_document.load().chord_capture,
+            !e.render_state
+                .load_full()
+                .active_document
+                .load()
+                .chord_capture,
             "no chord capture when the cmdline isn't at a Chord arg slot"
         );
         // Arm the describe-key prompt: Command mode at the Chord arg slot.
@@ -36154,7 +38002,11 @@ mod tests {
         );
         e.publish_render_state();
         assert!(
-            e.render_state.load_full().active_document.load().chord_capture,
+            e.render_state
+                .load_full()
+                .active_document
+                .load()
+                .chord_capture,
             "publish must mirror chord_capture_active() into ad.chord_capture"
         );
     }
@@ -36162,8 +38014,7 @@ mod tests {
     #[test]
     fn floating_popup_activates_help_mode_minor_so_nonu() {
         let mut e = Editor::boot(lattice_core::Document::from_text("fn main() {}\n"));
-        let content =
-            lattice_help::HelpContent::from_lines("hover", vec!["doc body".to_string()]);
+        let content = lattice_help::HelpContent::from_lines("hover", vec!["doc body".to_string()]);
         let _ = e.open_floating_popup(content, crate::popup::PopupPlacement::CursorAnchored);
         let pid = e.popup_buffer.expect("floating popup open");
         assert!(
@@ -36269,7 +38120,10 @@ mod tests {
         editor.publish_render_state();
         let cells = editor.render_state.load_full().cells.load_full();
         let pane = cells.panes.first().expect("at least one pane");
-        assert_eq!(pane.viewport_width, 60, "viewport_width must propagate to PaneCellsInputs");
+        assert_eq!(
+            pane.viewport_width, 60,
+            "viewport_width must propagate to PaneCellsInputs"
+        );
     }
 
     #[test]
@@ -36354,7 +38208,10 @@ mod tests {
             .iter()
             .find(|p| p.pane_id == PaneId::POPUP)
             .expect("popup pane");
-        assert_eq!(pop.wrap_reserved_cols, 0, "gutterless popup reserves nothing");
+        assert_eq!(
+            pop.wrap_reserved_cols, 0,
+            "gutterless popup reserves nothing"
+        );
     }
 
     /// The clamp's display-row accounting must compose wrap segments
@@ -36565,7 +38422,10 @@ mod tests {
         // Any non-display-line action via handle_action clears goal_col.
         let mut out = DispatchOutcome::default();
         handle_action(&mut editor, Action::None, &mut out);
-        assert_eq!(editor.goal_col, None, "goal_col cleared by non-display action");
+        assert_eq!(
+            editor.goal_col, None,
+            "goal_col cleared by non-display action"
+        );
     }
 
     #[test]
@@ -36590,6 +38450,68 @@ mod tests {
         assert!(matches!(editor.modal, lattice_grammar::ModalState::Insert));
     }
 
+    fn line0(editor: &Editor) -> String {
+        editor
+            .document
+            .snapshot()
+            .buffer
+            .line(0)
+            .unwrap_or_default()
+            .trim_end_matches('\n')
+            .to_string()
+    }
+
+    /// `<C-a>`/`<C-e>`/`<C-b>`/`<C-f>` — Insert cursor moves, with `<C-e>`
+    /// landing PAST the last byte (Insert semantics, unlike `$`).
+    #[test]
+    fn insert_line_edit_cursor_moves() {
+        use lattice_grammar::InsertLineEdit::*;
+        let mut editor = Editor::boot(lattice_core::Document::from_text("hello world\n"));
+        editor.cursor = lattice_protocol::position::Position::new(0, 5);
+        editor.do_insert_line_edit(CursorLineStart);
+        assert_eq!(editor.cursor.byte, 0);
+        editor.do_insert_line_edit(CursorLineEnd);
+        assert_eq!(editor.cursor.byte, 11, "past the last char");
+        editor.do_insert_line_edit(CursorCharLeft);
+        assert_eq!(editor.cursor.byte, 10);
+        editor.do_insert_line_edit(CursorCharRight);
+        assert_eq!(editor.cursor.byte, 11);
+    }
+
+    /// `<C-w>` deletes the whitespace-delimited word before the caret.
+    #[test]
+    fn insert_line_edit_delete_word_backward() {
+        let mut editor = Editor::boot(lattice_core::Document::from_text("hello world\n"));
+        editor.cursor = lattice_protocol::position::Position::new(0, 11);
+        editor.do_insert_line_edit(lattice_grammar::InsertLineEdit::DeleteWordBackward);
+        assert_eq!(line0(&editor), "hello ");
+        assert_eq!(editor.cursor.byte, 6);
+    }
+
+    /// `<C-k>` kills to line end; `<C-u>` deletes to line start.
+    #[test]
+    fn insert_line_edit_kill_and_delete_to_start() {
+        let mut editor = Editor::boot(lattice_core::Document::from_text("hello world\n"));
+        editor.cursor = lattice_protocol::position::Position::new(0, 6);
+        editor.do_insert_line_edit(lattice_grammar::InsertLineEdit::KillToLineEnd);
+        assert_eq!(line0(&editor), "hello ");
+        editor.do_insert_line_edit(lattice_grammar::InsertLineEdit::DeleteToLineStart);
+        assert_eq!(line0(&editor), "");
+        assert_eq!(editor.cursor.byte, 0);
+    }
+
+    /// `<C-t>`/`<C-d>` indent / dedent the current line by one `INDENT_UNIT`.
+    #[test]
+    fn insert_line_edit_indent_and_dedent() {
+        let mut editor = Editor::boot(lattice_core::Document::from_text("x\n"));
+        editor.cursor = lattice_protocol::position::Position::new(0, 0);
+        editor.do_insert_line_edit(lattice_grammar::InsertLineEdit::IndentLine);
+        assert_eq!(line0(&editor), "    x");
+        assert_eq!(editor.cursor.byte, 4);
+        editor.do_insert_line_edit(lattice_grammar::InsertLineEdit::DedentLine);
+        assert_eq!(line0(&editor), "x");
+    }
+
     #[test]
     fn enter_append_end_of_line_moves_cursor_past_last_byte() {
         let doc = lattice_core::Document::from_text("hello\n");
@@ -36597,7 +38519,10 @@ mod tests {
         editor.cursor = lattice_protocol::position::Position::new(0, 0);
         editor.do_enter_append_end_of_line();
         // line_byte_len excludes the newline, so len("hello") = 5
-        assert_eq!(editor.cursor.byte, 5, "cursor must land past last content byte");
+        assert_eq!(
+            editor.cursor.byte, 5,
+            "cursor must land past last content byte"
+        );
         assert!(
             matches!(editor.modal, lattice_grammar::ModalState::Insert),
             "must enter Insert mode"
@@ -36634,10 +38559,7 @@ mod tests {
         registry.for_each(|entry| {
             if matches!(entry.data, BufferData::Messages(_)) {
                 let row = crate::dispatch::picker_buffer_entry(entry, locals);
-                assert!(
-                    !row.dirty,
-                    "*messages* picker entry must not be dirty"
-                );
+                assert!(!row.dirty, "*messages* picker entry must not be dirty");
                 assert!(
                     !row.title.contains("[+]"),
                     "*messages* picker title must not contain [+]: {:?}",
@@ -36766,7 +38688,10 @@ mod tests {
         );
         let sels = editor.document.selections();
         let sel = sels.primary();
-        assert_eq!(sel.anchor, sel.head, "fresh entry is a zero-width selection");
+        assert_eq!(
+            sel.anchor, sel.head,
+            "fresh entry is a zero-width selection"
+        );
     }
 
     #[test]
@@ -36881,15 +38806,26 @@ mod tests {
         {
             let sels = editor.document.selections();
             let p = sels.primary();
-            assert_eq!(p.anchor, Position::new(0, 0), "anchor stays at the entry point");
+            assert_eq!(
+                p.anchor,
+                Position::new(0, 0),
+                "anchor stays at the entry point"
+            );
             assert_eq!(p.head, Position::new(0, 4), "head extends to word_end");
-            assert!(p.visual.is_some(), "the extended selection keeps a visual kind");
+            assert!(
+                p.visual.is_some(),
+                "the extended selection keeps a visual kind"
+            );
         }
 
         // `o` swaps ends: cursor jumps to the anchor end, anchor adopts
         // the old head.
         editor.do_swap_visual_ends();
-        assert_eq!(editor.cursor, Position::new(0, 0), "o moves the cursor to the anchor end");
+        assert_eq!(
+            editor.cursor,
+            Position::new(0, 0),
+            "o moves the cursor to the anchor end"
+        );
         assert_eq!(
             editor.visual_anchor,
             Some(Position::new(0, 4)),
@@ -36897,4 +38833,3 @@ mod tests {
         );
     }
 }
-

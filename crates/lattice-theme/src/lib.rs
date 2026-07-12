@@ -25,12 +25,12 @@ mod themes;
 pub use element::{
     ColorRef, ElementId, ElementName, ElementOwner, ModifierSet, StyleSpec, ThemeElement,
 };
-pub use palette::{default_palette, macchiato_palette, Palette, PaletteKey};
+pub use palette::{Palette, PaletteKey, default_palette, macchiato_palette};
 pub use registry::{
-    register_builtins, BuiltinElementIds, ElementInfo, InMemoryThemeRegistry, ResolvedTheme,
-    ThemeRegistry, ThemeRegistryHandle,
+    BuiltinElementIds, ElementInfo, InMemoryThemeRegistry, ResolvedTheme, ThemeRegistry,
+    ThemeRegistryHandle, register_builtins,
 };
-pub use themes::{builtin_themes, NamedTheme};
+pub use themes::{NamedTheme, builtin_themes};
 
 /// A single style: optional foreground + optional background +
 /// modifiers (bold/italic/etc) + the rich-vocabulary attributes

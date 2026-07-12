@@ -83,7 +83,11 @@ lang_mode!(JavascriptMode, "javascript-mode");
 // detection) and `BufferKind::Help` (via the registry's kind
 // index). Both paths land on the same mode; the kind binding
 // here drives the latter.
-lang_mode!(MarkdownMode, "markdown-mode", target_kind = BufferKind::Help);
+lang_mode!(
+    MarkdownMode,
+    "markdown-mode",
+    target_kind = BufferKind::Help
+);
 
 /// Resolve a [`Lang`] to its corresponding major-mode id.
 /// `Lang::Plain` returns `None` because `text-mode` (the

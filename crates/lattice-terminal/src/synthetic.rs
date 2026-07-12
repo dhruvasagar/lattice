@@ -96,8 +96,7 @@ impl SharedTerm {
         let cols = grid.columns();
         // Pre-size for the worst case (no trim) so the rope
         // build is a single allocation.
-        let mut text =
-            String::with_capacity(((bot - top + 1).max(0) as usize) * (cols + 1));
+        let mut text = String::with_capacity(((bot - top + 1).max(0) as usize) * (cols + 1));
         let cursor_grid_line = grid.cursor.point.line.0;
         let cursor_grid_col = grid.cursor.point.column.0 as u32;
         let mut cursor_line_doc: u32 = 0;
@@ -116,8 +115,7 @@ impl SharedTerm {
                 // sit in stripped padding. For ASCII the byte
                 // count matches the grid column; wide-char
                 // handling is the §7 open question.
-                cursor_col_doc =
-                    std::cmp::min(cursor_grid_col, trimmed.len() as u32);
+                cursor_col_doc = std::cmp::min(cursor_grid_col, trimmed.len() as u32);
                 cursor_found = true;
             }
             text.push_str(trimmed);
@@ -200,7 +198,8 @@ impl TerminalStoreHandle {
 
 impl std::fmt::Debug for TerminalStoreHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TerminalStoreHandle").finish_non_exhaustive()
+        f.debug_struct("TerminalStoreHandle")
+            .finish_non_exhaustive()
     }
 }
 

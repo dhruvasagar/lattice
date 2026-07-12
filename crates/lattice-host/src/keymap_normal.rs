@@ -77,6 +77,7 @@ use lattice_grammar::args::Args;
 use lattice_grammar::builtins::Builtins;
 use lattice_grammar::command::CommandInvocation;
 use lattice_protocol::ids::CommandId;
+use lattice_syntax::SyntaxMotionIds;
 use lattice_syntax::SyntaxTextObjectIds;
 
 use crate::action::{Action, FindKind};
@@ -102,6 +103,7 @@ pub fn register_normal_bindings(
     builtins: &Builtins,
     actions: &ActionIds,
     syntax_textobjects: &SyntaxTextObjectIds,
+    syntax_motions: &SyntaxMotionIds,
 ) {
     let layer = KeymapLayer::Builtin;
     let mode = BindingMode::Normal;
@@ -118,6 +120,15 @@ pub fn register_normal_bindings(
             CommandInvocation::of(motion.0),
             source(),
         );
+    }
+
+    // ---- TSM.4: the sixteen tree-sitter structural motions
+    // (`]f`/`[f`/`]F`/`[F`, `]c`/`[c`/`]C`/`[C`, `]a`/`[a`/`]A`/`[A`,
+    // `]l`/`[l`/`]L`/`[L`). Sourced from the shared `syntax_motion_rows`
+    // table so Normal / operator-pending / Visual never drift, exactly
+    // as `motion_rows` above. Each row is a full two-key sequence.
+    for (seq, motion) in syntax_motion_rows(syntax_motions) {
+        handle.bind(layer, mode, &seq, CommandInvocation::of(motion.0), source());
     }
 
     // ---- Pseudo-operators: typed invocations with built-in
@@ -798,6 +809,7 @@ pub fn register_normal_bindings(
         ChordPattern::Literal(KeyChord::char('d')),
         builtins,
         syntax_textobjects,
+        syntax_motions,
     );
     register_operator_bindings(
         handle,
@@ -806,6 +818,7 @@ pub fn register_normal_bindings(
         ChordPattern::Literal(KeyChord::char('c')),
         builtins,
         syntax_textobjects,
+        syntax_motions,
     );
     register_operator_bindings(
         handle,
@@ -814,6 +827,7 @@ pub fn register_normal_bindings(
         ChordPattern::Literal(KeyChord::char('y')),
         builtins,
         syntax_textobjects,
+        syntax_motions,
     );
     register_operator_bindings(
         handle,
@@ -822,6 +836,7 @@ pub fn register_normal_bindings(
         ChordPattern::Literal(KeyChord::char('>')),
         builtins,
         syntax_textobjects,
+        syntax_motions,
     );
     register_operator_bindings(
         handle,
@@ -830,6 +845,7 @@ pub fn register_normal_bindings(
         ChordPattern::Literal(KeyChord::char('<')),
         builtins,
         syntax_textobjects,
+        syntax_motions,
     );
     // Case operators -- prefix is the two-key sequence registered
     // at slice 8.g.ii. Their doubled forms (`gUU` / `guu` / `g~~`)
@@ -841,6 +857,7 @@ pub fn register_normal_bindings(
         ChordPattern::Literal(KeyChord::char('U')),
         builtins,
         syntax_textobjects,
+        syntax_motions,
     );
     register_operator_bindings(
         handle,
@@ -849,6 +866,7 @@ pub fn register_normal_bindings(
         ChordPattern::Literal(KeyChord::char('u')),
         builtins,
         syntax_textobjects,
+        syntax_motions,
     );
     register_operator_bindings(
         handle,
@@ -857,6 +875,7 @@ pub fn register_normal_bindings(
         ChordPattern::Literal(KeyChord::char('~')),
         builtins,
         syntax_textobjects,
+        syntax_motions,
     );
 
     // ---- Slice 8.g.v: mark / register / find-char / macro
@@ -1258,6 +1277,7 @@ pub fn register_operator_bindings(
     doubled_self: ChordPattern,
     builtins: &Builtins,
     syntax_textobjects: &SyntaxTextObjectIds,
+    syntax_motions: &SyntaxMotionIds,
 ) {
     let layer = KeymapLayer::Builtin;
     let mode = BindingMode::Normal;
@@ -1271,6 +1291,23 @@ pub fn register_operator_bindings(
     for (chord, motion) in motion_rows(builtins) {
         let mut path: Vec<ChordPattern> = op_prefix.to_vec();
         path.push(chord);
+        handle.bind(
+            layer,
+            mode,
+            &path,
+            CommandInvocation::of(op.0).with_target(Target::Motion(motion, Args::None)),
+            source(),
+        );
+    }
+
+    // ---- TSM.4: the sixteen tree-sitter structural motion targets --
+    // ---- `[op_prefix..., ']', 'f']` etc. resolve to `Invoke(op,
+    // ---- Target::Motion(motion))`, exactly as the builtin motions
+    // ---- above. Sourced from the shared `syntax_motion_rows` table so
+    // ---- `d]f` / `y]c` / `>]l` / ... all work automatically.
+    for (seq, motion) in syntax_motion_rows(syntax_motions) {
+        let mut path: Vec<ChordPattern> = op_prefix.to_vec();
+        path.extend(seq);
         handle.bind(
             layer,
             mode,
@@ -1466,6 +1503,38 @@ pub(crate) fn motion_rows(
     ]
 }
 
+/// The sixteen tree-sitter structural motions as full 2-key sequences
+/// (TSM.4). Single source of truth shared by the Normal binder
+/// ([`register_normal_bindings`]), the operator-pending resolver
+/// ([`register_operator_bindings`]), and the Visual binder
+/// ([`crate::keymap_visual::register_visual_bindings`]) so the three
+/// surfaces can never drift -- same discipline as [`motion_rows`] /
+/// [`text_object_rows`], just keyed on a full chord sequence instead of a
+/// single chord (each entry is `]x` / `[x`, a two-key sequence, not one
+/// key with aliases).
+pub(crate) fn syntax_motion_rows(
+    m: &SyntaxMotionIds,
+) -> Vec<(Vec<ChordPattern>, lattice_grammar::registry::MotionId)> {
+    vec![
+        (vec![lit_char(']'), lit_char('f')], m.next_function_start),
+        (vec![lit_char('['), lit_char('f')], m.prev_function_start),
+        (vec![lit_char(']'), lit_char('F')], m.next_function_end),
+        (vec![lit_char('['), lit_char('F')], m.prev_function_end),
+        (vec![lit_char(']'), lit_char('c')], m.next_class_start),
+        (vec![lit_char('['), lit_char('c')], m.prev_class_start),
+        (vec![lit_char(']'), lit_char('C')], m.next_class_end),
+        (vec![lit_char('['), lit_char('C')], m.prev_class_end),
+        (vec![lit_char(']'), lit_char('a')], m.next_parameter_start),
+        (vec![lit_char('['), lit_char('a')], m.prev_parameter_start),
+        (vec![lit_char(']'), lit_char('A')], m.next_parameter_end),
+        (vec![lit_char('['), lit_char('A')], m.prev_parameter_end),
+        (vec![lit_char(']'), lit_char('l')], m.next_loop_start),
+        (vec![lit_char('['), lit_char('l')], m.prev_loop_start),
+        (vec![lit_char(']'), lit_char('L')], m.next_loop_end),
+        (vec![lit_char('['), lit_char('L')], m.prev_loop_end),
+    ]
+}
+
 /// The canonical chord -> (inner, around) text-object table.
 ///
 /// Single source of truth shared by the Normal-mode operator-pending
@@ -1493,7 +1562,11 @@ pub(crate) fn text_object_rows(
     lattice_grammar::registry::TextObjectId,
 )> {
     vec![
-        (vec![lit_char('w')], builtins.inner_word, builtins.around_word),
+        (
+            vec![lit_char('w')],
+            builtins.inner_word,
+            builtins.around_word,
+        ),
         (
             vec![lit_char('W')],
             builtins.inner_big_word,
@@ -1809,7 +1882,10 @@ fn normalize_for_normal_lookup(chord: KeyChord) -> KeyChord {
 /// `@X`, plus the operator-prefixed `dfX` etc.) capture the
 /// matched char; this helper applies it to the placeholder
 /// stashed in the bound action.
-pub(crate) fn action_from_bound_with_capture(bound: &Arc<BoundCommand>, captured: &[char]) -> Action {
+pub(crate) fn action_from_bound_with_capture(
+    bound: &Arc<BoundCommand>,
+    captured: &[char],
+) -> Action {
     // Fold any captured wildcard char into `Args::Char(c)` so the
     // bound `ActionSpec`'s apply closure can see it. Validation
     // lives in the spec (e.g. `m<X>` requires `[a-zA-Z0-9]`);
@@ -1854,4 +1930,133 @@ fn lit_special(s: SpecialKey) -> ChordPattern {
 
 fn source() -> SourceLocation {
     SourceLocation::builtin_file(file!(), line!())
+}
+
+// ── TSM.4: host wiring for the 16 tree-sitter structural motions ──
+//
+// Strategy (B) from the task brief: `scope_toward` (the tree walk itself)
+// is already unit-tested end-to-end at the `lattice-syntax` level
+// (`syntax.rs`'s `scope_toward_*` tests, TSM.2/3). No existing host test
+// harness attaches a live `SyntaxSnapshot` to an `Editor` and drives full
+// multi-key chords through `dispatch_blocking` (that would need a tokio
+// document actor + the full `TranslateContext`, real machinery this slice
+// doesn't otherwise touch) -- so these tests verify THIS slice's actual
+// deliverable directly: that `]f`/`[f`/... resolve through the keymap trie
+// to the right `CommandInvocation` in Normal, operator-pending, and
+// Visual. This proves the wiring without needing a live tree; it does NOT
+// prove `scope_toward` itself walks correctly (already covered elsewhere).
+#[cfg(test)]
+mod syntax_motion_tests {
+    // `panic!` in a test match arm is the idiomatic failure path here (a
+    // `LookupResult` that isn't `Bound` means the wiring is broken); the
+    // workspace `clippy::panic = warn` restriction lint targets production
+    // code, so allow it in this test module (same convention as the
+    // lattice-ui-tui keymap test modules).
+    #![allow(clippy::panic)]
+    use super::*;
+    use lattice_grammar::CommandRegistry;
+    use lattice_grammar::builtins::populate as grammar_builtins_populate;
+    use lattice_syntax::SyntaxMotionIds;
+
+    use crate::keymap_trie::LookupResult;
+
+    /// Build a handle with Normal (+ operator-pending, which rides under
+    /// Normal) and Visual registered from a real, populated command
+    /// registry -- the same path boot takes (`editor_boot.rs`).
+    fn populated_handle() -> (KeymapHandle, SyntaxMotionIds) {
+        let mut registry = CommandRegistry::new();
+        let builtins = grammar_builtins_populate(&mut registry);
+        let action_ids = crate::actions::populate(&mut registry, &builtins);
+        let syntax_textobjects = lattice_syntax::register_syntax_text_objects(&mut registry);
+        let syntax_motions = lattice_syntax::register_syntax_motions(&mut registry);
+        let h = KeymapHandle::new();
+        crate::keymap_visual::register_visual_bindings(
+            &h,
+            &builtins,
+            &action_ids,
+            &syntax_textobjects,
+            &syntax_motions,
+        );
+        register_normal_bindings(
+            &h,
+            &builtins,
+            &action_ids,
+            &syntax_textobjects,
+            &syntax_motions,
+        );
+        (h, syntax_motions)
+    }
+
+    #[test]
+    fn bracket_f_resolves_to_next_function_start_in_normal() {
+        let (h, syntax_motions) = populated_handle();
+        let chords = [KeyChord::char(']'), KeyChord::char('f')];
+        match h.lookup(BindingMode::Normal, &chords) {
+            LookupResult::Bound { command, .. } => {
+                assert_eq!(
+                    command.command.command, syntax_motions.next_function_start.0,
+                    "]f must resolve to motion:next-function-start"
+                );
+            }
+            other => panic!("]f must be BOUND in Normal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn all_sixteen_bracket_chords_resolve_in_normal() {
+        let (h, syntax_motions) = populated_handle();
+        for (seq, motion) in syntax_motion_rows(&syntax_motions) {
+            let chords: Vec<KeyChord> = seq
+                .into_iter()
+                .map(|p| match p {
+                    ChordPattern::Literal(c) => c,
+                    _ => panic!("syntax_motion_rows must be all literals"),
+                })
+                .collect();
+            match h.lookup(BindingMode::Normal, &chords) {
+                LookupResult::Bound { command, .. } => {
+                    assert_eq!(command.command.command, motion.0, "{chords:?} mismatch");
+                }
+                other => panic!("{chords:?} must be BOUND in Normal, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn d_bracket_f_resolves_operator_pending_to_target_motion() {
+        let (h, syntax_motions) = populated_handle();
+        let chords = [
+            KeyChord::char('d'),
+            KeyChord::char(']'),
+            KeyChord::char('f'),
+        ];
+        match h.lookup(BindingMode::Normal, &chords) {
+            LookupResult::Bound { command, .. } => {
+                assert_eq!(
+                    command.command.target,
+                    Some(Target::Motion(
+                        syntax_motions.next_function_start,
+                        Args::None
+                    )),
+                    "d]f must resolve to Invoke(delete, Target::Motion(next_function_start))"
+                );
+            }
+            other => panic!("d]f must be BOUND in operator-pending, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bracket_f_resolves_in_visual() {
+        let (h, syntax_motions) = populated_handle();
+        let chords = [KeyChord::char(']'), KeyChord::char('f')];
+        match h.lookup(BindingMode::Visual, &chords) {
+            LookupResult::Bound { command, .. } => {
+                assert_eq!(
+                    command.command.command, syntax_motions.next_function_start.0,
+                    "]f must resolve to motion:next-function-start in Visual"
+                );
+            }
+            other => panic!("]f must be BOUND in Visual, got {other:?}"),
+        }
+    }
 }

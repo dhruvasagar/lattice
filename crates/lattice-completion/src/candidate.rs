@@ -357,7 +357,10 @@ pub enum Annotation {
     /// carries a slot KEY, never a resolved color, so theme
     /// resolution stays at the render seam. `category` keys the
     /// column exactly like the single-variant categories.
-    Styled { category: Arc<str>, segments: Vec<AnnotationSegment> },
+    Styled {
+        category: Arc<str>,
+        segments: Vec<AnnotationSegment>,
+    },
 }
 
 /// MARG §8: one run of marginalia text sharing a theme slot,
@@ -465,8 +468,7 @@ impl AnnotationColumns {
     where
         I: IntoIterator<Item = &'a RenderedCandidate>,
     {
-        let mut widths: std::collections::HashMap<String, usize> =
-            std::collections::HashMap::new();
+        let mut widths: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
         for c in candidates {
             for a in &c.annotations {
                 let cat = a.category().to_string();
@@ -640,7 +642,10 @@ mod tests {
     }
 
     fn seg(text: &str, slot: &str) -> AnnotationSegment {
-        AnnotationSegment { text: text.into(), slot: slot.into() }
+        AnnotationSegment {
+            text: text.into(),
+            slot: slot.into(),
+        }
     }
 
     #[test]
@@ -666,7 +671,10 @@ mod tests {
         };
         assert_eq!(one.display_text(), "1.2k");
         // Empty segment list is a valid (blank) cell, not a panic.
-        let empty = Annotation::Styled { category: "x".into(), segments: vec![] };
+        let empty = Annotation::Styled {
+            category: "x".into(),
+            segments: vec![],
+        };
         assert_eq!(empty.display_text(), "");
     }
 

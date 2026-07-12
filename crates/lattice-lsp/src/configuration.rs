@@ -87,8 +87,11 @@ pub fn make_handler(
 ) -> impl FnMut(InboundConfigurationRequest) -> Vec<Effect> + Send + 'static {
     move |req| {
         let tree = config_tree.load();
-        let values: Vec<Value> =
-            req.sections.iter().map(|section| lookup_section(&tree, section)).collect();
+        let values: Vec<Value> = req
+            .sections
+            .iter()
+            .map(|section| lookup_section(&tree, section))
+            .collect();
         // A dropped response receiver (server gone) is fine — log-and-skip.
         let _ = req.response.send(values);
         Vec::new()
@@ -131,7 +134,10 @@ mod tests {
             sections: vec!["rust-analyzer.cargo".into(), "does.not.exist".into()],
             response: tx,
         });
-        assert!(effects.is_empty(), "configuration is a pure read — no effects");
+        assert!(
+            effects.is_empty(),
+            "configuration is a pure read — no effects"
+        );
         let values = resp_rx.await.expect("handler resolved the oneshot");
         assert_eq!(values.len(), 2);
         assert_eq!(values[0]["features"], serde_json::json!("all"));
@@ -154,7 +160,9 @@ mod tests {
             response: tx,
         });
         let values = resp_rx.await.expect("handler resolved");
-        let obj = values[0].as_object().expect("whole lsp subtree is a JSON object");
+        let obj = values[0]
+            .as_object()
+            .expect("whole lsp subtree is a JSON object");
         assert!(obj.contains_key("rust-analyzer"));
     }
 

@@ -93,7 +93,8 @@ pub const DIFF_ELEMENT: &str = "diff";
 /// after `core.path`.
 pub fn register_diff_modeline_element(svc: &ModelineService) {
     svc.register(
-        ModelineElement::new(ElementId::new(DIFF_ELEMENT), Zone::Left, 20).with_scope(Scope::Global),
+        ModelineElement::new(ElementId::new(DIFF_ELEMENT), Zone::Left, 20)
+            .with_scope(Scope::Global),
     );
 }
 
@@ -123,7 +124,10 @@ pub fn diff_content(sign_map: &crate::overlay::DiffSignMap) -> ElementContent {
     if changed > 0 {
         parts.push(format!("~{changed}"));
     }
-    ElementContent::text(parts.join(" "), ModelineRole::new(lattice_mode::modeline::ROLE_MODE_ITEM))
+    ElementContent::text(
+        parts.join(" "),
+        ModelineRole::new(lattice_mode::modeline::ROLE_MODE_ITEM),
+    )
 }
 
 /// `diff-mode` minor. Empty marker in v1 (D.5.a): the bit other
@@ -217,10 +221,22 @@ impl Mode for DiffMode {
             sub.diff_prev_hunk_effect(active, ctx.cursor.line)
         });
         vec![
-            ActionHandlerContribution { action_name: "action:diff-get", handler: get },
-            ActionHandlerContribution { action_name: "action:diff-put", handler: put },
-            ActionHandlerContribution { action_name: "action:hunk-next", handler: next_hunk },
-            ActionHandlerContribution { action_name: "action:hunk-prev", handler: prev_hunk },
+            ActionHandlerContribution {
+                action_name: "action:diff-get",
+                handler: get,
+            },
+            ActionHandlerContribution {
+                action_name: "action:diff-put",
+                handler: put,
+            },
+            ActionHandlerContribution {
+                action_name: "action:hunk-next",
+                handler: next_hunk,
+            },
+            ActionHandlerContribution {
+                action_name: "action:hunk-prev",
+                handler: prev_hunk,
+            },
         ]
     }
     // ML.3: the `+N ~M` summary moved off `status_line_items` to a
@@ -241,7 +257,10 @@ impl Mode for DiffMode {
                     DiffSignKind::Change => GutterDiffKind::Change,
                     DiffSignKind::Conflict => GutterDiffKind::Conflict,
                 };
-                GutterDecoration::Diff { line: *line, kind: gdk }
+                GutterDecoration::Diff {
+                    line: *line,
+                    kind: gdk,
+                }
             })
             .collect()
     }
@@ -314,8 +333,11 @@ impl Mode for DiffMode {
                             let slot = sub.participant_slot(core_buffer_id).unwrap_or(1);
                             // Hunk folds (open-by-default; `za` collapses a
                             // change) on this buffer's OWN side.
-                            let hunk_src =
-                                Arc::new(HunkFoldSource::new(Arc::clone(&session), core_buffer_id, slot));
+                            let hunk_src = Arc::new(HunkFoldSource::new(
+                                Arc::clone(&session),
+                                core_buffer_id,
+                                slot,
+                            ));
                             let hunk_id = svc.add_source(hunk_src, core_buffer_id);
                             fold_registrations.push((svc.clone(), hunk_id));
                             // Unchanged folds (closed-by-default; the
@@ -884,10 +906,8 @@ mod tests {
     fn conflict_predicate_detects_conflict_regions() {
         use crate::overlay::{DiffSignKind, DiffSignMap};
 
-        let with_conflict = DiffSignMap::from_entries(vec![
-            (1, DiffSignKind::Add),
-            (3, DiffSignKind::Conflict),
-        ]);
+        let with_conflict =
+            DiffSignMap::from_entries(vec![(1, DiffSignKind::Add), (3, DiffSignKind::Conflict)]);
         assert!(sign_map_has_conflicts(&with_conflict));
 
         // Add / Change / Remove are 2-way diff signs, NOT conflicts.
@@ -910,7 +930,10 @@ mod tests {
     fn register_diff_modes_registers_base_and_conflict_modes() {
         let mut registry = ModeRegistry::new();
         register_diff_modes(&mut registry);
-        assert!(registry.is_registered(DiffMode::mode_id()), "diff-mode registered");
+        assert!(
+            registry.is_registered(DiffMode::mode_id()),
+            "diff-mode registered"
+        );
         assert!(
             registry.is_registered(DiffConflictMode::mode_id()),
             "diff-conflict-mode registered"
@@ -1023,8 +1046,7 @@ mod tests {
         assert!(
             changes
                 .iter()
-                .all(|c| c.kind == DiffModeKind::Conflict
-                    && c.action == DiffModeAction::Activate)
+                .all(|c| c.kind == DiffModeKind::Conflict && c.action == DiffModeAction::Activate)
         );
         // Idempotent: still conflict-bearing → nothing queued.
         bridge.note_conflict_state(bid(2), &[bid(1), bid(2)], true);
@@ -1090,7 +1112,10 @@ mod tests {
         let svc = ModelineService::new();
         register_diff_modeline_element(&svc);
         let snap = svc.snapshot();
-        let el = snap.registry.get(&ElementId::new(DIFF_ELEMENT)).expect("diff descriptor");
+        let el = snap
+            .registry
+            .get(&ElementId::new(DIFF_ELEMENT))
+            .expect("diff descriptor");
         assert_eq!(el.zone, Zone::Left);
         assert_eq!(el.priority, 20);
         assert_eq!(el.scope, Scope::Global);
@@ -1124,7 +1149,11 @@ mod tests {
             (5, GutterDiffKind::Remove),
             (7, GutterDiffKind::Conflict),
         ];
-        assert_eq!(decos.len(), expected.len(), "one decoration per signed line");
+        assert_eq!(
+            decos.len(),
+            expected.len(),
+            "one decoration per signed line"
+        );
         for (deco, (eline, ekind)) in decos.iter().zip(expected) {
             match deco {
                 GutterDecoration::Diff { line, kind } => {

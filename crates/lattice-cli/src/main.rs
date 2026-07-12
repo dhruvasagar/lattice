@@ -170,10 +170,7 @@ async fn main() -> Result<()> {
     #[cfg(all(target_os = "macos", feature = "gui"))]
     let running_in_bundle = std::env::current_exe()
         .ok()
-        .map(|p| {
-            p.components()
-                .any(|c| c.as_os_str() == "Contents")
-        })
+        .map(|p| p.components().any(|c| c.as_os_str() == "Contents"))
         .unwrap_or(false);
     #[cfg(not(all(target_os = "macos", feature = "gui")))]
     let running_in_bundle = false;

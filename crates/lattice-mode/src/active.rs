@@ -56,6 +56,21 @@ impl ActiveModes {
         &self.minors
     }
 
+    /// The mode ids the keymap lookup must gate on, in priority
+    /// order: the active major first (lowest of the gated layers),
+    /// then the minors in activation order (each overlaying the
+    /// previous). Pass this to
+    /// `KeymapHandle::lookup_with_context` so a `MajorMode` layer
+    /// fires only in buffers where that major is active — a bare
+    /// `minors()` slice would leave major-mode chords ungated
+    /// (they'd fire everywhere).
+    pub fn keymap_gated_ids(&self) -> Vec<ModeId> {
+        let mut ids = Vec::with_capacity(self.minors.len() + 1);
+        ids.extend(self.major);
+        ids.extend(self.minors.iter().copied());
+        ids
+    }
+
     /// True iff this minor is currently active.
     pub fn has_minor(&self, mode: ModeId) -> bool {
         self.minors.contains(&mode)

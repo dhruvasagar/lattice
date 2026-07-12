@@ -350,6 +350,18 @@ interface types {
 
     // Payload records for the multi-field `effect` arms. Paths cross as
     // `option<string>` / `string` (a non-UTF-8 path is a typed error, §4.4).
+    /// Mirrors `lattice_core::ui::popup::PopupPlacement`.
+    enum popup-placement { centered, cursor-anchored }
+    /// Mirrors `lattice_core::ui::popup::PopupFocus`.
+    enum popup-focus { steal, passive }
+    /// Payload for the `open-popup` effect (popup-api.md §4.3). Name-based:
+    /// the host ensures a popup buffer named `name` under major mode `mode-id`.
+    record open-popup-payload {
+        name: string,
+        mode-id: string,
+        placement: popup-placement,
+        focus: popup-focus,
+    }
     record apply-edit-payload {
         /// The target `BufferId` (its inner `u32`).
         target: u32,
@@ -382,6 +394,10 @@ interface types {
         path: option<string>,
         column: option<utf16-pos>,
         force: bool,
+    }
+    record open-synthetic-buffer-payload {
+        name: string,
+        mode-id: string,
     }
     record spawn-terminal-payload {
         cmd-line: option<string>,
@@ -466,7 +482,8 @@ interface types {
         describe-element(string),
         list-options,
         open-hover(string),
-        close-hover,
+        dismiss-popup,
+        open-popup(open-popup-payload),
         open-help-topic(option<string>),
         list-diagnostics,
         next-diagnostic,
@@ -526,6 +543,9 @@ interface types {
         toggle-mode(string),
         app-action(app-effect),
         record-jump,
+        open-ai-log(option<string>),
+        open-synthetic-buffer(open-synthetic-buffer-payload),
+        open-dashboard,
     }
 
     // ---- The `app-effect` variant mirror (PH7.3b2) ----
@@ -545,6 +565,20 @@ interface types {
     variant scroll-pos { top, center, bottom }
     /// Mirrors `lattice_grammar::app_effect::PaneDirection`.
     variant pane-direction { left, down, up, right }
+    /// Mirrors `lattice_grammar::app_effect::InsertLineEdit` — the `<C-a>`,
+    /// `<C-e>`, `<C-b>`, `<C-f>`, `<C-w>`, `<C-u>`, `<C-k>`, `<C-t>`, `<C-d>`
+    /// readline/vim line-editing family within Insert mode.
+    variant insert-line-edit {
+        cursor-line-start,
+        cursor-line-end,
+        cursor-char-left,
+        cursor-char-right,
+        delete-word-backward,
+        delete-to-line-start,
+        kill-to-line-end,
+        indent-line,
+        dedent-line,
+    }
     /// Mirrors `lattice_grammar::app_effect::HScroll` (vim `z{l,h,L,H,s,e}`).
     /// Each arm's bool is the native struct field: `columns`/`half-screen`
     /// carry `right`, `cursor-to-edge` carries `end`.
@@ -621,6 +655,7 @@ interface types {
         jump-viewport(viewport-pos),
         scroll-cursor-to(scroll-pos),
         horizontal-scroll(hscroll),
+        insert-line-edit(insert-line-edit),
         join-lines(bool),
         find-repeat(bool),
         insert-newline,
@@ -770,6 +805,14 @@ interface types {
         lsp-code-lens(u32),
         color-presentation(u32),
         colorscheme(string),
+        ai-session(ai-session-payload),
+    }
+
+    /// Mirrors `lattice_picker::RoutingPayload::AiSession` — the
+    /// `(provider, index)` key for opening the per-session AI log buffer.
+    record ai-session-payload {
+        provider: string,
+        index: u32,
     }
 
     // ---- The owned `PickerContext` projection (§4.2) ----

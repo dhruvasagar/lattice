@@ -32,8 +32,12 @@
 
 pub mod action;
 pub mod actions;
-pub(crate) mod events;
 pub mod activator;
+pub(crate) mod events;
+// Autoread (AR.*): external-change detection + refresh for file-backed
+// buffers. AR.0 lands the on-disk fingerprint seam only; the `notify`
+// watcher lands in AR.2. See `docs/dev/architecture/autoread.md`.
+pub mod autoread;
 // Boot-composition BC.1: the `BootContext` skeleton — the host's
 // generic-primitive surface (the typed bundle a subsystem's future
 // `install(boot)` receives). Additive this slice; `editor_boot` migrates onto

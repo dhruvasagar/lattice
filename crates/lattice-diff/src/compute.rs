@@ -30,46 +30,46 @@ use smallvec::smallvec;
 use crate::types::{DiffAlgorithm, Hunk, HunkIndex, HunkKind, LineRange};
 
 fn algorithm_to_imara(alg: DiffAlgorithm) -> Algorithm {
-	match alg {
-		DiffAlgorithm::Histogram => Algorithm::Histogram,
-		DiffAlgorithm::Myers => Algorithm::Myers,
-		DiffAlgorithm::MyersMinimal => Algorithm::MyersMinimal,
-	}
+    match alg {
+        DiffAlgorithm::Histogram => Algorithm::Histogram,
+        DiffAlgorithm::Myers => Algorithm::Myers,
+        DiffAlgorithm::MyersMinimal => Algorithm::MyersMinimal,
+    }
 }
 
 /// `imara_diff::Sink` impl that collects each `process_change`
 /// callback into a two-way `Hunk`.
 struct TwoWaySink {
-	hunks: Vec<Hunk>,
+    hunks: Vec<Hunk>,
 }
 
 impl Sink for TwoWaySink {
-	type Out = Vec<Hunk>;
+    type Out = Vec<Hunk>;
 
-	fn process_change(&mut self, before: Range<u32>, after: Range<u32>) {
-		let a = LineRange::new(before.start, before.end);
-		let b = LineRange::new(after.start, after.end);
-		let kind = classify_two_way(a, b);
-		self.hunks.push(Hunk {
-			kind,
-			ranges: smallvec![a, b],
-		});
-	}
+    fn process_change(&mut self, before: Range<u32>, after: Range<u32>) {
+        let a = LineRange::new(before.start, before.end);
+        let b = LineRange::new(after.start, after.end);
+        let kind = classify_two_way(a, b);
+        self.hunks.push(Hunk {
+            kind,
+            ranges: smallvec![a, b],
+        });
+    }
 
-	fn finish(self) -> Self::Out {
-		self.hunks
-	}
+    fn finish(self) -> Self::Out {
+        self.hunks
+    }
 }
 
 fn classify_two_way(a: LineRange, b: LineRange) -> HunkKind {
-	match (a.is_empty(), b.is_empty()) {
-		// imara-diff does not emit an empty/empty hunk; fall
-		// back to `Change` defensively rather than panic.
-		(true, true) => HunkKind::Change,
-		(true, false) => HunkKind::Add,
-		(false, true) => HunkKind::Remove,
-		(false, false) => HunkKind::Change,
-	}
+    match (a.is_empty(), b.is_empty()) {
+        // imara-diff does not emit an empty/empty hunk; fall
+        // back to `Change` defensively rather than panic.
+        (true, true) => HunkKind::Change,
+        (true, false) => HunkKind::Add,
+        (false, true) => HunkKind::Remove,
+        (false, false) => HunkKind::Change,
+    }
 }
 
 /// D.8.a: the engine's only public dispatch entry. Routes by
@@ -95,25 +95,20 @@ fn classify_two_way(a: LineRange, b: LineRange) -> HunkKind {
 /// callers go through it. The dispatch decision lives entirely
 /// inside this function so consumers never branch on arity.
 pub fn compute_diff(
-	sources: &[Rope],
-	algorithm: DiffAlgorithm,
+    sources: &[Rope],
+    algorithm: DiffAlgorithm,
 ) -> Result<HunkIndex, DiffEngineError> {
-	match sources.len() {
-		0 => Err(DiffEngineError::Empty),
-		1 => Ok(HunkIndex {
-			hunks: Vec::new(),
-			algorithm,
-			revision: 0,
-		}),
-		2 => Ok(two_way(&sources[0], &sources[1], algorithm)),
-		3 => Ok(three_way(
-			&sources[0],
-			&sources[1],
-			&sources[2],
-			algorithm,
-		)),
-		n => Err(DiffEngineError::Unsupported { n }),
-	}
+    match sources.len() {
+        0 => Err(DiffEngineError::Empty),
+        1 => Ok(HunkIndex {
+            hunks: Vec::new(),
+            algorithm,
+            revision: 0,
+        }),
+        2 => Ok(two_way(&sources[0], &sources[1], algorithm)),
+        3 => Ok(three_way(&sources[0], &sources[1], &sources[2], algorithm)),
+        n => Err(DiffEngineError::Unsupported { n }),
+    }
 }
 
 /// D.8.a: errors `compute_diff` returns for unsupported
@@ -122,10 +117,10 @@ pub fn compute_diff(
 /// extending the `Unsupported` arm with new computation.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum DiffEngineError {
-	#[error("diff requires at least one participant")]
-	Empty,
-	#[error("v1 supports up to 3 participants; got N = {n}")]
-	Unsupported { n: usize },
+    #[error("diff requires at least one participant")]
+    Empty,
+    #[error("v1 supports up to 3 participants; got N = {n}")]
+    Unsupported { n: usize },
 }
 
 /// Compute the two-way hunk list between ropes `a` and `b`.
@@ -145,14 +140,14 @@ pub enum DiffEngineError {
 /// O(N + M) bytes for ropes of sizes N and M; bench gated in
 /// `benches/recompute.rs`.
 pub(crate) fn two_way(a: &Rope, b: &Rope, algorithm: DiffAlgorithm) -> HunkIndex {
-	let a_str = a.to_string();
-	let b_str = b.to_string();
-	let hunks = two_way_str(&a_str, &b_str, algorithm);
-	HunkIndex {
-		hunks,
-		algorithm,
-		revision: 0,
-	}
+    let a_str = a.to_string();
+    let b_str = b.to_string();
+    let hunks = two_way_str(&a_str, &b_str, algorithm);
+    HunkIndex {
+        hunks,
+        algorithm,
+        revision: 0,
+    }
 }
 
 /// Internal: two-way diff over `&str` inputs. Used by both
@@ -164,15 +159,15 @@ pub(crate) fn two_way(a: &Rope, b: &Rope, algorithm: DiffAlgorithm) -> HunkIndex
 /// `&str` tokenisation uses `str::lines()` which strips
 /// terminators and treats `"x"` and `"x\n"` as identical).
 fn two_way_str(a: &str, b: &str, algorithm: DiffAlgorithm) -> Vec<Hunk> {
-	let input = InternedInput::new(
-		imara_diff::sources::lines_with_terminator(a),
-		imara_diff::sources::lines_with_terminator(b),
-	);
-	imara_diff::diff(
-		algorithm_to_imara(algorithm),
-		&input,
-		TwoWaySink { hunks: Vec::new() },
-	)
+    let input = InternedInput::new(
+        imara_diff::sources::lines_with_terminator(a),
+        imara_diff::sources::lines_with_terminator(b),
+    );
+    imara_diff::diff(
+        algorithm_to_imara(algorithm),
+        &input,
+        TwoWaySink { hunks: Vec::new() },
+    )
 }
 
 /// Compute a three-way hunk list between `base`, `local`, and
@@ -195,25 +190,25 @@ fn two_way_str(a: &str, b: &str, algorithm: DiffAlgorithm) -> Vec<Hunk> {
 /// Strict overlap (`a.start < b.end && b.start < a.end`) is
 /// the conflict predicate.
 pub(crate) fn three_way(
-	base: &Rope,
-	local: &Rope,
-	remote: &Rope,
-	algorithm: DiffAlgorithm,
+    base: &Rope,
+    local: &Rope,
+    remote: &Rope,
+    algorithm: DiffAlgorithm,
 ) -> HunkIndex {
-	let base_str = base.to_string();
-	let local_str = local.to_string();
-	let remote_str = remote.to_string();
+    let base_str = base.to_string();
+    let local_str = local.to_string();
+    let remote_str = remote.to_string();
 
-	let local_hunks = two_way_str(&base_str, &local_str, algorithm);
-	let remote_hunks = two_way_str(&base_str, &remote_str, algorithm);
+    let local_hunks = two_way_str(&base_str, &local_str, algorithm);
+    let remote_hunks = two_way_str(&base_str, &remote_str, algorithm);
 
-	let merged = merge_three_way(&local_hunks, &remote_hunks, &local_str, &remote_str);
+    let merged = merge_three_way(&local_hunks, &remote_hunks, &local_str, &remote_str);
 
-	HunkIndex {
-		hunks: merged,
-		algorithm,
-		revision: 0,
-	}
+    HunkIndex {
+        hunks: merged,
+        algorithm,
+        revision: 0,
+    }
 }
 
 /// Precompute byte offsets of every line start in `s`.
@@ -223,32 +218,32 @@ pub(crate) fn three_way(
 /// sentinel). Used by [`line_slice`] for O(1) line-range
 /// indexing during three-way merge content comparison.
 fn line_offsets(s: &str) -> Vec<usize> {
-	let mut offsets = Vec::with_capacity(s.len() / 32 + 2);
-	offsets.push(0);
-	for (i, byte) in s.bytes().enumerate() {
-		if byte == b'\n' {
-			offsets.push(i + 1);
-		}
-	}
-	if offsets.last().copied() != Some(s.len()) {
-		offsets.push(s.len());
-	}
-	offsets
+    let mut offsets = Vec::with_capacity(s.len() / 32 + 2);
+    offsets.push(0);
+    for (i, byte) in s.bytes().enumerate() {
+        if byte == b'\n' {
+            offsets.push(i + 1);
+        }
+    }
+    if offsets.last().copied() != Some(s.len()) {
+        offsets.push(s.len());
+    }
+    offsets
 }
 
 /// Slice `s` by line range, using precomputed offsets.
 /// Returns an empty slice if the range is empty or out of
 /// bounds.
 fn line_slice<'a>(s: &'a str, offsets: &[usize], range: LineRange) -> &'a str {
-	let start = offsets
-		.get(range.start as usize)
-		.copied()
-		.unwrap_or(s.len());
-	let end = offsets.get(range.end as usize).copied().unwrap_or(s.len());
-	if start > end || start > s.len() {
-		return "";
-	}
-	&s[start..end.min(s.len())]
+    let start = offsets
+        .get(range.start as usize)
+        .copied()
+        .unwrap_or(s.len());
+    let end = offsets.get(range.end as usize).copied().unwrap_or(s.len());
+    if start > end || start > s.len() {
+        return "";
+    }
+    &s[start..end.min(s.len())]
 }
 
 /// Merge two sorted two-way hunk lists (each `[base, side]`)
@@ -262,123 +257,119 @@ fn line_slice<'a>(s: &'a str, offsets: &[usize], range: LineRange) -> &'a str {
 /// union touched by only one side is attributed to that
 /// side's change kind.
 fn merge_three_way(
-	local_hunks: &[Hunk],
-	remote_hunks: &[Hunk],
-	local_str: &str,
-	remote_str: &str,
+    local_hunks: &[Hunk],
+    remote_hunks: &[Hunk],
+    local_str: &str,
+    remote_str: &str,
 ) -> Vec<Hunk> {
-	let local_offsets = line_offsets(local_str);
-	let remote_offsets = line_offsets(remote_str);
+    let local_offsets = line_offsets(local_str);
+    let remote_offsets = line_offsets(remote_str);
 
-	let mut merged = Vec::new();
-	let mut li = 0;
-	let mut ri = 0;
+    let mut merged = Vec::new();
+    let mut li = 0;
+    let mut ri = 0;
 
-	// Running net deltas: how many lines local/remote has
-	// gained (positive) or lost (negative) vs base by the time
-	// we reach the current base position. Used to project an
-	// untouched base range into the side's coordinate space.
-	let mut local_delta: i64 = 0;
-	let mut remote_delta: i64 = 0;
+    // Running net deltas: how many lines local/remote has
+    // gained (positive) or lost (negative) vs base by the time
+    // we reach the current base position. Used to project an
+    // untouched base range into the side's coordinate space.
+    let mut local_delta: i64 = 0;
+    let mut remote_delta: i64 = 0;
 
-	while li < local_hunks.len() || ri < remote_hunks.len() {
-		let l_pos = local_hunks.get(li).map(|h| h.ranges[0].start);
-		let r_pos = remote_hunks.get(ri).map(|h| h.ranges[0].start);
+    while li < local_hunks.len() || ri < remote_hunks.len() {
+        let l_pos = local_hunks.get(li).map(|h| h.ranges[0].start);
+        let r_pos = remote_hunks.get(ri).map(|h| h.ranges[0].start);
 
-		// Pick the earliest unprocessed hunk as the seed.
-		let take_local_first = match (l_pos, r_pos) {
-			(Some(l), Some(r)) => l <= r,
-			(Some(_), None) => true,
-			(None, Some(_)) => false,
-			(None, None) => break,
-		};
+        // Pick the earliest unprocessed hunk as the seed.
+        let take_local_first = match (l_pos, r_pos) {
+            (Some(l), Some(r)) => l <= r,
+            (Some(_), None) => true,
+            (None, Some(_)) => false,
+            (None, None) => break,
+        };
 
-		let mut taken_local: Vec<usize> = Vec::new();
-		let mut taken_remote: Vec<usize> = Vec::new();
-		let mut union_base;
+        let mut taken_local: Vec<usize> = Vec::new();
+        let mut taken_remote: Vec<usize> = Vec::new();
+        let mut union_base;
 
-		if take_local_first {
-			union_base = local_hunks[li].ranges[0];
-			taken_local.push(li);
-			li += 1;
-		} else {
-			union_base = remote_hunks[ri].ranges[0];
-			taken_remote.push(ri);
-			ri += 1;
-		}
+        if take_local_first {
+            union_base = local_hunks[li].ranges[0];
+            taken_local.push(li);
+            li += 1;
+        } else {
+            union_base = remote_hunks[ri].ranges[0];
+            taken_remote.push(ri);
+            ri += 1;
+        }
 
-		// Extend the union while either side has a strictly-
-		// overlapping next hunk.
-		loop {
-			let mut extended = false;
-			if let Some(h) = local_hunks.get(li) {
-				if h.ranges[0].start < union_base.end {
-					union_base = LineRange::new(
-						union_base.start,
-						union_base.end.max(h.ranges[0].end),
-					);
-					taken_local.push(li);
-					li += 1;
-					extended = true;
-				}
-			}
-			if let Some(h) = remote_hunks.get(ri) {
-				if h.ranges[0].start < union_base.end {
-					union_base = LineRange::new(
-						union_base.start,
-						union_base.end.max(h.ranges[0].end),
-					);
-					taken_remote.push(ri);
-					ri += 1;
-					extended = true;
-				}
-			}
-			if !extended {
-				break;
-			}
-		}
+        // Extend the union while either side has a strictly-
+        // overlapping next hunk.
+        loop {
+            let mut extended = false;
+            if let Some(h) = local_hunks.get(li) {
+                if h.ranges[0].start < union_base.end {
+                    union_base =
+                        LineRange::new(union_base.start, union_base.end.max(h.ranges[0].end));
+                    taken_local.push(li);
+                    li += 1;
+                    extended = true;
+                }
+            }
+            if let Some(h) = remote_hunks.get(ri) {
+                if h.ranges[0].start < union_base.end {
+                    union_base =
+                        LineRange::new(union_base.start, union_base.end.max(h.ranges[0].end));
+                    taken_remote.push(ri);
+                    ri += 1;
+                    extended = true;
+                }
+            }
+            if !extended {
+                break;
+            }
+        }
 
-		let local_range = side_range(&taken_local, local_hunks, union_base, local_delta);
-		let remote_range = side_range(&taken_remote, remote_hunks, union_base, remote_delta);
+        let local_range = side_range(&taken_local, local_hunks, union_base, local_delta);
+        let remote_range = side_range(&taken_remote, remote_hunks, union_base, remote_delta);
 
-		// Advance running deltas past the taken hunks.
-		for &idx in &taken_local {
-			let h = &local_hunks[idx];
-			local_delta += h.ranges[1].len() as i64 - h.ranges[0].len() as i64;
-		}
-		for &idx in &taken_remote {
-			let h = &remote_hunks[idx];
-			remote_delta += h.ranges[1].len() as i64 - h.ranges[0].len() as i64;
-		}
+        // Advance running deltas past the taken hunks.
+        for &idx in &taken_local {
+            let h = &local_hunks[idx];
+            local_delta += h.ranges[1].len() as i64 - h.ranges[0].len() as i64;
+        }
+        for &idx in &taken_remote {
+            let h = &remote_hunks[idx];
+            remote_delta += h.ranges[1].len() as i64 - h.ranges[0].len() as i64;
+        }
 
-		let kind = if !taken_local.is_empty() && !taken_remote.is_empty() {
-			// Both sides touched this region. If the resulting
-			// content is identical, this is a "soft" merge
-			// where both sides made the same change — not a
-			// conflict. Compare the actual line content rather
-			// than just the ranges, since equivalent edits can
-			// land at different line indices in their side's
-			// coordinate space.
-			let local_text = line_slice(local_str, &local_offsets, local_range);
-			let remote_text = line_slice(remote_str, &remote_offsets, remote_range);
-			if local_text == remote_text {
-				classify_three_way_attributed(union_base, local_range)
-			} else {
-				HunkKind::Conflict
-			}
-		} else if !taken_local.is_empty() {
-			classify_three_way_attributed(union_base, local_range)
-		} else {
-			classify_three_way_attributed(union_base, remote_range)
-		};
+        let kind = if !taken_local.is_empty() && !taken_remote.is_empty() {
+            // Both sides touched this region. If the resulting
+            // content is identical, this is a "soft" merge
+            // where both sides made the same change — not a
+            // conflict. Compare the actual line content rather
+            // than just the ranges, since equivalent edits can
+            // land at different line indices in their side's
+            // coordinate space.
+            let local_text = line_slice(local_str, &local_offsets, local_range);
+            let remote_text = line_slice(remote_str, &remote_offsets, remote_range);
+            if local_text == remote_text {
+                classify_three_way_attributed(union_base, local_range)
+            } else {
+                HunkKind::Conflict
+            }
+        } else if !taken_local.is_empty() {
+            classify_three_way_attributed(union_base, local_range)
+        } else {
+            classify_three_way_attributed(union_base, remote_range)
+        };
 
-		merged.push(Hunk {
-			kind,
-			ranges: smallvec![union_base, local_range, remote_range],
-		});
-	}
+        merged.push(Hunk {
+            kind,
+            ranges: smallvec![union_base, local_range, remote_range],
+        });
+    }
 
-	merged
+    merged
 }
 
 /// Compute one side's (local *or* remote) range corresponding
@@ -393,237 +384,237 @@ fn merge_three_way(
 ///   range into the side's coordinate space via the running
 ///   delta.
 fn side_range(
-	taken: &[usize],
-	hunks: &[Hunk],
-	union_base: LineRange,
-	side_delta: i64,
+    taken: &[usize],
+    hunks: &[Hunk],
+    union_base: LineRange,
+    side_delta: i64,
 ) -> LineRange {
-	if taken.is_empty() {
-		let start = (union_base.start as i64 + side_delta).max(0) as u32;
-		let end = (union_base.end as i64 + side_delta).max(0) as u32;
-		LineRange::new(start, end)
-	} else {
-		let first = &hunks[taken[0]];
-		let last = &hunks[*taken.last().expect("taken non-empty")];
-		// How much base extends before the first taken hunk
-		// (untouched prefix that we count as side-untouched).
-		let prefix = first.ranges[0].start.saturating_sub(union_base.start);
-		let suffix = union_base.end.saturating_sub(last.ranges[0].end);
-		let start = first.ranges[1].start.saturating_sub(prefix);
-		let end = last.ranges[1].end + suffix;
-		LineRange::new(start, end)
-	}
+    if taken.is_empty() {
+        let start = (union_base.start as i64 + side_delta).max(0) as u32;
+        let end = (union_base.end as i64 + side_delta).max(0) as u32;
+        LineRange::new(start, end)
+    } else {
+        let first = &hunks[taken[0]];
+        let last = &hunks[*taken.last().expect("taken non-empty")];
+        // How much base extends before the first taken hunk
+        // (untouched prefix that we count as side-untouched).
+        let prefix = first.ranges[0].start.saturating_sub(union_base.start);
+        let suffix = union_base.end.saturating_sub(last.ranges[0].end);
+        let start = first.ranges[1].start.saturating_sub(prefix);
+        let end = last.ranges[1].end + suffix;
+        LineRange::new(start, end)
+    }
 }
 
 fn classify_three_way_attributed(base: LineRange, side: LineRange) -> HunkKind {
-	match (base.is_empty(), side.is_empty()) {
-		(true, false) => HunkKind::Add,
-		(false, true) => HunkKind::Remove,
-		(false, false) => HunkKind::Change,
-		// An empty/empty union shouldn't occur after a
-		// hunk-taking iteration; classify defensively.
-		(true, true) => HunkKind::Change,
-	}
+    match (base.is_empty(), side.is_empty()) {
+        (true, false) => HunkKind::Add,
+        (false, true) => HunkKind::Remove,
+        (false, false) => HunkKind::Change,
+        // An empty/empty union shouldn't occur after a
+        // hunk-taking iteration; classify defensively.
+        (true, true) => HunkKind::Change,
+    }
 }
 
 #[cfg(test)]
 mod tests {
-	use super::*;
+    use super::*;
 
-	#[test]
-	fn empty_inputs_have_no_hunks() {
-		let a = Rope::new();
-		let b = Rope::new();
-		let idx = two_way(&a, &b, DiffAlgorithm::Histogram);
-		assert!(idx.is_empty());
-	}
+    #[test]
+    fn empty_inputs_have_no_hunks() {
+        let a = Rope::new();
+        let b = Rope::new();
+        let idx = two_way(&a, &b, DiffAlgorithm::Histogram);
+        assert!(idx.is_empty());
+    }
 
-	#[test]
-	fn identical_inputs_have_no_hunks() {
-		let a = Rope::from("alpha\nbeta\ngamma\n");
-		let b = Rope::from("alpha\nbeta\ngamma\n");
-		let idx = two_way(&a, &b, DiffAlgorithm::Histogram);
-		assert!(idx.is_empty());
-	}
+    #[test]
+    fn identical_inputs_have_no_hunks() {
+        let a = Rope::from("alpha\nbeta\ngamma\n");
+        let b = Rope::from("alpha\nbeta\ngamma\n");
+        let idx = two_way(&a, &b, DiffAlgorithm::Histogram);
+        assert!(idx.is_empty());
+    }
 
-	#[test]
-	fn pure_add_classifies_as_add() {
-		let a = Rope::from("alpha\ngamma\n");
-		let b = Rope::from("alpha\nbeta\ngamma\n");
-		let idx = two_way(&a, &b, DiffAlgorithm::Histogram);
-		assert_eq!(idx.len(), 1);
-		assert_eq!(idx.hunks[0].kind, HunkKind::Add);
-	}
+    #[test]
+    fn pure_add_classifies_as_add() {
+        let a = Rope::from("alpha\ngamma\n");
+        let b = Rope::from("alpha\nbeta\ngamma\n");
+        let idx = two_way(&a, &b, DiffAlgorithm::Histogram);
+        assert_eq!(idx.len(), 1);
+        assert_eq!(idx.hunks[0].kind, HunkKind::Add);
+    }
 
-	#[test]
-	fn pure_remove_classifies_as_remove() {
-		let a = Rope::from("alpha\nbeta\ngamma\n");
-		let b = Rope::from("alpha\ngamma\n");
-		let idx = two_way(&a, &b, DiffAlgorithm::Histogram);
-		assert_eq!(idx.len(), 1);
-		assert_eq!(idx.hunks[0].kind, HunkKind::Remove);
-	}
+    #[test]
+    fn pure_remove_classifies_as_remove() {
+        let a = Rope::from("alpha\nbeta\ngamma\n");
+        let b = Rope::from("alpha\ngamma\n");
+        let idx = two_way(&a, &b, DiffAlgorithm::Histogram);
+        assert_eq!(idx.len(), 1);
+        assert_eq!(idx.hunks[0].kind, HunkKind::Remove);
+    }
 
-	#[test]
-	fn change_classifies_as_change() {
-		let a = Rope::from("alpha\nbeta\ngamma\n");
-		let b = Rope::from("alpha\nBETA\ngamma\n");
-		let idx = two_way(&a, &b, DiffAlgorithm::Histogram);
-		assert_eq!(idx.len(), 1);
-		assert_eq!(idx.hunks[0].kind, HunkKind::Change);
-	}
+    #[test]
+    fn change_classifies_as_change() {
+        let a = Rope::from("alpha\nbeta\ngamma\n");
+        let b = Rope::from("alpha\nBETA\ngamma\n");
+        let idx = two_way(&a, &b, DiffAlgorithm::Histogram);
+        assert_eq!(idx.len(), 1);
+        assert_eq!(idx.hunks[0].kind, HunkKind::Change);
+    }
 
-	#[test]
-	fn three_way_non_overlapping_changes_no_conflict() {
-		let base = Rope::from("a\nb\nc\nd\ne\nf\n");
-		let local = Rope::from("a\nB\nc\nd\ne\nf\n"); // changed line 1
-		let remote = Rope::from("a\nb\nc\nd\nE\nf\n"); // changed line 4
-		let idx = three_way(&base, &local, &remote, DiffAlgorithm::Histogram);
-		// Two separate non-conflict hunks (one per side).
-		assert_eq!(idx.len(), 2);
-		assert!(idx.hunks.iter().all(|h| h.kind != HunkKind::Conflict));
-	}
+    #[test]
+    fn three_way_non_overlapping_changes_no_conflict() {
+        let base = Rope::from("a\nb\nc\nd\ne\nf\n");
+        let local = Rope::from("a\nB\nc\nd\ne\nf\n"); // changed line 1
+        let remote = Rope::from("a\nb\nc\nd\nE\nf\n"); // changed line 4
+        let idx = three_way(&base, &local, &remote, DiffAlgorithm::Histogram);
+        // Two separate non-conflict hunks (one per side).
+        assert_eq!(idx.len(), 2);
+        assert!(idx.hunks.iter().all(|h| h.kind != HunkKind::Conflict));
+    }
 
-	#[test]
-	fn three_way_overlapping_changes_yield_conflict() {
-		let base = Rope::from("a\nb\nc\n");
-		let local = Rope::from("a\nLOCAL\nc\n"); // changed line 1
-		let remote = Rope::from("a\nREMOTE\nc\n"); // changed line 1 differently
-		let idx = three_way(&base, &local, &remote, DiffAlgorithm::Histogram);
-		assert_eq!(idx.len(), 1);
-		assert_eq!(idx.hunks[0].kind, HunkKind::Conflict);
-	}
+    #[test]
+    fn three_way_overlapping_changes_yield_conflict() {
+        let base = Rope::from("a\nb\nc\n");
+        let local = Rope::from("a\nLOCAL\nc\n"); // changed line 1
+        let remote = Rope::from("a\nREMOTE\nc\n"); // changed line 1 differently
+        let idx = three_way(&base, &local, &remote, DiffAlgorithm::Histogram);
+        assert_eq!(idx.len(), 1);
+        assert_eq!(idx.hunks[0].kind, HunkKind::Conflict);
+    }
 
-	#[test]
-	fn three_way_no_changes_no_hunks() {
-		let base = Rope::from("a\nb\nc\n");
-		let local = base.clone();
-		let remote = base.clone();
-		let idx = three_way(&base, &local, &remote, DiffAlgorithm::Histogram);
-		assert!(idx.is_empty());
-	}
+    #[test]
+    fn three_way_no_changes_no_hunks() {
+        let base = Rope::from("a\nb\nc\n");
+        let local = base.clone();
+        let remote = base.clone();
+        let idx = three_way(&base, &local, &remote, DiffAlgorithm::Histogram);
+        assert!(idx.is_empty());
+    }
 
-	#[test]
-	fn all_algorithms_agree_on_simple_change() {
-		let a = Rope::from("alpha\nbeta\ngamma\n");
-		let b = Rope::from("alpha\nBETA\ngamma\n");
-		for alg in [
-			DiffAlgorithm::Histogram,
-			DiffAlgorithm::Myers,
-			DiffAlgorithm::MyersMinimal,
-		] {
-			let idx = two_way(&a, &b, alg);
-			assert_eq!(idx.len(), 1, "algorithm {alg:?}");
-			assert_eq!(idx.hunks[0].kind, HunkKind::Change, "algorithm {alg:?}");
-			assert_eq!(idx.algorithm, alg);
-		}
-	}
+    #[test]
+    fn all_algorithms_agree_on_simple_change() {
+        let a = Rope::from("alpha\nbeta\ngamma\n");
+        let b = Rope::from("alpha\nBETA\ngamma\n");
+        for alg in [
+            DiffAlgorithm::Histogram,
+            DiffAlgorithm::Myers,
+            DiffAlgorithm::MyersMinimal,
+        ] {
+            let idx = two_way(&a, &b, alg);
+            assert_eq!(idx.len(), 1, "algorithm {alg:?}");
+            assert_eq!(idx.hunks[0].kind, HunkKind::Change, "algorithm {alg:?}");
+            assert_eq!(idx.algorithm, alg);
+        }
+    }
 
-	// ──────────────────────────────────────────────────────
-	// D.8.a (2026-05-31): compute_diff dispatch matrix
-	// ──────────────────────────────────────────────────────
+    // ──────────────────────────────────────────────────────
+    // D.8.a (2026-05-31): compute_diff dispatch matrix
+    // ──────────────────────────────────────────────────────
 
-	#[test]
-	fn compute_diff_zero_participants_is_empty_error() {
-		let result = compute_diff(&[], DiffAlgorithm::Histogram);
-		assert!(matches!(result, Err(DiffEngineError::Empty)));
-	}
+    #[test]
+    fn compute_diff_zero_participants_is_empty_error() {
+        let result = compute_diff(&[], DiffAlgorithm::Histogram);
+        assert!(matches!(result, Err(DiffEngineError::Empty)));
+    }
 
-	#[test]
-	fn compute_diff_one_participant_returns_empty_hunk_index() {
-		// N=1 = dormant session. Vim parity: `:set diff` on a
-		// single buffer with no peers is a visual no-op.
-		let rope = Rope::from("alpha\nbeta\n");
-		let idx = compute_diff(&[rope], DiffAlgorithm::Histogram)
-			.expect("N=1 must succeed (dormant)");
-		assert!(idx.is_empty());
-		assert_eq!(idx.algorithm, DiffAlgorithm::Histogram);
-	}
+    #[test]
+    fn compute_diff_one_participant_returns_empty_hunk_index() {
+        // N=1 = dormant session. Vim parity: `:set diff` on a
+        // single buffer with no peers is a visual no-op.
+        let rope = Rope::from("alpha\nbeta\n");
+        let idx =
+            compute_diff(&[rope], DiffAlgorithm::Histogram).expect("N=1 must succeed (dormant)");
+        assert!(idx.is_empty());
+        assert_eq!(idx.algorithm, DiffAlgorithm::Histogram);
+    }
 
-	#[test]
-	fn compute_diff_two_participants_dispatches_to_two_way() {
-		let a = Rope::from("alpha\nbeta\ngamma\n");
-		let b = Rope::from("alpha\nBETA\ngamma\n");
-		let via_dispatch = compute_diff(
-			&[a.clone(), b.clone()],
-			DiffAlgorithm::Histogram,
-		)
-		.expect("N=2 is supported");
-		let direct = two_way(&a, &b, DiffAlgorithm::Histogram);
-		// Same hunks shape (the dispatch is a thin wrapper).
-		assert_eq!(via_dispatch.len(), direct.len());
-		assert_eq!(via_dispatch.hunks.len(), 1);
-		assert_eq!(via_dispatch.hunks[0].kind, HunkKind::Change);
-	}
+    #[test]
+    fn compute_diff_two_participants_dispatches_to_two_way() {
+        let a = Rope::from("alpha\nbeta\ngamma\n");
+        let b = Rope::from("alpha\nBETA\ngamma\n");
+        let via_dispatch = compute_diff(&[a.clone(), b.clone()], DiffAlgorithm::Histogram)
+            .expect("N=2 is supported");
+        let direct = two_way(&a, &b, DiffAlgorithm::Histogram);
+        // Same hunks shape (the dispatch is a thin wrapper).
+        assert_eq!(via_dispatch.len(), direct.len());
+        assert_eq!(via_dispatch.hunks.len(), 1);
+        assert_eq!(via_dispatch.hunks[0].kind, HunkKind::Change);
+    }
 
-	#[test]
-	fn compute_diff_three_participants_dispatches_to_three_way() {
-		let base = Rope::from("aaa\nbbb\nccc\n");
-		let local = Rope::from("aaa\nBBB\nccc\n");
-		let remote = Rope::from("aaa\nbbb\nCCC\n");
-		let via_dispatch = compute_diff(
-			&[base.clone(), local.clone(), remote.clone()],
-			DiffAlgorithm::Histogram,
-		)
-		.expect("N=3 is supported");
-		let direct = three_way(&base, &local, &remote, DiffAlgorithm::Histogram);
-		assert_eq!(via_dispatch.len(), direct.len());
-		// Disjoint edits → no Conflict.
-		assert!(via_dispatch
-			.hunks
-			.iter()
-			.all(|h| !matches!(h.kind, HunkKind::Conflict)));
-		// Every hunk carries 3 ranges per the three-way contract.
-		for h in &via_dispatch.hunks {
-			assert_eq!(h.ranges.len(), 3);
-		}
-	}
+    #[test]
+    fn compute_diff_three_participants_dispatches_to_three_way() {
+        let base = Rope::from("aaa\nbbb\nccc\n");
+        let local = Rope::from("aaa\nBBB\nccc\n");
+        let remote = Rope::from("aaa\nbbb\nCCC\n");
+        let via_dispatch = compute_diff(
+            &[base.clone(), local.clone(), remote.clone()],
+            DiffAlgorithm::Histogram,
+        )
+        .expect("N=3 is supported");
+        let direct = three_way(&base, &local, &remote, DiffAlgorithm::Histogram);
+        assert_eq!(via_dispatch.len(), direct.len());
+        // Disjoint edits → no Conflict.
+        assert!(
+            via_dispatch
+                .hunks
+                .iter()
+                .all(|h| !matches!(h.kind, HunkKind::Conflict))
+        );
+        // Every hunk carries 3 ranges per the three-way contract.
+        for h in &via_dispatch.hunks {
+            assert_eq!(h.ranges.len(), 3);
+        }
+    }
 
-	#[test]
-	fn compute_diff_four_participants_errors_unsupported() {
-		let r = Rope::from("x\n");
-		let result = compute_diff(
-			&[r.clone(), r.clone(), r.clone(), r],
-			DiffAlgorithm::Histogram,
-		);
-		assert!(matches!(result, Err(DiffEngineError::Unsupported { n: 4 })));
-	}
+    #[test]
+    fn compute_diff_four_participants_errors_unsupported() {
+        let r = Rope::from("x\n");
+        let result = compute_diff(
+            &[r.clone(), r.clone(), r.clone(), r],
+            DiffAlgorithm::Histogram,
+        );
+        assert!(matches!(result, Err(DiffEngineError::Unsupported { n: 4 })));
+    }
 
-	#[test]
-	fn compute_diff_arbitrarily_large_n_errors_unsupported() {
-		let sources: Vec<Rope> = (0..10).map(|i| Rope::from(format!("rope-{i}\n"))).collect();
-		let result = compute_diff(&sources, DiffAlgorithm::Histogram);
-		assert!(matches!(result, Err(DiffEngineError::Unsupported { n: 10 })));
-	}
+    #[test]
+    fn compute_diff_arbitrarily_large_n_errors_unsupported() {
+        let sources: Vec<Rope> = (0..10).map(|i| Rope::from(format!("rope-{i}\n"))).collect();
+        let result = compute_diff(&sources, DiffAlgorithm::Histogram);
+        assert!(matches!(
+            result,
+            Err(DiffEngineError::Unsupported { n: 10 })
+        ));
+    }
 
-	#[test]
-	fn diff_engine_error_messages_name_the_cap() {
-		// Surfaces in dispatch.rs error messages; verify they
-		// stay user-readable.
-		let empty = DiffEngineError::Empty;
-		let unsup = DiffEngineError::Unsupported { n: 5 };
-		assert_eq!(
-			format!("{empty}"),
-			"diff requires at least one participant"
-		);
-		assert_eq!(
-			format!("{unsup}"),
-			"v1 supports up to 3 participants; got N = 5"
-		);
-	}
+    #[test]
+    fn diff_engine_error_messages_name_the_cap() {
+        // Surfaces in dispatch.rs error messages; verify they
+        // stay user-readable.
+        let empty = DiffEngineError::Empty;
+        let unsup = DiffEngineError::Unsupported { n: 5 };
+        assert_eq!(format!("{empty}"), "diff requires at least one participant");
+        assert_eq!(
+            format!("{unsup}"),
+            "v1 supports up to 3 participants; got N = 5"
+        );
+    }
 
-	#[test]
-	fn compute_diff_three_way_overlap_produces_conflict() {
-		// Belt-and-braces: confirm the three-way Conflict path
-		// fires through the dispatch wrapper.
-		let base = Rope::from("aaa\nbbb\nccc\n");
-		let local = Rope::from("aaa\nLOCAL\nccc\n");
-		let remote = Rope::from("aaa\nREMOTE\nccc\n");
-		let idx = compute_diff(
-			&[base, local, remote],
-			DiffAlgorithm::Histogram,
-		)
-		.expect("N=3 supported");
-		assert!(idx.hunks.iter().any(|h| matches!(h.kind, HunkKind::Conflict)));
-	}
+    #[test]
+    fn compute_diff_three_way_overlap_produces_conflict() {
+        // Belt-and-braces: confirm the three-way Conflict path
+        // fires through the dispatch wrapper.
+        let base = Rope::from("aaa\nbbb\nccc\n");
+        let local = Rope::from("aaa\nLOCAL\nccc\n");
+        let remote = Rope::from("aaa\nREMOTE\nccc\n");
+        let idx =
+            compute_diff(&[base, local, remote], DiffAlgorithm::Histogram).expect("N=3 supported");
+        assert!(
+            idx.hunks
+                .iter()
+                .any(|h| matches!(h.kind, HunkKind::Conflict))
+        );
+    }
 }

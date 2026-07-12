@@ -1061,7 +1061,10 @@ mod tests {
         // and `cursor_line.bg` is a distinct Macchiato tint.
         let mocha = default_palette();
         let mac = macchiato_palette();
-        assert_eq!(mac.get(&"purple".into()), Some(Color::Rgb(0xc6, 0xa0, 0xf6)));
+        assert_eq!(
+            mac.get(&"purple".into()),
+            Some(Color::Rgb(0xc6, 0xa0, 0xf6))
+        );
         assert_ne!(mac.get(&"purple".into()), mocha.get(&"purple".into()));
         assert_eq!(mac.get(&"text".into()), Some(Color::Rgb(0xca, 0xd3, 0xf5)));
         // ANSI chrome identical to mocha.

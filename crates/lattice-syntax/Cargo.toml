@@ -48,5 +48,9 @@ criterion = { workspace = true }
 name = "highlight"
 harness = false
 
+[[bench]]
+name = "scope_toward"
+harness = false
+
 [lints]
 workspace = true

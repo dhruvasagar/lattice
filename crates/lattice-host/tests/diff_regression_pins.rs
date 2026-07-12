@@ -164,7 +164,9 @@ fn diff_chords_inactive_when_diff_mode_not_active() {
     let editor = boot();
     for second in ['o', 'p'] {
         let chords = [KeyChord::char('d'), KeyChord::char(second)];
-        let res = editor.keymap.resolve_trace(BindingMode::Normal, &chords, &[]);
+        let res = editor
+            .keymap
+            .resolve_trace(BindingMode::Normal, &chords, &[]);
         if let Some(hit) = diff_layer_hit(&res) {
             assert!(
                 !hit.active,
@@ -191,19 +193,35 @@ fn diff_conflict_chords_bound_on_conflict_mode_layer() {
     // the case, so the chord is `d` then `B`).
     let cases: [(&[KeyChord], &str); 5] = [
         (
-            &[KeyChord::char('d'), KeyChord::char('2'), KeyChord::char('o')],
+            &[
+                KeyChord::char('d'),
+                KeyChord::char('2'),
+                KeyChord::char('o'),
+            ],
             "action:diff-keep-ours",
         ),
         (
-            &[KeyChord::char('d'), KeyChord::char('3'), KeyChord::char('o')],
+            &[
+                KeyChord::char('d'),
+                KeyChord::char('3'),
+                KeyChord::char('o'),
+            ],
             "action:diff-keep-theirs",
         ),
         (
-            &[KeyChord::char('d'), KeyChord::char('2'), KeyChord::char('p')],
+            &[
+                KeyChord::char('d'),
+                KeyChord::char('2'),
+                KeyChord::char('p'),
+            ],
             "action:diff-put-ours",
         ),
         (
-            &[KeyChord::char('d'), KeyChord::char('3'), KeyChord::char('p')],
+            &[
+                KeyChord::char('d'),
+                KeyChord::char('3'),
+                KeyChord::char('p'),
+            ],
             "action:diff-put-theirs",
         ),
         (
@@ -238,7 +256,9 @@ fn diff_conflict_chords_inactive_when_mode_not_active() {
     // its bindings only fire on buffers where diff-conflict-mode is active.
     let editor = boot();
     let chords = [KeyChord::char('d'), KeyChord::char('B')];
-    let res = editor.keymap.resolve_trace(BindingMode::Normal, &chords, &[]);
+    let res = editor
+        .keymap
+        .resolve_trace(BindingMode::Normal, &chords, &[]);
     if let Some(hit) = conflict_layer_hit(&res) {
         assert!(
             !hit.active,
@@ -268,7 +288,9 @@ async fn boot_wired_document_closed_drains_to_subsystem() {
         .id();
 
     // A session keyed on the active buffer.
-    editor.diff_subsystem.register(bid, DiffAlgorithm::Histogram);
+    editor
+        .diff_subsystem
+        .register(bid, DiffAlgorithm::Histogram);
     assert!(
         editor.diff_subsystem.lookup(bid).is_some(),
         "session registered on the active buffer"
@@ -277,7 +299,9 @@ async fn boot_wired_document_closed_drains_to_subsystem() {
     // Publish on the EDITOR's bus (not a fresh one): only the boot-wired
     // `bind(event_bus, BufferRegistryDocumentResolver)` can translate this
     // DocumentId → the active BufferId and drive `note_buffer_closed`.
-    editor.event_bus.publish(Event::DocumentClosed { id: doc_id });
+    editor
+        .event_bus
+        .publish(Event::DocumentClosed { id: doc_id });
 
     let deadline = Instant::now() + Duration::from_secs(2);
     while editor.diff_subsystem.lookup(bid).is_some() && Instant::now() < deadline {

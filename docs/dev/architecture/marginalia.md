@@ -2,7 +2,7 @@
 
 > **Status (2026-06-03):** §§1–7 landed as the `MARG.*` slice series (typed `Annotation` enum, keybinding annotator, GPUI parity, MARG.5 column layout) plus T.6 (GPUI annotation colors read from theme). Closed slice plan: `docs/dev/archive/marginalia.md`. Cross-references existing fragments: `completion-pipeline-unification.md` (the substrate this rides on), `insert-completion.md` (sibling consumer of the candidate-rendering pipeline).
 >
-> **Status (2026-06-30):** §8 (rich per-segment marginalia) **landed** as the `MR.1–MR.4` slice series — `Annotation::Styled` colors a single column cell per-segment (eza-style permission bits), the file/dir picker is the first file-metadata producer (perms / size / mtime), and the remaining TUI theme-wiring gap is closed. Marginalia recolors live on `:colorscheme` on both peers; bench in `benchmarks.md` (MR §8). Slice plan: `docs/dev/operations/slice-plans/marginalia-rich.md`.
+> **Status (2026-06-30):** §8 (rich per-segment marginalia) **landed** as the `MR.1–MR.4` slice series — `Annotation::Styled` colors a single column cell per-segment (eza-style permission bits), the file/dir picker is the first file-metadata producer (perms / size / mtime), and the remaining TUI theme-wiring gap is closed. Marginalia recolors live on `:colorscheme` on both peers; bench in `benchmarks.md` (MR §8). Slice plan: `docs/dev/operations/slice-plans/archive/marginalia-rich.md`.
 
 ## 1. Vision
 
@@ -354,8 +354,8 @@ A real color *swatch* for `:colorscheme` is the one item needing a primitive ext
 ## 11. Cross-references
 
 - Slice sequencing + status (closed MARG.1–5): `docs/dev/archive/marginalia.md`
-- Slice sequencing for §8 (rich per-segment marginalia): `docs/dev/operations/slice-plans/marginalia-rich.md`
-- Slice sequencing for §9 (picker rollout) + preview highlighting: `docs/dev/operations/slice-plans/picker-marginalia.md`
+- Slice sequencing for §8 (rich per-segment marginalia): `docs/dev/operations/slice-plans/archive/marginalia-rich.md`
+- Slice sequencing for §9 (picker rollout) + preview highlighting: `docs/dev/operations/slice-plans/archive/picker-marginalia.md`
 - Sibling design — syntax-highlighted picker preview text (a separate surface from marginalia columns): `docs/dev/architecture/picker-preview-highlight.md`
 - Substrate this rides on: `docs/dev/architecture/completion-pipeline-unification.md`
 - Sibling consumer of the candidate-rendering pipeline: `docs/dev/architecture/insert-completion.md`

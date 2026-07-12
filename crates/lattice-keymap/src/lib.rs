@@ -18,8 +18,8 @@ pub use keymap_entry::{KeymapEntry, default_keymap, entries, lookup};
 pub use mode_id::ModeId;
 
 pub mod trie;
-pub use trie::{BoundCommand, KeymapLayer, KeymapTrie, LookupResult};
 pub use lattice_protocol::ChordPattern;
+pub use trie::{BoundCommand, KeymapLayer, KeymapTrie, LookupResult};
 
 pub mod registry;
 pub use registry::{

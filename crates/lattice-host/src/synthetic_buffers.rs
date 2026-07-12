@@ -213,6 +213,22 @@ impl Editor {
         )
     }
 
+    /// PU-B.2: idempotently ensure a named popup buffer under `major_id`,
+    /// stored as [`BufferData::Help`] so the popup renderer draws it (the
+    /// renderer's popup path is `BufferData::Help`-gated) while `major_id`
+    /// (e.g. `ai-permission-mode`) owns the buffer's behaviour + keymap. The
+    /// content is empty on creation — the owning mode's `on_activate`
+    /// owner-writes the projection. Returns the existing id when a buffer of
+    /// this `name` is already registered (re-open reuses it).
+    pub fn ensure_named_popup_buffer(
+        &mut self,
+        name: &str,
+        major_id: ModeId,
+        flags: BufferFlags,
+    ) -> BufferId {
+        self.ensure_named_synthetic_doc_with_variant(name, major_id, flags, SyntheticDocVariant::Help)
+    }
+
     /// PU.1a: register a freshly-built [`lattice_help::HelpContent`]
     /// as an actor-backed synthetic Document ([`BufferData::Help`]),
     /// seeded with the content's text + parsed metadata. Returns the
@@ -330,6 +346,7 @@ impl Editor {
         let data = match variant {
             SyntheticDocVariant::Document => BufferData::Document(DocumentEntry { id, handle }),
             SyntheticDocVariant::Messages => BufferData::Messages(DocumentEntry { id, handle }),
+            SyntheticDocVariant::Help => BufferData::Help(DocumentEntry { id, handle }),
         };
         self.buffers.insert(BufferEntry {
             id,
@@ -357,4 +374,6 @@ impl Editor {
 enum SyntheticDocVariant {
     Document,
     Messages,
+    /// [`BufferData::Help`] — the popup-renderable variant (PU-B.2 popup menus).
+    Help,
 }

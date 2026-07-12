@@ -70,7 +70,9 @@ fn bench_modeline_build(c: &mut Criterion) {
                         let content = if id.starts_with("core.") {
                             modeline::resolve_builtin_content(id, &pane, true, &rs, None)
                         } else {
-                            snap.resolve(el, pane.buffer_id).cloned().unwrap_or_default()
+                            snap.resolve(el, pane.buffer_id)
+                                .cloned()
+                                .unwrap_or_default()
                         };
                         black_box(content.plain());
                     }

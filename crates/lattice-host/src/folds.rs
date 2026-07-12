@@ -1017,7 +1017,9 @@ mod tests {
     fn syntax_folds_are_linear_not_quadratic() {
         let mut src = String::with_capacity(200_000);
         for i in 0..3000 {
-            src.push_str(&format!("fn f{i}() {{\n    let x = {i};\n    x + 1\n}}\n\n"));
+            src.push_str(&format!(
+                "fn f{i}() {{\n    let x = {i};\n    x + 1\n}}\n\n"
+            ));
         }
         let syntax = rust_syntax_with(&src);
         let t = std::time::Instant::now();
@@ -1419,9 +1421,17 @@ impl Buffer {
         let idx = FoldIndex::from_folds(&folds, true);
         assert_eq!(idx.enclosing_closed_fold(3), Some((2, 5)));
         assert_eq!(idx.enclosing_closed_fold(5), Some((2, 5)));
-        assert_eq!(idx.enclosing_closed_fold(2), None, "head row is not interior");
+        assert_eq!(
+            idx.enclosing_closed_fold(2),
+            None,
+            "head row is not interior"
+        );
         assert_eq!(idx.enclosing_closed_fold(6), None, "gap after fold");
-        assert_eq!(idx.enclosing_closed_fold(10), None, "open fold body excluded");
+        assert_eq!(
+            idx.enclosing_closed_fold(10),
+            None,
+            "open fold body excluded"
+        );
         assert_eq!(idx.enclosing_closed_fold(18), Some((15, 20)));
     }
 
@@ -1432,7 +1442,11 @@ impl Buffer {
         // outer (the scroll walk climbs head-to-head this way).
         let folds = vec![closed(0, 10), closed(3, 7)];
         let idx = FoldIndex::from_folds(&folds, true);
-        assert_eq!(idx.enclosing_closed_fold(5), Some((3, 7)), "innermost first");
+        assert_eq!(
+            idx.enclosing_closed_fold(5),
+            Some((3, 7)),
+            "innermost first"
+        );
         assert_eq!(
             idx.enclosing_closed_fold(3),
             Some((0, 10)),
@@ -1451,7 +1465,11 @@ impl Buffer {
         let folds = vec![closed(0, 8), closed(2, 4)];
         let idx = FoldIndex::from_folds(&folds, true);
         assert_eq!(idx.enclosing_closed_fold(6), Some((0, 8)));
-        assert_eq!(idx.enclosing_closed_fold(3), Some((2, 4)), "innermost on overlap");
+        assert_eq!(
+            idx.enclosing_closed_fold(3),
+            Some((2, 4)),
+            "innermost on overlap"
+        );
     }
 
     #[test]

@@ -52,8 +52,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use lattice_grammar::{CommandInvocation, SourceLocation};
 use crate::ModeId;
+use lattice_grammar::{CommandInvocation, SourceLocation};
 
 // K.2.1: `ChordPattern` moved to `lattice-protocol` alongside
 // `KeyChord` so mode crates can construct registration paths

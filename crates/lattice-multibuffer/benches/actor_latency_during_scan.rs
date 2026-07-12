@@ -42,8 +42,7 @@ fn synth_corpus(n: usize) -> (PathBuf, CorpusGuard) {
     std::fs::create_dir_all(&root).expect("create bench corpus dir");
     for i in 0..n {
         let path = root.join(format!("file_{i:04}.txt"));
-        std::fs::write(&path, "line one\nneedle here\nline three\n")
-            .expect("write bench file");
+        std::fs::write(&path, "line one\nneedle here\nline three\n").expect("write bench file");
     }
     (root.clone(), CorpusGuard(root))
 }

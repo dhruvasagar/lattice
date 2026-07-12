@@ -63,6 +63,7 @@
 //! snapshot + cursor) follows in 5.7.B.3 / 5.7.B.4.
 
 use lattice_core::{BufferKind, Document};
+use lattice_host::Renderer;
 use lattice_host::action::Action;
 use lattice_host::chord::KeyChord;
 use lattice_host::dispatch::{DispatchOutcome, RendererSignal};
@@ -70,7 +71,6 @@ use lattice_host::editor::Editor;
 use lattice_host::input::TranslateContext;
 use lattice_host::pane_render::ProviderLookup;
 use lattice_host::render_state::{ActiveDocumentRenderState, RenderState};
-use lattice_host::Renderer;
 use lattice_mode::ModeId;
 use std::sync::Arc;
 
@@ -319,10 +319,6 @@ pub struct GpuiApp {
     /// The `Arc<Notify>` is shared with the highlights worker; wakes
     /// propagate to GPUI's foreground executor via `cx.notify()`.
     pub paint_request: std::sync::Arc<tokio::sync::Notify>,
-    /// W.5: UI-thread window-command queue (maximize, …). Producers push
-    /// (boot seam / future :maximize); `EditorView::render` drains it.
-    #[cfg(feature = "window")]
-    pub window_commands: crate::window_chrome::WindowCommandQueue,
     // Phase 5.8.AE: `popup_content` retired. Popup state is
     // unified in `editor.popup_buffer` (+ buffer-locals for
     // links/anchors/highlights). The binary's render reads
@@ -407,7 +403,9 @@ impl GpuiApp {
         }
         // DB.5: publish `Startup` once `editor` exists, right after `boot`
         // returns — see the TUI seam for the full rationale.
-        editor.event_bus.publish_typed(lattice_mode::Startup { opened_file });
+        editor
+            .event_bus
+            .publish_typed(lattice_mode::Startup { opened_file });
         let render_state = editor.render_state.clone();
         // Slice 3c.final.E.swap: run boot-time setup directly on
         // the owned Editor BEFORE handing it to the actor. The
@@ -435,32 +433,6 @@ impl GpuiApp {
         // Clone before the actor consumes the editor so EditorView::new
         // can subscribe without a read_editor round-trip.
         let paint_request = editor.paint_request.clone();
-        // W.5: window-command queue, created before the actor hand-off so
-        // it's available for the struct literal below regardless of cfg.
-        #[cfg(feature = "window")]
-        let window_commands = crate::window_chrome::new_window_command_queue();
-
-        // W.6: ui.window.start-maximized — enqueue a one-shot maximize now that
-        // config is loaded (load_persistent_config ran above). Drained on the UI
-        // thread by EditorView::render (W.5). Must read editor.config before the
-        // actor consumes `editor` below. Whole block is window-gated because it
-        // touches the window-only command queue.
-        #[cfg(feature = "window")]
-        {
-            let start_maximized = editor
-                .config
-                .get_typed::<lattice_config::StartMaximized>()
-                .map(|v| *v)
-                .unwrap_or(false);
-            if start_maximized {
-                window_commands
-                    .lock()
-                    .expect("window command queue poisoned")
-                    .push_back(crate::window_chrome::WindowCommand::Maximize);
-                // Wake a paint so the drain runs even if no input is in flight.
-                paint_request.notify_one();
-            }
-        }
 
         // Slice 3c.final.E.swap: hand Editor to the actor (prod)
         // or keep inline (test).
@@ -478,8 +450,6 @@ impl GpuiApp {
             theme: GpuiTheme::default(),
             pane_render_registry: GpuiPaneRenderRegistry::default(),
             paint_request,
-            #[cfg(feature = "window")]
-            window_commands,
         };
         // App-side post-actor: rebuild the cached GPUI theme from
         // the freshly-published `render_state.theme`.
@@ -986,7 +956,8 @@ impl GpuiApp {
         if let Some(size) = config.get_typed::<lattice_host::ui::theme_options::UiFontSize>() {
             self.theme.font_size_pt = (*size).max(4).min(96) as u32;
         }
-        if let Some(ligatures) = config.get_typed::<lattice_host::ui::theme_options::UiLigatures>() {
+        if let Some(ligatures) = config.get_typed::<lattice_host::ui::theme_options::UiLigatures>()
+        {
             self.theme.ligatures = *ligatures;
         }
     }
@@ -1277,6 +1248,12 @@ impl GpuiApp {
             Effect::OpenLspLog { server_id } => {
                 self.mutate_editor(move |e| e.do_open_lsp_log(server_id.as_deref()));
             }
+            Effect::OpenAiLog { session } => {
+                self.mutate_editor(move |e| e.do_open_ai_log(session.as_deref()));
+            }
+            Effect::OpenSyntheticBuffer { name, mode_id } => {
+                self.mutate_editor(move |e| e.open_synthetic_buffer(&name, &mode_id));
+            }
             Effect::OpenLspTraceLog { server_id } => {
                 self.mutate_editor(move |e| e.do_open_lsp_trace_log(server_id.as_deref()));
             }
@@ -1318,10 +1295,23 @@ impl GpuiApp {
                     self.handle_renderer_signal(s);
                 }
             }
-            Effect::CloseHover => {
-                // CloseHover is App-side popup state today; GPUI's
+            Effect::DismissPopup => {
+                // DismissPopup is App-side popup state today; GPUI's
                 // popup_content covers it directly.
                 self.dismiss_popup();
+            }
+            Effect::OpenPopup {
+                name,
+                mode_id,
+                placement,
+                focus,
+            } => {
+                // Content-agnostic popup open (popup-api.md §4.3): delegate to
+                // the host primitive, same as the TUI peer. Signals are always
+                // empty today, so the return is discarded.
+                self.mutate_editor(move |e| {
+                    e.open_popup_named(&name, &mode_id, placement, focus);
+                });
             }
             Effect::Tutor { lesson } => {
                 let signals = self.mutate_editor_with(move |e| e.do_tutor(lesson));
@@ -1693,16 +1683,28 @@ mod tests {
         assert!(app.theme.ligatures, "default ligatures should be true");
         // Override via the config registry that's already in the render state.
         let rs = app.render_state.load();
-        rs.options.config.parse_and_set_command("ui.ligatures=off").unwrap();
+        rs.options
+            .config
+            .parse_and_set_command("ui.ligatures=off")
+            .unwrap();
         drop(rs);
         app.rebuild_gpui_theme();
-        assert!(!app.theme.ligatures, "ligatures should be false after ui.ligatures=off");
+        assert!(
+            !app.theme.ligatures,
+            "ligatures should be false after ui.ligatures=off"
+        );
         // Toggle back on.
         let rs = app.render_state.load();
-        rs.options.config.parse_and_set_command("ui.ligatures=on").unwrap();
+        rs.options
+            .config
+            .parse_and_set_command("ui.ligatures=on")
+            .unwrap();
         drop(rs);
         app.rebuild_gpui_theme();
-        assert!(app.theme.ligatures, "ligatures should be true after ui.ligatures=on");
+        assert!(
+            app.theme.ligatures,
+            "ligatures should be true after ui.ligatures=on"
+        );
     }
 
     /// Slice 3c.atomic.K: `set_viewport_height` clamps height

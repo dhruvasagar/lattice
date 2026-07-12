@@ -177,10 +177,7 @@ mod tests {
         let mut reg = DashboardRegistry::new();
         reg.register(stub("branding", 10, true));
         reg.register(stub("hidden", 20, false));
-        assert_eq!(
-            ordered_ids(&reg, &SectionSelection::Default),
-            ["branding"]
-        );
+        assert_eq!(ordered_ids(&reg, &SectionSelection::Default), ["branding"]);
     }
 
     #[test]

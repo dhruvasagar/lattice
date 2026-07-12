@@ -10,7 +10,7 @@
 
 use lattice_core::{BufferId, BufferKind, FoldMethod};
 
-use lattice_grammar::{SearchDirection, VisualKind, YankKind};
+use lattice_grammar::{ModalState, SearchDirection, VisualKind, YankKind};
 
 use lattice_protocol::CancellationToken;
 use lattice_protocol::position::{Position, Range as ProtoRange};
@@ -52,6 +52,15 @@ pub struct PrevPaneState {
     pub buffer_id: BufferId,
     pub cursor: Position,
     pub scroll: u32,
+    /// PU-A.1b: the modal state at capture. A focus-stealing popup
+    /// (`PopupFocus::Steal`) is a Normal-mode surface — its major mode
+    /// receives keys — so open sets `ModalState::Normal` and dismiss
+    /// restores this, returning a user who was mid-Insert to their
+    /// prompt in Insert (popup-api.md §5). Passive floats never flip
+    /// modal, so they never capture a `PrevPaneState`. In-pane help
+    /// captures this but is torn down by `do_close_pane` (which ignores
+    /// it), so the value is inert there.
+    pub modal: ModalState,
 }
 
 /// Hot-path option cache. Mirrors the typed-options registry's

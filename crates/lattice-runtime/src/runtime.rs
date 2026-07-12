@@ -155,7 +155,10 @@ where
     let target = shared_runtime();
     match Handle::try_current() {
         Ok(handle)
-            if matches!(handle.runtime_flavor(), tokio::runtime::RuntimeFlavor::MultiThread) =>
+            if matches!(
+                handle.runtime_flavor(),
+                tokio::runtime::RuntimeFlavor::MultiThread
+            ) =>
         {
             // Already inside a multi-thread runtime -- relinquish
             // the worker before driving `fut` on `target`.

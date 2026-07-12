@@ -53,17 +53,18 @@
 - [X] Implement org cycle like folding behavior
 - [X] Implement basic emacs style <C-x> bindings
   - [X] <C-x>b :buffer
-- [ ] in TUI, especially with tabline visible (because of multiple tabs), we again get a few lines that go beyond the screen. So pressing `G` it takes to the last line but it's off screen
-- [ ] modeline line / column number indicators don't update as the cursor moves and lag behind
+- [X] in TUI, especially with tabline visible (because of multiple tabs), we again get a few lines that go beyond the screen. So pressing `G` it takes to the last line but it's off screen
+- [X] modeline line / column number indicators don't update as the cursor moves and lag behind
 - [ ] in TUI, especially with tabline visible (because of multiple tabs), we again get a few lines that go beyond the screen. So pressing `G` it takes to the last line but it's off screen
   - [X] <C-x><C-s> for :write
   - [X] <C-x><C-f> file :files
   - [X] <C-x>0 :close
   - [X] <C-x>1 :only
 - [ ] Tree sitter motions (next function, next block, prev function, etc)
-- [ ] Improve oil `-` to search and position cursor on editing file
-- [ ] Refresh buffer if updated outside. vim's `autoread`.
-- [ ] GPUI: Maximise window after init
+- [X] Improve oil `-` to search and position cursor on editing file
+- [X] Refresh buffer if updated outside. vim's `autoread`.
+- [X] GPUI: Maximise window after init
+- [ ] `:opencode` support, similar to `:claude`
 
 * Plugins
 - [ ] plugin manager
@@ -190,12 +191,14 @@
 - [X] in TUI, especially with tabline visible (because of multiple tabs), we again get a few lines that go beyond the screen. So pressing `G` it takes to the last line but it's off screen
 - [X] yanking does not seem to work
   - [X] clipboard support is not there (CB series — clipboard.md; default-on `clipboard` bool, yank-only sync, terminal PTY paste, both peers)
-- [ ] fold `...` is missing
-- [ ] fold line count is wrong when we have consequtive fold groups back to back, the first one's count includes the subsequent fold lines within it
-- [ ] undo grouping is broken
-- [ ] `zz` does not work in terminal & `:claude`
-- [ ] `de` does not include the last character
-- [ ] `dw` on the last word in a line deletes the whole line (probably something to do with consuming the new line)
+- [X] fold `...` is missing
+- [X] fold line count is wrong when we have consequtive fold groups back to back, the first one's count includes the subsequent fold lines within it
+- [X] undo grouping is broken
+- [X] `zz` does not work in terminal & `:claude`
+- [X] `de` does not include the last character
+- [X] `dw` on the last word in a line deletes the whole line (probably something to do with consuming the new line)
+- [ ] cursor movements within popup are off, cursor not in sync with cursorline and jumps lines
+- [ ] folding still gets messed up when opening a file in vertical split.
 
 * Documentation
 - [X] lattice-tutor

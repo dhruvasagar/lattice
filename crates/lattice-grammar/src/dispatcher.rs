@@ -86,22 +86,22 @@ pub fn execute_with_env(
         .ok_or(CommandError::UnknownCommand)?;
 
     match entry.spec.kind {
-        CommandKind::Motion => execute_motion(document, buffer_id, cursor, &invocation, entry, cancel),
+        CommandKind::Motion => {
+            execute_motion(document, buffer_id, cursor, &invocation, entry, cancel, env)
+        }
         CommandKind::TextObject => {
             execute_text_object(document, cursor, &invocation, entry, cancel, env)
         }
-        CommandKind::Operator => {
-            execute_operator(
-                registry,
-                document,
-                buffer_id,
-                cursor,
-                &invocation,
-                entry,
-                cancel,
-                env,
-            )
-        }
+        CommandKind::Operator => execute_operator(
+            registry,
+            document,
+            buffer_id,
+            cursor,
+            &invocation,
+            entry,
+            cancel,
+            env,
+        ),
         CommandKind::ExCommand => execute_ex_command(&invocation, entry, cancel),
         CommandKind::Action => execute_action(&invocation, entry, cancel),
     }
@@ -145,6 +145,7 @@ pub fn execute_motion_only(
     cursor: Position,
     invocation: CommandInvocation,
     cancel: &CancellationToken,
+    env: crate::registry::TextObjectEnv<'_>,
 ) -> GrammarResult<Position> {
     cancel.check()?;
     let entry = registry
@@ -164,6 +165,7 @@ pub fn execute_motion_only(
         has_explicit_count: invocation.count.is_some(),
         args: invocation.args.clone(),
         cancel,
+        scope_resolver: env.scope_resolver,
     };
     let result = (motion.apply)(&ctx)?;
     Ok(result.target)
@@ -193,6 +195,7 @@ fn execute_motion(
     invocation: &CommandInvocation,
     entry: &CommandEntry,
     cancel: &CancellationToken,
+    env: crate::registry::TextObjectEnv<'_>,
 ) -> GrammarResult<Effect> {
     let motion = require_motion(entry)?;
     let ctx = MotionContext {
@@ -203,6 +206,7 @@ fn execute_motion(
         has_explicit_count: invocation.count.is_some(),
         args: invocation.args.clone(),
         cancel,
+        scope_resolver: env.scope_resolver,
     };
     let result = (motion.apply)(&ctx)?;
     // Motions in Phase 1 don't mutate selections directly here; the modal
@@ -294,18 +298,16 @@ fn execute_operator(
         (Some(grammar_range), _) => {
             resolve_grammar_range(document, grammar_range, cursor, motion_count.get())?
         }
-        (None, Some(target)) => {
-            resolve_target(
-                registry,
-                document,
-                buffer_id,
-                cursor,
-                target,
-                motion_count,
-                cancel,
-                env,
-            )?
-        }
+        (None, Some(target)) => resolve_target(
+            registry,
+            document,
+            buffer_id,
+            cursor,
+            target,
+            motion_count,
+            cancel,
+            env,
+        )?,
         (None, None) => return Err(CommandError::MissingTarget),
     };
 
@@ -620,6 +622,7 @@ fn resolve_target(
                 has_explicit_count: false,
                 args: args.clone(),
                 cancel,
+                scope_resolver: env.scope_resolver,
             };
             let r = (motion.apply)(&ctx)?;
             let mut target = r.target;
@@ -830,7 +833,8 @@ mod tests {
         let eff = execute(
             &registry,
             &mut doc,
-            lattice_core::BufferId(0), Position::ZERO,
+            lattice_core::BufferId(0),
+            Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -895,9 +899,100 @@ mod tests {
                 // inner-word "bar" = bytes [4, 7); charwise head = 6.
                 assert_eq!(p.anchor, Position::new(0, 4), "anchor at word start");
                 assert_eq!(p.head, Position::new(0, 6), "head one byte before end");
-                assert!(p.visual.is_none(), "bare object leaves the kind to the host");
+                assert!(
+                    p.visual.is_none(),
+                    "bare object leaves the kind to the host"
+                );
             }
             other => panic!("expected Effect::SelectionChange, got {other:?}"),
+        }
+    }
+
+    /// TSM.1: a motion's `apply` can read `ctx.scope_resolver` and call
+    /// `scope_toward` -- proving the env threads through
+    /// `execute_with_env` -> `execute_motion` -> `MotionContext` exactly
+    /// like the existing tree-sitter text-object seam
+    /// (`bare_text_object_sets_selection_to_object_span` above / N.1.4b).
+    #[test]
+    fn motion_context_carries_scope_resolver() {
+        use crate::registry::{NavBoundary, NavDir, ScopeResolver};
+
+        struct FixedResolver;
+        impl ScopeResolver for FixedResolver {
+            fn scope_at(
+                &self,
+                _l: u32,
+                _c: u32,
+                _s: &str,
+            ) -> Option<lattice_protocol::position::Range> {
+                None
+            }
+            fn scope_toward(
+                &self,
+                _l: u32,
+                _c: u32,
+                _s: &str,
+                _d: NavDir,
+                _b: NavBoundary,
+                _n: u32,
+            ) -> Option<lattice_protocol::Position> {
+                Some(lattice_protocol::Position::new(7, 0))
+            }
+        }
+
+        // A motion whose apply forwards to the resolver and returns its target.
+        let mut registry = CommandRegistry::new();
+        let m = registry.register_motion(
+            "motion:test-nav",
+            "test",
+            crate::registry::MotionSpec {
+                jump: false,
+                exclusive: true,
+                args_schema: Vec::new(),
+                apply: Box::new(|ctx| {
+                    let p = ctx
+                        .scope_resolver
+                        .and_then(|r| {
+                            r.scope_toward(
+                                ctx.from.line,
+                                ctx.from.byte,
+                                "function.outer",
+                                NavDir::Forward,
+                                NavBoundary::Start,
+                                1,
+                            )
+                        })
+                        .unwrap_or(ctx.from);
+                    Ok(crate::registry::MotionResult {
+                        target: p,
+                        linewise: false,
+                    })
+                }),
+            },
+        );
+
+        let mut doc = lattice_core::Document::from_text("fn a() {}\n");
+        let resolver = FixedResolver;
+        let env = crate::registry::TextObjectEnv {
+            scope_resolver: Some(&resolver),
+            comment_syntax: None,
+        };
+        let eff = execute_with_env(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0),
+            Position::ZERO,
+            CommandInvocation::of(m.0),
+            &CancellationToken::never(),
+            env,
+        )
+        .unwrap();
+        // The motion resolved to row 7 via the resolver.
+        match eff {
+            Effect::SelectionChange(sels) => {
+                assert_eq!(sels.primary().head.line, 7);
+            }
+            other => panic!("expected SelectionChange, got {other:?}"),
         }
     }
 }

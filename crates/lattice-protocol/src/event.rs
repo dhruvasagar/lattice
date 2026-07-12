@@ -106,13 +106,19 @@ pub enum Event {
     /// (mode-architecture.md §7.4). Published by the mode
     /// dispatcher's cascade task (MA.1); supersedes the prior typed
     /// `ModeEvent::MajorEntered` so the EF.1 filter machinery applies.
-    MajorEntered { buffer: BufferId, major: String },
+    MajorEntered {
+        buffer: BufferId,
+        major: String,
+    },
     /// The active major mode on `buffer` is about to be deactivated
     /// (published *before* the mode's Guard drops, so subscribers can
     /// inspect what's being torn down). Pairs with
     /// [`Self::MajorEntered`] for minor-mode teardown. `major` is the
     /// canonical name of the major being torn down.
-    MajorExiting { buffer: BufferId, major: String },
+    MajorExiting {
+        buffer: BufferId,
+        major: String,
+    },
     /// A minor mode was activated on `buffer` (published *after* its
     /// `on_activate` resolved). `minor` is the minor mode's canonical
     /// name. The full observable mode-lifecycle quartet
@@ -121,10 +127,16 @@ pub enum Event {
     /// `EventFilter` apply uniformly; only the internal
     /// `ModeActivationFailed` / `OptionConflict` cascade signals stay
     /// on the typed `lattice_mode::ModeEvent` bus.
-    MinorActivated { buffer: BufferId, minor: String },
+    MinorActivated {
+        buffer: BufferId,
+        minor: String,
+    },
     /// A minor mode was deactivated on `buffer` (published *before*
     /// its Guard drops). `minor` is the minor mode's canonical name.
-    MinorDeactivated { buffer: BufferId, minor: String },
+    MinorDeactivated {
+        buffer: BufferId,
+        minor: String,
+    },
 }
 
 // M.5.3.b: `LspLogPushed`, `LspBufferAttached`, and

@@ -230,7 +230,7 @@ impl App {
         // M.4 hover-popup unification: gate the auto-dismiss-on-
         // doc-cursor-motion behaviour on `hover-mode` being active
         // on the popup buffer, instead of the structural
-        // `prev_pane_for_help.is_none()` check. State A (popup
+        // `prev_pane_for_popup.is_none()` check. State A (popup
         // shown, doc focused) is "hover-mode active + active is
         // Document"; State B (focused popup) is "active is Help"
         // -- the second clause stays as the State-A discriminator.
@@ -324,6 +324,7 @@ impl App {
             | Action::OverwriteChar(_)
             | Action::ReplaceUndoLast
             | Action::DeleteCharBackward
+            | Action::InsertLineEdit(_)
             // 5.5.G.4: pure-editor scroll / viewport / page / bracket
             // / redraw arms migrated to `Editor::dispatch`.
             | Action::JumpViewport(_)
@@ -655,7 +656,7 @@ impl App {
         }
         self.maybe_reparse_syntax();
         // State-A hover-auto-dismiss: popup was shown, focus
-        // never moved into it (so `prev_pane_for_help` is None),
+        // never moved into it (so `prev_pane_for_popup` is None),
         // and the doc cursor moved. Drop the popup -- it's
         // anchored to the prior symbol and is now stale.
         if popup_in_state_a
@@ -1003,7 +1004,13 @@ impl App {
             // to `Editor::handle_effect`; routed through the
             // grouped no-op above.
             Effect::OpenHover { markdown } => self.do_open_hover(&markdown),
-            Effect::CloseHover => self.do_close_hover(),
+            Effect::DismissPopup => self.do_dismiss_popup(),
+            Effect::OpenPopup {
+                name,
+                mode_id,
+                placement,
+                focus,
+            } => self.open_popup_named(&name, &mode_id, placement, focus),
             Effect::OpenHelpTopic { topic } => self.do_open_help_topic(topic.as_deref()),
             // 5.5.F.7: `ListDiagnostics` migrated to
             // `Editor::handle_effect`; routed through the grouped
@@ -1011,6 +1018,10 @@ impl App {
             Effect::NextDiagnostic => self.do_next_diagnostic(),
             Effect::PrevDiagnostic => self.do_prev_diagnostic(),
             Effect::OpenLspLog { server_id } => self.do_open_lsp_log(server_id.as_deref()),
+            Effect::OpenAiLog { session } => self.do_open_ai_log(session.as_deref()),
+            Effect::OpenSyntheticBuffer { name, mode_id } => {
+                self.open_synthetic_buffer(&name, &mode_id)
+            }
             Effect::OpenMessages => self.do_open_messages(),
             // DB.2: host-applied via handle_effect (like DiffOpen); the
             // peer has nothing to do.
@@ -1149,8 +1160,7 @@ impl App {
             RendererSignal::DisplayBuffer(req) => {
                 let lattice_host::dispatch::DisplayBufferRequest { content, category } = *req;
                 self.display_buffer(content, category);
-            }
-            // 5.5.F.5.5: `BufferActivated` retired. The Bucket-A
+            } // 5.5.F.5.5: `BufferActivated` retired. The Bucket-A
               // `visible_highlights` / `pane_highlights` cache clear
               // lives on `Editor` as plain field writes, so the
               // post-activation tail (`activate_buffer_state`) runs
@@ -1232,12 +1242,15 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::DescribeElement { .. }
         | Effect::ListOptions
         | Effect::OpenHover { .. }
-        | Effect::CloseHover
+        | Effect::DismissPopup
+        | Effect::OpenPopup { .. }
         | Effect::OpenHelpTopic { .. }
         | Effect::ListDiagnostics
         | Effect::NextDiagnostic
         | Effect::PrevDiagnostic
         | Effect::OpenLspLog { .. }
+        | Effect::OpenAiLog { .. }
+        | Effect::OpenSyntheticBuffer { .. }
         | Effect::OpenMessages
         | Effect::ToggleLspTrace { .. }
         | Effect::OpenLspTraceLog { .. }
@@ -1351,12 +1364,15 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::DescribeElement { .. }
         | Effect::ListOptions
         | Effect::OpenHover { .. }
-        | Effect::CloseHover
+        | Effect::DismissPopup
+        | Effect::OpenPopup { .. }
         | Effect::OpenHelpTopic { .. }
         | Effect::ListDiagnostics
         | Effect::NextDiagnostic
         | Effect::PrevDiagnostic
         | Effect::OpenLspLog { .. }
+        | Effect::OpenAiLog { .. }
+        | Effect::OpenSyntheticBuffer { .. }
         | Effect::OpenMessages
         | Effect::ToggleLspTrace { .. }
         | Effect::OpenLspTraceLog { .. }
@@ -1583,7 +1599,10 @@ mod tests {
 
         let mut a = app_with("one\ntwo\nthree\nfour\nfive", 10);
         // First g: absorbs into partial_chord.
-        press(&mut a, KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE));
+        press(
+            &mut a,
+            KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE),
+        );
         assert_eq!(
             a.editor.partial_chord.len(),
             1,
@@ -1609,7 +1628,10 @@ mod tests {
         );
 
         // Second g resolves gg.
-        press(&mut a, KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE));
+        press(
+            &mut a,
+            KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE),
+        );
         assert_eq!(
             a.editor.cursor.line, 0,
             "gg should jump to line 0; partial_chord survived the inter-keystroke EnsureCursorVisible"
@@ -1657,10 +1679,8 @@ mod tests {
                 partial_chord: &translator.partial_chord,
                 active_minor_modes: &translator.active_minor_modes,
             };
-            let action = crate::input::translate(
-                ctx,
-                KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE),
-            );
+            let action =
+                crate::input::translate(ctx, KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE));
             a.apply(action);
         }
         press_g_via_rs(&mut a);
@@ -2357,24 +2377,29 @@ mod tests {
         // First K opens the popup (State A: cursor in doc); second
         // K transfers focus into the popup (State B: cursor in
         // help). The buffer content is the same; only `active_buffer`
-        // and the cursor position change. `prev_pane_for_help`
+        // and the cursor position change. `prev_pane_for_popup`
         // captures pre-State-B state so dismiss restores cleanly.
         let mut a = app_with("fn main() {}\n", 5);
         a.do_open_hover("hover body line 1\nhover body line 2");
         assert!(a.editor.popup_buffer.is_some());
         assert!(matches!(a.editor.active_buffer, BufferKind::Document));
-        assert!(a.editor.prev_pane_for_help.is_none());
+        assert!(a.editor.prev_pane_for_popup.is_none());
         // Second K -> focus into popup.
         // 5.5.LSP.1: hover request migrated to `Editor::dispatch`;
         // exercise the State A -> State B promote through the Action
         // path so the test covers the live dispatch wire too.
-        a.apply_effect(lattice_grammar::Effect::Lsp(lattice_grammar::LspRequest::Hover));
+        a.apply_effect(lattice_grammar::Effect::Lsp(
+            lattice_grammar::LspRequest::Hover,
+        ));
         assert!(
             a.editor.popup_buffer.is_some(),
             "popup stays up after focus"
         );
         assert!(matches!(a.editor.active_buffer, BufferKind::Help));
-        let stash = a.editor.prev_pane_for_help.expect("State B captures stash");
+        let stash = a
+            .editor
+            .prev_pane_for_popup
+            .expect("State B captures stash");
         assert_eq!(stash.buffer, BufferKind::Document);
     }
 

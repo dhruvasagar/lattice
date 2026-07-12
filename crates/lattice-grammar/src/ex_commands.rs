@@ -23,9 +23,9 @@
 //! resolution is the parser front-end's job (`expand_alias` in
 //! `lattice-ui-tui::excommand`).
 
+use crate::AppEffect;
 use crate::args::{ArgDefault, ArgKind, ArgSpec, ArgValue, Args};
 use crate::command::LatencyClass;
-use crate::AppEffect;
 use crate::effect::{Effect, QuitScope, SubstituteScope};
 use crate::error::{CommandError, GrammarResult};
 use crate::range::Range;
@@ -1319,7 +1319,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             accepts_bang: false,
             accepts_range: false,
             parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_| Ok(Effect::CloseHover)),
+            apply: Box::new(|_| Ok(Effect::DismissPopup)),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },
@@ -2007,9 +2007,7 @@ fn parse_tabmove_arg(rest: &str, _bang: bool) -> GrammarResult<Args> {
     }
     // Validate it's a non-negative integer before passing on.
     trimmed.parse::<u32>().map_err(|e| {
-        CommandError::BadArgs(format!(
-            ":tabmove arg must be a non-negative integer: {e}"
-        ))
+        CommandError::BadArgs(format!(":tabmove arg must be a non-negative integer: {e}"))
     })?;
     Ok(Args::String(trimmed.to_string()))
 }
@@ -2142,9 +2140,7 @@ fn apply_colorscheme(ctx: &ExCommandContext) -> GrammarResult<Effect> {
     // `SetColorscheme("")` — the host's `Effect::SetColorscheme` arm
     // branches on the empty string and calls `open_picker("colorscheme")`.
     match &ctx.args {
-        Args::String(s) if !s.trim().is_empty() => {
-            Ok(Effect::SetColorscheme(s.trim().to_string()))
-        }
+        Args::String(s) if !s.trim().is_empty() => Ok(Effect::SetColorscheme(s.trim().to_string())),
         // Args::None (no-arg) or empty/whitespace string → picker.
         _ => Ok(Effect::SetColorscheme(String::new())),
     }
@@ -2286,7 +2282,8 @@ mod tests {
         let eff = execute(
             &registry,
             &mut doc,
-            lattice_core::BufferId(0), Position::ZERO,
+            lattice_core::BufferId(0),
+            Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -2304,7 +2301,8 @@ mod tests {
         let eff = execute(
             &registry,
             &mut doc,
-            lattice_core::BufferId(0), Position::ZERO,
+            lattice_core::BufferId(0),
+            Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -2324,7 +2322,8 @@ mod tests {
         let eff = execute(
             &registry,
             &mut doc,
-            lattice_core::BufferId(0), Position::ZERO,
+            lattice_core::BufferId(0),
+            Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -2345,7 +2344,8 @@ mod tests {
         let eff = execute(
             &registry,
             &mut doc,
-            lattice_core::BufferId(0), Position::ZERO,
+            lattice_core::BufferId(0),
+            Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -2399,7 +2399,8 @@ mod tests {
         let eff = execute(
             &registry,
             &mut doc,
-            lattice_core::BufferId(0), Position::ZERO,
+            lattice_core::BufferId(0),
+            Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -2456,7 +2457,8 @@ mod tests {
         let eff = execute(
             &registry,
             &mut doc,
-            lattice_core::BufferId(0), Position::ZERO,
+            lattice_core::BufferId(0),
+            Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -2471,7 +2473,8 @@ mod tests {
         let eff = execute(
             &registry,
             &mut doc,
-            lattice_core::BufferId(0), Position::ZERO,
+            lattice_core::BufferId(0),
+            Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -2486,7 +2489,8 @@ mod tests {
         let eff = execute(
             &registry,
             &mut doc,
-            lattice_core::BufferId(0), Position::ZERO,
+            lattice_core::BufferId(0),
+            Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -2501,7 +2505,8 @@ mod tests {
         let eff = execute(
             &registry,
             &mut doc,
-            lattice_core::BufferId(0), Position::ZERO,
+            lattice_core::BufferId(0),
+            Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -2517,7 +2522,8 @@ mod tests {
         let eff = execute(
             &registry,
             &mut doc,
-            lattice_core::BufferId(0), Position::ZERO,
+            lattice_core::BufferId(0),
+            Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -2538,7 +2544,8 @@ mod tests {
         let eff = execute(
             &registry,
             &mut doc,
-            lattice_core::BufferId(0), Position::ZERO,
+            lattice_core::BufferId(0),
+            Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -2553,7 +2560,8 @@ mod tests {
         let eff = execute(
             &registry,
             &mut doc,
-            lattice_core::BufferId(0), Position::ZERO,
+            lattice_core::BufferId(0),
+            Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -2588,7 +2596,8 @@ mod tests {
         let eff = execute(
             &registry,
             &mut doc,
-            lattice_core::BufferId(0), Position::ZERO,
+            lattice_core::BufferId(0),
+            Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -2609,7 +2618,8 @@ mod tests {
         let err = execute(
             &registry,
             &mut doc,
-            lattice_core::BufferId(0), Position::ZERO,
+            lattice_core::BufferId(0),
+            Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -2626,7 +2636,8 @@ mod tests {
         let eff = execute(
             &registry,
             &mut doc,
-            lattice_core::BufferId(0), Position::ZERO,
+            lattice_core::BufferId(0),
+            Position::ZERO,
             inv,
             &CancellationToken::never(),
         )
@@ -2706,7 +2717,8 @@ mod tests {
         let eff = execute(
             &registry,
             &mut doc,
-            lattice_core::BufferId(0), Position::ZERO,
+            lattice_core::BufferId(0),
+            Position::ZERO,
             inv,
             &CancellationToken::never(),
         )

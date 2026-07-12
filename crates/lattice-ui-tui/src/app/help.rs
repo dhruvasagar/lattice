@@ -132,10 +132,32 @@ impl App {
 
     /// `:HoverClose` -- dismiss the hover popup. Routes through
     /// the unified `dismiss_popup` path so State A and State B
-    /// both unwind cleanly (B restores via `prev_pane_for_help`;
+    /// both unwind cleanly (B restores via `prev_pane_for_popup`;
     /// A just drops the popup).
-    pub(super) fn do_close_hover(&mut self) {
+    pub(super) fn do_dismiss_popup(&mut self) {
         self.dismiss_popup();
+    }
+
+    /// Show a popup overlay for the (host-ensured) buffer named `name` under
+    /// major mode `mode_id` — the content-agnostic `Effect::OpenPopup` arm
+    /// (popup-api.md §4.3). Delegates to the host primitive
+    /// [`lattice_host::dispatch::Editor::open_popup_named`] and drains any
+    /// renderer signals, mirroring `do_open_hover`. The GPUI peer reaches the
+    /// same primitive via `mutate_editor`.
+    pub(super) fn open_popup_named(
+        &mut self,
+        name: &str,
+        mode_id: &str,
+        placement: lattice_core::ui::popup::PopupPlacement,
+        focus: lattice_core::ui::popup::PopupFocus,
+    ) {
+        let name = name.to_string();
+        let mode_id = mode_id.to_string();
+        let signals =
+            self.mutate_editor_with(move |e| e.open_popup_named(&name, &mode_id, placement, focus));
+        for s in signals {
+            self.handle_renderer_signal(s);
+        }
     }
 
     // 5.5.F.2: `do_list_keymap` relocated -- see pointer block

@@ -96,7 +96,10 @@ pub fn display_line_to_source_spans(
         }
     }
     if !current_text.is_empty() {
-        spans.push(Span::styled(current_text, current_style.unwrap_or_default()));
+        spans.push(Span::styled(
+            current_text,
+            current_style.unwrap_or_default(),
+        ));
     }
     spans
 }
@@ -197,8 +200,8 @@ mod tests {
 
     use lattice_host::display_matrix::{DisplayLine, DisplayRun};
     use lattice_host::ui::theme::{
-        resolve_syntax_style, BuiltinElementIds, InMemoryThemeRegistry, ResolvedTheme,
-        ThemeRegistry as _,
+        BuiltinElementIds, InMemoryThemeRegistry, ResolvedTheme, ThemeRegistry as _,
+        resolve_syntax_style,
     };
 
     /// T.5.b: build the resolved table + builtin ids from the
@@ -323,7 +326,11 @@ mod tests {
             ("cd", lattice_syntax::Style::Default, 0),
         ]);
         let spans = display_line_to_source_spans(&line, &resolved, &ids);
-        assert_eq!(spans.len(), 1, "same-style runs merge across a dropped inlay");
+        assert_eq!(
+            spans.len(),
+            1,
+            "same-style runs merge across a dropped inlay"
+        );
         assert_eq!(spans[0].content.as_ref(), "abcd");
     }
 
@@ -345,7 +352,7 @@ mod tests {
     // classifier should fire at identical positions to the
     // legacy RowPrepaint path.
 
-    use crate::render::{apply_whitespace_decoration, WhitespaceDecoration};
+    use crate::render::{WhitespaceDecoration, apply_whitespace_decoration};
     use ratatui::style::Style as TuiStyle;
 
     fn ws_deco_all_off() -> WhitespaceDecoration {
@@ -463,8 +470,7 @@ mod tests {
         let body_before = body(&[("a b", fg)]);
         let line_text = "a b";
         let d = ws_deco_all_off();
-        let body_after =
-            apply_whitespace_decoration(body_before.clone(), line_text, &d);
+        let body_after = apply_whitespace_decoration(body_before.clone(), line_text, &d);
         // Same text, same span count, same styles.
         assert_eq!(body_after.len(), body_before.len());
         for (a, b) in body_after.iter().zip(body_before.iter()) {
@@ -522,13 +528,7 @@ mod tests {
         let body = flat_body("abcdefgh", 0xcdd6f4);
         let overlay_fg = Color::Rgb(0xff, 0x00, 0x00);
         let overlay_mods = Modifier::ITALIC;
-        let out = apply_semantic_token_overlay(
-            body,
-            2,
-            6,
-            overlay_fg,
-            overlay_mods,
-        );
+        let out = apply_semantic_token_overlay(body, 2, 6, overlay_fg, overlay_mods);
         assert_eq!(out.len(), 3);
         assert_eq!(out[0].content.as_ref(), "ab");
         assert_eq!(out[1].content.as_ref(), "cdef");
@@ -547,8 +547,7 @@ mod tests {
     fn s3c2_overlay_full_coverage() {
         let body = flat_body("hi", 0xcdd6f4);
         let overlay_fg = Color::Rgb(0xff, 0xa5, 0x00);
-        let out =
-            apply_semantic_token_overlay(body, 0, 2, overlay_fg, Modifier::empty());
+        let out = apply_semantic_token_overlay(body, 0, 2, overlay_fg, Modifier::empty());
         // Exactly the original cells' span(s) with new fg.
         let combined: String = out.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(combined, "hi");
@@ -564,8 +563,7 @@ mod tests {
         let body = flat_body("abc", 0xcdd6f4);
         let pre_text: String = body.iter().map(|s| s.content.as_ref()).collect();
         let pre_styles: Vec<_> = body.iter().map(|s| s.style).collect();
-        let out =
-            apply_semantic_token_overlay(body, 10, 20, Color::Red, Modifier::ITALIC);
+        let out = apply_semantic_token_overlay(body, 10, 20, Color::Red, Modifier::ITALIC);
         let post_text: String = out.iter().map(|s| s.content.as_ref()).collect();
         let post_styles: Vec<_> = out.iter().map(|s| s.style).collect();
         assert_eq!(post_text, pre_text);
@@ -586,13 +584,7 @@ mod tests {
                 .add_modifier(Modifier::BOLD),
         )];
         // Overlay adds ITALIC.
-        let out = apply_semantic_token_overlay(
-            body,
-            0,
-            2,
-            Color::Cyan,
-            Modifier::ITALIC,
-        );
+        let out = apply_semantic_token_overlay(body, 0, 2, Color::Cyan, Modifier::ITALIC);
         // One span (full coverage, same style); both modifiers
         // present.
         for s in &out {
@@ -613,13 +605,7 @@ mod tests {
                 .bg(rgb_u32_to_color(0x1e1e2e)),
         )];
         assert_eq!(body[0].style.bg, Some(Color::Rgb(0x1e, 0x1e, 0x2e)));
-        let out = apply_semantic_token_overlay(
-            body,
-            0,
-            1,
-            Color::Magenta,
-            Modifier::empty(),
-        );
+        let out = apply_semantic_token_overlay(body, 0, 1, Color::Magenta, Modifier::empty());
         // fg replaced, bg preserved.
         assert_eq!(out[0].style.fg, Some(Color::Magenta));
         assert_eq!(out[0].style.bg, Some(Color::Rgb(0x1e, 0x1e, 0x2e)));
@@ -776,8 +762,7 @@ mod tests {
                 .add_modifier(Modifier::BOLD),
         )];
         assert_eq!(body.len(), 1);
-        let out =
-            apply_underline_overlay(body, 0, 3, Color::Red /* unused */);
+        let out = apply_underline_overlay(body, 0, 3, Color::Red /* unused */);
         // UNDERLINED added; fg / bg / BOLD preserved.
         for s in &out {
             assert!(s.style.add_modifier.contains(Modifier::UNDERLINED));
@@ -869,12 +854,7 @@ mod tests {
     #[test]
     fn s3c4_inlay_splice_at_byte_zero_prepends() {
         let body = flat_body("hi", 0xcdd6f4);
-        let out = splice_virtual_text_into_spans(
-            body,
-            0,
-            ": ".to_string(),
-            dim_gray_style(),
-        );
+        let out = splice_virtual_text_into_spans(body, 0, ": ".to_string(), dim_gray_style());
         assert_eq!(collect_text(&out), ": hi");
         // First span is the virtual splice.
         assert_eq!(out[0].content.as_ref(), ": ");
@@ -891,12 +871,7 @@ mod tests {
     fn s3c4_inlay_splice_mid_span_splits_the_span() {
         let body = flat_body("abcdef", 0xcdd6f4);
         // One source span covers bytes [0, 6); splice at byte 3.
-        let out = splice_virtual_text_into_spans(
-            body,
-            3,
-            "[i]".to_string(),
-            dim_gray_style(),
-        );
+        let out = splice_virtual_text_into_spans(body, 3, "[i]".to_string(), dim_gray_style());
         // pre / inlay / post.
         assert_eq!(out.len(), 3);
         assert_eq!(out[0].content.as_ref(), "abc");
@@ -922,12 +897,7 @@ mod tests {
         assert_eq!(body.len(), 2);
         // Splice at byte 2 — exactly the boundary between the
         // two cell-derived spans.
-        let out = splice_virtual_text_into_spans(
-            body,
-            2,
-            "/*X*/".to_string(),
-            dim_gray_style(),
-        );
+        let out = splice_virtual_text_into_spans(body, 2, "/*X*/".to_string(), dim_gray_style());
         // Three spans: first body span "ab" / inlay "/*X*/" /
         // second body span "cd". Neither body span split.
         assert_eq!(out.len(), 3);
@@ -944,12 +914,8 @@ mod tests {
     #[test]
     fn s3c4_inlay_splice_past_end_appends() {
         let body = flat_body("hi", 0xcdd6f4);
-        let out = splice_virtual_text_into_spans(
-            body,
-            999,
-            " → unit".to_string(),
-            dim_gray_style(),
-        );
+        let out =
+            splice_virtual_text_into_spans(body, 999, " → unit".to_string(), dim_gray_style());
         // Body spans first, virtual span last.
         assert_eq!(collect_text(&out), "hi → unit");
         let last = out.last().unwrap();
@@ -968,18 +934,10 @@ mod tests {
         // Two splices: at byte 1 and at byte 2. Apply in reverse
         // (byte 2 first, then byte 1) so the byte-1 splice's
         // offset stays valid.
-        let after_second = splice_virtual_text_into_spans(
-            body,
-            2,
-            "/B/".to_string(),
-            dim_gray_style(),
-        );
-        let after_first = splice_virtual_text_into_spans(
-            after_second,
-            1,
-            "/A/".to_string(),
-            dim_gray_style(),
-        );
+        let after_second =
+            splice_virtual_text_into_spans(body, 2, "/B/".to_string(), dim_gray_style());
+        let after_first =
+            splice_virtual_text_into_spans(after_second, 1, "/A/".to_string(), dim_gray_style());
         // Result: `x` `/A/` `y` `/B/` — both inlays at their
         // intended positions.
         assert_eq!(collect_text(&after_first), "x/A/y/B/");
@@ -1014,12 +972,8 @@ mod tests {
     fn s3c4_inlay_splice_then_fold_suffix_order() {
         let body = flat_body("ab", 0xcdd6f4);
         // Inlay at byte 2 (end-of-line).
-        let mut after_inlay = splice_virtual_text_into_spans(
-            body,
-            2,
-            ": T".to_string(),
-            dim_gray_style(),
-        );
+        let mut after_inlay =
+            splice_virtual_text_into_spans(body, 2, ": T".to_string(), dim_gray_style());
         // Fold suffix.
         after_inlay.push(Span::styled(
             " ┄ 5 lines folded".to_string(),
@@ -1044,13 +998,7 @@ mod tests {
         // Overlay covers bytes [2, 5) — crossing the boundary at
         // byte 3.
         let overlay_fg = Color::Yellow;
-        let out = apply_semantic_token_overlay(
-            body,
-            2,
-            5,
-            overlay_fg,
-            Modifier::empty(),
-        );
+        let out = apply_semantic_token_overlay(body, 2, 5, overlay_fg, Modifier::empty());
         // Expect:
         //  - "aa" (fg_a, unchanged)
         //  - "a"  (overlay fg)

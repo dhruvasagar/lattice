@@ -98,7 +98,10 @@ impl KeymapEntry {
         fall_through: bool,
         source: lattice_grammar::SourceLocation,
     ) -> Self {
-        debug_assert!(!modes.is_empty(), "keymap_entry! requires at least one mode");
+        debug_assert!(
+            !modes.is_empty(),
+            "keymap_entry! requires at least one mode"
+        );
         Self {
             chord,
             modes,
@@ -457,6 +460,16 @@ fn build_default_keymap() -> Vec<KeymapEntry> {
         // inside `completion-popup-mode`, contributed via each
         // source mode's `popup_filter_chord` field).
         keymap_entry! { mode: Insert, chord: "<C-Space>", doc: "Manual completion trigger -- opens the popup with sources matching the prefix at the cursor" },
+        // Readline/vim line editing, general in every buffer.
+        keymap_entry! { mode: Insert, chord: "<C-a>", doc: "Move the caret to the start of the line (readline)" },
+        keymap_entry! { mode: Insert, chord: "<C-e>", doc: "Move the caret to the end of the line (readline)" },
+        keymap_entry! { mode: Insert, chord: "<C-b>", doc: "Move the caret one character left (readline)" },
+        keymap_entry! { mode: Insert, chord: "<C-f>", doc: "Move the caret one character right (readline)" },
+        keymap_entry! { mode: Insert, chord: "<C-w>", doc: "Delete the word before the caret (readline/vim)" },
+        keymap_entry! { mode: Insert, chord: "<C-u>", doc: "Delete from the line start to the caret (readline/vim)" },
+        keymap_entry! { mode: Insert, chord: "<C-k>", doc: "Delete from the caret to the line end (readline)" },
+        keymap_entry! { mode: Insert, chord: "<C-t>", doc: "Indent the current line by one shiftwidth (vim)" },
+        keymap_entry! { mode: Insert, chord: "<C-d>", doc: "Dedent the current line by one shiftwidth (vim)" },
         keymap_entry! { mode: Insert, chord: "<C-x>", doc: "Pending: vim's expansion-prefix family. `<C-x><C-s>` (snippet-expand-at-cursor) is the only live chord today, contributed by `snippet-mode` (SN.3c.1), not Builtin." },
         // Completion-popup minor mode -- bindings active only
         // while `App.insert_completion.is_some()`. Override
@@ -590,7 +603,10 @@ mod tests {
             cmd: "action:snippet-leave",
             fall_through: true
         };
-        assert_eq!(e.modes, [BindingMode::Insert, BindingMode::Select].as_slice());
+        assert_eq!(
+            e.modes,
+            [BindingMode::Insert, BindingMode::Select].as_slice()
+        );
         assert!(e.fall_through);
     }
 

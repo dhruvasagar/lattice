@@ -24,7 +24,9 @@ use crate::lattice::plugin_host::types::{
     LspRequest as WitLspRequest, ModalState as WitModalState,
     OpenBufferAtColumnPayload as WitOpenBufferAtColumnPayload,
     OpenBufferAtPayload as WitOpenBufferAtPayload, OpenBufferPayload as WitOpenBufferPayload,
-    OpenPickerPayload as WitOpenPickerPayload, Position as WitPosition,
+    OpenPickerPayload as WitOpenPickerPayload, OpenPopupPayload as WitOpenPopupPayload,
+    OpenSyntheticBufferPayload as WitOpenSyntheticBufferPayload, PopupFocus as WitPopupFocus,
+    PopupPlacement as WitPopupPlacement, Position as WitPosition,
     QuitPayload as WitQuitPayload, QuitScope as WitQuitScope, Range as WitRange,
     Register as WitRegister, SearchDirection as WitSearchDirection, Selection as WitSelection,
     SelectionSet as WitSelectionSet, SetLspLogLevelPayload as WitSetLspLogLevelPayload,
@@ -34,6 +36,9 @@ use crate::lattice::plugin_host::types::{
 };
 use lattice_core::BufferId;
 use lattice_core::buffer::AppliedEdit as NativeAppliedEdit;
+use lattice_core::ui::popup::{
+    PopupFocus as NativePopupFocus, PopupPlacement as NativePopupPlacement,
+};
 use lattice_grammar::app_effect::AppEffect as NativeAppEffect;
 use lattice_grammar::effect::{
     EchoLevel as NativeEchoLevel, Effect as NativeEffect, LspRequest as NativeLspRequest,
@@ -622,7 +627,24 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
         NativeEffect::DescribeElement { name } => WitEffect::DescribeElement(name.clone()),
         NativeEffect::ListOptions => WitEffect::ListOptions,
         NativeEffect::OpenHover { markdown } => WitEffect::OpenHover(markdown.clone()),
-        NativeEffect::CloseHover => WitEffect::CloseHover,
+        NativeEffect::DismissPopup => WitEffect::DismissPopup,
+        NativeEffect::OpenPopup {
+            name,
+            mode_id,
+            placement,
+            focus,
+        } => WitEffect::OpenPopup(WitOpenPopupPayload {
+            name: name.clone(),
+            mode_id: mode_id.clone(),
+            placement: match placement {
+                NativePopupPlacement::Centered => WitPopupPlacement::Centered,
+                NativePopupPlacement::CursorAnchored => WitPopupPlacement::CursorAnchored,
+            },
+            focus: match focus {
+                NativePopupFocus::Steal => WitPopupFocus::Steal,
+                NativePopupFocus::Passive => WitPopupFocus::Passive,
+            },
+        }),
         NativeEffect::OpenHelpTopic { topic } => WitEffect::OpenHelpTopic(topic.clone()),
         NativeEffect::ListDiagnostics => WitEffect::ListDiagnostics,
         NativeEffect::NextDiagnostic => WitEffect::NextDiagnostic,
@@ -708,6 +730,14 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
         // NarrowTrigger-carrying AppEffect still propagates its typed error).
         NativeEffect::AppAction(app) => WitEffect::AppAction(app.to_wit()?),
         NativeEffect::RecordJump => WitEffect::RecordJump,
+        NativeEffect::OpenAiLog { session } => WitEffect::OpenAiLog(session.clone()),
+        NativeEffect::OpenSyntheticBuffer { name, mode_id } => {
+            WitEffect::OpenSyntheticBuffer(WitOpenSyntheticBufferPayload {
+                name: name.clone(),
+                mode_id: mode_id.clone(),
+            })
+        }
+        NativeEffect::OpenDashboard => WitEffect::OpenDashboard,
         NativeEffect::Many(_) => {
             return Err(
                 "Effect::Many is flattened to list<effect> at the boundary and must not \
@@ -820,7 +850,19 @@ fn effect_from_wit(w: WitEffect) -> Result<NativeEffect, String> {
         WitEffect::DescribeElement(name) => NativeEffect::DescribeElement { name },
         WitEffect::ListOptions => NativeEffect::ListOptions,
         WitEffect::OpenHover(markdown) => NativeEffect::OpenHover { markdown },
-        WitEffect::CloseHover => NativeEffect::CloseHover,
+        WitEffect::DismissPopup => NativeEffect::DismissPopup,
+        WitEffect::OpenPopup(p) => NativeEffect::OpenPopup {
+            name: p.name,
+            mode_id: p.mode_id,
+            placement: match p.placement {
+                WitPopupPlacement::Centered => NativePopupPlacement::Centered,
+                WitPopupPlacement::CursorAnchored => NativePopupPlacement::CursorAnchored,
+            },
+            focus: match p.focus {
+                WitPopupFocus::Steal => NativePopupFocus::Steal,
+                WitPopupFocus::Passive => NativePopupFocus::Passive,
+            },
+        },
         WitEffect::OpenHelpTopic(topic) => NativeEffect::OpenHelpTopic { topic },
         WitEffect::ListDiagnostics => NativeEffect::ListDiagnostics,
         WitEffect::NextDiagnostic => NativeEffect::NextDiagnostic,
@@ -895,6 +937,12 @@ fn effect_from_wit(w: WitEffect) -> Result<NativeEffect, String> {
         WitEffect::ToggleMode(mode_name) => NativeEffect::ToggleMode { mode_name },
         WitEffect::AppAction(app) => NativeEffect::AppAction(NativeAppEffect::from_wit(app)?),
         WitEffect::RecordJump => NativeEffect::RecordJump,
+        WitEffect::OpenAiLog(session) => NativeEffect::OpenAiLog { session },
+        WitEffect::OpenSyntheticBuffer(p) => NativeEffect::OpenSyntheticBuffer {
+            name: p.name,
+            mode_id: p.mode_id,
+        },
+        WitEffect::OpenDashboard => NativeEffect::OpenDashboard,
     })
 }
 
@@ -1274,7 +1322,19 @@ mod tests {
             NativeEffect::OpenBufferPicker,
             NativeEffect::CloseFileTree,
             NativeEffect::ListOptions,
-            NativeEffect::CloseHover,
+            NativeEffect::DismissPopup,
+            NativeEffect::OpenPopup {
+                name: "*ai-permission*".to_string(),
+                mode_id: "ai-permission-mode".to_string(),
+                placement: NativePopupPlacement::Centered,
+                focus: NativePopupFocus::Steal,
+            },
+            NativeEffect::OpenPopup {
+                name: "hover".to_string(),
+                mode_id: "hover-mode".to_string(),
+                placement: NativePopupPlacement::CursorAnchored,
+                focus: NativePopupFocus::Passive,
+            },
             NativeEffect::ListDiagnostics,
             NativeEffect::NextDiagnostic,
             NativeEffect::PrevDiagnostic,

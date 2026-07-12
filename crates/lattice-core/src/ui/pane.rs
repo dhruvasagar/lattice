@@ -510,11 +510,7 @@ impl PaneTree {
     /// `top` (or `left`) child, growing means increasing the
     /// ratio (top/left gets bigger). If active is in `bottom`
     /// (or `right`), growing means DECREASING the ratio.
-    pub fn resize_active_split(
-        &mut self,
-        orientation: SplitOrientation,
-        delta: f32,
-    ) -> bool {
+    pub fn resize_active_split(&mut self, orientation: SplitOrientation, delta: f32) -> bool {
         let active = self.active;
         resize_active_recursive(&mut self.root, active, orientation, delta).is_some()
     }
@@ -647,11 +643,7 @@ fn leaf_count(node: &PaneNode) -> usize {
 fn equalize_recursive(node: &mut PaneNode) -> bool {
     match node {
         PaneNode::Leaf(_) => false,
-        PaneNode::HorizontalSplit {
-            top,
-            bottom,
-            ratio,
-        }
+        PaneNode::HorizontalSplit { top, bottom, ratio }
         | PaneNode::VerticalSplit {
             left: top,
             right: bottom,
@@ -692,11 +684,7 @@ fn resize_active_recursive(
     match node {
         PaneNode::Leaf(idx) if *idx == active => Some(()),
         PaneNode::Leaf(_) => None,
-        PaneNode::HorizontalSplit {
-            top,
-            bottom,
-            ratio,
-        } => {
+        PaneNode::HorizontalSplit { top, bottom, ratio } => {
             // active was in `top` ⇒ grow = positive delta;
             // active was in `bottom` ⇒ grow = negate delta.
             if resize_active_recursive(top, active, orientation, delta).is_some() {
@@ -715,11 +703,7 @@ fn resize_active_recursive(
             }
             None
         }
-        PaneNode::VerticalSplit {
-            left,
-            right,
-            ratio,
-        } => {
+        PaneNode::VerticalSplit { left, right, ratio } => {
             if resize_active_recursive(left, active, orientation, delta).is_some() {
                 if matches!(orientation, SplitOrientation::Vertical) {
                     *ratio = (*ratio + delta).clamp(MIN_SPLIT_RATIO, MAX_SPLIT_RATIO);

@@ -208,9 +208,7 @@ impl Default for RenderState {
             lifecycle: Arc::new(LifecycleRenderState::default()),
             resolved_theme: Arc::new(crate::ui::theme::ResolvedTheme::default()),
             theme_ids: crate::ui::theme::BuiltinElementIds::default(),
-            cells: Arc::new(arc_swap::ArcSwap::from_pointee(
-                CellsRenderState::default(),
-            )),
+            cells: Arc::new(arc_swap::ArcSwap::from_pointee(CellsRenderState::default())),
             diff: Arc::new(DiffRenderState::default()),
             virtual_rows: Arc::new(VirtualRowsRenderState::default()),
             paint_revision: 0,
@@ -333,10 +331,7 @@ impl RenderState {
     /// (`syntax.inlay_hints`); any other buffer reads its published
     /// `cells.panes` entry (built by `build_inlay_hints_for_buffer`,
     /// identical gating + byte-baking). A buffer in no pane yields empty.
-    pub fn inlay_hints_for_buffer(
-        &self,
-        buffer_id: lattice_core::BufferId,
-    ) -> Arc<[InlayHintRow]> {
+    pub fn inlay_hints_for_buffer(&self, buffer_id: lattice_core::BufferId) -> Arc<[InlayHintRow]> {
         let ad = self.active_document.load();
         if ad.document_buffer_id == buffer_id {
             return self.syntax.inlay_hints.clone();
@@ -1974,7 +1969,10 @@ pub struct OptionsRenderState {
 #[derive(Debug, Default, Clone)]
 pub struct ResolvedOptionsRenderState {
     pub map: std::sync::Arc<
-        std::collections::HashMap<lattice_core::BufferId, std::sync::Arc<lattice_config::ResolvedOptions>>,
+        std::collections::HashMap<
+            lattice_core::BufferId,
+            std::sync::Arc<lattice_config::ResolvedOptions>,
+        >,
     >,
 }
 
@@ -3044,7 +3042,11 @@ mod tests {
         assert!(Arc::ptr_eq(&active, &rs.syntax.inlay_hints));
 
         // An unknown buffer (no pane entry) routes to empty, never a panic.
-        let _ = InlayHintRow { line: 0, byte: 0, text: String::new() };
+        let _ = InlayHintRow {
+            line: 0,
+            byte: 0,
+            text: String::new(),
+        };
         let unknown = rs.inlay_hints_for_buffer(lattice_core::BufferId(999_999));
         assert!(unknown.is_empty());
     }
@@ -3067,7 +3069,12 @@ mod tests {
         assert_eq!(rs.active_document.load().all_matches[0], r);
         assert_eq!(rs.active_document.load().current_match, Some(r));
         assert!(rs.active_document.load().option_cache.show_whitespace);
-        assert!(rs.active_document.load().option_cache.current_line_highlight);
+        assert!(
+            rs.active_document
+                .load()
+                .option_cache
+                .current_line_highlight
+        );
     }
 
     /// Slice 3c.final.B (group 4): editor.lsp_progress is
@@ -3403,9 +3410,14 @@ mod tests {
         editor.pane_tree.split_active(SplitOrientation::Vertical);
         editor.publish_render_state();
         let rs = editor.render_state.load_full();
-        assert_eq!(rs.cells.load().panes.len(), 2, "two Document leaves expected");
+        assert_eq!(
+            rs.cells.load().panes.len(),
+            2,
+            "two Document leaves expected"
+        );
         assert_ne!(
-            rs.cells.load().panes[0].pane_id, rs.cells.load().panes[1].pane_id,
+            rs.cells.load().panes[0].pane_id,
+            rs.cells.load().panes[1].pane_id,
             "leaves must surface with distinct pane ids"
         );
         let shared_cell = editor.cells_matrix_for(editor.document_buffer_id);
@@ -3468,7 +3480,11 @@ mod tests {
         editor.pane_tree.split_active(SplitOrientation::Vertical);
         editor.publish_render_state();
         let rs = editor.render_state.load_full();
-        assert_eq!(rs.cells.load().panes.len(), 2, "two Document leaves expected");
+        assert_eq!(
+            rs.cells.load().panes.len(),
+            2,
+            "two Document leaves expected"
+        );
         let shared_cell = editor.virtual_rows_matrix_for(editor.document_buffer_id);
         for entry in rs.cells.load().panes.iter() {
             assert_eq!(entry.buffer_id, editor.document_buffer_id);
@@ -3502,7 +3518,10 @@ mod tests {
             1,
             "non-Document leaves must be filtered out of panes"
         );
-        assert_eq!(rs.cells.load().panes[0].buffer_id, editor.document_buffer_id);
+        assert_eq!(
+            rs.cells.load().panes[0].buffer_id,
+            editor.document_buffer_id
+        );
     }
 
     /// D.4.d.1.a: the active pane's entry carries the

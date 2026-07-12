@@ -142,7 +142,10 @@ async fn non_moving_dispatch_keeps_in_flight_references() {
     // A dispatch that does NOT move the cursor must NOT cancel the lookup —
     // the cancel is gated strictly on cursor motion.
     let _ = editor.dispatch(lattice_host::action::Action::None);
-    assert_eq!(editor.cursor, cursor_before, "Action::None must not move the cursor");
+    assert_eq!(
+        editor.cursor, cursor_before,
+        "Action::None must not move the cursor"
+    );
     assert!(
         editor.pending_references_rx.is_some(),
         "a non-moving dispatch must leave the in-flight references lookup intact (AW.2)"

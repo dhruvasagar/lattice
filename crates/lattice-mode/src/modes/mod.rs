@@ -70,6 +70,10 @@ pub fn register_foundation_modes(registry: &mut ModeRegistry) {
     registry
         .register(HelpMode)
         .expect("help-mode must register without conflict");
+    // `repl-mode`: the REPL input surface (i/a/o/… → jump-to-prompt+Insert).
+    // A `Manual` minor mode; REPL majors (`ai-conversation`, terminal, claude)
+    // pull it in via `implies()`, so it never touches an ordinary buffer.
+    crate::repl_mode::register_repl_mode(registry);
     // msg-mode.1: `messages-mode` is the major mode for the
     // editor's `*messages*` audit-log buffer. Replaces the
     // pre-msg-mode `text-mode + read-only-mode` combo so the

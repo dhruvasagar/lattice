@@ -38,8 +38,7 @@ const MARKDOWN_FOLDS_QUERY: &str = include_str!("../queries/markdown/folds.scm")
 // captures headings level-less (`@text.title`); this one distinguishes
 // `@text.title.1` … `.6` by atx marker so headings get per-level size +
 // colour (see the query file's header + style.rs `text.title.N`).
-const MARKDOWN_HIGHLIGHTS_QUERY: &str =
-    include_str!("../queries/markdown/highlights.scm");
+const MARKDOWN_HIGHLIGHTS_QUERY: &str = include_str!("../queries/markdown/highlights.scm");
 
 // Symbol queries -- one per language that supports the
 // `gen:tree-sitter-symbol` insert-completion source (Phase
@@ -58,8 +57,7 @@ const JAVASCRIPT_SYMBOLS_QUERY: &str = include_str!("../queries/javascript/symbo
 // (prose has no function/class/block semantics).
 const RUST_TEXTOBJECTS_QUERY: &str = include_str!("../queries/rust/textobjects.scm");
 const PYTHON_TEXTOBJECTS_QUERY: &str = include_str!("../queries/python/textobjects.scm");
-const JAVASCRIPT_TEXTOBJECTS_QUERY: &str =
-    include_str!("../queries/javascript/textobjects.scm");
+const JAVASCRIPT_TEXTOBJECTS_QUERY: &str = include_str!("../queries/javascript/textobjects.scm");
 
 /// Per-language compiled state held by the shared registry.
 ///
@@ -350,12 +348,13 @@ fn build_config(
         ),
         None => None,
     };
-    let textobjects = match textobjects {
-        Some(src) => Some(Query::new(&language, src).map_err(|e| {
-            SyntaxError::Language(format!("compile {name} textobjects.scm: {e}"))
-        })?),
-        None => None,
-    };
+    let textobjects =
+        match textobjects {
+            Some(src) => Some(Query::new(&language, src).map_err(|e| {
+                SyntaxError::Language(format!("compile {name} textobjects.scm: {e}"))
+            })?),
+            None => None,
+        };
     let _ = locals; // locals.scm support deferred to a follow-up commit.
     Ok(LangConfig {
         language,

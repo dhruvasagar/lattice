@@ -48,9 +48,7 @@ fn theme_defaults() -> (
 /// regions (a keyword and a type) so the per-character `style_at`
 /// walk has to advance through realistic span data.
 fn rust_line(idx: usize) -> String {
-    format!(
-        "fn handler_{idx:04}(input: &str) -> Result<Output, Error> {{ Ok(()) }}",
-    )
+    format!("fn handler_{idx:04}(input: &str) -> Result<Output, Error> {{ Ok(()) }}",)
 }
 
 fn styled_spans(line: &str) -> Vec<lattice_syntax::StyledSpan> {
@@ -284,9 +282,7 @@ fn frame_budget_with_overlays(c: &mut Criterion) {
                             &offsets,
                             0x6c7086,
                         );
-                        push_range_quads(
-                            &mut quads, &visual, line_idx, line, &offsets, 0x45475a,
-                        );
+                        push_range_quads(&mut quads, &visual, line_idx, line, &offsets, 0x45475a);
                         push_range_quads(
                             &mut quads,
                             &substitute,

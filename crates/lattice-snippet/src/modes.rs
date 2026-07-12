@@ -25,10 +25,9 @@ use lattice_completion::{
 };
 use lattice_grammar::{CommandRegistryHandle, Effect, ModalState, VisualKind};
 use lattice_mode::{
-    keymap_entry, ActionContext, ActionHandler, ActionHandlerContribution,
-    ActionHandlerRegistration, ActionHandlerRegistryHandle, ActivationPolicy, BufferStoreHandle,
-    CapabilitySet, Keymap, KeymapEntry, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind,
-    ModeRegistry,
+    ActionContext, ActionHandler, ActionHandlerContribution, ActionHandlerRegistration,
+    ActionHandlerRegistryHandle, ActivationPolicy, BufferStoreHandle, CapabilitySet, Keymap,
+    KeymapEntry, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, ModeRegistry, keymap_entry,
 };
 use lattice_protocol::position::{Position, Range};
 use lattice_protocol::selection::{Selection, SelectionSet, VisualMode};
@@ -316,7 +315,11 @@ impl Mode for SnippetMode {
             let store = ctx.services.get::<BufferStoreHandle>()?;
             let buffer_id = core_buffer_id(ctx.buffer_id);
             let handle = store.handle_for(buffer_id)?;
-            let line_text = handle.snapshot().buffer.line(ctx.cursor.line).unwrap_or_default();
+            let line_text = handle
+                .snapshot()
+                .buffer
+                .line(ctx.cursor.line)
+                .unwrap_or_default();
             // No word prefix → `None` (no effect); otherwise hand the
             // host the trigger range to resolve + expand.
             snippet_trigger_range(&line_text, ctx.cursor)
@@ -467,7 +470,10 @@ pub struct SnippetActiveModeGuard {
 /// doesn't map to a position. Takes the snapshot `buffer` (not the
 /// store) so the cursor math is unit-testable with a plain
 /// [`lattice_core::Buffer`].
-fn snippet_group_cursor_effect(buffer: &lattice_core::Buffer, group: &TabstopGroup) -> Option<Effect> {
+fn snippet_group_cursor_effect(
+    buffer: &lattice_core::Buffer,
+    group: &TabstopGroup,
+) -> Option<Effect> {
     let first = group.ranges.first()?;
     let start = buffer.byte_to_position(first.start).ok()?;
     if first.end > first.start {
@@ -535,16 +541,15 @@ impl Mode for SnippetActiveMode {
                 ctx.service::<ActionHandlerRegistryHandle>(),
             ) {
                 let cmd_registry = &**cmd_registry_arc;
-                let action_handlers: ActionHandlerRegistryHandle =
-                    (*action_handlers_arc).clone();
+                let action_handlers: ActionHandlerRegistryHandle = (*action_handlers_arc).clone();
 
                 // `<Tab>` — step to the next placeholder; clear the
                 // session (ending it) on walk-off-`$0`.
                 if let Some(id) = cmd_registry.id_by_name("action:snippet-next-placeholder") {
                     let session = session.clone();
                     let store = buffer_store.clone();
-                    let handler: ActionHandler = Arc::new(
-                        move |ctx: &ActionContext<'_>| -> Option<Effect> {
+                    let handler: ActionHandler =
+                        Arc::new(move |ctx: &ActionContext<'_>| -> Option<Effect> {
                             let buffer_id = core_buffer_id(ctx.buffer_id);
                             let group = session.with_mut(buffer_id, |s| {
                                 let active = s.as_mut()?;
@@ -562,8 +567,7 @@ impl Mode for SnippetActiveMode {
                             let store = store.as_ref()?;
                             let handle = store.handle_for(buffer_id)?;
                             snippet_group_cursor_effect(&handle.snapshot().buffer, &group)
-                        },
-                    );
+                        });
                     registrations.push(action_handlers.register(id, handler));
                 }
 
@@ -573,16 +577,16 @@ impl Mode for SnippetActiveMode {
                 if let Some(id) = cmd_registry.id_by_name("action:snippet-prev-placeholder") {
                     let session = session.clone();
                     let store = buffer_store.clone();
-                    let handler: ActionHandler = Arc::new(
-                        move |ctx: &ActionContext<'_>| -> Option<Effect> {
+                    let handler: ActionHandler =
+                        Arc::new(move |ctx: &ActionContext<'_>| -> Option<Effect> {
                             let buffer_id = core_buffer_id(ctx.buffer_id);
-                            let group = session
-                                .with_mut(buffer_id, |s| s.as_mut().and_then(|a| a.prev().cloned()))?;
+                            let group = session.with_mut(buffer_id, |s| {
+                                s.as_mut().and_then(|a| a.prev().cloned())
+                            })?;
                             let store = store.as_ref()?;
                             let handle = store.handle_for(buffer_id)?;
                             snippet_group_cursor_effect(&handle.snapshot().buffer, &group)
-                        },
-                    );
+                        });
                     registrations.push(action_handlers.register(id, handler));
                 }
 
@@ -604,12 +608,11 @@ impl Mode for SnippetActiveMode {
                 // meaning. No buffer store needed.
                 if let Some(id) = cmd_registry.id_by_name("action:snippet-leave") {
                     let session = session.clone();
-                    let handler: ActionHandler = Arc::new(
-                        move |ctx: &ActionContext<'_>| -> Option<Effect> {
+                    let handler: ActionHandler =
+                        Arc::new(move |ctx: &ActionContext<'_>| -> Option<Effect> {
                             session.clear(core_buffer_id(ctx.buffer_id));
                             Some(Effect::None)
-                        },
-                    );
+                        });
                     registrations.push(action_handlers.register(id, handler));
                 }
             } else {
@@ -673,9 +676,9 @@ pub fn register_snippet_modes(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ActiveSnippet;
     use crate::parse;
     use crate::registry::Snippet;
-    use crate::ActiveSnippet;
     use lattice_core::Buffer;
     use lattice_protocol::Position;
 
@@ -808,7 +811,10 @@ mod tests {
     fn snippet_mode_default_policy_is_global() {
         // The default cell is Global (behavior-preserving) — also
         // the folded value for `snippet.activation = global`.
-        assert_eq!(SnippetMode::new().activation_policy(), ActivationPolicy::Global);
+        assert_eq!(
+            SnippetMode::new().activation_policy(),
+            ActivationPolicy::Global
+        );
     }
 
     #[test]
@@ -820,7 +826,9 @@ mod tests {
             Arc::new(ArcSwap::from_pointee(ActivationPolicy::Global));
         let mode = SnippetMode::with_policy(cell.clone());
         assert_eq!(mode.activation_policy(), ActivationPolicy::Global);
-        cell.store(Arc::new(ActivationPolicy::Majors(vec![ModeId::new("rust-mode")])));
+        cell.store(Arc::new(ActivationPolicy::Majors(vec![ModeId::new(
+            "rust-mode",
+        )])));
         assert_eq!(
             mode.activation_policy(),
             ActivationPolicy::Majors(vec![ModeId::new("rust-mode")]),
@@ -1111,10 +1119,7 @@ mod tests {
 
     /// Install a fresh `for ${1:i} in ${2:iter} { $0 }` session in
     /// `buffer`, focused on `$1` (SN.3e multi-buffer tests).
-    fn install_active_session_in(
-        session: &SnippetSessionHandle,
-        buffer: lattice_core::BufferId,
-    ) {
+    fn install_active_session_in(session: &SnippetSessionHandle, buffer: lattice_core::BufferId) {
         let body = crate::parse("for ${1:i} in ${2:iter} { $0 }").expect("parse");
         let rendered = crate::render::render(&body, &crate::VariableContext::default());
         let mut active = ActiveSnippet::from_render(&rendered, 0);
@@ -1127,7 +1132,12 @@ mod tests {
         id: lattice_protocol::ids::CommandId,
         services: &lattice_mode::ServiceRegistry,
     ) -> Option<Effect> {
-        fire_in(handlers, id, services, lattice_protocol::ids::BufferId::new(1))
+        fire_in(
+            handlers,
+            id,
+            services,
+            lattice_protocol::ids::BufferId::new(1),
+        )
     }
 
     /// As [`fire`], but the synthetic `ActionContext` reports `buffer`
@@ -1210,7 +1220,9 @@ mod tests {
         install_active_session(&session);
 
         let idx = |s: &SnippetSessionHandle| {
-            s.with_mut(lattice_core::BufferId(1), |o| o.as_ref().and_then(ActiveSnippet::current_index))
+            s.with_mut(lattice_core::BufferId(1), |o| {
+                o.as_ref().and_then(ActiveSnippet::current_index)
+            })
         };
         assert_eq!(idx(&session), Some(1)); // focused on $1
         fire(&handlers, next_id, &services);
@@ -1230,7 +1242,9 @@ mod tests {
         install_active_session(&session);
 
         let idx = |s: &SnippetSessionHandle| {
-            s.with_mut(lattice_core::BufferId(1), |o| o.as_ref().and_then(ActiveSnippet::current_index))
+            s.with_mut(lattice_core::BufferId(1), |o| {
+                o.as_ref().and_then(ActiveSnippet::current_index)
+            })
         };
         fire(&handlers, next_id, &services);
         assert_eq!(idx(&session), Some(2));

@@ -1001,7 +1001,10 @@ mod tests {
         let buffers = parse("buffers", &r).unwrap();
         let b = parse("b", &r).unwrap();
         assert_eq!(invocation_name(&buffers, &r), "ex:buffer-picker");
-        assert_eq!(buffers.command, b.command, ":buffers and :b are the same command");
+        assert_eq!(
+            buffers.command, b.command,
+            ":buffers and :b are the same command"
+        );
         assert_eq!(invocation_name(&parse("ls", &r).unwrap(), &r), "ex:buffers");
     }
 

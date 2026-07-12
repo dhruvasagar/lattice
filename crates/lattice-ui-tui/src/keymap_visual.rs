@@ -16,6 +16,7 @@ mod tests {
     use crate::keymap_registry::KeymapHandle;
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
     use lattice_grammar::{CommandRegistry, VisualKind, builtins::Builtins, builtins::populate};
+    use lattice_syntax::SyntaxMotionIds;
     use lattice_syntax::SyntaxTextObjectIds;
 
     fn ev(code: KeyCode, mods: KeyModifiers) -> KeyChord {
@@ -28,24 +29,36 @@ mod tests {
         crate::chord::from_event(&raw).expect("test event converts to a chord")
     }
 
-    fn fixture() -> (CommandRegistry, Builtins, ActionIds, SyntaxTextObjectIds) {
+    fn fixture() -> (
+        CommandRegistry,
+        Builtins,
+        ActionIds,
+        SyntaxTextObjectIds,
+        SyntaxMotionIds,
+    ) {
         let mut r = CommandRegistry::new();
         let b = populate(&mut r);
         let a = crate::actions::populate(&mut r, &b);
         let so = lattice_syntax::register_syntax_text_objects(&mut r);
-        (r, b, a, so)
+        let sm = lattice_syntax::register_syntax_motions(&mut r);
+        (r, b, a, so, sm)
     }
 
-    fn populated_handle(b: &Builtins, a: &ActionIds, so: &SyntaxTextObjectIds) -> KeymapHandle {
+    fn populated_handle(
+        b: &Builtins,
+        a: &ActionIds,
+        so: &SyntaxTextObjectIds,
+        sm: &SyntaxMotionIds,
+    ) -> KeymapHandle {
         let h = KeymapHandle::new();
-        register_visual_bindings(&h, b, a, so);
+        register_visual_bindings(&h, b, a, so, sm);
         // Operators (`d` / `c` / `y` / `>` / `<`) bind into Visual via
         // `register_operator_bindings` (called by `register_normal_bindings`), not
         // `register_visual_bindings` -- an operator acts on the selection
         // by design. Tests here dispatch those operator chords in Visual,
         // so the Normal catalog must be registered too. The `x` / `s`
         // Visual-only aliases still come from `register_visual_bindings`.
-        crate::keymap_normal::register_normal_bindings(&h, b, a, so);
+        crate::keymap_normal::register_normal_bindings(&h, b, a, so, sm);
         h
     }
 
@@ -57,8 +70,8 @@ mod tests {
 
     #[test]
     fn esc_exits_visual_in_all_kinds() {
-        let (_, b, a, so) = fixture();
-        let h = populated_handle(&b, &a, &so);
+        let (_, b, a, so, sm) = fixture();
+        let h = populated_handle(&b, &a, &so, &sm);
         for kind in [
             VisualKind::Charwise,
             VisualKind::Linewise,
@@ -74,8 +87,8 @@ mod tests {
 
     #[test]
     fn lowercase_v_toggles_out_of_visual() {
-        let (_, b, a, so) = fixture();
-        let h = populated_handle(&b, &a, &so);
+        let (_, b, a, so, sm) = fixture();
+        let h = populated_handle(&b, &a, &so, &sm);
         let r = dv(
             &h,
             &ev(KeyCode::Char('v'), KeyModifiers::NONE),
@@ -89,8 +102,8 @@ mod tests {
 
     #[test]
     fn uppercase_v_toggles_out_of_visual() {
-        let (_, b, a, so) = fixture();
-        let h = populated_handle(&b, &a, &so);
+        let (_, b, a, so, sm) = fixture();
+        let h = populated_handle(&b, &a, &so, &sm);
         let r = dv(
             &h,
             &ev(KeyCode::Char('V'), KeyModifiers::NONE),
@@ -104,8 +117,8 @@ mod tests {
 
     #[test]
     fn motion_h_invokes_char_left() {
-        let (_, b, a, so) = fixture();
-        let h = populated_handle(&b, &a, &so);
+        let (_, b, a, so, sm) = fixture();
+        let h = populated_handle(&b, &a, &so, &sm);
         let r = dv(
             &h,
             &ev(KeyCode::Char('h'), KeyModifiers::NONE),
@@ -119,8 +132,8 @@ mod tests {
 
     #[test]
     fn arrow_left_aliases_to_char_left() {
-        let (_, b, a, so) = fixture();
-        let h = populated_handle(&b, &a, &so);
+        let (_, b, a, so, sm) = fixture();
+        let h = populated_handle(&b, &a, &so, &sm);
         let r = dv(
             &h,
             &ev(KeyCode::Left, KeyModifiers::NONE),
@@ -134,8 +147,8 @@ mod tests {
 
     #[test]
     fn delete_in_visual_carries_selection_range() {
-        let (_, b, a, so) = fixture();
-        let h = populated_handle(&b, &a, &so);
+        let (_, b, a, so, sm) = fixture();
+        let h = populated_handle(&b, &a, &so, &sm);
         let r = dv(
             &h,
             &ev(KeyCode::Char('d'), KeyModifiers::NONE),
@@ -152,8 +165,8 @@ mod tests {
 
     #[test]
     fn x_in_visual_aliases_to_delete() {
-        let (_, b, a, so) = fixture();
-        let h = populated_handle(&b, &a, &so);
+        let (_, b, a, so, sm) = fixture();
+        let h = populated_handle(&b, &a, &so, &sm);
         let r = dv(
             &h,
             &ev(KeyCode::Char('x'), KeyModifiers::NONE),
@@ -167,8 +180,8 @@ mod tests {
 
     #[test]
     fn s_in_visual_aliases_to_change() {
-        let (_, b, a, so) = fixture();
-        let h = populated_handle(&b, &a, &so);
+        let (_, b, a, so, sm) = fixture();
+        let h = populated_handle(&b, &a, &so, &sm);
         let r = dv(
             &h,
             &ev(KeyCode::Char('s'), KeyModifiers::NONE),
@@ -189,12 +202,20 @@ mod tests {
     /// under test is keymap generation across modes, not the effect.
     #[test]
     fn contributed_operator_acts_on_visual_selection_by_design() {
-        let (_, b, a, so) = fixture();
+        let (_, b, a, so, sm) = fixture();
         let _ = &a;
         let h = KeymapHandle::new();
         let z = crate::keymap_trie::ChordPattern::Literal(KeyChord::char('z'));
         let n = crate::keymap_trie::ChordPattern::Literal(KeyChord::char('n'));
-        crate::keymap_normal::register_operator_bindings(&h, &[z, n.clone()], b.delete, n, &b, &so);
+        crate::keymap_normal::register_operator_bindings(
+            &h,
+            &[z, n.clone()],
+            b.delete,
+            n,
+            &b,
+            &so,
+            &sm,
+        );
 
         // Visual `zn`: `z` absorbs as a partial, `n` resolves the pair to
         // the operator carrying `Range::Selection`.
@@ -238,8 +259,8 @@ mod tests {
         // the pair to the replace-char operator carrying
         // `Range::Selection`, with the captured char folded into
         // `Args::Char`.
-        let (_, b, a, so) = fixture();
-        let h = populated_handle(&b, &a, &so);
+        let (_, b, a, so, sm) = fixture();
+        let h = populated_handle(&b, &a, &so, &sm);
         let prefix = [ev(KeyCode::Char('r'), KeyModifiers::NONE)];
         let r = dispatch_visual(
             &h,
@@ -267,8 +288,8 @@ mod tests {
 
     #[test]
     fn visual_r_alone_absorbs_partial_chord() {
-        let (_, b, a, so) = fixture();
-        let h = populated_handle(&b, &a, &so);
+        let (_, b, a, so, sm) = fixture();
+        let h = populated_handle(&b, &a, &so, &sm);
         let r = dv(
             &h,
             &ev(KeyCode::Char('r'), KeyModifiers::NONE),
@@ -282,8 +303,8 @@ mod tests {
 
     #[test]
     fn capital_i_only_in_blockwise() {
-        let (_, b, a, so) = fixture();
-        let h = populated_handle(&b, &a, &so);
+        let (_, b, a, so, sm) = fixture();
+        let h = populated_handle(&b, &a, &so, &sm);
         // Charwise: I has no binding -> None.
         let r = dv(
             &h,
@@ -312,8 +333,8 @@ mod tests {
 
     #[test]
     fn capital_a_only_in_blockwise() {
-        let (_, b, a, so) = fixture();
-        let h = populated_handle(&b, &a, &so);
+        let (_, b, a, so, sm) = fixture();
+        let h = populated_handle(&b, &a, &so, &sm);
         let r = dv(
             &h,
             &ev(KeyCode::Char('A'), KeyModifiers::NONE),
@@ -330,8 +351,8 @@ mod tests {
 
     #[test]
     fn ctrl_modifier_yields_none() {
-        let (_, b, a, so) = fixture();
-        let h = populated_handle(&b, &a, &so);
+        let (_, b, a, so, sm) = fixture();
+        let h = populated_handle(&b, &a, &so, &sm);
         let r = dv(
             &h,
             &ev(KeyCode::Char('h'), KeyModifiers::CONTROL),
@@ -346,8 +367,8 @@ mod tests {
     /// short-circuited CONTROL.
     #[test]
     fn alt_h_in_visual_invokes_char_left() {
-        let (_, b, a, so) = fixture();
-        let h = populated_handle(&b, &a, &so);
+        let (_, b, a, so, sm) = fixture();
+        let h = populated_handle(&b, &a, &so, &sm);
         let r = dv(
             &h,
             &ev(KeyCode::Char('h'), KeyModifiers::ALT),
@@ -372,8 +393,8 @@ mod tests {
     /// into `partial_chord`, not no-op.
     #[test]
     fn bare_i_absorbs_as_text_object_prefix() {
-        let (_, b, a, so) = fixture();
-        let h = populated_handle(&b, &a, &so);
+        let (_, b, a, so, sm) = fixture();
+        let h = populated_handle(&b, &a, &so, &sm);
         let r = dv(
             &h,
             &ev(KeyCode::Char('i'), KeyModifiers::NONE),
@@ -390,8 +411,8 @@ mod tests {
     /// Bare `a` likewise absorbs as a text-object prefix.
     #[test]
     fn bare_a_absorbs_as_text_object_prefix() {
-        let (_, b, a, so) = fixture();
-        let h = populated_handle(&b, &a, &so);
+        let (_, b, a, so, sm) = fixture();
+        let h = populated_handle(&b, &a, &so, &sm);
         let r = dv(
             &h,
             &ev(KeyCode::Char('a'), KeyModifiers::NONE),
@@ -408,8 +429,8 @@ mod tests {
     /// range -- the grammar's `execute_text_object` sets the span).
     #[test]
     fn viw_resolves_to_bare_inner_word() {
-        let (_, b, a, so) = fixture();
-        let h = populated_handle(&b, &a, &so);
+        let (_, b, a, so, sm) = fixture();
+        let h = populated_handle(&b, &a, &so, &sm);
         let prefix = [ev(KeyCode::Char('i'), KeyModifiers::NONE)];
         let r = dispatch_visual(
             &h,
@@ -430,8 +451,8 @@ mod tests {
     /// `vaw` -> around-word via the `a` prefix.
     #[test]
     fn vaw_resolves_to_bare_around_word() {
-        let (_, b, a, so) = fixture();
-        let h = populated_handle(&b, &a, &so);
+        let (_, b, a, so, sm) = fixture();
+        let h = populated_handle(&b, &a, &so, &sm);
         let prefix = [ev(KeyCode::Char('a'), KeyModifiers::NONE)];
         let r = dispatch_visual(
             &h,
@@ -449,8 +470,8 @@ mod tests {
     /// shared table's alias rows reach Visual mode too.
     #[test]
     fn vi_brace_resolves_to_inner_brace() {
-        let (_, b, a, so) = fixture();
-        let h = populated_handle(&b, &a, &so);
+        let (_, b, a, so, sm) = fixture();
+        let h = populated_handle(&b, &a, &so, &sm);
         let prefix = [ev(KeyCode::Char('i'), KeyModifiers::NONE)];
         let r = dispatch_visual(
             &h,
@@ -468,8 +489,8 @@ mod tests {
     /// proving the syntax rows are wired identically in Visual.
     #[test]
     fn vaf_resolves_to_around_function() {
-        let (_, b, a, so) = fixture();
-        let h = populated_handle(&b, &a, &so);
+        let (_, b, a, so, sm) = fixture();
+        let h = populated_handle(&b, &a, &so, &sm);
         let prefix = [ev(KeyCode::Char('a'), KeyModifiers::NONE)];
         let r = dispatch_visual(
             &h,
@@ -486,8 +507,8 @@ mod tests {
     /// `vaC` -> around-comment (the N.1.6 comment object), capital C.
     #[test]
     fn va_capital_c_resolves_to_around_comment() {
-        let (_, b, a, so) = fixture();
-        let h = populated_handle(&b, &a, &so);
+        let (_, b, a, so, sm) = fixture();
+        let h = populated_handle(&b, &a, &so, &sm);
         let prefix = [ev(KeyCode::Char('a'), KeyModifiers::NONE)];
         let r = dispatch_visual(
             &h,
@@ -506,8 +527,8 @@ mod tests {
     /// prefix on an unbound second key.
     #[test]
     fn unbound_after_prefix_yields_none() {
-        let (_, b, a, so) = fixture();
-        let h = populated_handle(&b, &a, &so);
+        let (_, b, a, so, sm) = fixture();
+        let h = populated_handle(&b, &a, &so, &sm);
         let prefix = [ev(KeyCode::Char('i'), KeyModifiers::NONE)];
         let r = dispatch_visual(
             &h,

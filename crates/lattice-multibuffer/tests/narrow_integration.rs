@@ -17,7 +17,9 @@ use lattice_mode::{BufferStore, BufferStoreHandle, ModeActivator, ModeId, Servic
 use lattice_multibuffer::providers::narrow::{
     NarrowMinorMode, create_narrow_view, register_narrow_ex_commands,
 };
-use lattice_multibuffer::{HeaderlineStatus, InMemoryMultibufferRegistry, MultibufferRegistryHandle};
+use lattice_multibuffer::{
+    HeaderlineStatus, InMemoryMultibufferRegistry, MultibufferRegistryHandle,
+};
 use lattice_runtime::Document;
 
 #[derive(Debug, Default)]
@@ -89,7 +91,9 @@ impl ModeActivator for MockActivator {
 /// arm fetches from the buffer store).
 fn make_source(text: &str) -> (BufferId, Arc<dyn Document>) {
     let id = BufferId::next();
-    let document = lattice_core::DocumentBuilder::default().with_text(text).build();
+    let document = lattice_core::DocumentBuilder::default()
+        .with_text(text)
+        .build();
     let handle = lattice_runtime::spawn_document(id, document, Arc::new(CommandRegistry::new()));
     let dyn_handle: Arc<dyn Document> = Arc::new(handle);
     (id, dyn_handle)

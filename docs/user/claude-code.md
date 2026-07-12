@@ -18,6 +18,15 @@ it works like the LSP client: a JSON-RPC connection to an external
 process. No agent runs inside the editor, and no third-party code
 executes in lattice's address space.
 
+> **Two agents, opposite topologies.** Claude Code is the *server* side —
+> the `claude` CLI dials into lattice and runs its own TUI in a terminal
+> buffer. Lattice's other agent, [opencode](opencode.md), is the reverse:
+> lattice *drives* `opencode acp` as a child and owns the conversation as a
+> buffer. The edit-via-reviewable-diff workflow is the same in both; pick by
+> which agent you want. See
+> [agent-integration.md](../dev/architecture/agent-integration.md) for why
+> they share one capability surface.
+
 > **Status:** The full launch → read → edit-via-diff → accept/reject
 > loop is implemented. The on-the-wire reply and notification shapes
 > are **provisional** until validated against a live `claude` CLI —
@@ -234,7 +243,11 @@ accept or reject) is stable; only the wire details may still shift.
 
 ## Related
 
+- [`opencode.md`](opencode.md) — the other agent integration (lattice drives
+  `opencode acp` and owns the conversation as a buffer).
 - [`terminal.md`](terminal.md) — the terminal buffer the agent runs in.
 - [`diff.md`](diff.md) — the side-by-side diff UI used to review edits.
 - [`docs/dev/architecture/ide-protocol.md`](../dev/architecture/ide-protocol.md)
   — developer reference (protocol, mode ownership, data paths).
+- [`docs/dev/architecture/agent-integration.md`](../dev/architecture/agent-integration.md)
+  — why the two agents share one capability surface.

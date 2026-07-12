@@ -166,8 +166,7 @@ pub fn recompute(
         // No language attached. Clear published quads so a
         // language detach doesn't leave stale overlay buckets.
         let existing = static_overlay_quads_cell.load();
-        if existing.quads.is_empty()
-            && existing.computed_for_key == VisibleHighlightsKey::default()
+        if existing.quads.is_empty() && existing.computed_for_key == VisibleHighlightsKey::default()
         {
             return WorkerDecision::Clear;
         }
@@ -425,14 +424,13 @@ mod tests {
     #[test]
     fn recompute_with_no_handle_clears_quads() {
         let rs: ArcSwap<RenderState> = ArcSwap::from_pointee(RenderState::default());
-        let overlay_cell: ArcSwap<StaticOverlayQuads> =
-            ArcSwap::from_pointee(StaticOverlayQuads {
-                quads: Arc::from(vec![Vec::new()].into_boxed_slice()),
-                computed_for_key: VisibleHighlightsKey {
-                    snapshot_ptr: 0xdead,
-                    ..Default::default()
-                },
-            });
+        let overlay_cell: ArcSwap<StaticOverlayQuads> = ArcSwap::from_pointee(StaticOverlayQuads {
+            quads: Arc::from(vec![Vec::new()].into_boxed_slice()),
+            computed_for_key: VisibleHighlightsKey {
+                snapshot_ptr: 0xdead,
+                ..Default::default()
+            },
+        });
         let decision = recompute(&rs, &overlay_cell);
         assert_eq!(decision, WorkerDecision::Clear);
         let after = overlay_cell.load();
@@ -466,17 +464,13 @@ mod tests {
         let overlay_cell = Arc::new(arc_swap::ArcSwap::from_pointee(
             StaticOverlayQuads::default(),
         ));
-        let static_overlay_version = crate::render_state::static_overlay_state_version(
-            &doc_highlights,
-            &all_matches,
-            &[],
-        );
-        let active_document = arc_swap::ArcSwap::from_pointee(
-            crate::render_state::ActiveDocumentRenderState {
+        let static_overlay_version =
+            crate::render_state::static_overlay_state_version(&doc_highlights, &all_matches, &[]);
+        let active_document =
+            arc_swap::ArcSwap::from_pointee(crate::render_state::ActiveDocumentRenderState {
                 all_matches: Arc::from(all_matches.into_boxed_slice()),
                 ..crate::render_state::ActiveDocumentRenderState::default()
-            },
-        );
+            });
         let rs = RenderState {
             active_document: Arc::new(active_document),
             syntax: Arc::new(crate::render_state::SyntaxRenderState {
@@ -530,12 +524,13 @@ mod tests {
         );
         // Row 0 carries exactly one AllMatches quad covering 3..7.
         let row0 = &after.quads[0];
-        assert_eq!(row0.len(), 1, "row 0 should have one match quad; got {row0:?}");
-        assert!(matches!(row0[0].layer, OverlayLayer::AllMatches));
         assert_eq!(
-            (row0[0].source_byte_start, row0[0].source_byte_end),
-            (3, 7)
+            row0.len(),
+            1,
+            "row 0 should have one match quad; got {row0:?}"
         );
+        assert!(matches!(row0[0].layer, OverlayLayer::AllMatches));
+        assert_eq!((row0[0].source_byte_start, row0[0].source_byte_end), (3, 7));
     }
 
     /// Cache-hit short-circuit: a second `recompute` with the same

@@ -81,7 +81,11 @@ fn snapshot_publish_via_apply_edit(c: &mut Criterion) {
             // One handle reused across iterations -- the actor task
             // stays alive; each iteration only pays the mutation +
             // snapshot publish cost.
-            let handle = spawn_document(lattice_core::BufferId(0), Document::from_text(t), registry.clone());
+            let handle = spawn_document(
+                lattice_core::BufferId(0),
+                Document::from_text(t),
+                registry.clone(),
+            );
             // Pre-warm so the first iteration doesn't include the
             // actor task's spinup.
             let _ = block_on(handle.apply_edit(Edit::insert(Position::ZERO, "x")));
@@ -102,7 +106,11 @@ fn snapshot_publish_via_apply_edit(c: &mut Criterion) {
 fn snapshot_load_cached(c: &mut Criterion) {
     let mut g = c.benchmark_group("runtime::snapshot_load_cached");
     let registry = Arc::new(CommandRegistry::new());
-    let handle = spawn_document(lattice_core::BufferId(0), Document::from_text("x"), registry);
+    let handle = spawn_document(
+        lattice_core::BufferId(0),
+        Document::from_text("x"),
+        registry,
+    );
     let mut cache = handle.snapshot_cache();
     g.bench_function("steady", |bencher| {
         bencher.iter(|| {
@@ -121,7 +129,11 @@ fn snapshot_load_cached(c: &mut Criterion) {
 fn snapshot_load(c: &mut Criterion) {
     let mut g = c.benchmark_group("runtime::snapshot_load");
     let registry = Arc::new(CommandRegistry::new());
-    let handle = spawn_document(lattice_core::BufferId(0), Document::from_text("x"), registry);
+    let handle = spawn_document(
+        lattice_core::BufferId(0),
+        Document::from_text("x"),
+        registry,
+    );
     g.bench_function("load", |bencher| {
         bencher.iter(|| {
             let snap = handle.snapshot();
@@ -144,7 +156,11 @@ fn apply_edit_round_trip(c: &mut Criterion) {
     for size in [10usize, 1_000, 50_000] {
         let text = build_buffer_text(size);
         g.bench_with_input(BenchmarkId::from_parameter(size), &text, |bencher, t| {
-            let handle = spawn_document(lattice_core::BufferId(0), Document::from_text(t), registry.clone());
+            let handle = spawn_document(
+                lattice_core::BufferId(0),
+                Document::from_text(t),
+                registry.clone(),
+            );
             // Warm.
             let _ = block_on(handle.apply_edit(Edit::insert(Position::ZERO, "x")));
             bencher.iter(|| {
@@ -169,7 +185,11 @@ fn snapshot_post_publish_read(c: &mut Criterion) {
     for size in [10usize, 1_000, 50_000] {
         let text = build_buffer_text(size);
         g.bench_with_input(BenchmarkId::from_parameter(size), &text, |bencher, t| {
-            let handle = spawn_document(lattice_core::BufferId(0), Document::from_text(t), registry.clone());
+            let handle = spawn_document(
+                lattice_core::BufferId(0),
+                Document::from_text(t),
+                registry.clone(),
+            );
             bencher.iter(|| {
                 let snap = handle.snapshot();
                 black_box(snap.buffer.line_count());
@@ -198,7 +218,11 @@ fn dispatch_round_trip(c: &mut Criterion) {
     for size in [10usize, 1_000, 50_000] {
         let text = build_buffer_text(size);
         g.bench_with_input(BenchmarkId::from_parameter(size), &text, |bencher, t| {
-            let handle = spawn_document(lattice_core::BufferId(0), Document::from_text(t), registry.clone());
+            let handle = spawn_document(
+                lattice_core::BufferId(0),
+                Document::from_text(t),
+                registry.clone(),
+            );
             let inv = CommandInvocation::of(builtins.word_forward.0);
             // Pre-warm the actor task.
             let _ = block_on(handle.dispatch_with_cancel(
@@ -226,7 +250,8 @@ fn dispatch_round_trip(c: &mut Criterion) {
 fn status_segment_update(c: &mut Criterion) {
     let mut g = c.benchmark_group("runtime::status_segment_update");
     let registry = Arc::new(CommandRegistry::new());
-    let handle = spawn_document(lattice_core::BufferId(0), 
+    let handle = spawn_document(
+        lattice_core::BufferId(0),
         Document::from_text(build_buffer_text(1_000).as_str()),
         registry,
     );

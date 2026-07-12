@@ -49,7 +49,9 @@ use lattice_mode::SubsystemBoot;
 use crate::LspSupervisorHandle;
 use crate::completion::register_lsp_completion_mode;
 use crate::modes::register_lsp_log_modes;
-use crate::{LspCodeLensRefresh, LspDiagnosticRefresh, LspInlayHintRefresh, LspSemanticTokensRefresh};
+use crate::{
+    LspCodeLensRefresh, LspDiagnosticRefresh, LspInlayHintRefresh, LspSemanticTokensRefresh,
+};
 
 /// Wire the LSP subsystem's modes + off-keystroke refresh wakes into the editor
 /// at boot (BC.8a). One Phase-B line in `editor_boot.rs`.

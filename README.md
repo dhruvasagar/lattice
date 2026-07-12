@@ -14,13 +14,19 @@ and no shaping.
 > `&mut Editor` escape compile-time impossible (`EditorActorHandle`), both
 > TUI and GPUI peers edit against a live rust-analyzer backend, and
 > Phase 5.8 GPUI feature-parity work is the active frontier. Recent
-> cross-cutting improvements: O(viewport) incremental highlight + cell
-> build (flat to 100k lines), soft-wrap on both renderers, event-driven
-> TUI loop (100ms poll retired), decoration retention across focus changes
+> cross-cutting improvements: **two coding-agent integrations** — Claude Code
+> (the `claude` CLI attaches over WebSocket/MCP, runs in a terminal buffer)
+> and opencode (lattice drives `opencode acp` and owns the conversation as a
+> buffer with modal-input prompt, interactive diff review, and a trust-mode
+> toggle) — over one shared `EditorAccess` capability surface; a full diff &
+> merge subsystem (inline / side-by-side / three-way, `]c` `[c` `do` `dp`,
+> shared with the agents' edit review); O(viewport) incremental highlight +
+> cell build (flat to 100k lines); soft-wrap on both renderers; event-driven
+> TUI loop (100ms poll retired); decoration retention across focus changes
 > (inactive panes keep full syntax/inlay/diagnostic set, proven zero-recompute
-> on focus), multibuffer excerpt display, narrow mode (`zn`) with tree-sitter
-> text objects (`af`/`ac`/`aa`/`al`/`aC`), operators that act on the Visual
-> selection by design, a multi-mode keybinding API, and a diff foundation. The
+> on focus); multibuffer excerpt display; narrow mode (`zn`) with tree-sitter
+> text objects (`af`/`ac`/`aa`/`al`/`aC`); operators that act on the Visual
+> selection by design; and a multi-mode keybinding API. The
 > WASM plugin host arrives
 > in Phase 7. See
 > [`docs/dev/operations/implementation.md`](docs/dev/operations/implementation.md)
@@ -209,6 +215,8 @@ flowchart TD
 | `lattice-multibuffer`  | Multibuffer data model, excerpt layout, major mode, motions, header/fold virtual-row providers.          | 🚧 active   |
 | `lattice-diff`         | Two-way and three-way hunk computation over `ropey::Rope` inputs (Histogram algorithm via `imara-diff`). Pure data; no I/O. | 🚧 active   |
 | `lattice-terminal`     | Terminal emulator state machine + cell grid (`alacritty_terminal`). Backs the terminal buffer kind.     | 🚧 active   |
+| `lattice-agent`        | The direction-independent agent capability surface: the `EditorAccess` port, the shared `review_diff` seam, per-process trace-log rings. Backs both agent integrations. | 🚧 active   |
+| `lattice-ai`           | Agent adapters: opencode's native TUI in a terminal buffer (`opencode/` — `:opencode` + `opencode-mode`, the v1 path), the headless-ACP buffer conversation (`acp/` — `:opencode-acp`, kept for future IDE-native review), and Claude Code over MCP (`mcp/`). | 🚧 active   |
 | `lattice-host`         | Renderer-agnostic substrate. Owns `Editor`, dispatch, mode lifecycle, options cascade, `RenderState`, `PerBufferCache`, LSP watcher task, cells/virtual-rows workers. | ✅ stable   |
 | `lattice-ui-tui`       | Terminal UI peer: crossterm + ratatui, modal cursor, gutter, hlsearch, soft-wrap, command line, popups, picker UI. | ✅ stable   |
 | `lattice-ui-gpui`      | GPU UI peer (feature `window`): GPUI + blade rendering. Full edit + LSP against rust-analyzer; Phase 5.8 feature-parity in progress. | 🚧 active   |
@@ -311,7 +319,9 @@ In the running editor:
 - `:set foldmethod=indent` — auto-fold indented blocks; `zo` / `zc` to open / close
 - `:set wrap` — enable soft-wrap; long lines reflow at the pane width across both TUI and GPUI
 - `:set ui.dim_inactive=off` — turn off the inactive-pane DIM overlay (inactive panes keep full syntax + inlay hints; only opacity changes)
-- `:help` — open the topic index; `:help folding` / `:help buffers` for deep-dive docs (`<Tab>` completes)
+- `:diffsplit other.rs` — side-by-side diff; `]c` / `[c` navigate hunks, `do` / `dp` transfer them; `:diffthis` / `:diff` for inline-vs-disk
+- `:opencode` — launch the opencode agent's native TUI in a terminal buffer (its full interface: prompt, `/` commands, model switching, edit review), with `opencode-mode` for lattice navigation; `:opencode-acp` is the buffer-native alternative that reviews edits in lattice's diff view
+- `:help` — open the topic index; `:help folding` / `:help buffers` / `:help opencode` for deep-dive docs (`<Tab>` completes)
 
 ---
 
@@ -320,7 +330,7 @@ In the running editor:
 Among modern editors built on Rust + GPU + tree-sitter + LSP + WASM (the only stack that hits sub-frame latency without compromising extensibility, and one Lattice shares with Zed deliberately), the differentiators are:
 
 - **Vim grammar is the public command API**, not a key mapping over a non-modal core. One dispatcher; ex-commands, chords, and plugin contributions all flow through `CommandInvocation`. Adding a motion *is* extending the grammar.
-- **Everything is a buffer, enforced**. File tree, diagnostics list, terminal, `*messages*`, scratch — all are buffers placed by the user into panes via splits. There is no sidebar / bottom-panel concept. Every text operation works on every buffer kind through one code path.
+- **Everything is a buffer, enforced**. File tree, diagnostics list, terminal, `*messages*`, scratch, even the **agent conversation** (`*ai:opencode*`, with a modal-input prompt tail) — all are buffers placed by the user into panes via splits. There is no sidebar / bottom-panel concept. Every text operation works on every buffer kind through one code path.
 - **Modes own their surface; the host is a thin substrate**. A feature is a *mode* — it owns its keymaps (at `KeymapLayer::MinorMode` / `MajorMode`, never `Builtin`), the action-handler bodies those chords fire, its decorations, subscriptions, and completion sources. The host carries no per-feature branch; it exposes only generic primitives (buffer store, event bus, action-handler registry, chord dispatcher). The acid test is enforced: a new provider crate adds **zero** `Editor::` methods and **zero** host `Action` variants. This is the single deepest structural difference from Zed — lattice elevates *the mode system itself* to the extension mechanism, where Zed elevates the entity graph and treats modes as one feature layered over it. (DESIGN.md §5.8.2; `comparison-zed.md` §3.)
 - **WIT is the canonical plugin API today** (not aspirationally). Any Component-Model language speaks the same protocol — Rust, Zig, Go, AssemblyScript. CI-gated overhead budgets (typed-call < 500 ns p99, grammar-extension round-trip < 5 µs p99).
 - **Asynchrony is architectural, not disciplinary**. Other editors keep the UI thread free by convention — contributors know which calls might block. Lattice (DESIGN.md §5.7) chooses primitives that make UI-thread blocking *physically impossible* in the steady state: `RenderState` for reads, `Arc<ArcSwapOption<T>>` / `PerBufferCache<T>` for writes, dedicated subsystem tasks for everything else. The architecture stays uniform under feature pressure.

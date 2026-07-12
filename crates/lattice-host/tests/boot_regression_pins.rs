@@ -88,7 +88,11 @@ fn multibuffer_mode_registered_at_boot() {
 #[test]
 fn terminal_modes_registered_at_boot() {
     let editor = boot();
-    for name in ["terminal-mode", "terminal-insert-mode", "terminal-normal-mode"] {
+    for name in [
+        "terminal-mode",
+        "terminal-insert-mode",
+        "terminal-normal-mode",
+    ] {
         assert_mode(&editor, name);
     }
 }
@@ -127,7 +131,10 @@ fn subsystem_ex_commands_resolve_by_name() {
 fn lsp_services_present_at_boot() {
     let editor = boot();
     assert!(
-        editor.services.get::<lattice_lsp::LspSupervisorHandle>().is_some(),
+        editor
+            .services
+            .get::<lattice_lsp::LspSupervisorHandle>()
+            .is_some(),
         "LspSupervisorHandle must be registered"
     );
     assert!(
@@ -170,7 +177,7 @@ fn claude_code_service_present_at_boot() {
     assert!(
         boot()
             .services
-            .get::<lattice_claude_code::ClaudeCodeServerHandle>()
+            .get::<lattice_ai::mcp::ClaudeCodeServerHandle>()
             .is_some(),
         "ClaudeCodeServerHandle must be registered"
     );
@@ -190,7 +197,10 @@ fn generic_host_services_present_at_boot() {
         "EventBus (registered as Arc<EventBus>) must be present"
     );
     assert!(
-        editor.services.get::<lattice_mode::BufferStoreHandle>().is_some(),
+        editor
+            .services
+            .get::<lattice_mode::BufferStoreHandle>()
+            .is_some(),
         "BufferStoreHandle must be registered"
     );
     assert!(

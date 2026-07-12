@@ -795,9 +795,7 @@ mod tests {
     // D.0a: display_slice / interleaver tests
     // ============================================================
 
-    use crate::virtual_rows::{
-        AnchorPosition, VirtualRow, VirtualRowMatrix, VirtualRowVersion,
-    };
+    use crate::virtual_rows::{AnchorPosition, VirtualRow, VirtualRowMatrix, VirtualRowVersion};
 
     fn vrow(anchor: u32, position: AnchorPosition) -> VirtualRow {
         VirtualRow {
@@ -928,13 +926,7 @@ mod tests {
         // 3 is folded out.
         assert_eq!(
             collect(&ds),
-            vec![
-                ('D', 0),
-                ('V', 1),
-                ('D', 2),
-                ('V', 3),
-                ('D', 4),
-            ]
+            vec![('D', 0), ('V', 1), ('D', 2), ('V', 3), ('D', 4),]
         );
     }
 

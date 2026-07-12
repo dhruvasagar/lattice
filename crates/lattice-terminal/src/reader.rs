@@ -42,19 +42,67 @@ use crate::snapshot::TerminalSnapshot;
 /// publishes/sec instead of one per syscall.
 const REFRESH_WINDOW: Duration = Duration::from_millis(16);
 
-/// No-op [`EventListener`] for the embedded alacritty `Term`.
-/// We don't yet surface alacritty's events (title changes,
-/// bells, mouse cursor) to the rest of Lattice — title support
-/// is queued for the T3 polish slice. Until then this swallows
-/// every event silently.
+/// [`EventListener`] that answers the VT **queries** a TUI fires at startup so
+/// query-driven frameworks (opentui / opencode) render instead of blocking on a
+/// blank screen.
+///
+/// alacritty's parser turns queries like DSR cursor-position (`ESC[6n`), device
+/// attributes, DECRQM synchronized-output (`ESC[?2026$p`), and OSC colour
+/// (`]11;?`) into [`AlacrittyEvent`]s (`PtyWrite` / `ColorRequest`) carrying the
+/// reply — but the *reply has to be written back to the PTY*, exactly as a real
+/// terminal would. With no listener wired (the former `NoopListener`) those
+/// replies were dropped, so a TUI that waits for them hung invisibly. This
+/// listener writes them back through the master writer shared with
+/// [`PtyHandle`](crate::handle::PtyHandle) (`writer: None` = an inert no-op,
+/// for tests). Title / bell / clipboard events are still ignored (T3 polish).
 #[derive(Clone, Default)]
-pub(crate) struct NoopListener;
+pub(crate) struct PtyResponder {
+    writer: Option<crate::handle::SharedPtyWriter>,
+}
 
-impl EventListener for NoopListener {
-    fn send_event(&self, _event: AlacrittyEvent) {
-        // T3 will fan title-changed events into the buffer
-        // registry so the modeline / tabline can surface the
-        // shell's reported title.
+impl PtyResponder {
+    /// Inert responder (no PTY writer) — for tests and direct-`build_term` use.
+    pub(crate) fn noop() -> Self {
+        Self { writer: None }
+    }
+
+    /// Responder that writes VT-query replies back through the shared master
+    /// writer.
+    pub(crate) fn responding(writer: crate::handle::SharedPtyWriter) -> Self {
+        Self {
+            writer: Some(writer),
+        }
+    }
+
+    fn respond(&self, bytes: &[u8]) {
+        if let Some(w) = &self.writer {
+            let mut w = w.lock();
+            let _ = w.write_all(bytes);
+            let _ = w.flush();
+        }
+    }
+}
+
+impl EventListener for PtyResponder {
+    fn send_event(&self, event: AlacrittyEvent) {
+        match event {
+            // DSR / DA / DECRQM / cursor-position replies etc. — the layout-
+            // critical ones a TUI blocks on. Write the bytes straight back.
+            AlacrittyEvent::PtyWrite(text) => self.respond(text.as_bytes()),
+            // OSC 10/11 colour probe (`]1x;?`). Answer with a conservative dark
+            // default so the probe completes; wiring the live theme colours is
+            // a cosmetic follow-up (this does not affect layout).
+            AlacrittyEvent::ColorRequest(_index, formatter) => {
+                let rgb = alacritty_terminal::vte::ansi::Rgb {
+                    r: 0x1e,
+                    g: 0x1e,
+                    b: 0x1e,
+                };
+                self.respond(formatter(rgb).as_bytes());
+            }
+            // Title / bell / clipboard / wakeup / exit — not surfaced yet.
+            _ => {}
+        }
     }
 }
 
@@ -86,17 +134,25 @@ impl Dimensions for PtyDimensions {
 /// `scrollback_lines` configures alacritty's history ring; `0`
 /// disables scrollback entirely. Pulled out for the spawn path
 /// and the test helpers.
-pub(crate) fn build_term(
+pub(crate) fn build_term(rows: u16, cols: u16, scrollback_lines: u32) -> Term<PtyResponder> {
+    build_term_with(rows, cols, scrollback_lines, PtyResponder::noop())
+}
+
+/// [`build_term`] with an explicit [`PtyResponder`] — the spawn path passes a
+/// responding one (wired to the PTY writer) so VT queries get answered; tests
+/// use the inert `build_term`.
+pub(crate) fn build_term_with(
     rows: u16,
     cols: u16,
     scrollback_lines: u32,
-) -> Term<NoopListener> {
+    responder: PtyResponder,
+) -> Term<PtyResponder> {
     let dims = PtyDimensions { rows, cols };
     let config = TermConfig {
         scrolling_history: scrollback_lines as usize,
         ..TermConfig::default()
     };
-    Term::new(config, &dims, NoopListener)
+    Term::new(config, &dims, responder)
 }
 
 /// Map alacritty's [`AnsiNamedColor`] (which covers extended
@@ -287,7 +343,7 @@ fn map_scroll(kind: TerminalScrollKind) -> Scroll {
 /// without waiting for the next PTY byte.
 #[derive(Clone)]
 pub struct SharedTerm {
-    pub(crate) inner: Arc<Mutex<Term<NoopListener>>>,
+    pub(crate) inner: Arc<Mutex<Term<PtyResponder>>>,
     snapshot: Arc<ArcSwap<TerminalSnapshot>>,
     pub(crate) seq: Arc<AtomicU64>,
     paint_request: Option<Arc<tokio::sync::Notify>>,
@@ -328,11 +384,11 @@ impl SharedTerm {
     /// by sibling modules' unit tests. **Not for production code
     /// paths** — production constructs via `spawn_reader` so the
     /// OS-thread reader runs. Kept `pub(crate)` because the
-    /// signature references the crate-private `NoopListener`;
+    /// signature references the crate-private `PtyResponder`;
     /// external callers (e.g. the `term_snapshot` bench) use the
     /// higher-level [`Self::fixture`] helper instead.
     pub(crate) fn from_state(
-        inner: Arc<Mutex<Term<NoopListener>>>,
+        inner: Arc<Mutex<Term<PtyResponder>>>,
         snapshot: Arc<ArcSwap<TerminalSnapshot>>,
         seq: Arc<AtomicU64>,
     ) -> Self {
@@ -745,13 +801,22 @@ pub fn spawn_reader(
     cols: u16,
     scrollback_lines: u32,
     paint_request: Option<Arc<tokio::sync::Notify>>,
+    writer: crate::handle::SharedPtyWriter,
 ) -> SharedTerm {
     tracing::info!(
         target: "lattice_terminal::reader",
         rows, cols, scrollback_lines,
         "spawn_reader: spawning detached OS thread",
     );
-    let term = Arc::new(Mutex::new(build_term(rows, cols, scrollback_lines)));
+    // Responding responder: VT queries the child sends (DSR / DA / DECRQM /
+    // colour) are answered back through the shared PTY writer, so query-driven
+    // TUIs render instead of blocking on a blank screen.
+    let term = Arc::new(Mutex::new(build_term_with(
+        rows,
+        cols,
+        scrollback_lines,
+        PtyResponder::responding(writer),
+    )));
     let seq = Arc::new(AtomicU64::new(0));
     let shared = SharedTerm {
         inner: Arc::clone(&term),
@@ -759,82 +824,133 @@ pub fn spawn_reader(
         seq: Arc::clone(&seq),
         paint_request: paint_request.clone(),
     };
-    let _ = std::thread::Builder::new().name("lattice-pty-reader".to_string()).spawn(move || {
-        tracing::info!(
-            target: "lattice_terminal::reader",
-            "reader task entered; waiting for first read",
-        );
-        let mut processor: Processor = Processor::new();
-        let mut buf = [0u8; 32 * 1024];
-        let mut total_bytes: u64 = 0;
-        loop {
-            let n = match reader.read(&mut buf) {
-                Ok(0) => {
+    let _ = std::thread::Builder::new()
+        .name("lattice-pty-reader".to_string())
+        .spawn(move || {
+            tracing::info!(
+                target: "lattice_terminal::reader",
+                "reader task entered; waiting for first read",
+            );
+            let mut processor: Processor = Processor::new();
+            let mut buf = [0u8; 32 * 1024];
+            let mut total_bytes: u64 = 0;
+            loop {
+                let n = match reader.read(&mut buf) {
+                    Ok(0) => {
+                        tracing::info!(
+                            target: "lattice_terminal::reader",
+                            total_bytes,
+                            seq = seq.load(Ordering::Relaxed),
+                            "reader: EOF (child exited)",
+                        );
+                        break;
+                    }
+                    Ok(n) => n,
+                    Err(e) => {
+                        tracing::warn!(
+                            target: "lattice_terminal::reader",
+                            error = %e, total_bytes,
+                            "pty read error",
+                        );
+                        break;
+                    }
+                };
+                total_bytes += n as u64;
+                if total_bytes <= 256 {
                     tracing::info!(
                         target: "lattice_terminal::reader",
-                        total_bytes,
-                        seq = seq.load(Ordering::Relaxed),
-                        "reader: EOF (child exited)",
+                        n, total_bytes,
+                        "reader: read bytes",
                     );
-                    break;
                 }
-                Ok(n) => n,
-                Err(e) => {
-                    tracing::warn!(
-                        target: "lattice_terminal::reader",
-                        error = %e, total_bytes,
-                        "pty read error",
-                    );
-                    break;
+                // Take the lock for the parse + publish pair so a
+                // concurrent `SharedTerm::scroll` sees a consistent
+                // grid. PTY chunks are small (<= 32 KiB) and
+                // alacritty's parser is fast (~µs per KiB), so the
+                // critical section stays sub-millisecond.
+                let snap = {
+                    let mut term = term.lock();
+                    processor.advance(&mut *term, &buf[..n]);
+                    let s = seq.fetch_add(1, Ordering::Relaxed) + 1;
+                    term_to_snapshot(&*term, s)
+                };
+                snapshot.store(Arc::new(snap));
+                if let Some(n) = paint_request.as_ref() {
+                    // Wake event-driven renderers (GPUI). Per-tick
+                    // renderers (TUI) observe the store on their
+                    // next tick.
+                    n.notify_one();
                 }
-            };
-            total_bytes += n as u64;
-            if total_bytes <= 256 {
-                tracing::info!(
-                    target: "lattice_terminal::reader",
-                    n, total_bytes,
-                    "reader: read bytes",
-                );
+                // Coalesce future bursts into ~60Hz batches.
+                std::thread::sleep(REFRESH_WINDOW);
             }
-            // Take the lock for the parse + publish pair so a
-            // concurrent `SharedTerm::scroll` sees a consistent
-            // grid. PTY chunks are small (<= 32 KiB) and
-            // alacritty's parser is fast (~µs per KiB), so the
-            // critical section stays sub-millisecond.
+            // Final publish so the renderer sees the very last
+            // bytes even when the loop exited mid-window.
             let snap = {
-                let mut term = term.lock();
-                processor.advance(&mut *term, &buf[..n]);
+                let term = term.lock();
                 let s = seq.fetch_add(1, Ordering::Relaxed) + 1;
                 term_to_snapshot(&*term, s)
             };
             snapshot.store(Arc::new(snap));
             if let Some(n) = paint_request.as_ref() {
-                // Wake event-driven renderers (GPUI). Per-tick
-                // renderers (TUI) observe the store on their
-                // next tick.
                 n.notify_one();
             }
-            // Coalesce future bursts into ~60Hz batches.
-            std::thread::sleep(REFRESH_WINDOW);
-        }
-        // Final publish so the renderer sees the very last
-        // bytes even when the loop exited mid-window.
-        let snap = {
-            let term = term.lock();
-            let s = seq.fetch_add(1, Ordering::Relaxed) + 1;
-            term_to_snapshot(&*term, s)
-        };
-        snapshot.store(Arc::new(snap));
-        if let Some(n) = paint_request.as_ref() {
-            n.notify_one();
-        }
-    });
+        });
     shared
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A `Write` that appends to a shared `Vec`, so a test can spawn a
+    /// [`PtyResponder::responding`] term and inspect what it wrote back.
+    struct SharedVecWriter(Arc<Mutex<Vec<u8>>>);
+    impl std::io::Write for SharedVecWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// The fix: a responding `PtyResponder` answers a VT query (DSR cursor
+    /// position, `ESC[6n`) by writing the reply back through the shared PTY
+    /// writer. Without this a query-driven TUI (opentui / opencode) blocks on a
+    /// blank screen waiting for the reply that a real terminal would send.
+    #[test]
+    fn responder_answers_dsr_cursor_position_query() {
+        let captured = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let writer: crate::handle::SharedPtyWriter =
+            Arc::new(Mutex::new(Box::new(SharedVecWriter(captured.clone()))));
+        let mut term = build_term_with(24, 80, 0, PtyResponder::responding(writer));
+        let mut processor: Processor = Processor::new();
+
+        // Device Status Report — "report the cursor position".
+        processor.advance(&mut term, b"\x1b[6n");
+
+        let out = captured.lock().clone();
+        // Reply is a Cursor Position Report: ESC [ <row> ; <col> R.
+        assert!(!out.is_empty(), "responder wrote no DSR reply");
+        assert!(out.starts_with(b"\x1b["), "not a CSI reply: {out:?}");
+        assert_eq!(
+            out.last(),
+            Some(&b'R'),
+            "DSR reply must end in 'R': {out:?}"
+        );
+    }
+
+    /// The inert `noop` responder (tests / no PTY writer) writes nothing — the
+    /// former `NoopListener` behaviour, preserved for the writer-less paths.
+    #[test]
+    fn noop_responder_writes_nothing() {
+        let mut term = build_term(24, 80, 0); // noop responder
+        let mut processor: Processor = Processor::new();
+        // Just assert it doesn't panic advancing a query with no writer wired.
+        processor.advance(&mut term, b"\x1b[6n");
+    }
 
     /// Helper: build a fresh term + processor pair and advance
     /// the given bytes through it. The test asserts on the
@@ -1006,12 +1122,7 @@ mod tests {
         // 3-row screen with capacity for 32 history rows. Push
         // 6 rows of content; 3 land on-screen, the other 3 roll
         // into scrollback.
-        let s = run_with_scrollback(
-            b"r0\r\nr1\r\nr2\r\nr3\r\nr4\r\nr5",
-            3,
-            10,
-            32,
-        );
+        let s = run_with_scrollback(b"r0\r\nr1\r\nr2\r\nr3\r\nr4\r\nr5", 3, 10, 32);
         assert_eq!(s.scroll_offset, 0);
         // 5 newlines on a 3-row screen ⇒ 3 history rows
         // populated (r0 / r1 / r2 rolled off above the live
@@ -1054,10 +1165,7 @@ mod tests {
         // its row hides the cursor in the rendered snapshot.
         let mut term = build_term(3, 10, 16);
         let mut processor: Processor = Processor::new();
-        processor.advance(
-            &mut term,
-            b"a\r\nb\r\nc\r\nd\r\ne\r\nf\r\ng",
-        );
+        processor.advance(&mut term, b"a\r\nb\r\nc\r\nd\r\ne\r\nf\r\ng");
         let live = term_to_snapshot(&term, 1);
         assert!(live.cursor_visible);
         term.scroll_display(Scroll::Top);
@@ -1204,10 +1312,7 @@ mod tests {
     fn line_range_text_extracts_trimmed_rows() {
         let mut term = build_term(3, 20, 16);
         let mut processor: Processor = Processor::new();
-        processor.advance(
-            &mut term,
-            b"first line\r\nsecond line\r\nthird line",
-        );
+        processor.advance(&mut term, b"first line\r\nsecond line\r\nthird line");
         let snapshot = Arc::new(ArcSwap::from_pointee(TerminalSnapshot::empty()));
         let seq = Arc::new(AtomicU64::new(0));
         let shared = SharedTerm {

@@ -54,7 +54,12 @@ async fn plugin_instantiates_under_a_grant_and_gets_a_data_dir() {
     );
 
     let mut plugin = host
-        .instantiate_plugin(&component, &manifest, TrustTier::Bundled, PluginBudget::default())
+        .instantiate_plugin(
+            &component,
+            &manifest,
+            TrustTier::Bundled,
+            PluginBudget::default(),
+        )
         .await
         .expect("instantiates under grant");
 
@@ -99,12 +104,20 @@ async fn proc_spawn_is_bundled_only_and_denial_is_surfaced_not_fatal() {
     let tmp = tempfile::tempdir().unwrap();
     let host = host_in(&tmp);
     let component = host.compile(&noop_bytes()).expect("compiles");
-    let manifest =
-        PluginManifest::new("spawner", vec![Capability::ProcSpawn], CapabilitySet::empty());
+    let manifest = PluginManifest::new(
+        "spawner",
+        vec![Capability::ProcSpawn],
+        CapabilitySet::empty(),
+    );
 
     // Bundled: granted.
     let bundled = host
-        .instantiate_plugin(&component, &manifest, TrustTier::Bundled, PluginBudget::default())
+        .instantiate_plugin(
+            &component,
+            &manifest,
+            TrustTier::Bundled,
+            PluginBudget::default(),
+        )
         .await
         .expect("bundled plugin instantiates");
     assert!(bundled.grant().proc_spawn);
@@ -123,7 +136,9 @@ async fn proc_spawn_is_bundled_only_and_denial_is_surfaced_not_fatal() {
         .expect("user plugin still instantiates, degraded");
     assert!(!user.grant().proc_spawn);
     assert_eq!(user.denied_capabilities(), &[Capability::ProcSpawn]);
-    user.activate().await.expect("degraded plugin still activates");
+    user.activate()
+        .await
+        .expect("degraded plugin still activates");
 }
 
 #[tokio::test]
@@ -136,11 +151,18 @@ async fn a_missing_granted_prefix_degrades_gracefully() {
     // bad preopen (logged), the data dir still mounts, and the plugin loads.
     let manifest = PluginManifest::new(
         "hopeful",
-        vec![Capability::FsRead(PathBuf::from("/no/such/dir/lattice-ph72"))],
+        vec![Capability::FsRead(PathBuf::from(
+            "/no/such/dir/lattice-ph72",
+        ))],
         CapabilitySet::empty(),
     );
     let mut plugin = host
-        .instantiate_plugin(&component, &manifest, TrustTier::Bundled, PluginBudget::default())
+        .instantiate_plugin(
+            &component,
+            &manifest,
+            TrustTier::Bundled,
+            PluginBudget::default(),
+        )
         .await
         .expect("instantiates despite the missing prefix");
     plugin
@@ -163,11 +185,21 @@ async fn provenance_ids_are_host_issued_unique_and_stamp_the_plugin_layer() {
     // it from `PluginId`).
     let manifest = PluginManifest::new("dup", vec![], CapabilitySet::empty());
     let a = host
-        .instantiate_plugin(&component, &manifest, TrustTier::Bundled, PluginBudget::default())
+        .instantiate_plugin(
+            &component,
+            &manifest,
+            TrustTier::Bundled,
+            PluginBudget::default(),
+        )
         .await
         .unwrap();
     let b = host
-        .instantiate_plugin(&component, &manifest, TrustTier::Bundled, PluginBudget::default())
+        .instantiate_plugin(
+            &component,
+            &manifest,
+            TrustTier::Bundled,
+            PluginBudget::default(),
+        )
         .await
         .unwrap();
 
@@ -195,7 +227,12 @@ async fn editor_capabilities_are_carried_onto_the_grant() {
         CapabilitySet::TREE_SITTER | CapabilitySet::LSP,
     );
     let plugin = host
-        .instantiate_plugin(&component, &manifest, TrustTier::Bundled, PluginBudget::default())
+        .instantiate_plugin(
+            &component,
+            &manifest,
+            TrustTier::Bundled,
+            PluginBudget::default(),
+        )
         .await
         .unwrap();
     assert_eq!(

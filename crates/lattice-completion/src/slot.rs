@@ -423,7 +423,11 @@ mod tests {
         let line = "e crates/latt";
         let slot = current_slot(line, line.len(), &r, &aliases);
         match slot {
-            CommandLineSlot::Arg { prefix, command_name, .. } => {
+            CommandLineSlot::Arg {
+                prefix,
+                command_name,
+                ..
+            } => {
                 assert_eq!(command_name, "ex:edit");
                 assert_eq!(prefix, "crates/latt", "prefix should retain dir part");
             }

@@ -58,6 +58,27 @@ impl App {
         }
     }
 
+    /// `:ai-log [provider]` -- open the per-session AI log buffer
+    /// (AI-1b, T12b). Thin peer forwarder: the count logic (0 →
+    /// info hint, 1 → open, >1 → picker) + the buffer open live
+    /// host-side in [`lattice_host::editor::Editor::do_open_ai_log`];
+    /// the GPUI peer reaches the same method. Mirrors
+    /// `do_open_lsp_log`.
+    pub fn do_open_ai_log(&mut self, provider: Option<&str>) {
+        let provider = provider.map(|s| s.to_string());
+        self.mutate_editor(move |e| e.do_open_ai_log(provider.as_deref()));
+    }
+
+    /// `Effect::OpenSyntheticBuffer` -- open a named synthetic buffer under a
+    /// major mode. Thin peer forwarder to
+    /// [`lattice_host::editor::Editor::open_synthetic_buffer`]; the GPUI peer
+    /// reaches the same method.
+    pub fn open_synthetic_buffer(&mut self, name: &str, mode_id: &str) {
+        let name = name.to_string();
+        let mode_id = mode_id.to_string();
+        self.mutate_editor(move |e| e.open_synthetic_buffer(&name, &mode_id));
+    }
+
     /// Thin wrapper around
     /// [`lattice_host::editor::Editor::ensure_messages_buffer`]
     /// (Phase 5.7.B.9 migration). The find-or-create body +
@@ -161,7 +182,10 @@ mod tests {
                 )
             })
             .expect("*messages* entry");
-        assert!(is_messages, "*messages* must be stored as BufferData::Messages");
+        assert!(
+            is_messages,
+            "*messages* must be stored as BufferData::Messages"
+        );
         assert_eq!(name.as_deref(), Some(MESSAGES_BUFFER_NAME));
         // Unlisted: `:bn`/`:bp` skip it.
         assert!(!listed);

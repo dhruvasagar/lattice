@@ -570,8 +570,14 @@ impl ConfigRegistry {
     pub fn parse_for_buffer_local(
         &self,
         input: &str,
-    ) -> Result<(std::any::TypeId, std::sync::Arc<dyn std::any::Any + Send + Sync>, String), ConfigError>
-    {
+    ) -> Result<
+        (
+            std::any::TypeId,
+            std::sync::Arc<dyn std::any::Any + Send + Sync>,
+            String,
+        ),
+        ConfigError,
+    > {
         let parsed = parse_set(input).map_err(ConfigError::Parse)?;
         match parsed {
             ParsedSet::NameOnly(name) => {
@@ -584,7 +590,9 @@ impl ConfigRegistry {
                     )));
                 }
                 let type_id = self.typeid_for_name(opt.name())?;
-                let erased = opt.parse_to_erased("true").map_err(ConfigError::Validation)?;
+                let erased = opt
+                    .parse_to_erased("true")
+                    .map_err(ConfigError::Validation)?;
                 Ok((type_id, erased, opt.name().to_string()))
             }
             ParsedSet::Negate(name) => {
@@ -595,7 +603,9 @@ impl ConfigRegistry {
                     return Err(ConfigError::NotBoolean(name));
                 }
                 let type_id = self.typeid_for_name(opt.name())?;
-                let erased = opt.parse_to_erased("false").map_err(ConfigError::Validation)?;
+                let erased = opt
+                    .parse_to_erased("false")
+                    .map_err(ConfigError::Validation)?;
                 Ok((type_id, erased, opt.name().to_string()))
             }
             ParsedSet::Assign { name, value } => {

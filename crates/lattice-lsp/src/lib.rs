@@ -88,7 +88,6 @@ pub mod transport;
 
 pub use actor::{ServerHandle, spawn, spawn_with_io};
 pub use apply_edit::{ApplyEditBus, ApplyEditOutcome, InboundApplyEdit};
-pub use install::install;
 pub use buffer_names::{
     LSP_SUBSYSTEM_LOG_NAME, lsp_server_log_name, lsp_server_trace_log_name,
     parse_lsp_server_log_name, parse_lsp_trace_log_name,
@@ -110,6 +109,7 @@ pub use events::{
 };
 pub use file_watcher::{WatcherSubscriptions, compile_with_workspace_root};
 pub use framing::{FrameError, FrameHeader};
+pub use install::install;
 pub use lattice_protocol::jsonrpc::{
     Message, Notification, Request, RequestId, Response, ResponseError,
 };

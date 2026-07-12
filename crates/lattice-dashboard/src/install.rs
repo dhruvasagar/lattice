@@ -143,8 +143,7 @@ fn install_startup_trigger(boot: &mut impl SubsystemBoot) {
 /// lifetime), unlike the startup trigger's single `.recv().await`.
 fn install_recompose_triggers(boot: &mut impl SubsystemBoot) {
     let buffer_store: BufferStoreHandle = boot.buffer_store().clone();
-    let recompose_bus =
-        boot.inbound(|_: DashboardRecomposeTrigger| vec![Effect::OpenDashboard]);
+    let recompose_bus = boot.inbound(|_: DashboardRecomposeTrigger| vec![Effect::OpenDashboard]);
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
     boot.event_bus().subscribe(
         EventFilter::kind(EventKind::OptionChanged),

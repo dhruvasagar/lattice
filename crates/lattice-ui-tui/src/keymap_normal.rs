@@ -73,8 +73,9 @@ mod tests {
     fn populated_handle() -> (KeymapHandle, Builtins, ActionIds) {
         let (mut r, b, a) = fixture();
         let so = lattice_syntax::register_syntax_text_objects(&mut r);
+        let sm = lattice_syntax::register_syntax_motions(&mut r);
         let h = KeymapHandle::new();
-        register_normal_bindings(&h, &b, &a, &so);
+        register_normal_bindings(&h, &b, &a, &so, &sm);
         (h, b, a)
     }
 
@@ -519,7 +520,10 @@ mod tests {
             &[KeyChord::char('g')],
             &ev(KeyCode::Char('d'), KeyModifiers::NONE),
         );
-        assert!(matches!(r, Action::None), "expected Action::None, got {r:?}");
+        assert!(
+            matches!(r, Action::None),
+            "expected Action::None, got {r:?}"
+        );
     }
 
     #[test]

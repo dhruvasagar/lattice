@@ -491,8 +491,24 @@ pub enum Effect {
     OpenHover {
         markdown: String,
     },
-    /// `:HoverClose` -- dismiss the active hover popup.
-    CloseHover,
+    /// Dismiss the active popup, whatever its content. Content-agnostic
+    /// (routes through `dismiss_popup`); produced today by `:HoverClose`.
+    DismissPopup,
+    /// Show a popup overlay at `placement` with the given `focus`
+    /// (popup-api.md §4.3). Content-agnostic and data-only: the host
+    /// idempotently ensures a popup buffer named `name` under major mode
+    /// `mode_id` (`Editor::open_popup_named`) and the owning mode's
+    /// `on_activate` projects the content. Name-based, not id-based, because
+    /// the emitters (the `:ai-permission` ex-command, the async tick callback)
+    /// have no host access to register a buffer and supply a `BufferId` — a
+    /// name keeps the effect vocabulary the host boundary, like
+    /// `OpenSyntheticBuffer`.
+    OpenPopup {
+        name: String,
+        mode_id: String,
+        placement: lattice_core::ui::popup::PopupPlacement,
+        focus: lattice_core::ui::popup::PopupFocus,
+    },
     /// `:help [topic]` -- open a free-form help topic. With no
     /// topic the host renders the index (`docs/user/README.md`
     /// equivalent); with a topic the host looks it up in its
@@ -520,6 +536,29 @@ pub enum Effect {
     /// per-server log (`*lsp:<server>*`) when set.
     OpenLspLog {
         server_id: Option<String>,
+    },
+    /// `:ai-log [provider]` (AI-1b) -- open the per-session AI log
+    /// buffer (`*ai:<provider>:<index>*`). With no known session,
+    /// echoes an info hint; with exactly one, opens it directly; with
+    /// more (optionally narrowed by the `session` provider
+    /// prefilter), raises a picker. Peer-applied via the host's
+    /// `do_open_ai_log`, exactly like [`Effect::OpenLspLog`]. The
+    /// `lattice-ai` crate owns the `:ai-log` binding + this
+    /// emission; the host owns only the generic
+    /// `ensure_named_synthetic_document` + `AiLogMode` open.
+    OpenAiLog {
+        session: Option<String>,
+    },
+    /// Open (or focus) a named synthetic buffer under a given major mode --
+    /// the generic primitive behind provider-owned buffer views (e.g. the
+    /// `ai-conversation` `*ai:opencode*` buffer). The emitter (a mode's
+    /// command handler) supplies the buffer name + the mode id; the host owns
+    /// only the generic `ensure_named_synthetic_document` open, so no
+    /// provider-specific host method is added. `mode_id` is the mode's string
+    /// id (`ModeId::new(&mode_id)`); the mode must be registered at boot.
+    OpenSyntheticBuffer {
+        name: String,
+        mode_id: String,
     },
     /// `:messages` -- open the `*messages*` buffer (the emacs
     /// `*Messages*` analogue). Renders a chronological view
@@ -719,7 +758,9 @@ pub enum Effect {
     /// teardown (`:diffoff!`). The handler reads the session's
     /// watch list as the source of truth for participants —
     /// the tab is not a grouping unit. D.3.a.1 / D.4.d.3.a.
-    DiffOff { force: bool },
+    DiffOff {
+        force: bool,
+    },
     /// `:diffthis` -- stage the active pane for a two-pane
     /// diff; the second `:diffthis` invocation in a different
     /// pane completes the session (creates a `DiffSession`

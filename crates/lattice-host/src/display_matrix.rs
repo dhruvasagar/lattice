@@ -147,7 +147,11 @@ impl DisplayChunk {
     }
 
     pub fn empty(start_source_line: u32, version: MatrixVersion) -> Self {
-        Self::new(start_source_line, Arc::from([] as [DisplayLine; 0]), version)
+        Self::new(
+            start_source_line,
+            Arc::from([] as [DisplayLine; 0]),
+            version,
+        )
     }
 
     pub fn row_count(&self) -> u32 {
@@ -444,11 +448,7 @@ mod tests {
 
     #[test]
     fn shifted_by_advances_lines_sharing_payload() {
-        let chunk = DisplayChunk::new(
-            10,
-            vec![line(10, "a"), line(12, "c")],
-            MatrixVersion::ZERO,
-        );
+        let chunk = DisplayChunk::new(10, vec![line(10, "a"), line(12, "c")], MatrixVersion::ZERO);
         let s = chunk.shifted_by(3, MatrixVersion::ZERO);
         assert_eq!(s.start_source_line, 13);
         let lines: Vec<u32> = s.rows.iter().map(|r| r.source_line).collect();

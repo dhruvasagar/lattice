@@ -168,12 +168,20 @@ pub fn spawn(config: SpawnConfig) -> Result<SpawnHandles, SpawnError> {
         .try_clone_reader()
         .map_err(|e| SpawnError::CloneReader(e.to_string()))?;
 
-    let handle = PtyHandle::new(pair.master, writer, rows, cols);
+    // Share the master writer between the input path (`PtyHandle::write`) and
+    // the reader thread's VT-query responder, which writes DSR / DA / DECRQM /
+    // colour replies back so query-driven TUIs (opentui / opencode) render
+    // instead of blocking on a blank screen. One `Mutex` serialises the two.
+    let writer: crate::handle::SharedPtyWriter =
+        std::sync::Arc::new(parking_lot::Mutex::new(writer));
+    let handle = PtyHandle::new(pair.master, writer.clone(), rows, cols);
     // `empty_sized` (not `empty`): the placeholder shown before the reader
     // thread processes the child's first output must match the REAL spawn
     // geometry — see its doc comment for the clipping regression a
     // hardcoded 24×80 placeholder caused.
-    let snapshot = Arc::new(ArcSwap::from_pointee(TerminalSnapshot::empty_sized(rows, cols)));
+    let snapshot = Arc::new(ArcSwap::from_pointee(TerminalSnapshot::empty_sized(
+        rows, cols,
+    )));
     let term = spawn_reader(
         reader,
         Arc::clone(&snapshot),
@@ -181,6 +189,7 @@ pub fn spawn(config: SpawnConfig) -> Result<SpawnHandles, SpawnError> {
         cols,
         scrollback_lines,
         paint_request,
+        writer,
     );
 
     Ok(SpawnHandles {

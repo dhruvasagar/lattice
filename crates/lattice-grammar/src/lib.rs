@@ -38,7 +38,9 @@ pub mod registry;
 pub mod source;
 pub mod target;
 
-pub use crate::app_effect::{AppEffect, HScroll, PaneDirection, ScrollPos, ViewportPos};
+pub use crate::app_effect::{
+    AppEffect, HScroll, InsertLineEdit, PaneDirection, ScrollPos, ViewportPos,
+};
 pub use crate::args::{ArgDefault, ArgKind, ArgSpec, ArgValue, Args};
 pub use crate::cancel::{CancellationToken, CheckCancelled};
 pub use crate::command::{CommandInvocation, CommandKind, CommandSpec, Count, LatencyClass};
@@ -56,8 +58,8 @@ pub use crate::range::{Range, RangeBound};
 pub use crate::register::Register;
 pub use crate::registry::{
     ActionContext, ActionSpec, CommandRegistration, CommandRegistry, CommentSyntax,
-    ExCommandContext, ExCommandSpec, MotionSpec, OperatorContext, OperatorSpec, ScopeResolver,
-    SurfaceForm, TextObjectEnv, TextObjectSpec,
+    ExCommandContext, ExCommandSpec, MotionSpec, NavBoundary, NavDir, OperatorContext,
+    OperatorSpec, ScopeResolver, SurfaceForm, TextObjectEnv, TextObjectSpec,
 };
 pub use crate::registry::{ExCommandId, MotionId, OperatorId, TextObjectId};
 pub use crate::source::{SourceKind, SourceLayer, SourceLocation};

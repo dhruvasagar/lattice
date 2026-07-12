@@ -18,12 +18,12 @@
 
 use crate::element::{ElementName, StyleSpec};
 use crate::palette::{
-    catppuccin_latte_palette, default_palette, dracula_dark_palette, dracula_light_palette,
-    everforest_dark_palette, everforest_light_palette, gruvbox_dark_palette, gruvbox_light_palette,
-    macchiato_palette, monokai_dark_palette, monokai_light_palette, nord_dark_palette,
-    nord_light_palette, one_dark_palette, one_light_palette, rosepine_dark_palette,
-    rosepine_light_palette, solarized_dark_palette, solarized_light_palette, tokyonight_dark_palette,
-    tokyonight_light_palette, Palette,
+    Palette, catppuccin_latte_palette, default_palette, dracula_dark_palette,
+    dracula_light_palette, everforest_dark_palette, everforest_light_palette, gruvbox_dark_palette,
+    gruvbox_light_palette, macchiato_palette, monokai_dark_palette, monokai_light_palette,
+    nord_dark_palette, nord_light_palette, one_dark_palette, one_light_palette,
+    rosepine_dark_palette, rosepine_light_palette, solarized_dark_palette, solarized_light_palette,
+    tokyonight_dark_palette, tokyonight_light_palette,
 };
 
 /// A named theme: a palette + a (possibly empty) element-override set.
@@ -180,10 +180,7 @@ mod tests {
             .expect("macchiato registered");
         let mauve = crate::PaletteKey::from_static("purple");
         assert_ne!(mocha.palette.get(&mauve), mac.palette.get(&mauve));
-        assert_eq!(
-            mac.palette.get(&mauve),
-            Some(Color::Rgb(0xc6, 0xa0, 0xf6))
-        );
+        assert_eq!(mac.palette.get(&mauve), Some(Color::Rgb(0xc6, 0xa0, 0xf6)));
     }
 
     #[test]
@@ -203,13 +200,19 @@ mod tests {
         assert_eq!(latte.palette.get(&base), Some(Color::Rgb(0xef, 0xf1, 0xf5)));
         assert_eq!(latte.palette.get(&text), Some(Color::Rgb(0x4c, 0x4f, 0x69)));
         // Light base: every channel brighter than Mocha's dark base.
-        let mocha = themes.iter().find(|t| t.name == "catppuccin-mocha").unwrap();
+        let mocha = themes
+            .iter()
+            .find(|t| t.name == "catppuccin-mocha")
+            .unwrap();
         let (Some(Color::Rgb(lr, lg, lb)), Some(Color::Rgb(mr, mg, mb))) =
             (latte.palette.get(&base), mocha.palette.get(&base))
         else {
             panic!("both bases are rgb");
         };
-        assert!(lr > mr && lg > mg && lb > mb, "Latte base must be lighter than Mocha");
+        assert!(
+            lr > mr && lg > mg && lb > mb,
+            "Latte base must be lighter than Mocha"
+        );
     }
 
     #[test]

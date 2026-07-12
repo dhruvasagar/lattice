@@ -49,7 +49,9 @@ pub fn oneshot_highlight_lines(
     start_line: u32,
     end_line: u32,
 ) -> Option<Vec<Vec<StyledSpan>>> {
-    let mut syntax = Syntax::for_language_with_registry(lang, registry).ok().flatten()?;
+    let mut syntax = Syntax::for_language_with_registry(lang, registry)
+        .ok()
+        .flatten()?;
     syntax.parse(source);
     syntax.snapshot().highlight_lines(start_line, end_line).ok()
 }
@@ -81,8 +83,7 @@ mod tests {
     #[test]
     fn empty_range_returns_empty_vec() {
         let registry = LangRegistry::standard().expect("standard registry");
-        let out =
-            oneshot_highlight_lines(Lang::Rust, registry, "fn main() {}", 0, 0).expect("ok");
+        let out = oneshot_highlight_lines(Lang::Rust, registry, "fn main() {}", 0, 0).expect("ok");
         assert!(out.is_empty());
     }
 

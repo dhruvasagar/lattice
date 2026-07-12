@@ -198,11 +198,7 @@ mod tests {
 
     #[test]
     fn byte_to_col_identity_without_inlays() {
-        let r = CellRow::new(
-            vec![ascii(b'h'), ascii(b'i')],
-            0,
-            Vec::<InlayOffset>::new(),
-        );
+        let r = CellRow::new(vec![ascii(b'h'), ascii(b'i')], 0, Vec::<InlayOffset>::new());
         assert_eq!(r.byte_to_combined_col(0), 0);
         assert_eq!(r.byte_to_combined_col(1), 1);
         assert_eq!(r.byte_to_combined_col(2), 2);
@@ -233,11 +229,7 @@ mod tests {
 
     #[test]
     fn byte_to_col_handles_multiple_inlays() {
-        let r = CellRow::new(
-            vec![ascii(b'x'); 10],
-            0,
-            vec![(1u32, 2u32), (3u32, 1u32)],
-        );
+        let r = CellRow::new(vec![ascii(b'x'); 10], 0, vec![(1u32, 2u32), (3u32, 1u32)]);
         assert_eq!(r.byte_to_combined_col(0), 0);
         assert_eq!(r.byte_to_combined_col(1), 3); // +2 from first inlay
         assert_eq!(r.byte_to_combined_col(2), 4); // still +2

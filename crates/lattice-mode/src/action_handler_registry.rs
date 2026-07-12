@@ -75,9 +75,7 @@ pub struct ActionContext<'a> {
 /// Closures are `Send + Sync` so the registry can be cloned
 /// freely across threads; they take a borrowed
 /// [`ActionContext`] for zero-copy access to live state.
-pub type ActionHandler = Arc<
-    dyn Fn(&ActionContext<'_>) -> Option<Effect> + Send + Sync + 'static,
->;
+pub type ActionHandler = Arc<dyn Fn(&ActionContext<'_>) -> Option<Effect> + Send + Sync + 'static>;
 
 /// SN.3c.0: a *global* (buffer-agnostic) action-handler
 /// contribution declared by a mode via
@@ -312,10 +310,7 @@ mod tests {
         // First handler always returns None; second returns
         // a sentinel Effect we can detect.
         let _reg_first = r.register(id, handler_returning_none());
-        let _reg_second = r.register(
-            id,
-            Arc::new(|_ctx: &ActionContext<'_>| Some(Effect::None)),
-        );
+        let _reg_second = r.register(id, Arc::new(|_ctx: &ActionContext<'_>| Some(Effect::None)));
 
         let h = r.lookup(id).unwrap();
         let services = ServiceRegistry::new();

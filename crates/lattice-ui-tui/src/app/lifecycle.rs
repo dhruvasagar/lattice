@@ -467,10 +467,7 @@ impl App {
     /// for inactive documents it routes through `buffer_locals`.
     /// Returns `None` for `Lang::Plain` documents and for
     /// non-document buffers.
-    pub(crate) fn document_syntax_for(
-        &self,
-        id: BufferId,
-    ) -> Option<lattice_syntax::SyntaxHandle> {
+    pub(crate) fn document_syntax_for(&self, id: BufferId) -> Option<lattice_syntax::SyntaxHandle> {
         // Slice 3c.final.E.5e: returns owned `SyntaxHandle` (Clone;
         // cheap -- inner Arc<ArcSwap<_>> bump + mpsc sender bump) so
         // the `Send + 'static` closure body is satisfied.
@@ -619,6 +616,94 @@ mod tests {
         submit_ex(&mut a, &cmd);
         assert_eq!(a.editor.document.text(), "loaded contents\nsecond line");
         assert_eq!(a.editor.cursor, Position::ZERO);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn autoread_stamps_fingerprint_on_load() {
+        // AR.0: loading a file-backed buffer stamps its on-disk
+        // fingerprint, and that fingerprint matches the file content.
+        use lattice_host::autoread::OnDiskFingerprint;
+        let dir = unique_tempdir();
+        let path = dir.join("hello.txt");
+        std::fs::write(&path, "loaded contents\n").unwrap();
+        let mut a = app_with("original", 10);
+        submit_ex(&mut a, &format!("e {}", path.display()));
+
+        let id = a.editor.document_buffer_id;
+        let fp = a
+            .editor
+            .on_disk_fingerprints
+            .get(&id)
+            .expect("fingerprint stamped on load");
+        let expected = OnDiskFingerprint::from_path_and_text(&path, "loaded contents\n");
+        assert!(
+            fp.same_content(&expected),
+            "load fingerprint matches file content"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn autoread_restamps_fingerprint_on_save_to_match_disk() {
+        // AR.0 self-write suppression: after editing the buffer and
+        // saving, the stored fingerprint reflects the NEW content — i.e.
+        // it equals what a re-read of disk would produce, so the watcher
+        // (AR.2) will recognise this write as its own.
+        use lattice_host::autoread::OnDiskFingerprint;
+        let dir = unique_tempdir();
+        let path = dir.join("edit.txt");
+        std::fs::write(&path, "old\n").unwrap();
+        let mut a = app_with("original", 10);
+        submit_ex(&mut a, &format!("e {}", path.display()));
+        let id = a.editor.document_buffer_id;
+        let before = a.editor.on_disk_fingerprints.get(&id).cloned().unwrap();
+
+        // Dirty the buffer, then save.
+        a.apply_edit_blocking(Edit::insert(Position::new(0, 0), "new-"))
+            .unwrap();
+        assert!(a.editor.document.dirty());
+        a.save_blocking().unwrap();
+
+        let after = a.editor.on_disk_fingerprints.get(&id).cloned().unwrap();
+        assert!(
+            !before.same_content(&after),
+            "content changed ⇒ fingerprint changed"
+        );
+        // The stored fingerprint equals a fresh read of disk: self-write
+        // is suppressible.
+        let disk = std::fs::read_to_string(&path).unwrap();
+        let disk_fp = OnDiskFingerprint::from_path_and_text(&path, &disk);
+        assert!(
+            after.same_content(&disk_fp),
+            "post-save fingerprint matches on-disk content"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn autoread_removes_fingerprint_on_buffer_delete() {
+        // AR.0: closing a file-backed buffer drops its fingerprint so the
+        // map tracks only live buffers.
+        let dir = unique_tempdir();
+        let a_path = dir.join("a.txt");
+        let b_path = dir.join("b.txt");
+        std::fs::write(&a_path, "aaa\n").unwrap();
+        std::fs::write(&b_path, "bbb\n").unwrap();
+        let mut app = app_with("original", 10);
+        submit_ex(&mut app, &format!("e {}", a_path.display()));
+        let a_id = app.editor.document_buffer_id;
+        submit_ex(&mut app, &format!("e {}", b_path.display()));
+        assert!(app.editor.on_disk_fingerprints.contains_key(&a_id));
+
+        // Switch back to A and delete it.
+        submit_ex(&mut app, &format!("e {}", a_path.display()));
+        assert_eq!(app.editor.document_buffer_id, a_id);
+        submit_ex(&mut app, "bd");
+        assert!(
+            !app.editor.on_disk_fingerprints.contains_key(&a_id),
+            "fingerprint dropped on :bd"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -1115,9 +1200,9 @@ mod tests {
         let mut app = app_with("hi\n", 5);
         let toml_text = "[lsp-mode]\nlog-level = \"debug\"\n";
         // BC.8b: `lsp_config_tree` is shared (`Arc<ArcSwap>`); `store` the tree.
-        app.editor
-            .lsp_config_tree
-            .store(std::sync::Arc::new(toml_text.parse::<toml::Table>().expect("toml parse")));
+        app.editor.lsp_config_tree.store(std::sync::Arc::new(
+            toml_text.parse::<toml::Table>().expect("toml parse"),
+        ));
         app.apply_persistent_lsp_editor_options();
         // Effect: a Debug-level record on an unattached server lands
         // in the ring. Default min-level is Info; without the TOML
@@ -1147,9 +1232,9 @@ mod tests {
         let mut app = app_with("hi\n", 5);
         let toml_text = "[lsp]\nlog-level = \"debug\"\n";
         // BC.8b: `lsp_config_tree` is shared (`Arc<ArcSwap>`); `store` the tree.
-        app.editor
-            .lsp_config_tree
-            .store(std::sync::Arc::new(toml_text.parse::<toml::Table>().expect("toml parse")));
+        app.editor.lsp_config_tree.store(std::sync::Arc::new(
+            toml_text.parse::<toml::Table>().expect("toml parse"),
+        ));
         app.apply_persistent_lsp_editor_options();
         let msg = app.editor.last_message.as_ref().expect("deprecation warn");
         assert_eq!(msg.level, crate::app::EchoLevel::Warn);
@@ -1185,9 +1270,9 @@ mod tests {
         let mut app = app_with("hi\n", 5);
         let toml_text = "[lsp]\nlog-level = \"trace\"\n[lsp-mode]\nlog-level = \"debug\"\n";
         // BC.8b: `lsp_config_tree` is shared (`Arc<ArcSwap>`); `store` the tree.
-        app.editor
-            .lsp_config_tree
-            .store(std::sync::Arc::new(toml_text.parse::<toml::Table>().expect("toml parse")));
+        app.editor.lsp_config_tree.store(std::sync::Arc::new(
+            toml_text.parse::<toml::Table>().expect("toml parse"),
+        ));
         app.apply_persistent_lsp_editor_options();
         // No deprecation echo when canonical is present.
         assert!(
@@ -1202,9 +1287,9 @@ mod tests {
         let mut app = app_with("hi\n", 5);
         let toml_text = "[lsp-mode]\nlog-level = \"babble\"\n";
         // BC.8b: `lsp_config_tree` is shared (`Arc<ArcSwap>`); `store` the tree.
-        app.editor
-            .lsp_config_tree
-            .store(std::sync::Arc::new(toml_text.parse::<toml::Table>().expect("toml parse")));
+        app.editor.lsp_config_tree.store(std::sync::Arc::new(
+            toml_text.parse::<toml::Table>().expect("toml parse"),
+        ));
         app.apply_persistent_lsp_editor_options();
         let msg = app.editor.last_message.as_ref().expect("warn echo");
         assert!(
@@ -1219,7 +1304,9 @@ mod tests {
         let mut app = app_with("hi\n", 5);
         app.editor.last_message = None;
         // Empty tree: nothing under [lsp].
-        app.editor.lsp_config_tree.store(std::sync::Arc::new(toml::Table::new()));
+        app.editor
+            .lsp_config_tree
+            .store(std::sync::Arc::new(toml::Table::new()));
         app.apply_persistent_lsp_editor_options();
         assert!(
             app.editor.last_message.is_none(),
@@ -1813,6 +1900,59 @@ mod tests {
         a.apply(crate::app::Action::OilNavigateUp);
         // Active buffer should now be Oil.
         assert_eq!(a.editor.active_buffer, BufferKind::Oil);
+    }
+
+    #[test]
+    fn oil_navigate_up_from_document_lands_on_the_edited_file() {
+        // `-` from a file buffer opens oil for the file's parent
+        // with the cursor on the file you were editing (oil.nvim
+        // behaviour), not at the origin row.
+        let tmp =
+            std::env::temp_dir().join(format!("lattice-oil-focus-doc-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("adir")).expect("adir");
+        std::fs::write(tmp.join("target.txt"), "x").expect("target");
+
+        let mut a = app_with("hi", 5);
+        // Open the file as a document buffer so its path is set.
+        a.do_edit(Some(tmp.join("target.txt")), false);
+        assert_eq!(a.editor.active_buffer, BufferKind::Document);
+
+        a.apply(crate::app::Action::OilNavigateUp);
+        assert_eq!(a.editor.active_buffer, BufferKind::Oil);
+        // Listing is dirs-first alpha: ["adir", "target.txt"], so
+        // the edited file is row 1 -- the cursor must land there.
+        assert_eq!(a.editor.cursor.line, 1);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn oil_navigate_up_lands_on_the_directory_left() {
+        // `-` inside an oil buffer steps up to the parent listing
+        // with the cursor on the child directory you stepped out
+        // of, so `-` then `<CR>` round-trips to the same place.
+        let tmp =
+            std::env::temp_dir().join(format!("lattice-oil-focus-up-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        // Two dirs so "nested" is not row 0 after sorting
+        // (dirs-first alpha: ["adir", "nested"]).
+        std::fs::create_dir_all(tmp.join("adir")).expect("adir");
+        std::fs::create_dir_all(tmp.join("nested")).expect("nested");
+
+        let mut a = app_with("hi", 5);
+        a.do_open_oil(Some(tmp.join("nested")));
+        assert_eq!(a.editor.active_buffer, BufferKind::Oil);
+
+        a.apply(crate::app::Action::OilNavigateUp);
+        assert_eq!(
+            a.oil_dir_for(a.active_pane_buffer_id()).unwrap_or_default(),
+            tmp
+        );
+        // "nested" is row 1 in the parent listing.
+        assert_eq!(a.editor.cursor.line, 1);
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]

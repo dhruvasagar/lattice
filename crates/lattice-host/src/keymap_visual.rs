@@ -73,6 +73,7 @@ use lattice_grammar::SourceLocation;
 use lattice_grammar::VisualKind;
 use lattice_grammar::builtins::Builtins;
 use lattice_grammar::command::CommandInvocation;
+use lattice_syntax::SyntaxMotionIds;
 use lattice_syntax::SyntaxTextObjectIds;
 
 use crate::action::Action;
@@ -96,6 +97,7 @@ pub fn register_visual_bindings(
     builtins: &Builtins,
     actions: &ActionIds,
     syntax_textobjects: &SyntaxTextObjectIds,
+    syntax_motions: &SyntaxMotionIds,
 ) {
     let layer = KeymapLayer::Builtin;
     let mode = BindingMode::Visual;
@@ -163,6 +165,16 @@ pub fn register_visual_bindings(
             CommandInvocation::of(motion.0),
             source(),
         );
+    }
+
+    // TSM.4: the sixteen tree-sitter structural motions
+    // (`]f`/`[f`/`]F`/`[F`, `]c`/`[c`/`]C`/`[C`, `]a`/`[a`/`]A`/`[A`,
+    // `]l`/`[l`/`]L`/`[L`). Sourced from the SHARED
+    // `keymap_normal::syntax_motion_rows` table -- the same one Normal /
+    // operator-pending consume -- so a motion added there works in
+    // Visual automatically, exactly like the builtin motions above.
+    for (seq, motion) in crate::keymap_normal::syntax_motion_rows(syntax_motions) {
+        handle.bind(layer, mode, &seq, CommandInvocation::of(motion.0), source());
     }
 
     // Visual-only operator ALIASES. The canonical operator trigger

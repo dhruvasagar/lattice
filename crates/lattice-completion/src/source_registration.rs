@@ -190,11 +190,7 @@ pub enum AcceptAction {
     /// Jump to `(path, line, col)` via `App::jump_to_file_line_col`.
     /// First-party: LSP references / definitions / type-defs /
     /// implementations / declaration / diagnostics.
-    JumpToFileLocation {
-        path: PathBuf,
-        line: u32,
-        col: u32,
-    },
+    JumpToFileLocation { path: PathBuf, line: u32, col: u32 },
 
     /// Jump to `(line, col)` in an already-open buffer.
     /// First-party: `:picker lines`, `:picker jumps`.
@@ -242,31 +238,19 @@ pub enum AcceptAction {
     // -------- Stateful: host resolves by (token, index) --------
     /// Accept an LSP completion item from a pending request.
     /// First-party: `:complete`.
-    AcceptIndexedCompletion {
-        token: AcceptToken,
-        index: u32,
-    },
+    AcceptIndexedCompletion { token: AcceptToken, index: u32 },
 
     /// Accept an LSP code-action item.
     /// First-party: `:code-actions` / `gA`.
-    AcceptIndexedCodeAction {
-        token: AcceptToken,
-        index: u32,
-    },
+    AcceptIndexedCodeAction { token: AcceptToken, index: u32 },
 
     /// Accept an LSP code-lens item.
     /// First-party: `:lsp-code-lens`.
-    AcceptIndexedCodeLens {
-        token: AcceptToken,
-        index: u32,
-    },
+    AcceptIndexedCodeLens { token: AcceptToken, index: u32 },
 
     /// Accept a color-presentation item.
     /// First-party: `:lsp-color-presentation`.
-    AcceptColorPresentation {
-        token: AcceptToken,
-        index: u32,
-    },
+    AcceptColorPresentation { token: AcceptToken, index: u32 },
 
     /// Reply to a server-initiated `window/showMessageRequest`
     /// with the selected action index. Host looks up the
@@ -285,10 +269,7 @@ pub enum AcceptAction {
     /// variant moves that logic into the unified action enum so
     /// plugin-registered cmdline sources can use the same
     /// dispatch path.
-    InsertText {
-        text: String,
-        replace_start: usize,
-    },
+    InsertText { text: String, replace_start: usize },
 
     // -------- Plugin extension --------
     /// Plugin-defined opaque payload. The plugin's accept
@@ -328,10 +309,9 @@ impl PartialEq for AcceptAction {
                     col: cb,
                 },
             ) => ba == bb && la == lb && ca == cb,
-            (
-                InvokeCommand { id: ia, args: aa },
-                InvokeCommand { id: ib, args: ab },
-            ) => ia == ib && aa == ab,
+            (InvokeCommand { id: ia, args: aa }, InvokeCommand { id: ib, args: ab }) => {
+                ia == ib && aa == ab
+            }
             (PasteRegister { name: a }, PasteRegister { name: b }) => a == b,
             (JumpToMark { name: a }, JumpToMark { name: b }) => a == b,
             (ExpandSnippet { id: a }, ExpandSnippet { id: b }) => a == b,

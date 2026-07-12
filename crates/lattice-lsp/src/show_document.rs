@@ -40,8 +40,8 @@
 
 use std::sync::Arc;
 
-use lattice_grammar::effect::Effect;
 use lattice_grammar::Utf16Pos;
+use lattice_grammar::effect::Effect;
 use tokio::sync::oneshot;
 
 use crate::logging::{InstanceKey, LogLevel, LogSource, LspLogger};
@@ -115,8 +115,7 @@ pub fn make_handler(
     logger: LspLogger,
 ) -> impl FnMut(InboundShowDocument) -> Vec<Effect> + Send + 'static {
     move |req| {
-        let instance =
-            InstanceKey::new(Arc::clone(&req.server_id), Arc::clone(&req.workspace));
+        let instance = InstanceKey::new(Arc::clone(&req.server_id), Arc::clone(&req.workspace));
         let uri_str = req.uri.as_str().to_string();
         let (effect, success) = if req.external {
             // Optimistic ack: we dispatch the OS-handler open and report

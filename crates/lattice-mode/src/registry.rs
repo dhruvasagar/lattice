@@ -581,10 +581,18 @@ impl ModeRegistry {
                                 // only ones left on the typed bus.
                                 let name = step.mode.as_str().to_string();
                                 match step.kind {
-                                    ModeKind::Major => events_for_task
-                                        .publish(Event::MajorEntered { buffer, major: name }),
-                                    ModeKind::Minor => events_for_task
-                                        .publish(Event::MinorActivated { buffer, minor: name }),
+                                    ModeKind::Major => {
+                                        events_for_task.publish(Event::MajorEntered {
+                                            buffer,
+                                            major: name,
+                                        })
+                                    }
+                                    ModeKind::Minor => {
+                                        events_for_task.publish(Event::MinorActivated {
+                                            buffer,
+                                            minor: name,
+                                        })
+                                    }
                                 }
                             }
                             Err(stale_guard) => {
@@ -896,7 +904,10 @@ mod tests {
         // every mode, so the `emacs-keys` (no suffix) slip can't recur.
         let mut r = ModeRegistry::new();
         let err = r.register(MockMode::minor("emacs-keys")).unwrap_err();
-        assert_eq!(err, RegistrationError::MissingModeSuffix(ModeId::new("emacs-keys")));
+        assert_eq!(
+            err,
+            RegistrationError::MissingModeSuffix(ModeId::new("emacs-keys"))
+        );
         // The suffixed form registers fine.
         assert!(r.register(MockMode::minor("emacs-keys-mode")).is_ok());
     }

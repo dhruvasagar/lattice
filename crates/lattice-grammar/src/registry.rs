@@ -83,6 +83,10 @@ pub struct MotionContext<'a> {
     /// [`crate::CommandError::Cancelled`] and the dispatcher
     /// commits no effect.
     pub cancel: &'a crate::CancellationToken,
+    /// N.1.4-motions: the active buffer's tree-sitter resolver for structural
+    /// motions (`]f`/`[c`/…). `None` on Plain buffers with no parse — the
+    /// motion then no-ops. Threaded by the host, identical to `TextObjectContext`.
+    pub scope_resolver: Option<&'a dyn ScopeResolver>,
 }
 
 /// What a motion's evaluator returned.
@@ -182,6 +186,37 @@ impl std::fmt::Debug for OperatorSpec {
 /// tree-sitter node ranges and the operator slice convention.
 pub trait ScopeResolver {
     fn scope_at(&self, line: u32, col_byte: u32, suffix: &str) -> Option<ProtoRange>;
+
+    /// The `count`-th node whose capture name ends with `suffix`, in `dir`,
+    /// targeting the node's `boundary`. Respects the enclosing-object rule
+    /// (see treesitter-motions.md §4.1): `(Forward, Start)` / `(Backward, End)`
+    /// skip the object the cursor is inside; `(Backward, Start)` / `(Forward, End)`
+    /// may land on the current object's own boundary. Returns the target
+    /// position, or `None` (no tree / no match / fewer than `count` candidates).
+    fn scope_toward(
+        &self,
+        line: u32,
+        col_byte: u32,
+        suffix: &str,
+        dir: NavDir,
+        boundary: NavBoundary,
+        count: u32,
+    ) -> Option<Position>;
+}
+
+/// Direction of travel for a structural motion. `Forward` scans toward EOF,
+/// `Backward` toward BOF.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NavDir {
+    Forward,
+    Backward,
+}
+
+/// Which boundary of the target node the motion lands on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NavBoundary {
+    Start,
+    End,
 }
 
 /// N.1.6 (2026-06-10): per-buffer comment-leader descriptor for the

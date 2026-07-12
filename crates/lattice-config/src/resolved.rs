@@ -65,21 +65,12 @@ impl ResolvedOptions {
     /// Test helper: insert a resolved value directly. Used by
     /// tests across crates that exercise the read path without
     /// running the resolver. Production code uses
-    /// [`Self::insert_erased`] from the resolver.
+    /// [`Self::insert_erased_with_origin`] from the resolver.
     pub fn insert<T: OptionDecl>(&mut self, value: T::Value)
     where
         T::Value: Send + Sync + 'static,
     {
         self.by_type.insert(TypeId::of::<T>(), Arc::new(value));
-    }
-
-    /// Erased insert used by [`crate::Resolver`]. The caller
-    /// owns the type-correct construction; the cache stores
-    /// erased. Writes [`OptionOrigin::Default`] for the origin;
-    /// use [`Self::insert_erased_with_origin`] when the layer is known.
-    pub(crate) fn insert_erased(&mut self, type_id: TypeId, value: Arc<dyn Any + Send + Sync>) {
-        self.by_type.insert(type_id, value);
-        self.origins.insert(type_id, OptionOrigin::Default);
     }
 
     /// Erased insert with explicit origin. Used by the resolver's
@@ -107,10 +98,7 @@ impl ResolvedOptions {
     /// TypeId-keyed origin lookup for sites that only have a runtime
     /// `TypeId` (e.g. the query echo path in `do_set`).
     pub fn get_origin_for_typeid(&self, type_id: TypeId) -> OptionOrigin {
-        self.origins
-            .get(&type_id)
-            .cloned()
-            .unwrap_or_default()
+        self.origins.get(&type_id).cloned().unwrap_or_default()
     }
 
     /// TypeId-keyed erased value lookup. Used by the query echo path

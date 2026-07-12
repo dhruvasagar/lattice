@@ -72,10 +72,19 @@ impl DashboardSection for About {
         );
         f.blank();
         f.line("Paramount goals:", DashboardRole::Body);
-        f.line("  1. Performance — imperceptible keystroke latency", DashboardRole::Body);
-        f.line("  2. Extensibility — WebAssembly plugins from day one", DashboardRole::Body);
+        f.line(
+            "  1. Performance — imperceptible keystroke latency",
+            DashboardRole::Body,
+        );
+        f.line(
+            "  2. Extensibility — WebAssembly plugins from day one",
+            DashboardRole::Body,
+        );
         f.line("  3. Extensible vim modal editing", DashboardRole::Body);
-        f.line("  4. Asynchronicity — nothing blocks the UI", DashboardRole::Body);
+        f.line(
+            "  4. Asynchronicity — nothing blocks the UI",
+            DashboardRole::Body,
+        );
         f
     }
 }
@@ -247,11 +256,9 @@ impl DashboardSection for Commands {
             ("registers", "inspect register contents"),
         ] {
             f.push(
-                body_link("", &format!(":{cmd}"), LinkTarget::Command(cmd.to_string()))
-                    .push(DashboardSpan::new(
-                        format!("  — {what}"),
-                        DashboardRole::Hint,
-                    )),
+                body_link("", &format!(":{cmd}"), LinkTarget::Command(cmd.to_string())).push(
+                    DashboardSpan::new(format!("  — {what}"), DashboardRole::Hint),
+                ),
             );
         }
         f

@@ -126,6 +126,24 @@ pub(super) fn install_help(a: &mut App, h: HelpContent) {
         },
     );
     a.editor.popup_buffer = Some(id);
+    // PU-A.1a: mirror open_popup's pre-flip capture. Production captures
+    // `prev_pane_for_popup` from the underlying pane BEFORE overwriting
+    // cursor/scroll and flipping `active_buffer` to Help, so dismiss can
+    // restore the buffer the user came from. Without it this helper left
+    // `active_buffer == Help` with `prev == None` — a state production
+    // never produces — which the old `dismiss` masked by hardcoding
+    // Document.
+    let (prev_buf, prev_id) = {
+        let active = a.editor.pane_tree.active();
+        (active.buffer, active.buffer_id)
+    };
+    a.editor.prev_pane_for_popup = Some(lattice_host::state::PrevPaneState {
+        buffer: prev_buf,
+        buffer_id: prev_id,
+        cursor: a.editor.cursor,
+        scroll: a.editor.scroll,
+        modal: a.editor.modal,
+    });
     a.editor.popup_scroll = 0;
     a.editor.popup_cursor = lattice_protocol::position::Position::ZERO;
     a.editor.cursor = lattice_protocol::position::Position::ZERO;

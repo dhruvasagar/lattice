@@ -295,7 +295,12 @@ mod tests {
     fn popup_ctrl_n_navigates_next() {
         let h = populated_handle_with_popup();
         let a = shared_actions();
-        let r = dispatch_insert(&h, &ev(KeyCode::Char('n'), KeyModifiers::CONTROL), &[], &popup_minors());
+        let r = dispatch_insert(
+            &h,
+            &ev(KeyCode::Char('n'), KeyModifiers::CONTROL),
+            &[],
+            &popup_minors(),
+        );
         match r {
             Action::Invoke(inv) => assert_eq!(inv.command, a.completion_next),
             other => panic!("expected Invoke(completion_next), got {other:?}"),
@@ -306,7 +311,12 @@ mod tests {
     fn popup_down_arrow_navigates_next() {
         let h = populated_handle_with_popup();
         let a = shared_actions();
-        let r = dispatch_insert(&h, &ev(KeyCode::Down, KeyModifiers::NONE), &[], &popup_minors());
+        let r = dispatch_insert(
+            &h,
+            &ev(KeyCode::Down, KeyModifiers::NONE),
+            &[],
+            &popup_minors(),
+        );
         match r {
             Action::Invoke(inv) => assert_eq!(inv.command, a.completion_next),
             other => panic!("expected Invoke(completion_next), got {other:?}"),
@@ -317,7 +327,12 @@ mod tests {
     fn popup_tab_accepts() {
         let h = populated_handle_with_popup();
         let a = shared_actions();
-        let r = dispatch_insert(&h, &ev(KeyCode::Tab, KeyModifiers::NONE), &[], &popup_minors());
+        let r = dispatch_insert(
+            &h,
+            &ev(KeyCode::Tab, KeyModifiers::NONE),
+            &[],
+            &popup_minors(),
+        );
         match r {
             Action::Invoke(inv) => assert_eq!(inv.command, a.completion_accept),
             other => panic!("expected Invoke(completion_accept), got {other:?}"),
@@ -328,7 +343,12 @@ mod tests {
     fn popup_enter_accepts() {
         let h = populated_handle_with_popup();
         let a = shared_actions();
-        let r = dispatch_insert(&h, &ev(KeyCode::Enter, KeyModifiers::NONE), &[], &popup_minors());
+        let r = dispatch_insert(
+            &h,
+            &ev(KeyCode::Enter, KeyModifiers::NONE),
+            &[],
+            &popup_minors(),
+        );
         match r {
             Action::Invoke(inv) => assert_eq!(inv.command, a.completion_accept),
             other => panic!("expected Invoke(completion_accept), got {other:?}"),
@@ -339,7 +359,12 @@ mod tests {
     fn popup_esc_cancels_and_exits_insert() {
         let h = populated_handle_with_popup();
         let a = shared_actions();
-        let r = dispatch_insert(&h, &ev(KeyCode::Esc, KeyModifiers::NONE), &[], &popup_minors());
+        let r = dispatch_insert(
+            &h,
+            &ev(KeyCode::Esc, KeyModifiers::NONE),
+            &[],
+            &popup_minors(),
+        );
         match r {
             Action::Invoke(inv) => {
                 assert_eq!(inv.command, a.completion_cancel_and_exit_insert)
@@ -352,7 +377,12 @@ mod tests {
     fn popup_ctrl_e_cancels_only() {
         let h = populated_handle_with_popup();
         let a = shared_actions();
-        let r = dispatch_insert(&h, &ev(KeyCode::Char('e'), KeyModifiers::CONTROL), &[], &popup_minors());
+        let r = dispatch_insert(
+            &h,
+            &ev(KeyCode::Char('e'), KeyModifiers::CONTROL),
+            &[],
+            &popup_minors(),
+        );
         match r {
             Action::Invoke(inv) => assert_eq!(inv.command, a.completion_cancel),
             other => panic!("expected Invoke(completion_cancel), got {other:?}"),
@@ -364,7 +394,12 @@ mod tests {
         use lattice_grammar::args::Args;
         let h = populated_handle_with_popup();
         let a = shared_actions();
-        let r = dispatch_insert(&h, &ev(KeyCode::Char('a'), KeyModifiers::NONE), &[], &popup_minors());
+        let r = dispatch_insert(
+            &h,
+            &ev(KeyCode::Char('a'), KeyModifiers::NONE),
+            &[],
+            &popup_minors(),
+        );
         match r {
             Action::Invoke(inv) => {
                 assert_eq!(inv.command, a.completion_accept_then_insert);
@@ -384,7 +419,12 @@ mod tests {
         use lattice_grammar::args::Args;
         let h = populated_handle_with_popup();
         let a = shared_actions();
-        let r = dispatch_insert(&h, &ev(KeyCode::Char('b'), KeyModifiers::CONTROL), &[], &popup_minors());
+        let r = dispatch_insert(
+            &h,
+            &ev(KeyCode::Char('b'), KeyModifiers::CONTROL),
+            &[],
+            &popup_minors(),
+        );
         match r {
             Action::Invoke(inv) => {
                 assert_eq!(inv.command, a.completion_filter_to_source);
@@ -407,7 +447,12 @@ mod tests {
         use lattice_grammar::args::Args;
         let h = populated_handle_with_popup();
         let a = shared_actions();
-        let r = dispatch_insert(&h, &ev(KeyCode::Char('o'), KeyModifiers::CONTROL), &[], &popup_minors());
+        let r = dispatch_insert(
+            &h,
+            &ev(KeyCode::Char('o'), KeyModifiers::CONTROL),
+            &[],
+            &popup_minors(),
+        );
         match r {
             Action::Invoke(inv) => {
                 assert_eq!(inv.command, a.completion_filter_to_source);
@@ -429,7 +474,12 @@ mod tests {
     fn popup_ctrl_space_clears_filter() {
         let h = populated_handle_with_popup();
         let a = shared_actions();
-        let r = dispatch_insert(&h, &ev(KeyCode::Char(' '), KeyModifiers::CONTROL), &[], &popup_minors());
+        let r = dispatch_insert(
+            &h,
+            &ev(KeyCode::Char(' '), KeyModifiers::CONTROL),
+            &[],
+            &popup_minors(),
+        );
         match r {
             Action::Invoke(inv) => {
                 assert_eq!(inv.command, a.completion_filter_clear);
@@ -444,7 +494,12 @@ mod tests {
     fn popup_page_down_scrolls_docs() {
         let h = populated_handle_with_popup();
         let a = shared_actions();
-        let r = dispatch_insert(&h, &ev(KeyCode::PageDown, KeyModifiers::NONE), &[], &popup_minors());
+        let r = dispatch_insert(
+            &h,
+            &ev(KeyCode::PageDown, KeyModifiers::NONE),
+            &[],
+            &popup_minors(),
+        );
         match r {
             Action::Invoke(inv) => {
                 assert_eq!(inv.command, a.completion_docs_scroll_down)
@@ -467,7 +522,12 @@ mod tests {
         // protects the same property: the popup layer must not shadow
         // the `<C-x>` partial.
         let h = populated_handle_with_both();
-        let r = dispatch_insert(&h, &ev(KeyCode::Char('x'), KeyModifiers::CONTROL), &[], &both_minors());
+        let r = dispatch_insert(
+            &h,
+            &ev(KeyCode::Char('x'), KeyModifiers::CONTROL),
+            &[],
+            &both_minors(),
+        );
         match r {
             Action::AbsorbPartialChord(c) => assert_eq!(c, KeyChord::ctrl('x')),
             other => panic!("expected AbsorbPartialChord(<C-x>), got {other:?}"),
@@ -480,7 +540,12 @@ mod tests {
     fn snippet_tab_jumps_to_next_placeholder() {
         let h = populated_handle_with_snippet();
         let a = shared_actions();
-        let r = dispatch_insert(&h, &ev(KeyCode::Tab, KeyModifiers::NONE), &[], &snippet_minors());
+        let r = dispatch_insert(
+            &h,
+            &ev(KeyCode::Tab, KeyModifiers::NONE),
+            &[],
+            &snippet_minors(),
+        );
         match r {
             Action::Invoke(inv) => {
                 assert_eq!(inv.command, a.snippet_next_placeholder)
@@ -493,7 +558,12 @@ mod tests {
     fn snippet_back_tab_jumps_to_prev_placeholder() {
         let h = populated_handle_with_snippet();
         let a = shared_actions();
-        let r = dispatch_insert(&h, &ev(KeyCode::BackTab, KeyModifiers::NONE), &[], &snippet_minors());
+        let r = dispatch_insert(
+            &h,
+            &ev(KeyCode::BackTab, KeyModifiers::NONE),
+            &[],
+            &snippet_minors(),
+        );
         match r {
             Action::Invoke(inv) => {
                 assert_eq!(inv.command, a.snippet_prev_placeholder)
@@ -506,7 +576,12 @@ mod tests {
     fn snippet_shift_tab_jumps_to_prev_placeholder() {
         let h = populated_handle_with_snippet();
         let a = shared_actions();
-        let r = dispatch_insert(&h, &ev(KeyCode::Tab, KeyModifiers::SHIFT), &[], &snippet_minors());
+        let r = dispatch_insert(
+            &h,
+            &ev(KeyCode::Tab, KeyModifiers::SHIFT),
+            &[],
+            &snippet_minors(),
+        );
         match r {
             Action::Invoke(inv) => {
                 assert_eq!(inv.command, a.snippet_prev_placeholder)
@@ -519,7 +594,12 @@ mod tests {
     fn snippet_esc_leaves_snippet() {
         let h = populated_handle_with_snippet();
         let a = shared_actions();
-        let r = dispatch_insert(&h, &ev(KeyCode::Esc, KeyModifiers::NONE), &[], &snippet_minors());
+        let r = dispatch_insert(
+            &h,
+            &ev(KeyCode::Esc, KeyModifiers::NONE),
+            &[],
+            &snippet_minors(),
+        );
         // SN.3c.2b: `<Esc>` is `fall_through` — leave the snippet, then
         // continue to the native `<Esc>` (enter-normal). Resolves to a
         // Chain of the mode action followed by the native action.
@@ -539,7 +619,12 @@ mod tests {
     #[test]
     fn snippet_unrelated_key_falls_through_to_base_insert() {
         let h = populated_handle_with_snippet();
-        let r = dispatch_insert(&h, &ev(KeyCode::Char('z'), KeyModifiers::NONE), &[], &snippet_minors());
+        let r = dispatch_insert(
+            &h,
+            &ev(KeyCode::Char('z'), KeyModifiers::NONE),
+            &[],
+            &snippet_minors(),
+        );
         match r {
             Action::Insert(s) => assert_eq!(s, "z"),
             other => panic!("expected Insert(z), got {other:?}"),
@@ -552,7 +637,12 @@ mod tests {
     fn popup_wins_over_snippet_for_tab() {
         let h = populated_handle_with_both();
         let a = shared_actions();
-        let r = dispatch_insert(&h, &ev(KeyCode::Tab, KeyModifiers::NONE), &[], &both_minors());
+        let r = dispatch_insert(
+            &h,
+            &ev(KeyCode::Tab, KeyModifiers::NONE),
+            &[],
+            &both_minors(),
+        );
         // Popup binds <Tab> -> CompletionAccept; snippet binds
         // <Tab> -> SnippetNextPlaceholder. Popup pushed last
         // (higher LayerId) so popup wins.
@@ -566,7 +656,12 @@ mod tests {
     fn popup_wins_over_snippet_for_esc() {
         let h = populated_handle_with_both();
         let a = shared_actions();
-        let r = dispatch_insert(&h, &ev(KeyCode::Esc, KeyModifiers::NONE), &[], &both_minors());
+        let r = dispatch_insert(
+            &h,
+            &ev(KeyCode::Esc, KeyModifiers::NONE),
+            &[],
+            &both_minors(),
+        );
         match r {
             Action::Invoke(inv) => {
                 assert_eq!(inv.command, a.completion_cancel_and_exit_insert)
@@ -581,7 +676,12 @@ mod tests {
         // bind it. Falls through to snippet -> SnippetPrevPlaceholder.
         let h = populated_handle_with_both();
         let a = shared_actions();
-        let r = dispatch_insert(&h, &ev(KeyCode::BackTab, KeyModifiers::NONE), &[], &both_minors());
+        let r = dispatch_insert(
+            &h,
+            &ev(KeyCode::BackTab, KeyModifiers::NONE),
+            &[],
+            &both_minors(),
+        );
         match r {
             Action::Invoke(inv) => {
                 assert_eq!(inv.command, a.snippet_prev_placeholder)

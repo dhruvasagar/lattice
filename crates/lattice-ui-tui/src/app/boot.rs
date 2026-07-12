@@ -74,7 +74,9 @@ impl App {
         // `*dashboard*`. One publish per boot, TUI + GPUI both wire this at
         // their own post-boot seam; the subscription itself lives once in
         // `lattice-dashboard`.
-        editor.event_bus.publish_typed(lattice_mode::Startup { opened_file });
+        editor
+            .event_bus
+            .publish_typed(lattice_mode::Startup { opened_file });
         // Slice 3c.atomic.A: renderer-side clone of the editor's
         // RenderState cell, captured before Editor moves to the
         // actor thread.
@@ -82,8 +84,7 @@ impl App {
         // Perf plan B.2 slice B.2.a: clone the overlay worker's
         // output cell. display-line B4.2: the dead span/row prepaint
         // cell clones were deleted with the worker's span/row cache.
-        let syntax_static_overlay_quads_cell =
-            editor.syntax_static_overlay_quads_cell.clone();
+        let syntax_static_overlay_quads_cell = editor.syntax_static_overlay_quads_cell.clone();
         // Slice 3c.final.E.swap: run boot-time setup directly on
         // the owned Editor BEFORE handing it to the actor. Every
         // call below resolves to a host-side method; the App-side
@@ -211,11 +212,8 @@ impl App {
         // T.6.t: non-style chrome (glyphs, separator chars, dim/
         // nerd-fonts flags) sources from the published typed-options
         // registry; style fields from the resolved table.
-        self.theme = crate::theme::build_tui_theme(
-            &rs.options.config,
-            &rs.resolved_theme,
-            &rs.theme_ids,
-        );
+        self.theme =
+            crate::theme::build_tui_theme(&rs.options.config, &rs.resolved_theme, &rs.theme_ids);
     }
 
     /// Load `~/.editor.config/lattice/lattice.toml` (user) and
@@ -312,5 +310,98 @@ mod tests {
                  fallback, which never round-trips a write through read"
             );
         }
+    }
+
+    /// Agent boot-presence guard: `lattice_ai::install` runs in `Editor::boot`'s
+    /// Phase-B list, so a freshly-booted `App` must have both opencode paths
+    /// wired: `:opencode` (the primary ACP buffer conversation, which owns the
+    /// `AiClientHandle` service) and `:opencode-term` (the terminal-TUI spawn,
+    /// kept best-effort). Without them the commands would silently no-op at the
+    /// parser layer. The `:ai-log` picker itself is a later task; this only pins
+    /// that boot wiring landed.
+    #[test]
+    fn new_registers_ai_command_and_service_without_panicking() {
+        let app = App::new(Document::from_text("hello\n"));
+        assert!(
+            app.editor.registry.id_by_name("opencode").is_some(),
+            "App::new must register the `:opencode` (ACP conversation) ex-command"
+        );
+        assert!(
+            app.editor.registry.id_by_name("opencode-term").is_some(),
+            "App::new must register the `:opencode-term` (terminal) ex-command"
+        );
+        app.editor
+            .services
+            .get::<lattice_ai::AiClientHandle>()
+            .expect("App::new must leave an AiClientHandle registered (ACP path)");
+    }
+
+    /// AI-1b T12b: `:ai-log` is registered at boot, and the host
+    /// `do_open_ai_log` empty-session path (no `:opencode` run yet →
+    /// `AiLogger::known_sessions()` empty) echoes a hint instead of
+    /// panicking or opening a stray buffer. Exercises the
+    /// `AiLogger`-service lookup + count branch host-side.
+    #[test]
+    fn ai_log_registered_and_empty_session_path_is_safe() {
+        let mut app = App::new(Document::from_text("hello\n"));
+        assert!(
+            app.editor.registry.id_by_name("ai-log").is_some(),
+            "App::new must register the `:ai-log` ex-command"
+        );
+        let before = app.editor.active_pane_buffer_id();
+        // No session started, so known_sessions() is empty → the
+        // 0-session arm echoes a hint and opens nothing.
+        app.do_open_ai_log(None);
+        assert_eq!(
+            app.editor.active_pane_buffer_id(),
+            before,
+            "empty-session `:ai-log` must not switch buffers"
+        );
+    }
+
+    /// `:ai-log <provider>` that matches nothing, while some *other*
+    /// provider's session is live, must name what is running rather than
+    /// telling the user to start an agent that already started. Mirrors
+    /// `open_lsp_picker`'s "(running: ...)" listing.
+    #[test]
+    fn ai_log_unmatched_provider_lists_the_running_sessions() {
+        let mut app = App::new(Document::from_text("hello\n"));
+        let logger = app
+            .editor
+            .services
+            .get::<lattice_ai::AiLogger>()
+            .expect("App::new must leave an AiLogger registered");
+
+        // A record under this key is what makes the session "known".
+        let key = lattice_ai::SessionKey::new(std::sync::Arc::<str>::from("opencode"), 1);
+        logger.log(
+            Some(&key),
+            lattice_ai::AiLogLevel::Info,
+            lattice_ai::AiLogSource::Lifecycle,
+            "session opened",
+        );
+
+        let before = app.editor.active_pane_buffer_id();
+        app.do_open_ai_log(Some("bogus"));
+
+        let message = app
+            .editor
+            .last_message
+            .as_ref()
+            .map(|m| m.text.clone())
+            .unwrap_or_default();
+        assert!(
+            message.contains("opencode:1"),
+            "unmatched provider must list the live sessions, got {message:?}"
+        );
+        assert!(
+            !message.contains(":opencode`)"),
+            "must not tell the user to start an agent that is already running, got {message:?}"
+        );
+        assert_eq!(
+            app.editor.active_pane_buffer_id(),
+            before,
+            "an unmatched `:ai-log` must not switch buffers"
+        );
     }
 }

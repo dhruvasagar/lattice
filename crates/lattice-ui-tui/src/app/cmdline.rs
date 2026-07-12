@@ -85,16 +85,13 @@ impl App {
         // Arc-cloning helper; locally-bound so the `&reg` borrow
         // stays valid for the parser + lookup calls below.
         let reg = self.registry();
-        let slot =
-            lattice_completion::current_slot(&line, cursor, &reg, &alias_resolver);
+        let slot = lattice_completion::current_slot(&line, cursor, &reg, &alias_resolver);
 
         let word = slot.prefix();
         let canonical = if word.is_empty() {
             None
         } else {
-            alias_resolver(word).or_else(|| {
-                reg.id_by_name(word).and(Some(word.to_string()))
-            })
+            alias_resolver(word).or_else(|| reg.id_by_name(word).and(Some(word.to_string())))
         };
 
         if let Some(name) = canonical
@@ -263,7 +260,8 @@ impl App {
         if !matches!(self.ad().modal, ModalState::Command) {
             return false;
         }
-        let line = self.command_line(); let line = line.as_str();
+        let line = self.command_line();
+        let line = line.as_str();
         let alias_resolver = |short: &str| {
             crate::excommand::aliases()
                 .get(short)
@@ -271,12 +269,7 @@ impl App {
         };
         // Slice 3c.final.E.5e: registry through the Arc helper.
         let reg = self.registry();
-        let slot = lattice_completion::current_slot(
-            line,
-            line.len(),
-            &reg,
-            &alias_resolver,
-        );
+        let slot = lattice_completion::current_slot(line, line.len(), &reg, &alias_resolver);
         matches!(
             &slot,
             lattice_completion::CommandLineSlot::Arg { arg_spec, .. }
@@ -696,7 +689,11 @@ mod tests {
                 .iter()
                 .any(|c| c.raw.text == "describe-command"),
             "candidates: {:?}",
-            state.candidates.iter().map(|c| &c.raw.text).collect::<Vec<_>>(),
+            state
+                .candidates
+                .iter()
+                .map(|c| &c.raw.text)
+                .collect::<Vec<_>>(),
         );
     }
 

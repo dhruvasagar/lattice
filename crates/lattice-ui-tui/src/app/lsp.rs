@@ -266,7 +266,8 @@ impl App {
     pub fn lsp_document_highlight_mode_enabled_for(&self, buffer_id: BufferId) -> bool {
         #[cfg(test)]
         {
-            self.editor.lsp_document_highlight_mode_enabled_for(buffer_id)
+            self.editor
+                .lsp_document_highlight_mode_enabled_for(buffer_id)
         }
         #[cfg(not(test))]
         {
@@ -604,9 +605,9 @@ impl App {
     ) {
         // Slice 3c.final.E.5j: remove via `mutate_editor_with` so
         // the owned `req` flows out of the editor borrow.
-        let Some(req) = self.mutate_editor_with(move |e| {
-            e.lsp_pending_show_message_requests.remove(&request_id)
-        }) else {
+        let Some(req) = self
+            .mutate_editor_with(move |e| e.lsp_pending_show_message_requests.remove(&request_id))
+        else {
             return;
         };
         let selected = selected_index.and_then(|i| req.actions.get(i as usize).cloned());
@@ -846,7 +847,8 @@ impl App {
     ) {
         // 5.8.AA.l.2: migrated to host. Fan returned signals
         // through the existing renderer-signal handler.
-        let signals = self.mutate_editor_with(move |e| e.apply_rename_workspace_edit(per_file, new_name));
+        let signals =
+            self.mutate_editor_with(move |e| e.apply_rename_workspace_edit(per_file, new_name));
         for s in signals {
             self.handle_renderer_signal(s);
         }
@@ -1717,7 +1719,9 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
         // M.5.4 request gate: hover echoes the gate message.
-        a.apply_effect(lattice_grammar::Effect::Lsp(lattice_grammar::LspRequest::Hover));
+        a.apply_effect(lattice_grammar::Effect::Lsp(
+            lattice_grammar::LspRequest::Hover,
+        ));
         let msg = a.editor.last_message.as_ref().expect("gate echo");
         assert!(
             msg.text.contains("lsp-mode disabled"),
@@ -1751,7 +1755,9 @@ mod tests {
         let mut a = app_with("xx", 10);
         // Default: no auto-activation (no path).
         assert!(!a.lsp_mode_enabled_for(a.editor.document_buffer_id));
-        a.apply_effect(lattice_grammar::Effect::Lsp(lattice_grammar::LspRequest::Hover));
+        a.apply_effect(lattice_grammar::Effect::Lsp(
+            lattice_grammar::LspRequest::Hover,
+        ));
         let msg = a.editor.last_message.as_ref().expect("gate echo");
         assert_eq!(msg.level, EchoLevel::Info);
         assert!(
@@ -1775,7 +1781,9 @@ mod tests {
         assert!(!a.lsp_hover_mode_enabled_for(a.editor.document_buffer_id));
         // Hover request now bails with sub-mode echo (umbrella
         // is on, so the umbrella check inside the helper passes).
-        a.apply_effect(lattice_grammar::Effect::Lsp(lattice_grammar::LspRequest::Hover));
+        a.apply_effect(lattice_grammar::Effect::Lsp(
+            lattice_grammar::LspRequest::Hover,
+        ));
         let msg = a.editor.last_message.as_ref().expect("gate echo");
         assert_eq!(msg.level, EchoLevel::Info);
         assert!(
@@ -1812,7 +1820,9 @@ mod tests {
         let mut a = app_with("xx", 10);
         a.toggle_mode_by_name("lsp-mode");
         a.toggle_mode_by_name("lsp-nav-mode");
-        a.apply_effect(lattice_grammar::Effect::Lsp(lattice_grammar::LspRequest::Definition)); // 5.5.LSP.2
+        a.apply_effect(lattice_grammar::Effect::Lsp(
+            lattice_grammar::LspRequest::Definition,
+        )); // 5.5.LSP.2
         let msg = a.editor.last_message.as_ref().expect("nav gate echo");
         assert!(
             msg.text.contains("lsp-nav-mode disabled"),
@@ -1836,7 +1846,9 @@ mod tests {
         a.toggle_mode_by_name("lsp-mode");
         a.toggle_mode_by_name("lsp-mode");
         assert!(!a.lsp_mode_enabled_for(a.editor.document_buffer_id));
-        a.apply_effect(lattice_grammar::Effect::Lsp(lattice_grammar::LspRequest::Hover));
+        a.apply_effect(lattice_grammar::Effect::Lsp(
+            lattice_grammar::LspRequest::Hover,
+        ));
         let msg = a.editor.last_message.as_ref().expect("umbrella echo");
         // Umbrella echo, not sub-mode echo.
         assert!(
@@ -1893,8 +1905,8 @@ mod tests {
         let mut a = app_with("fn main() {}\nlet x = 1;\n", 5);
         a.do_open_hover("hover body");
         assert!(a.editor.popup_buffer.is_some());
-        // State A: focus still on doc, prev_pane_for_help is None.
-        assert!(a.editor.prev_pane_for_help.is_none());
+        // State A: focus still on doc, prev_pane_for_popup is None.
+        assert!(a.editor.prev_pane_for_popup.is_none());
         assert!(matches!(a.editor.active_buffer, BufferKind::Document));
         // Drive a real motion through `apply` (`l` -- char-right).
         let inv = lattice_grammar::CommandInvocation::of(a.editor.builtins.char_right.0);
@@ -1933,7 +1945,7 @@ mod tests {
         assert!(h.content.as_string().contains("documentation"));
         // State A: focus stays on doc.
         assert!(matches!(a.editor.active_buffer, BufferKind::Document));
-        assert!(a.editor.prev_pane_for_help.is_none());
+        assert!(a.editor.prev_pane_for_popup.is_none());
     }
 
     #[test]
@@ -2012,7 +2024,9 @@ mod tests {
         // was probing.
         let mut a = app_with("xx", 10);
         a.toggle_mode_by_name("lsp-mode");
-        a.apply_effect(lattice_grammar::Effect::Lsp(lattice_grammar::LspRequest::Hover));
+        a.apply_effect(lattice_grammar::Effect::Lsp(
+            lattice_grammar::LspRequest::Hover,
+        ));
         let msg = a.editor.last_message.as_ref().expect("echo");
         assert_eq!(msg.level, EchoLevel::Info);
         assert!(msg.text.contains("no LSP server"));
@@ -2031,7 +2045,9 @@ mod tests {
         // Trigger another hover. With no LSP attached the new
         // request bails on the URI lookup, but the cancel of the
         // previous token should still happen first.
-        a.apply_effect(lattice_grammar::Effect::Lsp(lattice_grammar::LspRequest::Hover));
+        a.apply_effect(lattice_grammar::Effect::Lsp(
+            lattice_grammar::LspRequest::Hover,
+        ));
         assert!(
             stale.is_cancelled(),
             "prior in-flight hover token should flip on a new K press"
@@ -2051,7 +2067,7 @@ mod tests {
         assert!(h.content.as_string().contains("**bold body**"));
         // State A entry: focus still on the doc.
         assert!(matches!(a.editor.active_buffer, BufferKind::Document));
-        assert!(a.editor.prev_pane_for_help.is_none());
+        assert!(a.editor.prev_pane_for_popup.is_none());
         assert!(
             a.editor.pending_hover_token.is_none(),
             "delivering the outcome should clear the in-flight token"
@@ -2540,10 +2556,7 @@ mod tests {
                 .get_for(buffer_id)
                 .is_none()
         };
-        assert!(
-            evicted,
-            "stale-baseline delta should evict the cache",
-        );
+        assert!(evicted, "stale-baseline delta should evict the cache",);
     }
 
     /// 4.4.i: multiple edits compose in order. The server
@@ -3106,7 +3119,9 @@ mod tests {
     fn lsp_definition_request_with_no_uri_echoes_no_lsp_attached() {
         let mut a = app_with("xx", 10);
         a.toggle_mode_by_name("lsp-mode");
-        a.apply_effect(lattice_grammar::Effect::Lsp(lattice_grammar::LspRequest::Definition));
+        a.apply_effect(lattice_grammar::Effect::Lsp(
+            lattice_grammar::LspRequest::Definition,
+        ));
         let msg = a.editor.last_message.as_ref().expect("echo");
         assert_eq!(msg.level, EchoLevel::Info);
         assert!(msg.text.contains("no LSP server"));
@@ -3116,7 +3131,9 @@ mod tests {
     fn lsp_declaration_request_routes_through_unified_nav_dispatch() {
         let mut a = app_with("xx", 10);
         a.toggle_mode_by_name("lsp-mode");
-        a.apply_effect(lattice_grammar::Effect::Lsp(lattice_grammar::LspRequest::Declaration));
+        a.apply_effect(lattice_grammar::Effect::Lsp(
+            lattice_grammar::LspRequest::Declaration,
+        ));
         // No URI mapped, same "no LSP server" guard fires.
         let msg = a.editor.last_message.as_ref().expect("echo");
         assert_eq!(msg.level, EchoLevel::Info);
@@ -3127,7 +3144,9 @@ mod tests {
     fn lsp_type_definition_request_routes_through_unified_nav_dispatch() {
         let mut a = app_with("xx", 10);
         a.toggle_mode_by_name("lsp-mode");
-        a.apply_effect(lattice_grammar::Effect::Lsp(lattice_grammar::LspRequest::TypeDefinition));
+        a.apply_effect(lattice_grammar::Effect::Lsp(
+            lattice_grammar::LspRequest::TypeDefinition,
+        ));
         let msg = a.editor.last_message.as_ref().expect("echo");
         assert!(msg.text.contains("no LSP server"));
     }
@@ -3136,7 +3155,9 @@ mod tests {
     fn lsp_implementation_request_routes_through_unified_nav_dispatch() {
         let mut a = app_with("xx", 10);
         a.toggle_mode_by_name("lsp-mode");
-        a.apply_effect(lattice_grammar::Effect::Lsp(lattice_grammar::LspRequest::Implementation));
+        a.apply_effect(lattice_grammar::Effect::Lsp(
+            lattice_grammar::LspRequest::Implementation,
+        ));
         let msg = a.editor.last_message.as_ref().expect("echo");
         assert!(msg.text.contains("no LSP server"));
     }
@@ -3193,7 +3214,9 @@ mod tests {
     fn lsp_references_request_with_no_uri_echoes_no_lsp_attached() {
         let mut a = app_with("xx", 10);
         a.toggle_mode_by_name("lsp-mode");
-        a.apply_effect(lattice_grammar::Effect::Lsp(lattice_grammar::LspRequest::References));
+        a.apply_effect(lattice_grammar::Effect::Lsp(
+            lattice_grammar::LspRequest::References,
+        ));
         let msg = a.editor.last_message.as_ref().expect("echo");
         assert!(msg.text.contains("no LSP server"));
     }
@@ -3203,7 +3226,9 @@ mod tests {
         let mut a = app_with("xx", 10);
         let stale = lattice_protocol::CancellationToken::new();
         a.editor.pending_references_token = Some(stale.clone());
-        a.apply_effect(lattice_grammar::Effect::Lsp(lattice_grammar::LspRequest::References));
+        a.apply_effect(lattice_grammar::Effect::Lsp(
+            lattice_grammar::LspRequest::References,
+        ));
         assert!(stale.is_cancelled());
     }
 
@@ -4314,7 +4339,9 @@ mod tests {
         let mut a = app_with("xx", 10);
         let stale = lattice_protocol::CancellationToken::new();
         a.editor.pending_definition_token = Some(stale.clone());
-        a.apply_effect(lattice_grammar::Effect::Lsp(lattice_grammar::LspRequest::Implementation));
+        a.apply_effect(lattice_grammar::Effect::Lsp(
+            lattice_grammar::LspRequest::Implementation,
+        ));
         assert!(stale.is_cancelled());
     }
 
@@ -4323,7 +4350,9 @@ mod tests {
         let mut a = app_with("xx", 10);
         let stale = lattice_protocol::CancellationToken::new();
         a.editor.pending_definition_token = Some(stale.clone());
-        a.apply_effect(lattice_grammar::Effect::Lsp(lattice_grammar::LspRequest::Definition));
+        a.apply_effect(lattice_grammar::Effect::Lsp(
+            lattice_grammar::LspRequest::Definition,
+        ));
         assert!(stale.is_cancelled());
     }
 
@@ -5306,7 +5335,9 @@ mod tests {
         );
         // Active snippet focused on $1 ("i").
         assert!(
-            a.editor.snippet_session.is_active(a.editor.document_buffer_id),
+            a.editor
+                .snippet_session
+                .is_active(a.editor.document_buffer_id),
             "active snippet started"
         );
         // Undo ONCE -> both the auto-import AND the snippet
@@ -5430,7 +5461,9 @@ mod tests {
         // Hover still works (well, fails for "no LSP server" but
         // not for "mode disabled" -- the sub-mode gate passes).
         a.editor.last_message = None;
-        a.apply_effect(lattice_grammar::Effect::Lsp(lattice_grammar::LspRequest::Hover));
+        a.apply_effect(lattice_grammar::Effect::Lsp(
+            lattice_grammar::LspRequest::Hover,
+        ));
         if let Some(msg) = &a.editor.last_message {
             assert!(
                 !msg.text.contains("lsp-hover-mode disabled"),

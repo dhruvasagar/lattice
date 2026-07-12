@@ -96,6 +96,17 @@ pub struct ActionIds {
     pub display_line_end: CommandId,
     pub create_fold_from_visual: CommandId,
     pub delete_char_backward: CommandId,
+    /// Insert-mode line editing (readline/vim). One `CommandId` per chord;
+    /// all resolve to `AppEffect::InsertLineEdit(kind)`.
+    pub insert_cursor_line_start: CommandId,
+    pub insert_cursor_line_end: CommandId,
+    pub insert_cursor_char_left: CommandId,
+    pub insert_cursor_char_right: CommandId,
+    pub insert_delete_word_backward: CommandId,
+    pub insert_delete_to_line_start: CommandId,
+    pub insert_kill_to_line_end: CommandId,
+    pub insert_indent_line: CommandId,
+    pub insert_dedent_line: CommandId,
     pub completion_trigger: CommandId,
     pub snippet_expand: CommandId,
     /// L4b: `gl` in lsp-diagnostics-mode. Command-name registration
@@ -553,6 +564,60 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
             "action:enter-append",
             "Vim's `a`: move right one byte and enter Insert.",
             AppEffect::EnterAppend,
+        ),
+        insert_cursor_line_start: register_simple(
+            registry,
+            "action:insert-cursor-line-start",
+            "Insert `<C-a>`: move the caret to the start of the line (readline).",
+            AppEffect::InsertLineEdit(lattice_grammar::InsertLineEdit::CursorLineStart),
+        ),
+        insert_cursor_line_end: register_simple(
+            registry,
+            "action:insert-cursor-line-end",
+            "Insert `<C-e>`: move the caret to the end of the line (readline).",
+            AppEffect::InsertLineEdit(lattice_grammar::InsertLineEdit::CursorLineEnd),
+        ),
+        insert_cursor_char_left: register_simple(
+            registry,
+            "action:insert-cursor-char-left",
+            "Insert `<C-b>`: move the caret one character left (readline).",
+            AppEffect::InsertLineEdit(lattice_grammar::InsertLineEdit::CursorCharLeft),
+        ),
+        insert_cursor_char_right: register_simple(
+            registry,
+            "action:insert-cursor-char-right",
+            "Insert `<C-f>`: move the caret one character right (readline).",
+            AppEffect::InsertLineEdit(lattice_grammar::InsertLineEdit::CursorCharRight),
+        ),
+        insert_delete_word_backward: register_simple(
+            registry,
+            "action:insert-delete-word-backward",
+            "Insert `<C-w>`: delete the word before the caret (readline/vim).",
+            AppEffect::InsertLineEdit(lattice_grammar::InsertLineEdit::DeleteWordBackward),
+        ),
+        insert_delete_to_line_start: register_simple(
+            registry,
+            "action:insert-delete-to-line-start",
+            "Insert `<C-u>`: delete from the line start to the caret (readline/vim).",
+            AppEffect::InsertLineEdit(lattice_grammar::InsertLineEdit::DeleteToLineStart),
+        ),
+        insert_kill_to_line_end: register_simple(
+            registry,
+            "action:insert-kill-to-line-end",
+            "Insert `<C-k>`: delete from the caret to the line end (readline).",
+            AppEffect::InsertLineEdit(lattice_grammar::InsertLineEdit::KillToLineEnd),
+        ),
+        insert_indent_line: register_simple(
+            registry,
+            "action:insert-indent-line",
+            "Insert `<C-t>`: indent the current line by one shiftwidth (vim).",
+            AppEffect::InsertLineEdit(lattice_grammar::InsertLineEdit::IndentLine),
+        ),
+        insert_dedent_line: register_simple(
+            registry,
+            "action:insert-dedent-line",
+            "Insert `<C-d>`: dedent the current line by one shiftwidth (vim).",
+            AppEffect::InsertLineEdit(lattice_grammar::InsertLineEdit::DedentLine),
         ),
         enter_insert_first_non_blank: register_simple(
             registry,

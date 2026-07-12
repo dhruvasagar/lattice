@@ -28,8 +28,9 @@ layered resolution); this page is the deep-dive on each.
 | `gj` / `gk`                      | —       | Move **one display row** (wraps count); `j`/`k` always logical line |
 | `g0` / `g$`                      | —       | Jump to start / end of the current display row (under wrap)    |
 | `:set ui.ligatures` / `:set ui.ligatures=off` | on | Enable / disable OpenType ligatures (GPUI only) |
-| `:set ui.window.decorations=none` | `full` | Borderless GPUI window — no titlebar/controls; macOS keeps corners/shadow, no internal resize (GPUI only, next launch) |
-| `:set ui.window.start-maximized` | off | Maximize the window on launch — fills the work area, keeps the menu bar (GPUI only) |
+| `:set ui.window.decorations=none` | `full` | Borderless GPUI window — no titlebar/controls; on macOS it's non-resizable (Raycast/yabai can't move it either), opens pre-sized (GPUI only, next launch) |
+| `:set ui.window.decorations=transparent` | `full` | Frameless-looking but **resizable** (Raycast/yabai work); keeps corners/shadow (GPUI only, next launch) |
+| `:set ui.window.start-maximized` | off | Open maximized — resizable windows fill the work area; a borderless (`none`) window fills the whole display (GPUI only) |
 | `:set tabstop=N`  (`:set ts=N`)  | `4`     | Columns a hard tab occupies                                    |
 | `:set scrolloff=N` (`:set so=N`) | `0`     | Minimum lines kept above/below the cursor                      |
 | `:set sidescroll=N` (`:set ss=N`) | `0`    | Columns to scroll when the cursor crosses the edge (`0` = jump to centre) |
@@ -171,13 +172,12 @@ Two options control the OS window itself rather than buffer content —
 **GPUI (`--gui`) only**; both are ignored by the terminal UI, which has
 no OS window.
 
-**`ui.window.decorations`** = `full` (default) | `none`. `full` keeps
-the normal OS titlebar and window controls (today's behavior,
-unchanged). `none` removes them for a borderless window, matching
-alacritty's `window.decorations = none`, kitty's
-`hide_window_decorations`, or emacs's `undecorated t` — for users
-running tiling / manual window managers (yabai, Raycast, sway,
-Rectangle) who don't want OS chrome.
+**`ui.window.decorations`** = `full` (default) | `none` | `transparent`.
+`full` keeps the normal OS titlebar and window controls (today's
+behavior, unchanged). `none` removes them for a borderless window,
+matching alacritty's `window.decorations = none`, kitty's
+`hide_window_decorations`, or emacs's `undecorated t`. `transparent`
+looks frameless but keeps the window **resizable** (see below).
 
 `none` behaves a little differently per platform:
 
@@ -185,22 +185,36 @@ Rectangle) who don't want OS chrome.
   window manager.
 - **Windows:** borderless, still edge-resizable.
 - **macOS:** no titlebar or traffic-light buttons, but the rounded
-  corners and system window shadow remain, and there is **no internal
-  edge-resize** — move or resize the window with an external tool
-  (Raycast, yabai, Rectangle), exactly as you would a borderless kitty
-  or emacs window on macOS.
+  corners and system window shadow remain. Note: a `none` window is
+  **non-resizable by any means** on macOS — no edge-resize, and external
+  window managers (Raycast, yabai, Rectangle) **cannot** resize or move
+  it either (their Accessibility calls are rejected). It is fixed at the
+  size it opens with. Use `transparent` if you need Raycast/yabai control.
 - **Linux (Wayland / WSLg):** best-effort; a minimal shadow or border
   may still show.
+
+`transparent` is the macOS-friendly frameless option: a transparent,
+full-size-content titlebar with the traffic-light buttons hidden (on
+macOS they're hidden with `setHidden:`, which — unlike moving them
+off-screen — keeps the window controllable by Raycast/yabai). Because it
+keeps a titlebar under the hood, the window stays **resizable** —
+edge-resize works, and Raycast/yabai can move and resize it. The trade-off
+vs `none`: the rounded corners and shadow remain (it is not truly
+borderless). On Linux/Windows `none` is already resizable, so
+`transparent` is mainly useful on macOS.
 
 `ui.window.decorations` is applied when the window is created, so
 changing it (via `:set` or TOML) takes effect on the **next launch**,
 not live in the current session.
 
 **`ui.window.start-maximized`** = `true` | `false` (default `false`).
-When `true`, the window is maximized on launch — it fills the work area
-but keeps the menu bar; this is not native fullscreen.
+When `true`, the window opens maximized. A `full`/`transparent` window
+is resizable, so it maximizes to the work area (keeps the menu bar; not
+native fullscreen). A `none` (borderless) window can't be maximized after
+the fact on macOS, so it opens pre-sized to fill the whole display.
 
 ```toml
-ui.window.decorations = "none"
+# Frameless + resizable + Raycast-controllable (recommended on macOS):
+ui.window.decorations = "transparent"
 ui.window.start-maximized = true
 ```

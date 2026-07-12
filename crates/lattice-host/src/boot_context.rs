@@ -365,7 +365,11 @@ mod tests {
         // The host's per-tick run drains both items through the handler.
         let effects = ctx.tick_callbacks().run_all();
         assert_eq!(effects.len(), 2, "both pending items drained as effects");
-        assert_eq!(*seen.lock().unwrap(), vec![1, 2], "handler saw items in order");
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![1, 2],
+            "handler saw items in order"
+        );
     }
 
     #[tokio::test]
@@ -406,6 +410,9 @@ mod tests {
 
         let woke =
             tokio::time::timeout(Duration::from_millis(200), ctx.async_landed().notified()).await;
-        assert!(woke.is_ok(), "publishing a subscribed event must wake the editor");
+        assert!(
+            woke.is_ok(),
+            "publishing a subscribed event must wake the editor"
+        );
     }
 }

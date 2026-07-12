@@ -293,7 +293,11 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn apply_edit_publishes_new_snapshot() {
-        let handle = spawn_document(lattice_core::BufferId(0), Document::from_text("hello"), empty_registry());
+        let handle = spawn_document(
+            lattice_core::BufferId(0),
+            Document::from_text("hello"),
+            empty_registry(),
+        );
         let initial = handle.snapshot();
         assert_eq!(initial.text(), "hello");
         let initial_version = initial.version;
@@ -311,7 +315,11 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn undo_restores_previous_snapshot_text() {
-        let handle = spawn_document(lattice_core::BufferId(0), Document::from_text("a"), empty_registry());
+        let handle = spawn_document(
+            lattice_core::BufferId(0),
+            Document::from_text("a"),
+            empty_registry(),
+        );
         handle
             .apply_edit(Edit::insert(Position::new(0, 1), "b"))
             .await
@@ -323,7 +331,11 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn redo_replays_undone_edit() {
-        let handle = spawn_document(lattice_core::BufferId(0), Document::from_text(""), empty_registry());
+        let handle = spawn_document(
+            lattice_core::BufferId(0),
+            Document::from_text(""),
+            empty_registry(),
+        );
         handle
             .apply_edit(Edit::insert(Position::ZERO, "x"))
             .await
@@ -337,7 +349,11 @@ mod tests {
     async fn snapshots_loaded_pre_publish_remain_coherent() {
         // §5.6.8 contract: an Arc<DocumentSnapshot> obtained at
         // frame start stays valid for the whole frame.
-        let handle = spawn_document(lattice_core::BufferId(0), Document::from_text("v1"), empty_registry());
+        let handle = spawn_document(
+            lattice_core::BufferId(0),
+            Document::from_text("v1"),
+            empty_registry(),
+        );
         let pinned = handle.snapshot();
         handle
             .apply_edit(Edit::insert(Position::new(0, 2), "!"))
@@ -349,7 +365,11 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn invalid_edit_returns_core_error_without_publish() {
-        let handle = spawn_document(lattice_core::BufferId(0), Document::from_text("abc"), empty_registry());
+        let handle = spawn_document(
+            lattice_core::BufferId(0),
+            Document::from_text("abc"),
+            empty_registry(),
+        );
         let v_before = handle.snapshot().version;
         // Insert at line 99 -- out of range.
         let res = handle
@@ -366,7 +386,11 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn dropping_all_handles_shuts_down_actor() {
-        let handle = spawn_document(lattice_core::BufferId(0), Document::from_text(""), empty_registry());
+        let handle = spawn_document(
+            lattice_core::BufferId(0),
+            Document::from_text(""),
+            empty_registry(),
+        );
         let h2 = handle.clone();
         drop(handle);
         h2.apply_edit(Edit::insert(Position::ZERO, "a"))
@@ -387,7 +411,11 @@ mod tests {
         use lattice_grammar::CommandInvocation;
         use lattice_grammar::error::CommandError;
 
-        let handle = spawn_document(lattice_core::BufferId(0), Document::from_text("hello"), empty_registry());
+        let handle = spawn_document(
+            lattice_core::BufferId(0),
+            Document::from_text("hello"),
+            empty_registry(),
+        );
         let token = CancellationToken::new();
         token.cancel();
 
@@ -412,7 +440,11 @@ mod tests {
         use lattice_grammar::CommandInvocation;
         use lattice_grammar::error::CommandError;
 
-        let handle = spawn_document(lattice_core::BufferId(0), Document::from_text("hello"), empty_registry());
+        let handle = spawn_document(
+            lattice_core::BufferId(0),
+            Document::from_text("hello"),
+            empty_registry(),
+        );
         let token = CancellationToken::new();
 
         let result = handle
@@ -455,6 +487,19 @@ mod tests {
                     Position::new(3, 2),
                     Position::new(9, 5),
                 ))
+            }
+
+            // TSM.1: stub -- see SyntaxSnapshot's scope_toward for rationale.
+            fn scope_toward(
+                &self,
+                _line: u32,
+                _col_byte: u32,
+                _suffix: &str,
+                _dir: lattice_grammar::NavDir,
+                _boundary: lattice_grammar::NavBoundary,
+                _count: u32,
+            ) -> Option<lattice_protocol::Position> {
+                None
             }
         }
 

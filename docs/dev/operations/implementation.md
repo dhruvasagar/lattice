@@ -5380,6 +5380,91 @@ recorded numbers.
 
 ---
 
+## Tree-sitter structural motions (TSM.0–TSM.5 ✅ complete, 2026-07-08)
+
+Design: [`../architecture/treesitter-motions.md`](../architecture/treesitter-motions.md).
+Slice plan: [`slice-plans/treesitter-motions.md`](slice-plans/treesitter-motions.md).
+
+Sixteen tree-sitter-backed next/previous structural motions (`]f [f ]F [F`,
+`]c [c ]C [C`, `]a [a ]A [A`, `]l [l ]L [L`) jumping between functions /
+classes / parameters / loops, composing with every operator, count, and
+Visual selection like any other motion. `lattice_grammar::ScopeResolver`
+grew a `scope_toward(...)` navigation query alongside its existing
+text-object resolution, threaded into `MotionContext` exactly as the text
+objects already were — `lattice-grammar` stays tree-sitter-free (the trait
+lives there), `lattice-syntax` owns the tree walk (`SyntaxSnapshot::
+scope_toward`) and the 16 `MotionSpec`s (`register_syntax_motions`,
+`SyntaxMotionIds`). No new `.scm` files: reuses the existing `@function.outer`
+/ `@class.outer` / `@parameter.outer` / `@loop.outer` captures. Motions
+register at `KeymapLayer::Builtin` (universal vim grammar, like the
+tree-sitter text objects), not a MinorMode; the host only wires chord → id.
+
+| Slice | Title | Status |
+|---|---|---|
+| **TSM.0** | design fragment + slice plan | ✅ |
+| **TSM.1** | grammar seam — `scope_toward` + `MotionContext.scope_resolver` | ✅ |
+| **TSM.2** | `SyntaxSnapshot::scope_toward` real tree walk | ✅ |
+| **TSM.3** | `register_syntax_motions` (16 `MotionSpec`s) | ✅ |
+| **TSM.4** | host wiring — boot registration + 16 chord bindings | ✅ |
+| **TSM.5** | bench + docs/ledger finalization (this entry) | ✅ |
+
+**TSM.5 bench coverage (paramount #1).** `scope_toward` runs on the
+core/actor thread on a deliberate keypress, never in `Render::render`, never
+per-frame — bounded by `QueryCursor::set_byte_range` to the relevant half of
+the file (`Forward` scans `[cursor, EOF)`, `Backward` scans `[0, cursor)`).
+`crates/lattice-syntax/benches/scope_toward.rs` isolates that tree-walk cost
+on a 2000-function synthetic Rust file, querying `@function.outer` from the
+file midpoint in both directions. See `BENCHMARKS.md` (TSM.5 entry) for
+recorded numbers and the byte-range-restriction rationale.
+
+---
+
+## Agent integration (Claude Code + opencode, ✅ core complete, 2026-07-10)
+
+Two coding agents over two protocols, one shared capability surface. Design:
+`../architecture/agent-integration.md` (the `EditorAccess` port + why one
+subsystem serves both), `../architecture/ai-agent-protocol.md` (ACP wire
+contract / auth / trace logs), `../architecture/agent-ui.md` (the
+conversation UI). Slice plans archived under
+`slice-plans/archive/{agent-integration,agent-ui,ai-agent-protocol}.md`.
+
+| Area | Status | Notes |
+|---|---|---|
+| **Claude Code (MCP)** | ✅ | `claude` CLI attaches over a loopback WebSocket; runs its TUI in a terminal buffer; edits via `openDiff`. `lattice-ai/mcp`. User doc: `../../user/claude-code.md`. |
+| **opencode — v1 (terminal TUI)** | ✅ | `:opencode` runs opencode's native TUI in a terminal buffer (`Effect::SpawnTerminal` + `opencode-mode` minor over `terminal-mode`), the same topology as Claude Code. opencode's TUI provides readline / `/` commands / model switching / history / edit review; lattice reimplements none of it. `lattice-ai/opencode` (always compiled). User doc: `../../user/opencode.md`. |
+| **opencode — ACP buffer conversation (`:opencode-acp`)** | ✅ kept | The AU-1…AU-5 headless-ACP path, **repositioned as the alternative**: `lattice` spawns `opencode acp`, folds `session/update` into a `Conversation` store, projects it into the `*ai:opencode*` Document (`ai-conversation` mode, comint editable-tail via `Mode::editable_tail()` + the read-only edit gate), `<C-c>` interrupt (`session/cancel`), user turn folded in. Its distinguishing win: **lattice-owned diff review**. Kept for the future IDE-native-review direction. `lattice-ai/acp` (feature `acp`). Design: `agent-ui.md`. |
+| **ACP diff review + approval (AU-4a)** | ✅ | (`:opencode-acp`) agent→client `session/request_permission` → supervisor; reads auto-run, file-edits → `review_diff` (shared with MCP `openDiff`) → verdict-gated. **Fail closed**: un-reviewable mutating ops denied in review mode (a background security review flagged the original auto-allow as a permission bypass). |
+| **ACP trust mode (AU-5)** | ✅ | (`:opencode-acp`) per-session `auto_accept` (default off = review); `<C-t>` toggles + echoes; permission tasks read an `Arc<AtomicBool>` live; resets on each `Start`. |
+| **Split conversation vs trace** | ✅ | (`:opencode-acp`) conversation sources → `Conversation` store → `*ai:opencode*`; trace → `AiLogger` ring → `:ai-log` (the `:lsp-log` analog). `:ai-log` / `AiLogger` are kept as generic infra even for the terminal path (no producer there yet). |
+
+**Deferred / follow-ups (not blocking; tracked here since the slice plans are archived):**
+- **opencode terminal path — IDE-native edit review.** For v1 the terminal
+  `:opencode` reviews edits in opencode's own TUI (Plan/Build + `/undo`); lattice
+  does not intercept them. A native integration (opencode's edits opening in
+  lattice's diff view while its TUI runs) is the planned follow-up, and is the
+  reason the `:opencode-acp` machinery (which already does lattice-owned diff
+  review) is kept rather than deleted. Whether it's built by co-attaching ACP to
+  the TUI's session, or an MCP-style callback like Claude Code, is an open spike.
+- The items below are `:opencode-acp` (ACP buffer path) follow-ups:
+- **AU-4b — `[diff]` Edit-block reflection.** Deferred as redundant: an agent
+  file-edit already streams as a `Block::ToolCall`, so a separate `Block::Edit`
+  double-represents it. Revisit by annotating the ToolCall block if the explicit
+  accept/reject verdict (distinct from execution status) or a diff-reopen
+  affordance proves worth it. `Block::Edit` / `EditStatus` stay in the model, unused.
+- **Decoration-based in-place tool-call status + reasoning folds.** The projection
+  is plain text today (turn headers + `▸ … [running]` lines, drain replaces only
+  the transcript zone). Decoration/virtual-row status is deferred polish.
+- **Trust-mode headerline indicator.** `AiState` already republishes `auto_accept`;
+  a `review`/`auto` modeline/headerline element can read it with no supervisor change.
+  The `<C-t>` echo is the visible reflection today.
+- **Command-confirmation surface.** Non-file mutating operations are denied in
+  review mode (fail closed); a confirmation prompt (so they can be reviewed rather
+  than only trust-allowed) is the real fix.
+- **Other ACP providers + `:ai-send` context push + in-protocol auth** (the
+  original AI-4 slice). Not started.
+
+---
+
 ## Conventions for updating this doc
 
 - Update the **Phase status** table whenever a phase advances.

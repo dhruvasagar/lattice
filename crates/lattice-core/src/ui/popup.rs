@@ -27,6 +27,25 @@ pub enum PopupPlacement {
     Centered,
 }
 
+/// Whether opening a popup moves focus into it. Names the distinction
+/// the code already makes between the two overlay entry points, so any
+/// popup kind (help, ACP permission menu, LSP code-action list) picks a
+/// focus mode without dragging in help-buffer machinery.
+///
+/// See `docs/dev/architecture/popup-api.md` §4.1.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PopupFocus {
+    /// Focus moves into the popup buffer: it becomes the active buffer,
+    /// its major mode receives keys, and modal resets to Normal (State
+    /// B). `:help`, `:describe-*`, `:apropos`, the permission menu.
+    #[default]
+    Steal,
+    /// The popup floats over the active buffer, which keeps focus and
+    /// the caret; modal and active-buffer are untouched (State A).
+    /// Hover, signature help.
+    Passive,
+}
+
 /// Outer size (border-inclusive) of a help / hover popup overlay.
 ///
 /// Centred popups are reading surfaces (`:help`, `:options`,

@@ -12,7 +12,9 @@
 //! The ids are consumed by the branding virtual-row provider (DB.4), which
 //! resolves them into cell colours.
 
-use lattice_theme::{Color, ColorRef, ElementId, ElementName, ElementOwner, StyleSpec, ThemeRegistry};
+use lattice_theme::{
+    Color, ColorRef, ElementId, ElementName, ElementOwner, StyleSpec, ThemeRegistry,
+};
 
 pub const ELEM_LOGO: &str = "dashboard.logo";
 pub const ELEM_CURSOR: &str = "dashboard.cursor";
@@ -22,6 +24,7 @@ pub const ELEM_SECTION: &str = "dashboard.section";
 pub const ELEM_KEY: &str = "dashboard.key";
 pub const ELEM_LINK: &str = "dashboard.link";
 pub const ELEM_BODY: &str = "dashboard.body";
+pub const ELEM_VERSION: &str = "dashboard.version";
 
 /// Brand blue (`assets/lattice-mark.svg`).
 pub const BRAND_BLUE: Color = Color::Rgb(0x1f, 0x6f, 0xeb);
@@ -40,6 +43,7 @@ pub struct DashboardElementIds {
     pub key: ElementId,
     pub link: ElementId,
     pub body: ElementId,
+    pub version: ElementId,
 }
 
 /// Register the `dashboard.*` elements + defaults under `owner`. Idempotent by
@@ -49,7 +53,12 @@ pub fn register_dashboard_theme_elements(
     owner: ElementOwner,
 ) -> DashboardElementIds {
     let elem = |name: &str, default: StyleSpec, doc: &'static str| {
-        reg.register(ElementName::from(name.to_string()), owner.clone(), default, doc)
+        reg.register(
+            ElementName::from(name.to_string()),
+            owner.clone(),
+            default,
+            doc,
+        )
     };
 
     DashboardElementIds {
@@ -93,25 +102,35 @@ pub fn register_dashboard_theme_elements(
         ),
         // Body inherits the default foreground.
         body: elem(ELEM_BODY, StyleSpec::new(), "Dashboard body text."),
+        // Version inherits the default foreground (regular text color)
+        // but can be overridden through the theme.
+        version: elem(ELEM_VERSION, StyleSpec::new(), "Dashboard version string."),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lattice_theme::{default_palette, InMemoryThemeRegistry};
+    use lattice_theme::{InMemoryThemeRegistry, default_palette};
 
     fn mode_owner() -> ElementOwner {
         ElementOwner::Mode("dashboard-mode".into())
     }
 
     #[test]
-    fn registers_all_eight_under_mode_owner() {
+    fn registers_all_nine_under_mode_owner() {
         let reg = InMemoryThemeRegistry::new(default_palette());
         register_dashboard_theme_elements(&reg, mode_owner());
         for name in [
-            ELEM_LOGO, ELEM_CURSOR, ELEM_TITLE, ELEM_TAGLINE, ELEM_SECTION, ELEM_KEY, ELEM_LINK,
+            ELEM_LOGO,
+            ELEM_CURSOR,
+            ELEM_TITLE,
+            ELEM_TAGLINE,
+            ELEM_SECTION,
+            ELEM_KEY,
+            ELEM_LINK,
             ELEM_BODY,
+            ELEM_VERSION,
         ] {
             let info = reg
                 .describe(&ElementName::from(name.to_string()))
@@ -128,7 +147,9 @@ mod tests {
             let info = reg.describe(&ElementName::from(name.to_string())).unwrap();
             assert_eq!(info.default.fg, Some(ColorRef::Literal(BRAND_BLUE)));
         }
-        let cursor = reg.describe(&ElementName::from(ELEM_CURSOR.to_string())).unwrap();
+        let cursor = reg
+            .describe(&ElementName::from(ELEM_CURSOR.to_string()))
+            .unwrap();
         assert_eq!(cursor.default.fg, Some(ColorRef::Literal(BRAND_AMBER)));
     }
 
@@ -136,8 +157,13 @@ mod tests {
     fn text_roles_reference_palette_keys() {
         let reg = InMemoryThemeRegistry::new(default_palette());
         register_dashboard_theme_elements(&reg, mode_owner());
-        let tagline = reg.describe(&ElementName::from(ELEM_TAGLINE.to_string())).unwrap();
-        assert_eq!(tagline.default.fg, Some(ColorRef::Palette("subtext".into())));
+        let tagline = reg
+            .describe(&ElementName::from(ELEM_TAGLINE.to_string()))
+            .unwrap();
+        assert_eq!(
+            tagline.default.fg,
+            Some(ColorRef::Palette("subtext".into()))
+        );
     }
 
     #[test]

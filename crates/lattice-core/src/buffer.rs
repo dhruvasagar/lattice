@@ -248,6 +248,52 @@ fn byte_to_char(rope: &Rope, byte: usize) -> usize {
     rope.byte_to_char(byte)
 }
 
+/// Transform a position across an edit (§4.1 of owner-write-caret.md).
+///
+/// Pure, total function: every position has a well-defined result after any
+/// edit. Composes left-to-right across batches.
+///
+/// | Where `p` is relative to `edit.original_range` | Result |
+/// |---|---|
+/// | strictly before `original_range.start` | unchanged |
+/// | at or after `original_range.end` | shifted by `inserted_range.end - original_range.end` |
+/// | strictly inside `original_range` | clamped to `inserted_range.end` |
+/// | at `original_range.start` (non-empty range) | stays at `inserted_range.start` |
+pub fn transform_position(pos: Position, edit: &AppliedEdit) -> Position {
+    let original = edit.original_range;
+    let inserted = edit.inserted_range;
+
+    if pos >= original.end {
+        let d_line = inserted.end.line as i64 - original.end.line as i64;
+        let d_byte = inserted.end.byte as i64 - original.end.byte as i64;
+        let new_line = if d_line >= 0 {
+            pos.line.saturating_add(d_line as u32)
+        } else {
+            pos.line.saturating_sub((-d_line) as u32)
+        };
+        let new_byte = if d_line == 0 {
+            if d_byte >= 0 {
+                pos.byte.saturating_add(d_byte as u32)
+            } else {
+                pos.byte.saturating_sub((-d_byte) as u32)
+            }
+        } else {
+            pos.byte
+        };
+        return Position::new(new_line, new_byte);
+    }
+
+    if pos < original.start {
+        return pos;
+    }
+
+    if pos == original.start {
+        inserted.start
+    } else {
+        inserted.end
+    }
+}
+
 impl Default for Buffer {
     fn default() -> Self {
         Self::empty()
@@ -589,5 +635,208 @@ mod tests {
         assert_eq!(inverse.delta.start_byte, 1);
         assert_eq!(inverse.delta.old_end_byte, 3);
         assert_eq!(inverse.delta.new_end_byte, 1);
+    }
+
+    // ---- owner-write-caret.md §8: transform_position tests ----
+
+    #[test]
+    fn transform_pos_before_is_unchanged() {
+        let edit = AppliedEdit {
+            original_range: Range::new(Position::new(1, 0), Position::new(1, 5)),
+            inserted_range: Range::new(Position::new(1, 0), Position::new(1, 3)),
+            replaced_text: "hello".into(),
+            inserted_text: "hi".into(),
+            // delta is irrelevant for transform
+            delta: EditDelta {
+                start_byte: 0,
+                old_end_byte: 0,
+                new_end_byte: 0,
+                start_position: Position::ZERO,
+                old_end_position: Position::ZERO,
+                new_end_position: Position::ZERO,
+            },
+        };
+        assert_eq!(
+            transform_position(Position::new(0, 10), &edit),
+            Position::new(0, 10)
+        );
+    }
+
+    #[test]
+    fn transform_pos_at_or_after_end_shifts_by_delta() {
+        // Insert at (1, 0) with delta +2 lines +0 byte
+        let edit = AppliedEdit {
+            original_range: Range::new(Position::new(1, 0), Position::new(1, 0)),
+            inserted_range: Range::new(Position::new(1, 0), Position::new(3, 0)),
+            replaced_text: String::new(),
+            inserted_text: "a\nb\nc".into(),
+            delta: EditDelta {
+                start_byte: 0,
+                old_end_byte: 0,
+                new_end_byte: 0,
+                start_position: Position::ZERO,
+                old_end_position: Position::ZERO,
+                new_end_position: Position::ZERO,
+            },
+        };
+        // Caret at (5, 3) → shifted by +2 lines → (7, 3)
+        assert_eq!(
+            transform_position(Position::new(5, 3), &edit),
+            Position::new(7, 3)
+        );
+    }
+
+    #[test]
+    fn transform_pos_at_or_after_end_shifts_byte_on_same_line() {
+        let edit = AppliedEdit {
+            original_range: Range::new(Position::new(0, 2), Position::new(0, 2)),
+            inserted_range: Range::new(Position::new(0, 2), Position::new(0, 5)),
+            replaced_text: String::new(),
+            inserted_text: "abc".into(),
+            delta: EditDelta {
+                start_byte: 0,
+                old_end_byte: 0,
+                new_end_byte: 0,
+                start_position: Position::ZERO,
+                old_end_position: Position::ZERO,
+                new_end_position: Position::ZERO,
+            },
+        };
+        // Insert "abc" at byte 2. Caret at byte 4 → shifted to byte 7
+        assert_eq!(
+            transform_position(Position::new(0, 4), &edit),
+            Position::new(0, 7)
+        );
+    }
+
+    #[test]
+    fn transform_pos_strictly_inside_clamps_to_end() {
+        let edit = AppliedEdit {
+            original_range: Range::new(Position::new(0, 1), Position::new(0, 5)),
+            inserted_range: Range::new(Position::new(0, 1), Position::new(0, 2)),
+            replaced_text: "ello".into(),
+            inserted_text: "x".into(),
+            delta: EditDelta {
+                start_byte: 0,
+                old_end_byte: 0,
+                new_end_byte: 0,
+                start_position: Position::ZERO,
+                old_end_position: Position::ZERO,
+                new_end_position: Position::ZERO,
+            },
+        };
+        // Caret inside "ello" → clamped to end of "x" = (0, 2)
+        assert_eq!(
+            transform_position(Position::new(0, 3), &edit),
+            Position::new(0, 2)
+        );
+    }
+
+    #[test]
+    fn transform_pos_at_start_of_non_empty_range_stays() {
+        let edit = AppliedEdit {
+            original_range: Range::new(Position::new(0, 1), Position::new(0, 5)),
+            inserted_range: Range::new(Position::new(0, 1), Position::new(0, 2)),
+            replaced_text: "ello".into(),
+            inserted_text: "x".into(),
+            delta: EditDelta {
+                start_byte: 0,
+                old_end_byte: 0,
+                new_end_byte: 0,
+                start_position: Position::ZERO,
+                old_end_position: Position::ZERO,
+                new_end_position: Position::ZERO,
+            },
+        };
+        // Caret at start of "ello" → stays at start of "x" = (0, 1)
+        assert_eq!(
+            transform_position(Position::new(0, 1), &edit),
+            Position::new(0, 1)
+        );
+    }
+
+    #[test]
+    fn transform_pos_insertion_at_cursor_rides_forward() {
+        // Insert at the caret position (empty range, pos == original.start == original.end)
+        let edit = AppliedEdit {
+            original_range: Range::new(Position::new(0, 2), Position::new(0, 2)),
+            inserted_range: Range::new(Position::new(0, 2), Position::new(0, 5)),
+            replaced_text: String::new(),
+            inserted_text: "XYZ".into(),
+            delta: EditDelta {
+                start_byte: 0,
+                old_end_byte: 0,
+                new_end_byte: 0,
+                start_position: Position::ZERO,
+                old_end_position: Position::ZERO,
+                new_end_position: Position::ZERO,
+            },
+        };
+        // Caret at (0, 2) — the insertion point — rides forward to (0, 5)
+        assert_eq!(
+            transform_position(Position::new(0, 2), &edit),
+            Position::new(0, 5)
+        );
+    }
+
+    #[test]
+    fn transform_pos_deletion_spanning_caret_clamps_to_end() {
+        let edit = AppliedEdit {
+            original_range: Range::new(Position::new(0, 1), Position::new(0, 10)),
+            inserted_range: Range::new(Position::new(0, 1), Position::new(0, 1)),
+            replaced_text: "bcdefghij".into(),
+            inserted_text: String::new(),
+            delta: EditDelta {
+                start_byte: 0,
+                old_end_byte: 0,
+                new_end_byte: 0,
+                start_position: Position::ZERO,
+                old_end_position: Position::ZERO,
+                new_end_position: Position::ZERO,
+            },
+        };
+        // Caret at (0, 5) inside deleted range → clamped to (0, 1)
+        assert_eq!(
+            transform_position(Position::new(0, 5), &edit),
+            Position::new(0, 1)
+        );
+    }
+
+    #[test]
+    fn transform_pos_batch_applies_left_to_right() {
+        let edit1 = AppliedEdit {
+            original_range: Range::new(Position::new(0, 5), Position::new(0, 5)),
+            inserted_range: Range::new(Position::new(0, 5), Position::new(0, 8)),
+            replaced_text: String::new(),
+            inserted_text: "abc".into(),
+            delta: EditDelta {
+                start_byte: 0,
+                old_end_byte: 0,
+                new_end_byte: 0,
+                start_position: Position::ZERO,
+                old_end_position: Position::ZERO,
+                new_end_position: Position::ZERO,
+            },
+        };
+        let edit2 = AppliedEdit {
+            original_range: Range::new(Position::new(0, 0), Position::new(0, 0)),
+            inserted_range: Range::new(Position::new(0, 0), Position::new(0, 2)),
+            replaced_text: String::new(),
+            inserted_text: "XY".into(),
+            delta: EditDelta {
+                start_byte: 0,
+                old_end_byte: 0,
+                new_end_byte: 0,
+                start_position: Position::ZERO,
+                old_end_position: Position::ZERO,
+                new_end_position: Position::ZERO,
+            },
+        };
+        // Caret at (0, 3) before batch.
+        // After edit1 (insert "abc" at byte 5 → pos unaffected since pos < 5).
+        // After edit2 (insert "XY" at byte 0 → pos shifts by +2 bytes).
+        let pos = transform_position(Position::new(0, 3), &edit1);
+        let pos = transform_position(pos, &edit2);
+        assert_eq!(pos, Position::new(0, 5));
     }
 }

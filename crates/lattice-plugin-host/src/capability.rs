@@ -259,11 +259,7 @@ mod tests {
 
     #[test]
     fn editor_capabilities_flow_through_unchanged() {
-        let m = PluginManifest::new(
-            "x",
-            vec![],
-            CapabilitySet::TREE_SITTER | CapabilitySet::LSP,
-        );
+        let m = PluginManifest::new("x", vec![], CapabilitySet::TREE_SITTER | CapabilitySet::LSP);
         let out = grant(&m, TrustTier::Bundled);
         assert_eq!(
             out.grant.editor,

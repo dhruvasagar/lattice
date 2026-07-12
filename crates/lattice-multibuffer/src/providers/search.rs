@@ -33,8 +33,8 @@ use lattice_core::{BufferFlags, BufferId};
 use lattice_grammar::{CommandRegistry, CommandRegistryHandle};
 use lattice_mode::{
     ActionContext, ActionHandlerRegistration, ActionHandlerRegistryHandle, CapabilitySet, Keymap,
-    KeymapEntry, LifecycleFuture, Mode, ModeActivator, ModeContext, ModeId, ModeKind,
-    ModeRegistry, ServiceRegistry, keymap_entry,
+    KeymapEntry, LifecycleFuture, Mode, ModeActivator, ModeContext, ModeId, ModeKind, ModeRegistry,
+    ServiceRegistry, keymap_entry,
 };
 use lattice_runtime::{Document, EventBus, spawn_document};
 use tokio::sync::mpsc;
@@ -279,7 +279,12 @@ impl ProjectSearchService for InMemoryProjectSearchService {
         }
     }
     fn source_path(&self, view: BufferId, source: BufferId) -> Option<PathBuf> {
-        self.state(view)?.read().ok()?.source_paths.get(&source).cloned()
+        self.state(view)?
+            .read()
+            .ok()?
+            .source_paths
+            .get(&source)
+            .cloned()
     }
     fn find_source_for_path(&self, view: BufferId, path: &Path) -> Option<BufferId> {
         let state = self.state(view)?;
@@ -494,20 +499,18 @@ impl Mode for ProjectSearchMultibufferMode {
             // registry handles + events use lattice_core::BufferId. Convert.
             let proto_view_id = ctx.buffer_id();
             let view_id = lattice_core::BufferId(proto_view_id.raw() as u32);
-            let mb_registry_arc =
-                ctx.service::<MultibufferRegistryHandle>().ok_or_else(|| {
-                    lattice_mode::ModeActivationError::MissingCapability {
-                        mode: ProjectSearchMultibufferMode::mode_id(),
-                        missing: CapabilitySet::empty(),
-                    }
-                })?;
+            let mb_registry_arc = ctx.service::<MultibufferRegistryHandle>().ok_or_else(|| {
+                lattice_mode::ModeActivationError::MissingCapability {
+                    mode: ProjectSearchMultibufferMode::mode_id(),
+                    missing: CapabilitySet::empty(),
+                }
+            })?;
             // Unwrap the outer Arc that `ServiceRegistry::get`
             // wraps the handle in.
             let mb_registry: MultibufferRegistryHandle = (*mb_registry_arc).clone();
             let bus = ctx.events_handle();
 
-            let (batch_tx, mut batch_rx) =
-                mpsc::unbounded_channel::<ProjectSearchBatchReady>();
+            let (batch_tx, mut batch_rx) = mpsc::unbounded_channel::<ProjectSearchBatchReady>();
             let (done_tx, mut done_rx) = mpsc::unbounded_channel::<ProjectSearchCompleted>();
             let (progress_tx, mut progress_rx) =
                 mpsc::unbounded_channel::<ProjectSearchProgressUpdated>();
@@ -553,8 +556,7 @@ impl Mode for ProjectSearchMultibufferMode {
                 ctx.service::<ActionHandlerRegistryHandle>(),
             ) {
                 let cmd_registry: &CommandRegistry = &**cmd_registry_arc;
-                let action_handlers: ActionHandlerRegistryHandle =
-                    (*action_handlers_arc).clone();
+                let action_handlers: ActionHandlerRegistryHandle = (*action_handlers_arc).clone();
                 if let Some(jump_command_id) =
                     cmd_registry.id_by_name("action:search-jump-to-source")
                 {
@@ -642,9 +644,7 @@ impl Mode for ProjectSearchMultibufferMode {
                 // `ProjectSearchRefreshed`). Returns `None` —
                 // no Effect needed since the work is done
                 // synchronously inside the closure.
-                if let Some(refresh_command_id) =
-                    cmd_registry.id_by_name("action:search-refresh")
-                {
+                if let Some(refresh_command_id) = cmd_registry.id_by_name("action:search-refresh") {
                     let mb_registry_for_refresh = mb_registry.clone();
                     let search_svc_for_refresh: Option<ProjectSearchServiceHandle> =
                         search_svc_arc.as_ref().map(|s| (**s).clone());
@@ -668,10 +668,7 @@ impl Mode for ProjectSearchMultibufferMode {
                                 }
                             }
                             // Clear + reset.
-                            view.replace_excerpts(
-                                std::collections::HashMap::new(),
-                                Vec::new(),
-                            );
+                            view.replace_excerpts(std::collections::HashMap::new(), Vec::new());
                             view.set_headerline(HeaderlineStatus::InProgress {
                                 label: "Refreshing search".into(),
                                 count: Some(0),
@@ -985,7 +982,14 @@ pub fn project_search(
         .state(view_id)
         .and_then(|s| s.read().ok().map(|s| Arc::clone(&s.cancel_token)))
         .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
-    let task = spawn_scan_task(view_id, query, options, search_svc.clone(), events.clone(), cancel);
+    let task = spawn_scan_task(
+        view_id,
+        query,
+        options,
+        search_svc.clone(),
+        events.clone(),
+        cancel,
+    );
     search_svc.attach_task(view_id, task);
 
     Some(view_id)
@@ -1024,12 +1028,7 @@ async fn run_scan(
     let matcher = match build_matcher(&query, &options) {
         Ok(m) => m,
         Err(e) => {
-            service.set_status(
-                view,
-                SearchStatus::Failed {
-                    reason: e.clone(),
-                },
-            );
+            service.set_status(view, SearchStatus::Failed { reason: e.clone() });
             events.publish_typed(ProjectSearchCompleted {
                 view,
                 total_hits: 0,
@@ -1099,7 +1098,9 @@ fn run_scan_blocking(
         if cancel.load(Ordering::Relaxed) {
             return;
         }
-        let Ok(entry) = entry else { continue; };
+        let Ok(entry) = entry else {
+            continue;
+        };
         if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
             continue;
         }
@@ -1125,7 +1126,10 @@ fn run_scan_blocking(
             });
         }
         if files_scanned % progress_interval == 0 {
-            events.publish_typed(ProjectSearchProgressUpdated { view, files_scanned });
+            events.publish_typed(ProjectSearchProgressUpdated {
+                view,
+                files_scanned,
+            });
         }
     }
 
@@ -1312,10 +1316,7 @@ pub fn register_search_ex_command(registry: &mut CommandRegistry) {
 /// Convenience wrapper that calls both helpers. Useful for
 /// tests that wire mode + service together; production boot
 /// uses the split helpers.
-pub fn register_project_search(
-    mode_registry: &mut ModeRegistry,
-    services: &mut ServiceRegistry,
-) {
+pub fn register_project_search(mode_registry: &mut ModeRegistry, services: &mut ServiceRegistry) {
     register_project_search_mode(mode_registry);
     register_project_search_service(services);
 }
@@ -1461,10 +1462,7 @@ mod tests {
             None,
         );
         // A second view with the same path doesn't see source-a.
-        assert_eq!(
-            svc.find_source_for_path(BufferId(2), &path_a),
-            None,
-        );
+        assert_eq!(svc.find_source_for_path(BufferId(2), &path_a), None,);
     }
 
     #[test]
@@ -1510,7 +1508,10 @@ mod tests {
         events.subscribe_typed(tx);
 
         let svc = InMemoryProjectSearchService::handle();
-        svc.set_state(view, ProjectSearchState::scanning("x".into(), ProjectSearchOptions::default()));
+        svc.set_state(
+            view,
+            ProjectSearchState::scanning("x".into(), ProjectSearchOptions::default()),
+        );
         let cancel = svc
             .state(view)
             .and_then(|s| s.read().ok().map(|s| Arc::clone(&s.cancel_token)))
@@ -1544,7 +1545,10 @@ mod tests {
         let svc = InMemoryProjectSearchService::handle();
         let view = BufferId(88);
 
-        svc.set_state(view, ProjectSearchState::scanning("x".into(), ProjectSearchOptions::default()));
+        svc.set_state(
+            view,
+            ProjectSearchState::scanning("x".into(), ProjectSearchOptions::default()),
+        );
         let old_cancel = svc
             .state(view)
             .and_then(|s| s.read().ok().map(|s| Arc::clone(&s.cancel_token)))
@@ -1552,14 +1556,20 @@ mod tests {
 
         // Simulate the refresh: flip old token, install fresh state.
         old_cancel.store(true, Ordering::Relaxed);
-        svc.set_state(view, ProjectSearchState::scanning("x".into(), ProjectSearchOptions::default()));
+        svc.set_state(
+            view,
+            ProjectSearchState::scanning("x".into(), ProjectSearchOptions::default()),
+        );
         let new_cancel = svc
             .state(view)
             .and_then(|s| s.read().ok().map(|s| Arc::clone(&s.cancel_token)))
             .unwrap();
 
         assert!(old_cancel.load(Ordering::Relaxed), "old token must be set");
-        assert!(!new_cancel.load(Ordering::Relaxed), "fresh token must start unset");
+        assert!(
+            !new_cancel.load(Ordering::Relaxed),
+            "fresh token must start unset"
+        );
         assert!(
             !Arc::ptr_eq(&old_cancel, &new_cancel),
             "refresh must allocate a distinct cancel token"
@@ -1631,7 +1641,10 @@ mod tests {
             context_lines: 0,
         };
         let svc = InMemoryProjectSearchService::handle();
-        svc.set_state(view, ProjectSearchState::scanning("needle".into(), options.clone()));
+        svc.set_state(
+            view,
+            ProjectSearchState::scanning("needle".into(), options.clone()),
+        );
 
         let handle = spawn_scan_task(
             view,

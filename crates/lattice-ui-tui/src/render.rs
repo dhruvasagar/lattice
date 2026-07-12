@@ -315,11 +315,7 @@ impl<'a> FrameView<'a> {
 /// cursor-anchored — position-dependent, unlike the floating popup whose
 /// geometry the runtime reconstructs (`popup_feedback_inner_dims`).
 #[must_use]
-pub fn draw_frame(
-    frame: &mut Frame,
-    app: &App,
-    snap: &DocumentSnapshot,
-) -> Option<(u32, u32)> {
+pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) -> Option<(u32, u32)> {
     // Vertico-style layout (DESIGN.md §5.11.3, §5.9.7): when the
     // cmdline completion popup OR the picker is open in
     // minibuffer mode, an extra row band sits below the cmdline
@@ -452,8 +448,7 @@ pub fn draw_frame(
             draw_insert_completion_docs_popup(frame, chunks[1], app, snap);
             // PU.5c: feed the docs popup's inner geometry back to the host
             // (computed here with the exact `chunks[1]` it painted into).
-            completion_docs_dims =
-                completion_docs_feedback_inner_dims(app, snap, chunks[1]);
+            completion_docs_dims = completion_docs_feedback_inner_dims(app, snap, chunks[1]);
         }
     }
     completion_docs_dims
@@ -527,7 +522,11 @@ impl ChromeRows {
 /// local tabline recomputation either — callers pass a `buffer_height`
 /// that already excludes it via this function.
 pub(crate) fn chrome_rows(app: &App) -> ChromeRows {
-    let tabline = if app.render_state.load().tabs.visible { 1 } else { 0 };
+    let tabline = if app.render_state.load().tabs.visible {
+        1
+    } else {
+        0
+    };
     let picker_is_minibuffer = picker_display_is_minibuffer(app);
     let picker_rows = if picker_is_minibuffer {
         app.picker_state()
@@ -593,8 +592,14 @@ fn draw_insert_completion_popup(
     // the helper from the hover popup path.
     let pane_rect = active_pane_content_rect(app, buffer_area).unwrap_or(buffer_area);
     let view = FrameView::from_app(app);
-    let anchor_screen =
-        cursor_screen_position_at(&view, snap, pane_rect, app.ad().cursor, app.ad().scroll);
+    let anchor_screen = cursor_screen_position_at(
+        &view,
+        snap,
+        pane_rect,
+        app.ad().cursor,
+        app.ad().scroll,
+        app.panes().tree.active().id,
+    );
     let (anchor_x, anchor_y) = anchor_screen.unwrap_or((buffer_area.x, buffer_area.y));
     // Below if there's room, else above.
     let area_bottom = buffer_area.y + buffer_area.height;
@@ -731,19 +736,34 @@ pub(crate) fn filter_chord_entries(
 ) -> Vec<FilterChordEntry> {
     let mut out: Vec<FilterChordEntry> = Vec::new();
     if sources_present.contains(lattice_completion::insert::BufferWordsSource::ID) {
-        out.push(FilterChordEntry { key: "b", label: "buf" });
+        out.push(FilterChordEntry {
+            key: "b",
+            label: "buf",
+        });
     }
     if sources_present.contains(lattice_completion::insert::LSP_COMPLETION_SOURCE_ID) {
-        out.push(FilterChordEntry { key: "o", label: "lsp" });
+        out.push(FilterChordEntry {
+            key: "o",
+            label: "lsp",
+        });
     }
     if sources_present.contains(lattice_completion::insert::PATH_SOURCE_ID) {
-        out.push(FilterChordEntry { key: "f", label: "path" });
+        out.push(FilterChordEntry {
+            key: "f",
+            label: "path",
+        });
     }
     if sources_present.contains(lattice_completion::insert::TREE_SITTER_SYMBOL_SOURCE_ID) {
-        out.push(FilterChordEntry { key: "t", label: "ts" });
+        out.push(FilterChordEntry {
+            key: "t",
+            label: "ts",
+        });
     }
     if sources_present.contains(lattice_completion::insert::SNIPPET_SOURCE_ID) {
-        out.push(FilterChordEntry { key: "s", label: "snip" });
+        out.push(FilterChordEntry {
+            key: "s",
+            label: "snip",
+        });
     }
     out
 }
@@ -751,10 +771,7 @@ pub(crate) fn filter_chord_entries(
 /// 2026-05-27: render the filter-chord footer string with
 /// width adaption — full form if it fits, compact otherwise,
 /// then prune from the right.
-pub(crate) fn render_filter_chord_footer(
-    entries: &[FilterChordEntry],
-    width: u16,
-) -> String {
+pub(crate) fn render_filter_chord_footer(entries: &[FilterChordEntry], width: u16) -> String {
     if entries.is_empty() {
         return String::new();
     }
@@ -853,8 +870,14 @@ fn completion_docs_popup_rect(
     // Anchor: same anchor as the candidate popup.
     let pane_rect = active_pane_content_rect(app, buffer_area).unwrap_or(buffer_area);
     let view = FrameView::from_app(app);
-    let anchor_screen =
-        cursor_screen_position_at(&view, snap, pane_rect, app.ad().cursor, app.ad().scroll);
+    let anchor_screen = cursor_screen_position_at(
+        &view,
+        snap,
+        pane_rect,
+        app.ad().cursor,
+        app.ad().scroll,
+        app.panes().tree.active().id,
+    );
     let (anchor_x, anchor_y) = anchor_screen.unwrap_or((buffer_area.x, buffer_area.y));
     // Candidate popup geometry (mirrors `draw_insert_completion_popup`).
     let cand_width: u16 = 60u16.min(buffer_area.width.saturating_sub(2)).max(30);
@@ -1163,7 +1186,16 @@ fn draw_completion_popup(frame: &mut Frame, popup_area: Rect, app: &App) {
         .enumerate()
         .skip(scroll)
         .take(visible_count)
-        .map(|(i, c)| candidate_to_line(c, i == state.selected, display_col_chars, &columns, &cells_rs.resolved_theme, &cells_rs.theme_ids))
+        .map(|(i, c)| {
+            candidate_to_line(
+                c,
+                i == state.selected,
+                display_col_chars,
+                &columns,
+                &cells_rs.resolved_theme,
+                &cells_rs.theme_ids,
+            )
+        })
         .collect();
     let para = Paragraph::new(visible);
     frame.render_widget(para, inner);
@@ -1300,10 +1332,7 @@ fn candidate_to_line<'a>(
             }
             // Find this row's annotation for the column's
             // category. None ⇒ blank cell of the full width.
-            let ann_for_col = c
-                .annotations
-                .iter()
-                .find(|a| a.category() == category);
+            let ann_for_col = c.annotations.iter().find(|a| a.category() == category);
             match ann_for_col {
                 Some(ann) => {
                     let text_chars = ann.display_text().chars().count();
@@ -1321,10 +1350,7 @@ fn candidate_to_line<'a>(
                                     .fg
                                     .map(crate::theme::host_color_to_ratatui)
                                     .unwrap_or(Color::DarkGray);
-                                spans.push(Span::styled(
-                                    seg.text.to_string(),
-                                    row_style.fg(fg),
-                                ));
+                                spans.push(Span::styled(seg.text.to_string(), row_style.fg(fg)));
                             }
                         }
                         _ => {
@@ -1579,7 +1605,16 @@ fn draw_picker_candidates(frame: &mut Frame, area: Rect, app: &App) {
         .enumerate()
         .skip(scroll)
         .take(visible_count)
-        .map(|(i, c)| candidate_to_line(c, i == p.selected, display_col_chars, &columns, &cells_rs.resolved_theme, &cells_rs.theme_ids))
+        .map(|(i, c)| {
+            candidate_to_line(
+                c,
+                i == p.selected,
+                display_col_chars,
+                &columns,
+                &cells_rs.resolved_theme,
+                &cells_rs.theme_ids,
+            )
+        })
         .collect();
     let para = Paragraph::new(visible);
     frame.render_widget(para, area);
@@ -1726,7 +1761,16 @@ fn draw_picker_overlay(frame: &mut Frame, buffer_area: Rect, app: &App) {
         .enumerate()
         .skip(scroll)
         .take(visible_count)
-        .map(|(i, c)| candidate_to_line(c, i == p.selected, display_col_chars, &columns, &cells_rs.resolved_theme, &cells_rs.theme_ids))
+        .map(|(i, c)| {
+            candidate_to_line(
+                c,
+                i == p.selected,
+                display_col_chars,
+                &columns,
+                &cells_rs.resolved_theme,
+                &cells_rs.theme_ids,
+            )
+        })
         .collect();
     let para = Paragraph::new(visible);
     frame.render_widget(para, cand_area);
@@ -1800,7 +1844,16 @@ fn draw_completion_overlay(frame: &mut Frame, buffer_area: Rect, app: &App) {
         .enumerate()
         .skip(scroll)
         .take(visible_count)
-        .map(|(i, c)| candidate_to_line(c, i == state.selected, display_col_chars, &columns, &cells_rs.resolved_theme, &cells_rs.theme_ids))
+        .map(|(i, c)| {
+            candidate_to_line(
+                c,
+                i == state.selected,
+                display_col_chars,
+                &columns,
+                &cells_rs.resolved_theme,
+                &cells_rs.theme_ids,
+            )
+        })
         .collect();
     let para = Paragraph::new(visible);
     frame.render_widget(para, inner);
@@ -1874,10 +1927,18 @@ fn draw_help_overlay(frame: &mut Frame, buffer_area: Rect, app: &App, snap: &Doc
     // `app.theme.popup_{title,hint}`) — same source the GPUI peer uses, so
     // the accent is themeable and identical across peers. GPUI additionally
     // bumps the title font size; no separator rule on either peer.
-    let block = Block::default().borders(Borders::ALL).title(Line::from(vec![
-        Span::styled(format!(" {} ", help.title), app.theme.popup_title),
-        Span::styled("Esc to dismiss ", app.theme.popup_hint),
-    ]));
+    // PU-A.4: title = the popup buffer's registry name (the synthetic
+    // Document name slot), not `help.title` — de-Help-ifies the chrome to
+    // match the GPUI peer, which sources it from `name_of` since PU.1b-4b.
+    // `help.title` == this name today (`register_help_document` sets
+    // `name: Some(buffer.title)`), so the swap is invisible to the user.
+    let title = app.buffers().registry.name_of(popup_id).unwrap_or_default();
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(Line::from(vec![
+            Span::styled(format!(" {} ", title), app.theme.popup_title),
+            Span::styled("Esc to dismiss ", app.theme.popup_hint),
+        ]));
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
 
@@ -1952,6 +2013,11 @@ fn draw_help_overlay(frame: &mut Frame, buffer_area: Rect, app: &App, snap: &Doc
             inner,
             app.ad().cursor,
             app.ad().scroll,
+            // PIC.1: the popup caret walks the POPUP pane's matrices —
+            // the same source `compose_pane_lines` uses for the body +
+            // cursorline above (`ctx.pane_id`). Reading the active
+            // document pane instead drifts the caret past the cursorline.
+            lattice_core::ui::pane::PaneId::POPUP,
         )
     {
         frame.set_cursor_position((screen_x, screen_y));
@@ -1979,10 +2045,7 @@ const WRAP_CONT_MARKER: &str = "↪";
 /// source line occupies. The continuation marker lives in the
 /// gutter (see the compose loop), not in the body, so every segment
 /// uses the full content width.
-fn split_body_into_segments(
-    body: Vec<Span<'static>>,
-    width: usize,
-) -> Vec<Vec<Span<'static>>> {
+fn split_body_into_segments(body: Vec<Span<'static>>, width: usize) -> Vec<Vec<Span<'static>>> {
     if width == 0 {
         return vec![body];
     }
@@ -2127,7 +2190,14 @@ fn position_help_popup(
         }
     };
     let view = FrameView::from_app(app);
-    let Some((cx, cy)) = cursor_screen_position_at(&view, snap, pane_area, cursor, scroll) else {
+    let Some((cx, cy)) = cursor_screen_position_at(
+        &view,
+        snap,
+        pane_area,
+        cursor,
+        scroll,
+        app.panes().tree.active().id,
+    ) else {
         return centered();
     };
     // Vertical: prefer below the cursor row; if the popup wouldn't
@@ -2548,10 +2618,8 @@ fn draw_terminal_pane(
     use ratatui::text::{Line, Span};
     use ratatui::widgets::Paragraph;
     let rs = app.render_state.load();
-    let (snap_arc, current_match, mut visual, all_matches, mut nav_cursor) = match rs
-        .buffers
-        .registry
-        .with_terminal(pane.buffer_id, |t| {
+    let (snap_arc, current_match, mut visual, all_matches, mut nav_cursor) =
+        match rs.buffers.registry.with_terminal(pane.buffer_id, |t| {
             (
                 t.snapshot.load_full(),
                 t.current_match,
@@ -2560,13 +2628,13 @@ fn draw_terminal_pane(
                 t.nav_cursor,
             )
         }) {
-        Some(p) => p,
-        None => {
-            let p = Paragraph::new(Line::from(Span::raw("(terminal buffer unavailable)")));
-            frame.render_widget(p, area);
-            return;
-        }
-    };
+            Some(p) => p,
+            None => {
+                let p = Paragraph::new(Line::from(Span::raw("(terminal buffer unavailable)")));
+                frame.render_widget(p, area);
+                return;
+            }
+        };
     // T-clean-1 Phase A.2 (2026-05-28): for the active pane,
     // prefer the publisher's derived values from
     // `rs.active_document.load().terminal_nav_cursor` /
@@ -2688,8 +2756,14 @@ fn draw_terminal_pane(
     // without the active gate. Out-of-area positions are clamped
     // so a stale snapshot can't park the cursor outside the pane.
     if is_active && cursor_visible {
-        let screen_x = area.x.saturating_add(cursor_col).min(area.x + area.width.saturating_sub(1));
-        let screen_y = area.y.saturating_add(cursor_row).min(area.y + area.height.saturating_sub(1));
+        let screen_x = area
+            .x
+            .saturating_add(cursor_col)
+            .min(area.x + area.width.saturating_sub(1));
+        let screen_y = area
+            .y
+            .saturating_add(cursor_row)
+            .min(area.y + area.height.saturating_sub(1));
         frame.set_cursor_position((screen_x, screen_y));
     }
 }
@@ -2831,25 +2905,55 @@ pub fn build_pane_render_registry() -> crate::pane_render::PaneRenderRegistry {
 fn draw_pane_separators(frame: &mut Frame, rects: &[(usize, crate::pane::PaneRect)], app: &App) {
     let glyph = app.theme.pane_separator_vertical;
     let style = app.theme.pane_separator;
+    for (col, y_start, y_end) in separator_segments(rects) {
+        for row in y_start..y_end {
+            let r = Rect {
+                x: col,
+                y: row,
+                width: 1,
+                height: 1,
+            };
+            let para = Paragraph::new(Line::from(Span::styled(glyph.to_string(), style)));
+            frame.render_widget(para, r);
+        }
+    }
+}
+
+/// Compute the vertical separator segments between horizontally
+/// adjacent panes. Each segment is `(col, y_start, y_end)` (half-open
+/// row range) painted on the boundary column shared by a left pane's
+/// right edge and a right pane's left edge.
+///
+/// The separator is drawn over the *vertical overlap* of the two
+/// panes, NOT the full height of either. This is what lets a column
+/// that has itself been sub-split (e.g. `:vsplit` then `:split` the
+/// left pane) still get a continuous divider against the neighbour:
+/// each stacked sub-pane contributes the segment covering its own
+/// rows. The earlier "same band" gate (`a.y == b.y && a.height ==
+/// b.height`) required identical rects and silently dropped the
+/// divider whenever one side was sub-split.
+fn separator_segments(rects: &[(usize, crate::pane::PaneRect)]) -> Vec<(u16, u16, u16)> {
+    let mut segments = Vec::new();
     for (i, (_, a)) in rects.iter().enumerate() {
         for (_, b) in rects.iter().skip(i + 1) {
-            let same_band = a.y == b.y && a.height == b.height;
-            let adjacent = a.x + a.width == b.x;
-            if same_band && adjacent {
-                let col = a.x + a.width - 1;
-                for row in a.y..a.y + a.height {
-                    let r = Rect {
-                        x: col,
-                        y: row,
-                        width: 1,
-                        height: 1,
-                    };
-                    let para = Paragraph::new(Line::from(Span::styled(glyph.to_string(), style)));
-                    frame.render_widget(para, r);
-                }
+            // Identify which pane sits directly to the left of the
+            // other (order in `rects` is tree-walk order, not sorted
+            // by x), so both `a|b` and `b|a` adjacencies are caught.
+            let (left, right) = if a.x + a.width == b.x {
+                (a, b)
+            } else if b.x + b.width == a.x {
+                (b, a)
+            } else {
+                continue;
+            };
+            let y_start = left.y.max(right.y);
+            let y_end = (left.y + left.height).min(right.y + right.height);
+            if y_start < y_end {
+                segments.push((left.x + left.width - 1, y_start, y_end));
             }
         }
     }
+    segments
 }
 
 /// One-row status line at the bottom of a pane (vim's "statusline"
@@ -2953,7 +3057,9 @@ fn modeline_spans(
                 // the published store, resolved per the descriptor's
                 // scope against this pane's buffer (PaneLocal) or the
                 // global slot.
-                snap.resolve(el, pane.buffer_id).cloned().unwrap_or_default()
+                snap.resolve(el, pane.buffer_id)
+                    .cloned()
+                    .unwrap_or_default()
             };
             if content.is_empty() {
                 continue;
@@ -3108,12 +3214,7 @@ fn compose_modeline_segments(
 /// FULL buffer-intrinsic decoration set (syntax, semantic tokens,
 /// inlay hints, diagnostics) dimmed, per the design's §Render
 /// contract.
-fn draw_inactive_document(
-    frame: &mut Frame,
-    area: Rect,
-    app: &App,
-    pane: &crate::pane::PaneState,
-) {
+fn draw_inactive_document(frame: &mut Frame, area: Rect, app: &App, pane: &crate::pane::PaneState) {
     // Slice 3c.final.B (group 1): registry lookup via `app.buffers()`.
     let Some(handle) = app.buffers().registry.document_handle(pane.buffer_id) else {
         return;
@@ -3127,8 +3228,7 @@ fn draw_inactive_document(
     // its cursorline — the target line of an LSP-reference / grep preview
     // stays highlighted — resolved from the displayed buffer's `CursorLine`.
     // Ordinary (unfocused) inactive panes never paint a cursorline.
-    let focused_preview =
-        pane.is_previewing() && app.panes().tree.active().id == pane.id;
+    let focused_preview = pane.is_previewing() && app.panes().tree.active().id == pane.id;
     let ctx = PaneComposeCtx {
         is_active: false,
         pane_id: pane.id,
@@ -3148,8 +3248,7 @@ fn draw_inactive_document(
         // return None (identity numbering).
         display_line_numbers: handle.display_line_numbers(),
     };
-    let lines =
-        compose_pane_lines(&view, &snap, area.height as u32, area.width as u32, &ctx);
+    let lines = compose_pane_lines(&view, &snap, area.height as u32, area.width as u32, &ctx);
     frame.render_widget(Paragraph::new(lines), area);
 }
 
@@ -3292,8 +3391,8 @@ fn draw_oil_pane(
         let row_off = row_off.min(area.height.saturating_sub(1) as usize);
         // Both nerd-font and BMP fallback glyphs occupy 2 cells.
         let icon_width = 2;
-        let col_off = (app.ad().cursor.byte as usize + icon_width)
-            .min(area.width.saturating_sub(1) as usize);
+        let col_off =
+            (app.ad().cursor.byte as usize + icon_width).min(area.width.saturating_sub(1) as usize);
         frame.set_cursor_position((area.x + col_off as u16, area.y + row_off as u16));
     }
 }
@@ -3305,10 +3404,7 @@ fn draw_buffer(frame: &mut Frame, area: Rect, app: &App, snap: &DocumentSnapshot
     // Place the buffer-area cursor only when the prompt isn't claiming it.
     // In Command (`:`) and Search (`/`, `?`) modal states the cursor lives
     // in the bottom prompt row -- handled by `draw_command_or_echo`.
-    let prompt_owns_cursor = matches!(
-        app.ad().modal,
-        ModalState::Command | ModalState::Search(_)
-    );
+    let prompt_owns_cursor = matches!(app.ad().modal, ModalState::Command | ModalState::Search(_));
     if !prompt_owns_cursor {
         let view = FrameView::from_app(app);
         if let Some((screen_x, screen_y)) = cursor_screen_position(&view, snap, area) {
@@ -3415,7 +3511,6 @@ fn draw_command_or_echo(frame: &mut Frame, area: Rect, app: &App) {
     let para = Paragraph::new(Line::from(vec![Span::styled(msg.text.clone(), style)]));
     frame.render_widget(para, area);
 }
-
 
 /// Produce the visible buffer lines as `ratatui::text::Line`s, including
 /// gutter (line numbers), tab expansion, and styled spans pulled from
@@ -3629,17 +3724,15 @@ pub(crate) fn compose_pane_lines(
         rs.virtual_rows
             .matrix_for_pane(ctx.pane_id)
             .map(|cell| cell.load_full())
-            .unwrap_or_else(|| {
-                std::sync::Arc::new(lattice_cells::VirtualRowMatrix::empty())
-            })
+            .unwrap_or_else(|| std::sync::Arc::new(lattice_cells::VirtualRowMatrix::empty()))
     };
-    // Sticky rows occupy the top of the pane; shrink the visible window
-    // so document line 0 (at scroll=0) always renders BELOW the header
-    // and the bottom of the viewport doesn't lose content silently.
-    let sticky_count = virtual_rows_matrix.sticky_rows().count();
-    if sticky_count > 0 {
-        visible.truncate(visible.len().saturating_sub(sticky_count));
-    }
+    // Sticky rows occupy the top of the pane, but they are NOT paid for
+    // here: the host reserves them once in the scroll budget
+    // (`ensure_cursor_visible`'s `effective_height`), and the fill loop
+    // below counts the sticky pre-pass rows against `height`. Shrinking
+    // `visible` as well would reserve the row twice and silently delete
+    // the last document line — which, for a buffer whose final line is an
+    // editable prompt (the ACP conversation buffer), is always the prompt.
     let body_col_width = buffer_w;
     // W.4 (soft-wrap): `:set wrap`. When on, the per-line body is
     // kept at full width (truncation below is skipped) so
@@ -3718,8 +3811,7 @@ pub(crate) fn compose_pane_lines(
     // — both now read the maps, not the render-state directly.
     let (diff_gutter, severity_gutter) = {
         use lattice_mode::{
-            DecorationCtx, GutterDecoration, GutterDiffKind, GutterSeverityLevel,
-            ServiceRegistry,
+            DecorationCtx, GutterDecoration, GutterDiffKind, GutterSeverityLevel, ServiceRegistry,
         };
         let mut services = ServiceRegistry::new();
         let rs_deco = app.render_state.load();
@@ -4008,10 +4100,7 @@ pub(crate) fn compose_pane_lines(
         // the active doc → byte-identical.
         use lattice_host::per_buffer_cache::PerBufferCacheExt;
         let rs_st = app.render_state.load();
-        if let Some(cache) = rs_st
-            .lsp
-            .semantic_tokens
-            .get_for(ctx.buffer_id)
+        if let Some(cache) = rs_st.lsp.semantic_tokens.get_for(ctx.buffer_id)
             && view.lsp_semantic_tokens_enabled
         {
             for tok in cache.tokens.iter().filter(|t| t.line == line_idx) {
@@ -4081,14 +4170,17 @@ pub(crate) fn compose_pane_lines(
         // focused pane. The bucket is empty when inactive anyway; the
         // gate also stops the `else` walk from painting the active
         // buffer's matches onto an inactive pane.
-        let bucket_row: Option<&Vec<lattice_host::render_state::RowOverlayQuad>> =
-            (line_idx >= frame_scroll)
-                .then(|| (line_idx - frame_scroll) as usize)
-                .and_then(|idx| active_overlay_quads_for_frame.quads.get(idx));
+        let bucket_row: Option<&Vec<lattice_host::render_state::RowOverlayQuad>> = (line_idx
+            >= frame_scroll)
+            .then(|| (line_idx - frame_scroll) as usize)
+            .and_then(|idx| active_overlay_quads_for_frame.quads.get(idx));
         if ctx.is_active {
             if let Some(row_quads) = bucket_row {
                 for q in row_quads {
-                    if matches!(q.layer, lattice_host::render_state::OverlayLayer::AllMatches) {
+                    if matches!(
+                        q.layer,
+                        lattice_host::render_state::OverlayLayer::AllMatches
+                    ) {
                         let start = (q.source_byte_start as usize).min(line_len);
                         let end = (q.source_byte_end as usize).min(line_len);
                         if start < end {
@@ -4208,8 +4300,12 @@ pub(crate) fn compose_pane_lines(
                 if start >= end {
                     continue;
                 }
-                body =
-                    apply_match_overlay(body, map_ob(start), map_ob(end), document_highlight_style(h.kind, overlay_resolved, overlay_ids));
+                body = apply_match_overlay(
+                    body,
+                    map_ob(start),
+                    map_ob(end),
+                    document_highlight_style(h.kind, overlay_resolved, overlay_ids),
+                );
             }
         }
         // Perf plan A.2 slice A.2b.2: `inlayHint` virtual-text
@@ -4297,7 +4393,10 @@ pub(crate) fn compose_pane_lines(
             if let Some(row_quads) = bucket_row {
                 let mut found_any = false;
                 for q in row_quads {
-                    if matches!(q.layer, lattice_host::render_state::OverlayLayer::Substitute) {
+                    if matches!(
+                        q.layer,
+                        lattice_host::render_state::OverlayLayer::Substitute
+                    ) {
                         let start = (q.source_byte_start as usize).min(line_len);
                         let end = (q.source_byte_end as usize).min(line_len);
                         if start < end {
@@ -4412,18 +4511,15 @@ pub(crate) fn compose_pane_lines(
         // `ctx.buffer_id` so an inactive pane shows ITS buffer's
         // severity glyph (was a blank cell pre-merge). Active pane's
         // id is the active doc → byte-identical.
-        let severity_cell = render_diagnostic_severity_cell(
-            severity_gutter.get(&line_idx).copied(),
-            view,
-        );
+        let severity_cell =
+            render_diagnostic_severity_cell(severity_gutter.get(&line_idx).copied(), view);
         // D.3.d.1: diff sign cell sits LEFT of line numbers
         // (between severity and gutter) — matches the editor
         // convention used by Vim signcolumn, Helix, Zed,
         // VSCode, JetBrains. LSP severity and diff signs
         // occupy adjacent dedicated columns so the two
         // decoration types don't compete (Helix-style).
-        let diff_sign_cell =
-            render_diff_sign_cell(diff_gutter.get(&line_idx).copied(), view);
+        let diff_sign_cell = render_diff_sign_cell(diff_gutter.get(&line_idx).copied(), view);
         // D.3.e: line-background tint. Applied AFTER all other
         // body overlays (whitespace decoration, hlsearch,
         // visual selection, etc.) — the tint sits BEHIND the
@@ -4791,9 +4887,7 @@ fn inlay_hint_style(
         .fg
         .map(crate::theme::host_color_to_ratatui)
         .unwrap_or(Color::DarkGray);
-    TuiStyle::default()
-        .fg(fg)
-        .add_modifier(Modifier::ITALIC)
+    TuiStyle::default().fg(fg).add_modifier(Modifier::ITALIC)
 }
 
 /// L4a.3 (lsp-architecture.md §15): style for the inline end-of-line
@@ -5171,9 +5265,7 @@ fn render_virtual_row(
         })
         .or_else(|| match vrow.kind {
             lattice_cells::VirtualRowKind::DeletionBlock
-            | lattice_cells::VirtualRowKind::Generic => {
-                Some(view.app.theme.diff_deletion_block_bg)
-            }
+            | lattice_cells::VirtualRowKind::Generic => Some(view.app.theme.diff_deletion_block_bg),
             // Filler/Sticky/BrandingBlock: no kind backdrop. The TUI paints
             // the branding cells as its terminal-art treatment (half-block
             // mark); no full-row backdrop behind them.
@@ -5226,7 +5318,10 @@ fn render_virtual_row(
         if let Some(c) = bg {
             pad_style = pad_style.bg(c);
         }
-        spans.push(Span::styled(" ".repeat((body_width - used) as usize), pad_style));
+        spans.push(Span::styled(
+            " ".repeat((body_width - used) as usize),
+            pad_style,
+        ));
     }
     let mut out: Vec<Span<'static>> = Vec::with_capacity(3 + spans.len());
     out.push(severity_blank);
@@ -5280,10 +5375,7 @@ fn diff_tint_bg(
 /// `spans`, preserving each span's foreground colour and
 /// modifiers. Used to apply diff-line backgrounds on top of
 /// syntax-highlighted source content.
-fn apply_diff_tint(
-    spans: Vec<Span<'static>>,
-    bg: Color,
-) -> Vec<Span<'static>> {
+fn apply_diff_tint(spans: Vec<Span<'static>>, bg: Color) -> Vec<Span<'static>> {
     spans
         .into_iter()
         .map(|s| {
@@ -5332,18 +5424,13 @@ fn render_diagnostic_severity_cell(
     };
     let theme = &view.app.theme;
     let (glyph, style) = match level {
-        GutterSeverityLevel::Error => {
-            (theme.diagnostic_error_glyph, theme.diagnostic_error_style)
-        }
-        GutterSeverityLevel::Warning => {
-            (theme.diagnostic_warning_glyph, theme.diagnostic_warning_style)
-        }
-        GutterSeverityLevel::Info => {
-            (theme.diagnostic_info_glyph, theme.diagnostic_info_style)
-        }
-        GutterSeverityLevel::Hint => {
-            (theme.diagnostic_hint_glyph, theme.diagnostic_hint_style)
-        }
+        GutterSeverityLevel::Error => (theme.diagnostic_error_glyph, theme.diagnostic_error_style),
+        GutterSeverityLevel::Warning => (
+            theme.diagnostic_warning_glyph,
+            theme.diagnostic_warning_style,
+        ),
+        GutterSeverityLevel::Info => (theme.diagnostic_info_glyph, theme.diagnostic_info_style),
+        GutterSeverityLevel::Hint => (theme.diagnostic_hint_glyph, theme.diagnostic_hint_style),
     };
     Span::styled(glyph.to_string(), style)
 }
@@ -5805,6 +5892,15 @@ fn buffer_line_to_visible_row_with(
     // every kind of virtual textual height is summed here, matching
     // what `compose_visible_lines_inner` paints.
     wrap_width: u32,
+    // PIC.1: the pane whose matrices the walk must read — the caret
+    // must sum wrap-segment / virtual-row heights from the SAME pane
+    // the body + cursorline compose from (`compose_pane_lines`'s
+    // `ctx.pane_id`). For the active document pane this is
+    // `tree.active().id` (byte-identical to the top-level matrix); for
+    // a focused popup it is `PaneId::POPUP`, whose help-buffer line
+    // widths differ from the background document's — reading the wrong
+    // pane compounds a per-line wrap error and drifts the caret.
+    pane_id: lattice_core::ui::pane::PaneId,
 ) -> Option<u32> {
     if target < scroll {
         return None;
@@ -5812,7 +5908,19 @@ fn buffer_line_to_visible_row_with(
     // B2.4: per-line display width from the canonical `DisplayMatrix`
     // (tab-expanded col_count == what the renderer paints). Stale /
     // missing rows fall back to the rope line's char count.
-    let display_matrix = view.app.render_state.load().cells.load().display_matrix.load_full();
+    // PIC.1: read THIS pane's matrix (keyed by `pane_id`), matching
+    // `compose_pane_lines`'s body/cursorline source. For the active
+    // document pane this entry is byte-identical to the top-level
+    // `cells.display_matrix`; for `PaneId::POPUP` it is the popup
+    // buffer's matrix, so the caret walks the same wrap widths the
+    // popup body paints.
+    let cells_rs = view.app.render_state.load().cells.load_full();
+    let display_matrix = cells_rs
+        .display_matrix_for_pane(pane_id)
+        .map(|cell| cell.load_full())
+        .unwrap_or_else(|| {
+            std::sync::Arc::new(lattice_host::display_matrix::DisplayMatrix::empty())
+        });
     let segment_rows = |line: u32| -> u32 {
         if wrap_width == 0 {
             return 1;
@@ -5820,7 +5928,12 @@ fn buffer_line_to_visible_row_with(
         let width = display_matrix
             .row_at_source_line(line)
             .map(|r| r.col_count)
-            .unwrap_or_else(|| snap.buffer.line(line).map(|s| s.chars().count() as u32).unwrap_or(0));
+            .unwrap_or_else(|| {
+                snap.buffer
+                    .line(line)
+                    .map(|s| s.chars().count() as u32)
+                    .unwrap_or(0)
+            });
         lattice_cells::wrap_segments(width, wrap_width)
     };
     // D.3.b.1.cursor-fix (2026-05-29): account for virtual
@@ -5838,13 +5951,10 @@ fn buffer_line_to_visible_row_with(
     // compose_visible_lines_inner.
     let virtual_rows_matrix = {
         let rs = view.app.render_state.load();
-        let active_pane_id = view.app.panes().tree.active().id;
         rs.virtual_rows
-            .matrix_for_pane(active_pane_id)
+            .matrix_for_pane(pane_id)
             .map(|cell| cell.load_full())
-            .unwrap_or_else(|| {
-                std::sync::Arc::new(lattice_cells::VirtualRowMatrix::empty())
-            })
+            .unwrap_or_else(|| std::sync::Arc::new(lattice_cells::VirtualRowMatrix::empty()))
     };
     let total_lines = snap.buffer.line_count();
     let mut buf_line = scroll;
@@ -5921,6 +6031,7 @@ fn cursor_screen_position(
         area,
         view.app.ad().cursor,
         view.app.ad().scroll,
+        view.app.panes().tree.active().id,
     )
 }
 
@@ -5936,6 +6047,10 @@ fn cursor_screen_position_at(
     area: Rect,
     cursor: lattice_protocol::Position,
     scroll: u32,
+    // PIC.1: the pane whose matrices back the caret walk — see
+    // `buffer_line_to_visible_row_with`. `tree.active().id` for the
+    // active document caret; `PaneId::POPUP` for a focused popup.
+    pane_id: lattice_core::ui::pane::PaneId,
 ) -> Option<(u16, u16)> {
     if cursor.line < scroll {
         return None;
@@ -5978,6 +6093,7 @@ fn cursor_screen_position_at(
         area.height as u32,
         scroll,
         wrap_width,
+        pane_id,
     )?;
     // `cursor.byte` is a UTF-8 byte offset into the line; the
     // terminal places glyphs by display width, not byte count. A
@@ -6029,7 +6145,6 @@ fn cursor_screen_position_at(
     // the correct physical row.
     let sticky_count = {
         let rs = view.app.render_state.load();
-        let pane_id = view.app.panes().tree.active().id;
         rs.virtual_rows
             .matrix_for_pane(pane_id)
             .map(|cell| cell.load_full().sticky_rows().count() as u32)
@@ -6045,10 +6160,10 @@ fn cursor_screen_position_at(
     } else {
         view.app.ad().leftcol
     };
-    let col = sign_columns_width(view)
-        + gutter_w
-        + body_col.saturating_sub(leftcol);
-    let row = row_in_view.saturating_add(own_segment).saturating_add(sticky_count);
+    let col = sign_columns_width(view) + gutter_w + body_col.saturating_sub(leftcol);
+    let row = row_in_view
+        .saturating_add(own_segment)
+        .saturating_add(sticky_count);
     Some((
         area.x.saturating_add(col.try_into().unwrap_or(u16::MAX)),
         area.y.saturating_add(row.try_into().unwrap_or(u16::MAX)),
@@ -6177,13 +6292,12 @@ mod tests {
             display_line_numbers: handle.display_line_numbers(),
         };
         let lines = compose_pane_lines(&view, &snap, 30, 100, &ctx);
-        let link_style = crate::theme::host_style_to_ratatui(
-            lattice_host::ui::theme::resolve_syntax_style(
+        let link_style =
+            crate::theme::host_style_to_ratatui(lattice_host::ui::theme::resolve_syntax_style(
                 &cells.resolved_theme,
                 &cells.theme_ids,
                 lattice_syntax::Style::Link,
-            ),
-        );
+            ));
         let styled_link = lines
             .iter()
             .flat_map(|l| l.spans.iter())
@@ -6192,6 +6306,183 @@ mod tests {
             styled_link,
             "floating popup must render a span with the resolved Style::Link style \
              (got the unstyled plain-text fallback — link styling regressed)"
+        );
+    }
+
+    /// PIC.1 regression: in a FOCUSED popup (State B) the terminal caret
+    /// must land on the cursorline row. The popup body + cursorline
+    /// compose from the `PaneId::POPUP` matrix, but the caret used to
+    /// walk the background document's top-level matrix — so a wrapping
+    /// line above the cursor drifted the caret below the cursorline
+    /// (they coincide on line 0, diverge going down). Here popup line 0
+    /// wraps into several segments while the background document's line 0
+    /// is a single segment: the caret for popup line 1 must sit on the
+    /// popup's cursorline row, NOT the (higher) row the document matrix
+    /// would put it on.
+    #[test]
+    fn focused_popup_caret_row_matches_cursorline_row() {
+        use lattice_core::ui::pane::PaneId;
+        // Background document: line 0 is a single wrap segment.
+        let mut a = App::new(Document::from_text("a\nb\nc\n"));
+        a.set_viewport_height(20);
+        // Focused popup whose line 0 is very wide (wraps into several
+        // segments), followed by two short lines.
+        let content = lattice_help::parse_help_lines(
+            "t",
+            vec!["x".repeat(200), "second".to_string(), "third".to_string()],
+        );
+        a.editor
+            .open_popup(content, lattice_host::popup::PopupPlacement::Centered);
+        let popup_id = a.editor.popup_buffer.expect("popup open");
+        // Wrap on so the caret's wrap-width (from `ad().option_cache`)
+        // matches the popup body's wrapping — isolates the matrix-source
+        // fix (PIC.1) from the separate wrap-flag source question.
+        a.editor.option_cache.wrap_lines = true;
+        // Cursor onto popup line 1, below the wrap of line 0.
+        a.editor.cursor = lattice_protocol::Position::new(1, 0);
+        a.editor.popup_viewport_height = 20;
+        a.editor.popup_viewport_width = 40;
+        a.editor.publish_render_state();
+        assert_eq!(
+            a.ad().buffer_kind,
+            crate::buffers::BufferKind::Help,
+            "open_popup is State B (focused)"
+        );
+        // Drive the cells worker for the synthetic popup pane so its
+        // DisplayMatrix is populated (sim async).
+        let cells = a.editor.render_state.load().cells.load_full();
+        let pop = cells
+            .panes
+            .iter()
+            .find(|p| p.pane_id == PaneId::POPUP)
+            .expect("synthetic popup pane present");
+        let ct = lattice_host::cells_worker::CellTheme {
+            resolved: &cells.resolved_theme,
+            ids: &cells.theme_ids,
+        };
+        let _ = lattice_host::cells_worker::recompute_pane(pop, ct, &cells.whitespace);
+
+        let handle = a
+            .buffers()
+            .registry
+            .document_handle(popup_id)
+            .expect("popup buffer in registry");
+        let snap = handle.snapshot();
+        let inner = Rect::new(0, 0, 40, 18);
+        let view = FrameView::for_buffer(&a, popup_id);
+
+        // Cursorline row: the cursor-line background is applied to every
+        // wrap segment of line 1, so its FIRST row is line 1 segment 0 —
+        // exactly where the caret (col 0) should land.
+        let ctx = PaneComposeCtx {
+            is_active: true,
+            pane_id: PaneId::POPUP,
+            buffer_id: popup_id,
+            cursor_line: 1,
+            cursor_line_highlight: true,
+            scroll: 0,
+            leftcol: 0,
+            display_line_numbers: handle.display_line_numbers(),
+        };
+        let lines = compose_pane_lines(&view, &snap, inner.height as u32, inner.width as u32, &ctx);
+        let cursor_line_bg = a.theme.cursor_line_bg;
+        let cursorline_row = lines
+            .iter()
+            .position(|l| l.spans.iter().any(|s| s.style.bg == Some(cursor_line_bg)))
+            .expect("cursorline row present");
+        assert!(
+            cursorline_row > 1,
+            "popup line 0 must wrap into multiple rows so the bug is exercised \
+             (line 1 at row {cursorline_row})"
+        );
+
+        // Caret from the POPUP matrix (the fix) lands on the cursorline row.
+        let (_, caret_y) = cursor_screen_position_at(
+            &view,
+            &snap,
+            inner,
+            lattice_protocol::Position::new(1, 0),
+            0,
+            PaneId::POPUP,
+        )
+        .expect("caret placed");
+        assert_eq!(
+            caret_y as usize, cursorline_row,
+            "focused-popup caret must land on the cursorline row (PIC.1)"
+        );
+
+        // Prove the drift source: walking the ACTIVE DOCUMENT pane's
+        // matrix (line 0 = one segment) puts the caret above the
+        // cursorline — the pre-fix behaviour.
+        let active_pane = a.panes().tree.active().id;
+        let (_, doc_y) = cursor_screen_position_at(
+            &view,
+            &snap,
+            inner,
+            lattice_protocol::Position::new(1, 0),
+            0,
+            active_pane,
+        )
+        .expect("caret placed");
+        assert!(
+            (doc_y as usize) < cursorline_row,
+            "the background document's line 0 is a single segment, so the \
+             pre-fix (document-matrix) caret drifts above the cursorline \
+             (doc_y {doc_y} vs cursorline {cursorline_row})"
+        );
+    }
+
+    /// A sticky headerline must not cost a document line. The host already
+    /// reserves the sticky row in the scroll budget (`ensure_cursor_visible`'s
+    /// `effective_height`), and the fill loop below the sticky pre-pass already
+    /// caps at `height` — so shrinking `visible` on top of that deletes a real
+    /// line. For a buffer whose last line is an editable prompt (the ACP
+    /// conversation buffer) the deleted line is always the prompt.
+    #[test]
+    fn sticky_headerline_does_not_clip_the_last_document_line() {
+        let mut a = app_with("alpha\nbravo\n> ", 6);
+        a.editor.publish_render_state();
+        let buffer_id = a.ad().document_buffer_id;
+
+        let handle = lattice_cells::SimpleHeaderlineHandle::new((), |_: &()| {
+            let cells: std::sync::Arc<[lattice_cells::Cell]> =
+                vec![lattice_cells::Cell::new('H' as u32, 0xff_ff_ff, 0, 0)].into();
+            Some(lattice_cells::HeaderlineRow { cells, bg: None })
+        });
+        a.editor
+            .virtual_row_providers
+            .register(buffer_id, std::sync::Arc::new(handle.provider(7)));
+
+        let mut state = lattice_host::virtual_rows_worker::VirtualRowsWorkerState::new();
+        lattice_host::virtual_rows_worker::recompute(
+            &mut state,
+            &a.editor.render_state,
+            &a.editor.virtual_row_providers,
+        );
+
+        let snap = a.ad().snapshot.clone();
+        let lines = compose_visible_lines(&a, &snap, 6, 40);
+        let rendered: Vec<String> = lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect();
+
+        assert!(
+            rendered.iter().any(|l| l.contains('H')),
+            "sticky headerline should paint: {rendered:#?}"
+        );
+        assert!(
+            rendered.iter().any(|l| l.contains("bravo")),
+            "last transcript line should paint: {rendered:#?}"
+        );
+        assert!(
+            rendered.iter().any(|l| l.trim_end().ends_with('>')),
+            "the prompt (last document line) must still be painted: {rendered:#?}"
         );
     }
 
@@ -6214,7 +6505,11 @@ mod tests {
         assert_eq!(chrome_rows(&a).tabline, 0, "single tab: no tabline row");
         a.editor.do_new_tab();
         a.editor.publish_render_state();
-        assert_eq!(chrome_rows(&a).tabline, 1, "two tabs: tabline claims one row");
+        assert_eq!(
+            chrome_rows(&a).tabline,
+            1,
+            "two tabs: tabline claims one row"
+        );
     }
 
     /// Regression guard for the "last line off-screen once the tabline is
@@ -6330,14 +6625,8 @@ mod tests {
         // window" — including sizes too small to hold every split cleanly,
         // where `saturating_sub`/`.max(1)` clamping must still agree
         // between both sides.
-        let terminal_sizes: &[(u16, u16)] = &[
-            (80, 24),
-            (80, 40),
-            (200, 60),
-            (40, 10),
-            (120, 8),
-            (30, 6),
-        ];
+        let terminal_sizes: &[(u16, u16)] =
+            &[(80, 24), (80, 40), (200, 60), (40, 10), (120, 8), (30, 6)];
 
         for splits in split_plans {
             for tabline_visible in [false, true] {
@@ -6347,7 +6636,9 @@ mod tests {
                         a.editor.pane_tree.split_active(*orientation);
                     }
                     if tabline_visible {
-                        a.editor.pane_tree.split_active(SplitOrientation::Horizontal);
+                        a.editor
+                            .pane_tree
+                            .split_active(SplitOrientation::Horizontal);
                         // Second tab makes `tabs.visible` true in Auto mode
                         // (`self.tabs.len() > 1`) without depending on any
                         // particular `tabline.show` config default.
@@ -6440,7 +6731,11 @@ mod tests {
                     // checked here across the SAME split/size matrix rather
                     // than just the whole-buffer area.
                     for (idx, rect) in &draw_rects {
-                        let content_h = if rect.height >= 2 { rect.height - 1 } else { rect.height };
+                        let content_h = if rect.height >= 2 {
+                            rect.height - 1
+                        } else {
+                            rect.height
+                        };
                         assert!(
                             content_h <= rect.height,
                             "leaf {idx} content height must not exceed its pane rect \
@@ -6640,9 +6935,8 @@ mod tests {
         let body = vec![Span::styled("abcd", red), Span::styled("efghij", blue)];
         let segs = split_body_into_segments(body, 4);
         assert_eq!(segs.len(), 3);
-        let text = |s: &[Span<'static>]| -> String {
-            s.iter().map(|sp| sp.content.as_ref()).collect()
-        };
+        let text =
+            |s: &[Span<'static>]| -> String { s.iter().map(|sp| sp.content.as_ref()).collect() };
         assert_eq!(text(&segs[0]), "abcd");
         assert_eq!(text(&segs[1]), "efgh");
         assert_eq!(text(&segs[2]), "ij");
@@ -7011,7 +7305,8 @@ mod tests {
 
         // Default (`signcolumn=yes` + `number=yes`) reserves the sign
         // cells + the line-number gutter, so content sits further in.
-        let default0 = line_text(&compose_visible_lines(&app, &app.ad().snapshot.clone(), 5, 40)[0]);
+        let default0 =
+            line_text(&compose_visible_lines(&app, &app.ad().snapshot.clone(), 5, 40)[0]);
         let default_indent = default0.find("hello").expect("hello rendered");
         assert!(
             default_indent >= 3,
@@ -7054,10 +7349,7 @@ mod tests {
     fn clip_spans_horizontally_skip_spans_whole_first_span() {
         // Skip crosses a span boundary: ["ab","cdef"], skip 3 ⇒ drop
         // "ab" entirely + 1 byte of "cdef" ⇒ "def" (width 8).
-        let spans = vec![
-            Span::raw("ab".to_string()),
-            Span::raw("cdef".to_string()),
-        ];
+        let spans = vec![Span::raw("ab".to_string()), Span::raw("cdef".to_string())];
         let out = clip_spans_horizontally(spans, 3, 8);
         let joined: String = out.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(joined, "def");
@@ -7081,12 +7373,9 @@ mod tests {
         let mut app = app_with("hello", 5);
         app.editor.set_cursor_byte(3);
         let area = Rect::new(0, 0, 80, 5);
-        let pos = cursor_screen_position(
-            &FrameView::from_app(&app),
-            &app.ad().snapshot.clone(),
-            area,
-        )
-        .unwrap();
+        let pos =
+            cursor_screen_position(&FrameView::from_app(&app), &app.ad().snapshot.clone(), area)
+                .unwrap();
         // severity_cell (1) + diff_sign_cell (1) + gutter_width(1)=5 + 3 = 10.
         assert_eq!(pos.0, 10);
         assert_eq!(pos.1, 0);
@@ -7102,13 +7391,11 @@ mod tests {
         // at or before `cursor.byte`. Mirrors GPUI's
         // `byte_to_combined_col` semantics.
         let app = app_with("let x = 42\n", 5);
-        let inlays = [
-            lattice_host::render_state::InlayHintRow {
-                line: 0,
-                byte: 5, // after `let x`, before ` =`
-                text: ": i32".to_string(),
-            },
-        ];
+        let inlays = [lattice_host::render_state::InlayHintRow {
+            line: 0,
+            byte: 5, // after `let x`, before ` =`
+            text: ": i32".to_string(),
+        }];
         // Cursor before the inlay anchor: no shift.
         let before = display_col_for_byte(
             &app.ad().snapshot.buffer,
@@ -7175,6 +7462,7 @@ mod tests {
             area,
             lattice_protocol::Position::new(2, 0),
             0,
+            app.panes().tree.active().id,
         )
         .unwrap();
         assert_eq!(below.1, 4, "line below a 3-row wrap sits at display row 4");
@@ -7188,9 +7476,13 @@ mod tests {
             area,
             lattice_protocol::Position::new(1, 68),
             0,
+            app.panes().tree.active().id,
         )
         .unwrap();
-        assert_eq!(within.1, 3, "cursor in the 3rd wrap segment sits at display row 3");
+        assert_eq!(
+            within.1, 3,
+            "cursor in the 3rd wrap segment sits at display row 3"
+        );
     }
 
     /// Screen column (char index) where the first non-gutter body char
@@ -7267,6 +7559,7 @@ mod tests {
             area,
             lattice_protocol::Position::new(0, 37),
             0,
+            app.panes().tree.active().id,
         )
         .unwrap();
         assert_eq!(pos.1, 1, "byte 37 sits on the first wrap continuation row");
@@ -7284,9 +7577,8 @@ mod tests {
         // tab-stop, matching the cells builder's expansion.
         let app = app_with("\tab", 5);
         let buf = &app.ad().snapshot.buffer;
-        let col = |byte: u32| {
-            display_col_for_byte(buf, lattice_protocol::Position::new(0, byte), &[], 4)
-        };
+        let col =
+            |byte: u32| display_col_for_byte(buf, lattice_protocol::Position::new(0, byte), &[], 4);
         assert_eq!(col(0), 0, "cursor on the tab sits at its start column");
         assert_eq!(col(1), 4, "'a' after a tab lands at column tabstop");
         assert_eq!(col(2), 5, "'b' follows at column tabstop+1");
@@ -7302,12 +7594,9 @@ mod tests {
         let mut app = app_with("- §8 Performance commitments", 5);
         app.editor.set_cursor_byte(6);
         let area = Rect::new(0, 0, 80, 5);
-        let pos = cursor_screen_position(
-            &FrameView::from_app(&app),
-            &app.ad().snapshot.clone(),
-            area,
-        )
-        .unwrap();
+        let pos =
+            cursor_screen_position(&FrameView::from_app(&app), &app.ad().snapshot.clone(), area)
+                .unwrap();
         // severity_cell (1) + diff_sign_cell (1) + gutter_w (5) + 5 = 12.
         assert_eq!(pos.0, 12);
     }
@@ -7320,12 +7609,9 @@ mod tests {
         let mut app = app_with("abc中 def", 5);
         app.editor.set_cursor_byte(6); // past the 3-byte CJK char
         let area = Rect::new(0, 0, 80, 5);
-        let pos = cursor_screen_position(
-            &FrameView::from_app(&app),
-            &app.ad().snapshot.clone(),
-            area,
-        )
-        .unwrap();
+        let pos =
+            cursor_screen_position(&FrameView::from_app(&app), &app.ad().snapshot.clone(), area)
+                .unwrap();
         // severity_cell (1) + diff_sign_cell (1) + gutter_w (5) + 5 = 12.
         assert_eq!(pos.0, 12);
     }
@@ -7337,12 +7623,8 @@ mod tests {
         app.editor.set_cursor_line(4); // not in viewport [0,1]
         let area = Rect::new(0, 0, 80, 2);
         assert!(
-            cursor_screen_position(
-                &FrameView::from_app(&app),
-                &app.ad().snapshot.clone(),
-                area
-            )
-            .is_none()
+            cursor_screen_position(&FrameView::from_app(&app), &app.ad().snapshot.clone(), area)
+                .is_none()
         );
     }
 
@@ -7355,7 +7637,8 @@ mod tests {
         // cursor would draw at row 3, which doesn't correspond to
         // any drawn buffer line.
         let mut app = app_with("a\nb\nh\nx\ny\nz\nq", 7);
-        app.editor.set_cursor(lattice_protocol::position::Position::new(3, 0)); // hidden by fold
+        app.editor
+            .set_cursor(lattice_protocol::position::Position::new(3, 0)); // hidden by fold
         // Push a closed fold over lines 2..=4.
         app.editor.folds.push(crate::app::Fold {
             start_line: 2,
@@ -7368,12 +7651,9 @@ mod tests {
         // `rs.active_document.load().folds` snapshot now.
         app.editor.publish_render_state();
         let area = Rect::new(0, 0, 80, 7);
-        let pos = cursor_screen_position(
-            &FrameView::from_app(&app),
-            &app.ad().snapshot.clone(),
-            area,
-        )
-        .expect("cursor visible");
+        let pos =
+            cursor_screen_position(&FrameView::from_app(&app), &app.ad().snapshot.clone(), area)
+                .expect("cursor visible");
         // Visible rows: 0=line0, 1=line1, 2=line2 (heading + summary),
         // 3=line5, 4=line6. Cursor at hidden line 3 → screen row 2
         // (area.y + 2 since area.y is 0).
@@ -7926,14 +8206,18 @@ mod tests {
             "current-match leaked onto inactive pane",
         );
         assert!(
-            spans.iter().all(|s| s.style.bg != Some(Color::Indexed(236))),
+            spans
+                .iter()
+                .all(|s| s.style.bg != Some(Color::Indexed(236))),
             "cursor-line leaked onto inactive pane",
         );
         // Decorations retained + dimmed: the syntax-coloured body span
         // keeps its fg and gains the DIM overlay.
         assert!(
-            spans.iter().any(|s| s.style.fg == Some(Color::Rgb(205, 214, 244))
-                && s.style.add_modifier.contains(Modifier::DIM)),
+            spans
+                .iter()
+                .any(|s| s.style.fg == Some(Color::Rgb(205, 214, 244))
+                    && s.style.add_modifier.contains(Modifier::DIM)),
             "inactive pane lost its dimmed syntax decoration: {lines:?}",
         );
     }
@@ -8016,8 +8300,14 @@ mod tests {
         };
         let lines = compose_pane_lines(&view, &app.ad().snapshot.clone(), 5, 80, &ctx);
         let blob: String = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
-        assert!(!blob.contains("hidden1"), "inactive interior leaked: {blob}");
-        assert!(!blob.contains("hidden2"), "inactive interior leaked: {blob}");
+        assert!(
+            !blob.contains("hidden1"),
+            "inactive interior leaked: {blob}"
+        );
+        assert!(
+            !blob.contains("hidden2"),
+            "inactive interior leaked: {blob}"
+        );
         assert!(blob.contains("⋯"), "inactive summary missing: {blob}");
     }
 
@@ -8167,7 +8457,10 @@ mod tests {
         app.editor.publish_render_state();
         let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 5, 80);
         let row0 = line_text(&lines[0]);
-        assert!(row0.contains('▾'), "gutterless head still shows ▾: {row0:?}");
+        assert!(
+            row0.contains('▾'),
+            "gutterless head still shows ▾: {row0:?}"
+        );
         // The glyph sits just before the heading text (a single trailing
         // gap), not at column 0 with the text far to the right.
         let chars: Vec<char> = row0.chars().collect();
@@ -8484,38 +8777,42 @@ mod tests {
         // via `RenderState` reflect the seeded value (mirrors
         // the prod path where the spawned task stores + the
         // ArcSwap is shared with the render-state snapshot).
-        app.editor.lsp_document_highlights.store(Some(std::sync::Arc::new(crate::app::DocumentHighlightCache {
-            buffer_id: app.ad().document_buffer_id,
-            cursor: lattice_protocol::Position::new(0, 4),
-            highlights: vec![
-                lattice_lsp::lsp_types::DocumentHighlight {
-                    range: lattice_lsp::lsp_types::Range {
-                        start: lattice_lsp::lsp_types::Position {
-                            line: 0,
-                            character: 4,
+        app.editor
+            .lsp_document_highlights
+            .store(Some(std::sync::Arc::new(
+                crate::app::DocumentHighlightCache {
+                    buffer_id: app.ad().document_buffer_id,
+                    cursor: lattice_protocol::Position::new(0, 4),
+                    highlights: vec![
+                        lattice_lsp::lsp_types::DocumentHighlight {
+                            range: lattice_lsp::lsp_types::Range {
+                                start: lattice_lsp::lsp_types::Position {
+                                    line: 0,
+                                    character: 4,
+                                },
+                                end: lattice_lsp::lsp_types::Position {
+                                    line: 0,
+                                    character: 5,
+                                },
+                            },
+                            kind: Some(lattice_lsp::lsp_types::DocumentHighlightKind::WRITE),
                         },
-                        end: lattice_lsp::lsp_types::Position {
-                            line: 0,
-                            character: 5,
+                        lattice_lsp::lsp_types::DocumentHighlight {
+                            range: lattice_lsp::lsp_types::Range {
+                                start: lattice_lsp::lsp_types::Position {
+                                    line: 0,
+                                    character: 8,
+                                },
+                                end: lattice_lsp::lsp_types::Position {
+                                    line: 0,
+                                    character: 9,
+                                },
+                            },
+                            kind: Some(lattice_lsp::lsp_types::DocumentHighlightKind::READ),
                         },
-                    },
-                    kind: Some(lattice_lsp::lsp_types::DocumentHighlightKind::WRITE),
+                    ],
                 },
-                lattice_lsp::lsp_types::DocumentHighlight {
-                    range: lattice_lsp::lsp_types::Range {
-                        start: lattice_lsp::lsp_types::Position {
-                            line: 0,
-                            character: 8,
-                        },
-                        end: lattice_lsp::lsp_types::Position {
-                            line: 0,
-                            character: 9,
-                        },
-                    },
-                    kind: Some(lattice_lsp::lsp_types::DocumentHighlightKind::READ),
-                },
-            ],
-        })));
+            )));
         app.editor.publish_render_state();
         let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 5, 80);
         // Walk the spans on row 0; expect at least one span
@@ -8622,7 +8919,10 @@ mod tests {
                 crate::app::LspInlayHintCache {
                     document_version: app.editor.document.snapshot().version,
                     hints: vec![lattice_lsp::lsp_types::InlayHint {
-                        position: lattice_lsp::lsp_types::Position { line: 0, character: 5 },
+                        position: lattice_lsp::lsp_types::Position {
+                            line: 0,
+                            character: 5,
+                        },
                         label: lattice_lsp::lsp_types::InlayHintLabel::String(": i32".into()),
                         kind: Some(lattice_lsp::lsp_types::InlayHintKind::TYPE),
                         text_edits: None,
@@ -8688,8 +8988,7 @@ mod tests {
         let app = app_with("x\n", 5);
         let cells = app.render_state.load().cells.load_full();
         let kind = lattice_completion::Annotation::Kind("motion".into());
-        let got =
-            super::annotation_color(&kind, true, &cells.resolved_theme, &cells.theme_ids);
+        let got = super::annotation_color(&kind, true, &cells.resolved_theme, &cells.theme_ids);
         // Same brightened literal GPUI returns for a selected Kind row.
         assert_eq!(got, Color::Rgb(0xcd, 0xd6, 0xf4));
     }
@@ -8735,8 +9034,16 @@ mod tests {
                 .map(crate::theme::host_color_to_ratatui)
                 .unwrap()
         };
-        let w = line.spans.iter().find(|s| s.content.as_ref() == "w").expect("w span");
-        let x = line.spans.iter().find(|s| s.content.as_ref() == "x").expect("x span");
+        let w = line
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "w")
+            .expect("w span");
+        let x = line
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "x")
+            .expect("x span");
         assert_eq!(w.style.fg, Some(want(ids.completion_annotation_perm_write)));
         assert_eq!(x.style.fg, Some(want(ids.completion_annotation_perm_exec)));
     }
@@ -8783,7 +9090,10 @@ mod tests {
             StyleSpec::new().fg("green"),
         );
         let after = w_fg(&reg);
-        assert_ne!(before, after, "styled marginalia tracks the active theme on TUI");
+        assert_ne!(
+            before, after,
+            "styled marginalia tracks the active theme on TUI"
+        );
     }
 
     /// PH.1: a candidate's `display_spans` syntax-color the
@@ -9071,23 +9381,27 @@ mod tests {
             app.toggle_mode_by_name("lsp-document-highlight-mode");
         }
         // 5.8.AF.5 / Slice 3b.0: see seed pattern note above.
-        app.editor.lsp_document_highlights.store(Some(std::sync::Arc::new(crate::app::DocumentHighlightCache {
-            buffer_id: app.ad().document_buffer_id,
-            cursor: lattice_protocol::Position::new(0, 4),
-            highlights: vec![lattice_lsp::lsp_types::DocumentHighlight {
-                range: lattice_lsp::lsp_types::Range {
-                    start: lattice_lsp::lsp_types::Position {
-                        line: 0,
-                        character: 4,
-                    },
-                    end: lattice_lsp::lsp_types::Position {
-                        line: 0,
-                        character: 5,
-                    },
+        app.editor
+            .lsp_document_highlights
+            .store(Some(std::sync::Arc::new(
+                crate::app::DocumentHighlightCache {
+                    buffer_id: app.ad().document_buffer_id,
+                    cursor: lattice_protocol::Position::new(0, 4),
+                    highlights: vec![lattice_lsp::lsp_types::DocumentHighlight {
+                        range: lattice_lsp::lsp_types::Range {
+                            start: lattice_lsp::lsp_types::Position {
+                                line: 0,
+                                character: 4,
+                            },
+                            end: lattice_lsp::lsp_types::Position {
+                                line: 0,
+                                character: 5,
+                            },
+                        },
+                        kind: None,
+                    }],
                 },
-                kind: None,
-            }],
-        })));
+            )));
         app.editor.publish_render_state();
         let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 5, 80);
         let row0 = &lines[0];
@@ -9183,7 +9497,6 @@ mod tests {
         // gutter glyph (most-severe semantics).
         assert!(row0.contains('■'), "row0 expected ■: {row0:?}");
     }
-
 
     #[test]
     fn no_lsp_attachment_no_severity_glyph() {
@@ -9547,7 +9860,11 @@ mod tests {
             .iter()
             .find(|s| s.content.contains("NOR"))
             .expect("mode span present");
-        assert_eq!(mode.style.fg, Some(Color::Rgb(0x89, 0xb4, 0xfa)), "mode fg = blue");
+        assert_eq!(
+            mode.style.fg,
+            Some(Color::Rgb(0x89, 0xb4, 0xfa)),
+            "mode fg = blue"
+        );
         assert!(
             mode.style.add_modifier.contains(Modifier::BOLD),
             "mode is bold"
@@ -9599,7 +9916,9 @@ mod tests {
             })
             .unwrap();
         let buf = terminal.backend().buffer().clone();
-        (0..width).map(|x| buf[(x, 0)].symbol().to_string()).collect()
+        (0..width)
+            .map(|x| buf[(x, 0)].symbol().to_string())
+            .collect()
     }
 
     /// Active pane: `core.mode` (`NOR`) + `core.path` in the Left
@@ -9647,5 +9966,160 @@ mod tests {
             let row = render_status_row(&app, &pane, true, w);
             assert_eq!(row.chars().count(), w as usize, "row fills width {w}");
         }
+    }
+
+    // --- pane separator geometry (draw_pane_separators) ---
+
+    use crate::pane::PaneRect;
+
+    /// Collect the individual `(col, row)` separator cells that
+    /// `separator_segments` would paint, sorted for stable asserts.
+    fn separator_cells(rects: &[(usize, PaneRect)]) -> Vec<(u16, u16)> {
+        let mut cells: Vec<(u16, u16)> = separator_segments(rects)
+            .into_iter()
+            .flat_map(|(col, y0, y1)| (y0..y1).map(move |row| (col, row)))
+            .collect();
+        cells.sort_unstable();
+        cells
+    }
+
+    /// A plain `:vsplit` (two equal side-by-side panes) draws a
+    /// full-height divider on the left pane's right edge.
+    #[test]
+    fn separator_simple_vsplit_full_height() {
+        // Left: (0,0,5,4)   Right: (5,0,5,4)
+        let rects = vec![
+            (
+                0,
+                PaneRect {
+                    x: 0,
+                    y: 0,
+                    width: 5,
+                    height: 4,
+                },
+            ),
+            (
+                1,
+                PaneRect {
+                    x: 5,
+                    y: 0,
+                    width: 5,
+                    height: 4,
+                },
+            ),
+        ];
+        let cells = separator_cells(&rects);
+        assert_eq!(cells, vec![(4, 0), (4, 1), (4, 2), (4, 3)]);
+    }
+
+    /// Regression: `:vsplit` then `:split` the LEFT pane. The left
+    /// column now holds two half-height stacked panes while the right
+    /// pane is full height. The divider must still be continuous over
+    /// the full height — the earlier "same band" gate dropped it
+    /// entirely because no pair shared identical (y, height).
+    #[test]
+    fn separator_subsplit_left_column_stays_continuous() {
+        // Left-top:    (0,0,5,2)
+        // Left-bottom: (0,2,5,2)
+        // Right:       (5,0,5,4)
+        let rects = vec![
+            (
+                0,
+                PaneRect {
+                    x: 0,
+                    y: 0,
+                    width: 5,
+                    height: 2,
+                },
+            ),
+            (
+                2,
+                PaneRect {
+                    x: 0,
+                    y: 2,
+                    width: 5,
+                    height: 2,
+                },
+            ),
+            (
+                1,
+                PaneRect {
+                    x: 5,
+                    y: 0,
+                    width: 5,
+                    height: 4,
+                },
+            ),
+        ];
+        let cells = separator_cells(&rects);
+        // Continuous column at x=4 over every row 0..4.
+        assert_eq!(cells, vec![(4, 0), (4, 1), (4, 2), (4, 3)]);
+    }
+
+    /// Symmetric case: sub-split the RIGHT column instead. Still one
+    /// continuous divider on the boundary column.
+    #[test]
+    fn separator_subsplit_right_column_stays_continuous() {
+        // Left:         (0,0,5,4)
+        // Right-top:    (5,0,5,2)
+        // Right-bottom: (5,2,5,2)
+        let rects = vec![
+            (
+                0,
+                PaneRect {
+                    x: 0,
+                    y: 0,
+                    width: 5,
+                    height: 4,
+                },
+            ),
+            (
+                1,
+                PaneRect {
+                    x: 5,
+                    y: 0,
+                    width: 5,
+                    height: 2,
+                },
+            ),
+            (
+                2,
+                PaneRect {
+                    x: 5,
+                    y: 2,
+                    width: 5,
+                    height: 2,
+                },
+            ),
+        ];
+        let cells = separator_cells(&rects);
+        assert_eq!(cells, vec![(4, 0), (4, 1), (4, 2), (4, 3)]);
+    }
+
+    /// A pure horizontal split (stacked panes, same column) has no
+    /// vertical separator — the per-pane status line divides them.
+    #[test]
+    fn separator_horizontal_split_has_no_vertical_divider() {
+        let rects = vec![
+            (
+                0,
+                PaneRect {
+                    x: 0,
+                    y: 0,
+                    width: 10,
+                    height: 2,
+                },
+            ),
+            (
+                1,
+                PaneRect {
+                    x: 0,
+                    y: 2,
+                    width: 10,
+                    height: 2,
+                },
+            ),
+        ];
+        assert!(separator_cells(&rects).is_empty());
     }
 }

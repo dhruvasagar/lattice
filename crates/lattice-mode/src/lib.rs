@@ -59,8 +59,8 @@
 // dispatcher consults via `lookup`; mode's `Guard` carries
 // `ActionHandlerRegistration` tokens whose `Drop` unregisters.
 pub mod action_handler_registry;
-pub mod active;
 pub mod activator;
+pub mod active;
 pub mod binding_mode;
 pub mod buffer_store;
 pub mod capability;
@@ -74,6 +74,7 @@ pub mod emacs_keys_mode;
 pub mod error;
 pub mod event;
 pub mod guards;
+pub mod repl_mode;
 // Boot-composition BC.1: the generic *inbound* primitive — a channel whose
 // `send` wakes the editor (`async_landed`) and whose items drain per-tick
 // through a handler. Pairs with `tick_callback`; generalizes the I3
@@ -115,26 +116,29 @@ pub use crate::action_handler_registry::{
     ActionContext, ActionHandler, ActionHandlerContribution, ActionHandlerRegistration,
     ActionHandlerRegistry, ActionHandlerRegistryHandle,
 };
+pub use crate::activator::{ModeActivator, VirtualRowRegistrar};
 pub use crate::active::ActiveModes;
-pub use crate::activator::ModeActivator;
 pub use crate::binding_mode::BindingMode;
-pub use crate::tick_callback::{
-    TickCallback, TickCallbackRegistration, TickCallbackRegistry, TickCallbackRegistryHandle,
-};
 pub use crate::buffer_store::{BufferStore, BufferStoreHandle};
 pub use crate::capability::CapabilitySet;
 pub use crate::context::ModeContext;
 pub use crate::contributions::{
-    DecorationCtx, DecorationProvider, GutterDecoration, GutterDiffKind, GutterSeverityLevel,
-    Keymap, KeymapBinding,
+    DecorationCtx,
+    DecorationProvider,
+    GutterDecoration,
+    GutterDiffKind,
+    GutterSeverityLevel,
+    Keymap,
+    KeymapBinding,
     Subscription, // MO.4.c: real RAII type; use in mode Guards
 };
-pub use lattice_keymap::KeymapEntry;
 pub use crate::error::ModeActivationError;
 pub use crate::event::ModeEvent;
 pub use crate::guards::{GuardStore, GuardStoreHandle};
 pub use crate::locals::{BufferLocal, BufferLocals, LocalDescriptor};
-pub use crate::mode::{ActivationPolicy, DynMode, LifecycleFuture, Mode, ModeId, ModeKind};
+pub use crate::mode::{
+    ActivationPolicy, DynMode, EditableTail, LifecycleFuture, Mode, ModeId, ModeKind,
+};
 pub use crate::modes::{
     ActiveCompletionSources, BufferWordsMode, CompletionMode, CompletionPopupMode, HelpMode,
     HoverMode, MessagesMode, PathCompletionMode, TextMode, register_foundation_modes,
@@ -142,10 +146,15 @@ pub use crate::modes::{
 pub use crate::services::ServiceRegistry;
 pub use crate::startup::Startup;
 pub use crate::subsystem_boot::SubsystemBoot;
+pub use crate::tick_callback::{
+    TickCallback, TickCallbackRegistration, TickCallbackRegistry, TickCallbackRegistryHandle,
+};
+pub use lattice_keymap::KeymapEntry;
 // BC.5: the host pushes the `<C-x>` leader layer (it owns the `KeymapHandle` +
 // config), calling `emacs_keys_layer_bindings`; `EmacsKeysMode::mode_id` keys
 // the layer + the K.1.c per-keystroke gate.
 pub use crate::emacs_keys_mode::{EmacsKeysMode, emacs_keys_layer_bindings};
+pub use crate::repl_mode::{ReplMode, register_repl_mode, register_repl_mode_actions};
 // ML.0a: configurable-modeline element model + descriptor registry.
 pub use crate::modeline::{
     ElementContent, ElementId, HoverSpec, Interaction, ModelineElement, ModelineElementUpdate,

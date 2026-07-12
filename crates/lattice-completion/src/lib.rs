@@ -37,7 +37,9 @@ pub mod traits;
 pub use crate::builtins::annotators::{
     DocSnippetAnnotator, KeybindingAnnotator, KeymapReverseLookup, KindLabelAnnotator,
 };
-pub use crate::builtins::matchers::{FuzzyDisplayMatcher, FuzzyMatcher, PrefixMatcher, SubstringMatcher};
+pub use crate::builtins::matchers::{
+    FuzzyDisplayMatcher, FuzzyMatcher, PrefixMatcher, SubstringMatcher,
+};
 pub use crate::builtins::rankers::{AlphabeticalRanker, MruRanker, ScoreRanker};
 pub use crate::builtins::{CompletionBuiltins, populate};
 pub use crate::cache::GeneratorCache;
@@ -58,13 +60,13 @@ pub use crate::registry::{
     RegisteredGenerator, RegisteredMatcher, RegisteredRanker,
 };
 pub use crate::slot::{CommandLineSlot, current_slot};
-pub use crate::source_registration::{
-    AcceptAction, AcceptHandler, AcceptToken, ArgsSchema, CandidateSourceKind,
-    CustomAcceptPayload, DefaultAcceptHandler, SourceRegistration, SourceSpec,
-};
 pub use crate::source::{
     AsyncCompletionSource, CandidateSink, CompletionSourceContribution, CompletionSourceKind,
     InsertContextSnapshot, SyncCompletionSource,
+};
+pub use crate::source_registration::{
+    AcceptAction, AcceptHandler, AcceptToken, ArgsSchema, CandidateSourceKind, CustomAcceptPayload,
+    DefaultAcceptHandler, SourceRegistration, SourceSpec,
 };
 pub use crate::traits::{
     CandidateAnnotator, CandidateGenerator, CandidateMatcher, CandidateRanker, GenerateContext,

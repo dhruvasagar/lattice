@@ -15,9 +15,7 @@ pub enum OptionOrigin {
     /// Set via `:setlocal` for this buffer.
     BufferLocal,
     /// Contributed by a mode (major or minor).
-    ModeContribution {
-        mode_id: String,
-    },
+    ModeContribution { mode_id: String },
 }
 
 impl std::fmt::Display for OptionOrigin {

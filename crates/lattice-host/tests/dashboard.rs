@@ -112,7 +112,10 @@ fn dashboard_help_topic_links_resolve_to_registered_topics() {
             }
         }
     }
-    assert!(checked > 0, "expected the dashboard to render some help-topic links");
+    assert!(
+        checked > 0,
+        "expected the dashboard to render some help-topic links"
+    );
 }
 
 // Following a dashboard link end-to-end: `<CR>` (Action::FollowLink) on a
@@ -124,10 +127,10 @@ fn dashboard_help_topic_links_resolve_to_registered_topics() {
 // (`dashboard_active_routes_enter_to_follow_link`).
 mod link_following {
     use lattice_grammar::Effect;
+    use lattice_help::HelpLinkTarget;
     use lattice_host::action::Action;
     use lattice_host::dispatch::RendererSignal;
     use lattice_host::modes::HelpLinks;
-    use lattice_help::HelpLinkTarget;
 
     use super::*;
 
@@ -156,9 +159,10 @@ mod link_following {
         // The tutor pointer is `LinkTarget::Command("tutor")` → seeded as
         // `Execute("tutor")` (runs `:tutor`), NOT `Command` (which would only
         // *describe* the command).
-        let target = cursor_on_link(&mut editor, |t| {
-            matches!(t, HelpLinkTarget::Execute(c) if c == "tutor")
-        });
+        let target = cursor_on_link(
+            &mut editor,
+            |t| matches!(t, HelpLinkTarget::Execute(c) if c == "tutor"),
+        );
         assert_eq!(target, HelpLinkTarget::Execute("tutor".to_string()));
 
         // Following the link runs `:tutor`, which resolves to
@@ -239,7 +243,8 @@ mod link_following {
             })
             .unwrap_or_default();
         assert!(
-            urls.iter().any(|u| u == "https://github.com/dhruvasagar/lattice"),
+            urls.iter()
+                .any(|u| u == "https://github.com/dhruvasagar/lattice"),
             "the GitHub link should seed as HelpLinkTarget::Url; got {urls:?}"
         );
         assert!(
@@ -259,16 +264,28 @@ fn dashboard_registers_branding_virtual_rows() {
     // DB.4: the branding provider is registered for the dashboard buffer and
     // emits the mark + wordmark rows, colored with the brand blue.
     let providers = editor.virtual_row_providers.snapshot(id);
-    assert!(!providers.is_empty(), "branding provider should be registered");
+    assert!(
+        !providers.is_empty(),
+        "branding provider should be registered"
+    );
     let brand_blue = lattice_theme::Color::Rgb(0x1f, 0x6f, 0xeb).to_rgb_u32(0);
     let has_blue_glyph = providers.iter().flat_map(|p| p.collect()).any(|row| {
-        row.cells.iter().any(|c| c.fg == brand_blue && c.codepoint != 0x20)
+        row.cells
+            .iter()
+            .any(|c| c.fg == brand_blue && c.codepoint != 0x20)
     });
     let has_wordmark = providers.iter().flat_map(|p| p.collect()).any(|row| {
-        let t: String = row.cells.iter().filter_map(|c| char::from_u32(c.codepoint)).collect();
+        let t: String = row
+            .cells
+            .iter()
+            .filter_map(|c| char::from_u32(c.codepoint))
+            .collect();
         t.contains("Lattice")
     });
-    assert!(has_blue_glyph, "branding should render brand-blue mark glyphs");
+    assert!(
+        has_blue_glyph,
+        "branding should render brand-blue mark glyphs"
+    );
     assert!(has_wordmark, "branding should render the Lattice wordmark");
 }
 
@@ -731,5 +748,111 @@ mod idle_frame_does_no_recompose {
     }
 }
 
+#[cfg(test)]
+mod major_gating {
+    use super::*;
+    use lattice_protocol::position::Position;
+    use lattice_protocol::{KeyChord, parse_chord_sequence};
 
+    fn chord(s: &str) -> KeyChord {
+        parse_chord_sequence(s)
+            .expect("parse")
+            .into_iter()
+            .next()
+            .expect("one")
+    }
 
+    /// Regression: the ai-conversation major mode binds all of
+    /// `i a o A I O` to focus-prompt, which jumps the cursor to the END OF
+    /// CONTENT (the last line) and enters Insert. Because major-mode
+    /// keymaps were folded into the always-on merge, those bindings fired
+    /// in EVERY buffer — pressing one on the dashboard jumped to the last
+    /// line and dragged the viewport to the bottom. With major layers
+    /// gated by the active major, none of them may move the cursor off
+    /// its line (a builtin `A`/`I` still moves within line 0, which is
+    /// fine — it is not the focus-prompt EOF jump).
+    #[test]
+    fn focus_prompt_chords_do_not_leak_onto_dashboard() {
+        for key in ["i", "a", "o", "A", "I", "O"] {
+            let mut editor = boot();
+            editor.viewport_height = 20;
+            editor.do_open_dashboard();
+            assert_eq!(editor.cursor, Position::ZERO, "dashboard opens at top");
+            let last_line = editor.active_text().line_count().saturating_sub(1);
+            assert!(last_line > 1, "dashboard has multi-line content");
+            let mut partial: Vec<KeyChord> = Vec::new();
+            editor.dispatch_chord(chord(key), &mut partial);
+            assert_eq!(
+                editor.cursor.line, 0,
+                "`{key}` must NOT jump the cursor to the end of content on the \
+                 dashboard (ai-conversation focus-prompt leaked via an ungated \
+                 MajorMode layer); landed on line {}",
+                editor.cursor.line
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod insert_still_works {
+    use super::*;
+    use lattice_protocol::position::Position;
+    use lattice_protocol::{KeyChord, parse_chord_sequence};
+
+    fn chord(s: &str) -> KeyChord {
+        parse_chord_sequence(s)
+            .expect("parse")
+            .into_iter()
+            .next()
+            .expect("one")
+    }
+
+    /// Non-regression: `i` on a normal editable buffer still enters Insert
+    /// AT THE CURSOR (no jump to EOF). The major-gating fix must not have
+    /// disabled the builtin `i`.
+    #[test]
+    fn i_on_editable_buffer_enters_insert_at_cursor() {
+        let mut editor = boot(); // scratch "scratch\n", editable
+        editor.viewport_height = 20;
+        editor.cursor = Position::new(0, 3);
+        let mut partial: Vec<KeyChord> = Vec::new();
+        editor.dispatch_chord(chord("i"), &mut partial);
+        assert!(
+            matches!(editor.modal, lattice_grammar::ModalState::Insert),
+            "i must still enter Insert on a normal buffer"
+        );
+        assert_eq!(
+            editor.cursor,
+            Position::new(0, 3),
+            "i must enter Insert AT THE CURSOR, not jump to EOF"
+        );
+    }
+}
+
+#[cfg(test)]
+mod owc_adopt {
+    use super::*;
+
+    /// The end-to-end guarantee: after opening the dashboard, the FIRST
+    /// keystroke (which runs `maybe_adopt_owner_write` before dispatch) must
+    /// NOT move the cursor to EOF. The dashboard has no editable tail, so the
+    /// OWC adopt is gated off — the forced top-of-page caret stands even though
+    /// the owner-write populate left the document selection at EOF.
+    #[test]
+    fn keystroke_after_dashboard_open_does_not_jump_to_eof() {
+        use lattice_host::action::Action;
+        let mut editor = boot();
+        editor.viewport_height = 20;
+        editor.do_open_dashboard();
+        // `dispatch_fused` is the real per-keystroke entry; it runs the OWC
+        // adopt. `Action::None` is an inert keystroke.
+        let pre = editor.active_buffer;
+        let _ = editor.dispatch_fused(Action::None, pre, false);
+        assert_eq!(
+            editor.cursor.line, 0,
+            "first keystroke after dashboard open must not adopt an owner-write \
+             EOF position; landed on line {}",
+            editor.cursor.line
+        );
+    }
+}

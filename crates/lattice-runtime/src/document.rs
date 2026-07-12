@@ -312,8 +312,6 @@ impl std::ops::Deref for ActiveDocument {
 
 impl std::fmt::Debug for ActiveDocument {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("ActiveDocument")
-            .field(&self.0.id())
-            .finish()
+        f.debug_tuple("ActiveDocument").field(&self.0.id()).finish()
     }
 }

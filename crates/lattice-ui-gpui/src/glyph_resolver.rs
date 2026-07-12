@@ -216,9 +216,7 @@ impl GlyphResolver {
             underline: None,
             strikethrough: None,
         };
-        let layout = window
-            .text_system()
-            .layout_line(s, font_size, &[run], None);
+        let layout = window.text_system().layout_line(s, font_size, &[run], None);
 
         let raw = layout.runs.first().and_then(|r| {
             r.glyphs.first().map(|g| ResolvedGlyph {
@@ -403,7 +401,11 @@ mod tests {
         let v = resolved(7, 99, true);
         r.insert(k, Some(v));
         assert_eq!(r.get_cached(k), Some(Some(v)));
-        assert_eq!(r.len(), 1, "overwrite keeps the same key, not adds a new one");
+        assert_eq!(
+            r.len(),
+            1,
+            "overwrite keeps the same key, not adds a new one"
+        );
     }
 
     /// `ResolvedGlyph` carries `is_emoji` so the paint loop can

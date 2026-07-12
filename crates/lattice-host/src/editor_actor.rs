@@ -608,11 +608,11 @@ async fn run_actor(
         // Retarget the idle-gate sleep to the current deadline. Cheap;
         // when disarmed we point it an hour out and the `is_some()`
         // guard keeps the arm dormant.
-        inline_diag_sleep.as_mut().reset(
-            editor.inline_diag_deadline.unwrap_or_else(|| {
+        inline_diag_sleep
+            .as_mut()
+            .reset(editor.inline_diag_deadline.unwrap_or_else(|| {
                 tokio::time::Instant::now() + std::time::Duration::from_secs(60 * 60)
-            }),
-        );
+            }));
         let cmd = tokio::select! {
             maybe_cmd = cmd_rx.recv() => match maybe_cmd {
                 Some(cmd) => cmd,
@@ -1042,10 +1042,16 @@ mod tests {
         // 0 must clamp to 1 -- mirror App-side wrapper.
         handle.set_viewport_height(0).expect("send vh=0");
         await_actor(&handle);
-        assert_eq!(handle.render_state().active_document.load().viewport_height, 1);
+        assert_eq!(
+            handle.render_state().active_document.load().viewport_height,
+            1
+        );
 
         handle.set_viewport_height(24).expect("send vh=24");
         await_actor(&handle);
-        assert_eq!(handle.render_state().active_document.load().viewport_height, 24);
+        assert_eq!(
+            handle.render_state().active_document.load().viewport_height,
+            24
+        );
     }
 }

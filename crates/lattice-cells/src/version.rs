@@ -91,7 +91,10 @@ mod tests {
         let bumps = [
             MatrixVersion { text: 1, ..base },
             MatrixVersion { syntax: 1, ..base },
-            MatrixVersion { inlay_hints: 1, ..base },
+            MatrixVersion {
+                inlay_hints: 1,
+                ..base
+            },
             MatrixVersion { folds: 1, ..base },
             MatrixVersion { theme: 1, ..base },
         ];

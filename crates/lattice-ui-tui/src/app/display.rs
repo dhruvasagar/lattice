@@ -98,7 +98,8 @@ impl App {
         orientation: SplitOrientation,
     ) -> BufferId {
         // Phase 5.8.AE: body migrated.
-        let (id, signals) = self.mutate_editor_with(move |e| e.open_help_in_split(content, orientation));
+        let (id, signals) =
+            self.mutate_editor_with(move |e| e.open_help_in_split(content, orientation));
         for s in signals {
             self.handle_renderer_signal(s);
         }

@@ -90,3 +90,19 @@ pub trait ModeActivator {
         false
     }
 }
+
+/// AUX‑2: service-accessible interface for registering virtual row providers
+/// on a buffer. The host registers an `Arc<dyn VirtualRowRegistrar>` during boot
+/// so subsystems (e.g. `lattice-ai`) can register headerlines without depending
+/// on `lattice-host`'s concrete `VirtualRowProviderRegistry`.
+pub trait VirtualRowRegistrar: Send + Sync {
+    /// Register `provider` against `buffer`. Returns `false` if a provider with
+    /// the same `ProviderId` is already registered in the same buffer scope.
+    fn register(
+        &self,
+        buffer: BufferId,
+        provider: Arc<dyn lattice_cells::VirtualRowProvider>,
+    ) -> bool;
+    /// Remove the provider identified by `id` from `buffer`'s scope.
+    fn unregister(&self, buffer: BufferId, id: lattice_cells::ProviderId) -> bool;
+}

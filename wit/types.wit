@@ -1077,6 +1077,10 @@ interface types {
         major-exiting,
         minor-activated,
         minor-deactivated,
+        // Discriminator for EVERY plugin-defined event (PH7.8b). All plugin
+        // events share this one kind; the per-event `name` is not a bus
+        // discriminator — a subscriber filters by name in its `on-event`.
+        plugin,
     }
 
     /// Mirrors `lattice_runtime::EventFilter` — the DECLARATIVE subset a plugin
@@ -1111,6 +1115,7 @@ interface types {
         major-exiting(event-mode-lifecycle),
         minor-activated(event-mode-lifecycle),
         minor-deactivated(event-mode-lifecycle),
+        plugin(event-plugin),
     }
 
     /// `Event::DocumentOpened` payload. `path` is `none` for scratch buffers.
@@ -1162,6 +1167,19 @@ interface types {
     record event-mode-lifecycle {
         buffer: u64,
         mode: string,
+    }
+
+    /// `Event::Plugin` payload (PH7.8b) — a plugin-defined event. `name` is the
+    /// plugin's event identifier (declared via `host-services register-event`);
+    /// `payload` is opaque MessagePack the plugin owns and the host NEVER
+    /// interprets. The host is a thin router: it moves the bytes, it does not
+    /// parse them (the boundary discipline the plugin host rests on). The
+    /// ergonomic typed wrapper (`#[derive(PluginEvent)]`) is a guest-side SDK
+    /// layer OVER this opaque wire (PH7.8b.3) — the wire is identical with or
+    /// without it.
+    record event-plugin {
+        name: string,
+        payload: list<u8>,
     }
 
     // --- Decoration seam (PH7.9, plugin-host.md §5 `decorations`) --------------

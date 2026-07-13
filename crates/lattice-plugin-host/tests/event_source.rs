@@ -18,6 +18,7 @@
 #![allow(clippy::unwrap_used, clippy::panic)]
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use lattice_mode::CapabilitySet;
 use lattice_plugin_host::{PluginBudget, PluginHost, PluginManifest, TrustTier};
@@ -69,7 +70,7 @@ async fn plugin_receives_subscribed_events_end_to_end() {
         .compile(&std::fs::read(wasm).unwrap())
         .expect("compile events fixture");
     let manifest = PluginManifest::new(PLUGIN_ID, Vec::new(), CapabilitySet::empty());
-    let bus = EventBus::new();
+    let bus = Arc::new(EventBus::new());
 
     let (sub_ids, actor) = host
         .spawn_event_plugin(
@@ -110,6 +111,79 @@ async fn plugin_receives_subscribed_events_end_to_end() {
     );
 }
 
+/// PH7.8b.2 — the emit/subscribe wire, end to end through a real guest. The
+/// fixture DECLARES a plugin event (`register-event`) at registration and EMITS
+/// it (`emit-event`) from its save handler. This proves both host-services seams:
+///   - `register-event` records into the host's runtime event registry under the
+///     plugin's `plugin:<id>` provenance (surfacing in introspection), and
+///   - `emit-event` publishes an opaque-payload `Event::Plugin` onto the bus that
+///     a NATIVE subscriber receives verbatim — the host as a thin byte router.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn plugin_declares_and_emits_a_custom_event_end_to_end() {
+    use lattice_protocol::event_registry::event_info_by_name;
+
+    let Some(wasm) = guest_wasm() else {
+        eprintln!("SKIP: events fixture guest not built");
+        return;
+    };
+    let dir = TempDir::new().unwrap();
+    let data_base = dir.path().join("data");
+    let host = PluginHost::with_dirs(dir.path().join("cache"), &data_base).expect("host builds");
+    let component = host
+        .compile(&std::fs::read(wasm).unwrap())
+        .expect("compile events fixture");
+    let manifest = PluginManifest::new(PLUGIN_ID, Vec::new(), CapabilitySet::empty());
+    let bus = Arc::new(EventBus::new());
+
+    let (sub_ids, actor) = host
+        .spawn_event_plugin(
+            &component,
+            &manifest,
+            TrustTier::Bundled,
+            PluginBudget::event(),
+            &bus,
+        )
+        .await
+        .expect("spawn events plugin");
+
+    // `register-events` already ran, so the plugin's `register-event` call landed
+    // the custom event in the runtime registry, stamped with its provenance.
+    let info = event_info_by_name("events-fixture.saved-echo")
+        .expect("the plugin's custom event self-registered via register-event");
+    assert_eq!(
+        info.source,
+        format!("plugin:{}", actor.id().0),
+        "the event is attributed to the emitting plugin's provenance"
+    );
+    assert!(!info.builtin, "a plugin-defined event is not a built-in");
+
+    // A native subscriber for the plugin-event kind — the emit witness. It stays
+    // subscribed while the plugin's own subscriptions are torn down.
+    let (plugin_tx, mut plugin_rx) = tokio::sync::mpsc::unbounded_channel();
+    bus.subscribe(
+        EventFilter::kind(EventKind::Plugin),
+        SubscriptionTarget::Channel(plugin_tx),
+    );
+
+    // Publish a save → handler 1 fires and EMITS the custom event from inside its
+    // `on-event`. Queue the delivery, then close the actor channel and drain.
+    bus.publish(saved("src/lib.rs"));
+    for id in sub_ids {
+        bus.unsubscribe(id);
+    }
+    actor.run().await;
+
+    // The guest's emit crossed to the bus and reached the native subscriber with
+    // its opaque payload byte-for-byte — the host never parsed it.
+    match plugin_rx.try_recv() {
+        Ok(Event::Plugin { name, payload }) => {
+            assert_eq!(name, "events-fixture.saved-echo");
+            assert_eq!(payload, vec![0xAA, 0xBB, 0xCC], "opaque bytes cross verbatim");
+        }
+        other => panic!("expected the emitted Plugin event, got {other:?}"),
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn poison_handler_traps_gracefully_without_affecting_others() {
     let Some(wasm) = guest_wasm() else {
@@ -124,7 +198,7 @@ async fn poison_handler_traps_gracefully_without_affecting_others() {
         .compile(&std::fs::read(wasm).unwrap())
         .expect("compile events fixture");
     let manifest = PluginManifest::new(PLUGIN_ID, Vec::new(), CapabilitySet::empty());
-    let bus = EventBus::new();
+    let bus = Arc::new(EventBus::new());
 
     // A NATIVE bus subscriber to the same kind the poison handler observes — the
     // isolation witness: it must still receive the event even though the plugin

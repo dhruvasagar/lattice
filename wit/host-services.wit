@@ -25,4 +25,21 @@ interface host-services {
     /// grant reaches nothing. The check runs host-side because the host, unlike
     /// the guest's WASI view, has ambient authority the grant must bound.
     walk: func(root: string) -> result<list<string>, string>;
+
+    /// Declare a plugin-defined event (PH7.8b). Registers `name` + `doc` into
+    /// the host's RUNTIME event registry (`event_registry`) under this plugin's
+    /// provenance (`plugin:<id>`), so the event surfaces in introspection
+    /// (`:describe-event(s)`) and `:`-completion exactly like a built-in one.
+    /// Returns `false` (and registers nothing) if `name` would shadow a BUILT-IN
+    /// event — a plugin must not hijack a native event's subscribers. Idempotent
+    /// by name: a re-register refreshes the doc (a plugin reload).
+    register-event: func(name: string, doc: string) -> bool;
+
+    /// Publish a plugin-defined event on the editor's event bus (PH7.8b). `name`
+    /// is the event identifier (typically pre-declared via `register-event`);
+    /// `payload` is opaque MessagePack the plugin owns — the host moves the bytes
+    /// onto the bus (`event::plugin`) and NEVER interprets them. Fire-and-forget:
+    /// the bus is observation-only (§5.10), so there is no reply. Subscribers
+    /// (native or other plugins) filter by `name` in their handler.
+    emit-event: func(name: string, payload: list<u8>);
 }

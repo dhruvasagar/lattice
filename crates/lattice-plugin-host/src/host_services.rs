@@ -18,7 +18,32 @@
 
 use std::path::{Path, PathBuf};
 
+use lattice_protocol::Event as NativeEvent;
+use lattice_protocol::event_registry::register_runtime_event;
+use lattice_runtime::EventBus;
+
+use crate::PluginId;
 use crate::capability::CapabilityGrant;
+
+/// The `register-event` host-service body (PH7.8b) — declare a plugin-defined
+/// event. Stamps the plugin's provenance (`plugin:<id>`) as the source so the
+/// event is attributed to its owner in `:describe-event(s)`, then delegates to
+/// the process-wide [`register_runtime_event`]. Returns `false` (registering
+/// nothing) when `name` would shadow a BUILT-IN event — a plugin must not hijack
+/// a native event's subscribers. Factored here (the [`walk_within_grant`]
+/// precedent) so the provenance formatting is unit-testable without a `Store`.
+pub(crate) fn register_plugin_event(plugin: PluginId, name: &str, doc: &str) -> bool {
+    register_runtime_event(name, doc, format!("plugin:{}", plugin.0))
+}
+
+/// The `emit-event` host-service body (PH7.8b) — publish a plugin-defined event
+/// on `bus`. The host is a thin router: `payload` is opaque MessagePack the
+/// plugin owns; it crosses onto the bus as [`NativeEvent::Plugin`] verbatim and
+/// the host NEVER interprets it. Fire-and-forget (the bus is observation-only,
+/// §5.10): there is no reply. Subscribers filter by `name` in their handler.
+pub(crate) fn emit_plugin_event(bus: &EventBus, name: String, payload: Vec<u8>) {
+    bus.publish(NativeEvent::Plugin { name, payload });
+}
 
 /// True if `root` lies within one of the grant's fs prefixes (read *or* write —
 /// a walk only reads). Both sides are canonicalized first so a `..` segment
@@ -140,6 +165,46 @@ mod tests {
             !out.iter().any(|p| p.contains(".git") || p.contains("target")),
             "ignore dirs are skipped host-side: {out:?}"
         );
+    }
+
+    #[test]
+    fn register_plugin_event_stamps_the_plugin_provenance() {
+        use lattice_protocol::event_registry::{event_info_by_name, unregister_runtime_event};
+
+        // A fresh, uniquely-named event registers and carries the plugin's
+        // provenance (`plugin:<id>`) as its source — the piece host_services adds
+        // on top of the registry (built-in-shadow rejection is `register_runtime_event`'s
+        // own contract, covered in `event_registry`).
+        let name = "host-services-test.custom-event";
+        assert!(register_plugin_event(PluginId(42), name, "a test event"));
+        let info = event_info_by_name(name).expect("registered");
+        assert_eq!(info.source, "plugin:42");
+        assert!(!info.builtin, "a plugin event is not a built-in");
+        assert_eq!(info.doc, "a test event");
+        unregister_runtime_event(name);
+    }
+
+    #[test]
+    fn emit_plugin_event_publishes_to_a_native_subscriber() {
+        use lattice_runtime::{EventFilter, SubscriptionTarget};
+        use lattice_protocol::EventKind;
+
+        let bus = EventBus::new();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        bus.subscribe(
+            EventFilter::kind(EventKind::Plugin),
+            SubscriptionTarget::Channel(tx),
+        );
+
+        emit_plugin_event(&bus, "my-plugin.indexed".into(), vec![1, 2, 3]);
+
+        match rx.try_recv() {
+            Ok(NativeEvent::Plugin { name, payload }) => {
+                assert_eq!(name, "my-plugin.indexed");
+                assert_eq!(payload, vec![1, 2, 3], "opaque bytes cross verbatim");
+            }
+            other => panic!("expected a Plugin event, got {other:?}"),
+        }
     }
 
     #[test]

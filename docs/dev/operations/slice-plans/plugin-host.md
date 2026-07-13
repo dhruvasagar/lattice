@@ -919,48 +919,48 @@ the **plugin API surface** + **human-readable plugin provenance**. Two facets un
   **populator is Phase-8** (the plugin loader — no plugins are loaded today, so `:list-plugins`
   shows an empty-state and `:describe-plugin <name>` echoes "no loaded plugin").
   - **Doc source (locked with Dhruva):** a plugin's doc is its **own** documentation — the embedded
-    **WIT world doc-comment** (preferred; the author's `///`) with the manifest **`doc` field** as
-    fallback. Both are **immutable at editor runtime** (fixed at the plugin's build/package time), so
-    the doc is **extracted once at load and cached** in the registry — never re-fetched per
-    `:describe-plugin`; only a reload/hot-swap (PH7.12) re-extracts. (For bundled plugins the
-    extraction could even happen at the editor's build time, like PI.1's catalog.) Added `doc:
-    Option<String>` to `PluginManifest` + `RawManifest` (blank → `None`).
+	**WIT world doc-comment** (preferred; the author's `///`) with the manifest **`doc` field** as
+	fallback. Both are **immutable at editor runtime** (fixed at the plugin's build/package time), so
+	the doc is **extracted once at load and cached** in the registry — never re-fetched per
+	`:describe-plugin`; only a reload/hot-swap (PH7.12) re-extracts. (For bundled plugins the
+	extraction could even happen at the editor's build time, like PI.1's catalog.) Added `doc:
+	Option<String>` to `PluginManifest` + `RawManifest` (blank → `None`).
   - **Registry:** PI.3's `PluginNameRegistry` generalised to `PluginMetaRegistry(RwLock<HashMap<u32,
-    PluginMeta{name,doc}>>)` (same ServiceRegistry newtype seam). New `Editor::register_plugin(id,
-    name, doc)` / `plugin_meta` / `loaded_plugins`; `register_plugin_name` + `plugin_display_name`
-    (PI.3) still work (name-only over the same map).
+	PluginMeta{name,doc}>>)` (same ServiceRegistry newtype seam). New `Editor::register_plugin(id,
+	name, doc)` / `plugin_meta` / `loaded_plugins`; `register_plugin_name` + `plugin_display_name`
+	(PI.3) still work (name-only over the same map).
   - **Surfaces:** `Effect::{DescribePlugin{name}, ListPlugins}` (host-applied display effects, the
-    `:describe-command`/`:list-commands` wiring class; Effect↔WIT + renderer-classifier lockstep).
-    `:describe-plugin` renders through the `Introspectable` spine (kind `plugin`, doc = the plugin's
-    doc, a *Commands (N)* section listing the commands whose provenance is `Plugin(id)` — ties to
-    PI.3). `:list-plugins` = a table of `exec:describe-plugin` links + doc summaries.
+	`:describe-command`/`:list-commands` wiring class; Effect↔WIT + renderer-classifier lockstep).
+	`:describe-plugin` renders through the `Introspectable` spine (kind `plugin`, doc = the plugin's
+	doc, a *Commands (N)* section listing the commands whose provenance is `Plugin(id)` — ties to
+	PI.3). `:list-plugins` = a table of `exec:describe-plugin` links + doc summaries.
   - **Tests (+6):** grammar parse (describe-plugin required-arg + list-plugins), boundary round-trip,
-    manifest `doc` parse (present/absent/blank→None), host (empty list-plugins, register→describe
-    renders doc + contributions + list shows it, unknown→None). Green: grammar 218, plugin-host 91,
-    host suite 13, GPUI `--features window`.
+	manifest `doc` parse (present/absent/blank→None), host (empty list-plugins, register→describe
+	renders doc + contributions + list shows it, unknown→None). Green: grammar 218, plugin-host 91,
+	host suite 13, GPUI `--features window`.
 
-  #### PI.3 — `:list-commands` (source-grouped) + plugin-name provenance seam ✅ (2026-07-13)
+#### PI.3 — `:list-commands` (source-grouped) + plugin-name provenance seam ✅ (2026-07-13)
   Facet B's discoverable-now half: the one introspection enumeration the help family was missing,
   plus the `Plugin(id)→manifest-name` resolution seam.
   - **`:list-commands`** (`Effect::ListCommands`, host-applied display effect — same wiring class as
-    `:list-plugin-apis`): `Editor::build_list_commands_content` walks `registry.names()`, groups by
-    `spec.source.layer` (Built-in / User config / Project config / Modeline / Runtime / Plugin), sorts
-    `(group, name)`, renders each as a `:describe-command` link under a `## <group>` heading.
+	`:list-plugin-apis`): `Editor::build_list_commands_content` walks `registry.names()`, groups by
+	`spec.source.layer` (Built-in / User config / Project config / Modeline / Runtime / Plugin), sorts
+	`(group, name)`, renders each as a `:describe-command` link under a `## <group>` heading.
   - **Plugin-name seam:** a `PluginNameRegistry(RwLock<HashMap<u32,String>>)` newtype registered
-    empty in the `ServiceRegistry` at boot (newtype so the `TypeId` can't collide; `RwLock` for the
-    interior mutability a post-boot populate needs behind the shared `Arc<ServiceRegistry>`).
-    `Editor::register_plugin_name(id,name)` / `plugin_display_name(id)->Option<String>`. The Plugin
-    group resolves the id to its manifest name, else falls back to `<plugin:id>`. **No populator
-    exists yet** — the Phase-8 plugin loader is it; the seam is ready and unit-tested by direct
-    injection.
+	empty in the `ServiceRegistry` at boot (newtype so the `TypeId` can't collide; `RwLock` for the
+	interior mutability a post-boot populate needs behind the shared `Arc<ServiceRegistry>`).
+	`Editor::register_plugin_name(id,name)` / `plugin_display_name(id)->Option<String>`. The Plugin
+	group resolves the id to its manifest name, else falls back to `<plugin:id>`. **No populator
+	exists yet** — the Phase-8 plugin loader is it; the seam is ready and unit-tested by direct
+	injection.
   - **Deferred (documented, not skipped):** applying the name resolver to the `render_introspection`
-    source *links* (`:describe-command` on a plugin-contributed command) — it would thread a resolver
-    through grammar's render for a surface with zero live plugin sources today; folds in when a real
-    plugin lands (heuristic #1 / §5.5 "API grows from real plugins"). `:list-commands` is where the
-    grouping value concentrates now.
+	source *links* (`:describe-command` on a plugin-contributed command) — it would thread a resolver
+	through grammar's render for a surface with zero live plugin sources today; folds in when a real
+	plugin lands (heuristic #1 / §5.5 "API grows from real plugins"). `:list-commands` is where the
+	grouping value concentrates now.
   - **Tests (+4):** grammar parse, boundary round-trip, host `:list-commands` grouping + the
-    plugin-name seam (inject → resolve → unknown-id None). Green: grammar 216, plugin-host 90, host
-    plugin-api suite 10, GPUI `--features window`.
+	plugin-name seam (inject → resolve → unknown-id None). Green: grammar 216, plugin-host 90, host
+	plugin-api suite 10, GPUI `--features window`.
 
 #### PI.2b — `:export-plugin-api [markdown|json]` (savable buffer) ✅ (2026-07-13)
   The author-facing machine-readable export (Facet A), as a **savable synthetic buffer** the user
@@ -1044,7 +1044,7 @@ the **plugin API surface** + **human-readable plugin provenance**. Two facets un
 	any hot path). Green: 4 catalog tests. **Depends:** PH7.9. **Next:** PI.2 (the
 	`:describe-plugin-api` ex-commands via HelpBuffer + `render_introspection`).
 
-### PH7.8b — Plugin-DEFINED events (register + emit + subscribe) 🚧 (Half 1 ✅)
+### PH7.8b — Plugin-DEFINED events (register + emit + subscribe) 🚧 (Halves 1+2 ✅)
 Extends the PH7.8 event seam (which was **subscribe-only** — plugins subscribed to *built-in*
 events) to let plugins **declare and use their OWN custom events** (Dhruva, 2026-07-13: "important
 that plugins should be able to register custom events for custom use cases of their own"). This
@@ -1083,8 +1083,31 @@ runtime plugin can declare events + they surface in introspection/completion.
 - Tests: protocol round-trip + built-in-shadow rejection; host describe surfaces a runtime event.
   Green: protocol + host suite 14.
 
-#### PH7.8b.2 — The emit/subscribe wire 📝 (NEXT)
-The dynamic event on the bus + the guest→host seams. Concrete steps:
+#### PH7.8b.2 — The emit/subscribe wire ✅ (2026-07-13)
+The dynamic event on the bus + the guest→host seams. Landed exactly as scoped:
+- `Event::Plugin { name, payload }` + `EventKind::Plugin` (protocol), the WIT
+  `event.plugin(event-plugin)` arm + `event-kind.plugin`, and the both-direction
+  `boundary_event.rs` mirror — the exhaustiveness *was* the guard (compiler forced
+  `event_path` / `event_major_mode` in `lattice-runtime` and both `WitBoundary`
+  impls to add the arm).
+- `host-services.wit`: `register-event(name, doc) -> bool` + `emit-event(name,
+  payload)`; bodies in `host_services.rs` (`register_plugin_event` stamps the
+  `plugin:<id>` provenance → `register_runtime_event`; `emit_plugin_event`
+  publishes `Event::Plugin` on the bus).
+- **The deepest bit:** `PluginState` gained `event_emit: Option<EventEmitCtx{
+  plugin_id, bus: Arc<EventBus> }>` — `spawn_event_plugin` (now `bus: &Arc<EventBus>`)
+  sets it before `register-events` runs, so the guest can register/emit from
+  `register-events` *and* from `on-event`. `None` for a plugin not spawned onto a
+  bus → emit is a warn + drop (graceful; the host isn't boot-wired yet).
+- Tests: `boundary_event` opaque-payload round-trip (incl. non-UTF-8 bytes);
+  `host_services` provenance-stamp unit test; the `events-guest` fixture now
+  declares + emits `events-fixture.saved-echo` on save, and a new `event_source`
+  host-layer e2e proves guest `emit-event` → bus → **native** subscriber receives
+  the opaque payload byte-for-byte, plus `register-event` lands in the runtime
+  registry under `plugin:<id>`. Green: protocol 66, runtime 58, plugin-host lib +
+  `event_source` (3) + `perf_ratchet` (6), plugin-api 4, host introspection/boot 14+14.
+
+Original scope (for reference):
 1. `crates/lattice-protocol/src/event.rs`: add `Event::Plugin { name: String, payload: Vec<u8> }`
    + the matching `EventKind::Plugin` (+ its `kind()` mapping). It's the WIT-mirrored enum, so this
    is a **compiler-forced lockstep**: `wit/types.wit` `event` variant gains a `plugin(record{name,
@@ -1106,7 +1129,7 @@ The dynamic event on the bus + the guest→host seams. Concrete steps:
    without the wasm target.
 - **Depends:** PH7.8b.1, PH7.8 (the event actor + `boundary_event`).
 
-#### PH7.8b.3 — `lattice-plugin-sdk` guest crate: `PluginEvent` trait + derive 📝
+#### PH7.8b.3 — `lattice-plugin-sdk` guest crate: `PluginEvent` trait + derive 📝 (NEXT)
 The ergonomic, contract-capable author layer over the opaque wire (guest-side, compiled into
 plugins — NOT the host).
 1. New crate `crates/lattice-plugin-sdk` (guest-side; deps the generated WIT bindings + a

@@ -333,6 +333,7 @@ async fn event_handler_stays_within_ceiling() {
     use lattice_protocol::Event;
     use lattice_protocol::ids::DocumentId;
     use lattice_runtime::EventBus;
+    use std::sync::Arc;
 
     let path = env!("EVENTS_GUEST_WASM");
     if path.is_empty() {
@@ -343,7 +344,7 @@ async fn event_handler_stays_within_ceiling() {
     let host = PluginHost::with_dirs(dirs.path().join("cache"), dirs.path().join("data")).unwrap();
     let component = host.compile(&std::fs::read(path).unwrap()).unwrap();
     let manifest = PluginManifest::new("events-fixture", Vec::new(), CapabilitySet::empty());
-    let bus = EventBus::new();
+    let bus = Arc::new(EventBus::new());
     let (sub_ids, actor) = host
         .spawn_event_plugin(
             &component,

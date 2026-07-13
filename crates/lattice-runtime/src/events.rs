@@ -712,7 +712,10 @@ fn event_path(event: &Event) -> Option<&Path> {
         | Event::MajorEntered { .. }
         | Event::MajorExiting { .. }
         | Event::MinorActivated { .. }
-        | Event::MinorDeactivated { .. } => None,
+        | Event::MinorDeactivated { .. }
+        // Plugin events carry an opaque payload, not a path; a plugin that
+        // wants path-based routing filters inside its own handler (PH7.8b).
+        | Event::Plugin { .. } => None,
     }
 }
 
@@ -740,7 +743,10 @@ fn event_major_mode(event: &Event) -> Option<&str> {
         | Event::BeforeQuit
         | Event::OptionChanged { .. }
         | Event::MinorActivated { .. }
-        | Event::MinorDeactivated { .. } => None,
+        | Event::MinorDeactivated { .. }
+        // A plugin event is not tied to a buffer's major mode; a plugin that
+        // wants major-mode routing filters inside its own handler (PH7.8b).
+        | Event::Plugin { .. } => None,
     }
 }
 

@@ -95,6 +95,8 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+use lattice_runtime::EventBus;
+
 use lattice_grammar::SourceLayer;
 use wasmtime::component::{Component, HasSelf, Linker};
 use wasmtime::{Cache, CacheConfig, Config, Engine, Store};
@@ -414,6 +416,27 @@ struct PluginState {
     /// and wires each subscription to the native `EventBus` (PH7.8c). Empty for a
     /// plugin that observes no events.
     event_subscriptions: events_host::EventContributions,
+    /// The publish-side handle for the `register-event` / `emit-event`
+    /// host-services (PH7.8b.2) — the plugin's identity (for the `plugin:<id>`
+    /// provenance) plus the bus it emits onto. `Some` only for a plugin spawned
+    /// onto a bus ([`PluginHost::spawn_event_plugin`]); `None` otherwise, in
+    /// which case an `emit-event` is a warn + drop (the honest "no bus wired
+    /// yet" degradation — the host isn't boot-wired into the `Editor`, so this
+    /// slice is validation-only).
+    event_emit: Option<EventEmitCtx>,
+}
+
+/// The bus-publish handle a plugin needs to emit custom events (PH7.8b.2). Set
+/// on [`PluginState`] by [`PluginHost::spawn_event_plugin`] once the plugin's
+/// identity is allocated. The subscribe side already threads the concrete
+/// [`EventBus`] into the host ([`event_task`](crate::event_task)), so the emit
+/// side stores it directly rather than behind a closure indirection.
+struct EventEmitCtx {
+    /// The host-issued identity — the `plugin:<id>` provenance stamped on every
+    /// event this plugin declares via `register-event`.
+    plugin_id: PluginId,
+    /// The bus `emit-event` publishes `Event::Plugin` onto.
+    bus: Arc<EventBus>,
 }
 
 impl WasiView for PluginState {
@@ -434,6 +457,39 @@ impl WasiView for PluginState {
 impl crate::lattice::plugin_host::host_services::Host for PluginState {
     fn walk(&mut self, root: String) -> Result<Vec<String>, String> {
         host_services::walk_within_grant(&self.grant, &root)
+    }
+
+    /// `register-event` (PH7.8b.2): declare a plugin-defined event into the
+    /// runtime registry under this plugin's `plugin:<id>` provenance. Returns
+    /// `false` on a built-in-shadow (the registry refuses it) OR when no emit
+    /// context is wired (a plugin not spawned onto a bus — degrade gracefully to
+    /// "not registered" rather than panic; the host isn't boot-wired yet).
+    fn register_event(&mut self, name: String, doc: String) -> bool {
+        match &self.event_emit {
+            Some(ctx) => host_services::register_plugin_event(ctx.plugin_id, &name, &doc),
+            None => {
+                tracing::warn!(
+                    event = %name,
+                    "register-event ignored: plugin has no event bus wired"
+                );
+                false
+            }
+        }
+    }
+
+    /// `emit-event` (PH7.8b.2): publish a plugin-defined event on the bus. A
+    /// plugin with no emit context wired (not spawned onto a bus) degrades to a
+    /// warn + drop — never a panic (the four-artefact graceful-failure clause).
+    fn emit_event(&mut self, name: String, payload: Vec<u8>) {
+        match &self.event_emit {
+            Some(ctx) => host_services::emit_plugin_event(&ctx.bus, name, payload),
+            None => {
+                tracing::warn!(
+                    event = %name,
+                    "emit-event dropped: plugin has no event bus wired"
+                );
+            }
+        }
     }
 }
 
@@ -819,6 +875,9 @@ impl PluginHost {
             grant,
             grammar_contributions: grammar_host::GrammarContributions::default(),
             event_subscriptions: events_host::EventContributions::default(),
+            // Set by `spawn_event_plugin` once the plugin's id is allocated; a
+            // plugin not spawned onto a bus cannot emit (warn + drop).
+            event_emit: None,
         };
         let mut store = Store::new(&self.engine, state);
         store

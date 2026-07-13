@@ -42,8 +42,8 @@ use crate::WitBoundary;
 use crate::boundary_event::project_event_filter;
 use crate::events_host::bindings::EventsPlugin;
 use crate::{
-    Component, PluginBudget, PluginHost, PluginHostError, PluginId, PluginManifest, PluginState,
-    TrustTier, arm_store, classify_trap,
+    Component, EventEmitCtx, PluginBudget, PluginHost, PluginHostError, PluginId, PluginManifest,
+    PluginState, TrustTier, arm_store, classify_trap,
 };
 
 /// One event routed from the bus to the actor. The bus sink tags each delivery
@@ -155,7 +155,7 @@ impl PluginHost {
         manifest: &PluginManifest,
         tier: TrustTier,
         budget: PluginBudget,
-        bus: &EventBus,
+        bus: &Arc<EventBus>,
     ) -> Result<(Vec<SubscriptionId>, EventActor), PluginHostError> {
         let (wasi, outcome, _data_dir) = self.build_plugin_wasi(manifest, tier);
         for denied in &outcome.denied {
@@ -170,6 +170,16 @@ impl PluginHost {
             .await
             .map_err(|e| PluginHostError::Instantiate(e.into()))?;
         let id = self.alloc_id();
+
+        // Wire the emit context BEFORE `register-events` runs: the guest may call
+        // the imported `register-event` / `emit-event` host-services from inside
+        // `register-events` (or later, from `on-event`), and both need this
+        // plugin's identity + the bus (PH7.8b.2). `store` moves into the actor
+        // below, carrying the context for the life of the plugin.
+        store.data_mut().event_emit = Some(EventEmitCtx {
+            plugin_id: id,
+            bus: Arc::clone(bus),
+        });
 
         // Drive subscription registration: the guest calls the imported
         // `events.subscribe(filter, handler)` inside `register-events`, recording

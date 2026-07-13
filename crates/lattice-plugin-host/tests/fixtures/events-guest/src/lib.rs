@@ -22,7 +22,12 @@ wit_bindgen::generate!({
 });
 
 use lattice::plugin_host::events;
+use lattice::plugin_host::host_services;
 use lattice::plugin_host::types::{EventFilter, EventKind};
+
+/// The plugin-defined event this fixture declares (`register-event`) and emits
+/// (`emit-event`) when it observes a save — the PH7.8b.2 emit/subscribe wire.
+const ECHO_EVENT: &str = "events-fixture.saved-echo";
 // `Event` is world-`use`d, so wit-bindgen surfaces it at the crate root (in
 // scope here without an import — importing it from `types` would collide).
 
@@ -54,6 +59,7 @@ fn label(ev: &Event) -> &'static str {
         Event::MajorExiting(_) => "major-exiting",
         Event::MinorActivated(_) => "minor-activated",
         Event::MinorDeactivated(_) => "minor-deactivated",
+        Event::Plugin(_) => "plugin",
     }
 }
 
@@ -68,6 +74,10 @@ impl Guest for Component {
         // No-op handler: returns immediately (no fs) — the clean per-delivery
         // dispatch path the perf ratchet (PH7.8d) measures.
         events::subscribe(&kind_filter(EventKind::DocumentChanged), 4);
+        // PH7.8b.2: declare a plugin-defined event via the `register-event`
+        // host-service. It self-registers into the host's runtime event registry
+        // under this plugin's provenance; `on-event` handler 1 emits it on save.
+        host_services::register_event(ECHO_EVENT, "emitted when the plugin observes a save");
     }
 
     /// Deliver one matching event. Handler 3 traps, handler 4 is a no-op (the
@@ -91,6 +101,13 @@ impl Guest for Component {
             .open("/data/received.log")
         {
             let _ = f.write_all(line.as_bytes());
+        }
+        // PH7.8b.2: on a save, EMIT a plugin-defined event with an opaque
+        // payload (here a tiny byte marker — a real plugin would MessagePack a
+        // struct). It crosses to the bus verbatim; a native subscriber (the host
+        // test) filters by name and receives it. The host never parses the bytes.
+        if handler == 1 {
+            host_services::emit_event(ECHO_EVENT, &[0xAA, 0xBB, 0xCC]);
         }
     }
 }

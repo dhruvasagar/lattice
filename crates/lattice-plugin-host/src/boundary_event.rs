@@ -24,7 +24,8 @@ use crate::boundary::path_to_wit;
 use crate::lattice::plugin_host::types::{
     Event as WitEvent, EventAppliedEdit as WitEventAppliedEdit, EventDocumentChanged,
     EventDocumentOpened, EventDocumentPath, EventFilter as WitEventFilter, EventKind as WitEventKind,
-    EventModalModeChanged, EventModeLifecycle, EventOptionChanged, EventSelectionsChanged,
+    EventModalModeChanged, EventModeLifecycle, EventOptionChanged, EventPlugin as WitEventPlugin,
+    EventSelectionsChanged,
 };
 use lattice_keymap::ModeId;
 use lattice_protocol::event::AppliedEdit as NativeEventAppliedEdit;
@@ -81,6 +82,7 @@ impl WitBoundary for NativeEventKind {
             NativeEventKind::MajorExiting => WitEventKind::MajorExiting,
             NativeEventKind::MinorActivated => WitEventKind::MinorActivated,
             NativeEventKind::MinorDeactivated => WitEventKind::MinorDeactivated,
+            NativeEventKind::Plugin => WitEventKind::Plugin,
         })
     }
 
@@ -99,6 +101,7 @@ impl WitBoundary for NativeEventKind {
             WitEventKind::MajorExiting => NativeEventKind::MajorExiting,
             WitEventKind::MinorActivated => NativeEventKind::MinorActivated,
             WitEventKind::MinorDeactivated => NativeEventKind::MinorDeactivated,
+            WitEventKind::Plugin => NativeEventKind::Plugin,
         })
     }
 }
@@ -179,6 +182,11 @@ impl WitBoundary for NativeEvent {
             NativeEvent::MinorDeactivated { buffer, minor } => {
                 WitEvent::MinorDeactivated(mode_lifecycle(buffer, minor))
             }
+            // Opaque bytes cross verbatim — the host is a thin router (PH7.8b).
+            NativeEvent::Plugin { name, payload } => WitEvent::Plugin(WitEventPlugin {
+                name: name.clone(),
+                payload: payload.clone(),
+            }),
         })
     }
 
@@ -241,6 +249,10 @@ impl WitBoundary for NativeEvent {
             WitEvent::MinorDeactivated(p) => NativeEvent::MinorDeactivated {
                 buffer: BufferId::new(p.buffer),
                 minor: p.mode,
+            },
+            WitEvent::Plugin(p) => NativeEvent::Plugin {
+                name: p.name,
+                payload: p.payload,
             },
         })
     }
@@ -427,12 +439,27 @@ mod tests {
             NativeEventKind::MajorExiting,
             NativeEventKind::MinorActivated,
             NativeEventKind::MinorDeactivated,
+            NativeEventKind::Plugin,
         ] {
             assert_eq!(
                 NativeEventKind::from_wit(kind.to_wit().unwrap()).unwrap(),
                 kind
             );
         }
+    }
+
+    #[test]
+    fn plugin_event_round_trips_opaque_payload() {
+        // The host is a thin router: the name + arbitrary bytes cross verbatim,
+        // including a non-UTF-8 payload (MessagePack is binary, not text).
+        round_trip(NativeEvent::Plugin {
+            name: "git-gutter.hunks-changed".into(),
+            payload: vec![0x00, 0x91, 0xff, 0x7f, 0xde],
+        });
+        round_trip(NativeEvent::Plugin {
+            name: "empty".into(),
+            payload: Vec::new(),
+        });
     }
 
     #[test]

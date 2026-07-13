@@ -137,6 +137,21 @@ pub enum Event {
         buffer: BufferId,
         minor: String,
     },
+    /// A plugin-DEFINED event (PH7.8b). Unlike every arm above -- each a
+    /// closed, host-owned editor-core transition -- this arm is the OPEN
+    /// escape hatch a runtime-loaded plugin publishes through
+    /// (`host-services emit-event`). The host is a thin router: `name` is
+    /// the plugin's event identifier (declared via `register-event`, surfaced
+    /// in the runtime event registry, `event_registry`); `payload` is opaque
+    /// MessagePack the *plugin* owns and the host NEVER interprets -- the
+    /// boundary discipline the plugin host rests on. Every plugin event shares
+    /// this one variant + [`EventKind::Plugin`]; subscribers filter by `name`
+    /// inside their handler (the bus discriminates only to `Plugin`, not
+    /// per-name), so a new plugin event needs no enum/WIT change.
+    Plugin {
+        name: String,
+        payload: Vec<u8>,
+    },
 }
 
 // M.5.3.b: `LspLogPushed`, `LspBufferAttached`, and
@@ -166,6 +181,7 @@ impl Event {
             Event::MajorExiting { .. } => EventKind::MajorExiting,
             Event::MinorActivated { .. } => EventKind::MinorActivated,
             Event::MinorDeactivated { .. } => EventKind::MinorDeactivated,
+            Event::Plugin { .. } => EventKind::Plugin,
         }
     }
 }
@@ -188,6 +204,10 @@ pub enum EventKind {
     MajorExiting,
     MinorActivated,
     MinorDeactivated,
+    /// Discriminator for every plugin-defined event ([`Event::Plugin`]). All
+    /// plugin events share this one kind; the per-event `name` is NOT a bus
+    /// discriminator (subscribers filter by name in their handler, PH7.8b).
+    Plugin,
 }
 
 /// An edit as actually applied to the buffer (the original `Edit` plus the

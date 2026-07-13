@@ -758,6 +758,33 @@ impl KeymapHandle {
         self.registry.rebuild_reverse_cache();
     }
 
+    /// Remove an entire layer by its [`KeymapLayer`] identity, dropping every
+    /// binding it holds across all binding-modes, then rebuild the merged /
+    /// gated / reverse caches. The teardown seam for a plugin mode's keymap
+    /// (PH7.12b): [`bind_mode_keymap`](crate) binds a plugin mode's chords into
+    /// `KeymapLayer::MinorMode(mode_id)` via [`Self::try_bind_chord_string`] —
+    /// an *implicitly-created* layer, so the host never holds a [`LayerId`] to
+    /// [`pop_layer`](Self::pop_layer) with. This removes it by the layer key
+    /// the host *does* know (the mode's own `MinorMode(mode_id)`). No-op if no
+    /// such layer exists (idempotent second unload / a mode that bound nothing).
+    /// Mirrors `pop_layer`'s rebuild exactly — every site that stores `merged` /
+    /// `gated_mode_tries` must also rebuild the reverse cache.
+    pub fn remove_layer(&self, layer: KeymapLayer) {
+        let (merged, minors) = {
+            let mut inner = self.registry.inner.lock().expect("registry mutex");
+            if let Some(pos) = inner.layers.iter().position(|l| l.layer == layer) {
+                inner.layers.remove(pos);
+            }
+            (
+                inner.build_always_on_merged(),
+                inner.build_gated_mode_tries(),
+            )
+        };
+        self.registry.merged.store(Arc::new(merged));
+        self.registry.gated_mode_tries.store(Arc::new(minors));
+        self.registry.rebuild_reverse_cache();
+    }
+
     /// Total binding count across all layers. Telemetry +
     /// tests; not on the hot path.
     pub fn binding_count(&self) -> usize {
@@ -1569,6 +1596,51 @@ mod tests {
             src("plugin-a"),
         );
         assert!(matches!(r, Err(KeymapError::CapabilityDenied { .. })));
+    }
+
+    #[test]
+    fn remove_layer_drops_a_minor_modes_bindings_leaving_others() {
+        let h = KeymapHandle::new();
+        let mode_a = ModeId::new("plugin-a-mode");
+        let mode_b = ModeId::new("plugin-b-mode");
+        // Two plugin minor-mode layers, each with one chord (the shape
+        // `bind_mode_keymap` produces — an implicitly-created MinorMode layer,
+        // no LayerId handed back to the host).
+        h.try_bind(
+            KeymapCapability::OwnedLayer { mode_id: mode_a },
+            KeymapLayer::MinorMode(mode_a),
+            BindingMode::Normal,
+            &[lit('j')],
+            invocation(1),
+            src("plugin-a"),
+        )
+        .unwrap();
+        h.try_bind(
+            KeymapCapability::OwnedLayer { mode_id: mode_b },
+            KeymapLayer::MinorMode(mode_b),
+            BindingMode::Normal,
+            &[lit('k')],
+            invocation(2),
+            src("plugin-b"),
+        )
+        .unwrap();
+        assert_eq!(h.binding_count(), 2);
+
+        // Remove plugin-a's layer by its MinorMode key (the host has no LayerId).
+        h.remove_layer(KeymapLayer::MinorMode(mode_a));
+        assert_eq!(h.binding_count(), 1);
+        // plugin-a's chord is gone from every layer; plugin-b's survives.
+        assert!(
+            h.enumerate_chord_bindings(BindingMode::Normal, &[KeyChord::char('j')])
+                .is_empty()
+        );
+        let b_hits = h.enumerate_chord_bindings(BindingMode::Normal, &[KeyChord::char('k')]);
+        assert_eq!(b_hits.len(), 1);
+        assert_eq!(b_hits[0].0, KeymapLayer::MinorMode(mode_b));
+
+        // Idempotent: removing an already-gone layer is a no-op.
+        h.remove_layer(KeymapLayer::MinorMode(mode_a));
+        assert_eq!(h.binding_count(), 1);
     }
 
     #[test]

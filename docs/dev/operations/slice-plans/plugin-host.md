@@ -1358,10 +1358,19 @@ nothing) and keeps every index consistent.
 `OptionHandle`s, so real removal needs a tombstone (or a by-name delist that frees the leaked
 `&'static str` name/doc). Invasive — its own slice. **Depends:** PH7.12b.1a.
 
-#### PH7.12b.1c — Keymap `MinorMode`-layer removal + plugin-event unregister 📝
-`bind_mode_keymap` binds chords into `KeymapLayer::MinorMode(mode_id)` (not a pushed poppable
-layer), so add a remove-by-layer path; plus an unregister for plugin-defined events in the
-process-wide `event_registry`. **Depends:** PH7.12b.1a.
+#### PH7.12b.1c — Keymap `MinorMode`-layer removal ✅ (2026-07-14)
+`bind_mode_keymap` binds a plugin mode's chords into `KeymapLayer::MinorMode(mode_id)` via
+`try_bind_chord_string` — an *implicitly-created* layer, so the host never holds a `LayerId` to
+`pop_layer` with.
+- `KeymapHandle::remove_layer(layer: KeymapLayer)` — removes the whole layer by its
+  `KeymapLayer` identity (the key the host *does* know: the mode's `MinorMode(mode_id)`),
+  dropping every binding across all binding-modes and rebuilding the merged / gated / reverse
+  caches exactly as `pop_layer` does. Idempotent (no-op if absent).
+- **Plugin-defined events need NO new code**: the process-wide runtime registry already exposes
+  `lattice_protocol::event_registry::unregister_runtime_event(name)` (String-keyed `BTreeMap`,
+  no leak) — the teardown bundle (PH7.12b.3) calls it directly with the recorded event names.
+- **Test: two plugin `MinorMode` layers → `remove_layer` one → its chord gone from every layer,
+  the other survives, idempotent second removal.** Green: keymap 96.
 
 #### PH7.12b.2 — Per-plugin intern pool (F6) 📝
 Replace `Box::leak` for plugin-sourced spec strings (grammar/picker/config/event names + docs)

@@ -3119,6 +3119,31 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
                     },
                 )));
         }
+        Effect::DescribePlugin { name } => {
+            // PI.4: `:describe-plugin <name>` -- one loaded plugin's doc +
+            // contributions. Unknown/not-loaded echoes + skips the signal.
+            if let Some(content) = editor.build_describe_plugin_content(&name) {
+                out.renderer_signals
+                    .push(RendererSignal::DisplayBuffer(Box::new(
+                        DisplayBufferRequest {
+                            content,
+                            category:
+                                lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
+                        },
+                    )));
+            }
+        }
+        Effect::ListPlugins => {
+            // PI.4: `:list-plugins` -- every loaded plugin; infallible.
+            let content = editor.build_list_plugins_content();
+            out.renderer_signals
+                .push(RendererSignal::DisplayBuffer(Box::new(
+                    DisplayBufferRequest {
+                        content,
+                        category: lattice_core::ui::display::BufferDisplayCategory::HelpList,
+                    },
+                )));
+        }
         Effect::DescribeOptionResolution { name } => {
             // 5.5.F.3: `:describe-option-resolution <name>` --
             // walks the §6.1 layer model (modal-state / buffer-
@@ -27436,19 +27461,53 @@ impl Editor {
     /// `git-gutter`) instead of `<plugin:id>`. The Phase-8 plugin loader calls
     /// this as each plugin loads; today the map starts (and stays) empty.
     pub fn register_plugin_name(&self, id: u32, name: impl Into<String>) {
-        if let Some(reg) = self.services.get::<PluginNameRegistry>()
+        self.register_plugin(id, name, "");
+    }
+
+    /// PI.4: record a loaded plugin's full metadata (name + its own doc). The
+    /// Phase-8 loader calls this once per plugin at load, resolving `doc` from
+    /// the plugin's embedded WIT world doc-comment (or its manifest `doc`
+    /// field) — both immutable at editor runtime, so this is a one-time cache.
+    pub fn register_plugin(&self, id: u32, name: impl Into<String>, doc: impl Into<String>) {
+        if let Some(reg) = self.services.get::<PluginMetaRegistry>()
             && let Ok(mut map) = reg.0.write()
         {
-            map.insert(id, name.into());
+            map.insert(
+                id,
+                PluginMeta {
+                    name: name.into(),
+                    doc: doc.into(),
+                },
+            );
         }
     }
 
     /// PI.3: the manifest name for a plugin id, if the host knows it. `None`
     /// falls back to `<plugin:id>` at the display sites.
     pub fn plugin_display_name(&self, id: u32) -> Option<String> {
-        let reg = self.services.get::<PluginNameRegistry>()?;
-        let name = reg.0.read().ok()?.get(&id).cloned();
-        name
+        Some(self.plugin_meta(id)?.name)
+    }
+
+    /// PI.4: the full metadata for a plugin id, if loaded.
+    pub fn plugin_meta(&self, id: u32) -> Option<PluginMeta> {
+        let reg = self.services.get::<PluginMetaRegistry>()?;
+        let meta = reg.0.read().ok()?.get(&id).cloned();
+        meta
+    }
+
+    /// PI.4: every loaded plugin as `(id, meta)`, sorted by name then id.
+    /// Empty until the Phase-8 loader populates the registry.
+    pub fn loaded_plugins(&self) -> Vec<(u32, PluginMeta)> {
+        let Some(reg) = self.services.get::<PluginMetaRegistry>() else {
+            return Vec::new();
+        };
+        let Ok(map) = reg.0.read() else {
+            return Vec::new();
+        };
+        let mut out: Vec<(u32, PluginMeta)> =
+            map.iter().map(|(k, v)| (*k, v.clone())).collect();
+        out.sort_by(|a, b| a.1.name.cmp(&b.1.name).then(a.0.cmp(&b.0)));
+        out
     }
 
     /// PI.3: build the `:list-commands` content — every registered command
@@ -27505,6 +27564,118 @@ impl Editor {
             ));
         }
         lattice_help::HelpContent::from_lines("list-commands", lines)
+    }
+
+    /// PI.4: build the `:describe-plugin <name>` content — one loaded plugin's
+    /// own documentation + its contributions, through the shared `Introspectable`
+    /// spine (uniform with `:describe-command`). An unknown / not-loaded name
+    /// echoes an error + returns `None`. The loaded-plugin registry is empty
+    /// until the Phase-8 loader populates it, so today this always echoes.
+    pub fn build_describe_plugin_content(&mut self, name: &str) -> Option<lattice_help::HelpContent> {
+        let Some((id, meta)) = self
+            .loaded_plugins()
+            .into_iter()
+            .find(|(_, m)| m.name == name)
+        else {
+            self.set_message(
+                EchoLevel::Error,
+                format!("no loaded plugin `{name}` (try :list-plugins)"),
+            );
+            return None;
+        };
+
+        // Commands this plugin contributed (provenance = Plugin(id)).
+        let contributions: Vec<String> = {
+            use lattice_grammar::source::SourceLayer;
+            let mut names: Vec<String> = self
+                .registry
+                .names()
+                .filter_map(|n| self.registry.lookup_by_name(n).map(|s| (n, s)))
+                .filter(|(_, s)| matches!(s.source.layer, SourceLayer::Plugin(p) if p == id))
+                .map(|(n, _)| n.to_string())
+                .collect();
+            names.sort();
+            names
+        };
+
+        struct View<'a> {
+            name: &'a str,
+            doc: &'a str,
+            contributions: Vec<String>,
+        }
+        impl lattice_grammar::Introspectable for View<'_> {
+            fn kind_label(&self) -> &'static str {
+                "plugin"
+            }
+            fn identifier(&self) -> String {
+                self.name.to_string()
+            }
+            fn doc(&self) -> &str {
+                self.doc
+            }
+            fn sources(&self) -> Vec<lattice_grammar::SourceEntry<'_>> {
+                Vec::new()
+            }
+            fn extra_sections(&self) -> Vec<lattice_grammar::HelpSection> {
+                let lines = if self.contributions.is_empty() {
+                    vec!["  (no commands contributed)".to_string()]
+                } else {
+                    self.contributions
+                        .iter()
+                        .map(|n| format!("  {}", lattice_help::command_link(n)))
+                        .collect()
+                };
+                vec![lattice_grammar::HelpSection {
+                    heading: format!("Commands ({}):", self.contributions.len()),
+                    lines,
+                    anchor: Some("commands".to_string()),
+                }]
+            }
+        }
+
+        let view = View {
+            name: &meta.name,
+            doc: &meta.doc,
+            contributions,
+        };
+        let rendered = lattice_grammar::render_introspection(&view);
+        let anchors: Vec<lattice_help::HelpAnchor> = rendered
+            .anchors
+            .into_iter()
+            .map(|a| lattice_help::HelpAnchor {
+                name: a.name,
+                line: a.line,
+            })
+            .collect();
+        Some(lattice_help::HelpContent::from_lines_and_anchors(
+            format!("describe-plugin {name}"),
+            rendered.lines,
+            anchors,
+        ))
+    }
+
+    /// PI.4: build the `:list-plugins` content — every loaded plugin (name →
+    /// `:describe-plugin` link + doc summary). Infallible; renders an empty-state
+    /// line until the Phase-8 loader populates the registry.
+    pub fn build_list_plugins_content(&self) -> lattice_help::HelpContent {
+        let plugins = self.loaded_plugins();
+        let mut lines = vec![format!("# Plugins ({} loaded)", plugins.len()), String::new()];
+        if plugins.is_empty() {
+            lines.push(
+                "No plugins are loaded. (The plugin loader is wired in at Phase 8.)".to_string(),
+            );
+        } else {
+            let name_w = plugins.iter().map(|(_, m)| m.name.len()).max().unwrap_or(0);
+            for (_, m) in plugins {
+                let pad = " ".repeat(name_w.saturating_sub(m.name.len()));
+                let first = m.doc.lines().next().unwrap_or("");
+                lines.push(format!(
+                    "  [{name}](exec:describe-plugin {name}){pad}  {first}",
+                    name = m.name,
+                ));
+            }
+        }
+        lattice_help::HelpContent::from_lines("list-plugins", lines)
     }
 
     /// PI.2b: `:export-plugin-api [markdown|json]` — dump the whole catalog
@@ -29752,18 +29923,33 @@ fn plugin_api_capability_short(c: lattice_plugin_api::Capability) -> &'static st
     }
 }
 
-/// PI.3: host-side plugin-id → manifest-name map for provenance display. A
-/// `SourceLayer::Plugin(id)` renders as the plugin's manifest name where the
-/// host knows it (e.g. `git-gutter`), else `<plugin:id>`. A newtype (not a bare
-/// `RwLock<HashMap>`) so the `ServiceRegistry` `TypeId` can't collide. Registered
-/// empty at boot; the Phase-8 plugin loader is the populator (none exists yet —
-/// the seam is ready). `RwLock` gives the interior mutability a post-boot
-/// populate needs behind the shared `Arc<ServiceRegistry>`.
-pub struct PluginNameRegistry(pub std::sync::RwLock<std::collections::HashMap<u32, String>>);
+/// PI.4: resolved metadata for one loaded plugin. The `doc` is the plugin's
+/// OWN documentation (its embedded WIT world doc-comment, or its manifest `doc`
+/// field) — both fixed at the plugin's build/package time, so it is extracted
+/// ONCE at load and kept here, never re-fetched per `:describe-plugin` (a
+/// component's embedded WIT is immutable at editor runtime; only a reload
+/// re-extracts, PH7.12).
+#[derive(Debug, Clone, Default)]
+pub struct PluginMeta {
+    /// Manifest id / display name (e.g. `git-gutter`).
+    pub name: String,
+    /// The plugin's own documentation (may be empty).
+    pub doc: String,
+}
 
-impl Default for PluginNameRegistry {
+/// PI.3/PI.4: host-side plugin-id → [`PluginMeta`] map. Backs both provenance
+/// display (`SourceLayer::Plugin(id)` renders as the manifest name, else
+/// `<plugin:id>`) and the loaded-plugin introspection surfaces
+/// (`:describe-plugin` / `:list-plugins`). A newtype (not a bare
+/// `RwLock<HashMap>`) so the `ServiceRegistry` `TypeId` can't collide.
+/// Registered empty at boot; the Phase-8 plugin loader is the populator (none
+/// exists yet — the seam is ready). `RwLock` gives the interior mutability a
+/// post-boot populate needs behind the shared `Arc<ServiceRegistry>`.
+pub struct PluginMetaRegistry(pub std::sync::RwLock<std::collections::HashMap<u32, PluginMeta>>);
+
+impl Default for PluginMetaRegistry {
     fn default() -> Self {
-        PluginNameRegistry(std::sync::RwLock::new(std::collections::HashMap::new()))
+        PluginMetaRegistry(std::sync::RwLock::new(std::collections::HashMap::new()))
     }
 }
 
@@ -29930,6 +30116,8 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         | Effect::DescribePluginApi { .. }
         | Effect::ListPluginApis
         | Effect::ListCommands
+        | Effect::DescribePlugin { .. }
+        | Effect::ListPlugins
         | Effect::ExportPluginApi { .. }
         | Effect::OpenHover { .. }
         | Effect::DismissPopup
@@ -30058,6 +30246,8 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         | Effect::DescribePluginApi { .. }
         | Effect::ListPluginApis
         | Effect::ListCommands
+        | Effect::DescribePlugin { .. }
+        | Effect::ListPlugins
         | Effect::ExportPluginApi { .. }
         | Effect::OpenHover { .. }
         | Effect::DismissPopup

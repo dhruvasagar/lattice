@@ -874,7 +874,7 @@ builds the decoration snapshot off the render path. **Depends:** PH7.3. **Gate:*
   native `mode.gutter_decorations` read). Until then plugin decorations produce + cache but do not
   visibly render. This is the phase's standing boot-wiring milestone; no plugin-author work.
 
-### PI — Plugin-API Introspection (PRIORITIZED, before PH7.10) 🚧 (PI.1–PI.3 ✅)
+### PI — Plugin-API Introspection (PRIORITIZED, before PH7.10) 🚧 (PI.1–PI.4 ✅; PI.4 = scaffold, loader Phase-8)
 A baked-in, discoverable introspection layer for APIs — **especially plugin APIs** (Dhruva,
 2026-07-13). Extends the existing self-documenting-help spine (design §5.11) — `:describe-*` /
 `:apropos` / `render_introspection()` already surface `SourceLayer::Plugin(id)` provenance — to
@@ -913,7 +913,33 @@ the **plugin API surface** + **human-readable plugin provenance**. Two facets un
   provenance-name resolution; error = a malformed/absent WIT interface → the catalog omits it +
   logs, never a panic; a plugin id with no manifest → falls back to `<plugin:id>`.
 
-#### PI.3 — `:list-commands` (source-grouped) + plugin-name provenance seam ✅ (2026-07-13)
+#### PI.4 — `:describe-plugin` / `:list-plugins` scaffold + plugin-doc source ✅ (2026-07-13)
+  The loaded-plugin introspection surface (Facet B). Built as a **scaffold** (like PI.3's name
+  seam): the ex-commands + registry + rendering exist and are unit-tested by injection, but the
+  **populator is Phase-8** (the plugin loader — no plugins are loaded today, so `:list-plugins`
+  shows an empty-state and `:describe-plugin <name>` echoes "no loaded plugin").
+  - **Doc source (locked with Dhruva):** a plugin's doc is its **own** documentation — the embedded
+    **WIT world doc-comment** (preferred; the author's `///`) with the manifest **`doc` field** as
+    fallback. Both are **immutable at editor runtime** (fixed at the plugin's build/package time), so
+    the doc is **extracted once at load and cached** in the registry — never re-fetched per
+    `:describe-plugin`; only a reload/hot-swap (PH7.12) re-extracts. (For bundled plugins the
+    extraction could even happen at the editor's build time, like PI.1's catalog.) Added `doc:
+    Option<String>` to `PluginManifest` + `RawManifest` (blank → `None`).
+  - **Registry:** PI.3's `PluginNameRegistry` generalised to `PluginMetaRegistry(RwLock<HashMap<u32,
+    PluginMeta{name,doc}>>)` (same ServiceRegistry newtype seam). New `Editor::register_plugin(id,
+    name, doc)` / `plugin_meta` / `loaded_plugins`; `register_plugin_name` + `plugin_display_name`
+    (PI.3) still work (name-only over the same map).
+  - **Surfaces:** `Effect::{DescribePlugin{name}, ListPlugins}` (host-applied display effects, the
+    `:describe-command`/`:list-commands` wiring class; Effect↔WIT + renderer-classifier lockstep).
+    `:describe-plugin` renders through the `Introspectable` spine (kind `plugin`, doc = the plugin's
+    doc, a *Commands (N)* section listing the commands whose provenance is `Plugin(id)` — ties to
+    PI.3). `:list-plugins` = a table of `exec:describe-plugin` links + doc summaries.
+  - **Tests (+6):** grammar parse (describe-plugin required-arg + list-plugins), boundary round-trip,
+    manifest `doc` parse (present/absent/blank→None), host (empty list-plugins, register→describe
+    renders doc + contributions + list shows it, unknown→None). Green: grammar 218, plugin-host 91,
+    host suite 13, GPUI `--features window`.
+
+  #### PI.3 — `:list-commands` (source-grouped) + plugin-name provenance seam ✅ (2026-07-13)
   Facet B's discoverable-now half: the one introspection enumeration the help family was missing,
   plus the `Plugin(id)→manifest-name` resolution seam.
   - **`:list-commands`** (`Effect::ListCommands`, host-applied display effect — same wiring class as

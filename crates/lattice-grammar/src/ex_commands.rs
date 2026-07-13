@@ -79,6 +79,10 @@ pub struct ExBuiltins {
     pub export_plugin_api: ExCommandId,
     /// PI.3: `:list-commands` -- enumerate every command, source-grouped.
     pub list_commands: ExCommandId,
+    /// PI.4: `:describe-plugin <name>` / `:list-plugins` -- loaded-plugin
+    /// introspection (Facet B).
+    pub describe_plugin: ExCommandId,
+    pub list_plugins: ExCommandId,
     pub describe_events: ExCommandId,
     pub describe_event: ExCommandId,
     // CR.6 (2026-06-24): the 11 diff/hunk ex-command ids
@@ -1170,6 +1174,47 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             surface_form: SurfaceForm::Keyword,
         },
     );
+    let describe_plugin = registry.register_ex_command(
+        "ex:describe-plugin",
+        "Open the help view for a loaded plugin (`:describe-plugin <name>`): its \
+         own documentation + contributions. (Loaded-plugin enumeration is \
+         Phase-8-gated; today no plugins are loaded.)",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_required_string),
+            apply: Box::new(|ctx| match &ctx.args {
+                Args::String(name) => Ok(Effect::DescribePlugin { name: name.clone() }),
+                _ => Err(CommandError::BadArgs("expected a plugin name".into())),
+            }),
+            args_schema: vec![ArgSpec {
+                name: "name",
+                kind: ArgKind::String,
+                doc: "Loaded plugin name (e.g. `git-gutter`).",
+                prompt: "plugin:",
+                default: ArgDefault::Required,
+                // `gen:plugins` completion is a follow-up (the loaded-plugin
+                // registry is host-side + empty until Phase-8).
+                completion: None,
+            }],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    let list_plugins = registry.register_ex_command(
+        "ex:list-plugins",
+        "List every loaded plugin (`:list-plugins`): name + doc summary. Empty \
+         until the Phase-8 plugin loader is wired in.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_| Ok(Effect::ListPlugins)),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
     let describe_events = registry.register_ex_command(
         "ex:describe-events",
         "List every registered event (`:describe-events`). Walks the \
@@ -2024,6 +2069,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         list_plugin_apis,
         export_plugin_api,
         list_commands,
+        describe_plugin,
+        list_plugins,
         describe_events,
         describe_event,
         // CR.6: diff/hunk ex-commands now registered by lattice_diff::install().
@@ -2762,6 +2809,33 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(eff, Effect::ListCommands));
+    }
+
+    #[test]
+    fn describe_plugin_and_list_plugins_emit_effects() {
+        let (registry, ex, mut doc) = fixture();
+        let run = |registry: &_, doc: &mut _, id, args: Args| {
+            execute(
+                registry,
+                doc,
+                lattice_core::BufferId(0),
+                Position::ZERO,
+                CommandInvocation::of(id).with_args(args),
+                &CancellationToken::never(),
+            )
+        };
+        match run(&registry, &mut doc, ex.describe_plugin.0, Args::String("git-gutter".into()))
+            .unwrap()
+        {
+            Effect::DescribePlugin { name } => assert_eq!(name, "git-gutter"),
+            other => panic!("unexpected: {other:?}"),
+        }
+        // A name is required.
+        assert!(run(&registry, &mut doc, ex.describe_plugin.0, Args::None).is_err());
+        assert!(matches!(
+            run(&registry, &mut doc, ex.list_plugins.0, Args::None).unwrap(),
+            Effect::ListPlugins
+        ));
     }
 
     /// Regression guard (plugin-introspection tie-together): a plugin command

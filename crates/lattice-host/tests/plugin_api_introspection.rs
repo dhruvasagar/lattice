@@ -165,3 +165,47 @@ fn plugin_name_seam_resolves_id_to_manifest_name() {
     assert_eq!(ed.plugin_display_name(7).as_deref(), Some("git-gutter"));
     assert!(ed.plugin_display_name(99).is_none(), "unknown id stays None");
 }
+
+// --- PI.4: :describe-plugin / :list-plugins (loaded-plugin introspection) ---
+
+#[test]
+fn list_plugins_empty_until_a_plugin_loads() {
+    let ed = editor();
+    let body = text(&ed.build_list_plugins_content());
+    assert!(body.contains("# Plugins (0 loaded)"), "empty count:\n{body}");
+    assert!(body.contains("No plugins are loaded"), "empty-state line");
+}
+
+#[test]
+fn describe_plugin_renders_registered_metadata_and_lists_it() {
+    let mut ed = editor();
+    // The Phase-8 loader would call this once at load, doc resolved from the
+    // plugin's embedded WIT / manifest `doc`.
+    ed.register_plugin(7, "git-gutter", "Shows git diff signs in the gutter.");
+
+    let content = ed
+        .build_describe_plugin_content("git-gutter")
+        .expect("a registered plugin is describable");
+    let body = text(&content);
+    assert!(body.contains("git-gutter  (plugin)"), "heading:\n{body}");
+    assert!(
+        body.contains("Shows git diff signs in the gutter."),
+        "the plugin's own doc renders"
+    );
+
+    // :list-plugins now shows it (with a :describe-plugin exec-link).
+    let list = ed.build_list_plugins_content();
+    let list_body = text(&list);
+    assert!(list_body.contains("# Plugins (1 loaded)"));
+    assert!(list_body.contains("git-gutter"));
+    assert!(has_exec_link(&list, "describe-plugin git-gutter"));
+}
+
+#[test]
+fn describe_unknown_plugin_returns_none() {
+    let mut ed = editor();
+    assert!(
+        ed.build_describe_plugin_content("no-such-plugin").is_none(),
+        "an unloaded plugin echoes an error, no help buffer"
+    );
+}

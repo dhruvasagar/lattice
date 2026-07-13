@@ -510,6 +510,17 @@ pub enum Effect {
     /// introspection enumeration the help family was missing; a plugin group
     /// resolves the plugin id to its manifest name where the host knows it.
     ListCommands,
+    /// `:describe-plugin <name>` (PI.4, Facet B) -- render one loaded plugin's
+    /// own documentation + contributions. The doc comes from the plugin
+    /// (embedded WIT world doc / manifest `doc`), resolved once at load. Unknown
+    /// / no-plugin-loaded echoes an error. Loaded-plugin enumeration is
+    /// Phase-8-gated; the surface + registry seam exist now.
+    DescribePlugin {
+        name: String,
+    },
+    /// `:list-plugins` (PI.4) -- list every loaded plugin (name + doc summary).
+    /// Empty until the Phase-8 loader populates the registry.
+    ListPlugins,
     /// `:hover [text]` -- open a hover popup at the cursor with
     /// `text` as the markdown body. v1 path: lets the user
     /// validate the popup positioning + dismissal; Phase 4 LSP

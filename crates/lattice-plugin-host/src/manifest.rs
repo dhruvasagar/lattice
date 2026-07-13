@@ -122,6 +122,11 @@ pub struct PluginManifest {
     pub requested: Vec<Capability>,
     /// The editor capabilities a plugin-declared mode requires (fragment §6).
     pub editor_capabilities: CapabilitySet,
+    /// PI.4: the plugin's own documentation, shown by `:describe-plugin`. A
+    /// static, author-written string (immutable at editor runtime). The
+    /// preferred doc source is the plugin's embedded WIT world doc-comment;
+    /// this manifest field is the fallback when a component ships no WIT docs.
+    pub doc: Option<String>,
 }
 
 /// The on-disk manifest shape. Deserialised first, then validated into
@@ -133,6 +138,9 @@ struct RawManifest {
     capabilities: Vec<String>,
     #[serde(default)]
     editor_capabilities: Vec<String>,
+    /// PI.4: the plugin's documentation (`:describe-plugin`).
+    #[serde(default)]
+    doc: Option<String>,
 }
 
 /// Why a manifest failed to parse. Every failure is a value — the host logs +
@@ -171,6 +179,7 @@ impl PluginManifest {
             id: id.into(),
             requested,
             editor_capabilities,
+            doc: None,
         }
     }
 
@@ -196,6 +205,7 @@ impl PluginManifest {
             id: raw.id,
             requested,
             editor_capabilities: editor,
+            doc: raw.doc.filter(|d| !d.trim().is_empty()),
         })
     }
 }
@@ -205,6 +215,23 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
 
     use super::*;
+
+    /// PI.4: the optional `doc` field parses (the `:describe-plugin` fallback
+    /// doc source); absent or blank → `None`.
+    #[test]
+    fn parses_optional_doc_field() {
+        let m = PluginManifest::from_toml_str(
+            "id = \"git-gutter\"\ndoc = \"Shows git diff signs in the gutter.\"\n",
+        )
+        .unwrap();
+        assert_eq!(m.doc.as_deref(), Some("Shows git diff signs in the gutter."));
+
+        let none = PluginManifest::from_toml_str("id = \"x\"\n").unwrap();
+        assert!(none.doc.is_none());
+
+        let blank = PluginManifest::from_toml_str("id = \"x\"\ndoc = \"   \"\n").unwrap();
+        assert!(blank.doc.is_none(), "blank doc is normalised to None");
+    }
 
     #[test]
     fn parses_each_capability_form() {

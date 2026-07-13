@@ -55,6 +55,11 @@ fn main() {
         "EVENTS_GUEST_WASM",
     );
     build_guest(
+        &fixtures.join("decorations-guest"),
+        "decorations-guest",
+        "DECORATIONS_GUEST_WASM",
+    );
+    build_guest(
         &manifest_dir
             .join("..")
             .join("..")

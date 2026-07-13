@@ -1,12 +1,13 @@
 # Plugin Host (Phase 7) — WASM Component Model extension substrate
 
-**Status:** 🚧 in build (design 2026-07-01; last refreshed 2026-07-12). **PH7.0–7.8 have
+**Status:** 🚧 in build (design 2026-07-01; last refreshed 2026-07-13). **PH7.0–7.9 have
 landed** — the `lattice-plugin-host` crate, the `wit/` package, the capability/WASI model, the
-boundary mirrors (`Effect`/picker/completion/grammar/event), the `fuzzy-finder` validation
-plugin (⭐ Phase-7 exit), the grammar-extension sync seam (PH7.7), the **event/hook seam**
-(PH7.8 — the dedicated async `events-plugin` world + the reserved `SubscriptionTarget::Plugin`
-slot), and CI perf gates all exist; 7.9–7.12 pending. This fragment is the detailed "what/why"
-that expands
+boundary mirrors (`Effect`/picker/completion/grammar/event/decoration), the `fuzzy-finder`
+validation plugin (⭐ Phase-7 exit), the grammar-extension sync seam (PH7.7), the **event/hook
+seam** (PH7.8), the **decoration seam** (PH7.9 — the `Mode::gutter_decorations` mirror as an
+async off-render producer; `ui` row type-mirror-only; renderer read-from-cache is a tracked
+Phase-8 boot-wiring item), and CI perf gates all exist; 7.10–7.12 pending. This fragment is the
+detailed "what/why" that expands
 `design.md` §5.5 (Plugin Subsystem), §9 (Plugin API), §10 (extension tiers), §3.1
 (core-vs-plugin split), §14 (risks). Slice sequencing + landed status lives in
 `docs/dev/operations/slice-plans/plugin-host.md`; a conformance review of the whole host
@@ -273,9 +274,9 @@ against the full exercised set (§14 mitigation), and land as follow-on slices.
 | `grammar` | `register_{motion,text_object,operator,ex_command}` | guest exports apply/parse; host shim closures | ➕ |
 | `command` | `CommandRegistry` + `CommandInvocation` + `Effect` | guest→host `invoke`; host→guest apply | ➕ |
 | `events` | `EventBus::subscribe` + `Event` enum (✅ PH7.8) | host owns mpsc + a type-erased sink; forwards each `Event` to the guest `on-event` off-keystroke | ➕ |
-| `decorations` | `Mode::gutter_decorations` + `GutterDecoration` | host→guest per trigger; guest returns per-line data | ➕ |
+| `decorations` | `Mode::gutter_decorations` + `GutterDecoration` (✅ PH7.9) | host calls guest producer OFF the render path per trigger; caches per-line data (the PH7.6 fork) | ➕ |
 | `modes` | `Mode` trait (`mode.rs:148`) + `ModeRegistry` | guest declares mode; host registers `Arc<dyn DynMode>` | ➕ |
-| `ui` | status/gutter segments, popups, notifications, sprites | guest→host emit data (no draw calls) | ➕ |
+| `ui` | status/gutter segments, popups, notifications, sprites (type-mirror ✅ PH7.9) | guest→host emit data (no draw calls) — emit producer deferred | ➕ |
 | `config` | `ConfigRegistry` + `OptionType`/`OptionSpec` | guest declares typed option; host registers into registry | ➕ |
 
 **Registration is into the *same* registries, never a parallel plugin registry — and the

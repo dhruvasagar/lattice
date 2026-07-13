@@ -53,6 +53,7 @@
 
 pub mod boundary;
 pub mod boundary_app_effect;
+pub mod boundary_decoration;
 pub mod boundary_effect;
 pub mod boundary_event;
 pub mod boundary_grammar;
@@ -61,10 +62,13 @@ pub mod buffer;
 pub mod capability;
 pub mod host_services;
 pub mod completion_host;
+pub mod decoration_host;
+pub mod decoration_task;
 pub mod event_task;
 pub mod events_host;
 pub mod completion_source;
 pub mod completion_task;
+pub mod decoration_source;
 pub mod grammar_host;
 pub mod grammar_trampoline;
 pub mod manifest;
@@ -79,6 +83,8 @@ pub use capability::{
 };
 pub use completion_source::WasmCompletionSource;
 pub use completion_task::{CompletionActor, CompletionClient};
+pub use decoration_source::WasmDecorationSource;
+pub use decoration_task::{DecorationActor, DecorationClient};
 pub use manifest::{Capability, CapabilityParseError, ManifestError, PluginManifest};
 pub use picker_source::WasmPickerSource;
 pub use picker_task::{PickerActor, PickerClient};
@@ -193,6 +199,25 @@ impl PluginBudget {
     /// untouched (§8). The marshalling+dispatch overhead itself is the CI-gated
     /// `< 250µs p99` row (PH7.8d), distinct from this runaway guard.
     pub fn event() -> Self {
+        Self {
+            fuel: 100_000_000,
+            epoch_deadline: 1_000,
+        }
+    }
+
+    /// The budget for a plugin **decoration producer** (`gutter-decorations`,
+    /// PH7.9). Like the event budget, decoration production is **off the render
+    /// path** (async, on the plugin's actor task, triggered by an edit / scroll /
+    /// diagnostic change) and the producer runs on the async linker (it may
+    /// `await` a `host-services` call — a git-gutter source reading the repo). So
+    /// the **epoch is a generous ~1 s backstop** and **fuel is the primary bound**
+    /// (`100M` ≈ ~10 frames of compute — ample for a real diff/annotate pass, a
+    /// hard cap on a runaway). A trap is caught per-call by the
+    /// [`DecorationActor`](crate::decoration_task::DecorationActor) → the trigger
+    /// yields no decorations and the cached snapshot keeps its prior value (§8, no
+    /// flicker). The §7 `< 50 µs p99` "segment update" gate is on the marshalling
+    /// + dispatch overhead, distinct from this runaway guard.
+    pub fn decoration() -> Self {
         Self {
             fuel: 100_000_000,
             epoch_deadline: 1_000,

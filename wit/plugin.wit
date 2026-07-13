@@ -65,6 +65,14 @@ world plugin {
 	/// `crate::lattice::plugin_host::types::*` without a world-level `use`.
 	use types.{event, event-kind, event-filter};
 
+	/// The decoration/ui seam types (PH7.9a, §5 `decorations`/`ui`): the per-line
+	/// `gutter-decoration` a provider produces + its `decoration-context`
+	/// projection, plus the type-mirrored `ui` emit surface (segment/notification,
+	/// deferred producer). Transitively-referenced records (`gutter-diff`,
+	/// `gutter-severity`) surface under `crate::lattice::plugin_host::types::*`.
+	use types.{gutter-decoration, gutter-diff-kind, gutter-severity-level, decoration-context};
+	use types.{ui-zone, ui-segment, ui-notification};
+
 	/// The owned `buffer-snapshot` projection record (PH7.3c, §4.2). `use`d (not
 	/// `import`ed) so `bindgen!` emits the Rust mirror the host projects into
 	/// (`buffer.rs::project_buffer_snapshot`). The `document` **resource** is

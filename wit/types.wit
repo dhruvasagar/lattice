@@ -1156,4 +1156,80 @@ interface types {
         buffer: u64,
         mode: string,
     }
+
+    // --- Decoration seam (PH7.9, plugin-host.md §5 `decorations`) --------------
+    //
+    // Mirrors `Mode::gutter_decorations` + `GutterDecoration` (lattice-mode). A
+    // WASM decoration provider is an ASYNC PRODUCER (the completion PH7.6 fork —
+    // the sync `gutter_decorations` trait is read PER-FRAME by the renderer, so a
+    // WASM mode can't satisfy it inline): the host calls the guest's producer OFF
+    // the render path on a trigger, caches the returned `list<gutter-decoration>`
+    // per buffer, and the renderer reads the cache (never WASM on the tick,
+    // paramount #1). Per-line data only — no draw calls cross.
+
+    /// Mirrors `lattice_mode::GutterDiffKind` — the diff-sign column.
+    enum gutter-diff-kind { add, remove, change, conflict }
+
+    /// Mirrors `lattice_mode::GutterSeverityLevel` — the diagnostic column
+    /// (ascending severity; `max()` selects the most severe).
+    enum gutter-severity-level { hint, info, warning, error }
+
+    /// `GutterDecoration::Diff { line, kind }` payload.
+    record gutter-diff {
+        line: u32,
+        kind: gutter-diff-kind,
+    }
+
+    /// `GutterDecoration::Severity { line, level }` payload.
+    record gutter-severity {
+        line: u32,
+        level: gutter-severity-level,
+    }
+
+    /// Mirrors `lattice_mode::GutterDecoration` — one per-line gutter cell a
+    /// provider contributes. Each arm maps to one physical gutter column.
+    variant gutter-decoration {
+        diff(gutter-diff),
+        severity(gutter-severity),
+    }
+
+    /// The owned projection of `lattice_mode::DecorationCtx` (host→guest). The
+    /// native ctx is `buffer_id` + a `ServiceRegistry` of render-state snapshots
+    /// (host-owned, can't cross); the projection carries the owned scalars a v1
+    /// producer computes from — buffer id / path / line count. Bulk buffer text
+    /// (a diff producer's input) rides `host-services` or the deferred `document`
+    /// handle (the picker/grammar precedent), NOT this record.
+    record decoration-context {
+        buffer-id: u64,
+        path: option<string>,
+        line-count: u32,
+    }
+
+    // --- UI-contribution seam (PH7.9, plugin-host.md §5 `ui`) — TYPE-MIRROR ----
+    //
+    // Sized for the ABI freeze (§14) but the guest→host EMIT producer is DEFERRED
+    // (the PH7.6 matcher/ranker-mirror precedent): a plugin pushes modeline
+    // segments today via the event-bus element path (ML.3) and notifications via
+    // the `effect.echo` vocabulary, so a dedicated `ui.emit` interface waits for a
+    // real plugin that needs more (§5.5 "the API grows from real plugins").
+    // Sprites (§5.6.7) have no native struct yet — not mirrored (mirroring a
+    // non-existent surface violates exercised-trait-first).
+
+    /// A modeline zone (mirrors `lattice_host::modeline::Zone`).
+    enum ui-zone { left, center, right }
+
+    /// A pushed modeline segment (the ML.3 element-update shape): the zone, the
+    /// content text, and an optional themed role/element key for styling.
+    record ui-segment {
+        zone: ui-zone,
+        text: string,
+        role: option<string>,
+    }
+
+    /// A user notification a plugin emits — reuses the `echo-level` severity the
+    /// `effect.echo` path already carries.
+    record ui-notification {
+        level: echo-level,
+        message: string,
+    }
 }

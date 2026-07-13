@@ -10,10 +10,11 @@
 //! Mirrors `lattice-host/tests/keystroke_publish_ratchet.rs`.
 //!
 //! Only the EXERCISED §7 rows are gated here (typed host call, the guest→host
-//! picker path, cold-start, the grammar-extension round-trip (PH7.7), **and the
-//! event-handler delivery path** now the seam exists, PH7.8). The still-forward-
-//! looking rows (status/gutter segment, picker-filter-per-item) map to seams that
-//! don't exist yet (PH7.9–7.11); each lands its own ratchet with its seam. Skips
+//! picker path, cold-start, the grammar-extension round-trip (PH7.7), the
+//! event-handler delivery path (PH7.8), **and the status/gutter segment update**
+//! now the decoration seam exists, PH7.9). The still-forward-looking rows
+//! (picker-filter-per-item, major-mode event handler beyond delivery) map to
+//! seams not fully exercised yet; each lands its own ratchet with its seam. Skips
 //! cleanly when the `wasm32-wasip2` guests weren't built (CI installs the target
 //! so the gate runs there — see build.rs).
 
@@ -387,5 +388,68 @@ async fn event_handler_stays_within_ceiling() {
         "event handler mean per-delivery was {per:?}; expected < 2ms \
          (§7 release budget < 250µs p99). A gross regression in the event \
          delivery path (bus sink → channel → guest on-event)."
+    );
+}
+
+// ── §7 row: status / gutter segment update (< 10µs p50 / < 50µs p99 release) ──
+// The OFF-render-path cost a decoration provider pays per trigger (PH7.9): the
+// host projects the `decoration-context`, calls the guest `gutter-decorations`
+// producer (async canonical-ABI), and converts the result to native. Measured
+// through the `decorations-guest` fixture (a deterministic 3-decoration
+// producer). Off the render path (the completion PH7.6 fork), so a slow producer
+// never touches a frame — this gates the marshalling + dispatch overhead.
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn decoration_produce_stays_within_ceiling() {
+    use lattice_plugin_host::WasmDecorationSource;
+
+    let path = env!("DECORATIONS_GUEST_WASM");
+    if path.is_empty() {
+        eprintln!("SKIP: decoration produce ratchet — decorations fixture not built");
+        return;
+    }
+    let dirs = tempfile::tempdir().unwrap();
+    let host = PluginHost::with_dirs(dirs.path().join("cache"), dirs.path().join("data")).unwrap();
+    let component = host.compile(&std::fs::read(path).unwrap()).unwrap();
+    let manifest = PluginManifest::new("decorations-fixture", Vec::new(), CapabilitySet::empty());
+    let (client, actor) = host
+        .spawn_decoration_source(
+            &component,
+            &manifest,
+            TrustTier::Bundled,
+            PluginBudget::decoration(),
+        )
+        .await
+        .unwrap();
+    tokio::spawn(actor.run());
+    let src = WasmDecorationSource::new(client);
+
+    // Warm, then measure the median produce round-trip (project ctx → guest
+    // producer → convert; no walk).
+    for _ in 0..20 {
+        let _ = src.gutter_decorations(1, None, 200).await.unwrap();
+    }
+    let iters = 200usize;
+    let mut samples = Vec::with_capacity(iters);
+    for _ in 0..iters {
+        let t = Instant::now();
+        let out = src.gutter_decorations(1, None, 200).await.unwrap();
+        samples.push(t.elapsed());
+        std::hint::black_box(out);
+    }
+    let m = median(samples);
+    eprintln!("[ph7.9-ratchet] decoration_produce median (debug): {m:?}");
+
+    // §7 release budget: status / gutter segment update < 50µs p99. The
+    // per-trigger cost decomposes into the ~ns context projection + one async
+    // guest producer call (≈ the PH7.3d typed call) + per-decoration marshalling
+    // (~ns, PH7.9a) + a sub-µs channel hop — µs-scale in debug. 5ms is orders of
+    // magnitude above that yet well under a per-trigger re-instantiation or an
+    // O(payload) blowup.
+    assert!(
+        m < Duration::from_millis(5),
+        "decoration produce median was {m:?}; expected < 5ms \
+         (§7 release budget < 50µs p99). A gross regression in the decoration \
+         producer path (project → guest producer → from_wit)."
     );
 }

@@ -248,5 +248,43 @@ fn event_round_trip(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, boundary_round_trip, event_round_trip);
+/// PH7.9a: the decoration boundary marshalling — the cost the host pays to
+/// convert a producer's `gutter-decoration` back to native `GutterDecoration`
+/// before caching it. Per-line scalars, so this is the fixed per-decoration
+/// overhead; the producer's own compute is bounded by the decoration budget
+/// (PH7.9d). Both arms (`Diff` / `Severity`).
+fn decoration_round_trip(c: &mut Criterion) {
+    use lattice_mode::{GutterDecoration, GutterDiffKind, GutterSeverityLevel};
+
+    let diff = GutterDecoration::Diff {
+        line: 128,
+        kind: GutterDiffKind::Change,
+    };
+    c.bench_function("boundary_decoration_diff_round_trip", |b| {
+        b.iter(|| {
+            let wit = black_box(&diff).to_wit().expect("to_wit");
+            let back = GutterDecoration::from_wit(wit).expect("from_wit");
+            black_box(back);
+        })
+    });
+
+    let sev = GutterDecoration::Severity {
+        line: 42,
+        level: GutterSeverityLevel::Error,
+    };
+    c.bench_function("boundary_decoration_severity_round_trip", |b| {
+        b.iter(|| {
+            let wit = black_box(&sev).to_wit().expect("to_wit");
+            let back = GutterDecoration::from_wit(wit).expect("from_wit");
+            black_box(back);
+        })
+    });
+}
+
+criterion_group!(
+    benches,
+    boundary_round_trip,
+    event_round_trip,
+    decoration_round_trip
+);
 criterion_main!(benches);

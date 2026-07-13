@@ -1,0 +1,27 @@
+# PH7.9c decoration fixture guest — a minimal `wasm32-wasip2` component
+# implementing the `decorations-plugin` world: its `gutter-decorations` producer
+# returns a deterministic set of per-line `gutter-decoration`s derived from the
+# projected `decoration-context` (so the host test can prove the context crosses
+# in and the decorations cross back), and errs on an empty buffer to exercise the
+# graceful no-decorations path (§8). Built to a component by the host crate's
+# build.rs and loaded by `tests/decoration_source.rs`. Standalone workspace
+# (`[workspace]` below) so it is NOT part of the parent workspace — it targets
+# wasm32-wasip2 and must not inherit the host toolchain's lints/target. Mirrors
+# the sibling `events-guest` fixture's setup exactly.
+[package]
+name = "decorations-guest"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.58"
+
+[profile.release]
+opt-level = "s"
+strip = true
+
+[workspace]

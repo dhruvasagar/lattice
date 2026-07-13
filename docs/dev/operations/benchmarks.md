@@ -166,6 +166,44 @@ backstop because an event handler runs on the async linker and may legitimately
 
 ---
 
+## PH7.9 — decoration production (the §7 "status/gutter segment update" gate, 2026-07-13)
+
+The **off-render-path** cost a decoration provider pays per trigger (edit /
+scroll / diagnostic change): the host projects the `decoration-context`, calls
+the guest `gutter-decorations` producer (async canonical-ABI), and converts the
+returned `list<gutter-decoration>` to native before caching it. This is the §7
+**status / gutter segment update < 50 µs p99** commitment. The producer is the
+completion PH7.6 fork — the sync `Mode::gutter_decorations` trait is read *per
+frame*, so a WASM mode can't satisfy it inline; the plugin produces off-trigger
+and the renderer reads the cache (never WASM on the tick).
+
+Marshalling (PH7.9a) — `benches/boundary.rs`:
+
+| Conversion | Value | Notes |
+|---|---|---|
+| `GutterDecoration::Diff` round-trip | **~tens of ns** | Per-line scalar (`line` + `kind`); native ↔ WIT both ways. |
+| `GutterDecoration::Severity` round-trip | ~tens of ns | Per-line scalar (`line` + `level`). |
+
+End-to-end produce — CI gate `tests/perf_ratchet.rs`
+(`decoration_produce_stays_within_ceiling`):
+
+| Measure | Value | Notes |
+|---|---|---|
+| Debug median (ratchet) | **~63 µs** | Warm produce round-trip through the `decorations-guest` fixture (project ctx → guest producer → convert; no walk); `cargo test` (debug). |
+| CI gate ceiling | 5 ms | Orders of magnitude above the µs-scale debug produce, well under a per-trigger re-instantiation or an O(payload) blowup. |
+
+**Read:** produce decomposes into the ~ns context projection + one async guest
+producer call (≈ the PH7.3d typed call) + per-decoration marshalling (~ns) + a
+sub-µs channel hop — the ~63 µs debug median is the canonical-ABI lift/lower under
+debug, far under budget once release-optimized. The producer's own compute is
+bounded by the **fuel-primary** `PluginBudget::decoration` (100M fuel ≈ ~10 frames;
+epoch a generous ~1 s backstop — a decoration producer runs on the async linker
+and may `await` `host-services`, e.g. a git-gutter source reading the repo). *NB:
+PH7.9 is validation-only — the renderer-reads-the-cache wiring is the Phase-8
+boot-wiring step; the gate here is on the producer, which is what §7 budgets.*
+
+---
+
 ## TSM.5 — `scope_toward` structural-motion tree walk (2026-07-08)
 
 Tree-sitter structural motions, slice TSM.5 (design:

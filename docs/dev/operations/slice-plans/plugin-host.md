@@ -18,7 +18,11 @@ projections + marshalling bench), 7.7b ✅ (two-interface sync `grammar` world +
 Reflex budget). **PH7.8 ✅ COMPLETE** (event/hook seam — dedicated async `events-plugin` world +
 the reserved `SubscriptionTarget::Plugin` slot filled with a type-erased lock-dropped sink;
 `events-guest` fixture proves delivery + graceful trap-isolation e2e; `< 250 µs` gate at
-~3.75 µs debug). **PH7.9–7.12** (WIT-seam hardening before ABI freeze) remain. A conformance
+~3.75 µs debug). **PH7.9 ✅ COMPLETE** (decoration seam — the `Mode::gutter_decorations` mirror
+as an async off-render producer, the completion PH7.6 fork; `ui` row type-mirror-only;
+`decorations-guest` fixture proves producer→cache e2e; `< 50 µs` gate at ~63 µs debug; renderer
+read-from-cache is a tracked Phase-8 boot-wiring item). **PH7.10–7.12** (WIT-seam hardening before
+ABI freeze) remain. A conformance
 audit of the whole host is `../../audit/plugin-host-architecture.md` (8 findings; **F1
 resolved**). Design fragment:
 [`../../architecture/plugin-host.md`](../../architecture/plugin-host.md). Spec:
@@ -827,10 +831,48 @@ from a plugin desugars to the guest→host `events.subscribe`. **Depends:** PH7.
 	precedent). `benchmarks.md` PH7.8 row. CI `wasm32-wasip2` target already added (PH7.5) so the
 	fixture builds + the gate runs.
 
-### PH7.9 — Decoration + UI-contribution WIT seam 📝
-Mirror `Mode::gutter_decorations` → per-line `GutterDecoration` data (no draw calls); status/
-gutter segments, popups, notifications, sprite sets (design.md §9.4 `ui`). Host builds the
-decoration snapshot off the render path. **Depends:** PH7.3. **Gate:** segment update < 50μs p99.
+### PH7.9 — Decoration + UI-contribution WIT seam ✅ (2026-07-13)
+Mirror `Mode::gutter_decorations` → per-line `GutterDecoration` data (no draw calls); the host
+builds the decoration snapshot off the render path. **Depends:** PH7.3. **Gate:** segment update
+< 50μs p99 (`decoration_produce_stays_within_ceiling`, ~63µs debug).
+- **The fork (locked with Dhruva) = the completion PH7.6 shape.** `Mode::gutter_decorations` is
+  a **sync** trait the renderer reads **per frame** (`render.rs:3847` / `window.rs:1818`) — a
+  WASM mode can't satisfy it inline (per-frame WASM = a paramount-#1 violation). So a plugin
+  decoration provider is an **async producer** the host calls OFF the render path on a trigger,
+  caching the returned `Vec<GutterDecoration>`; the renderer reads the cache. Rejected a "sync
+  decoration trampoline" (the grammar shape) — it would put WASM on the render path.
+- **Scope (locked with Dhruva):** the exercised `decorations` row is built FULLY (a git-gutter
+  plugin's exact need); the broader `ui` row (status/gutter segments, notifications, sprites) is
+  **type-mirror-only** (the PH7.6 matcher/ranker precedent — modeline already rides the event bus
+  ML.3, notifications ride `effect.echo`; sprites have no native struct, not mirrored). **PH7.9
+  is validation-only** (like PH7.4d/7.6/7.8 + the no-per-frame-WASM guard): the fixture proves
+  producer→host-cache; **the renderer-reads-the-cache + boot-wiring is a tracked Phase-8 item**
+  (one-time HOST work — a git-gutter *author* writes only the producer; the native gutter path
+  already reads an off-render `ServiceRegistry` snapshot, so the plugin cache is one more per-line
+  map to merge). Confirmed with Dhruva: the deferred piece is host plumbing, never an author gap.
+- **Sub-slices (all ✅):**
+  - **PH7.9a** — boundary mirrors (`boundary_decoration.rs`): `WitBoundary for GutterDecoration`
+    (compiler-exhaustive) + `GutterDiffKind`/`GutterSeverityLevel` + `project_decoration_context`
+    (host→guest one-way; the native `DecorationCtx` carries a `ServiceRegistry`, so the host
+    builds the owned ctx from buffer id/path/line-count). `types.wit` += the `gutter-decoration`
+    variant + the `ui` type-mirror (`ui-segment`/`ui-notification`/`ui-zone`, reusing `echo-level`).
+    5 tests; ~tens-of-ns marshalling (`benches/boundary.rs`).
+  - **PH7.9b** — `wit/decorations.wit` (the `decorations` producer interface + `decorations-plugin`
+    world) + the **6th `bindgen!`** (`decoration_host.rs`, shared `types`/`host-services`) + the
+    request/reply producer actor (`decoration_task.rs`: `DecorationClient`/`DecorationActor` +
+    `spawn_decoration_source`, the completion bridge shape) + `PluginBudget::decoration()`.
+  - **PH7.9c** — `WasmDecorationSource` (`decoration_source.rs`, the native-typed producer facade
+    a boot-wired `Editor` polls — project → guest → `from_wit`, graceful-keep-prior-cache on err)
+    + a real `decorations-guest` wasm fixture + `tests/decoration_source.rs` (2 e2e: context
+    crosses in [last-line decoration keyed off `line_count`] + returns native decorations; empty
+    buffer → graceful guest `err`).
+  - **PH7.9d** — the §7 gate: `tests/perf_ratchet.rs::decoration_produce_stays_within_ceiling`
+    (warm produce median **~63 µs debug**, 5 ms ceiling) + the marshalling bench + `benchmarks.md`
+    PH7.9 row.
+- **Tracked Phase-8 follow-on (NOT PH7.9):** boot-wire the plugin host into the `Editor` + both
+  renderers merge the per-buffer plugin decoration cache into `diff_map`/`sev_map` (alongside the
+  native `mode.gutter_decorations` read). Until then plugin decorations produce + cache but do not
+  visibly render. This is the phase's standing boot-wiring milestone; no plugin-author work.
 
 ### PH7.10 — Config/options WIT seam 📝
 Plugin declares typed options (name + type_label + default + doc); host registers via

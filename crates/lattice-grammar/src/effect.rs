@@ -484,6 +484,19 @@ pub enum Effect {
     },
     /// `:options` -- list every registered option.
     ListOptions,
+    /// `:describe-plugin-api [<seam>]` (PI.2) -- render the plugin-API
+    /// catalog. With `seam` = an interface name (`host-services`,
+    /// `picker-source`, ...), render that one interface's functions +
+    /// direction + capability. Without, render the same as
+    /// `:list-plugin-apis`. The catalog is derived from `wit/` at build
+    /// time (`lattice-plugin-api`); the host holds no plugin runtime.
+    DescribePluginApi {
+        seam: Option<String>,
+    },
+    /// `:list-plugin-apis` (PI.2) -- list every plugin-API interface the
+    /// `wit/` package exposes, one row per interface (name + direction +
+    /// capability + function count).
+    ListPluginApis,
     /// `:hover [text]` -- open a hover popup at the cursor with
     /// `text` as the markdown body. v1 path: lets the user
     /// validate the popup positioning + dismissal; Phase 4 LSP

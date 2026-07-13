@@ -3078,6 +3078,35 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
                     },
                 )));
         }
+        Effect::DescribePluginApi { seam } => {
+            // PI.2: `:describe-plugin-api [<seam>]` -- render one interface
+            // (via the `Introspectable` spine) or, with no seam, the full
+            // list. The catalog is derived from `wit/` at build time
+            // (`lattice-plugin-api`); an unknown seam routes an error echo
+            // and skips the signal.
+            if let Some(content) = editor.build_describe_plugin_api_content(seam.as_deref()) {
+                out.renderer_signals
+                    .push(RendererSignal::DisplayBuffer(Box::new(
+                        DisplayBufferRequest {
+                            content,
+                            category:
+                                lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
+                        },
+                    )));
+            }
+        }
+        Effect::ListPluginApis => {
+            // PI.2: `:list-plugin-apis` -- one row per catalogued interface;
+            // infallible.
+            let content = editor.build_list_plugin_apis_content();
+            out.renderer_signals
+                .push(RendererSignal::DisplayBuffer(Box::new(
+                    DisplayBufferRequest {
+                        content,
+                        category: lattice_core::ui::display::BufferDisplayCategory::HelpList,
+                    },
+                )));
+        }
         Effect::DescribeOptionResolution { name } => {
             // 5.5.F.3: `:describe-option-resolution <name>` --
             // walks the §6.1 layer model (modal-state / buffer-
@@ -27202,6 +27231,26 @@ impl Editor {
                 hits.push((spec.name.clone(), spec.kind.label(), first));
             }
         }
+        // PI.2: also search the plugin-API catalog (interface names + docs),
+        // so `:apropos picker` surfaces the `picker-source` seam alongside
+        // commands. Hits carry the `plugin-api` kind; the render below links
+        // them to `:describe-plugin-api <seam>` rather than `:describe-command`.
+        for iface in &lattice_plugin_api::catalog().interfaces {
+            let name_match = iface.name.to_ascii_lowercase().contains(&needle);
+            let doc_match = iface
+                .doc
+                .as_deref()
+                .is_some_and(|d| d.to_ascii_lowercase().contains(&needle));
+            if name_match || doc_match {
+                let first = iface
+                    .doc
+                    .as_deref()
+                    .and_then(|d| d.lines().next())
+                    .unwrap_or("")
+                    .to_string();
+                hits.push((iface.name.clone(), "plugin-api", first));
+            }
+        }
         hits.sort_by(|a, b| a.0.cmp(&b.0));
         let mut lines: Vec<String> = Vec::new();
         if hits.is_empty() {
@@ -27214,9 +27263,16 @@ impl Editor {
             for (name, kind, first) in hits {
                 let pad_n = name_w.saturating_sub(name.len());
                 let pad_k = kind_w.saturating_sub(kind.len());
+                // Plugin-API seams describe via `:describe-plugin-api <seam>`
+                // (an exec-link), not the command describer.
+                let link = if kind == "plugin-api" {
+                    format!("[{name}](exec:describe-plugin-api {name})")
+                } else {
+                    lattice_help::command_link(&name)
+                };
                 lines.push(format!(
                     "  {}{}  {}{}  {}",
-                    lattice_help::command_link(&name),
+                    link,
                     " ".repeat(pad_n),
                     kind,
                     " ".repeat(pad_k),
@@ -27228,6 +27284,139 @@ impl Editor {
             format!("apropos {pattern}"),
             lines,
         ))
+    }
+
+    /// PI.2: build the `:describe-plugin-api [<seam>]` content. With a seam
+    /// name, render that one interface through the shared `Introspectable`
+    /// spine (uniform with `:describe-command`); without, delegate to the
+    /// `:list-plugin-apis` listing. An unknown seam echoes an error + returns
+    /// `None` (dispatcher skips the signal). The catalog is derived from `wit/`
+    /// at build time (`lattice-plugin-api`); the host holds no plugin runtime.
+    pub fn build_describe_plugin_api_content(
+        &mut self,
+        seam: Option<&str>,
+    ) -> Option<lattice_help::HelpContent> {
+        let Some(seam) = seam else {
+            return Some(self.build_list_plugin_apis_content());
+        };
+        let cat = lattice_plugin_api::catalog();
+        let Some(iface) = cat.interface(seam) else {
+            self.set_message(
+                EchoLevel::Error,
+                format!("no plugin-API seam `{seam}` (try :list-plugin-apis)"),
+            );
+            return None;
+        };
+
+        // A local `Introspectable` wrapper: reuses `render_introspection` for a
+        // help body uniform with every other `:describe-*`, while keeping
+        // `lattice-plugin-api` dependency-pure (the trait lives in grammar).
+        struct View<'a>(&'a lattice_plugin_api::ApiInterface);
+        impl lattice_grammar::Introspectable for View<'_> {
+            fn kind_label(&self) -> &'static str {
+                "plugin-api"
+            }
+            fn identifier(&self) -> String {
+                self.0.name.clone()
+            }
+            fn doc(&self) -> &str {
+                self.0.doc.as_deref().unwrap_or("")
+            }
+            fn sources(&self) -> Vec<lattice_grammar::SourceEntry<'_>> {
+                // The catalog is the static, editor-shipped WIT surface; no
+                // per-plugin provenance (that is Facet B / PI.3).
+                Vec::new()
+            }
+            fn extra_sections(&self) -> Vec<lattice_grammar::HelpSection> {
+                let iface = self.0;
+                let mut fn_lines: Vec<String> = iface
+                    .functions
+                    .iter()
+                    .map(|f| {
+                        let first = f
+                            .doc
+                            .as_deref()
+                            .and_then(|d| d.lines().next())
+                            .unwrap_or("");
+                        format!("  {}  —  {first}", f.name)
+                    })
+                    .collect();
+                if fn_lines.is_empty() {
+                    fn_lines.push("  (no functions — a shared type interface)".to_string());
+                }
+                vec![
+                    lattice_grammar::HelpSection {
+                        heading: "Seam:".to_string(),
+                        lines: vec![
+                            format!("  direction:   {}", plugin_api_direction_prose(iface.direction)),
+                            format!("  capability:  {}", plugin_api_capability_prose(iface.capability)),
+                        ],
+                        anchor: Some("seam".to_string()),
+                    },
+                    lattice_grammar::HelpSection {
+                        heading: format!("Functions ({}):", iface.functions.len()),
+                        lines: fn_lines,
+                        anchor: Some("functions".to_string()),
+                    },
+                ]
+            }
+        }
+
+        let rendered = lattice_grammar::render_introspection(&View(iface));
+        let anchors: Vec<lattice_help::HelpAnchor> = rendered
+            .anchors
+            .into_iter()
+            .map(|a| lattice_help::HelpAnchor {
+                name: a.name,
+                line: a.line,
+            })
+            .collect();
+        Some(lattice_help::HelpContent::from_lines_and_anchors(
+            format!("describe-plugin-api {seam}"),
+            rendered.lines,
+            anchors,
+        ))
+    }
+
+    /// PI.2: build the `:list-plugin-apis` content — one row per catalogued
+    /// interface (name → `:describe-plugin-api` exec-link, direction,
+    /// capability, function count, first doc line). Infallible.
+    pub fn build_list_plugin_apis_content(&self) -> lattice_help::HelpContent {
+        let cat = lattice_plugin_api::catalog();
+        let mut lines: Vec<String> = Vec::new();
+        lines.push(format!(
+            "# Plugin API — {} seam(s), derived from wit/",
+            cat.interfaces.len()
+        ));
+        lines.push(String::new());
+        lines.push(
+            "Each seam is a WIT interface a plugin implements or calls. \
+             `:describe-plugin-api <seam>` opens one."
+                .to_string(),
+        );
+        lines.push(String::new());
+        let name_w = cat
+            .interfaces
+            .iter()
+            .map(|i| i.name.len())
+            .max()
+            .unwrap_or(0);
+        for iface in &cat.interfaces {
+            let pad = " ".repeat(name_w.saturating_sub(iface.name.len()));
+            let first = iface
+                .doc
+                .as_deref()
+                .and_then(|d| d.lines().next())
+                .unwrap_or("");
+            lines.push(format!(
+                "  [{name}](exec:describe-plugin-api {name}){pad}  {dir:<12}  {cap:<10}  {nfn} fn  —  {first}",
+                name = iface.name,
+                dir = plugin_api_direction_short(iface.direction),
+                cap = plugin_api_capability_short(iface.capability),
+                nfn = iface.functions.len(),
+            ));
+        }
+        lattice_help::HelpContent::from_lines("list-plugin-apis", lines)
     }
 
     /// 5.5.F.2: build the `:describe-key <chord>` content.
@@ -29411,6 +29600,49 @@ pub fn preview_register(s: &str) -> String {
     }
 }
 
+/// PI.2: prose / short labels for a plugin-API interface's world-derived
+/// direction and host-authored capability, rendered by the
+/// `:describe-plugin-api` / `:list-plugin-apis` builders.
+fn plugin_api_direction_prose(d: lattice_plugin_api::Direction) -> &'static str {
+    use lattice_plugin_api::Direction;
+    match d {
+        Direction::GuestExport => "guest implements this interface",
+        Direction::GuestImport => "guest calls into the host through it",
+        Direction::Both => "guest both implements and calls it",
+        Direction::TypesOnly => "shared types only (not called directly)",
+    }
+}
+
+fn plugin_api_direction_short(d: lattice_plugin_api::Direction) -> &'static str {
+    use lattice_plugin_api::Direction;
+    match d {
+        Direction::GuestExport => "exports",
+        Direction::GuestImport => "imports",
+        Direction::Both => "both",
+        Direction::TypesOnly => "types",
+    }
+}
+
+fn plugin_api_capability_prose(c: lattice_plugin_api::Capability) -> &'static str {
+    use lattice_plugin_api::Capability;
+    match c {
+        Capability::Fs => "filesystem",
+        Capability::Net => "network",
+        Capability::Proc => "subprocess",
+        Capability::None => "none (pure data / dispatch)",
+    }
+}
+
+fn plugin_api_capability_short(c: lattice_plugin_api::Capability) -> &'static str {
+    use lattice_plugin_api::Capability;
+    match c {
+        Capability::Fs => "fs",
+        Capability::Net => "net",
+        Capability::Proc => "proc",
+        Capability::None => "-",
+    }
+}
+
 /// 5.5.G.23: True if the Effect indicates an operator-class action
 /// (the buffer changed or content was yanked). Used by Visual mode to
 /// decide whether to auto-exit after the dispatch — motions in Visual
@@ -29459,6 +29691,8 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         | Effect::DescribeOption { .. }
         | Effect::DescribeElement { .. }
         | Effect::ListOptions
+        | Effect::DescribePluginApi { .. }
+        | Effect::ListPluginApis
         | Effect::OpenHover { .. }
         | Effect::DismissPopup
         | Effect::OpenPopup { .. }
@@ -29583,6 +29817,8 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         | Effect::DescribeOption { .. }
         | Effect::DescribeElement { .. }
         | Effect::ListOptions
+        | Effect::DescribePluginApi { .. }
+        | Effect::ListPluginApis
         | Effect::OpenHover { .. }
         | Effect::DismissPopup
         | Effect::OpenPopup { .. }

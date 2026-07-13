@@ -913,6 +913,38 @@ the **plugin API surface** + **human-readable plugin provenance**. Two facets un
   provenance-name resolution; error = a malformed/absent WIT interface → the catalog omits it +
   logs, never a panic; a plugin id with no manifest → falls back to `<plugin:id>`.
 
+  #### PI.2a — `:describe-plugin-api` / `:list-plugin-apis` / `:apropos` extension ✅ (2026-07-13)
+  The in-editor discoverable surface (Facet A), rendered through the existing help spine. Export
+  (Facet A machine-readable) is carved to **PI.2b** (buffer-backed). `lattice-host` now deps
+  `lattice-plugin-api` (the wasmtime-free leaf — no runtime added).
+  - **Wiring (matches the existing help-command family exactly):** two `Effect` variants
+    (`DescribePluginApi { seam: Option<String> }`, `ListPluginApis`) in `lattice-grammar`, registered
+    as builtin ex-commands (`ex:describe-plugin-api` optional-string arg, `ex:list-plugin-apis`) +
+    host aliases; dispatched to new `Editor::build_{describe_plugin_api,list_plugin_apis}_content`
+    → `HelpContent` → `RendererSignal::DisplayBuffer` (renderer-agnostic — **TUI+GPUI parity
+    automatic**; only the Effect-mirror + the two renderers' effect *classifiers* needed the new
+    arms, added in-lockstep).
+  - **The Effect↔WIT lockstep (compiler-forced):** the whole-enum mirror (`boundary_effect.rs`)
+    is compiler-exhaustive, so both variants got `to_wit`/`from_wit` arms + a `wit/types.wit`
+    `effect` arm the same slice (the exhaustiveness *is* the guard — `lattice-plugin-host` won't
+    compile otherwise). The analog of the TUI/GPUI parity rule for the plugin boundary.
+  - **Describe = the `Introspectable` spine, not freeform.** A host-local `View(&ApiInterface)`
+    impls `lattice_grammar::Introspectable` (kind `plugin-api`, `extra_sections` = a *Seam:* block
+    [direction+capability prose] + a *Functions (N):* block, both anchored for scroll-to), so the
+    body is uniform with `:describe-command` AND `lattice-plugin-api` stays dependency-pure (the
+    trait lives in grammar; the wrapper in the host). `:list-plugin-apis` is a freeform table (the
+    `:list-options` style), each seam an `exec:describe-plugin-api <seam>` link. `:apropos` now
+    also scans the catalog (interface names+docs); plugin-API hits carry the `plugin-api` kind and
+    link via `exec:` (not `:describe-command`).
+  - **Graceful:** an unknown seam echoes an error + returns `None` (no help buffer); no-arg
+    `:describe-plugin-api` delegates to the list. A `gen:plugin-apis` completion generator is a
+    deferred follow-up (the `describe-element` precedent — the catalog is host-side).
+  - **Tests (8):** grammar parse (2), plugin-host boundary round-trip (1), host builders + apropos
+    via a booted `Editor` (5, incl. unknown-seam→None + exec-link targets asserted on
+    `metadata.links`, since `HelpContent` strips links out of buffer text). Regression: grammar
+    214, plugin-host 90, GPUI `--features window` build all green. **Next: PI.2b**
+    (`:export-plugin-api [markdown|json]` → a savable synthetic buffer).
+
   #### PI.1 — `lattice-plugin-api` crate + build-time catalog ✅ (2026-07-13)
   The wasmtime-free leaf crate owning Facet A's `PluginApiCatalog`, derived from `wit/` at build
   time so it can't drift. Design fragment: [`../../architecture/plugin-host.md`](../../architecture/plugin-host.md) §5.13.

@@ -466,6 +466,9 @@ static ALIAS_TABLE: &[(&str, &str)] = &[
     ("describe-element", "ex:describe-element"),
     ("describe-face", "ex:describe-element"),
     ("options", "ex:options"),
+    // PI.2: plugin-API introspection.
+    ("describe-plugin-api", "ex:describe-plugin-api"),
+    ("list-plugin-apis", "ex:list-plugin-apis"),
     ("describe-events", "ex:describe-events"),
     ("describe-event", "ex:describe-event"),
     // CR.6 (2026-06-24): the diff/hunk commands no longer need aliases —

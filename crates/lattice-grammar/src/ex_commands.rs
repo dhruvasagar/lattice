@@ -69,6 +69,11 @@ pub struct ExBuiltins {
     /// introspection (host `build_describe_element_content`).
     pub describe_element: ExCommandId,
     pub list_options: ExCommandId,
+    /// PI.2: plugin-API introspection (`:describe-plugin-api [<seam>]`,
+    /// `:list-plugin-apis`). The catalog is derived from `wit/` at build
+    /// time by `lattice-plugin-api`; the host renders it.
+    pub describe_plugin_api: ExCommandId,
+    pub list_plugin_apis: ExCommandId,
     pub describe_events: ExCommandId,
     pub describe_event: ExCommandId,
     // CR.6 (2026-06-24): the 11 diff/hunk ex-command ids
@@ -1079,6 +1084,49 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             surface_form: SurfaceForm::Keyword,
         },
     );
+    let describe_plugin_api = registry.register_ex_command(
+        "ex:describe-plugin-api",
+        "Open the help view for the plugin API (`:describe-plugin-api [<seam>]`). \
+         With a seam name (`host-services`, `picker-source`, ...) render that \
+         interface's functions, direction, and capability; without, list every \
+         seam. The catalog is derived from `wit/` at build time.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_optional_string),
+            apply: Box::new(apply_describe_plugin_api),
+            args_schema: vec![ArgSpec {
+                name: "seam",
+                kind: ArgKind::String,
+                doc: "Plugin-API interface name (`host-services`, `picker-source`, \
+                      `grammar`, ...). Omit to list every seam.",
+                prompt: "seam:",
+                default: ArgDefault::None,
+                // A `gen:plugin-apis` completion generator is a follow-up (the
+                // catalog lives host-side in `lattice-plugin-api`, which the
+                // grammar crate's generators can't reach -- the describe-element
+                // precedent).
+                completion: None,
+            }],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    let list_plugin_apis = registry.register_ex_command(
+        "ex:list-plugin-apis",
+        "List every plugin-API interface the `wit/` package exposes \
+         (`:list-plugin-apis`). One row per seam with direction + capability + \
+         function count.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_| Ok(Effect::ListPluginApis)),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
     let describe_events = registry.register_ex_command(
         "ex:describe-events",
         "List every registered event (`:describe-events`). Walks the \
@@ -1929,6 +1977,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         describe_option,
         describe_element,
         list_options,
+        describe_plugin_api,
+        list_plugin_apis,
         describe_events,
         describe_event,
         // CR.6: diff/hunk ex-commands now registered by lattice_diff::install().
@@ -2010,6 +2060,26 @@ fn parse_tabmove_arg(rest: &str, _bang: bool) -> GrammarResult<Args> {
         CommandError::BadArgs(format!(":tabmove arg must be a non-negative integer: {e}"))
     })?;
     Ok(Args::String(trimmed.to_string()))
+}
+
+/// PI.2: `:describe-plugin-api [<seam>]` -- an optional seam name. Missing
+/// arg -> `Args::None` (render the full list); present -> `Args::String`.
+fn parse_optional_string(rest: &str, _bang: bool) -> GrammarResult<Args> {
+    let trimmed = rest.trim();
+    if trimmed.is_empty() {
+        Ok(Args::None)
+    } else {
+        Ok(Args::String(trimmed.to_string()))
+    }
+}
+
+fn apply_describe_plugin_api(ctx: &ExCommandContext) -> GrammarResult<Effect> {
+    let seam = match &ctx.args {
+        Args::String(s) => Some(s.clone()),
+        Args::None => None,
+        _ => return Err(CommandError::BadArgs("expected an optional seam name".into())),
+    };
+    Ok(Effect::DescribePluginApi { seam })
 }
 
 fn parse_required_string(rest: &str, _bang: bool) -> GrammarResult<Args> {
@@ -2535,6 +2605,58 @@ mod tests {
             }
             other => panic!("unexpected effect: {other:?}"),
         }
+    }
+
+    #[test]
+    fn describe_plugin_api_emits_effect_with_and_without_seam() {
+        // With a seam name -> Some.
+        let (registry, ex, mut doc) = fixture();
+        let inv = CommandInvocation::of(ex.describe_plugin_api.0)
+            .with_args(Args::String("host-services".into()));
+        let eff = execute(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0),
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
+        match eff {
+            Effect::DescribePluginApi { seam } => assert_eq!(seam.as_deref(), Some("host-services")),
+            other => panic!("unexpected effect: {other:?}"),
+        }
+        // No arg -> None (renders the full list).
+        let inv = CommandInvocation::of(ex.describe_plugin_api.0);
+        let eff = execute(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0),
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
+        match eff {
+            Effect::DescribePluginApi { seam } => assert!(seam.is_none()),
+            other => panic!("unexpected effect: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn list_plugin_apis_emits_effect() {
+        let (registry, ex, mut doc) = fixture();
+        let inv = CommandInvocation::of(ex.list_plugin_apis.0);
+        let eff = execute(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0),
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
+        assert!(matches!(eff, Effect::ListPluginApis));
     }
 
     #[test]

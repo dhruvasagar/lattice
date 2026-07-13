@@ -4235,6 +4235,7 @@ dependencies = [
  "lattice-multibuffer",
  "lattice-oil",
  "lattice-picker",
+ "lattice-plugin-api",
  "lattice-protocol",
  "lattice-runtime",
  "lattice-snippet",

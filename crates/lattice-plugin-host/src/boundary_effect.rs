@@ -626,6 +626,8 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
         NativeEffect::DescribeOption { name } => WitEffect::DescribeOption(name.clone()),
         NativeEffect::DescribeElement { name } => WitEffect::DescribeElement(name.clone()),
         NativeEffect::ListOptions => WitEffect::ListOptions,
+        NativeEffect::DescribePluginApi { seam } => WitEffect::DescribePluginApi(seam.clone()),
+        NativeEffect::ListPluginApis => WitEffect::ListPluginApis,
         NativeEffect::OpenHover { markdown } => WitEffect::OpenHover(markdown.clone()),
         NativeEffect::DismissPopup => WitEffect::DismissPopup,
         NativeEffect::OpenPopup {
@@ -848,6 +850,8 @@ fn effect_from_wit(w: WitEffect) -> Result<NativeEffect, String> {
         WitEffect::DescribeOption(name) => NativeEffect::DescribeOption { name },
         WitEffect::DescribeElement(name) => NativeEffect::DescribeElement { name },
         WitEffect::ListOptions => NativeEffect::ListOptions,
+        WitEffect::DescribePluginApi(seam) => NativeEffect::DescribePluginApi { seam },
+        WitEffect::ListPluginApis => NativeEffect::ListPluginApis,
         WitEffect::OpenHover(markdown) => NativeEffect::OpenHover { markdown },
         WitEffect::DismissPopup => NativeEffect::DismissPopup,
         WitEffect::OpenPopup(p) => NativeEffect::OpenPopup {
@@ -963,6 +967,30 @@ mod tests {
             end: pos(2, 5),
         };
         assert_eq!(r, NativeRange::from_wit(r.to_wit().unwrap()).unwrap());
+    }
+
+    #[test]
+    fn plugin_api_help_effects_round_trip() {
+        // PI.2: the `:describe-plugin-api` / `:list-plugin-apis` effects cross
+        // the WIT boundary losslessly (the whole-enum mirror, §4.4). `Effect`
+        // has no `PartialEq`, so match on the variant.
+        let rt = |e: &NativeEffect| effect_from_wit(effect_to_wit(e).unwrap()).unwrap();
+        match rt(&NativeEffect::DescribePluginApi {
+            seam: Some("host-services".into()),
+        }) {
+            NativeEffect::DescribePluginApi { seam } => {
+                assert_eq!(seam.as_deref(), Some("host-services"))
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+        match rt(&NativeEffect::DescribePluginApi { seam: None }) {
+            NativeEffect::DescribePluginApi { seam } => assert!(seam.is_none()),
+            other => panic!("unexpected: {other:?}"),
+        }
+        assert!(matches!(
+            rt(&NativeEffect::ListPluginApis),
+            NativeEffect::ListPluginApis
+        ));
     }
 
     #[test]

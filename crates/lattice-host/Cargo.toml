@@ -39,6 +39,12 @@ lattice-oil = { path = "../lattice-oil" }
 # agnostic logic that depends only on the grammar + protocol
 # substrate.
 lattice-grammar = { path = "../lattice-grammar" }
+# PI.2: the plugin-API introspection catalog (`:describe-plugin-api` /
+# `:list-plugin-apis` / `:apropos`). A wasmtime-FREE leaf crate (build-time
+# `wit-parser` catalog, zero runtime deps), so the host gains plugin-API
+# introspection WITHOUT depending on the heavy `lattice-plugin-host` runtime --
+# the no-per-frame-WASM invariant (plugin-host PH7.5) stays intact.
+lattice-plugin-api = { path = "../lattice-plugin-api" }
 lattice-protocol = { path = "../lattice-protocol" }
 # K.3 (2026-06-07): keymap types moved to lattice-keymap
 lattice-keymap = { path = "../lattice-keymap" }

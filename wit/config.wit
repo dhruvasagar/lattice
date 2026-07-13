@@ -1,9 +1,49 @@
 package lattice:plugin-host@0.1.0;
 
-/// Mirrors `ConfigRegistry` + `OptionType`/`OptionSpec` (lattice-config).
-/// The guest declares a typed option (name + type_label + default + doc);
-/// the host registers via `register_with_typeid` into the *same* registry
-/// core options live in, so `:set` / `:describe-option` / `:customize` treat
-/// plugin options uniformly. Values round-trip as strings (the `OptionType`
-/// parse/format contract). Populated in PH7.10.
-interface config {}
+/// Mirrors `ConfigRegistry` (lattice-config). The guest declares an option
+/// (name + type + default + doc); the host registers it into the *same* registry
+/// core options live in, so `:set` / `:describe-option` / `:customize` /
+/// `gen:options` completion treat plugin options uniformly (no host kind-branch).
+/// Values round-trip as strings via the native `OptionType` parse/format
+/// contract. Populated in PH7.10.
+///
+/// This interface is the CANONICAL, language-agnostic option API — any
+/// component-model language (Go, JS, Zig, Python, ...) calls these directly. The
+/// Rust `lattice-plugin-sdk` `#[derive(PluginOption)]` (PH7.10b) is optional
+/// ergonomics that expands to these same calls; it adds no capability not here.
+interface config {
+    /// The value type of a plugin option. Maps 1:1 to a native `OptionType`
+    /// impl: `boolean`→`bool`, `integer`→`i64`, `string`→`String`. The option's
+    /// value is set / read as a `string` and parsed/formatted through that type
+    /// (so `:set name=value` and `get-option` share one string contract).
+    enum option-type {
+        boolean,
+        integer,
+        // `%`-escaped: `string` is a reserved WIT keyword. Generates the
+        // `OptionType::String` variant.
+        %string,
+    }
+
+    /// Declare a plugin option into the editor's `ConfigRegistry`. `default` is
+    /// the initial value as a string (parsed via the chosen `option-type`); `doc`
+    /// is the `:describe-option` summary. Returns `false` (registering nothing) if
+    /// `default` doesn't parse for `ty` OR `name` collides with an existing option
+    /// — a plugin must not silently shadow another option. Idempotent to retry
+    /// after a rejected default.
+    register-option: func(name: string, ty: option-type, default: string, doc: string) -> bool;
+
+    /// Read an option's current value, formatted as a string (the `OptionType`
+    /// `format` contract). `none` if no option by that name is registered. Works
+    /// for ANY option (core or plugin) — a plugin can read a built-in option too.
+    get-option: func(name: string) -> option<string>;
+}
+
+/// The world a config/options plugin implements. Imports the `config` register +
+/// read API; exports `register-options` (the host calls it once to drive
+/// declaration — the guest invokes the imported `register-option` inside it, the
+/// `register-events` precedent). Synchronous: registration only records into the
+/// `ConfigRegistry` (no async, off any hot path).
+world config-plugin {
+    import config;
+    export register-options: func();
+}

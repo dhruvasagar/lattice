@@ -4382,6 +4382,7 @@ dependencies = [
  "dirs 5.0.1",
  "futures",
  "lattice-completion",
+ "lattice-config",
  "lattice-core",
  "lattice-grammar",
  "lattice-keymap",

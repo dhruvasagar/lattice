@@ -67,6 +67,10 @@ lattice-core = { path = "../lattice-core" }
 # A -- a point-in-time immutable view; `get-text-range` slices this snapshot's
 # rope). `DocumentSnapshot` lives in lattice-runtime.
 lattice-runtime = { path = "../lattice-runtime" }
+# PH7.10: the config/options seam. Plugin options register into the SAME
+# `ConfigRegistry` core options use, built as `Option<bool|i64|String>` via the
+# public `OptionType` parse/format contract (no new registry variant).
+lattice-config = { path = "../lattice-config" }
 # PH7.8: the event/hook seam. `EventFilter.major_modes` is `Vec<ModeId>` and the
 # native `EventFilter` / `SubscriptionTarget` live in `lattice-runtime`; a
 # plugin's declarative filter reconstructs `ModeId` from its string form, so the

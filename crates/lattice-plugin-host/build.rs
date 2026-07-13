@@ -60,6 +60,11 @@ fn main() {
         "DECORATIONS_GUEST_WASM",
     );
     build_guest(
+        &fixtures.join("config-guest"),
+        "config-guest",
+        "CONFIG_GUEST_WASM",
+    );
+    build_guest(
         &manifest_dir
             .join("..")
             .join("..")

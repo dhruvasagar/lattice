@@ -1,0 +1,24 @@
+# PH7.10 config fixture guest — a minimal `wasm32-wasip2` component implementing
+# the `config-plugin` world: from its `register-options` export it declares a few
+# options via the imported `config.register-option`, then reads one back via
+# `config.get-option` and writes the value to `/data/option.log` (its writable
+# data-dir mount, PH7.2) so the host test can observe the seam end to end.
+# Standalone workspace (`[workspace]` below) so it targets wasm32-wasip2 without
+# inheriting the host toolchain — mirrors the sibling `events-guest` fixture.
+[package]
+name = "config-guest"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.58"
+
+[profile.release]
+opt-level = "s"
+strip = true
+
+[workspace]

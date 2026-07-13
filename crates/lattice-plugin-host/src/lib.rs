@@ -60,6 +60,7 @@ pub mod boundary_grammar;
 pub mod boundary_picker;
 pub mod buffer;
 pub mod capability;
+pub mod config_host;
 pub mod host_services;
 pub mod completion_host;
 pub mod decoration_host;
@@ -424,6 +425,16 @@ struct PluginState {
     /// yet" degradation — the host isn't boot-wired into the `Editor`, so this
     /// slice is validation-only).
     event_emit: Option<EventEmitCtx>,
+    /// The `ConfigRegistry` a config plugin registers options into / reads via the
+    /// `config` seam (PH7.10). `Some` only for a plugin spawned onto a registry
+    /// ([`PluginHost::spawn_config_plugin`]); `None` otherwise, in which case a
+    /// `register-option` returns `false` and `get-option` returns `none` (the
+    /// honest "no registry wired" degradation — the host isn't boot-wired yet).
+    config_registry: Option<Arc<lattice_config::ConfigRegistry>>,
+    /// Names of options this plugin registered via `register-option` (PH7.10),
+    /// recorded so the host can report them after `register-options` returns (and
+    /// as the teardown seam PH7.12 will unregister). Empty for a non-config plugin.
+    config_contributions: Vec<String>,
 }
 
 /// The bus-publish handle a plugin needs to emit custom events (PH7.8b.2). Set
@@ -582,6 +593,57 @@ impl crate::events_host::bindings::lattice::plugin_host::events::Host for Plugin
     }
 }
 
+/// Host impl of the `config` guest→host option seam (PH7.10, §5). The guest calls
+/// `register-option` (from its `register-options` export) to declare options and
+/// `get-option` to read any option's current string value. Both are sync +
+/// non-trapping, so bindgen omits the outer `wasmtime::Result` (the
+/// `host-services` `walk` shape). `register-option` maps the WIT `option-type` to
+/// a native `OptionType` and registers into the SAME `ConfigRegistry` core
+/// options use ([`config_host::register_plugin_option`]); a plugin with no
+/// registry wired degrades to `false` / `none` (never a panic — the
+/// four-artefact graceful-failure clause).
+impl crate::config_host::bindings::lattice::plugin_host::config::Host for PluginState {
+    fn register_option(
+        &mut self,
+        name: String,
+        ty: crate::config_host::bindings::lattice::plugin_host::config::OptionType,
+        default: String,
+        doc: String,
+    ) -> bool {
+        use crate::config_host::PluginOptionKind;
+        use crate::config_host::bindings::lattice::plugin_host::config::OptionType as WitOptionType;
+        let kind = match ty {
+            WitOptionType::Boolean => PluginOptionKind::Boolean,
+            WitOptionType::Integer => PluginOptionKind::Integer,
+            WitOptionType::String => PluginOptionKind::String,
+        };
+        // The `&self.config_registry` borrow ends with the match (the result is a
+        // plain `bool`), so the `config_contributions` push below doesn't overlap.
+        let registered = match &self.config_registry {
+            Some(registry) => {
+                config_host::register_plugin_option(registry, &name, kind, &default, &doc)
+            }
+            None => {
+                tracing::warn!(
+                    option = %name,
+                    "register-option ignored: plugin has no config registry wired"
+                );
+                false
+            }
+        };
+        if registered {
+            self.config_contributions.push(name);
+        }
+        registered
+    }
+
+    fn get_option(&mut self, name: String) -> Option<String> {
+        self.config_registry
+            .as_ref()
+            .and_then(|registry| registry.lookup(&name).map(|opt| opt.get_formatted()))
+    }
+}
+
 /// A host-issued plugin identity. Monotonic, allocated by the [`PluginHost`] at
 /// instantiation — never supplied by the guest. It is the `u32` inside
 /// [`SourceLayer::Plugin`], so every contribution a plugin registers (PH7.3+)
@@ -709,6 +771,14 @@ impl PluginHost {
         // a sync host func (it only records into `PluginState`) and is inert for
         // worlds that don't import `events` (picker/completion/the scaffold).
         crate::events_host::bindings::lattice::plugin_host::events::add_to_linker::<_, HasSelf<_>>(
+            &mut linker,
+            |state: &mut PluginState| state,
+        )
+        .map_err(|e| PluginHostError::Linker(e.into()))?;
+        // The `config` guest→host option seam (PH7.10). Sync host funcs
+        // (`register-option` / `get-option` only touch the `ConfigRegistry`),
+        // inert for worlds that don't import `config`.
+        crate::config_host::bindings::lattice::plugin_host::config::add_to_linker::<_, HasSelf<_>>(
             &mut linker,
             |state: &mut PluginState| state,
         )
@@ -878,6 +948,10 @@ impl PluginHost {
             // Set by `spawn_event_plugin` once the plugin's id is allocated; a
             // plugin not spawned onto a bus cannot emit (warn + drop).
             event_emit: None,
+            // Set by `spawn_config_plugin`; a plugin not spawned onto a registry
+            // cannot register/read options (warn + false / none).
+            config_registry: None,
+            config_contributions: Vec::new(),
         };
         let mut store = Store::new(&self.engine, state);
         store

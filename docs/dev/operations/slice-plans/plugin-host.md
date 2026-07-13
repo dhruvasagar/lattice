@@ -1177,11 +1177,49 @@ plugins — NOT the host).
   in a shared crate, plugin B deps it — a compile-checked, versioned event contract (the coordinating-
   plugins use case).
 
-### PH7.10 — Config/options WIT seam 📝
-Plugin declares typed options (name + type_label + default + doc); host registers via
-`register_with_typeid` into the same `ConfigRegistry`; values round-trip as strings; changes
-publish `OptionChanged`. `:set`/`:describe-option`/`:customize` treat them uniformly.
-**Depends:** PH7.3.
+### PH7.10 — Config/options WIT seam 🚧 (10a ✅, 10b 📝)
+Plugin declares options (name + type + default + doc); host registers into the same
+`ConfigRegistry` core options use; values round-trip as strings; `:set`/`:describe-option`/
+`gen:options`/`OptionChanged` treat them uniformly. **Depends:** PH7.3.
+
+**Design note — `options!` macro cannot cross to a WASM plugin.** The host `options!` macro is a
+compile-time/link-time construct (linkme `OPTION_DECLS` slice + a Rust `OptionDecl` `TypeId` +
+`&'static str` consts), all resolved when the HOST binary links. A runtime-loaded WASM component is
+separately compiled and reached only over WIT — the host can't see its linkme slice or types. So a
+WASM plugin declares options by CALLING a host function (`register-option`) over WIT, exactly as
+PH7.8b.1 built a *runtime* event registry beside the compile-time linkme one. Native/bundled crates
+statically linked into the host keep using `options!` unchanged. (See
+[[feedback_wit_canonical_sdk_ergonomics]]: the WIT is the language-agnostic contract.)
+
+#### PH7.10a — the `register-option` wire ✅ (2026-07-13)
+- `wit/config.wit`: filled the stub — `enum option-type { boolean, integer, %string }` (`%`-escaped,
+  `string` is a WIT keyword); `interface config { register-option(name, ty, default, doc) -> bool;
+  get-option(name) -> option<string> }`; `world config-plugin { import config; export register-options }`.
+- Type mapping: `option-type` → a concrete `OptionType` impl (`bool`/`i64`/`String`); `default`
+  parsed via `T::parse`. **No new registry value-variant** — a plugin option is a plain
+  `Option<T>` in the SAME registry, so all erased consumers (`:set`, `:describe-option`,
+  `gen:options`, `OptionChanged`) work with zero host kind-branch.
+- **Owned-name resolution (locked with Dhruva):** `ErasedOption`/`Option<T>` store `&'static str`,
+  but a runtime plugin's name/doc arrive as owned `String`s. Chose **leak** (`Box::leak`, bounded —
+  a few per plugin, once at load; parse/dup checked BEFORE leaking so a rejected registration
+  allocates nothing) over a `Cow` refactor of the stable config crate. Freeing on unload is PH7.12.
+- `PluginState` gains `config_registry: Option<Arc<ConfigRegistry>>` + `config_contributions:
+  Vec<String>`, set by `spawn_config_plugin(registry)` before `register-options` runs (the
+  `spawn_event_plugin` precedent; simpler — no actor, registration is synchronous). Host impl:
+  `register-option` → `config_host::register_plugin_option`; `get-option` → `registry.lookup(name)
+  .get_formatted()`. `None` registry → warn + `false`/`none`.
+- Tests: `config_host` unit (4) — type mapping + read-back, bad-default rejected, dup rejected,
+  `:set` round-trip; `config_source` e2e (1) — a `config-guest` fixture declares 3 options via the
+  RAW WIT (no SDK — the language-agnostic surface) + reads one back via `get-option`, host inspects
+  the shared registry + drives `:set`. Green: plugin-host lib 98, `config_source` 1, plugin-api 4.
+
+#### PH7.10b — Rust SDK ergonomics (`#[derive(PluginOption)]`) 📝 (NEXT)
+Guest-side, WIT-agnostic (the PH7.8b.3 approach-A pattern): a `PluginOption` trait
+(`NAME`/`DOC`/`TYPE`/`DEFAULT` + typed `parse`) + `#[derive(PluginOption)]` (doc-comment → `DOC`,
+`#[option(name, default)]`, field type → `TYPE`) in `lattice-plugin-sdk`. Expands to metadata
+constants; the plugin makes the one-liner `config::register_option(O::NAME, ...)` /
+`config::get_option` calls itself. Adds ZERO capability not on the wire — a Go/JS/Zig plugin uses
+the WIT directly.
 
 ### PH7.11 — Modes declaration WIT seam 📝
 `modes` WIT mirroring the `Mode` trait method set; host registers `Arc<dyn DynMode>` into

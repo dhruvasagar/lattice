@@ -497,6 +497,14 @@ pub enum Effect {
     /// `wit/` package exposes, one row per interface (name + direction +
     /// capability + function count).
     ListPluginApis,
+    /// `:export-plugin-api [markdown|json]` (PI.2b) -- dump the whole
+    /// plugin-API catalog into a savable synthetic buffer (`*plugin-api.md*`
+    /// / `*plugin-api.json*`) the author saves with `:w <path>`. `format`
+    /// defaults to markdown; `json` selects the machine-readable form. The
+    /// host owns the dump + buffer open (the `OpenSyntheticBuffer` pattern).
+    ExportPluginApi {
+        format: Option<String>,
+    },
     /// `:hover [text]` -- open a hover popup at the cursor with
     /// `text` as the markdown body. v1 path: lets the user
     /// validate the popup positioning + dismissal; Phase 4 LSP

@@ -1024,6 +1024,10 @@ impl App {
             Effect::OpenSyntheticBuffer { name, mode_id } => {
                 self.open_synthetic_buffer(&name, &mode_id)
             }
+            // PI.2b: dump the plugin-API catalog into a savable buffer.
+            Effect::ExportPluginApi { format } => {
+                self.mutate_editor(move |e| e.do_export_plugin_api(format.as_deref()))
+            }
             Effect::OpenMessages => self.do_open_messages(),
             // DB.2: host-applied via handle_effect (like DiffOpen); the
             // peer has nothing to do.
@@ -1245,6 +1249,7 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::ListOptions
         | Effect::DescribePluginApi { .. }
         | Effect::ListPluginApis
+        | Effect::ExportPluginApi { .. }
         | Effect::OpenHover { .. }
         | Effect::DismissPopup
         | Effect::OpenPopup { .. }
@@ -1369,6 +1374,7 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::ListOptions
         | Effect::DescribePluginApi { .. }
         | Effect::ListPluginApis
+        | Effect::ExportPluginApi { .. }
         | Effect::OpenHover { .. }
         | Effect::DismissPopup
         | Effect::OpenPopup { .. }

@@ -27419,6 +27419,27 @@ impl Editor {
         lattice_help::HelpContent::from_lines("list-plugin-apis", lines)
     }
 
+    /// PI.2b: `:export-plugin-api [markdown|json]` — dump the whole catalog
+    /// into a savable `text-mode` buffer (`*plugin-api.md*` / `*plugin-api.json*`)
+    /// the author saves with `:w <path>`. Idempotent: re-export overwrites the
+    /// existing buffer (the `OpenSyntheticBuffer` open pattern + a full replace).
+    /// `format` is pre-validated by the grammar (`markdown`/`md`/`json`).
+    pub fn do_export_plugin_api(&mut self, format: Option<&str>) {
+        let json = matches!(format, Some("json"));
+        let (name, dump) = if json {
+            ("*plugin-api.json*", plugin_api_json_dump())
+        } else {
+            ("*plugin-api.md*", plugin_api_markdown_dump())
+        };
+        let id = self.ensure_named_synthetic_document(
+            name,
+            lattice_mode::TextMode::mode_id(),
+            crate::synthetic_buffers::SYNTHETIC_BUFFER_FLAGS,
+        );
+        self.replace_owned_buffer(id, &dump);
+        self.activate_buffer(id);
+    }
+
     /// 5.5.F.2: build the `:describe-key <chord>` content.
     ///
     /// Accepts an optional mode prefix (`n_j` → Normal mode `j`;
@@ -29643,6 +29664,118 @@ fn plugin_api_capability_short(c: lattice_plugin_api::Capability) -> &'static st
     }
 }
 
+/// PI.2b: stable machine tokens for the JSON export (distinct from the prose /
+/// short labels, which are for human display).
+fn plugin_api_direction_token(d: lattice_plugin_api::Direction) -> &'static str {
+    use lattice_plugin_api::Direction;
+    match d {
+        Direction::GuestExport => "guest-export",
+        Direction::GuestImport => "guest-import",
+        Direction::Both => "both",
+        Direction::TypesOnly => "types-only",
+    }
+}
+
+fn plugin_api_capability_token(c: lattice_plugin_api::Capability) -> &'static str {
+    use lattice_plugin_api::Capability;
+    match c {
+        Capability::Fs => "fs",
+        Capability::Net => "net",
+        Capability::Proc => "proc",
+        Capability::None => "none",
+    }
+}
+
+/// PI.2b: the markdown export — the whole catalog as a savable document.
+fn plugin_api_markdown_dump() -> String {
+    let cat = lattice_plugin_api::catalog();
+    let mut out = String::new();
+    out.push_str("# Lattice Plugin API\n\n");
+    out.push_str(&format!(
+        "Derived from the canonical `wit/` package — {} seam(s).\n",
+        cat.interfaces.len()
+    ));
+    for iface in &cat.interfaces {
+        out.push_str(&format!(
+            "\n## {}  ({}, capability: {})\n\n",
+            iface.name,
+            plugin_api_direction_prose(iface.direction),
+            plugin_api_capability_prose(iface.capability),
+        ));
+        if let Some(doc) = &iface.doc {
+            out.push_str(doc);
+            out.push_str("\n\n");
+        }
+        out.push_str(&format!("### Functions ({})\n\n", iface.functions.len()));
+        if iface.functions.is_empty() {
+            out.push_str("_(none — a shared type interface)_\n");
+        } else {
+            for f in &iface.functions {
+                let first = f.doc.as_deref().and_then(|d| d.lines().next()).unwrap_or("");
+                out.push_str(&format!("- `{}` — {first}\n", f.name));
+            }
+        }
+    }
+    out
+}
+
+/// PI.2b: the JSON export — hand-built (no serde dep on `lattice-plugin-api`),
+/// so string fields are escaped explicitly by [`json_escape`].
+fn plugin_api_json_dump() -> String {
+    let cat = lattice_plugin_api::catalog();
+    let mut out = String::from("{\n  \"seams\": [\n");
+    for (i, iface) in cat.interfaces.iter().enumerate() {
+        out.push_str("    {\n");
+        out.push_str(&format!("      \"name\": \"{}\",\n", json_escape(&iface.name)));
+        out.push_str(&format!(
+            "      \"direction\": \"{}\",\n",
+            plugin_api_direction_token(iface.direction)
+        ));
+        out.push_str(&format!(
+            "      \"capability\": \"{}\",\n",
+            plugin_api_capability_token(iface.capability)
+        ));
+        out.push_str(&format!(
+            "      \"doc\": \"{}\",\n",
+            json_escape(iface.doc.as_deref().unwrap_or(""))
+        ));
+        out.push_str("      \"functions\": [");
+        for (j, f) in iface.functions.iter().enumerate() {
+            out.push_str(if j == 0 { "\n" } else { ",\n" });
+            out.push_str(&format!(
+                "        {{ \"name\": \"{}\", \"doc\": \"{}\" }}",
+                json_escape(&f.name),
+                json_escape(f.doc.as_deref().unwrap_or(""))
+            ));
+        }
+        out.push_str(if iface.functions.is_empty() { "]\n" } else { "\n      ]\n" });
+        out.push_str(if i + 1 == cat.interfaces.len() {
+            "    }\n"
+        } else {
+            "    },\n"
+        });
+    }
+    out.push_str("  ]\n}\n");
+    out
+}
+
+/// Minimal JSON string escaper for the hand-built [`plugin_api_json_dump`].
+fn json_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 /// 5.5.G.23: True if the Effect indicates an operator-class action
 /// (the buffer changed or content was yanked). Used by Visual mode to
 /// decide whether to auto-exit after the dispatch — motions in Visual
@@ -29693,6 +29826,7 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         | Effect::ListOptions
         | Effect::DescribePluginApi { .. }
         | Effect::ListPluginApis
+        | Effect::ExportPluginApi { .. }
         | Effect::OpenHover { .. }
         | Effect::DismissPopup
         | Effect::OpenPopup { .. }
@@ -29819,6 +29953,7 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         | Effect::ListOptions
         | Effect::DescribePluginApi { .. }
         | Effect::ListPluginApis
+        | Effect::ExportPluginApi { .. }
         | Effect::OpenHover { .. }
         | Effect::DismissPopup
         | Effect::OpenPopup { .. }

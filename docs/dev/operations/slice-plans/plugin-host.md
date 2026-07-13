@@ -874,7 +874,7 @@ builds the decoration snapshot off the render path. **Depends:** PH7.3. **Gate:*
   native `mode.gutter_decorations` read). Until then plugin decorations produce + cache but do not
   visibly render. This is the phase's standing boot-wiring milestone; no plugin-author work.
 
-### PI — Plugin-API Introspection (PRIORITIZED, before PH7.10) 🚧 (PI.1 ✅)
+### PI — Plugin-API Introspection (PRIORITIZED, before PH7.10) 🚧 (PI.1 + PI.2 ✅)
 A baked-in, discoverable introspection layer for APIs — **especially plugin APIs** (Dhruva,
 2026-07-13). Extends the existing self-documenting-help spine (design §5.11) — `:describe-*` /
 `:apropos` / `render_introspection()` already surface `SourceLayer::Plugin(id)` provenance — to
@@ -912,6 +912,29 @@ the **plugin API surface** + **human-readable plugin provenance**. Two facets un
   path; build-time parse); test = catalog-covers-every-interface + describe/apropos output +
   provenance-name resolution; error = a malformed/absent WIT interface → the catalog omits it +
   logs, never a panic; a plugin id with no manifest → falls back to `<plugin:id>`.
+
+  #### PI.2b — `:export-plugin-api [markdown|json]` (savable buffer) ✅ (2026-07-13)
+  The author-facing machine-readable export (Facet A), as a **savable synthetic buffer** the user
+  writes with `:w <path>` (the option locked with Dhruva over a direct fs-write command).
+  - **Mechanism (the `OpenSyntheticBuffer` pattern, buffer-open effect):** `Effect::ExportPluginApi
+    { format: Option<String> }` (+ WIT-mirror + renderer-classifier lockstep). Unlike the display
+    effects (host-applied), this is **peer-applied** — each renderer's dispatch arm calls the shared
+    host `Editor::do_export_plugin_api` via `mutate_editor` (the `OpenSyntheticBuffer`/`OpenAiLog`
+    precedent), so it sits with `OpenSyntheticBuffer` in the effect *classifiers*, NOT in the
+    peer-no-op group (grouping it with the display effects made the handler unreachable — corrected).
+  - **The buffer is a real, savable `text-mode` Document** (`*plugin-api.md*` / `*plugin-api.json*`)
+    via the generic `ensure_named_synthetic_document` — `text-mode` contributes no read-only/NoFile
+    override (that is mode-contributed, not a `BufferFlags` field), so `:w <path>` works. Idempotent:
+    a re-export reuses the by-name buffer, so content is fully **replaced** via a new generic
+    `Editor::replace_owned_buffer` (sibling to `append_to_owned_buffer`; must span the true last line
+    — `line_count()-1`, NOT `last_addressable_line`, which backs past the trailing newline and would
+    only overwrite line 0 on a reused buffer).
+  - **Dumps** built host-side from the catalog: markdown (default) and hand-built JSON (a local
+    `json_escape` keeps `lattice-plugin-api` serde-free). Format is pre-validated by the grammar
+    (`markdown`/`md`/`json`) — a typo echoes a parse error, not a silent default.
+  - **Tests (+5, 13 total for PI.2):** grammar parse (format validation + emit), boundary round-trip,
+    host (json content + markdown default + re-export-replaces-not-doubles via a booted `Editor`).
+    Regression: grammar 215, plugin-host 90, GPUI `--features window` build all green.
 
   #### PI.2a — `:describe-plugin-api` / `:list-plugin-apis` / `:apropos` extension ✅ (2026-07-13)
   The in-editor discoverable surface (Facet A), rendered through the existing help spine. Export

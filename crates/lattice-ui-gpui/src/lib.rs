@@ -1253,6 +1253,9 @@ impl GpuiApp {
             Effect::OpenAiLog { session } => {
                 self.mutate_editor(move |e| e.do_open_ai_log(session.as_deref()));
             }
+            Effect::ExportPluginApi { format } => {
+                self.mutate_editor(move |e| e.do_export_plugin_api(format.as_deref()));
+            }
             Effect::OpenSyntheticBuffer { name, mode_id } => {
                 self.mutate_editor(move |e| e.open_synthetic_buffer(&name, &mode_id));
             }

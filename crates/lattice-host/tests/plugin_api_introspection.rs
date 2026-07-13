@@ -109,3 +109,35 @@ fn apropos_surfaces_plugin_api_seams() {
         "plugin-api hit should link to :describe-plugin-api"
     );
 }
+
+#[test]
+fn export_plugin_api_json_opens_a_savable_buffer() {
+    let mut ed = editor();
+    ed.do_export_plugin_api(Some("json"));
+    // The export buffer is activated, so `active_text` is the dump.
+    let body = ed.active_text().as_string();
+    assert!(body.contains("\"seams\""), "json root missing:\n{body}");
+    assert!(body.contains("\"name\": \"host-services\""), "seam entry missing");
+    assert!(body.contains("\"capability\": \"fs\""), "capability token missing");
+    assert!(body.contains("\"walk\""), "function missing");
+}
+
+#[test]
+fn export_plugin_api_defaults_to_markdown() {
+    let mut ed = editor();
+    ed.do_export_plugin_api(None);
+    let body = ed.active_text().as_string();
+    assert!(body.contains("# Lattice Plugin API"), "md header:\n{body}");
+    assert!(body.contains("## host-services"), "md seam section");
+}
+
+#[test]
+fn re_export_replaces_rather_than_appends() {
+    let mut ed = editor();
+    ed.do_export_plugin_api(Some("json"));
+    let len1 = ed.active_text().as_string().len();
+    // The buffer is reused by name, so a second export must overwrite.
+    ed.do_export_plugin_api(Some("json"));
+    let len2 = ed.active_text().as_string().len();
+    assert_eq!(len1, len2, "re-export must replace, not double the content");
+}

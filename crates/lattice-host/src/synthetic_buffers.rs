@@ -162,6 +162,32 @@ impl Editor {
         let _ = lattice_runtime::block_on(handle.apply_edit_batch(vec![edit]));
     }
 
+    /// Replace the ENTIRE content of an owner-written buffer with `text` (one
+    /// full-range edit). The idempotent counterpart to
+    /// [`Self::append_to_owned_buffer`]: a synthetic buffer opened by name is
+    /// reused across calls, so a re-render (e.g. `:export-plugin-api` a second
+    /// time) must overwrite rather than append. Bypasses the read-only
+    /// dispatcher, exactly like the append path (owner writes).
+    pub fn replace_owned_buffer(&mut self, buffer_id: BufferId, text: &str) {
+        let Some(handle) = self.buffers.document_handle(buffer_id) else {
+            return;
+        };
+        let snap = handle.snapshot();
+        // The TRUE end of the buffer -- `last_addressable_line` deliberately
+        // backs up past a trailing-newline line, which would leave that line
+        // uncovered here (and on a reused buffer it collapses to line 0). A
+        // full replace must span every line, phantom trailing line included.
+        let lc = snap.buffer.line_count();
+        let last_line = lc.saturating_sub(1);
+        let line_len = snap.buffer.line_byte_len(last_line);
+        let whole = lattice_protocol::position::Range {
+            start: Position::new(0, 0),
+            end: Position::new(last_line, line_len),
+        };
+        let edit = Edit::replace(whole, text);
+        let _ = lattice_runtime::block_on(handle.apply_edit_batch(vec![edit]));
+    }
+
     /// Find-or-create a Document buffer named `name`, register it
     /// in the registry with `flags`, seed empty document locals,
     /// and activate `major_id` directly (skipping the

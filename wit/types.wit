@@ -484,6 +484,7 @@ interface types {
         // PI.2: plugin-API introspection help effects.
         describe-plugin-api(option<string>),
         list-plugin-apis,
+        export-plugin-api(option<string>),
         open-hover(string),
         dismiss-popup,
         open-popup(open-popup-payload),

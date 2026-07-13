@@ -74,6 +74,9 @@ pub struct ExBuiltins {
     /// time by `lattice-plugin-api`; the host renders it.
     pub describe_plugin_api: ExCommandId,
     pub list_plugin_apis: ExCommandId,
+    /// PI.2b: `:export-plugin-api [markdown|json]` -- dump the catalog to a
+    /// savable buffer.
+    pub export_plugin_api: ExCommandId,
     pub describe_events: ExCommandId,
     pub describe_event: ExCommandId,
     // CR.6 (2026-06-24): the 11 diff/hunk ex-command ids
@@ -1127,6 +1130,29 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             surface_form: SurfaceForm::Keyword,
         },
     );
+    let export_plugin_api = registry.register_ex_command(
+        "ex:export-plugin-api",
+        "Export the whole plugin-API catalog to a savable buffer \
+         (`:export-plugin-api [markdown|json]`). Opens `*plugin-api.md*` (or \
+         `*plugin-api.json*`) under text-mode; save it with `:w <path>`. \
+         Defaults to markdown.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_optional_string),
+            apply: Box::new(apply_export_plugin_api),
+            args_schema: vec![ArgSpec {
+                name: "format",
+                kind: ArgKind::String,
+                doc: "`markdown` (default) or `json`.",
+                prompt: "format:",
+                default: ArgDefault::None,
+                completion: None,
+            }],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
     let describe_events = registry.register_ex_command(
         "ex:describe-events",
         "List every registered event (`:describe-events`). Walks the \
@@ -1979,6 +2005,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         list_options,
         describe_plugin_api,
         list_plugin_apis,
+        export_plugin_api,
         describe_events,
         describe_event,
         // CR.6: diff/hunk ex-commands now registered by lattice_diff::install().
@@ -2080,6 +2107,25 @@ fn apply_describe_plugin_api(ctx: &ExCommandContext) -> GrammarResult<Effect> {
         _ => return Err(CommandError::BadArgs("expected an optional seam name".into())),
     };
     Ok(Effect::DescribePluginApi { seam })
+}
+
+fn apply_export_plugin_api(ctx: &ExCommandContext) -> GrammarResult<Effect> {
+    let format = match &ctx.args {
+        Args::String(s) => {
+            let f = s.trim().to_ascii_lowercase();
+            // Validate at parse time so a typo echoes a grammar error rather
+            // than silently defaulting; the host maps `markdown`/`json`.
+            if f != "markdown" && f != "md" && f != "json" {
+                return Err(CommandError::BadArgs(format!(
+                    "unknown format `{s}` (expected `markdown` or `json`)"
+                )));
+            }
+            Some(f)
+        }
+        Args::None => None,
+        _ => return Err(CommandError::BadArgs("expected an optional format".into())),
+    };
+    Ok(Effect::ExportPluginApi { format })
 }
 
 fn parse_required_string(rest: &str, _bang: bool) -> GrammarResult<Args> {
@@ -2657,6 +2703,32 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(eff, Effect::ListPluginApis));
+    }
+
+    #[test]
+    fn export_plugin_api_validates_format_and_emits_effect() {
+        let (registry, ex, mut doc) = fixture();
+        let run = |registry: &_, doc: &mut _, args: Args| {
+            execute(
+                registry,
+                doc,
+                lattice_core::BufferId(0),
+                Position::ZERO,
+                CommandInvocation::of(ex.export_plugin_api.0).with_args(args),
+                &CancellationToken::never(),
+            )
+        };
+        // json -> Some("json"); no arg -> None (markdown default).
+        match run(&registry, &mut doc, Args::String("json".into())).unwrap() {
+            Effect::ExportPluginApi { format } => assert_eq!(format.as_deref(), Some("json")),
+            other => panic!("unexpected: {other:?}"),
+        }
+        match run(&registry, &mut doc, Args::None).unwrap() {
+            Effect::ExportPluginApi { format } => assert!(format.is_none()),
+            other => panic!("unexpected: {other:?}"),
+        }
+        // An unknown format is a parse-time error (not a silent default).
+        assert!(run(&registry, &mut doc, Args::String("yaml".into())).is_err());
     }
 
     #[test]

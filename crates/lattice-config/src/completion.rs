@@ -150,6 +150,40 @@ mod tests {
         assert!(!names.contains(&"notabstop"));
     }
 
+    /// Regression guard (plugin-completion tie-together): a plugin registers an
+    /// option into the SHARED `ConfigRegistry` at runtime (PH7.10's
+    /// `register_with_typeid`); `:set <Tab>` must show it. The generator holds
+    /// an `Arc<ConfigRegistry>` and walks it fresh each invocation, so an option
+    /// added AFTER the generator is built still appears — no boot snapshot.
+    #[test]
+    fn set_completion_reads_the_registry_live_so_runtime_added_options_appear() {
+        let registry = Arc::new(ConfigRegistry::new());
+        registry.register(Option::<bool>::new("builtin-opt", true, ""));
+        let g = OptionsGenerator::new(registry.clone());
+
+        let names = |g: &OptionsGenerator| -> Vec<String> {
+            let doc = Document::from_text("");
+            let buf = doc.buffer();
+            let cmd_reg = CommandRegistry::new();
+            let ctx = GenerateContext {
+                prefix: "",
+                buffer: buf,
+                registry: &cmd_reg,
+                case_sensitive: false,
+            };
+            g.generate(&ctx).into_iter().map(|c| c.text).collect()
+        };
+
+        // Registered AFTER the generator was built — the "plugin loads late" case.
+        registry.register(Option::<i64>::new("plugin-added-opt", 4, ""));
+        let out = names(&g);
+        assert!(out.contains(&"builtin-opt".to_string()));
+        assert!(
+            out.contains(&"plugin-added-opt".to_string()),
+            "a runtime-registered option must appear in :set completion (live read)"
+        );
+    }
+
     #[test]
     fn bare_prefix_enumerates_aliases_and_their_no_forms() {
         let registry = Arc::new(ConfigRegistry::new());

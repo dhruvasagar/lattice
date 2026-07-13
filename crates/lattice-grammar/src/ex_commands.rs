@@ -2764,6 +2764,41 @@ mod tests {
         assert!(matches!(eff, Effect::ListCommands));
     }
 
+    /// Regression guard (plugin-introspection tie-together): a plugin command
+    /// (PH7.7 `register_plugin_ex_command`) lands in the SAME store
+    /// `registry.names()` iterates — the one `gen:commands` completion,
+    /// `:list-commands`, `:describe-command`, and `:apropos` all read live —
+    /// carrying `Plugin(id)` provenance so `:list-commands` groups it and PI.3
+    /// resolves its name. If this breaks, plugin commands silently vanish from
+    /// every introspection/completion surface.
+    #[test]
+    fn plugin_command_lands_in_the_store_read_by_completion_and_introspection() {
+        let mut registry = CommandRegistry::new();
+        let spec = ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_| Ok(Effect::None)),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        };
+        registry.register_plugin_ex_command(7, "plugin-cmd", "a plugin command", spec);
+        // Visible to the live enumeration every introspection/completion consumer walks.
+        assert!(
+            registry.names().any(|n| n == "plugin-cmd"),
+            "plugin command must be in the store `names()` iterates"
+        );
+        let spec = registry
+            .lookup_by_name("plugin-cmd")
+            .expect("plugin command is looked up like any other");
+        assert!(
+            matches!(spec.source.layer, crate::source::SourceLayer::Plugin(7)),
+            "plugin command carries Plugin(id) provenance"
+        );
+        assert_eq!(spec.doc, "a plugin command");
+    }
+
     #[test]
     fn describe_buffer_emits_describe_buffer_effect() {
         let (registry, ex, mut doc) = fixture();

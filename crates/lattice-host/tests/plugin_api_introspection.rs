@@ -209,3 +209,28 @@ fn describe_unknown_plugin_returns_none() {
         "an unloaded plugin echoes an error, no help buffer"
     );
 }
+
+// --- PH7.8b: plugin-defined events surface in the event introspection ---
+
+#[test]
+fn plugin_defined_event_surfaces_in_describe_events() {
+    use lattice_protocol::event_registry::{register_runtime_event, unregister_runtime_event};
+    let mut ed = editor();
+    let name = "test.host-describe-runtime-evt";
+    assert!(register_runtime_event(name, "a custom plugin event", "plugin:demo"));
+
+    // :describe-events (plural) lists it beside built-ins.
+    let all = text(&ed.build_describe_events_content());
+    assert!(all.contains(name), "runtime event listed:\n{all}");
+
+    // :describe-event <name> resolves + renders it as a plugin event.
+    let one = ed
+        .build_describe_event_content(name)
+        .expect("a runtime event is describable");
+    let body = text(&one);
+    assert!(body.contains(name));
+    assert!(body.contains("plugin"), "kind should read plugin:\n{body}");
+    assert!(body.contains("a custom plugin event"));
+
+    unregister_runtime_event(name);
+}

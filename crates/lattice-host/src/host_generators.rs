@@ -64,17 +64,19 @@ impl CandidateGenerator for ModesGenerator {
     }
 }
 
-/// `gen:events` -- one candidate per typed event registered in the
-/// process-wide `EVENT_DESCRIPTORS` distributed slice. Stateless;
-/// the slice is link-time constant.
+/// `gen:events` -- one candidate per registered event, from the unified view
+/// (`event_registry::all_events`): the compile-time `EVENT_DESCRIPTORS` linkme
+/// slice (built-ins) PLUS the runtime registry (plugin-defined events, PH7.8b),
+/// so a plugin's custom events complete here the moment they register.
 pub struct EventsGenerator;
 
 impl CandidateGenerator for EventsGenerator {
     fn generate(&self, _ctx: &GenerateContext<'_>) -> Vec<RawCandidate> {
-        let mut out: Vec<RawCandidate> = lattice_protocol::event_registry::registered_events()
+        let mut out: Vec<RawCandidate> = lattice_protocol::event_registry::all_events()
+            .into_iter()
             .map(|d| RawCandidate {
-                text: d.name.to_string(),
-                display: d.name.to_string(),
+                text: d.name.clone(),
+                display: d.name.clone(),
                 kind: CandidateKind::Plain,
                 data: CandidateData::Plain,
                 source: None,

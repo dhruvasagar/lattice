@@ -147,6 +147,104 @@ pub fn descriptor_by_type_id(type_id: TypeId) -> Option<&'static EventDescriptor
     EVENT_DESCRIPTORS.iter().find(|d| (d.type_id)() == type_id)
 }
 
+/// Owned, source-tagged view of an event descriptor. Merges the two registries:
+/// the compile-time [`EVENT_DESCRIPTORS`] linkme slice (built-in events) and the
+/// runtime registry (plugin-defined events, PH7.8b). Introspection + completion
+/// (`:describe-events`, `:describe-event`, `gen:events`) read this unified view
+/// so a plugin's custom event surfaces exactly like a built-in one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EventInfo {
+    /// User-facing identifier (`lsp.buffer-attached`, `my-plugin.file-indexed`).
+    pub name: String,
+    /// Short summary shown by `:describe-event(s)`.
+    pub doc: String,
+    /// Who owns the declaration — a source crate for built-ins, or the plugin
+    /// provenance string (e.g. `plugin:git-gutter`) for runtime events.
+    pub source: String,
+    /// `true` = compile-time (linkme) built-in; `false` = runtime plugin event.
+    pub builtin: bool,
+}
+
+/// Process-wide registry of RUNTIME (plugin-defined) events. Parallels the
+/// compile-time [`EVENT_DESCRIPTORS`] linkme slice — `linkme` is link-time
+/// constant, so a runtime-loaded plugin needs this to declare its own events.
+/// Keyed by name; a `RwLock` gives the interior mutability a post-boot plugin
+/// load needs. The Phase-8 loader / the `host-services register-event` seam
+/// (PH7.8b.2) is the populator.
+fn runtime_events() -> &'static std::sync::RwLock<std::collections::BTreeMap<String, EventInfo>> {
+    static RUNTIME_EVENTS: std::sync::OnceLock<
+        std::sync::RwLock<std::collections::BTreeMap<String, EventInfo>>,
+    > = std::sync::OnceLock::new();
+    RUNTIME_EVENTS.get_or_init(|| std::sync::RwLock::new(std::collections::BTreeMap::new()))
+}
+
+/// Register a runtime (plugin-defined) event. Idempotent by name (a re-register
+/// overwrites — a plugin reload refreshes its doc). Returns `false` and records
+/// nothing if the name collides with a BUILT-IN event: a plugin must not shadow
+/// a native event (its subscribers would be ambiguous).
+pub fn register_runtime_event(
+    name: impl Into<String>,
+    doc: impl Into<String>,
+    source: impl Into<String>,
+) -> bool {
+    let name = name.into();
+    if descriptor_by_name(&name).is_some() {
+        return false;
+    }
+    if let Ok(mut map) = runtime_events().write() {
+        map.insert(
+            name.clone(),
+            EventInfo {
+                name,
+                doc: doc.into(),
+                source: source.into(),
+                builtin: false,
+            },
+        );
+        true
+    } else {
+        false
+    }
+}
+
+/// Remove a runtime event (plugin unload / reload). No-op for an unknown name.
+pub fn unregister_runtime_event(name: &str) {
+    if let Ok(mut map) = runtime_events().write() {
+        map.remove(name);
+    }
+}
+
+/// Every event — built-in (linkme) ∪ runtime (plugin) — as owned [`EventInfo`],
+/// sorted by name. The unified view introspection + completion read.
+pub fn all_events() -> Vec<EventInfo> {
+    let mut out: Vec<EventInfo> = registered_events()
+        .map(|d| EventInfo {
+            name: d.name.to_string(),
+            doc: d.doc.to_string(),
+            source: d.source_crate.to_string(),
+            builtin: true,
+        })
+        .collect();
+    if let Ok(map) = runtime_events().read() {
+        out.extend(map.values().cloned());
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
+}
+
+/// Look up any event (built-in or runtime) by exact name.
+pub fn event_info_by_name(name: &str) -> Option<EventInfo> {
+    if let Some(d) = descriptor_by_name(name) {
+        return Some(EventInfo {
+            name: d.name.to_string(),
+            doc: d.doc.to_string(),
+            source: d.source_crate.to_string(),
+            builtin: true,
+        });
+    }
+    runtime_events().read().ok()?.get(name).cloned()
+}
+
 /// Declare and register an event type. Generates:
 ///
 /// 1. An impl of [`Event`] for `$ty` returning the registered
@@ -226,6 +324,34 @@ mod tests {
     fn registered_event_appears_in_descriptors_slice() {
         let found = registered_events().any(|d| d.name == "test.event");
         assert!(found, "test.event should appear in EVENT_DESCRIPTORS");
+    }
+
+    /// PH7.8b: a runtime (plugin-defined) event registers, surfaces in the
+    /// unified view beside built-ins, resolves by name, and unregisters. It may
+    /// NOT shadow a built-in event name.
+    #[test]
+    fn runtime_events_register_surface_and_unregister() {
+        let name = "test.ph78b-runtime-only";
+        assert!(register_runtime_event(name, "a plugin event", "plugin:demo"));
+
+        // Appears in the unified view, tagged non-builtin, beside `test.event`.
+        let all = all_events();
+        assert!(all.iter().any(|e| e.name == name && !e.builtin));
+        assert!(all.iter().any(|e| e.name == "test.event" && e.builtin));
+
+        let info = event_info_by_name(name).expect("resolves by name");
+        assert_eq!(info.doc, "a plugin event");
+        assert_eq!(info.source, "plugin:demo");
+        assert!(!info.builtin);
+
+        // A plugin must not shadow a built-in event.
+        assert!(
+            !register_runtime_event("test.event", "hijack", "plugin:demo"),
+            "runtime registration must not shadow a built-in event"
+        );
+
+        unregister_runtime_event(name);
+        assert!(event_info_by_name(name).is_none());
     }
 
     #[test]

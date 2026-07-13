@@ -28291,28 +28291,30 @@ impl Editor {
     /// invocation pushes into); groups rows by source crate so
     /// the catalogue is easy to scan.
     pub fn build_describe_events_content(&self) -> lattice_help::HelpContent {
-        use lattice_protocol::event_registry::registered_events;
-        let mut by_crate: std::collections::BTreeMap<
-            &'static str,
-            Vec<&'static lattice_protocol::event_registry::EventDescriptor>,
+        // PH7.8b: the unified view — built-in (linkme) ∪ runtime (plugin)
+        // events — so a plugin's custom events list here beside native ones.
+        use lattice_protocol::event_registry::all_events;
+        let mut by_source: std::collections::BTreeMap<
+            String,
+            Vec<lattice_protocol::event_registry::EventInfo>,
         > = std::collections::BTreeMap::new();
-        for d in registered_events() {
-            by_crate.entry(d.source_crate).or_default().push(d);
+        for info in all_events() {
+            by_source.entry(info.source.clone()).or_default().push(info);
         }
         let mut total = 0usize;
         let mut lines: Vec<String> = Vec::new();
         lines.push("# Registered events".into());
         lines.push(String::new());
-        if by_crate.is_empty() {
+        if by_source.is_empty() {
             lines.push("(none)".into());
         }
-        for (source_crate, mut entries) in by_crate {
-            entries.sort_by_key(|d| d.name);
+        for (source, mut entries) in by_source {
+            entries.sort_by(|a, b| a.name.cmp(&b.name));
             total += entries.len();
-            lines.push(format!("## {source_crate} ({})", entries.len()));
+            lines.push(format!("## {source} ({})", entries.len()));
             lines.push(String::new());
-            for d in entries {
-                lines.push(format!("- [{}](event:{})  {}", d.name, d.name, d.doc));
+            for info in entries {
+                lines.push(format!("- [{}](event:{})  {}", info.name, info.name, info.doc));
             }
             lines.push(String::new());
         }
@@ -28998,24 +29000,33 @@ impl Editor {
         &mut self,
         name: &str,
     ) -> Option<lattice_help::HelpContent> {
-        use lattice_protocol::event_registry::descriptor_by_name;
-        let Some(d) = descriptor_by_name(name) else {
+        // PH7.8b: resolve across built-in (linkme) AND runtime (plugin) events.
+        use lattice_protocol::event_registry::event_info_by_name;
+        let Some(info) = event_info_by_name(name) else {
             self.set_message(EchoLevel::Error, format!("no event named `{name}`"));
             return None;
         };
         let mut lines: Vec<String> = Vec::new();
-        lines.push(format!("# event :: {}", d.name));
+        lines.push(format!("# event :: {}", info.name));
         lines.push(String::new());
-        lines.push(format!("- source crate: `{}`", d.source_crate));
-        lines.push(format!("- type-id name: `{}`", d.name));
+        lines.push(format!(
+            "- kind: {}",
+            if info.builtin { "built-in" } else { "plugin" }
+        ));
+        lines.push(format!("- source: `{}`", info.source));
         lines.push(String::new());
-        lines.push(d.doc.to_string());
+        lines.push(info.doc.clone());
         lines.push(String::new());
-        lines.push(
-            "Subscribe via `EventBus::subscribe_typed::<T>(tx)` where `T` \
-             is the concrete event struct exported by the source crate."
-                .into(),
-        );
+        lines.push(if info.builtin {
+            "Subscribe via `EventBus::subscribe_typed::<T>(tx)` where `T` is the \
+             concrete event struct exported by the source crate."
+                .into()
+        } else {
+            "A plugin-defined event: subscribe from a plugin via its `on-event` \
+             export filtered on this name; the payload is the emitter's opaque \
+             bytes (PH7.8b)."
+                .to_string()
+        });
         Some(lattice_help::HelpContent::from_lines(
             format!("describe-event {name}"),
             lines,

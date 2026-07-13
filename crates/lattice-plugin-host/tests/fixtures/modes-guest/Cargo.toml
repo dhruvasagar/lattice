@@ -1,0 +1,23 @@
+# PH7.11a modes fixture guest — a minimal `wasm32-wasip2` component implementing
+# the `modes-plugin` world: from its `register-modes` export it declares a few
+# minor modes via the imported `modes.register-mode`. The host test then inspects
+# the `ModeRegistry` those declarations were registered into. Standalone
+# workspace (`[workspace]` below) so it targets wasm32-wasip2 without inheriting
+# the host toolchain — mirrors the sibling `events-guest` fixture.
+[package]
+name = "modes-guest"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.58"
+
+[profile.release]
+opt-level = "s"
+strip = true
+
+[workspace]

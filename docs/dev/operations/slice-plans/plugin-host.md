@@ -1231,12 +1231,41 @@ Guest-side, WIT-agnostic (the PH7.8b.3 approach-A pattern), in the two SDK crate
   (`Enabled`/`Count`/`Label`) + reads `count` back through `parse_option`; the existing
   `config_source` e2e passes unchanged. Green: SDK 7, config_source 1.
 
-### PH7.11 — Modes declaration WIT seam 📝
-`modes` WIT mirroring the `Mode` trait method set; host registers `Arc<dyn DynMode>` into
-`ModeRegistry`; keymap contributions land at `KeymapLayer::MinorMode(id)` only (the
-`KeymapCapability` write-gate); Guard-`Drop` teardown. (Bundled modes-as-components shipping
-is Phase 8 — this slice lands only the declaration WIT + registration path.) **Depends:**
-PH7.7, PH7.9.
+### PH7.11 — Modes declaration WIT seam 🚧 (11a ✅, 11b 📝)
+`modes` WIT mirroring the `Mode` declaration surface; host builds a marker `Mode` impl and
+registers it into `ModeRegistry`; keymap contributions land at `KeymapLayer::MinorMode(id)` only
+(the `KeymapCapability` write-gate). Bundled modes-as-components shipping is Phase 8 — this slice
+lands the declaration WIT + registration path. **Depends:** PH7.7, PH7.9.
+
+**Scope note.** The `Mode` trait is rich, but only `id()`/`kind()`/`on_activate()` are required
+(all else defaults). A WASM mode declares the data-crossable subset; its *behavior* is composed
+from the other seams (keymap→commands 11b; action bodies via the grammar `register-action`
+trampoline PH7.7). Lifecycle callbacks, decorations, completion-sources, typed option-overrides,
+and major modes are deferred (Phase 8 / other seams).
+
+#### PH7.11a — declaration + registration ✅ (2026-07-13)
+- `wit/modes.wit`: filled the stub — `enum mode-kind`, `variant activation-policy {manual, global,
+  universal, majors(list<string>)}`, `flags mode-capabilities` (mirrors `CapabilitySet`),
+  `record mode-declaration {id, kind, activation-policy, capabilities}`, `register-mode(decl)`,
+  `world modes-plugin { import modes; export register-modes }`.
+- Host builds `PluginMode` — a marker `Mode` impl (the `EmacsKeysMode` template: `Guard = ()`,
+  no-op `on_activate`, `kind = Minor`) carrying the declared policy + capabilities — and registers
+  it into the SAME `ModeRegistry` builtins use (which enforces the `-mode` suffix). `register-mode`
+  records into a `PluginState.mode_contributions` accumulator; `spawn_mode_plugin(&mut ModeRegistry)`
+  drains + registers after `register-modes` returns (the `register-grammar` drain precedent —
+  registration needs `&mut`, not a live handle). Returns the accepted `ModeId`s; a bad suffix /
+  dup / `major` kind is logged + skipped.
+- Tests: `mode_host` unit (5) — registers a minor mode, rejects a bare id / a `major` kind / a dup,
+  carries policy+caps; `mode_source` e2e (1) — a `modes-guest` fixture declares 2 well-formed + 1
+  mis-suffixed via the RAW WIT, host inspects the shared registry. Green: plugin-host lib 103,
+  mode_source 1, plugin-api 4.
+
+#### PH7.11b — keymap bindings (chord→command, `OwnedLayer` gate) 📝 (NEXT)
+The mode declares `list<mode-keymap-binding {binding-mode, chord, command}>`; the host resolves each
+command name against the `CommandRegistry` (the `emacs_keys_layer_bindings` pattern), builds a
+`KeymapTrie`, and pushes it under `PushLayerKind::MinorMode(id)` gated by
+`KeymapCapability::OwnedLayer { mode_id }` (a plugin mode can push ONLY its own layer — the
+write-gate). Optionally a Rust SDK `#[derive(PluginMode)]` follow-on.
 
 ### PH7.12 — Crash isolation + lifecycle hardening + four-artefact close 📝
 Trap → `PluginCrashed` event + quarantine; graceful degradation audit across every seam;

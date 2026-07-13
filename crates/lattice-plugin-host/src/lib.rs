@@ -61,6 +61,7 @@ pub mod boundary_picker;
 pub mod buffer;
 pub mod capability;
 pub mod config_host;
+pub mod mode_host;
 pub mod host_services;
 pub mod completion_host;
 pub mod decoration_host;
@@ -435,6 +436,11 @@ struct PluginState {
     /// recorded so the host can report them after `register-options` returns (and
     /// as the teardown seam PH7.12 will unregister). Empty for a non-config plugin.
     config_contributions: Vec<String>,
+    /// Mode declarations the guest makes through `register-mode` during
+    /// `register-modes` (PH7.11a). The `modes::Host` impl records into it; the
+    /// host drains it after the registration export returns and registers each
+    /// into the `ModeRegistry` (`spawn_mode_plugin`). Empty for a non-mode plugin.
+    mode_contributions: mode_host::ModeContributions,
 }
 
 /// The bus-publish handle a plugin needs to emit custom events (PH7.8b.2). Set
@@ -644,6 +650,57 @@ impl crate::config_host::bindings::lattice::plugin_host::config::Host for Plugin
     }
 }
 
+/// Host impl of the `modes` guest→host mode-declaration seam (PH7.11a, §5). The
+/// guest calls `register-mode` (from its `register-modes` export) to declare a
+/// minor mode; each records the declaration into the Store's
+/// [`mode_host::ModeContributions`] so the host can drain it after registration
+/// and register each into a `&mut ModeRegistry` (`spawn_mode_plugin`).
+/// Sync + infallible (it only pushes — recording cannot trap; the register
+/// outcome surfaces at drain time), so bindgen omits the outer `wasmtime::Result`
+/// (the `grammar` / `config` shape). The WIT declaration projects to the native
+/// [`mode_host::PluginModeDecl`] here (kind / policy / capability flags → native).
+impl crate::mode_host::bindings::lattice::plugin_host::modes::Host for PluginState {
+    fn register_mode(
+        &mut self,
+        decl: crate::mode_host::bindings::lattice::plugin_host::modes::ModeDeclaration,
+    ) {
+        use crate::mode_host::bindings::lattice::plugin_host::modes::{
+            ActivationPolicy as WitPolicy, ModeCapabilities as WitCaps, ModeKind as WitKind,
+        };
+        use crate::mode_host::{PluginModeDecl, PluginModeKind};
+        use lattice_mode::{ActivationPolicy, CapabilitySet, ModeId};
+
+        let kind = match decl.kind {
+            WitKind::Major => PluginModeKind::Major,
+            WitKind::Minor => PluginModeKind::Minor,
+        };
+        let policy = match decl.activation_policy {
+            WitPolicy::Manual => ActivationPolicy::Manual,
+            WitPolicy::Global => ActivationPolicy::Global,
+            WitPolicy::Universal => ActivationPolicy::Universal,
+            WitPolicy::Majors(ids) => {
+                ActivationPolicy::Majors(ids.iter().map(|m| ModeId::new(m)).collect())
+            }
+        };
+        // WIT `flags` project to the native bitflags one bit at a time (the
+        // generated flags type is distinct from `CapabilitySet`).
+        let mut caps = CapabilitySet::empty();
+        caps.set(CapabilitySet::BUFFER_URI, decl.capabilities.contains(WitCaps::BUFFER_URI));
+        caps.set(CapabilitySet::LSP, decl.capabilities.contains(WitCaps::LSP));
+        caps.set(CapabilitySet::TREE_SITTER, decl.capabilities.contains(WitCaps::TREE_SITTER));
+        caps.set(CapabilitySet::FOLDS, decl.capabilities.contains(WitCaps::FOLDS));
+        caps.set(CapabilitySet::WRITABLE, decl.capabilities.contains(WitCaps::WRITABLE));
+        caps.set(CapabilitySet::DIAGNOSTICS, decl.capabilities.contains(WitCaps::DIAGNOSTICS));
+
+        self.mode_contributions.record(PluginModeDecl {
+            id: decl.id,
+            kind,
+            policy,
+            caps,
+        });
+    }
+}
+
 /// A host-issued plugin identity. Monotonic, allocated by the [`PluginHost`] at
 /// instantiation — never supplied by the guest. It is the `u32` inside
 /// [`SourceLayer::Plugin`], so every contribution a plugin registers (PH7.3+)
@@ -779,6 +836,14 @@ impl PluginHost {
         // (`register-option` / `get-option` only touch the `ConfigRegistry`),
         // inert for worlds that don't import `config`.
         crate::config_host::bindings::lattice::plugin_host::config::add_to_linker::<_, HasSelf<_>>(
+            &mut linker,
+            |state: &mut PluginState| state,
+        )
+        .map_err(|e| PluginHostError::Linker(e.into()))?;
+        // The `modes` guest→host mode-declaration seam (PH7.11a). Sync host func
+        // (`register-mode` only records into `PluginState`), inert for worlds that
+        // don't import `modes`.
+        crate::mode_host::bindings::lattice::plugin_host::modes::add_to_linker::<_, HasSelf<_>>(
             &mut linker,
             |state: &mut PluginState| state,
         )
@@ -952,6 +1017,9 @@ impl PluginHost {
             // cannot register/read options (warn + false / none).
             config_registry: None,
             config_contributions: Vec::new(),
+            // Drained by `spawn_mode_plugin` into the `ModeRegistry` after
+            // `register-modes` returns (PH7.11a).
+            mode_contributions: mode_host::ModeContributions::default(),
         };
         let mut store = Store::new(&self.engine, state);
         store

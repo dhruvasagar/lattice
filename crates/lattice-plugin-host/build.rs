@@ -65,6 +65,11 @@ fn main() {
         "CONFIG_GUEST_WASM",
     );
     build_guest(
+        &fixtures.join("modes-guest"),
+        "modes-guest",
+        "MODES_GUEST_WASM",
+    );
+    build_guest(
         &manifest_dir
             .join("..")
             .join("..")

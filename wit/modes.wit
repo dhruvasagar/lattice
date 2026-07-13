@@ -1,8 +1,72 @@
 package lattice:plugin-host@0.1.0;
 
-/// Mirrors the `Mode` trait method set + `ModeRegistry` (lattice-mode). The
-/// guest declares a mode; the host registers `Arc<dyn DynMode>`; keymap
-/// contributions land at `KeymapLayer::MinorMode(id)` only (the
-/// `KeymapCapability` write-gate). PH7.11 lands the declaration WIT +
-/// registration path; bundled modes-as-components are Phase 8.
-interface modes {}
+/// Mirrors the `Mode` trait declaration surface + `ModeRegistry` (lattice-mode).
+/// The guest declares a minor mode as DATA (id + kind + activation policy +
+/// capability requirements); the host builds a marker `Mode` impl (`PluginMode`,
+/// the `EmacsKeysMode` template) and registers it into the SAME `ModeRegistry`
+/// builtins use, so `:describe-mode` / mode introspection treat it uniformly.
+///
+/// PH7.11a lands the declaration + registration path (this file); keymap bindings
+/// (chord→command-name at `KeymapLayer::MinorMode(id)`, the `KeymapCapability`
+/// write-gate) are PH7.11b; lifecycle callbacks / decorations / typed
+/// option-overrides / major modes / bundled modes-as-components are Phase 8.
+///
+/// The CANONICAL, language-agnostic surface — any component-model language calls
+/// `register-mode` directly (see the WIT-canonical principle).
+interface modes {
+    /// Major (content-type identity) vs minor (orthogonal behavior). PH7.11a
+    /// registers `minor` only; `major` crosses for forward-compatibility but the
+    /// host rejects it for now (majors are Phase 8).
+    enum mode-kind {
+        major,
+        minor,
+    }
+
+    /// Which buffers a mode auto-activates on — mirrors `ActivationPolicy`.
+    /// `manual` = only on explicit activation; `global` = document buffers only;
+    /// `universal` = every buffer; `majors` = an allowlist of major-mode ids.
+    variant activation-policy {
+        manual,
+        global,
+        universal,
+        majors(list<string>),
+    }
+
+    /// Capability requirements a mode declares — mirrors the `CapabilitySet`
+    /// bitflags (lattice-mode). Enforcement stays the native mode-activation
+    /// path; the declaration sizes the requirement honestly (fragment §6).
+    flags mode-capabilities {
+        buffer-uri,
+        lsp,
+        tree-sitter,
+        folds,
+        writable,
+        diagnostics,
+    }
+
+    /// A mode declaration. `id` must carry the conventional `-mode` suffix (the
+    /// `ModeRegistry::register` gate, e.g. `git-blame-mode`); a bare or
+    /// mis-suffixed id is rejected at registration.
+    record mode-declaration {
+        id: string,
+        kind: mode-kind,
+        activation-policy: activation-policy,
+        capabilities: mode-capabilities,
+    }
+
+    /// Declare a mode. Records the declaration; the host builds a `PluginMode`
+    /// and registers it into the `ModeRegistry` after `register-modes` returns
+    /// (the `register-grammar` drain precedent — registration needs `&mut
+    /// ModeRegistry`, not a live handle). Registration failures (bad `-mode`
+    /// suffix, id collision, `major` kind) are logged + skipped at drain.
+    register-mode: func(decl: mode-declaration);
+}
+
+/// The world a mode-declaring plugin implements. Imports the `modes` register
+/// API; exports `register-modes` (the host calls it once to drive declaration —
+/// the guest invokes the imported `register-mode` inside it, the
+/// `register-grammar` / `register-events` precedent). Synchronous.
+world modes-plugin {
+    import modes;
+    export register-modes: func();
+}

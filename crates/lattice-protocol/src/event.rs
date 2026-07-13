@@ -152,6 +152,35 @@ pub enum Event {
         name: String,
         payload: Vec<u8>,
     },
+    /// A plugin instance crashed (a lifecycle / callback export trapped: fuel
+    /// exhaustion, epoch deadline, a guest panic, or any wasm trap) and was
+    /// quarantined by the host (PH7.12). Unlike [`Self::Plugin`] -- the OPEN
+    /// escape hatch a *live* plugin publishes through -- this is a CLOSED,
+    /// host-owned lifecycle transition the host itself originates, mirroring the
+    /// mode-lifecycle quartet ([`Self::MinorDeactivated`] et al.): the host is
+    /// the sole publisher, and subscribers (a future crash-notification surface,
+    /// the Phase-8 plugin manager's reload/health UI) filter it by *kind*, not by
+    /// string-matching a name.
+    ///
+    /// Fired exactly once per instance -- on the first trap that trips
+    /// quarantine. A component trap taints its instance irrecoverably (wasmtime
+    /// offers no rollback), so the instance is dead-until-reinstantiation: every
+    /// later call short-circuits without re-entering the dead `Store`, and no
+    /// further `PluginCrashed` fires until a reload (PH7.12b) mints a fresh
+    /// instance. The guarantee is **isolation**: the editor, actor, other
+    /// plugins, LSP, and UI are untouched.
+    ///
+    /// `plugin` is the host-issued numeric plugin id (the same id inside
+    /// `SourceLayer::Plugin(id)`); `func` is the export that trapped
+    /// (`"on-event"` / `"spec"` / `"generate"` / `"apply-motion"` / ...); `kind`
+    /// is a stable machine label (`"fuel"` / `"epoch"` / `"trap"`) -- a `String`
+    /// (not the host's `TrapKind`) so the protocol layer stays free of the
+    /// plugin-host type, mirroring [`Self::ModalModeChanged`].
+    PluginCrashed {
+        plugin: u32,
+        func: String,
+        kind: String,
+    },
 }
 
 // M.5.3.b: `LspLogPushed`, `LspBufferAttached`, and
@@ -182,6 +211,7 @@ impl Event {
             Event::MinorActivated { .. } => EventKind::MinorActivated,
             Event::MinorDeactivated { .. } => EventKind::MinorDeactivated,
             Event::Plugin { .. } => EventKind::Plugin,
+            Event::PluginCrashed { .. } => EventKind::PluginCrashed,
         }
     }
 }
@@ -208,6 +238,11 @@ pub enum EventKind {
     /// plugin events share this one kind; the per-event `name` is NOT a bus
     /// discriminator (subscribers filter by name in their handler, PH7.8b).
     Plugin,
+    /// Discriminator for [`Event::PluginCrashed`] -- the host-originated
+    /// crash/quarantine lifecycle transition (PH7.12). A single kind so a
+    /// crash-notification surface or the Phase-8 plugin manager subscribes to
+    /// every plugin crash with one filter.
+    PluginCrashed,
 }
 
 /// An edit as actually applied to the buffer (the original `Edit` plus the

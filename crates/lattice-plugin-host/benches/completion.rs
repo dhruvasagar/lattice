@@ -47,6 +47,7 @@ fn generate_warm(c: &mut Criterion) {
                 &manifest,
                 TrustTier::Bundled,
                 PluginBudget::default(),
+                &std::sync::Arc::new(lattice_runtime::EventBus::new()),
             )
             .await
             .unwrap();

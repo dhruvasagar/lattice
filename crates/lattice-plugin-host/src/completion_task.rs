@@ -16,14 +16,17 @@
 //! shape and reuses the shared `arm_store` / `new_store` / `build_plugin_wasi`
 //! primitives.
 
+use std::sync::Arc;
+
 use futures::StreamExt;
 use futures::channel::{mpsc, oneshot};
+use lattice_runtime::EventBus;
 use wasmtime::Store;
 
 use crate::completion_host::bindings::CompletionSourcePlugin;
 use crate::{
     Component, PluginBudget, PluginHost, PluginHostError, PluginId, PluginManifest, PluginState,
-    TrustTier, arm_store, classify_trap,
+    TrustTier, arm_store,
 };
 
 // The completion WIT records the bridge's public API traffics in — the
@@ -113,6 +116,9 @@ pub struct CompletionActor {
     budget: PluginBudget,
     rx: mpsc::UnboundedReceiver<CompletionCall>,
     id: PluginId,
+    /// Crash-quarantine (PH7.12): the first export trap trips this, fires one
+    /// `PluginCrashed`, and every later call returns `Quarantined`.
+    quarantine: crate::Quarantine,
 }
 
 impl CompletionActor {
@@ -136,32 +142,32 @@ impl CompletionActor {
     }
 
     async fn call_spec(&mut self) -> CallResult<CompletionSourceSpec> {
+        if self.quarantine.is_tripped() {
+            return Err(PluginHostError::Quarantined { func: "spec" });
+        }
         arm_store(&mut self.store, self.budget)?;
-        self.bindings
+        let result = self
+            .bindings
             .lattice_plugin_host_completion_source()
             .call_spec(&mut self.store)
-            .await
-            .map_err(|source| PluginHostError::Trap {
-                func: "spec",
-                kind: classify_trap(&source),
-                source: source.into(),
-            })
+            .await;
+        crate::trip_and_map(&mut self.quarantine, "spec", result)
     }
 
     async fn call_generate(
         &mut self,
         ctx: &GenerateContext,
     ) -> CallResult<Result<Vec<RawCandidate>, String>> {
+        if self.quarantine.is_tripped() {
+            return Err(PluginHostError::Quarantined { func: "generate" });
+        }
         arm_store(&mut self.store, self.budget)?;
-        self.bindings
+        let result = self
+            .bindings
             .lattice_plugin_host_completion_source()
             .call_generate(&mut self.store, ctx)
-            .await
-            .map_err(|source| PluginHostError::Trap {
-                func: "generate",
-                kind: classify_trap(&source),
-                source: source.into(),
-            })
+            .await;
+        crate::trip_and_map(&mut self.quarantine, "generate", result)
     }
 }
 
@@ -178,6 +184,7 @@ impl PluginHost {
         manifest: &PluginManifest,
         tier: TrustTier,
         budget: PluginBudget,
+        bus: &Arc<EventBus>,
     ) -> Result<(CompletionClient, CompletionActor), PluginHostError> {
         let (wasi, outcome, _data_dir) = self.build_plugin_wasi(manifest, tier);
         for denied in &outcome.denied {
@@ -201,6 +208,7 @@ impl PluginHost {
             budget,
             rx,
             id,
+            quarantine: crate::Quarantine::new(id, Arc::clone(bus)),
         };
         Ok((client, actor))
     }

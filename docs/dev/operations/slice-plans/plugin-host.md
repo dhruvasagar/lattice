@@ -339,7 +339,7 @@ result; `OpenFile` outcome). Unregister the native `files` source; register the 
   Marginalia decision (locked): whole enum crosses, host lays out `AnnotationColumns` (a
   render-consumed projection stays host-side per the substrate-vs-consumer rule).
 
-  #### PH7.4a — Picker boundary type mirrors + projection ✅ (2026-07-03)
+#### PH7.4a — Picker boundary type mirrors + projection ✅ (2026-07-03)
   The plugin-facing API's data types + round-trips (the PH7.3a "conventions + small
   round-trips" character, extended to the picker seam). Host-layer only — no guest, no
   host-services, no adapter, no cutover.
@@ -375,7 +375,7 @@ result; `OpenFile` outcome). Unregister the native `files` source; register the 
 	picker-source-spec through intern; open-target; representative routing-payload arms;
 	non-UTF-8 path typed error.
 
-  #### PH7.4b — `host-services` fs-walk seam ✅ (2026-07-11)
+#### PH7.4b — `host-services` fs-walk seam ✅ (2026-07-11)
   The first guest→host call direction: a capability-gated fs `walk` against the plugin's
   `CapabilityGrant` (PH7.2). The `fuzzy-finder` (PH7.4d) walks the workspace through this.
   **Depends:** PH7.4a. **Decision (locked with Dhruva, option A):** a bounded `host-services`
@@ -410,7 +410,7 @@ result; `OpenFile` outcome). Unregister the native `files` source; register the 
 	PH7.3c "prove host-layer, defer the guest call to the real consumer" precedent).
   - **Tests (5, 65 lib green) + 16 integration green.**
 
-  #### PH7.4c — Host adapter (create path) 🚧
+#### PH7.4c — Host adapter (create path) 🚧
   Wrap a component's `picker-source` exports as `Arc<dyn PickerSourceGenerator>` and register
   via `install(boot)` → `register_generator` with a host-stamped `SourceLayer::Plugin(id)`.
   **Depends:** PH7.4a, PH7.4b. **Acid test:** ZERO `Editor::` methods, ZERO new `Action`
@@ -423,7 +423,7 @@ result; `OpenFile` outcome). Unregister the native `files` source; register the 
   `Arc<dyn>` adapter — completion/grammar/modes). Over `Arc<async-mutex<Store>>` (B, a lock
   across `.await` + a runtime dep in the lib, weaker foundation). Sub-sliced:
 
-	#### PH7.4c.1a — `picker-source` world + async export bindings ✅ (2026-07-12)
+#### PH7.4c.1a — `picker-source` world + async export bindings ✅ (2026-07-12)
 	`wit/picker-source.wit` — the `picker-source` interface (`spec`/`init`/`accept` +
 	`candidate-pair`) + the `picker-source-plugin` world (import `host-services`, export
 	`picker-source`). `picker_host.rs` — the **second `bindgen!`** for that world, reusing the
@@ -442,7 +442,7 @@ result; `OpenFile` outcome). Unregister the native `files` source; register the 
 	  seen as a host `with`-mapped import); wasi-http is the precedent that it is solvable —
 	  resolve the world shape then, not now. The PH7.3c `DocumentResource` backing stays ready.
 
-	#### PH7.4c.1b — Per-plugin actor task + call protocol ✅ (2026-07-12)
+#### PH7.4c.1b — Per-plugin actor task + call protocol ✅ (2026-07-12)
 	The bridge (`src/picker_task.rs`): the `PickerCall` enum (Spec/Init/Accept, each carrying a
 	`oneshot` reply), the `PickerActor` task loop owning the `Store<PluginState>` + picker
 	bindings (per-call fuel/epoch armed inside the loop via the extracted `arm_store`), and the
@@ -470,7 +470,7 @@ result; `OpenFile` outcome). Unregister the native `files` source; register the 
 	  `PickerAcceptOutcome`, `PickerSourceSpec`, + the `PickerContext` construction family) so
 	  callers get a clean path, not `crate::lattice::…`. **Depends:** PH7.4c.1a.
 
-	#### PH7.4c.2 — `WasmPickerSource` adapter + async-accept seam ✅ (2026-07-12)
+#### PH7.4c.2 — `WasmPickerSource` adapter + async-accept seam ✅ (2026-07-12)
 	`impl PickerSourceGenerator` over the `PickerClient` (`lattice-plugin-host/src/picker_source.rs`),
 	boundary conversions via PH7.4a. The trait is synchronous but the guest exports are async +
 	actor-bound, resolved per method: **`spec`** fetched + converted once at `connect` (cached,
@@ -507,7 +507,7 @@ result; `OpenFile` outcome). Unregister the native `files` source; register the 
 	  registration via `PickerRegistry::register_generator` directly (+ the `connect_picker_source`
 	  helper that wraps `Arc<dyn PickerSourceGenerator>`). **Depends:** PH7.4c.1b.
 
-  #### PH7.4d — `fuzzy-finder` validation plugin ⭐ ✅ (2026-07-12)
+#### PH7.4d — `fuzzy-finder` validation plugin ⭐ ✅ (2026-07-12)
   The real `wasm32-wasip2` guest (`plugins/fuzzy-finder`) replicating the native `files`
   picker, proving the plugin substrate end-to-end through ONLY the generic seams: it walks the
   workspace via the capability-gated `host-services` `walk` (PH7.4b) and emits `OpenFile`
@@ -1284,10 +1284,51 @@ and major modes are deferred (Phase 8 / other seams).
 A Rust SDK `#[derive(PluginMode)]` (declarative bindings + doc-comment) is a possible future
 follow-on (the PH7.8b.3 / PH7.10b pattern); not needed for the wire.
 
-### PH7.12 — Crash isolation + lifecycle hardening + four-artefact close 📝
+### PH7.12 — Crash isolation + lifecycle hardening + four-artefact close 🚧
 Trap → `PluginCrashed` event + quarantine; graceful degradation audit across every seam;
 reload/hot-swap seam (teardown + re-instantiate) for the deferred `init.rs`/plugin-manager
-consumers; fuzz malformed components/payloads/timing. **Depends:** all above.
+consumers; fuzz malformed components/payloads/timing. **Depends:** all above. Sub-sliced:
+
+#### PH7.12a — Crash-quarantine + `PluginCrashed` ✅ (2026-07-14)
+The first trap on any repeated-call surface taints its `wasmtime` `Store` irrecoverably (no
+rollback), so instead of re-failing every later call (each logged), the host quarantines the
+instance: fires **exactly one** crash signal, then short-circuits before re-entering the dead
+`Store`. Turns "tainted instance keeps re-trapping at held-key frequency" into a one-shot
+signal plus a silent no-op. Isolation is the guarantee — tripping touches only this instance's
+flag + one bus publish; the actor, bus, every other plugin, LSP, and the editor are untouched.
+- **`Event::PluginCrashed { plugin, func, kind }`** (`lattice-protocol`) — a CLOSED,
+  host-originated lifecycle transition (the host is the sole publisher), distinct from the OPEN
+  `Event::Plugin` escape hatch a *live* plugin publishes through. Subscribers (a future
+  crash-notification surface, the Phase-8 plugin manager's reload/health UI) filter by *kind*,
+  mirroring the mode-lifecycle quartet. `kind` is a `String` label (`"fuel"`/`"epoch"`/`"trap"`)
+  not the host's `TrapKind`, so the protocol layer stays free of the plugin-host type
+  (mirrors `ModalModeChanged`). `EventKind::PluginCrashed` discriminator + `lattice-runtime`
+  routing arms (no path, no major-mode). At the WIT boundary it's a typed error, never a silent
+  drop — no `event-kind` variant, so guests cannot subscribe in v1 (a Phase-8 monitoring plugin
+  adds the variant then).
+- **`Quarantine` primitive** (`lib.rs`) — per-instance `tripped` flag + `Arc<EventBus>`;
+  `is_tripped()` short-circuit + idempotent `trip(func, kind)` (publishes once, `info!` once —
+  a one-shot user-actionable event, not a per-keystroke diagnostic). Shared helpers
+  `TrapKind::label()` + `trip_and_map()` (map a raw wasmtime result: trap → trip + typed `Trap`).
+- **All five repeated-call surfaces wired** — event / picker / decoration / completion actors +
+  the grammar trampoline (one `Quarantine` per guest, so one `apply-*` trap quarantines every
+  contribution). Each `spawn_*` / `instantiate_grammar_plugin` takes `&Arc<EventBus>`; each
+  export checks `is_tripped()` first. New `PluginHostError::Quarantined { func }` is the typed
+  post-crash no-op (distinct from `Trap` — ran-and-failed — and `PluginGone` — channel closed).
+- **Test** — `first_trap_quarantines_and_emits_one_plugin_crashed`: one-shot (second trap fires
+  no second event), full-instance quarantine (a post-crash *good* delivery is skipped, not just
+  the trapping handler), native co-subscriber isolation. **Green: lib + event_source (4).**
+
+#### PH7.12b — Reload / hot-swap seam 📝
+Teardown (drop the actor / poison the guest lock, unsubscribe events, unregister
+grammar/picker/decoration/completion/config/mode contributions) + re-instantiate a fresh,
+untripped instance — the seam the deferred `init.rs` / plugin-manager consumers reload through,
+and the recovery path out of a PH7.12a quarantine. Also frees the PH7.10a leaked option names
+and tears down PH7.11a mode registrations on unregister. **Depends:** PH7.12a.
+
+#### PH7.12c — Graceful-degradation audit + fuzz 📝
+Audit every seam for log-and-skip-not-panic under malformed input; fuzz malformed
+components / payloads / timing (epoch races, fuel-at-boundary). **Depends:** PH7.12a.
 
 ---
 

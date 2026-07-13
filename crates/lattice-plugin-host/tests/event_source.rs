@@ -273,3 +273,94 @@ async fn poison_handler_traps_gracefully_without_affecting_others() {
         "the pre-trap delivery landed; the poison delivery degraded gracefully to a skip"
     );
 }
+
+/// PH7.12 — crash-quarantine. The first `on-event` trap trips quarantine: it
+/// fires **exactly one** `Event::PluginCrashed` on the bus, and every later
+/// delivery — even to a *non-trapping* handler — short-circuits without
+/// re-entering the dead `Store`. This is the formalisation of the "tainted
+/// instance" note in `poison_handler_*`: today's repeated-fail-and-log becomes a
+/// one-shot crash signal plus a silent no-op. Isolation is asserted by a native
+/// co-subscriber that keeps receiving the event the plugin dies on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn first_trap_quarantines_and_emits_one_plugin_crashed() {
+    let Some(wasm) = guest_wasm() else {
+        eprintln!("SKIP: events fixture guest not built");
+        return;
+    };
+    let dir = TempDir::new().unwrap();
+    let data_base = dir.path().join("data");
+    let host = PluginHost::with_dirs(dir.path().join("cache"), &data_base).expect("host builds");
+    let component = host
+        .compile(&std::fs::read(wasm).unwrap())
+        .expect("compile events fixture");
+    let manifest = PluginManifest::new(PLUGIN_ID, Vec::new(), CapabilitySet::empty());
+    let bus = Arc::new(EventBus::new());
+
+    // The crash witness: a native subscriber on the host-internal
+    // `PluginCrashed` kind. Counting these is how we prove "exactly once".
+    let (crash_tx, mut crash_rx) = tokio::sync::mpsc::unbounded_channel();
+    bus.subscribe(
+        EventFilter::kind(EventKind::PluginCrashed),
+        SubscriptionTarget::Channel(crash_tx),
+    );
+
+    let (sub_ids, actor) = host
+        .spawn_event_plugin(
+            &component,
+            &manifest,
+            TrustTier::Bundled,
+            PluginBudget::event(),
+            &bus,
+        )
+        .await
+        .expect("spawn events plugin");
+    let pid = actor.id().0;
+
+    // Pre-crash good delivery (handler 1) lands. Then the poison event (handler 3
+    // → wasm trap) crashes the instance. Two MORE deliveries follow — a second
+    // poison and a *good* save — both must be short-circuited by quarantine (the
+    // instance is dead), so neither re-traps nor writes.
+    bus.publish(saved("before/crash.rs")); // handler 1 → "1:saved"
+    let poison = || Event::ModalModeChanged {
+        from: "Normal".into(),
+        to: "Insert".into(),
+    };
+    bus.publish(poison()); // handler 3 → trap → quarantine trips, ONE PluginCrashed
+    bus.publish(poison()); // handler 3 → short-circuited (already quarantined)
+    bus.publish(saved("after/crash.rs")); // handler 1 → short-circuited (dead instance)
+
+    for id in sub_ids {
+        bus.unsubscribe(id);
+    }
+    actor.run().await;
+
+    // Only the pre-crash delivery wrote: the post-crash good save was skipped
+    // because the whole instance is quarantined, not just the trapping handler.
+    let got = recorded(&data_base);
+    assert_eq!(
+        got,
+        vec!["1:saved".to_string()],
+        "only the pre-crash delivery landed; every post-crash delivery short-circuited"
+    );
+
+    // Exactly one PluginCrashed, carrying this plugin's id, the trapping export,
+    // and the `trap` kind (a guest `unreachable!`). The second poison did NOT
+    // fire a second crash — the guarantee is one-shot.
+    let first = crash_rx.try_recv().expect("a PluginCrashed fired");
+    match first {
+        Event::PluginCrashed {
+            plugin,
+            ref func,
+            ref kind,
+        } => {
+            assert_eq!(plugin, pid, "crash carries the host-issued plugin id");
+            assert_eq!(func, "on-event", "the trapping export is on-event");
+            assert_eq!(kind, "trap", "a guest unreachable is a `trap`-kind crash");
+        }
+        other => panic!("expected PluginCrashed, got {other:?}"),
+    }
+    assert!(
+        crash_rx.try_recv().is_err(),
+        "quarantine is one-shot: the second trap fired no second PluginCrashed"
+    );
+}

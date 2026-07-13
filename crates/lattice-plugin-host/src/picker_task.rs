@@ -38,14 +38,17 @@
 //! `current_thread` editor actor — paramount #4 + the no-UI-thread-work rule).
 //! The channels are `futures::channel`, runtime-agnostic on purpose.
 
+use std::sync::Arc;
+
 use futures::StreamExt;
 use futures::channel::{mpsc, oneshot};
+use lattice_runtime::EventBus;
 use wasmtime::Store;
 
 use crate::picker_host::bindings::PickerSourcePlugin;
 use crate::{
     Component, PluginBudget, PluginHost, PluginHostError, PluginId, PluginManifest, PluginState,
-    TrustTier, arm_store, classify_trap,
+    TrustTier, arm_store,
 };
 
 // The picker WIT records the bridge's public API traffics in. They are the
@@ -187,6 +190,10 @@ pub struct PickerActor {
     budget: PluginBudget,
     rx: mpsc::UnboundedReceiver<PickerCall>,
     id: PluginId,
+    /// Crash-quarantine (PH7.12): the first export trap trips this, fires one
+    /// `PluginCrashed`, and every later call returns `Quarantined` without
+    /// re-entering the dead `Store`.
+    quarantine: crate::Quarantine,
 }
 
 impl PickerActor {
@@ -224,16 +231,16 @@ impl PickerActor {
     }
 
     async fn call_spec(&mut self) -> CallResult<PickerSourceSpec> {
+        if self.quarantine.is_tripped() {
+            return Err(PluginHostError::Quarantined { func: "spec" });
+        }
         arm_store(&mut self.store, self.budget)?;
-        self.bindings
+        let result = self
+            .bindings
             .lattice_plugin_host_picker_source()
             .call_spec(&mut self.store)
-            .await
-            .map_err(|source| PluginHostError::Trap {
-                func: "spec",
-                kind: classify_trap(&source),
-                source: source.into(),
-            })
+            .await;
+        crate::trip_and_map(&mut self.quarantine, "spec", result)
     }
 
     async fn call_init(
@@ -241,16 +248,16 @@ impl PickerActor {
         ctx: &PickerContext,
         args: &[String],
     ) -> CallResult<Result<Vec<CandidatePair>, String>> {
+        if self.quarantine.is_tripped() {
+            return Err(PluginHostError::Quarantined { func: "init" });
+        }
         arm_store(&mut self.store, self.budget)?;
-        self.bindings
+        let result = self
+            .bindings
             .lattice_plugin_host_picker_source()
             .call_init(&mut self.store, ctx, args)
-            .await
-            .map_err(|source| PluginHostError::Trap {
-                func: "init",
-                kind: classify_trap(&source),
-                source: source.into(),
-            })
+            .await;
+        crate::trip_and_map(&mut self.quarantine, "init", result)
     }
 
     async fn call_accept(
@@ -258,16 +265,16 @@ impl PickerActor {
         ctx: &PickerContext,
         routing: &RoutingPayload,
     ) -> CallResult<Result<PickerAcceptOutcome, String>> {
+        if self.quarantine.is_tripped() {
+            return Err(PluginHostError::Quarantined { func: "accept" });
+        }
         arm_store(&mut self.store, self.budget)?;
-        self.bindings
+        let result = self
+            .bindings
             .lattice_plugin_host_picker_source()
             .call_accept(&mut self.store, ctx, routing)
-            .await
-            .map_err(|source| PluginHostError::Trap {
-                func: "accept",
-                kind: classify_trap(&source),
-                source: source.into(),
-            })
+            .await;
+        crate::trip_and_map(&mut self.quarantine, "accept", result)
     }
 }
 
@@ -292,6 +299,7 @@ impl PluginHost {
         manifest: &PluginManifest,
         tier: TrustTier,
         budget: PluginBudget,
+        bus: &Arc<EventBus>,
     ) -> Result<(PickerClient, PickerActor), PluginHostError> {
         let (wasi, outcome, _data_dir) = self.build_plugin_wasi(manifest, tier);
         for denied in &outcome.denied {
@@ -314,6 +322,7 @@ impl PluginHost {
             budget,
             rx,
             id,
+            quarantine: crate::Quarantine::new(id, Arc::clone(bus)),
         };
         Ok((client, actor))
     }

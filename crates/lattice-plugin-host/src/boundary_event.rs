@@ -83,6 +83,18 @@ impl WitBoundary for NativeEventKind {
             NativeEventKind::MinorActivated => WitEventKind::MinorActivated,
             NativeEventKind::MinorDeactivated => WitEventKind::MinorDeactivated,
             NativeEventKind::Plugin => WitEventKind::Plugin,
+            // PH7.12: the host-internal crash/quarantine signal. Not projected to
+            // guests in v1 -- the WIT `event-kind` has no `plugin-crashed`
+            // variant, so a plugin cannot declare it in a filter and this arm is
+            // unreachable in practice. Kept as a typed error (never a silent
+            // drop) to honour the boundary's non-lossy discipline; a Phase-8
+            // monitoring plugin that needs it adds the WIT variant then.
+            NativeEventKind::PluginCrashed => {
+                return Err(
+                    "event-kind `plugin-crashed` is host-internal, not deliverable to plugins"
+                        .to_string(),
+                );
+            }
         })
     }
 
@@ -187,6 +199,15 @@ impl WitBoundary for NativeEvent {
                 name: name.clone(),
                 payload: payload.clone(),
             }),
+            // PH7.12: host-internal crash/quarantine signal — never routed to a
+            // guest (no WIT variant to subscribe to), so this is unreachable in
+            // practice; a typed error keeps the boundary non-lossy.
+            NativeEvent::PluginCrashed { .. } => {
+                return Err(
+                    "event `plugin-crashed` is host-internal, not deliverable to plugins"
+                        .to_string(),
+                );
+            }
         })
     }
 

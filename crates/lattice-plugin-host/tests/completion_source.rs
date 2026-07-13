@@ -44,6 +44,7 @@ async fn connect(host: &PluginHost) -> WasmCompletionSource {
             &manifest,
             TrustTier::Bundled,
             PluginBudget::default(),
+            &std::sync::Arc::new(lattice_runtime::EventBus::new()),
         )
         .await
         .unwrap();
@@ -118,6 +119,7 @@ async fn completion_source_calls_after_the_actor_ends_are_typed_plugin_gone() {
             &manifest,
             TrustTier::Bundled,
             PluginBudget::default(),
+            &std::sync::Arc::new(lattice_runtime::EventBus::new()),
         )
         .await
         .unwrap();

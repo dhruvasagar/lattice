@@ -54,8 +54,9 @@ use crate::lattice::plugin_host::types::{
 };
 use crate::{
     Component, PluginBudget, PluginHost, PluginHostError, PluginId, PluginManifest, PluginState,
-    TrustTier, WitBoundary, arm_store, classify_trap,
+    Quarantine, TrustTier, WitBoundary, arm_store, classify_trap,
 };
+use lattice_runtime::EventBus;
 
 /// The plugin's `Store` + grammar bindings, shared by every contribution's
 /// trampoline closure. Behind an `Arc<Mutex<>>` so the `Send + Sync` grammar
@@ -65,6 +66,11 @@ use crate::{
 struct GrammarGuest {
     store: Store<PluginState>,
     bindings: GrammarPlugin,
+    /// Crash-quarantine (PH7.12) shared by every trampoline closure (they all
+    /// lock this one guest). The first `apply-*` trap trips it — one
+    /// `PluginCrashed` on the bus — and every later keystroke short-circuits to a
+    /// no-op instead of re-trapping the dead `Store` at held-key frequency.
+    quarantine: Quarantine,
 }
 
 /// Lock the guest, arm the Reflex-class grammar budget, and run one synchronous
@@ -80,7 +86,18 @@ fn run_callback<T>(
     let mut guard = guest
         .lock()
         .map_err(|_| CommandError::Plugin(format!("{func}: plugin lock poisoned")))?;
-    let GrammarGuest { store, bindings } = &mut *guard;
+    // Quarantine short-circuit (PH7.12): a prior `apply-*` trap tainted this
+    // instance's `Store`, so every later motion/operator is a clean no-op — the
+    // `PluginCrashed` event already fired at trip time. This is what stops a
+    // trapping motion from re-failing at held-key (30 Hz) frequency.
+    if guard.quarantine.is_tripped() {
+        return Err(CommandError::Plugin(format!("{func}: plugin quarantined")));
+    }
+    let GrammarGuest {
+        store,
+        bindings,
+        quarantine,
+    } = &mut *guard;
     // Reflex-class budget (audit F1): a runaway plugin motion traps well inside a
     // frame instead of stalling the keystroke.
     arm_store(store, PluginBudget::grammar())
@@ -88,10 +105,13 @@ fn run_callback<T>(
     match call(bindings, store) {
         Ok(Ok(value)) => Ok(value),
         Ok(Err(guest_err)) => Err(CommandError::Plugin(format!("{func}: {guest_err}"))),
-        Err(trap) => Err(CommandError::Plugin(format!(
-            "{func} trapped ({}): {trap}",
-            classify_trap(&trap)
-        ))),
+        Err(trap) => {
+            // The trap taints the instance irrecoverably: trip quarantine so the
+            // crash fires once and later keystrokes short-circuit above.
+            let kind = classify_trap(&trap);
+            quarantine.trip(func, kind);
+            Err(CommandError::Plugin(format!("{func} trapped ({kind}): {trap}")))
+        }
     }
 }
 
@@ -315,6 +335,7 @@ impl PluginHost {
         component: &Component,
         manifest: &PluginManifest,
         tier: TrustTier,
+        bus: &Arc<EventBus>,
     ) -> Result<GrammarContributionSet, PluginHostError> {
         let (wasi, outcome, _data_dir) = self.build_plugin_wasi(manifest, tier);
         for denied in &outcome.denied {
@@ -339,7 +360,13 @@ impl PluginHost {
         let id = self.alloc_id();
 
         // Move the store + bindings behind the shared lock every trampoline reads.
-        let guest = Arc::new(Mutex::new(GrammarGuest { store, bindings }));
+        // The `Quarantine` rides inside so one `apply-*` trap quarantines every
+        // contribution from this plugin (they share the one guest).
+        let guest = Arc::new(Mutex::new(GrammarGuest {
+            store,
+            bindings,
+            quarantine: Quarantine::new(id, Arc::clone(bus)),
+        }));
 
         let mut set = GrammarContributionSet {
             plugin_id: id,

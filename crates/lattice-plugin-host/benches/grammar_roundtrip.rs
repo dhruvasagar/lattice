@@ -35,7 +35,7 @@ fn grammar_round_trip(c: &mut Criterion) {
     let component = host.compile(&std::fs::read(path).unwrap()).unwrap();
     let manifest = PluginManifest::new("grammar-fixture", Vec::new(), CapabilitySet::empty());
     let set = host
-        .instantiate_grammar_plugin(&component, &manifest, TrustTier::Bundled)
+        .instantiate_grammar_plugin(&component, &manifest, TrustTier::Bundled, &std::sync::Arc::new(lattice_runtime::EventBus::new()))
         .unwrap();
     // Leak the host so its engine + epoch ticker outlive the dispatched closures.
     Box::leak(Box::new(host));

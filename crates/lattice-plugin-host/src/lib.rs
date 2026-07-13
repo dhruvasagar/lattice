@@ -242,6 +242,20 @@ pub enum TrapKind {
     Other,
 }
 
+impl TrapKind {
+    /// A short, stable machine label (`"fuel"` / `"epoch"` / `"trap"`) for the
+    /// [`lattice_protocol::Event::PluginCrashed`] payload and structured logs. Distinct from the
+    /// [`Display`](std::fmt::Display) impl's human sentence: subscribers match on
+    /// this without parsing prose, and it never changes with copy edits.
+    pub fn label(self) -> &'static str {
+        match self {
+            TrapKind::Fuel => "fuel",
+            TrapKind::Epoch => "epoch",
+            TrapKind::Other => "trap",
+        }
+    }
+}
+
 impl std::fmt::Display for TrapKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let s = match self {
@@ -317,6 +331,20 @@ pub enum PluginHostError {
         func: &'static str,
     },
 
+    /// The plugin instance is quarantined (PH7.12): a prior lifecycle / callback
+    /// call trapped, tripping crash-quarantine, so this call short-circuits
+    /// *before* re-entering the dead `Store`. Distinct from [`Trap`](Self::Trap)
+    /// (the plugin ran and its call failed) and [`PluginGone`](Self::PluginGone)
+    /// (the actor's channel is closed): the actor is still alive, but the instance
+    /// is dead-until-reinstantiation. The `PluginCrashed` event already fired on
+    /// the first trap; this variant is the quiet no-op every subsequent call
+    /// returns until a reload (PH7.12b) mints a fresh instance.
+    #[error("plugin is quarantined; `{func}` short-circuited after an earlier crash")]
+    Quarantined {
+        /// The export the caller was trying to reach.
+        func: &'static str,
+    },
+
     /// A value crossing the picker boundary could not be converted between its
     /// WIT mirror and the native type — a malformed record the guest returned
     /// (e.g. a non-UTF-8 path, §4.4), or a native value with no WIT
@@ -347,6 +375,96 @@ pub(crate) fn classify_trap(err: &wasmtime::Error) -> TrapKind {
         Some(wasmtime::Trap::OutOfFuel) => TrapKind::Fuel,
         Some(wasmtime::Trap::Interrupt) => TrapKind::Epoch,
         _ => TrapKind::Other,
+    }
+}
+
+/// Per-instance crash-quarantine, shared by every repeated-call plugin surface
+/// (the four actors — event / picker / decoration / completion — and the
+/// grammar apply path). A component trap taints its instance irrecoverably:
+/// wasmtime offers no rollback, so a `Store` that trapped once will keep
+/// failing. The first trap trips quarantine here — [`lattice_protocol::Event::PluginCrashed`]
+/// fires exactly once on the bus, an `info!` records the death — and every
+/// later call short-circuits (via [`is_tripped`](Self::is_tripped)) *before*
+/// re-entering the dead `Store`. This turns today's "tainted instance keeps
+/// re-failing, each logged" behaviour into a clean one-shot crash signal plus a
+/// silent no-op. Reload (PH7.12b) mints a fresh instance with a fresh,
+/// untripped `Quarantine`.
+///
+/// Isolation is the guarantee: tripping touches only this instance's flag and
+/// publishes one event; the actor, bus, every other plugin, and the editor are
+/// untouched.
+pub(crate) struct Quarantine {
+    plugin: PluginId,
+    bus: Arc<EventBus>,
+    tripped: bool,
+}
+
+impl Quarantine {
+    pub(crate) fn new(plugin: PluginId, bus: Arc<EventBus>) -> Self {
+        Self {
+            plugin,
+            bus,
+            tripped: false,
+        }
+    }
+
+    /// Whether a prior trap has quarantined this instance. Callers short-circuit
+    /// when this is `true` rather than re-entering the dead `Store`.
+    pub(crate) fn is_tripped(&self) -> bool {
+        self.tripped
+    }
+
+    /// Trip quarantine on a trap. Idempotent: the first call publishes exactly
+    /// one [`lattice_protocol::Event::PluginCrashed`] and logs; a second call (a race, or a caller
+    /// that forgot to check [`is_tripped`](Self::is_tripped)) is a silent no-op —
+    /// the instance is already known dead and the event has already fired.
+    pub(crate) fn trip(&mut self, func: &'static str, kind: TrapKind) {
+        if self.tripped {
+            return;
+        }
+        self.tripped = true;
+        // info!, not warn!: a plugin dying is a one-shot, user-actionable event
+        // (the notification / plugin-manager surface acts on it), not a
+        // per-keystroke diagnostic. Later short-circuits are silent.
+        tracing::info!(
+            plugin = self.plugin.0,
+            func,
+            kind = kind.label(),
+            "plugin quarantined after trap"
+        );
+        self.bus.publish(lattice_protocol::Event::PluginCrashed {
+            plugin: self.plugin.0,
+            func: func.to_string(),
+            kind: kind.label().to_string(),
+        });
+    }
+}
+
+/// Map a raw wasmtime call result for a repeated-call actor export: on a trap,
+/// trip `quarantine` (fires `PluginCrashed` once) and return a typed [`Trap`];
+/// otherwise pass the value through. The paired short-circuit —
+/// `if quarantine.is_tripped() { return Err(Quarantined { func }) }` at the top
+/// of each export — keeps a dead instance from ever re-entering its `Store`.
+/// Shared by the picker / decoration / completion actors (the event actor's
+/// `deliver` is `()`-returning, so it trips inline).
+///
+/// [`Trap`]: PluginHostError::Trap
+pub(crate) fn trip_and_map<T>(
+    quarantine: &mut Quarantine,
+    func: &'static str,
+    result: wasmtime::Result<T>,
+) -> Result<T, PluginHostError> {
+    match result {
+        Ok(v) => Ok(v),
+        Err(source) => {
+            let kind = classify_trap(&source);
+            quarantine.trip(func, kind);
+            Err(PluginHostError::Trap {
+                func,
+                kind,
+                source: source.into(),
+            })
+        }
     }
 }
 

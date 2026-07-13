@@ -65,6 +65,10 @@ pub struct EventActor {
     budget: PluginBudget,
     rx: mpsc::UnboundedReceiver<PluginEventDelivery>,
     id: PluginId,
+    /// Crash-quarantine (PH7.12): the first `on-event` trap trips this, firing
+    /// one `PluginCrashed` and short-circuiting every later delivery before it
+    /// re-enters the dead `Store`.
+    quarantine: crate::Quarantine,
 }
 
 impl EventActor {
@@ -96,6 +100,13 @@ impl EventActor {
     /// subscribed, the publisher and every other subscriber proceed.
     async fn deliver(&mut self, delivery: PluginEventDelivery) {
         let PluginEventDelivery { handler, event } = delivery;
+        // Quarantine short-circuit (PH7.12): once this instance has trapped, its
+        // `Store` is dead — skip the delivery silently (the `PluginCrashed` event
+        // already fired at trip time; re-logging every subsequent delivery is
+        // the noise this replaces).
+        if self.quarantine.is_tripped() {
+            return;
+        }
         let wit = match event.to_wit() {
             Ok(w) => w,
             Err(error) => {
@@ -121,9 +132,10 @@ impl EventActor {
             Err(source) => {
                 // Trap (fuel/epoch/wasm) or guest panic: skip this delivery,
                 // never propagate — the host, bus, and every other subscriber
-                // are untouched (§8 isolation). A component trap taints its
-                // instance, so this plugin's later deliveries will also fail
-                // (each logged + skipped); re-instantiation is PH7.12.
+                // are untouched (§8 isolation). The trap taints the instance
+                // irrecoverably, so trip quarantine: `PluginCrashed` fires once
+                // and every later delivery short-circuits above rather than
+                // re-failing. Re-instantiation is PH7.12b.
                 let kind = classify_trap(&source);
                 tracing::warn!(
                     plugin = self.id.0,
@@ -131,6 +143,7 @@ impl EventActor {
                     ?kind,
                     "plugin event handler trapped; delivery skipped"
                 );
+                self.quarantine.trip("on-event", kind);
             }
         }
     }
@@ -242,6 +255,7 @@ impl PluginHost {
             budget,
             rx,
             id,
+            quarantine: crate::Quarantine::new(id, Arc::clone(bus)),
         };
         Ok((subscription_ids, actor))
     }

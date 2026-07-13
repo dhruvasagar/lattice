@@ -16,14 +16,17 @@
 //! near-identical request/reply bridges; generalising the loop over the bindings
 //! type is deferred until a real need (the `completion_task` rule-of-three note).
 
+use std::sync::Arc;
+
 use futures::StreamExt;
 use futures::channel::{mpsc, oneshot};
+use lattice_runtime::EventBus;
 use wasmtime::Store;
 
 use crate::decoration_host::bindings::DecorationsPlugin;
 use crate::{
     Component, PluginBudget, PluginHost, PluginHostError, PluginId, PluginManifest, PluginState,
-    TrustTier, arm_store, classify_trap,
+    TrustTier, arm_store,
 };
 
 // The decoration WIT records the bridge's public API traffics in — the
@@ -93,6 +96,9 @@ pub struct DecorationActor {
     budget: PluginBudget,
     rx: mpsc::UnboundedReceiver<DecorationCall>,
     id: PluginId,
+    /// Crash-quarantine (PH7.12): the first `gutter-decorations` trap trips this,
+    /// fires one `PluginCrashed`, and every later call returns `Quarantined`.
+    quarantine: crate::Quarantine,
 }
 
 impl DecorationActor {
@@ -116,16 +122,18 @@ impl DecorationActor {
         &mut self,
         ctx: &DecorationContext,
     ) -> CallResult<Result<Vec<GutterDecoration>, String>> {
+        if self.quarantine.is_tripped() {
+            return Err(PluginHostError::Quarantined {
+                func: "gutter-decorations",
+            });
+        }
         arm_store(&mut self.store, self.budget)?;
-        self.bindings
+        let result = self
+            .bindings
             .lattice_plugin_host_decorations()
             .call_gutter_decorations(&mut self.store, ctx)
-            .await
-            .map_err(|source| PluginHostError::Trap {
-                func: "gutter-decorations",
-                kind: classify_trap(&source),
-                source: source.into(),
-            })
+            .await;
+        crate::trip_and_map(&mut self.quarantine, "gutter-decorations", result)
     }
 }
 
@@ -142,6 +150,7 @@ impl PluginHost {
         manifest: &PluginManifest,
         tier: TrustTier,
         budget: PluginBudget,
+        bus: &Arc<EventBus>,
     ) -> Result<(DecorationClient, DecorationActor), PluginHostError> {
         let (wasi, outcome, _data_dir) = self.build_plugin_wasi(manifest, tier);
         for denied in &outcome.denied {
@@ -164,6 +173,7 @@ impl PluginHost {
             budget,
             rx,
             id,
+            quarantine: crate::Quarantine::new(id, Arc::clone(bus)),
         };
         Ok((client, actor))
     }

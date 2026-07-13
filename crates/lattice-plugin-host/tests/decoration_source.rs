@@ -40,6 +40,7 @@ async fn source(host: &PluginHost) -> WasmDecorationSource {
             &manifest,
             TrustTier::Bundled,
             PluginBudget::decoration(),
+            &std::sync::Arc::new(lattice_runtime::EventBus::new()),
         )
         .await
         .expect("spawn decoration source");

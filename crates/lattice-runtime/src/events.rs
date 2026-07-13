@@ -715,7 +715,9 @@ fn event_path(event: &Event) -> Option<&Path> {
         | Event::MinorDeactivated { .. }
         // Plugin events carry an opaque payload, not a path; a plugin that
         // wants path-based routing filters inside its own handler (PH7.8b).
-        | Event::Plugin { .. } => None,
+        | Event::Plugin { .. }
+        // A crash event carries the plugin id, not a path (PH7.12).
+        | Event::PluginCrashed { .. } => None,
     }
 }
 
@@ -746,7 +748,9 @@ fn event_major_mode(event: &Event) -> Option<&str> {
         | Event::MinorDeactivated { .. }
         // A plugin event is not tied to a buffer's major mode; a plugin that
         // wants major-mode routing filters inside its own handler (PH7.8b).
-        | Event::Plugin { .. } => None,
+        | Event::Plugin { .. }
+        // A crash event is not tied to a buffer's major mode (PH7.12).
+        | Event::PluginCrashed { .. } => None,
     }
 }
 

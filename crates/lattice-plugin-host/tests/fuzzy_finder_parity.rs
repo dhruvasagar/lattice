@@ -114,6 +114,7 @@ async fn plugin_files(root: &str, grant_root: PathBuf) -> CandidateBatch {
             &manifest,
             TrustTier::Bundled,
             PluginBudget::default(),
+            &std::sync::Arc::new(lattice_runtime::EventBus::new()),
         )
         .await
         .unwrap();
@@ -179,6 +180,7 @@ async fn wasm_fuzzy_finder_accept_matches_native() {
             &manifest,
             TrustTier::Bundled,
             PluginBudget::default(),
+            &std::sync::Arc::new(lattice_runtime::EventBus::new()),
         )
         .await
         .unwrap();

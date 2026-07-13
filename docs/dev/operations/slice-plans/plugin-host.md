@@ -1353,10 +1353,25 @@ nothing) and keeps every index consistent.
 - **Tests (3, one per registry): register → unregister → truly gone + siblings untouched +
   idempotent second unload.** Green: grammar 220, picker +1, mode 134.
 
-#### PH7.12b.1b — Config option removal 📝
-`ConfigRegistry` stores options in an append-only `by_id: Vec` whose indices are stable
-`OptionHandle`s, so real removal needs a tombstone (or a by-name delist that frees the leaked
-`&'static str` name/doc). Invasive — its own slice. **Depends:** PH7.12b.1a.
+#### PH7.12b.1b — Config option removal ✅ (2026-07-14)
+`ConfigRegistry` stores options in a `by_id: Vec` whose indices ARE the stable
+`OptionHandle`s, so removal can't shift the vec. Fixed with a tombstone + free-list (chosen on
+heuristic #1 over a bare append-only leave-in-place: it bounds `by_id` across reloads, the F6
+goal, without invalidating live handles):
+- `by_id: Vec<Option<Arc<dyn ErasedOption>>>` — a slot is `None` once unregistered; `free_list:
+  Vec<usize>` recycles freed indices so a plugin reload re-registering the same options reuses
+  slots instead of growing the vec. `len`/`iter`/`Debug`/lookup/`get_typed`/`bootstrap`/
+  `erased_at` all skip tombstones.
+- `ConfigRegistry::unregister(name: &str) -> bool` — drops every name+alias mapping pointing at
+  the slot, any `TypeId` mapping, tombstones the slot (frees the `Arc`), pushes the index to the
+  free-list. Idempotent. Driven by the host bundle with `PluginState::config_contributions`.
+  Live handles left dangling by contract: the slot reads `None` (never another option's value);
+  an index is only reused by a *new* registration, never silently re-pointed under an old handle.
+- **Test: register (with alias) → unregister by alias → name+alias gone + sibling untouched +
+  idempotent + reload reuses the freed slot.** Green: config 160; `lattice-host` +
+  `lattice-plugin-host` rebuild clean (public API unchanged).
+- **Leaked `&'static str` option names** (PH7.10a `Box::leak`) are still freed separately by the
+  per-plugin intern pool — PH7.12b.2.
 
 #### PH7.12b.1c — Keymap `MinorMode`-layer removal ✅ (2026-07-14)
 `bind_mode_keymap` binds a plugin mode's chords into `KeymapLayer::MinorMode(mode_id)` via

@@ -55,10 +55,19 @@ pub struct ConfigRegistry {
 
 #[derive(Default)]
 struct Inner {
-    /// Indexed by [`OptionHandle::idx`]. Vec is append-only;
-    /// removing an option (which we don't currently support) would
-    /// require a tombstone scheme to keep handle indices valid.
-    by_id: Vec<Arc<dyn ErasedOption>>,
+    /// Indexed by [`OptionHandle::idx`]. A slot is `Some` while the
+    /// option is live and `None` once unregistered (PH7.12b): the
+    /// index IS the handle, so a slot can never shift or be reused
+    /// under a live handle without invalidating it — hence a tombstone
+    /// (set the slot to `None`) rather than `Vec::remove`. Freed
+    /// indices are recycled through [`Inner::free_list`] so a plugin
+    /// reload re-registering the same options reuses the slots instead
+    /// of growing this vec unbounded across reloads (audit F6).
+    by_id: Vec<std::option::Option<Arc<dyn ErasedOption>>>,
+    /// Tombstoned `by_id` indices, available for reuse by the next
+    /// registration (PH7.12b). Keeps `by_id` bounded across plugin
+    /// reload cycles; empty in the common register-only lifetime.
+    free_list: Vec<usize>,
     /// Name + alias → index. Multiple entries (canonical name +
     /// each alias) all point at the same `by_id` index.
     by_name: HashMap<String, usize>,
@@ -157,7 +166,8 @@ impl ConfigRegistry {
             let new = inner
                 .by_name
                 .get(name)
-                .map(|i| inner.by_id[*i].get_formatted());
+                .and_then(|i| inner.by_id[*i].as_ref())
+                .map(|o| o.get_formatted());
             (publisher, new)
         };
         if let (Some(publisher), Some(new)) = (publisher, new) {
@@ -198,9 +208,20 @@ impl ConfigRegistry {
                 return Err(ConfigError::DuplicateName((*a).to_string()));
             }
         }
-        let idx = inner.by_id.len();
         let arc: Arc<dyn ErasedOption> = Arc::new(option);
-        inner.by_id.push(arc);
+        // Reuse a tombstoned slot if one is free (a prior unregister) so
+        // `by_id` stays bounded across plugin reloads (PH7.12b); otherwise
+        // append. Either way the index is stable for the returned handle.
+        let idx = match inner.free_list.pop() {
+            Some(reused) => {
+                inner.by_id[reused] = Some(arc);
+                reused
+            }
+            None => {
+                inner.by_id.push(Some(arc));
+                inner.by_id.len() - 1
+            }
+        };
         inner.by_name.insert(name.to_string(), idx);
         for a in aliases {
             inner.by_name.insert((*a).to_string(), idx);
@@ -253,7 +274,7 @@ impl ConfigRegistry {
     {
         let inner = self.inner.lock().expect("ConfigRegistry poisoned");
         let idx = *inner.by_typeid.get(&TypeId::of::<D>())?;
-        let arc = Arc::clone(&inner.by_id[idx]);
+        let arc = Arc::clone(inner.by_id[idx].as_ref()?);
         drop(inner);
         let opt = arc.as_any().downcast_ref::<Option<D::Value>>()?;
         Some(opt.get())
@@ -308,7 +329,10 @@ impl ConfigRegistry {
     pub fn bootstrap_resolved_with_current_values(&self, out: &mut crate::ResolvedOptions) {
         let inner = self.inner.lock().expect("ConfigRegistry poisoned");
         for (type_id, &idx) in inner.by_typeid.iter() {
-            let arc = std::sync::Arc::clone(&inner.by_id[idx]);
+            let Some(arc) = inner.by_id[idx].as_ref() else {
+                continue;
+            };
+            let arc = std::sync::Arc::clone(arc);
             let value_erased = arc.current_value_erased();
             out.insert_erased_with_origin(
                 *type_id,
@@ -420,7 +444,7 @@ impl ConfigRegistry {
         inner
             .by_name
             .get(name)
-            .map(|i| Arc::clone(&inner.by_id[*i]))
+            .and_then(|i| inner.by_id[*i].as_ref().map(Arc::clone))
     }
 
     /// Read a `bool`-typed option's current value by name.
@@ -460,17 +484,44 @@ impl ConfigRegistry {
     /// view to enumerate.
     pub fn iter(&self) -> Vec<Arc<dyn ErasedOption>> {
         let inner = self.inner.lock().expect("ConfigRegistry poisoned");
-        inner.by_id.iter().map(Arc::clone).collect()
+        // `flatten` skips tombstoned (unregistered) slots (PH7.12b).
+        inner.by_id.iter().flatten().map(Arc::clone).collect()
     }
 
-    /// Number of registered options.
+    /// Number of registered options. Counts live options only — a
+    /// tombstoned (unregistered) slot does not count (PH7.12b).
     pub fn len(&self) -> usize {
         let inner = self.inner.lock().expect("ConfigRegistry poisoned");
-        inner.by_id.len()
+        inner.by_id.iter().filter(|o| o.is_some()).count()
     }
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// Remove an option by name (or any alias), the teardown seam for a plugin
+    /// reload / unload (PH7.12b). Drops every name+alias mapping pointing at the
+    /// option's slot plus any `TypeId` mapping, tombstones the `by_id` slot
+    /// (freeing the `Arc`), and recycles the index through the free-list so a
+    /// re-register reuses it. Idempotent: `false` if nothing is registered under
+    /// `name`. Driven by the plugin host's teardown bundle with the option names
+    /// a plugin registered (`PluginState::config_contributions`); built-in
+    /// options have no unload path in practice. Any live [`OptionHandle`] for
+    /// the removed option is left dangling by contract — its slot is `None`, so
+    /// a by-handle read returns nothing rather than another option's value; the
+    /// index is only ever reused by a *new* registration, never silently
+    /// re-pointed under an existing handle.
+    pub fn unregister(&self, name: &str) -> bool {
+        let mut inner = self.inner.lock().expect("ConfigRegistry poisoned");
+        let idx = match inner.by_name.get(name) {
+            Some(&i) => i,
+            None => return false,
+        };
+        inner.by_name.retain(|_, v| *v != idx);
+        inner.by_typeid.retain(|_, v| *v != idx);
+        inner.by_id[idx] = None;
+        inner.free_list.push(idx);
+        true
     }
 
     /// Drive the cmdline `:set` syntax against the registry. Parses
@@ -644,7 +695,7 @@ impl ConfigRegistry {
 
     fn erased_at(&self, idx: usize) -> std::option::Option<Arc<dyn ErasedOption>> {
         let inner = self.inner.lock().expect("ConfigRegistry poisoned");
-        inner.by_id.get(idx).map(Arc::clone)
+        inner.by_id.get(idx).and_then(|slot| slot.as_ref()).map(Arc::clone)
     }
 }
 
@@ -652,7 +703,7 @@ impl std::fmt::Debug for ConfigRegistry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let inner = self.inner.lock().expect("ConfigRegistry poisoned");
         f.debug_struct("ConfigRegistry")
-            .field("count", &inner.by_id.len())
+            .field("count", &inner.by_id.iter().filter(|o| o.is_some()).count())
             .finish_non_exhaustive()
     }
 }
@@ -701,6 +752,40 @@ mod tests {
         let echo = r.parse_and_set_command("tabstop=4").unwrap();
         assert_eq!(echo, "tabstop=4");
         assert_eq!(*r.get(h), 4);
+    }
+
+    #[test]
+    fn unregister_removes_name_and_aliases_and_recycles_the_slot() {
+        let r = ConfigRegistry::new();
+        // Two options, one with an alias; capture the aliased option's slot idx.
+        let keep = r.register(Option::<i64>::new("keep", 1, "sibling"));
+        let doomed = r.register(
+            Option::<i64>::builder("plugin.opt", 8, "a plugin option")
+                .aliases(&["po"])
+                .build(),
+        );
+        let doomed_idx = doomed.idx;
+        assert_eq!(r.len(), 2);
+        assert!(r.lookup("plugin.opt").is_some());
+        assert!(r.lookup("po").is_some());
+
+        // Unregister by ALIAS: canonical name + alias both go, the slot frees,
+        // len drops, the sibling is untouched.
+        assert!(r.unregister("po"));
+        assert_eq!(r.len(), 1);
+        assert!(r.lookup("plugin.opt").is_none());
+        assert!(r.lookup("po").is_none());
+        assert_eq!(*r.get(keep), 1);
+
+        // Idempotent: a second unload (canonical or alias) removes nothing.
+        assert!(!r.unregister("plugin.opt"));
+        assert!(!r.unregister("po"));
+
+        // Reload: re-registering reuses the freed slot rather than growing by_id.
+        let reloaded = r.register(Option::<i64>::new("plugin.opt", 9, "reloaded"));
+        assert_eq!(reloaded.idx, doomed_idx, "freed slot is recycled");
+        assert_eq!(r.len(), 2);
+        assert_eq!(*r.get(reloaded), 9);
     }
 
     #[test]

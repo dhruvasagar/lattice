@@ -19,6 +19,11 @@ crate-type = ["cdylib"]
 
 [dependencies]
 wit-bindgen = "0.58"
+# PH7.8b.3: the guest-side SDK — `#[derive(PluginEvent)]` for a type-safe event
+# over the opaque wire. Path-deps a parent-workspace crate (the SDK is
+# WIT-agnostic pure serde, so it compiles fine to wasm32-wasip2).
+lattice-plugin-sdk = { path = "../../../../lattice-plugin-sdk" }
+serde = { version = "1", features = ["derive"] }
 
 [profile.release]
 opt-level = "s"

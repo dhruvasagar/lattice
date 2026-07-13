@@ -1,0 +1,14 @@
+[package]
+name = "lattice-plugin-sdk"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+lattice-plugin-sdk-derive = { path = "../lattice-plugin-sdk-derive" }
+serde = { workspace = true }
+rmp-serde = { workspace = true }
+
+[lints]
+workspace = true

@@ -1044,7 +1044,7 @@ the **plugin API surface** + **human-readable plugin provenance**. Two facets un
 	any hot path). Green: 4 catalog tests. **Depends:** PH7.9. **Next:** PI.2 (the
 	`:describe-plugin-api` ex-commands via HelpBuffer + `render_introspection`).
 
-### PH7.8b — Plugin-DEFINED events (register + emit + subscribe) 🚧 (Halves 1+2 ✅)
+### PH7.8b — Plugin-DEFINED events (register + emit + subscribe) ✅ (all three halves)
 Extends the PH7.8 event seam (which was **subscribe-only** — plugins subscribed to *built-in*
 events) to let plugins **declare and use their OWN custom events** (Dhruva, 2026-07-13: "important
 that plugins should be able to register custom events for custom use cases of their own"). This
@@ -1129,7 +1129,34 @@ Original scope (for reference):
    without the wasm target.
 - **Depends:** PH7.8b.1, PH7.8 (the event actor + `boundary_event`).
 
-#### PH7.8b.3 — `lattice-plugin-sdk` guest crate: `PluginEvent` trait + derive 📝 (NEXT)
+#### PH7.8b.3 — `lattice-plugin-sdk` guest crate: `PluginEvent` trait + derive ✅ (2026-07-13)
+Landed **approach A** (locked with Dhruva): a **WIT-agnostic** SDK core, not a world-coupled
+wrapper. The core is pure serde + a derive — it touches NO plugin-host bindings, so it composes
+with every future plugin world (events / grammar / completion / …) unchanged and is the seed the
+other SDK seams reuse. Two crates (the serde / serde_derive split):
+- `crates/lattice-plugin-sdk-derive` — `#[derive(PluginEvent)]` proc-macro. `DOC` from the struct's
+  `///` doc-comment (the PI.4 doc-from-doc-comment principle); `NAME` from `#[event(name = "...")]`
+  or the kebab-cased type name; `encode`/`decode` via the SDK's private rmp-serde helpers (so the
+  consumer deps only the SDK). A malformed `#[event(...)]` key is a compile error, never a silent
+  fallback.
+- `crates/lattice-plugin-sdk` — the `PluginEvent` trait (`NAME`/`DOC`/`encode`/`decode`), a typed
+  `DecodeError` (decode is fallible → never a panic), the subscriber `try_decode::<E>(name, payload)`
+  name-gate helper, and re-exports the derive. `extern crate self as lattice_plugin_sdk;` so the
+  derive's paths resolve in-crate.
+- **Emit/register stay plugin-side one-liners** (approach A — no speculative host-call binding):
+  `host_services::register_event(E::NAME, E::DOC)` / `host_services::emit_event(E::NAME, &ev.encode())`.
+  The full `ctx.emit` / auto-register-at-activate sugar (original step 4) is deferred until a real
+  multi-world plugin exists to shape the binding — building it now would be an abstraction with no
+  consumer (heuristic #1).
+- Tests: SDK unit (5) — explicit-name+multiline-doc, kebab fallback, encode/decode round-trip,
+  `try_decode` name-gate, typed decode error. The `events-guest` fixture now authors its event via
+  the derive (`SavedEcho`), and the `event_source` e2e proves the **cross-plugin contract**: the
+  host test redeclares the same `PluginEvent` type and decodes the guest's MessagePack payload
+  (guest encode → wire → host consumer decode). Green: SDK 5, `event_source` 3.
+- **Depends:** PH7.8b.2. Cross-plugin contract = plugin A publishes the type in a shared crate,
+  plugin B deps it — compile-checked, versioned.
+
+Original scope (for reference):
 The ergonomic, contract-capable author layer over the opaque wire (guest-side, compiled into
 plugins — NOT the host).
 1. New crate `crates/lattice-plugin-sdk` (guest-side; deps the generated WIT bindings + a

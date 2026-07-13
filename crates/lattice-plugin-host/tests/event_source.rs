@@ -22,6 +22,7 @@ use std::sync::Arc;
 
 use lattice_mode::CapabilitySet;
 use lattice_plugin_host::{PluginBudget, PluginHost, PluginManifest, TrustTier};
+use lattice_plugin_sdk::PluginEvent;
 use lattice_protocol::ids::DocumentId;
 use lattice_protocol::{Event, EventKind};
 use lattice_runtime::{EventBus, EventFilter, SubscriptionTarget};
@@ -173,15 +174,33 @@ async fn plugin_declares_and_emits_a_custom_event_end_to_end() {
     }
     actor.run().await;
 
-    // The guest's emit crossed to the bus and reached the native subscriber with
-    // its opaque payload byte-for-byte — the host never parsed it.
+    // The guest's emit crossed to the bus and reached the native subscriber. The
+    // guest authored the payload with the PH7.8b.3 SDK derive; this test shares
+    // the SAME `PluginEvent` type (the cross-plugin contract) and decodes it —
+    // proving the typed round-trip guest→wire→host consumer.
     match plugin_rx.try_recv() {
         Ok(Event::Plugin { name, payload }) => {
-            assert_eq!(name, "events-fixture.saved-echo");
-            assert_eq!(payload, vec![0xAA, 0xBB, 0xCC], "opaque bytes cross verbatim");
+            assert_eq!(name, SavedEcho::NAME, "the SDK-derived NAME crossed");
+            let decoded = lattice_plugin_sdk::try_decode::<SavedEcho>(&name, &payload)
+                .expect("name matches the contract type")
+                .expect("payload is valid MessagePack for the shared type");
+            assert_eq!(
+                decoded.path, "src/lib.rs",
+                "the typed field survives guest encode → wire → host decode"
+            );
         }
         other => panic!("expected the emitted Plugin event, got {other:?}"),
     }
+}
+
+/// The cross-plugin event CONTRACT (PH7.8b.3): the exact `PluginEvent` type the
+/// `events-guest` fixture emits, redeclared here so this host-side test decodes
+/// the guest's payload the way a *coordinating plugin* would — sharing the type
+/// via a common crate. `NAME` must match the fixture's `#[event(name = ...)]`.
+#[derive(serde::Serialize, serde::Deserialize, lattice_plugin_sdk::PluginEvent)]
+#[event(name = "events-fixture.saved-echo")]
+struct SavedEcho {
+    path: String,
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

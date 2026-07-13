@@ -93,6 +93,11 @@ criterion = { workspace = true }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time"] }
 # Hermetic per-test dir for the module-cache hit/miss test.
 tempfile = { workspace = true }
+# PH7.8b.3: the e2e test acts as a cross-plugin CONSUMER — it shares the guest's
+# `PluginEvent` type (via the SDK derive) and decodes the emitted payload,
+# proving the contract round-trips guest→host.
+lattice-plugin-sdk = { path = "../lattice-plugin-sdk" }
+serde = { workspace = true }
 
 [[bench]]
 name = "instantiate"

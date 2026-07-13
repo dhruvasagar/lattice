@@ -24,10 +24,21 @@ wit_bindgen::generate!({
 use lattice::plugin_host::events;
 use lattice::plugin_host::host_services;
 use lattice::plugin_host::types::{EventFilter, EventKind};
+use lattice_plugin_sdk::PluginEvent;
+use serde::{Deserialize, Serialize};
 
 /// The plugin-defined event this fixture declares (`register-event`) and emits
-/// (`emit-event`) when it observes a save — the PH7.8b.2 emit/subscribe wire.
-const ECHO_EVENT: &str = "events-fixture.saved-echo";
+/// (`emit-event`) when it observes a save. Authored via the PH7.8b.3 SDK derive:
+/// `NAME` / `DOC` come from the derive (the `///` doc-comment IS the doc), and
+/// `encode()` gives a type-safe MessagePack payload over the opaque wire. A
+/// shared-crate copy of this exact type is the cross-plugin contract the host-side
+/// consumer decodes in the e2e test.
+#[derive(Serialize, Deserialize, PluginEvent)]
+#[event(name = "events-fixture.saved-echo")]
+struct SavedEcho {
+    /// The path that was saved (echoed back on the bus).
+    path: String,
+}
 // `Event` is world-`use`d, so wit-bindgen surfaces it at the crate root (in
 // scope here without an import — importing it from `types` would collide).
 
@@ -74,10 +85,11 @@ impl Guest for Component {
         // No-op handler: returns immediately (no fs) — the clean per-delivery
         // dispatch path the perf ratchet (PH7.8d) measures.
         events::subscribe(&kind_filter(EventKind::DocumentChanged), 4);
-        // PH7.8b.2: declare a plugin-defined event via the `register-event`
-        // host-service. It self-registers into the host's runtime event registry
-        // under this plugin's provenance; `on-event` handler 1 emits it on save.
-        host_services::register_event(ECHO_EVENT, "emitted when the plugin observes a save");
+        // PH7.8b.2/3: declare a plugin-defined event via the `register-event`
+        // host-service, using the SDK-derived `NAME` + `DOC` (the doc-comment).
+        // It self-registers into the host's runtime event registry under this
+        // plugin's provenance; `on-event` handler 1 emits it on save.
+        host_services::register_event(SavedEcho::NAME, SavedEcho::DOC);
     }
 
     /// Deliver one matching event. Handler 3 traps, handler 4 is a no-op (the
@@ -102,12 +114,18 @@ impl Guest for Component {
         {
             let _ = f.write_all(line.as_bytes());
         }
-        // PH7.8b.2: on a save, EMIT a plugin-defined event with an opaque
-        // payload (here a tiny byte marker — a real plugin would MessagePack a
-        // struct). It crosses to the bus verbatim; a native subscriber (the host
-        // test) filters by name and receives it. The host never parses the bytes.
+        // PH7.8b.2/3: on a save, EMIT a plugin-defined event. The SDK derive
+        // MessagePack-encodes a typed struct (`SavedEcho`) into the opaque
+        // payload; it crosses to the bus verbatim and a consumer sharing the type
+        // decodes it (the e2e test). The host never parses the bytes.
         if handler == 1 {
-            host_services::emit_event(ECHO_EVENT, &[0xAA, 0xBB, 0xCC]);
+            let echo = SavedEcho {
+                path: match &ev {
+                    Event::DocumentSaved(p) => p.path.clone(),
+                    _ => String::new(),
+                },
+            };
+            host_services::emit_event(SavedEcho::NAME, &echo.encode());
         }
     }
 }

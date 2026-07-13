@@ -1044,6 +1044,89 @@ the **plugin API surface** + **human-readable plugin provenance**. Two facets un
 	any hot path). Green: 4 catalog tests. **Depends:** PH7.9. **Next:** PI.2 (the
 	`:describe-plugin-api` ex-commands via HelpBuffer + `render_introspection`).
 
+### PH7.8b — Plugin-DEFINED events (register + emit + subscribe) 🚧 (Half 1 ✅)
+Extends the PH7.8 event seam (which was **subscribe-only** — plugins subscribed to *built-in*
+events) to let plugins **declare and use their OWN custom events** (Dhruva, 2026-07-13: "important
+that plugins should be able to register custom events for custom use cases of their own"). This
+surfaced from the completion/introspection verification: `EVENT_DESCRIPTORS` is a compile-time
+`linkme` slice and the bus `Event` is a **closed, WIT-mirrored enum**, so neither could be extended
+by a runtime-loaded plugin.
+
+**Design (locked with Dhruva 2026-07-13):**
+- **Wire = opaque bytes; host is a thin router.** The bus/WIT carries `name: string` +
+  `payload: list<u8>` (MessagePack the plugin owns). The host NEVER interprets a plugin payload —
+  the boundary discipline the whole plugin host rests on (paramount #1/#2). Rejected a structured
+  `Value` payload (imposes a host value-model + per-event parsing for zero host benefit).
+- **A payload TRAIT adds real author value — but as a GUEST-SIDE SDK layer OVER the opaque wire**
+  (heuristic #3: the answer is "both", different layers). `#[derive(PluginEvent)]` gives type-safe
+  `emit(MyEvent)` / `on_event::<MyEvent>()`, **auto name + doc from the struct's `///` doc-comment**
+  (the PI.4 "doc from doc comments" principle applied to events), and — the biggest win for the
+  coordinating-plugins use case — a **typed cross-plugin event contract** via a shared crate. It's
+  additive: the host wire is identical with/without it, so **zero rework** landing it later.
+- **Subscribe-by-name stays in the guest's `on-event`** (the PH7.8 rule — declarative filter
+  crosses, guest filters by name in `on-event`), so `EventFilter` needs no new dimension; all plugin
+  events share one `EventKind::Plugin`.
+- **Validation-only** (like every plugin-host slice) — the host isn't boot-wired into the `Editor`,
+  so no live plugin emits in the shipping editor; proven host-layer + via the wasm fixture.
+
+**Three landable halves:**
+
+#### PH7.8b.1 — Runtime event registry + introspection/completion ✅ (2026-07-13, `7b5a3c39`)
+The process-wide RUNTIME event-descriptor registry alongside the compile-time linkme slice, so a
+runtime plugin can declare events + they surface in introspection/completion.
+- `lattice-protocol::event_registry`: `EventInfo { name, doc, source, builtin }` (owned, source-
+  tagged) + `register_runtime_event(name, doc, source) -> bool` (false if it would shadow a built-in)
+  / `unregister_runtime_event` / `all_events()` (builtin ∪ runtime, sorted) / `event_info_by_name`.
+  A `OnceLock<RwLock<BTreeMap<String, EventInfo>>>` — additive, the linkme path unchanged.
+- Consumers moved to the unified view: `gen:events` completion (`host_generators.rs`),
+  `:describe-events` (grouped by source), `:describe-event <name>` (tags built-in vs plugin).
+- Tests: protocol round-trip + built-in-shadow rejection; host describe surfaces a runtime event.
+  Green: protocol + host suite 14.
+
+#### PH7.8b.2 — The emit/subscribe wire 📝 (NEXT)
+The dynamic event on the bus + the guest→host seams. Concrete steps:
+1. `crates/lattice-protocol/src/event.rs`: add `Event::Plugin { name: String, payload: Vec<u8> }`
+   + the matching `EventKind::Plugin` (+ its `kind()` mapping). It's the WIT-mirrored enum, so this
+   is a **compiler-forced lockstep**: `wit/types.wit` `event` variant gains a `plugin(record{name,
+   payload})` arm + `crates/lattice-plugin-host/src/boundary_event.rs` (`WitBoundary for Event`,
+   both directions) — the crate won't compile until mirrored (the exhaustiveness IS the guard).
+2. `wit/host-services.wit`: add `register-event: func(name: string, doc: string) -> bool` and
+   `emit-event: func(name: string, payload: list<u8>)`.
+3. `crates/lattice-plugin-host/src/host_services.rs`: impl `register-event` →
+   `register_runtime_event(name, doc, format!("plugin:{id}"))`; impl `emit-event` → publish
+   `Event::Plugin { name, payload }` on the bus. **The deepest bit:** `PluginState` currently holds
+   the SUBSCRIBE wiring (PH7.8) but NOT a bus-PUBLISH handle — add one (an `EventPublisher`/bus
+   `Arc`) so `emit-event` can publish. Unregister the plugin's events on teardown (PH7.12 hook).
+4. Guest delivery: `Event::Plugin` must cross to the guest's `on-event` (the PH7.8a `boundary_event`
+   already mirrors `Event`; the new arm rides it). A subscribing plugin filters by `name` inside
+   `on-event`.
+5. Tests (PH7.8 precedent): extend `events-guest` (or a new fixture) so a guest `emit-event`s a
+   custom event → the bus → a native subscriber receives it (host-layer e2e); boundary round-trip
+   for `Event::Plugin`; `register-event` records into the runtime registry (ties to 8b.1). Skips
+   without the wasm target.
+- **Depends:** PH7.8b.1, PH7.8 (the event actor + `boundary_event`).
+
+#### PH7.8b.3 — `lattice-plugin-sdk` guest crate: `PluginEvent` trait + derive 📝
+The ergonomic, contract-capable author layer over the opaque wire (guest-side, compiled into
+plugins — NOT the host).
+1. New crate `crates/lattice-plugin-sdk` (guest-side; deps the generated WIT bindings + a
+   MessagePack serde, e.g. `rmp-serde`). Seeds the plugin-SDK the grammar/completion/decoration
+   seams will all eventually want.
+2. `PluginEvent` trait: `const NAME: &str`, `const DOC: &str`, `fn encode(&self) -> Vec<u8>`,
+   `fn decode(&[u8]) -> Result<Self,_>`.
+3. `#[derive(PluginEvent)]` proc-macro: reads the struct's `#[doc]` attribute → `DOC` (the
+   doc-comment IS the event doc); derives encode/decode via serde/MessagePack; `NAME` from a
+   `#[event(name = "...")]` attr (or the type name kebab-cased).
+4. Ergonomic wrappers: `ctx.emit(ev: impl PluginEvent)` (→ `emit-event(E::NAME, ev.encode())`) and
+   `on_event::<E>(|e| ...)` (name-filter + decode). At `activate`, a helper auto-calls
+   `register-event(E::NAME, E::DOC)` so the event self-registers (8b.1) + gets its doc from the
+   doc-comment.
+5. Tests: derive round-trips (encode→decode); the doc-comment lands in `DOC`; a fixture plugin uses
+   the SDK to emit + subscribe end-to-end.
+- **Depends:** PH7.8b.2. **NB:** cross-plugin contracts = plugin A publishes the `PluginEvent` type
+  in a shared crate, plugin B deps it — a compile-checked, versioned event contract (the coordinating-
+  plugins use case).
+
 ### PH7.10 — Config/options WIT seam 📝
 Plugin declares typed options (name + type_label + default + doc); host registers via
 `register_with_typeid` into the same `ConfigRegistry`; values round-trip as strings; changes

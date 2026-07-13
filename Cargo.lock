@@ -4366,6 +4366,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "lattice-plugin-api"
+version = "0.1.0"
+dependencies = [
+ "wit-parser",
+]
+
+[[package]]
 name = "lattice-plugin-host"
 version = "0.1.0"
 dependencies = [

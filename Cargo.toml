@@ -30,6 +30,7 @@ members = [
 	"crates/lattice-diff",
 	"crates/lattice-agent",
 	"crates/lattice-plugin-host",
+	"crates/lattice-plugin-api",
 ]
 
 [workspace.package]
@@ -146,6 +147,13 @@ getrandom = "0.2"
 wasmtime = "46"
 wasmtime-wasi = "46"
 wit-bindgen = "0.58"
+# PI.1: the plugin-API introspection catalog (`lattice-plugin-api`) parses
+# `wit/` at BUILD time to derive its catalog. `wit-parser` is already in the
+# tree transitively (wasmtime 46 pulls 0.251); pinning it as a build-dep reuses
+# that exact locked version -- no new runtime dep enters any graph (it is a
+# build-dependency of a leaf crate, so `lattice-host` can dep the catalog
+# WITHOUT pulling wasmtime, keeping the no-per-frame-WASM invariant intact).
+wit-parser = "0.251"
 # `wat` assembles the hand-written no-op lifecycle component from
 # WebAssembly Text to component bytes inside `cargo test` -- no
 # `wasm32-wasip2` target or separate guest build needed for the PH7.0

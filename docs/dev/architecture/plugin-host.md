@@ -335,6 +335,35 @@ exactly the surface `lattice_lsp` and friends already reach. (Watch the document
 > plugin: the plugin contributes ids via the registry and the handler bodies live in the
 > component. This is the acid test from CLAUDE.md — a new plugin adds ZERO `Editor::` methods.
 
+### 5.13 Plugin-API introspection catalog (Facet A)
+
+The WIT package above *is* the plugin API. Rather than re-document it by hand, a
+**derived catalog** answers "what CAN a plugin do" for both audiences (in-editor users via
+`:describe-plugin-api`, and plugin authors via a JSON/markdown export). The contract:
+
+- **Single source of truth = `wit/`, parsed at build time.** A `wit-parser` build step walks the
+  package into a `PluginApiCatalog { interfaces, worlds }`; each `ApiInterface` carries
+  name + doc + `Vec<ApiFunction>` (name + doc). Deriving-not-authoring is the whole point: the
+  catalog cannot drift from the interface it documents — a new function or `///` comment surfaces
+  the moment the WIT lands. (Runtime component reflection was rejected: it needs boot-wiring and
+  only sees *loaded* plugins, which is Facet B, not the static "what's possible" surface.)
+- **Two fields the parser can't infer, host-authored:**
+  - **direction** (`GuestExport` / `GuestImport` / `Both` / `TypesOnly`) — world-derived. Caveat:
+    `use foo.{ty}` registers an import edge indistinguishable from a callable `import foo;`, so an
+    interface is `GuestImport` only when imported *and non-empty of functions*; a zero-function
+    type bag (`types`) is `TypesOnly`. Descriptive hint, not a contract.
+  - **capability** (`Fs` / `Net` / `Proc` / `None`) — which OS capability a seam requires, which
+    the WIT syntax can't express. One annotation row per interface; a test asserts the annotation
+    covers *every* parsed interface, so a new seam forces a deliberate capability decision before
+    it ships. Only `host-services` reaches the OS today (`Fs`, its `walk`).
+- **Crate placement = a wasmtime-free leaf `lattice-plugin-api`.** `wit-parser` is a *build*
+  dependency; the lib's only runtime input is `std`. So `lattice-host` deps the catalog for the
+  introspection ex-commands **without** pulling the WASM runtime into the host — the
+  no-per-frame-WASM invariant (§7) is preserved structurally, and the heavy `lattice-plugin-host`
+  stays out of the host until Phase-8 boot-wiring. The test-only `trampoline-fixture` world is
+  excluded from the catalog (it is not an API). Slice: PI.1 (see the slice plan). Facet B (human
+  `Plugin(id)→name` provenance, `:list-commands`) is PI.3+.
+
 ---
 
 ## 6. Capability & security model

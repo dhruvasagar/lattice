@@ -1,0 +1,33 @@
+[package]
+name = "lattice-plugin-api"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# PI.1 (plugin-host.md slice plan, "PI -- Plugin-API Introspection"): a
+# lightweight, wasmtime-FREE crate owning the plugin-API catalog.
+#
+# The `wit/` package IS the canonical plugin API; this crate DERIVES a
+# `PluginApiCatalog` from it at BUILD time (`build.rs` -> `wit-parser`) so the
+# catalog can never drift from the WIT. The lib carries only the catalog data
+# types + a host-authored capability annotation the WIT can't itself express.
+#
+# Placement rationale (locked with Dhruva 2026-07-13): a NEW leaf crate with a
+# `wit-parser` BUILD-dependency and ZERO runtime deps, so `lattice-host` can
+# dep it for `:describe-plugin-api` (PI.2) WITHOUT pulling the heavy
+# `wasmtime` runtime into the host -- the no-per-frame-WASM invariant
+# (plugin-host.md slice plan PH7.5) stays intact.
+
+[dependencies]
+# (intentionally none -- the catalog is generated Rust data with owned Strings;
+# no runtime dependency enters the graph a consumer inherits.)
+
+[build-dependencies]
+# Parse `wit/` into the catalog at build time. Already locked at 0.251 in the
+# tree (transitive via wasmtime 46); this reuses that exact version and adds
+# NOTHING to any runtime dep graph (build-deps are compile-host-only).
+wit-parser = { workspace = true }
+
+[lints]
+workspace = true

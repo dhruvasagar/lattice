@@ -874,6 +874,72 @@ builds the decoration snapshot off the render path. **Depends:** PH7.3. **Gate:*
   native `mode.gutter_decorations` read). Until then plugin decorations produce + cache but do not
   visibly render. This is the phase's standing boot-wiring milestone; no plugin-author work.
 
+### PI — Plugin-API Introspection (PRIORITIZED, before PH7.10) 🚧 (PI.1 ✅)
+A baked-in, discoverable introspection layer for APIs — **especially plugin APIs** (Dhruva,
+2026-07-13). Extends the existing self-documenting-help spine (design §5.11) — `:describe-*` /
+`:apropos` / `render_introspection()` already surface `SourceLayer::Plugin(id)` provenance — to
+the **plugin API surface** + **human-readable plugin provenance**. Two facets under one surface
+(both audiences: in-editor users AND plugin authors).
+- **Decisions (locked with Dhruva 2026-07-13):**
+  - **Catalog source of truth = parse the WIT at build time** (`wit-parser`, already in-tree via
+    wasmtime). The `wit/` package IS the canonical API; the catalog is *derived* from it so it
+    can't drift. Chosen over a hand-authored+drift-test catalog (more "baked in", zero drift) and
+    over runtime component reflection (needs boot-wiring; only sees loaded plugins → a Facet-B
+    enhancement, not the static catalog).
+  - **Crate placement = a NEW lightweight `lattice-plugin-api` crate** (wit-parser build-dep, NO
+    wasmtime) that owns the catalog, so `lattice-host` can dep it for `:describe-plugin-api`
+    WITHOUT pulling the wasmtime runtime into the host (keeps the no-per-frame-WASM invariant; the
+    heavy `lattice-plugin-host` stays out of the host until Phase-8 boot-wiring).
+  - **First slice = PI.1–PI.3** (catalog + discovery ex-commands + provenance resolution +
+    `:list-commands`). PI.4 (loaded-plugin enumeration) partly waits on boot-wiring.
+- **Facet A — the API-surface catalog ("what CAN a plugin do"):** a `PluginApiCatalog` derived
+  from `wit/`: each interface (`grammar`/`events`/`decorations`/`picker-source`/`completion-
+  source`/`host-services`/`config`/`modes`/`ui`) → name, doc, functions (name+doc), + world-
+  derived direction (guest-exports vs guest-imports) + a thin host-authored **capability**
+  annotation (fs/net/proc/none) the WIT can't carry. Discoverable via `:describe-plugin-api
+  [<seam>]` / `:list-plugin-apis` / `:apropos`, exportable (JSON/markdown for authors).
+- **Facet B — contribution introspection ("what HAS a plugin done"):** `Plugin(id) → manifest
+  name` resolution (provenance reads "git-gutter", not "<plugin:7>") + `:list-commands` (the one
+  missing enumeration, source-grouped) + (PI.4, partly boot-wired) `:describe-plugin`/`:list-plugins`.
+- **Carve:** **PI.1** the `lattice-plugin-api` crate — build.rs `wit-parser` → generated catalog
+  (interfaces+funcs+worlds+docs) + the host-authored capability annotation + a test that the
+  annotation covers every parsed interface. **PI.2** `:describe-plugin-api`/`:list-plugin-apis`/
+  `:apropos` extension (via the existing HelpBuffer + `render_introspection`) + machine-readable
+  export. **PI.3** `Plugin(id)→name` provenance resolution + `:list-commands` + source grouping.
+  **PI.4** `:describe-plugin`/`:list-plugins` (contribution plumbing now; loaded-plugin enum with
+  Phase-8 boot-wiring). **Depends:** PH7.9 (the WIT set is now complete enough to catalog).
+- **Four artefacts:** doc = this section + design §5.11; bench = n/a (introspection is off any hot
+  path; build-time parse); test = catalog-covers-every-interface + describe/apropos output +
+  provenance-name resolution; error = a malformed/absent WIT interface → the catalog omits it +
+  logs, never a panic; a plugin id with no manifest → falls back to `<plugin:id>`.
+
+  #### PI.1 — `lattice-plugin-api` crate + build-time catalog ✅ (2026-07-13)
+  The wasmtime-free leaf crate owning Facet A's `PluginApiCatalog`, derived from `wit/` at build
+  time so it can't drift. Design fragment: [`../../architecture/plugin-host.md`](../../architecture/plugin-host.md) §5.13.
+  - **Landed:** `crates/lattice-plugin-api/` — `build.rs` (`wit-parser` `Resolve::push_dir` over the
+    workspace-root `wit/` → generates `$OUT_DIR/catalog.rs`, two free fns building the public
+    types; `rerun-if-changed` per wit file) + `src/lib.rs` (the `PluginApiCatalog` / `ApiInterface` /
+    `ApiFunction` / `ApiWorld` / `Direction` / `Capability` types, `include!`s the generated data,
+    merges the host-authored `CAPABILITY_ANNOTATIONS`, `catalog()` `OnceLock`-cached, `interface`/
+    `world` lookups) + `tests/catalog.rs` (4). Workspace: new member + `wit-parser = "0.251"` in
+    `[workspace.dependencies]` (reuses the version wasmtime 46 already locks — **zero** new runtime
+    dep in any graph; it's a build-dep of a leaf crate, so `lattice-host` can dep the catalog
+    without pulling wasmtime — the no-per-frame-WASM invariant PH7.5 guards stays intact).
+  - **The two parser-underivable fields (host-authored):** *(1) direction* — world-derived, but
+    `use foo.{ty}` registers an import edge indistinguishable from a callable `import foo;`, so the
+    classifier only calls an imported interface `GuestImport` when it **has functions**; a
+    zero-function type bag (`types`) stays `TypesOnly` (`host-services`→GuestImport,
+    `picker-source`→GuestExport, `types`→TypesOnly are the spot-checked anchors). *(2) capability* —
+    `CAPABILITY_ANNOTATIONS` (one row per interface; only `host-services`→`Fs` today, rest `None`);
+    a test asserts it **covers every parsed interface**, so a new WIT interface fails the test gate
+    until someone makes a deliberate capability decision. The test-only `trampoline-fixture` world
+    is excluded from the catalog.
+  - **Graceful error:** an unparseable canonical `wit/` is a hard **build** error (you can't ship a
+    plugin editor with a broken API package; a silent empty catalog would hide it); an unnamed
+    (inline-world) interface is skipped with a `cargo:warning`. Bench = n/a (build-time parse, off
+    any hot path). Green: 4 catalog tests. **Depends:** PH7.9. **Next:** PI.2 (the
+    `:describe-plugin-api` ex-commands via HelpBuffer + `render_introspection`).
+
 ### PH7.10 — Config/options WIT seam 📝
 Plugin declares typed options (name + type_label + default + doc); host registers via
 `register_with_typeid` into the same `ConfigRegistry`; values round-trip as strings; changes

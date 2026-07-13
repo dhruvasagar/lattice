@@ -12,6 +12,8 @@
 
 #![allow(clippy::unwrap_used, clippy::panic)]
 
+use lattice_grammar::CommandRegistry;
+use lattice_keymap::{BindingMode, KeymapHandle, LookupResult};
 use lattice_mode::{ActivationPolicy, CapabilitySet, ModeId, ModeRegistry};
 use lattice_plugin_host::{PluginBudget, PluginHost, PluginManifest, TrustTier};
 use tempfile::TempDir;
@@ -41,6 +43,10 @@ async fn plugin_declares_minor_modes_into_the_shared_registry_end_to_end() {
     // A fresh registry (no foundation modes) — the plugin modes are the only
     // entries, so assertions are hermetic.
     let mut registry = ModeRegistry::default();
+    // Commands the mode's keymap binds to (by name) + the keymap it pushes into.
+    let mut commands = CommandRegistry::new();
+    let _ = lattice_grammar::ex_commands::populate(&mut commands);
+    let keymap = KeymapHandle::new();
 
     let ids = host
         .spawn_mode_plugin(
@@ -49,6 +55,8 @@ async fn plugin_declares_minor_modes_into_the_shared_registry_end_to_end() {
             TrustTier::Bundled,
             PluginBudget::event(),
             &mut registry,
+            &commands,
+            &keymap,
         )
         .await
         .expect("spawn mode plugin");
@@ -71,5 +79,25 @@ async fn plugin_declares_minor_modes_into_the_shared_registry_end_to_end() {
     assert_eq!(
         lens.required_capabilities(),
         CapabilitySet::LSP | CapabilitySet::DIAGNOSTICS
+    );
+
+    // PH7.11b: git-blame-mode's declared `<C-s>` → `ex:write` binding landed in
+    // its OWN MinorMode layer (the capability-gated push). It resolves only when
+    // the mode is active — the gated-layer contract.
+    let blame = ModeId::new("git-blame-mode");
+    let chord = lattice_protocol::parse_chord_sequence("<C-s>").expect("chord parses");
+    assert!(
+        matches!(
+            keymap.lookup_with_context(BindingMode::Normal, &chord, &[blame.clone()]),
+            LookupResult::Bound { .. }
+        ),
+        "the plugin mode's keymap binding resolves when the mode is active"
+    );
+    assert!(
+        matches!(
+            keymap.lookup_with_context(BindingMode::Normal, &chord, &[]),
+            LookupResult::Unbound
+        ),
+        "the gated binding does not fire when the mode is inactive"
     );
 }

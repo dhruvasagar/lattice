@@ -23,6 +23,11 @@
 //! (PH7.11b), lifecycle callbacks, decorations, typed option-overrides, and major
 //! modes are deferred (fragment / Phase 8).
 
+use lattice_grammar::source::SourceLocation;
+use lattice_grammar::{CommandInvocation, CommandRegistry};
+use lattice_keymap::{
+    BindingMode, KeymapCapability, KeymapHandle, KeymapLayer,
+};
 use lattice_mode::{
     ActivationPolicy, CapabilitySet, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind,
     ModeRegistry,
@@ -52,6 +57,15 @@ pub(crate) enum PluginModeKind {
     Minor,
 }
 
+/// One keymap binding a mode contributes (PH7.11b) — the native projection of
+/// the WIT `mode-keymap-binding`. `command` is resolved by name against the
+/// `CommandRegistry` at bind time.
+pub(crate) struct PluginKeymapBinding {
+    pub mode: BindingMode,
+    pub chord: String,
+    pub command: String,
+}
+
 /// A native intermediate for one declared mode, projected from the WIT
 /// `mode-declaration` at the Host-impl boundary so the register logic here needs
 /// no bindgen types.
@@ -60,6 +74,7 @@ pub(crate) struct PluginModeDecl {
     pub kind: PluginModeKind,
     pub policy: ActivationPolicy,
     pub caps: CapabilitySet,
+    pub keymap: Vec<PluginKeymapBinding>,
 }
 
 /// The per-plugin accumulator the `modes::Host` impl records into during
@@ -127,7 +142,7 @@ impl Mode for PluginMode {
 /// `-mode` suffix, id collision) — logged, never a panic (graceful degradation).
 pub(crate) fn register_plugin_mode(
     registry: &mut ModeRegistry,
-    decl: PluginModeDecl,
+    decl: &PluginModeDecl,
 ) -> Option<ModeId> {
     if decl.kind != PluginModeKind::Minor {
         tracing::warn!(
@@ -138,7 +153,7 @@ pub(crate) fn register_plugin_mode(
     }
     let mode = PluginMode {
         id: ModeId::new(&decl.id),
-        policy: decl.policy,
+        policy: decl.policy.clone(),
         caps: decl.caps,
     };
     match registry.register(mode) {
@@ -148,6 +163,57 @@ pub(crate) fn register_plugin_mode(
             None
         }
     }
+}
+
+/// Bind a plugin mode's declared keymap into its OWN `MinorMode(mode_id)` layer
+/// (PH7.11b), returning the number of bindings that landed. Each binding resolves
+/// its command name against `commands` and installs a capability-gated write with
+/// [`KeymapCapability::OwnedLayer`] — so the mode can write ONLY its own layer
+/// (the write-gate). An unparseable chord, an unknown command, or a capability
+/// denial skips that one binding with a `warn!` (graceful degradation), never a
+/// panic. Provenance is `SourceLocation::plugin(plugin_id)` — host-issued, so the
+/// binding traces to the plugin (§6).
+pub(crate) fn bind_mode_keymap(
+    keymap: &KeymapHandle,
+    commands: &CommandRegistry,
+    plugin_id: u32,
+    mode_id: &ModeId,
+    bindings: &[PluginKeymapBinding],
+) -> usize {
+    let capability = KeymapCapability::OwnedLayer {
+        mode_id: mode_id.clone(),
+    };
+    let layer = KeymapLayer::MinorMode(mode_id.clone());
+    let mut bound = 0;
+    for binding in bindings {
+        let Some(command_id) = commands.id_by_name(&binding.command) else {
+            tracing::warn!(
+                mode = %mode_id.as_str(),
+                command = %binding.command,
+                "mode keymap binding skipped: command not registered"
+            );
+            continue;
+        };
+        match keymap.try_bind_chord_string(
+            capability,
+            layer.clone(),
+            binding.mode,
+            &binding.chord,
+            CommandInvocation::of(command_id),
+            SourceLocation::plugin(plugin_id),
+        ) {
+            Ok(()) => bound += 1,
+            Err(error) => {
+                tracing::warn!(
+                    mode = %mode_id.as_str(),
+                    chord = %binding.chord,
+                    %error,
+                    "mode keymap binding skipped"
+                );
+            }
+        }
+    }
+    bound
 }
 
 impl PluginHost {
@@ -170,6 +236,8 @@ impl PluginHost {
         tier: TrustTier,
         budget: PluginBudget,
         registry: &mut ModeRegistry,
+        commands: &CommandRegistry,
+        keymap: &KeymapHandle,
     ) -> Result<Vec<ModeId>, PluginHostError> {
         let (wasi, outcome, _data_dir) = self.build_plugin_wasi(manifest, tier);
         for denied in &outcome.denied {
@@ -183,6 +251,7 @@ impl PluginHost {
         let bindings = bindings::ModesPlugin::instantiate_async(&mut store, component, &self.linker)
             .await
             .map_err(|e| PluginHostError::Instantiate(e.into()))?;
+        let plugin_id = self.alloc_id();
 
         arm_store(&mut store, budget)?;
         bindings
@@ -194,11 +263,18 @@ impl PluginHost {
                 source: source.into(),
             })?;
 
+        // Register each mode, then bind its keymap into its OWN MinorMode layer
+        // (PH7.11b, capability-gated). A mode the registry rejects contributes no
+        // keymap (its layer never exists).
         let recorded = store.data_mut().mode_contributions.take();
-        Ok(recorded
-            .into_iter()
-            .filter_map(|decl| register_plugin_mode(registry, decl))
-            .collect())
+        let mut ids = Vec::with_capacity(recorded.len());
+        for decl in recorded {
+            if let Some(id) = register_plugin_mode(registry, &decl) {
+                bind_mode_keymap(keymap, commands, plugin_id.0, &id, &decl.keymap);
+                ids.push(id);
+            }
+        }
+        Ok(ids)
     }
 }
 
@@ -214,13 +290,14 @@ mod tests {
             kind: PluginModeKind::Minor,
             policy: ActivationPolicy::Manual,
             caps: CapabilitySet::empty(),
+            keymap: Vec::new(),
         }
     }
 
     #[test]
     fn registers_a_minor_mode_into_the_registry() {
         let mut registry = ModeRegistry::default();
-        let id = register_plugin_mode(&mut registry, minor("git-blame-mode"))
+        let id = register_plugin_mode(&mut registry, &minor("git-blame-mode"))
             .expect("a well-formed minor mode registers");
         assert_eq!(id.as_str(), "git-blame-mode");
         assert!(registry.is_registered(ModeId::new("git-blame-mode")));
@@ -230,7 +307,7 @@ mod tests {
     fn a_bare_id_without_the_mode_suffix_is_rejected() {
         let mut registry = ModeRegistry::default();
         assert!(
-            register_plugin_mode(&mut registry, minor("git-blame")).is_none(),
+            register_plugin_mode(&mut registry, &minor("git-blame")).is_none(),
             "the registry enforces the `-mode` suffix"
         );
         assert!(!registry.is_registered(ModeId::new("git-blame")));
@@ -242,7 +319,7 @@ mod tests {
         let mut decl = minor("rust-mode");
         decl.kind = PluginModeKind::Major;
         assert!(
-            register_plugin_mode(&mut registry, decl).is_none(),
+            register_plugin_mode(&mut registry, &decl).is_none(),
             "majors are Phase 8"
         );
     }
@@ -250,9 +327,9 @@ mod tests {
     #[test]
     fn a_duplicate_id_is_rejected_keeping_the_original() {
         let mut registry = ModeRegistry::default();
-        assert!(register_plugin_mode(&mut registry, minor("dup-mode")).is_some());
+        assert!(register_plugin_mode(&mut registry, &minor("dup-mode")).is_some());
         assert!(
-            register_plugin_mode(&mut registry, minor("dup-mode")).is_none(),
+            register_plugin_mode(&mut registry, &minor("dup-mode")).is_none(),
             "a second registration under the same id is refused"
         );
     }
@@ -265,8 +342,9 @@ mod tests {
             kind: PluginModeKind::Minor,
             policy: ActivationPolicy::Universal,
             caps: CapabilitySet::LSP | CapabilitySet::DIAGNOSTICS,
+            keymap: Vec::new(),
         };
-        let id = register_plugin_mode(&mut registry, decl).unwrap();
+        let id = register_plugin_mode(&mut registry, &decl).unwrap();
         let mode = registry.get(id).expect("registered");
         assert!(matches!(
             mode.activation_policy(),
@@ -276,5 +354,58 @@ mod tests {
             mode.required_capabilities(),
             CapabilitySet::LSP | CapabilitySet::DIAGNOSTICS
         );
+    }
+
+    #[test]
+    fn keymap_binding_lands_in_the_owned_layer_and_resolves() {
+        use lattice_keymap::LookupResult;
+
+        // A command the binding targets by name.
+        let mut commands = CommandRegistry::new();
+        let _ = lattice_grammar::ex_commands::populate(&mut commands);
+        let target = "ex:write";
+        assert!(commands.id_by_name(target).is_some(), "sanity: target exists");
+
+        let keymap = KeymapHandle::new();
+        let mode_id = ModeId::new("git-blame-mode");
+        let bindings = vec![PluginKeymapBinding {
+            mode: BindingMode::Normal,
+            chord: "<C-s>".to_string(),
+            command: target.to_string(),
+        }];
+        let bound = bind_mode_keymap(&keymap, &commands, 7, &mode_id, &bindings);
+        assert_eq!(bound, 1, "the well-formed binding landed");
+
+        // Build the lookup chord the same way the binding parsed it.
+        let chord = lattice_protocol::parse_chord_sequence("<C-s>").expect("chord parses");
+
+        // The binding resolves ONLY when the mode is active (gated layer).
+        assert!(
+            matches!(
+                keymap.lookup_with_context(BindingMode::Normal, &chord, &[mode_id.clone()]),
+                LookupResult::Bound { .. }
+            ),
+            "the chord resolves in the mode's owned layer when active"
+        );
+        assert!(
+            matches!(
+                keymap.lookup_with_context(BindingMode::Normal, &chord, &[]),
+                LookupResult::Unbound
+            ),
+            "with the mode inactive the gated binding does not fire"
+        );
+    }
+
+    #[test]
+    fn keymap_binding_to_an_unknown_command_is_skipped() {
+        let commands = CommandRegistry::new();
+        let keymap = KeymapHandle::new();
+        let bindings = vec![PluginKeymapBinding {
+            mode: BindingMode::Normal,
+            chord: "gx".to_string(),
+            command: "ex:does-not-exist".to_string(),
+        }];
+        let bound = bind_mode_keymap(&keymap, &commands, 1, &ModeId::new("x-mode"), &bindings);
+        assert_eq!(bound, 0, "an unknown command binds nothing (logged + skipped)");
     }
 }

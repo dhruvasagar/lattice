@@ -1231,7 +1231,7 @@ Guest-side, WIT-agnostic (the PH7.8b.3 approach-A pattern), in the two SDK crate
   (`Enabled`/`Count`/`Label`) + reads `count` back through `parse_option`; the existing
   `config_source` e2e passes unchanged. Green: SDK 7, config_source 1.
 
-### PH7.11 — Modes declaration WIT seam 🚧 (11a ✅, 11b 📝)
+### PH7.11 — Modes declaration WIT seam ✅ (11a + 11b)
 `modes` WIT mirroring the `Mode` declaration surface; host builds a marker `Mode` impl and
 registers it into `ModeRegistry`; keymap contributions land at `KeymapLayer::MinorMode(id)` only
 (the `KeymapCapability` write-gate). Bundled modes-as-components shipping is Phase 8 — this slice
@@ -1260,12 +1260,29 @@ and major modes are deferred (Phase 8 / other seams).
   mis-suffixed via the RAW WIT, host inspects the shared registry. Green: plugin-host lib 103,
   mode_source 1, plugin-api 4.
 
-#### PH7.11b — keymap bindings (chord→command, `OwnedLayer` gate) 📝 (NEXT)
-The mode declares `list<mode-keymap-binding {binding-mode, chord, command}>`; the host resolves each
-command name against the `CommandRegistry` (the `emacs_keys_layer_bindings` pattern), builds a
-`KeymapTrie`, and pushes it under `PushLayerKind::MinorMode(id)` gated by
-`KeymapCapability::OwnedLayer { mode_id }` (a plugin mode can push ONLY its own layer — the
-write-gate). Optionally a Rust SDK `#[derive(PluginMode)]` follow-on.
+#### PH7.11b — keymap bindings (chord→command, `OwnedLayer` gate) ✅ (2026-07-13)
+- `wit/modes.wit`: added `enum binding-mode` (the plugin-facing subset: normal/insert/visual/
+  select/replace/command/search — the transient operator-pending/after-key states stay internal),
+  `record mode-keymap-binding {binding-mode, chord, command}`, and a `keymap:
+  list<mode-keymap-binding>` field on `mode-declaration`.
+- Host `bind_mode_keymap`: for each binding, resolve `command` by name against the `CommandRegistry`
+  (`id_by_name`) and install a capability-gated write via
+  `KeymapHandle::try_bind_chord_string(KeymapCapability::OwnedLayer{mode_id},
+  KeymapLayer::MinorMode(mode_id), binding_mode, chord, CommandInvocation::of(id),
+  SourceLocation::plugin(plugin_id))` — so a plugin mode writes ONLY its own layer (the write-gate;
+  `capability_allows` permits `OwnedLayer→MinorMode(same id)`). An unparseable chord / unknown
+  command / capability denial skips that one binding (logged), never a panic. `spawn_mode_plugin`
+  grew `&CommandRegistry` + `&KeymapHandle` params + allocs a `PluginId` for provenance.
+- The binding lands in the mode's GATED layer, so it resolves only when the mode is active
+  (`lookup_with_context(mode, chord, &[mode_id])` → Bound; inactive → Unbound) — the K.1.c
+  per-keystroke-filter contract, identical to a native minor mode's keymap.
+- Tests: `mode_host` unit (2 new) — a well-formed binding lands in the owned layer + resolves
+  when active / not when inactive; an unknown command binds nothing. The `modes-guest` fixture now
+  declares a `<C-s>→ex:write` binding on `git-blame-mode`; `mode_source` e2e asserts it resolves via
+  the gated layer. Green: plugin-host lib 105, mode_source 1.
+
+A Rust SDK `#[derive(PluginMode)]` (declarative bindings + doc-comment) is a possible future
+follow-on (the PH7.8b.3 / PH7.10b pattern); not needed for the wire.
 
 ### PH7.12 — Crash isolation + lifecycle hardening + four-artefact close 📝
 Trap → `PluginCrashed` event + quarantine; graceful degradation audit across every seam;

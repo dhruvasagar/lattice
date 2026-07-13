@@ -665,9 +665,11 @@ impl crate::mode_host::bindings::lattice::plugin_host::modes::Host for PluginSta
         decl: crate::mode_host::bindings::lattice::plugin_host::modes::ModeDeclaration,
     ) {
         use crate::mode_host::bindings::lattice::plugin_host::modes::{
-            ActivationPolicy as WitPolicy, ModeCapabilities as WitCaps, ModeKind as WitKind,
+            ActivationPolicy as WitPolicy, BindingMode as WitBindingMode,
+            ModeCapabilities as WitCaps, ModeKind as WitKind,
         };
-        use crate::mode_host::{PluginModeDecl, PluginModeKind};
+        use crate::mode_host::{PluginKeymapBinding, PluginModeDecl, PluginModeKind};
+        use lattice_keymap::BindingMode;
         use lattice_mode::{ActivationPolicy, CapabilitySet, ModeId};
 
         let kind = match decl.kind {
@@ -692,11 +694,33 @@ impl crate::mode_host::bindings::lattice::plugin_host::modes::Host for PluginSta
         caps.set(CapabilitySet::WRITABLE, decl.capabilities.contains(WitCaps::WRITABLE));
         caps.set(CapabilitySet::DIAGNOSTICS, decl.capabilities.contains(WitCaps::DIAGNOSTICS));
 
+        // Project the keymap bindings (PH7.11b): WIT `binding-mode` → native
+        // `BindingMode`; chord + command names cross as strings (resolved against
+        // the `CommandRegistry` at bind time in `spawn_mode_plugin`).
+        let keymap = decl
+            .keymap
+            .into_iter()
+            .map(|b| PluginKeymapBinding {
+                mode: match b.binding_mode {
+                    WitBindingMode::Normal => BindingMode::Normal,
+                    WitBindingMode::Insert => BindingMode::Insert,
+                    WitBindingMode::Visual => BindingMode::Visual,
+                    WitBindingMode::Select => BindingMode::Select,
+                    WitBindingMode::Replace => BindingMode::Replace,
+                    WitBindingMode::Command => BindingMode::Command,
+                    WitBindingMode::Search => BindingMode::Search,
+                },
+                chord: b.chord,
+                command: b.command,
+            })
+            .collect();
+
         self.mode_contributions.record(PluginModeDecl {
             id: decl.id,
             kind,
             policy,
             caps,
+            keymap,
         });
     }
 }

@@ -44,14 +44,42 @@ interface modes {
         diagnostics,
     }
 
+    /// The vim binding mode a keymap entry lives in — the plugin-facing subset of
+    /// the native `BindingMode` (the transient operator-pending / after-key states
+    /// are internal grammar states, not plugin-bindable).
+    enum binding-mode {
+        normal,
+        insert,
+        visual,
+        select,
+        replace,
+        command,
+        search,
+    }
+
+    /// One keymap binding a mode contributes (PH7.11b): bind `chord` in
+    /// `binding-mode` to an EXISTING command named `command`, resolved against the
+    /// `CommandRegistry` at registration. `command` is any registered command name
+    /// — a built-in (`ex:write`), a host action (`action:split-pane-horizontal`),
+    /// or the plugin's OWN grammar contribution (PH7.7 `register-action`). An
+    /// unparseable chord or unknown command skips that one binding (logged).
+    record mode-keymap-binding {
+        binding-mode: binding-mode,
+        chord: string,
+        command: string,
+    }
+
     /// A mode declaration. `id` must carry the conventional `-mode` suffix (the
     /// `ModeRegistry::register` gate, e.g. `git-blame-mode`); a bare or
-    /// mis-suffixed id is rejected at registration.
+    /// mis-suffixed id is rejected at registration. `keymap` bindings land at
+    /// `KeymapLayer::MinorMode(id)` gated by `KeymapCapability::OwnedLayer{id}` —
+    /// a plugin mode can write ONLY its own layer (PH7.11b write-gate).
     record mode-declaration {
         id: string,
         kind: mode-kind,
         activation-policy: activation-policy,
         capabilities: mode-capabilities,
+        keymap: list<mode-keymap-binding>,
     }
 
     /// Declare a mode. Records the declaration; the host builds a `PluginMode`

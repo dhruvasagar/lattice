@@ -78,6 +78,14 @@ use lattice_protocol::chord::{
 /// for compile-time source ids; a WASM plugin supplies runtime strings, so the
 /// adapter leaks them once at registration. Bounded by loaded-source count; no
 /// `unsafe` (keeps the workspace `unsafe_code = "deny"` gate intact).
+///
+/// Reclaiming these on unload is **deferred** (PH7.12b.2, decision C): the
+/// registry ENTRY is removed on teardown (`PickerRegistry::unregister`,
+/// PH7.12b.1a) — only the `&'static str` bytes linger, and only under *repeated*
+/// hot-reload (a v1 plugin loads once). The durable fix (`Cow<'static, str>` on
+/// the native spec types so the string frees with the entry, keeping no-unsafe)
+/// is a ~100-site sweep disproportionate to a Low–Medium leak with no consumer
+/// until Phase-8 reload wiring; it lands *with* that consumer.
 fn intern(s: String) -> &'static str {
     Box::leak(s.into_boxed_str())
 }

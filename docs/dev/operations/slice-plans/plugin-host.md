@@ -1387,9 +1387,26 @@ goal, without invalidating live handles):
 - **Test: two plugin `MinorMode` layers → `remove_layer` one → its chord gone from every layer,
   the other survives, idempotent second removal.** Green: keymap 96.
 
-#### PH7.12b.2 — Per-plugin intern pool (F6) 📝
-Replace `Box::leak` for plugin-sourced spec strings (grammar/picker/config/event names + docs)
-with a pool owned by the teardown bundle, freed on drop. **Depends:** PH7.12b.1a–c.
+#### PH7.12b.2 — Intern-leak reclamation: DEFERRED (decision C, 2026-07-14) ✅
+The plugin-sourced spec strings (`config_host` option name/doc, `boundary_picker::intern`,
+`boundary_grammar::intern`) are `Box::leak`'d to `&'static str` because the native spec types
+(`PickerSourceSpec`/`ArgSpec`/`ConfigOption`/`SurfaceForm`) hold `&'static str`. 12b.1 already
+removes the registry ENTRY on teardown; only the string bytes linger, and only under *repeated*
+hot-reload (a v1 plugin loads once — process-lifetime metadata, not a leak in practice).
+Three options were mapped (see the design decision in-session):
+- **A — `unsafe` per-plugin arena** (reclaims `&'static str` via `transmute`): **rejected** —
+  cuts against the deliberate `unsafe_code = "deny"` stance the `intern` doc calls out, and adds
+  a teardown-order safety contract the compiler can't verify.
+- **B — `Cow<'static, str>` on the native spec types** (frees with the entry, no unsafe): the
+  durable fix, but a ~100-site sweep of stable picker/grammar/config types (28 `PickerSourceSpec`
+  + 54 `ArgSpec` + 47 config + 147 `SurfaceForm` construction sites) — disproportionate to a
+  Low–Medium leak with **no consumer until Phase-8 reload wiring** exists to exercise it.
+- **C (chosen) — defer B until the reload consumer lands.** The audit's "F6 must land *with* the
+  reload seam" predates 12b.1's auto-freeing entry removal and assumed a live seam; the Phase-7
+  seam is validation-only, so the leak is never exercised now. B lands *with* the Phase-8
+  `init.rs` file-watcher / plugin-manager reload consumer, which gives the sweep a concrete
+  present win (heuristic #1: no rewrite ahead of the consumer).
+Landed as the three reframed `intern` / `build_and_register` doc comments pointing here.
 
 #### PH7.12b.3 — `PluginTeardown` bundle + reload/unload driver 📝
 Aggregate every teardown token (subscription ids, contribution plugin-id, registered ids, actor

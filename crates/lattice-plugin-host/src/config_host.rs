@@ -83,9 +83,18 @@ pub(crate) fn register_plugin_option(
 ///
 /// Runtime option metadata is process-lifetime: a plugin's `name`/`doc` arrive as
 /// owned `String`s over WIT, but `ConfigRegistry` stores `&'static str`. We
-/// `Box::leak` them — bounded (a few options per plugin, once at load). Freeing
-/// on plugin unload is a PH7.12 (lifecycle-hardening) concern; a v1 plugin loads
-/// once and its options live for the process.
+/// `Box::leak` them — bounded (a few options per plugin, once at load). A v1
+/// plugin loads once and its options live for the process, so this is not a leak
+/// in practice; it only grows under *repeated* hot-reload.
+///
+/// Reclaiming these strings on unload was evaluated for PH7.12b and **deferred**
+/// (PH7.12b.2, decision C): the entry itself IS removed on teardown
+/// (`ConfigRegistry::unregister`, PH7.12b.1b) — only the `&'static str` bytes
+/// linger. The durable fix is a `Cow<'static, str>` on the native option type so
+/// the string frees with the entry, but that is a ~100-site sweep of stable
+/// types (picker/grammar/config) disproportionate to a Low–Medium leak that has
+/// no consumer until Phase-8 reload wiring exists to exercise it. It lands *with*
+/// that consumer, not ahead of it.
 fn build_and_register<T: OptionType>(
     registry: &ConfigRegistry,
     name: &str,

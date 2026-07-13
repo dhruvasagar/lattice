@@ -44,8 +44,12 @@ use lattice_grammar::registry::{
 /// Intern a plugin-supplied owned string as `&'static str`. `SurfaceForm`'s
 /// `Delimiter { hint }` is `&'static str` (a native builtin uses a literal); a
 /// plugin supplies a runtime string, leaked once when the ex-command spec
-/// crosses. Bounded by the loaded-source count — the `boundary_picker::intern`
-/// rationale (unbounded re-registration is the hot-reload quarantine, PH7.12).
+/// crosses. Bounded by the loaded-source count. Reclaiming on unload is
+/// **deferred** (PH7.12b.2, decision C): the grammar ENTRY is removed on
+/// teardown (`CommandRegistry::unregister_plugin`, PH7.12b.1a) — only the bytes
+/// linger, and only under *repeated* hot-reload. Same `boundary_picker::intern`
+/// rationale: the `Cow<'static, str>` fix lands with the Phase-8 reload consumer,
+/// not ahead of it.
 fn intern(s: String) -> &'static str {
     Box::leak(s.into_boxed_str())
 }

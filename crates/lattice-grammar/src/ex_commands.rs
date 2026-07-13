@@ -77,6 +77,8 @@ pub struct ExBuiltins {
     /// PI.2b: `:export-plugin-api [markdown|json]` -- dump the catalog to a
     /// savable buffer.
     pub export_plugin_api: ExCommandId,
+    /// PI.3: `:list-commands` -- enumerate every command, source-grouped.
+    pub list_commands: ExCommandId,
     pub describe_events: ExCommandId,
     pub describe_event: ExCommandId,
     // CR.6 (2026-06-24): the 11 diff/hunk ex-command ids
@@ -1153,6 +1155,21 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             surface_form: SurfaceForm::Keyword,
         },
     );
+    let list_commands = registry.register_ex_command(
+        "ex:list-commands",
+        "List every registered command grouped by source (`:list-commands`): \
+         built-in, user config, plugin, ... Each row links to its \
+         `:describe-command` view.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_| Ok(Effect::ListCommands)),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
     let describe_events = registry.register_ex_command(
         "ex:describe-events",
         "List every registered event (`:describe-events`). Walks the \
@@ -2006,6 +2023,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         describe_plugin_api,
         list_plugin_apis,
         export_plugin_api,
+        list_commands,
         describe_events,
         describe_event,
         // CR.6: diff/hunk ex-commands now registered by lattice_diff::install().
@@ -2729,6 +2747,21 @@ mod tests {
         }
         // An unknown format is a parse-time error (not a silent default).
         assert!(run(&registry, &mut doc, Args::String("yaml".into())).is_err());
+    }
+
+    #[test]
+    fn list_commands_emits_effect() {
+        let (registry, ex, mut doc) = fixture();
+        let eff = execute(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0),
+            Position::ZERO,
+            CommandInvocation::of(ex.list_commands.0),
+            &CancellationToken::never(),
+        )
+        .unwrap();
+        assert!(matches!(eff, Effect::ListCommands));
     }
 
     #[test]

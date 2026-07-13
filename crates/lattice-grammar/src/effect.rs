@@ -505,6 +505,11 @@ pub enum Effect {
     ExportPluginApi {
         format: Option<String>,
     },
+    /// `:list-commands` (PI.3) -- enumerate every registered command grouped
+    /// by source layer (built-in / user config / plugin / ...). The one
+    /// introspection enumeration the help family was missing; a plugin group
+    /// resolves the plugin id to its manifest name where the host knows it.
+    ListCommands,
     /// `:hover [text]` -- open a hover popup at the cursor with
     /// `text` as the markdown body. v1 path: lets the user
     /// validate the popup positioning + dismissal; Phase 4 LSP

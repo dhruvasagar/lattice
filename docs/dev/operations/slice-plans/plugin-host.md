@@ -852,29 +852,29 @@ builds the decoration snapshot off the render path. **Depends:** PH7.3. **Gate:*
   map to merge). Confirmed with Dhruva: the deferred piece is host plumbing, never an author gap.
 - **Sub-slices (all ✅):**
   - **PH7.9a** — boundary mirrors (`boundary_decoration.rs`): `WitBoundary for GutterDecoration`
-    (compiler-exhaustive) + `GutterDiffKind`/`GutterSeverityLevel` + `project_decoration_context`
-    (host→guest one-way; the native `DecorationCtx` carries a `ServiceRegistry`, so the host
-    builds the owned ctx from buffer id/path/line-count). `types.wit` += the `gutter-decoration`
-    variant + the `ui` type-mirror (`ui-segment`/`ui-notification`/`ui-zone`, reusing `echo-level`).
-    5 tests; ~tens-of-ns marshalling (`benches/boundary.rs`).
+	(compiler-exhaustive) + `GutterDiffKind`/`GutterSeverityLevel` + `project_decoration_context`
+	(host→guest one-way; the native `DecorationCtx` carries a `ServiceRegistry`, so the host
+	builds the owned ctx from buffer id/path/line-count). `types.wit` += the `gutter-decoration`
+	variant + the `ui` type-mirror (`ui-segment`/`ui-notification`/`ui-zone`, reusing `echo-level`).
+	5 tests; ~tens-of-ns marshalling (`benches/boundary.rs`).
   - **PH7.9b** — `wit/decorations.wit` (the `decorations` producer interface + `decorations-plugin`
-    world) + the **6th `bindgen!`** (`decoration_host.rs`, shared `types`/`host-services`) + the
-    request/reply producer actor (`decoration_task.rs`: `DecorationClient`/`DecorationActor` +
-    `spawn_decoration_source`, the completion bridge shape) + `PluginBudget::decoration()`.
+	world) + the **6th `bindgen!`** (`decoration_host.rs`, shared `types`/`host-services`) + the
+	request/reply producer actor (`decoration_task.rs`: `DecorationClient`/`DecorationActor` +
+	`spawn_decoration_source`, the completion bridge shape) + `PluginBudget::decoration()`.
   - **PH7.9c** — `WasmDecorationSource` (`decoration_source.rs`, the native-typed producer facade
-    a boot-wired `Editor` polls — project → guest → `from_wit`, graceful-keep-prior-cache on err)
-    + a real `decorations-guest` wasm fixture + `tests/decoration_source.rs` (2 e2e: context
-    crosses in [last-line decoration keyed off `line_count`] + returns native decorations; empty
-    buffer → graceful guest `err`).
+	a boot-wired `Editor` polls — project → guest → `from_wit`, graceful-keep-prior-cache on err)
+	+ a real `decorations-guest` wasm fixture + `tests/decoration_source.rs` (2 e2e: context
+	crosses in [last-line decoration keyed off `line_count`] + returns native decorations; empty
+	buffer → graceful guest `err`).
   - **PH7.9d** — the §7 gate: `tests/perf_ratchet.rs::decoration_produce_stays_within_ceiling`
-    (warm produce median **~63 µs debug**, 5 ms ceiling) + the marshalling bench + `benchmarks.md`
-    PH7.9 row.
+	(warm produce median **~63 µs debug**, 5 ms ceiling) + the marshalling bench + `benchmarks.md`
+	PH7.9 row.
 - **Tracked Phase-8 follow-on (NOT PH7.9):** boot-wire the plugin host into the `Editor` + both
   renderers merge the per-buffer plugin decoration cache into `diff_map`/`sev_map` (alongside the
   native `mode.gutter_decorations` read). Until then plugin decorations produce + cache but do not
   visibly render. This is the phase's standing boot-wiring milestone; no plugin-author work.
 
-### PI — Plugin-API Introspection (PRIORITIZED, before PH7.10) 🚧 (PI.1 + PI.2 ✅)
+### PI — Plugin-API Introspection (PRIORITIZED, before PH7.10) 🚧 (PI.1–PI.3 ✅)
 A baked-in, discoverable introspection layer for APIs — **especially plugin APIs** (Dhruva,
 2026-07-13). Extends the existing self-documenting-help spine (design §5.11) — `:describe-*` /
 `:apropos` / `render_introspection()` already surface `SourceLayer::Plugin(id)` provenance — to
@@ -882,16 +882,16 @@ the **plugin API surface** + **human-readable plugin provenance**. Two facets un
 (both audiences: in-editor users AND plugin authors).
 - **Decisions (locked with Dhruva 2026-07-13):**
   - **Catalog source of truth = parse the WIT at build time** (`wit-parser`, already in-tree via
-    wasmtime). The `wit/` package IS the canonical API; the catalog is *derived* from it so it
-    can't drift. Chosen over a hand-authored+drift-test catalog (more "baked in", zero drift) and
-    over runtime component reflection (needs boot-wiring; only sees loaded plugins → a Facet-B
-    enhancement, not the static catalog).
+	wasmtime). The `wit/` package IS the canonical API; the catalog is *derived* from it so it
+	can't drift. Chosen over a hand-authored+drift-test catalog (more "baked in", zero drift) and
+	over runtime component reflection (needs boot-wiring; only sees loaded plugins → a Facet-B
+	enhancement, not the static catalog).
   - **Crate placement = a NEW lightweight `lattice-plugin-api` crate** (wit-parser build-dep, NO
-    wasmtime) that owns the catalog, so `lattice-host` can dep it for `:describe-plugin-api`
-    WITHOUT pulling the wasmtime runtime into the host (keeps the no-per-frame-WASM invariant; the
-    heavy `lattice-plugin-host` stays out of the host until Phase-8 boot-wiring).
+	wasmtime) that owns the catalog, so `lattice-host` can dep it for `:describe-plugin-api`
+	WITHOUT pulling the wasmtime runtime into the host (keeps the no-per-frame-WASM invariant; the
+	heavy `lattice-plugin-host` stays out of the host until Phase-8 boot-wiring).
   - **First slice = PI.1–PI.3** (catalog + discovery ex-commands + provenance resolution +
-    `:list-commands`). PI.4 (loaded-plugin enumeration) partly waits on boot-wiring.
+	`:list-commands`). PI.4 (loaded-plugin enumeration) partly waits on boot-wiring.
 - **Facet A — the API-surface catalog ("what CAN a plugin do"):** a `PluginApiCatalog` derived
   from `wit/`: each interface (`grammar`/`events`/`decorations`/`picker-source`/`completion-
   source`/`host-services`/`config`/`modes`/`ui`) → name, doc, functions (name+doc), + world-
@@ -913,87 +913,110 @@ the **plugin API surface** + **human-readable plugin provenance**. Two facets un
   provenance-name resolution; error = a malformed/absent WIT interface → the catalog omits it +
   logs, never a panic; a plugin id with no manifest → falls back to `<plugin:id>`.
 
-  #### PI.2b — `:export-plugin-api [markdown|json]` (savable buffer) ✅ (2026-07-13)
+#### PI.3 — `:list-commands` (source-grouped) + plugin-name provenance seam ✅ (2026-07-13)
+  Facet B's discoverable-now half: the one introspection enumeration the help family was missing,
+  plus the `Plugin(id)→manifest-name` resolution seam.
+  - **`:list-commands`** (`Effect::ListCommands`, host-applied display effect — same wiring class as
+    `:list-plugin-apis`): `Editor::build_list_commands_content` walks `registry.names()`, groups by
+    `spec.source.layer` (Built-in / User config / Project config / Modeline / Runtime / Plugin), sorts
+    `(group, name)`, renders each as a `:describe-command` link under a `## <group>` heading.
+  - **Plugin-name seam:** a `PluginNameRegistry(RwLock<HashMap<u32,String>>)` newtype registered
+    empty in the `ServiceRegistry` at boot (newtype so the `TypeId` can't collide; `RwLock` for the
+    interior mutability a post-boot populate needs behind the shared `Arc<ServiceRegistry>`).
+    `Editor::register_plugin_name(id,name)` / `plugin_display_name(id)->Option<String>`. The Plugin
+    group resolves the id to its manifest name, else falls back to `<plugin:id>`. **No populator
+    exists yet** — the Phase-8 plugin loader is it; the seam is ready and unit-tested by direct
+    injection.
+  - **Deferred (documented, not skipped):** applying the name resolver to the `render_introspection`
+    source *links* (`:describe-command` on a plugin-contributed command) — it would thread a resolver
+    through grammar's render for a surface with zero live plugin sources today; folds in when a real
+    plugin lands (heuristic #1 / §5.5 "API grows from real plugins"). `:list-commands` is where the
+    grouping value concentrates now.
+  - **Tests (+4):** grammar parse, boundary round-trip, host `:list-commands` grouping + the
+    plugin-name seam (inject → resolve → unknown-id None). Green: grammar 216, plugin-host 90, host
+    plugin-api suite 10, GPUI `--features window`.
+
+#### PI.2b — `:export-plugin-api [markdown|json]` (savable buffer) ✅ (2026-07-13)
   The author-facing machine-readable export (Facet A), as a **savable synthetic buffer** the user
   writes with `:w <path>` (the option locked with Dhruva over a direct fs-write command).
   - **Mechanism (the `OpenSyntheticBuffer` pattern, buffer-open effect):** `Effect::ExportPluginApi
-    { format: Option<String> }` (+ WIT-mirror + renderer-classifier lockstep). Unlike the display
-    effects (host-applied), this is **peer-applied** — each renderer's dispatch arm calls the shared
-    host `Editor::do_export_plugin_api` via `mutate_editor` (the `OpenSyntheticBuffer`/`OpenAiLog`
-    precedent), so it sits with `OpenSyntheticBuffer` in the effect *classifiers*, NOT in the
-    peer-no-op group (grouping it with the display effects made the handler unreachable — corrected).
+	{ format: Option<String> }` (+ WIT-mirror + renderer-classifier lockstep). Unlike the display
+	effects (host-applied), this is **peer-applied** — each renderer's dispatch arm calls the shared
+	host `Editor::do_export_plugin_api` via `mutate_editor` (the `OpenSyntheticBuffer`/`OpenAiLog`
+	precedent), so it sits with `OpenSyntheticBuffer` in the effect *classifiers*, NOT in the
+	peer-no-op group (grouping it with the display effects made the handler unreachable — corrected).
   - **The buffer is a real, savable `text-mode` Document** (`*plugin-api.md*` / `*plugin-api.json*`)
-    via the generic `ensure_named_synthetic_document` — `text-mode` contributes no read-only/NoFile
-    override (that is mode-contributed, not a `BufferFlags` field), so `:w <path>` works. Idempotent:
-    a re-export reuses the by-name buffer, so content is fully **replaced** via a new generic
-    `Editor::replace_owned_buffer` (sibling to `append_to_owned_buffer`; must span the true last line
-    — `line_count()-1`, NOT `last_addressable_line`, which backs past the trailing newline and would
-    only overwrite line 0 on a reused buffer).
+	via the generic `ensure_named_synthetic_document` — `text-mode` contributes no read-only/NoFile
+	override (that is mode-contributed, not a `BufferFlags` field), so `:w <path>` works. Idempotent:
+	a re-export reuses the by-name buffer, so content is fully **replaced** via a new generic
+	`Editor::replace_owned_buffer` (sibling to `append_to_owned_buffer`; must span the true last line
+	— `line_count()-1`, NOT `last_addressable_line`, which backs past the trailing newline and would
+	only overwrite line 0 on a reused buffer).
   - **Dumps** built host-side from the catalog: markdown (default) and hand-built JSON (a local
-    `json_escape` keeps `lattice-plugin-api` serde-free). Format is pre-validated by the grammar
-    (`markdown`/`md`/`json`) — a typo echoes a parse error, not a silent default.
+	`json_escape` keeps `lattice-plugin-api` serde-free). Format is pre-validated by the grammar
+	(`markdown`/`md`/`json`) — a typo echoes a parse error, not a silent default.
   - **Tests (+5, 13 total for PI.2):** grammar parse (format validation + emit), boundary round-trip,
-    host (json content + markdown default + re-export-replaces-not-doubles via a booted `Editor`).
-    Regression: grammar 215, plugin-host 90, GPUI `--features window` build all green.
+	host (json content + markdown default + re-export-replaces-not-doubles via a booted `Editor`).
+	Regression: grammar 215, plugin-host 90, GPUI `--features window` build all green.
 
-  #### PI.2a — `:describe-plugin-api` / `:list-plugin-apis` / `:apropos` extension ✅ (2026-07-13)
+#### PI.2a — `:describe-plugin-api` / `:list-plugin-apis` / `:apropos` extension ✅ (2026-07-13)
   The in-editor discoverable surface (Facet A), rendered through the existing help spine. Export
   (Facet A machine-readable) is carved to **PI.2b** (buffer-backed). `lattice-host` now deps
   `lattice-plugin-api` (the wasmtime-free leaf — no runtime added).
   - **Wiring (matches the existing help-command family exactly):** two `Effect` variants
-    (`DescribePluginApi { seam: Option<String> }`, `ListPluginApis`) in `lattice-grammar`, registered
-    as builtin ex-commands (`ex:describe-plugin-api` optional-string arg, `ex:list-plugin-apis`) +
-    host aliases; dispatched to new `Editor::build_{describe_plugin_api,list_plugin_apis}_content`
-    → `HelpContent` → `RendererSignal::DisplayBuffer` (renderer-agnostic — **TUI+GPUI parity
-    automatic**; only the Effect-mirror + the two renderers' effect *classifiers* needed the new
-    arms, added in-lockstep).
+  (`DescribePluginApi { seam: Option<String> }`, `ListPluginApis`) in `lattice-grammar`, registered
+  as builtin ex-commands (`ex:describe-plugin-api` optional-string arg, `ex:list-plugin-apis`) +
+  host aliases; dispatched to new `Editor::build_{describe_plugin_api,list_plugin_apis}_content`
+  → `HelpContent` → `RendererSignal::DisplayBuffer` (renderer-agnostic — **TUI+GPUI parity
+  automatic**; only the Effect-mirror + the two renderers' effect *classifiers* needed the new
+  arms, added in-lockstep).
   - **The Effect↔WIT lockstep (compiler-forced):** the whole-enum mirror (`boundary_effect.rs`)
-    is compiler-exhaustive, so both variants got `to_wit`/`from_wit` arms + a `wit/types.wit`
-    `effect` arm the same slice (the exhaustiveness *is* the guard — `lattice-plugin-host` won't
-    compile otherwise). The analog of the TUI/GPUI parity rule for the plugin boundary.
+  is compiler-exhaustive, so both variants got `to_wit`/`from_wit` arms + a `wit/types.wit`
+  `effect` arm the same slice (the exhaustiveness *is* the guard — `lattice-plugin-host` won't
+  compile otherwise). The analog of the TUI/GPUI parity rule for the plugin boundary.
   - **Describe = the `Introspectable` spine, not freeform.** A host-local `View(&ApiInterface)`
-    impls `lattice_grammar::Introspectable` (kind `plugin-api`, `extra_sections` = a *Seam:* block
-    [direction+capability prose] + a *Functions (N):* block, both anchored for scroll-to), so the
-    body is uniform with `:describe-command` AND `lattice-plugin-api` stays dependency-pure (the
-    trait lives in grammar; the wrapper in the host). `:list-plugin-apis` is a freeform table (the
-    `:list-options` style), each seam an `exec:describe-plugin-api <seam>` link. `:apropos` now
-    also scans the catalog (interface names+docs); plugin-API hits carry the `plugin-api` kind and
-    link via `exec:` (not `:describe-command`).
+  impls `lattice_grammar::Introspectable` (kind `plugin-api`, `extra_sections` = a *Seam:* block
+  [direction+capability prose] + a *Functions (N):* block, both anchored for scroll-to), so the
+  body is uniform with `:describe-command` AND `lattice-plugin-api` stays dependency-pure (the
+  trait lives in grammar; the wrapper in the host). `:list-plugin-apis` is a freeform table (the
+  `:list-options` style), each seam an `exec:describe-plugin-api <seam>` link. `:apropos` now
+  also scans the catalog (interface names+docs); plugin-API hits carry the `plugin-api` kind and
+  link via `exec:` (not `:describe-command`).
   - **Graceful:** an unknown seam echoes an error + returns `None` (no help buffer); no-arg
-    `:describe-plugin-api` delegates to the list. A `gen:plugin-apis` completion generator is a
-    deferred follow-up (the `describe-element` precedent — the catalog is host-side).
+  `:describe-plugin-api` delegates to the list. A `gen:plugin-apis` completion generator is a
+  deferred follow-up (the `describe-element` precedent — the catalog is host-side).
   - **Tests (8):** grammar parse (2), plugin-host boundary round-trip (1), host builders + apropos
-    via a booted `Editor` (5, incl. unknown-seam→None + exec-link targets asserted on
-    `metadata.links`, since `HelpContent` strips links out of buffer text). Regression: grammar
-    214, plugin-host 90, GPUI `--features window` build all green. **Next: PI.2b**
-    (`:export-plugin-api [markdown|json]` → a savable synthetic buffer).
+  via a booted `Editor` (5, incl. unknown-seam→None + exec-link targets asserted on
+  `metadata.links`, since `HelpContent` strips links out of buffer text). Regression: grammar
+  214, plugin-host 90, GPUI `--features window` build all green. **Next: PI.2b**
+  (`:export-plugin-api [markdown|json]` → a savable synthetic buffer).
 
-  #### PI.1 — `lattice-plugin-api` crate + build-time catalog ✅ (2026-07-13)
-  The wasmtime-free leaf crate owning Facet A's `PluginApiCatalog`, derived from `wit/` at build
-  time so it can't drift. Design fragment: [`../../architecture/plugin-host.md`](../../architecture/plugin-host.md) §5.13.
+#### PI.1 — `lattice-plugin-api` crate + build-time catalog ✅ (2026-07-13)
+	The wasmtime-free leaf crate owning Facet A's `PluginApiCatalog`, derived from `wit/` at build
+	time so it can't drift. Design fragment: [`../../architecture/plugin-host.md`](../../architecture/plugin-host.md) §5.13.
   - **Landed:** `crates/lattice-plugin-api/` — `build.rs` (`wit-parser` `Resolve::push_dir` over the
-    workspace-root `wit/` → generates `$OUT_DIR/catalog.rs`, two free fns building the public
-    types; `rerun-if-changed` per wit file) + `src/lib.rs` (the `PluginApiCatalog` / `ApiInterface` /
-    `ApiFunction` / `ApiWorld` / `Direction` / `Capability` types, `include!`s the generated data,
-    merges the host-authored `CAPABILITY_ANNOTATIONS`, `catalog()` `OnceLock`-cached, `interface`/
-    `world` lookups) + `tests/catalog.rs` (4). Workspace: new member + `wit-parser = "0.251"` in
-    `[workspace.dependencies]` (reuses the version wasmtime 46 already locks — **zero** new runtime
-    dep in any graph; it's a build-dep of a leaf crate, so `lattice-host` can dep the catalog
-    without pulling wasmtime — the no-per-frame-WASM invariant PH7.5 guards stays intact).
+	workspace-root `wit/` → generates `$OUT_DIR/catalog.rs`, two free fns building the public
+	types; `rerun-if-changed` per wit file) + `src/lib.rs` (the `PluginApiCatalog` / `ApiInterface` /
+	`ApiFunction` / `ApiWorld` / `Direction` / `Capability` types, `include!`s the generated data,
+	merges the host-authored `CAPABILITY_ANNOTATIONS`, `catalog()` `OnceLock`-cached, `interface`/
+	`world` lookups) + `tests/catalog.rs` (4). Workspace: new member + `wit-parser = "0.251"` in
+	`[workspace.dependencies]` (reuses the version wasmtime 46 already locks — **zero** new runtime
+	dep in any graph; it's a build-dep of a leaf crate, so `lattice-host` can dep the catalog
+	without pulling wasmtime — the no-per-frame-WASM invariant PH7.5 guards stays intact).
   - **The two parser-underivable fields (host-authored):** *(1) direction* — world-derived, but
-    `use foo.{ty}` registers an import edge indistinguishable from a callable `import foo;`, so the
-    classifier only calls an imported interface `GuestImport` when it **has functions**; a
-    zero-function type bag (`types`) stays `TypesOnly` (`host-services`→GuestImport,
-    `picker-source`→GuestExport, `types`→TypesOnly are the spot-checked anchors). *(2) capability* —
-    `CAPABILITY_ANNOTATIONS` (one row per interface; only `host-services`→`Fs` today, rest `None`);
-    a test asserts it **covers every parsed interface**, so a new WIT interface fails the test gate
-    until someone makes a deliberate capability decision. The test-only `trampoline-fixture` world
-    is excluded from the catalog.
+	`use foo.{ty}` registers an import edge indistinguishable from a callable `import foo;`, so the
+	classifier only calls an imported interface `GuestImport` when it **has functions**; a
+	zero-function type bag (`types`) stays `TypesOnly` (`host-services`→GuestImport,
+	`picker-source`→GuestExport, `types`→TypesOnly are the spot-checked anchors). *(2) capability* —
+	`CAPABILITY_ANNOTATIONS` (one row per interface; only `host-services`→`Fs` today, rest `None`);
+	a test asserts it **covers every parsed interface**, so a new WIT interface fails the test gate
+	until someone makes a deliberate capability decision. The test-only `trampoline-fixture` world
+	is excluded from the catalog.
   - **Graceful error:** an unparseable canonical `wit/` is a hard **build** error (you can't ship a
-    plugin editor with a broken API package; a silent empty catalog would hide it); an unnamed
-    (inline-world) interface is skipped with a `cargo:warning`. Bench = n/a (build-time parse, off
-    any hot path). Green: 4 catalog tests. **Depends:** PH7.9. **Next:** PI.2 (the
-    `:describe-plugin-api` ex-commands via HelpBuffer + `render_introspection`).
+	plugin editor with a broken API package; a silent empty catalog would hide it); an unnamed
+	(inline-world) interface is skipped with a `cargo:warning`. Bench = n/a (build-time parse, off
+	any hot path). Green: 4 catalog tests. **Depends:** PH7.9. **Next:** PI.2 (the
+	`:describe-plugin-api` ex-commands via HelpBuffer + `render_introspection`).
 
 ### PH7.10 — Config/options WIT seam 📝
 Plugin declares typed options (name + type_label + default + doc); host registers via

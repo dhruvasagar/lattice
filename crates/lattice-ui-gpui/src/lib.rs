@@ -1147,6 +1147,7 @@ impl GpuiApp {
             | Effect::ListOptions
             | Effect::DescribePluginApi { .. }
             | Effect::ListPluginApis
+            | Effect::ListCommands
             | Effect::DescribeOptionResolution { .. }
             | Effect::DescribeEvents
             | Effect::DescribeEvent { .. }

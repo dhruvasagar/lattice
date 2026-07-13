@@ -1415,6 +1415,10 @@ impl Editor {
         let clipboard: lattice_core::ClipboardHandle = Arc::new(lattice_core::FakeClipboard::new());
         boot.register_service(clipboard);
         boot.register_service(lsp_logger.clone());
+        // PI.3: the (initially empty) plugin-id → manifest-name map for
+        // provenance display. The Phase-8 plugin loader populates it via
+        // `Editor::register_plugin_name`; `:list-commands` + provenance reads it.
+        boot.register_service(crate::dispatch::PluginNameRegistry::default());
         // L4b (lsp-architecture.md §15): the diagnostics-query service
         // (`lsp-diagnostics-mode`'s `gl` handler + claude-code's read tools read
         // it) is registered in Phase A above, so a subsystem `install(boot)` can

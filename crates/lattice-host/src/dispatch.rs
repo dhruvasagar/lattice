@@ -3107,6 +3107,18 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
                     },
                 )));
         }
+        Effect::ListCommands => {
+            // PI.3: `:list-commands` -- every command grouped by source;
+            // infallible.
+            let content = editor.build_list_commands_content();
+            out.renderer_signals
+                .push(RendererSignal::DisplayBuffer(Box::new(
+                    DisplayBufferRequest {
+                        content,
+                        category: lattice_core::ui::display::BufferDisplayCategory::HelpList,
+                    },
+                )));
+        }
         Effect::DescribeOptionResolution { name } => {
             // 5.5.F.3: `:describe-option-resolution <name>` --
             // walks the §6.1 layer model (modal-state / buffer-
@@ -27419,6 +27431,82 @@ impl Editor {
         lattice_help::HelpContent::from_lines("list-plugin-apis", lines)
     }
 
+    /// PI.3: record a plugin's manifest name against its host-issued id, so
+    /// `SourceLayer::Plugin(id)` provenance renders as the name (e.g.
+    /// `git-gutter`) instead of `<plugin:id>`. The Phase-8 plugin loader calls
+    /// this as each plugin loads; today the map starts (and stays) empty.
+    pub fn register_plugin_name(&self, id: u32, name: impl Into<String>) {
+        if let Some(reg) = self.services.get::<PluginNameRegistry>()
+            && let Ok(mut map) = reg.0.write()
+        {
+            map.insert(id, name.into());
+        }
+    }
+
+    /// PI.3: the manifest name for a plugin id, if the host knows it. `None`
+    /// falls back to `<plugin:id>` at the display sites.
+    pub fn plugin_display_name(&self, id: u32) -> Option<String> {
+        let reg = self.services.get::<PluginNameRegistry>()?;
+        let name = reg.0.read().ok()?.get(&id).cloned();
+        name
+    }
+
+    /// PI.3: build the `:list-commands` content — every registered command
+    /// grouped by source layer (built-in / user config / plugin / ...), each a
+    /// `:describe-command` link. The one introspection enumeration the help
+    /// family was missing. Infallible.
+    pub fn build_list_commands_content(&self) -> lattice_help::HelpContent {
+        use lattice_grammar::source::SourceLayer;
+        // (group_order, group_label, command_name, kind_label, first_doc_line).
+        let mut rows: Vec<(u8, String, String, &'static str, String)> = Vec::new();
+        for name in self.registry.names() {
+            let Some(id) = self.registry.id_by_name(name) else {
+                continue;
+            };
+            let Some(spec) = self.registry.lookup(id) else {
+                continue;
+            };
+            let (order, group) = match spec.source.layer {
+                SourceLayer::Builtin => (0u8, "Built-in".to_string()),
+                SourceLayer::UserConfig => (1, "User config".to_string()),
+                SourceLayer::ProjectConfig => (2, "Project config".to_string()),
+                SourceLayer::Modeline => (3, "Modeline".to_string()),
+                SourceLayer::Runtime => (4, "Runtime".to_string()),
+                SourceLayer::Plugin(pid) => (
+                    5,
+                    format!(
+                        "Plugin: {}",
+                        self.plugin_display_name(pid)
+                            .unwrap_or_else(|| format!("<plugin:{pid}>"))
+                    ),
+                ),
+            };
+            let first = spec.doc.lines().next().unwrap_or("").to_string();
+            rows.push((order, group, spec.name.clone(), spec.kind.label(), first));
+        }
+        rows.sort_by(|a, b| (a.0, &a.1, &a.2).cmp(&(b.0, &b.1, &b.2)));
+
+        let mut lines = vec![format!("# Commands ({})", rows.len()), String::new()];
+        let mut current: Option<String> = None;
+        for (_, group, name, kind, first) in rows {
+            if current.as_deref() != Some(group.as_str()) {
+                lines.push(String::new());
+                lines.push(format!("## {group}"));
+                current = Some(group);
+            }
+            let doc = if first.is_empty() {
+                String::new()
+            } else {
+                format!("  — {first}")
+            };
+            lines.push(format!(
+                "  {}  ({kind}){doc}",
+                lattice_help::command_link(&name)
+            ));
+        }
+        lattice_help::HelpContent::from_lines("list-commands", lines)
+    }
+
     /// PI.2b: `:export-plugin-api [markdown|json]` — dump the whole catalog
     /// into a savable `text-mode` buffer (`*plugin-api.md*` / `*plugin-api.json*`)
     /// the author saves with `:w <path>`. Idempotent: re-export overwrites the
@@ -29664,6 +29752,21 @@ fn plugin_api_capability_short(c: lattice_plugin_api::Capability) -> &'static st
     }
 }
 
+/// PI.3: host-side plugin-id → manifest-name map for provenance display. A
+/// `SourceLayer::Plugin(id)` renders as the plugin's manifest name where the
+/// host knows it (e.g. `git-gutter`), else `<plugin:id>`. A newtype (not a bare
+/// `RwLock<HashMap>`) so the `ServiceRegistry` `TypeId` can't collide. Registered
+/// empty at boot; the Phase-8 plugin loader is the populator (none exists yet —
+/// the seam is ready). `RwLock` gives the interior mutability a post-boot
+/// populate needs behind the shared `Arc<ServiceRegistry>`.
+pub struct PluginNameRegistry(pub std::sync::RwLock<std::collections::HashMap<u32, String>>);
+
+impl Default for PluginNameRegistry {
+    fn default() -> Self {
+        PluginNameRegistry(std::sync::RwLock::new(std::collections::HashMap::new()))
+    }
+}
+
 /// PI.2b: stable machine tokens for the JSON export (distinct from the prose /
 /// short labels, which are for human display).
 fn plugin_api_direction_token(d: lattice_plugin_api::Direction) -> &'static str {
@@ -29826,6 +29929,7 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         | Effect::ListOptions
         | Effect::DescribePluginApi { .. }
         | Effect::ListPluginApis
+        | Effect::ListCommands
         | Effect::ExportPluginApi { .. }
         | Effect::OpenHover { .. }
         | Effect::DismissPopup
@@ -29953,6 +30057,7 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         | Effect::ListOptions
         | Effect::DescribePluginApi { .. }
         | Effect::ListPluginApis
+        | Effect::ListCommands
         | Effect::ExportPluginApi { .. }
         | Effect::OpenHover { .. }
         | Effect::DismissPopup

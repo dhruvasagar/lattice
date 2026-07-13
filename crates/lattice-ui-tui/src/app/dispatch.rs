@@ -898,6 +898,7 @@ impl App {
             | Effect::ListOptions
             | Effect::DescribePluginApi { .. }
             | Effect::ListPluginApis
+            | Effect::ListCommands
             | Effect::DescribeOptionResolution { .. }
             | Effect::DescribeEvents
             | Effect::DescribeEvent { .. }
@@ -1249,6 +1250,7 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::ListOptions
         | Effect::DescribePluginApi { .. }
         | Effect::ListPluginApis
+        | Effect::ListCommands
         | Effect::ExportPluginApi { .. }
         | Effect::OpenHover { .. }
         | Effect::DismissPopup
@@ -1374,6 +1376,7 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::ListOptions
         | Effect::DescribePluginApi { .. }
         | Effect::ListPluginApis
+        | Effect::ListCommands
         | Effect::ExportPluginApi { .. }
         | Effect::OpenHover { .. }
         | Effect::DismissPopup

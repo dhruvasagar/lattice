@@ -141,3 +141,27 @@ fn re_export_replaces_rather_than_appends() {
     let len2 = ed.active_text().as_string().len();
     assert_eq!(len1, len2, "re-export must replace, not double the content");
 }
+
+// --- PI.3: :list-commands + plugin-name provenance seam ---
+
+#[test]
+fn list_commands_groups_by_source() {
+    let ed = editor();
+    let body = text(&ed.build_list_commands_content());
+    assert!(body.contains("# Commands ("), "header missing:\n{body}");
+    // Every builtin command lands under the Built-in group.
+    assert!(body.contains("## Built-in"), "Built-in group missing");
+    // `:list-commands` enumerates itself (registered as `ex:list-commands`).
+    assert!(body.contains("list-commands"), "should enumerate commands");
+}
+
+#[test]
+fn plugin_name_seam_resolves_id_to_manifest_name() {
+    let ed = editor();
+    // Empty by default (no plugin loader yet) → falls back to <plugin:id>.
+    assert!(ed.plugin_display_name(7).is_none());
+    // The Phase-8 loader populates it via `register_plugin_name`.
+    ed.register_plugin_name(7, "git-gutter");
+    assert_eq!(ed.plugin_display_name(7).as_deref(), Some("git-gutter"));
+    assert!(ed.plugin_display_name(99).is_none(), "unknown id stays None");
+}

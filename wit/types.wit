@@ -485,6 +485,7 @@ interface types {
         describe-plugin-api(option<string>),
         list-plugin-apis,
         export-plugin-api(option<string>),
+        list-commands,
         open-hover(string),
         dismiss-popup,
         open-popup(open-popup-payload),

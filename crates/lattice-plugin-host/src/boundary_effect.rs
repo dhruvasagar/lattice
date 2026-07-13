@@ -629,6 +629,7 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
         NativeEffect::DescribePluginApi { seam } => WitEffect::DescribePluginApi(seam.clone()),
         NativeEffect::ListPluginApis => WitEffect::ListPluginApis,
         NativeEffect::ExportPluginApi { format } => WitEffect::ExportPluginApi(format.clone()),
+        NativeEffect::ListCommands => WitEffect::ListCommands,
         NativeEffect::OpenHover { markdown } => WitEffect::OpenHover(markdown.clone()),
         NativeEffect::DismissPopup => WitEffect::DismissPopup,
         NativeEffect::OpenPopup {
@@ -854,6 +855,7 @@ fn effect_from_wit(w: WitEffect) -> Result<NativeEffect, String> {
         WitEffect::DescribePluginApi(seam) => NativeEffect::DescribePluginApi { seam },
         WitEffect::ListPluginApis => NativeEffect::ListPluginApis,
         WitEffect::ExportPluginApi(format) => NativeEffect::ExportPluginApi { format },
+        WitEffect::ListCommands => NativeEffect::ListCommands,
         WitEffect::OpenHover(markdown) => NativeEffect::OpenHover { markdown },
         WitEffect::DismissPopup => NativeEffect::DismissPopup,
         WitEffect::OpenPopup(p) => NativeEffect::OpenPopup {
@@ -1003,6 +1005,10 @@ mod tests {
             NativeEffect::ExportPluginApi { format } => assert!(format.is_none()),
             other => panic!("unexpected: {other:?}"),
         }
+        assert!(matches!(
+            rt(&NativeEffect::ListCommands),
+            NativeEffect::ListCommands
+        ));
     }
 
     #[test]

@@ -1319,12 +1319,59 @@ flag + one bus publish; the actor, bus, every other plugin, LSP, and the editor 
   no second event), full-instance quarantine (a post-crash *good* delivery is skipped, not just
   the trapping handler), native co-subscriber isolation. **Green: lib + event_source (4).**
 
-#### PH7.12b — Reload / hot-swap seam 📝
+#### PH7.12b — Reload / hot-swap seam 🚧
 Teardown (drop the actor / poison the guest lock, unsubscribe events, unregister
 grammar/picker/decoration/completion/config/mode contributions) + re-instantiate a fresh,
 untripped instance — the seam the deferred `init.rs` / plugin-manager consumers reload through,
 and the recovery path out of a PH7.12a quarantine. Also frees the PH7.10a leaked option names
-and tears down PH7.11a mode registrations on unregister. **Depends:** PH7.12a.
+and tears down PH7.11a mode registrations on unregister. **Depends:** PH7.12a. Because the
+registries span six crates with very different removal shapes, sub-sliced by registry so each
+lands green:
+
+- **The teardown-token map (from the PH7.12b design exploration).** Only **grammar**
+  (`CommandRegistry`), **picker** (`PickerRegistry`), **config** (`ConfigRegistry`), **modes**
+  (`ModeRegistry` + the `MinorMode` keymap layer), and **plugin-defined events** have a
+  host-side registration path that needs a reverse. **Completion** + **decoration** are
+  *channel-drop only* — the host never registers them with plugin provenance (completion's
+  adapter goes through the generic builtin-stamped `register_generator`; decoration has no
+  registry, mode-owned in Phase 8), so dropping the client kills the actor and there is nothing
+  to unregister. Event *subscriptions* already reverse via `EventBus::unsubscribe`.
+
+#### PH7.12b.1a — Grammar + picker + mode registry removal ✅ (2026-07-14)
+The three clean, `HashMap`/id-keyed registries get a provenance/id-driven remove — the
+foundation the teardown bundle (PH7.12b.3) drives. Each is idempotent (a second unload removes
+nothing) and keeps every index consistent.
+- `CommandRegistry::unregister_plugin(plugin_id) -> usize` — removes every entry whose
+  `spec.source.layer == SourceLayer::Plugin(plugin_id)` (built-in / config / runtime untouched,
+  honouring the forgery invariant — a caller supplies only a `u32`), cleaning `by_id`,
+  `by_name`, and the word-forward tag set.
+- `PickerRegistry::unregister(id: &str) -> bool` — the registry keys on `spec.id` with no
+  plugin provenance, so removal is by id (the bundle records the id it registered).
+- `ModeRegistry::unregister(id: ModeId) -> bool` — removes the mode + any `kind_index` claim it
+  owned, so a reload re-claims the kind instead of hitting `Duplicate`. (Note: `ModeId` is
+  interned by name, so a reloaded same-name mode is the *same* id — proven in the test.)
+- **Tests (3, one per registry): register → unregister → truly gone + siblings untouched +
+  idempotent second unload.** Green: grammar 220, picker +1, mode 134.
+
+#### PH7.12b.1b — Config option removal 📝
+`ConfigRegistry` stores options in an append-only `by_id: Vec` whose indices are stable
+`OptionHandle`s, so real removal needs a tombstone (or a by-name delist that frees the leaked
+`&'static str` name/doc). Invasive — its own slice. **Depends:** PH7.12b.1a.
+
+#### PH7.12b.1c — Keymap `MinorMode`-layer removal + plugin-event unregister 📝
+`bind_mode_keymap` binds chords into `KeymapLayer::MinorMode(mode_id)` (not a pushed poppable
+layer), so add a remove-by-layer path; plus an unregister for plugin-defined events in the
+process-wide `event_registry`. **Depends:** PH7.12b.1a.
+
+#### PH7.12b.2 — Per-plugin intern pool (F6) 📝
+Replace `Box::leak` for plugin-sourced spec strings (grammar/picker/config/event names + docs)
+with a pool owned by the teardown bundle, freed on drop. **Depends:** PH7.12b.1a–c.
+
+#### PH7.12b.3 — `PluginTeardown` bundle + reload/unload driver 📝
+Aggregate every teardown token (subscription ids, contribution plugin-id, registered ids, actor
+client drops, intern pool); `Drop` unregisters all + frees the pool; `reload` = unload +
+re-instantiate a fresh, untripped instance. Capstone test: quarantined instance → reload →
+fresh instance, old contributions gone, no growth. **Depends:** PH7.12b.1a–c, PH7.12b.2.
 
 #### PH7.12c — Graceful-degradation audit + fuzz 📝
 Audit every seam for log-and-skip-not-panic under malformed input; fuzz malformed

@@ -176,6 +176,21 @@ impl PickerRegistry {
         );
     }
 
+    /// Remove a registered source by its id, the teardown seam for a plugin
+    /// reload / unload (PH7.12b). The registry keys on `spec.id` and carries no
+    /// plugin-id provenance, so removal is by id — the host's teardown bundle
+    /// records the id it registered and drives this. Idempotent: `false` if no
+    /// source was registered under `id` (a second unload, or a never-registered
+    /// id). Without it a reload would leave the previous generator's dead entry
+    /// behind (calls fail `PluginGone`) and the interned id string keeps
+    /// leaking across reloads (audit F6, freed by the per-plugin pool in
+    /// PH7.12b.2).
+    pub fn unregister(&mut self, id: &str) -> bool {
+        let before = self.sources.len();
+        self.sources.retain(|k, _| *k != id);
+        self.sources.len() != before
+    }
+
     pub fn get(&self, id: &str) -> Option<&PickerSourceSpec> {
         self.sources.get(id).map(|e| &e.spec)
     }
@@ -453,6 +468,24 @@ mod tests {
         reg.register(spec("mu"));
         let ids: Vec<&'static str> = reg.ids().collect();
         assert_eq!(ids, vec!["alpha", "mu", "zeta"]);
+    }
+
+    #[test]
+    fn unregister_removes_only_the_named_source() {
+        let mut reg = PickerRegistry::new();
+        reg.register(spec("files"));
+        reg.register(spec("recent"));
+        assert_eq!(reg.len(), 2);
+
+        // Removes the named source, leaves the other; reports it was present.
+        assert!(reg.unregister("files"));
+        assert_eq!(reg.len(), 1);
+        assert!(reg.get("files").is_none());
+        assert!(reg.get("recent").is_some());
+
+        // Idempotent: a second unload (or an unknown id) removes nothing.
+        assert!(!reg.unregister("files"));
+        assert!(!reg.unregister("never-registered"));
     }
 
     /// Slice 13a: a no-op test generator that confirms the

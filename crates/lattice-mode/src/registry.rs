@@ -154,6 +154,24 @@ impl ModeRegistry {
         self.modes.contains_key(&id)
     }
 
+    /// Remove a registered mode, the teardown seam for a plugin reload / unload
+    /// (PH7.12b). The registry is otherwise register-only, so without this a
+    /// plugin reload would hit [`RegistrationError::Duplicate`] on the second
+    /// `register-mode`, and the `modes` map would grow across reloads. The
+    /// caller drives this with the [`ModeId`]s `spawn_mode_plugin` returned, so
+    /// removal is by id (the registry keeps no plugin-id provenance — the host
+    /// owns the id↔plugin mapping in its teardown bundle). Also drops any
+    /// `kind_index` entry pointing at this mode so a re-register can re-claim
+    /// the kind. Returns `true` if the mode was present (idempotent no-op on a
+    /// second unload).
+    pub fn unregister(&mut self, id: ModeId) -> bool {
+        let removed = self.modes.remove(&id).is_some();
+        if removed {
+            self.kind_index.retain(|_, claimed| *claimed != id);
+        }
+        removed
+    }
+
     /// Look up a registered mode by id.
     pub fn get(&self, id: ModeId) -> Option<Arc<dyn DynMode>> {
         self.modes.get(&id).cloned()
@@ -995,6 +1013,37 @@ mod tests {
         let mut r = ModeRegistry::new();
         r.register(MockMode::minor("a-minor-mode")).unwrap();
         assert_eq!(r.find_major_for_kind(BufferKind::Document), None);
+    }
+
+    #[test]
+    fn unregister_removes_mode_and_frees_its_kind_claim() {
+        let mut r = ModeRegistry::new();
+        let major = r
+            .register(MockMode::major("rust-mode").targeting(BufferKind::Document))
+            .unwrap();
+        let minor = r.register(MockMode::minor("keep-mode")).unwrap();
+        assert_eq!(r.find_major_for_kind(BufferKind::Document), Some(major));
+
+        // Unregister the major: it's gone, its kind claim is freed, the other
+        // mode is untouched.
+        assert!(r.unregister(major));
+        assert!(!r.is_registered(major));
+        assert!(r.get(major).is_none());
+        assert_eq!(r.find_major_for_kind(BufferKind::Document), None);
+        assert!(r.is_registered(minor));
+
+        // Idempotent: a second unload of an already-removed id is a no-op.
+        // (Checked before the reload below — `ModeId` is interned by name, so a
+        // re-registered `"rust-mode"` is the *same* id and would be removable.)
+        assert!(!r.unregister(major));
+
+        // The freed kind can be re-claimed by a fresh registration (the reload
+        // case): register-again no longer hits Duplicate and re-owns the kind.
+        let reloaded = r
+            .register(MockMode::major("rust-mode").targeting(BufferKind::Document))
+            .unwrap();
+        assert_eq!(reloaded, major, "interned id is stable across reload");
+        assert_eq!(r.find_major_for_kind(BufferKind::Document), Some(reloaded));
     }
 
     #[tokio::test]

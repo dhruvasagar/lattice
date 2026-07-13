@@ -734,6 +734,33 @@ impl CommandRegistry {
         self.insert_action(name, doc, spec, SourceLocation::plugin(plugin_id))
     }
 
+    /// Remove every command a plugin contributed, keyed by its host-issued
+    /// `plugin_id` (the `u32` inside `SourceLayer::Plugin`). The teardown seam
+    /// for a plugin reload / unload (PH7.12b): the registry is otherwise
+    /// append-only, so without this a reload would re-register on top of the
+    /// old entries and the `by_id`/`by_name` maps would grow unbounded across
+    /// reloads (audit F6). Provenance-driven — only `Plugin(plugin_id)` entries
+    /// go; built-in / config / runtime commands are never touched, mirroring
+    /// the forgery invariant (a caller supplies only a `u32`, never a
+    /// `SourceLayer`). Returns the number of commands removed (0 if the plugin
+    /// contributed none — an idempotent no-op on a second unload). Every
+    /// index (`by_id`, `by_name`, the word-forward tag set) is kept consistent.
+    pub fn unregister_plugin(&mut self, plugin_id: u32) -> usize {
+        let doomed: Vec<CommandId> = self
+            .by_id
+            .iter()
+            .filter(|(_, entry)| entry.spec.source.layer == SourceLayer::Plugin(plugin_id))
+            .map(|(id, _)| *id)
+            .collect();
+        for id in &doomed {
+            if let Some(entry) = self.by_id.remove(id) {
+                self.by_name.remove(&entry.spec.name);
+            }
+            self.word_forward_motions.remove(id);
+        }
+        doomed.len()
+    }
+
     pub fn lookup(&self, id: CommandId) -> Option<&CommandSpec> {
         self.by_id.get(&id).map(|e| &e.spec)
     }
@@ -900,6 +927,32 @@ mod tests {
         let a = r.register_motion("a", "", dummy_motion());
         let b = r.register_motion("b", "", dummy_motion());
         assert_ne!(a.0, b.0);
+    }
+
+    #[test]
+    fn unregister_plugin_removes_only_that_plugins_commands() {
+        let mut r = CommandRegistry::new();
+        // A built-in and two plugins, one of which registers a word-forward motion.
+        r.register_motion("builtin:w", "builtin", dummy_motion());
+        let p7 = r.register_plugin_motion(7, "p7:down", "", dummy_motion());
+        r.tag_word_forward_motion(p7);
+        r.register_plugin_motion(7, "p7:up", "", dummy_motion());
+        r.register_plugin_motion(9, "p9:left", "", dummy_motion());
+        assert_eq!(r.len(), 4);
+
+        // Unregister plugin 7: both its commands go, the built-in and plugin 9 stay.
+        let removed = r.unregister_plugin(7);
+        assert_eq!(removed, 2);
+        assert_eq!(r.len(), 2);
+        assert!(r.lookup_by_name("p7:down").is_none());
+        assert!(r.lookup_by_name("p7:up").is_none());
+        assert!(r.lookup_by_name("builtin:w").is_some());
+        assert!(r.lookup_by_name("p9:left").is_some());
+        // The word-forward tag for the removed motion is gone too.
+        assert!(!r.is_word_forward_motion(p7.0));
+
+        // Idempotent: a second unload of the same plugin removes nothing.
+        assert_eq!(r.unregister_plugin(7), 0);
     }
 
     #[test]

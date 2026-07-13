@@ -18,42 +18,62 @@ wit_bindgen::generate!({
 
 use lattice::plugin_host::config;
 use lattice::plugin_host::config::OptionType;
+use lattice_plugin_sdk::{OptionKind, PluginOption, parse_option};
 
 struct Component;
 
-impl Guest for Component {
-    /// The host calls this once; the guest declares its options through the
-    /// imported `config.register-option` host function, then reads one back.
-    fn register_options() {
-        config::register_option(
-            "config-fixture.enabled",
-            OptionType::Boolean,
-            "true",
-            "whether the fixture is enabled",
-        );
-        config::register_option(
-            "config-fixture.count",
-            OptionType::Integer,
-            "3",
-            "how many things the fixture tracks",
-        );
-        config::register_option(
-            "config-fixture.label",
-            OptionType::String,
-            "hello",
-            "a display label",
-        );
+/// Whether the fixture is enabled.
+#[derive(PluginOption)]
+#[option(name = "config-fixture.enabled", default = "true")]
+struct Enabled(bool);
 
-        // Read one back through `get-option` (the registry round-trip) and record
-        // it so the host test can observe the value crossed correctly.
-        let read = config::get_option("config-fixture.count").unwrap_or_default();
+/// How many things the fixture tracks.
+#[derive(PluginOption)]
+#[option(name = "config-fixture.count", default = "3")]
+struct Count(i64);
+
+/// A display label.
+#[derive(PluginOption)]
+#[option(name = "config-fixture.label", default = "hello")]
+struct Label(String);
+
+/// Map the SDK's WIT-agnostic [`OptionKind`] to the generated `option-type` — the
+/// one-line approach-A tax a plugin pays (the SDK can't name the per-world WIT
+/// type). Done once, not per option.
+fn wit_ty(kind: OptionKind) -> OptionType {
+    match kind {
+        OptionKind::Boolean => OptionType::Boolean,
+        OptionKind::Integer => OptionType::Integer,
+        OptionKind::String => OptionType::String,
+    }
+}
+
+/// Register one derived option through the `config` wire using its SDK metadata.
+fn register<O: PluginOption>() {
+    config::register_option(O::NAME, wit_ty(O::KIND), O::DEFAULT, O::DOC);
+}
+
+impl Guest for Component {
+    /// The host calls this once; the guest declares its options via the SDK
+    /// derive (`NAME`/`KIND`/`DEFAULT`/`DOC`) over the imported `register-option`,
+    /// then reads one back and parses it typed via `parse_option`.
+    fn register_options() {
+        register::<Enabled>();
+        register::<Count>();
+        register::<Label>();
+
+        // Read `count` back through `get-option` and parse it typed (i64) via the
+        // SDK — the full declare→register→read→parse round-trip. Record it so the
+        // host test can observe the value crossed correctly.
+        let raw = config::get_option(Count::NAME).unwrap_or_default();
+        let count = parse_option::<Count>(&raw).unwrap_or(-1);
         use std::io::Write;
         if let Ok(mut f) = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open("/data/option.log")
         {
-            let _ = writeln!(f, "count={read}");
+            let _ = writeln!(f, "count={count}");
         }
     }
 }

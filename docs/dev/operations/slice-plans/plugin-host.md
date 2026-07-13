@@ -1177,7 +1177,7 @@ plugins — NOT the host).
   in a shared crate, plugin B deps it — a compile-checked, versioned event contract (the coordinating-
   plugins use case).
 
-### PH7.10 — Config/options WIT seam 🚧 (10a ✅, 10b 📝)
+### PH7.10 — Config/options WIT seam ✅ (10a + 10b)
 Plugin declares options (name + type + default + doc); host registers into the same
 `ConfigRegistry` core options use; values round-trip as strings; `:set`/`:describe-option`/
 `gen:options`/`OptionChanged` treat them uniformly. **Depends:** PH7.3.
@@ -1213,13 +1213,23 @@ statically linked into the host keep using `options!` unchanged. (See
   RAW WIT (no SDK — the language-agnostic surface) + reads one back via `get-option`, host inspects
   the shared registry + drives `:set`. Green: plugin-host lib 98, `config_source` 1, plugin-api 4.
 
-#### PH7.10b — Rust SDK ergonomics (`#[derive(PluginOption)]`) 📝 (NEXT)
-Guest-side, WIT-agnostic (the PH7.8b.3 approach-A pattern): a `PluginOption` trait
-(`NAME`/`DOC`/`TYPE`/`DEFAULT` + typed `parse`) + `#[derive(PluginOption)]` (doc-comment → `DOC`,
-`#[option(name, default)]`, field type → `TYPE`) in `lattice-plugin-sdk`. Expands to metadata
-constants; the plugin makes the one-liner `config::register_option(O::NAME, ...)` /
-`config::get_option` calls itself. Adds ZERO capability not on the wire — a Go/JS/Zig plugin uses
-the WIT directly.
+#### PH7.10b — Rust SDK ergonomics (`#[derive(PluginOption)]`) ✅ (2026-07-13)
+Guest-side, WIT-agnostic (the PH7.8b.3 approach-A pattern), in the two SDK crates:
+- `lattice-plugin-sdk`: `PluginOption` trait (`NAME`/`DOC`/`DEFAULT`/`KIND` + `type Value`), an
+  `OptionKind` enum (WIT-agnostic mirror of `option-type`), and `parse_option::<O>(s)` (typed
+  `FromStr` read of a `get-option` result → typed `OptionParseError`, never a panic).
+- `lattice-plugin-sdk-derive`: `#[derive(PluginOption)]` on a newtype over `bool`/`i64`/`String` —
+  `DOC` from the `///` comment, `NAME` from `#[option(name)]` or kebab type name, `DEFAULT` from the
+  required `#[option(default = "...")]`, `KIND`+`Value` inferred from the field type. Malformed attr
+  / non-newtype / unsupported field type = compile errors.
+- Expands to metadata constants only; the plugin makes the one-liner
+  `config::register_option(O::NAME, wit_ty(O::KIND), O::DEFAULT, O::DOC)` call itself (`wit_ty` = the
+  one-arm `OptionKind`→WIT map, the approach-A tax). Adds ZERO capability not on the wire — a
+  Go/JS/Zig plugin uses the WIT directly.
+- Tests: SDK unit (2 new) — derive captures name/doc/default/kind + kebab fallback; `parse_option`
+  typed read + typed error. The `config-guest` fixture now authors its options via the derive
+  (`Enabled`/`Count`/`Label`) + reads `count` back through `parse_option`; the existing
+  `config_source` e2e passes unchanged. Green: SDK 7, config_source 1.
 
 ### PH7.11 — Modes declaration WIT seam 📝
 `modes` WIT mirroring the `Mode` trait method set; host registers `Arc<dyn DynMode>` into

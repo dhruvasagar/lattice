@@ -16,6 +16,9 @@ crate-type = ["cdylib"]
 
 [dependencies]
 wit-bindgen = "0.58"
+# PH7.10b: the guest-side SDK — `#[derive(PluginOption)]` for type-safe option
+# metadata over the `config` wire. WIT-agnostic pure Rust, compiles to wasm.
+lattice-plugin-sdk = { path = "../../../../lattice-plugin-sdk" }
 
 [profile.release]
 opt-level = "s"

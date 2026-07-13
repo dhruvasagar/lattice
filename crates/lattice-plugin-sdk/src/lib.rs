@@ -48,7 +48,7 @@
 // consumes its own derive).
 extern crate self as lattice_plugin_sdk;
 
-pub use lattice_plugin_sdk_derive::PluginEvent;
+pub use lattice_plugin_sdk_derive::{PluginEvent, PluginOption};
 
 /// A plugin-defined event: a typed view over the opaque `emit-event` /
 /// `on-event` wire (PH7.8b.2). Implement via `#[derive(PluginEvent)]` on a
@@ -102,6 +102,76 @@ pub fn try_decode<E: PluginEvent>(name: &str, payload: &[u8]) -> Option<Result<E
     (name == E::NAME).then(|| E::decode(payload))
 }
 
+/// A plugin-defined option (PH7.10b) — a typed view over the `config`
+/// register/read wire. Implement via `#[derive(PluginOption)]` on a newtype over
+/// `bool` / `i64` / `String`:
+///
+/// ```ignore
+/// /// How many things the plugin tracks.
+/// #[derive(PluginOption)]
+/// #[option(name = "myplugin.count", default = "3")]
+/// struct Count(i64);
+/// ```
+///
+/// It is **WIT-agnostic** (approach A): the derive only supplies these constants
+/// plus the value type. The plugin makes the `config.register-option` /
+/// `config.get-option` WIT calls itself, mapping [`OptionKind`] to the generated
+/// `option-type`:
+///
+/// ```ignore
+/// config::register_option(Count::NAME, wit_ty(Count::KIND), Count::DEFAULT, Count::DOC);
+/// let value = parse_option::<Count>(&config::get_option(Count::NAME).unwrap())?;
+/// ```
+pub trait PluginOption {
+    /// The option's registry name (matched by `:set`, shown in `:describe-option`).
+    const NAME: &'static str;
+    /// The human-facing doc (from the struct's `///` comment).
+    const DOC: &'static str;
+    /// The initial value as a string (parsed host-side via the native `OptionType`).
+    const DEFAULT: &'static str;
+    /// The value type — maps to the WIT `option-type` when registering.
+    const KIND: OptionKind;
+    /// The Rust value type (`bool` / `i64` / `String`), parsed from a
+    /// `get-option` string via [`parse_option`].
+    type Value: std::str::FromStr;
+}
+
+/// The value type of a plugin option — the WIT-agnostic mirror of the `config`
+/// interface's `option-type` enum. The plugin maps this to the generated
+/// `option-type` at the `register-option` call site (the SDK can't name the
+/// per-world WIT type — approach A).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OptionKind {
+    Boolean,
+    Integer,
+    String,
+}
+
+/// Parse a `get-option` result string into the option's typed value (PH7.10b).
+/// `get-option` returns the value formatted by the native `OptionType`; this
+/// reads it back into `O::Value` via its `FromStr`. A malformed string is a typed
+/// [`OptionParseError`], never a panic.
+pub fn parse_option<O: PluginOption>(s: &str) -> Result<O::Value, OptionParseError>
+where
+    <O::Value as std::str::FromStr>::Err: std::fmt::Display,
+{
+    s.parse::<O::Value>()
+        .map_err(|e| OptionParseError(e.to_string()))
+}
+
+/// A failed [`parse_option`] — the `get-option` string didn't parse for the
+/// option's value type. Carries the underlying parser message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OptionParseError(pub String);
+
+impl std::fmt::Display for OptionParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "plugin option parse failed: {}", self.0)
+    }
+}
+
+impl std::error::Error for OptionParseError {}
+
 /// Implementation detail used by the generated `#[derive(PluginEvent)]` code so a
 /// consumer depends only on `lattice-plugin-sdk` (the SDK owns the `rmp-serde`
 /// dependency, not every plugin). Not part of the stable API.
@@ -126,7 +196,9 @@ pub mod __private {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::panic)]
+    // The `PluginOption` marker newtypes carry their value type for the derive
+    // but the tests read only the derived constants, so the field is unused.
+    #![allow(clippy::unwrap_used, clippy::panic, dead_code)]
 
     use super::*;
     use serde::{Deserialize, Serialize};
@@ -198,5 +270,35 @@ mod tests {
             format!("{err}").contains("decode failed"),
             "decode surfaces a typed error, never a panic: {err}"
         );
+    }
+
+    /// How wide a tab is rendered.
+    #[derive(PluginOption)]
+    #[option(name = "editor.tab-width", default = "8")]
+    struct TabWidth(i64);
+
+    /// Whether long lines wrap.
+    #[derive(PluginOption)]
+    #[option(default = "true")]
+    struct WrapLines(bool);
+
+    #[test]
+    fn option_derive_captures_name_doc_default_and_kind() {
+        assert_eq!(TabWidth::NAME, "editor.tab-width");
+        assert_eq!(TabWidth::DOC, "How wide a tab is rendered.");
+        assert_eq!(TabWidth::DEFAULT, "8");
+        assert_eq!(TabWidth::KIND, OptionKind::Integer);
+        // NAME defaults to the kebab-cased type name; KIND from the field type.
+        assert_eq!(WrapLines::NAME, "wrap-lines");
+        assert_eq!(WrapLines::KIND, OptionKind::Boolean);
+    }
+
+    #[test]
+    fn parse_option_reads_typed_values_and_errors_typed() {
+        assert_eq!(parse_option::<TabWidth>("7").unwrap(), 7_i64);
+        assert!(parse_option::<WrapLines>("true").unwrap());
+        // A malformed string is a typed error, never a panic.
+        let err = parse_option::<TabWidth>("not-a-number").unwrap_err();
+        assert!(format!("{err}").contains("parse failed"));
     }
 }

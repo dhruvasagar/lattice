@@ -69,9 +69,16 @@ pub trait Clipboard: Send + Sync {
 ```
 
 - **TUI native:** `arboard` (macOS / X11 / Wayland / Windows) — robust read *and* write.
+  **On by default on macOS / Windows** (a plain `cargo run` gets a working OS clipboard):
+  `arboard` links the always-present system frameworks there (AppKit `NSPasteboard` /
+  Win32), so there is no extra system-lib or headless concern. `lattice-cli` enables
+  `lattice-ui-tui/system-clipboard` for those targets via a `cfg(target_os)`-gated
+  dependency. **On Linux it stays opt-in** (`cargo run --features clipboard`) because
+  `arboard` there pulls X11/Wayland link libs that break headless CI/build images.
 - **TUI headless / SSH fallback:** OSC52 escape write when there's no display
-  (`$SSH_TTY` set / `arboard` init fails). OSC52 read is unreliable across terminals,
-  so read falls back to the in-memory register there (documented degradation).
+  (`$SSH_TTY` set / `arboard` init fails / Linux build without the `clipboard` feature).
+  OSC52 read is unreliable across terminals, so read falls back to the in-memory register
+  there (documented degradation).
 - **GPUI peer:** gpui's own `read_from_clipboard` / `write_to_clipboard` (gpui 0.2.2),
   wrapped in the same trait so the host stays renderer-neutral.
 - **Test/CI:** an in-memory `FakeClipboard` so headless CI exercises the roundtrip

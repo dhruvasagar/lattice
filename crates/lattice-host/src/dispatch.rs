@@ -19273,8 +19273,29 @@ fn is_word_char_byte(b: u8) -> bool {
 impl Editor {
     /// Bracketed-paste handler. Routes the payload to cursor /
     /// command line / search line based on the current modal.
+    /// CB.3 follow-up: terminal buffers route through [`do_terminal_input`]
+    /// (same path as `p`/`P` in `run_terminal_invocation`) instead
+    /// of inserting into `self.document` — the paste belongs on the
+    /// PTY, not the SyntheticDoc or the active document. This is the
+    /// external/OS bracketed-paste peer of CB.3's `p`/`P` register paste.
     pub fn do_paste_text(&mut self, text: &str) {
         if text.is_empty() {
+            return;
+        }
+        // CB.3 follow-up: terminal buffer paste (non-Command/Search mode) —
+        // write to PTY instead of the document. Wraps in DEC-2004
+        // bracketed-paste markers when the running program requested
+        // them, matching the `p`/`P` path in `run_terminal_invocation`.
+        if matches!(self.active_buffer, BufferKind::Terminal)
+            && !matches!(self.modal, ModalState::Command | ModalState::Search(_))
+        {
+            let buf_id = self.active_pane_buffer_id();
+            let bracketed = self
+                .buffers
+                .with_terminal(buf_id, |t| t.term.bracketed_paste())
+                .unwrap_or(false);
+            let payload = terminal_paste_payload(text, bracketed);
+            self.do_terminal_input(&payload);
             return;
         }
         match self.modal {
@@ -38578,6 +38599,48 @@ mod tests {
     #[test]
     fn terminal_paste_payload_passes_through_when_not_bracketed() {
         assert_eq!(terminal_paste_payload("hello", false), b"hello".to_vec());
+    }
+
+    // ---- CB.3 follow-up: `do_paste_text` (external/OS bracketed paste) routing ----
+    //
+    // `do_paste_text` fires from `Action::PasteText` — an OS/terminal-emulator
+    // bracketed paste arriving at lattice, distinct from vim `p`/`P`. The two
+    // sides of its terminal branch are testable without a real PTY: the
+    // `Command`/`Search` guard (must NOT leak into the PTY) is fully
+    // inspectable via `command_line`, and the positive route degrades to a
+    // silent no-op with no terminal buffer registered (`do_terminal_input`'s
+    // documented `None` path) — so we assert it does NOT splice into the
+    // document, which pins that it took the terminal branch rather than the
+    // `_ =>` document-insert arm. The actual PTY write stays unasserted,
+    // matching CB.3's real-PTY testing boundary above.
+
+    #[test]
+    fn paste_text_into_command_line_while_terminal_focused_edits_command_line_not_pty() {
+        let mut editor = crate::editor::Editor::boot(lattice_core::Document::empty());
+        editor.active_buffer = BufferKind::Terminal;
+        editor.modal = ModalState::Command;
+        editor.command_line = ":e ".to_string();
+
+        editor.do_paste_text("some/path");
+
+        // The bracketed paste edits the `:` command line, it must not be
+        // routed to the PTY just because a terminal buffer is focused.
+        assert_eq!(editor.command_line, ":e some/path");
+    }
+
+    #[test]
+    fn paste_text_in_terminal_normal_mode_routes_to_pty_not_document() {
+        let mut editor = crate::editor::Editor::boot(lattice_core::Document::from_text("abc\n"));
+        editor.active_buffer = BufferKind::Terminal;
+        editor.modal = ModalState::Normal;
+
+        editor.do_paste_text("payload");
+
+        // Terminal + non-Command/Search took the PTY branch; with no PTY
+        // registered `do_terminal_input` no-ops, so the document must be
+        // untouched (proving it did NOT hit the document-insert arm).
+        assert_eq!(editor.document.text(), "abc\n");
+        assert!(editor.command_line.is_empty());
     }
 
     #[test]

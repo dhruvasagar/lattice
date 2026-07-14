@@ -247,6 +247,28 @@ See design §7 for the full mapping.
 
 ---
 
+## Post-CB.5 follow-ups (landed)
+
+- **Native clipboard on-by-default where it is free (refines CB.2).** On macOS /
+  Windows `arboard` links the always-present system frameworks (AppKit `NSPasteboard` /
+  Win32), so a plain `cargo run` should just have a working OS clipboard rather than the
+  OSC52 write-only fallback. `lattice-cli` now enables `lattice-ui-tui/system-clipboard`
+  for those targets via a `cfg(any(target_os = "macos", target_os = "windows"))`-gated
+  dependency; Linux stays opt-in via `--features clipboard` (X11/Wayland link libs break
+  headless CI). `--features clipboard` is a no-op on macOS/Windows. See
+  `docs/dev/architecture/clipboard.md`.
+- **External/OS bracketed-paste → PTY routing (completes CB.3).** `Editor::do_paste_text`
+  (the `Action::PasteText` handler for an OS/terminal-emulator bracketed paste, distinct
+  from vim `p`/`P`) now routes to the PTY via `do_terminal_input` when a terminal buffer
+  is focused and the modal isn't `Command`/`Search`, wrapping in DEC-2004 markers when the
+  program requested them — the external-paste peer of CB.3's `p`/`P` register paste. The
+  `Command`/`Search` guard keeps a paste into the `:` line from leaking into the PTY.
+  Tests: `paste_text_into_command_line_while_terminal_focused_edits_command_line_not_pty`
+  and `paste_text_in_terminal_normal_mode_routes_to_pty_not_document` (both PTY-free,
+  matching CB.3's real-PTY testing boundary).
+
+---
+
 ## Risk / sequencing notes
 
 - **CB.2 dependency risk** is the main one: `arboard` must stay optional so headless CI

@@ -29,6 +29,18 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 # subscriber so debug logs flow to stderr on demand.
 tracing-subscriber = { workspace = true }
 
+# CB.2 (docs/dev/architecture/clipboard.md): native OS clipboard ON BY
+# DEFAULT where it is free. On macOS / Windows `arboard` links against the
+# always-present system frameworks (AppKit `NSPasteboard` / Win32), so there
+# is NO extra system-lib / headless concern — a default `cargo run` should
+# just have a working clipboard (paste-from-another-app + native write),
+# not the OSC52-write-only fallback. This target-gated dependency turns
+# `lattice-ui-tui/system-clipboard` on for those targets only; Linux stays
+# opt-in via `--features clipboard` (see the `[features]` note) because there
+# `arboard` pulls X11/Wayland link libs that break headless CI/build images.
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+lattice-ui-tui = { path = "../lattice-ui-tui", features = ["system-clipboard"] }
+
 [features]
 default = []
 # 5.9 / 5.8.M: opt-in routing to the GPUI peer via `lattice --gui`.
@@ -36,12 +48,15 @@ default = []
 # which in turn links real gpui (needs display libs at link time
 # on Linux: `libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev`).
 gui = ["dep:lattice-ui-gpui", "lattice-ui-gpui/window"]
-# CB.2 (docs/dev/architecture/clipboard.md): opt-in native OS clipboard
-# support via `cargo build --features clipboard`. Off by default for the
-# same headless-CI reason as `gui`. Without it, yank still reaches the
-# real system clipboard via the OSC52 write fallback -- this feature only
-# adds clipboard *read* (paste-from-another-app) + native Wayland/X11
-# write. CB.4 wires the equivalent for the `--gui` (GPUI) peer.
+# CB.2 (docs/dev/architecture/clipboard.md): explicit opt-in to the native
+# OS clipboard on targets where it is NOT already on by default — i.e.
+# Linux, where `arboard` pulls X11/Wayland link libs that break headless
+# CI/build images (same reason as `gui`). macOS / Windows already get this
+# via the target-gated dependency above, so `--features clipboard` is a
+# no-op there. Without it (Linux headless / SSH), yank still reaches the
+# real system clipboard via the OSC52 write fallback -- this feature adds
+# clipboard *read* (paste-from-another-app) + native Wayland/X11 write.
+# CB.4 wires the equivalent for the `--gui` (GPUI) peer.
 clipboard = ["lattice-ui-tui/system-clipboard"]
 
 [lints]

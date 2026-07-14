@@ -310,6 +310,12 @@ mod tests {
                  fallback, which never round-trips a write through read"
             );
         }
+        // With `system-clipboard` on, `Native(ArboardClipboard)` would
+        // round-trip on a real display, so there's no environment-independent
+        // behavioral spot-check -- the `.expect()` above is the panic-free
+        // presence assertion for this config.
+        #[cfg(feature = "system-clipboard")]
+        let _ = clipboard;
     }
 
     /// Agent boot-presence guard: `lattice_ai::install` runs in `Editor::boot`'s

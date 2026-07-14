@@ -1757,6 +1757,18 @@ mod tests {
     }
 
     #[test]
+    fn x_deletes_whole_multibyte_char_without_panicking() {
+        // Regression: `x` (delete + char_right) over a multibyte glyph
+        // must delete the WHOLE scalar, not one byte. The AI conversation
+        // transcript is seeded with `│` (U+2502, 3 bytes) etc.; a byte-step
+        // motion produced a delete range ending mid-char, panicking ropey
+        // on a non-char-boundary byte slice. See systematic-debugging trace.
+        let mut a = app_with("│x", 10);
+        press_chars(&mut a, "x");
+        assert_eq!(a.editor.document.text(), "x");
+    }
+
+    #[test]
     fn event_bus_publishes_document_changed_on_apply_edit() {
         let mut a = app_with("hello", 5);
         let mut rx = subscribe_all_events(&a);

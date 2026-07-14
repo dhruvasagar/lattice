@@ -142,8 +142,8 @@ impl Buffer {
     }
 
     pub fn slice(&self, range: Range) -> CoreResult<String> {
-        let start = self.position_to_byte(range.start)?;
-        let end = self.position_to_byte(range.end)?;
+        let start = snap_to_char_boundary(&self.rope, self.position_to_byte(range.start)?);
+        let end = snap_to_char_boundary(&self.rope, self.position_to_byte(range.end)?);
         if end < start {
             return Err(ProtocolError::InvalidRange("end < start").into());
         }
@@ -154,8 +154,8 @@ impl Buffer {
     /// `AppliedEdit::replaced_text` is exactly what the caller needs to push
     /// onto the undo stack as the inverse.
     pub fn apply_edit(&mut self, edit: &Edit) -> CoreResult<AppliedEdit> {
-        let start_byte = self.position_to_byte(edit.range.start)?;
-        let end_byte = self.position_to_byte(edit.range.end)?;
+        let start_byte = snap_to_char_boundary(&self.rope, self.position_to_byte(edit.range.start)?);
+        let end_byte = snap_to_char_boundary(&self.rope, self.position_to_byte(edit.range.end)?);
         if end_byte < start_byte {
             return Err(ProtocolError::InvalidRange("end < start").into());
         }
@@ -246,6 +246,18 @@ impl Buffer {
 
 fn byte_to_char(rope: &Rope, byte: usize) -> usize {
     rope.byte_to_char(byte)
+}
+
+/// Round `byte` DOWN to the start of the UTF-8 scalar it falls within, so it is
+/// always a valid char boundary. A mid-scalar byte offset would panic ropey's
+/// `byte_slice` / `byte_to_char` on the hot path (paramount #1: never panic on
+/// a keystroke). The char motions produce boundary-aligned offsets after the
+/// scalar-step fix; this is the defensive net for any residual byte-off offset
+/// from other motions (word/find/till) or future plugin-contributed motions.
+/// `byte_to_char` is monotonic, so snapping both ends of a range preserves
+/// `start <= end`.
+fn snap_to_char_boundary(rope: &Rope, byte: usize) -> usize {
+    rope.char_to_byte(rope.byte_to_char(byte))
 }
 
 /// Transform a position across an edit (§4.1 of owner-write-caret.md).
@@ -359,6 +371,28 @@ mod tests {
         let b = Buffer::from_text("hello\nworld");
         let r = Range::new(Position::new(0, 1), Position::new(1, 3));
         assert_eq!(b.slice(r).unwrap(), "ello\nwor");
+    }
+
+    #[test]
+    fn slice_snaps_mid_scalar_byte_offset_without_panicking() {
+        // Defensive hot-path guard: a range whose end lands mid-UTF-8-scalar
+        // (byte 1 inside `│` U+2502, bytes 0..3) must not panic ropey's
+        // byte_slice. It snaps DOWN to the nearest boundary (byte 0 here), so
+        // the slice is empty rather than a crash.
+        let b = Buffer::from_text("│x");
+        let r = Range::new(Position::new(0, 0), Position::new(0, 1));
+        assert_eq!(b.slice(r).unwrap(), "");
+    }
+
+    #[test]
+    fn apply_edit_snaps_mid_scalar_range_without_panicking() {
+        // Same guard on the edit path: a delete range ending mid-scalar must
+        // not panic; it snaps to a boundary before touching the rope.
+        let mut b = Buffer::from_text("│x");
+        let edit = Edit::delete(Range::new(Position::new(0, 0), Position::new(0, 1)));
+        // No panic; the mid-scalar end snaps down so nothing is removed.
+        assert!(b.apply_edit(&edit).is_ok());
+        assert_eq!(b.as_string(), "│x");
     }
 
     #[test]

@@ -1336,12 +1336,23 @@ fn motion_first_non_blank(ctx: &MotionContext) -> Result<MotionResult, CommandEr
 fn motion_char_left(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
     let count = ctx.count.get().max(1);
     let mut pos = ctx.from;
+    let text = ctx.buffer.as_string();
+    let line = line_text(&text, pos.line);
+    // Step by whole UTF-8 scalars, not bytes: a byte-step could land mid-glyph
+    // (e.g. inside `│` U+2502, 3 bytes) and produce a delete range that panics
+    // ropey on a non-char-boundary slice. `min` also snaps a mis-seeded
+    // starting `pos.byte` onto the line before walking.
+    let mut byte = (pos.byte as usize).min(line.len());
     for _ in 0..count {
-        if pos.byte == 0 {
+        if byte == 0 {
             break;
         }
-        pos.byte -= 1;
+        byte -= 1;
+        while byte > 0 && !line.is_char_boundary(byte) {
+            byte -= 1;
+        }
     }
+    pos.byte = byte as u32;
     Ok(MotionResult {
         target: pos,
         linewise: false,
@@ -1353,13 +1364,23 @@ fn motion_char_left(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
 fn motion_char_right(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
     let count = ctx.count.get().max(1);
     let mut pos = ctx.from;
-    let line_len = line_byte_len(ctx.buffer, pos.line);
+    let text = ctx.buffer.as_string();
+    let line = line_text(&text, pos.line);
+    let line_len = line.len();
+    // Step by whole UTF-8 scalars, not bytes (see `motion_char_left`): a
+    // byte-step over a multibyte glyph produced a delete range ending mid-char
+    // and panicked ropey's `byte_slice` on the editor actor thread.
+    let mut byte = (pos.byte as usize).min(line_len);
     for _ in 0..count {
-        if pos.byte >= line_len {
+        if byte >= line_len {
             break;
         }
-        pos.byte += 1;
+        byte += 1;
+        while byte < line_len && !line.is_char_boundary(byte) {
+            byte += 1;
+        }
     }
+    pos.byte = byte as u32;
     Ok(MotionResult {
         target: pos,
         linewise: false,
@@ -2707,6 +2728,49 @@ mod tests {
         .unwrap();
         match effect {
             Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 1)),
+            other => panic!("expected SelectionChange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn char_right_advances_whole_multibyte_scalar() {
+        // `│` (U+2502) is 3 bytes. char_right must land on the next scalar
+        // boundary (byte 3), never mid-glyph (byte 1), or a subsequent delete
+        // panics ropey on a non-char-boundary slice.
+        let (registry, b, mut doc) = fixture("│x");
+        let inv = CommandInvocation::of(b.char_right.0);
+        let effect = execute(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0),
+            Position::ZERO,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
+        match effect {
+            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 3)),
+            other => panic!("expected SelectionChange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn char_left_retreats_whole_multibyte_scalar() {
+        // Cursor just after `│` (byte 3); char_left must return to byte 0,
+        // not byte 2 (mid-glyph).
+        let (registry, b, mut doc) = fixture("│x");
+        let inv = CommandInvocation::of(b.char_left.0);
+        let effect = execute(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0),
+            Position::new(0, 3),
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
+        match effect {
+            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::ZERO),
             other => panic!("expected SelectionChange, got {other:?}"),
         }
     }

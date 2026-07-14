@@ -1319,7 +1319,7 @@ flag + one bus publish; the actor, bus, every other plugin, LSP, and the editor 
   no second event), full-instance quarantine (a post-crash *good* delivery is skipped, not just
   the trapping handler), native co-subscriber isolation. **Green: lib + event_source (4).**
 
-#### PH7.12b — Reload / hot-swap seam 🚧
+#### PH7.12b — Reload / hot-swap seam ✅ (2026-07-14; 12b.2 reclamation deferred)
 Teardown (drop the actor / poison the guest lock, unsubscribe events, unregister
 grammar/picker/decoration/completion/config/mode contributions) + re-instantiate a fresh,
 untripped instance — the seam the deferred `init.rs` / plugin-manager consumers reload through,
@@ -1408,11 +1408,31 @@ Three options were mapped (see the design decision in-session):
   present win (heuristic #1: no rewrite ahead of the consumer).
 Landed as the three reframed `intern` / `build_and_register` doc comments pointing here.
 
-#### PH7.12b.3 — `PluginTeardown` bundle + reload/unload driver 📝
-Aggregate every teardown token (subscription ids, contribution plugin-id, registered ids, actor
-client drops, intern pool); `Drop` unregisters all + frees the pool; `reload` = unload +
-re-instantiate a fresh, untripped instance. Capstone test: quarantined instance → reload →
-fresh instance, old contributions gone, no growth. **Depends:** PH7.12b.1a–c, PH7.12b.2.
+#### PH7.12b.3 — `PluginTeardown` bundle + unload driver ✅ (2026-07-14)
+The capstone: aggregate every teardown token and reverse each against the host registries,
+composing the reload cycle. New `crates/lattice-plugin-host/src/teardown.rs`:
+- **`PluginTeardown`** — the union of teardown tokens (`plugin_id`, `has_grammar`,
+  `picker_sources`, `modes`, `config_options`, `events_defined`, `subscriptions`), filled by the
+  spawning caller from the tokens the `spawn_*` fns already return. A plugin populates only the
+  surfaces it used.
+- **`TeardownRegistries<'a>`** — a borrow struct grouping the six host registries
+  (`&mut CommandRegistry/PickerRegistry/ModeRegistry`, `&KeymapHandle/ConfigRegistry/EventBus`),
+  so `unload` takes one arg, not six, and the caller passes exactly what a `&mut Editor` holds.
+- **`PluginTeardown::unload(&mut TeardownRegistries) -> TeardownReport`** — runs each PH7.12b.1
+  `unregister_*` for its recorded tokens (idempotent; returns per-surface removed counts). Modes
+  reverse BOTH halves (registry entry + `remove_layer(MinorMode(id))`).
+- **Explicit driver, not `Drop`** (heuristic #1): the registries have mixed mutability
+  (`&mut` vs `Arc`); a `Drop` bundle would force every registry behind `Arc<Mutex>` — a weaker
+  foundation. **No `reload` method**: reload = `unload` + re-invoke the same `spawn_*` (a fresh
+  `Store` + fresh untripped `Quarantine`), composed by the caller (the Phase-8 plugin manager).
+- **Completion + decoration** absent by design (channel-drop only — no plugin-provenance
+  registration path).
+- **Tests (2):** a host-layer driver unit test (`unload` reverses grammar+picker+config+events
+  +mode-keymap in one call, spares co-resident built-ins/native entries, idempotent second
+  unload = all zeros); and the wasm capstone `tests/plugin_teardown.rs` — spawn events plugin →
+  crash (trap → one `PluginCrashed`) → `unload` (unsubscribes) → **reload** (fresh
+  `spawn_event_plugin`) → the reloaded instance delivers normally, exactly one crash across the
+  cycle. Green: lib teardown (1) + plugin_teardown (1).
 
 #### PH7.12c — Graceful-degradation audit + fuzz 📝
 Audit every seam for log-and-skip-not-panic under malformed input; fuzz malformed

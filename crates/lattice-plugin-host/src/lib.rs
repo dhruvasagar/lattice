@@ -77,6 +77,7 @@ pub mod manifest;
 pub mod picker_host;
 pub mod picker_source;
 pub mod picker_task;
+pub mod teardown;
 pub mod trampoline;
 
 pub use boundary::WitBoundary;
@@ -89,6 +90,7 @@ pub use decoration_source::WasmDecorationSource;
 pub use decoration_task::{DecorationActor, DecorationClient};
 pub use manifest::{Capability, CapabilityParseError, ManifestError, PluginManifest};
 pub use picker_source::WasmPickerSource;
+pub use teardown::{PluginTeardown, TeardownRegistries, TeardownReport};
 pub use picker_task::{PickerActor, PickerClient};
 
 use std::path::{Path, PathBuf};

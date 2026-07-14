@@ -1098,6 +1098,12 @@ mod tests {
     /// (`"id":"39977f74-..."`), so `sed` lifts it back out verbatim and the
     /// canned replies quote it -- a numeric-id mock is silently ignored by
     /// the client and the handshake hangs.
+    ///
+    /// Unix-only: the mock is a `/bin/sh` script. Windows has no POSIX
+    /// shell at that path, so the two tests that spawn it are gated to
+    /// `cfg(unix)` (they exercise subprocess-lifecycle behaviour, not
+    /// platform-specific code).
+    #[cfg(unix)]
     const MOCK_AGENT_EXITS_AFTER_SESSION: &str = r#"
 while IFS= read -r line; do
   id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
@@ -1111,6 +1117,7 @@ while IFS= read -r line; do
 done
 "#;
 
+    #[cfg(unix)]
     fn mock_agent_provider() -> ProviderConfig {
         ProviderConfig {
             command: "/bin/sh".into(),
@@ -1126,6 +1133,7 @@ done
     /// running `AiState` exists for only microseconds -- polling
     /// `handle.snapshot()` for it would be inherently racy. The log ring is
     /// append-only, so a record that was ever written stays observable.
+    #[cfg(unix)]
     async fn wait_for_record(logger: &AiLogger, session: &SessionKey, needle: &str) {
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         loop {
@@ -1289,6 +1297,7 @@ done
     /// child and tears the session down when it dies. Without this, the
     /// modeline claims a live session forever and `:ai-prompt` is silently
     /// dropped until the user happens to run `:ai-stop`.
+    #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread")]
     async fn unexpected_child_exit_resets_state_and_logs() {
         let logger = AiLogger::with_defaults();
@@ -1316,6 +1325,7 @@ done
 
     /// After the child dies, a subsequent `Start` must open a *fresh* session
     /// at the next index rather than resurrecting the dead one's key.
+    #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread")]
     async fn start_after_child_exit_opens_the_next_session() {
         let logger = AiLogger::with_defaults();

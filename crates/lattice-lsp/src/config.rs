@@ -286,7 +286,13 @@ mod tests {
             let mut p = std::env::temp_dir();
             p.push(format!("lattice-lsp-test-{}-{}", name, std::process::id()));
             std::fs::create_dir_all(&p).unwrap();
-            p
+            // Canonicalize the created dir so equality checks against the
+            // resolver's output are stable on hosts that put the temp dir
+            // behind a symlink (macOS: `/var` -> `/private/var`).
+            // `resolve_workspace_root` canonicalizes `start_dir`, so its
+            // result is already the canonical form; the expected value must
+            // match.
+            std::fs::canonicalize(&p).unwrap()
         }
     }
 

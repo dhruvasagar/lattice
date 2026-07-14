@@ -26,11 +26,18 @@ and no shaping.
 > (inactive panes keep full syntax/inlay/diagnostic set, proven zero-recompute
 > on focus); multibuffer excerpt display; narrow mode (`zn`) with tree-sitter
 > text objects (`af`/`ac`/`aa`/`al`/`aC`); operators that act on the Visual
-> selection by design; and a multi-mode keybinding API. The
-> WASM plugin host arrives
-> in Phase 7. See
+> selection by design; and a multi-mode keybinding API.
+> **Phase 7 (the WASM Component Model plugin host) is complete** — the
+> `lattice-plugin-host` runtime, the `wit/` API package, the capability /
+> fuel / crash-isolation model, and every extension seam (picker, grammar,
+> completion, events, decorations, config, modes, host-services), each
+> exercised end-to-end by a guest fixture, plus the `fuzzy-finder` validation
+> plugin and CI overhead gates. **Editor-side loading** of plugins (the plugin
+> manager, on-disk discovery, `init.rs`-as-WASM config) is **Phase 8** — the
+> runtime is done; wiring it into the editor is next. See
 > [`docs/dev/operations/implementation.md`](docs/dev/operations/implementation.md)
-> for the per-feature ledger.
+> for the per-feature ledger and [`docs/user/plugins.md`](docs/user/plugins.md)
+> for the plugin model.
 
 ---
 
@@ -182,15 +189,14 @@ flowchart TD
 
 	Core["<b>Core Layer</b><br/><code>lattice-runtime</code> + <code>lattice-core</code> + <code>lattice-grammar</code><br/>• One DocumentActor per open document (tokio task)<br/>• Owns the writable Document; bounded mpsc mailbox<br/>• Publishes immutable snapshots via arc-swap<br/>• Grammar dispatcher: motions, operators, text objects,<br/>&nbsp;&nbsp;ex-commands, plugin contributions — peers, not<br/>&nbsp;&nbsp;separated worlds"]
 
-	Plugin["<b>Plugin Layer</b> &nbsp;<i>(planned)</i><br/><code>lattice-plugin-host</code><br/>• wasmtime + Component Model + WASI<br/>• One Store per plugin instance, runs as a tokio task<br/>• Capability-gated, fuel-limited, crash-isolated"]
+	Plugin["<b>Plugin Layer</b> &nbsp;<i>(runtime built; editor wiring = Phase 8)</i><br/><code>lattice-plugin-host</code><br/>• wasmtime + Component Model + WASI<br/>• One Store per plugin instance, runs as a tokio task<br/>• Capability-gated, fuel-limited, crash-isolated"]
 
 	UI -->|"<b>DocumentHandle</b> (cheap clone)<br/>• snapshot() — wait-free Arc load<br/>• dispatch_with_cancel() — Pending&lt;Effect&gt;<br/>• apply_edit() — Pending&lt;AppliedEdit&gt;"| Core
-	Core -.->|"WIT-defined ABI<br/><i>(planned)</i>"| Plugin
+	Core -.->|"WIT-defined ABI<br/><i>(defined + exercised; editor wiring = Phase 8)</i>"| Plugin
 
 	classDef done fill:#1f4d2c,stroke:#2ea043,color:#e6edf3
 	classDef planned fill:#3d2a1a,stroke:#bf8700,color:#e6edf3,stroke-dasharray:5 5
-	class UI,Core done
-	class Plugin planned
+	class UI,Core,Plugin done
 ```
 
 ### Crate map
@@ -222,7 +228,8 @@ flowchart TD
 | `lattice-ui-gpui`      | GPU UI peer (feature `window`): GPUI + blade rendering. Full edit + LSP against rust-analyzer; Phase 5.8 feature-parity in progress. | 🚧 active   |
 | `lattice-cli`          | Binary entry-point. `--tui` / `--gui` flag routes to either peer; tokio multi-thread main.               | ✅ stable   |
 | `lattice-config-macros`| Proc-macro for typed-option / `OptionGroup` registration via `linkme` distributed slices.                | ✅ stable   |
-| `lattice-plugin-host`  | WASM Component Model host. **Planned (Phase 7).**                                                        | ⛔ planned  |
+| `lattice-plugin-api`   | Wasmtime-free plugin-API catalog derived from `wit/` at build time; backs `:describe-plugin-api` / `:list-plugin-apis` / `:export-plugin-api`. | ✅ stable   |
+| `lattice-plugin-host`  | WASM Component Model host (wasmtime + WASI p2): capability/fuel/crash-isolation model + every extension seam. **Runtime complete (Phase 7); editor-side loading is Phase 8.** | ✅ built    |
 
 ---
 
@@ -350,7 +357,7 @@ Tracked against [DESIGN.md §8.2](docs/dev/architecture/design.md). Latest measu
 | Reflex motion / operator     | < 2 ms       | ✅ all under budget on 50k-line buffers              |
 | Search (literal pattern)     | < 2 ms       | ✅ all variants under 2 ms on 200k-line buffers      |
 | Snapshot load (renderer)     | < 5 ns       | ⚠️ ~17 ns (`load_full` Arc bump — known headroom)    |
-| WASM typed call (planned)    | < 500 ns     | ⛔ Phase 7                                           |
+| WASM typed call              | < 500 ns     | ✅ CI-gated (Phase 7); grammar round-trip < 5 µs (~340 ns release) |
 
 The architectural rule: **the UI thread does no I/O, no parsing, no
 shaping.** Document mutations route through the actor; renderers read
@@ -372,9 +379,9 @@ flipped `CancellationToken` within ~100 µs).
 | 3     | Tree-sitter (Rust / Python / JS / MD)  | ✅ done     |
 | 4     | LSP                                    | 🚧 wind-down (~90% shipped; 3 trigger-UX items deferred: `linkedEditingRange`, `inlineValue`, `inlineCompletion`) |
 | 5     | GPU Rendering + architectural async    | 🚧 architecturally complete (Editor on its own thread, compile-time enforced; both peers edit against live LSP). Phase 5.8 GPUI feature-parity is the active frontier. |
-| 6     | Document Renderer + UI Components      | ⛔ planned  |
-| 7     | Plugin Host (WASM Component Model)     | ⛔ planned  |
-| 8     | Major / Minor Modes + Reference Plugins| ⛔ planned  |
+| 6     | Document Renderer + UI Components      | ✅ done (delivered across Phases 4–5) |
+| 7     | Plugin Host (WASM Component Model)     | ✅ done (runtime — PH7.0–7.12; editor-side loading is Phase 8) |
+| 8     | Major / Minor Modes + Reference Plugins| ⛔ planned (the plugin *manager*: loading, discovery, `init.rs`, modes-as-components) |
 | 9     | Rich Buffer Rendering                  | ⛔ planned  |
 | 10    | Polish + v1.0                          | ⛔ planned  |
 
@@ -390,7 +397,7 @@ The granular pre-Phase-4 polish plan, plus the upcoming Phase 4 work:
 - [x] Cooperative `CancellationToken` (grammar + actor + search loops)
 - [x] Actor stress tests (mailbox saturation, concurrent senders, snapshot ordering)
 - [ ] Per-`LatencyClass` deadline timers (Reflex < 2 ms, Display < 10 ms)
-- [ ] Plugin async-task host primitive (Phase 7)
+- [x] Plugin async-task host primitive (Phase 7 — per-plugin `Store` as a tokio task)
 
 **Vim modal editing** (DESIGN.md §5.2)
 
@@ -474,12 +481,14 @@ The granular pre-Phase-4 polish plan, plus the upcoming Phase 4 work:
 - [x] 15 sub-modes toggle individually or via the `lsp-mode` umbrella
 - [ ] `linkedEditingRange` (needs shadow-edit machinery), `inlineValue` (needs DAP), `inlineCompletion` (lsp-types `proposed`) — deferred
 
-**Plugin host** (DESIGN.md §5.5, §9) — Phase 7
+**Plugin host** (DESIGN.md §5.5, §9) — Phase 7 ✅ (runtime; editor-side loading is Phase 8)
 
-- [ ] `wasmtime` + Component Model + WIT bindings
-- [ ] AOT module cache; lazy instantiation; capability manifests; fuel limits
-- [ ] Per-call overhead bench gates in CI (typed call < 500 ns p99; round-trip < 5 µs p99)
-- [ ] Reference plugin: `fuzzy-finder` (validates picker primitive end-to-end)
+- [x] `wasmtime` + Component Model + WIT bindings; per-plugin `Store` as a tokio task
+- [x] Module cache; capability manifests + WASI-preopen enforcement; fuel + epoch deadlines; crash-quarantine (`PluginCrashed`)
+- [x] Per-call overhead bench gates in CI (grammar round-trip < 5 µs p99 ~340 ns; no-per-frame-WASM dep-graph guard; `wasm32-wasip2` in CI)
+- [x] Every extension seam mirrored: picker, grammar (sync), completion, events, decorations, config, modes, host-services
+- [x] Reference plugin: `fuzzy-finder` (validates picker primitive end-to-end; parity + overhead benched, not cut over)
+- [ ] Editor-side loading: loader ex-command, on-disk plugin discovery, `init.rs`-as-WASM config — **Phase 8**
 
 **Multi-buffer + UI components** (DESIGN.md §5.9) — Phase 6
 

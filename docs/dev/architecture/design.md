@@ -3058,6 +3058,16 @@ lattice/
 
 ## 13. Roadmap
 
+> **Progress (see `../operations/implementation.md` for the live ledger):**
+> Phases 0–7 shipped. Phase 7 (the plugin **host runtime**) is complete —
+> `lattice-plugin-host`, the `wit/` API package, the capability/fuel/
+> crash-isolation model, and every extension seam, exercised end-to-end by
+> guest fixtures, with the `fuzzy-finder` validation plugin and CI overhead
+> gates. **Editor-side loading of plugins** (the plugin manager, on-disk
+> discovery, `init.rs`-as-WASM config, modes/reference-plugins as components)
+> is **Phase 8** — the runtime exists; wiring it into the editor is next. The
+> week numbers below are the original plan, retained as the historical spec.
+
 ### Phase 0: Foundation (weeks 1-2)
 Workspace, `lattice-core`, document/buffer/undo, file I/O, protocol enums, snapshot tests. **Exit:** programmatic edit roundtrip.
 

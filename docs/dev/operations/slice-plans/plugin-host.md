@@ -1,6 +1,11 @@
 # Slice plan — Plugin Host (Phase 7)
 
-**Status:** **Phase-7 PROPER COMPLETE (PH7.0–PH7.5 ✅) — ⭐ exit reached (2026-07-12).** PH7.0 ✅,
+**Status:** **PHASE 7 COMPLETE (PH7.0–PH7.12 ✅) — ⭐ exit reached (2026-07-12); WIT-seam
+hardening + teardown done (2026-07-14).** The host runtime, capability/WASI model, every
+exercised WIT seam, the `fuzzy-finder` validation plugin, and the CI overhead gates all ship.
+Editor-side loading (a `.wasm` a running editor discovers + loads), the on-disk plugin manager,
+and `init.rs`-as-WASM config are **Phase 8** — the runtime is done; wiring it into the editor is
+the next phase. PH7.0 ✅,
 PH7.1 ✅ (7.1a + 7.1b), PH7.2 ✅, **PH7.3 ✅** (a + b(b1a+b1b+b2) + c + d); **PH7.4 ✅** (⭐ exit,
 a–e): **4a ✅** (picker boundary mirrors + marginalia + context projection), **4b ✅**
 (host-services `walk` seam — first guest→host call, capability-gated), **4c ✅** (host adapter;
@@ -21,8 +26,11 @@ the reserved `SubscriptionTarget::Plugin` slot filled with a type-erased lock-dr
 ~3.75 µs debug). **PH7.9 ✅ COMPLETE** (decoration seam — the `Mode::gutter_decorations` mirror
 as an async off-render producer, the completion PH7.6 fork; `ui` row type-mirror-only;
 `decorations-guest` fixture proves producer→cache e2e; `< 50 µs` gate at ~63 µs debug; renderer
-read-from-cache is a tracked Phase-8 boot-wiring item). **PH7.10–7.12** (WIT-seam hardening before
-ABI freeze) remain. A conformance
+read-from-cache is a tracked Phase-8 boot-wiring item). **PH7.10 ✅** (config/options WIT seam —
+`register-option` wire + `#[derive(PluginOption)]` SDK), **PH7.11 ✅** (modes declaration WIT seam
+— declaration/registration + keymap bindings on the owned layer), **PH7.12 ✅** (WIT-seam
+hardening before ABI freeze: crash-quarantine + `PluginCrashed`, registry/keymap/config teardown,
+graceful-degradation audit + fuzz). A conformance
 audit of the whole host is `../../audit/plugin-host-architecture.md` (8 findings; **F1
 resolved**). Design fragment:
 [`../../architecture/plugin-host.md`](../../architecture/plugin-host.md). Spec:

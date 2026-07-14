@@ -32,11 +32,13 @@ in-editor — the `<topic>.md` filename is the topic name.
 | LSP                        | [user/lsp.md](user/lsp.md)                 |
 | `lsp-mode` umbrella        | [user/lsp-mode.md](user/lsp-mode.md)       |
 | Options / configuration    | [user/options.md](user/options.md)         |
+| Plugins                    | [user/plugins.md](user/plugins.md)         |
 
-The `lattice-help` crate embeds these via `include_str!`, so the
-binary is self-contained — `:help options` works on a machine with
+The `lattice-help` crate embeds these into the binary at build time
+(`crates/lattice-help/build.rs` auto-discovers every `docs/user/**/*.md`),
+so it is self-contained — `:help options` works on a machine with
 no network, no filesystem layout assumption beyond the binary
-itself.
+itself. A new topic is just a new `docs/user/<topic>.md`.
 
 ## dev/architecture/
 
@@ -51,7 +53,17 @@ changing it.
 | [keymap-architecture.md](dev/architecture/keymap-architecture.md)| Layered keymap registry, chord trie, dispatch.                                                  |
 | [lsp-architecture.md](dev/architecture/lsp-architecture.md)      | LSP supervisor / actor / client, attach lifecycle, capability gating.                          |
 | [insert-completion.md](dev/architecture/insert-completion.md)    | Insert-mode completion: sources, ranking, popup, ghost text.                                   |
+| [plugin-host.md](dev/architecture/plugin-host.md)                | Plugin host design fragment: the exercised-trait → WIT-mirror spine, capability/security model, per-seam rationale. |
 | [diagrams.md](dev/architecture/diagrams.md)                      | ASCII architecture diagrams (3-layer, threading, buffers/panes, mode resolver, LSP, completion).|
+
+## dev/guides/
+
+How-to references for extending lattice (distinct from the design
+specs above — these tell you how to *build* against a subsystem).
+
+| Doc                                                              | What it covers                                                                     |
+|------------------------------------------------------------------|------------------------------------------------------------------------------------|
+| [plugin-authoring.md](dev/guides/plugin-authoring.md)            | Writing a plugin: toolchain (`wasm32-wasip2`, `wit-bindgen`), the WIT package, lifecycle + manifest, per-seam surface, fuel/capability model, building + testing a guest, the `fuzzy-finder` example. |
 
 ## dev/operations/
 

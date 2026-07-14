@@ -63,7 +63,7 @@ same surface).
 | Search and substitute (`/` / `?` / `:s` / live preview / regex syntax / backrefs)                           | _covered in modal-editing + ex-commands_ | 🟡 |
 | Registers, marks, macros                                                                                    | _covered in modal-editing_          | 🟡     |
 | Help system (`:describe-*`, `:apropos`, `:keymap`, `<C-h>` map, mode-prefix syntax for `:describe-key`)    | [help.md](help.md)                  | ✅     |
-| Plugins (WASM Component Model, capabilities, fuel)                                                          | _planned (Phase 7+)_                | ⛔     |
+| Plugins (WASM Component Model, capabilities, fuel, crash isolation, API introspection)                      | [plugins.md](plugins.md)            | ✅     |
 | Performance posture (latency budgets, what's safe in a hot loop)                                            | _planned_                           | ⛔     |
 | Tutor (the gamified `:tutor` lesson sequence — lives/score/HUD; 7 lessons: motions → grammar → visual → modes/help → splits/diff/LSP → advanced editing → customization) | [tutor.md](tutor.md) · [lessons](tutor/) | ✅ |
 

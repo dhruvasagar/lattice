@@ -101,6 +101,14 @@ jobs:
           # injection -- see the top-of-file note.
           rustflags: ""
       - uses: Swatinem/rust-cache@v2
+      # The workspace `.cargo/config.toml` routes the Linux link step
+      # through mold (`-fuse-ld=mold`) for local build speed. mold isn't
+      # preinstalled on the GitHub Linux runners, so install it here or
+      # the link fails with `invalid linker name`. No-op on macOS/Windows
+      # (that target override is Linux-scoped).
+      - name: Install mold linker (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends mold
       - name: cargo test --workspace
         run: cargo test --workspace --locked
       - name: cargo clippy --workspace --tests
@@ -143,6 +151,11 @@ jobs:
           toolchain: stable
           rustflags: ""
       - uses: Swatinem/rust-cache@v2
+      # See the mold note in the `test` job -- the Linux link override in
+      # `.cargo/config.toml` needs mold present to compile proc-macro deps.
+      - name: Install mold linker (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends mold
       - name: cargo doc --no-deps --workspace
         # Build the rustdoc output (catches obvious breakage --
         # invalid markdown that fails to render, etc.) but don't
@@ -166,6 +179,10 @@ jobs:
           toolchain: stable
           rustflags: ""
       - uses: Swatinem/rust-cache@v2
+      # See the mold note in the `test` job.
+      - name: Install mold linker (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends mold
       - name: cargo bench --workspace --no-run
         # Compile every bench target to catch bench-code rot. Does
         # not execute the benches -- that's the bench-baseline job
@@ -189,6 +206,10 @@ jobs:
           toolchain: stable
           rustflags: ""
       - uses: Swatinem/rust-cache@v2
+      # See the mold note in the `test` job.
+      - name: Install mold linker (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends mold
       - name: cargo bench --workspace
         # Quick mode: small sample sizes, ~10x faster than full
         # criterion. Trades p99 fidelity for CI runtime; full runs
@@ -231,6 +252,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
+            mold \
             libxcb1-dev \
             libxkbcommon-dev \
             libxkbcommon-x11-dev \

@@ -332,7 +332,11 @@ mod tests {
     #[test]
     fn runtime_events_register_surface_and_unregister() {
         let name = "test.ph78b-runtime-only";
-        assert!(register_runtime_event(name, "a plugin event", "plugin:demo"));
+        assert!(register_runtime_event(
+            name,
+            "a plugin event",
+            "plugin:demo"
+        ));
 
         // Appears in the unified view, tagged non-builtin, beside `test.event`.
         let all = all_events();

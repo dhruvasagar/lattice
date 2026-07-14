@@ -581,21 +581,24 @@ impl ConversationStore {
         keep: impl Fn(&str) -> bool,
     ) -> Option<PendingPermissionView> {
         let conv = self.inner.lock().expect("conversation mutex poisoned");
-        conv.turns.iter().flat_map(|t| t.blocks.iter()).find_map(|b| match b {
-            Block::Permission {
-                id,
-                title,
-                description,
-                options,
-                status: PermissionStatus::Pending,
-            } if keep(id) => Some(PendingPermissionView {
-                id: id.clone(),
-                title: title.clone(),
-                description: description.clone(),
-                options: options.clone(),
-            }),
-            _ => None,
-        })
+        conv.turns
+            .iter()
+            .flat_map(|t| t.blocks.iter())
+            .find_map(|b| match b {
+                Block::Permission {
+                    id,
+                    title,
+                    description,
+                    options,
+                    status: PermissionStatus::Pending,
+                } if keep(id) => Some(PendingPermissionView {
+                    id: id.clone(),
+                    title: title.clone(),
+                    description: description.clone(),
+                    options: options.clone(),
+                }),
+                _ => None,
+            })
     }
 
     /// AUX‑3: set the global processing status and publish a
@@ -931,7 +934,11 @@ mod tests {
             "perm-1".to_string(),
             "First?".to_string(),
             None,
-            vec![test_permission_option("a", "Allow", PermissionOptionKind::AllowOnce)],
+            vec![test_permission_option(
+                "a",
+                "Allow",
+                PermissionOptionKind::AllowOnce,
+            )],
             tx1,
         );
         store.push_permission_request(
@@ -939,7 +946,11 @@ mod tests {
             "perm-2".to_string(),
             "Second?".to_string(),
             None,
-            vec![test_permission_option("b", "Allow", PermissionOptionKind::AllowOnce)],
+            vec![test_permission_option(
+                "b",
+                "Allow",
+                PermissionOptionKind::AllowOnce,
+            )],
             tx2,
         );
 

@@ -69,7 +69,9 @@ async fn plugin_declares_options_into_the_shared_registry_end_to_end() {
     assert_eq!(names.len(), 3, "three options declared: {names:?}");
     assert!(names.iter().any(|n| n == "config-fixture.enabled"));
 
-    let enabled = registry.lookup("config-fixture.enabled").expect("registered");
+    let enabled = registry
+        .lookup("config-fixture.enabled")
+        .expect("registered");
     assert_eq!(enabled.type_label(), "boolean");
     assert_eq!(enabled.get_formatted(), "true");
 
@@ -92,7 +94,10 @@ async fn plugin_declares_options_into_the_shared_registry_end_to_end() {
         .parse_and_set_command("config-fixture.count=7")
         .expect(":set on a plugin option works");
     assert_eq!(
-        registry.lookup("config-fixture.count").unwrap().get_formatted(),
+        registry
+            .lookup("config-fixture.count")
+            .unwrap()
+            .get_formatted(),
         "7"
     );
 }

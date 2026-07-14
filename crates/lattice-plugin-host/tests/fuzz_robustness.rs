@@ -107,7 +107,10 @@ fn manifest_handles_malformed_but_parseable_toml_gracefully() {
             "unknown capability string",
             "id = \"p\"\ncapabilities = [\"nonsense:everything\"]",
         ),
-        ("capability not a list", "id = \"p\"\ncapabilities = \"fs:read\""),
+        (
+            "capability not a list",
+            "id = \"p\"\ncapabilities = \"fs:read\"",
+        ),
         ("array-of-tables where scalar expected", "[[id]]\nx = 1"),
     ];
     for (name, toml) in cases {

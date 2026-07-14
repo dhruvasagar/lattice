@@ -140,9 +140,10 @@ impl PluginHost {
             );
         }
         let mut store = self.new_store(wasi, outcome.grant, budget)?;
-        let bindings = bindings::ConfigPlugin::instantiate_async(&mut store, component, &self.linker)
-            .await
-            .map_err(|e| PluginHostError::Instantiate(e.into()))?;
+        let bindings =
+            bindings::ConfigPlugin::instantiate_async(&mut store, component, &self.linker)
+                .await
+                .map_err(|e| PluginHostError::Instantiate(e.into()))?;
 
         // Wire the registry BEFORE `register-options` runs so the guest's imported
         // `register-option` / `get-option` reach it.
@@ -255,7 +256,8 @@ mod tests {
         let r = registry();
         register_plugin_option(&r, "plugin.count", PluginOptionKind::Integer, "3", "count");
         // A plugin option is a first-class registry entry: `:set` works uniformly.
-        r.parse_and_set_command("plugin.count=7").expect(":set works");
+        r.parse_and_set_command("plugin.count=7")
+            .expect(":set works");
         assert_eq!(r.lookup("plugin.count").unwrap().get_formatted(), "7");
     }
 }

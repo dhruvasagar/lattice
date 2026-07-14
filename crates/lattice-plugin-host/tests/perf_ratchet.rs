@@ -258,7 +258,12 @@ fn grammar_round_trip_stays_within_ceiling() {
     let component = host.compile(&std::fs::read(path).unwrap()).unwrap();
     let manifest = PluginManifest::new("grammar-fixture", Vec::new(), CapabilitySet::empty());
     let set = host
-        .instantiate_grammar_plugin(&component, &manifest, TrustTier::Bundled, &std::sync::Arc::new(lattice_runtime::EventBus::new()))
+        .instantiate_grammar_plugin(
+            &component,
+            &manifest,
+            TrustTier::Bundled,
+            &std::sync::Arc::new(lattice_runtime::EventBus::new()),
+        )
         .unwrap();
     // Leak the host so its engine + epoch ticker outlive the dispatched closures
     // (the trampoline holds the guest store for the plugin's life).

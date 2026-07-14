@@ -56,7 +56,10 @@ fn describe_plugin_api_renders_one_seam_via_the_spine() {
         .expect("host-services is a real seam");
     let body = text(&content);
     // Uniform `Introspectable` heading + the two extra sections.
-    assert!(body.contains("host-services  (plugin-api)"), "heading:\n{body}");
+    assert!(
+        body.contains("host-services  (plugin-api)"),
+        "heading:\n{body}"
+    );
     assert!(body.contains("capability:  filesystem"), "capability prose");
     assert!(
         body.contains("guest calls into the host"),
@@ -71,7 +74,10 @@ fn describe_plugin_api_renders_one_seam_via_the_spine() {
         .map(|a| a.name.as_str())
         .collect();
     assert!(anchors.contains(&"seam"), "seam anchor: {anchors:?}");
-    assert!(anchors.contains(&"functions"), "functions anchor: {anchors:?}");
+    assert!(
+        anchors.contains(&"functions"),
+        "functions anchor: {anchors:?}"
+    );
 }
 
 #[test]
@@ -103,7 +109,10 @@ fn apropos_surfaces_plugin_api_seams() {
     // The `picker-source` seam appears with the `plugin-api` kind and an
     // exec-link (not a `:describe-command` link).
     assert!(body.contains("picker-source"), "seam missing:\n{body}");
-    assert!(body.contains("plugin-api"), "plugin-api kind column missing");
+    assert!(
+        body.contains("plugin-api"),
+        "plugin-api kind column missing"
+    );
     assert!(
         has_exec_link(&content, "describe-plugin-api picker-source"),
         "plugin-api hit should link to :describe-plugin-api"
@@ -117,8 +126,14 @@ fn export_plugin_api_json_opens_a_savable_buffer() {
     // The export buffer is activated, so `active_text` is the dump.
     let body = ed.active_text().as_string();
     assert!(body.contains("\"seams\""), "json root missing:\n{body}");
-    assert!(body.contains("\"name\": \"host-services\""), "seam entry missing");
-    assert!(body.contains("\"capability\": \"fs\""), "capability token missing");
+    assert!(
+        body.contains("\"name\": \"host-services\""),
+        "seam entry missing"
+    );
+    assert!(
+        body.contains("\"capability\": \"fs\""),
+        "capability token missing"
+    );
     assert!(body.contains("\"walk\""), "function missing");
 }
 
@@ -163,7 +178,10 @@ fn plugin_name_seam_resolves_id_to_manifest_name() {
     // The Phase-8 loader populates it via `register_plugin_name`.
     ed.register_plugin_name(7, "git-gutter");
     assert_eq!(ed.plugin_display_name(7).as_deref(), Some("git-gutter"));
-    assert!(ed.plugin_display_name(99).is_none(), "unknown id stays None");
+    assert!(
+        ed.plugin_display_name(99).is_none(),
+        "unknown id stays None"
+    );
 }
 
 // --- PI.4: :describe-plugin / :list-plugins (loaded-plugin introspection) ---
@@ -172,7 +190,10 @@ fn plugin_name_seam_resolves_id_to_manifest_name() {
 fn list_plugins_empty_until_a_plugin_loads() {
     let ed = editor();
     let body = text(&ed.build_list_plugins_content());
-    assert!(body.contains("# Plugins (0 loaded)"), "empty count:\n{body}");
+    assert!(
+        body.contains("# Plugins (0 loaded)"),
+        "empty count:\n{body}"
+    );
     assert!(body.contains("No plugins are loaded"), "empty-state line");
 }
 
@@ -217,7 +238,11 @@ fn plugin_defined_event_surfaces_in_describe_events() {
     use lattice_protocol::event_registry::{register_runtime_event, unregister_runtime_event};
     let mut ed = editor();
     let name = "test.host-describe-runtime-evt";
-    assert!(register_runtime_event(name, "a custom plugin event", "plugin:demo"));
+    assert!(register_runtime_event(
+        name,
+        "a custom plugin event",
+        "plugin:demo"
+    ));
 
     // :describe-events (plural) lists it beside built-ins.
     let all = text(&ed.build_describe_events_content());

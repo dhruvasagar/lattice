@@ -695,7 +695,11 @@ impl ConfigRegistry {
 
     fn erased_at(&self, idx: usize) -> std::option::Option<Arc<dyn ErasedOption>> {
         let inner = self.inner.lock().expect("ConfigRegistry poisoned");
-        inner.by_id.get(idx).and_then(|slot| slot.as_ref()).map(Arc::clone)
+        inner
+            .by_id
+            .get(idx)
+            .and_then(|slot| slot.as_ref())
+            .map(Arc::clone)
     }
 }
 

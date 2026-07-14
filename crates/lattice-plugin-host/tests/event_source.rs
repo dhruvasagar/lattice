@@ -65,8 +65,7 @@ async fn plugin_receives_subscribed_events_end_to_end() {
     };
     let dir = TempDir::new().unwrap();
     let data_base = dir.path().join("data");
-    let host =
-        PluginHost::with_dirs(dir.path().join("cache"), &data_base).expect("host builds");
+    let host = PluginHost::with_dirs(dir.path().join("cache"), &data_base).expect("host builds");
     let component = host
         .compile(&std::fs::read(wasm).unwrap())
         .expect("compile events fixture");
@@ -211,8 +210,7 @@ async fn poison_handler_traps_gracefully_without_affecting_others() {
     };
     let dir = TempDir::new().unwrap();
     let data_base = dir.path().join("data");
-    let host =
-        PluginHost::with_dirs(dir.path().join("cache"), &data_base).expect("host builds");
+    let host = PluginHost::with_dirs(dir.path().join("cache"), &data_base).expect("host builds");
     let component = host
         .compile(&std::fs::read(wasm).unwrap())
         .expect("compile events fixture");

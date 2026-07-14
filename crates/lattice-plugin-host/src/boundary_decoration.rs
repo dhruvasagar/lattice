@@ -84,10 +84,12 @@ impl WitBoundary for NativeGutterDecoration {
     /// Compiler-exhaustive: a new `GutterDecoration` arm forces a mapping here.
     fn to_wit(&self) -> Result<WitGutterDecoration, String> {
         Ok(match self {
-            NativeGutterDecoration::Diff { line, kind } => WitGutterDecoration::Diff(WitGutterDiff {
-                line: *line,
-                kind: kind.to_wit()?,
-            }),
+            NativeGutterDecoration::Diff { line, kind } => {
+                WitGutterDecoration::Diff(WitGutterDiff {
+                    line: *line,
+                    kind: kind.to_wit()?,
+                })
+            }
             NativeGutterDecoration::Severity { line, level } => {
                 WitGutterDecoration::Severity(WitGutterSeverity {
                     line: *line,
@@ -145,7 +147,10 @@ mod tests {
             NativeGutterDiffKind::Change,
             NativeGutterDiffKind::Conflict,
         ] {
-            assert_eq!(NativeGutterDiffKind::from_wit(k.to_wit().unwrap()).unwrap(), k);
+            assert_eq!(
+                NativeGutterDiffKind::from_wit(k.to_wit().unwrap()).unwrap(),
+                k
+            );
         }
     }
 

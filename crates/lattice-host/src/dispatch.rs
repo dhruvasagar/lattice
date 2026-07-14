@@ -27385,8 +27385,14 @@ impl Editor {
                     lattice_grammar::HelpSection {
                         heading: "Seam:".to_string(),
                         lines: vec![
-                            format!("  direction:   {}", plugin_api_direction_prose(iface.direction)),
-                            format!("  capability:  {}", plugin_api_capability_prose(iface.capability)),
+                            format!(
+                                "  direction:   {}",
+                                plugin_api_direction_prose(iface.direction)
+                            ),
+                            format!(
+                                "  capability:  {}",
+                                plugin_api_capability_prose(iface.capability)
+                            ),
                         ],
                         anchor: Some("seam".to_string()),
                     },
@@ -27504,8 +27510,7 @@ impl Editor {
         let Ok(map) = reg.0.read() else {
             return Vec::new();
         };
-        let mut out: Vec<(u32, PluginMeta)> =
-            map.iter().map(|(k, v)| (*k, v.clone())).collect();
+        let mut out: Vec<(u32, PluginMeta)> = map.iter().map(|(k, v)| (*k, v.clone())).collect();
         out.sort_by(|a, b| a.1.name.cmp(&b.1.name).then(a.0.cmp(&b.0)));
         out
     }
@@ -27571,7 +27576,10 @@ impl Editor {
     /// spine (uniform with `:describe-command`). An unknown / not-loaded name
     /// echoes an error + returns `None`. The loaded-plugin registry is empty
     /// until the Phase-8 loader populates it, so today this always echoes.
-    pub fn build_describe_plugin_content(&mut self, name: &str) -> Option<lattice_help::HelpContent> {
+    pub fn build_describe_plugin_content(
+        &mut self,
+        name: &str,
+    ) -> Option<lattice_help::HelpContent> {
         let Some((id, meta)) = self
             .loaded_plugins()
             .into_iter()
@@ -27659,7 +27667,10 @@ impl Editor {
     /// line until the Phase-8 loader populates the registry.
     pub fn build_list_plugins_content(&self) -> lattice_help::HelpContent {
         let plugins = self.loaded_plugins();
-        let mut lines = vec![format!("# Plugins ({} loaded)", plugins.len()), String::new()];
+        let mut lines = vec![
+            format!("# Plugins ({} loaded)", plugins.len()),
+            String::new(),
+        ];
         if plugins.is_empty() {
             lines.push(
                 "No plugins are loaded. (The plugin loader is wired in at Phase 8.)".to_string(),
@@ -28314,7 +28325,10 @@ impl Editor {
             lines.push(format!("## {source} ({})", entries.len()));
             lines.push(String::new());
             for info in entries {
-                lines.push(format!("- [{}](event:{})  {}", info.name, info.name, info.doc));
+                lines.push(format!(
+                    "- [{}](event:{})  {}",
+                    info.name, info.name, info.doc
+                ));
             }
             lines.push(String::new());
         }
@@ -30011,7 +30025,11 @@ fn plugin_api_markdown_dump() -> String {
             out.push_str("_(none — a shared type interface)_\n");
         } else {
             for f in &iface.functions {
-                let first = f.doc.as_deref().and_then(|d| d.lines().next()).unwrap_or("");
+                let first = f
+                    .doc
+                    .as_deref()
+                    .and_then(|d| d.lines().next())
+                    .unwrap_or("");
                 out.push_str(&format!("- `{}` — {first}\n", f.name));
             }
         }
@@ -30026,7 +30044,10 @@ fn plugin_api_json_dump() -> String {
     let mut out = String::from("{\n  \"seams\": [\n");
     for (i, iface) in cat.interfaces.iter().enumerate() {
         out.push_str("    {\n");
-        out.push_str(&format!("      \"name\": \"{}\",\n", json_escape(&iface.name)));
+        out.push_str(&format!(
+            "      \"name\": \"{}\",\n",
+            json_escape(&iface.name)
+        ));
         out.push_str(&format!(
             "      \"direction\": \"{}\",\n",
             plugin_api_direction_token(iface.direction)
@@ -30048,7 +30069,11 @@ fn plugin_api_json_dump() -> String {
                 json_escape(f.doc.as_deref().unwrap_or(""))
             ));
         }
-        out.push_str(if iface.functions.is_empty() { "]\n" } else { "\n      ]\n" });
+        out.push_str(if iface.functions.is_empty() {
+            "]\n"
+        } else {
+            "\n      ]\n"
+        });
         out.push_str(if i + 1 == cat.interfaces.len() {
             "    }\n"
         } else {

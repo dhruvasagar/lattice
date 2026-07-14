@@ -224,7 +224,10 @@ mod tests {
             "id = \"git-gutter\"\ndoc = \"Shows git diff signs in the gutter.\"\n",
         )
         .unwrap();
-        assert_eq!(m.doc.as_deref(), Some("Shows git diff signs in the gutter."));
+        assert_eq!(
+            m.doc.as_deref(),
+            Some("Shows git diff signs in the gutter.")
+        );
 
         let none = PluginManifest::from_toml_str("id = \"x\"\n").unwrap();
         assert!(none.doc.is_none());

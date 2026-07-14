@@ -110,7 +110,9 @@ fn run_callback<T>(
             // crash fires once and later keystrokes short-circuit above.
             let kind = classify_trap(&trap);
             quarantine.trip(func, kind);
-            Err(CommandError::Plugin(format!("{func} trapped ({kind}): {trap}")))
+            Err(CommandError::Plugin(format!(
+                "{func} trapped ({kind}): {trap}"
+            )))
         }
     }
 }

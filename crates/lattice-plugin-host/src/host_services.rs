@@ -162,7 +162,8 @@ mod tests {
 
         assert!(out.iter().any(|p| p.ends_with("keep.rs")));
         assert!(
-            !out.iter().any(|p| p.contains(".git") || p.contains("target")),
+            !out.iter()
+                .any(|p| p.contains(".git") || p.contains("target")),
             "ignore dirs are skipped host-side: {out:?}"
         );
     }
@@ -186,8 +187,8 @@ mod tests {
 
     #[test]
     fn emit_plugin_event_publishes_to_a_native_subscriber() {
-        use lattice_runtime::{EventFilter, SubscriptionTarget};
         use lattice_protocol::EventKind;
+        use lattice_runtime::{EventFilter, SubscriptionTarget};
 
         let bus = EventBus::new();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();

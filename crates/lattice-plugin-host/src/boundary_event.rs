@@ -23,9 +23,9 @@ use crate::WitBoundary;
 use crate::boundary::path_to_wit;
 use crate::lattice::plugin_host::types::{
     Event as WitEvent, EventAppliedEdit as WitEventAppliedEdit, EventDocumentChanged,
-    EventDocumentOpened, EventDocumentPath, EventFilter as WitEventFilter, EventKind as WitEventKind,
-    EventModalModeChanged, EventModeLifecycle, EventOptionChanged, EventPlugin as WitEventPlugin,
-    EventSelectionsChanged,
+    EventDocumentOpened, EventDocumentPath, EventFilter as WitEventFilter,
+    EventKind as WitEventKind, EventModalModeChanged, EventModeLifecycle, EventOptionChanged,
+    EventPlugin as WitEventPlugin, EventSelectionsChanged,
 };
 use lattice_keymap::ModeId;
 use lattice_protocol::event::AppliedEdit as NativeEventAppliedEdit;
@@ -493,7 +493,10 @@ mod tests {
                 id: DocumentId::new(1),
                 path: bad,
             };
-            assert!(ev.to_wit().is_err(), "non-UTF-8 path must not cross lossily");
+            assert!(
+                ev.to_wit().is_err(),
+                "non-UTF-8 path must not cross lossily"
+            );
         }
     }
 

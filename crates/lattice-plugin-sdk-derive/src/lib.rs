@@ -230,9 +230,7 @@ fn option_kind_for(ty: &Type) -> Result<proc_macro2::TokenStream, syn::Error> {
 
 /// Parse `#[option(name = "...", default = "...")]` into `(name?, default?)`. An
 /// unknown key or non-string value is a compile error, never a silent fallback.
-fn parse_option_attr(
-    attrs: &[Attribute],
-) -> Result<(Option<String>, Option<String>), syn::Error> {
+fn parse_option_attr(attrs: &[Attribute]) -> Result<(Option<String>, Option<String>), syn::Error> {
     let mut name = None;
     let mut default = None;
     for attr in attrs {

@@ -60,20 +60,20 @@ pub mod boundary_grammar;
 pub mod boundary_picker;
 pub mod buffer;
 pub mod capability;
-pub mod config_host;
-pub mod mode_host;
-pub mod host_services;
 pub mod completion_host;
+pub mod completion_source;
+pub mod completion_task;
+pub mod config_host;
 pub mod decoration_host;
+pub mod decoration_source;
 pub mod decoration_task;
 pub mod event_task;
 pub mod events_host;
-pub mod completion_source;
-pub mod completion_task;
-pub mod decoration_source;
 pub mod grammar_host;
 pub mod grammar_trampoline;
+pub mod host_services;
 pub mod manifest;
+pub mod mode_host;
 pub mod picker_host;
 pub mod picker_source;
 pub mod picker_task;
@@ -90,8 +90,8 @@ pub use decoration_source::WasmDecorationSource;
 pub use decoration_task::{DecorationActor, DecorationClient};
 pub use manifest::{Capability, CapabilityParseError, ManifestError, PluginManifest};
 pub use picker_source::WasmPickerSource;
-pub use teardown::{PluginTeardown, TeardownRegistries, TeardownReport};
 pub use picker_task::{PickerActor, PickerClient};
+pub use teardown::{PluginTeardown, TeardownRegistries, TeardownReport};
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -710,11 +710,7 @@ impl crate::grammar_host::bindings::lattice::plugin_host::grammar::Host for Plug
 /// the outer `wasmtime::Result` (the `grammar` / `host_services` shape). The
 /// filter stays WIT-typed here and projects to native at wire time.
 impl crate::events_host::bindings::lattice::plugin_host::events::Host for PluginState {
-    fn subscribe(
-        &mut self,
-        filter: crate::lattice::plugin_host::types::EventFilter,
-        handler: u32,
-    ) {
+    fn subscribe(&mut self, filter: crate::lattice::plugin_host::types::EventFilter, handler: u32) {
         self.event_subscriptions.record(filter, handler);
     }
 }
@@ -807,12 +803,27 @@ impl crate::mode_host::bindings::lattice::plugin_host::modes::Host for PluginSta
         // WIT `flags` project to the native bitflags one bit at a time (the
         // generated flags type is distinct from `CapabilitySet`).
         let mut caps = CapabilitySet::empty();
-        caps.set(CapabilitySet::BUFFER_URI, decl.capabilities.contains(WitCaps::BUFFER_URI));
+        caps.set(
+            CapabilitySet::BUFFER_URI,
+            decl.capabilities.contains(WitCaps::BUFFER_URI),
+        );
         caps.set(CapabilitySet::LSP, decl.capabilities.contains(WitCaps::LSP));
-        caps.set(CapabilitySet::TREE_SITTER, decl.capabilities.contains(WitCaps::TREE_SITTER));
-        caps.set(CapabilitySet::FOLDS, decl.capabilities.contains(WitCaps::FOLDS));
-        caps.set(CapabilitySet::WRITABLE, decl.capabilities.contains(WitCaps::WRITABLE));
-        caps.set(CapabilitySet::DIAGNOSTICS, decl.capabilities.contains(WitCaps::DIAGNOSTICS));
+        caps.set(
+            CapabilitySet::TREE_SITTER,
+            decl.capabilities.contains(WitCaps::TREE_SITTER),
+        );
+        caps.set(
+            CapabilitySet::FOLDS,
+            decl.capabilities.contains(WitCaps::FOLDS),
+        );
+        caps.set(
+            CapabilitySet::WRITABLE,
+            decl.capabilities.contains(WitCaps::WRITABLE),
+        );
+        caps.set(
+            CapabilitySet::DIAGNOSTICS,
+            decl.capabilities.contains(WitCaps::DIAGNOSTICS),
+        );
 
         // Project the keymap bindings (PH7.11b): WIT `binding-mode` → native
         // `BindingMode`; chord + command names cross as strings (resolved against

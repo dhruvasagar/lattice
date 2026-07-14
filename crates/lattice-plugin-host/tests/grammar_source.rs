@@ -47,7 +47,12 @@ fn load(dir: &TempDir) -> (CommandRegistry, u32) {
         .expect("compile grammar fixture");
     let manifest = PluginManifest::new("grammar-fixture", Vec::new(), CapabilitySet::empty());
     let set = host
-        .instantiate_grammar_plugin(&component, &manifest, TrustTier::Bundled, &std::sync::Arc::new(lattice_runtime::EventBus::new()))
+        .instantiate_grammar_plugin(
+            &component,
+            &manifest,
+            TrustTier::Bundled,
+            &std::sync::Arc::new(lattice_runtime::EventBus::new()),
+        )
         .expect("instantiate + register-grammar");
     let plugin_id = set.plugin_id().0;
     // 2 motions (down-n, fails) + 1 text object (to-cursor).

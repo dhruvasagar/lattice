@@ -252,7 +252,12 @@ impl Editor {
         major_id: ModeId,
         flags: BufferFlags,
     ) -> BufferId {
-        self.ensure_named_synthetic_doc_with_variant(name, major_id, flags, SyntheticDocVariant::Help)
+        self.ensure_named_synthetic_doc_with_variant(
+            name,
+            major_id,
+            flags,
+            SyntheticDocVariant::Help,
+        )
     }
 
     /// PU.1a: register a freshly-built [`lattice_help::HelpContent`]

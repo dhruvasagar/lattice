@@ -196,7 +196,11 @@ impl Mode for AiPermissionMode {
                 Some(pending) => {
                     let state = MenuState {
                         request_id: Some(pending.id.clone()),
-                        option_ids: pending.options.iter().map(|o| o.option_id.clone()).collect(),
+                        option_ids: pending
+                            .options
+                            .iter()
+                            .map(|o| o.option_id.clone())
+                            .collect(),
                     };
                     (project_permission(&pending), state)
                 }
@@ -409,7 +413,10 @@ mod tests {
             matches!(first.as_slice(), [Effect::OpenPopup { name, .. }] if name == PERMISSION_BUFFER_NAME),
             "a pending request auto-opens the menu",
         );
-        assert!(coord.is_open(), "menu_open set optimistically so it emits once");
+        assert!(
+            coord.is_open(),
+            "menu_open set optimistically so it emits once"
+        );
         assert!(
             auto_open_tick(&store, &coord).is_empty(),
             "gated while a menu is open — no repeat emit every tick",
@@ -436,7 +443,10 @@ mod tests {
         store.resolve_permission("perm-1", PermissionOptionId::new("allow-once"));
         coord.set_open(false); // guard Drop on dismiss
         assert!(
-            matches!(auto_open_tick(&store, &coord).as_slice(), [Effect::OpenPopup { .. }]),
+            matches!(
+                auto_open_tick(&store, &coord).as_slice(),
+                [Effect::OpenPopup { .. }]
+            ),
             "the next pending request opens once the menu closes",
         );
     }

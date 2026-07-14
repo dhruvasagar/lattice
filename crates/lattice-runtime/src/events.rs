@@ -286,9 +286,7 @@ impl std::fmt::Debug for SubscriptionTarget {
         // the sink's presence (mirrors `EventFilter`'s `predicate` handling).
         match self {
             SubscriptionTarget::Channel(tx) => f.debug_tuple("Channel").field(tx).finish(),
-            SubscriptionTarget::Invocation(inv) => {
-                f.debug_tuple("Invocation").field(inv).finish()
-            }
+            SubscriptionTarget::Invocation(inv) => f.debug_tuple("Invocation").field(inv).finish(),
             SubscriptionTarget::Plugin {
                 plugin, handler, ..
             } => f

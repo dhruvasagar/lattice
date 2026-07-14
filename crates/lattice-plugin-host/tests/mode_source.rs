@@ -74,8 +74,13 @@ async fn plugin_declares_minor_modes_into_the_shared_registry_end_to_end() {
 
     // The declared activation policy + capability requirements are carried onto
     // the registered mode.
-    let lens = registry.get(ModeId::new("lsp-lens-mode")).expect("registered");
-    assert!(matches!(lens.activation_policy(), ActivationPolicy::Universal));
+    let lens = registry
+        .get(ModeId::new("lsp-lens-mode"))
+        .expect("registered");
+    assert!(matches!(
+        lens.activation_policy(),
+        ActivationPolicy::Universal
+    ));
     assert_eq!(
         lens.required_capabilities(),
         CapabilitySet::LSP | CapabilitySet::DIAGNOSTICS

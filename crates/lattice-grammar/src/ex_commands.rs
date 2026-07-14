@@ -2169,7 +2169,11 @@ fn apply_describe_plugin_api(ctx: &ExCommandContext) -> GrammarResult<Effect> {
     let seam = match &ctx.args {
         Args::String(s) => Some(s.clone()),
         Args::None => None,
-        _ => return Err(CommandError::BadArgs("expected an optional seam name".into())),
+        _ => {
+            return Err(CommandError::BadArgs(
+                "expected an optional seam name".into(),
+            ));
+        }
     };
     Ok(Effect::DescribePluginApi { seam })
 }
@@ -2734,7 +2738,9 @@ mod tests {
         )
         .unwrap();
         match eff {
-            Effect::DescribePluginApi { seam } => assert_eq!(seam.as_deref(), Some("host-services")),
+            Effect::DescribePluginApi { seam } => {
+                assert_eq!(seam.as_deref(), Some("host-services"))
+            }
             other => panic!("unexpected effect: {other:?}"),
         }
         // No arg -> None (renders the full list).
@@ -2824,8 +2830,13 @@ mod tests {
                 &CancellationToken::never(),
             )
         };
-        match run(&registry, &mut doc, ex.describe_plugin.0, Args::String("git-gutter".into()))
-            .unwrap()
+        match run(
+            &registry,
+            &mut doc,
+            ex.describe_plugin.0,
+            Args::String("git-gutter".into()),
+        )
+        .unwrap()
         {
             Effect::DescribePlugin { name } => assert_eq!(name, "git-gutter"),
             other => panic!("unexpected: {other:?}"),

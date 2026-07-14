@@ -81,8 +81,7 @@ async fn crash_then_unload_then_reload_delivers_on_a_fresh_instance() {
     // ---- Instance A: crashes, then is unloaded. ----
     let dir_a = TempDir::new().unwrap();
     let data_a = dir_a.path().join("data");
-    let host_a =
-        PluginHost::with_dirs(dir_a.path().join("cache"), &data_a).expect("host A builds");
+    let host_a = PluginHost::with_dirs(dir_a.path().join("cache"), &data_a).expect("host A builds");
     let component_a = host_a.compile(&std::fs::read(wasm).unwrap()).unwrap();
     let (subs_a, actor_a) = host_a
         .spawn_event_plugin(
@@ -143,8 +142,7 @@ async fn crash_then_unload_then_reload_delivers_on_a_fresh_instance() {
     // ---- Instance B: the reload. A fresh spawn → fresh, untripped Quarantine. ----
     let dir_b = TempDir::new().unwrap();
     let data_b = dir_b.path().join("data");
-    let host_b =
-        PluginHost::with_dirs(dir_b.path().join("cache"), &data_b).expect("host B builds");
+    let host_b = PluginHost::with_dirs(dir_b.path().join("cache"), &data_b).expect("host B builds");
     let component_b = host_b.compile(&std::fs::read(wasm).unwrap()).unwrap();
     let (subs_b, actor_b) = host_b
         .spawn_event_plugin(

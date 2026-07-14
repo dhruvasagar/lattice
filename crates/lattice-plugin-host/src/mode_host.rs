@@ -25,9 +25,7 @@
 
 use lattice_grammar::source::SourceLocation;
 use lattice_grammar::{CommandInvocation, CommandRegistry};
-use lattice_keymap::{
-    BindingMode, KeymapCapability, KeymapHandle, KeymapLayer,
-};
+use lattice_keymap::{BindingMode, KeymapCapability, KeymapHandle, KeymapLayer};
 use lattice_mode::{
     ActivationPolicy, CapabilitySet, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind,
     ModeRegistry,
@@ -248,9 +246,10 @@ impl PluginHost {
             );
         }
         let mut store = self.new_store(wasi, outcome.grant, budget)?;
-        let bindings = bindings::ModesPlugin::instantiate_async(&mut store, component, &self.linker)
-            .await
-            .map_err(|e| PluginHostError::Instantiate(e.into()))?;
+        let bindings =
+            bindings::ModesPlugin::instantiate_async(&mut store, component, &self.linker)
+                .await
+                .map_err(|e| PluginHostError::Instantiate(e.into()))?;
         let plugin_id = self.alloc_id();
 
         arm_store(&mut store, budget)?;
@@ -364,7 +363,10 @@ mod tests {
         let mut commands = CommandRegistry::new();
         let _ = lattice_grammar::ex_commands::populate(&mut commands);
         let target = "ex:write";
-        assert!(commands.id_by_name(target).is_some(), "sanity: target exists");
+        assert!(
+            commands.id_by_name(target).is_some(),
+            "sanity: target exists"
+        );
 
         let keymap = KeymapHandle::new();
         let mode_id = ModeId::new("git-blame-mode");
@@ -406,6 +408,9 @@ mod tests {
             command: "ex:does-not-exist".to_string(),
         }];
         let bound = bind_mode_keymap(&keymap, &commands, 1, &ModeId::new("x-mode"), &bindings);
-        assert_eq!(bound, 0, "an unknown command binds nothing (logged + skipped)");
+        assert_eq!(
+            bound, 0,
+            "an unknown command binds nothing (logged + skipped)"
+        );
     }
 }

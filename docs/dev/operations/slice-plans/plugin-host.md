@@ -1284,10 +1284,13 @@ and major modes are deferred (Phase 8 / other seams).
 A Rust SDK `#[derive(PluginMode)]` (declarative bindings + doc-comment) is a possible future
 follow-on (the PH7.8b.3 / PH7.10b pattern); not needed for the wire.
 
-### PH7.12 — Crash isolation + lifecycle hardening + four-artefact close 🚧
+### PH7.12 — Crash isolation + lifecycle hardening + four-artefact close ✅ (2026-07-14)
 Trap → `PluginCrashed` event + quarantine; graceful degradation audit across every seam;
 reload/hot-swap seam (teardown + re-instantiate) for the deferred `init.rs`/plugin-manager
-consumers; fuzz malformed components/payloads/timing. **Depends:** all above. Sub-sliced:
+consumers; fuzz malformed components/payloads/timing. **Depends:** all above. Sub-sliced —
+**12a ✅** crash-quarantine, **12b ✅** reload/unload seam (12b.2 intern reclamation deferred to
+the Phase-8 reload consumer, decision C), **12c ✅** graceful-degradation audit + fuzz. Closes
+the Phase-7 plugin-host substrate.
 
 #### PH7.12a — Crash-quarantine + `PluginCrashed` ✅ (2026-07-14)
 The first trap on any repeated-call surface taints its `wasmtime` `Store` irrecoverably (no
@@ -1434,9 +1437,31 @@ composing the reload cycle. New `crates/lattice-plugin-host/src/teardown.rs`:
   `spawn_event_plugin`) → the reloaded instance delivers normally, exactly one crash across the
   cycle. Green: lib teardown (1) + plugin_teardown (1).
 
-#### PH7.12c — Graceful-degradation audit + fuzz 📝
-Audit every seam for log-and-skip-not-panic under malformed input; fuzz malformed
-components / payloads / timing (epoch races, fuel-at-boundary). **Depends:** PH7.12a.
+#### PH7.12c — Graceful-degradation audit + fuzz ✅ (2026-07-14)
+**Audit conclusion — the production guest-input path is panic-free by construction.** A sweep of
+every `unwrap`/`expect`/`panic!`/`unreachable!`/unguarded-index in `lattice-plugin-host/src`
+found the entire malformed-input surface already degrades to typed errors: every boundary
+`from_wit`/`to_wit` returns `Result<_, String>`, host-services return `Result`, actor calls map
+traps to typed `Trap` (→ quarantine, PH7.12a). Splitting each file at its first `#[cfg(test)]`
+marker, *all* panic sites live in test modules bar two production sites, both safe: `lib.rs`'s
+`.expect("spawning the epoch-ticker thread")` (host construction, not the guest path — a
+thread-spawn failure is a host-environment error) and `boundary_effect.rs`'s `effects.remove(0)`
+(guarded by `else if effects.len() == 1`). No code change needed — the boundary discipline
+already enforces the four-artefact "log + skip, never panic" rule.
+- **Fuzz (`tests/fuzz_robustness.rs`, `proptest`):** the two boundaries where *untrusted* bytes/
+  text cross into the host — component bytes (`compile`) and manifest TOML (`from_toml_str`) —
+  hammered with randomised + adversarial inputs, asserting a typed error, never a panic/hang.
+  Property tests: `compile` on arbitrary bytes + wasm-magic-prefixed garbage; `from_toml_str` and
+  `Capability::from_str` on arbitrary text. Deterministic batteries: adversarial component
+  prefixes (empty / magic-only / a valid *core-module* header that must be rejected as
+  not-a-component / truncated real component / ascii garbage) → all typed `Compile` errors; and
+  malformed-but-parseable manifest TOML (wrong types, unknown capability, array-of-tables) →
+  graceful + deterministic.
+- **Not fuzzed, with reason:** the guest→host *value* path (`from_wit`) can't take arbitrary
+  bytes — wasmtime's typed ABI only hands the host well-typed WIT values, and every `from_wit`
+  returns `Result` by construction. Malformed *timing* (fuel/epoch traps mid-call) is covered by
+  PH7.12a's quarantine tests — a trap becomes a typed `Trap` + one `PluginCrashed`, never a panic.
+- **Depends:** PH7.12a. Closes PH7.12 (and the Phase-7 plugin-host substrate).
 
 ---
 

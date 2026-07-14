@@ -102,6 +102,10 @@ tempfile = { workspace = true }
 # proving the contract round-trips guest→host.
 lattice-plugin-sdk = { path = "../lattice-plugin-sdk" }
 serde = { workspace = true }
+# PH7.12c: property fuzz of the untrusted-input boundaries (component bytes,
+# manifest TOML) — assert graceful degradation (typed error, never a panic)
+# across randomised inputs.
+proptest = { workspace = true }
 
 [[bench]]
 name = "instantiate"

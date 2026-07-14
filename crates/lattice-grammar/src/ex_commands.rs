@@ -1067,15 +1067,13 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             args_schema: vec![ArgSpec {
                 name: "name",
                 kind: ArgKind::String,
-                // Completion: the theme registry is a host-side service
-                // the grammar crate's completion generators can't reach,
-                // so no `gen:elements` source here (T.9.d scope: the
-                // ex-command + handler; a completion generator is a
-                // follow-up).
+                // `gen:elements` is a host generator (the theme registry is a
+                // host-side ServiceRegistry service); it's registered in
+                // `editor_boot.rs` and walks `ThemeRegistry::element_names`.
                 doc: "Registered theme-element name (e.g. `syntax.keyword`, `diff.add.sign`).",
                 prompt: "element:",
                 default: ArgDefault::Required,
-                completion: None,
+                completion: Some("gen:elements"),
             }],
             surface_form: SurfaceForm::Keyword,
         },

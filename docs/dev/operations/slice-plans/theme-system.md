@@ -362,6 +362,12 @@ chrome fields migrated off host `Theme` onto overrides
   accept `#rrggbb` hex (now unblocked — palette is the indirection).
 - **T.9.d** — `:describe-element` / `:customize` buffer-backed views
   (owner + resolved style + inherit chain). Larger help-view feature.
+  - **T.9.d follow-up (landed):** `<Tab>` completion for `:describe-element`
+    / `:describe-face`. `ThemeRegistry::element_names()` feeds a `gen:elements`
+    host completion generator (`host_generators::ElementsGenerator`, registered
+    in `editor_boot.rs`), pointed at by the ex-command's `ArgSpec.completion`.
+    Closes the deferred completion gap; the `:describe-plugin-api` `gen:plugin-apis`
+    generator remains the same-shaped open follow-up.
 
 - `:colorscheme <name>` swaps active `(Palette, overrides)`; a
   named-theme registry (≥2 builtin themes to exercise the swap).

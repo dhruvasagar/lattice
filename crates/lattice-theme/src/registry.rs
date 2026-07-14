@@ -146,6 +146,12 @@ pub trait ThemeRegistry: Send + Sync {
     /// path.
     fn describe(&self, name: &ElementName) -> Option<ElementInfo>;
 
+    /// T.9.d follow-up: the names of every registered theme element, sorted.
+    /// Drives `:describe-element` / `:describe-face` `<Tab>` completion (the
+    /// `gen:elements` host generator). Sorted so popup ordering is stable
+    /// across runs; a theme-build-time read, never on the hot path.
+    fn element_names(&self) -> Vec<String>;
+
     /// T.11.1: register (or replace, by name) a named theme in the
     /// catalog. Idempotent by name — re-registering a name replaces its
     /// palette + overrides. This is the seam `init.rs` (and, later, a
@@ -350,6 +356,13 @@ impl ThemeRegistry for InMemoryThemeRegistry {
     fn theme_names(&self) -> Vec<String> {
         let inner = self.inner.read().expect("theme registry lock poisoned");
         inner.themes.iter().map(|t| t.name.to_string()).collect()
+    }
+
+    fn element_names(&self) -> Vec<String> {
+        let inner = self.inner.read().expect("theme registry lock poisoned");
+        let mut names: Vec<String> = inner.by_name.keys().map(|n| n.as_str().to_string()).collect();
+        names.sort();
+        names
     }
 
     fn apply_theme(&self, name: &str) -> bool {
@@ -2487,6 +2500,30 @@ mod tests {
         // Resolved style is the concrete mocha mauve + bold.
         assert_eq!(info.resolved.fg, Some(Color::Rgb(0xcb, 0xa6, 0xf7)));
         assert!(info.resolved.modifiers.bold);
+    }
+
+    #[test]
+    fn element_names_are_sorted_and_include_builtins() {
+        // T.9.d follow-up: `element_names` backs `gen:elements`
+        // (`:describe-element <Tab>`). Every registered element appears, and
+        // the list is sorted so popup ordering is stable across runs.
+        let reg = reg();
+        let names = reg.element_names();
+        assert!(
+            names.contains(&"syntax.keyword".to_string()),
+            "builtin element must be enumerable for completion"
+        );
+        assert!(names.contains(&"syntax.comment".to_string()));
+        let mut sorted = names.clone();
+        sorted.sort();
+        assert_eq!(names, sorted, "element_names must be sorted");
+        // Every name resolves via `describe` — no phantom entries.
+        for n in &names {
+            assert!(
+                reg.describe(&ElementName::from(n.clone())).is_some(),
+                "enumerated element `{n}` must be describable"
+            );
+        }
     }
 
     #[test]

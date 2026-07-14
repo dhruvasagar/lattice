@@ -90,6 +90,40 @@ impl CandidateGenerator for EventsGenerator {
     }
 }
 
+/// `gen:elements` -- one candidate per registered theme element / face.
+/// Walks [`ThemeRegistry::element_names`] so the candidate set follows the
+/// live registry (core elements plus any mode/plugin-contributed ones).
+/// Drives `:describe-element <Tab>` / `:describe-face <Tab>`.
+///
+/// Holds a strong [`ThemeRegistryHandle`] clone, mirroring
+/// [`ThemePickerSource`] (the theme registry is a host ServiceRegistry
+/// service that renderers read; nothing takes `Arc::get_mut` of it
+/// post-boot, so the [`Weak`] discipline the mode-registry generators use
+/// doesn't apply here).
+pub struct ElementsGenerator {
+    pub registry: ThemeRegistryHandle,
+}
+
+impl CandidateGenerator for ElementsGenerator {
+    fn generate(&self, _ctx: &GenerateContext<'_>) -> Vec<RawCandidate> {
+        // `element_names()` is already sorted.
+        self.registry
+            .element_names()
+            .into_iter()
+            .map(|name| RawCandidate {
+                text: name.clone(),
+                display: name,
+                kind: CandidateKind::Plain,
+                data: CandidateData::Plain,
+                source: None,
+                accept_action: None,
+                annotations: Vec::new(),
+                display_spans: Vec::new(),
+            })
+            .collect()
+    }
+}
+
 /// `gen:log-levels` -- the five canonical log levels accepted by
 /// `:lsp-log-level`. Returned in severity order so the popup reads
 /// the same way the level enum does.
@@ -304,5 +338,48 @@ impl PickerSourceGenerator for ThemePickerSource {
             }
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lattice_core::Document;
+    use lattice_grammar::CommandRegistry;
+    use std::sync::Arc;
+
+    /// T.9.d follow-up: `gen:elements` (`:describe-element <Tab>`) enumerates
+    /// the live theme-element registry. Confirms the generator surfaces builtin
+    /// element names in sorted order, mirroring `ThemeRegistry::element_names`.
+    #[test]
+    fn elements_generator_produces_sorted_theme_element_names() {
+        let registry: ThemeRegistryHandle =
+            Arc::new(lattice_theme::InMemoryThemeRegistry::with_defaults());
+        let g = ElementsGenerator {
+            registry: registry.clone(),
+        };
+        let doc = Document::from_text("");
+        let buf = doc.buffer();
+        let cmd_reg = CommandRegistry::new();
+        let ctx = GenerateContext {
+            prefix: "",
+            buffer: buf,
+            registry: &cmd_reg,
+            case_sensitive: false,
+        };
+
+        let out = g.generate(&ctx);
+        let names: Vec<String> = out.iter().map(|c| c.text.clone()).collect();
+
+        assert!(
+            names.contains(&"syntax.keyword".to_string()),
+            "a builtin theme element must complete for `:describe-element`"
+        );
+        // The generator returns exactly what the registry enumerates, in the
+        // same (sorted) order — no drift, so popup ordering is stable.
+        assert_eq!(names, registry.element_names());
+        let mut sorted = names.clone();
+        sorted.sort();
+        assert_eq!(names, sorted, "candidates must be sorted");
     }
 }

@@ -916,6 +916,18 @@ impl Editor {
                 registry: Arc::downgrade(&picker_registry),
             },
         );
+        // T.9.d follow-up: `gen:elements` — theme-element / face names for
+        // `:describe-element <Tab>` / `:describe-face <Tab>`. Holds a clone of
+        // the same `theme_registry` handle the renderers + `:describe-element`
+        // handler read, so completion never drifts from the live element set.
+        completion_registry.register_generator(
+            "gen:elements",
+            "Every registered theme element / face name; used by \
+             `:describe-element <Tab>` / `:describe-face <Tab>`.",
+            crate::host_generators::ElementsGenerator {
+                registry: theme_registry.clone(),
+            },
+        );
 
         // `lang_registry` (one per Editor, shared between the document
         // buffer's `Syntax`, every `HelpBuffer`, and the grep preview

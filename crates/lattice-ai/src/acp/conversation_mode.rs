@@ -429,6 +429,16 @@ impl Mode for AiConversationMode {
         CapabilitySet::empty()
     }
 
+    /// AU‑3 gap fix: claim the invocation runner so vim operators respect the
+    /// editable tail. The host registers `Editor::run_editable_tail_invocation`
+    /// under this mode id (`editor_boot.rs`); it gates mutating operators
+    /// (`x` / `dd` / `dw`) started in the frozen transcript and lets them
+    /// through in the prompt. Without a runner, operators fell through to the
+    /// ungated document path and mutated the read-only transcript.
+    fn invocation_runner(&self) -> Option<ModeId> {
+        Some(Self::mode_id())
+    }
+
     /// Pull in `repl-mode` on the conversation buffer: it owns the generic
     /// insert-entry surface (`i`/`a`/`o`/… → jump-to-prompt-and-Insert). The
     /// activation cascade turns it on wherever this major is active and off
@@ -1006,6 +1016,20 @@ mod tests {
                 first_line_min_byte: 2,
                 first_editable_line: Some(0),
             }),
+        );
+    }
+
+    /// AU‑3 gap fix: the mode claims its own invocation runner so the host
+    /// wires `Editor::run_editable_tail_invocation` (which gates vim operators
+    /// like `x`/`dd` to the editable prompt) instead of falling through to the
+    /// ungated document path. `editor_boot.rs` registers the runner fn under
+    /// exactly this mode id.
+    #[test]
+    fn claims_invocation_runner_for_the_editable_tail_gate() {
+        let mode = AiConversationMode::new();
+        assert_eq!(
+            <AiConversationMode as Mode>::invocation_runner(&mode),
+            Some(AiConversationMode::mode_id()),
         );
     }
 

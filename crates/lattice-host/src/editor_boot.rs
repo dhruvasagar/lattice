@@ -1929,6 +1929,15 @@ impl Editor {
             lattice_terminal::TerminalMode::mode_id(),
             Editor::run_terminal_invocation,
         );
+        // AU‑3 gap fix: the AI conversation buffer is read-only above an
+        // editable prompt tail. Its runner gates vim operators (`x` / `dd`)
+        // to the tail so they can't mutate the frozen transcript — the
+        // editable-tail read-only gate otherwise only covered the
+        // `apply_edit_blocking` char path, not the operator path.
+        editor.register_invocation_runner(
+            lattice_ai::acp::conversation_mode::AiConversationMode::mode_id(),
+            Editor::run_editable_tail_invocation,
+        );
         editor
     }
 }

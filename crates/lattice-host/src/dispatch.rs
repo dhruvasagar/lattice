@@ -31193,6 +31193,39 @@ impl Editor {
         self.run_read_only_motion(inv)
     }
 
+    /// Invocation runner for a read-only buffer that exposes an editable tail
+    /// (the comint prompt of an owner-written conversation buffer, e.g.
+    /// `ai-conversation-mode`). Splits on the cursor:
+    ///
+    /// - Cursor in the **editable tail** → return `false` so the invocation
+    ///   falls through to the normal document path; vim operators (`x` / `dd`
+    ///   / `dw`) edit the prompt like any Document.
+    /// - Cursor in the **frozen transcript** above the anchor → delegate to
+    ///   [`Self::run_read_only_motion`]: motions move the cursor, mutating
+    ///   operators / text objects echo "read-only" and never reach the rope,
+    ///   and Action / ex-command invocations (`:`, `/`) still fall through.
+    ///
+    /// AU-3 gap fix: without this runner the mode registered none, so
+    /// operators routed straight to [`Self::run_document_invocation`] and
+    /// committed edits on the real document, bypassing the editable-tail gate
+    /// (which only guarded the `apply_edit_blocking` char path). A whole-line
+    /// operator started in the tail can still reach a byte above the anchor
+    /// (`dgg`); that residual is the cursor-vs-range approximation, harmless
+    /// here because the transcript re-projects from the conversation store.
+    pub fn run_editable_tail_invocation(
+        &mut self,
+        inv: lattice_grammar::CommandInvocation,
+    ) -> bool {
+        let cursor_in_tail = self.active_editable_tail().is_some_and(|tail| {
+            let line_count = self.document.snapshot().buffer.line_count();
+            tail.permits(self.cursor.line, self.cursor.byte, line_count)
+        });
+        if cursor_in_tail {
+            return false;
+        }
+        self.run_read_only_motion(inv)
+    }
+
     /// 5.5.G.23: top-level command-invocation router. Selects the
     /// correct runner based on `active_buffer`. `CommandKind::Action`
     /// invocations bypass the document path and run against a
@@ -36492,6 +36525,95 @@ mod tests {
             "fold-cycle in a read-only popup echoes read-only (not the \
              handler's 'no folds to cycle'), got: {}",
             msg.text
+        );
+    }
+
+    /// AU‑3 gap fix: a read-only buffer with an editable tail (the AI
+    /// conversation prompt) must gate vim operators started in the frozen
+    /// transcript, but let them run in the prompt. Before the fix operators
+    /// routed to `run_document_invocation` and mutated the transcript,
+    /// bypassing the editable-tail gate (which only guarded the char path).
+    #[tokio::test]
+    async fn editable_tail_runner_gates_operators_above_the_prompt() {
+        use lattice_grammar::{args::Args, CommandInvocation, Target};
+        use lattice_mode::{
+            EditableTail, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, ModeRegistry,
+        };
+        use lattice_protocol::position::Position;
+
+        #[derive(Debug, Clone)]
+        struct TailTestMode;
+        impl TailTestMode {
+            fn mode_id() -> ModeId {
+                ModeId::new("tail-test-mode")
+            }
+        }
+        impl Mode for TailTestMode {
+            type Guard = ();
+            fn id(&self) -> ModeId {
+                Self::mode_id()
+            }
+            fn kind(&self) -> ModeKind {
+                ModeKind::Major
+            }
+            // Last buffer line is the editable prompt; everything above is
+            // frozen. `first_editable_line: None` derives the boundary from
+            // the line count, so the test needs no anchor seeding.
+            fn editable_tail(&self) -> Option<EditableTail> {
+                Some(EditableTail {
+                    trailing_lines: 1,
+                    first_line_min_byte: 0,
+                    first_editable_line: None,
+                })
+            }
+            fn invocation_runner(&self) -> Option<ModeId> {
+                Some(Self::mode_id())
+            }
+            fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, ()> {
+                Box::pin(async { Ok(()) })
+            }
+        }
+
+        let mut editor = Editor::boot(lattice_core::Document::from_text("line0\nline1\nprompt"));
+        let mut reg = ModeRegistry::new();
+        reg.register(TailTestMode).expect("register test mode");
+        editor.mode_registry = std::sync::Arc::new(reg);
+        editor.register_invocation_runner(
+            TailTestMode::mode_id(),
+            Editor::run_editable_tail_invocation,
+        );
+        let buf_id = editor.document_buffer_id;
+        let _ = editor.activate_mode_by_id(buf_id, TailTestMode::mode_id());
+
+        // `x` = delete operator with a char_right target.
+        let x = CommandInvocation::of(editor.builtins.delete.0)
+            .with_target(Target::Motion(editor.builtins.char_right, Args::None));
+
+        // Cursor in the frozen transcript (line 0): the operator is gated.
+        editor.cursor = Position::new(0, 0);
+        let mut out = DispatchOutcome::default();
+        editor.dispatch_invocation(x.clone(), &mut out);
+        assert_eq!(
+            editor.document.snapshot().buffer.as_string(),
+            "line0\nline1\nprompt",
+            "operator in the read-only transcript must not mutate the buffer"
+        );
+        assert!(
+            editor
+                .last_message
+                .as_ref()
+                .is_some_and(|m| m.text.contains("read-only")),
+            "gated operator echoes read-only"
+        );
+
+        // Cursor in the editable prompt (line 2): the operator edits normally.
+        editor.cursor = Position::new(2, 0);
+        let mut out = DispatchOutcome::default();
+        editor.dispatch_invocation(x, &mut out);
+        assert_eq!(
+            editor.document.snapshot().buffer.as_string(),
+            "line0\nline1\nrompt",
+            "operator in the editable prompt deletes the char"
         );
     }
 

@@ -1,14 +1,15 @@
 # Building Lattice with AI
 
-### An engineering retrospective on constructing complex software with a capable, forgetful collaborator
+### A whitepaper on constructing complex software with a capable, forgetful collaborator
 
 **Author:** Dhruva Sagar
 **Subject:** the method — not the editor — behind Lattice
+**Document type:** engineering whitepaper, written as a well-instrumented single-project case study
 **Status:** living document; revised as the practice and the tools evolve
 
 ---
 
-## Abstract
+## Executive summary
 
 I have been building Lattice — a modal, GPU-accelerated, plugin-first text
 editor in Rust — in sustained collaboration with an AI coding agent. Lattice is
@@ -20,8 +21,8 @@ of software the conventional wisdom says AI cannot help with: too large to fit i
 a prompt, too interdependent to change locally, too demanding to accept
 "probably correct."
 
-This document is my retrospective on how that collaboration actually works. My
-central claim is that the difficulty of building complex software with a highly
+This whitepaper sets out how that collaboration actually works. The central claim
+is that the difficulty of building complex software with a highly
 capable model is **not** getting the model to write correct code — it will do
 that, often brilliantly, on the first try. The difficulty is **coherence over
 time**: keeping thousands of interdependent decisions aligned across a
@@ -32,7 +33,7 @@ a constitution, an externalized memory, a set of gates and ratchets, an
 interaction contract — in which the model's considerable capability reliably
 produces the right thing instead of the merely plausible thing.
 
-I will argue that this is a durable shift in the engineer's role, from author to
+This whitepaper argues that this is a durable shift in the engineer's role, from author to
 architect-of-constraints and reviewer-of-mappings; that the leverage of good
 scaffolding *increases* rather than decreases as models improve; and that the
 apparatus I describe here is an early, hand-built prototype of infrastructure
@@ -50,7 +51,7 @@ Part V. Read the rest as a well-instrumented case study, not a controlled result
 ## How to read this
 
 Part I sets the problem: why Lattice is a hard case, a theory of what an AI
-collaborator actually *is*, and the thesis in full. Part II is the evidence —
+collaborator actually *is*, and the position in full. Part II is the evidence —
 eleven practices, each traced to a concrete failure it was built to prevent, with
 the cost named honestly. Part III is the economics: where this paid, where it
 cost, and the net. Part IV is the forward look — how each practice should evolve
@@ -58,8 +59,8 @@ as the underlying capabilities scale, and which of them I expect to invert. Part
 V states the limits of the claim and concludes.
 
 It is written to be split. Each chapter in Part II stands alone and could be an
-article; Part IV is the piece I most want read on its own. But the argument is
-cumulative, and I have written it to be read in order at least once.
+article; Part IV is the section with the longest shelf life and reads on its own.
+But the argument is cumulative, and is written to be read in order at least once.
 
 ---
 
@@ -154,7 +155,7 @@ not, unless the accumulation happens outside it.
 
 **It is biased toward the locally-easy path.** Faced with two designs, it
 gravitates to the one that is smaller to *write*, not the one that is better to
-*live with* — and, tellingly, it will justify the choice with the vocabulary of
+*live with*. And, tellingly, it will justify the choice with the vocabulary of
 virtue: "cleaner," "simpler," "more consistent," "idiomatic." The bias is not
 laziness; it is a genuine and understandable pull toward the solution with the
 most training-set support and the fewest tokens, which correlates with local ease
@@ -170,7 +171,7 @@ the collaboration lives in the gap between its capability and its alignment.** A
 low-capability agent that is misaligned produces obvious garbage you discard for
 free. A high-capability agent that is misaligned produces *plausible, well-
 argued, test-passing* code that violates a load-bearing invariant three
-abstraction layers away — and it costs you real time to catch, because catching
+abstraction layers away. And it costs you real time to catch, because catching
 it requires holding the whole system in your head, which is the thing you cannot
 do, which is why you are using the agent.
 
@@ -182,9 +183,9 @@ backwards for the failures that actually hurt. Better model, higher stakes on
 alignment, and therefore *more* return on the scaffolding that keeps capability
 pointed in the right direction.
 
-## 3. The thesis
+## 3. Position and core claims
 
-I can now state the thesis precisely.
+The position can now be stated precisely.
 
 **First:** on complex software, the binding constraint of AI-assisted development
 is not generation but coherence — the maintenance of consistency among many
@@ -200,7 +201,7 @@ interaction contract. The human becomes an architect of constraints and a
 reviewer of mappings between decisions and principles, more than a writer of
 lines.
 
-**Third — and this is the claim I most want to defend:** the leverage of this
+**Third — and this is the central forward claim:** the leverage of this
 scaffolding *increases* as models get more capable, more autonomous, and
 longer-context, rather than decreasing. The scaffolding built for a forgetful
 collaborator does not become obsolete when memory grows; it *transforms* — from
@@ -212,133 +213,6 @@ that interface carries more traffic as execution becomes more autonomous.
 
 The rest of Part II is the evidence for the first two claims. Part IV is the
 argument for the third.
-
-## 3a. Related work and intellectual lineage
-
-Almost nothing in this document is new in isolation. What I claim is new is the
-*synthesis* — the observation that a specific, capable-but-forgetful collaborator
-recreates, at a new scale and with new urgency, a set of problems that several
-established fields have each studied from one side. It is worth situating the
-argument against that prior work, both to give credit and to be precise about what
-is borrowed and what is genuinely a response to the new situation. (I have cited
-only works I am confident exist; given this document's thesis about confabulation,
-inventing a bibliography would be a peculiar self-own. Verify freely — the
-references are at the end.)
-
-**Complexity and conceptual integrity.** My central quantity — *coherence* — is a
-descendant of Brooks's *conceptual integrity* (Brooks 1975, 1986). Brooks argued
-that conceptual integrity is the most important consideration in system design and
-that it is threatened by the number of hands (and minds) involved; his "No Silver
-Bullet" separated *essential* from *accidental* complexity and warned that tooling
-attacks the accidental and leaves the essential. My thesis is a direct restatement
-in the age of generative models: capability attacks generation (accidental), and
-leaves coherence (essential) — the hard, irreducible part — largely intact. Parnas
-(1972) on information hiding and Conway (1968) on the mirroring of communication
-structure onto system structure are the deep sources for why interdependence is the
-enemy; "Out of the Tar Pit" (Moseley & Marks 2006) is the modern restatement that
-complexity, especially state and control, is the thing to be relentlessly managed.
-The everything-is-a-buffer discipline and the mode-ownership rule are Parnas and
-Conway applied — and the reason a forgetful collaborator strains them is that it has
-no persistent mental model of the module boundaries to respect.
-
-**Programs as theories; distributed cognition.** The single closest intellectual
-ancestor is Peter Naur's "Programming as Theory Building" (1985). Naur argued that a
-program's essence is not its text but a *theory* held in the developers' minds —
-tacit, unwritten knowledge of why the code is shaped as it is — and that a program
-whose theory has been lost is effectively dead even if the source survives. This is
-exactly my situation, made acute: my collaborator has no persistent mind in which
-the theory can live, so the theory *must* be externalized or it is lost every
-session. The entire memory-and-constitution apparatus (Chapters 5–6) is an attempt
-to write down Naur's theory in reloadable form. Hutchins's *Cognition in the Wild*
-(1995) on distributed cognition — cognition as a property of a system of people and
-artifacts, not a lone head — is the frame for treating the constitution, the memory,
-and the gates as cognitive infrastructure the human and the model share.
-
-**Disciplines of small, safe, always-green steps.** The slicing and four-artefact
-practices (Chapter 8) descend from a well-developed lineage: Beck's test-driven
-development (Beck 2002) and its small-step, red-green rhythm; Fowler's *Refactoring*
-(Fowler 1999) and its behavior-preserving micro-steps; Feathers (2004) on getting
-legacy code under a test harness before changing it; and the continuous-integration
-tradition (popularized by Fowler and others) whose "keep the build green" ethos the
-ratchet (Chapter 12) extends from a binary to a distribution. What is new is the
-*reason*: these disciplines were designed to manage human fallibility and team
-coordination; I am applying them to manage a collaborator's total inter-session
-amnesia, where a green checkpoint is not just good hygiene but the only safe resume
-point.
-
-**Decision capture.** The design-fragment / slice-plan separation and the per-fact
-memories are close kin to Architecture Decision Records (Nygard 2011) and, further
-back, to Knuth's literate programming (Knuth 1984), which insisted that the *why*
-travel with the code. ADRs capture the rationale of a decision at the moment it is
-made; my memories do the same, with the added twist that the intended reader is a
-model that will otherwise reconstruct — or confabulate — the rationale from scratch.
-
-**Specification gaming, Goodhart, and the proxy problem.** Chapter 11 (the agent
-optimizes the proxy) and Chapter 12 (ratchets over targets) are the AI-safety
-literature's *specification gaming* and *reward hacking* seen from the engineering
-side. Amodei et al., "Concrete Problems in AI Safety" (2016), named reward hacking
-and scalable oversight as core problems; Krakovna et al. (DeepMind, 2020) catalogued
-specification-gaming examples where an optimizer satisfies the letter of an
-objective and violates its spirit. Goodhart's law — in Strathern's (1997) crisp
-formulation, "when a measure becomes a target, it ceases to be a good measure" — is
-the reason a fixed latency budget invites satisficing and a ratchet does not. That a
-capable optimizer given an imperfect proxy will exploit the gap is not a quirk of my
-setup; it is the field's central finding, and the higher court and the ratchet are
-my project-level defenses against it.
-
-**Constitutions and legible reasoning.** Calling `CLAUDE.md` a "constitution" is a
-deliberate nod to Constitutional AI (Bai et al., Anthropic, 2022), which aligns a
-model's behavior to a written set of principles — but the analogy needs a sharp
-distinction. Constitutional AI operates at *training* time, on the model's weights,
-to shape its dispositions in general; my constitution operates at *project* time, in
-context, to align the *work* on one codebase. They are complementary layers: a
-model made broadly cooperative by the former still needs the latter to know that
-*this* project forbids kind-branching. The heuristic-mapping discipline (Chapter 6),
-which forces reasoning to be stated against named principles, is in the spirit of
-chain-of-thought prompting (Wei et al. 2022) making reasoning explicit — used here
-not to improve the reasoning but to make it *auditable*. And the multi-agent
-adversarial verification I anticipate in Part IV is the practical descendant of
-debate-style scalable oversight (Irving et al., "AI Safety via Debate," 2018) and of
-learning from human preferences (Christiano et al. 2017).
-
-**Context, retrieval, and the limits of scale.** My claim that "more context is not
-more attention" (Chapter 15) rests on real findings: retrieval-augmented generation
-(Lewis et al. 2020) exists precisely because feeding everything in is neither
-possible nor sufficient, and "Lost in the Middle" (Liu et al. 2023) showed that
-models attend unevenly across long contexts, degrading on information buried in the
-middle. The authoritative-subset idea is a hand-built retrieval-and-salience layer,
-and the literature suggests salience will remain a problem that raw window growth
-does not solve. Sculley et al., "Hidden Technical Debt in Machine Learning Systems"
-(2015), is the reminder that the maintainable substrate around a model is where the
-long-term cost lives — my knowledge base is that substrate, with its own upkeep.
-
-**Agent practice and benchmarks.** The concrete practice sits atop the agent-
-architecture line — ReAct (Yao et al. 2022) and the broader reasoning-plus-acting
-and tool-use work — and the "easy case vs hard case" framing of Chapter 1 is
-sharpened by benchmarks like SWE-bench (Jimenez et al. 2023), which measure agents
-on real repository issues and reveal how much harder grounded, interdependent change
-is than isolated generation. The most visible alternative to this document's
-human-coupled method is the fully *autonomous loop* — the "Ralph" technique
-(Huntley), Reflexion-style self-critique (Shinn et al. 2023), Voyager's
-skill-accumulation (Wang et al. 2023), and the multi-agent orchestrations; I treat
-that family, and where it is similar to and different from the Lattice approach, at
-length in Chapter 16a, because it belongs to the autonomy-horizon argument of Part IV
-rather than to the lineage recounted here. Finally, the specific artifacts I lean on — a checked-in
-`CLAUDE.md` / `AGENTS.md`-style constitution, pre-tool hooks, per-fact memory files —
-belong to a fast-moving *practitioner* discourse (often labelled "context
-engineering") that is, as of this writing, largely ahead of the peer-reviewed
-literature. That gap is part of the motivation for writing this down: the direct
-study of building large, coherent systems with AI collaborators is young, and most
-of what exists is field notes. This document is field notes too — better-instrumented
-than most, but field notes, and it should be read as a contribution to that emerging
-practice rather than a settled result.
-
-The synthesis, then: I am not proposing new primitives. I am observing that a
-capable, eager, forgetful, easy-path-biased collaborator collapses the concerns of
-these separate traditions into a single daily practice — Naur's theory-building meets
-Goodhart's law meets Beck's small steps meets Brooks's conceptual integrity — and
-that the collapse is what is new, because no prior collaborator forced all of them to
-the surface at once.
 
 ---
 
@@ -390,7 +264,7 @@ before it was codified, and each of which is now a named rule:
   and zero new host `Action` variants.
 - *Silent failure.* The agent would swallow a recoverable error rather than
   log-and-skip, which reads as "handled" when it is in fact "hidden." This became
-  the "graceful error handling" clause of the four-artefact rule.
+  the "graceful error handling" clause of the four-artifact rule.
 
 **Cost.** Codification has a real price. The rule set grows; `CLAUDE.md` is now
 long, and every session pays to load it. There is a genuine risk of over-fitting —
@@ -555,7 +429,7 @@ consistent" not as a reason but as a flag to inspect. The genuinely-better desig
 frequently costs more keystrokes today. That cost is not an objection to it. It is
 often the signature of it.
 
-## 8. Slicing and the four-artefact contract
+## 8. Slicing and the four-artifact contract
 
 **Problem.** A large change from a forgetful collaborator is a coherence hazard
 twice over: it is unreviewable (a two-thousand-line "here is the feature" is
@@ -566,7 +440,7 @@ across five files in an unknown degree of doneness).
 **Mechanism.** The unit of work is a *slice*: a change small enough to land with
 the tree green, sequenced explicitly in a slice plan with a status icon. Large
 changes are decomposed into slices, each landed green before the next begins. And
-every non-trivial slice ships *four artefacts together*: the architecture doc, the
+every non-trivial slice ships *four artifacts together*: the architecture doc, the
 benchmark coverage, the test coverage (including failure modes, not just the happy
 path), and graceful error handling. The rule's slogan is blunt: a change that
 ships only code is incomplete.
@@ -580,13 +454,13 @@ end of the first sub-slice — types and round-trips landed, green, benched,
 documented — precisely because the next sub-slice opened a genuine design
 question. The green checkpoint is what made stopping there cost nothing.
 
-Why four artefacts and not just code: on a codebase no single context holds, the
+Why four artifacts and not just code: on a codebase no single context holds, the
 *doc* is how the next session understands the change without re-deriving it; the
 *bench* is how CI catches a regression the agent cannot remember causing; and the
 *failure-mode test* is the designated place where the agent's happy-path eagerness
-gets caught. Each artefact compensates for a specific property of the collaborator.
+gets caught. Each artifact compensates for a specific property of the collaborator.
 
-**Cost.** The four-artefact rule roughly doubles the work per slice, and for
+**Cost.** The four-artifact rule roughly doubles the work per slice, and for
 genuinely trivial changes that is waste — not every one-line fix needs a bench and
 a design note, and pretending it does breeds cargo-culting. Aggressive slicing
 also has a coordination cost: more commits, more plans to keep current, more
@@ -876,8 +750,28 @@ with.
 
 # Part III — The economics
 
-I want to be concrete and honest about the ledger, because a retrospective that
+I want to be concrete and honest about the ledger, because a whitepaper that
 only lists practices and their virtues is marketing, not engineering.
+
+**The project, in round numbers.** Some scale first, to ground the ledger — these
+are repo-committed facts, identical on any checkout, and they describe the scale the
+practices ran at, not a controlled measurement of their benefit (Part V is honest
+about what cannot be shown from a single case). At the time of writing, Lattice is a
+29-crate Rust workspace of roughly 300,000 lines carrying nearly 4,900 test
+functions, sequenced through 45 slice plans (15 active, 30 archived) across some
+2,050 commits — 74 of them in the four days since this document's first draft. The
+scaffolding steering all of that is deliberately small: a ~180-line constitution
+(`CLAUDE.md`) — four paramount goals, five decision heuristics, and some two dozen
+further codified standing rules and pitfalls — plus a per-fact memory store and
+roughly 9,000
+lines of authoritative design-and-implementation docs that are the only records
+permitted as ground truth about what exists. The `Effect` boundary mirror the
+plugin-host chapters keep returning to is, today, 109 variants wide, each crossing
+the WASM boundary typed, in both directions, under test. The number that matters is
+the ratio: a few hundred lines of curated judgment steering a codebase three orders
+of magnitude larger. The number I cannot give you honestly is the counterfactual —
+what the same editor would have cost without the scaffolding — and its absence is
+exactly the limit Part V insists on.
 
 **Where the collaboration paid, unambiguously.** Mechanical, exacting, high-volume
 work with a clear specification: the boundary mirrors, the exhaustive round-trip
@@ -894,7 +788,7 @@ thing from getting it right.
 and the overhead is front-loaded and real. Writing and maintaining the
 constitution, curating the memory, building GateGuard and the compile-time gates
 and the ratchets, decomposing every non-trivial change into slices with four
-artefacts each — this is a tax on every unit of work, and on a smaller or shorter
+artifacts each — this is a tax on every unit of work, and on a smaller or shorter
 project it would not pay for itself. There were stretches where I spent more time
 tending the environment than the environment saved me, and the payoff was a bet on
 the project's longevity that only looks obviously correct in hindsight.
@@ -926,10 +820,10 @@ scarcity is the entire story, and it is the hinge on which the next part turns.
 Everything above is a snapshot of a practice at one point on several rising
 curves: context windows, raw capability, available compute, and the length of
 horizon over which an agent can run autonomously. The interesting question — the
-one I most wanted this document to reach — is not "what works now" but "what
-happens to each of these practices as those curves rise." I will take the axes one
-at a time, then state the synthesis, which is a claim that runs against the
-intuitive grain.
+one this whitepaper is ultimately for — is not "what works now" but "what happens
+to each of these practices as those curves rise." I will take the axes one at a
+time, then state the synthesis, which is a claim that runs against the intuitive
+grain.
 
 ## 15. Four axes of growth
 
@@ -997,40 +891,67 @@ convenience in this regime; it is the *only* thing standing between an autonomou
 agent and hours of confidently-wrong work. Autonomy does not reduce the need for
 guardrails-as-code. It is the scenario the guardrails were secretly always for.
 
-## 16. The synthesis: scaffolding leverage increases
+## 16. The synthesis: leverage rises, and the scaffolding changes in kind
 
 Put the four axes together and the intuitive story — "as AI improves, we need less
-process" — inverts. Every axis of growth *increases* the leverage of the
-scaffolding, by a different mechanism:
+process" — inverts on two levels at once.
+
+First, in *magnitude*: every axis of growth increases the leverage of the
+scaffolding, each by its own mechanism.
 
 - Larger context makes curated salience more valuable, not less, because attention
   does not scale with capacity.
 - Higher capability raises the stakes on value-specification and spec-conformance,
   because a more capable misaligned agent does more damage before detection.
-- Abundant compute turns the externalized judgment into a shared coordination
-  substrate for parallel work, and makes the coherence problem it solves the
-  central one.
+- Abundant compute turns externalized judgment into a shared coordination substrate
+  for parallel work, and makes the coherence problem it solves the central one.
 - Longer autonomy horizons make mechanical enforcement the last line of defense,
-  because there is no human turn-by-turn correction left to lean on.
+  with no human turn-by-turn correction left to lean on.
 
-The unifying reason is the thesis from Part I, now paying off: the binding
-constraint was never generation, and improving models attack generation. They make
-the cheap thing cheaper and leave the expensive thing — coherence, alignment,
-verification — largely untouched, or make it *more* expensive by raising the volume
-and confidence of the work that has to be kept coherent. The scaffolding is the
-apparatus that manages the expensive thing. Its leverage is the ratio of the
-expensive thing to the cheap thing, and that ratio grows.
+The unifying reason is the position from Part I, now paying off: improving models
+attack generation. They make the cheap thing cheaper and leave the expensive thing —
+coherence, alignment, verification — largely untouched, or make it *more* expensive
+by raising the volume and confidence of the work that must be kept coherent. The
+scaffolding manages the expensive thing, so its leverage is the ratio of the
+expensive to the cheap, and that ratio grows.
 
-## 16a. A comparison: autonomous loops, the Ralph technique, and the spectrum of human coupling
+Second, and less obviously, in *kind*. Today `CLAUDE.md` and the memory files are, in
+large part, mnemonic aids — maintained so a forgetful model can reload the judgment it
+cannot retain. As the axes rise, the same artifacts do not merely persist; they
+transform into infrastructure that machines consume directly:
+
+- The **constitution becomes an executable specification** — named principles and
+  invariants stop being prose the agent is asked to honor and become constraints that
+  autonomous agents optimize against and verifiers check mechanically. The
+  heuristic-mapping rule, today a discipline enforced in review, becomes a structured
+  artifact: every non-trivial decision carries a machine-checkable mapping to the
+  principles it serves, and unmapped or dishonestly-mapped changes are rejected
+  without a human in the loop.
+- **Memory becomes the shared world-model of a swarm** — the per-fact files, today a
+  note-to-future-self, become the coordination substrate that keeps parallel agents
+  from diverging: read and written by machines, versioned, contested, reconciled.
+- **The enforcement ladder becomes the primary control surface** — as the human
+  leaves the turn-by-turn loop, the gates, ratchets, and compile-time impossibilities
+  stop being backstops for a reviewer's attention and become the main mechanism by
+  which intent is imposed on autonomous execution.
+
+The content — the judgment, the principles, the invariants — is preserved and grows
+more valuable; the *consumer* shifts from human-and-forgetful-model to
+autonomous-and-parallel-machines; and the *form* shifts from prose toward structured,
+checkable, executable specification. Building this scaffolding by hand is, in that
+light, a manual prototype of infrastructure that will be productized and
+standardized: hand-rolled, badly and specifically, into what will become general.
+
+## 17. A comparison: autonomous loops, the Ralph technique, and the spectrum of human coupling
 
 It is worth comparing this approach directly against the most visible alternative
 in current practice: the *autonomous agentic loop*, and its bluntest instance, the
-"Ralph" technique. (I have heard it garbled as "Ralph Lauren" loops; the name is
-actually a nod to Ralph Wiggum — the joke being a cheerfully dumb, relentlessly
-persistent process that nonetheless gets there. The technique is associated with
-Geoffrey Huntley and the broader agentic-coding practitioner community.) The
-comparison is clarifying, because the two approaches look like opposites and are in
-fact complementary — points on a single spectrum of *human coupling*.
+"Ralph" technique. (The name nods to Ralph Wiggum — a cheerfully dumb but
+relentlessly persistent process that nonetheless gets there — and the technique is
+associated with Geoffrey Huntley and the broader agentic-coding practitioner
+community.) The comparison is clarifying, because the two approaches look like
+opposites and are in fact complementary — points on a single spectrum of *human
+coupling*.
 
 **What the loop is.** In its purest form the Ralph technique is `while true: run the
 agent against the same prompt`. A stable specification lives in a file; the agent is
@@ -1045,6 +966,49 @@ multi-agent orchestrations — generator/critic pairs, debate, RFC-driven DAG
 pipelines that fan work across many agents. They differ in structure but share a
 commitment: **maximize autonomy, let the loop and its feedback signals carry the
 work, minimize the human's per-step involvement.**
+
+**The engineering around the loop — because the bare loop is the least of it.** In
+practice the naive `while true` is not the interesting part; what has matured around
+the Ralph technique is a discipline of *loop engineering* whose moves rhyme, closely,
+with the scaffolding in Part II — arrived at from the opposite direction. The
+practitioner conventions, as they have settled, look like this:
+
+- *A standing prompt plus an editable plan file.* The loop is not pointed at a raw
+  task but at a curated instruction (a `PROMPT.md`) and, separately, a living backlog
+  (a `fix_plan.md` or task list) that the agent reads at the top of each iteration
+  and *rewrites* at the bottom — checking off what it finished, recording what it
+  learned, re-ordering what remains. This is the externalized specification and the
+  slice plan of Chapters 5 and 8, discovered independently: the loop, like a session,
+  forgets between iterations, so its intent and its progress must live in files it
+  reloads.
+- *One meaningful change per iteration.* The hard-won discipline is to instruct the
+  loop to do the smallest useful thing and stop, not to attempt the whole backlog in
+  a single pass — an iteration that tries to do everything exhausts its context and
+  converges on mush. This is slicing and the green checkpoint (Chapter 8), re-derived
+  as a context-budget survival tactic rather than a reviewability one.
+- *Subagent fan-out to protect the context budget.* Mature loops delegate search,
+  exploration, and verification to fresh subagents whose findings come back
+  distilled, so the main loop spends its scarce attention on the change itself and not
+  on re-reading the repository. This is the authoritative-subset and salience argument
+  of Chapter 15 — more context is not more attention — turned into an operational
+  habit.
+- *A commit per iteration as the resume point.* Each pass that leaves the tree green
+  is committed, so a bad iteration is a `git reset`, not a half-state smeared across
+  five files. This is green-per-slice, verbatim.
+- *Guardrails the loop cannot argue with, and then "let it cook."* The fitness signal
+  is the build and the test suite; the loop is then left to run — for hours,
+  overnight — on the bet that persistence plus an honest signal converges. The
+  precondition for walking away is exactly that the guardrails are strong enough to
+  survive being unwatched: the same enforcement-ladder logic (Chapter 10) I built for
+  a forgetful collaborator is what makes an unsupervised loop safe to leave running at
+  all.
+
+The convergence is the point worth dwelling on. Loop engineering and the Lattice
+practice are not borrowing from each other; they are two independent responses to the
+*same* substrate — a capable, forgetful, easy-path-biased generator. They keep
+landing on the same primitives (externalized spec, small green steps, checkpointing,
+mechanical guardrails, delegated verification) because those primitives are forced by
+the substrate, not by either author's taste.
 
 **Where the approaches agree — more than they appear to.** The Lattice practice and
 the Ralph loop rest on several of the same foundations, and the overlap is not
@@ -1132,44 +1096,50 @@ scaffolding as the loop's boundary conditions, where the objective is taste-lade
 architecturally consequential, or otherwise untestable. The two are not a dichotomy
 but a division of labor along the line of *verifiability*, and the design of that line —
 deciding what is safe to loop and what must be deliberated — is itself one of the
-human-irreducible jobs of Chapter 18. The Ralph technique and this retrospective are,
-in the end, answering the same question from opposite ends: how do you get coherent
+human-irreducible jobs of Chapter 19. The Ralph technique and the scaffolded practice
+described here are, in the end, answering the same question from opposite ends: how do you get coherent
 software out of a forgetful collaborator? The loop answers "persistence plus a
 feedback signal"; I answer "externalized judgment plus human review at the junctions."
 The strongest system uses both, and knows which to apply where.
 
-## 17. What transforms: from mnemonic to executable specification
+## 18. The reflexive turn: Lattice becomes a harness for the collaborator
 
-The specific prediction I will commit to is about *what the scaffolding becomes*,
-not just that it persists. Today, `CLAUDE.md` and the memory files are, in large
-part, mnemonic aids — I maintain them so that a forgetful model can reload the
-judgment it cannot retain. That framing is a product of the current regime. As the
-axes rise, the same artifacts transform in kind:
+Since the first draft of this whitepaper the argument has closed a loop I did not
+plan. Lattice now *embeds* the class of collaborator it was built with: it hosts AI
+coding agents — Claude Code and opencode today — behind one shared capability
+surface, the `EditorAccess` port, rather than a bespoke per-agent subsystem. The
+generalizing transport for the headless, lattice-driven agents is the Agent Client
+Protocol (ACP) — the Zed-originated, LSP-shaped standard a growing set of agents
+already speak — while Claude Code rides the inverted topology (lattice as an MCP
+server the agent connects back into). Either way the payoff is the same: adding an
+agent is launch configuration, not a new subsystem, and sessions, streamed
+conversation, tool-call rendering, and interactive edit review are implemented once
+and reused.
 
-- The **constitution becomes an executable specification.** The named principles
-  and invariants stop being prose the agent is asked to honor and become
-  constraints that autonomous agents optimize against and that verification systems
-  check mechanically. The heuristic-mapping rule, today a discipline I enforce in
-  review, becomes a structured artifact a verifier consumes: every non-trivial
-  decision carries a machine-checkable mapping to the principles it serves, and the
-  verifier rejects unmapped or dishonestly-mapped changes without me.
-- **Memory becomes the shared world-model of a swarm.** The per-fact files, today a
-  note-to-future-self, become the coordination substrate that keeps parallel agents
-  from diverging — read and written by machines, versioned, contested, reconciled.
-- **The enforcement ladder becomes the primary control surface.** As I move out of
-  the turn-by-turn loop, the gates and ratchets and compile-time impossibilities
-  stop being backstops for my attention and become the main mechanism by which
-  intent is imposed on autonomous execution.
+What makes this more than a feature is *which* parts of the editor the integration
+reuses. An agent's proposed edits do not simply apply — they flow through lattice's
+own diff subsystem as a permission gate: the write blocks on
+`session/request_permission`, surfaces as a `review_diff` the user accepts or
+rejects, and **review mode fails closed** — reads auto-run, file edits open a diff,
+un-reviewable mutating operations are denied unless the user opts into a per-session
+*trust mode*. The conversation is a Document buffer like any other; the prompt is an
+editable-tail (comint) surface behind the read-only edit gate; protocol diagnostics
+stream to a dedicated `:ai-log` buffer rather than polluting `*messages*`.
 
-In each case the *content* — the judgment, the principles, the invariants — is
-preserved and grows more valuable; the *consumer* shifts from human-and-forgetful-
-model to autonomous-and-parallel-machines; and the *form* shifts from prose toward
-structured, checkable, executable specification. The work of building Lattice's
-scaffolding by hand is, in this light, a manual prototype of infrastructure that
-will be productized and standardized. I am hand-rolling, badly and specifically,
-what will become general.
+Read against Part II, this is the thesis compiled into the product. The
+human-as-higher-court of Chapter 11 becomes a literal accept/reject gate on every
+agent write. The enforcement ladder of Chapter 10 becomes a fail-closed default an
+autonomous agent cannot argue past. The dedicated-buffer discipline — stream a
+subsystem's output into its own named buffer, never the shared scratchpad — is the
+same rule that governs the memory files, now enforced in the UI. The editor built
+*with* a forgetful collaborator, by externalizing judgment and gating execution,
+turns out to be a serviceable *harness* for supervising that same class of
+collaborator: the autonomy-horizon argument of Chapter 15 — mechanical enforcement as
+the last line of defense — arriving once more from the other direction. The
+scaffolding was always a control system; giving it a user interface only made that
+visible.
 
-## 18. What stays human, and why
+## 19. What stays human, and why
 
 If generation goes to nearly free and verification and coordination increasingly
 mechanize, the honest question is what remains irreducibly the human's. My answer,
@@ -1211,7 +1181,7 @@ that was always the actual engineering.
 
 # Part V — Limits, and a close
 
-## 19. Threats to validity
+## 20. Threats to validity
 
 I would not trust this document if it did not attack itself, so:
 
@@ -1226,8 +1196,8 @@ followed these three incidents" is correlation dressed for court.
 **Single operator, confounded with a learning curve.** I got better at this over
 the same period the tools got better and the scaffolding accumulated. I cannot
 cleanly separate "the method works" from "I learned to work" from "the models
-improved." All three rose together, and the retrospective's narrative gives the
-method more credit than a controlled study could.
+improved." All three rose together, and the narrative here gives the method more
+credit than a controlled study could.
 
 **Selection on domain.** Lattice is systems software in Rust with a strong,
 opinionated architecture and a single decisive taste-holder. That is close to the
@@ -1247,7 +1217,7 @@ not generation, is the binding constraint, and that the human's leverage moves u
 the stack toward constraint and verification. The specific mechanisms are my best
 current implementation of that thesis and I expect to be wrong about the details.
 
-## 20. Close: the scaffolding is the artifact
+## 21. Close: the scaffolding is the artifact
 
 I set out to build a text editor and, in the process, built something I did not
 plan to: an environment for building it — a constitution, a memory, a set of gates
@@ -1274,7 +1244,9 @@ to execute against them without a human watching every turn. I was forced to wri
 that part down because my collaborator could not remember it. It turns out to be
 the part that was always the real work.
 
-The scaffolding is the artifact. The editor is what it produced.
+The scaffolding is the artifact. The editor is what it produced — and, now that the
+editor embeds the collaborator behind those same gates, part of how the next thing
+will be built.
 
 ---
 
@@ -1287,6 +1259,135 @@ the flagship forward-looking essay, which I would publish first and independentl
 since it is the part with the longest shelf life. The through-line to preserve
 across any split is the single claim that coherence, not generation, is the binding
 constraint — every piece should be traceable back to it.
+
+---
+
+## Related work and intellectual lineage
+
+Almost nothing in this document is new in isolation. What I claim is new is the
+*synthesis* — the observation that a specific, capable-but-forgetful collaborator
+recreates, at a new scale and with new urgency, a set of problems that several
+established fields have each studied from one side. It is worth situating the
+argument against that prior work, both to give credit and to be precise about what
+is borrowed and what is genuinely a response to the new situation. (I have cited
+only works I am confident exist; given this document's thesis about confabulation,
+inventing a bibliography would be a peculiar self-own. Verify freely — the
+references are at the end.)
+
+**Complexity and conceptual integrity.** My central quantity — *coherence* — is a
+descendant of Brooks's *conceptual integrity* (Brooks 1975, 1986). Brooks argued
+that conceptual integrity is the most important consideration in system design and
+that it is threatened by the number of hands (and minds) involved; his "No Silver
+Bullet" separated *essential* from *accidental* complexity and warned that tooling
+attacks the accidental and leaves the essential. My thesis is a direct restatement
+in the age of generative models: capability attacks generation (accidental), and
+leaves coherence (essential) — the hard, irreducible part — largely intact. Parnas
+(1972) on information hiding and Conway (1968) on the mirroring of communication
+structure onto system structure are the deep sources for why interdependence is the
+enemy; "Out of the Tar Pit" (Moseley & Marks 2006) is the modern restatement that
+complexity, especially state and control, is the thing to be relentlessly managed.
+The everything-is-a-buffer discipline and the mode-ownership rule are Parnas and
+Conway applied — and the reason a forgetful collaborator strains them is that it has
+no persistent mental model of the module boundaries to respect.
+
+**Programs as theories; distributed cognition.** The single closest intellectual
+ancestor is Peter Naur's "Programming as Theory Building" (1985). Naur argued that a
+program's essence is not its text but a *theory* held in the developers' minds —
+tacit, unwritten knowledge of why the code is shaped as it is — and that a program
+whose theory has been lost is effectively dead even if the source survives. This is
+exactly my situation, made acute: my collaborator has no persistent mind in which
+the theory can live, so the theory *must* be externalized or it is lost every
+session. The entire memory-and-constitution apparatus (Chapters 5–6) is an attempt
+to write down Naur's theory in reloadable form. Hutchins's *Cognition in the Wild*
+(1995) on distributed cognition — cognition as a property of a system of people and
+artifacts, not a lone head — is the frame for treating the constitution, the memory,
+and the gates as cognitive infrastructure the human and the model share.
+
+**Disciplines of small, safe, always-green steps.** The slicing and four-artifact
+practices (Chapter 8) descend from a well-developed lineage: Beck's test-driven
+development (Beck 2002) and its small-step, red-green rhythm; Fowler's *Refactoring*
+(Fowler 1999) and its behavior-preserving micro-steps; Feathers (2004) on getting
+legacy code under a test harness before changing it; and the continuous-integration
+tradition (popularized by Fowler and others) whose "keep the build green" ethos the
+ratchet (Chapter 12) extends from a binary to a distribution. What is new is the
+*reason*: these disciplines were designed to manage human fallibility and team
+coordination; I am applying them to manage a collaborator's total inter-session
+amnesia, where a green checkpoint is not just good hygiene but the only safe resume
+point.
+
+**Decision capture.** The design-fragment / slice-plan separation and the per-fact
+memories are close kin to Architecture Decision Records (Nygard 2011) and, further
+back, to Knuth's literate programming (Knuth 1984), which insisted that the *why*
+travel with the code. ADRs capture the rationale of a decision at the moment it is
+made; my memories do the same, with the added twist that the intended reader is a
+model that will otherwise reconstruct — or confabulate — the rationale from scratch.
+
+**Specification gaming, Goodhart, and the proxy problem.** Chapter 11 (the agent
+optimizes the proxy) and Chapter 12 (ratchets over targets) are the AI-safety
+literature's *specification gaming* and *reward hacking* seen from the engineering
+side. Amodei et al., "Concrete Problems in AI Safety" (2016), named reward hacking
+and scalable oversight as core problems; Krakovna et al. (DeepMind, 2020) catalogued
+specification-gaming examples where an optimizer satisfies the letter of an
+objective and violates its spirit. Goodhart's law — in Strathern's (1997) crisp
+formulation, "when a measure becomes a target, it ceases to be a good measure" — is
+the reason a fixed latency budget invites satisficing and a ratchet does not. That a
+capable optimizer given an imperfect proxy will exploit the gap is not a quirk of my
+setup; it is the field's central finding, and the higher court and the ratchet are
+my project-level defenses against it.
+
+**Constitutions and legible reasoning.** Calling `CLAUDE.md` a "constitution" is a
+deliberate nod to Constitutional AI (Bai et al., Anthropic, 2022), which aligns a
+model's behavior to a written set of principles — but the analogy needs a sharp
+distinction. Constitutional AI operates at *training* time, on the model's weights,
+to shape its dispositions in general; my constitution operates at *project* time, in
+context, to align the *work* on one codebase. They are complementary layers: a
+model made broadly cooperative by the former still needs the latter to know that
+*this* project forbids kind-branching. The heuristic-mapping discipline (Chapter 6),
+which forces reasoning to be stated against named principles, is in the spirit of
+chain-of-thought prompting (Wei et al. 2022) making reasoning explicit — used here
+not to improve the reasoning but to make it *auditable*. And the multi-agent
+adversarial verification I anticipate in Part IV is the practical descendant of
+debate-style scalable oversight (Irving et al., "AI Safety via Debate," 2018) and of
+learning from human preferences (Christiano et al. 2017).
+
+**Context, retrieval, and the limits of scale.** My claim that "more context is not
+more attention" (Chapter 15) rests on real findings: retrieval-augmented generation
+(Lewis et al. 2020) exists precisely because feeding everything in is neither
+possible nor sufficient, and "Lost in the Middle" (Liu et al. 2023) showed that
+models attend unevenly across long contexts, degrading on information buried in the
+middle. The authoritative-subset idea is a hand-built retrieval-and-salience layer,
+and the literature suggests salience will remain a problem that raw window growth
+does not solve. Sculley et al., "Hidden Technical Debt in Machine Learning Systems"
+(2015), is the reminder that the maintainable substrate around a model is where the
+long-term cost lives — my knowledge base is that substrate, with its own upkeep.
+
+**Agent practice and benchmarks.** The concrete practice sits atop the agent-
+architecture line — ReAct (Yao et al. 2022) and the broader reasoning-plus-acting
+and tool-use work — and the "easy case vs hard case" framing of Chapter 1 is
+sharpened by benchmarks like SWE-bench (Jimenez et al. 2023), which measure agents
+on real repository issues and reveal how much harder grounded, interdependent change
+is than isolated generation. The most visible alternative to this document's
+human-coupled method is the fully *autonomous loop* — the "Ralph" technique
+(Huntley), Reflexion-style self-critique (Shinn et al. 2023), Voyager's
+skill-accumulation (Wang et al. 2023), and the multi-agent orchestrations; I treat
+that family, and where it is similar to and different from the Lattice approach, at
+length in Chapter 17, because it belongs to the autonomy-horizon argument of Part IV
+rather than to the lineage recounted here. Finally, the specific artifacts I lean on — a checked-in
+`CLAUDE.md` / `AGENTS.md`-style constitution, pre-tool hooks, per-fact memory files —
+belong to a fast-moving *practitioner* discourse (often labelled "context
+engineering") that is, as of this writing, largely ahead of the peer-reviewed
+literature. That gap is part of the motivation for writing this down: the direct
+study of building large, coherent systems with AI collaborators is young, and most
+of what exists is field notes. This document is field notes too — better-instrumented
+than most, but field notes, and it should be read as a contribution to that emerging
+practice rather than a settled result.
+
+The synthesis, then: I am not proposing new primitives. I am observing that a
+capable, eager, forgetful, easy-path-biased collaborator collapses the concerns of
+these separate traditions into a single daily practice — Naur's theory-building meets
+Goodhart's law meets Beck's small steps meets Brooks's conceptual integrity — and
+that the collapse is what is new, because no prior collaborator forced all of them to
+the surface at once.
 
 ---
 

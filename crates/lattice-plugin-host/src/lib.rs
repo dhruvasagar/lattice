@@ -88,10 +88,16 @@ pub use completion_source::WasmCompletionSource;
 pub use completion_task::{CompletionActor, CompletionClient};
 pub use decoration_source::WasmDecorationSource;
 pub use decoration_task::{DecorationActor, DecorationClient};
-pub use manifest::{Capability, CapabilityParseError, ManifestError, PluginManifest};
+pub use manifest::{
+    Capability, CapabilityParseError, ManifestError, PluginManifest, PluginSeam,
+};
 pub use picker_source::WasmPickerSource;
 pub use picker_task::{PickerActor, PickerClient};
 pub use teardown::{PluginTeardown, TeardownRegistries, TeardownReport};
+/// The compiled component — the return type of [`PluginHost::compile`],
+/// re-exported so callers (the plugin loader) can name it without a direct
+/// `wasmtime` dependency.
+pub use wasmtime::component::Component;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -102,7 +108,7 @@ use std::time::Duration;
 use lattice_runtime::EventBus;
 
 use lattice_grammar::SourceLayer;
-use wasmtime::component::{Component, HasSelf, Linker};
+use wasmtime::component::{HasSelf, Linker};
 use wasmtime::{Cache, CacheConfig, Config, Engine, Store};
 use wasmtime_wasi::{ResourceTable, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 

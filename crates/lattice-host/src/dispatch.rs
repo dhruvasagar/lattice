@@ -30004,6 +30004,25 @@ impl Default for PluginMetaRegistry {
     }
 }
 
+/// PL8.B: the write seam the plugin loader populates provenance through. The
+/// host registers the same registry instance as a `PluginMetaSinkHandle`
+/// service; `lattice-plugin-loader` writes each loaded plugin's name/doc here so
+/// `SourceLayer::Plugin(id)` provenance + `:list-plugins` reflect it — without
+/// the loader naming this host type (dependency-cycle-free, per the sink docs).
+impl lattice_mode::PluginMetaSink for PluginMetaRegistry {
+    fn register_plugin(&self, id: u32, name: String, doc: String) {
+        if let Ok(mut map) = self.0.write() {
+            map.insert(id, PluginMeta { name, doc });
+        }
+    }
+
+    fn unregister_plugin(&self, id: u32) {
+        if let Ok(mut map) = self.0.write() {
+            map.remove(&id);
+        }
+    }
+}
+
 /// PI.2b: stable machine tokens for the JSON export (distinct from the prose /
 /// short labels, which are for human display).
 fn plugin_api_direction_token(d: lattice_plugin_api::Direction) -> &'static str {

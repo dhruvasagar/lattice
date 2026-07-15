@@ -28,6 +28,19 @@ lattice-plugin-host = { path = "../lattice-plugin-host" }
 # host's concrete `BootContext` would be a dependency cycle). The loader reaches
 # the runtime pool + native registries through this trait, never the host.
 lattice-mode = { path = "../lattice-mode" }
+# The native picker registry the loader RCU-registers a loaded picker plugin's
+# source into (`PickerRegistryHandle` / `WasmPickerSource` → `Arc<dyn
+# PickerSourceGenerator>`).
+lattice-picker = { path = "../lattice-picker" }
+# `EventBus` — `spawn_picker_source` binds the seam actor's crash quarantine to
+# the bus (a plugin trap fires `PluginCrashed`, host stays live).
+lattice-runtime = { path = "../lattice-runtime" }
+# The shared runtime handle the loader drives seam actors + off-boot discovery
+# on (never the current-thread editor actor).
+tokio = { workspace = true, features = ["rt", "rt-multi-thread"] }
+# Cross-platform plugins-dir resolution (`<data>/lattice/plugins/`, XDG on
+# Linux / Application Support on macOS / LocalAppData on Windows).
+dirs = { workspace = true }
 # Typed load-error surface (no panics on any load path -- the four-artefact
 # graceful-error clause; a bad plugin is logged + skipped, never fatal).
 thiserror = { workspace = true }
@@ -42,3 +55,7 @@ tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time
 # component bytes for the spine proof -- the same canonical fixture the runtime
 # crate's lifecycle tests use, referenced in place (single source of truth).
 wat = { workspace = true }
+# The picker-drain e2e builds a fresh `ArcSwap<PickerRegistry>` + a hermetic
+# plugins dir.
+arc-swap = { workspace = true }
+tempfile = { workspace = true }

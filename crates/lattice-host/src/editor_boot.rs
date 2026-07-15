@@ -573,14 +573,6 @@ impl Editor {
         // inbound buses + drains (reshaped onto `boot.inbound::<T>` in BC.8b–e).
         // See `lattice_lsp::install` for the full rationale.
         lattice_lsp::install(&mut boot);
-        // Phase 8 (PL8.A): the plugin loader. Stands the wasmtime runtime up and
-        // registers the `PluginLoaderHandle` service; PL8.B drives on-disk
-        // discovery + load off the boot thread. This is the first subsystem
-        // whose install pulls the plugin *runtime* into the editor (the host was
-        // wasmtime-free through Phase 7 — only the `lattice-plugin-api` catalog).
-        // A host that fails to build degrades to no-plugin-support, logged, never
-        // a failed boot — see `lattice_plugin_loader::install`.
-        lattice_plugin_loader::install(&mut boot);
 
         // BC.3a: freeze the mode registry into its shared `Arc` BEFORE
         // `register_mode_toggle_commands`. The toggle helper needs
@@ -1446,6 +1438,28 @@ impl Editor {
         // `Editor::register_plugin`; provenance (`:list-commands`) reads the
         // name, `:describe-plugin` / `:list-plugins` read the full metadata.
         boot.register_service(crate::dispatch::PluginMetaRegistry::default());
+        // PL8.B: expose the SAME meta registry as a `PluginMetaSinkHandle` so
+        // the plugin loader can write provenance (name/doc) as each plugin loads
+        // without naming this host type. `service` returns the Arc just
+        // registered; coerce it to the trait object (same instance the host's
+        // `register_plugin` / `plugin_meta` read through).
+        if let Some(meta) = boot.service::<crate::dispatch::PluginMetaRegistry>() {
+            let sink: lattice_mode::PluginMetaSinkHandle = meta;
+            boot.register_service::<lattice_mode::PluginMetaSinkHandle>(sink);
+        }
+
+        // Phase 8 (PL8.A/B): the plugin loader. Stands the wasmtime runtime up,
+        // registers the `PluginLoaderHandle` service, and spawns on-disk
+        // discovery off the boot thread. First subsystem whose install pulls the
+        // plugin *runtime* into the editor (the host was wasmtime-free through
+        // Phase 7 — only the `lattice-plugin-api` catalog). Placed here, AFTER
+        // the picker registry (~L893) + meta sink (just above) it captures, not
+        // in the Phase-B install list — its inputs are host primitives created
+        // mid-boot, so it seats last among the services it depends on. A host
+        // that fails to build degrades to no-plugin-support, logged, never a
+        // failed boot — see `lattice_plugin_loader::install`.
+        lattice_plugin_loader::install(&mut boot);
+
         // L4b (lsp-architecture.md §15): the diagnostics-query service
         // (`lsp-diagnostics-mode`'s `gl` handler + claude-code's read tools read
         // it) is registered in Phase A above, so a subsystem `install(boot)` can

@@ -1,27 +1,22 @@
-//! PL8.A — the crate-owned `install(boot)` entry point.
+//! PL8.A/B — the crate-owned `install(boot)` entry point.
 //!
 //! Wiring the loader into the editor is **one line** in the host's Phase-B
 //! install list (`lattice_plugin_loader::install(&mut boot)`) and zero host
 //! internals — the mode-ownership acid test: no `Editor::` method, no host
-//! `Action` variant. `install` stands the runtime up, wraps it in a
-//! [`PluginLoader`], and registers the [`PluginLoaderHandle`] service so the
-//! user surface (PL8.C) and manager view (PL8.H) reach it generically. PL8.B
-//! drives on-disk discovery + load from here, off the boot thread via
-//! `boot.runtime_handle()`.
+//! `Action` variant. `install` stands the runtime up, captures the editor
+//! environment (runtime handle, event bus, the runtime-mutable picker registry,
+//! the provenance sink) from the generic `SubsystemBoot` seams, registers the
+//! [`PluginLoaderHandle`] service, and spawns on-disk discovery **off the boot
+//! thread** so no plugin cold-start delays boot.
 
 use std::sync::Arc;
 
-use lattice_mode::SubsystemBoot;
-use lattice_plugin_host::PluginHost;
+use lattice_mode::{PluginMetaSinkHandle, SubsystemBoot};
+use lattice_picker::PickerRegistryHandle;
+use lattice_plugin_host::{PluginHost, TrustTier};
 
 use crate::{PluginLoader, PluginLoaderHandle};
 
-/// Stand the plugin loader up at boot and register its handle as a service.
-///
-/// Graceful degradation (the four-artefact clause): if the wasmtime engine
-/// cannot be built (an unsupported target, a bad cache dir), the editor degrades
-/// to **no plugin support** — logged, never a failed boot. Every native
-/// subsystem still installs; the editor runs fully, just without plugins.
 pub fn install(boot: &mut impl SubsystemBoot) {
     let host = match PluginHost::new() {
         Ok(host) => Arc::new(host),
@@ -33,9 +28,40 @@ pub fn install(boot: &mut impl SubsystemBoot) {
             return;
         }
     };
-    let loader: PluginLoaderHandle = Arc::new(PluginLoader::new(host));
-    boot.register_service::<PluginLoaderHandle>(loader);
-    // PL8.B: `boot.runtime_handle().spawn(discover_and_load(loader.clone()))`
-    // scans the plugins dir and loads each discovered component off the boot
-    // thread. PL8.A registers the service only — no real plugins load yet.
+
+    // Capture the editor environment from the generic boot seams. `service`
+    // returns `Arc<Handle-alias>` (double-Arc); unwrap one layer to the handle.
+    let picker_registry = boot
+        .service::<PickerRegistryHandle>()
+        .map(|h| (*h).clone());
+    let meta_sink = boot.service::<PluginMetaSinkHandle>().map(|h| (*h).clone());
+    let Some(picker_registry) = picker_registry else {
+        // The host always registers the picker registry; its absence means a
+        // boot-order regression. Degrade to no plugin support, logged.
+        tracing::warn!("picker registry service missing; the editor runs without plugin support");
+        return;
+    };
+
+    let loader: PluginLoaderHandle = Arc::new(PluginLoader::with_services(
+        host,
+        boot.runtime_handle().clone(),
+        boot.event_bus().clone(),
+        picker_registry,
+        meta_sink,
+    ));
+    boot.register_service::<PluginLoaderHandle>(loader.clone());
+
+    // Discover + load on-disk plugins OFF the boot thread: a plugin cold-start
+    // must not delay boot, and the load path is async (instantiate/activate/
+    // spawn-seam). Contributions appear a frame or two after boot — the
+    // eventual-consistency the UX contract permits for non-edited content. A
+    // missing plugins dir (the common case) is a benign empty scan.
+    if let Some(dir) = crate::default_plugins_dir() {
+        boot.runtime_handle().spawn(async move {
+            let n = loader.discover_and_load(&dir, TrustTier::UserInstalled).await;
+            if n > 0 {
+                tracing::info!(count = n, dir = %dir.display(), "plugins loaded from disk");
+            }
+        });
+    }
 }

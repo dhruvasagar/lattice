@@ -110,6 +110,66 @@ fn parse_editor_capability(name: &str) -> Option<CapabilitySet> {
     })
 }
 
+/// Which extension seam a plugin's component implements — the WIT world it
+/// exports. Each seam is its own world (`picker-source`, `events-plugin`, …); a
+/// component implements one, and the manifest declares which so the plugin
+/// loader (`lattice-plugin-loader`) knows which `spawn_*` path to drive. An
+/// empty `provides` list is a **lifecycle-only** plugin (the base `plugin`
+/// world — `init.rs`, the no-op fixture), driven through `instantiate_plugin` +
+/// `activate` rather than a seam actor.
+///
+/// Wire form (manifest `provides = [...]` + [`Display`]) is the dashed WIT
+/// interface name: `picker-source`, `completion-source`, `grammar`, `events`,
+/// `modes`, `config`, `decorations`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PluginSeam {
+    PickerSource,
+    CompletionSource,
+    Grammar,
+    Events,
+    Modes,
+    Config,
+    Decorations,
+}
+
+impl PluginSeam {
+    /// The dashed wire / display name (matches the WIT interface).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PluginSeam::PickerSource => "picker-source",
+            PluginSeam::CompletionSource => "completion-source",
+            PluginSeam::Grammar => "grammar",
+            PluginSeam::Events => "events",
+            PluginSeam::Modes => "modes",
+            PluginSeam::Config => "config",
+            PluginSeam::Decorations => "decorations",
+        }
+    }
+}
+
+impl std::fmt::Display for PluginSeam {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for PluginSeam {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
+            "picker-source" => PluginSeam::PickerSource,
+            "completion-source" => PluginSeam::CompletionSource,
+            "grammar" => PluginSeam::Grammar,
+            "events" => PluginSeam::Events,
+            "modes" => PluginSeam::Modes,
+            "config" => PluginSeam::Config,
+            "decorations" => PluginSeam::Decorations,
+            _ => return Err(()),
+        })
+    }
+}
+
 /// Everything a plugin declares about itself and what it needs. Untrusted
 /// input; the trust tier is supplied separately at grant time.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -122,6 +182,11 @@ pub struct PluginManifest {
     pub requested: Vec<Capability>,
     /// The editor capabilities a plugin-declared mode requires (fragment §6).
     pub editor_capabilities: CapabilitySet,
+    /// The extension seam(s) this plugin's component implements — which
+    /// `spawn_*` path(s) the loader drives. Empty ⇒ lifecycle-only (base
+    /// `plugin` world). Programmatic [`new`](Self::new) defaults this empty;
+    /// disk discovery reads it from the manifest `provides` list.
+    pub provides: Vec<PluginSeam>,
     /// PI.4: the plugin's own documentation, shown by `:describe-plugin`. A
     /// static, author-written string (immutable at editor runtime). The
     /// preferred doc source is the plugin's embedded WIT world doc-comment;
@@ -138,6 +203,10 @@ struct RawManifest {
     capabilities: Vec<String>,
     #[serde(default)]
     editor_capabilities: Vec<String>,
+    /// PL8.B: the extension seam(s) the component implements (`picker-source`,
+    /// `events`, …). Empty / absent ⇒ lifecycle-only.
+    #[serde(default)]
+    provides: Vec<String>,
     /// PI.4: the plugin's documentation (`:describe-plugin`).
     #[serde(default)]
     doc: Option<String>,
@@ -166,6 +235,12 @@ pub enum ManifestError {
     /// the data dir path).
     #[error("plugin manifest `id` must not be empty")]
     EmptyId,
+
+    /// A `provides` entry was not a recognised seam name.
+    #[error(
+        "unrecognised plugin seam `{0}` (expected picker-source / completion-source / grammar / events / modes / config / decorations)"
+    )]
+    Seam(String),
 }
 
 impl PluginManifest {
@@ -179,6 +254,7 @@ impl PluginManifest {
             id: id.into(),
             requested,
             editor_capabilities,
+            provides: Vec::new(),
             doc: None,
         }
     }
@@ -201,10 +277,16 @@ impl PluginManifest {
             editor |= parse_editor_capability(name)
                 .ok_or_else(|| ManifestError::EditorCapability(name.clone()))?;
         }
+        let provides = raw
+            .provides
+            .iter()
+            .map(|s| PluginSeam::from_str(s).map_err(|()| ManifestError::Seam(s.clone())))
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(Self {
             id: raw.id,
             requested,
             editor_capabilities: editor,
+            provides,
             doc: raw.doc.filter(|d| !d.trim().is_empty()),
         })
     }

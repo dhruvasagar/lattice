@@ -9,11 +9,10 @@
 //! unchanged.
 //!
 //! This crate is the **subsystem that composes the runtime with the editor's
-//! native registries**. It discovers plugins on disk, loads them
-//! (`compile → instantiate_plugin → activate`, then — PL8.B — drains each seam's
-//! contribution into its native registry), owns the loaded-plugin state past
-//! boot as a service, and exposes the user-facing load/unload/reload surface
-//! (PL8.C).
+//! native registries**. It discovers plugins on disk ([`discovery`]), loads
+//! them (`compile → spawn each declared seam → drain the contribution into its
+//! native registry`), owns the loaded-plugin state past boot as a service, and
+//! (PL8.C) will expose the user-facing load/unload/reload surface.
 //!
 //! # Where this sits (the loader-home decision)
 //!
@@ -27,26 +26,37 @@
 //! other subsystem installs through, so wiring it into the editor is one line
 //! ([`install`]) and zero host internals.
 //!
-//! # Status (PL8.A)
+//! # Status (PL8.B, picker seam)
 //!
-//! PL8.A stands the host up at boot and proves the `compile → instantiate →
-//! activate` spine end-to-end, loading *no* real plugins yet. On-disk discovery
-//! + the seam→registry drain are PL8.B; the ex-command surface is PL8.C.
+//! On-disk discovery + the picker seam→registry drain are live: a picker plugin
+//! dropped in `<data>/lattice/plugins/` loads at boot, its source RCU-registers
+//! into the [`PickerRegistryHandle`](lattice_picker::PickerRegistryHandle), and
+//! `:list-plugins` shows it (via the [`PluginMetaSink`] seam). The other seams
+//! (completion, grammar, events, modes, config) declare-but-warn until their
+//! registries land runtime registration; decoration caching is PL8.E; the
+//! ex-command surface + teardown is PL8.C.
 //!
 //! Design: `docs/dev/architecture/plugin-host.md`,
 //! `docs/dev/architecture/boot-composition.md`. Slice plan:
 //! `docs/dev/operations/slice-plans/plugin-loader.md`.
 
+pub mod discovery;
 pub mod install;
 
+pub use discovery::{DiscoveredPlugin, default_plugins_dir, discover};
 pub use install::install;
 
 use std::sync::{Arc, Mutex};
 
+use lattice_mode::PluginMetaSinkHandle;
+use lattice_picker::{PickerRegistryHandle, PickerSourceGenerator};
 use lattice_plugin_host::{
     LoadedPlugin, ManifestError, PluginBudget, PluginHost, PluginHostError, PluginId,
-    PluginManifest, TrustTier,
+    PluginManifest, PluginSeam, TrustTier, WasmPickerSource,
 };
+use lattice_runtime::EventBus;
+use tokio::runtime::Handle;
+use tokio::task::JoinHandle;
 
 /// The service handle other layers reach the loader through — the ex-command
 /// surface (PL8.C), the plugin-manager view (PL8.H). Per the `ServiceRegistry`
@@ -55,55 +65,114 @@ use lattice_plugin_host::{
 pub type PluginLoaderHandle = Arc<PluginLoader>;
 
 /// A live loaded plugin: its host-issued [`PluginId`], its manifest id (the
-/// user-facing name, and the key for `:plugin-unload <name>` — PL8.C), and the
-/// live instance whose `Store` must stay alive for the plugin's contributions
-/// to remain valid.
+/// user-facing name, and the key for `:plugin-unload <name>` — PL8.C), and
+/// whatever must stay alive / be reversed for the plugin's contributions to
+/// keep working (PL8.C drives teardown from these).
 struct LoadedRecord {
     #[allow(dead_code)] // read by PL8.C unload / PL8.H manager view.
     id: PluginId,
     name: String,
-    /// Kept alive: dropping [`LoadedPlugin`] drops its `Store<PluginState>` —
-    /// the plugin's entire runtime footprint. PL8.B attaches the seam actors +
-    /// the [`PluginTeardown`](lattice_plugin_host::PluginTeardown) token that
-    /// reverses each contributed surface; PL8.A holds the bare instance so the
-    /// spine is honest (a loaded plugin is a *live* instance, not a handle).
-    _plugin: LoadedPlugin,
+    /// Lifecycle-only plugins (base `plugin` world — `init.rs`, no-op) keep
+    /// their instance alive here; dropping it drops the `Store`. Seam plugins
+    /// are driven by their actor task instead, so this is `None` for them.
+    #[allow(dead_code)]
+    lifecycle: Option<LoadedPlugin>,
+    /// The detached actor tasks driving this plugin's seams. Aborted on unload
+    /// (PL8.C). Kept so the tasks are not cancelled by a dropped `JoinHandle`
+    /// (tokio detaches on drop, so this is really the unload handle).
+    #[allow(dead_code)]
+    tasks: Vec<JoinHandle<()>>,
+    /// Picker source ids this plugin registered — unregistered from the picker
+    /// registry on unload (PL8.C).
+    #[allow(dead_code)]
+    picker_sources: Vec<&'static str>,
 }
 
-/// The plugin loader subsystem: owns the runtime handle and the loaded-plugin
-/// set, and drives the `compile → instantiate → activate` spine. Stood up at
-/// boot by [`install`], which registers it as a [`PluginLoaderHandle`] service
-/// so the user surface reaches it generically.
+/// The editor-side runtime environment the loader drives seams against —
+/// captured once from the boot context in [`install`]. `Option` because the
+/// minimal test constructor ([`PluginLoader::new`]) exercises only the
+/// lifecycle spine (no seams); a seam drain with an absent handle is a logged
+/// skip, never a panic.
+#[derive(Default)]
+struct LoaderEnv {
+    /// The shared multi-thread runtime handle (seam actors + discovery run here,
+    /// never the current-thread editor actor).
+    runtime: Option<Handle>,
+    /// The typed event bus — seam-actor crash quarantine binds to it.
+    bus: Option<Arc<EventBus>>,
+    /// The runtime-mutable picker registry (RCU-register loaded picker sources).
+    picker_registry: Option<PickerRegistryHandle>,
+    /// The provenance sink — records `PluginId → name/doc` for `:list-plugins`.
+    meta_sink: Option<PluginMetaSinkHandle>,
+}
+
+/// The plugin loader subsystem: owns the runtime, the loaded-plugin set, and the
+/// discovery + load orchestration. Stood up at boot by [`install`], which
+/// captures the editor environment and registers the loader as a
+/// [`PluginLoaderHandle`] service so the user surface reaches it generically.
 pub struct PluginLoader {
     host: Arc<PluginHost>,
-    /// `std::sync::Mutex`, not `tokio::sync::Mutex`: the lock is only ever taken
-    /// to push / read the loaded set *after* the async load work completes,
-    /// never held across an `.await`, so a blocking mutex is correct and
-    /// cheaper than an async one.
+    env: LoaderEnv,
+    /// `std::sync::Mutex` (not `tokio`): taken only to push / read the loaded
+    /// set *after* the async load work completes, never across an `.await`.
     loaded: Mutex<Vec<LoadedRecord>>,
 }
 
 /// Why a plugin failed to load. Every variant is graceful-degradation input for
-/// the caller (PL8.B logs + skips; the editor never aborts boot on one bad
+/// the caller (discovery logs + skips; the editor never aborts boot on one bad
 /// plugin) — the load path returns a value, never panics.
 #[derive(Debug, thiserror::Error)]
 pub enum PluginLoaderError {
-    /// The manifest was malformed or declared an unrecognised capability.
+    /// The manifest was malformed or declared an unrecognised capability/seam.
     #[error("plugin manifest invalid: {0}")]
     Manifest(#[from] ManifestError),
-    /// The component failed to compile, instantiate, or activate — a wasm trap,
-    /// fuel/epoch exhaustion, or a capability failure. Carries the runtime's
-    /// typed cause.
+    /// The component failed to compile, instantiate, activate, or spawn a seam —
+    /// a wasm trap, fuel/epoch exhaustion, or a capability failure.
     #[error("plugin runtime error: {0}")]
     Host(#[from] PluginHostError),
+    /// A seam was declared but the loader was constructed without the editor
+    /// environment needed to drive it (the minimal test constructor). Never
+    /// happens on the real boot path.
+    #[error("plugin loader not wired for seam `{0}` (no editor environment)")]
+    NotWired(&'static str),
+    /// The plugin declared no seam the loader can drain yet, so nothing loaded.
+    #[error("plugin declares no loadable seam")]
+    NothingLoaded,
 }
 
 impl PluginLoader {
-    /// Construct a loader over `host`. The loaded set starts empty; [`install`]
-    /// registers the handle as a service and (PL8.B) drives discovery.
+    /// Construct a loader over `host` with **no** editor environment — the
+    /// minimal constructor for tests exercising only the lifecycle spine.
+    /// [`install`] uses [`with_env`](Self::with_env) to wire the real seams.
     pub fn new(host: Arc<PluginHost>) -> Self {
         Self {
             host,
+            env: LoaderEnv::default(),
+            loaded: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Construct a loader wired with the editor environment — the seam actors
+    /// run on `runtime`, crash-quarantine binds to `bus`, loaded picker sources
+    /// RCU-register into `picker_registry`, and provenance records through
+    /// `meta_sink` (absent ⇒ no `:list-plugins` entry, still loads). Used by
+    /// [`install`] and by headless harnesses / tests that wire the loader
+    /// without a full boot context.
+    pub fn with_services(
+        host: Arc<PluginHost>,
+        runtime: Handle,
+        bus: Arc<EventBus>,
+        picker_registry: PickerRegistryHandle,
+        meta_sink: Option<PluginMetaSinkHandle>,
+    ) -> Self {
+        Self {
+            host,
+            env: LoaderEnv {
+                runtime: Some(runtime),
+                bus: Some(bus),
+                picker_registry: Some(picker_registry),
+                meta_sink,
+            },
             loaded: Mutex::new(Vec::new()),
         }
     }
@@ -127,50 +196,152 @@ impl PluginLoader {
             .any(|r| r.name == name)
     }
 
-    /// The load spine: compile `bytes`, instantiate under `manifest` + `tier`,
-    /// activate, and record the live instance. Returns the host-issued
-    /// [`PluginId`].
-    ///
-    /// Any failure surfaces as a typed [`PluginLoaderError`] and leaves the
-    /// loader **and the editor live** — no partial record is stored on error,
-    /// and the caller (PL8.B discovery) logs + skips so one bad plugin never
-    /// aborts boot or another plugin.
-    ///
-    /// PL8.A drives *only* the lifecycle spine — no seam actors, no registry
-    /// drain (that is PL8.B). `manifest` + `tier` thread the capability model
-    /// through from the first load so it is honest from day one (a
-    /// `TrustTier::UserInstalled` plugin's withheld capabilities are already
-    /// computed, even though nothing consumes them until PL8.C surfaces them).
-    pub async fn load_component(
+    /// Discover every plugin under `dir` and load each, logging + skipping any
+    /// that fails (never aborting the others). Returns the count loaded. Runs on
+    /// the caller (the multi-thread runtime), off the editor actor.
+    pub async fn discover_and_load(&self, dir: &std::path::Path, tier: TrustTier) -> usize {
+        let discovered = discovery::discover(dir);
+        let mut loaded = 0;
+        for plugin in discovered {
+            match self.load_discovered(&plugin, tier).await {
+                Ok(_) => loaded += 1,
+                Err(err) => tracing::warn!(
+                    plugin = %plugin.manifest.id,
+                    dir = %plugin.dir.display(),
+                    error = %err,
+                    "plugin failed to load; skipped"
+                ),
+            }
+        }
+        loaded
+    }
+
+    /// Load one already-discovered plugin: compile, then either drive the
+    /// lifecycle spine (empty `provides`) or drain each declared seam, and
+    /// record its provenance. Returns the host-issued [`PluginId`].
+    pub async fn load_discovered(
         &self,
-        bytes: &[u8],
-        manifest: &PluginManifest,
+        plugin: &DiscoveredPlugin,
         tier: TrustTier,
     ) -> Result<PluginId, PluginLoaderError> {
-        // `compile` is synchronous (Cranelift AOT, cached on disk per PH7.1b);
-        // `instantiate_plugin` + `activate` are async and run on the caller's
-        // multi-thread pool, never the current-thread editor actor.
-        let component = self.host.compile(bytes)?;
-        let mut plugin = self
-            .host
-            .instantiate_plugin(&component, manifest, tier, PluginBudget::default())
-            .await?;
-        plugin.activate().await?;
+        let manifest = &plugin.manifest;
+        let component = self.host.compile(&plugin.component_bytes)?;
 
-        let id = plugin.id();
-        let record = LoadedRecord {
-            id,
+        let mut record = LoadedRecord {
+            id: PluginId(0),
             name: manifest.id.clone(),
-            _plugin: plugin,
+            lifecycle: None,
+            tasks: Vec::new(),
+            picker_sources: Vec::new(),
         };
-        // The lock is taken only here — after every `.await`, never across one.
+        let mut loaded_id: Option<PluginId> = None;
+
+        if manifest.provides.is_empty() {
+            // Lifecycle-only (base `plugin` world): instantiate + activate.
+            let mut instance = self
+                .host
+                .instantiate_plugin(&component, manifest, tier, PluginBudget::default())
+                .await?;
+            instance.activate().await?;
+            loaded_id = Some(instance.id());
+            record.lifecycle = Some(instance);
+        } else {
+            for seam in &manifest.provides {
+                match seam {
+                    PluginSeam::PickerSource => {
+                        let id = self
+                            .drain_picker(&component, manifest, tier, &mut record)
+                            .await?;
+                        loaded_id.get_or_insert(id);
+                    }
+                    other => tracing::warn!(
+                        seam = %other,
+                        plugin = %manifest.id,
+                        "plugin declares a seam the loader does not drain yet (PL8.B follow-on); skipped"
+                    ),
+                }
+            }
+        }
+
+        let Some(id) = loaded_id else {
+            return Err(PluginLoaderError::NothingLoaded);
+        };
+        record.id = id;
+
+        // Provenance: `SourceLayer::Plugin(id)` renders as the name, and
+        // `:list-plugins` shows it. Doc falls back to the manifest field.
+        if let Some(sink) = &self.env.meta_sink {
+            sink.register_plugin(
+                id.0,
+                manifest.id.clone(),
+                manifest.doc.clone().unwrap_or_default(),
+            );
+        }
+
         self.loaded
             .lock()
             .expect("plugin-loader loaded-set mutex poisoned")
             .push(record);
-        // One-shot, user-actionable event (the "LSP server attached" class) —
-        // `info!`, not `debug!`, per the diagnostic-logs rule.
+        // One-shot, user-actionable event (the "LSP server attached" class).
         tracing::info!(plugin = %manifest.id, id = id.0, "plugin loaded");
+        Ok(id)
+    }
+
+    /// Drain the picker seam: spawn the source actor, fetch its spec, register
+    /// the `WasmPickerSource` into the picker registry by copy-on-write RCU, and
+    /// spawn the actor's `run` loop on the runtime. Records the actor task +
+    /// source id on `record` for teardown (PL8.C).
+    async fn drain_picker(
+        &self,
+        component: &lattice_plugin_host::Component,
+        manifest: &PluginManifest,
+        tier: TrustTier,
+        record: &mut LoadedRecord,
+    ) -> Result<PluginId, PluginLoaderError> {
+        let bus = self
+            .env
+            .bus
+            .as_ref()
+            .ok_or(PluginLoaderError::NotWired("picker-source"))?;
+        let runtime = self
+            .env
+            .runtime
+            .as_ref()
+            .ok_or(PluginLoaderError::NotWired("picker-source"))?;
+        let registry = self
+            .env
+            .picker_registry
+            .as_ref()
+            .ok_or(PluginLoaderError::NotWired("picker-source"))?;
+
+        let (client, actor) = self
+            .host
+            .spawn_picker_source(component, manifest, tier, PluginBudget::default(), bus)
+            .await?;
+
+        // Drive the actor's request loop on the multi-thread runtime FIRST —
+        // `connect` below issues a `spec()` guest call over the client channel,
+        // which the actor must be running to answer (else the await deadlocks).
+        let task = runtime.spawn(actor.run());
+
+        // The spec fetch is a guest call; a malformed spec fails registration
+        // loudly rather than registering a broken source.
+        let source = WasmPickerSource::connect(client).await?;
+        let id = source.plugin_id();
+        let source_id: &'static str = source.spec().id;
+
+        // Copy-on-write RCU into the wait-free registry: clone the current
+        // snapshot, add the source, publish. Concurrent picker-open readers keep
+        // seeing the old snapshot until the store lands — no lock on their path.
+        let generator: Arc<dyn PickerSourceGenerator> = Arc::new(source);
+        registry.rcu(|current| {
+            let mut next = (**current).clone();
+            next.register_generator(generator.clone());
+            Arc::new(next)
+        });
+
+        record.tasks.push(task);
+        record.picker_sources.push(source_id);
         Ok(id)
     }
 }

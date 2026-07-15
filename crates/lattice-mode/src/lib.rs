@@ -97,6 +97,7 @@ pub mod locals;
 pub mod mode;
 pub mod modeline;
 pub mod modes;
+pub mod plugin_meta_sink;
 pub mod registry;
 pub mod services;
 // DB.5 (design.md §9.1): the generic `Startup` boot-completion typed event.
@@ -136,6 +137,7 @@ pub use crate::error::ModeActivationError;
 pub use crate::event::ModeEvent;
 pub use crate::guards::{GuardStore, GuardStoreHandle};
 pub use crate::locals::{BufferLocal, BufferLocals, LocalDescriptor};
+pub use crate::plugin_meta_sink::{PluginMetaSink, PluginMetaSinkHandle};
 pub use crate::mode::{
     ActivationPolicy, DynMode, EditableTail, LifecycleFuture, Mode, ModeId, ModeKind,
 };

@@ -12,7 +12,7 @@
 
 use lattice_mode::CapabilitySet;
 use lattice_plugin_host::{PluginHost, PluginManifest, TrustTier};
-use lattice_plugin_loader::{PluginLoader, PluginLoaderError};
+use lattice_plugin_loader::{DiscoveredPlugin, PluginLoader, PluginLoaderError};
 use std::sync::Arc;
 
 /// The canonical no-op lifecycle fixture (`activate`/`deactivate` do nothing),
@@ -27,9 +27,19 @@ fn noop_bytes() -> Vec<u8> {
 }
 
 fn manifest(id: &str) -> PluginManifest {
-    // No requested OS capabilities + no editor capabilities: the minimal honest
-    // manifest for a no-op lifecycle plugin.
+    // No requested OS capabilities + no editor capabilities + empty `provides`:
+    // the minimal honest manifest for a no-op *lifecycle* plugin.
     PluginManifest::new(id, Vec::new(), CapabilitySet::empty())
+}
+
+/// Wrap raw bytes + a manifest as a discovered plugin (bypassing the on-disk
+/// scan) so the spine proof drives the load path directly.
+fn discovered(bytes: Vec<u8>, manifest: PluginManifest) -> DiscoveredPlugin {
+    DiscoveredPlugin {
+        manifest,
+        component_bytes: bytes,
+        dir: std::path::PathBuf::from("<in-memory>"),
+    }
 }
 
 /// A hermetic host that writes its cache + per-plugin data dirs under a temp
@@ -47,7 +57,7 @@ async fn loads_a_component_through_the_lifecycle_spine() {
     assert_eq!(loader.loaded_count(), 0, "loader starts empty");
 
     let id = loader
-        .load_component(&noop_bytes(), &manifest("noop-plugin"), TrustTier::Bundled)
+        .load_discovered(&discovered(noop_bytes(), manifest("noop-plugin")), TrustTier::Bundled)
         .await
         .expect("the no-op component compiles, instantiates, and activates");
 
@@ -68,7 +78,10 @@ async fn a_failed_load_leaves_the_loader_live_and_unchanged() {
     // (never a panic), and the loaded set is untouched — the graceful-
     // degradation contract PL8.B's discovery relies on to skip a bad plugin.
     let err = loader
-        .load_component(b"not a wasm component", &manifest("broken"), TrustTier::Bundled)
+        .load_discovered(
+            &discovered(b"not a wasm component".to_vec(), manifest("broken")),
+            TrustTier::Bundled,
+        )
         .await
         .expect_err("garbage bytes must not load");
     assert!(matches!(err, PluginLoaderError::Host(_)), "compile failure is a host error");

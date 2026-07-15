@@ -4409,8 +4409,13 @@ dependencies = [
 name = "lattice-plugin-loader"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
+ "dirs 5.0.1",
  "lattice-mode",
+ "lattice-picker",
  "lattice-plugin-host",
+ "lattice-runtime",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tracing",

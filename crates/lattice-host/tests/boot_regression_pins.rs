@@ -56,7 +56,7 @@ fn assert_mode(editor: &Editor, name: &str) {
 
 fn assert_command(editor: &Editor, name: &str) {
     assert!(
-        editor.registry.lookup_by_name(name).is_some(),
+        editor.registry.load().lookup_by_name(name).is_some(),
         "ex-command `{name}` must resolve by name at boot"
     );
 }

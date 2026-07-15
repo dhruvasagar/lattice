@@ -329,11 +329,11 @@ mod tests {
     fn new_registers_ai_command_and_service_without_panicking() {
         let app = App::new(Document::from_text("hello\n"));
         assert!(
-            app.editor.registry.id_by_name("opencode").is_some(),
+            app.editor.registry.load().id_by_name("opencode").is_some(),
             "App::new must register the `:opencode` (ACP conversation) ex-command"
         );
         assert!(
-            app.editor.registry.id_by_name("opencode-term").is_some(),
+            app.editor.registry.load().id_by_name("opencode-term").is_some(),
             "App::new must register the `:opencode-term` (terminal) ex-command"
         );
         app.editor
@@ -351,7 +351,7 @@ mod tests {
     fn ai_log_registered_and_empty_session_path_is_safe() {
         let mut app = App::new(Document::from_text("hello\n"));
         assert!(
-            app.editor.registry.id_by_name("ai-log").is_some(),
+            app.editor.registry.load().id_by_name("ai-log").is_some(),
             "App::new must register the `:ai-log` ex-command"
         );
         let before = app.editor.active_pane_buffer_id();

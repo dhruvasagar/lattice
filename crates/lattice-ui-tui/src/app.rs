@@ -1286,7 +1286,10 @@ impl App {
     /// `let reg = self.registry(); ... &reg ...` to keep the Arc
     /// alive across the borrow.
     pub(crate) fn registry(&self) -> std::sync::Arc<lattice_grammar::CommandRegistry> {
-        self.read_editor(|e| e.registry.clone())
+        // B3b: `load_full` yields an owned snapshot of the current registry
+        // (the field is now an `ArcSwap` handle) so callers keep receiving a
+        // plain `Arc<CommandRegistry>` and see runtime plugin registrations.
+        self.read_editor(|e| e.registry.load_full())
     }
 
     /// Thin renderer-side wrapper around
@@ -1898,9 +1901,10 @@ mod tests {
         // `<Tab>` on that arg silently produces no candidates --
         // the bug class that motivated this slice.
         let a = app_with("hi", 5);
-        for name in a.editor.registry.names() {
-            let id = a.editor.registry.id_by_name(name).unwrap();
-            let Some(spec) = a.editor.registry.ex_command_spec(id) else {
+        let reg = a.editor.registry.load();
+        for name in reg.names() {
+            let id = reg.id_by_name(name).unwrap();
+            let Some(spec) = reg.ex_command_spec(id) else {
                 continue;
             };
             for arg in &spec.args_schema {

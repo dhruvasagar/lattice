@@ -555,7 +555,10 @@ impl Mode for ProjectSearchMultibufferMode {
                 ctx.service::<CommandRegistryHandle>(),
                 ctx.service::<ActionHandlerRegistryHandle>(),
             ) {
-                let cmd_registry: &CommandRegistry = &**cmd_registry_arc;
+                // B3b: the service holds the `ArcSwap` handle; snapshot it
+                // wait-free for the `action:` id lookup below.
+                let cmd_registry_snapshot = cmd_registry_arc.load();
+                let cmd_registry: &CommandRegistry = &cmd_registry_snapshot;
                 let action_handlers: ActionHandlerRegistryHandle = (*action_handlers_arc).clone();
                 if let Some(jump_command_id) =
                     cmd_registry.id_by_name("action:search-jump-to-source")
@@ -754,7 +757,11 @@ impl Mode for ProjectSearchMultibufferMode {
                                         .with_text(&text)
                                         .with_path(path.clone())
                                         .build();
-                                    let registry = Arc::new(CommandRegistry::new());
+                                    // B3b: source docs in the search view get a
+                                    // fresh empty registry behind the `ArcSwap`
+                                    // handle `spawn_document` now expects.
+                                    let registry =
+                                        Arc::new(arc_swap::ArcSwap::from_pointee(CommandRegistry::new()));
                                     let handle = spawn_document(id, document, registry);
                                     let dyn_handle: Arc<dyn Document> = Arc::new(handle);
                                     view.add_source(id, dyn_handle);
@@ -929,7 +936,7 @@ pub fn project_search(
     activator: &mut dyn ModeActivator,
     query: String,
     options: ProjectSearchOptions,
-    registry: Arc<lattice_grammar::CommandRegistry>,
+    registry: lattice_grammar::CommandRegistryHandle,
     // K.4.7 (2026-06-07): when `Some`, passed to
     // `create_multibuffer_view` so per-source SyntaxHandles are
     // created as hits arrive via `add_source`.

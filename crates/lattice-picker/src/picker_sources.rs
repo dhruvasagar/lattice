@@ -23,7 +23,7 @@ use lattice_completion::{
     Annotation, AnnotationSegment, CandidateKind, KeymapReverseLookup, RawCandidate,
 };
 use lattice_config::ConfigRegistry;
-use lattice_grammar::CommandRegistry;
+use lattice_grammar::CommandRegistryHandle;
 use lattice_grammar::args::{ArgDefault, ArgSpec, Args};
 use lattice_grammar::command::{CommandKind, LatencyClass};
 
@@ -925,7 +925,10 @@ impl PickerSourceGenerator for JumpsSource {
 /// per-invocation snapshot data.
 pub struct CommandsSource {
     pub spec: PickerSourceSpec,
-    pub registry: Arc<CommandRegistry>,
+    /// B3b: the `ArcSwap` handle (not a boot snapshot) so the palette
+    /// enumerates commands a plugin registered at runtime — `init`
+    /// `.load()`s it per open, mirroring the `reverse` cache below.
+    pub registry: CommandRegistryHandle,
     /// MP.2b: name → first-bound-chord reverse lookup. Captured
     /// at construction like `registry` (both are static
     /// App-wide facades, not per-open snapshot state — see the
@@ -938,7 +941,7 @@ pub struct CommandsSource {
 }
 
 impl CommandsSource {
-    pub fn new(registry: Arc<CommandRegistry>, reverse: Arc<dyn KeymapReverseLookup>) -> Self {
+    pub fn new(registry: CommandRegistryHandle, reverse: Arc<dyn KeymapReverseLookup>) -> Self {
         Self {
             spec: PickerSourceSpec::no_args(
                 "commands",
@@ -970,11 +973,13 @@ impl PickerSourceGenerator for CommandsSource {
             doc: String,
             latency: LatencyClass,
         }
-        let mut rows: Vec<Row> = self
-            .registry
+        // B3b: wait-free snapshot for this open; a runtime-registered
+        // plugin command is enumerated on the next palette open.
+        let registry = self.registry.load();
+        let mut rows: Vec<Row> = registry
             .names()
             .filter_map(|canonical| {
-                let spec = self.registry.lookup_by_name(canonical)?;
+                let spec = registry.lookup_by_name(canonical)?;
                 if !matches!(spec.kind, CommandKind::ExCommand) {
                     return None;
                 }
@@ -1824,7 +1829,7 @@ pub fn walk_files_for_picker(root: &std::path::Path) -> Vec<std::path::PathBuf> 
 /// `ConfigRegistry`) take the relevant `Arc` here so the trait
 /// surface stays state-handle-free.
 pub fn first_party_generators(
-    command_registry: Arc<CommandRegistry>,
+    command_registry: CommandRegistryHandle,
     config: Arc<ConfigRegistry>,
     keybinding_reverse: Arc<dyn KeymapReverseLookup>,
     grep_highlighter: Option<Arc<dyn GrepPreviewHighlighter>>,

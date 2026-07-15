@@ -920,7 +920,7 @@ mod tests {
         for (mode_id, _kind) in a.editor.mode_registry.load().iter_meta() {
             let name = mode_id.to_string();
             assert!(
-                a.editor.registry.id_by_name(&name).is_some(),
+                a.editor.registry.load().id_by_name(&name).is_some(),
                 "no ex-command registered for mode `{name}`"
             );
         }

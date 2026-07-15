@@ -26,7 +26,7 @@ use std::sync::Arc;
 
 use lattice_config::OptionOverrideSet;
 use lattice_core::{BufferFlags, BufferId};
-use lattice_grammar::CommandRegistry;
+use lattice_grammar::{CommandRegistry, CommandRegistryHandle};
 use lattice_mode::{
     CapabilitySet, Keymap, LifecycleFuture, Mode, ModeActivator, ModeContext, ModeId, ModeKind,
     ModeRegistry,
@@ -115,7 +115,7 @@ pub fn create_narrow_view(
     start_line: u32,
     end_line: u32,
     label: &str,
-    registry: Arc<CommandRegistry>,
+    registry: CommandRegistryHandle,
     lang_registry: Option<Arc<LangRegistry>>,
 ) -> BufferId {
     let mut sources: HashMap<BufferId, Arc<dyn Document>> = HashMap::new();

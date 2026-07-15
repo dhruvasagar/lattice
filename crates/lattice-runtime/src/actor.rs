@@ -42,7 +42,7 @@ use std::sync::Arc;
 
 use lattice_core::{Buffer, CoreError, Document};
 use lattice_grammar::{
-    CancellationToken, CommandInvocation, CommandRegistry, Effect, execute_with_env,
+    CancellationToken, CommandInvocation, CommandRegistryHandle, Effect, execute_with_env,
 };
 use lattice_protocol::edit::Edit;
 use lattice_protocol::position::Position;
@@ -136,10 +136,13 @@ pub(crate) enum ActorMsg {
 /// The actor task. Constructed by [`crate::spawn_document`].
 pub struct DocumentActor {
     document: Document,
-    /// Shared with the App and any other caller; the actor holds
-    /// `Arc` only so it can run [`lattice_grammar::execute`]
-    /// against the registry from within its own task.
-    registry: Arc<CommandRegistry>,
+    /// Shared with the App and any other caller; the actor holds the
+    /// `ArcSwap` handle so it can run [`lattice_grammar::execute`]
+    /// against the registry from within its own task, snapshotting it
+    /// wait-free (`.load()`) on each dispatch so a plugin registered at
+    /// runtime becomes live for this buffer on its next keystroke
+    /// (PL8.B / B3b).
+    registry: CommandRegistryHandle,
     inbox: mpsc::UnboundedReceiver<ActorMsg>,
     snapshot_cell: Arc<PublishedSnapshot>,
 }
@@ -147,7 +150,7 @@ pub struct DocumentActor {
 impl DocumentActor {
     pub(crate) fn new(
         document: Document,
-        registry: Arc<CommandRegistry>,
+        registry: CommandRegistryHandle,
         inbox: mpsc::UnboundedReceiver<ActorMsg>,
         snapshot_cell: Arc<PublishedSnapshot>,
     ) -> Self {
@@ -249,8 +252,13 @@ impl DocumentActor {
                     scope_resolver,
                     comment_syntax: env.comment_syntax.as_deref(),
                 };
+                // B3b: snapshot the registry wait-free for this dispatch. A
+                // plugin registered at runtime (loader RCU-store into the
+                // `ArcSwap`) becomes live on the next keystroke; a mid-dispatch
+                // store never mutates the snapshot this call holds.
+                let registry = self.registry.load();
                 let result = execute_with_env(
-                    &self.registry,
+                    &registry,
                     &mut self.document,
                     buffer_id,
                     cursor,
@@ -284,11 +292,11 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
     use crate::handle::spawn_document;
-    use lattice_grammar::CommandRegistry;
+    use lattice_grammar::{CommandRegistry, CommandRegistryHandle};
     use lattice_protocol::position::Position;
 
-    fn empty_registry() -> Arc<CommandRegistry> {
-        Arc::new(CommandRegistry::new())
+    fn empty_registry() -> CommandRegistryHandle {
+        Arc::new(arc_swap::ArcSwap::from_pointee(CommandRegistry::new()))
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -528,7 +536,7 @@ mod tests {
         let handle = spawn_document(
             lattice_core::BufferId(0),
             Document::from_text("fn a() {}\nfn b() {}\nfn c() {}\n"),
-            Arc::new(registry),
+            Arc::new(arc_swap::ArcSwap::from_pointee(registry)),
         );
 
         // Positive: a resolver is supplied -> the text object sees Some

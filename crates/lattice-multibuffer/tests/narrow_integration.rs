@@ -94,7 +94,7 @@ fn make_source(text: &str) -> (BufferId, Arc<dyn Document>) {
     let document = lattice_core::DocumentBuilder::default()
         .with_text(text)
         .build();
-    let handle = lattice_runtime::spawn_document(id, document, Arc::new(CommandRegistry::new()));
+    let handle = lattice_runtime::spawn_document(id, document, Arc::new(arc_swap::ArcSwap::from_pointee(CommandRegistry::new())));
     let dyn_handle: Arc<dyn Document> = Arc::new(handle);
     (id, dyn_handle)
 }
@@ -113,7 +113,7 @@ fn narrow_renders_only_the_requested_range() {
         2,
         5,
         "src.rs",
-        Arc::new(CommandRegistry::new()),
+        Arc::new(arc_swap::ArcSwap::from_pointee(CommandRegistry::new())),
         None,
     );
 
@@ -143,7 +143,7 @@ fn narrow_activates_narrow_minor_mode() {
         0,
         3,
         "",
-        Arc::new(CommandRegistry::new()),
+        Arc::new(arc_swap::ArcSwap::from_pointee(CommandRegistry::new())),
         None,
     );
 
@@ -169,7 +169,7 @@ fn narrow_headerline_shows_the_range() {
         2,
         5,
         "src.rs",
-        Arc::new(CommandRegistry::new()),
+        Arc::new(arc_swap::ArcSwap::from_pointee(CommandRegistry::new())),
         None,
     );
 
@@ -198,7 +198,7 @@ fn empty_label_headerline_omits_label() {
         0,
         0,
         "",
-        Arc::new(CommandRegistry::new()),
+        Arc::new(arc_swap::ArcSwap::from_pointee(CommandRegistry::new())),
         None,
     );
 

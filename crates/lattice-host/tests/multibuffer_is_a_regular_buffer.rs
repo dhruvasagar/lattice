@@ -42,7 +42,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use lattice_core::{BufferFlags, BufferId, BufferKind, Document as CoreDocument};
-use lattice_grammar::CommandRegistry;
 use lattice_host::dispatch::DispatchOutcome;
 use lattice_host::editor::Editor;
 use lattice_multibuffer::{Excerpt, create_multibuffer_view};
@@ -70,7 +69,7 @@ fn boot_with_multibuffer() -> (Editor, BufferId) {
 
     // Build two source documents we'll embed into the
     // multibuffer view.
-    let cmd_registry: Arc<CommandRegistry> = editor.registry.clone();
+    let cmd_registry: lattice_grammar::CommandRegistryHandle = editor.registry.clone();
     let source_a = spawn_document(
         BufferId(101),
         CoreDocument::from_text("a-line-0\na-line-1\na-line-2\na-line-3\n"),

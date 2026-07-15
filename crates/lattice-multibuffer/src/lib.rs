@@ -72,7 +72,8 @@ use lattice_cells::virtual_rows::{
 use lattice_core::buffer::AppliedEdit;
 use lattice_core::{Buffer, BufferId};
 use lattice_grammar::{
-    CancellationToken, CommandInvocation, CommandKind, CommandRegistry, Effect, execute_with_env,
+    CancellationToken, CommandInvocation, CommandKind, CommandRegistryHandle, Effect,
+    execute_with_env,
 };
 use lattice_protocol::edit::Edit;
 use lattice_protocol::ids::DocumentId;
@@ -308,7 +309,12 @@ struct MultibufferInner {
     // host-side kind-branch in `Editor::dispatch_blocking` (the
     // multibuffer's own `Document::dispatch_with_cancel` impl
     // now does the work uniformly).
-    registry: Arc<CommandRegistry>,
+    //
+    // B3b: the `ArcSwap` handle (was `Arc<CommandRegistry>`) so a plugin
+    // grammar contribution registered at runtime is live for this view's
+    // next dispatch; `dispatch_with_cancel` `.load_full()`s an owned
+    // snapshot for each keystroke.
+    registry: CommandRegistryHandle,
     // K.4.7 (2026-06-07): language registry for per-source
     // SyntaxHandle creation. Set once after construction via
     // `set_lang_registry`; `None` until the host wires it.
@@ -492,7 +498,7 @@ impl MultibufferDocumentHandle {
     pub fn new(
         sources: HashMap<BufferId, Arc<dyn Document>>,
         excerpts: Vec<Excerpt>,
-        registry: Arc<CommandRegistry>,
+        registry: CommandRegistryHandle,
     ) -> Result<Self, MultibufferError> {
         for ex in &excerpts {
             if !sources.contains_key(&ex.source) {
@@ -582,10 +588,10 @@ impl MultibufferDocumentHandle {
     /// provider streams content in via [`Self::append_excerpts`].
     /// Infallible.
     ///
-    /// K.4.11 (2026-06-02): takes the same `Arc<CommandRegistry>`
+    /// K.4.11 (2026-06-02): takes the same `CommandRegistryHandle`
     /// as the full [`Self::new`] constructor. The multibuffer is
     /// grammar-capable from creation — empty-view or not.
-    pub fn empty(registry: Arc<CommandRegistry>) -> Self {
+    pub fn empty(registry: CommandRegistryHandle) -> Self {
         Self::new(HashMap::new(), Vec::new(), registry)
             .expect("empty inputs are valid; UnknownSource impossible")
     }
@@ -1651,7 +1657,9 @@ impl Document for MultibufferDocumentHandle {
         let snapshot = self.snapshot();
         let mut scratch = lattice_core::Document::from_buffer(snapshot.buffer.clone());
         let buffer_id = self.inner.buffer_id;
-        let registry = Arc::clone(&self.inner.registry);
+        // B3b: owned snapshot for this dispatch (was `Arc::clone`); a
+        // runtime plugin registration is live on the next keystroke.
+        let registry = self.inner.registry.load_full();
         // N.1.5: tree-sitter text objects (`af` / `daf` / `znaf`) inside a
         // multibuffer view resolve against the SOURCE syntax, not the
         // composed text (which has no parse tree of its own). Build a
@@ -2710,8 +2718,8 @@ mod tests {
     use lattice_grammar::CommandRegistry;
     use lattice_runtime::spawn_document;
 
-    fn empty_registry() -> Arc<CommandRegistry> {
-        Arc::new(CommandRegistry::new())
+    fn empty_registry() -> lattice_grammar::CommandRegistryHandle {
+        Arc::new(arc_swap::ArcSwap::from_pointee(CommandRegistry::new()))
     }
 
     fn make_sources(texts: &[&str]) -> (HashMap<BufferId, Arc<dyn Document>>, Vec<BufferId>) {
@@ -4878,8 +4886,8 @@ mod excerpt_fold_tests {
 
     use super::*;
 
-    fn reg() -> Arc<CommandRegistry> {
-        Arc::new(CommandRegistry::new())
+    fn reg() -> lattice_grammar::CommandRegistryHandle {
+        Arc::new(arc_swap::ArcSwap::from_pointee(CommandRegistry::new()))
     }
 
     #[tokio::test(flavor = "current_thread")]

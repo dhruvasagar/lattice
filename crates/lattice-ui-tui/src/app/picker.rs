@@ -809,7 +809,7 @@ mod tests {
         let ctx = lattice_completion::GenerateContext {
             prefix: "",
             buffer: &snap.buffer,
-            registry: &app.editor.registry,
+            registry: &app.editor.registry.load(),
             case_sensitive: false,
         };
         let candidates = generator.inner.generate(&ctx);
@@ -861,7 +861,7 @@ mod tests {
         let ctx = lattice_completion::GenerateContext {
             prefix: "",
             buffer: &snap.buffer,
-            registry: &app.editor.registry,
+            registry: &app.editor.registry.load(),
             case_sensitive: false,
         };
         let candidates = lattice_completion::traits::CandidateGenerator::generate(&generator, &ctx);

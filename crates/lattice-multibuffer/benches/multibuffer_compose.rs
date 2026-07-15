@@ -23,8 +23,8 @@ use lattice_grammar::CommandRegistry;
 use lattice_multibuffer::{Excerpt, ExcerptHeader, MultibufferDocumentHandle};
 use lattice_runtime::{Document, spawn_document};
 
-fn empty_grammar() -> Arc<CommandRegistry> {
-    Arc::new(CommandRegistry::new())
+fn empty_grammar() -> lattice_grammar::CommandRegistryHandle {
+    Arc::new(arc_swap::ArcSwap::from_pointee(CommandRegistry::new()))
 }
 
 fn build_source(lines: u32) -> Arc<dyn Document> {
@@ -73,7 +73,7 @@ fn build_view_with_sample(
         let end = start + excerpt_rows - 1;
         excerpts.push(Excerpt::new(s, start, end).with_header(ExcerptHeader::default()));
     }
-    let registry = Arc::new(CommandRegistry::new());
+    let registry = Arc::new(arc_swap::ArcSwap::from_pointee(CommandRegistry::new()));
     let view =
         MultibufferDocumentHandle::new(sources, excerpts, registry).expect("valid construction");
     (view, sample.expect("at least one source"))

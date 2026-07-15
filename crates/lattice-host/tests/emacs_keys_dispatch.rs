@@ -70,6 +70,7 @@ fn assert_invokes(editor: &Editor, action: &Action, name: &str) {
     };
     let expected = editor
         .registry
+        .load()
         .id_by_name(name)
         .unwrap_or_else(|| panic!("command `{name}` is registered"));
     assert_eq!(inv.command, expected, "leader chord must target `{name}`");

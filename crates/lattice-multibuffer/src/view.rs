@@ -71,7 +71,7 @@ pub fn create_multibuffer_view(
     excerpts: Vec<Excerpt>,
     name: Option<String>,
     flags: BufferFlags,
-    registry: Arc<lattice_grammar::CommandRegistry>,
+    registry: lattice_grammar::CommandRegistryHandle,
     // K.4.7 (2026-06-07): when `Some`, wired into the handle so
     // `add_source` creates a `SyntaxHandle` per source file.
     lang_registry: Option<Arc<LangRegistry>>,

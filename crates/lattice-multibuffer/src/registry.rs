@@ -135,7 +135,7 @@ mod tests {
 
     fn empty_handle() -> Arc<MultibufferDocumentHandle> {
         Arc::new(MultibufferDocumentHandle::empty(Arc::new(
-            lattice_grammar::CommandRegistry::new(),
+            arc_swap::ArcSwap::from_pointee(lattice_grammar::CommandRegistry::new()),
         )))
     }
 

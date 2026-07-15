@@ -118,7 +118,7 @@ fn empty_view_creates_inserts_and_activates_major() {
         Vec::new(),
         Some("*test:empty*".into()),
         BufferFlags::default(),
-        Arc::new(CommandRegistry::new()),
+        Arc::new(arc_swap::ArcSwap::from_pointee(CommandRegistry::new())),
         None,
     );
 
@@ -153,7 +153,7 @@ fn view_returns_unique_buffer_ids_per_call() {
         Vec::new(),
         None,
         BufferFlags::default(),
-        Arc::new(CommandRegistry::new()),
+        Arc::new(arc_swap::ArcSwap::from_pointee(CommandRegistry::new())),
         None,
     );
     let b = create_multibuffer_view(
@@ -162,7 +162,7 @@ fn view_returns_unique_buffer_ids_per_call() {
         Vec::new(),
         None,
         BufferFlags::default(),
-        Arc::new(CommandRegistry::new()),
+        Arc::new(arc_swap::ArcSwap::from_pointee(CommandRegistry::new())),
         None,
     );
     assert_ne!(a, b);
@@ -183,7 +183,7 @@ async fn append_excerpts_after_create_extends_view() {
         Vec::new(),
         None,
         BufferFlags::default(),
-        Arc::new(CommandRegistry::new()),
+        Arc::new(arc_swap::ArcSwap::from_pointee(CommandRegistry::new())),
         None,
     );
     let handle = activator.mb_registry.handle(view_id).unwrap();
@@ -194,7 +194,7 @@ async fn append_excerpts_after_create_extends_view() {
     let src_handle = spawn_document(
         src_id,
         CoreDocument::from_text("a\nb\nc\n"),
-        Arc::new(CommandRegistry::new()),
+        Arc::new(arc_swap::ArcSwap::from_pointee(CommandRegistry::new())),
     );
     handle.add_source(src_id, Arc::new(src_handle));
     handle.append_excerpts(vec![Excerpt::new(src_id, 0, 1)]);

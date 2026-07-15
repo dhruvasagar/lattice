@@ -6839,16 +6839,16 @@ impl Editor {
                 .get(short)
                 .map(|s| (*s).to_string())
         };
-        let slot = lattice_completion::current_slot(&line, cursor, &self.registry, &alias_resolver);
+        let reg = self.registry.load();
+        let slot = lattice_completion::current_slot(&line, cursor, &reg, &alias_resolver);
         let word = slot.prefix();
         let canonical = if word.is_empty() {
             None
         } else {
-            alias_resolver(word)
-                .or_else(|| self.registry.id_by_name(word).and(Some(word.to_string())))
+            alias_resolver(word).or_else(|| reg.id_by_name(word).and(Some(word.to_string())))
         };
         if let Some(name) = canonical
-            && self.registry.id_by_name(&name).is_some()
+            && reg.id_by_name(&name).is_some()
         {
             if let Some(content) = self.build_describe_command_content(&name, None) {
                 out.renderer_signals
@@ -7370,13 +7370,15 @@ impl Editor {
             return None;
         }
         let cmd = raw_cmd.strip_suffix('!').unwrap_or(raw_cmd);
-        let canonical = self.registry.id_by_name(cmd).or_else(|| {
+        // B3b: wait-free registry snapshot for this read-only resolution.
+        let reg = self.registry.load();
+        let canonical = reg.id_by_name(cmd).or_else(|| {
             crate::excommand::aliases()
                 .get(cmd)
                 .copied()
-                .and_then(|c| self.registry.id_by_name(c))
+                .and_then(|c| reg.id_by_name(c))
         })?;
-        let spec = self.registry.ex_command_spec(canonical)?;
+        let spec = reg.ex_command_spec(canonical)?;
         if matches!(
             spec.surface_form,
             lattice_grammar::SurfaceForm::Delimiter { .. }
@@ -7440,16 +7442,19 @@ impl Editor {
         // ("describe-key"). Mirror try_resolve_missing_arg_prompt's
         // resolution logic so both call sites accept the same
         // forms.
-        let canonical = self.registry.id_by_name(command_name).or_else(|| {
+        // B3b: owned snapshot (`load_full`) so `spec` never borrows `self`
+        // — this method mutates self (`apply_missing_arg_prompt`) below.
+        let reg = self.registry.load_full();
+        let canonical = reg.id_by_name(command_name).or_else(|| {
             crate::excommand::aliases()
                 .get(command_name)
                 .copied()
-                .and_then(|c| self.registry.id_by_name(c))
+                .and_then(|c| reg.id_by_name(c))
         });
         let Some(canonical) = canonical else {
             return false;
         };
-        let Some(spec) = self.registry.ex_command_spec(canonical) else {
+        let Some(spec) = reg.ex_command_spec(canonical) else {
             return false;
         };
         let Some(first) = spec.args_schema.first() else {
@@ -7491,16 +7496,18 @@ impl Editor {
     /// to use `arm_missing_arg_prompt` (Required-only) so `:write<CR>`
     /// still saves immediately without a second `<CR>`.
     fn arm_picker_prompt(&mut self, command_name: &str) -> bool {
-        let canonical = self.registry.id_by_name(command_name).or_else(|| {
+        // B3b: owned snapshot (`load_full`) — self is mutated below.
+        let reg = self.registry.load_full();
+        let canonical = reg.id_by_name(command_name).or_else(|| {
             crate::excommand::aliases()
                 .get(command_name)
                 .copied()
-                .and_then(|c| self.registry.id_by_name(c))
+                .and_then(|c| reg.id_by_name(c))
         });
         let Some(canonical) = canonical else {
             return false;
         };
-        let Some(spec) = self.registry.ex_command_spec(canonical) else {
+        let Some(spec) = reg.ex_command_spec(canonical) else {
             return false;
         };
         let Some(first) = spec.args_schema.first() else {
@@ -7707,8 +7714,12 @@ impl Editor {
                 .get(short)
                 .map(|s| (*s).to_string())
         };
-        let slot =
-            lattice_completion::current_slot(line, line.len(), &self.registry, &alias_resolver);
+        let slot = lattice_completion::current_slot(
+            line,
+            line.len(),
+            &self.registry.load(),
+            &alias_resolver,
+        );
         matches!(
             &slot,
             lattice_completion::CommandLineSlot::Arg { arg_spec, .. }
@@ -7721,7 +7732,9 @@ impl Editor {
     /// through `apply_effect_host` (host migrated-arm pass + push to
     /// `out.effects` for the renderer-coupled tail).
     pub fn execute_ex_line(&mut self, line: &str, out: &mut DispatchOutcome) {
-        match crate::excommand::parse(line, &self.registry) {
+        // B3b: `load_full` yields an owned snapshot the `match` can hold
+        // without borrowing self — the `Ok` arm dispatches on `&mut self`.
+        match crate::excommand::parse(line, &self.registry.load_full()) {
             // UD (unified dispatch): route the parsed invocation through
             // the SINGLE command-dispatch entry — the same path the
             // keymap's `Action::Invoke` (and, eventually, plugins) use.
@@ -7753,7 +7766,8 @@ impl Editor {
                 .get(short)
                 .map(|s| (*s).to_string())
         };
-        let slot = lattice_completion::current_slot(&line, cursor, &self.registry, &alias_resolver);
+        let reg = self.registry.load();
+        let slot = lattice_completion::current_slot(&line, cursor, &reg, &alias_resolver);
         let (source_name, prefix, replace_start) = match &slot {
             lattice_completion::CommandLineSlot::CommandName {
                 prefix,
@@ -7793,7 +7807,7 @@ impl Editor {
         let ctx = lattice_completion::GenerateContext {
             prefix: &prefix,
             buffer: &snap.buffer,
-            registry: &self.registry,
+            registry: &reg,
             case_sensitive: false,
         };
         let mut candidates = pipeline.run(&ctx, &prefix, &self.completion_registry.cache);
@@ -26896,7 +26910,7 @@ impl Editor {
                         lattice_mode::EmacsKeysMode::mode_id(),
                     ),
                     "emacs-keys-mode",
-                    lattice_mode::emacs_keys_layer_bindings(enabled, &prefix, &self.registry),
+                    lattice_mode::emacs_keys_layer_bindings(enabled, &prefix, &self.registry.load()),
                 );
             }
             n if n.starts_with("ui.") => {
@@ -27225,11 +27239,14 @@ impl Editor {
         name: &str,
         anchor: Option<&str>,
     ) -> Option<lattice_help::HelpContent> {
-        let Some(id) = crate::excommand::resolve_command_name_or_alias(&self.registry, name) else {
+        // B3b: owned snapshot (`load_full`) so `spec` never borrows self —
+        // the `else` arms call `set_message` on `&mut self`.
+        let reg = self.registry.load_full();
+        let Some(id) = crate::excommand::resolve_command_name_or_alias(&reg, name) else {
             self.set_message(EchoLevel::Error, format!("no command named `{name}`"));
             return None;
         };
-        let Some(spec) = self.registry.lookup(id) else {
+        let Some(spec) = reg.lookup(id) else {
             self.set_message(EchoLevel::Error, format!("no command named `{name}`"));
             return None;
         };
@@ -27279,12 +27296,15 @@ impl Editor {
         }
         let needle = pattern.to_ascii_lowercase();
         let mut hits: Vec<(String, &'static str, String)> = Vec::new();
-        for name in self.registry.names() {
-            let id = match self.registry.id_by_name(name) {
+        // B3b: owned snapshot (`load_full`) — self is mutated later in this
+        // method (plugin-API catalog append + set_message).
+        let reg = self.registry.load_full();
+        for name in reg.names() {
+            let id = match reg.id_by_name(name) {
                 Some(id) => id,
                 None => continue,
             };
-            let Some(spec) = self.registry.lookup(id) else {
+            let Some(spec) = reg.lookup(id) else {
                 continue;
             };
             let name_match = spec.name.to_ascii_lowercase().contains(&needle);
@@ -27549,11 +27569,12 @@ impl Editor {
         use lattice_grammar::source::SourceLayer;
         // (group_order, group_label, command_name, kind_label, first_doc_line).
         let mut rows: Vec<(u8, String, String, &'static str, String)> = Vec::new();
-        for name in self.registry.names() {
-            let Some(id) = self.registry.id_by_name(name) else {
+        let reg = self.registry.load();
+        for name in reg.names() {
+            let Some(id) = reg.id_by_name(name) else {
                 continue;
             };
-            let Some(spec) = self.registry.lookup(id) else {
+            let Some(spec) = reg.lookup(id) else {
                 continue;
             };
             let (order, group) = match spec.source.layer {
@@ -27621,10 +27642,10 @@ impl Editor {
         // Commands this plugin contributed (provenance = Plugin(id)).
         let contributions: Vec<String> = {
             use lattice_grammar::source::SourceLayer;
-            let mut names: Vec<String> = self
-                .registry
+            let reg = self.registry.load();
+            let mut names: Vec<String> = reg
                 .names()
-                .filter_map(|n| self.registry.lookup_by_name(n).map(|s| (n, s)))
+                .filter_map(|n| reg.lookup_by_name(n).map(|s| (n, s)))
                 .filter(|(_, s)| matches!(s.source.layer, SourceLayer::Plugin(p) if p == id))
                 .map(|(n, _)| n.to_string())
                 .collect();
@@ -27812,6 +27833,7 @@ impl Editor {
             if let Some(winner) = resolution.winner() {
                 let cmd_name = self
                     .registry
+                    .load()
                     .lookup(winner.command.command.command)
                     .map(|spec| spec.name.clone())
                     .unwrap_or_else(|| format!("{:?}", winner.command.command.command));
@@ -27840,6 +27862,7 @@ impl Editor {
                     let hit = active_desc[i];
                     let next_name = self
                         .registry
+                        .load()
                         .lookup(hit.command.command.command)
                         .map(|spec| spec.name.clone())
                         .unwrap_or_else(|| format!("{:?}", hit.command.command.command));
@@ -27905,6 +27928,7 @@ impl Editor {
                     };
                     let cmd_name = self
                         .registry
+                        .load()
                         .lookup(hit.command.command.command)
                         .map(|spec| spec.name.clone())
                         .unwrap_or_else(|| format!("{:?}", hit.command.command.command));
@@ -31108,12 +31132,16 @@ impl Editor {
     /// into `do_*` helpers downstream.
     pub fn run_oil_invocation(&mut self, inv: lattice_grammar::CommandInvocation) -> bool {
         use lattice_grammar::Effect;
+        // B3b: owned registry snapshot (`load_full`) for this dispatch — self
+        // is mutated below (buffer/cursor writes), so an owned `Arc` (not a
+        // `.load()` guard borrowing self) is required.
+        let reg = self.registry.load_full();
         // Action- and ExCommand-kind commands don't apply to the oil
         // text buffer. Action: grammar Action gate handles them centrally.
         // ExCommand: ex-command dispatcher produces AppAction effects
         // (e.g. `describe-buffer`, `describe-key`) that work buffer-
         // agnostically — fall through to `run_document_invocation`.
-        if let Some(spec) = self.registry.lookup(inv.command)
+        if let Some(spec) = reg.lookup(inv.command)
             && matches!(
                 spec.kind,
                 lattice_grammar::CommandKind::Action | lattice_grammar::CommandKind::ExCommand
@@ -31143,7 +31171,7 @@ impl Editor {
         let inv_for_repeat = inv.clone();
         let cursor_before = self.cursor;
         let result = lattice_grammar::execute(
-            &self.registry,
+            &reg,
             &mut temp_doc,
             self.document_buffer_id,
             cursor_before,
@@ -31293,8 +31321,13 @@ impl Editor {
         // and the typed `:` path produce identical editor state.
         // Plugins / init.rs can call the public API directly
         // without going through this short-circuit.
+        //
+        // B3b: owned registry snapshot (`load_full`) for this dispatch — the
+        // let-chains below feed bodies that mutate self, so an owned `Arc`
+        // (not a `.load()` guard borrowing self) is required.
+        let reg = self.registry.load_full();
         if matches!(inv.args, lattice_grammar::args::Args::None)
-            && let Some(spec) = self.registry.lookup(inv.command)
+            && let Some(spec) = reg.lookup(inv.command)
             && let Some(first) = spec.args_schema.first()
             && matches!(first.default, lattice_grammar::ArgDefault::Required)
         {
@@ -31410,7 +31443,7 @@ impl Editor {
         // scratch `Document`. Reached when the per-kind runner
         // declined the command (e.g. `:` enter-command-line on a
         // help / oil / file-tree / terminal pane).
-        if let Some(spec) = self.registry.lookup(inv.command)
+        if let Some(spec) = reg.lookup(inv.command)
             && matches!(spec.kind, lattice_grammar::CommandKind::Action)
         {
             let cancel = lattice_protocol::CancellationToken::never();
@@ -31423,7 +31456,7 @@ impl Editor {
             // throwaway empty one.
             let mut scratch = lattice_core::Document::empty();
             match lattice_grammar::execute(
-                &self.registry,
+                &reg,
                 &mut scratch,
                 self.document_buffer_id,
                 pos,
@@ -31582,6 +31615,9 @@ impl Editor {
         let buf_id = self.active_pane_buffer_id();
         let _count = inv.count.map(|c| c.0).unwrap_or(1).max(1);
         let cmd = inv.command;
+        // B3b: owned registry snapshot (`load_full`) for this dispatch — the
+        // motion/operator arms below mutate self while reading the registry.
+        let reg = self.registry.load_full();
         // T3.b.2 / T3.b.2.b: handle Visual-active state first.
         // Visual entry / no-Visual scrollback nav fall through
         // below.
@@ -31614,14 +31650,14 @@ impl Editor {
                 None
             };
             let dispatch_cmd = coerced.unwrap_or(cmd);
-            let kind = self.registry.lookup(dispatch_cmd).map(|s| s.kind);
+            let kind = reg.lookup(dispatch_cmd).map(|s| s.kind);
             if matches!(kind, Some(lattice_grammar::CommandKind::Motion)) {
                 let mut motion_inv = inv.clone();
                 motion_inv.command = dispatch_cmd;
                 let buffer = self.active_text();
                 let cancel = lattice_protocol::CancellationToken::never();
                 if let Ok(new_pos) = lattice_grammar::execute_motion_only(
-                    &self.registry,
+                    &reg,
                     &buffer,
                     self.document_buffer_id,
                     self.cursor,
@@ -31645,7 +31681,7 @@ impl Editor {
             // only". This is the seam that lets newly-registered
             // operators (e.g. surround) work on terminal-Visual
             // with zero per-buffer-kind changes.
-            let op_kind = self.registry.lookup(cmd).map(|s| s.kind);
+            let op_kind = reg.lookup(cmd).map(|s| s.kind);
             if matches!(
                 op_kind,
                 Some(lattice_grammar::CommandKind::Operator)
@@ -31777,7 +31813,7 @@ impl Editor {
             None
         };
         let dispatch_cmd = coerced.unwrap_or(cmd);
-        let kind = self.registry.lookup(dispatch_cmd).map(|s| s.kind);
+        let kind = reg.lookup(dispatch_cmd).map(|s| s.kind);
         if matches!(kind, Some(lattice_grammar::CommandKind::Motion)) {
             self.pending_count = 0;
             self.op_count = 0;
@@ -31786,7 +31822,7 @@ impl Editor {
             let buffer = self.active_text();
             let cancel = lattice_protocol::CancellationToken::never();
             match lattice_grammar::execute_motion_only(
-                &self.registry,
+                &reg,
                 &buffer,
                 self.document_buffer_id,
                 self.cursor,
@@ -31859,7 +31895,7 @@ impl Editor {
         // - `Motion` commands the runner didn't already intercept
         //   are silently swallowed (claim with `true`) to match
         //   pre-refactor behaviour.
-        match self.registry.lookup(cmd).map(|s| s.kind) {
+        match reg.lookup(cmd).map(|s| s.kind) {
             Some(lattice_grammar::CommandKind::Action)
             | Some(lattice_grammar::CommandKind::ExCommand) => false,
             Some(lattice_grammar::CommandKind::Motion) | None => true,
@@ -31890,8 +31926,10 @@ impl Editor {
         let mut doc = lattice_core::Document::from_text(buffer.as_string());
         let cursor = self.cursor;
         let cancel = lattice_protocol::CancellationToken::never();
+        // B3b: owned registry snapshot for this dispatch.
+        let reg = self.registry.load_full();
         let effect = match lattice_grammar::execute(
-            &self.registry,
+            &reg,
             &mut doc,
             self.document_buffer_id,
             cursor,
@@ -31942,7 +31980,10 @@ impl Editor {
     /// buffer-agnostic and shouldn't echo "read-only" — they
     /// belong on the central dispatch path.
     pub fn run_read_only_motion(&mut self, inv: lattice_grammar::CommandInvocation) -> bool {
-        let Some(spec) = self.registry.lookup(inv.command) else {
+        // B3b: owned registry snapshot — self is mutated in the non-Motion
+        // and motion-dispatch arms below.
+        let reg = self.registry.load_full();
+        let Some(spec) = reg.lookup(inv.command) else {
             return true;
         };
         if matches!(
@@ -31970,7 +32011,7 @@ impl Editor {
         let buffer = self.active_text();
         let cancel = lattice_protocol::CancellationToken::never();
         match lattice_grammar::execute_motion_only(
-            &self.registry,
+            &reg,
             &buffer,
             self.document_buffer_id,
             self.cursor,
@@ -38854,6 +38895,7 @@ mod tests {
         let mut editor = Editor::boot(document);
         let describe_key_id = editor
             .registry
+            .load()
             .id_by_name("ex:describe-key")
             .expect("ex:describe-key registered by ex_commands::populate");
         let inv = lattice_grammar::CommandInvocation::of(describe_key_id);
@@ -38877,6 +38919,7 @@ mod tests {
         let mut editor = Editor::boot(document);
         let id = editor
             .registry
+            .load()
             .id_by_name("ex:describe-command")
             .expect("ex:describe-command registered");
         let inv = lattice_grammar::CommandInvocation::of(id);

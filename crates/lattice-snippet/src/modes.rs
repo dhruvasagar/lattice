@@ -540,7 +540,10 @@ impl Mode for SnippetActiveMode {
                 ctx.service::<CommandRegistryHandle>(),
                 ctx.service::<ActionHandlerRegistryHandle>(),
             ) {
-                let cmd_registry = &**cmd_registry_arc;
+                // B3b: the service holds the `ArcSwap` handle; snapshot it
+                // wait-free once for the `action:` id lookups below.
+                let cmd_registry_snapshot = cmd_registry_arc.load();
+                let cmd_registry = &*cmd_registry_snapshot;
                 let action_handlers: ActionHandlerRegistryHandle = (*action_handlers_arc).clone();
 
                 // `<Tab>` — step to the next placeholder; clear the
@@ -1094,7 +1097,7 @@ mod tests {
         let mut services = lattice_mode::ServiceRegistry::new();
         services.register::<SnippetSessionHandle>(session.clone());
         services.register::<BufferStoreHandle>(BufferStoreHandle::new(store));
-        services.register::<CommandRegistryHandle>(Arc::new(cmd));
+        services.register::<CommandRegistryHandle>(Arc::new(arc_swap::ArcSwap::from_pointee(cmd)));
         services.register::<ActionHandlerRegistryHandle>(action_handlers.clone());
 
         (

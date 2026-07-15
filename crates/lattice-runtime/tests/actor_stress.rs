@@ -27,13 +27,13 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use lattice_core::Document;
-use lattice_grammar::{CommandId, CommandInvocation, CommandRegistry};
+use lattice_grammar::{CommandId, CommandInvocation, CommandRegistry, CommandRegistryHandle};
 use lattice_protocol::edit::Edit;
 use lattice_protocol::position::Position;
 use lattice_runtime::{CancellationToken, RuntimeError, block_on, spawn_document};
 
-fn empty_registry() -> Arc<CommandRegistry> {
-    Arc::new(CommandRegistry::new())
+fn empty_registry() -> CommandRegistryHandle {
+    Arc::new(arc_swap::ArcSwap::from_pointee(CommandRegistry::new()))
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

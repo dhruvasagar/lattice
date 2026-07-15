@@ -1165,7 +1165,9 @@ mod tests {
         use std::collections::HashMap;
 
         // Two source documents.
-        let registry = std::sync::Arc::new(lattice_grammar::CommandRegistry::new());
+        let registry = std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(
+            lattice_grammar::CommandRegistry::new(),
+        ));
         let s1 = spawn_document(
             lattice_core::BufferId(0),
             lattice_core::Document::from_text("alpha\nbeta\ngamma\n"),
@@ -1212,7 +1214,9 @@ mod tests {
         let mb = MultibufferDocumentHandle::new(
             sources,
             excerpts,
-            std::sync::Arc::new(lattice_grammar::CommandRegistry::new()),
+            std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(
+                lattice_grammar::CommandRegistry::new(),
+            )),
         )
         .expect("mb constructs");
         let mb_buffer_id = mb.buffer_id();

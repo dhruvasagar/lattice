@@ -8,6 +8,10 @@ license.workspace = true
 [dependencies]
 lattice-protocol = { path = "../lattice-protocol" }
 lattice-core = { path = "../lattice-core" }
+# PL8.B / B3b: `CommandRegistryHandle` holds the registry behind
+# `ArcSwap` so the plugin loader can RCU-register a runtime grammar
+# contribution while the dispatch path reads it wait-free.
+arc-swap = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
 # msg-mode.1: EchoLevel ↔ tracing::Level conversion lives next

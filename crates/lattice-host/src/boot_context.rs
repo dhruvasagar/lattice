@@ -171,16 +171,21 @@ impl BootContext {
         &self.tick_callbacks
     }
 
-    /// Freeze the command registry into its shared `Arc` and take it out of the
-    /// context. Called mid-boot, after all command registration, before the
-    /// `Arc` is consumed (picker registry, document handles). Subsequent
-    /// `commands_mut` panics.
-    pub fn freeze_command_registry(&mut self) -> Arc<CommandRegistry> {
-        Arc::new(
+    /// Freeze the command registry into its shared runtime-mutable handle
+    /// (`ArcSwap`) and take it out of the context. Called mid-boot, after all
+    /// command registration, before the handle is consumed (picker registry,
+    /// document handles). Subsequent `commands_mut` panics.
+    ///
+    /// PL8.B / B3b: `ArcSwap` (not a bare `Arc`) so the plugin loader can
+    /// RCU-register a runtime grammar contribution; the dispatch path — the
+    /// per-buffer actor and every host-side ex-command / completion read —
+    /// snapshots it wait-free. Mirrors [`Self::freeze_mode_registry`].
+    pub fn freeze_command_registry(&mut self) -> lattice_grammar::CommandRegistryHandle {
+        Arc::new(arc_swap::ArcSwap::from_pointee(
             self.command_registry
                 .take()
                 .expect("command registry already frozen"),
-        )
+        ))
     }
 
     /// Freeze the mode registry into its shared runtime-mutable handle

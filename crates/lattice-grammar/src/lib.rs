@@ -69,12 +69,21 @@ pub use crate::target::Target;
 pub use lattice_protocol::ids::CommandId;
 
 /// M.10.3 (2026-06-03): typed handle for `ServiceRegistry`
-/// registration + lookup. Boot wraps the `CommandRegistry` in
-/// an `Arc<CommandRegistry>` and registers it under this alias;
-/// mode crates pull it via
+/// registration + lookup. Mode crates pull it via
 /// `ctx.service::<CommandRegistryHandle>()` to look up
 /// CommandIds by action name (`id_by_name("action:...")`) at
 /// `on_activate` time. Same shape as
 /// `lattice_mode::ActionHandlerRegistryHandle` per
 /// `feedback_servicesregistry_arc_typeid`.
-pub type CommandRegistryHandle = std::sync::Arc<CommandRegistry>;
+///
+/// PL8.B / B3b (2026-07-15): held behind `ArcSwap` (was a bare
+/// `Arc<CommandRegistry>`) so the plugin loader can RCU-register a
+/// runtime grammar contribution (`register_plugin_motion` /
+/// `_operator` / `_ex_command` / …) into a cloned registry and
+/// `store` it, while the dispatch path — the per-buffer actor and
+/// every host-side ex-command / completion read — snapshots it
+/// wait-free via `.load()` (`.load_full()` where an owned `Arc`
+/// snapshot must outlive a `&mut self` borrow). Mirrors
+/// `lattice_mode::ModeRegistryHandle` / `lattice_picker::PickerRegistryHandle`
+/// (decision B: ArcSwap all plugin-contributed registries).
+pub type CommandRegistryHandle = std::sync::Arc<arc_swap::ArcSwap<CommandRegistry>>;

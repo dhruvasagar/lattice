@@ -100,7 +100,7 @@ fn diff_ex_commands_resolve_at_boot() {
         "describe-diff",
     ] {
         assert!(
-            excommand::resolve_command_name_or_alias(&editor.registry, name).is_some(),
+            excommand::resolve_command_name_or_alias(&editor.registry.load(), name).is_some(),
             ":{name} must resolve at boot"
         );
     }
@@ -136,6 +136,7 @@ fn diff_get_put_chords_bound_on_diff_mode_layer() {
     for (second, name) in [('o', "action:diff-get"), ('p', "action:diff-put")] {
         let expected = editor
             .registry
+            .load()
             .id_by_name(name)
             .unwrap_or_else(|| panic!("`{name}` must be registered at boot"));
         let chords = [KeyChord::char('d'), KeyChord::char(second)];
@@ -232,6 +233,7 @@ fn diff_conflict_chords_bound_on_conflict_mode_layer() {
     for (chords, name) in cases {
         let expected = editor
             .registry
+            .load()
             .id_by_name(name)
             .unwrap_or_else(|| panic!("`{name}` must be registered at boot"));
         let res = editor

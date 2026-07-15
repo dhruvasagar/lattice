@@ -114,7 +114,7 @@ fn build_lsp_subsystem(
 /// `lattice-picker` itself never has to know about feature
 /// crates.
 fn built_in_picker_registry(
-    command_registry: Arc<CommandRegistry>,
+    command_registry: lattice_grammar::CommandRegistryHandle,
     config: Arc<ConfigRegistry>,
     keybinding_reverse: Arc<dyn lattice_completion::KeymapReverseLookup>,
     grep_highlighter: Option<Arc<dyn lattice_picker::picker_sources::GrepPreviewHighlighter>>,
@@ -1353,7 +1353,7 @@ impl Editor {
         let global_action_handler_regs = crate::mode_action_handlers::register_mode_action_handlers(
             &action_handlers,
             &mode_registry.load(),
-            &registry,
+            &registry.load(),
         );
 
         // IDE-protocol I1.1 / BC.3a: the per-tick drain-closure registry is a
@@ -1647,6 +1647,7 @@ impl Editor {
                 // is infallible at this point.
                 let narrow_operator_id = lattice_grammar::registry::OperatorId(
                     registry
+                        .load()
                         .id_by_name("operator:narrow")
                         .expect("operator:narrow registered by lattice_multibuffer::install"),
                 );
@@ -1676,7 +1677,7 @@ impl Editor {
                 // Resolves command names against the registry
                 // (populated above by ex_commands::populate +
                 // actions::populate).
-                crate::keymap_help::register_help_prefix_bindings(&h, &registry);
+                crate::keymap_help::register_help_prefix_bindings(&h, &registry.load());
                 // MO.x (2026-06-24): the diff-mode `do`/`dp` keymap is
                 // contributed via `DiffMode::keymap()` and pushed by the
                 // K.2.4 `translate_mode_keymaps` pass below (under
@@ -1708,7 +1709,7 @@ impl Editor {
                     lattice_mode::emacs_keys_layer_bindings(
                         emacs_keys_enabled,
                         &emacs_keys_prefix,
-                        &registry,
+                        &registry.load(),
                     ),
                 );
                 // K.2.5 (2026-06-02): explicit push_layer calls
@@ -1738,7 +1739,7 @@ impl Editor {
                 crate::keymap_mode_contributions::translate_mode_keymaps(
                     &h,
                     &mode_registry.load(),
-                    &registry,
+                    &registry.load(),
                 );
                 // MARG.2 (2026-06-03): now that every layer's
                 // bindings are registered, the reverse cache

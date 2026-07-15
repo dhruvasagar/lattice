@@ -38,7 +38,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use lattice_core::Document;
-use lattice_grammar::{CancellationToken, CommandInvocation, CommandRegistry, Effect};
+use lattice_grammar::{CancellationToken, CommandInvocation, CommandRegistryHandle, Effect};
 use lattice_protocol::edit::Edit;
 use lattice_protocol::ids::DocumentId;
 use lattice_protocol::position::Position;
@@ -105,9 +105,10 @@ impl Default for RopeDocumentHandle {
 /// `RopeDocumentHandle`. Document moves into the actor; once spawned
 /// the document is reachable only through the handle.
 ///
-/// `registry` is shared by `Arc` so the actor can run grammar
-/// dispatches without coupling to the App's lifetime. Cloning the
-/// `Arc` is one atomic increment.
+/// `registry` is shared by the `ArcSwap` handle so the actor can run
+/// grammar dispatches without coupling to the App's lifetime and see
+/// runtime plugin registrations on its next dispatch (PL8.B / B3b).
+/// Cloning the handle `Arc` is one atomic increment.
 ///
 /// The actor task survives until every clone of the returned
 /// handle is dropped; on the last drop the mailbox closes, the
@@ -115,7 +116,7 @@ impl Default for RopeDocumentHandle {
 pub fn spawn_document(
     buffer_id: lattice_core::BufferId,
     document: Document,
-    registry: Arc<CommandRegistry>,
+    registry: CommandRegistryHandle,
 ) -> RopeDocumentHandle {
     let (tx, rx) = mpsc::unbounded_channel();
     let snapshot_cell = Arc::new(PublishedSnapshot::new(DocumentSnapshot::from_document(
@@ -455,10 +456,11 @@ impl std::fmt::Debug for RopeDocumentHandle {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+    use lattice_grammar::CommandRegistry;
     use lattice_protocol::position::Position;
 
-    fn empty_registry() -> Arc<CommandRegistry> {
-        Arc::new(CommandRegistry::new())
+    fn empty_registry() -> CommandRegistryHandle {
+        Arc::new(arc_swap::ArcSwap::from_pointee(CommandRegistry::new()))
     }
 
     /// M.0 (2026-05-31): `Arc<dyn Document>` works — the trait

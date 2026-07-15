@@ -35,7 +35,6 @@ use std::sync::Arc;
 
 use lattice_config::{ConfigRegistry, OptionOverrideSet, ResolvedOptions};
 use lattice_core::ui::popup::PopupPlacement;
-use lattice_grammar::CommandRegistry;
 use lattice_grammar::ModalState;
 use lattice_grammar::builtins::Builtins;
 use lattice_help::topics::HelpTopicRegistry;
@@ -967,12 +966,18 @@ pub struct Editor {
     /// runs through the trie with this stack as prefix.
     /// Cleared on every non-`AbsorbPartialChord` action.
     pub partial_chord: Vec<KeyChord>,
-    /// Grammar registry shared with the document actor by
-    /// `Arc`. The actor calls `lattice_grammar::execute`
-    /// with this registry from inside its own task. The App
-    /// also reads it directly for the parser, completion
-    /// pipeline, and introspection.
-    pub registry: Arc<CommandRegistry>,
+    /// Grammar registry shared with the document actor by the
+    /// `ArcSwap` handle. The actor calls `lattice_grammar::execute`
+    /// with a wait-free snapshot from inside its own task. The App
+    /// also reads it directly (`.load()`, or `.load_full()` where an
+    /// owned snapshot must outlive a `&mut self` borrow) for the
+    /// parser, completion pipeline, and introspection.
+    ///
+    /// PL8.B / B3b: held behind `ArcSwap` (was `Arc<CommandRegistry>`)
+    /// so the plugin loader can RCU-register a runtime grammar
+    /// contribution and `store` it; every reader picks it up on its
+    /// next `.load()`. See [`lattice_grammar::CommandRegistryHandle`].
+    pub registry: lattice_grammar::CommandRegistryHandle,
     /// In-process event bus (DESIGN.md §5.10). The App
     /// publishes editor lifecycle events
     /// (DocumentChanged, SelectionsChanged,

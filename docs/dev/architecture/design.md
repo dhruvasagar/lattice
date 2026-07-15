@@ -1,9 +1,77 @@
 # Design Document: A Modal, GPU-Accelerated, Plugin-First Editor
 
-> **Status:** Draft v0.5
+> **Status:** Draft v0.6
 > **Codename:** `lattice` (placeholder -- rename freely)
 > **Author:** TBD
-> **Last updated:** 2026-05-08
+> **Last updated:** 2026-07-15
+
+---
+
+> **Status legend (v0.6).** This revision reconciled the spec against the
+> implemented code (main branch, through Phase 7). Where a subsection
+> describes design that has *not* yet shipped, it is fenced inline:
+>
+> - ✅ **built** — implemented and exercised (the default; unmarked prose is built).
+> - 🟡 **partial** — some of the described surface is built; the rest is planned.
+> - 📝 **planned** — designed but not yet implemented; kept here as the forward
+>   spec (design.md is authoritative for *what to build*, not only what exists).
+>
+> The companion ledger [`../operations/implementation.md`](../operations/implementation.md)
+> is the authoritative per-feature current-state record; this doc is the design.
+> When they disagree on *what exists today*, the ledger + the code win.
+
+---
+
+## Changes from v0.5
+
+This revision is a **reconciliation pass**: the spec had drifted from the
+implementation across many sections (the design predates most of Phases 4–7).
+v0.6 corrects the load-bearing divergences, replaces superseded designs with
+what actually landed, and fences not-yet-built design as 📝 planned rather than
+deleting it. Headline changes:
+
+- **§3 / §4 corrected.** "Major and minor modes are themselves implemented as
+  plugins" was false — modes are a **native `lattice-mode` trait** crate (WASM is
+  the *extension* substrate, not the mode substrate). The threading model dropped
+  the unused `rayon` pool (off-UI work is `spawn_blocking`) and now names the
+  dedicated `current_thread` editor actor. The tech stack fences `taffy` /
+  `cosmic-text` / `parley` / `wgpu` (none integrated) and adds the shipped
+  `ratatui` / `crossterm` (TUI), `imara-diff`, `fancy-regex`, `gpui`.
+- **§5.6 Rendering rewritten.** The per-buffer `Renderer` trait with
+  `EditorRenderer` / `DocumentRenderer`, four selectable GPU fast paths, a taffy
+  `DocumentRenderer`, and a v1 sprite atlas **never shipped**. What landed: an
+  off-thread **cell-grid / `DisplayMatrix`** (`lattice-cells`) consumed by the
+  `lattice-ui-tui` (ratatui) and `lattice-ui-gpui` (GPUI) peers behind a
+  marker-style `Renderer { Theme, PaneRenderRegistry }` trait. The old design is
+  demoted to a superseded-alternative note; the sprite atlas is fenced 📝.
+- **§5.1 / §5.2 corrected.** The published `Document` struct was fiction (the
+  real struct is lean; syntax / diagnostics / modes live in sibling crates); undo
+  is a linear `UndoStack`, not a persisted branching tree. Grammar `execute` is
+  **synchronous** (the `Pending` envelope is the runtime handle layer); the actor
+  mailbox is **unbounded** (`CommandError::Busy` was deliberately removed).
+- **§5.4 corrected.** LSP attach moved to `LspMode::on_activate` (the retired
+  `attach_driver` / `build_lsp_subsystem` are gone) under the mode-ownership rule.
+- **§5.9 / §5.10 / §5.12 reconciled.** UI structs updated to the shipped shapes
+  (binary `PaneNode`, `TabSlot`, `ModelineRegistry`, buffer-backed popups); the
+  event bus is a concrete `struct` in `lattice-runtime`; config is the v0.5
+  `OptionDecl` / `trait OptionType` registry over `lattice.toml`. Rich minibuffer,
+  notifications, scrollbars/minimap, before-event veto, `:autocmd`, and the
+  `init.rs`-as-WASM config path are fenced 📝 planned.
+- **§6 / §9 corrected.** The `Command` enum and cross-process MessagePack framing
+  are retired (in-process typed mailbox); the `Event` catalog matches
+  `lattice-protocol`. The WIT §9.4 rewritten to the shipped
+  `lattice:plugin-host` package: guest-**exported** capability worlds
+  (`picker-source`, `completion-source`, `decorations`) driven by the host, plus a
+  grammar callback trampoline — not the old import-return-id / monolithic `ui` model.
+- **§8 / §14 / §15 refreshed.** Perf numbers updated to `benchmarks.md`; the
+  Phase-7 plugin-host rows filled in (grammar round-trip ~340 ns, CI-gated) and the
+  WASM-overhead risks downgraded to mitigated; resolved open questions struck
+  (Replace mode, narrow-to-region, per-plugin async task, built-in snippets).
+- **§11 Project Layout rewritten** to the real 32-crate workspace (the
+  `lattice-render*` trisection, `lattice-modes`, `lattice-config-api`, and
+  `lattice-headless` never existed; `wit/` and `plugins/` corrected).
+- **Appendix B fenced.** Only interactive arg specs (B.1) and `:describe-buffer`
+  (B.10) are built; the rest marked 📝 / 🟡.
 
 ---
 
@@ -191,46 +259,60 @@ The editor is structured as **three strictly separated layers** communicating ex
 
 ```
 +------------------------------------------------------------------+
-|                   UI Layer (GPU-rendered)                        |
+|                   UI Layer (renderer peers)                      |
 |                                                                  |
-|  Window/tab management | Pane tree | Compositor | Input loop     |
-|  Popup manager | Picker manager | Notification queue             |
-|  Status bar | Buffer-backed views (placed in panes)              |
+|  Window/tab management | Pane tree | Input loop                  |
+|  Popup + picker (buffer-backed) | Echo area | Buffer-backed views|
 |                                                                  |
 |  +------------------------------------------------------------+  |
-|  |              Renderer trait (abstraction)                  |  |
-|  |   +----------------+ +------------------+ +-----------+    |  |
-|  |   | EditorRenderer | | DocumentRenderer | |  Future:  |    |  |
-|  |   |  (panes)       | |  (everything     | |    Web    |    |  |
-|  |   |                | |   else)          | |  Renderer |    |  |
-|  |   +----------------+ +------------------+ +-----------+    |  |
+|  |     lattice_host::Renderer  (marker trait: Theme,          |  |
+|  |     PaneRenderRegistry) -- consumes a per-pane DisplayMatrix|  |
+|  |   +----------------+ +----------------+ +---------------+   |  |
+|  |   |  TuiRenderer   | |  GpuiRenderer  | |   Future: Web |   |  |
+|  |   | (lattice-ui-   | | (lattice-ui-   | |   (placeholder|   |  |
+|  |   |  tui, ratatui) | |  gpui, GPUI)   | |    )          |   |  |
+|  |   +----------------+ +----------------+ +---------------+   |  |
 |  +------------------------------------------------------------+  |
 +------------------------------+-----------------------------------+
-					   Commands | Events
+			 CommandInvocation | RenderState snapshots
 							   v ^
 +------------------------------------------------------------------+
 |                          Core Layer                              |
 |                                                                  |
-|  Buffers (rope) | Documents | Selections | Undo Tree |           |
-|  Mode/Command Dispatcher | Tree-sitter | LSP Clients |           |
-|  Major/Minor Mode Registry | Plugin Host | File I/O |            |
-|  Workspace | Search | Status Segment Registry                    |
+|  Buffers (rope) | Documents | Selections | Undo stack |          |
+|  Grammar dispatcher | Tree-sitter | LSP clients |                |
+|  Major/Minor Mode Registry | File I/O | cell-grid worker |       |
+|  Workspace | Search | Modeline registry                         |
 +------------------------------+-----------------------------------+
-					   Commands | Events (same protocol as UI)
+			 (in-process typed mailbox + event bus)
 							   v ^
 +------------------------------------------------------------------+
-|                  Plugin Layer (WASM sandboxes)                   |
+|          Plugin Layer (WASM sandboxes) -- 📝 host built          |
+|          (Phase 7); editor-side loading is Phase 8               |
 +------------------------------------------------------------------+
 ```
 
-**Critical architectural property:** *the UI is just the most privileged client of the core.* Major and minor modes are themselves implemented as plugins.
+**Critical architectural property:** *the UI is just the most privileged client
+of the core.* Major and minor modes are a **native `lattice-mode` trait** (not
+WASM plugins) — the default keymap and grammar never cross the WASM boundary;
+WASM is the substrate for *extensions* (and, in a later phase, for shipping
+modes as components). See §5.8.
 
 **Threading model:**
 
-- **UI thread** (one): owns window, GPU surface, input event loop, layout, rendering. Renders at vsync. Does no blocking work.
-- **Core executor** (tokio multi-thread): owns buffers, command dispatcher, LSP clients, plugin instances.
-- **Render-prep workers** (rayon pool): parallel work -- syntax highlights, search/replace, indexing, text shaping for rich buffers.
-- **Blocking I/O thread pool** (`spawn_blocking`): file ops on slow filesystems, large files, tree-sitter parsing.
+- **UI / render thread** (one per renderer peer): owns the window / terminal,
+  input event loop, layout, rendering. Consumes published snapshots; does no
+  blocking work, no I/O, no parsing (paramount goal #4, §5.7).
+- **Editor actor** (a dedicated `current_thread` tokio task): owns the writable
+  `Document` and dispatches grammar; `&mut Editor` cannot escape it. Reads are
+  wait-free snapshot loads (arc-swap).
+- **Shared / LSP executors** (tokio multi-thread): LSP clients, background
+  subsystems, plugin instances (each plugin owns its own `wasmtime::Store` as a
+  task).
+- **Blocking pool** (`spawn_blocking`): file ops, large files, tree-sitter
+  parsing, cell-grid builds, diff computation — all CPU/IO work off the actor and
+  render threads. (An earlier draft named a `rayon` pool for render-prep; that was
+  never adopted — `spawn_blocking` covers it.)
 
 ### 3.1 Core vs plugin: the fast path / orchestration split
 
@@ -249,7 +331,7 @@ Concretely:
 | **Picker** | widget, keymap, popup geometry, matcher / ranker default impls. Used by ~10 surfaces; each fires off the keystroke path. | picker *sources* (fuzzy file finder, project-grep, command palette content) via the existing trait surface. |
 | **Insert-mode completion** | state machine, aggregator, popup widget, completion-popup minor mode, matcher / ranker traits. | sources beyond the bundled set (LSP + snippets + buffer-words + path + tree-sitter): AI / Copilot, project-specific generators. |
 | **Modal engine** | grammar, dispatcher, builtins (motions / operators / text objects), modal state machine. | new motions / text objects / operators via the grammar-extension trait surface. |
-| **Renderer** | layered architecture (TUI, GPU, document), pane tree, popup primitives, sprite atlas. | renderer overlays (e.g. inline-error decorations, custom gutter content); status-line segments. |
+| **Renderer** | the cell-grid / `DisplayMatrix` substrate (`lattice-cells`) + the `lattice-ui-tui` (ratatui) and `lattice-ui-gpui` (GPUI) peers, pane tree, buffer-backed popups. | renderer overlays (e.g. inline-error decorations, custom gutter content); modeline elements. |
 | **Buffer / Document** | rope, undo, edit dispatch, snapshot model. | content providers for non-file buffers (REPL, terminal, scratch:rust, magit-clone, diff viewer). |
 
 **What this isn't:** a closed shop. The trait surface is rich (CandidateGenerator / CandidateMatcher / CandidateRanker / CandidateAnnotator / SourceGenerator / Hook / EventSubscriber / SpriteSet / StatusSegment / FoldProvider / etc.). Plugins extend lattice through these traits — that's where extensibility lives. What the trait surface does *not* expose is the keystroke-frequency state machines themselves: those stay in core and the trait surface taps into them.
@@ -264,21 +346,24 @@ Concretely:
 
 | Concern               | Choice                                                             | Rationale                                                           |
 |-----------------------|--------------------------------------------------------------------|---------------------------------------------------------------------|
-| Language              | **Rust (stable)**                                                  | Memory and data-race safety; mature async; strong editor ecosystem. |
-| Async runtime         | **tokio** (multi-thread)                                           | Default; integrates everywhere.                                     |
+| Language              | **Rust**, edition 2024, pinned **1.94** (`rust-toolchain.toml`)    | Memory and data-race safety; mature async; strong editor ecosystem. |
+| Async runtime         | **tokio** (multi-thread shared/LSP pools + a `current_thread` editor actor) | Default; integrates everywhere.                           |
 | Buffer                | **`ropey`**                                                        | Battle-tested rope; O(log n) edits; cheap clones.                   |
 | Parser                | **`tree-sitter`**                                                  | Incremental, error-recovering, ubiquitous.                          |
+| Regex / search        | **`fancy-regex`**                                                  | Backreferences + look-around for `/` and `:s`.                      |
+| Diff                  | **`imara-diff`**                                                   | Fast Myers/histogram diff for the diff subsystem (§5.13).           |
 | LSP types             | **`lsp-types`**                                                    | Generated bindings; we write our own client.                        |
-| GPU rendering         | **GPUI** (preferred) or **`wgpu`** (fallback)                      | GPUI purpose-built; wgpu the fallback.                              |
-| Layout (UI furniture) | **`taffy`**                                                        | Standalone flexbox/block layout.                                    |
-| Text shaping          | **`cosmic-text`** or **`parley`**                                  | Full Unicode when needed; bypassed on monospace fast path.          |
-| Plugin runtime        | **`wasmtime`** + Component Model + WASI                            | Sandboxing, fuel limits, async host.                                |
-| Serialization         | **`serde`** + MessagePack (`rmp-serde`); WIT for plugin interfaces | Zero-cost in-process; Component Model for plugins.                  |
-| Config                | **TOML**                                                           | Single config tier. Anything beyond config is a WASM plugin (§10).  |
+| TUI renderer          | **`ratatui`** + **`crossterm`** (`lattice-ui-tui`)                 | First-class terminal peer (headless / SSH), not a fallback.         |
+| GPU renderer          | **GPUI** (`gpui`, optional `gui` feature; `lattice-ui-gpui`)       | Purpose-built GPU UI; peer of the TUI over a shared `DisplayMatrix`. |
+| Layout / text shaping | 📝 **`taffy`** / **`cosmic-text`** / **`parley`** (planned)         | Not integrated — the shipped renderer is a cell grid; GPUI shapes per-line. `wgpu` fallback likewise not pursued. |
+| Plugin runtime        | **`wasmtime`** (v46) + Component Model + WASI p2                   | Sandboxing, fuel + epoch limits, async host (Phase 7).              |
+| Serialization         | **`serde`**; **WIT** for plugin interfaces                        | In-process typed channels; Component Model for plugins. (Cross-process MessagePack framing was dropped — the editor is one process, §6.) |
+| Config                | **TOML** (`lattice.toml`)                                          | Static option tier; programmable config (`init.rs`→WASM) is 📝 planned (§10). |
+| Clipboard             | **`arboard`**                                                     | System clipboard integration.                                      |
 | CLI                   | **`clap`**                                                         | Standard.                                                           |
-| Logging               | **`tracing`** + `tracing-subscriber`                               | Structured logs, span timing.                                       |
-| Build                 | **`cargo`** workspace                                              | Crate boundaries enforce architecture.                              |
-| Testing               | **`cargo test`**, `insta`, `criterion`                             | Snapshot + benchmarks.                                              |
+| Logging               | **`tracing`** + `tracing-subscriber`                               | Structured logs, span timing; `MessagesLayer` tees to `*messages*`. |
+| Build                 | **`cargo`** workspace (32 crates)                                  | Crate boundaries enforce architecture.                             |
+| Testing               | **`cargo test`**, `criterion`                                     | ~3.5k tests + latency/throughput benches (ratcheted in CI).         |
 
 ---
 
@@ -2983,59 +3068,86 @@ default-minor-modes = ["git-gutter", "rainbow-delimiters", "auto-pair"]
 
 ## 11. Project Layout (Cargo Workspace)
 
+The workspace is **32 crates** (`Cargo.toml` members), organized bottom-up so
+every crate depends only downward. (This tree was rewritten in v0.6 to match the
+code — the earlier `lattice-render*` trisection, `lattice-modes`,
+`lattice-config-api`, and `lattice-headless` were never built; rendering
+consolidated into the `ui-*` peers + `lattice-host`, modes into one
+`lattice-mode` crate, and the TUI serves the headless role.)
+
 ```
 lattice/
 |-- Cargo.toml
+|-- rust-toolchain.toml                # pins rustc 1.94, edition 2024
 |-- crates/
-|   |-- lattice-core/                  # buffers, documents, undo, dispatcher
-|   |-- lattice-grammar/               # vim modal state machine + command API
-|   |                                  #   (operators, motions, text objects, registers,
-|   |                                  #    ranges, ex-commands, dot-repeat, macros)
-|   |-- lattice-syntax/                # tree-sitter integration
-|   |-- lattice-lsp/                   # LSP client
-|   |-- lattice-plugin-host/           # wasmtime + Component Model + WIT bindings
-|   |-- lattice-modes/                 # major / minor mode registry
-|   |-- lattice-protocol/              # Command / Event enums; serde + msgpack
-|   |-- lattice-config/                # typed-options registry: `OptionType` trait,
-|   |                                  #   `Option<T>` (ArcSwap-backed value cell),
-|   |                                  #   `ErasedOption`, `ConfigRegistry`,
-|   |                                  #   `OptionsGenerator` (gen:options), `:set` parser,
-|   |                                  #   renderer-agnostic core options
-|   |                                  #   (`register_core_options → CoreOptions`).
-|   |                                  #   Phase 7+ adds options.toml + init.rs build/load.
-|   |-- lattice-config-api/            # WIT-bindings reexport consumed by user `init.rs`
-|   |-- lattice-render/                # Renderer trait, atlas, frame, fonts
-|   |-- lattice-render-editor/         # EditorRenderer (all paths)
-|   |-- lattice-render-document/       # DocumentRenderer (taffy-based)
-|   |-- lattice-ui-gpui/               # compositor, panes, popups, pickers,
-|   |                                  #   notifications, status lines
-|   |-- lattice-ui-tui/                # terminal UI for bootstrap / headless
-|   |-- lattice-headless/              # headless server (remote / SSH)
-|   `-- lattice-cli/                   # `lattice` binary
-|-- wit/                               # canonical WIT interface definitions
-|   |-- buffer.wit
-|   |-- grammar.wit
-|   |-- modes.wit
-|   |-- decorations.wit
-|   |-- ui.wit
-|   |-- host-services.wit
-|   `-- plugin.wit
-|-- plugins/                           # first-party plugins (compiled to component-model WASM)
-|   |-- fuzzy-finder/
-|   |-- git-gutter/
-|   |-- linter-bridge/
-|   |-- markdown-mode/
-|   |-- rust-mode/
-|   |-- python-mode/
-|   |-- file-tree/
-|   |-- outline/
-|   |-- diagnostics-list/
-|   `-- tree-sitter-motions/           # validates grammar extension API
-|-- grammars/                          # tree-sitter grammars
-|-- runtime/                           # bundled runtime assets (default keymap, themes)
+|   # -- bottom: shared types (no editor deps) --
+|   |-- lattice-protocol/              # Position/Range/Edit/Selection/Event/IDs; jsonrpc; CancellationToken
+|   # -- core: the editor engine --
+|   |-- lattice-core/                  # Buffer (ropey) + Document + linear UndoStack + file I/O + search
+|   |-- lattice-grammar/               # vim modal state machine + CommandRegistry + dispatcher + builtins
+|   |-- lattice-runtime/               # DocumentActor (tokio task/doc) + snapshots (arc-swap) + Pending<T> + EventBus
+|   |-- lattice-cells/                 # CellMatrix / DisplayMatrix / VirtualRow — the renderer-neutral cell grid
+|   # -- subsystems --
+|   |-- lattice-syntax/                # tree-sitter integration (rust/python/js/markdown), incremental reparse
+|   |-- lattice-lsp/                   # LSP client: actor pool, diagnostics, supervisor, watcher, lsp-modes
+|   |-- lattice-mode/                  # Mode trait (major/minor), registry, lifecycle, ServiceRegistry, modeline, event bus
+|   |-- lattice-keymap/                # layered keymap trie + chord resolution
+|   |-- lattice-completion/            # insert-completion pipeline: generators / matchers / rankers / annotators
+|   |-- lattice-config/                # typed-option registry (OptionDecl + trait OptionType, ArcSwap cells), :set, lattice.toml loader
+|   |-- lattice-config-macros/         # derive macros for typed options
+|   |-- lattice-picker/                # picker primitive: source registry, live-query, MRU frecency, preview
+|   |-- lattice-help/                  # HelpContent/HelpBuffer, Introspectable, :help + :describe-* backing
+|   |-- lattice-theme/                 # theme element registry (ArcSwap), palette resolution
+|   |-- lattice-snippet/               # snippet parser + registry + expansion mode
+|   |-- lattice-terminal/              # terminal buffer kind + PTY
+|   |-- lattice-file-tree/             # file-tree buffer kind
+|   |-- lattice-oil/                   # oil-style directory buffer kind
+|   |-- lattice-diff/                  # diff subsystem (imara-diff): signs, inline/side/three-way, ]c/[c/do/dp
+|   |-- lattice-multibuffer/           # multibuffer Document (excerpts) + search / narrow providers
+|   # -- host: the editor composition root (thin substrate) --
+|   |-- lattice-host/                  # Editor: boot, dispatch, BufferRegistry, RenderState, pane tree, tabs
+|   # -- renderer peers --
+|   |-- lattice-ui-tui/                # TUI peer (ratatui + crossterm); first-class, headless / SSH
+|   |-- lattice-ui-gpui/               # GPUI peer (optional `gui`/`window` features)
+|   # -- integrations --
+|   |-- lattice-ai/                    # AI coding-agent integrations (Claude Code over MCP, opencode ACP)
+|   |-- lattice-agent/                 # agent-log buffers + modes
+|   |-- lattice-dashboard/             # dashboard/start buffer
+|   # -- plugin substrate --
+|   |-- lattice-plugin-host/           # wasmtime (v46) + Component Model + WASI p2; capability/fuel/epoch; every seam
+|   |-- lattice-plugin-api/            # wasmtime-free introspection catalog (what lattice-host depends on today)
+|   |-- lattice-plugin-sdk/            # guest-side SDK for authoring plugins
+|   |-- lattice-plugin-sdk-derive/     # derive macros for the guest SDK
+|   # -- binary --
+|   `-- lattice-cli/                   # `lattice` binary (TUI default; `--features gui` links the GPUI peer)
+|-- wit/                               # canonical WIT interface definitions (package lattice:plugin-host@0.1.0)
+|   |-- types.wit                      # shared record/variant types
+|   |-- plugin.wit                     # top-level plugin world
+|   |-- buffer.wit                     # read-only `document` resource
+|   |-- command.wit                    # (stub)
+|   |-- grammar.wit                    # grammar contributions + callback trampoline
+|   |-- picker-source.wit              # guest-exported picker-source world
+|   |-- completion-source.wit          # guest-exported completion-source world
+|   |-- decorations.wit                # guest-exported decoration world
+|   |-- events.wit                     # event subscribe / emit
+|   |-- config.wit                     # plugin-contributed options
+|   |-- modes.wit                      # mode contributions
+|   |-- host-services.wit              # walk / register-event / emit-event
+|   |-- ui.wit                         # (stub)
+|   `-- trampoline-fixture.wit         # test fixture
+|-- plugins/
+|   `-- fuzzy-finder/                  # the PH7 validation plugin (seam parity + overhead bench)
+|-- assets/                            # icons, banner, desktop-entry, bundle resources
 |-- docs/
 `-- tests/
 ```
+
+> 📝 Bundled first-party plugins (git, grep, outline, format-on-save, …) and the
+> `init.rs`-as-WASM config path are Phase 8 / 8b — the host runtime exists, but
+> editor-side loading is not yet wired (§5.5.6, §5.12, §13). Much of that
+> *functionality* already ships **natively** (fuzzy-finder = `lattice-picker`,
+> git diff = `lattice-diff`, snippets = `lattice-snippet`, outline =
+> `:lsp-symbols`); the not-yet-done work is repackaging it as WASM components.
 
 ---
 
@@ -3178,7 +3290,7 @@ Path 4 (inline blocks). `org-mode`. `WebRenderer` (decision time). Remote / SSH.
 
 - **Buffer**: rope-backed in-memory text.
 - **Document**: buffer + metadata.
-- **Selection / Selection set**: (anchor, head) pairs; multi-cursor default.
+- **Selection / Selection set**: (anchor, head) pairs. The type is a *set* so multi-cursor is a clean post-1.0 extension; v1 uses a single selection with vim's visual extents (§2.2).
 - **Edit**: a primitive change at a range.
 - **Command / Event**: protocol messages between layers.
 - **Modal mode**: input interpretation context (Normal, Insert, Visual).

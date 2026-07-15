@@ -1451,18 +1451,6 @@ impl Editor {
             boot.register_service::<lattice_mode::PluginMetaSinkHandle>(sink);
         }
 
-        // Phase 8 (PL8.A/B): the plugin loader. Stands the wasmtime runtime up,
-        // registers the `PluginLoaderHandle` service, and spawns on-disk
-        // discovery off the boot thread. First subsystem whose install pulls the
-        // plugin *runtime* into the editor (the host was wasmtime-free through
-        // Phase 7 — only the `lattice-plugin-api` catalog). Placed here, AFTER
-        // the picker registry (~L893) + meta sink (just above) it captures, not
-        // in the Phase-B install list — its inputs are host primitives created
-        // mid-boot, so it seats last among the services it depends on. A host
-        // that fails to build degrades to no-plugin-support, logged, never a
-        // failed boot — see `lattice_plugin_loader::install`.
-        lattice_plugin_loader::install(&mut boot);
-
         // L4b (lsp-architecture.md §15): the diagnostics-query service
         // (`lsp-diagnostics-mode`'s `gl` handler + claude-code's read tools read
         // it) is registered in Phase A above, so a subsystem `install(boot)` can
@@ -1506,6 +1494,23 @@ impl Editor {
         // visible). Registered as `KeymapHandle` (already a shareable handle — no
         // `Arc<X>` wrapper needed); the loader looks it up under the same type.
         boot.register_service::<crate::keymap_registry::KeymapHandle>(keymap_handle.clone());
+
+        // Phase 8 (PL8.A/B): the plugin loader. Stands the wasmtime runtime up,
+        // registers the `PluginLoaderHandle` service, and spawns on-disk
+        // discovery off the boot thread. First subsystem whose install pulls the
+        // plugin *runtime* into the editor (the host was wasmtime-free through
+        // Phase 7 — only the `lattice-plugin-api` catalog). **Seated last among
+        // its service dependencies**, which is why it lives here and not in the
+        // Phase-B install list: the drains capture the picker (~L893) + meta sink
+        // + mode registry + config + the `CommandRegistryHandle` (drain_grammar,
+        // just above) + the `KeymapHandle` (drain_mode, just above), so it MUST
+        // follow every one of those `register_service` calls. A boot-ordering
+        // regression (moving this earlier) would silently degrade grammar/mode
+        // plugin loading to a `NotWired` skip — the boot pin
+        // `plugin_loader_captures_every_drain_service` guards against exactly
+        // that. A host that fails to build degrades to no-plugin-support, logged,
+        // never a failed boot — see `lattice_plugin_loader::install`.
+        lattice_plugin_loader::install(&mut boot);
         // (BC.3b: the `ClaudeCodeServerHandle` service is registered by
         // `lattice_claude_code::install` in the Phase-B list above.)
         // M.7: expose the fold-overlay service so `MultibufferMode::on_activate`

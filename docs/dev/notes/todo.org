@@ -69,9 +69,10 @@
 * Plugins
 - [ ] plugin manager
 - [ ] project.el
-- [ ] Claude Code IDE
+- [X] Claude Code IDE
 - [ ] Org Mode
 - [ ] lsp context
+- [ ] lsp breadcrumbs
 - [ ] which key
 - [ ] Dictionary lookup
 

@@ -152,6 +152,39 @@ pub struct LoaderServices {
     pub meta_sink: Option<PluginMetaSinkHandle>,
 }
 
+/// Which drain-required services the loader captured at [`install`] time —
+/// reported by [`PluginLoader::wired_seams`]. Every flag must be `true` after a
+/// real editor boot; a `false` is a boot-ordering regression (the loader was
+/// installed before that service registered) that silently degrades the
+/// dependent seam's drain to a `NotWired` skip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WiredSeams {
+    pub runtime: bool,
+    pub bus: bool,
+    pub picker_registry: bool,
+    pub config_registry: bool,
+    pub command_registry: bool,
+    pub mode_registry: bool,
+    pub keymap: bool,
+    pub meta_sink: bool,
+}
+
+impl WiredSeams {
+    /// True when every drain-required service was captured — the boot pin's
+    /// assertion. `runtime` + `bus` are always present (`install` clones them
+    /// from the boot context directly, not via `service::<T>()`).
+    pub fn all(&self) -> bool {
+        self.runtime
+            && self.bus
+            && self.picker_registry
+            && self.config_registry
+            && self.command_registry
+            && self.mode_registry
+            && self.keymap
+            && self.meta_sink
+    }
+}
+
 /// The plugin loader subsystem: owns the runtime, the loaded-plugin set, and the
 /// discovery + load orchestration. Stood up at boot by [`install`], which
 /// captures the editor environment and registers the loader as a
@@ -265,6 +298,24 @@ impl PluginLoader {
             .lock()
             .expect("plugin-loader loaded-set mutex poisoned")
             .len()
+    }
+
+    /// Which drain-required services the loader captured from the boot context
+    /// ([`install`]). A boot-ordering regression (installing the loader before a
+    /// service it depends on registers) silently leaves a field `false`, turning
+    /// that seam's drain into a `NotWired` skip — so the boot pin asserts every
+    /// flag is set after `Editor::boot`. Test/introspection affordance.
+    pub fn wired_seams(&self) -> WiredSeams {
+        WiredSeams {
+            runtime: self.env.runtime.is_some(),
+            bus: self.env.bus.is_some(),
+            picker_registry: self.env.picker_registry.is_some(),
+            config_registry: self.env.config_registry.is_some(),
+            command_registry: self.env.command_registry.is_some(),
+            mode_registry: self.env.mode_registry.is_some(),
+            keymap: self.env.keymap.is_some(),
+            meta_sink: self.env.meta_sink.is_some(),
+        }
     }
 
     /// Whether a plugin with manifest id `name` is currently loaded (the

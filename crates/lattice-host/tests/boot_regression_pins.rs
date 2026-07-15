@@ -200,6 +200,28 @@ fn plugin_loader_service_present_at_boot() {
 }
 
 #[test]
+fn plugin_loader_captures_every_drain_service() {
+    // PL8.B: the loader's `install` captures its drain-required services via
+    // `boot.service::<T>()`, which returns `None` for any service registered
+    // AFTER the install call. `drain_grammar` needs the `CommandRegistryHandle`
+    // and `drain_mode` needs the `KeymapHandle`, both registered late in boot —
+    // so `install` must be seated after them. A boot-ordering regression that
+    // moves `install` earlier silently degrades those seams to a `NotWired` skip
+    // (the unit-test drains bypass `install` by wiring `LoaderServices` by hand,
+    // so ONLY this real-boot pin catches it). Assert every drain service landed.
+    let editor = boot();
+    let loader = editor
+        .services
+        .get::<lattice_plugin_loader::PluginLoaderHandle>()
+        .expect("loader handle present");
+    let wired = loader.wired_seams();
+    assert!(
+        wired.all(),
+        "the plugin loader must capture every drain service at boot; missing: {wired:?}"
+    );
+}
+
+#[test]
 fn generic_host_services_present_at_boot() {
     // These generic primitives are exactly what BC.3's Phase A will own and
     // hand to subsystems via `BootContext`; pin them so the Phase split does

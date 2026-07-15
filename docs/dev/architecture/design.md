@@ -685,7 +685,7 @@ point with no host changes.
 
 The keymap-side companion of this extension point -- how plugins and user config bind chords to the ids returned here, layer priority across builtin / major-mode / minor-mode / user / per-buffer, and the trie merge cost on overlay push / pop -- is documented in [`docs/keymap-architecture.md`](keymap-architecture.md) §5 (extensibility) and §6 (layered registry).
 
-**Macros, marks, registers, and dot-repeat** are mechanical because every change flows through `execute(invocation)`. The `last change` for `.` is the most recent recorded `CommandInvocation`. **Macros record `CommandInvocation` sequences -- not raw keystrokes.** Replay survives keymap changes, plays back faster (no parse pass), and is editable as data: opening the macro register in a buffer-backed view (`*macro:q*`) yields a one-invocation-per-line buffer the user can hand-edit and re-store.
+**Macros, marks, registers, and dot-repeat** are mechanical because every change flows through `execute(invocation)`. The `last change` for `.` is the most recent recorded `CommandInvocation`. **Macros record resolved grammar `Action` sequences -- not raw keystrokes** (`MacroRecording { register, actions: Vec<Action> }`). Replay survives keymap changes, plays back faster (no parse pass), and is editable as data. (📝 The buffer-backed `*macro:q*` editing view is design intent, not yet built.)
 
 **Visual mode IS the active region.** When Visual is active, the current selection is automatically supplied as the `range` argument to any range-accepting command. Vim users see "operate on visual selection"; users coming from emacs see "operate on region." Both reduce to: the dispatcher receives `range = Some(Range::Selection)` when no explicit range is given and Visual is active. This is the `Range::Selection` variant added to the range type for exactly this purpose.
 
@@ -3179,11 +3179,17 @@ lattice/
 | Snapshot | `insta` | Editor scenarios; status segment outputs |
 | Property | `proptest` | Buffer invariants, layout cache coherence |
 | Benchmark | `criterion` | Hot paths in CI |
-| Fuzz | `cargo-fuzz` | Edits, command parser, MessagePack |
-| LSP integration | Real servers in Docker | rust-analyzer, pyright, gopls |
-| Plugin | Mock-core harness | Plugin API correctness |
-| Visual regression | Headless GPUI + screenshot diff | Rendering, popups, pickers, panels |
-| UI scenario | Synthetic input -> screenshot | Full-stack: keystroke through to rendered frame |
+| Fuzz | 📝 `cargo-fuzz` (planned) | Edits, command parser |
+| LSP integration | 🟡 real servers | rust-analyzer / pyright / etc. (Docker harness 📝) |
+| Plugin | `lattice-plugin-host` guest fixtures | every seam exercised end-to-end (Phase 7) |
+| Visual regression | 📝 headless screenshot diff (planned) | Rendering, popups, pickers |
+| UI scenario | synthetic input in host/ui-tui tests | keystroke → published state |
+
+> **Status.** Unit + integration + benchmark testing is heavily exercised
+> (**~3.5k tests**: ~1.5k ui-tui, ~650 host, ~190 grammar, ~180 lsp, plus the
+> rest) and the criterion latency benches are CI-ratcheted. The `cargo-fuzz`,
+> Dockerized-LSP, and screenshot-diff / visual-regression rows are 📝 aspirational.
+> `insta` snapshot + `proptest` are used lightly, not pervasively.
 
 ---
 
@@ -3197,7 +3203,11 @@ lattice/
 > gates. **Editor-side loading of plugins** (the plugin manager, on-disk
 > discovery, `init.rs`-as-WASM config, modes/reference-plugins as components)
 > is **Phase 8** — the runtime exists; wiring it into the editor is next. The
-> week numbers below are the original plan, retained as the historical spec.
+> week numbers + crate names below are the **original plan, retained as the
+> historical spec** — several crate names never existed (`lattice-render*`,
+> `lattice-modes`; see §11) and the mode/view *system* was built **natively**
+> ahead of the plugin host, so Phase 8's remaining work is the *loader* +
+> repackaging modes as components, not building the mode system.
 
 ### Phase 0: Foundation (weeks 1-2)
 Workspace, `lattice-core`, document/buffer/undo, file I/O, protocol enums, snapshot tests. **Exit:** programmatic edit roundtrip.
@@ -3232,7 +3242,14 @@ Diagnostics, completion, hover, definition, references; cancellation; version tr
 `lattice-plugin-host` with wasmtime + Component Model + WIT bindings (`wit-bindgen`). AOT module cache; lazy instantiation; capability manifests; fuel limits; per-call overhead benchmarks gated in CI (typed call < 500ns p99; grammar-extension round-trip < 5μs p99). Async ABI wired through tokio. Reference plugin: `fuzzy-finder` (validates picker primitive end-to-end). **Exit:** a WASM plugin replicates the file picker without host changes; CI enforces overhead budgets.
 
 ### Phase 8: Major/Minor Modes + Reference Plugins (weeks 23-25)
-`lattice-modes` registry. Built-in major modes ship as components (rust, python, js, go, c, json, yaml, toml, markdown). Reference minor modes (git-gutter, auto-pair, rainbow-delimiters). Buffer-backed views (`file-tree`, `outline`, `diagnostics-list`) ship as components. **Exit:** mode and view systems fully exercised; the everything-is-a-buffer principle validated by the layout-from-config flow.
+**Reframed vs. the original plan:** the mode/view *system* is ✅ built natively
+(`lattice-mode` registry, major/minor axes, lifecycle, the LSP sub-mode cascade,
+help/diff/oil/file-tree/multibuffer modes) — the everything-is-a-buffer principle
+is already validated. What **remains** for Phase 8 is (a) the **editor-side plugin
+loader** (on-disk discovery, `:plugin-load`, `init.rs`-as-WASM), and (b)
+repackaging built-in modes + reference plugins **as WASM components** (§5.8.3
+goal). Built-in modes stay native by design; the as-components path is the
+extension story.
 
 ### Phase 9: Rich Buffer Rendering (weeks 26-28)
 Shaped path in `lattice-render-editor`. Per-line layout cache + Fenwick index. `markdown-mode`. Style mappings system. **Exit:** edit markdown with variable headings; latency indistinguishable from code.
@@ -3253,8 +3270,8 @@ Path 4 (inline blocks). `org-mode`. `WebRenderer` (decision time). Remote / SSH.
 |---|---|---|---|
 | GPUI API churns | Medium | Medium | UI crate isolated; protocol-only dependency; wgpu + parley fallback. |
 | Plugin API (WIT) design proves wrong | High | High | Built-in modes / views / grammar extensions all built against the WIT before 1.0; `tree-sitter-motions` plugin built early to validate the grammar extension API. SemVer only after 1.0. WIT changes ARE breaking; design carefully upfront. |
-| **WASM host-call overhead exceeds budget** (new in v0.4) | **Medium** | **High** | **Per-call benchmarks gated in CI (typed call < 500ns p99; grammar-extension round-trip < 5μs p99). AOT compilation; module cache; resource handles; native host APIs for hot work. Built-in motions / text objects / operators stay native; WASM is for extensions only.** |
-| **Plugin cold-start tax at editor launch** (new in v0.4) | **Medium** | **Medium** | **Lazy instantiation; AOT module cache reused across launches; deferred activation on first invocation. Cold-start budget for 50 plugins: < 30ms total.** |
+| ✅ WASM host-call overhead exceeds budget | ~~Medium~~ **mitigated** | High | **Empirically bounded + CI-gated (Phase 7): grammar round-trip ~340ns release, typed-call <500ns p99, both green in CI.** AOT + module cache; built-in grammar stays native. Risk largely retired. |
+| ✅ Plugin cold-start tax at editor launch | ~~Medium~~ **mitigated** | Medium | Lazy instantiation + AOT module cache landed in the Phase-7 host; cold-start budget stands. Re-measure once the loader (Phase 8) instantiates real plugins. |
 | Per-line layout cache invalidation bugs | Medium | High | Property tests for cache coherence; content + style hashes. |
 | Tree-sitter performance on huge files | Low | High | Per-file thresholds; disable structural features above N MB. |
 | LSP server quirks | High | Low | Per-server compatibility shims. |
@@ -3286,16 +3303,16 @@ Path 4 (inline blocks). `org-mode`. `WebRenderer` (decision time). Remote / SSH.
 13. Notification persistence -- should errors persist across sessions until acknowledged.
 14. **Default layouts** (new in v0.4) -- which named layouts ship in default config so the everything-is-a-buffer model has good zero-config defaults.
 15. **Grammar extension API surface for tree-sitter motions** (new in v0.4) -- exact shape of the host's tree-sitter query API exposed to plugins (one-shot vs. cursor-based query iterator; range scoping; query caching).
-16. **Plugin async-task host primitive** (new in v0.4) -- name and shape of the host function that lets a plugin schedule background async work (`spawn-task` vs. `with-cancellation` vs. structured-concurrency primitive).
+16. ~~**Plugin async-task host primitive**~~ **Resolved** — each plugin owns its own `wasmtime::Store` run as a tokio task; background work is additional plugin-side tasks composed via the host's async ABI (§5.5.1 / §9.5). No separate `spawn-task` primitive was needed.
 17. **WASM AOT cache invalidation** (new in v0.4) -- when do we invalidate cached compiled modules (wasmtime version, target triple, plugin checksum, all three).
 18. **Folds** (deferred) -- vim has manual / indent / syntax / expr folds; tree-sitter gives us syntax folds nearly free. Open: storage (rope-side metadata vs. computed view), interaction with motions (`zj`/`zk`/`[z`/`]z`) and operators that target folded ranges, persistence across sessions.
-19. **Replace mode (`R`) dispatch** (deferred) -- overstrike is a third edit mode beside Normal/Insert. Open: whether to model it as a flag on Insert or as its own modal state in the state machine, and how dot-repeat records overstrike spans.
+19. ~~**Replace mode (`R`) dispatch**~~ **Resolved / built** — `R` overstrike ships as its own `ModalState::Replace` with per-char `ReplaceUndoLast` restore (`lattice-grammar`).
 20. ~~**Live evaluation / REPL parity** -- emacs's `M-x ielm`, `eval-last-sexp`, scratch buffer.~~ Resolved per §10 / §2.2: live evaluation in lattice means *plugin authoring without restart* via `*scratch:rust*` -> `rustc` -> dynamic plugin load, sharing the WASM plugin host substrate. In-process REPL with sub-keystroke evaluation is an explicit non-goal; users wanting it install a community-shipped plugin.
 21. **File watcher / auto-revert** (deferred) -- emacs's `auto-revert-mode` and external-change detection. Open: notify-based watcher per workspace, mtime poll fallback, conflict resolution UI when external + local edits diverge.
 22. **Bookmarks and cross-file marks** (deferred) -- vim's `'A`-`'Z` global marks and emacs's bookmark facility cover overlapping ground. Position history (§5.1.1) handles in-process navigation; bookmarks need persistence, naming, and a picker.
 23. **Function rebinding / advice** (deferred) -- emacs's `defadvice` / `advice-add`. The dispatcher already mediates every command, so wrapping is a registry-side concern. Open: advice ordering, removal semantics, interaction with WASM-defined commands, fuel accounting for advice chains.
-24. **Narrow-to-region** (deferred) -- emacs's `narrow-to-region` confines all operations to a sub-range. Open: model as a buffer-local view (cheap; commands see the narrowed range as `Whole`) vs. a transient overlay; interaction with multi-cursor and Visual.
-25. **Snippets and abbrev** (deferred) -- a built-in snippet engine vs. plugin-only. If built-in, integration with completion popups, with the rich minibuffer's parameter hints, and with LSP `textDocument/completion` snippet results.
+24. ~~**Narrow-to-region**~~ **Resolved / built** — narrow-mode (N.1, 2026-06-10): `zn` / `:narrow` build a `MultibufferDocumentHandle` view of the sub-range with tree-sitter text objects; `:widen` restores.
+25. **Snippets and abbrev** — 🟡 **snippet engine built** (`lattice-snippet`: parser, registry, expansion mode, integrated with completion). **Abbrev** (auto-expand-on-type) is still open.
 26. **Frames (multi-OS-window)** (deferred) -- emacs's frame concept. Decoupling is clean (each frame is a top-level window with its own pane tree); open question is workspace boundaries (one workspace per frame vs. shared) and how the position-history ring partitions across frames.
 27. **Session save / restore** (deferred) -- emacs `desktop.el`. What state is captured (open buffers, panes, layouts, registers, marks, position history, command history, ex-history, search history) and what is per-workspace vs. per-user-global.
 28. **DAP support** (deferred to post-1.0 plugin) -- LSP is in-host (§5.4) for latency reasons; DAP is similar shape. Open: in-host like LSP, or first reference plugin that exercises the WIT async/event surfaces under a real adversarial workload.
@@ -3311,11 +3328,11 @@ Path 4 (inline blocks). `org-mode`. `WebRenderer` (decision time). Remote / SSH.
 - **Document**: buffer + metadata.
 - **Selection / Selection set**: (anchor, head) pairs. The type is a *set* so multi-cursor is a clean post-1.0 extension; v1 uses a single selection with vim's visual extents (§2.2).
 - **Edit**: a primitive change at a range.
-- **Command / Event**: protocol messages between layers.
+- **CommandInvocation / Event**: the typed dispatch value and the typed event payload (the old monolithic `Command` enum was retired, §6.1).
 - **Modal mode**: input interpretation context (Normal, Insert, Visual).
 - **Major mode**: a buffer's primary content-type identity. Exactly one per buffer.
 - **Minor mode**: composable feature toggle. Zero or more per buffer.
-- **Rendering profile**: which EditorRenderer fast path a buffer uses.
+- **DisplayMatrix / cell grid**: the renderer-neutral per-pane styled-cell output both peers paint (§5.6).
 - **Style mapping**: major mode's table from syntax-tree node types to text styles.
 - **Layout cache**: per-line cache of shaped glyphs and metrics.
 - **Damage region**: range that has changed and needs re-rendering.
@@ -3325,14 +3342,13 @@ Path 4 (inline blocks). `org-mode`. `WebRenderer` (decision time). Remote / SSH.
 - **Capability**: explicit permission grant for a plugin.
 - **Fuel**: wasmtime's CPU budget mechanism.
 - **WIT**: WebAssembly Interface Types.
-- **Renderer**: trait implementation drawing a specific kind of content.
-- **Compositor**: arranges panes and composes renderer output into one GPU frame.
+- **Renderer**: a peer frontend (`TuiRenderer` / `GpuiRenderer`) painting the shared `DisplayMatrix`; the `Renderer` trait is a marker surfacing its `Theme` / `PaneRenderRegistry` types (§5.6.1).
 - **Pane**: a region of a window holding one document's view.
 - **Pane tree**: recursive split structure of a tab's panes.
 - **Tab**: per-window grouping holding a pane tree.
-- **Status segment**: contributed unit of mode line / header line content.
-- **Gutter segment**: contributed unit of gutter content (a column).
-- **Popup**: floating overlay anchored to a position.
+- **Modeline element**: contributed, event-driven unit of mode-line content (`ModelineRegistry`); the header line is delivered as virtual rows.
+- **Gutter column**: a gutter content column (hardcoded set today; registry 📝).
+- **Popup**: a Document in a floating popup-shaped view (§5.6.3).
 - **Picker**: fuzzy-search overlay for selecting from a list (file / symbol / command / etc.).
 - **Buffer-backed view**: a non-file buffer (file tree, outline, diagnostics, terminal, ...) placed in a pane like any other buffer.
 - **Notification**: transient corner-anchored message.
@@ -3388,7 +3404,7 @@ The metric "keystroke-to-glyph" measures the time from when the OS delivers a ke
 
 **Steady-state typing (code).** This is the most important metric and we should be at parity with or slightly faster than Neovim. Our pipeline (buffer mutation -> tree-sitter incremental edit -> atomic tree swap -> next-vsync render) is microseconds of Rust on the input path; the display work is GPU-accelerated with monospace fast path. Neovim's terminal-based pipeline adds a small PTY round-trip; ours doesn't. Realistic targets: ours <2ms, Neovim 2-4ms, both well below human perception. Against Emacs we should be 3-5x faster because Emacs's display engine carries machinery (variable fonts, mixed content) we don't pay for in code buffers.
 
-**Steady-state typing (rich content / markdown / org).** Neovim doesn't natively render variable fonts -- its rich-document plugins (`render-markdown.nvim`) work through grid-cell tricks rather than true variable-font rendering. So this is apples-to-oranges. The fair comparison is Emacs `org-mode`, where we should be 2-3x faster because shaping work runs on rayon workers off the input thread. Emacs's redisplay is single-threaded; shaping cost goes directly to perceived latency.
+**Steady-state typing (rich content / markdown / org).** Neovim doesn't natively render variable fonts -- its rich-document plugins (`render-markdown.nvim`) work through grid-cell tricks rather than true variable-font rendering. So this is apples-to-oranges. The fair comparison is Emacs `org-mode`, where the *design* (📝 shaped rich-buffer path, not yet built — §5.6.2) should be 2-3x faster because shaping would run on `spawn_blocking` workers off the input thread. Emacs's redisplay is single-threaded; shaping cost goes directly to perceived latency. (Today lattice renders markdown as highlighted monospace cells, which is already off-thread.)
 
 **Large file handling.** Neovim and Lattice both use rope-like structures and handle 100MB+ files comfortably. Emacs uses a gap buffer that performs poorly on large files; mitigated by `so-long-mode` but not gracefully.
 
@@ -3439,7 +3455,16 @@ If we deliver against the Section 8.2 commitments and avoid the Section A.6 risk
 
 ## Appendix B: Vim / Emacs Unifications (smaller wins)
 
-This appendix collects the smaller-scale unifications that fall out naturally from the v0.4 architecture. Each is a clarification or convenience -- none introduces new primitives, all reuse the existing command registry, event bus, buffer model, and minibuffer.
+This appendix collects the smaller-scale unifications that fall out naturally from the architecture. Each reuses the existing command registry, event bus, buffer model, and minibuffer.
+
+> **📝 Status (most of Appendix B is forward design).** Built today: **B.1**
+> interactive arg specs (incl. `Chord`-capture), **B.10** `:describe-buffer`.
+> Partial: **B.2** — only `:global` (`:g`) ships; `:v`/`:vglobal` and the whole
+> `:windo`/`:bufdo`/`:tabdo`/`:argdo` family are 📝 unbuilt. **B.4** — `*messages*`
+> ships; `*scratch*`/`*compilation*` do not. Not built (📝): **B.3** history
+> pickers, **B.5** `:redir`, **B.6** `:!`/shell-execute, **B.7** minor-modes
+> status segment, **B.8** idle hooks, **B.9** notification-to-`*messages*` teeing
+> (notifications themselves are unbuilt, §5.9.9). Read the rest as design intent.
 
 ### B.1 Interactive arg specs (emacs `(interactive ...)` done right)
 
@@ -3472,7 +3497,7 @@ When a `Chord`-required arg is submitted empty (`:describe-key<CR>`), instead of
 
 Both are registered ex-commands taking `(pattern: Regex, body: CommandInvocation)`. The `:g` parser produces a `CommandInvocation` for `global` whose `body` arg is itself a parsed `CommandInvocation` for `delete` with `range = Some(CurrentLine)`. The dispatcher iterates matching lines and invokes `body` for each. Same registry, no special form.
 
-The same pattern lets `:windo`, `:bufdo`, `:tabdo`, `:argdo` all be normal commands taking a `body` invocation arg.
+📝 The same pattern is *intended* to let `:vglobal` (`:v`), `:windo`, `:bufdo`, `:tabdo`, `:argdo` be normal commands taking a `body` invocation arg — none of those are built yet; only `:global` ships.
 
 ### B.3 Histories as pickers over registries
 

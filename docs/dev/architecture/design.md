@@ -1596,104 +1596,90 @@ Floating overlays (z-ordered above all):
 
 A window contains a recursive tree of panes. Each leaf is an editor view; each branch is a horizontal or vertical split.
 
+The real tree is a recursive **binary** split (each split is one branch with a
+left/right or top/bottom child + a ratio), not an n-ary `Vec` of children:
+
 ```rust
+// lattice-core/src/ui/pane.rs
 enum PaneNode {
-	Leaf(Pane),
-	Split {
-		orientation: SplitOrientation,
-		children: Vec<PaneNode>,
-		sizes: Vec<f32>,  // proportions, sum to 1.0
-	},
+	Leaf(usize),                               // index into the tab's pane list
+	HorizontalSplit { left: Box<PaneNode>,  right: Box<PaneNode>,  ratio: f32 },
+	VerticalSplit   { top:  Box<PaneNode>,  bottom: Box<PaneNode>, ratio: f32 },
 }
 
-struct Pane {
-	id: PaneId,
-	document: Option<DocumentId>,
-	scroll_position: ScrollPosition,
-	selection_focus: SelectionFocus,
-	header_line_config: HeaderLineConfig,
-	mode_line_config: ModeLineConfig,
-	show_gutter: bool,
-	show_minimap: bool,
+struct PaneState {
+	buffer_id: BufferId,
+	cursor: Position,
+	scroll: usize,
+	viewport_height: u32,
+	viewport_width: u32,
+	// … per-pane render/preview state
 }
 ```
 
-**Pane operations** (UI-layer commands):
-- `SplitPane { pane: PaneId, orientation, new_document: Option<DocumentId> }`
-- `ClosePane { pane: PaneId }`
-- `FocusPane { pane: PaneId }`
-- `ResizePane { pane: PaneId, delta: f32 }`
-- `SwapPanes { a: PaneId, b: PaneId }`
-- `MovePane { pane: PaneId, target: PaneId, position: SplitPosition }`
+Splits carry a `ratio` (`<C-w>+` / `<C-w>-` / `<C-w>>` / `<C-w>=` adjust it). Pane
+ops: split (`<C-w>s` / `<C-w>v`), close (`<C-w>c`), focus (`<C-w>hjkl` / `<C-w>w`),
+resize, `only` (`<C-w>o`), and `MovePaneToNewTab`. (There is no generic
+`SwapPanes` / `MovePane` in v1; `show_gutter` / `show_minimap` are not pane
+fields — gutter columns are global-ish options, minimap is 📝 unbuilt.)
 
-The same document can appear in multiple panes (and multiple windows). Each pane holds its own scroll/selection state; the buffer is shared.
+The same buffer can appear in multiple panes (and tabs). Each pane holds its own cursor/scroll state; the buffer is shared.
 
 #### 5.9.3 Tabs
 
 Tabs are a per-window grouping of documents, distinct from panes. A tab can hold multiple panes (a saved split layout). Tabs are optional -- users who prefer pure split-only navigation can disable the tab bar.
 
-```rust
-struct Tab {
-	id: TabId,
-	title: String,             // user-editable; defaults from primary document
-	pane_tree: PaneNode,
-	active_pane: PaneId,
-}
+There is no `Window` struct — the host `Editor` *is* the composition root and
+owns the tab list directly:
 
-struct Window {
-	id: WindowId,
-	tabs: Vec<Tab>,
-	active_tab: TabId,
-	layout: WindowLayout,      // saved layout state (split sizes, view placement)
+```rust
+// lattice-host: Editor.tabs: Vec<TabSlot>
+struct TabSlot {
+	id: TabId,
+	panes: PaneNode,           // this tab's pane tree
+	label: String,             // user-editable via :tabmove/:tabnew; defaults from buffer
 }
 ```
 
-**Tab operations:** create, close, rename, reorder, move-to-window, duplicate.
+**Tab operations (built):** `:tabnew [path]`, `:tabnext`/`:tabprev` (`gt`/`gT`/`{N}gt`),
+`:tabclose`, `:tabonly`, `:tabmove`, `MovePaneToNewTab`, `<C-PageDown>`/`<C-PageUp>`.
+The tabline shows via the `tabline.show` option (`never`/`auto`/`always`).
+(Move-to-*window* and duplicate are 📝 — there is a single window.)
 
 #### 5.9.4 Status lines: mode line and header line
 
-Two horizontal status surfaces per pane, both rendered by `DocumentRenderer`.
+Two horizontal status surfaces per pane, both painted through the shared cell-grid pipeline.
 
 **Mode line** (bottom of pane): the persistent status surface -- modal mode indicator, file info, cursor position, encoding, line ending, major mode, minor modes summary, LSP status, plugin contributions.
 
 **Header line** (top of pane, optional): contextual breadcrumb or symbol context -- file path with breadcrumbs, the current symbol (LSP `documentSymbol` containing cursor), tab-context, plugin contributions.
 
-Both are composed of **status segments** registered in a registry.
-
-##### Status segment registry
+The **mode line** is composed of **modeline elements** registered in a
+`ModelineRegistry` (`lattice-mode`, the ML.0–ML.5 redesign). Elements are
+event-driven, not pull-on-trigger: content updates arrive over the event bus as
+`ModelineElementUpdate`, so an element recomputes only when its data changes —
+never per keystroke:
 
 ```rust
-struct StatusSegmentSpec {
-	id: SegmentId,
-	line: StatusLine,                      // ModeLine | HeaderLine
-	position: SegmentPosition,             // Left | Center | Right
-	priority: i32,                         // ordering within position
-	update_trigger: UpdateTrigger,
-	content_provider: ContentProviderId,
-	visibility_predicate: Option<Predicate>,
-}
-
-enum UpdateTrigger {
-	OnEvent(EventKind),                    // e.g., SelectionChanged
-	Periodic(Duration),                    // e.g., clock segment
-	Manual,                                // explicit update_segment call
-}
-
-struct ContentProvider {
-	fn provide(&self, ctx: &SegmentContext) -> SegmentContent;
-}
-
-enum SegmentContent {
-	Text(StyledText),
-	Composite(Vec<SegmentContent>),
+// lattice-mode/src/modeline.rs
+struct ModelineElement {
+	id: ElementId,
+	zone: Zone,          // Left | Center | Right
+	priority: i32,       // ordering within the zone
+	// content published via ModelineElementUpdate over the event bus
 }
 ```
 
-Segments are **contributed**, not hardcoded. The core ships default segments (mode indicator, file path, cursor position, etc.). Plugins, major modes, and minor modes contribute additional segments.
+The **header line** is not a second segment registry — it is delivered as
+**view-header virtual rows** (`lattice-cells` headerline / `HeaderlineProvider`);
+async-buffer/multibuffer providers surface progress + breadcrumb content there
+(the standing rule that async-buffer status lives on the headerline, not the mode
+line or a notification).
 
-**Conflict resolution:** segments at the same `(position, priority)` are ordered by registration order. Users can override priority and visibility per segment in config.
-
-**Performance:** segments are pull-not-push -- the renderer queries content providers only when their `update_trigger` fires. A segment subscribed to `SelectionChanged` updates on cursor movement; one with `Periodic(1s)` updates once a second. This avoids the Emacs problem of every keystroke causing every modeline element to recompute.
+Elements are **contributed**, not hardcoded: the core ships defaults (modal
+indicator, file path, cursor position, encoding, EOL, major mode, LSP status) and
+modes / plugins register their own. Conflict resolution: same-`(zone, priority)`
+elements order by registration.
 
 **Default mode line (rust-mode example):**
 
@@ -1708,77 +1694,59 @@ Segments are **contributed**, not hardcoded. The core ships default segments (mo
 
 A vertical strip at the left of each pane showing line-aligned annotations. Like the status lines, gutter content comes from a registry of contributors.
 
+> **📝 Status.** The **gutter columns are hardcoded today** (`gutter_cols()` in
+> the cells worker) — line numbers (`number` / `relativenumber`), diagnostic
+> markers, and diff signs. The pluggable `GutterSegmentSpec` *registry* below is
+> the forward design; plugin-contributed columns (breakpoints, blame heatmap) are
+> not yet a seam.
+
+The planned registry mirrors the modeline element model:
+
 ```rust
 struct GutterSegmentSpec {
 	id: SegmentId,
 	column: GutterColumn,           // ordered columns left-to-right
 	width: GutterWidth,             // Fixed(n_chars) | Auto
 	content_provider: ContentProviderId,
-	update_trigger: UpdateTrigger,
-}
-
-enum GutterContent {
-	PerLine(Vec<LineContent>),
-	Range(RangeMap<LineContent>),
 }
 ```
 
-**Default gutter columns** (left to right): diagnostic markers, git diff markers, line numbers, fold indicators.
-
-Plugins add columns: breakpoint indicators (debugger plugin), git blame heatmap, custom markers.
+**Gutter columns today** (left to right): diagnostic markers, diff signs, line numbers, fold indicators.
 
 #### 5.9.6 Popup system
 
-Popups are floating, transient UI surfaces anchored to positions. They're rendered by `DocumentRenderer` and managed by a popup manager in the UI layer.
+Popups are floating, transient UI surfaces. Crucially, **a popup is a Document
+in a popup-shaped view** (§5.9.8 / §5.6.3) — not a bespoke non-buffer primitive
+with typed anchor/dismissal/interaction structs. The real shape carries only a
+placement + a focus mode; content, dismissal, and interaction come from the
+underlying buffer + its mode:
 
 ```rust
-enum PopupAnchor {
-	AtCursor,                                          // moves with cursor
-	AtPosition { document: DocumentId, position: Position },
-	AtScreenCoordinate { x: f32, y: f32 },
-	AtPaneCenter { pane: PaneId },
-	AtPaneCorner { pane: PaneId, corner: Corner },
+// lattice-host/src/ui/popup.rs
+enum PopupPlacement {
+	CursorAnchored,   // pinned to the symbol the popup was invoked from
+	Centered,
 }
 
-struct Popup {
-	id: PopupId,
-	anchor: PopupAnchor,
-	content: RichContent,
-	layer: PopupLayer,                  // ordering for overlapping popups
-	dismissal: DismissalRules,
-	interaction: InteractionMode,
-}
-
-struct DismissalRules {
-	on_cursor_move: bool,
-	on_buffer_edit: bool,
-	on_focus_change: bool,
-	on_escape: bool,
-	on_click_outside: bool,
-	timeout: Option<Duration>,
-}
-
-enum InteractionMode {
-	Passive,      // popup is informational; input goes to editor
-	Modal,        // popup captures input; editor inactive
-	Reactive,     // popup responds to specific keys (e.g., Tab to accept completion)
+enum PopupFocus {
+	Steal,            // popup captures input (State-B): pickers, code-action menus
+	Passive,          // informational; input goes to the editor: hover, signature
 }
 ```
 
-**Popup types and their typical configurations:**
+**Popup types:** completion, hover, signature help, diagnostic detail, code-action
+menu — each a buffer with a mode, placed `CursorAnchored` (hover/signature/
+completion pin to the invoking symbol via the stored anchor) or `Centered`
+(pickers). Focus is `Passive` for hover/signature, `Steal` for pickers /
+code-action menus. Dismissal (on cursor move, edit, Esc) is driven by the owning
+mode's lifecycle hooks — e.g. the hover-popup auto-dismiss-on-cursor-move hook
+lives in `Editor::dispatch` so it fires in both peers.
 
-| Popup | Anchor | Interaction | Dismissal |
-|---|---|---|---|
-| Completion | AtCursor | Reactive (Tab/Enter accept; Esc dismiss) | On cursor move, edit, focus change |
-| Hover | AtCursor | Passive | On cursor move, edit |
-| Signature help | AtCursor | Passive | On argument boundary or close paren |
-| Diagnostic detail | AtCursor | Passive | On cursor move |
-| Code action menu | AtCursor | Modal | On selection or Esc |
-| Notification | AtPaneCorner | Passive | After timeout |
+📝 A corner-anchored **notification** popup with stacking + timeout (the old
+`AtPaneCorner` row) is not built — see §5.9.9.
 
-**Layering:** when multiple popups overlap, the popup manager z-orders by `layer`. Notifications stay on top; modals next; passive hovers below them.
-
-**Performance:** popup content is laid out once on first display, cached, re-rendered on content change only. Showing or hiding a popup costs sub-millisecond -- it's just toggling visibility on cached geometry.
+**Performance:** because a popup is just another buffer view, it reuses the
+cell-grid layout + caching; showing / hiding is sub-millisecond.
 
 #### 5.9.7 Pickers
 
@@ -1832,13 +1800,13 @@ trait PreviewProvider {
 
 **Streaming results:** the picker stays responsive even with millions of files because `ContentProvider::items()` returns a stream. Items appear as they're discovered. The first matches appear in milliseconds; the picker is usable while enumeration continues.
 
-**Preview pane:** optional. When present, the picker layout splits into list-on-left, preview-on-right. Previews render via `EditorRenderer` (for code files) or `DocumentRenderer` (for documentation/non-code). Preview is async; missing previews show a placeholder.
+**Preview pane:** optional. When present, the picker layout splits into list-on-left, preview-on-right. Previews render through the same cell-grid pipeline as any buffer (in a read-only projection, §5.9.8). Preview is async; missing previews show a placeholder.
 
 **Plugin-defined pickers:** plugins create pickers by implementing `ContentProvider` and optionally `ItemRenderer`/`PreviewProvider` and calling `ui.open-picker(spec)`. Examples: a git-branch picker, a docker-container picker, a snippet picker.
 
-**Implementation seed (v1).** A minimal but real picker primitive lives in `lattice-ui-tui::picker::Picker` today: holds a query line, a substring-filtered candidate list (fed by a `PickerSource` enum), a selection cursor, and a `PickerAction` tag the host's accept dispatcher pattern-matches on. The first instantiation is the **buffer switcher** -- `:b` with no arg walks `BufferRegistry`, builds one row per entry with a kind-tagged marginalia (`doc` / `tree` / `help`, plus `(current)` on the active buffer), and `<CR>` activates the selected `BufferId` via `App::activate_buffer`. Filtering today is case-insensitive substring; the full pipeline-driven path (`lattice-completion` matcher / ranker / annotators) graduates the picker once `CommandLineSlot` is lifted out of the slot detector.
+**✅ Graduated.** The picker primitive now lives in its own **`lattice-picker`** crate (the "graduates to a sibling crate when the GPUI peer comes online" plan below has happened — both peers are online): `Picker` + `PickerRegistry` + `PickerSourceSpec`, a source registry, live-query subsystem, MRU frecency, and async syntax-highlighted preview. It holds a query line, a filtered candidate list (fed by registered sources), a selection cursor, and a `PickerAction` tag the host's accept dispatcher pattern-matches on. The first instantiation is the **buffer switcher** -- `:b` with no arg walks `BufferRegistry`, builds one row per entry with a kind-tagged marginalia (`doc` / `tree` / `help`, plus `(current)` on the active buffer), and `<CR>` activates the selected `BufferId` via `App::activate_buffer`. Filtering today is case-insensitive substring; the full pipeline-driven path (`lattice-completion` matcher / ranker / annotators) graduates the picker once `CommandLineSlot` is lifted out of the slot detector.
 
-**Renderer-agnostic by construction.** The picker module has no renderer-specific or host-specific imports beyond `lattice-completion`'s candidate shape. Host-coupled work (walking `BufferRegistry`, snapshotting the LSP supervisor, parsing host buffer ids) lives on the host side; the picker's only mutation entry is `Picker::set_raw_candidates(Vec<RawCandidate>)`. When the GPUI / wgpu renderer comes online, this module graduates to a sibling crate (`lattice-picker`) with zero file-by-file edits — only the host's render adapter is renderer-specific.
+**Renderer-agnostic by construction.** The `lattice-picker` crate has no renderer-specific or host-specific imports beyond `lattice-completion`'s candidate shape. Host-coupled work (walking `BufferRegistry`, snapshotting the LSP supervisor, parsing host buffer ids) lives on the host side; each renderer peer supplies only its own render adapter.
 
 **Layout.** Vertico-style: the picker's query line takes over the cmdline / echo row at the bottom, candidates render in the row band immediately below. The selected row sits at the TOP of the band (closest to the prompt below), alternatives fan upward in match-rank order. Reuses the cmdline completion popup's per-row painter (matched ranges + marginalia), so styling is consistent across surfaces.
 
@@ -1903,11 +1871,17 @@ The user opens any of these like opening a file: a command (`:open file-tree`, k
 
 **Implementation seed: help / log buffers in the registry.** The unified `BufferRegistry` carries the same `BufferData::Help(HelpBuffer)` variant the introspection layer (§5.11) uses for `:describe-*`, `:apropos`, `:diagnostics`, and the LSP log views. `App::open_help_in_pane(buffer)` is the in-pane entry point (durable record + active hot-path mirror); `App::open_help` is the popup overlay path (transient surfaces: hover, doc lookups, error toasts). De-dup by title means re-running `:lsp-log rust` surfaces the existing buffer rather than spawning a duplicate. The picker (§5.9.7) and the LSP command refactor (`:lsp-log` / `:lsp-server-log` / `:lsp-trace-log`) consume this primitive: candidate generation walks `BufferRegistry::help_ids_sorted()`, on-accept activates the chosen `BufferId` in the current pane.
 
-**Performance:** content providers are lazy. They populate on first display; they refresh on declared triggers (event, periodic, manual), all off the UI thread on the rayon pool. A buffer that is open but whose pane is not visible can be configured to suspend updates entirely.
+**Performance:** content providers are lazy. They populate on first display; they refresh on declared triggers (event, periodic, manual), all off the UI thread on the blocking pool (`spawn_blocking`). A buffer that is open but whose pane is not visible can be configured to suspend updates entirely.
 
 **Terminal buffers — Document-on-Normal.** The `terminal` buffer has two sub-states (`TerminalInsertMode` PTY-bound, `TerminalNormalMode` Document-bound). Insert mode encodes keystrokes to ANSI and the renderer paints the alacritty cell grid directly. Normal / Visual operates on a **synthetic, read-only Document** built from the scrollback at Insert→Normal transition; the central vim grammar (motions, text objects, marks, search, registers, visual modes) runs against that Document with no kind-specific branching. The renderer still paints the cell grid; a coord adapter remaps document-space selection ranges to cell coordinates at publish time. See [`terminal-as-document.md`](terminal-as-document.md) for the lifecycle, coord adapter, and slice plan.
 
-#### 5.9.9 Notifications
+#### 5.9.9 Notifications (📝 planned)
+
+> **📝 Status.** A dedicated notification subsystem (corner-anchored, stacking,
+> timeouts) is **not built**. Today the **echo area** (`set_message` / `EchoLevel`)
+> and the `*messages*` buffer cover the case, and async-buffer status routes to
+> the headerline by standing rule (§5.9.4). The design below is the forward plan;
+> revisit only if the echo area proves insufficient.
 
 Transient messages anchored to a window corner, queued and animated.
 
@@ -1939,7 +1913,9 @@ struct NotificationAction {
 
 #### 5.9.10 Minibuffer and echo area
 
-The "command line" surface is a **rich editing space, not a single-line widget.** It is implemented as a real buffer with a major mode, opened transiently, rendered by `EditorRenderer`. This is one of the highest-leverage simplifications in the design: every interactive prompt in the editor reuses the buffer, command-dispatch, decoration, popup, and renderer machinery -- nothing minibuffer-specific exists outside of "this buffer is currently the input focus."
+> **🟡 Status.** The command line is a **single-line widget today** (`Editor.command_line: String`), not yet a full buffer-with-a-major-mode. What *is* built: the `:` / `/` / `?` cmdline with completion popups, command history, and — notably — **live substitute preview** (`:s///` decorates the target buffer as you type). The "every prompt is a real buffer with `command-line` / `search-line` / `git-commit-line` / `repl-input` major modes, full vim grammar, tree-sitter highlighting, live error indicators" vision below is 📝 the forward design (see `mode-architecture.md`); the rich-minibuffer-as-buffer work is deferred.
+
+The design intent: the "command line" surface is a **rich editing space, not a single-line widget** — a real buffer with a major mode, opened transiently, painted through the cell-grid pipeline. Every interactive prompt would reuse the buffer, command-dispatch, decoration, popup, and renderer machinery -- nothing minibuffer-specific outside of "this buffer is currently the input focus."
 
 ##### Minibuffer as a buffer
 
@@ -2011,11 +1987,13 @@ The echo area is a separate, single-line surface used for transient one-line out
 
 A rolling history of every echo-area message and every notification is kept in a `*messages*` buffer (read-only, auto-scrolling) that the user can open in any pane to scroll back.
 
-#### 5.9.11 Scrollbars and minimap
+#### 5.9.11 Scrollbars and minimap (📝 planned)
+
+> **📝 Status.** Neither is built. Both are forward design.
 
 **Scrollbars:** modern style -- appear on scroll, fade out after a moment of inactivity. Show position indicator + diagnostics summary marks (errors/warnings as colored ticks along the scrollbar). Configurable: always-visible, on-scroll, never.
 
-**Minimap:** optional thumbnail of the file rendered at small scale on the right edge of the pane. Implemented as a low-resolution variant of `EditorRenderer` that re-renders only when the file or scroll position changes substantially (debounced). Shows diagnostics, search matches, current viewport indicator. Performance impact minimal due to debouncing and shared atlas.
+**Minimap:** optional thumbnail of the file rendered at small scale on the right edge of the pane, re-rendered (debounced) only when the file or scroll position changes substantially. Shows diagnostics, search matches, current viewport indicator.
 
 #### 5.9.12 Performance characteristics of the UI layer
 
@@ -2031,8 +2009,8 @@ A frame containing:
 ...costs roughly the same to render as a frame with just the editor pane. Reasoning:
 
 - The editor pane carries the heavy work; it's on the fast path.
-- Popups, buffer-backed views, status lines are all `DocumentRenderer` content (or low-traffic `EditorRenderer` content) -- laid out once, cached, re-rendered only on change.
-- Status segments update on triggers, not per-frame.
+- Popups, buffer-backed views, status lines are all low-traffic cell-grid content -- built once off-thread, cached, re-rendered only on change.
+- Modeline elements update on event, not per-frame.
 - All renderers share one GPU atlas and submission.
 
 **This is the architectural win over Emacs in concrete terms.** In Emacs, every UI element shares the redisplay engine with the buffer, so a busy UI taxes editor rendering. Here, the UI layer's complexity has near-zero impact on editor input latency.
@@ -2041,16 +2019,21 @@ A frame containing:
 
 Vim's `autocmd` and emacs's hooks both attach behavior to editor events. The two systems differ only in surface syntax; their semantics collapse into one primitive:
 
+The bus is a concrete **`struct EventBus` in `lattice-runtime`** (not a trait in
+`lattice-mode`), holding the writable `Document` actors' fan-in plus typed
+subscriptions:
+
 ```rust
-pub trait EventBus {
+// lattice-runtime/src/events.rs (shape)
+impl EventBus {
 	fn subscribe(&self, filter: EventFilter, sink: SubscriptionTarget) -> SubscriptionId;
 	fn unsubscribe(&self, id: SubscriptionId);
 	fn publish(&self, event: Event);
 }
 
 pub struct EventFilter {
-	pub kinds: Option<Vec<EventKind>>,        // BeforeSave, AfterSave, etc.
-	pub document_pattern: Option<Pattern>,    // path glob
+	pub kinds: Option<Vec<EventKind>>,        // e.g. DocumentSaved
+	pub path_glob: Option<String>,            // path glob (field is `path_glob`)
 	pub major_mode: Option<MajorModeId>,
 	pub predicate: Option<PredicateId>,       // arbitrary plugin-supplied
 }
@@ -2064,24 +2047,36 @@ pub enum SubscriptionTarget {
 
 #### 5.10.1 Event catalog
 
-Every meaningful editor state transition publishes a typed event. The catalog grows over time; the v1 baseline includes:
+The **protocol-level `Event` enum** (`lattice-protocol/src/event.rs`) carries
+editor state transitions. The real v1 variants:
 
-- **Document lifecycle:** `DocumentOpened` (live; carries `{ id, path, version, text }`; published by `App::new` for the initial buffer and `App::do_edit` for subsequent opens; the LSP attach driver in `lattice_lsp::attach_driver` is the canonical subscriber, and §5.4.3 describes the event-driven LSP attach in full), `BeforeSave`, `AfterSave`, `BeforeClose`, `DocumentClosed`, `BufferChanged`, `LanguageDetected`.
-- **Modal state:** `ModalModeChanged { from, to }`, `OperatorPendingEntered`, `OperatorPendingResolved`.
-- **Mode lifecycle:** `MajorEntered { buffer, mode }`, `MajorExiting { buffer, mode }`, `MinorActivated { buffer, mode }`, `MinorDeactivated { buffer, mode }`, `OptionConflict { buffer, option, modes }`. `MajorEntered` runs *after* the trait's `on_activate` hook (subscribers see a consistent state); `MajorExiting` runs *before* the trait's `on_deactivate` (subscribers can inspect what's about to be torn down). Deactivation is synchronous from the user's perspective; resource teardown can continue async post-event. See [`docs/mode-architecture.md`](mode-architecture.md) §7.
-- **Selection / cursor:** `SelectionsChanged`, `CursorMoved`, `JumpPushed { source }`.
-- **LSP:** `LspServerStarted`, `LspResponseReceived`, `DiagnosticsUpdated`, `CompletionAvailable`, `LspLogPushed { server_id, workspace, level, source, message }` (every `LspLogger::log` append; powers live-tail of `*lsp*` (aggregator) / `*lsp:<server>:<workspace>*` / `*lsp:<server>:<workspace>:trace*` buffers per §5.4.7 + §5.10.5).
-- **UI:** `PaneFocused`, `PaneClosed`, `WindowFocused`, `BufferViewOpened`.
-- **Plugin:** `PluginActivated`, `PluginCrashed`, `PluginDeactivated`.
-- **System:** `Idle { duration }`, `FocusGained`, `FocusLost`, `BeforeQuit`.
+- **Document lifecycle:** `DocumentOpened` (carries `{ id, path, version, text }`; §5.4.3 describes the mode-owned LSP attach that subscribes to it), `BeforeSave`, `DocumentSaved`, `DocumentClosed`, `DocumentChanged`.
+- **Modal state:** `ModalModeChanged { from, to }`.
+- **Mode lifecycle:** `MajorEntered { buffer, major }`, `MajorExiting { buffer, major }`, `MinorActivated { buffer, minor }`, `MinorDeactivated { buffer, minor }`. `MajorEntered` fires *after* `on_activate`; `MajorExiting` *before* `on_deactivate`. See [`docs/mode-architecture.md`](mode-architecture.md) §7.
+- **Selection:** `SelectionsChanged`.
+- **Options:** `OptionChanged`.
+- **Plugin:** `Plugin(payload)`, `PluginCrashed`.
 
-Each event carries a typed payload. `BeforeSave` carries `{ document, path, content_hash }`; `SelectionsChanged` carries `{ document, old, new }`; etc.
+Beyond this core enum, subsystems run **typed sub-buses** for their own payloads
+(not part of the protocol `Event`): LSP publishes `LspBufferAttached` /
+`LspLogPushed` / `LspDocumentChanged` etc. over its own typed bus; diagnostics
+flow over a `broadcast`. 📝 The richer catalog originally sketched here —
+`CursorMoved`, `AfterSave`, `Idle { duration }`, `FocusGained/Lost`,
+`BufferViewOpened`, UI/`Pane*` events — is **not** protocol-level today; those are
+either subsystem-typed or not yet added.
 
-#### 5.10.2 Hook handlers may *modify* events for "Before"-class events
+#### 5.10.2 Hook handlers may *modify* events for "Before"-class events (📝 planned)
 
-A subscription registered as `Invocation(...)` for an event with the `Before` semantics receives the typed payload, may mutate fields the event declares as mutable, and may veto by returning `Err`. `BeforeSave` handlers can rewrite content (formatters do this); `BeforeQuit` handlers can veto (with a reason that surfaces as a notification). For non-Before events the handler's return value is ignored except for error-logging.
+> **📝 Status.** The event bus is **observation-only** today (`event.rs` documents
+> "v1: observation-only"). The mutate/veto path below is not built.
 
-#### 5.10.3 Vim `:autocmd` and emacs hooks both desugar to this
+The design: a subscription registered as `Invocation(...)` for a `Before`-class event receives the typed payload, may mutate fields the event declares as mutable, and may veto by returning `Err`. `BeforeSave` handlers could rewrite content (formatters); `BeforeQuit` handlers could veto. For non-Before events the return value is ignored except for error-logging.
+
+#### 5.10.3 Vim `:autocmd` and emacs hooks both desugar to this (📝 planned)
+
+> **📝 Status.** The `:autocmd` / `:add-hook` ex-commands are **not built** — the
+> `subscribe(filter, target)` primitive exists and modes subscribe in Rust, but
+> the user-facing desugaring commands below are forward design.
 
 ```vim
 " vim
@@ -2111,7 +2106,7 @@ The `:autocmd` and `:add-hook` ex-commands are parser front-ends for this call.
 
 #### 5.10.4 Performance
 
-Subscriptions live in indexed maps keyed by `(EventKind, document_pattern_bucket, major_mode)`. Publishing an event evaluates the filter for matching buckets only, never iterating the global subscription list. WASM-hosted subscription handlers run on the publisher's tokio task via the async ABI; a slow handler does not delay other subscribers because each `Invocation` target is dispatched as a separate task.
+Subscriptions are indexed by `EventKind` (plus a wildcard bucket); the remaining filters (`path_glob`, `major_mode`, predicate) are AND-checked per candidate at publish time. Publishing evaluates only the matching kind bucket, never the global subscription list. WASM-hosted subscription handlers run on the publisher's tokio task via the async ABI; a slow handler does not delay other subscribers because each `Invocation` target is dispatched as a separate task.
 
 Subscriptions for `Before`-class events are bounded in count per event; if a user installs 100 `BeforeSave` hooks, the save runs them in registration order and each gets a fuel budget. A handler that exhausts fuel logs and is skipped; the save proceeds.
 
@@ -2180,26 +2175,28 @@ pub struct ServiceRegistry { /* typed Arc<dyn T> map */ }
 Every registered primitive in the editor -- commands, options, events, modes, keybindings -- carries metadata. The metadata is mandatory at registration time, not optional documentation, and the `:describe-...` family of commands renders it on demand.
 
 ```rust
-pub struct CommandMetadata {
+pub struct CommandSpec {           // lattice-grammar/src/command.rs
 	pub id: CommandId,
 	pub name: String,
+	pub kind: CommandKind,
 	pub doc: String,                          // markdown, multi-paragraph
-	pub args: Vec<ArgMetadata>,
-	pub since_version: Version,
-	pub source: SourceLocation,               // path, line, plugin
-	pub category: Category,
-	pub example_invocations: Vec<String>,
+	pub args_schema: Vec<ArgSpec>,
+	pub source: SourceLocation,               // path, line, plugin (§5.11.1)
+	pub latency_class: LatencyClass,
 }
 
-pub struct ArgMetadata {
-	pub name: String,
-	pub ty: ArgType,                          // typed (Path, Regex, OptionId, ...)
-	pub doc: String,
-	pub default: Option<DefaultValue>,
-	pub completion: Option<CompletionSourceId>,
-	pub validator: Option<ValidatorId>,
+pub struct ArgSpec {
+	pub name: &'static str,
+	pub kind: ArgKind,                        // typed (String, Path, Chord, ...)
+	pub doc: &'static str,
+	pub prompt: &'static str,
+	pub default: ArgDefault,
+	pub completion: Option<&'static str>,     // named generator, e.g. "gen:files"
 }
 ```
+
+(The original sketch carried `since_version` / `example_invocations` / a
+`Category` — not built; the real spec is the shape above.)
 
 Built-in introspection commands:
 
@@ -2213,7 +2210,7 @@ Built-in introspection commands:
 | `:describe-buffer` | `*help:buffer*` | Current buffer's mode stack, encoding, options, keymap chain |
 | `:apropos <pattern>` | `*help:apropos:<pattern>*` | Fuzzy search across all metadata |
 
-Each opens a buffer-backed help view (consistent with everything-is-a-buffer). The view is rendered by `EditorRenderer` for code-like content and `DocumentRenderer` for prose-heavy descriptions; cross-references inside it are clickable / followable via standard motions.
+Each opens a buffer-backed help view (`HelpContent` / `HelpBuffer` in `lattice-help`, consistent with everything-is-a-buffer), painted through the cell-grid pipeline like any buffer; cross-references inside it are clickable / followable via standard motions.
 
 **Cost model.** Metadata lives next to registrations and is only materialized when an introspection command runs. The catalog is queryable in O(1) by id and O(log N) by name; `:apropos` is a streaming picker (§5.9.7) over all metadata.
 
@@ -2267,7 +2264,7 @@ pub trait Introspectable {
 pub fn render_introspection(item: &dyn Introspectable) -> Vec<String>;
 ```
 
-`render_introspection` produces the help body in a uniform shape: `identifier (kind)` heading, doc, type-specific extra sections (e.g. `Arguments:` for commands), then one `[[file:...]]` link per source labelled (`Defined at:`, `Bound at:`, `Subscribed at:`, `Last set at:`, `Overridden at:`, `Activated at:`). Each `:describe-X` is a thin lookup-and-call.
+`render_introspection` produces the help body in a uniform shape: `identifier icon` heading (e.g. `ex:write :` or `motion:line-down →`), doc, type-specific extra sections (e.g. `Arguments:` for commands), then one `[[file:...]]` link per source labelled (`Defined at:`, `Bound at:`, `Subscribed at:`, `Last set at:`, `Overridden at:`, `Activated at:`). Each `:describe-X` is a thin lookup-and-call.
 
 `extra_sections()` is the open hook for type-specific structure: commands render their `args_schema`, options render their type and current value, events render their subscribers list, modes render their keymap and hooks. Adding a new registry means adding one trait impl; the renderer doesn't change.
 
@@ -2328,7 +2325,7 @@ The matcher / ranker / annotators always run live; only generation is cached.
 | Matcher | `match:fuzzy` | subsequence with byte-range tracking; score decays with skipped chars; prefix-bonus |
 | Ranker | `rank:score` | descending score (default) |
 | Ranker | `rank:alphabetical` | A-Z |
-| Annotator | `anno:kind-label` | `(motion)`, `(file)`, `(directory)`, etc. |
+| Annotator | `anno:kind-label` | `→` (motion), `:` (ex-command), `f` (file), etc. |
 | Annotator | `anno:doc-snippet` | first line of doc |
 
 Host-state generators (`gen:chords`, `gen:registers`, `gen:marks`, `gen:buffers`) live in the host crate (`lattice-ui-tui`) because they read App-level state; they register against the same `CompletionRegistry` like any plugin would.
@@ -2345,32 +2342,35 @@ Vim's `:set option=value` is a string-bag with no typing or validation, and vims
 
 #### 5.12.1 The typed option registry
 
+The v0.5 model shipped: **the option's *type* is its canonical identity**, not a
+string name. Each option is a unique Rust type carrying its own value/default/doc,
+and `OptionType` is a **trait** (not an enum). The registry stores type-erased
+handles; consumers hold typed handles for zero-overhead reads:
+
 ```rust
-pub struct OptionSpec {
-	pub id: OptionId,
-	pub name: String,                 // dotted path: "editor.line-numbers"
-	pub ty: OptionType,
-	pub default: Value,
-	pub doc: String,
-	pub group: GroupPath,             // "Editor" / "UI" / "LSP" / "Plugin: git-gutter"
-	pub validator: Option<ValidatorId>,
-	pub on_change: Option<EventKind>, // event published when value changes
-	pub scope: OptionScope,           // Global | PerDocument | PerWindow
+// lattice-config: option_decl.rs / option.rs / option_type.rs
+pub trait OptionType: 'static { /* Value assoc + parse/format */ }
+
+// A built-in option is a unit type implementing this and carrying its metadata:
+pub trait OptionDecl {
+	type Ty: OptionType;
+	const NAME: &'static str;     // dotted path, e.g. "editor.line-numbers"
+	const DEFAULT: /* Ty::Value */;
+	const DOC: &'static str;
+	const CUSTOMIZABLE: bool;
 }
 
-pub enum OptionType {
-	Bool, Int { min: Option<i64>, max: Option<i64> },
-	Float, String, Path, Regex,
-	Enum(Vec<String>),
-	List(Box<OptionType>),
-	Map(Box<OptionType>, Box<OptionType>),
-	Custom(TypeId),
-}
+// Each Option<T> owns an ArcSwap<T> value cell; the registry holds
+// Arc<dyn ErasedOption>; reads are type-driven: config.get::<Tabstop>().
 ```
 
-The registry is the single source of truth: every option's name, type, default, doc, group, validator, scope, and on-change event live here. `:set`, `:describe-option`, the customize buffer, the TOML deserializer, and any plugin / `init.rs` call all read from and write to the same `OptionSpec`.
-
-> **v0.5 update:** the v1 implementation evolves the `OptionSpec` shape so that **the option's *type* is the canonical identity, not its string name**. Each built-in option is a unique Rust type implementing an `Option` trait that carries `Value`, `DEFAULT`, `DOC`, and `CUSTOMIZABLE`. Hot-path access is type-driven (`config.get::<Tabstop>()`); strings appear only at boundaries (`:set`, TOML, plugin manifests). Cross-crate uniqueness is enforced by Rust's type system; display-name uniqueness by `linkme` aggregation; naming-rule constraints by `const fn` assertions in the declaration macros. The same model is mirrored for `OptionGroup` (the customize-organization unit, distinct from a mode). See [`docs/mode-architecture.md`](mode-architecture.md) §6.4 (option identity), §6.7.1.1 (groups), §6.8 (constraint enforcement table).
+The registry is the single source of truth. `:set`, `:describe-option`, the
+`gen:options` completion source, the customize buffer, and any plugin call all read
+and write the same store. Cross-crate uniqueness is enforced by the type system;
+display-name uniqueness by `linkme` aggregation; naming rules by `const fn`
+assertions in the declaration macros (`lattice-config-macros`). The same model is
+mirrored for `OptionGroup`. See [`docs/mode-architecture.md`](mode-architecture.md)
+§6.4 (option identity), §6.7.1.1 (groups), §6.8 (constraints).
 >
 > Layered resolution: modal-state override → buffer-local explicit `setlocal` → active minor modes (in activation order, with explicit priority for tie-breaks) → major mode → global `:set` → built-in default. Cached per buffer as `ResolvedOptions`, invalidated on mode toggle / option write. O(1) hot-path reads. (`mode-architecture.md` §6.1 / §6.3.)
 >
@@ -2378,12 +2378,20 @@ The registry is the single source of truth: every option's name, type, default, 
 
 #### 5.12.2 Two layers, both optional
 
-User configuration lives in two layered files at `~/.config/lattice/`:
+> **Status.** The **`lattice.toml`** static layer is ✅ built (`lattice-config`
+> loader over XDG paths, plus `.lattice/config.toml` for project-local overrides).
+> The **`init.rs`→WASM** layer is 📝 **not built** — it depends on editor-side
+> plugin loading (Phase 8). The only shipped WASM-config piece is the
+> `config`-plugin WIT seam (`config_host.rs`), which lets a plugin register
+> options from a prebuilt component.
+
+User configuration lives in two layered files (the config file is
+**`lattice.toml`**, not `options.toml`):
 
 ```
-~/.config/lattice/
-├── options.toml      # static option overrides; data only; no toolchain needed
-└── init.rs           # Rust source, compiled to WASM, loaded as a plugin with `boot` capability
+~/.config/lattice/            (XDG; + project-local .lattice/config.toml)
+├── lattice.toml      # ✅ static option overrides; data only; no toolchain needed
+└── init.rs           # 📝 planned: Rust → WASM, loaded as a plugin with `boot` capability
 ```
 
 | Layer          | Format                | Toolchain                                                  | Loaded                                                          | What it expresses                                                                                                                                                                   |
@@ -2395,7 +2403,7 @@ Either, both, or neither can be present. Both fall back to defaults when absent.
 
 The intended progression: a new user copies an `options.toml` example. When they outgrow declaration -- a keymap that needs context, a hook that does real work -- they migrate the affected piece into `init.rs`. The graduation cost is "learn the same API the plugin SDK exposes", because **`init.rs` is a plugin** -- the only thing distinguishing it from a third-party plugin is the `boot` capability and the well-known load path.
 
-#### 5.12.3 The `init.rs` plugin
+#### 5.12.3 The `init.rs` plugin (📝 planned — Phase 8)
 
 `init.rs` is a single source file. The host wraps it in a small generated crate (`Cargo.toml`, `src/lib.rs` shim, `[package.metadata.component]` entry) under `~/.cache/lattice/init-build/` and compiles it through `cargo-component build` against the published `lattice-config-api` crate, which re-exports the §5.5 / §9 WIT bindings under an ergonomic Rust-native shape.
 
@@ -2428,7 +2436,7 @@ fn init(c: &mut Config) {
 
 `Config` is the WIT-defined facet of the host plugins use, scoped to operations sensible at boot time: option setting, keymap registration, command registration, autocmd subscription, event-bus subscription, and the `invoke(CommandInvocation)` host call. Capabilities beyond `boot` (filesystem, network) are declared in the manifest the same way they would be for a third-party plugin and require the user's explicit acknowledgement; the `boot` capability alone is bounded.
 
-#### 5.12.4 Auto-build on first boot
+#### 5.12.4 Auto-build on first boot (📝 planned — Phase 8)
 
 The user does not run a build command manually. Boot sequence:
 
@@ -2456,30 +2464,25 @@ The `lattice config build` CLI subcommand is **not** on the user's critical path
 
 Values come from layered sources, resolved in this order (later wins):
 
-1. Built-in defaults (`OptionSpec::default`).
-2. Bundled config files (default keymap, theme).
-3. User options (`~/.config/lattice/options.toml`).
-4. User init module (`~/.config/lattice/init.rs`, compiled to WASM, run with `boot` capability).
-5. Project options (`.lattice/options.toml` at workspace root).
-6. Per-buffer overrides (modeline-style `:setlocal`).
+1. Built-in defaults (each option's `DEFAULT`).
+2. Bundled config (default keymap, theme).
+3. User options (`~/.config/lattice/lattice.toml`).  ✅
+4. 📝 User init module (`init.rs` → WASM, `boot` capability) — Phase 8, not built.
+5. Project options (`.lattice/config.toml` at workspace root).  ✅
+6. Per-buffer overrides (`:setlocal`) + the mode-resolution stack (§5.12.1).
 7. Programmatic / `:set` invocations during a session.
 
 `init.rs` runs after `options.toml` is applied so it can read what TOML did and override or extend. Project-level `init.rs` is **deferred** -- arbitrary code execution by virtue of `cd`-ing into a directory is a real attack surface; the eventual mechanism is a per-directory trust prompt with a hashed allowlist (vim's `:set exrc` with explicit trust). Until that lands, project-local code-config is unsupported.
 
 #### 5.12.6 The `:set` parser front-end
 
-`:set option=value`, `:set option!`, `:set option+=value`, `:set option^=value` are all parsed by the `:set` command's `parse_args` into a typed `SetOption` invocation:
+`:set option=value`, `:set option?` (query), `:set option!` (negate), and
+`:set option&` (reset) parse into a typed `ParsedSet` (`NameOnly` / `Query` /
+`Assign` / `Negate` / `Reset`). Scope is chosen at the command level —
+`:set` / `:setlocal` / `:setglobal` — rather than a field. (📝 The compound
+`+=` / `^=` / `-=` append/prepend/subtract ops are not yet built.)
 
-```rust
-struct SetOption {
-	option: OptionId,
-	op: SetOp,                        // Replace | Toggle | Append | Prepend | Subtract | Reset
-	value: Option<Value>,             // typed per option_spec.ty; absent for Toggle/Reset
-	scope: SetScope,                  // Global | Local
-}
-```
-
-Validation runs at the dispatcher; type errors surface as a parse error in the `command-line` minibuffer (live error indicator -- §5.9.10).
+Validation runs at the dispatcher; type errors surface as a parse error on the command line.
 
 `:set` is itself a registered command that dispatches through `execute(...)`; `init.rs`'s `c.set(name, value)` call lowers to the same invocation. There is one path that mutates an option, and it publishes the option's `on_change` event so subscribers (autocmds, `:customize` redraw, dependent options) react uniformly regardless of source.
 
@@ -2508,11 +2511,11 @@ All six entry points produce or consume the same typed `Value` against the same 
 
 ### 5.13 Diff System
 
-Lattice ships a diff subsystem covering the four flows users expect from a modern editor: inline overlay against a baseline (file vs. disk, file vs. git HEAD, file vs. AI-proposed content), side-by-side two-way diff, three-pane three-way merge, and hunk motions / transfer operators (`]c` / `[c` / `do` / `dp`) registered through the central `CommandRegistry` (§5.2.1). The deep-dive design lives in [`diff-system.md`](diff-system.md); the headline architectural decisions are: hunks are **data on the Core thread** owned by a `DiffSubsystem` and RCU-published via arc-swap, not a window-local UI flag (vim's mistake); two-way and three-way share **one** data model with `1..=3` participating documents (ediff's correct structural choice); inline overlay and side-by-side are **presentation transforms** (`DiffMap`) over that shared data, not separate subsystems (Zed's structural insight); the engine is `imara-diff` (Histogram default, what gitoxide ships) running on `spawn_blocking`. Two foundational primitives ship with the first slice: **displacing virtual rows** (deletion blocks, also consumed by multibuffer §5.14 and post-v1 inlay hints) and **scroll-binding pane groups** (used by side-by-side diff, vim's `:set scrollbind`, future `:windo`). Slice ledger is D.0–D.7 in [`../operations/implementation.md`](../operations/implementation.md).
+Lattice ships a diff subsystem covering the four flows users expect from a modern editor: inline overlay against a baseline (file vs. disk, file vs. git HEAD, file vs. AI-proposed content), side-by-side two-way diff, three-pane three-way merge, and hunk motions / transfer operators (`]c` / `[c` / `do` / `dp`) registered through the central `CommandRegistry` (§5.2.1). The deep-dive design lives in [`diff-system.md`](diff-system.md); the headline architectural decisions are: hunks are **data on the Core thread** owned by a `DiffSubsystem` and RCU-published via arc-swap, not a window-local UI flag (vim's mistake); two-way and three-way share **one** data model with `1..=3` participating documents (ediff's correct structural choice); inline overlay and side-by-side are **presentation transforms** over that shared data, not separate subsystems (Zed's structural insight) — realized as a `DiffSignMap` plus overlay / fold / filler modules rather than one `DiffMap` type; the engine is `imara-diff` (Histogram default, what gitoxide ships) running on `spawn_blocking`. Two foundational primitives ship with the first slice: **displacing virtual rows** (deletion blocks, also consumed by multibuffer §5.14 and post-v1 inlay hints) and **scroll-binding pane groups** (used by side-by-side diff, vim's `:set scrollbind`, future `:windo`). Slice ledger is D.0–D.7 in [`../operations/implementation.md`](../operations/implementation.md).
 
 ### 5.14 Multibuffer Views
 
-A `MultibufferDocument` is a `Document` whose content is composed of N **anchored excerpts** spliced from other Documents, where edits at the surface propagate back through the standard edit pipeline to the source buffers. This is the primitive that lights up project-wide diff, AI multi-file `openDiff`, search-as-buffer (`wgrep`-style), LSP references-as-buffer, and diagnostics-as-buffer with one implementation rather than five. The deep-dive design lives in [`multibuffer-views.md`](multibuffer-views.md); the headline architectural decisions are: **`Document` becomes a trait** with `RopeDocument` and `MultibufferDocument` implementations (the load-bearing refactor); excerpts hold the existing **anchor type** (§5.1.1) and track source-buffer edits automatically; edit propagation is a translation-table lookup → dispatch through the standard pipeline — undo / macros / autocmds / LSP `didChange` observe one consistent edit stream regardless of pane; **cross-pane coherence falls out of arc-swap** (§5.6.8) because there is only one underlying buffer; the **provider trait** (`MultibufferProvider`) is how grep, references, diff, AI proposals, and diagnostics populate excerpts — each is a single task that emits mutations. Multibuffer and diff are independent designs that meet at their consumers (project-wide diff, AI multi-file edits), not at their implementations. Slice ledger is M.0–M.6 in [`../operations/implementation.md`](../operations/implementation.md).
+A `MultibufferDocument` is a `Document` whose content is composed of N **anchored excerpts** spliced from other Documents, where edits at the surface propagate back through the standard edit pipeline to the source buffers. This is the primitive that lights up project-wide diff, AI multi-file `openDiff`, search-as-buffer (`wgrep`-style), LSP references-as-buffer, and diagnostics-as-buffer with one implementation rather than five. The deep-dive design lives in [`multibuffer-views.md`](multibuffer-views.md); the headline architectural decisions are: **`Document` becomes a trait** with `RopeDocument` and `MultibufferDocument` implementations (the load-bearing refactor); excerpts hold the existing **anchor type** (§5.1.1) and track source-buffer edits automatically; edit propagation is a translation-table lookup → dispatch through the standard pipeline — undo / macros / autocmds / LSP `didChange` observe one consistent edit stream regardless of pane; **cross-pane coherence falls out of arc-swap** (§5.6.8) because there is only one underlying buffer; providers populate excerpts by emitting mutations from a single task — **built today as concrete `search` + `narrow` providers** (📝 references / diagnostics / diff-as-multibuffer providers, and a generalized `MultibufferProvider` trait, are not yet built). Multibuffer and diff are independent designs that meet at their consumers (project-wide diff, AI multi-file edits), not at their implementations. Slice ledger is M.0–M.6 in [`../operations/implementation.md`](../operations/implementation.md).
 
 ### 5.15 Virtual Rows
 

@@ -217,9 +217,9 @@ plugins yet.
 > | Picker | ✅ B1 `31dbd577` (`PickerRegistryHandle`) | ✅ `drain_picker` `e32aff53` |
 > | Config (already interior-mutable) | — | ✅ `drain_config` `a4001d9c` |
 > | Events (`EventBus`, already shared) | — | ✅ `drain_events` `a4001d9c` |
-> | Mode | ✅ B2 `aede19af` (`ModeRegistryHandle`) | 📝 `drain_mode` — **next slice** |
+> | Mode | ✅ B2 `aede19af` (`ModeRegistryHandle`) | ✅ `drain_mode` |
 > | Grammar | ✅ B3a `0b6baded` (Box→Arc spec closures) + B3b `14fe3ce8` (`CommandRegistryHandle`) | ✅ `drain_grammar` |
-> | Completion | 📝 (registers into a `Mode::completion_sources()`, not a standalone registry — different shape) | 📝 |
+> | Completion | 📝 (registers into a `Mode::completion_sources()`, not a standalone registry — different shape) | 📝 — **next slice** |
 >
 > **`drain_grammar` (landed).** The grammar seam is the **synchronous** one (the
 > PH7.7 fork): `instantiate_grammar_plugin` drives the guest's `register-grammar`
@@ -240,6 +240,30 @@ plugins yet.
 > plugin without panicking. No new bench: the drain is load-time (off the
 > keystroke path); the hot-path guard is B3b's `.load()` + the existing
 > `plugin-host/tests/perf_ratchet.rs::grammar_round_trip_stays_within_ceiling`.
+>
+> **`drain_mode` (landed).** A mode plugin's minor modes register into B2's
+> runtime-mutable `ModeRegistryHandle`, each mode's declared keymap binding
+> landing in its own gated `MinorMode` layer. A registered mode is **declarative
+> data** (id / kind / activation policy / capabilities + keymap bindings to
+> *existing* commands), so after `spawn_mode_plugin` copies it into the registry
+> the guest `Store` drops — no actor task, no live callback, nothing to keep
+> alive (teardown, PL8.C, removes modes + layers by `plugin_id`). Registration
+> RCUs the mode registry **load → clone → spawn → store** (not `rcu`:
+> `spawn_mode_plugin` takes `&mut ModeRegistry` across its async `register-modes`,
+> so a local owned snapshot clone keeps the borrow sound; B2 made `ModeRegistry`
+> an `ArcSwap` handle + `Clone`). `LoaderServices` gains `mode_registry:
+> Option<ModeRegistryHandle>` + `keymap: Option<KeymapHandle>`; the keymap handle
+> is now a boot service (`editor_boot.rs`, next to the command-registry service),
+> and the drain reads a `CommandRegistry` snapshot for bind-time command
+> resolution. `spawn_mode_plugin` now returns `(PluginId, Vec<ModeId>)` (was
+> `Vec<ModeId>`) so the loader records provenance + teardown-by-id, consistent
+> with the other seams. A missing service degrades the modes seam to a logged
+> skip (`NotWired("modes")`), never a boot abort. Tests: `mode_drain.rs` — (1) a
+> discovered mode plugin registers `git-blame-mode` + `lsp-lens-mode` (the
+> mis-suffixed `not-suffixed` rejected by the `-mode` gate), its `<C-s>` binding
+> resolves only when its mode is active, and provenance is recorded; (2) a loader
+> with no wired mode registry skips the plugin without panicking. No new bench:
+> mode registration is load-time declarative work, off the keystroke path.
 
 ### PL8.C — User-facing load/unload/reload ex-commands  📝
 - `:plugin-load <path>`, `:plugin-unload <id|name>`, `:plugin-reload <id|name>` —

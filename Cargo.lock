@@ -4415,6 +4415,7 @@ dependencies = [
  "lattice-config",
  "lattice-core",
  "lattice-grammar",
+ "lattice-keymap",
  "lattice-mode",
  "lattice-picker",
  "lattice-plugin-host",

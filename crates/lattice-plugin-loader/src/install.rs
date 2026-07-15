@@ -40,6 +40,12 @@ pub fn install(boot: &mut impl SubsystemBoot) {
         command_registry: boot
             .service::<lattice_grammar::CommandRegistryHandle>()
             .map(|h| (*h).clone()),
+        mode_registry: boot
+            .service::<lattice_mode::ModeRegistryHandle>()
+            .map(|h| (*h).clone()),
+        keymap: boot
+            .service::<lattice_keymap::KeymapHandle>()
+            .map(|h| (*h).clone()),
         meta_sink: boot.service::<PluginMetaSinkHandle>().map(|h| (*h).clone()),
     };
     if services.picker_registry.is_none() {

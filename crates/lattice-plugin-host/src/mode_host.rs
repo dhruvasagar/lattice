@@ -32,8 +32,8 @@ use lattice_mode::{
 };
 
 use crate::{
-    Component, PluginBudget, PluginHost, PluginHostError, PluginManifest, TrustTier, arm_store,
-    classify_trap,
+    Component, PluginBudget, PluginHost, PluginHostError, PluginId, PluginManifest, TrustTier,
+    arm_store, classify_trap,
 };
 
 pub(crate) mod bindings {
@@ -236,7 +236,7 @@ impl PluginHost {
         registry: &mut ModeRegistry,
         commands: &CommandRegistry,
         keymap: &KeymapHandle,
-    ) -> Result<Vec<ModeId>, PluginHostError> {
+    ) -> Result<(PluginId, Vec<ModeId>), PluginHostError> {
         let (wasi, outcome, _data_dir) = self.build_plugin_wasi(manifest, tier);
         for denied in &outcome.denied {
             tracing::warn!(
@@ -273,7 +273,13 @@ impl PluginHost {
                 ids.push(id);
             }
         }
-        Ok(ids)
+        // Surface the host-issued `plugin_id` alongside the accepted modes: the
+        // loader records it for provenance (`:list-plugins`) + teardown-by-id
+        // (PL8.C), consistent with the other seam spawns (picker / config /
+        // events). The modes themselves are declarative data now living in the
+        // registry, so the guest `store` / `bindings` drop here — no handle to
+        // keep alive.
+        Ok((plugin_id, ids))
     }
 }
 

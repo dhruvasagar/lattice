@@ -1498,6 +1498,14 @@ impl Editor {
         // `cmd_registry.id_by_name("action:search-jump-to-source")` — without
         // depending on host-internal types. Same `Arc<X>` alias pattern.
         boot.register_service::<lattice_grammar::CommandRegistryHandle>(registry.clone());
+        // PL8.B (drain_mode): expose the keymap handle so `lattice-plugin-loader`
+        // can pass it to `spawn_mode_plugin` — a mode plugin's per-mode
+        // `MinorMode` keymap bindings land in it. `KeymapHandle` is Arc-backed +
+        // `Clone` with interior-mutable (mutex+ArcSwap) writes, so the loader's
+        // captured clone shares the one live registry (bindings are immediately
+        // visible). Registered as `KeymapHandle` (already a shareable handle — no
+        // `Arc<X>` wrapper needed); the loader looks it up under the same type.
+        boot.register_service::<crate::keymap_registry::KeymapHandle>(keymap_handle.clone());
         // (BC.3b: the `ClaudeCodeServerHandle` service is registered by
         // `lattice_claude_code::install` in the Phase-B list above.)
         // M.7: expose the fold-overlay service so `MultibufferMode::on_activate`

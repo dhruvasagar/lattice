@@ -48,7 +48,7 @@ async fn plugin_declares_minor_modes_into_the_shared_registry_end_to_end() {
     let _ = lattice_grammar::ex_commands::populate(&mut commands);
     let keymap = KeymapHandle::new();
 
-    let ids = host
+    let (_plugin_id, ids) = host
         .spawn_mode_plugin(
             &component,
             &manifest,

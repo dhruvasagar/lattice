@@ -26,9 +26,9 @@
 //! other subsystem installs through, so wiring it into the editor is one line
 //! ([`install`]) and zero host internals.
 //!
-//! # Status (PL8.B — picker / config / events / grammar seams)
+//! # Status (PL8.B — picker / config / events / grammar / modes seams)
 //!
-//! On-disk discovery + four seam→registry drains are live: a plugin dropped in
+//! On-disk discovery + five seam→registry drains are live: a plugin dropped in
 //! `<data>/lattice/plugins/` loads at boot and its contribution is reachable.
 //! - **picker** RCU-registers its source into the
 //!   [`PickerRegistryHandle`](lattice_picker::PickerRegistryHandle);
@@ -39,13 +39,18 @@
 //!   into the runtime-mutable
 //!   [`CommandRegistryHandle`](lattice_grammar::CommandRegistryHandle) (B3a/B3b)
 //!   — the sync-trampoline seam, so the dispatcher fires it on keystroke off a
-//!   wait-free `.load()` snapshot with no actor task.
+//!   wait-free `.load()` snapshot with no actor task;
+//! - **modes** registers its minor modes into the runtime-mutable
+//!   [`ModeRegistryHandle`](lattice_mode::ModeRegistryHandle) (B2), each mode's
+//!   keymap binding landing in its own gated `MinorMode` layer on the
+//!   [`KeymapHandle`] — declarative data, so the guest `Store` drops after
+//!   registration (no task, nothing to keep alive).
 //!
 //! Each records provenance for `:list-plugins` via the [`PluginMetaSink`] seam.
-//! The remaining seams (completion, modes) declare-but-warn until their drains
-//! land (modes is the next slice, on B2's runtime-mutable
-//! [`ModeRegistryHandle`](lattice_mode::ModeRegistryHandle)); decoration caching
-//! is PL8.E; the ex-command surface + teardown is PL8.C.
+//! The remaining seam (completion) declares-but-warns until its drain lands (it
+//! registers into a `Mode::completion_sources()`, not a standalone registry — a
+//! different shape); decoration caching is PL8.E; the ex-command surface +
+//! teardown is PL8.C.
 //!
 //! Design: `docs/dev/architecture/plugin-host.md`,
 //! `docs/dev/architecture/boot-composition.md`. Slice plan:
@@ -61,7 +66,8 @@ use std::sync::{Arc, Mutex};
 
 use lattice_config::ConfigRegistry;
 use lattice_grammar::CommandRegistryHandle;
-use lattice_mode::PluginMetaSinkHandle;
+use lattice_keymap::KeymapHandle;
+use lattice_mode::{ModeRegistryHandle, PluginMetaSinkHandle};
 use lattice_picker::{PickerRegistryHandle, PickerSourceGenerator};
 use lattice_plugin_host::{
     LoadedPlugin, ManifestError, PluginBudget, PluginHost, PluginHostError, PluginId,
@@ -125,6 +131,15 @@ pub struct LoaderServices {
     /// snapshots it wait-free with `.load()`, so a plugin registered at runtime
     /// is live for a buffer on its next keystroke.
     pub command_registry: Option<CommandRegistryHandle>,
+    /// The runtime-mutable mode registry (B2) a mode plugin's minor modes
+    /// register into. RCU'd like the command registry — an owned snapshot is
+    /// cloned, `spawn_mode_plugin` drains into it, and it is published, so
+    /// keymap-resolution / mode-activation reads stay wait-free.
+    pub mode_registry: Option<ModeRegistryHandle>,
+    /// The interior-mutable keymap handle a mode plugin's per-mode `MinorMode`
+    /// keymap bindings land in (a shared clone — its writes are internally
+    /// mutex+ArcSwap-routed, so `spawn_mode_plugin` mutates it through a `&`).
+    pub keymap: Option<KeymapHandle>,
     /// The provenance sink — records `PluginId → name/doc` for `:list-plugins`.
     pub meta_sink: Option<PluginMetaSinkHandle>,
 }
@@ -276,6 +291,10 @@ impl PluginLoader {
                     }
                     PluginSeam::Grammar => {
                         let id = self.drain_grammar(&component, manifest, tier)?;
+                        loaded_id.get_or_insert(id);
+                    }
+                    PluginSeam::Modes => {
+                        let id = self.drain_mode(&component, manifest, tier).await?;
                         loaded_id.get_or_insert(id);
                     }
                     other => tracing::warn!(
@@ -492,6 +511,77 @@ impl PluginLoader {
             plugin = %manifest.id,
             contributions = count,
             "grammar plugin registered its motions / operators / text-objects / ex-commands"
+        );
+        Ok(id)
+    }
+
+    /// Drain the modes seam: instantiate the `modes-plugin` component, drive its
+    /// `register-modes` export, and register each accepted minor mode into the
+    /// runtime-mutable mode registry (B2), binding each mode's declared keymap
+    /// into its own `MinorMode` layer.
+    ///
+    /// A registered mode is **declarative data** — id / kind / activation policy
+    /// / capability requirements + keymap bindings that resolve to *existing*
+    /// commands — so once `spawn_mode_plugin` copies it into the registry, the
+    /// guest `Store` drops (no actor task, no live callback, nothing to keep
+    /// alive); teardown (PL8.C) removes the modes + keymap layers by `plugin_id`.
+    ///
+    /// Registration RCUs the mode registry — **load → clone → spawn → store**.
+    /// `spawn_mode_plugin` takes `&mut ModeRegistry` (registration drains after
+    /// its async `register-modes`) so it holds the borrow across an `.await`;
+    /// passing a local owned snapshot clone keeps that sound, and it can't run in
+    /// a retrying `rcu` closure anyway (it instantiates a guest). B2 made
+    /// `ModeRegistry` an `ArcSwap` handle + `Clone` for exactly this. The
+    /// `commands` snapshot (read-only, for bind-time command resolution) and the
+    /// interior-mutable `keymap` handle come straight from the wired services.
+    /// A missing service degrades the modes seam to a logged skip
+    /// (`NotWired("modes")`), never a boot abort; a `register-modes` trap maps to
+    /// `PluginLoaderError::Host` and skips only this plugin.
+    async fn drain_mode(
+        &self,
+        component: &lattice_plugin_host::Component,
+        manifest: &PluginManifest,
+        tier: TrustTier,
+    ) -> Result<PluginId, PluginLoaderError> {
+        let mode_registry = self
+            .env
+            .mode_registry
+            .as_ref()
+            .ok_or(PluginLoaderError::NotWired("modes"))?;
+        let keymap = self
+            .env
+            .keymap
+            .as_ref()
+            .ok_or(PluginLoaderError::NotWired("modes"))?;
+        let commands = self
+            .env
+            .command_registry
+            .as_ref()
+            .ok_or(PluginLoaderError::NotWired("modes"))?;
+
+        // Read-only command snapshot for keymap-binding resolution; owned so it
+        // outlives the `&mut next` borrow across the await.
+        let commands_snapshot = commands.load_full();
+        // load → clone → spawn → store (see the RCU note above).
+        let mut next = (**mode_registry.load()).clone();
+        let (id, mode_ids) = self
+            .host
+            .spawn_mode_plugin(
+                component,
+                manifest,
+                tier,
+                PluginBudget::default(),
+                &mut next,
+                &commands_snapshot,
+                keymap,
+            )
+            .await?;
+        mode_registry.store(Arc::new(next));
+
+        tracing::debug!(
+            plugin = %manifest.id,
+            modes = ?mode_ids,
+            "mode plugin registered its minor modes"
         );
         Ok(id)
     }

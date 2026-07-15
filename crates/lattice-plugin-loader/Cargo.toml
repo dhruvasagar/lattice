@@ -45,6 +45,11 @@ lattice-config = { path = "../lattice-config" }
 # registry owns the guest store (no actor task) and the dispatcher fires it on
 # keystroke off a wait-free `.load()` snapshot.
 lattice-grammar = { path = "../lattice-grammar" }
+# The interior-mutable keymap handle (`KeymapHandle`, Arc-backed + Clone) a mode
+# plugin's per-mode `MinorMode` keymap bindings land in via `spawn_mode_plugin`.
+# Shared (not RCU'd): its writes are internally mutex+ArcSwap-routed, so a `&`
+# ref mutates it; the loader captures a clone from the boot service.
+lattice-keymap = { path = "../lattice-keymap" }
 # The shared runtime handle the loader drives seam actors + off-boot discovery
 # on (never the current-thread editor actor).
 tokio = { workspace = true, features = ["rt", "rt-multi-thread"] }

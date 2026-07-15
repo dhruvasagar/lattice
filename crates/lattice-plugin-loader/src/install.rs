@@ -57,6 +57,11 @@ pub fn install(boot: &mut impl SubsystemBoot) {
 
     let loader: PluginLoaderHandle =
         Arc::new(PluginLoader::with_services(host, services));
+    // Option A (PL8.C.2): the loader self-registers its `:plugin-load` /
+    // `:plugin-unload` / `:plugin-reload` ex-commands into the runtime-mutable
+    // command registry — zero host code, the full command surface owned by the
+    // loader crate.
+    loader.register_ex_commands();
     boot.register_service::<PluginLoaderHandle>(loader.clone());
 
     // Discover + load on-disk plugins OFF the boot thread: a plugin cold-start

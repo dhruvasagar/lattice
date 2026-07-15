@@ -222,6 +222,28 @@ fn plugin_loader_captures_every_drain_service() {
 }
 
 #[test]
+fn plugin_lifecycle_ex_commands_registered_at_boot() {
+    // PL8.C.2 (option A): the loader self-registers `:plugin-load` /
+    // `:plugin-unload` / `:plugin-reload` into the runtime-mutable command
+    // registry at install — plain names resolving directly via `id_by_name`
+    // (zero host code, no `expand_alias` entry). Pinned end-to-end on a real boot
+    // so a regression in `register_ex_commands` (or a command-registry handle
+    // that isn't the editor's shared one) fails before landing.
+    let editor = boot();
+    let commands = editor
+        .services
+        .get::<lattice_grammar::CommandRegistryHandle>()
+        .expect("command registry service present");
+    let snapshot = commands.load();
+    for name in ["plugin-load", "plugin-unload", "plugin-reload"] {
+        assert!(
+            snapshot.id_by_name(name).is_some(),
+            "`:{name}` must be registered in the editor's command registry at boot"
+        );
+    }
+}
+
+#[test]
 fn generic_host_services_present_at_boot() {
     // These generic primitives are exactly what BC.3's Phase A will own and
     // hand to subsystems via `BootContext`; pin them so the Phase split does

@@ -53,14 +53,19 @@
 //!   off the keystroke path).
 //!
 //! Each records provenance for `:list-plugins` via the [`PluginMetaSink`] seam.
-//! That closes the PL8.B seam drains; decoration caching is the separate
-//! hot-path slice PL8.E; the ex-command surface + teardown is PL8.C.
+//! That closes the PL8.B seam drains. **PL8.C** adds the user-facing lifecycle:
+//! the loader self-registers `:plugin-load` / `:plugin-unload` / `:plugin-reload`
+//! into the runtime-mutable command registry ([`register_ex_commands`](PluginLoader::register_ex_commands),
+//! option A — zero host code), and [`unload`](PluginLoader::unload) reverses every
+//! registry contribution via [`PluginTeardown`]. Decoration caching is the
+//! separate hot-path slice PL8.E; `init.rs`-as-WASM is PL8.D.
 //!
 //! Design: `docs/dev/architecture/plugin-host.md`,
 //! `docs/dev/architecture/boot-composition.md`. Slice plan:
 //! `docs/dev/operations/slice-plans/plugin-loader.md`.
 
 pub mod discovery;
+mod ex_commands;
 pub mod install;
 
 pub use discovery::{DiscoveredPlugin, default_plugins_dir, discover, discover_one};
@@ -470,6 +475,71 @@ impl PluginLoader {
         // One-shot, user-actionable event (the "LSP server attached" class).
         tracing::info!(plugin = %manifest.id, id = id.0, "plugin loaded");
         Ok(id)
+    }
+
+    /// Self-register the `:plugin-load` / `:plugin-unload` / `:plugin-reload`
+    /// ex-commands into the runtime-mutable command registry (option A — the
+    /// loader owns its full command surface; zero host code). Plain command
+    /// names resolve directly via `id_by_name` (no `expand_alias` host entry),
+    /// exactly like plugin-contributed ex-commands. Called once by [`install`]
+    /// after the loader is constructed; a no-op (logged) if no command registry
+    /// was wired.
+    ///
+    /// The apply closures capture `Arc<Self>`, so the command registry holds the
+    /// loader and the loader holds the registry — a benign cycle (both are
+    /// app-lifetime boot services that never drop).
+    pub fn register_ex_commands(self: &Arc<Self>) {
+        let Some(registry) = self.env.command_registry.clone() else {
+            tracing::warn!(
+                "no command registry wired; :plugin-load / :plugin-unload / :plugin-reload unavailable"
+            );
+            return;
+        };
+        // load → clone → register → store (single-threaded at boot; no retry).
+        let mut next = (**registry.load()).clone();
+        ex_commands::register_all(&mut next, self);
+        registry.store(Arc::new(next));
+    }
+
+    /// Spawn an async [`load_path`](Self::load_path) on the loader's own runtime
+    /// — the `:plugin-load` apply path (a sync ex-command closure kicking off
+    /// async work). Completion / failure surfaces via `tracing` (→ `*messages*`).
+    pub(crate) fn spawn_load_path(self: &Arc<Self>, dir: std::path::PathBuf) {
+        let Some(runtime) = self.env.runtime.clone() else {
+            tracing::warn!("no runtime wired; :plugin-load cannot run");
+            return;
+        };
+        let this = Arc::clone(self);
+        runtime.spawn(async move {
+            match this.load_path(&dir, TrustTier::UserInstalled).await {
+                Ok(id) => {
+                    tracing::info!(id = id.0, dir = %dir.display(), "plugin loaded (:plugin-load)")
+                }
+                Err(err) => {
+                    tracing::warn!(dir = %dir.display(), error = %err, ":plugin-load failed")
+                }
+            }
+        });
+    }
+
+    /// Spawn an async [`reload`](Self::reload) on the loader's own runtime — the
+    /// `:plugin-reload` apply path. Reports via `tracing` (→ `*messages*`).
+    pub(crate) fn spawn_reload(self: &Arc<Self>, target: String) {
+        let Some(runtime) = self.env.runtime.clone() else {
+            tracing::warn!("no runtime wired; :plugin-reload cannot run");
+            return;
+        };
+        let this = Arc::clone(self);
+        runtime.spawn(async move {
+            match this.reload(&target, TrustTier::UserInstalled).await {
+                Ok(id) => {
+                    tracing::info!(id = id.0, plugin = %target, "plugin reloaded (:plugin-reload)")
+                }
+                Err(err) => {
+                    tracing::warn!(plugin = %target, error = %err, ":plugin-reload failed")
+                }
+            }
+        });
     }
 
     /// Load a single plugin from an explicit directory — the `:plugin-load <path>`

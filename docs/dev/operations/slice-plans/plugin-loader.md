@@ -297,17 +297,51 @@ plugins yet.
 > This closes the PL8.B seam drains (picker / config / events / grammar / modes /
 > completion); decorations are the separate hot-path slice PL8.E.
 
-### PL8.C — User-facing load/unload/reload ex-commands  📝
-- `:plugin-load <path>`, `:plugin-unload <id|name>`, `:plugin-reload <id|name>` —
-  parse front-end in `lattice-grammar/src/ex_commands.rs` (dashed/namespaced naming
-  rule; no 1-2 letter shorts), alias in `excommand.rs`, action-handler bound in the
-  loader (per the secondary decision above).
+### PL8.C — User-facing load/unload/reload ex-commands  ✅
+- `:plugin-load <path>`, `:plugin-unload <id|name>`, `:plugin-reload <id|name>`.
 - Unload = `PluginTeardown::unload(&mut TeardownRegistries)` (reverses every surface);
   reload = unload + re-run the load orchestration (fresh `Store` → fresh, untripped
   `Quarantine`).
-- **Exit:** load/unload/reload work interactively; `:list-plugins` / `:describe-plugin`
-  reflect state; teardown removes every contributed surface (assert counts via
-  `TeardownReport`).
+- **Exit:** load/unload/reload work interactively; teardown removes every contributed
+  surface (assert counts via `TeardownReport`).
+
+> **Landed — option A (loader self-registers), confirmed with Dhruva.** The
+> ex-command→loader wiring was the design fork. The slice plan's *preferred*
+> action-handler path was **blocked** (`ActionContext` carries no ex-command
+> args), so the choice was between (A) the loader self-registering its
+> ex-commands and (B) the documented thin-host-effect-arm fallback. **(A)** won on
+> the mode-ownership standing rule: plugin load/unload is *loader-internal* (not
+> editor state), so it needn't round-trip the host `Effect` vocabulary. The
+> resolver tries `id_by_name` before `expand_alias`, so **plain** command names
+> (`plugin-load`, not `ex:plugin-load`) resolve directly — **zero host code**: no
+> host `Effect` variant, no `Editor::` method, no `expand_alias` entry.
+>
+> **C.1 (teardown foundation).** Every drain now accumulates a `PluginTeardown`
+> bundle on its `LoadedRecord` (grammar→`has_grammar`; modes + completion carrier
+> mode→`modes`; picker→`picker_sources`; config→`config_options`;
+> events→`subscriptions`). `LoadedRecord` gains `source_dir` (reload) + `teardown`;
+> the old `picker_sources` field folds in. `PluginLoader::unload(target)` (sync —
+> resolves by manifest id or numeric id, aborts actor tasks, RCU-reverses the
+> ArcSwap registries + refs the Arc-shared ones through `run_teardown`), `reload`
+> (= capture dir → unload → `load_path`), `load_path` (`:plugin-load` entry via
+> `discovery::discover_one`). New errors: `Discovery` / `NotLoaded` /
+> `NotReloadable`. Tests: `unload_reload.rs` (picker + grammar reversal counts,
+> reload from disk, unknown-target).
+>
+> **C.2 (ex-command surface).** New `ex_commands` module: the loader
+> self-registers the three commands into the runtime-mutable command registry at
+> `install` (load→clone→register→store), each `apply` closure capturing
+> `Arc<PluginLoader>`. `unload` is synchronous so its `apply` does the work +
+> echoes the result immediately; `load` / `reload` are async so their `apply`
+> spawns on the loader's runtime and echoes "loading…", completion via
+> `tracing::info!`/`warn!` (→ `*messages*`). A benign registry↔loader Arc cycle
+> (both app-lifetime services). Tests: `ex_command_surface.rs` (plain-name
+> registration, usage hints, sync unload, async load-poll) + boot pin
+> `plugin_lifecycle_ex_commands_registered_at_boot` (end-to-end on a real boot).
+> Also fixed a **boot-ordering bug** en route (`install` seated before the
+> command-registry + keymap services it now depends on — grammar/mode plugins
+> silently `NotWired` in the real editor; guarded by
+> `plugin_loader_captures_every_drain_service`).
 
 ### PL8.E — WASM decorations: producer → per-buffer cache → renderer  📝 (hot path — paramount #1)
 The one UX-vigilant slice. The producer (`WasmDecorationSource::gutter_decorations`,

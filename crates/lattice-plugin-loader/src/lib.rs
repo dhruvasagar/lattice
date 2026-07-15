@@ -63,7 +63,7 @@
 pub mod discovery;
 pub mod install;
 
-pub use discovery::{DiscoveredPlugin, default_plugins_dir, discover};
+pub use discovery::{DiscoveredPlugin, default_plugins_dir, discover, discover_one};
 pub use install::install;
 
 use std::sync::{Arc, Mutex};
@@ -79,7 +79,8 @@ use lattice_mode::{
 use lattice_picker::{PickerRegistryHandle, PickerSourceGenerator};
 use lattice_plugin_host::{
     LoadedPlugin, ManifestError, PluginBudget, PluginHost, PluginHostError, PluginId,
-    PluginManifest, PluginSeam, TrustTier, WasmCompletionSource, WasmPickerSource,
+    PluginManifest, PluginSeam, PluginTeardown, TeardownRegistries, TeardownReport, TrustTier,
+    WasmCompletionSource, WasmPickerSource,
 };
 use lattice_runtime::EventBus;
 use tokio::runtime::Handle;
@@ -92,27 +93,31 @@ use tokio::task::JoinHandle;
 pub type PluginLoaderHandle = Arc<PluginLoader>;
 
 /// A live loaded plugin: its host-issued [`PluginId`], its manifest id (the
-/// user-facing name, and the key for `:plugin-unload <name>` — PL8.C), and
-/// whatever must stay alive / be reversed for the plugin's contributions to
-/// keep working (PL8.C drives teardown from these).
+/// user-facing name, and the key for `:plugin-unload <name>`), the source dir to
+/// re-load from on `:plugin-reload`, the actor-lifecycle handles, and the
+/// [`PluginTeardown`] bundle that reverses its registry contributions on unload.
 struct LoadedRecord {
-    #[allow(dead_code)] // read by PL8.C unload / PL8.H manager view.
     id: PluginId,
     name: String,
+    /// The directory this plugin was loaded from — re-loaded on
+    /// `:plugin-reload`. `None` for plugins loaded from bytes in tests (reload
+    /// is then a no-op with a logged reason).
+    source_dir: Option<std::path::PathBuf>,
     /// Lifecycle-only plugins (base `plugin` world — `init.rs`, no-op) keep
     /// their instance alive here; dropping it drops the `Store`. Seam plugins
     /// are driven by their actor task instead, so this is `None` for them.
-    #[allow(dead_code)]
     lifecycle: Option<LoadedPlugin>,
-    /// The detached actor tasks driving this plugin's seams. Aborted on unload
-    /// (PL8.C). Kept so the tasks are not cancelled by a dropped `JoinHandle`
-    /// (tokio detaches on drop, so this is really the unload handle).
-    #[allow(dead_code)]
+    /// The detached actor tasks driving this plugin's seams (picker / events /
+    /// completion). Aborted on unload — the actor-lifecycle half. Kept so the
+    /// tasks are not cancelled by a dropped `JoinHandle` (tokio detaches on
+    /// drop). [`PluginTeardown`] reverses the *registry* half; these are the
+    /// running actors it does not cover.
     tasks: Vec<JoinHandle<()>>,
-    /// Picker source ids this plugin registered — unregistered from the picker
-    /// registry on unload (PL8.C).
-    #[allow(dead_code)]
-    picker_sources: Vec<&'static str>,
+    /// The registry-contribution reversal bundle — each drain fills its surface's
+    /// tokens (grammar / picker / modes / config options / event subscriptions);
+    /// `PluginTeardown::unload` consumes it against the live registries on
+    /// `:plugin-unload` / reload.
+    teardown: PluginTeardown,
 }
 
 /// The editor-side runtime environment the loader drives seams against —
@@ -217,6 +222,24 @@ pub enum PluginLoaderError {
     /// The plugin declared no seam the loader can drain yet, so nothing loaded.
     #[error("plugin declares no loadable seam")]
     NothingLoaded,
+    /// `:plugin-load <path>` pointed at a directory that is not a plugin (no
+    /// `plugin.toml`, bad TOML, or missing/ambiguous component).
+    #[error("cannot load plugin from path: {0}")]
+    Discovery(String),
+    /// `:plugin-unload` / `:plugin-reload <target>` named no currently-loaded
+    /// plugin (by manifest id or numeric plugin id).
+    #[error("no loaded plugin named `{0}`")]
+    NotLoaded(String),
+    /// `:plugin-reload` on a plugin the loader can't re-read from disk (loaded
+    /// from bytes in a test, or its source dir is gone).
+    #[error("plugin `{0}` has no on-disk source to reload from")]
+    NotReloadable(String),
+}
+
+/// Match a loaded record against a `:plugin-unload` / `:plugin-reload` target —
+/// its manifest id (the common case) or its numeric host-issued plugin id.
+fn record_matches(record: &LoadedRecord, target: &str) -> bool {
+    record.name == target || target.parse::<u32>().ok() == Some(record.id.0)
 }
 
 /// Default priority bucket for a plugin completion source — below LSP (200) and
@@ -362,9 +385,10 @@ impl PluginLoader {
         let mut record = LoadedRecord {
             id: PluginId(0),
             name: manifest.id.clone(),
+            source_dir: Some(plugin.dir.clone()),
             lifecycle: None,
             tasks: Vec::new(),
-            picker_sources: Vec::new(),
+            teardown: PluginTeardown::new(PluginId(0)),
         };
         let mut loaded_id: Option<PluginId> = None;
 
@@ -387,7 +411,9 @@ impl PluginLoader {
                         loaded_id.get_or_insert(id);
                     }
                     PluginSeam::Config => {
-                        let id = self.drain_config(&component, manifest, tier).await?;
+                        let id = self
+                            .drain_config(&component, manifest, tier, &mut record)
+                            .await?;
                         loaded_id.get_or_insert(id);
                     }
                     PluginSeam::Events => {
@@ -397,11 +423,13 @@ impl PluginLoader {
                         loaded_id.get_or_insert(id);
                     }
                     PluginSeam::Grammar => {
-                        let id = self.drain_grammar(&component, manifest, tier)?;
+                        let id = self.drain_grammar(&component, manifest, tier, &mut record)?;
                         loaded_id.get_or_insert(id);
                     }
                     PluginSeam::Modes => {
-                        let id = self.drain_mode(&component, manifest, tier).await?;
+                        let id = self
+                            .drain_mode(&component, manifest, tier, &mut record)
+                            .await?;
                         loaded_id.get_or_insert(id);
                     }
                     PluginSeam::CompletionSource => {
@@ -423,6 +451,7 @@ impl PluginLoader {
             return Err(PluginLoaderError::NothingLoaded);
         };
         record.id = id;
+        record.teardown.plugin_id = id;
 
         // Provenance: `SourceLayer::Plugin(id)` renders as the name, and
         // `:list-plugins` shows it. Doc falls back to the manifest field.
@@ -441,6 +470,134 @@ impl PluginLoader {
         // One-shot, user-actionable event (the "LSP server attached" class).
         tracing::info!(plugin = %manifest.id, id = id.0, "plugin loaded");
         Ok(id)
+    }
+
+    /// Load a single plugin from an explicit directory — the `:plugin-load <path>`
+    /// entry point (PL8.C). Unlike [`discover_and_load`](Self::discover_and_load)
+    /// (a tree scan that silently skips non-plugin dirs), a direct request
+    /// surfaces a bad path as a [`PluginLoaderError::Discovery`] the user sees.
+    pub async fn load_path(
+        &self,
+        dir: &std::path::Path,
+        tier: TrustTier,
+    ) -> Result<PluginId, PluginLoaderError> {
+        let plugin = discovery::discover_one(dir).map_err(PluginLoaderError::Discovery)?;
+        self.load_discovered(&plugin, tier).await
+    }
+
+    /// Unload the plugin named `target` (its manifest id, or its numeric plugin
+    /// id): abort its actor tasks and reverse every registry contribution via
+    /// [`PluginTeardown`]. Returns the [`TeardownReport`] (what each surface
+    /// removed), or `None` if no loaded plugin matched. **Synchronous** —
+    /// teardown and `JoinHandle::abort` don't await — so an ex-command `apply`
+    /// closure can call it directly. Idempotent per the teardown contract.
+    pub fn unload(&self, target: &str) -> Option<TeardownReport> {
+        let record = {
+            let mut loaded = self
+                .loaded
+                .lock()
+                .expect("plugin-loader loaded-set mutex poisoned");
+            let pos = loaded.iter().position(|r| record_matches(r, target))?;
+            loaded.remove(pos)
+        };
+
+        // The running-actor half: abort the detached seam tasks (picker / events
+        // / completion). The registry half is the `PluginTeardown` below.
+        for task in &record.tasks {
+            task.abort();
+        }
+        let report = self.run_teardown(&record.teardown);
+        if let Some(sink) = &self.env.meta_sink {
+            sink.unregister_plugin(record.id.0);
+        }
+        tracing::info!(
+            plugin = %record.name,
+            id = record.id.0,
+            ?report,
+            "plugin unloaded"
+        );
+        Some(report)
+    }
+
+    /// Reload the plugin named `target`: [`unload`](Self::unload) it, then
+    /// re-[`load_path`](Self::load_path) from its recorded source directory —
+    /// minting a fresh `Store` with a fresh, untripped `Quarantine` (the reload
+    /// contract, teardown.rs §"Why no reload method"). Errors if `target` names
+    /// no loaded plugin ([`NotLoaded`](PluginLoaderError::NotLoaded)) or it has
+    /// no on-disk source ([`NotReloadable`](PluginLoaderError::NotReloadable)).
+    pub async fn reload(
+        &self,
+        target: &str,
+        tier: TrustTier,
+    ) -> Result<PluginId, PluginLoaderError> {
+        // Capture the source dir before unloading (unload removes the record).
+        let dir = {
+            let loaded = self
+                .loaded
+                .lock()
+                .expect("plugin-loader loaded-set mutex poisoned");
+            let record = loaded
+                .iter()
+                .find(|r| record_matches(r, target))
+                .ok_or_else(|| PluginLoaderError::NotLoaded(target.to_string()))?;
+            record
+                .source_dir
+                .clone()
+                .ok_or_else(|| PluginLoaderError::NotReloadable(record.name.clone()))?
+        };
+        self.unload(target);
+        self.load_path(&dir, tier).await
+    }
+
+    /// Reverse a plugin's registry contributions against the live registries.
+    /// The `ArcSwap`-held registries (command / picker / mode) are RCU'd —
+    /// snapshot-clone → `&mut` → [`PluginTeardown::unload`] → store — while the
+    /// `Arc`-shared interior-mutable ones (config / keymap / bus) pass by
+    /// reference. A missing registry handle (a partially-wired test loader)
+    /// downgrades to a logged no-op reversal, never a panic.
+    fn run_teardown(&self, teardown: &PluginTeardown) -> TeardownReport {
+        let (
+            Some(cmd_h),
+            Some(pick_h),
+            Some(mode_h),
+            Some(config),
+            Some(keymap),
+            Some(bus),
+        ) = (
+            self.env.command_registry.as_ref(),
+            self.env.picker_registry.as_ref(),
+            self.env.mode_registry.as_ref(),
+            self.env.config_registry.as_ref(),
+            self.env.keymap.as_ref(),
+            self.env.bus.as_ref(),
+        )
+        else {
+            tracing::warn!(
+                "plugin teardown skipped: loader missing a registry handle (partial unload)"
+            );
+            return TeardownReport::default();
+        };
+
+        // Owned snapshots of the ArcSwap registries for the `&mut` unload needs.
+        let mut commands = (**cmd_h.load()).clone();
+        let mut pickers = (**pick_h.load()).clone();
+        let mut modes = (**mode_h.load()).clone();
+        let report = {
+            let mut reg = TeardownRegistries {
+                commands: &mut commands,
+                pickers: &mut pickers,
+                modes: &mut modes,
+                keymap,
+                config: &**config,
+                bus: &**bus,
+            };
+            teardown.unload(&mut reg)
+        };
+        // Publish the reversed snapshots (RCU store).
+        cmd_h.store(Arc::new(commands));
+        pick_h.store(Arc::new(pickers));
+        mode_h.store(Arc::new(modes));
+        report
     }
 
     /// Drain the picker seam: spawn the source actor, fetch its spec, register
@@ -497,7 +654,8 @@ impl PluginLoader {
         });
 
         record.tasks.push(task);
-        record.picker_sources.push(source_id);
+        // Teardown token: the picker registry unregisters this source by id.
+        record.teardown.picker_sources.push(source_id.to_string());
         Ok(id)
     }
 
@@ -509,6 +667,7 @@ impl PluginLoader {
         component: &lattice_plugin_host::Component,
         manifest: &PluginManifest,
         tier: TrustTier,
+        record: &mut LoadedRecord,
     ) -> Result<PluginId, PluginLoaderError> {
         let registry = self
             .env
@@ -520,6 +679,8 @@ impl PluginLoader {
             .spawn_config_plugin(component, manifest, tier, PluginBudget::default(), registry)
             .await?;
         tracing::debug!(plugin = %manifest.id, options = ?names, "config plugin registered options");
+        // Teardown token: the config registry unregisters each option by name.
+        record.teardown.config_options = names;
         Ok(id)
     }
 
@@ -557,6 +718,8 @@ impl PluginLoader {
             subscriptions = subscriptions.len(),
             "event plugin subscribed"
         );
+        // Teardown token: the bus unsubscribes each subscription id.
+        record.teardown.subscriptions = subscriptions;
         Ok(id)
     }
 
@@ -592,6 +755,7 @@ impl PluginLoader {
         component: &lattice_plugin_host::Component,
         manifest: &PluginManifest,
         tier: TrustTier,
+        record: &mut LoadedRecord,
     ) -> Result<PluginId, PluginLoaderError> {
         let bus = self
             .env
@@ -625,6 +789,9 @@ impl PluginLoader {
             contributions = count,
             "grammar plugin registered its motions / operators / text-objects / ex-commands"
         );
+        // Teardown token: grammar reverses by provenance (all
+        // `SourceLayer::Plugin(id)` entries), so just record that it ran.
+        record.teardown.has_grammar = true;
         Ok(id)
     }
 
@@ -655,6 +822,7 @@ impl PluginLoader {
         component: &lattice_plugin_host::Component,
         manifest: &PluginManifest,
         tier: TrustTier,
+        record: &mut LoadedRecord,
     ) -> Result<PluginId, PluginLoaderError> {
         let mode_registry = self
             .env
@@ -696,6 +864,9 @@ impl PluginLoader {
             modes = ?mode_ids,
             "mode plugin registered its minor modes"
         );
+        // Teardown tokens: each mode reverses via `ModeRegistry::unregister` +
+        // `KeymapHandle::remove_layer(MinorMode(id))`.
+        record.teardown.modes.extend(mode_ids);
         Ok(id)
     }
 
@@ -772,6 +943,7 @@ impl PluginLoader {
             id: ModeId::new(&mode_id),
             source: contribution,
         };
+        let carrier_id = ModeId::new(&mode_id);
         let mut next = (**mode_registry.load()).clone();
         match next.register(mode) {
             Ok(_) => mode_registry.store(Arc::new(next)),
@@ -791,6 +963,9 @@ impl PluginLoader {
         }
 
         record.tasks.push(task);
+        // Teardown token: unregistering the carrier mode drops the source; the
+        // actor task is aborted separately from `record.tasks`.
+        record.teardown.modes.push(carrier_id);
         tracing::debug!(
             plugin = %manifest.id,
             source = %source_id,

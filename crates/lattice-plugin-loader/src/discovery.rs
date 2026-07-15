@@ -66,6 +66,21 @@ pub fn discover(dir: &Path) -> Vec<DiscoveredPlugin> {
     found
 }
 
+/// Parse a single explicitly-named plugin directory — the `:plugin-load <path>`
+/// entry point (PL8.C). Unlike [`discover`] (which scans a tree and silently
+/// skips non-plugin subdirs), this is a direct request for *one* dir, so a
+/// missing manifest is an error the user sees, not a silent skip.
+pub fn discover_one(plugin_dir: &Path) -> Result<DiscoveredPlugin, String> {
+    match load_one(plugin_dir) {
+        Ok(Some(plugin)) => Ok(plugin),
+        Ok(None) => Err(format!(
+            "no `{MANIFEST_FILE}` in {} (not a plugin directory)",
+            plugin_dir.display()
+        )),
+        Err(reason) => Err(reason),
+    }
+}
+
 /// Parse a single plugin directory. `Ok(None)` if it has no manifest (not a
 /// plugin dir); `Err(reason)` if it has a manifest but is otherwise malformed
 /// (bad TOML, missing/ambiguous component) — the caller logs the reason.

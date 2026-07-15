@@ -68,9 +68,9 @@ and communicate by typed messages.
    │       │         │         │  └──────────────────┘    │
    │       ▼         │         │                          │
    │  apply edits    │         │  ┌──────────────────┐    │
-   │       │         │         │  │  attach_driver   │    │
-   │       ▼         │         │  │  (DocumentOpened │    │
-   │  render frame   │◄────────┤  │   → didOpen)     │    │
+   │       │         │         │  │ LspMode::        │    │
+   │       ▼         │         │  │  on_activate     │    │
+   │  render frame   │◄────────┤  │  → attach_handle │    │
    │                 │  drain  │  └──────────────────┘    │
    │                 │  result │                          │
    └─────────────────┘         └──────────────────────────┘
@@ -211,7 +211,7 @@ shadows a `:set` write.
                   │      Arc<EventBus>         │
                   │                            │
                   │  by_kind:    HashMap...    │
-                  │  by_typeid:  HashMap...    │
+                  │  typed_subs: HashMap...    │
                   │  wildcard:   Vec<...>      │
                   └────────────────────────────┘
                        ▲                 │

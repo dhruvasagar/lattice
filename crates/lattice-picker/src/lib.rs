@@ -62,7 +62,7 @@ pub use mru::{
 pub use outcome::{OpenTarget, PickerAcceptOutcome};
 pub use source::{
     AcceptFuture, CandidateBatch, CandidateFuture, CandidateStream, PickerInitResult,
-    PickerRegistry, PickerSourceGenerator, PickerSourceSpec, SourceResult,
+    PickerRegistry, PickerRegistryHandle, PickerSourceGenerator, PickerSourceSpec, SourceResult,
 };
 
 use std::path::PathBuf;

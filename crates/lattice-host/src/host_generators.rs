@@ -158,7 +158,7 @@ impl CandidateGenerator for LogLevelsGenerator {
 /// dropped-registry yields an empty candidate set rather than a
 /// panic.
 pub struct PickerSourcesGenerator {
-    pub registry: Weak<lattice_picker::PickerRegistry>,
+    pub registry: Weak<arc_swap::ArcSwap<lattice_picker::PickerRegistry>>,
 }
 
 impl CandidateGenerator for PickerSourcesGenerator {
@@ -166,9 +166,10 @@ impl CandidateGenerator for PickerSourcesGenerator {
         let Some(registry) = self.registry.upgrade() else {
             return Vec::new();
         };
-        // PickerRegistry::iter is id-sorted already; mirror its
-        // order in the candidate list so popup ordering stays
-        // stable across runs.
+        // Wait-free snapshot of the current registry (a plugin load may have
+        // RCU-swapped a fresh one in). `PickerRegistry::iter` is id-sorted
+        // already; mirror its order so popup ordering stays stable across runs.
+        let registry = registry.load();
         registry
             .iter()
             .map(|(id, _spec)| RawCandidate {

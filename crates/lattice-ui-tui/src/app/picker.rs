@@ -591,7 +591,7 @@ mod tests {
     #[test]
     fn boot_registers_builtin_picker_sources() {
         let app = app_with("hi\n", 5);
-        let ids: Vec<&'static str> = app.editor.picker_registry.ids().collect();
+        let ids: Vec<&'static str> = app.editor.picker_registry.load().ids().collect();
         assert!(ids.contains(&"files"));
         assert!(ids.contains(&"recent"));
         assert!(ids.contains(&"buffers"));
@@ -835,7 +835,7 @@ mod tests {
             ]
         );
         // Sanity: matches what the registry itself reports.
-        let registry_ids: Vec<&'static str> = app.editor.picker_registry.ids().collect();
+        let registry_ids: Vec<&'static str> = app.editor.picker_registry.load().ids().collect();
         let mut expected: Vec<String> = registry_ids.iter().map(|s| s.to_string()).collect();
         expected.sort();
         assert_eq!(ids, expected);
@@ -849,9 +849,9 @@ mod tests {
     fn gen_picker_sources_handles_dropped_registry_gracefully() {
         use std::sync::{Arc, Weak};
 
-        let reg: Arc<lattice_picker::PickerRegistry> =
-            Arc::new(lattice_picker::PickerRegistry::new());
-        let weak: Weak<lattice_picker::PickerRegistry> = Arc::downgrade(&reg);
+        let reg: lattice_picker::PickerRegistryHandle =
+            Arc::new(arc_swap::ArcSwap::from_pointee(lattice_picker::PickerRegistry::new()));
+        let weak: Weak<arc_swap::ArcSwap<lattice_picker::PickerRegistry>> = Arc::downgrade(&reg);
         drop(reg);
         let generator = crate::host_generators::PickerSourcesGenerator { registry: weak };
         // Build a minimal GenerateContext via an App fixture --

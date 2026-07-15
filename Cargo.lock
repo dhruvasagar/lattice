@@ -4353,6 +4353,7 @@ dependencies = [
 name = "lattice-picker"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
  "bincode",
  "criterion",
  "dirs 5.0.1",

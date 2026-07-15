@@ -59,7 +59,7 @@ use lattice_mode::{
     ActiveModes, BufferLocals, GuardStoreHandle, ModeRegistry, ServiceRegistry,
     TickCallbackRegistration,
 };
-use lattice_picker::{Picker, PickerMruIndex, PickerRegistry};
+use lattice_picker::{Picker, PickerMruIndex};
 use lattice_protocol::CancellationToken;
 use lattice_protocol::Event;
 use lattice_protocol::edit::EditDelta;
@@ -815,8 +815,12 @@ pub struct Editor {
     /// Cleared in lockstep with `diffthis_group` — both reset
     /// to empty / `None` when the group drops to arity 0.
     pub diffthis_members: Vec<crate::pane_group::PaneGroupMember>,
-    /// Picker source registry -- `:picker` source kinds.
-    pub picker_registry: Arc<PickerRegistry>,
+    /// Picker source registry -- `:picker` source kinds. Held behind
+    /// `ArcSwap` (`PickerRegistryHandle`) so the plugin loader can register a
+    /// loaded picker plugin's source at runtime by copy-on-write RCU while the
+    /// picker-open path reads it wait-free (PL8.B). Shared as a service so
+    /// `lattice-plugin-loader` reaches it without a host dep.
+    pub picker_registry: lattice_picker::PickerRegistryHandle,
     /// Per-source MRU index that biases the picker's initial
     /// candidate ordering toward recently-accepted picks.
     pub picker_mru: PickerMruIndex,

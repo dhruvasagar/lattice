@@ -109,10 +109,25 @@ impl PickerSourceSpec {
 /// at boot; the overwrite semantics make tests trivial to write
 /// (`register` twice with different specs to assert the second
 /// wins).
-#[derive(Debug, Default)]
+/// `Clone` so the host can hold the registry behind an `Arc<ArcSwap<_>>` and
+/// register plugin sources at runtime by copy-on-write RCU (clone → mutate →
+/// store) — the same wait-free-read / rare-write idiom the snippet registry
+/// uses. Reads stay lock-free; a plugin load / unload swaps a fresh registry
+/// in. Cloning is cheap: the sources map holds `&'static str` keys and
+/// `Arc`-shared generators.
+#[derive(Debug, Default, Clone)]
 pub struct PickerRegistry {
     sources: HashMap<&'static str, RegistryEntry>,
 }
+
+/// The runtime-mutable registry handle the editor holds and shares as a service.
+/// `ArcSwap` gives wait-free reads on the picker-open path and copy-on-write RCU
+/// writes for runtime plugin-source registration (`:plugin-load` /
+/// boot-discovery): clone the current registry, `register_generator` /
+/// `unregister`, then `store` the new snapshot. The plugin loader
+/// (`lattice-plugin-loader`) reaches this via `service::<PickerRegistryHandle>()`
+/// and RCU-registers each loaded picker plugin's `WasmPickerSource`.
+pub type PickerRegistryHandle = std::sync::Arc<arc_swap::ArcSwap<PickerRegistry>>;
 
 /// Registry entry: either metadata-only (slice 12 path,
 /// retained for tab-completion of source ids whose generator
@@ -125,6 +140,7 @@ pub struct PickerRegistry {
 /// generator entries flow through the trait-driven path. As
 /// each source migrates to a `PickerSourceGenerator` impl
 /// the registry transitions from metadata-only to full.
+#[derive(Clone)]
 pub struct RegistryEntry {
     pub spec: PickerSourceSpec,
     pub generator: Option<std::sync::Arc<dyn PickerSourceGenerator>>,

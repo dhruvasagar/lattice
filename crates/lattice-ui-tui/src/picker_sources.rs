@@ -754,7 +754,7 @@ mod tests {
         let mut reg = lattice_picker::PickerRegistry::new();
         let source: Arc<dyn PickerSourceGenerator> = Arc::new(DelayedFutureSource::new());
         reg.register_generator(source);
-        app.editor.picker_registry = Arc::new(reg);
+        app.editor.picker_registry.store(Arc::new(reg));
         // Fire the picker. Init returns Future; the picker
         // should NOT seat synchronously.
         app.open_picker("delayed-test".into(), Vec::new());

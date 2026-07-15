@@ -9689,6 +9689,7 @@ impl Editor {
         );
         let live = self
             .picker_registry
+            .load()
             .entry(&source)
             .map(|e| e.spec.live)
             .unwrap_or(false);
@@ -9776,8 +9777,11 @@ impl Editor {
             let live = reg.spec.live;
             return self.open_picker_from_completion_source(source, kind, live);
         }
-        let Some(entry) = self.picker_registry.entry(&source) else {
-            let known: Vec<&str> = self.picker_registry.ids().collect();
+        // `load_full` (owned `Arc`, no borrow of `self`) so the else branch can
+        // still `&mut self` (`set_message`) without a borrow conflict.
+        let picker_registry = self.picker_registry.load_full();
+        let Some(entry) = picker_registry.entry(&source) else {
+            let known: Vec<&str> = picker_registry.ids().collect();
             let msg = if known.is_empty() {
                 format!("picker: unknown source `{source}` (no sources registered)")
             } else {
@@ -9821,8 +9825,9 @@ impl Editor {
         // Live mode: install per-picker query state before
         // seating so concurrent keystrokes during the seat
         // already have somewhere to land.
-        let entry_is_live = self
-            .picker_registry
+        // Reuse the `load_full` snapshot bound above — same registry view for
+        // both reads, and no second atomic load.
+        let entry_is_live = picker_registry
             .entry(&source)
             .map(|e| e.spec.live)
             .unwrap_or(false);
@@ -18320,7 +18325,7 @@ impl Editor {
         // apply it (restoring on `<Esc>` is wired in `do_picker_dismiss`).
         if let Some(source_id) = picker.source_id.clone()
             && let Some(routing) = picker.routing_for(c).cloned()
-            && let Some(generator) = self.picker_registry.generator(&source_id).cloned()
+            && let Some(generator) = self.picker_registry.load().generator(&source_id).cloned()
         {
             let snap = self.document.snapshot();
             let ctx = self.build_picker_context(&snap);
@@ -25319,7 +25324,7 @@ impl Editor {
         // generator, accept, translate outcome. LSP picker
         // sources go through here today.
         if let Some(source_id) = picker.source_id.as_deref()
-            && let Some(generator) = self.picker_registry.generator(source_id).cloned()
+            && let Some(generator) = self.picker_registry.load().generator(source_id).cloned()
         {
             let source_id_owned = source_id.to_string();
             let snap = self.document.snapshot();
@@ -32983,7 +32988,7 @@ mod tests {
         reg.register_generator(std::sync::Arc::new(AsyncAcceptSource::new(
             lattice_picker::outcome::PickerAcceptOutcome::NoOp,
         )));
-        editor.picker_registry = std::sync::Arc::new(reg);
+        editor.picker_registry.store(std::sync::Arc::new(reg));
 
         seat_one_candidate(
             &mut editor,

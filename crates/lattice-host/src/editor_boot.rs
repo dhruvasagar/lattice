@@ -877,14 +877,20 @@ impl Editor {
         > = Some(crate::grep_highlight::SyntaxGrepHighlighter::new(
             lang_registry.clone(),
         ));
-        let picker_registry: Arc<PickerRegistry> = Arc::new(built_in_picker_registry(
-            registry.clone(),
-            config.clone(),
-            keybinding_reverse,
-            grep_highlighter,
-            snippet_registry_handle.clone(),
-            theme_registry.clone(),
-        ));
+        // PL8.B: held behind `ArcSwap` so the plugin loader can RCU-register a
+        // loaded picker plugin's source at runtime while the picker-open path
+        // reads it wait-free. Registered as a `PickerRegistryHandle` service
+        // below so `lattice-plugin-loader` reaches it without a host dep.
+        let picker_registry: lattice_picker::PickerRegistryHandle =
+            Arc::new(arc_swap::ArcSwap::from_pointee(built_in_picker_registry(
+                registry.clone(),
+                config.clone(),
+                keybinding_reverse,
+                grep_highlighter,
+                snippet_registry_handle.clone(),
+                theme_registry.clone(),
+            )));
+        boot.register_service::<lattice_picker::PickerRegistryHandle>(picker_registry.clone());
 
         // MRU cache load. Honor `picker.mru.persist` at boot;
         // failure modes: no persist path (sandboxed), no file

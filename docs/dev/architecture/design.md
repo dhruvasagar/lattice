@@ -1065,7 +1065,18 @@ WASM call overhead is real but bounded. Ground rules:
 
 #### 5.5.6 Bundled plugins
 
-Lattice ships with a curated set of **bundled plugins** -- WASM Component Model packages compiled into the editor binary (or shipped in a known directory next to it) so they're available without a separate install step. They are the same shape as user-installed plugins; they just have a higher trust default and zero install friction.
+> **📝 Status (Phase 8 / 8b).** The plugin **host** is ✅ built (Phase 7:
+> Component Model, WIT seams, capability/fuel/epoch, WASI-fs isolation, AOT
+> cache, per-call CI budgets). But it is **not yet wired into the editor**
+> (`lattice-host` depends only on the wasmtime-free `lattice-plugin-api`
+> catalog, guard-tested) and **no bundled plugins ship** — `plugins/fuzzy-finder`
+> is a seam-parity test fixture, not a loaded plugin. Everything below is the
+> forward plan. Note much of this *functionality* already ships **natively**
+> (fuzzy-finder = `lattice-picker`, grep + git = `lattice-diff`, snippets =
+> `lattice-snippet`, outline = `:lsp-symbols`); the not-done work is repackaging
+> it as WASM components + the editor-side loader (§13, Phase 8).
+
+Lattice will ship with a curated set of **bundled plugins** -- WASM Component Model packages compiled into the editor binary (or shipped in a known directory next to it) so they're available without a separate install step. They are the same shape as user-installed plugins; they just have a higher trust default and zero install friction.
 
 The strategy: features that *aren't architecturally core* but *are essential to ship feature-complete out of the box* live here. Core stays narrow (buffers, modal grammar, command registry, renderer trait, runtime, plugin host); editor-quality wins (LSP server management, project-wide search, version-control UIs, snippets, surround / comment / auto-pair editing helpers) ship as bundled plugins. This dogfoods the plugin host on real workloads, gives third-party plugin authors high-quality reference implementations to study, and keeps the plugin API surface honest.
 
@@ -1100,114 +1111,106 @@ The strategy: features that *aren't architecturally core* but *are essential to 
 
 ### 5.6 Rendering -- The Layered Architecture
 
-#### 5.6.1 The Renderer trait
+#### 5.6.1 The Renderer trait + the cell-grid substrate
+
+> **Reconciliation note (v0.6).** The original design (below, "Superseded
+> approach") specified a rich per-buffer `Renderer` trait with `EditorRenderer` /
+> `DocumentRenderer` implementers, four selectable GPU fast paths, an
+> `accessibility_tree`, a taffy-based `DocumentRenderer`, and a v1 sprite atlas.
+> That is **not** what shipped. What shipped is the **cell-grid / `DisplayMatrix`**
+> architecture described here.
+
+The renderer is split into a **renderer-neutral cell-grid substrate** (built off
+the render thread) and thin **peer renderers** that paint it. The trait a
+frontend implements is a marker that surfaces its renderer-specific associated
+types to the host's boot/dispatch machinery — it is *not* a per-buffer draw API:
 
 ```rust
-trait Renderer: Send {
-	type Content;
-	type Event;
-	type Config;
-
-	fn set_content(&mut self, content: Self::Content);
-	fn handle_input(&mut self, event: InputEvent) -> Vec<Self::Event>;
-	fn layout(&mut self, constraints: LayoutConstraints) -> LayoutResult;
-	fn paint(&mut self, frame: &mut Frame, viewport: Rect);
-	fn accessibility_tree(&self) -> AccessibilityNode;
-	fn invalidate(&mut self, region: InvalidationRegion);
+// lattice-host
+pub trait Renderer {
+	type Theme;                 // frontend-specific theme cache
+	type PaneRenderRegistry;    // frontend-specific per-kind provider table
 }
 ```
 
-| Renderer | Purpose | Status |
+| Impl | Crate | Role |
 |---|---|---|
-| `EditorRenderer` | Editable buffers (code and rich text) -- GPU primary | v1.0 |
-| `DocumentRenderer` | Read-only flowed content (popups, status lines, pickers, previews) -- GPU primary | v1.0 |
-| `TuiRenderer` | Terminal renderer for headless / SSH / low-bandwidth use | v1.0 (subset) |
-| `CanvasRenderer` | Plugin-driven custom UIs | v1.0 (limited API) |
-| `WebRenderer` | Full web-page rendering | Deferred placeholder |
+| `TuiRenderer` | `lattice-ui-tui` | ✅ terminal peer (ratatui + crossterm) — first-class, headless / SSH |
+| `GpuiRenderer` | `lattice-ui-gpui` | ✅ GPU peer (GPUI; `gui`/`window` cargo features) |
+| `MinimalRenderer` | `lattice-host` (tests) | headless test harness |
+| Web renderer | — | 📝 deferred placeholder |
 
-The **GPU UI is the primary v1 surface** -- variable fonts, sub-pixel-precise text, smooth scrolling, popups, pickers, the rich minibuffer. The **terminal UI is a first-class peer** intended for headless / SSH / low-bandwidth use, not a bootstrap dev fixture. It shares the input pipeline, command dispatcher, modal engine, tree-sitter, LSP, and plugin layer with the GPU UI -- only the renderer differs.
+**The shared substrate is the cell grid** (`lattice-cells`). A per-pane
+`DisplayMatrix` (rows of styled `CellMatrix` cells, plus virtual rows) is built
+**off the render thread** by a cells worker (on `spawn_blocking`) from the
+document snapshot + syntax spans + decorations, and published through `RenderState`
+(§5.7.2). Both peers consume the *same* `DisplayMatrix`: the TUI maps cells to
+ratatui spans; GPUI shapes each line via `WindowTextSystem::shape_line` against a
+glyph atlas. There is **no** per-buffer `Renderer` v-table, no `EditorRenderer` /
+`DocumentRenderer` split, and no `lattice-render*` crate — one grid, two painters.
 
-The TUI accepts the limits its substrate imposes:
-- Monospace cells only; variable fonts, mixed sizes, and sub-pixel positioning are out.
-- Color via 24-bit ANSI when supported, 8-color fallback otherwise.
-- Sprites (§5.6.7) degrade to text glyphs (nerd-font icons or ASCII placeholders); the icon registry returns a sprite *and* an optional fallback grapheme.
-- Path 3 (per-line shaped) rich-buffer rendering renders as plain monospace in the terminal.
-- Path 4 (inline blocks, post-1.0) is a no-op in the terminal; affected buffers fall back to placeholder text.
+Both peers are held to the same latency invariant: the paint body reads a
+published snapshot and does zero I/O / parsing / shaping-of-unchanged-content per
+frame (§5.7). Element fan-out is O(viewport rows), never O(chars).
 
-Beyond those, the TUI is held to the same input-latency invariants as the GPU UI: no plugin or background task may stall its event loop; rendering is damage-tracked, not full-redraw-per-frame.
+The renderer reads **mode-resolved options** for every per-frame decision (wrap, line numbers, gutter width, foldcolumn, decoration providers). There is no `BufferKind` branch in the render path: every buffer flows through the one cell-grid pipeline, parameterised by its `ResolvedOptions` snapshot. The hover popup is a floating-geometry view of a `markdown-mode` buffer with a `hover-mode` minor contributing `wrap=true, line-numbers=false, anchor=cursor` -- not a separate render code path. See [`docs/mode-architecture.md`](mode-architecture.md) §6.1 (resolution layers), §6.3 (caching), and §9.5 (renderer integration).
+
+<details><summary><b>Superseded approach (original v0.x design — not built)</b></summary>
+
+The original design specified a `trait Renderer { type Content/Event/Config;
+set_content / handle_input / layout / paint / accessibility_tree / invalidate }`
+with `EditorRenderer` (editable buffers) and `DocumentRenderer` (popups/pickers,
+taffy-based) implementers, plus `CanvasRenderer` / `WebRenderer`. This was
+retired: the peer renderers instead consume a shared `DisplayMatrix`, so per-buffer
+paint logic lives once in the cell-grid substrate rather than behind a trait
+each frontend re-implements. An accessibility tree was never built. The
+`lattice-render` / `-render-editor` / `-render-document` crate trisection (§11)
+was likewise dropped.
+
+</details>
 
 The renderer reads **mode-resolved options** for every per-frame decision (wrap, line numbers, gutter width, foldcolumn, statusline contributors, decoration providers). There is no `BufferKind` branch in the render path: every buffer flows through one pipeline, parameterised by its `ResolvedOptions` snapshot. The hover popup is a floating-geometry view of a `markdown-mode` buffer with a `hover-mode` minor contributing `wrap=true, line-numbers=false, anchor=cursor` -- not a separate render code path. See [`docs/mode-architecture.md`](mode-architecture.md) §6.1 (resolution layers), §6.3 (caching, with O(1) hot-path reads), and §9.5 (renderer integration).
 
-#### 5.6.2 EditorRenderer -- Layered fast paths
+#### 5.6.2 Building the cell grid (the content path)
 
-| Path | Latency | Applies to |
-|---|---|---|
-| **Pure monospace, no decorations** | <1ms full repaint, <100us damage | Plain code editing, default |
-| **Monospace with inline decorations** | 1-2ms full repaint | Code with LSP (squiggles, inlay hints, gutter) |
-| **Per-line shaped** (mixed sizes/fonts) | 3-5ms full repaint, sub-ms damage | Markdown, org-mode |
-| **Inline blocks** (images, LaTeX, charts) | 5-15ms first paint, cheap repaint | Specialized buffers |
+The `DisplayMatrix` for each pane is built off-thread from the published snapshot:
+walk the visible line range (+ overscan), fetch the cached highlight spans and
+the decoration/virtual-row contributions for those lines, and emit **styled cells
+per line** (`CellMatrix`) plus any virtual rows. This runs on a cells worker via
+`spawn_blocking` and publishes through `RenderState`; the render thread only
+*reads* the finished matrix. Fan-out is O(viewport rows).
 
-Each buffer's major mode declares its rendering profile; **a buffer never silently upgrades to a slower path**.
+Painting the matrix differs per peer:
 
-##### Path 1: Pure monospace
+- **TUI** (`lattice-ui-tui`) maps each cell to a ratatui styled span — monospace,
+  24-bit color where supported (8-color fallback), damage-tracked (not
+  full-redraw-per-frame).
+- **GPUI** (`lattice-ui-gpui`) shapes each visible line via
+  `WindowTextSystem::shape_line` against a glyph atlas and emits GPUI elements —
+  variable fonts + sub-pixel positioning available, but the *content* is the same
+  cell grid.
 
-Pipeline: visible-line-range determination -> cached highlight query -> walk rope by line, compute `glyph X = column * advance` (no shaping) -> GPU atlas lookup -> emit instance quads -> emit selection backgrounds -> emit cursor -> submit one or two draw calls.
+A `Document.rendering_profile` field exists as *data* (a per-buffer hint), but the
+renderer does **not** select among four separate GPU pipelines — the four
+"selectable fast paths" of the original design were not built. Incremental
+highlight + incremental cell build keep the steady state flat to ~100k lines;
+soft-wrap is supported on both peers.
 
-**Optimizations:** monospace fast path skips HarfBuzz shaping entirely; glyph atlas (alacritty/kitty/ghostty/Zed pattern); damage tracking via rope edit ranges; instanced rendering.
+> **📝 Planned rich-buffer rendering.** Per-line variable-height shaping with a
+> `LineLayout` cache + a Fenwick cumulative-height index (for markdown/org with
+> mixed font sizes), and Path-4 inline media blocks (images, LaTeX, charts), are
+> **not built**. Markdown today renders as styled monospace cells with syntax
+> highlighting; rich per-line geometry and inline blocks are post-1.0.
 
-Capable of 240Hz on modern laptop GPUs. Bottleneck is OS input latency.
+#### 5.6.3 Popups, pickers, and UI furniture
 
-##### Path 2: Monospace with decorations
-
-Same as path 1 plus extra passes for diagnostic squiggles, inlay hints (virtual inline text), gutter widgets, line highlights. Decorations submitted as data (range + style), composited on the renderer's schedule.
-
-##### Path 3: Per-line shaped (rich buffers)
-
-Per-line layout cache: each line shaped once via `cosmic-text`/`parley`, cached. Re-shape only when line content, style context, or font config changes.
-
-```rust
-struct LineLayout {
-	line_index: u64,
-	content_hash: u64,
-	style_context_hash: u64,
-	shaped_glyphs: Vec<ShapedGlyph>,
-	line_height: f32,
-	ascent: f32,
-	descent: f32,
-	cursor_positions: Vec<f32>,  // byte-offset to x-pixel
-}
-```
-
-**Cumulative-height index** (Fenwick tree) for variable-height lines: O(log n) scroll lookups.
-
-**Edit pipeline:** mutation -> identify affected lines (typically 1-2) -> mark cache dirty -> shape on rayon worker (50-200us/line) -> update Fenwick index -> renderer picks up new layout next frame; uses stale layout for one frame if shape isn't done.
-
-**Style mappings** are data, not code:
-
-```toml
-[style-mappings]
-heading_1   = { font = "ui_serif", size = 24, weight = "bold" }
-emphasis    = { italic = true }
-code_block  = { font = "code_mono", preserve_monospace = true }
-```
-
-`preserve_monospace = true` keeps code blocks within markdown on the fast path.
-
-##### Path 4: Inline blocks (post-1.0)
-
-For full-size embedded media: rendered LaTeX equations, embedded charts, image previews larger than line-height, code-output cells. Implemented as inline decorations with non-zero block size that participate in the cumulative-height index. Plugins produce blocks; the renderer composites cached textures.
-
-(Note: small in-line iconography -- file-type icons, severity icons, mode-line glyphs -- is a separate v1 capability handled by the sprite atlas in §5.6.7, not by Path 4.)
-
-#### 5.6.3 DocumentRenderer -- UI furniture
-
-Built on `taffy` + `cosmic-text`. Renders into the same shared GPU atlas.
-
-Pipeline: styled tree -> taffy layout (1-10ms) -> cosmic-text shaping (1-5ms) -> atlas rasterization -> emit quads.
-
-**Total: 5-20ms first paint of typical popup content. Subsequent frames re-emit cached geometry -- sub-ms.**
-
-Off the input path. Cannot affect editor responsiveness.
+There is **no** separate taffy-based `DocumentRenderer`. Popups (completion,
+hover, signature, diagnostics), pickers, and buffer-backed panels are all
+**Documents** (§5.9.8) rendered through the *same* cell-grid pipeline in a
+popup-shaped view — the hover popup is a `markdown-mode` buffer in floating
+geometry, not a bespoke text-layout path. This is what makes syntax highlighting,
+`:help`-consistent rendering, and vim motions work uniformly inside popups. The
+work is off the input path and cannot affect editor responsiveness.
 
 #### 5.6.4 Cursor positioning and logical/visual translation
 
@@ -1221,9 +1224,16 @@ Window is a single GPU surface. Renderers render into regions. All renderers sha
 
 Deferred indefinitely. Architecturally the trait accommodates Servo embedding, system webview (`wry`/WebView2/WKWebView), or CEF. Decision punted.
 
-#### 5.6.7 Iconography and sprites (v1)
+#### 5.6.7 Iconography and sprites (📝 planned; text glyphs today)
 
-Small graphical elements -- file-type icons in the file tree, severity icons in the diagnostics list and gutter, language logos in tab strips, status-line indicators (LSP healthy / sick, git branch), picker leading icons, notification level badges -- are first-class in v1. They are *not* Path 4: they are line-height-sized, atlas-backed, and rendered through the same GPU pipeline as glyphs.
+> **📝 Status.** The `SpriteSet` / `SpriteSpec` / `SpriteSource` /
+> `Decoration::InlineSprite` types below **do not exist**. Icons today are
+> **nerd-font text glyphs with a BMP-block fallback** (Geometric Shapes + Misc
+> Symbols) — the `ui.nerd_fonts` option toggles between the two palettes, which
+> occupy the same cell width so column geometry is stable. The rasterized sprite
+> atlas is the forward design.
+
+Small graphical elements -- file-type icons in the file tree, severity icons in the diagnostics list and gutter, language logos in tab strips, status-line indicators (LSP healthy / sick, git branch), picker leading icons, notification level badges. The planned design makes them atlas-backed, line-height-sized, and rendered through the same GPU pipeline as glyphs (not inline media blocks).
 
 ##### Sprite atlas
 
@@ -1286,24 +1296,26 @@ Sprites fit in line height. They participate in the existing decoration + gutter
 
 #### 5.6.8 Render-snapshot coherence (the core / renderer contract)
 
-Every frame the renderer reads a coherent view of `(buffer text, syntax tree, decorations, selections, layout cache)`. These pieces live on different actors -- text and selections on the document actor, syntax trees on `spawn_blocking` workers, decorations from any source publishing into the document's decoration layer, layout cache on rayon workers (shaped buffers only). The renderer cannot acquire a lock the document actor holds, and it cannot afford a synchronous "give me a snapshot" round-trip into the actor: that round-trip would put the keystroke-to-glyph budget at the mercy of the actor's mailbox depth.
+Every frame the renderer reads a coherent view of `(buffer text, syntax, decorations, selections)`. These pieces live on different actors -- text and selections on the document actor, syntax trees on `spawn_blocking` workers, decorations from any source. The renderer cannot acquire a lock the document actor holds, and it cannot afford a synchronous "give me a snapshot" round-trip into the actor: that round-trip would put the keystroke-to-glyph budget at the mercy of the actor's mailbox depth.
 
-The contract between core and renderer is therefore **publish-versioned, copy-on-write snapshots**: the document actor publishes immutable snapshots; the renderer reads the latest published snapshot with one atomic load per visible document at frame start, and uses *that snapshot* for the entire frame.
+The contract between core and renderer is therefore **publish-versioned, copy-on-write snapshots**: the document actor publishes an immutable `DocumentSnapshot`; the renderer reads the latest one with one atomic load per visible document at frame start, and uses *that snapshot* for the entire frame. The real snapshot carries only **text + selections + version metadata** — syntax spans, decorations, and the built cell grid publish through the separate `RenderState` sub-states (§5.7.2), each an arc-swap cell, and the cells worker composes them into the `DisplayMatrix`. Coherence still holds because each publish is a single atomic store.
 
 ```rust
 pub struct DocumentSnapshot {
-	pub document_id: DocumentId,
-	pub version: u64,                              // monotonic per document
-	pub text: Arc<RopeSnapshot>,                   // O(1) clone of ropey
-	pub selections: Arc<SelectionSet>,             // transformed against AppliedEdit
-	pub syntax: Option<Arc<SyntaxSnapshot>>,       // None for plain-text
-	pub decorations: Arc<DecorationLayer>,         // immutable; one layer per snapshot
-	pub layout: Option<Arc<LayoutCacheSnapshot>>,  // shaped buffers only
+	pub id: DocumentId,
+	pub version: u64,              // bumps on any change
+	pub text_version: u64,         // bumps only on text mutation
+	pub buffer: Buffer,            // O(1) rope clone
+	pub path: Option<PathBuf>,
+	pub dirty: bool,
+	pub selections: SelectionSet,
+	// NB: syntax / decorations / cell-grid are NOT fields here — they
+	// publish via RenderState sub-states (§5.7.2) and the cells worker.
 }
 
 /// One atomic-load-published-pointer per document. arc-swap is the
-/// canonical primitive; `Cache::load()` is wait-free and ~2ns.
-pub struct PublishedSnapshot(arc_swap::ArcSwap<DocumentSnapshot>);
+/// canonical primitive; `load()` is wait-free.
+pub struct PublishedSnapshot(Arc<arc_swap::ArcSwap<DocumentSnapshot>>);
 ```
 
 ##### Publish discipline (actor side)
@@ -1316,7 +1328,7 @@ The document actor holds the writable state. On every committed `Effect`, it con
 
 Snapshot construction p99 budget: **< 10 us** for buffers up to 100MB. No syscalls, no allocations beyond the changed fragments.
 
-Late arrivals from other actors -- tree-sitter completing a parse on a `spawn_blocking` worker, a plugin publishing decorations, rayon finishing a line shape -- submit their result to the document actor as an event. The actor folds the result into the *next* snapshot it publishes. Workers never publish snapshots themselves.
+Late arrivals from other actors -- tree-sitter completing a parse on a `spawn_blocking` worker, a plugin publishing decorations, the cells worker finishing a `DisplayMatrix` build -- submit their result to the document actor (or `RenderState`) as an event. The actor folds the result into the *next* snapshot it publishes. Workers never publish snapshots themselves.
 
 ##### Renderer discipline (read side)
 
@@ -1371,17 +1383,16 @@ This is the load-bearing async invariant of the editor. Every other piece of the
 
 | Component | Runs on |
 |---|---|
-| UI event loop | Dedicated UI thread |
-| Core dispatcher | tokio multi-thread |
-| Buffer mutations | Core executor (single-task-per-document) |
+| UI event loop | Dedicated UI / render thread (one per peer) |
+| Grammar dispatch + buffer mutations | The editor actor (a `current_thread` tokio task; one document actor per doc) |
 | Tree-sitter parses | `spawn_blocking` |
-| Text shaping (rich buffers) | rayon pool |
-| LSP I/O | tokio tasks |
+| Cell-grid (`DisplayMatrix`) build | `spawn_blocking` (cells worker) |
+| 📝 Text shaping (rich buffers) | `spawn_blocking` (planned; not built) |
+| LSP I/O | tokio tasks (shared / LSP runtimes) |
 | LSP file-watcher | Dedicated tokio task on the LSP runtime (§5.7.4) |
-| Plugin instances | tokio tasks (wasmtime async) |
-| Search/index | rayon pool |
-| File I/O (small) | tokio file ops |
-| File I/O (huge) | `spawn_blocking` |
+| Plugin instances | tokio tasks (wasmtime async), one `Store` each |
+| Search / diff / index | `spawn_blocking` |
+| File I/O | `spawn_blocking` |
 
 **The actor pattern for documents:** each open document owned by one tokio task; mutations via mpsc; reads via O(1) rope snapshot. No locks on the hot path.
 
@@ -1419,7 +1430,7 @@ pub struct RenderState {
 }
 ```
 
-Each sub-state is `Arc`-wrapped so subsystems publish independently -- a motion republishes `ActiveDocumentRenderState` (per-frame critical) without forcing `BuffersRenderState` (`:b N`-rate) to churn. The split tracks read frequency, not domain boundaries.
+Each sub-state is `Arc`-wrapped so subsystems publish independently -- a motion republishes `ActiveDocumentRenderState` (per-frame critical) without forcing `BuffersRenderState` (`:b N`-rate) to churn. The split tracks read frequency, not domain boundaries. (The set has since grown past the list above — e.g. `active_document` is itself a nested `Arc<ArcSwap<…>>` cell for the hottest reads, and there are additional sub-states such as modeline elements and the resolved-options registry — but the shape is unchanged: one arc-swap cell per read-frequency band.)
 
 `Editor::dispatch(...)` republishes after every action. Background tasks (LSP responses, syntax updates, etc.) publish their sub-state directly without re-snapshotting the whole world.
 
@@ -1456,7 +1467,7 @@ Every LSP feature drain in `run_tick_pending` migrates onto §5.7.2 + §5.7.3 th
 4. The corresponding sub-state on `RenderState` carries a clone of the cache slot; renderers read through `rs.lsp.X.load()` / `rs.lsp.X.get_for(id)`.
 5. Renderer-coupled side-effects the old drain ran inline (e.g. `recompute_folds` after a fold-cache write) move to the renderer-tick `maybe_request_X` via a "last cache version reflected" tracker, fired once per (buffer, version) transition.
 
-End state: `run_tick_pending` does not exist. The renderer reads `editor.render_state.load_full()`, paints, and hands input back. Subsystems publish on their own cadence.
+📝 Target end state: `run_tick_pending` disappears entirely — the renderer reads `editor.render_state.load_full()`, paints, and hands input back, with subsystems publishing on their own cadence. This is **in progress**: the primitives (§5.7.2/§5.7.3) are in place and the heavy drains (LSP file-watcher, most feature caches) have migrated, but `run_tick_pending` still exists today for the not-yet-relocated drains.
 
 #### 5.7.6 Paint-time savings — deferred-decision rationale
 
@@ -1470,7 +1481,7 @@ Lattice's "everything is a buffer" model means the active pane *is* the cursor-c
 
 **The reactive *semantic* is already delivered by the existing primitives.** `Arc<ArcSwapOption<T>>` (§5.7.3) and `PerBufferCache<T>` (§5.7.3) propagate writes across all clones atomically. The renderer's `rs.lsp.foo.load()` sees the spawned task's write within nanoseconds, no re-publication of `RenderState` needed. What `cx.notify()` would add on top is a *paint-side short-circuit* — and that only pays when the paint work it skips is substantial relative to the bookkeeping cost.
 
-**Simpler alternatives target the same idle-frame savings.** Per-pane input-keyed cache (`(buffer_id, cursor.line, scroll, viewport_dims, theme_epoch, syntax_version, diag_version)` → rendered output) is a strictly simpler design: no dirty bits, no event-bus subscriptions, no `Arc::ptr_eq` logic — just a hash-of-inputs cache. Cache key invalidates correctly: cursor moved → recompute (which is exactly what we want). Glyph atlas + line-layout caching at the rendering crate level (cosmic-text / parley already do shaping cache; we'd extend per-line layout) targets the same hot path more locally. Tree-sitter highlight span cache keyed on `(buffer_id, range, syntax_version)` is the syntax-side equivalent.
+**Simpler alternatives target the same idle-frame savings.** Per-pane input-keyed cache (`(buffer_id, cursor.line, scroll, viewport_dims, theme_epoch, syntax_version, diag_version)` → rendered output) is a strictly simpler design: no dirty bits, no event-bus subscriptions, no `Arc::ptr_eq` logic — just a hash-of-inputs cache. Cache key invalidates correctly: cursor moved → recompute (which is exactly what we want). Glyph atlas + line-layout caching at the renderer-peer level (GPUI's text system already caches shaping; the cell-grid caches incremental builds) targets the same hot path more locally. Tree-sitter highlight span cache keyed on `(buffer_id, range, syntax_version)` is the syntax-side equivalent.
 
 **Decision posture.** No commitment to adopt cx.notify()-shaped reactive publication. The substrate (§5.7.2 + §5.7.3) is already reactive in the load-bearing sense; further paint-side savings are an *open* question, gated on bench data:
 

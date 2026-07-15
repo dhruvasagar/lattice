@@ -35,6 +35,9 @@ lattice-picker = { path = "../lattice-picker" }
 # `EventBus` — `spawn_picker_source` binds the seam actor's crash quarantine to
 # the bus (a plugin trap fires `PluginCrashed`, host stays live).
 lattice-runtime = { path = "../lattice-runtime" }
+# The config registry (already interior-mutable) that config plugins register
+# their typed options into via `spawn_config_plugin`.
+lattice-config = { path = "../lattice-config" }
 # The shared runtime handle the loader drives seam actors + off-boot discovery
 # on (never the current-thread editor actor).
 tokio = { workspace = true, features = ["rt", "rt-multi-thread"] }

@@ -130,7 +130,7 @@ impl PluginHost {
         tier: TrustTier,
         budget: PluginBudget,
         registry: &Arc<ConfigRegistry>,
-    ) -> Result<Vec<String>, PluginHostError> {
+    ) -> Result<(crate::PluginId, Vec<String>), PluginHostError> {
         let (wasi, outcome, _data_dir) = self.build_plugin_wasi(manifest, tier);
         for denied in &outcome.denied {
             tracing::warn!(
@@ -159,7 +159,14 @@ impl PluginHost {
                 source: source.into(),
             })?;
 
-        Ok(store.data_mut().config_contributions.drain(..).collect())
+        // A host-issued id so a config-only plugin keys `:list-plugins` /
+        // provenance uniformly with the seam plugins that mint one (picker /
+        // event). The config contributions register into `ConfigRegistry` by
+        // name, not by `SourceLayer::Plugin(id)`, so this id backs the loader's
+        // loaded-record, not per-option provenance.
+        let id = self.alloc_id();
+        let names = store.data_mut().config_contributions.drain(..).collect();
+        Ok((id, names))
     }
 }
 

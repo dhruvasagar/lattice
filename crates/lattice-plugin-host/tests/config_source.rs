@@ -53,7 +53,7 @@ async fn plugin_declares_options_into_the_shared_registry_end_to_end() {
     // entries, so assertions are hermetic.
     let registry = Arc::new(ConfigRegistry::default());
 
-    let names = host
+    let (_id, names) = host
         .spawn_config_plugin(
             &component,
             &manifest,

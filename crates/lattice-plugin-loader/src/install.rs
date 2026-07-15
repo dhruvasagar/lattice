@@ -11,11 +11,12 @@
 
 use std::sync::Arc;
 
+use lattice_config::ConfigRegistry;
 use lattice_mode::{PluginMetaSinkHandle, SubsystemBoot};
 use lattice_picker::PickerRegistryHandle;
 use lattice_plugin_host::{PluginHost, TrustTier};
 
-use crate::{PluginLoader, PluginLoaderHandle};
+use crate::{LoaderServices, PluginLoader, PluginLoaderHandle};
 
 pub fn install(boot: &mut impl SubsystemBoot) {
     let host = match PluginHost::new() {
@@ -31,24 +32,22 @@ pub fn install(boot: &mut impl SubsystemBoot) {
 
     // Capture the editor environment from the generic boot seams. `service`
     // returns `Arc<Handle-alias>` (double-Arc); unwrap one layer to the handle.
-    let picker_registry = boot
-        .service::<PickerRegistryHandle>()
-        .map(|h| (*h).clone());
-    let meta_sink = boot.service::<PluginMetaSinkHandle>().map(|h| (*h).clone());
-    let Some(picker_registry) = picker_registry else {
+    let services = LoaderServices {
+        runtime: Some(boot.runtime_handle().clone()),
+        bus: Some(boot.event_bus().clone()),
+        picker_registry: boot.service::<PickerRegistryHandle>().map(|h| (*h).clone()),
+        config_registry: boot.service::<Arc<ConfigRegistry>>().map(|h| (*h).clone()),
+        meta_sink: boot.service::<PluginMetaSinkHandle>().map(|h| (*h).clone()),
+    };
+    if services.picker_registry.is_none() {
         // The host always registers the picker registry; its absence means a
         // boot-order regression. Degrade to no plugin support, logged.
         tracing::warn!("picker registry service missing; the editor runs without plugin support");
         return;
-    };
+    }
 
-    let loader: PluginLoaderHandle = Arc::new(PluginLoader::with_services(
-        host,
-        boot.runtime_handle().clone(),
-        boot.event_bus().clone(),
-        picker_registry,
-        meta_sink,
-    ));
+    let loader: PluginLoaderHandle =
+        Arc::new(PluginLoader::with_services(host, services));
     boot.register_service::<PluginLoaderHandle>(loader.clone());
 
     // Discover + load on-disk plugins OFF the boot thread: a plugin cold-start

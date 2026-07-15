@@ -11,10 +11,11 @@
 
 use std::sync::{Arc, Mutex};
 
+use lattice_config::ConfigRegistry;
 use lattice_mode::PluginMetaSink;
 use lattice_picker::{PickerRegistry, PickerRegistryHandle};
 use lattice_plugin_host::{PluginHost, TrustTier};
-use lattice_plugin_loader::{PluginLoader, discover};
+use lattice_plugin_loader::{LoaderServices, PluginLoader, discover};
 use lattice_runtime::EventBus;
 
 /// The picker fixture component, if the `wasm32-wasip2` build produced it. The
@@ -78,10 +79,13 @@ async fn discovered_picker_plugin_registers_its_source_and_provenance() {
 
     let loader = PluginLoader::with_services(
         temp_host(base.path()),
-        tokio::runtime::Handle::current(),
-        Arc::new(EventBus::new()),
-        picker_registry.clone(),
-        Some(sink.clone() as Arc<dyn PluginMetaSink>),
+        LoaderServices {
+            runtime: Some(tokio::runtime::Handle::current()),
+            bus: Some(Arc::new(EventBus::new())),
+            picker_registry: Some(picker_registry.clone()),
+            meta_sink: Some(sink.clone() as Arc<dyn PluginMetaSink>),
+            ..Default::default()
+        },
     );
 
     // Sanity: discovery finds exactly the one plugin dir.
@@ -107,6 +111,57 @@ async fn discovered_picker_plugin_registers_its_source_and_provenance() {
     assert!(loader.is_loaded("picker-fixture"), "loader tracks it as loaded");
 }
 
+fn config_guest_wasm() -> Option<Vec<u8>> {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../lattice-plugin-host/tests/fixtures/config-guest/target/wasm32-wasip2/release/config_guest.wasm"
+    );
+    std::fs::read(path).ok()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn discovered_config_plugin_registers_its_options() {
+    let Some(wasm) = config_guest_wasm() else {
+        eprintln!("skipping: config-guest wasm not built (no wasm32-wasip2 target)");
+        return;
+    };
+
+    let base = tempfile::tempdir().unwrap();
+    let plugins_dir = base.path().join("plugins");
+    write_plugin_dir(&plugins_dir, "config-fixture", "config", &wasm);
+
+    // A fresh (empty) config registry so the plugin's options are the only entries.
+    let config_registry = Arc::new(ConfigRegistry::default());
+    let sink: Arc<RecordingSink> = Arc::new(RecordingSink::default());
+
+    let loader = PluginLoader::with_services(
+        temp_host(base.path()),
+        LoaderServices {
+            runtime: Some(tokio::runtime::Handle::current()),
+            bus: Some(Arc::new(EventBus::new())),
+            config_registry: Some(config_registry.clone()),
+            meta_sink: Some(sink.clone() as Arc<dyn PluginMetaSink>),
+            ..Default::default()
+        },
+    );
+
+    let n = loader
+        .discover_and_load(&plugins_dir, TrustTier::Bundled)
+        .await;
+    assert_eq!(n, 1, "the config plugin loads");
+
+    // The plugin's typed option is live in the registry (`:set` / `:customize`
+    // treat it uniformly with core options).
+    assert!(
+        config_registry.lookup("config-fixture.enabled").is_some(),
+        "the plugin's option registered into the live config registry"
+    );
+
+    // Provenance recorded, so `:list-plugins` would show the config plugin.
+    assert_eq!(sink.registered.lock().unwrap().len(), 1);
+    assert!(loader.is_loaded("config-fixture"));
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_broken_plugin_dir_is_skipped_without_aborting_discovery() {
     let base = tempfile::tempdir().unwrap();
@@ -126,10 +181,12 @@ async fn a_broken_plugin_dir_is_skipped_without_aborting_discovery() {
 
     let loader = PluginLoader::with_services(
         temp_host(base.path()),
-        tokio::runtime::Handle::current(),
-        Arc::new(EventBus::new()),
-        Arc::new(arc_swap::ArcSwap::from_pointee(PickerRegistry::new())),
-        None,
+        LoaderServices {
+            runtime: Some(tokio::runtime::Handle::current()),
+            bus: Some(Arc::new(EventBus::new())),
+            picker_registry: Some(Arc::new(arc_swap::ArcSwap::from_pointee(PickerRegistry::new()))),
+            ..Default::default()
+        },
     );
     assert_eq!(loader.discover_and_load(&plugins_dir, TrustTier::Bundled).await, 0);
 }

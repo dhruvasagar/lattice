@@ -4411,6 +4411,7 @@ version = "0.1.0"
 dependencies = [
  "arc-swap",
  "dirs 5.0.1",
+ "lattice-config",
  "lattice-mode",
  "lattice-picker",
  "lattice-plugin-host",

@@ -48,6 +48,7 @@ pub use install::install;
 
 use std::sync::{Arc, Mutex};
 
+use lattice_config::ConfigRegistry;
 use lattice_mode::PluginMetaSinkHandle;
 use lattice_picker::{PickerRegistryHandle, PickerSourceGenerator};
 use lattice_plugin_host::{
@@ -89,21 +90,25 @@ struct LoadedRecord {
 }
 
 /// The editor-side runtime environment the loader drives seams against —
-/// captured once from the boot context in [`install`]. `Option` because the
-/// minimal test constructor ([`PluginLoader::new`]) exercises only the
-/// lifecycle spine (no seams); a seam drain with an absent handle is a logged
-/// skip, never a panic.
-#[derive(Default)]
-struct LoaderEnv {
+/// captured once from the boot context in [`install`], or built directly by a
+/// headless harness / test. Every handle is `Option` because a given consumer
+/// wires only the seams it exercises; a seam drain with an absent handle is a
+/// logged skip, never a panic. Grows one field per seam without churning the
+/// [`PluginLoader::with_services`] signature.
+#[derive(Default, Clone)]
+pub struct LoaderServices {
     /// The shared multi-thread runtime handle (seam actors + discovery run here,
     /// never the current-thread editor actor).
-    runtime: Option<Handle>,
-    /// The typed event bus — seam-actor crash quarantine binds to it.
-    bus: Option<Arc<EventBus>>,
+    pub runtime: Option<Handle>,
+    /// The typed event bus — seam-actor crash quarantine binds to it, and event
+    /// plugins subscribe through it.
+    pub bus: Option<Arc<EventBus>>,
     /// The runtime-mutable picker registry (RCU-register loaded picker sources).
-    picker_registry: Option<PickerRegistryHandle>,
+    pub picker_registry: Option<PickerRegistryHandle>,
+    /// The config registry (already interior-mutable) plugin options register into.
+    pub config_registry: Option<Arc<ConfigRegistry>>,
     /// The provenance sink — records `PluginId → name/doc` for `:list-plugins`.
-    meta_sink: Option<PluginMetaSinkHandle>,
+    pub meta_sink: Option<PluginMetaSinkHandle>,
 }
 
 /// The plugin loader subsystem: owns the runtime, the loaded-plugin set, and the
@@ -112,7 +117,7 @@ struct LoaderEnv {
 /// [`PluginLoaderHandle`] service so the user surface reaches it generically.
 pub struct PluginLoader {
     host: Arc<PluginHost>,
-    env: LoaderEnv,
+    env: LoaderServices,
     /// `std::sync::Mutex` (not `tokio`): taken only to push / read the loaded
     /// set *after* the async load work completes, never across an `.await`.
     loaded: Mutex<Vec<LoadedRecord>>,
@@ -147,32 +152,19 @@ impl PluginLoader {
     pub fn new(host: Arc<PluginHost>) -> Self {
         Self {
             host,
-            env: LoaderEnv::default(),
+            env: LoaderServices::default(),
             loaded: Mutex::new(Vec::new()),
         }
     }
 
-    /// Construct a loader wired with the editor environment — the seam actors
-    /// run on `runtime`, crash-quarantine binds to `bus`, loaded picker sources
-    /// RCU-register into `picker_registry`, and provenance records through
-    /// `meta_sink` (absent ⇒ no `:list-plugins` entry, still loads). Used by
-    /// [`install`] and by headless harnesses / tests that wire the loader
-    /// without a full boot context.
-    pub fn with_services(
-        host: Arc<PluginHost>,
-        runtime: Handle,
-        bus: Arc<EventBus>,
-        picker_registry: PickerRegistryHandle,
-        meta_sink: Option<PluginMetaSinkHandle>,
-    ) -> Self {
+    /// Construct a loader wired with the editor environment ([`LoaderServices`])
+    /// — the boot path ([`install`]) and headless harnesses / tests. The seams a
+    /// plugin declares are driven against the wired handles; an absent handle
+    /// makes that seam a logged skip.
+    pub fn with_services(host: Arc<PluginHost>, services: LoaderServices) -> Self {
         Self {
             host,
-            env: LoaderEnv {
-                runtime: Some(runtime),
-                bus: Some(bus),
-                picker_registry: Some(picker_registry),
-                meta_sink,
-            },
+            env: services,
             loaded: Mutex::new(Vec::new()),
         }
     }
@@ -251,6 +243,16 @@ impl PluginLoader {
                     PluginSeam::PickerSource => {
                         let id = self
                             .drain_picker(&component, manifest, tier, &mut record)
+                            .await?;
+                        loaded_id.get_or_insert(id);
+                    }
+                    PluginSeam::Config => {
+                        let id = self.drain_config(&component, manifest, tier).await?;
+                        loaded_id.get_or_insert(id);
+                    }
+                    PluginSeam::Events => {
+                        let id = self
+                            .drain_events(&component, manifest, tier, &mut record)
                             .await?;
                         loaded_id.get_or_insert(id);
                     }
@@ -342,6 +344,65 @@ impl PluginLoader {
 
         record.tasks.push(task);
         record.picker_sources.push(source_id);
+        Ok(id)
+    }
+
+    /// Drain the config seam: run the guest's `register-options` against the live
+    /// config registry (already interior-mutable — `:set` / `:describe-option` /
+    /// `:customize` treat plugin options uniformly). One-shot: no actor to spawn.
+    async fn drain_config(
+        &self,
+        component: &lattice_plugin_host::Component,
+        manifest: &PluginManifest,
+        tier: TrustTier,
+    ) -> Result<PluginId, PluginLoaderError> {
+        let registry = self
+            .env
+            .config_registry
+            .as_ref()
+            .ok_or(PluginLoaderError::NotWired("config"))?;
+        let (id, names) = self
+            .host
+            .spawn_config_plugin(component, manifest, tier, PluginBudget::default(), registry)
+            .await?;
+        tracing::debug!(plugin = %manifest.id, options = ?names, "config plugin registered options");
+        Ok(id)
+    }
+
+    /// Drain the events seam: register the guest's subscriptions on the bus and
+    /// drive its `on-event` actor on the runtime (off the keystroke path). A
+    /// trapping handler quarantines the plugin without touching the publisher or
+    /// other subscribers (the event-seam isolation contract).
+    async fn drain_events(
+        &self,
+        component: &lattice_plugin_host::Component,
+        manifest: &PluginManifest,
+        tier: TrustTier,
+        record: &mut LoadedRecord,
+    ) -> Result<PluginId, PluginLoaderError> {
+        let bus = self
+            .env
+            .bus
+            .as_ref()
+            .ok_or(PluginLoaderError::NotWired("events"))?;
+        let runtime = self
+            .env
+            .runtime
+            .as_ref()
+            .ok_or(PluginLoaderError::NotWired("events"))?;
+
+        let (subscriptions, actor) = self
+            .host
+            .spawn_event_plugin(component, manifest, tier, PluginBudget::event(), bus)
+            .await?;
+        let id = actor.id();
+        let task = runtime.spawn(actor.run());
+        record.tasks.push(task);
+        tracing::debug!(
+            plugin = %manifest.id,
+            subscriptions = subscriptions.len(),
+            "event plugin subscribed"
+        );
         Ok(id)
     }
 }

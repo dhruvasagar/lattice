@@ -35,7 +35,8 @@ pub mod source_registration;
 pub mod traits;
 
 pub use crate::builtins::annotators::{
-    DocSnippetAnnotator, KeybindingAnnotator, KeymapReverseLookup, KindLabelAnnotator,
+    DocSnippetAnnotator, KeybindingAnnotator, KeybindingSource, KeymapReverseLookup,
+    KindLabelAnnotator,
 };
 pub use crate::builtins::matchers::{
     FuzzyDisplayMatcher, FuzzyMatcher, PrefixMatcher, SubstringMatcher,

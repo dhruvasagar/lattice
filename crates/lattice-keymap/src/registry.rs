@@ -326,7 +326,12 @@ pub struct KeymapRegistry {
     ///   reachable via `:describe-command`. MRU-influenced
     ///   "pick the chord the user actually uses" is a
     ///   post-v1 follow-up flagged in marginalia.md §8.
-    pub(crate) reverse_cache: Arc<ArcSwap<HashMap<CommandId, Vec<KeyChord>>>>,
+    /// - **Layer provenance.** Each entry now carries the
+    ///   [`KeymapLayer`] alongside the chord so the completion
+    ///   margin can show which mode provides the binding and
+    ///   filter by active modes (MARG.3).
+    pub(crate) reverse_cache:
+        Arc<ArcSwap<HashMap<CommandId, Vec<(KeyChord, KeymapLayer)>>>>,
 }
 
 impl KeymapRegistry {
@@ -343,9 +348,47 @@ impl KeymapRegistry {
     /// reverse cache. Called by every write site after the
     /// `merged` ArcSwap has been stored. Cheap: walks the
     /// Normal-mode trie once (O(N) over bound chords).
+    ///
+    /// Also walks the gated mode tries (`MinorMode` / `MajorMode`
+    /// layers) that the always-on merged trie excludes — most
+    /// notably emacs-keys-mode chords, which are registered at
+    /// `KeymapLayer::MinorMode(emacs-keys-mode)` and would
+    /// otherwise be invisible to the completion margin's
+    /// `KeybindingAnnotator`.
     fn rebuild_reverse_cache(&self) {
         let merged = self.merged.load();
-        let cache = build_reverse_cache_from_merged(&merged);
+        let mut cache = build_reverse_cache_from_merged(&merged);
+        // K.1.c (2026-05-30): also walk gated mode tries so
+        // MinorMode/MajorMode bindings (e.g. emacs-keys-mode's
+        // <C-x><C-f> → ex:files) appear in the command
+        // completion margin's keybinding annotation column.
+        // MARG.3 (2026-07-15): preserves bound.layer for mode
+        // provenance.
+        let gated = self.gated_mode_tries.load();
+        for per_mode in gated.values() {
+            if let Some(trie) = per_mode.get(&BindingMode::Normal) {
+                trie.walk_bindings(|path, bound| {
+                    let mut chords: Vec<KeyChord> = Vec::with_capacity(path.len());
+                    for seg in path {
+                        match seg {
+                            ChordPattern::Literal(c) => chords.push(*c),
+                            ChordPattern::CharLiteral => return,
+                        }
+                    }
+                    if chords.is_empty() {
+                        return;
+                    }
+                    let layer = bound.layer;
+                    // First-binding-wins: the always-on pass was
+                    // processed first, so a command bound at User
+                    // or Buffer level retains its higher-priority
+                    // chord in the display.
+                    cache
+                        .entry(bound.command.command)
+                        .or_insert_with(|| chords.into_iter().map(|c| (c, layer)).collect());
+                });
+            }
+        }
         self.reverse_cache.store(Arc::new(cache));
     }
 }
@@ -365,13 +408,17 @@ impl Default for KeymapRegistry {
 }
 
 /// MARG.2 (2026-06-03): walk the merged Normal-mode trie and
-/// produce a `CommandId → Vec<KeyChord>` map for the
-/// keybinding annotator. Skips bindings whose chord path
+/// produce a `CommandId → Vec<(KeyChord, KeymapLayer)>` map for
+/// the keybinding annotator. Skips bindings whose chord path
 /// contains `ChordPattern::CharLiteral` (wildcard) since the
 /// marginalia column wants a clean chord-only sequence.
-/// First-binding-wins on collisions.
-fn build_reverse_cache_from_merged(merged: &MergedKeymap) -> HashMap<CommandId, Vec<KeyChord>> {
-    let mut out: HashMap<CommandId, Vec<KeyChord>> = HashMap::new();
+/// First-binding-wins on collisions. The [`KeymapLayer`] from
+/// each [`BoundCommand`](crate::BoundCommand) is preserved for
+/// MARG.3 mode-aware filtering and provenance display.
+fn build_reverse_cache_from_merged(
+    merged: &MergedKeymap,
+) -> HashMap<CommandId, Vec<(KeyChord, KeymapLayer)>> {
+    let mut out: HashMap<CommandId, Vec<(KeyChord, KeymapLayer)>> = HashMap::new();
     let Some(trie) = merged.by_mode.get(&BindingMode::Normal) else {
         return out;
     };
@@ -390,7 +437,10 @@ fn build_reverse_cache_from_merged(merged: &MergedKeymap) -> HashMap<CommandId, 
         if chords.is_empty() {
             return;
         }
-        out.entry(bound.command.command).or_insert(chords);
+        let layer = bound.layer;
+        out.entry(bound.command.command).or_insert_with(|| {
+            chords.into_iter().map(|c| (c, layer)).collect()
+        });
     });
     out
 }
@@ -432,7 +482,9 @@ impl KeymapHandle {
     /// cannot depend on `lattice-completion` (circular dep risk), so
     /// the `KeymapReverseLookupHandle` type lives in `lattice-host`
     /// and obtains the cache via this accessor.
-    pub fn reverse_cache_arc(&self) -> Arc<ArcSwap<HashMap<CommandId, Vec<KeyChord>>>> {
+    pub fn reverse_cache_arc(
+        &self,
+    ) -> Arc<ArcSwap<HashMap<CommandId, Vec<(KeyChord, KeymapLayer)>>>> {
         Arc::clone(&self.registry.reverse_cache)
     }
 

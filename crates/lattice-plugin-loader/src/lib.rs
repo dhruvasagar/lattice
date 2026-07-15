@@ -26,15 +26,26 @@
 //! other subsystem installs through, so wiring it into the editor is one line
 //! ([`install`]) and zero host internals.
 //!
-//! # Status (PL8.B, picker seam)
+//! # Status (PL8.B — picker / config / events / grammar seams)
 //!
-//! On-disk discovery + the picker seam→registry drain are live: a picker plugin
-//! dropped in `<data>/lattice/plugins/` loads at boot, its source RCU-registers
-//! into the [`PickerRegistryHandle`](lattice_picker::PickerRegistryHandle), and
-//! `:list-plugins` shows it (via the [`PluginMetaSink`] seam). The other seams
-//! (completion, grammar, events, modes, config) declare-but-warn until their
-//! registries land runtime registration; decoration caching is PL8.E; the
-//! ex-command surface + teardown is PL8.C.
+//! On-disk discovery + four seam→registry drains are live: a plugin dropped in
+//! `<data>/lattice/plugins/` loads at boot and its contribution is reachable.
+//! - **picker** RCU-registers its source into the
+//!   [`PickerRegistryHandle`](lattice_picker::PickerRegistryHandle);
+//! - **config** registers its typed options into the live
+//!   [`ConfigRegistry`](lattice_config::ConfigRegistry);
+//! - **events** subscribes its handlers on the [`EventBus`];
+//! - **grammar** registers its motions / operators / text-objects / ex-commands
+//!   into the runtime-mutable
+//!   [`CommandRegistryHandle`](lattice_grammar::CommandRegistryHandle) (B3a/B3b)
+//!   — the sync-trampoline seam, so the dispatcher fires it on keystroke off a
+//!   wait-free `.load()` snapshot with no actor task.
+//!
+//! Each records provenance for `:list-plugins` via the [`PluginMetaSink`] seam.
+//! The remaining seams (completion, modes) declare-but-warn until their drains
+//! land (modes is the next slice, on B2's runtime-mutable
+//! [`ModeRegistryHandle`](lattice_mode::ModeRegistryHandle)); decoration caching
+//! is PL8.E; the ex-command surface + teardown is PL8.C.
 //!
 //! Design: `docs/dev/architecture/plugin-host.md`,
 //! `docs/dev/architecture/boot-composition.md`. Slice plan:
@@ -49,6 +60,7 @@ pub use install::install;
 use std::sync::{Arc, Mutex};
 
 use lattice_config::ConfigRegistry;
+use lattice_grammar::CommandRegistryHandle;
 use lattice_mode::PluginMetaSinkHandle;
 use lattice_picker::{PickerRegistryHandle, PickerSourceGenerator};
 use lattice_plugin_host::{
@@ -107,6 +119,12 @@ pub struct LoaderServices {
     pub picker_registry: Option<PickerRegistryHandle>,
     /// The config registry (already interior-mutable) plugin options register into.
     pub config_registry: Option<Arc<ConfigRegistry>>,
+    /// The runtime-mutable command registry (B3a/B3b) a grammar plugin's
+    /// motions / operators / text-objects / ex-commands register into. The
+    /// dispatch path (`DocumentActor`, host-side ex-command / completion reads)
+    /// snapshots it wait-free with `.load()`, so a plugin registered at runtime
+    /// is live for a buffer on its next keystroke.
+    pub command_registry: Option<CommandRegistryHandle>,
     /// The provenance sink — records `PluginId → name/doc` for `:list-plugins`.
     pub meta_sink: Option<PluginMetaSinkHandle>,
 }
@@ -256,6 +274,10 @@ impl PluginLoader {
                             .await?;
                         loaded_id.get_or_insert(id);
                     }
+                    PluginSeam::Grammar => {
+                        let id = self.drain_grammar(&component, manifest, tier)?;
+                        loaded_id.get_or_insert(id);
+                    }
                     other => tracing::warn!(
                         seam = %other,
                         plugin = %manifest.id,
@@ -402,6 +424,74 @@ impl PluginLoader {
             plugin = %manifest.id,
             subscriptions = subscriptions.len(),
             "event plugin subscribed"
+        );
+        Ok(id)
+    }
+
+    /// Drain the grammar seam: instantiate the `grammar-plugin` component, drive
+    /// its `register-grammar` export, and register the resulting native specs
+    /// into the runtime-mutable command registry (B3a/B3b).
+    ///
+    /// The grammar seam is the **synchronous** one (the PH7.7 fork): each
+    /// contributed motion / operator / text-object / ex-command carries a sync
+    /// trampoline the dispatcher fires on keystroke, so — unlike the async actor
+    /// seams (picker / events) — there is *no* actor `run()` loop to spawn. The
+    /// command registry itself owns the guest `Store` (inside the boxed
+    /// trampolines the specs carry), so registering the set is all that keeps the
+    /// plugin's grammar alive; teardown (PL8.C) unregisters by `plugin_id`.
+    ///
+    /// Registration is **load → clone → register → store**, *not* an
+    /// [`rcu`](arc_swap::ArcSwap::rcu): [`register_all`] consumes the set (the
+    /// specs own non-`Clone` boxed trampolines) so it cannot run inside a
+    /// retrying `rcu` closure. B3a made `CommandRegistry: Clone` (Arc'd spec
+    /// closures) precisely so this snapshot clone is cheap (Arc bumps, no deep
+    /// copy). Loads are serialized — boot discovery is a sequential
+    /// [`discover_and_load`](Self::discover_and_load) loop, and the PL8.C
+    /// `:plugin-load` ex-command dispatches one at a time — so the load→store
+    /// window carries no lost-write race against a concurrent grammar
+    /// registration. A malformed spec fails loudly with `PluginHostError`
+    /// (mapped to [`PluginLoaderError::Host`]); a *runtime* `apply` trap degrades
+    /// to a graceful no-op inside the trampoline (`CommandError::Plugin`), never
+    /// a host crash.
+    ///
+    /// [`register_all`]: lattice_plugin_host::GrammarContributionSet::register_all
+    fn drain_grammar(
+        &self,
+        component: &lattice_plugin_host::Component,
+        manifest: &PluginManifest,
+        tier: TrustTier,
+    ) -> Result<PluginId, PluginLoaderError> {
+        let bus = self
+            .env
+            .bus
+            .as_ref()
+            .ok_or(PluginLoaderError::NotWired("grammar"))?;
+        let registry = self
+            .env
+            .command_registry
+            .as_ref()
+            .ok_or(PluginLoaderError::NotWired("grammar"))?;
+
+        // SYNC end to end (no async host import to drive) — instantiation +
+        // `register-grammar` run at load time, off the keystroke path (the
+        // sibling `self.host.compile` above is likewise a synchronous call).
+        let set = self
+            .host
+            .instantiate_grammar_plugin(component, manifest, tier, bus)?;
+        let id = set.plugin_id();
+        let count = set.len();
+
+        // load → clone → register → store. `register_all` consumes `set`, so a
+        // retrying `rcu` closure is impossible; the serialized-load invariant
+        // (doc above) makes the plain swap race-free in practice.
+        let mut next = (**registry.load()).clone();
+        set.register_all(&mut next);
+        registry.store(Arc::new(next));
+
+        tracing::debug!(
+            plugin = %manifest.id,
+            contributions = count,
+            "grammar plugin registered its motions / operators / text-objects / ex-commands"
         );
         Ok(id)
     }

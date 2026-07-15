@@ -37,6 +37,9 @@ pub fn install(boot: &mut impl SubsystemBoot) {
         bus: Some(boot.event_bus().clone()),
         picker_registry: boot.service::<PickerRegistryHandle>().map(|h| (*h).clone()),
         config_registry: boot.service::<Arc<ConfigRegistry>>().map(|h| (*h).clone()),
+        command_registry: boot
+            .service::<lattice_grammar::CommandRegistryHandle>()
+            .map(|h| (*h).clone()),
         meta_sink: boot.service::<PluginMetaSinkHandle>().map(|h| (*h).clone()),
     };
     if services.picker_registry.is_none() {

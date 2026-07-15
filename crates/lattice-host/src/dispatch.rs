@@ -37409,7 +37409,7 @@ mod tests {
     /// default-empty `Arc<ModeRegistry>` before any session
     /// opens.
     fn editor_with_diff_mode_registered() -> crate::editor::Editor {
-        let mut editor = crate::editor::Editor::default();
+        let editor = crate::editor::Editor::default();
         let mut registry = lattice_mode::ModeRegistry::new();
         crate::diff::mode::register_diff_modes(&mut registry);
         editor.mode_registry.store(std::sync::Arc::new(registry));

@@ -186,7 +186,7 @@ plugins yet.
 > 73s. No bench artefact: PL8.A is boot-only (runs once, off the keystroke
 > path) — the perf-relevant slice is PL8.E (the hot-path decoration cache).
 
-### PL8.B — On-disk discovery + load orchestration  📝
+### PL8.B — On-disk discovery + load orchestration  🚧
 - Discovery: resolve the plugins dir (`dirs`-based, `<data>/lattice/plugins/`),
   scan for components + their `PluginManifest` TOML, parse (`PluginManifest::from_toml_str`).
 - Orchestration in the loader: per discovered plugin, `compile → instantiate_plugin`
@@ -205,6 +205,41 @@ plugins yet.
 - **Exit:** a plugin dropped in the plugins dir loads at boot and its contribution is
   live (`:list-plugins` shows it; a picker/grammar/completion contribution is
   reachable); a broken plugin is skipped with a logged reason.
+
+> **Progress.** A seam can only register at runtime once its native registry is
+> runtime-mutable, so PL8.B lands as a **registry-conversion → drain** pair per
+> seam (the enabler makes the registry an `ArcSwap` handle + registers it as a
+> boot service; the drain consumes it in the loader):
+>
+> | Seam | Registry conversion (enabler) | Drain (consumer) |
+> |------|-------------------------------|------------------|
+> | Discovery (`discover` + `discover_and_load`) | — | ✅ `e32aff53` |
+> | Picker | ✅ B1 `31dbd577` (`PickerRegistryHandle`) | ✅ `drain_picker` `e32aff53` |
+> | Config (already interior-mutable) | — | ✅ `drain_config` `a4001d9c` |
+> | Events (`EventBus`, already shared) | — | ✅ `drain_events` `a4001d9c` |
+> | Mode | ✅ B2 `aede19af` (`ModeRegistryHandle`) | 📝 `drain_mode` — **next slice** |
+> | Grammar | ✅ B3a `0b6baded` (Box→Arc spec closures) + B3b `14fe3ce8` (`CommandRegistryHandle`) | ✅ `drain_grammar` |
+> | Completion | 📝 (registers into a `Mode::completion_sources()`, not a standalone registry — different shape) | 📝 |
+>
+> **`drain_grammar` (landed).** The grammar seam is the **synchronous** one (the
+> PH7.7 fork): `instantiate_grammar_plugin` drives the guest's `register-grammar`
+> and returns a `GrammarContributionSet` whose specs each carry a sync trampoline;
+> the command registry itself owns the guest `Store` (inside the boxed
+> trampolines), so there is **no** actor `run()` loop — the dispatcher fires the
+> trampoline on keystroke off a wait-free `.load()` snapshot (the `DocumentActor`
+> read path B3b put in place). Registration is **load → clone → register → store**
+> (*not* `rcu`, because `register_all` consumes the set — the specs are non-`Clone`;
+> B3a made `CommandRegistry: Clone` so the snapshot clone is cheap). `LoaderServices`
+> gains a `command_registry: Option<CommandRegistryHandle>` captured from the boot
+> service (`editor_boot.rs:1500`); a missing handle degrades the grammar seam to a
+> logged skip (`NotWired("grammar")`), never a boot abort. Tests:
+> `grammar_drain.rs` — (1) a discovered grammar plugin registers `down-n` /
+> `to-cursor` / `fails` with unforgeable `SourceLayer::Plugin` provenance and a
+> loaded motion dispatches through `execute_motion_only` off the snapshot (line
+> 1 + count 3 → line 4); (2) a loader with no wired command registry skips the
+> plugin without panicking. No new bench: the drain is load-time (off the
+> keystroke path); the hot-path guard is B3b's `.load()` + the existing
+> `plugin-host/tests/perf_ratchet.rs::grammar_round_trip_stays_within_ceiling`.
 
 ### PL8.C — User-facing load/unload/reload ex-commands  📝
 - `:plugin-load <path>`, `:plugin-unload <id|name>`, `:plugin-reload <id|name>` —

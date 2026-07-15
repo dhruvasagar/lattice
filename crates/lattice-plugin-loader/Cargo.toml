@@ -38,6 +38,13 @@ lattice-runtime = { path = "../lattice-runtime" }
 # The config registry (already interior-mutable) that config plugins register
 # their typed options into via `spawn_config_plugin`.
 lattice-config = { path = "../lattice-config" }
+# The runtime-mutable command registry (`CommandRegistryHandle =
+# Arc<ArcSwap<CommandRegistry>>`, B3a/B3b) a grammar plugin's motions / operators
+# / text-objects / ex-commands RCU-register into via `instantiate_grammar_plugin`
+# → `GrammarContributionSet::register_all`. The sync-trampoline seam, so the
+# registry owns the guest store (no actor task) and the dispatcher fires it on
+# keystroke off a wait-free `.load()` snapshot.
+lattice-grammar = { path = "../lattice-grammar" }
 # The shared runtime handle the loader drives seam actors + off-boot discovery
 # on (never the current-thread editor actor).
 tokio = { workspace = true, features = ["rt", "rt-multi-thread"] }
@@ -59,6 +66,11 @@ tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time
 # crate's lifecycle tests use, referenced in place (single source of truth).
 wat = { workspace = true }
 # The picker-drain e2e builds a fresh `ArcSwap<PickerRegistry>` + a hermetic
-# plugins dir.
+# plugins dir; the grammar-drain e2e builds a fresh `ArcSwap<CommandRegistry>`.
 arc-swap = { workspace = true }
 tempfile = { workspace = true }
+# The grammar-drain e2e dispatches a loaded plugin motion through the real
+# grammar dispatcher (`execute_motion_only`) against a `Buffer` at a `Position`,
+# proving the sync trampoline fires off the wait-free registry snapshot (B3b).
+lattice-core = { path = "../lattice-core" }
+lattice-protocol = { path = "../lattice-protocol" }

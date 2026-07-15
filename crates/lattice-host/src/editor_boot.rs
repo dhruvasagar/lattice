@@ -573,6 +573,14 @@ impl Editor {
         // inbound buses + drains (reshaped onto `boot.inbound::<T>` in BC.8b–e).
         // See `lattice_lsp::install` for the full rationale.
         lattice_lsp::install(&mut boot);
+        // Phase 8 (PL8.A): the plugin loader. Stands the wasmtime runtime up and
+        // registers the `PluginLoaderHandle` service; PL8.B drives on-disk
+        // discovery + load off the boot thread. This is the first subsystem
+        // whose install pulls the plugin *runtime* into the editor (the host was
+        // wasmtime-free through Phase 7 — only the `lattice-plugin-api` catalog).
+        // A host that fails to build degrades to no-plugin-support, logged, never
+        // a failed boot — see `lattice_plugin_loader::install`.
+        lattice_plugin_loader::install(&mut boot);
 
         // BC.3a: freeze the mode registry into its shared `Arc` BEFORE
         // `register_mode_toggle_commands`. The toggle helper needs

@@ -184,6 +184,22 @@ fn claude_code_service_present_at_boot() {
 }
 
 #[test]
+fn plugin_loader_service_present_at_boot() {
+    // PL8.A: `lattice_plugin_loader::install` stands the wasmtime runtime up and
+    // registers the loader handle. Pinned here so a later boot restructure (or a
+    // plugin-host build regression) that drops the loader fails BEFORE it lands.
+    // Registered as `PluginLoaderHandle` (= `Arc<PluginLoader>`), looked up with
+    // the same `T` per the ServiceRegistry Arc/TypeId rule.
+    assert!(
+        boot()
+            .services
+            .get::<lattice_plugin_loader::PluginLoaderHandle>()
+            .is_some(),
+        "PluginLoaderHandle must be registered at boot (the editor instantiates the plugin host)"
+    );
+}
+
+#[test]
 fn generic_host_services_present_at_boot() {
     // These generic primitives are exactly what BC.3's Phase A will own and
     // hand to subsystems via `BootContext`; pin them so the Phase split does

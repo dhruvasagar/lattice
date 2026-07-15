@@ -45,6 +45,15 @@ lattice-grammar = { path = "../lattice-grammar" }
 # introspection WITHOUT depending on the heavy `lattice-plugin-host` runtime --
 # the no-per-frame-WASM invariant (plugin-host PH7.5) stays intact.
 lattice-plugin-api = { path = "../lattice-plugin-api" }
+# Phase 8 (PL8.A): the editor-side plugin loader. This is the FIRST edge that
+# pulls the wasmtime runtime (`lattice-plugin-host`, transitively) into the
+# editor binary -- Phase 7 kept the host wasmtime-free by depending only on the
+# `lattice-plugin-api` catalog above. The loader installs through the generic
+# `SubsystemBoot` seam (one line in the Phase-B list), so this dep adds no
+# `Editor::` method. The no-per-frame-WASM guard (plugin-host PH7.5) anticipates
+# this transitive host->plugin-host edge: it checks only DIRECT renderer deps,
+# and all plugin interaction stays host-mediated + off-thread.
+lattice-plugin-loader = { path = "../lattice-plugin-loader" }
 lattice-protocol = { path = "../lattice-protocol" }
 # K.3 (2026-06-07): keymap types moved to lattice-keymap
 lattice-keymap = { path = "../lattice-keymap" }

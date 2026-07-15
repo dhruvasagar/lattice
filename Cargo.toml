@@ -30,6 +30,7 @@ members = [
 	"crates/lattice-diff",
 	"crates/lattice-agent",
 	"crates/lattice-plugin-host",
+	"crates/lattice-plugin-loader",
 	"crates/lattice-plugin-api",
 	"crates/lattice-plugin-sdk",
 	"crates/lattice-plugin-sdk-derive",

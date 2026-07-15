@@ -4236,6 +4236,7 @@ dependencies = [
  "lattice-oil",
  "lattice-picker",
  "lattice-plugin-api",
+ "lattice-plugin-loader",
  "lattice-protocol",
  "lattice-runtime",
  "lattice-snippet",
@@ -4400,6 +4401,18 @@ dependencies = [
  "tracing",
  "wasmtime",
  "wasmtime-wasi",
+ "wat",
+]
+
+[[package]]
+name = "lattice-plugin-loader"
+version = "0.1.0"
+dependencies = [
+ "lattice-mode",
+ "lattice-plugin-host",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
  "wat",
 ]
 

@@ -1,0 +1,44 @@
+[package]
+name = "lattice-plugin-loader"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# Phase 8 (PL8.A): the editor-side plugin loader. Phase 7 shipped the plugin
+# *runtime* (`lattice-plugin-host`) as a substrate-neutral "engine + seams"
+# crate that knows nothing about the editor. This crate is the SUBSYSTEM that
+# composes the runtime with the editor's native registries -- discovery, load
+# orchestration (compile -> instantiate -> activate -> drain each seam into its
+# registry), the loaded-plugin state, and the user-facing load/unload/reload
+# surface. It installs through the same `SubsystemBoot` seam every other
+# subsystem uses (`lattice_plugin_loader::install(&mut boot)`), so wiring it
+# into the host adds ZERO `Editor::` methods (the mode-ownership acid test).
+#
+# Design: docs/dev/architecture/plugin-host.md (Sec.5 seam->registry drain,
+# Sec.8 lifecycle) + docs/dev/architecture/boot-composition.md (the install
+# contract). Slice plan: docs/dev/operations/slice-plans/plugin-loader.md.
+
+[dependencies]
+# The Phase-7 runtime: the wasmtime engine, the WIT API, the capability/fuel/
+# crash model, and every extension seam. PL8.A drives its lifecycle spine
+# (`compile` / `instantiate_plugin` / `activate`); PL8.B spawns its seam actors.
+lattice-plugin-host = { path = "../lattice-plugin-host" }
+# The `SubsystemBoot` install surface (below every subsystem crate; naming the
+# host's concrete `BootContext` would be a dependency cycle). The loader reaches
+# the runtime pool + native registries through this trait, never the host.
+lattice-mode = { path = "../lattice-mode" }
+# Typed load-error surface (no panics on any load path -- the four-artefact
+# graceful-error clause; a bad plugin is logged + skipped, never fatal).
+thiserror = { workspace = true }
+# One-shot user-actionable load events ("plugin loaded") + degraded-load warns.
+tracing = { workspace = true }
+
+[dev-dependencies]
+# Drives the async lifecycle spine (`instantiate_plugin` / `activate` are
+# `async fn`; the lib owns no runtime, so the test does).
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time"] }
+# Assembles the no-op lifecycle fixture (`plugin`-world component) from WAT to
+# component bytes for the spine proof -- the same canonical fixture the runtime
+# crate's lifecycle tests use, referenced in place (single source of truth).
+wat = { workspace = true }

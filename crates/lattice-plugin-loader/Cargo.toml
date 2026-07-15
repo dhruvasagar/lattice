@@ -38,6 +38,11 @@ lattice-runtime = { path = "../lattice-runtime" }
 # The config registry (already interior-mutable) that config plugins register
 # their typed options into via `spawn_config_plugin`.
 lattice-config = { path = "../lattice-config" }
+# A completion plugin's `WasmCompletionSource` is wrapped as a
+# `CompletionSourceContribution` (`CompletionSourceKind::Async`) and carried by a
+# loader-contributed universal minor mode's `completion_sources()`, so the native
+# aggregator picks it up like any LSP / snippet source (option A).
+lattice-completion = { path = "../lattice-completion" }
 # The runtime-mutable command registry (`CommandRegistryHandle =
 # Arc<ArcSwap<CommandRegistry>>`, B3a/B3b) a grammar plugin's motions / operators
 # / text-objects / ex-commands RCU-register into via `instantiate_grammar_plugin`

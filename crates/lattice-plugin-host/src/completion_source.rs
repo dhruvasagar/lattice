@@ -10,7 +10,13 @@
 //! `match_and_rank` over them (matching / ranking / annotation stay native).
 //! Option A, locked with Dhruva — see `wit/completion-source.wit`.
 
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
+
 use lattice_completion::candidate::RawCandidate;
+use lattice_completion::source::{AsyncCompletionSource, CandidateSink, InsertContextSnapshot};
+use lattice_protocol::CancellationToken;
 
 use crate::WitBoundary;
 use crate::completion_task::GenerateContext as WitGenerateContext;
@@ -76,5 +82,56 @@ impl WasmCompletionSource {
             Err(host_err) => return Err(format!("completion plugin: {host_err}")),
         };
         wit.into_iter().map(RawCandidate::from_wit).collect()
+    }
+}
+
+impl std::fmt::Debug for WasmCompletionSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WasmCompletionSource")
+            .field("id", &self.id)
+            .finish_non_exhaustive()
+    }
+}
+
+/// PH7.6 → PL8.B: the adapter that lets a WASM completion source ride a mode's
+/// `completion_sources()` like any native async source (LSP's precedent). The
+/// aggregator drives `produce_async` at popup-open / `isIncomplete` refresh; the
+/// async `generate` runs on the source's actor (spawned by the loader on the
+/// multi-thread runtime), **never** the keystroke path — matching / ranking /
+/// annotation stay native (the host runs `match_and_rank` over the pushed
+/// candidates), so paramount #1 holds.
+impl AsyncCompletionSource for WasmCompletionSource {
+    fn produce_async(
+        &self,
+        ctx: InsertContextSnapshot,
+        sink: Arc<dyn CandidateSink>,
+        token: CancellationToken,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+        // Cheap clone (mpsc `Sender` + cached id/doc) — the future outlives the
+        // aggregator's stack frame as it crosses the spawn boundary.
+        let source = self.clone();
+        Box::pin(async move {
+            if token.is_cancelled() {
+                return;
+            }
+            // A host trap / plugin-gone (outer) or a guest WIT `err` (inner) both
+            // collapse to a logged zero-candidate result — never a panic, never a
+            // poisoned popup (§8 graceful degradation).
+            match source.generate(&ctx.query, ctx.case_sensitive).await {
+                Ok(candidates) => {
+                    for candidate in candidates {
+                        if token.is_cancelled() {
+                            return;
+                        }
+                        sink.push(candidate);
+                    }
+                }
+                Err(err) => tracing::debug!(
+                    source = %source.id,
+                    error = %err,
+                    "wasm completion source produced no candidates"
+                ),
+            }
+        })
     }
 }

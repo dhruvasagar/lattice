@@ -219,7 +219,7 @@ plugins yet.
 > | Events (`EventBus`, already shared) | — | ✅ `drain_events` `a4001d9c` |
 > | Mode | ✅ B2 `aede19af` (`ModeRegistryHandle`) | ✅ `drain_mode` |
 > | Grammar | ✅ B3a `0b6baded` (Box→Arc spec closures) + B3b `14fe3ce8` (`CommandRegistryHandle`) | ✅ `drain_grammar` |
-> | Completion | 📝 (registers into a `Mode::completion_sources()`, not a standalone registry — different shape) | 📝 — **next slice** |
+> | Completion | ✅ option A (rides a loader-owned universal carrier mode's `completion_sources()`, not a standalone registry) | ✅ `drain_completion` |
 >
 > **`drain_grammar` (landed).** The grammar seam is the **synchronous** one (the
 > PH7.7 fork): `instantiate_grammar_plugin` drives the guest's `register-grammar`
@@ -264,6 +264,38 @@ plugins yet.
 > resolves only when its mode is active, and provenance is recorded; (2) a loader
 > with no wired mode registry skips the plugin without panicking. No new bench:
 > mode registration is load-time declarative work, off the keystroke path.
+>
+> **`drain_completion` (landed, option A — confirmed with Dhruva).** Completion
+> is mode-attached across the whole editor (the aggregator
+> `recompute_active_completion_sources_for` walks the mode registry calling
+> `completion_sources()`; LSP rides the LSP mode, snippets ride the snippet
+> mode), so a plugin source rides a **mode**, not a parallel registry. Since
+> `ModeRegistry` stores `Arc<dyn DynMode>` (immutable post-registration), the
+> loader owns a tiny `PluginCompletionMode` (universal minor) that carries the
+> wrapped source and registers it — no post-hoc mutation, no join to a separately
+> declared mode, no plugin-host API change. `impl AsyncCompletionSource for
+> WasmCompletionSource` (plugin-host) is the missing adapter: `produce_async`
+> runs the async guest `generate` on the source's actor (spawned on the
+> multi-thread runtime, off the keystroke path) and pushes candidates to the
+> sink; matching / ranking / annotation stay native, so paramount #1 holds. The
+> source is wrapped as a `CompletionSourceContribution` (`Async` kind, default
+> priority 100 — below LSP 200 / snippets 150; a per-plugin priority override is
+> future work) and the carrier mode is RCU-registered into B2's
+> `ModeRegistryHandle`. **Zero host edits** — mode-registry / bus / runtime were
+> already boot services, so the acid test holds trivially. Runtime-visibility
+> caveat: a universal mode contributes only once active + the source cache
+> recomputed (on mode transitions); at boot, discovery precedes buffers so the
+> first cache build includes it — a plugin loaded after buffers are open needs a
+> re-activation + recompute pass that lands with PL8.C. Graceful degradation: a
+> missing service → `NotWired` skip; a carrier-mode id collision aborts the actor
+> + skips loudly; a spawn/connect trap → `PluginLoaderError::Host`. Tests:
+> `completion_drain.rs` — (1) a discovered completion plugin registers the
+> universal carrier mode whose `completion_sources()` surfaces the `keywords`
+> source as an async contribution at priority 100, with provenance recorded; (2)
+> a loader with no wired mode registry skips it without panicking. The
+> async-produce path itself is proven by `plugin-host/tests/completion_source.rs`.
+> This closes the PL8.B seam drains (picker / config / events / grammar / modes /
+> completion); decorations are the separate hot-path slice PL8.E.
 
 ### PL8.C — User-facing load/unload/reload ex-commands  📝
 - `:plugin-load <path>`, `:plugin-unload <id|name>`, `:plugin-reload <id|name>` —

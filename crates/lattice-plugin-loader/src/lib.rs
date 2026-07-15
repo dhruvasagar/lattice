@@ -26,9 +26,9 @@
 //! other subsystem installs through, so wiring it into the editor is one line
 //! ([`install`]) and zero host internals.
 //!
-//! # Status (PL8.B — picker / config / events / grammar / modes seams)
+//! # Status (PL8.B — picker / config / events / grammar / modes / completion)
 //!
-//! On-disk discovery + five seam→registry drains are live: a plugin dropped in
+//! On-disk discovery + six seam→registry drains are live: a plugin dropped in
 //! `<data>/lattice/plugins/` loads at boot and its contribution is reachable.
 //! - **picker** RCU-registers its source into the
 //!   [`PickerRegistryHandle`](lattice_picker::PickerRegistryHandle);
@@ -44,13 +44,17 @@
 //!   [`ModeRegistryHandle`](lattice_mode::ModeRegistryHandle) (B2), each mode's
 //!   keymap binding landing in its own gated `MinorMode` layer on the
 //!   [`KeymapHandle`] — declarative data, so the guest `Store` drops after
-//!   registration (no task, nothing to keep alive).
+//!   registration (no task, nothing to keep alive);
+//! - **completion** wraps its `WasmCompletionSource` as a native async
+//!   `CompletionSourceContribution` carried by a loader-owned universal
+//!   [`PluginCompletionMode`], so the aggregator reads it through
+//!   `Mode::completion_sources()` like any LSP / snippet source (option A —
+//!   completion is mode-attached; the async `generate` runs on a spawned actor,
+//!   off the keystroke path).
 //!
 //! Each records provenance for `:list-plugins` via the [`PluginMetaSink`] seam.
-//! The remaining seam (completion) declares-but-warns until its drain lands (it
-//! registers into a `Mode::completion_sources()`, not a standalone registry — a
-//! different shape); decoration caching is PL8.E; the ex-command surface +
-//! teardown is PL8.C.
+//! That closes the PL8.B seam drains; decoration caching is the separate
+//! hot-path slice PL8.E; the ex-command surface + teardown is PL8.C.
 //!
 //! Design: `docs/dev/architecture/plugin-host.md`,
 //! `docs/dev/architecture/boot-composition.md`. Slice plan:
@@ -64,14 +68,18 @@ pub use install::install;
 
 use std::sync::{Arc, Mutex};
 
+use lattice_completion::{CompletionSourceContribution, CompletionSourceKind, SourceId};
 use lattice_config::ConfigRegistry;
 use lattice_grammar::CommandRegistryHandle;
 use lattice_keymap::KeymapHandle;
-use lattice_mode::{ModeRegistryHandle, PluginMetaSinkHandle};
+use lattice_mode::{
+    ActivationPolicy, CapabilitySet, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind,
+    ModeRegistryHandle, PluginMetaSinkHandle,
+};
 use lattice_picker::{PickerRegistryHandle, PickerSourceGenerator};
 use lattice_plugin_host::{
     LoadedPlugin, ManifestError, PluginBudget, PluginHost, PluginHostError, PluginId,
-    PluginManifest, PluginSeam, TrustTier, WasmPickerSource,
+    PluginManifest, PluginSeam, TrustTier, WasmCompletionSource, WasmPickerSource,
 };
 use lattice_runtime::EventBus;
 use tokio::runtime::Handle;
@@ -176,6 +184,54 @@ pub enum PluginLoaderError {
     /// The plugin declared no seam the loader can drain yet, so nothing loaded.
     #[error("plugin declares no loadable seam")]
     NothingLoaded,
+}
+
+/// Default priority bucket for a plugin completion source — below LSP (200) and
+/// snippets (150), above bare buffer-word sources. A per-plugin priority
+/// override (a manifest field / `completion.source.<id>.priority` option) is
+/// future work; for now every plugin source shares this documented default.
+const PLUGIN_COMPLETION_DEFAULT_PRIORITY: u32 = 100;
+
+/// The loader-owned minor mode that carries a plugin's completion source into
+/// the native aggregator (option A — completion is mode-attached everywhere:
+/// LSP rides the LSP mode, snippets ride the snippet mode). Registered
+/// [`ActivationPolicy::Universal`] so the source contributes on every
+/// completion-capable buffer; `recompute_active_completion_sources_for` walks
+/// the mode registry and picks up [`completion_sources`](Mode::completion_sources)
+/// like any native mode's. A manifest-declared scope (attach to a named
+/// language / major mode instead of universal) is the natural extension.
+#[derive(Debug)]
+struct PluginCompletionMode {
+    id: ModeId,
+    source: CompletionSourceContribution,
+}
+
+impl Mode for PluginCompletionMode {
+    type Guard = ();
+
+    fn id(&self) -> ModeId {
+        self.id.clone()
+    }
+
+    fn kind(&self) -> ModeKind {
+        ModeKind::Minor
+    }
+
+    fn activation_policy(&self) -> ActivationPolicy {
+        ActivationPolicy::Universal
+    }
+
+    fn required_capabilities(&self) -> CapabilitySet {
+        CapabilitySet::empty()
+    }
+
+    fn completion_sources(&self) -> Vec<CompletionSourceContribution> {
+        vec![self.source.clone()]
+    }
+
+    fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, ()> {
+        Box::pin(async { Ok(()) })
+    }
 }
 
 impl PluginLoader {
@@ -295,6 +351,12 @@ impl PluginLoader {
                     }
                     PluginSeam::Modes => {
                         let id = self.drain_mode(&component, manifest, tier).await?;
+                        loaded_id.get_or_insert(id);
+                    }
+                    PluginSeam::CompletionSource => {
+                        let id = self
+                            .drain_completion(&component, manifest, tier, &mut record)
+                            .await?;
                         loaded_id.get_or_insert(id);
                     }
                     other => tracing::warn!(
@@ -582,6 +644,107 @@ impl PluginLoader {
             plugin = %manifest.id,
             modes = ?mode_ids,
             "mode plugin registered its minor modes"
+        );
+        Ok(id)
+    }
+
+    /// Drain the completion seam: spawn the source actor, wrap the plugin's
+    /// `WasmCompletionSource` as a native async `CompletionSourceContribution`,
+    /// and register a loader-owned universal [`PluginCompletionMode`] carrying it
+    /// into the runtime-mutable mode registry (option A).
+    ///
+    /// Completion is mode-attached across the whole editor (the aggregator
+    /// `recompute_active_completion_sources_for` walks the mode registry calling
+    /// `completion_sources()`), so the source rides a mode rather than a parallel
+    /// registry. The async `generate` runs on the spawned actor (off the
+    /// keystroke path); matching / ranking / annotation stay native, so paramount
+    /// #1 holds. The `WasmCompletionSource` actor mirrors the picker seam — driven
+    /// on the runtime, recorded on `record` for unload (PL8.C).
+    ///
+    /// Runtime-visibility caveat: a Universal mode contributes on a buffer only
+    /// once it is *active* there and the completion-source cache is recomputed
+    /// (on mode-activation transitions). At boot, discovery runs before buffers
+    /// open, so the first cache build includes it; a plugin loaded *after* buffers
+    /// are open reaches new buffers immediately but needs a re-activation +
+    /// recompute pass for existing ones — that pass lands with the PL8.C
+    /// `:plugin-load` / reload surface. A missing service degrades the seam to a
+    /// logged skip (`NotWired`); a spawn/connect trap maps to
+    /// `PluginLoaderError::Host` and skips only this plugin.
+    async fn drain_completion(
+        &self,
+        component: &lattice_plugin_host::Component,
+        manifest: &PluginManifest,
+        tier: TrustTier,
+        record: &mut LoadedRecord,
+    ) -> Result<PluginId, PluginLoaderError> {
+        let bus = self
+            .env
+            .bus
+            .as_ref()
+            .ok_or(PluginLoaderError::NotWired("completion-source"))?;
+        let runtime = self
+            .env
+            .runtime
+            .as_ref()
+            .ok_or(PluginLoaderError::NotWired("completion-source"))?;
+        let mode_registry = self
+            .env
+            .mode_registry
+            .as_ref()
+            .ok_or(PluginLoaderError::NotWired("completion-source"))?;
+
+        let (client, actor) = self
+            .host
+            .spawn_completion_source(component, manifest, tier, PluginBudget::default(), bus)
+            .await?;
+        // Drive the actor FIRST — `connect` issues a `spec()` guest call over the
+        // client channel, which the actor must be running to answer.
+        let task = runtime.spawn(actor.run());
+        let source = WasmCompletionSource::connect(client).await?;
+        let id = source.plugin_id();
+        let source_id = source.id().to_string();
+
+        let contribution = CompletionSourceContribution {
+            id: SourceId::new(&source_id),
+            default_priority: PLUGIN_COMPLETION_DEFAULT_PRIORITY,
+            auto_trigger: true,
+            trigger_chars: Vec::new(),
+            popup_filter_chord: None,
+            kind: CompletionSourceKind::Async(Arc::new(source)),
+        };
+
+        // RCU-register the carrier mode (load → clone → register → store; B2 made
+        // ModeRegistry an ArcSwap handle + Clone). The `-mode` suffix satisfies
+        // the registry's naming gate.
+        let mode_id = format!("{}-completion-mode", manifest.id);
+        let mode = PluginCompletionMode {
+            id: ModeId::new(&mode_id),
+            source: contribution,
+        };
+        let mut next = (**mode_registry.load()).clone();
+        match next.register(mode) {
+            Ok(_) => mode_registry.store(Arc::new(next)),
+            Err(error) => {
+                // An id collision (a mode already owns `<id>-completion-mode`)
+                // leaves the source unreachable — abort the actor and fail loudly
+                // rather than leak a dangling task or claim a phantom load.
+                task.abort();
+                tracing::warn!(
+                    plugin = %manifest.id,
+                    mode = %mode_id,
+                    %error,
+                    "completion carrier mode id collision; source unreachable, skipped"
+                );
+                return Err(PluginLoaderError::NothingLoaded);
+            }
+        }
+
+        record.tasks.push(task);
+        tracing::debug!(
+            plugin = %manifest.id,
+            source = %source_id,
+            mode = %mode_id,
+            "completion plugin registered its source on a universal carrier mode"
         );
         Ok(id)
     }

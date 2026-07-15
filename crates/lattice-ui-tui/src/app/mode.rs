@@ -917,7 +917,7 @@ mod tests {
         let a = app_with("hi", 5);
         // Every registered mode should have a corresponding
         // ex-command keyword in the registry.
-        for (mode_id, _kind) in a.editor.mode_registry.iter_meta() {
+        for (mode_id, _kind) in a.editor.mode_registry.load().iter_meta() {
             let name = mode_id.to_string();
             assert!(
                 a.editor.registry.id_by_name(&name).is_some(),

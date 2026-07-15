@@ -183,14 +183,16 @@ impl BootContext {
         )
     }
 
-    /// Freeze the mode registry into its shared `Arc` and take it out. Called
-    /// after `register_mode_toggle_commands`. Subsequent `modes_mut` panics.
-    pub fn freeze_mode_registry(&mut self) -> Arc<ModeRegistry> {
-        Arc::new(
+    /// Freeze the mode registry into its shared runtime-mutable handle
+    /// (`ArcSwap`) and take it out. Called after `register_mode_toggle_commands`.
+    /// Subsequent `modes_mut` panics. `ArcSwap` (not a bare `Arc`) so the plugin
+    /// loader can RCU-register a runtime mode; reads snapshot it wait-free.
+    pub fn freeze_mode_registry(&mut self) -> lattice_mode::ModeRegistryHandle {
+        Arc::new(arc_swap::ArcSwap::from_pointee(
             self.mode_registry
                 .take()
                 .expect("mode registry already frozen"),
-        )
+        ))
     }
 
     /// Freeze the service registry into its shared `Arc` and take it out.

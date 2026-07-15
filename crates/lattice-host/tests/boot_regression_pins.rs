@@ -49,7 +49,7 @@ fn boot() -> Editor {
 
 fn assert_mode(editor: &Editor, name: &str) {
     assert!(
-        editor.mode_registry.is_registered(ModeId::new(name)),
+        editor.mode_registry.load().is_registered(ModeId::new(name)),
         "mode `{name}` must be registered at boot"
     );
 }

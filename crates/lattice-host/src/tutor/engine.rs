@@ -108,7 +108,7 @@ impl Editor {
         // Activate tutor-mode on this buffer.
         let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
         let mut active = self.active_modes.remove(&buffer_id).unwrap_or_default();
-        let _ = self.mode_registry.activate_minor(
+        let _ = self.mode_registry.load_full().activate_minor(
             &mut active,
             &self.mode_guards,
             &self.config,

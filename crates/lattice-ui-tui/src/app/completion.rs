@@ -1467,8 +1467,12 @@ mod tests {
         }
 
         let mut a = app_with("hi", 5);
-        let registry = std::sync::Arc::make_mut(&mut a.editor.mode_registry);
-        let mode_id = registry.register(StubMode).expect("register");
+        let mode_id = {
+            let mut registry = (**a.editor.mode_registry.load()).clone();
+            let id = registry.register(StubMode).expect("register");
+            a.editor.mode_registry.store(std::sync::Arc::new(registry));
+            id
+        };
         let buffer_id = a.editor.document_buffer_id;
         a.activate_mode_by_id(buffer_id, mode_id);
 

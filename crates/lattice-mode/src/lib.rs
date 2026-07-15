@@ -166,5 +166,5 @@ pub use crate::modeline::{
 // M.4 dep-inversion: layer-input types live in `lattice-config`
 // now. Re-exported here for compatibility -- callers that
 // imported from `lattice_mode` keep working.
-pub use crate::registry::{ModeRegistry, RegistrationError};
+pub use crate::registry::{ModeRegistry, ModeRegistryHandle, RegistrationError};
 pub use lattice_config::{OptionOverride, OptionOverrideSet, OverridePriority};

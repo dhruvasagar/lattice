@@ -582,7 +582,10 @@ impl Editor {
         // (derefs to `&ModeRegistry`); the registry is fully populated here,
         // so the auto-generated `:<mode-name>` toggles are identical.
         let mode_registry = boot.freeze_mode_registry();
-        register_mode_toggle_commands(boot.commands_mut(), &mode_registry);
+        register_mode_toggle_commands(boot.commands_mut(), &mode_registry.load());
+        // PL8.B: share the runtime-mutable mode registry so the plugin loader can
+        // RCU-register a mode plugin at runtime (`service::<ModeRegistryHandle>()`).
+        boot.register_service::<lattice_mode::ModeRegistryHandle>(mode_registry.clone());
 
         // Slice 8.i action ids: each `CommandKind::Action` entry
         // returns `Effect::AppAction(AppEffect::Foo)`; per-mode
@@ -1349,7 +1352,7 @@ impl Editor {
             Arc::new(lattice_mode::ActionHandlerRegistry::new());
         let global_action_handler_regs = crate::mode_action_handlers::register_mode_action_handlers(
             &action_handlers,
-            &mode_registry,
+            &mode_registry.load(),
             &registry,
         );
 
@@ -1734,7 +1737,7 @@ impl Editor {
                 // than minting a sibling (K.1.b).
                 crate::keymap_mode_contributions::translate_mode_keymaps(
                     &h,
-                    &mode_registry,
+                    &mode_registry.load(),
                     &registry,
                 );
                 // MARG.2 (2026-06-03): now that every layer's

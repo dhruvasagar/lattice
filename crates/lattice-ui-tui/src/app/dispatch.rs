@@ -2679,16 +2679,21 @@ mod tests {
         // M-async.2: validation succeeds synchronously; the
         // lifecycle future is spawned. Yield to the runtime so
         // the spawned task runs and stashes the Guard.
-        let mut a = app_with("hi", 5);
-        let registry = std::sync::Arc::make_mut(&mut a.editor.mode_registry);
+        let a = app_with("hi", 5);
         let test_mode = TestLocalsMode::new();
         let counter = test_mode.counter.clone();
-        let mode_id = registry.register(test_mode).expect("register");
+        let mode_id = {
+            let mut registry = (**a.editor.mode_registry.load()).clone();
+            let id = registry.register(test_mode).expect("register");
+            a.editor.mode_registry.store(std::sync::Arc::new(registry));
+            id
+        };
 
         let mut active = lattice_mode::ActiveModes::new();
         let guards = lattice_mode::GuardStoreHandle::new();
         a.editor
             .mode_registry
+            .load_full()
             .activate_minor(
                 &mut active,
                 &guards,
@@ -2726,16 +2731,21 @@ mod tests {
     async fn mode_deactivate_drops_guard_and_fires_cleanup() {
         // M-async.2: activate spawns; yield to let the Guard land,
         // then deactivate synchronously and observe Drop fired.
-        let mut a = app_with("hi", 5);
-        let registry = std::sync::Arc::make_mut(&mut a.editor.mode_registry);
+        let a = app_with("hi", 5);
         let test_mode = TestLocalsMode::new();
         let counter = test_mode.counter.clone();
-        let mode_id = registry.register(test_mode).expect("register");
+        let mode_id = {
+            let mut registry = (**a.editor.mode_registry.load()).clone();
+            let id = registry.register(test_mode).expect("register");
+            a.editor.mode_registry.store(std::sync::Arc::new(registry));
+            id
+        };
 
         let mut active = lattice_mode::ActiveModes::new();
         let guards = lattice_mode::GuardStoreHandle::new();
         a.editor
             .mode_registry
+            .load_full()
             .activate_minor(
                 &mut active,
                 &guards,
@@ -2757,6 +2767,7 @@ mod tests {
 
         a.editor
             .mode_registry
+            .load_full()
             .deactivate_minor(
                 &mut active,
                 &guards,

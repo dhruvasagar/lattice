@@ -714,7 +714,7 @@ impl Editor {
                             .map(|(id, modes)| (*id, std::sync::Arc::new(modes.clone())))
                             .collect(),
                     ),
-                    mode_registry: self.mode_registry.clone(),
+                    mode_registry: self.mode_registry.load_full(),
                 })
             });
             // PI.4: publish per-buffer resolved options so both peers
@@ -3915,7 +3915,7 @@ impl Editor {
             };
             let mut active = self.active_modes.remove(&buffer_id).unwrap_or_default();
             let res = match change.action {
-                crate::diff::mode::DiffModeAction::Activate => self.mode_registry.activate_minor(
+                crate::diff::mode::DiffModeAction::Activate => self.mode_registry.load_full().activate_minor(
                     &mut active,
                     &self.mode_guards,
                     &self.config,
@@ -3926,7 +3926,7 @@ impl Editor {
                     lattice_mode::CapabilitySet::empty(),
                 ),
                 crate::diff::mode::DiffModeAction::Deactivate => {
-                    self.mode_registry.deactivate_minor(
+                    self.mode_registry.load_full().deactivate_minor(
                         &mut active,
                         &self.mode_guards,
                         &self.event_bus,
@@ -13829,7 +13829,7 @@ impl Editor {
             let want = (minor.active)(buffer_id);
             let have = active.has_minor(minor.mode_id);
             if want && !have {
-                let _ = self.mode_registry.activate_minor(
+                let _ = self.mode_registry.load_full().activate_minor(
                     &mut active,
                     &self.mode_guards,
                     &self.config,
@@ -13840,7 +13840,7 @@ impl Editor {
                     lattice_mode::CapabilitySet::empty(),
                 );
             } else if !want && have {
-                let _ = self.mode_registry.deactivate_minor(
+                let _ = self.mode_registry.load_full().deactivate_minor(
                     &mut active,
                     &self.mode_guards,
                     &self.event_bus,
@@ -13857,7 +13857,7 @@ impl Editor {
         let popup_mode_id = lattice_mode::CompletionPopupMode::mode_id();
         let currently_popup = active.has_minor(popup_mode_id);
         if want_popup && !currently_popup {
-            let _ = self.mode_registry.activate_minor(
+            let _ = self.mode_registry.load_full().activate_minor(
                 &mut active,
                 &self.mode_guards,
                 &self.config,
@@ -13868,7 +13868,7 @@ impl Editor {
                 lattice_mode::CapabilitySet::empty(),
             );
         } else if !want_popup && currently_popup {
-            let _ = self.mode_registry.deactivate_minor(
+            let _ = self.mode_registry.load_full().deactivate_minor(
                 &mut active,
                 &self.mode_guards,
                 &self.event_bus,
@@ -13910,12 +13910,12 @@ impl Editor {
         let mut merged: Vec<lattice_completion::CompletionSourceContribution> = Vec::new();
         if let Some(modes_snapshot) = self.active_modes.get(&buffer).cloned() {
             if let Some(major_id) = modes_snapshot.major()
-                && let Some(major) = self.mode_registry.get(major_id)
+                && let Some(major) = self.mode_registry.load().get(major_id)
             {
                 merged.extend(major.completion_sources());
             }
             for &minor_id in modes_snapshot.minors() {
-                if let Some(minor) = self.mode_registry.get(minor_id) {
+                if let Some(minor) = self.mode_registry.load().get(minor_id) {
                     merged.extend(minor.completion_sources());
                 }
             }
@@ -13962,7 +13962,7 @@ impl Editor {
         buffer_id: BufferId,
         mode_id: lattice_mode::ModeId,
     ) -> Vec<RendererSignal> {
-        let Some(mode) = self.mode_registry.get(mode_id) else {
+        let Some(mode) = self.mode_registry.load().get(mode_id) else {
             self.set_message(
                 EchoLevel::Warn,
                 format!("mode: `{mode_id}` is not registered"),
@@ -13973,7 +13973,7 @@ impl Editor {
         let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
         let mut active = self.active_modes.remove(&buffer_id).unwrap_or_default();
         let result = match kind {
-            lattice_mode::ModeKind::Major => self.mode_registry.activate_major(
+            lattice_mode::ModeKind::Major => self.mode_registry.load_full().activate_major(
                 &mut active,
                 &self.mode_guards,
                 &self.config,
@@ -13983,7 +13983,7 @@ impl Editor {
                 mode_id,
                 lattice_mode::CapabilitySet::empty(),
             ),
-            lattice_mode::ModeKind::Minor => self.mode_registry.activate_minor(
+            lattice_mode::ModeKind::Minor => self.mode_registry.load_full().activate_minor(
                 &mut active,
                 &self.mode_guards,
                 &self.config,
@@ -14035,7 +14035,7 @@ impl Editor {
         buffer_id: BufferId,
         mode_id: lattice_mode::ModeId,
     ) -> Vec<RendererSignal> {
-        let Some(mode) = self.mode_registry.get(mode_id) else {
+        let Some(mode) = self.mode_registry.load().get(mode_id) else {
             self.set_message(
                 EchoLevel::Warn,
                 format!("mode: `{mode_id}` is not registered"),
@@ -14045,13 +14045,13 @@ impl Editor {
         let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
         let mut active = self.active_modes.remove(&buffer_id).unwrap_or_default();
         let result = match mode.kind() {
-            lattice_mode::ModeKind::Major => self.mode_registry.deactivate_major(
+            lattice_mode::ModeKind::Major => self.mode_registry.load_full().deactivate_major(
                 &mut active,
                 &self.mode_guards,
                 &self.event_bus,
                 proto_id,
             ),
-            lattice_mode::ModeKind::Minor => self.mode_registry.deactivate_minor(
+            lattice_mode::ModeKind::Minor => self.mode_registry.load_full().deactivate_minor(
                 &mut active,
                 &self.mode_guards,
                 &self.event_bus,
@@ -14153,10 +14153,10 @@ impl Editor {
             }
             _ => lattice_syntax::Lang::Plain,
         };
-        let major_id = crate::modes::resolve_major_mode(&self.mode_registry, kind, lang);
+        let major_id = crate::modes::resolve_major_mode(&self.mode_registry.load(), kind, lang);
         let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
         let mut active = self.active_modes.remove(&buffer_id).unwrap_or_default();
-        match self.mode_registry.activate_major(
+        match self.mode_registry.load_full().activate_major(
             &mut active,
             &self.mode_guards,
             &self.config,
@@ -14178,7 +14178,7 @@ impl Editor {
             }
         }
         if let Some(minor_id) = crate::modes::default_minor_mode_id_for_buffer_kind(kind)
-            && let Err(e) = self.mode_registry.activate_minor(
+            && let Err(e) = self.mode_registry.load_full().activate_minor(
                 &mut active,
                 &self.mode_guards,
                 &self.config,
@@ -14198,7 +14198,7 @@ impl Editor {
             );
         }
         for minor_id in crate::modes::auto_activated_minors_for_buffer_kind(kind) {
-            if let Err(e) = self.mode_registry.activate_minor(
+            if let Err(e) = self.mode_registry.load_full().activate_minor(
                 &mut active,
                 &self.mode_guards,
                 &self.config,
@@ -14419,7 +14419,7 @@ impl Editor {
                 let Some(kind) = self.buffers.kind_of(buffer_id) else {
                     continue;
                 };
-                for minor_id in self.mode_registry.auto_activatable_minors(&major, kind) {
+                for minor_id in self.mode_registry.load().auto_activatable_minors(&major, kind) {
                     to_activate.push((buffer_id, minor_id));
                 }
             }
@@ -14516,7 +14516,7 @@ impl Editor {
         // (which take `&mut self`) don't conflict with the registry
         // borrow inside `iter_meta`.
         let mirror_ids: Vec<lattice_mode::ModeId> = {
-            let registry = &self.mode_registry;
+            let registry = self.mode_registry.load();
             registry
                 .iter_meta()
                 .filter_map(|(id, _kind)| {
@@ -14558,7 +14558,7 @@ impl Editor {
     pub fn toggle_mode_by_name(&mut self, name: &str) -> Vec<RendererSignal> {
         let mode_id = lattice_mode::ModeId::new(name);
         let buffer_id = self.active_pane_buffer_id();
-        let Some(mode) = self.mode_registry.get(mode_id) else {
+        let Some(mode) = self.mode_registry.load().get(mode_id) else {
             self.set_message(
                 EchoLevel::Error,
                 format!("mode: `{name}` is not a registered mode"),
@@ -14942,7 +14942,7 @@ impl Editor {
     /// needs no seeding and stays valid as the owner appends content.
     fn active_editable_tail(&self) -> Option<lattice_mode::EditableTail> {
         let major = self.active_modes.get(&self.document_buffer_id)?.major()?;
-        self.mode_registry.get(major)?.editable_tail()
+        self.mode_registry.load().get(major)?.editable_tail()
     }
 
     /// AU‑3: should this keystroke edit be rejected by the read-only gate?
@@ -22063,7 +22063,7 @@ impl Editor {
         let mut active = self.active_modes.remove(&buffer_id).unwrap_or_default();
         // Markdown as the MAJOR (the content is markdown; highlighting also
         // rides the `SyntaxHandle` seeded by `register_help_document`).
-        let _ = self.mode_registry.activate_major(
+        let _ = self.mode_registry.load_full().activate_major(
             &mut active,
             &self.mode_guards,
             &self.config,
@@ -22080,7 +22080,7 @@ impl Editor {
         // (hover / signature help) rendered WITH line numbers (the
         // user-reported bug: it bypassed the PU help-mode option path that
         // `:help` goes through). HelpMode is a MINOR, not a major.
-        let _ = self.mode_registry.activate_minor(
+        let _ = self.mode_registry.load_full().activate_minor(
             &mut active,
             &self.mode_guards,
             &self.config,
@@ -22091,7 +22091,7 @@ impl Editor {
             lattice_mode::CapabilitySet::empty(),
         );
         // hover-specific minor (auto-dismiss on cursor motion, …).
-        let _ = self.mode_registry.activate_minor(
+        let _ = self.mode_registry.load_full().activate_minor(
             &mut active,
             &self.mode_guards,
             &self.config,
@@ -26475,7 +26475,7 @@ impl Editor {
             lattice_config::OptionOrigin,
         )> = Vec::with_capacity(modes_snapshot.minors().len() + 1);
         if let Some(major_id) = modes_snapshot.major()
-            && let Some(major) = self.mode_registry.get(major_id)
+            && let Some(major) = self.mode_registry.load().get(major_id)
         {
             mode_contributions.push((
                 major.options(),
@@ -26485,7 +26485,7 @@ impl Editor {
             ));
         }
         for &minor_id in modes_snapshot.minors() {
-            if let Some(minor) = self.mode_registry.get(minor_id) {
+            if let Some(minor) = self.mode_registry.load().get(minor_id) {
                 mode_contributions.push((
                     minor.options(),
                     lattice_config::OptionOrigin::ModeContribution {
@@ -28261,7 +28261,7 @@ impl Editor {
         } else {
             let mut any_contributes = false;
             for minor_id in &minors {
-                let Some(minor) = self.mode_registry.get(*minor_id) else {
+                let Some(minor) = self.mode_registry.load().get(*minor_id) else {
                     continue;
                 };
                 let opts = minor.options();
@@ -28283,7 +28283,7 @@ impl Editor {
         }
 
         match modes_snapshot.major() {
-            Some(major_id) => match self.mode_registry.get(major_id) {
+            Some(major_id) => match self.mode_registry.load().get(major_id) {
                 Some(major) => {
                     let opts = major.options();
                     let contributes = opts.iter().any(|o| o.option_type_id == target_type_id);
@@ -29081,7 +29081,7 @@ impl Editor {
     pub fn build_list_modes_content(&self) -> lattice_help::HelpContent {
         let mut majors: Vec<lattice_mode::ModeId> = Vec::new();
         let mut minors: Vec<lattice_mode::ModeId> = Vec::new();
-        for (id, kind) in self.mode_registry.iter_meta() {
+        for (id, kind) in self.mode_registry.load().iter_meta() {
             match kind {
                 lattice_mode::ModeKind::Major => majors.push(id),
                 lattice_mode::ModeKind::Minor => minors.push(id),
@@ -29138,7 +29138,7 @@ impl Editor {
     /// unknown name.
     pub fn build_describe_mode_content(&mut self, name: &str) -> Option<lattice_help::HelpContent> {
         let mode_id = lattice_mode::ModeId::new(name);
-        let Some(mode) = self.mode_registry.get(mode_id) else {
+        let Some(mode) = self.mode_registry.load().get(mode_id) else {
             self.set_message(EchoLevel::Error, format!("no mode named `{name}`"));
             return None;
         };
@@ -29220,8 +29220,8 @@ impl Editor {
                 .map(|d| (d.type_id)())
                 .collect();
         let mut customisable_modes: Vec<lattice_mode::ModeId> = Vec::new();
-        for (mode_id, _kind) in self.mode_registry.iter_meta() {
-            if let Some(mode) = self.mode_registry.get(mode_id) {
+        for (mode_id, _kind) in self.mode_registry.load().iter_meta() {
+            if let Some(mode) = self.mode_registry.load().get(mode_id) {
                 let opts = mode.options();
                 if opts
                     .iter()
@@ -29338,7 +29338,7 @@ impl Editor {
         mode_name: &str,
     ) -> Option<lattice_help::HelpContent> {
         let mode_id = lattice_mode::ModeId::new(mode_name);
-        let Some(mode) = self.mode_registry.get(mode_id) else {
+        let Some(mode) = self.mode_registry.load().get(mode_id) else {
             self.set_message(EchoLevel::Error, format!("no mode named `{mode_name}`"));
             return None;
         };
@@ -36601,7 +36601,7 @@ mod tests {
         let mut editor = Editor::boot(lattice_core::Document::from_text("line0\nline1\nprompt"));
         let mut reg = ModeRegistry::new();
         reg.register(TailTestMode).expect("register test mode");
-        editor.mode_registry = std::sync::Arc::new(reg);
+        editor.mode_registry.store(std::sync::Arc::new(reg));
         editor.register_invocation_runner(
             TailTestMode::mode_id(),
             Editor::run_editable_tail_invocation,
@@ -37371,7 +37371,7 @@ mod tests {
         let mut editor = crate::editor::Editor::default();
         let mut registry = lattice_mode::ModeRegistry::new();
         crate::diff::mode::register_diff_modes(&mut registry);
-        editor.mode_registry = std::sync::Arc::new(registry);
+        editor.mode_registry.store(std::sync::Arc::new(registry));
         editor
     }
 
@@ -37445,7 +37445,7 @@ mod tests {
                 )]),
             })
             .unwrap();
-        editor.mode_registry = std::sync::Arc::new(registry);
+        editor.mode_registry.store(std::sync::Arc::new(registry));
 
         // Clear any MajorEntered the boot path already queued, so we
         // assert against exactly the event we publish.

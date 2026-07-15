@@ -101,7 +101,7 @@ impl Editor {
     pub fn activate_major_by_id(&mut self, buffer_id: BufferId, major_id: ModeId) {
         let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
         let mut active = self.active_modes.remove(&buffer_id).unwrap_or_default();
-        if let Err(e) = self.mode_registry.activate_major(
+        if let Err(e) = self.mode_registry.load_full().activate_major(
             &mut active,
             &self.mode_guards,
             &self.config,

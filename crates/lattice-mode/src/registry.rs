@@ -82,6 +82,15 @@ pub struct ModeRegistry {
     kind_index: HashMap<BufferKind, ModeId>,
 }
 
+/// The runtime-mutable mode-registry handle the editor holds and shares as a
+/// service. `ArcSwap` gives wait-free reads on the keymap-resolution /
+/// mode-activation paths and copy-on-write RCU writes for runtime mode
+/// registration (a mode plugin loaded via `:plugin-load`, PL8.B). Reads take a
+/// snapshot (`load`/`load_full`); a mode load/unload clones-mutates-stores a
+/// fresh registry. The plugin loader reaches this via
+/// `service::<ModeRegistryHandle>()`.
+pub type ModeRegistryHandle = std::sync::Arc<arc_swap::ArcSwap<ModeRegistry>>;
+
 impl Default for ModeRegistry {
     fn default() -> Self {
         Self::new()

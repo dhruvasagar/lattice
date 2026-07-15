@@ -788,14 +788,19 @@ mod tests {
         let mut a = app_with("hi", 5);
         let buf = a.editor.document_buffer_id;
         // See dispatch.rs notes for `make_mut` vs `get_mut`.
-        let registry = std::sync::Arc::make_mut(&mut a.editor.mode_registry);
-        let mode_id = registry
-            .register(OptionContributingMode::new())
-            .expect("register");
+        let mode_id = {
+            let mut registry = (**a.editor.mode_registry.load()).clone();
+            let id = registry
+                .register(OptionContributingMode::new())
+                .expect("register");
+            a.editor.mode_registry.store(std::sync::Arc::new(registry));
+            id
+        };
         let mut active = lattice_mode::ActiveModes::new();
         let guards = lattice_mode::GuardStoreHandle::new();
         a.editor
             .mode_registry
+            .load_full()
             .activate_minor(
                 &mut active,
                 &guards,
@@ -822,14 +827,19 @@ mod tests {
         let mut a = app_with("hi", 5);
         let buf = a.editor.document_buffer_id;
         // See dispatch.rs notes for `make_mut` vs `get_mut`.
-        let registry = std::sync::Arc::make_mut(&mut a.editor.mode_registry);
-        let mode_id = registry
-            .register(OptionContributingMode::new())
-            .expect("register");
+        let mode_id = {
+            let mut registry = (**a.editor.mode_registry.load()).clone();
+            let id = registry
+                .register(OptionContributingMode::new())
+                .expect("register");
+            a.editor.mode_registry.store(std::sync::Arc::new(registry));
+            id
+        };
         let mut active = lattice_mode::ActiveModes::new();
         let guards = lattice_mode::GuardStoreHandle::new();
         a.editor
             .mode_registry
+            .load_full()
             .activate_minor(
                 &mut active,
                 &guards,

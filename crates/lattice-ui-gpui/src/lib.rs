@@ -1466,7 +1466,7 @@ mod tests {
         // `Editor::boot` populates the mode registry; the entry
         // count is nonzero so the host's mode-registration path
         // ran.
-        assert!(app.editor.mode_registry.iter_meta().next().is_some());
+        assert!(app.editor.mode_registry.load().iter_meta().next().is_some());
         // 5.7.B.6: `GpuiApp::new` now also runs `finalize_boot`
         // which calls `activate_major_for_buffer_kind` for the
         // initial document buffer. The active-modes map should

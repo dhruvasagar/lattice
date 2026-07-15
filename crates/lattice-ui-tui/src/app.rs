@@ -4126,59 +4126,70 @@ mod tests {
         assert!(
             a.editor
                 .mode_registry
+                .load()
                 .is_registered(lattice_mode::TextMode::mode_id())
         );
         // Languages (lattice-syntax)
         assert!(
             a.editor
                 .mode_registry
+                .load()
                 .is_registered(lattice_syntax::RustMode::mode_id())
         );
         assert!(
             a.editor
                 .mode_registry
+                .load()
                 .is_registered(lattice_syntax::PythonMode::mode_id())
         );
         assert!(
             a.editor
                 .mode_registry
+                .load()
                 .is_registered(lattice_syntax::JavascriptMode::mode_id())
         );
         assert!(
             a.editor
                 .mode_registry
+                .load()
                 .is_registered(lattice_syntax::MarkdownMode::mode_id())
         );
         // Buffer-kind majors (lattice-ui-tui)
         assert!(
             a.editor
                 .mode_registry
+                .load()
                 .is_registered(crate::modes::HelpMode::mode_id())
         );
         assert!(
             a.editor
                 .mode_registry
+                .load()
                 .is_registered(crate::modes::FileTreeMode::mode_id())
         );
         assert!(
             a.editor
                 .mode_registry
+                .load()
                 .is_registered(crate::modes::OilMode::mode_id())
         );
         // LSP log majors (lattice-lsp)
         assert!(
             a.editor
                 .mode_registry
+                .load()
                 .is_registered(lattice_lsp::modes::LspLogMode::mode_id())
         );
         assert!(
             a.editor
                 .mode_registry
+                .load()
                 .is_registered(lattice_lsp::modes::LspTraceLogMode::mode_id())
         );
         assert!(
             a.editor
                 .mode_registry
+                .load()
                 .is_registered(lattice_lsp::modes::LspServerLogMode::mode_id())
         );
     }

@@ -38,7 +38,7 @@ use lattice_theme::ThemeRegistryHandle;
 /// post-boot. Upgrade-on-demand: a dropped registry yields an
 /// empty candidate set (no panic).
 pub struct ModesGenerator {
-    pub registry: Weak<lattice_mode::ModeRegistry>,
+    pub registry: Weak<arc_swap::ArcSwap<lattice_mode::ModeRegistry>>,
 }
 
 impl CandidateGenerator for ModesGenerator {
@@ -46,6 +46,7 @@ impl CandidateGenerator for ModesGenerator {
         let Some(registry) = self.registry.upgrade() else {
             return Vec::new();
         };
+        let registry = registry.load();
         let mut out: Vec<RawCandidate> = registry
             .iter_meta()
             .map(|(id, _kind)| RawCandidate {
@@ -233,7 +234,7 @@ impl CandidateGenerator for LspServersGenerator {
 /// single candidate set covers both forms. Same [`Weak`] discipline
 /// as [`ModesGenerator`].
 pub struct CustomizeNamesGenerator {
-    pub registry: Weak<lattice_mode::ModeRegistry>,
+    pub registry: Weak<arc_swap::ArcSwap<lattice_mode::ModeRegistry>>,
 }
 
 impl CandidateGenerator for CustomizeNamesGenerator {
@@ -252,6 +253,7 @@ impl CandidateGenerator for CustomizeNamesGenerator {
             });
         }
         if let Some(registry) = self.registry.upgrade() {
+            let registry = registry.load();
             for (id, _kind) in registry.iter_meta() {
                 out.push(RawCandidate {
                     text: id.as_str().to_string(),

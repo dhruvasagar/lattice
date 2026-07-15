@@ -56,7 +56,7 @@ use lattice_lsp::cache::{
 // via `PerBufferCache::insert_for` / `ArcSwapOption::store`).
 use lattice_lsp::{DiagnosticsLayer, LspLogger, LspSupervisorHandle};
 use lattice_mode::{
-    ActiveModes, BufferLocals, GuardStoreHandle, ModeRegistry, ServiceRegistry,
+    ActiveModes, BufferLocals, GuardStoreHandle, ServiceRegistry,
     TickCallbackRegistration,
 };
 use lattice_picker::{Picker, PickerMruIndex};
@@ -869,7 +869,7 @@ pub struct Editor {
     pub option_cache: OptionCache,
     /// Mode registry (M.1). Owns the catalogue of registered
     /// modes; activation / deactivation routes through here.
-    pub mode_registry: Arc<ModeRegistry>,
+    pub mode_registry: lattice_mode::ModeRegistryHandle,
     /// 2026-05-26: per-mode invocation runner table. Boot
     /// registers a runner function under each mode-id whose
     /// [`lattice_mode::Mode::invocation_runner`] returns
@@ -1768,7 +1768,7 @@ impl Editor {
     ) -> Option<InvocationRunnerFn> {
         let modes = self.active_modes.get(&buffer_id)?;
         for &minor_id in modes.minors().iter().rev() {
-            let mode = self.mode_registry.get(minor_id)?;
+            let mode = self.mode_registry.load().get(minor_id)?;
             if let Some(runner_id) = mode.invocation_runner()
                 && let Some(runner) = self.invocation_runners.get(&runner_id)
             {
@@ -1776,7 +1776,7 @@ impl Editor {
             }
         }
         let major_id = modes.major()?;
-        let mode = self.mode_registry.get(major_id)?;
+        let mode = self.mode_registry.load().get(major_id)?;
         let runner_id = mode.invocation_runner()?;
         self.invocation_runners.get(&runner_id).copied()
     }

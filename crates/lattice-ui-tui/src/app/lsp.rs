@@ -1881,6 +1881,7 @@ mod tests {
         let mut active = a.editor.active_modes.remove(&id).unwrap_or_default();
         a.editor
             .mode_registry
+            .load_full()
             .activate_minor(
                 &mut active,
                 &a.editor.mode_guards,

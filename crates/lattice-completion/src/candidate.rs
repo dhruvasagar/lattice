@@ -314,7 +314,7 @@ pub struct ScoredCandidate {
 /// spans alternatives.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Annotation {
-    /// Category label like `(motion)`, `(command)`, `(file)`.
+    /// Category icon like `→` (motion), `:` (ex-command), `f` (file).
     /// Emitted by `KindLabelAnnotator`. Renderer styles with
     /// the kind-annotation slot.
     Kind(Arc<str>),
@@ -443,11 +443,10 @@ impl Annotation {
 /// GPUI element-tree), but the column widths are universal.
 ///
 /// Display order is variant-fixed via `category_order`:
-/// keybinding -> kind -> doc -> source -> custom (custom
-/// slots come last, grouped at the end). Order matches the
-/// `default_annotators` order in editor_boot post-`4ed7bf0`
-/// (keybinding-first placement fix), so the visible layout
-/// matches the registration order.
+/// keybinding -> source -> kind -> doc -> custom (custom
+/// slots come last, grouped at the end). Source sits right
+/// after keybinding so the user sees which mode contributes
+/// the chord at a glance.
 #[derive(Debug, Clone, Default)]
 pub struct AnnotationColumns {
     /// (category_key, max display width in `chars`)
@@ -514,9 +513,9 @@ impl AnnotationColumns {
 fn category_order(category: &str) -> u8 {
     match category {
         "keybinding" => 0,
-        "kind" => 1,
-        "doc" => 2,
-        "source" => 3,
+        "source" => 1,
+        "kind" => 2,
+        "doc" => 3,
         // MARG §8: file-metadata columns render in `ls`-style order
         // (permissions → size → mtime), to the right of any command
         // columns. Explicit ranks because the default tie-break is
@@ -633,12 +632,12 @@ mod tests {
         // Two candidates, same category, different widths — the
         // column width is the max so every row's cell lines up.
         let cands = vec![
-            candidate_with(vec![Annotation::Kind("motion".into())]),
-            candidate_with(vec![Annotation::Kind("ex".into())]),
+            candidate_with(vec![Annotation::Kind("→".into())]),
+            candidate_with(vec![Annotation::Kind(":".into())]),
         ];
         let cols = AnnotationColumns::from_visible(cands.iter());
         let kind = cols.iter().find(|(c, _)| *c == "kind").unwrap();
-        assert_eq!(kind.1, "motion".chars().count());
+        assert_eq!(kind.1, "→".chars().count());
     }
 
     fn seg(text: &str, slot: &str) -> AnnotationSegment {
@@ -698,10 +697,10 @@ mod tests {
     }
 
     #[test]
-    fn columns_ordered_keybinding_first() {
-        // Registration / display order: keybinding -> kind ->
-        // doc -> source -> custom. The HashMap build is
-        // unordered; `category_order` re-imposes the fixed rank.
+    fn columns_ordered_keybinding_then_source() {
+        // Display order: keybinding -> source -> kind -> doc ->
+        // custom. Source sits right after keybinding so the user
+        // sees the contributing mode at a glance.
         let cands = vec![candidate_with(vec![
             Annotation::DocSnippet("docs".into()),
             Annotation::Source("builtin".into()),
@@ -710,7 +709,7 @@ mod tests {
         ])];
         let cols = AnnotationColumns::from_visible(cands.iter());
         let order: Vec<&str> = cols.iter().map(|(c, _)| c).collect();
-        assert_eq!(order, vec!["keybinding", "kind", "doc", "source"]);
+        assert_eq!(order, vec!["keybinding", "source", "kind", "doc"]);
     }
 
     #[test]
@@ -740,7 +739,7 @@ mod tests {
         assert_eq!(keys, vec!["keybinding", "kind"]);
         // kind width is the max across both rows.
         let kind = cols.iter().find(|(c, _)| *c == "kind").unwrap();
-        assert_eq!(kind.1, "motion".chars().count());
+        assert_eq!(kind.1, 6);
     }
 
     #[test]

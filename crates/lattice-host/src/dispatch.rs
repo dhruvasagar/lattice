@@ -10126,6 +10126,19 @@ impl Editor {
             })
             .collect();
 
+        // MARG.3: collect active mode names so the command picker
+        // can filter keybindings whose source mode is not active.
+        let active_modes: Vec<Arc<str>> = self
+            .active_modes
+            .get(&active_id)
+            .map(|am| {
+                am.keymap_gated_ids()
+                    .into_iter()
+                    .map(|id| Arc::from(id.as_str()) as Arc<str>)
+                    .collect()
+            })
+            .unwrap_or_default();
+
         PickerContext {
             active_buffer,
             workspace_root,
@@ -10134,6 +10147,7 @@ impl Editor {
             buffers,
             marks,
             registers,
+            active_modes,
         }
     }
 
@@ -27286,7 +27300,7 @@ impl Editor {
             let doc_match = spec.doc.to_ascii_lowercase().contains(&needle);
             if name_match || doc_match {
                 let first = spec.doc.lines().next().unwrap_or("").to_string();
-                hits.push((spec.name.clone(), spec.kind.label(), first));
+                hits.push((spec.name.clone(), lattice_grammar::kind_icon(spec.kind.label()), first));
             }
         }
         // PI.2: also search the plugin-API catalog (interface names + docs),
@@ -27306,7 +27320,7 @@ impl Editor {
                     .and_then(|d| d.lines().next())
                     .unwrap_or("")
                     .to_string();
-                hits.push((iface.name.clone(), "plugin-api", first));
+                hits.push((iface.name.clone(), lattice_grammar::kind_icon("plugin-api"), first));
             }
         }
         hits.sort_by(|a, b| a.0.cmp(&b.0));
@@ -27323,7 +27337,7 @@ impl Editor {
                 let pad_k = kind_w.saturating_sub(kind.len());
                 // Plugin-API seams describe via `:describe-plugin-api <seam>`
                 // (an exec-link), not the command describer.
-                let link = if kind == "plugin-api" {
+                let link = if kind == lattice_grammar::kind_icon("plugin-api") {
                     format!("[{name}](exec:describe-plugin-api {name})")
                 } else {
                     lattice_help::command_link(&name)
@@ -27567,7 +27581,7 @@ impl Editor {
                 ),
             };
             let first = spec.doc.lines().next().unwrap_or("").to_string();
-            rows.push((order, group, spec.name.clone(), spec.kind.label(), first));
+            rows.push((order, group, spec.name.clone(), lattice_grammar::kind_icon(spec.kind.label()), first));
         }
         rows.sort_by(|a, b| (a.0, &a.1, &a.2).cmp(&(b.0, &b.1, &b.2)));
 
@@ -27585,7 +27599,7 @@ impl Editor {
                 format!("  — {first}")
             };
             lines.push(format!(
-                "  {}  ({kind}){doc}",
+                "  {}  {kind}{doc}",
                 lattice_help::command_link(&name)
             ));
         }
@@ -29153,15 +29167,15 @@ impl Editor {
             lattice_mode::ModeKind::Major => active.and_then(|a| a.major()) == Some(mode_id),
             lattice_mode::ModeKind::Minor => active.map(|a| a.has_minor(mode_id)).unwrap_or(false),
         };
-        let kind_label = match mode.kind() {
-            lattice_mode::ModeKind::Major => "major",
-            lattice_mode::ModeKind::Minor => "minor",
+        let kind_icon = match mode.kind() {
+            lattice_mode::ModeKind::Major => "◆",
+            lattice_mode::ModeKind::Minor => "◇",
         };
 
         let mut lines: Vec<String> = Vec::new();
         lines.push(format!("# mode :: {mode_id}"));
         lines.push(String::new());
-        lines.push(format!("- kind: `{kind_label}`"));
+        lines.push(format!("- kind: {kind_icon}"));
         lines.push(format!(
             "- active on current buffer: {}",
             if is_active { "yes" } else { "no" }

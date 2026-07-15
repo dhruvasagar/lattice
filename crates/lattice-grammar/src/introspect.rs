@@ -15,6 +15,7 @@
 //!   `impl Introspectable` and the introspection surface picks it
 //!   up automatically.
 
+use crate::command::kind_icon;
 use crate::source::SourceLocation;
 
 /// A registered / bound / set thing, queryable from `:describe-*`.
@@ -130,7 +131,7 @@ pub struct RenderedIntrospection {
 pub fn render_introspection(item: &dyn Introspectable) -> RenderedIntrospection {
     let mut lines = Vec::new();
     let mut anchors = Vec::new();
-    lines.push(format!("{}  ({})", item.identifier(), item.kind_label()));
+    lines.push(format!("{} {}", item.identifier(), kind_icon(item.kind_label())));
     lines.push(String::new());
     let doc = item.doc();
     if doc.is_empty() {
@@ -214,7 +215,7 @@ mod tests {
             source: SourceLocation::builtin_file("foo.rs", 7),
         };
         let result = render_introspection(&item);
-        assert_eq!(result.lines[0], "ex:write  (stub)");
+        assert_eq!(result.lines[0], "ex:write ·");
         assert!(result.lines.iter().any(|l| l.contains("Write the buffer.")));
     }
 

@@ -286,7 +286,7 @@ fn bench_annotation_display_text_per_variant(c: &mut Criterion) {
     // `Keybinding`. Bench locks in the assumption so a
     // future variant that owns a String allocation surfaces
     // immediately.
-    let kind = Annotation::Kind(Arc::from("(motion)"));
+    let kind = Annotation::Kind(Arc::from("→"));
     let doc = Annotation::DocSnippet(Arc::from("Write the buffer."));
     let keyb = Annotation::Keybinding(vec![KeyChord::ctrl('w'), KeyChord::char('v')]);
     let source = Annotation::Source(Arc::from("builtin"));

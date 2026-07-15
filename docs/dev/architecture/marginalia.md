@@ -11,7 +11,7 @@ Emacs's vertico + marginalia pattern: each completion candidate carries one or m
 Lattice today has the annotation column but doesn't carry annotation categories — every annotation is the same color regardless of meaning. Two consequences:
 
 1. The **keybinding column** the user wants for command discovery has nowhere to live with its own color slot.
-2. The **existing annotations** (`(motion)`, `(command)`, doc snippets) all collapse to one undifferentiated grey, hurting scannability — you can't quickly find the doc string vs. the kind tag by color.
+2. The **existing annotations** (`→`, `:`, doc snippets) all collapse to one undifferentiated grey, hurting scannability — you can't quickly find the doc string vs. the kind tag by color.
 
 This fragment defines the substrate that color-codes annotations by category, and registers the keybinding annotator as the first new beneficiary.
 

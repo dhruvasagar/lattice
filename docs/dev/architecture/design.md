@@ -373,63 +373,65 @@ Concretely:
 
 The atomic unit of editable text is a **`Buffer`**, internally backed by `ropey::Rope`. Buffers are wrapped in a **`Document`** with metadata.
 
+The `Document` is deliberately **lean** — it owns only text, selections, and
+undo. Syntax, diagnostics, modes, and modal state are *not* fields on it; they
+live in sibling crates keyed by buffer id (which is what lets `lattice-core`
+stay dependency-free at the bottom of the graph). The real shape
+(`lattice_core::Document`):
+
 ```rust
 struct Document {
 	id: DocumentId,
-	buffer: Buffer,
-	language: Option<LanguageId>,
-	syntax: Option<SyntaxState>,
-	diagnostics: Vec<Diagnostic>,
+	path: Option<PathBuf>,
+	buffer: Buffer,               // ropey-backed
+	version: u64,                 // bumps on any state change
+	text_version: u64,            // bumps only on text mutation (syntax-cache trigger)
 	selections: SelectionSet,
-	history: UndoTree,
-	version: u64,
-	encoding: Encoding,
-	line_ending: LineEnding,
-	dirty: bool,
-	major_mode: MajorModeId,
-	minor_modes: Vec<MinorModeId>,
-	rendering_profile: RenderingProfile,
+	undo: UndoStack,              // linear undo/redo (not a branching tree)
+	clean_position: Option<usize>,// undo depth matching on-disk state → `dirty` is derived
+	coalescing: bool,             // fold an insert session into one undo unit
+	group_has_entry: bool,
 }
 ```
 
+**Where the rest lives:** syntax → a `lattice-syntax` handle; diagnostics →
+`lattice-lsp`; language / major mode / minor modes → `App.active_modes`
+(per-*buffer*, in the host, because mode resolution needs `lattice-config`);
+modal state (§5.2) → the host's `Editor`. Keeping these off `Document` is what
+breaks the `lattice-core → lattice-mode` dependency (see `mode-architecture.md`).
+
 **Key properties:**
 - Cheap snapshotting via O(1) rope clone.
-- Versioning for stale-result rejection.
-- Branching undo tree, persisted to sidecar.
-- Selections support a primary cursor with charwise / linewise / blockwise visual extents (vim model). The data type is a set so multi-cursor is a clean post-1.0 extension; v1 invariants assume one selection.
-- Major mode determines parser, LSP server, keymaps, style mappings, rendering profile.
-- Modal state (Normal / Insert / Visual / Op-pending / Command / Search) lives on the Document as a separate field; see §5.2. Major mode and modal mode are orthogonal axes.
+- Versioning for stale-result rejection (`version` + `text_version`).
+- Dirtiness is **derived** (`clean_position` vs. current undo depth), not a stored flag.
+- Undo is a **linear `UndoStack`** (undo + redo vecs; a new edit clears redo). 📝 A branching undo tree + sidecar persistence are post-v1.
+- Selections support a primary cursor with charwise / linewise / blockwise visual extents (vim model). The type is a set so multi-cursor is a clean post-1.0 extension; v1 invariants assume one selection.
+- Modal state (Normal / Insert / Visual / Op-pending / Command / Search) is its own axis, orthogonal to major mode; see §5.2.
 
 **Synthetic Documents.** Help / log / scratch / messages / terminal-scrollback views are all `Document` instances on the same rope-backed abstraction. They differ from on-disk Documents along two orthogonal axes: `BufferMutability` (`ReadOnly` / `Interactive` / `Editable`, §5.9.8) and the absence of a file path. The grammar and rendering layers do not branch on "synthetic vs. file-backed"; mutability gates only operator-level edits via the read-only echo path. Terminal scrollback is the most recent addition — see [`terminal-as-document.md`](terminal-as-document.md) — but the model also covers help (§5.11), `*messages*`, LSP logs, and `:scratch`.
 
 #### 5.1.1 Position history (jump list + mark ring unified)
 
-Both vim's jump list and emacs's mark ring track "where the cursor was" -- the same underlying data, with different push policies. We unify them into one **position history** per buffer plus one global history, with each entry tagged by the source that pushed it:
+Both vim's jump list and emacs's mark ring track "where the cursor was" -- the same underlying data, with different push policies. We unify them into one **position history** with each entry tagged by the source that pushed it. It lives in the host (`lattice-host`, `state.rs`), fed by grammar via `Effect::RecordJump`; the real `PositionEntry` carries a `buffer` + registry `buffer_id` + `terminal_scroll_offset` (not a `DocumentId` / `timestamp`):
 
 ```rust
-struct PositionHistory {
-	entries: VecDeque<PositionEntry>,    // bounded ring
-	cursor: usize,                       // current index for next/prev navigation
-}
-
 struct PositionEntry {
-	document: DocumentId,
 	position: Position,
 	source: PositionSource,
-	timestamp: Instant,
+	buffer: /* name */,
+	buffer_id: BufferId,
+	terminal_scroll_offset: Option<u32>,
 }
 
 enum PositionSource {
-	AutoJump,        // pushed by "big motions" (vim jump list semantics)
-	ExplicitMark,    // pushed by user (emacs set-mark semantics)
-	PluginPush,      // pushed by plugins (LSP go-to-definition, fuzzy-finder hop, etc.)
-	NamedMark(char), // vim's a-zA-Z marks
+	AutoJump,        // ✅ pushed by "big motions" (vim jump list semantics)
+	NamedMark(char), // ✅ vim's a-zA-Z marks
+	ExplicitMark,    // 📝 reserved (emacs set-mark) — not yet wired
+	PluginPush,      // 📝 reserved (LSP / fuzzy-finder hops) — not yet wired
 }
 ```
 
-**Different keybindings walk different views.** `<C-o>` / `<C-i>` (vim) iterate over `AutoJump` and `PluginPush` entries; `g;` / `g,` (vim mark history) iterate over `NamedMark` entries; an emacs-style `pop-to-mark` walks `ExplicitMark` entries. All bindings consume the same data structure through filtered iterators -- no duplicate state.
-
-Plugins push entries through a typed API (`history.push(entry)`); LSP go-to-definition, fuzzy-finder selections, and search jumps all participate in the same history with `PositionSource::PluginPush`.
+**Different keybindings walk different views.** `<C-o>` / `<C-i>` (vim) iterate the jump-list (`AutoJump`) entries; `g;` / `g,` walk `NamedMark` entries. All bindings consume the same data structure through filtered iterators -- no duplicate state. The `ExplicitMark` / `PluginPush` sources are reserved slots (the enum and filtered-view machinery exist); the plugin-push typed API arrives with the plugin loader (Phase 8).
 
 ### 5.2 Modal Editing Engine
 
@@ -475,28 +477,43 @@ pub struct CommandInvocation {
 	pub count: Option<Count>,
 	pub register: Option<Register>,
 	pub range: Option<Range>,
+	pub target: Option<Target>,      // operator's motion / text-object target
+	pub bang: bool,                  // ex-command `!` (e.g. `:q!`)
 	pub args: Args,                  // typed per the command's signature
 }
 
-/// Submit an invocation. Returns immediately with a typed handle; the
-/// invocation runs on the document actor that owns the target buffer.
-/// This is the seam every command flows through -- vim chord, `:` line,
-/// keymap, plugin, palette -- so it MUST NOT block the caller.
-pub fn execute(inv: CommandInvocation) -> Result<Pending, CommandError>;
+/// Grammar dispatch is SYNCHRONOUS: it runs on the document actor that owns the
+/// buffer and returns the Effect directly. (`execute_with_env` / `execute` /
+/// `execute_motion_only` in `lattice-grammar`.)
+pub fn execute(reg: &CommandRegistry, doc: &mut Document, /* … */ inv: CommandInvocation)
+	-> GrammarResult<Effect>;
+```
 
-pub struct Pending {
-	pub id: InvocationId,
-	pub effect: oneshot::Receiver<Result<Effect, CommandError>>,
+**The async envelope is the *runtime handle* layer, not the grammar.** Grammar
+`execute` is a plain synchronous call. What makes command submission non-blocking
+is that it happens *inside the editor actor's own task*: the UI sends a
+`CommandInvocation` over the actor mailbox and gets back a `Pending<Effect>`
+(a oneshot the caller may `await` or drop), while the actor runs `execute`
+synchronously on its thread and publishes a fresh snapshot. So "sync grammar
+dispatch" and "never block the UI" are both true — the boundary is the mailbox
+(`lattice-runtime`), not the grammar dispatcher.
+
+```rust
+// lattice-runtime: the actor-handle seam the UI actually calls.
+pub struct Pending<T> { /* oneshot-backed; await or drop */ }
+impl RopeDocumentHandle {
+	pub fn dispatch(&self, inv: CommandInvocation, env: DispatchEnv) -> Pending<Effect>;
 }
 ```
 
-**Why async, not sync.** Commands may run synchronously on the document actor (`dw`, simple motions, single-buffer edits) or asynchronously (`:write` to a slow disk, `:!cmd`, plugin operators that fetch over LSP). The dispatcher cannot tell which without inspecting the registered body, and even sync-looking commands can fan out into hooks that must run before commit. Returning a `Pending` is uniform: callers that want to wait can `await` the receiver, callers that don't (the input loop, macro replay) hand it to a per-buffer queue.
+**Veto-class hooks are 📝 planned.** The design intends pre-mutation hooks
+(`BeforeApplyEdit`, `BeforeBufferWrite`) that run inline under a latency budget
+and may veto/mutate. Today the event bus is **observation-only** (§5.10.2) — the
+`Before*` veto/mutation path is not yet built.
 
-**Veto-class hooks are bounded-sync.** Hooks subscribed to pre-mutation events (`BeforeBufferWrite`, `BeforeApplyEdit`) run inline on the actor under a hard latency budget (target: 1 ms p99 per hook, total 5 ms p99); exceeding it is a logged warning, not a panic, and a repeat offender gets demoted to advisory-only. Observation-class hooks (`BufferChanged`, `ModeChanged`) are dispatched fire-and-forget after commit. This split is what keeps the UI's keystroke-to-glyph budget intact even with active plugins.
+**Atomicity scope.** A single `CommandInvocation` is atomic *within one document*: edits, selection updates, and the resulting `Effect` commit together or not at all. Cross-document and cross-pane invocations (📝 `:bufdo` / `:windo` are not yet built) would be a sequence of per-document atoms with explicit failure modes, not a global transaction.
 
-**Atomicity scope.** A single `CommandInvocation` is atomic *within one document*: edits, selection updates, and the resulting `Effect` commit together or not at all. Cross-document and cross-pane invocations (`:bufdo`, `:windo`, plugin-orchestrated multi-buffer refactors) are a sequence of per-document atoms with explicit failure modes, not a global transaction -- the cost of distributed transactions over actor mailboxes is not worth the use cases.
-
-**Backpressure.** Each document actor has a bounded mailbox. When full, the dispatcher returns `CommandError::Busy` rather than blocking; the caller decides (input loop drops to a "buffer is busy" indicator; scripts retry with backoff). The event bus uses the same discipline: subscriber queues are bounded, and a slow subscriber gets dropped events with a counter, not backpressure on the publisher.
+**Backpressure.** The actor mailbox is **unbounded** (`tokio::mpsc::unbounded`). An earlier design used a bounded mailbox that returned `CommandError::Busy` when full, but that dropped keystrokes under load (audit slice 6/H3) and was removed — `Busy` is gone from `CommandError`. The event bus still applies bounded-queue discipline for slow subscribers (drop-with-counter, no publisher backpressure).
 
 The vim user experience is preserved exactly:
 
@@ -517,7 +534,13 @@ The vim user experience is preserved exactly:
 
 **Two input surfaces, one substrate.** The vim DSL on `:` is the canonical surface for *user typing*; constructing a `CommandInvocation` directly via the WIT host is the canonical surface for *code* (plugins, `init.rs`, the Rust functional API, future scripting-shaped extensions). They meet at `CommandInvocation` -- byte-identical from `execute(...)`'s perspective regardless of origin. The DSL stays vim-shaped because vim users have decades of muscle memory and many idioms (`:%s/.../.../g`, `:1,5d`, `:wq!`) don't map cleanly to function-call syntax without re-implementing the DSL as a sugar layer; the typed surface stays typed because plugins want signatures, not strings. We deliberately do not unify the *input surface* -- only the *dispatch substrate*. (The corresponding non-goal is in §2.2.)
 
-**Every command is reachable from `:` via a small kind-prefix form.** Ex-commands keep the bare alias surface (`:wq`, `:write foo.txt`, `:set number` -- vim-shaped DSL, unchanged). Motions, operators, text-objects, and any plugin contribution registered as one of those kinds are reachable from `:` through a kind-prefix word + the registered name's tail (the part after the canonical `motion:` / `operator:` / `text-object:` namespace prefix):
+**📝 Every command reachable from `:` via a small kind-prefix form (planned).**
+The `CommandRegistry` already namespaces motions / operators / text-objects
+(`motion:` / `operator:` / `text-object:`), but the `:`-line kind-prefix parser
+below is **not yet built** — today motions/operators/text-objects are reached via
+the chord grammar, and `:` reaches ex-commands. The design: ex-commands keep the
+bare alias surface (`:wq`, `:write foo.txt`, `:set number`), and the other kinds
+become reachable through a kind-prefix word + the registered name's tail:
 
 - `:motion goto-first-line` runs the same `gg` motion the chord grammar reaches.
 - `:operator delete word-forward` runs the operator over the named motion (or text-object) target.
@@ -555,12 +578,12 @@ pub enum Range {
 	CurrentLine,                                   // .
 	Whole,                                         // %
 	Selection,                                     // current Visual / active region
-	Custom(RangeId, Args),                         // plugin-registered range
+	Custom(RangeId),                               // plugin-registered range
 }
 
 pub enum RangeBound {
 	Line(u32), Mark(char), CurrentLine, LastLine,
-	Pattern(Regex), Offset(Box<RangeBound>, i32),
+	Pattern(String), Offset(Box<RangeBound>, i32),
 }
 
 pub struct Count(pub u32);
@@ -576,11 +599,11 @@ struct Builtins {
 	pub yank: OperatorId,
 	pub indent_left: OperatorId,
 	pub indent_right: OperatorId,
-	pub format: OperatorId,
 	pub upper: OperatorId,
 	pub lower: OperatorId,
 	pub toggle_case: OperatorId,
-	pub filter: OperatorId,
+	pub replace_char: OperatorId,       // `r`
+	// (illustrative subset; `format` / `filter` operators are 📝 not yet built)
 
 	// Motions
 	pub char_forward: MotionId,
@@ -623,44 +646,42 @@ Walks layered keymaps in priority order:
 
 Each keymap entry is `(chord_sequence) -> CommandInvocation`.
 
-Authoritative architecture reference: [`docs/keymap-architecture.md`](keymap-architecture.md). Covers the trie data structure, layer merging, performance commitments, plugin / user-config registration paths, and the migration plan from today's hand-rolled `input.rs` dispatcher.
+Resolution runs against the layered trie in the dedicated **`lattice-keymap`**
+crate; feature keymaps register at `KeymapLayer::MinorMode(mode_id)` /
+`MajorMode(mode_id)` (never `Builtin`). Authoritative reference:
+[`docs/keymap-architecture.md`](keymap-architecture.md) — the trie data structure,
+layer merging, performance commitments, and plugin / user-config registration paths.
 
 #### 5.2.4 Extensibility -- first-class
 
 Plugins extend the grammar by registering new commands. The same registration API serves operators, motions, text objects, and ex-commands; all become first-class citizens of the dispatcher:
 
+The registration API takes `(name, doc, spec)`; the spec's closures are
+`Arc<dyn Fn …>` and the caller's source location is captured via `#[track_caller]`
+(see §5.11.1). Registration returns a typed id (`MotionId` / `OperatorId` / …):
+
 ```rust
-registry.register_motion(MotionSpec {
-	id: "tree-sitter:next-function".into(),
-	args_schema: ArgsSchema::None,
-	evaluator: Box::new(|ctx, count, args| {
-		// query tree-sitter, return a new position
-	}),
-	jump: true,
-	exclusive: false,
-});
+let next_fn = registry.register_motion(
+	"motion:tree-sitter-next-function",
+	"Move to the start of the next function (tree-sitter).",
+	MotionSpec { apply: Arc::new(|ctx| { /* query tree-sitter → MotionResult */ }),
+		jump: true, exclusive: false, args_schema: vec![] },
+);
 
-registry.register_text_object(TextObjectSpec {
-	id: "git-hunk".into(),
-	args_schema: ArgsSchema::None,
-	evaluator: Box::new(|ctx, args| { /* compute Range covering the hunk */ }),
-});
-
-registry.register_operator(OperatorSpec {
-	id: "sort-lines".into(),
-	args_schema: ArgsSchema::None,
-	apply: Box::new(|ctx, range, register, args| { /* return Edit */ }),
-	repeatable: true,    // dot-repeat eligible
-});
-
-registry.register_ex_command(ExCommandSpec {
-	id: "git:blame".into(),
-	parse_args: Box::new(|raw| { /* string -> typed Args */ }),
-	apply: Box::new(|ctx, invocation| { /* return Effect */ }),
-});
+registry.register_operator(
+	"operator:sort-lines", "Sort the lines in the range.",
+	OperatorSpec { apply: Arc::new(|ctx| { /* → Effect::Edits */ }),
+		repeatable: true, args_schema: vec![], blockwise_per_row: false },
+);
 ```
 
-Every registration returns an id usable in keymaps, in `:` invocations, in scripts, and in plugin-to-plugin calls. **Tree-sitter-driven motions and text objects are post-v1, but the extension point is first-class today** -- a `tree-sitter-motions` plugin registers motions whose evaluators query the tree-sitter tree, with no host changes required.
+Plugins use the forgery-safe `register_plugin_motion(plugin_id, name, doc, spec)`
+family (§9), which stamps `SourceLayer::Plugin`. Every registration returns an id
+usable in keymaps, in `:` invocations, and in plugin-to-plugin calls.
+**Tree-sitter-driven structural motions and text objects are ✅ shipped** — 16 of
+them (`]f`/`[f`/`]c`/`[c`/`]a`/`[a`/`]l`/`[l` + the `af`/`ac`/`aa`/`al`/`aC`
+objects) live in `lattice-syntax`, registered through exactly this extension
+point with no host changes.
 
 The keymap-side companion of this extension point -- how plugins and user config bind chords to the ids returned here, layer priority across builtin / major-mode / minor-mode / user / per-buffer, and the trie merge cost on overlay push / pop -- is documented in [`docs/keymap-architecture.md`](keymap-architecture.md) §5 (extensibility) and §6 (layered registry).
 
@@ -672,7 +693,7 @@ The keymap-side companion of this extension point -- how plugins and user config
 
 #### 5.2.5 Latency classes (the keystroke contract)
 
-Every command's `CommandSpec` declares a **latency class** that pins how the runtime schedules its work and what budget the CI test harness enforces:
+Every command's `CommandSpec` declares a **latency class** that pins how the runtime should schedule its work and what budget the CI harness will enforce:
 
 ```rust
 pub enum LatencyClass {
@@ -681,6 +702,15 @@ pub enum LatencyClass {
 	Background,  // no user-perceived sync budget; throughput-only
 }
 ```
+
+> **Status.** The `LatencyClass` enum is ✅ declared on every `CommandSpec` and
+> the cooperative **`CancellationToken`** is ✅ plumbed through `execute` (hot
+> loops poll it; a flip returns `CommandError::Cancelled` with no commit). The
+> **deadline-timer enforcement + CI budget gates** described below are 📝 not yet
+> built — the class is advisory today. The **event-bus completion choreography**
+> in "Events over invocation" is also 📝 aspirational: real insert-completion runs
+> through the `lattice-completion` pipeline (§5.11.3) + `gen:lsp` sources, not the
+> 7-step `CompletionRequested → … → CompletionRanked` bus flow sketched here.
 
 **Reflex.** Single-stroke editing primitives: cursor motion, char insert, mode entry, dot-repeat, simple delete, scroll. Their evaluator must commit a sync `Effect` within the keystroke budget. The input loop awaits the `Pending::effect` receiver on the keystroke path; if it's not ready by the deadline, the dispatcher cancels (see below) and the keystroke completes without a commit.
 
@@ -735,7 +765,10 @@ A command that fails its class's budget is a CI regression on the same gate that
 
 ### 5.3 Syntax: Tree-Sitter Integration
 
-Tree-sitter is responsible for **all** structural code understanding.
+Tree-sitter is responsible for **all** structural code understanding. Bundled
+grammars today: **Rust, Python, JavaScript, Markdown** (the last as a dual
+block+inline grammar, with code-block injections resolving fenced languages);
+more are added by registering into the process-wide `LangRegistry`.
 
 **Update flow** (Option B + C-series, slices B.1–B.5 / C.1–C.5):
 edit → `Buffer::apply_edit` returns `EditDelta` (~2ns) → App
@@ -758,7 +791,7 @@ fall back to full reparse without panic. Grammar-driven edits
 (operators) flow through the same chokepoint via slice C.5 so
 the byte-shift logic and `didChange` fire-out apply uniformly.
 
-**Highlight queries** evaluated lazily on visible viewport + overscan, cached per `(snapshot_ptr, text_version, viewport_range, fold_hash)`. Cache hit (steady-state norm: cursor blinking, no edit) is ~20ns; cache miss runs the QueryCursor walk (rayon-parallelized over patterns is post-1.0 work). Slice B.3 lit this up.
+**Highlight queries** evaluated lazily on visible viewport + overscan, cached per `(snapshot_ptr, text_version, viewport_range, fold_hash)`. Cache hit (steady-state norm: cursor blinking, no edit) is fast; cache miss runs the QueryCursor walk (parallelizing over patterns is post-1.0 work). Slice B.3 lit this up.
 
 **Structural motions:** `]f`/`[f`, `]c`/`[c`, `af`/`if`, `ae`/`ie`. `locals.scm` for scope-aware rename.
 
@@ -770,10 +803,10 @@ We write our own client. `tower-lsp` is server-side; `async-lsp` brings tower mi
 
 #### 5.4.1 Crate layout
 
-`lattice-lsp` is a self-contained crate; `lattice-ui-tui` consumes its public API. The module split mirrors the data-flow stages:
+`lattice-lsp` is a self-contained crate; `lattice-host` consumes its public API (attach is mode-owned, §5.4.3). The module split mirrors the data-flow stages:
 
 - `framing` -- LSP `Content-Length` header parser. Pure; stream-agnostic. Default 64 MiB per-message ceiling guards against runaway servers.
-- `jsonrpc` -- JSON-RPC 2.0 typed `Request` / `Response` / `Notification` with `RequestId` correlation (`Number` / `String` / `Null` accepted on the read path; `Number` emitted). Standard error codes (`-32700..=-32600`) plus LSP extensions (`-32099..=-32000`).
+- `jsonrpc` -- JSON-RPC 2.0 typed `Request` / `Response` / `Notification` with `RequestId` correlation. Now lives in `lattice_protocol::jsonrpc` and is re-exported as `lattice_lsp::jsonrpc`. Standard error codes (`-32700..=-32600`) plus LSP extensions (`-32099..=-32000`).
 - `codec` -- tokio `AsyncBufRead` / `AsyncWrite` codec. One `read_message` / `write_message` per LSP message; reuses scratch buffers so steady-state alloc count is one per round-trip (the body `Vec` from serde_json).
 - `transport` -- `tokio::process::Command` child-process spawn with `kill_on_drop`; captures stdin / stdout / stderr; `split()` yields the codec halves + retained `Child` so the actor's read / write loops own independent tasks.
 - `pending` -- `Pending<T>` (`oneshot::Receiver` wrapper parameterised over `LspError`). Mirrors `lattice_runtime::Pending` semantics: async-await, blocking_recv, or sync drop.
@@ -825,9 +858,9 @@ The supervisor keys actors by `(workspace_root, server_id)`. Implications:
 
 Spawn is lazy: the first `didOpen` for a `(workspace, server_id)` triggers `actor::spawn`. The handshake (`initialize` → `initialized`) completes before `open_buffer`'s reply lands, so once the supervisor's mailbox dispatches the next request the actor is fully attached. Spawn failures (binary not on `PATH`, handshake error, server response malformed) are logged via the supervisor's logger and the relevant attachment is skipped without sinking the buffer-open.
 
-**Attach is event-driven (paramount goal #4: asynchronicity).** Both the initial document and every subsequent `:e <path>` follow exactly one path: the publisher (`App::new` for the initial document, `App::do_edit` for follow-up opens) sets `BufferId → Uri` eagerly (the URI is a deterministic `uri_from_path`), publishes [`Event::DocumentOpened { id, path, version, text }`](§5.10.1), and **returns immediately**. The LSP attach driver (`lattice_lsp::attach_driver::spawn`, wired in `App::build_lsp_subsystem`) runs on the LSP runtime, owns one mpsc subscriber for `EventKind::DocumentOpened`, and serially submits each path-bearing event to the supervisor's mailbox via `LspSupervisorHandle::open_buffer`. The UI thread never parks on the LSP `initialize` round-trip — the editor's first frame draws as soon as `App::new` returns; rust-analyzer / pyright / gopls / etc. attach in the background and diagnostics flow whenever the server finishes initialising.
+**Attach is event-driven AND mode-owned (paramount goal #4 + the mode-ownership rule).** Both the initial document and every subsequent `:e <path>` follow one path: the publisher sets `BufferId → Uri` eagerly (the URI is a deterministic `uri_from_path`), publishes [`Event::DocumentOpened { id, path, version, text }`](§5.10.1), and **returns immediately**. The attach itself is owned by **`LspMode::on_activate`** (M-async.5): when the LSP minor mode activates on a buffer it subscribes to `DocumentOpened` and submits each path-bearing event to the supervisor's mailbox via `LspSupervisorHandle::open_buffer`, on the shared/LSP runtime. The earlier standalone `lattice_lsp::attach_driver::spawn` / `App::build_lsp_subsystem` wiring was **retired** in favour of this mode-owned path — a worked example of "modes own their full surface" (§5.8.2). The render thread never parks on the LSP `initialize` round-trip; servers attach in the background and diagnostics flow whenever a server finishes initialising.
 
-A `BufferId ↔ Uri` map lives on the App; `lattice-lsp` is below the UI layer in the crate graph and can't see `BufferId`. The App threads URIs into the supervisor's API.
+A `BufferId ↔ Uri` map lives in the host; `lattice-lsp` is below the host in the crate graph and can't see `BufferId`, so the host threads URIs into the supervisor's API.
 
 #### 5.4.4 Document synchronisation
 
@@ -944,7 +977,7 @@ Server priority is a single integer per `ServerConfig`; default 100. Used by the
 
 The `read_loop` detects pipe close and ends. The actor task observes the inbound `mpsc::Receiver::recv()` returning `None`, drains pending requests with `LspError::ActorGone`, signals the supervisor. The supervisor restarts with exponential backoff (100ms → 5s; max 5 retries) and re-issues `didOpen` for every URI it was tracking under that `(workspace, server_id)`. The diagnostics layer's per-server entries clear via `clear_server(&id)`; other servers attached to the same buffer keep working.
 
-Restart-with-backoff lives in the supervisor (App-side knowledge of which buffers were attached); the actor only signals "I'm gone." 4.1.h shipped the actor-side detection; 4.4 lands the supervisor-side restart loop.
+Restart-with-backoff lives in the supervisor (host-side knowledge of which buffers were attached); the actor only signals "I'm gone." Both halves shipped: 4.1.h the actor-side detection, 4.4 the supervisor-side restart loop (`restart_history` + `RESTART_WINDOW` + max-restarts in `supervisor.rs`).
 
 #### 5.4.10 Performance characteristics
 

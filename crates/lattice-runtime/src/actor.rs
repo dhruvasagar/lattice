@@ -514,7 +514,7 @@ mod tests {
             "test-scope-probe",
             "N.1.4b test: records the scope resolver result it is handed",
             TextObjectSpec {
-                apply: Box::new(move |ctx| {
+                apply: Arc::new(move |ctx| {
                     let resolved = ctx
                         .scope_resolver
                         .and_then(|r| r.scope_at(ctx.at.line, 0, ".function.outer"));

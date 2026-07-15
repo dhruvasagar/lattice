@@ -25,6 +25,7 @@
 //! See `docs/dev/architecture/multibuffer-views.md` §3.7 +
 //! slice plan M.2.b.3.
 
+use std::sync::Arc;
 use lattice_core::BufferId;
 use lattice_grammar::registry::{MotionContext, MotionResult};
 use lattice_grammar::{
@@ -65,7 +66,7 @@ pub fn register_multibuffer_motions(
         MotionSpec {
             jump: true,
             exclusive: false,
-            apply: Box::new(move |ctx| handle_next_excerpt_start(ctx, &mb_a)),
+            apply: Arc::new(move |ctx| handle_next_excerpt_start(ctx, &mb_a)),
             args_schema: Vec::new(),
         },
     );
@@ -77,7 +78,7 @@ pub fn register_multibuffer_motions(
         MotionSpec {
             jump: true,
             exclusive: false,
-            apply: Box::new(move |ctx| handle_prev_excerpt_start(ctx, &mb_b)),
+            apply: Arc::new(move |ctx| handle_prev_excerpt_start(ctx, &mb_b)),
             args_schema: Vec::new(),
         },
     );
@@ -89,7 +90,7 @@ pub fn register_multibuffer_motions(
         MotionSpec {
             jump: true,
             exclusive: false,
-            apply: Box::new(move |ctx| handle_next_file_boundary(ctx, &mb_c)),
+            apply: Arc::new(move |ctx| handle_next_file_boundary(ctx, &mb_c)),
             args_schema: Vec::new(),
         },
     );
@@ -101,7 +102,7 @@ pub fn register_multibuffer_motions(
         MotionSpec {
             jump: true,
             exclusive: false,
-            apply: Box::new(move |ctx| handle_prev_file_boundary(ctx, &mb_d)),
+            apply: Arc::new(move |ctx| handle_prev_file_boundary(ctx, &mb_d)),
             args_schema: Vec::new(),
         },
     );

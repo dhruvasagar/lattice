@@ -338,8 +338,8 @@ pub fn register_multibuffer_ex_commands(registry: &mut lattice_grammar::CommandR
             latency_class: LatencyClass::Reflex,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_optional_count),
-            apply: Box::new(|ctx| {
+            parse_args: Arc::new(parse_optional_count),
+            apply: Arc::new(|ctx| {
                 let delta = count_from_args(&ctx.args);
                 Ok(Effect::AppAction(AppEffect::MultibufferExpand { delta }))
             }),
@@ -355,8 +355,8 @@ pub fn register_multibuffer_ex_commands(registry: &mut lattice_grammar::CommandR
             latency_class: LatencyClass::Reflex,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_optional_count),
-            apply: Box::new(|ctx| {
+            parse_args: Arc::new(parse_optional_count),
+            apply: Arc::new(|ctx| {
                 let delta = -count_from_args(&ctx.args);
                 Ok(Effect::AppAction(AppEffect::MultibufferExpand { delta }))
             }),

@@ -173,7 +173,7 @@ fn register_mode_toggle_commands(cmd_registry: &mut CommandRegistry, mode_regist
                 latency_class: lattice_grammar::command::LatencyClass::Reflex,
                 accepts_bang: false,
                 accepts_range: false,
-                parse_args: Box::new(|s: &str, _bang: bool| {
+                parse_args: Arc::new(|s: &str, _bang: bool| {
                     if s.trim().is_empty() {
                         Ok(Args::None)
                     } else {
@@ -182,7 +182,7 @@ fn register_mode_toggle_commands(cmd_registry: &mut CommandRegistry, mode_regist
                         ))
                     }
                 }),
-                apply: Box::new(move |_ctx| {
+                apply: Arc::new(move |_ctx| {
                     Ok(Effect::ToggleMode {
                         mode_name: mode_name.clone(),
                     })

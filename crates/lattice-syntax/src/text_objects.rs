@@ -19,6 +19,7 @@
 //! paired operator no-ops -- matching vim, where `daf` with no enclosing
 //! function does nothing.
 
+use std::sync::Arc;
 use lattice_grammar::TextObjectId;
 use lattice_grammar::registry::{CommandRegistry, TextObjectSpec};
 
@@ -115,7 +116,7 @@ fn reg(
         name,
         doc,
         TextObjectSpec {
-            apply: Box::new(move |ctx| {
+            apply: Arc::new(move |ctx| {
                 Ok(ctx
                     .scope_resolver
                     .and_then(|r| r.scope_at(ctx.at.line, ctx.at.byte, capture_suffix))

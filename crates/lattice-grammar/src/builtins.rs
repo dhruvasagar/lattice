@@ -9,6 +9,7 @@
 //! Subsequent revisions populate the full vim catalog. Each new built-in is
 //! a registration here; no new dispatcher wiring needed.
 
+use std::sync::Arc;
 use lattice_protocol::edit::Edit;
 use lattice_protocol::position::{Position, Range as ProtoRange};
 
@@ -28,7 +29,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         MotionSpec {
             jump: false,
             exclusive: true,
-            apply: Box::new(motion_word_forward),
+            apply: Arc::new(motion_word_forward),
             args_schema: vec![],
         },
     );
@@ -38,7 +39,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         MotionSpec {
             jump: false,
             exclusive: true,
-            apply: Box::new(motion_word_backward),
+            apply: Arc::new(motion_word_backward),
             args_schema: vec![],
         },
     );
@@ -48,7 +49,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         MotionSpec {
             jump: false,
             exclusive: false,
-            apply: Box::new(motion_word_end),
+            apply: Arc::new(motion_word_end),
             args_schema: vec![],
         },
     );
@@ -61,7 +62,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             // the dispatcher ignored the flag; now honoured, so it must be
             // correct.)
             exclusive: true,
-            apply: Box::new(motion_first_non_blank),
+            apply: Arc::new(motion_first_non_blank),
             args_schema: vec![],
         },
     );
@@ -71,7 +72,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         MotionSpec {
             jump: false,
             exclusive: false,
-            apply: Box::new(motion_find_char_forward),
+            apply: Arc::new(motion_find_char_forward),
             args_schema: vec![],
         },
     );
@@ -81,7 +82,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         MotionSpec {
             jump: false,
             exclusive: false,
-            apply: Box::new(motion_find_char_backward),
+            apply: Arc::new(motion_find_char_backward),
             args_schema: vec![],
         },
     );
@@ -91,7 +92,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         MotionSpec {
             jump: false,
             exclusive: false,
-            apply: Box::new(motion_till_char_forward),
+            apply: Arc::new(motion_till_char_forward),
             args_schema: vec![],
         },
     );
@@ -101,7 +102,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         MotionSpec {
             jump: false,
             exclusive: false,
-            apply: Box::new(motion_till_char_backward),
+            apply: Arc::new(motion_till_char_backward),
             args_schema: vec![],
         },
     );
@@ -111,7 +112,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         MotionSpec {
             jump: false,
             exclusive: true,
-            apply: Box::new(motion_big_word_forward),
+            apply: Arc::new(motion_big_word_forward),
             args_schema: vec![],
         },
     );
@@ -128,7 +129,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         MotionSpec {
             jump: false,
             exclusive: true,
-            apply: Box::new(motion_big_word_backward),
+            apply: Arc::new(motion_big_word_backward),
             args_schema: vec![],
         },
     );
@@ -138,7 +139,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         MotionSpec {
             jump: false,
             exclusive: false,
-            apply: Box::new(motion_big_word_end),
+            apply: Arc::new(motion_big_word_end),
             args_schema: vec![],
         },
     );
@@ -149,7 +150,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             jump: true,
             // `}` is exclusive in vim (`d}` does not include the blank line).
             exclusive: true,
-            apply: Box::new(motion_paragraph_forward),
+            apply: Arc::new(motion_paragraph_forward),
             args_schema: vec![],
         },
     );
@@ -160,7 +161,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             jump: true,
             // `{` is exclusive in vim.
             exclusive: true,
-            apply: Box::new(motion_paragraph_backward),
+            apply: Arc::new(motion_paragraph_backward),
             args_schema: vec![],
         },
     );
@@ -171,7 +172,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             jump: true,
             // `)` is exclusive in vim.
             exclusive: true,
-            apply: Box::new(motion_sentence_forward),
+            apply: Arc::new(motion_sentence_forward),
             args_schema: vec![],
         },
     );
@@ -182,7 +183,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             jump: true,
             // `(` is exclusive in vim.
             exclusive: true,
-            apply: Box::new(motion_sentence_backward),
+            apply: Arc::new(motion_sentence_backward),
             args_schema: vec![],
         },
     );
@@ -194,7 +195,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             // `h` is exclusive in vim. (Backward motion, so behaviour is
             // unchanged either way, but the registration should be correct.)
             exclusive: true,
-            apply: Box::new(motion_char_left),
+            apply: Arc::new(motion_char_left),
             args_schema: vec![],
         },
     );
@@ -204,7 +205,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         MotionSpec {
             jump: false,
             exclusive: true,
-            apply: Box::new(motion_char_right),
+            apply: Arc::new(motion_char_right),
             args_schema: vec![],
         },
     );
@@ -214,7 +215,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         MotionSpec {
             jump: false,
             exclusive: false,
-            apply: Box::new(motion_line_up),
+            apply: Arc::new(motion_line_up),
             args_schema: vec![],
         },
     );
@@ -224,7 +225,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         MotionSpec {
             jump: false,
             exclusive: false,
-            apply: Box::new(motion_line_down),
+            apply: Arc::new(motion_line_down),
             args_schema: vec![],
         },
     );
@@ -235,7 +236,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             jump: false,
             // `0` is exclusive in vim.
             exclusive: true,
-            apply: Box::new(motion_line_start),
+            apply: Arc::new(motion_line_start),
             args_schema: vec![],
         },
     );
@@ -245,7 +246,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         MotionSpec {
             jump: false,
             exclusive: false,
-            apply: Box::new(motion_line_end),
+            apply: Arc::new(motion_line_end),
             args_schema: vec![],
         },
     );
@@ -255,7 +256,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         MotionSpec {
             jump: true,
             exclusive: false,
-            apply: Box::new(motion_goto_first_line),
+            apply: Arc::new(motion_goto_first_line),
             args_schema: vec![],
         },
     );
@@ -265,7 +266,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         MotionSpec {
             jump: true,
             exclusive: false,
-            apply: Box::new(motion_goto_last_line),
+            apply: Arc::new(motion_goto_last_line),
             args_schema: vec![],
         },
     );
@@ -275,7 +276,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "Delete the bytes covered by the target range; yank to the unnamed register.",
         OperatorSpec {
             repeatable: true,
-            apply: Box::new(operator_delete),
+            apply: Arc::new(operator_delete),
             args_schema: vec![],
             blockwise_per_row: true,
         },
@@ -285,7 +286,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "Delete the bytes covered by the target range and enter Insert mode (vim's `c`).",
         OperatorSpec {
             repeatable: true,
-            apply: Box::new(operator_change),
+            apply: Arc::new(operator_change),
             args_schema: vec![],
             blockwise_per_row: true,
         },
@@ -295,7 +296,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "Copy the bytes covered by the target range into the named register without modifying the buffer (vim's `y`).",
         OperatorSpec {
             repeatable: true,
-            apply: Box::new(operator_yank),
+            apply: Arc::new(operator_yank),
             args_schema: vec![],
             blockwise_per_row: true,
         },
@@ -305,7 +306,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "Strip leading indentation (4 spaces or one tab) from each line in the range (vim's `<`).",
         OperatorSpec {
             repeatable: true,
-            apply: Box::new(operator_indent_left),
+            apply: Arc::new(operator_indent_left),
             args_schema: vec![],
             // Linewise effect -- one batched edit covers every line
             // in the visual span, regardless of charwise / blockwise.
@@ -317,7 +318,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "Prepend 4 spaces to each line in the range (vim's `>`).",
         OperatorSpec {
             repeatable: true,
-            apply: Box::new(operator_indent_right),
+            apply: Arc::new(operator_indent_right),
             args_schema: vec![],
             blockwise_per_row: false,
         },
@@ -327,7 +328,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "Uppercase ASCII letters in the range (vim's `gU`).",
         OperatorSpec {
             repeatable: true,
-            apply: Box::new(operator_upper),
+            apply: Arc::new(operator_upper),
             args_schema: vec![],
             blockwise_per_row: false,
         },
@@ -337,7 +338,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "Lowercase ASCII letters in the range (vim's `gu`).",
         OperatorSpec {
             repeatable: true,
-            apply: Box::new(operator_lower),
+            apply: Arc::new(operator_lower),
             args_schema: vec![],
             blockwise_per_row: false,
         },
@@ -347,7 +348,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "Toggle case of ASCII letters in the range (vim's `g~`).",
         OperatorSpec {
             repeatable: true,
-            apply: Box::new(operator_toggle_case),
+            apply: Arc::new(operator_toggle_case),
             args_schema: vec![],
             blockwise_per_row: false,
         },
@@ -357,7 +358,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "Overwrite each non-newline char in the range with the captured char (vim's `r{char}` and Visual `r`).",
         OperatorSpec {
             repeatable: true,
-            apply: Box::new(operator_replace_char),
+            apply: Arc::new(operator_replace_char),
             // Args::Char(replacement) is folded in by the keymap's
             // wildcard capture (same shape as `f{char}`, which also
             // leaves its schema empty).
@@ -372,7 +373,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "text-object:inner-sentence",
         "Inner sentence -- text up to the next .!? that ends a sentence (vim's `is`).",
         TextObjectSpec {
-            apply: Box::new(text_object_inner_sentence),
+            apply: Arc::new(text_object_inner_sentence),
             args_schema: vec![],
         },
     );
@@ -380,7 +381,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "text-object:around-sentence",
         "Around sentence -- inner_sentence plus trailing whitespace (vim's `as`).",
         TextObjectSpec {
-            apply: Box::new(text_object_around_sentence),
+            apply: Arc::new(text_object_around_sentence),
             args_schema: vec![],
         },
     );
@@ -389,7 +390,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "text-object:inner-paragraph",
         "Inner paragraph -- the run of non-blank lines containing the cursor (vim's `ip`).",
         TextObjectSpec {
-            apply: Box::new(text_object_inner_paragraph),
+            apply: Arc::new(text_object_inner_paragraph),
             args_schema: vec![],
         },
     );
@@ -397,7 +398,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "text-object:around-paragraph",
         "Around paragraph -- inner_paragraph plus trailing blank lines (vim's `ap`).",
         TextObjectSpec {
-            apply: Box::new(text_object_around_paragraph),
+            apply: Arc::new(text_object_around_paragraph),
             args_schema: vec![],
         },
     );
@@ -406,7 +407,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "text-object:inner-word",
         "Inner word -- alphanum + underscore run containing the cursor (vim's `iw`).",
         TextObjectSpec {
-            apply: Box::new(text_object_inner_word),
+            apply: Arc::new(text_object_inner_word),
             args_schema: vec![],
         },
     );
@@ -414,7 +415,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "text-object:around-word",
         "Around word -- inner_word plus trailing whitespace (vim's `aw`).",
         TextObjectSpec {
-            apply: Box::new(text_object_around_word),
+            apply: Arc::new(text_object_around_word),
             args_schema: vec![],
         },
     );
@@ -422,7 +423,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "text-object:inner-quote-double",
         "Inner double-quoted string -- text between the surrounding `\"` chars (vim's `i\"`).",
         TextObjectSpec {
-            apply: Box::new(|ctx| text_object_inner_quote(ctx, '"')),
+            apply: Arc::new(|ctx| text_object_inner_quote(ctx, '"')),
             args_schema: vec![],
         },
     );
@@ -430,7 +431,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "text-object:around-quote-double",
         "Around double-quoted string -- includes the surrounding `\"` chars (vim's `a\"`).",
         TextObjectSpec {
-            apply: Box::new(|ctx| text_object_around_quote(ctx, '"')),
+            apply: Arc::new(|ctx| text_object_around_quote(ctx, '"')),
             args_schema: vec![],
         },
     );
@@ -438,7 +439,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "text-object:inner-quote-single",
         "Inner single-quoted string (vim's `i'`).",
         TextObjectSpec {
-            apply: Box::new(|ctx| text_object_inner_quote(ctx, '\'')),
+            apply: Arc::new(|ctx| text_object_inner_quote(ctx, '\'')),
             args_schema: vec![],
         },
     );
@@ -446,7 +447,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "text-object:around-quote-single",
         "Around single-quoted string (vim's `a'`).",
         TextObjectSpec {
-            apply: Box::new(|ctx| text_object_around_quote(ctx, '\'')),
+            apply: Arc::new(|ctx| text_object_around_quote(ctx, '\'')),
             args_schema: vec![],
         },
     );
@@ -454,7 +455,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "text-object:inner-quote-backtick",
         "Inner backtick-quoted string (vim's ``i` ``).",
         TextObjectSpec {
-            apply: Box::new(|ctx| text_object_inner_quote(ctx, '`')),
+            apply: Arc::new(|ctx| text_object_inner_quote(ctx, '`')),
             args_schema: vec![],
         },
     );
@@ -462,7 +463,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "text-object:around-quote-backtick",
         "Around backtick-quoted string (vim's ``a` ``).",
         TextObjectSpec {
-            apply: Box::new(|ctx| text_object_around_quote(ctx, '`')),
+            apply: Arc::new(|ctx| text_object_around_quote(ctx, '`')),
             args_schema: vec![],
         },
     );
@@ -470,7 +471,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "text-object:inner-paren",
         "Inside the innermost enclosing `()` pair (vim's `i(`).",
         TextObjectSpec {
-            apply: Box::new(|ctx| text_object_inner_brackets(ctx, '(', ')')),
+            apply: Arc::new(|ctx| text_object_inner_brackets(ctx, '(', ')')),
             args_schema: vec![],
         },
     );
@@ -478,7 +479,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "text-object:around-paren",
         "Around the innermost enclosing `()` pair, including the brackets (vim's `a(`).",
         TextObjectSpec {
-            apply: Box::new(|ctx| text_object_around_brackets(ctx, '(', ')')),
+            apply: Arc::new(|ctx| text_object_around_brackets(ctx, '(', ')')),
             args_schema: vec![],
         },
     );
@@ -486,7 +487,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "text-object:inner-bracket",
         "Inside the innermost enclosing `[]` pair (vim's `i[`).",
         TextObjectSpec {
-            apply: Box::new(|ctx| text_object_inner_brackets(ctx, '[', ']')),
+            apply: Arc::new(|ctx| text_object_inner_brackets(ctx, '[', ']')),
             args_schema: vec![],
         },
     );
@@ -494,7 +495,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "text-object:around-bracket",
         "Around the innermost enclosing `[]` pair, including the brackets (vim's `a[`).",
         TextObjectSpec {
-            apply: Box::new(|ctx| text_object_around_brackets(ctx, '[', ']')),
+            apply: Arc::new(|ctx| text_object_around_brackets(ctx, '[', ']')),
             args_schema: vec![],
         },
     );
@@ -502,7 +503,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "text-object:inner-tag",
         "Inside the innermost enclosing XML/HTML tag pair (vim's `it`).",
         TextObjectSpec {
-            apply: Box::new(text_object_inner_tag),
+            apply: Arc::new(text_object_inner_tag),
             args_schema: vec![],
         },
     );
@@ -510,7 +511,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "text-object:around-tag",
         "Around the innermost enclosing XML/HTML tag pair, including the tags (vim's `at`).",
         TextObjectSpec {
-            apply: Box::new(text_object_around_tag),
+            apply: Arc::new(text_object_around_tag),
             args_schema: vec![],
         },
     );
@@ -519,7 +520,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "text-object:inner-brace",
         "Inside the innermost enclosing `{}` pair (vim's `i{`).",
         TextObjectSpec {
-            apply: Box::new(|ctx| text_object_inner_brackets(ctx, '{', '}')),
+            apply: Arc::new(|ctx| text_object_inner_brackets(ctx, '{', '}')),
             args_schema: vec![],
         },
     );
@@ -527,7 +528,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "text-object:around-brace",
         "Around the innermost enclosing `{}` pair, including the brackets (vim's `a{`).",
         TextObjectSpec {
-            apply: Box::new(|ctx| text_object_around_brackets(ctx, '{', '}')),
+            apply: Arc::new(|ctx| text_object_around_brackets(ctx, '{', '}')),
             args_schema: vec![],
         },
     );
@@ -535,7 +536,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "text-object:inner-big-word",
         "Inner WORD -- whitespace-delimited run containing the cursor (vim's `iW`).",
         TextObjectSpec {
-            apply: Box::new(text_object_inner_big_word),
+            apply: Arc::new(text_object_inner_big_word),
             args_schema: vec![],
         },
     );
@@ -543,7 +544,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "text-object:around-big-word",
         "Around WORD -- inner WORD plus trailing whitespace (vim's `aW`).",
         TextObjectSpec {
-            apply: Box::new(text_object_around_big_word),
+            apply: Arc::new(text_object_around_big_word),
             args_schema: vec![],
         },
     );
@@ -551,7 +552,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "text-object:inner-angle",
         "Inside the innermost enclosing `<>` pair (vim's `i<`).",
         TextObjectSpec {
-            apply: Box::new(|ctx| text_object_inner_brackets(ctx, '<', '>')),
+            apply: Arc::new(|ctx| text_object_inner_brackets(ctx, '<', '>')),
             args_schema: vec![],
         },
     );
@@ -559,7 +560,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "text-object:around-angle",
         "Around the innermost enclosing `<>` pair, including the brackets (vim's `a<`).",
         TextObjectSpec {
-            apply: Box::new(|ctx| text_object_around_brackets(ctx, '<', '>')),
+            apply: Arc::new(|ctx| text_object_around_brackets(ctx, '<', '>')),
             args_schema: vec![],
         },
     );
@@ -570,7 +571,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "text-object:inner-comment",
         "Inner comment -- the comment text with the first line's leader stripped (`iC`).",
         TextObjectSpec {
-            apply: Box::new(text_object_inner_comment),
+            apply: Arc::new(text_object_inner_comment),
             args_schema: vec![],
         },
     );
@@ -578,7 +579,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "text-object:around-comment",
         "A comment -- the contiguous run of comment lines including the markers (`aC`).",
         TextObjectSpec {
-            apply: Box::new(text_object_around_comment),
+            apply: Arc::new(text_object_around_comment),
             args_schema: vec![],
         },
     );

@@ -208,6 +208,8 @@ pub fn emacs_keys_layer_bindings(
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
+    use std::sync::Arc;
+
     use super::*;
     use crate::BindingMode;
     use lattice_keymap::LookupResult;
@@ -232,7 +234,7 @@ mod tests {
                 name,
                 "test pane action",
                 lattice_grammar::registry::ActionSpec {
-                    apply: Box::new(|_ctx| Ok(lattice_grammar::Effect::None)),
+                    apply: Arc::new(|_ctx| Ok(lattice_grammar::Effect::None)),
                     args_schema: vec![],
                 },
             );

@@ -8,6 +8,7 @@
 //! plugin host (Phase 7) wraps the same shape.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
@@ -100,8 +101,9 @@ pub struct MotionResult {
 
 /// Implementation of a motion. Boxed because evaluator closures capture
 /// configuration; cheap to call.
-type MotionFn = Box<dyn Fn(&MotionContext) -> GrammarResult<MotionResult> + Send + Sync>;
+type MotionFn = Arc<dyn Fn(&MotionContext) -> GrammarResult<MotionResult> + Send + Sync>;
 
+#[derive(Clone)]
 pub struct MotionSpec {
     pub jump: bool,
     pub exclusive: bool,
@@ -145,8 +147,9 @@ pub struct OperatorContext<'a> {
 /// dispatcher passes the result through unchanged -- composition is
 /// expressed in the Effect, not via flags on the spec.
 type OperatorFn =
-    Box<dyn Fn(&mut OperatorContext) -> GrammarResult<crate::effect::Effect> + Send + Sync>;
+    Arc<dyn Fn(&mut OperatorContext) -> GrammarResult<crate::effect::Effect> + Send + Sync>;
 
+#[derive(Clone)]
 pub struct OperatorSpec {
     pub repeatable: bool,
     pub apply: OperatorFn,
@@ -272,8 +275,9 @@ pub struct TextObjectContext<'a> {
     pub comment_syntax: Option<&'a CommentSyntax>,
 }
 
-type TextObjectFn = Box<dyn Fn(&TextObjectContext) -> GrammarResult<ProtoRange> + Send + Sync>;
+type TextObjectFn = Arc<dyn Fn(&TextObjectContext) -> GrammarResult<ProtoRange> + Send + Sync>;
 
+#[derive(Clone)]
 pub struct TextObjectSpec {
     pub apply: TextObjectFn,
     /// Per-positional-argument metadata (DESIGN.md §B.1). Empty for
@@ -308,11 +312,11 @@ pub struct ExCommandContext {
 /// Parser callback for an ex-command. The host hands the rest of the
 /// command line (everything after the command word and the optional `!`)
 /// plus the `bang` bit; the callback returns typed [`Args`].
-type ExParseFn = Box<dyn Fn(&str, bool) -> GrammarResult<Args> + Send + Sync>;
+type ExParseFn = Arc<dyn Fn(&str, bool) -> GrammarResult<Args> + Send + Sync>;
 
 /// Evaluator callback. Returns the [`Effect`] the host should commit.
 type ExApplyFn =
-    Box<dyn Fn(&ExCommandContext) -> GrammarResult<crate::effect::Effect> + Send + Sync>;
+    Arc<dyn Fn(&ExCommandContext) -> GrammarResult<crate::effect::Effect> + Send + Sync>;
 
 /// How the user types this command on the `:` line. The default
 /// (`Keyword`) covers most commands -- `:write`, `:quit`, `:set
@@ -337,6 +341,7 @@ pub enum SurfaceForm {
     Delimiter { hint: &'static str },
 }
 
+#[derive(Clone)]
 pub struct ExCommandSpec {
     /// Latency class declaration (DESIGN.md §5.2.5). Most ex-commands
     /// stay [`crate::command::LatencyClass::Reflex`] (the default) --
@@ -397,8 +402,9 @@ pub struct ActionContext {
 /// `Effect::AppAction(AppEffect::Foo)` for a chord-bound action,
 /// occasionally a richer `Effect::Many([...])` if the action also
 /// emits an edit / mode transition / yank.
-type ActionFn = Box<dyn Fn(&ActionContext) -> GrammarResult<crate::effect::Effect> + Send + Sync>;
+type ActionFn = Arc<dyn Fn(&ActionContext) -> GrammarResult<crate::effect::Effect> + Send + Sync>;
 
+#[derive(Clone)]
 pub struct ActionSpec {
     pub apply: ActionFn,
     /// Per-positional-argument metadata (DESIGN.md §B.1). Empty
@@ -415,6 +421,7 @@ impl std::fmt::Debug for ActionSpec {
 }
 
 /// What a registered command holds in the registry, beyond its metadata.
+#[derive(Clone)]
 pub enum CommandRegistration {
     Motion(MotionSpec),
     Operator(OperatorSpec),
@@ -443,7 +450,7 @@ impl CommandRegistration {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct CommandRegistry {
     by_id: HashMap<CommandId, CommandEntry>,
     by_name: HashMap<String, CommandId>,
@@ -457,6 +464,7 @@ pub struct CommandRegistry {
     word_forward_motions: std::collections::HashSet<CommandId>,
 }
 
+#[derive(Clone)]
 pub(crate) struct CommandEntry {
     pub spec: CommandSpec,
     pub registration: CommandRegistration,
@@ -893,7 +901,7 @@ mod tests {
         MotionSpec {
             jump: false,
             exclusive: false,
-            apply: Box::new(|ctx| {
+            apply: Arc::new(|ctx| {
                 Ok(MotionResult {
                     target: ctx.from,
                     linewise: false,
@@ -1009,7 +1017,7 @@ mod tests {
             "",
             OperatorSpec {
                 repeatable: false,
-                apply: Box::new(|_| Ok(crate::effect::Effect::None)),
+                apply: Arc::new(|_| Ok(crate::effect::Effect::None)),
                 args_schema: vec![],
                 blockwise_per_row: false,
             },
@@ -1036,7 +1044,7 @@ mod tests {
             "test:sentinel-tobj",
             "",
             TextObjectSpec {
-                apply: Box::new(|_| Ok(ProtoRange::new(Position::ZERO, Position::ZERO))),
+                apply: Arc::new(|_| Ok(ProtoRange::new(Position::ZERO, Position::ZERO))),
                 args_schema: vec![],
             },
         );

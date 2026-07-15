@@ -17,6 +17,7 @@
 //! sibling per-mode modules) and consume [`ActionIds`] alongside
 //! `Builtins`.
 
+use std::sync::Arc;
 use lattice_grammar::AppEffect;
 use lattice_grammar::CommandRegistry;
 use lattice_grammar::HScroll;
@@ -295,7 +296,7 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
             "`K`: send `textDocument/hover` to attached LSP servers \
              (mode-owned; `lsp-mode`'s handler emits `Effect::Lsp(LspRequest::Hover)`).",
             ActionSpec {
-                apply: Box::new(|_ctx| Ok(lattice_grammar::Effect::None)),
+                apply: Arc::new(|_ctx| Ok(lattice_grammar::Effect::None)),
                 args_schema: vec![],
             },
         ),
@@ -510,7 +511,7 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
             "`gd`: send `textDocument/definition` to attached LSP servers \
              (mode-owned; emits `Effect::Lsp(LspRequest::Definition)`).",
             ActionSpec {
-                apply: Box::new(|_ctx| Ok(lattice_grammar::Effect::None)),
+                apply: Arc::new(|_ctx| Ok(lattice_grammar::Effect::None)),
                 args_schema: vec![],
             },
         ),
@@ -519,7 +520,7 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
             "`gD`: send `textDocument/declaration` to attached LSP servers \
              (mode-owned; emits `Effect::Lsp(LspRequest::Declaration)`).",
             ActionSpec {
-                apply: Box::new(|_ctx| Ok(lattice_grammar::Effect::None)),
+                apply: Arc::new(|_ctx| Ok(lattice_grammar::Effect::None)),
                 args_schema: vec![],
             },
         ),
@@ -528,7 +529,7 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
             "`gy`: send `textDocument/typeDefinition` to attached LSP servers \
              (mode-owned; emits `Effect::Lsp(LspRequest::TypeDefinition)`).",
             ActionSpec {
-                apply: Box::new(|_ctx| Ok(lattice_grammar::Effect::None)),
+                apply: Arc::new(|_ctx| Ok(lattice_grammar::Effect::None)),
                 args_schema: vec![],
             },
         ),
@@ -537,7 +538,7 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
             "`gI`: send `textDocument/implementation` to attached LSP servers \
              (mode-owned; emits `Effect::Lsp(LspRequest::Implementation)`).",
             ActionSpec {
-                apply: Box::new(|_ctx| Ok(lattice_grammar::Effect::None)),
+                apply: Arc::new(|_ctx| Ok(lattice_grammar::Effect::None)),
                 args_schema: vec![],
             },
         ),
@@ -546,7 +547,7 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
             "`gr`: send `textDocument/references` to attached LSP servers \
              (mode-owned; emits `Effect::Lsp(LspRequest::References)`).",
             ActionSpec {
-                apply: Box::new(|_ctx| Ok(lattice_grammar::Effect::None)),
+                apply: Arc::new(|_ctx| Ok(lattice_grammar::Effect::None)),
                 args_schema: vec![],
             },
         ),
@@ -555,7 +556,7 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
             "`gx`: follow the `textDocument/documentLink` covering the cursor \
              (mode-owned; emits `Effect::Lsp(LspRequest::FollowLink)`).",
             ActionSpec {
-                apply: Box::new(|_ctx| Ok(lattice_grammar::Effect::None)),
+                apply: Arc::new(|_ctx| Ok(lattice_grammar::Effect::None)),
                 args_schema: vec![],
             },
         ),
@@ -685,7 +686,7 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
             "Insert mode's `<C-x><C-s>`: direct snippet expansion (mode-owned; \
              `snippet-mode`'s handler emits `Effect::ExpandSnippet`).",
             ActionSpec {
-                apply: Box::new(|_ctx| Ok(lattice_grammar::Effect::None)),
+                apply: Arc::new(|_ctx| Ok(lattice_grammar::Effect::None)),
                 args_schema: vec![],
             },
         ),
@@ -700,7 +701,7 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
              cursor-anchored popup (mode-owned; the handler emits \
              `Effect::ShowDiagnosticsPopup`).",
             ActionSpec {
-                apply: Box::new(|_ctx| Ok(lattice_grammar::Effect::None)),
+                apply: Arc::new(|_ctx| Ok(lattice_grammar::Effect::None)),
                 args_schema: vec![],
             },
         ),
@@ -1293,7 +1294,7 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
             "Active-snippet `<Esc>`: exit the snippet (mode-owned; \
              `active-snippet-mode`'s handler clears the session + enters Normal).",
             ActionSpec {
-                apply: Box::new(|_ctx| Ok(lattice_grammar::Effect::None)),
+                apply: Arc::new(|_ctx| Ok(lattice_grammar::Effect::None)),
                 args_schema: vec![],
             },
         ),
@@ -1326,7 +1327,7 @@ fn register_operator_prefix(
         name,
         doc,
         ActionSpec {
-            apply: Box::new(move |_| Ok(Effect::AppAction(AppEffect::AbsorbOperatorPrefix(op)))),
+            apply: Arc::new(move |_| Ok(Effect::AppAction(AppEffect::AbsorbOperatorPrefix(op)))),
             args_schema: vec![],
         },
     )
@@ -1348,7 +1349,7 @@ fn captured_char_action(
     decide: impl Fn(char) -> Option<AppEffect> + Send + Sync + 'static,
 ) -> ActionSpec {
     ActionSpec {
-        apply: Box::new(move |ctx| {
+        apply: Arc::new(move |ctx| {
             let c = match ctx.args {
                 Args::Char(c) => c,
                 _ => return Ok(Effect::None),
@@ -1371,7 +1372,7 @@ fn captured_string_action(
     decide: impl Fn(String) -> Option<AppEffect> + Send + Sync + 'static,
 ) -> ActionSpec {
     ActionSpec {
-        apply: Box::new(move |ctx| {
+        apply: Arc::new(move |ctx| {
             let s = match &ctx.args {
                 Args::String(s) => s.clone(),
                 _ => return Ok(Effect::None),
@@ -1413,7 +1414,7 @@ fn register_simple(
         name,
         doc,
         ActionSpec {
-            apply: Box::new(move |_ctx| Ok(lattice_grammar::Effect::AppAction(effect.clone()))),
+            apply: Arc::new(move |_ctx| Ok(lattice_grammar::Effect::AppAction(effect.clone()))),
             args_schema: vec![],
         },
     )

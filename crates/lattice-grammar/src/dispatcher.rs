@@ -806,6 +806,8 @@ fn line_byte_len(buffer: &lattice_core::Buffer, line: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
+    use std::sync::Arc;
+
     use super::*;
     use crate::CancellationToken;
     use crate::app_effect::AppEffect;
@@ -823,7 +825,7 @@ mod tests {
             "test:quit-action",
             "smoke variant for slice 8.i.0",
             ActionSpec {
-                apply: Box::new(|_ctx| Ok(Effect::AppAction(AppEffect::Quit))),
+                apply: Arc::new(|_ctx| Ok(Effect::AppAction(AppEffect::Quit))),
                 args_schema: vec![],
             },
         );
@@ -949,7 +951,7 @@ mod tests {
                 jump: false,
                 exclusive: true,
                 args_schema: Vec::new(),
-                apply: Box::new(|ctx| {
+                apply: Arc::new(|ctx| {
                     let p = ctx
                         .scope_resolver
                         .and_then(|r| {

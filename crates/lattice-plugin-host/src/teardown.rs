@@ -159,6 +159,8 @@ pub struct TeardownReport {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
+    use std::sync::Arc;
+
     use super::*;
 
     use lattice_config::option::Option as ConfigOption;
@@ -176,7 +178,7 @@ mod tests {
         MotionSpec {
             jump: false,
             exclusive: false,
-            apply: Box::new(|ctx| {
+            apply: Arc::new(|ctx| {
                 Ok(MotionResult {
                     target: ctx.from,
                     linewise: false,

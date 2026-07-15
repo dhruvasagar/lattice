@@ -23,6 +23,7 @@
 //! resolution is the parser front-end's job (`expand_alias` in
 //! `lattice-ui-tui::excommand`).
 
+use std::sync::Arc;
 use crate::AppEffect;
 use crate::args::{ArgDefault, ArgKind, ArgSpec, ArgValue, Args};
 use crate::command::LatencyClass;
@@ -144,8 +145,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_optional_path),
-            apply: Box::new(apply_write),
+            parse_args: Arc::new(parse_optional_path),
+            apply: Arc::new(apply_write),
             args_schema: vec![ArgSpec {
                 name: "path",
                 kind: ArgKind::String,
@@ -164,8 +165,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Reflex,
             accepts_bang: true,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(apply_quit),
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(apply_quit),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },
@@ -177,8 +178,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Display,
             accepts_bang: true,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(apply_write_quit),
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(apply_write_quit),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },
@@ -196,8 +197,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Reflex,
             accepts_bang: true,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(apply_quit_all),
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(apply_quit_all),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },
@@ -214,8 +215,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Reflex,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_| Ok(Effect::AppAction(AppEffect::OnlyPane))),
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| Ok(Effect::AppAction(AppEffect::OnlyPane))),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },
@@ -232,8 +233,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Reflex,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_| Ok(Effect::AppAction(AppEffect::SplitPaneHorizontal))),
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| Ok(Effect::AppAction(AppEffect::SplitPaneHorizontal))),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },
@@ -245,8 +246,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Reflex,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_| Ok(Effect::AppAction(AppEffect::SplitPaneVertical))),
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| Ok(Effect::AppAction(AppEffect::SplitPaneVertical))),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },
@@ -258,8 +259,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Reflex,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_| Ok(Effect::AppAction(AppEffect::ClosePane))),
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| Ok(Effect::AppAction(AppEffect::ClosePane))),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },
@@ -276,8 +277,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Reflex,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_| Ok(Effect::AppAction(AppEffect::CycleFoldAtCursor))),
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| Ok(Effect::AppAction(AppEffect::CycleFoldAtCursor))),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },
@@ -290,8 +291,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Reflex,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_| Ok(Effect::AppAction(AppEffect::CycleFoldsGlobal))),
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| Ok(Effect::AppAction(AppEffect::CycleFoldsGlobal))),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },
@@ -304,8 +305,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Reflex,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_| Ok(Effect::AppAction(AppEffect::GotoParentFold))),
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| Ok(Effect::AppAction(AppEffect::GotoParentFold))),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },
@@ -317,8 +318,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Reflex,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_| Ok(Effect::ClearSearchHighlight)),
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| Ok(Effect::ClearSearchHighlight)),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },
@@ -330,8 +331,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_| Ok(Effect::EchoRegisters)),
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| Ok(Effect::EchoRegisters)),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },
@@ -343,8 +344,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_| Ok(Effect::EchoMarks)),
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| Ok(Effect::EchoMarks)),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },
@@ -356,8 +357,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Reflex,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_| Ok(Effect::DeleteCurrentLine)),
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| Ok(Effect::DeleteCurrentLine)),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },
@@ -369,8 +370,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Reflex,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_required_string),
-            apply: Box::new(apply_set),
+            parse_args: Arc::new(parse_required_string),
+            apply: Arc::new(apply_set),
             // Single arg slot tied to the `gen:options` completion
             // generator so `:set <Tab>` enumerates option names and
             // `:set foldmethod=<Tab>` enumerates valid values.
@@ -392,8 +393,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Reflex,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_required_string),
-            apply: Box::new(apply_set_local),
+            parse_args: Arc::new(parse_required_string),
+            apply: Arc::new(apply_set_local),
             args_schema: vec![ArgSpec {
                 name: "option",
                 kind: ArgKind::String,
@@ -412,8 +413,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Reflex,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_required_string),
-            apply: Box::new(apply_set_global),
+            parse_args: Arc::new(parse_required_string),
+            apply: Arc::new(apply_set_global),
             args_schema: vec![ArgSpec {
                 name: "option",
                 kind: ArgKind::String,
@@ -435,8 +436,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             // T.12a: no-arg is now legal — it opens the live-preview
             // theme picker host-side. `parse_optional_path` returns
             // `Args::None` on empty input, `Args::String` otherwise.
-            parse_args: Box::new(parse_optional_path),
-            apply: Box::new(apply_colorscheme),
+            parse_args: Arc::new(parse_optional_path),
+            apply: Arc::new(apply_colorscheme),
             args_schema: vec![ArgSpec {
                 name: "name",
                 kind: ArgKind::String,
@@ -458,8 +459,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Display,
             accepts_bang: true,
             accepts_range: false,
-            parse_args: Box::new(parse_optional_path),
-            apply: Box::new(apply_edit),
+            parse_args: Arc::new(parse_optional_path),
+            apply: Arc::new(apply_edit),
             args_schema: vec![ArgSpec {
                 name: "path",
                 kind: ArgKind::String,
@@ -486,8 +487,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             // is unreachable for normal `:`-line input. We keep a
             // stub that errors on direct use to prevent surprise from
             // a script invocation.
-            parse_args: Box::new(parse_substitute_args_unreachable),
-            apply: Box::new(apply_substitute),
+            parse_args: Arc::new(parse_substitute_args_unreachable),
+            apply: Arc::new(apply_substitute),
             args_schema: vec![
                 ArgSpec::required(
                     "pattern",
@@ -520,8 +521,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Reflex,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_global_args_unreachable),
-            apply: Box::new(apply_global),
+            parse_args: Arc::new(parse_global_args_unreachable),
+            apply: Arc::new(apply_global),
             args_schema: vec![
                 ArgSpec::required("pattern", ArgKind::Pattern, "Match pattern (literal in v1)"),
                 ArgSpec {
@@ -550,8 +551,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_required_string),
-            apply: Box::new(apply_describe_command),
+            parse_args: Arc::new(parse_required_string),
+            apply: Arc::new(apply_describe_command),
             args_schema: vec![ArgSpec {
                 name: "name",
                 kind: ArgKind::String,
@@ -570,8 +571,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_| Ok(Effect::DescribeBuffer)),
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| Ok(Effect::DescribeBuffer)),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },
@@ -583,8 +584,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_required_string),
-            apply: Box::new(apply_apropos),
+            parse_args: Arc::new(parse_required_string),
+            apply: Arc::new(apply_apropos),
             args_schema: vec![ArgSpec {
                 name: "pattern",
                 kind: ArgKind::String,
@@ -603,8 +604,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_required_string),
-            apply: Box::new(apply_describe_key),
+            parse_args: Arc::new(parse_required_string),
+            apply: Arc::new(apply_describe_key),
             args_schema: vec![ArgSpec {
                 name: "chord",
                 kind: ArgKind::Chord,
@@ -623,8 +624,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_| Ok(Effect::ListKeymap)),
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| Ok(Effect::ListKeymap)),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },
@@ -636,8 +637,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Reflex,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_| Ok(Effect::BufferNext)),
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| Ok(Effect::BufferNext)),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },
@@ -653,8 +654,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Reflex,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_| Ok(Effect::AppAction(AppEffect::NextTab))),
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| Ok(Effect::AppAction(AppEffect::NextTab))),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },
@@ -666,8 +667,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Reflex,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_| Ok(Effect::AppAction(AppEffect::PrevTab))),
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| Ok(Effect::AppAction(AppEffect::PrevTab))),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },
@@ -679,8 +680,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Reflex,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_optional_path),
-            apply: Box::new(|ctx| match &ctx.args {
+            parse_args: Arc::new(parse_optional_path),
+            apply: Arc::new(|ctx| match &ctx.args {
                 Args::String(path) if !path.is_empty() => {
                     Ok(Effect::AppAction(AppEffect::NewTabAt(path.clone())))
                 }
@@ -704,8 +705,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Reflex,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_| Ok(Effect::AppAction(AppEffect::CloseTab))),
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| Ok(Effect::AppAction(AppEffect::CloseTab))),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },
@@ -719,8 +720,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Reflex,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_optional_path),
-            apply: Box::new(|ctx| match &ctx.args {
+            parse_args: Arc::new(parse_optional_path),
+            apply: Arc::new(|ctx| match &ctx.args {
                 Args::String(s) if !s.is_empty() => {
                     Ok(Effect::AppAction(AppEffect::TerminalSpawn(Some(s.clone()))))
                 }
@@ -746,8 +747,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Reflex,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_optional_path),
-            apply: Box::new(|ctx| match &ctx.args {
+            parse_args: Arc::new(parse_optional_path),
+            apply: Arc::new(|ctx| match &ctx.args {
                 Args::String(s) if !s.is_empty() => Ok(Effect::AppAction(
                     AppEffect::TerminalSpawnInNewTab(Some(s.clone())),
                 )),
@@ -771,8 +772,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Reflex,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_| Ok(Effect::AppAction(AppEffect::OnlyTab))),
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| Ok(Effect::AppAction(AppEffect::OnlyTab))),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },
@@ -788,8 +789,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Reflex,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_tabmove_arg),
-            apply: Box::new(|ctx| {
+            parse_args: Arc::new(parse_tabmove_arg),
+            apply: Arc::new(|ctx| {
                 let n: u32 = match &ctx.args {
                     Args::String(s) => s.parse::<u32>().unwrap_or(0),
                     _ => 0,
@@ -811,8 +812,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Reflex,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_| Ok(Effect::BufferPrev)),
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| Ok(Effect::BufferPrev)),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },
@@ -825,8 +826,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_| Ok(Effect::ListBuffers)),
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| Ok(Effect::ListBuffers)),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },
@@ -839,8 +840,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_| Ok(Effect::OpenBufferPicker)),
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| Ok(Effect::OpenBufferPicker)),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },
@@ -852,8 +853,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Reflex,
             accepts_bang: true,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(|ctx| Ok(Effect::BufferDelete { force: ctx.bang })),
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|ctx| Ok(Effect::BufferDelete { force: ctx.bang })),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },
@@ -871,8 +872,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_optional_path),
-            apply: Box::new(|ctx| {
+            parse_args: Arc::new(parse_optional_path),
+            apply: Arc::new(|ctx| {
                 let args: Vec<String> = match &ctx.args {
                     Args::String(p) if !p.is_empty() => vec![p.clone()],
                     _ => Vec::new(),
@@ -900,8 +901,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_| {
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| {
                 Ok(Effect::OpenPicker {
                     source: "recent".into(),
                     args: Vec::new(),
@@ -921,8 +922,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_picker_args),
-            apply: Box::new(|ctx| {
+            parse_args: Arc::new(parse_picker_args),
+            apply: Arc::new(|ctx| {
                 // `parse_picker_args` always produces an `Args::List`
                 // with `source` at index 0 + raw arg tokens after.
                 let list = ctx
@@ -963,8 +964,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_optional_path),
-            apply: Box::new(|ctx| {
+            parse_args: Arc::new(parse_optional_path),
+            apply: Arc::new(|ctx| {
                 let root = match &ctx.args {
                     Args::String(p) if !p.is_empty() => Some(std::path::PathBuf::from(p.as_str())),
                     _ => None,
@@ -989,8 +990,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Reflex,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_| Ok(Effect::CloseFileTree)),
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| Ok(Effect::CloseFileTree)),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },
@@ -1002,8 +1003,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_optional_path),
-            apply: Box::new(|ctx| {
+            parse_args: Arc::new(parse_optional_path),
+            apply: Arc::new(|ctx| {
                 let dir = match &ctx.args {
                     Args::String(p) if !p.is_empty() => Some(std::path::PathBuf::from(p.as_str())),
                     _ => None,
@@ -1028,8 +1029,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_required_string),
-            apply: Box::new(|ctx| match &ctx.args {
+            parse_args: Arc::new(parse_required_string),
+            apply: Arc::new(|ctx| match &ctx.args {
                 Args::String(name) => Ok(Effect::DescribeOption {
                     name: name.to_string(),
                 }),
@@ -1057,8 +1058,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_required_string),
-            apply: Box::new(|ctx| match &ctx.args {
+            parse_args: Arc::new(parse_required_string),
+            apply: Arc::new(|ctx| match &ctx.args {
                 Args::String(name) => Ok(Effect::DescribeElement {
                     name: name.to_string(),
                 }),
@@ -1085,8 +1086,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_| Ok(Effect::ListOptions)),
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| Ok(Effect::ListOptions)),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },
@@ -1101,8 +1102,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_optional_string),
-            apply: Box::new(apply_describe_plugin_api),
+            parse_args: Arc::new(parse_optional_string),
+            apply: Arc::new(apply_describe_plugin_api),
             args_schema: vec![ArgSpec {
                 name: "seam",
                 kind: ArgKind::String,
@@ -1128,8 +1129,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_| Ok(Effect::ListPluginApis)),
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| Ok(Effect::ListPluginApis)),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },
@@ -1144,8 +1145,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_optional_string),
-            apply: Box::new(apply_export_plugin_api),
+            parse_args: Arc::new(parse_optional_string),
+            apply: Arc::new(apply_export_plugin_api),
             args_schema: vec![ArgSpec {
                 name: "format",
                 kind: ArgKind::String,
@@ -1166,8 +1167,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_| Ok(Effect::ListCommands)),
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| Ok(Effect::ListCommands)),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },
@@ -1181,8 +1182,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_required_string),
-            apply: Box::new(|ctx| match &ctx.args {
+            parse_args: Arc::new(parse_required_string),
+            apply: Arc::new(|ctx| match &ctx.args {
                 Args::String(name) => Ok(Effect::DescribePlugin { name: name.clone() }),
                 _ => Err(CommandError::BadArgs("expected a plugin name".into())),
             }),
@@ -1207,8 +1208,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_| Ok(Effect::ListPlugins)),
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| Ok(Effect::ListPlugins)),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },
@@ -1222,8 +1223,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_| Ok(Effect::DescribeEvents)),
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| Ok(Effect::DescribeEvents)),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },
@@ -1235,8 +1236,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_required_string),
-            apply: Box::new(|ctx| match &ctx.args {
+            parse_args: Arc::new(parse_required_string),
+            apply: Arc::new(|ctx| match &ctx.args {
                 Args::String(name) => Ok(Effect::DescribeEvent {
                     name: name.to_string(),
                 }),
@@ -1262,8 +1263,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_| Ok(Effect::ListModes)),
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| Ok(Effect::ListModes)),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },
@@ -1276,8 +1277,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_required_string),
-            apply: Box::new(|ctx| match &ctx.args {
+            parse_args: Arc::new(parse_required_string),
+            apply: Arc::new(|ctx| match &ctx.args {
                 Args::String(name) => Ok(Effect::DescribeMode {
                     name: name.to_string(),
                 }),
@@ -1303,8 +1304,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_required_string),
-            apply: Box::new(|ctx| match &ctx.args {
+            parse_args: Arc::new(parse_required_string),
+            apply: Arc::new(|ctx| match &ctx.args {
                 Args::String(name) => Ok(Effect::DescribeOptionResolution {
                     name: name.to_string(),
                 }),
@@ -1333,8 +1334,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_optional_path),
-            apply: Box::new(|ctx| match &ctx.args {
+            parse_args: Arc::new(parse_optional_path),
+            apply: Arc::new(|ctx| match &ctx.args {
                 Args::None => Ok(Effect::Tutor { lesson: None }),
                 Args::String(s) => {
                     let n: u32 = s.parse().map_err(|_| {
@@ -1365,8 +1366,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_| Ok(Effect::AppAction(AppEffect::TutorAdvance))),
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| Ok(Effect::AppAction(AppEffect::TutorAdvance))),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },
@@ -1378,8 +1379,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_| Ok(Effect::AppAction(AppEffect::TutorRetreat))),
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| Ok(Effect::AppAction(AppEffect::TutorRetreat))),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },
@@ -1396,8 +1397,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_optional_path),
-            apply: Box::new(|ctx| match &ctx.args {
+            parse_args: Arc::new(parse_optional_path),
+            apply: Arc::new(|ctx| match &ctx.args {
                 Args::None => Ok(Effect::Customize { name: None }),
                 Args::String(name) => Ok(Effect::Customize {
                     name: Some(name.to_string()),
@@ -1426,8 +1427,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_optional_path),
-            apply: Box::new(|ctx| {
+            parse_args: Arc::new(parse_optional_path),
+            apply: Arc::new(|ctx| {
                 let markdown = match &ctx.args {
                     Args::String(s) if !s.is_empty() => s.to_string(),
                     _ => "(empty hover)".to_string(),
@@ -1452,8 +1453,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Reflex,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_| Ok(Effect::DismissPopup)),
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| Ok(Effect::DismissPopup)),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },
@@ -1466,8 +1467,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_ctx| Ok(Effect::OpenMessages)),
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_ctx| Ok(Effect::OpenMessages)),
             args_schema: Vec::new(),
             surface_form: SurfaceForm::Keyword,
         },
@@ -1479,8 +1480,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_optional_path),
-            apply: Box::new(|ctx| {
+            parse_args: Arc::new(parse_optional_path),
+            apply: Arc::new(|ctx| {
                 let server_id = match &ctx.args {
                     Args::String(s) if !s.is_empty() => Some(s.to_string()),
                     _ => None,
@@ -1505,8 +1506,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_required_string),
-            apply: Box::new(|ctx| match &ctx.args {
+            parse_args: Arc::new(parse_required_string),
+            apply: Arc::new(|ctx| match &ctx.args {
                 Args::String(s) if !s.is_empty() => Ok(Effect::ToggleLspTrace {
                     server_id: s.to_string(),
                 }),
@@ -1532,8 +1533,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_optional_path),
-            apply: Box::new(|ctx| {
+            parse_args: Arc::new(parse_optional_path),
+            apply: Arc::new(|ctx| {
                 let server_id = match &ctx.args {
                     Args::String(s) if !s.is_empty() => Some(s.to_string()),
                     _ => None,
@@ -1558,8 +1559,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_| Ok(Effect::LspStatus)),
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| Ok(Effect::LspStatus)),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },
@@ -1571,8 +1572,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_| Ok(Effect::LspServerLogListing)),
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| Ok(Effect::LspServerLogListing)),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },
@@ -1584,8 +1585,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_required_string),
-            apply: Box::new(|ctx| match &ctx.args {
+            parse_args: Arc::new(parse_required_string),
+            apply: Arc::new(|ctx| match &ctx.args {
                 Args::String(s) if !s.is_empty() => Ok(Effect::LspRestart {
                     server_id: s.to_string(),
                 }),
@@ -1611,8 +1612,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Reflex,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_optional_path),
-            apply: Box::new(|ctx| match &ctx.args {
+            parse_args: Arc::new(parse_optional_path),
+            apply: Arc::new(|ctx| match &ctx.args {
                 Args::String(s) if !s.trim().is_empty() => Ok(Effect::LspProgressCancel {
                     server_id: Some(s.trim().to_string()),
                 }),
@@ -1636,8 +1637,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Reflex,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_| Ok(Effect::LspExpandRegion)),
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| Ok(Effect::LspExpandRegion)),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },
@@ -1649,8 +1650,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Reflex,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_| Ok(Effect::LspShrinkRegion)),
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| Ok(Effect::LspShrinkRegion)),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },
@@ -1662,8 +1663,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Reflex,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_required_string),
-            apply: Box::new(|ctx| match &ctx.args {
+            parse_args: Arc::new(parse_required_string),
+            apply: Arc::new(|ctx| match &ctx.args {
                 Args::String(s) if !s.is_empty() => {
                     let trimmed = s.trim();
                     let mut parts = trimmed.split_whitespace();
@@ -1702,8 +1703,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Reflex,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_optional_path),
-            apply: Box::new(|ctx| {
+            parse_args: Arc::new(parse_optional_path),
+            apply: Arc::new(|ctx| {
                 let server_id = match &ctx.args {
                     Args::String(s) if !s.is_empty() => Some(s.to_string()),
                     _ => None,
@@ -1729,8 +1730,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_| Ok(Effect::LspDocumentSymbol)),
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| Ok(Effect::LspDocumentSymbol)),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },
@@ -1742,8 +1743,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_| Ok(Effect::LspFormat)),
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| Ok(Effect::LspFormat)),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },
@@ -1755,8 +1756,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: true,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_| Ok(Effect::LspFormatRange)),
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| Ok(Effect::LspFormatRange)),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },
@@ -1769,8 +1770,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: true,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_| Ok(Effect::LspCodeAction)),
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| Ok(Effect::LspCodeAction)),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },
@@ -1783,8 +1784,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_optional_path),
-            apply: Box::new(|ctx| {
+            parse_args: Arc::new(parse_optional_path),
+            apply: Arc::new(|ctx| {
                 let new_name = match &ctx.args {
                     Args::String(s) => s.trim().to_string(),
                     _ => String::new(),
@@ -1810,8 +1811,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_| Ok(Effect::LspComplete)),
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| Ok(Effect::LspComplete)),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },
@@ -1824,8 +1825,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_| Ok(Effect::LspSignatureHelp)),
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| Ok(Effect::LspSignatureHelp)),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },
@@ -1838,8 +1839,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_optional_path),
-            apply: Box::new(|ctx| {
+            parse_args: Arc::new(parse_optional_path),
+            apply: Arc::new(|ctx| {
                 let query = match &ctx.args {
                     Args::String(s) => s.to_string(),
                     _ => String::new(),
@@ -1865,8 +1866,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_ctx| Ok(Effect::LspIncomingCalls)),
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_ctx| Ok(Effect::LspIncomingCalls)),
             args_schema: Vec::new(),
             surface_form: SurfaceForm::Keyword,
         },
@@ -1878,8 +1879,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_ctx| Ok(Effect::LspOutgoingCalls)),
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_ctx| Ok(Effect::LspOutgoingCalls)),
             args_schema: Vec::new(),
             surface_form: SurfaceForm::Keyword,
         },
@@ -1891,8 +1892,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_ctx| Ok(Effect::LspSupertypes)),
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_ctx| Ok(Effect::LspSupertypes)),
             args_schema: Vec::new(),
             surface_form: SurfaceForm::Keyword,
         },
@@ -1904,8 +1905,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_ctx| Ok(Effect::LspSubtypes)),
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_ctx| Ok(Effect::LspSubtypes)),
             args_schema: Vec::new(),
             surface_form: SurfaceForm::Keyword,
         },
@@ -1917,8 +1918,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_ctx| Ok(Effect::LspMoniker)),
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_ctx| Ok(Effect::LspMoniker)),
             args_schema: Vec::new(),
             surface_form: SurfaceForm::Keyword,
         },
@@ -1930,8 +1931,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_ctx| Ok(Effect::LspCodeLens)),
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_ctx| Ok(Effect::LspCodeLens)),
             args_schema: Vec::new(),
             surface_form: SurfaceForm::Keyword,
         },
@@ -1943,8 +1944,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_ctx| Ok(Effect::LspColorPresentation)),
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_ctx| Ok(Effect::LspColorPresentation)),
             args_schema: Vec::new(),
             surface_form: SurfaceForm::Keyword,
         },
@@ -1957,8 +1958,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_| Ok(Effect::ListDiagnostics)),
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| Ok(Effect::ListDiagnostics)),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },
@@ -1970,8 +1971,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Reflex,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_| Ok(Effect::NextDiagnostic)),
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| Ok(Effect::NextDiagnostic)),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },
@@ -1983,8 +1984,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Reflex,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_| Ok(Effect::PrevDiagnostic)),
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| Ok(Effect::PrevDiagnostic)),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },
@@ -2001,8 +2002,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_| Ok(Effect::ReloadSnippets)),
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| Ok(Effect::ReloadSnippets)),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },
@@ -2014,8 +2015,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_optional_path),
-            apply: Box::new(|ctx| {
+            parse_args: Arc::new(parse_optional_path),
+            apply: Arc::new(|ctx| {
                 let topic = match &ctx.args {
                     Args::String(s) if !s.is_empty() => Some(s.to_string()),
                     _ => None,
@@ -2861,8 +2862,8 @@ mod tests {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_| Ok(Effect::None)),
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| Ok(Effect::None)),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         };

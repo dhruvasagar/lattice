@@ -1069,7 +1069,7 @@ mod tests {
             "action:snippet-next-placeholder",
             "next placeholder",
             ActionSpec {
-                apply: Box::new(|_| Ok(Effect::None)),
+                apply: Arc::new(|_| Ok(Effect::None)),
                 args_schema: vec![],
             },
         );
@@ -1077,7 +1077,7 @@ mod tests {
             "action:snippet-prev-placeholder",
             "prev placeholder",
             ActionSpec {
-                apply: Box::new(|_| Ok(Effect::None)),
+                apply: Arc::new(|_| Ok(Effect::None)),
                 args_schema: vec![],
             },
         );
@@ -1086,7 +1086,7 @@ mod tests {
             "action:snippet-leave",
             "leave snippet",
             ActionSpec {
-                apply: Box::new(|_| Ok(Effect::None)),
+                apply: Arc::new(|_| Ok(Effect::None)),
                 args_schema: vec![],
             },
         );

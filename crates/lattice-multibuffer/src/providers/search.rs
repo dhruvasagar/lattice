@@ -1287,7 +1287,7 @@ pub fn register_search_ex_command(registry: &mut CommandRegistry) {
             latency_class: LatencyClass::Reflex,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(|s: &str, _bang: bool| {
+            parse_args: Arc::new(|s: &str, _bang: bool| {
                 let trimmed = s.trim();
                 if trimmed.is_empty() {
                     return Err(CommandError::BadArgs(
@@ -1296,7 +1296,7 @@ pub fn register_search_ex_command(registry: &mut CommandRegistry) {
                 }
                 Ok(Args::String(trimmed.to_string()))
             }),
-            apply: Box::new(|ctx| {
+            apply: Arc::new(|ctx| {
                 let query = match &ctx.args {
                     Args::String(s) => s.clone(),
                     _ => String::new(),

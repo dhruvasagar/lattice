@@ -173,7 +173,7 @@ impl LatencyClass {
 
 /// Metadata + the actual implementation of a registered command. Stored in
 /// the `CommandRegistry`.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CommandSpec {
     pub id: CommandId,
     pub name: String,

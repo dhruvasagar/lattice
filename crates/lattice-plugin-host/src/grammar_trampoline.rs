@@ -138,7 +138,7 @@ fn build_motion_spec(
         jump: spec.jump,
         exclusive: spec.exclusive,
         args_schema,
-        apply: Box::new(move |ctx: &MotionContext| -> GrammarResult<MotionResult> {
+        apply: Arc::new(move |ctx: &MotionContext| -> GrammarResult<MotionResult> {
             let wit_ctx = project_motion_context(ctx).map_err(CommandError::Plugin)?;
             let wit = run_callback(&guest, "apply-motion", |b, s| {
                 b.lattice_plugin_host_grammar_callbacks()
@@ -160,7 +160,7 @@ fn build_operator_spec(
         repeatable: spec.repeatable,
         args_schema,
         blockwise_per_row: spec.blockwise_per_row,
-        apply: Box::new(
+        apply: Arc::new(
             move |ctx: &mut OperatorContext| -> GrammarResult<NativeEffect> {
                 let wit_ctx = project_operator_context(ctx).map_err(CommandError::Plugin)?;
                 let wit = run_callback(&guest, "apply-operator", |b, s| {
@@ -182,7 +182,7 @@ fn build_text_object_spec(
     let guest = guest.clone();
     Ok(TextObjectSpec {
         args_schema,
-        apply: Box::new(
+        apply: Arc::new(
             move |ctx: &TextObjectContext| -> GrammarResult<NativeRange> {
                 let wit_ctx = project_text_object_context(ctx).map_err(CommandError::Plugin)?;
                 let wit = run_callback(&guest, "apply-text-object", |b, s| {
@@ -204,7 +204,7 @@ fn build_action_spec(
     let guest = guest.clone();
     Ok(ActionSpec {
         args_schema,
-        apply: Box::new(move |ctx: &ActionContext| -> GrammarResult<NativeEffect> {
+        apply: Arc::new(move |ctx: &ActionContext| -> GrammarResult<NativeEffect> {
             let wit_ctx = project_action_context(ctx).map_err(CommandError::Plugin)?;
             let wit = run_callback(&guest, "apply-action", |b, s| {
                 b.lattice_plugin_host_grammar_callbacks()
@@ -234,7 +234,7 @@ fn build_ex_command_spec(
         accepts_range: spec.accepts_range,
         args_schema,
         surface_form,
-        parse_args: Box::new(move |rest: &str, bang: bool| -> GrammarResult<NativeArgs> {
+        parse_args: Arc::new(move |rest: &str, bang: bool| -> GrammarResult<NativeArgs> {
             let rest = rest.to_string();
             let wit = run_callback(&parse_guest, "parse-ex-args", |b, s| {
                 b.lattice_plugin_host_grammar_callbacks()
@@ -242,7 +242,7 @@ fn build_ex_command_spec(
             })?;
             NativeArgs::from_wit(wit).map_err(CommandError::Plugin)
         }),
-        apply: Box::new(
+        apply: Arc::new(
             move |ctx: &ExCommandContext| -> GrammarResult<NativeEffect> {
                 let wit_ctx = project_ex_command_context(ctx).map_err(CommandError::Plugin)?;
                 let wit = run_callback(&apply_guest, "apply-ex-command", |b, s| {

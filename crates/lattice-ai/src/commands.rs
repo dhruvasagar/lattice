@@ -11,6 +11,7 @@
 //! The ACP lifecycle commands (`:opencode` / `:ai-prompt` / `:ai-stop`) live in
 //! [`crate::acp::commands`], gated with the rest of the ACP transport.
 
+use std::sync::Arc;
 use lattice_grammar::args::Args;
 use lattice_grammar::command::LatencyClass;
 use lattice_grammar::effect::Effect;
@@ -30,8 +31,8 @@ pub fn register_ai_log_command(registry: &mut CommandRegistry) {
             latency_class: LatencyClass::Reflex,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(lattice_agent::parse_rest_as_text),
-            apply: Box::new(move |ctx| {
+            parse_args: Arc::new(lattice_agent::parse_rest_as_text),
+            apply: Arc::new(move |ctx| {
                 let session = match &ctx.args {
                     Args::String(t) if !t.is_empty() => Some(t.clone()),
                     _ => None,

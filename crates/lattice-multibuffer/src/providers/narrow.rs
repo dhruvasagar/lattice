@@ -193,8 +193,8 @@ pub fn register_narrow_ex_commands(registry: &mut CommandRegistry) {
             latency_class: LatencyClass::Reflex,
             accepts_bang: false,
             accepts_range: true,
-            parse_args: Box::new(|_s: &str, _bang: bool| Ok(Args::None)),
-            apply: Box::new(|ctx| {
+            parse_args: Arc::new(|_s: &str, _bang: bool| Ok(Args::None)),
+            apply: Arc::new(|ctx| {
                 Ok(Effect::AppAction(AppEffect::NarrowTrigger {
                     range: ctx.range.clone(),
                 }))
@@ -211,8 +211,8 @@ pub fn register_narrow_ex_commands(registry: &mut CommandRegistry) {
             latency_class: LatencyClass::Reflex,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(|_s: &str, _bang: bool| Ok(Args::None)),
-            apply: Box::new(|_ctx| Ok(Effect::AppAction(AppEffect::NarrowWiden))),
+            parse_args: Arc::new(|_s: &str, _bang: bool| Ok(Args::None)),
+            apply: Arc::new(|_ctx| Ok(Effect::AppAction(AppEffect::NarrowWiden))),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },
@@ -249,7 +249,7 @@ pub fn register_narrow_operator(registry: &mut CommandRegistry) -> lattice_gramm
             repeatable: false,
             blockwise_per_row: false,
             args_schema: vec![],
-            apply: Box::new(|ctx: &mut OperatorContext| {
+            apply: Arc::new(|ctx: &mut OperatorContext| {
                 let (start_line, end_line) = range_to_narrow_lines(
                     ctx.range.start.line,
                     ctx.range.start.byte,

@@ -93,7 +93,7 @@ mod tests {
             name,
             "test action",
             ActionSpec {
-                apply: Box::new(|_| Ok(lattice_grammar::effect::Effect::None)),
+                apply: Arc::new(|_| Ok(lattice_grammar::effect::Effect::None)),
                 args_schema: Vec::new(),
             },
         );

@@ -4,6 +4,7 @@
 //! text objects (`text_objects.rs`); both read the same textobjects.scm
 //! captures. See docs/dev/architecture/treesitter-motions.md.
 
+use std::sync::Arc;
 use lattice_grammar::registry::{CommandRegistry, MotionResult, MotionSpec};
 use lattice_grammar::{MotionId, NavBoundary, NavDir};
 
@@ -191,7 +192,7 @@ fn reg(
             jump: true,
             exclusive,
             args_schema: Vec::new(),
-            apply: Box::new(move |ctx| {
+            apply: Arc::new(move |ctx| {
                 let count = ctx.count.get().max(1);
                 let target = ctx
                     .scope_resolver

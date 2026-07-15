@@ -11,6 +11,8 @@
 //! crate-root `commands` module (`register_ai_log_command`), because the log
 //! substrate is shared by every transport (AG‑3).
 
+use std::sync::Arc;
+
 use lattice_agent::{parse_no_args, parse_rest_as_text};
 use lattice_grammar::args::Args;
 use lattice_grammar::command::LatencyClass;
@@ -38,8 +40,8 @@ pub fn register_ai_ex_commands(registry: &mut CommandRegistry, handle: AiClientH
             latency_class: LatencyClass::Reflex,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(move |_ctx| {
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(move |_ctx| {
                 start.start(ProviderConfig::opencode());
                 // Start AND open the conversation buffer (the user's decision):
                 // a generic open of the `*ai:opencode*` synthetic buffer under
@@ -65,8 +67,8 @@ pub fn register_ai_ex_commands(registry: &mut CommandRegistry, handle: AiClientH
             latency_class: LatencyClass::Reflex,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_rest_as_text),
-            apply: Box::new(move |ctx| match &ctx.args {
+            parse_args: Arc::new(parse_rest_as_text),
+            apply: Arc::new(move |ctx| match &ctx.args {
                 Args::String(t) if !t.is_empty() => {
                     prompt.prompt(t.clone());
                     Ok(Effect::Echo {
@@ -92,8 +94,8 @@ pub fn register_ai_ex_commands(registry: &mut CommandRegistry, handle: AiClientH
             latency_class: LatencyClass::Reflex,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(move |_ctx| {
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(move |_ctx| {
                 stop.stop();
                 Ok(Effect::Echo {
                     level: EchoLevel::Info,
@@ -116,8 +118,8 @@ pub fn register_ai_ex_commands(registry: &mut CommandRegistry, handle: AiClientH
             latency_class: LatencyClass::Reflex,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_ctx| {
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_ctx| {
                 Ok(Effect::OpenPopup {
                     name: crate::acp::permission_mode::PERMISSION_BUFFER_NAME.to_string(),
                     mode_id: crate::acp::permission_mode::AiPermissionMode::mode_id()

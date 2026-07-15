@@ -22,6 +22,8 @@
 //! mode-ownership-compliant route — it keeps the handler body in the
 //! crate without a new host `Effect` variant. See design §2.
 
+use std::sync::Arc;
+
 use lattice_agent::parse_no_args;
 use lattice_grammar::command::LatencyClass;
 use lattice_grammar::effect::{EchoLevel, Effect};
@@ -44,8 +46,8 @@ pub fn register_claude_code_ex_commands(
             latency_class: LatencyClass::Reflex,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(move |_ctx| {
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(move |_ctx| {
                 start_server.start();
                 Ok(Effect::Echo {
                     level: EchoLevel::Info,
@@ -74,8 +76,8 @@ pub fn register_claude_code_ex_commands(
             latency_class: LatencyClass::Reflex,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(move |_ctx| {
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(move |_ctx| {
                 let Some(port) = claude_server.start() else {
                     return Ok(Effect::Echo {
                         level: EchoLevel::Error,
@@ -109,8 +111,8 @@ pub fn register_claude_code_ex_commands(
             latency_class: LatencyClass::Reflex,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(move |_ctx| {
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(move |_ctx| {
                 let cache = send_server.read_cache();
                 let frame = {
                     let guard = cache.lock().unwrap_or_else(|e| e.into_inner());
@@ -154,8 +156,8 @@ pub fn register_claude_code_ex_commands(
             latency_class: LatencyClass::Reflex,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(move |_ctx| {
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(move |_ctx| {
                 stop_server.stop();
                 Ok(Effect::Echo {
                     level: EchoLevel::Info,
@@ -182,8 +184,8 @@ pub fn register_claude_code_ex_commands(
             latency_class: LatencyClass::Reflex,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_ctx| Ok(Effect::TerminalInput(vec![0x1b]))),
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_ctx| Ok(Effect::TerminalInput(vec![0x1b]))),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },

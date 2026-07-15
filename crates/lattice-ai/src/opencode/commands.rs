@@ -6,6 +6,7 @@
 //! the minor) is requested through the [`Effect`] vocabulary — the host
 //! boundary — not a bespoke channel, exactly like `:claude`.
 
+use std::sync::Arc;
 use lattice_agent::parse_no_args;
 use lattice_grammar::command::LatencyClass;
 use lattice_grammar::effect::Effect;
@@ -26,8 +27,8 @@ pub fn register_opencode_ex_commands(registry: &mut CommandRegistry) {
             latency_class: LatencyClass::Reflex,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Box::new(parse_no_args),
-            apply: Box::new(|_ctx| {
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_ctx| {
                 Ok(Effect::SpawnTerminal {
                     cmd_line: Some("opencode".to_string()),
                     env: vec![],

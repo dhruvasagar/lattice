@@ -158,7 +158,7 @@ pub fn register_repl_mode_actions(registry: &mut lattice_grammar::CommandRegistr
         "action:repl-focus-input",
         "repl: move the cursor to the prompt and enter Insert (mode-owned).",
         ActionSpec {
-            apply: Box::new(|_| Ok(Effect::None)),
+            apply: Arc::new(|_| Ok(Effect::None)),
             args_schema: vec![],
         },
     );

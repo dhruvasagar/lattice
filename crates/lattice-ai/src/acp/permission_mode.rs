@@ -352,7 +352,7 @@ pub fn register_ai_permission_actions(registry: &mut lattice_grammar::CommandReg
             name,
             doc,
             ActionSpec {
-                apply: Box::new(|_| Ok(Effect::None)),
+                apply: Arc::new(|_| Ok(Effect::None)),
                 args_schema: vec![],
             },
         );

@@ -2,7 +2,6 @@
 title = "Ligature rendering"
 +++
 
-# Ligature rendering
 
 **Date:** 2026-06-09
 **Status:** complete (LG.1 + LG.2 ✅)

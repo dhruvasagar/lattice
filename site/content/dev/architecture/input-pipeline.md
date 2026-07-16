@@ -2,7 +2,6 @@
 title = "Input Pipeline — key identity, dispatch, and keystroke→glyph latency"
 +++
 
-# Input Pipeline — key identity, dispatch, and keystroke→glyph latency
 
 Design fragment. The *what* and *why* of how a physical key press becomes a
 rendered glyph: the canonical input token, the logical-vs-physical key-identity

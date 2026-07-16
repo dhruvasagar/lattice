@@ -2,7 +2,6 @@
 title = "Multibuffer Views"
 +++
 
-# Multibuffer Views
 
 Authoritative design for Lattice's multibuffer aggregator: a
 single editor surface composed of **anchored excerpts** spliced

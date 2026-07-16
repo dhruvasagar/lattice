@@ -2,7 +2,6 @@
 title = "Audits"
 +++
 
-# Audits
 
 Point-in-time investigations of a subsystem's design — written when a bug or a
 "this smells redundant" hunch turns into a full trace of how something actually

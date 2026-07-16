@@ -2,7 +2,6 @@
 title = "Architecture diagrams"
 +++
 
-# Architecture diagrams
 
 ASCII diagrams for the major lattice subsystems. Renders cleanly
 in the in-editor `:help` view (which can't render Mermaid /

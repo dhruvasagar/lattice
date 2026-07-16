@@ -2,7 +2,6 @@
 title = "Diff extraction — design fragment (`lattice-host::diff` → the `lattice-diff` crate)"
 +++
 
-# Diff extraction — design fragment (`lattice-host::diff` → the `lattice-diff` crate)
 
 **What + why** of moving the host-side diff *subsystem* into the existing
 `lattice-diff` crate as diff *modes*, installed through the BC `SubsystemBoot`

@@ -2,7 +2,6 @@
 title = "Emacs-keys — a configurable `<C-x>` leader (tribute layer)"
 +++
 
-# Emacs-keys — a configurable `<C-x>` leader (tribute layer)
 
 A built-in, default-on minor mode (`emacs-keys`) that contributes an
 emacs-style `<C-x>` prefix in Normal (and Visual) mode. The prefix is a

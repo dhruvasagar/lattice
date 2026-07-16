@@ -2,7 +2,6 @@
 title = "Tree-sitter Text Objects"
 +++
 
-# Tree-sitter Text Objects
 
 Design fragment for Lattice's **structural text objects** — `af` (a function),
 `ic` (inner class), `aa` (an argument), etc. — read from the tree-sitter parse

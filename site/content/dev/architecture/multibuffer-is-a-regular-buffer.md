@@ -2,7 +2,6 @@
 title = "Multibuffer is a regular buffer (integration audit)"
 +++
 
-# Multibuffer is a regular buffer (integration audit)
 
 **Status:** 2026-06-01 — K.4 audit, in progress. Triggered by
 the M.6 testing arc that surfaced four latent integration

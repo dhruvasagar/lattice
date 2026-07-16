@@ -2,7 +2,6 @@
 title = "Theme system"
 +++
 
-# Theme system
 
 Authoritative design for Lattice's theme/styling layer: a
 **two-part model** — named *theme elements* (semantic styleable

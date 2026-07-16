@@ -2,7 +2,6 @@
 title = "Select mode (vim Select) — design fragment"
 +++
 
-# Select mode (vim Select) — design fragment
 
 **Status:** designed (SN.3d), not yet implemented. Slice sequencing lives in
 the [mode-activation slice plan](../operations/slice-plans/archive/mode-activation)

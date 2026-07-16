@@ -2,7 +2,6 @@
 title = "Keymap Architecture (developer reference)"
 +++
 
-# Keymap Architecture (developer reference)
 
 Authoritative design for lattice's key-input dispatch. The
 plan section at the end lists the slices that take us from the

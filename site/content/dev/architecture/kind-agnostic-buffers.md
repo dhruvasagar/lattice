@@ -2,7 +2,6 @@
 title = "Kind-agnostic buffer + mode infrastructure (H-series)"
 +++
 
-# Kind-agnostic buffer + mode infrastructure (H-series)
 
 > **Status (2026-06-01):** H-series closed after H.2. H.1 + H.2 ✅ landed; **H.3 deferred** — see §10 below for rationale.
 

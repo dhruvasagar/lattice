@@ -2,7 +2,6 @@
 title = "Developing Lattice — a contributor's getting-started guide"
 +++
 
-# Developing Lattice — a contributor's getting-started guide
 
 This is the on-ramp for writing code in Lattice. It gets you building and
 testing, hands you the mental model you need before touching a hot path, and

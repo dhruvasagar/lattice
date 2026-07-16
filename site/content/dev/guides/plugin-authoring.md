@@ -2,7 +2,6 @@
 title = "Plugin authoring guide"
 +++
 
-# Plugin authoring guide
 
 How to write a lattice plugin: the toolchain, the WIT package, the lifecycle,
 the capability manifest, the per-seam surface, and how to build and test a guest

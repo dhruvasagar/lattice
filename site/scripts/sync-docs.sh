@@ -50,6 +50,10 @@ def sync_dir(src_dir, dst_dir, link_mods=None):
         title = make_title(content, b)
         body = strip_frontmatter(content)
 
+        # Strip the first H1 heading matching the title, since the template
+        # already renders <h1>{{ page.title }}</h1>.
+        body = re.sub(rf'^# {re.escape(title)}\n?', '', body, count=1, flags=re.MULTILINE)
+
         # Apply link modifications
         if link_mods and 'strip_md' in link_mods:
             body = strip_md_from_links(body)

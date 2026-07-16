@@ -2,7 +2,6 @@
 title = "Owner-write caret survival"
 +++
 
-# Owner-write caret survival
 
 How a caret survives an edit made by something other than the user's keystroke.
 

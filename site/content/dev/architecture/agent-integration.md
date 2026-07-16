@@ -2,7 +2,6 @@
 title = "Agent integration — the `EditorAccess` port, and the adapters built on it"
 +++
 
-# Agent integration — the `EditorAccess` port, and the adapters built on it
 
 > **Status:** implemented (2026-07-10). The `EditorAccess` port and the
 > adapters are live in `lattice-agent` / `lattice-ai`.

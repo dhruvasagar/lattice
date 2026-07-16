@@ -2,7 +2,6 @@
 title = "Virtual Rows"
 +++
 
-# Virtual Rows
 
 Authoritative design for Lattice's displacing virtual-row
 primitive: a sibling lane to [`CellMatrix`](cell-grid-renderer)

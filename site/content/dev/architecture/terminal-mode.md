@@ -2,7 +2,6 @@
 title = "Terminal Mode (developer reference)"
 +++
 
-# Terminal Mode (developer reference)
 
 This document is the implementer-side companion to the
 forthcoming `design.md` §5.B (canonical text lands once T1

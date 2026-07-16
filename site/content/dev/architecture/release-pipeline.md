@@ -2,7 +2,6 @@
 title = "Release pipeline"
 +++
 
-# Release pipeline
 
 > Design fragment. The "what" and "why" of how Lattice produces downloadable
 > release artefacts. Slice sequencing lives in the slice plan

@@ -2,7 +2,6 @@
 title = "ACP UX enhancements — permission surface, usage metadata, status, and queue"
 +++
 
-# ACP UX enhancements — permission surface, usage metadata, status, and queue
 
 > **Status:** design fragment (v0.1). Slices sequenced in
 > `docs/dev/operations/slice-plans/acp-ux-enhancements.md`.

@@ -2,7 +2,6 @@
 title = "Picker Architecture (developer reference)"
 +++
 
-# Picker Architecture (developer reference)
 
 This document is the implementer-side companion to
 [design.md §5.9.7](design) and [design.md §5.9.10](design)

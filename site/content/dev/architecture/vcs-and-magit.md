@@ -2,7 +2,6 @@
 title = "VCS and Magit-style Integration"
 +++
 
-# VCS and Magit-style Integration
 
 **Status:** sketch — design captured during 2026-05-31's D.6 → D.7 review.
 The diff system (D-series) ships first; this fragment locks in the

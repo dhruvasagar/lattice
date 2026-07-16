@@ -2,7 +2,6 @@
 title = "Plugin host architecture — conformance audit"
 +++
 
-# Plugin host architecture — conformance audit
 
 **Audited 2026-07-12**, prompted by "a thorough review before proceeding past
 PH7.7a — does the plugin host conform to our design philosophy, and do all

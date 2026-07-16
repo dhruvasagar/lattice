@@ -2,7 +2,6 @@
 title = "Narrow Mode"
 +++
 
-# Narrow Mode
 
 Design fragment for Lattice's narrow mode: a focused, editable multibuffer
 view of a single source-buffer excerpt. Edits propagate to the underlying

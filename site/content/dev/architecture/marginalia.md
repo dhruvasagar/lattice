@@ -2,7 +2,6 @@
 title = "Marginalia — typed annotations for completion candidates"
 +++
 
-# Marginalia — typed annotations for completion candidates
 
 > **Status (2026-06-03):** §§1–7 landed as the `MARG.*` slice series (typed `Annotation` enum, keybinding annotator, GPUI parity, MARG.5 column layout) plus T.6 (GPUI annotation colors read from theme). Closed slice plan: `docs/dev/archive/marginalia.md`. Cross-references existing fragments: `completion-pipeline-unification.md` (the substrate this rides on), `insert-completion.md` (sibling consumer of the candidate-rendering pipeline).
 >

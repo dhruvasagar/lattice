@@ -2,7 +2,6 @@
 title = "Cutting a release"
 +++
 
-# Cutting a release
 
 The release pipeline (`.github/workflows/release.yml`) is driven by `v*` tags.
 Design: `docs/dev/architecture/release-pipeline.md`.

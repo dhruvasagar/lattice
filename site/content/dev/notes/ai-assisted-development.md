@@ -2,7 +2,6 @@
 title = "Building Lattice with AI"
 +++
 
-# Building Lattice with AI
 
 ### A whitepaper on constructing complex software with a capable, forgetful collaborator
 

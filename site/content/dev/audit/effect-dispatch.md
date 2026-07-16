@@ -2,7 +2,6 @@
 title = "Effect dispatch — how an `Effect` reaches its appliers"
 +++
 
-# Effect dispatch — how an `Effect` reaches its appliers
 
 **Audited 2026-07-03**, prompted by dashboard URL links (`GitHub`, `Issues`)
 silently not opening. The trace found the effect architecture is coherent; the

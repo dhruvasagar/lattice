@@ -2,7 +2,6 @@
 title = "LSP Feature Tracking"
 +++
 
-# LSP Feature Tracking
 
 Single source of truth for which LSP 3.17 capabilities `lattice`
 implements and which are planned. Updated every commit that

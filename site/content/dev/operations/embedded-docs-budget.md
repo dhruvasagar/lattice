@@ -2,7 +2,6 @@
 title = "Embedded user-docs size budget"
 +++
 
-# Embedded user-docs size budget
 
 ## Why this exists
 

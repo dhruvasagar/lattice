@@ -2,7 +2,6 @@
 title = "Headerline"
 +++
 
-# Headerline
 
 Authoritative design for Lattice's generic sticky headerline mechanism:
 the one surface for a buffer to emit a pinned status row above line 0,

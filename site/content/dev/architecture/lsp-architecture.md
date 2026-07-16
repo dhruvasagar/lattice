@@ -2,7 +2,6 @@
 title = "LSP Architecture (developer reference)"
 +++
 
-# LSP Architecture (developer reference)
 
 This document is the implementer-side companion to
 [design.md §5.4](design). design.md is the terse,

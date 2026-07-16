@@ -2,7 +2,6 @@
 title = "Verification checklist"
 +++
 
-# Verification checklist
 
 A thorough manual verification of every feature lattice ships
 today. Use this for release sign-off, post-refactor regression

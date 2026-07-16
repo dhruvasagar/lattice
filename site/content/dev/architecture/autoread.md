@@ -2,7 +2,6 @@
 title = "Autoread — design fragment (external-change detection + refresh)"
 +++
 
-# Autoread — design fragment (external-change detection + refresh)
 
 > **Status: implemented (AR.0–AR.6).** Addresses `design.md` §15:21 ("File
 > watcher / auto-revert", deferred) for the Document-buffer case. Vim's

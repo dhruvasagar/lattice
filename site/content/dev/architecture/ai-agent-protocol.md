@@ -2,7 +2,6 @@
 title = "AI agent protocol — lattice as an ACP client for Claude Code, opencode & friends"
 +++
 
-# AI agent protocol — lattice as an ACP client for Claude Code, opencode & friends
 
 Lattice hosts AI coding agents through **one generalized integration** rather than
 a bespoke per-agent crate. The substrate is the **Agent Client Protocol (ACP)** —

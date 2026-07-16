@@ -2,7 +2,6 @@
 title = "Buffer-local options"
 +++
 
-# Buffer-local options
 
 Companion to `mode-architecture.md` §6 and `design.md` §5.12. Owns
 the *what* and *why* of per-buffer option values; sequencing lives in

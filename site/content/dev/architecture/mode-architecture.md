@@ -2,7 +2,6 @@
 title = "Mode Architecture (developer reference)"
 +++
 
-# Mode Architecture (developer reference)
 
 Authoritative design for lattice's major / minor mode system. The
 plan section at the end lists the slices that take us from the

@@ -2,7 +2,6 @@
 title = "Unified command dispatch — one path for `:`, the keymap, and plugins"
 +++
 
-# Unified command dispatch — one path for `:`, the keymap, and plugins
 
 **Status:** landed 2026-06-15 (the consolidation). Slice sequencing +
 remaining items live in

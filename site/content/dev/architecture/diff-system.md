@@ -2,7 +2,6 @@
 title = "Diff System"
 +++
 
-# Diff System
 
 Authoritative design for Lattice's diff subsystem: the data
 model, the presentation transforms that turn hunks into rendered

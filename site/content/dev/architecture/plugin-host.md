@@ -2,7 +2,6 @@
 title = "Plugin Host (Phase 7) — WASM Component Model extension substrate"
 +++
 
-# Plugin Host (Phase 7) — WASM Component Model extension substrate
 
 **Status:** 🚧 in build (design 2026-07-01; last refreshed 2026-07-13). **PH7.0–7.9 have
 landed** — the `lattice-plugin-host` crate, the `wit/` package, the capability/WASI model, the

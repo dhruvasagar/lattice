@@ -2,7 +2,6 @@
 title = "Benchmark Results"
 +++
 
-# Benchmark Results
 
 Captured numbers from the criterion suite, indexed against the
 performance commitments in ../architecture/design.md §8.2 (Floor / Target / Today

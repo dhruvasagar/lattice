@@ -2,7 +2,6 @@
 title = "Lattice — Implementation Tracker"
 +++
 
-# Lattice — Implementation Tracker
 
 This doc is the **current-state ledger** for the v1.0 build. It maps every
 feature back to its anchor in ../architecture/design.md / CLAUDE.md and shows what's done,

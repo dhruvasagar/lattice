@@ -2,7 +2,6 @@
 title = "IDE protocol host — lattice as a Claude Code agent peer"
 +++
 
-# IDE protocol host — lattice as a Claude Code agent peer
 
 Lattice speaks the **Claude Code IDE protocol** as the *IDE side*: an external
 `claude` CLI connects over loopback and drives the editor — reading the

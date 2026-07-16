@@ -2,7 +2,6 @@
 title = "Cell-grid renderer architecture"
 +++
 
-# Cell-grid renderer architecture
 
 Anchor: [design.md §5.6](design) (rendering layered architecture) and paramount goal #1 (sub-frame keystroke→glyph at 120 Hz, within the one-frame ceiling ≤ 8.3 ms).
 

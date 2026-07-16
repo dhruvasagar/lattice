@@ -2,7 +2,6 @@
 title = "Foreground cancellation (`<C-g>`)"
 +++
 
-# Foreground cancellation (`<C-g>`)
 
 Design for user-initiated cancellation of long-running or stuck
 foreground operations — search scans, LSP commands, picker fills,

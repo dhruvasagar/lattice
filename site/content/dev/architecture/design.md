@@ -2,7 +2,6 @@
 title = "Design Document: A Modal, GPU-Accelerated, Plugin-First Editor"
 +++
 
-# Design Document: A Modal, GPU-Accelerated, Plugin-First Editor
 
 > **Status:** Draft v0.6
 > **Codename:** `lattice` (placeholder -- rename freely)

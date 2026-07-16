@@ -2,7 +2,6 @@
 title = "Mode keymap authoring guide"
 +++
 
-# Mode keymap authoring guide
 
 A reference for crates that implement [`Mode`] and want to ship
 keybindings alongside their options, decorations, and lifecycle.

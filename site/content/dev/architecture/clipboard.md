@@ -2,7 +2,6 @@
 title = "System clipboard integration (CB)"
 +++
 
-# System clipboard integration (CB)
 
 **Status:** ✅ complete (2026-07-03). CB.0–CB.5 all landed: the `Clipboard` trait +
 shared native `arboard` backend + OSC52 fallback, the `clipboard` bool option with

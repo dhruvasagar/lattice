@@ -2,7 +2,6 @@
 title = "Pane groups"
 +++
 
-# Pane groups
 
 Authoritative design for Lattice's pane-group substrate: the
 primitive that makes side-by-side diff, three-pane merge,

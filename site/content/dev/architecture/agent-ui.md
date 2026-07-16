@@ -2,7 +2,6 @@
 title = "Agent conversation UI"
 +++
 
-# Agent conversation UI
 
 A terminal-native, buffer-native chat surface for the ACP agent (opencode
 today; any ACP provider tomorrow). The user reads the conversation as

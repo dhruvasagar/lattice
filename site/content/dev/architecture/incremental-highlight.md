@@ -2,7 +2,6 @@
 title = "Incremental highlight & viewport-scoped cells"
 +++
 
-# Incremental highlight & viewport-scoped cells
 
 Status: design locked 2026-06-04. Slice plan: `docs/dev/operations/slice-plans/archive/incremental-highlight.md`.
 

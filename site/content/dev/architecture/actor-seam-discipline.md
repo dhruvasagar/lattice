@@ -2,7 +2,6 @@
 title = "Actor-seam discipline"
 +++
 
-# Actor-seam discipline
 
 How `App`-side code decides between **published RenderState reads**
 and **actor-mailbox RPC** (`App::{read,mutate,mutate_with}_editor`).

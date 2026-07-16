@@ -2,7 +2,6 @@
 title = "Terminal wide-char ghosting — one grid cell ≠ one emitted char"
 +++
 
-# Terminal wide-char ghosting — one grid cell ≠ one emitted char
 
 **Audited 2026-07-07**, prompted by "ghosted characters left over on the screen"
 in terminal panes (`:terminal`, `:claude`) — stray glyphs that survive tab

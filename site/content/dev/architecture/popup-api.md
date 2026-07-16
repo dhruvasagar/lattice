@@ -2,7 +2,6 @@
 title = "Popup API"
 +++
 
-# Popup API
 
 A first-class, content-agnostic overlay surface that modes own and plugins will
 inherit.

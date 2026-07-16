@@ -2,7 +2,6 @@
 title = "Horizontal scroll"
 +++
 
-# Horizontal scroll
 
 When soft-wrap is off, a line longer than the body area must be
 reachable: the view scrolls left/right to keep the cursor visible and

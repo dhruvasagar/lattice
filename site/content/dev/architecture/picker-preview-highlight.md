@@ -2,7 +2,6 @@
 title = "Picker preview syntax highlighting (PH)"
 +++
 
-# Picker preview syntax highlighting (PH)
 
 **Status:** ✅ complete (2026-07-01). PH.1 (substrate: `DisplaySpan` carrier + both-peer paint + match composition), PH.2 (Lines/Outline active-buffer producers + per-frame bench), and PH.3 (Grep arbitrary-file highlighting) all landed — `:picker lines` / `:picker outline` / `:picker grep` render syntax colors on both peers, recoloring on `:colorscheme`. The §4 dependency-cycle question resolved toward the primary semantic-`Style` design (`lattice-cells` is a leaf crate → no cycle). Slice plan: `docs/dev/operations/slice-plans/archive/picker-marginalia.md` (PH series).
 

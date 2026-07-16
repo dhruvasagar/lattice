@@ -2,7 +2,6 @@
 title = "Preview isolation (PI)"
 +++
 
-# Preview isolation (PI)
 
 **Status:** ✅ landed (PI.0–PI.5, 2026-07-07). In-pane picker preview is now
 *isolated*: previewing buffer B in a pane never mutates the pane's committed buffer

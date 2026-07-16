@@ -2,7 +2,6 @@
 title = "Modeline architecture (developer reference)"
 +++
 
-# Modeline architecture (developer reference)
 
 The **modeline** is the per-pane bottom status row
 (`[MODE]  path … L:n C:n  lang`). This is the design fragment for its

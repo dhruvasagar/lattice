@@ -2,7 +2,6 @@
 title = "Dashboard"
 +++
 
-# Dashboard
 
 Authoritative design for Lattice's launch **dashboard** — the branded start
 page shown when the editor opens with no file argument. The dashboard is a

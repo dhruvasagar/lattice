@@ -2,7 +2,6 @@
 title = "Boot composition — generic-primitives-first + per-subsystem `install`"
 +++
 
-# Boot composition — generic-primitives-first + per-subsystem `install`
 
 `editor_boot.rs` is a ~1500-line function that accumulates per-subsystem wiring.
 Every async subsystem (LSP, multibuffer, emacs-keys, diff, terminal, the Claude

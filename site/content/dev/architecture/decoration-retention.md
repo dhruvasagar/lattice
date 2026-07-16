@@ -2,7 +2,6 @@
 title = "Decoration retention across focus"
 +++
 
-# Decoration retention across focus
 
 Design fragment — the *what* and *why*. Sequencing lives in the slice
 plan: [`../operations/slice-plans/archive/decoration-retention.md`](../operations/slice-plans/archive/decoration-retention).

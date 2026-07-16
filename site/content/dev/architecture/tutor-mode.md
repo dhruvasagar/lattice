@@ -2,7 +2,6 @@
 title = "Tutor Mode — Architecture"
 +++
 
-# Tutor Mode — Architecture
 
 **Design fragment.** For the slice sequencing see
 `docs/dev/operations/slice-plans/tutor.md`.

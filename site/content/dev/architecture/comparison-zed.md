@@ -2,7 +2,6 @@
 title = "Lattice vs. Zed — architectural comparison"
 +++
 
-# Lattice vs. Zed — architectural comparison
 
 > **What this is.** A design-doc fragment positioning lattice against its
 > closest *architectural* peer, **Zed**, and explaining why **Helix** is a

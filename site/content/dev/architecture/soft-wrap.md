@@ -2,7 +2,6 @@
 title = "Soft line-wrapping (`:set wrap`)"
 +++
 
-# Soft line-wrapping (`:set wrap`)
 
 Design fragment. Sequencing lives in the slice plan
 [`../operations/slice-plans/soft-wrap.md`](../operations/slice-plans/soft-wrap);

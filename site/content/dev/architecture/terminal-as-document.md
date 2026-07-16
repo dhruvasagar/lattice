@@ -2,7 +2,6 @@
 title = "Terminal Buffer as a Document (Normal/Visual sub-states)"
 +++
 
-# Terminal Buffer as a Document (Normal/Visual sub-states)
 
 Authoritative design for collapsing the parallel "scrollback
 grammar" that grew under `BufferKind::Terminal` into the unified

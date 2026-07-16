@@ -2,7 +2,6 @@
 title = "Keymap API design review — 2026-06-02"
 +++
 
-# Keymap API design review — 2026-06-02
 
 One-shot review after the K.1 → K.4 arc landed. Evaluates the
 keymap substrate (`lattice-protocol::chord`,

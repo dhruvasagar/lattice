@@ -2,7 +2,6 @@
 title = "Insert-Mode Completion (design)"
 +++
 
-# Insert-Mode Completion (design)
 
 This document is the design spec for buffer-level Insert-mode
 completion in lattice. It is the editor surface that turns the

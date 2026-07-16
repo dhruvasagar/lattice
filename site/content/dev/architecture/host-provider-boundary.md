@@ -2,7 +2,6 @@
 title = "Host ↔ provider boundary"
 +++
 
-# Host ↔ provider boundary
 
 > **The decision.** `lattice-host` owns the substrate **and the core features**;
 > only genuinely-separable **feature-buffers** are inverted out so the host

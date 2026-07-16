@@ -2,7 +2,6 @@
 title = "Completion / picker unification under `CompletionPipeline`"
 +++
 
-# Completion / picker unification under `CompletionPipeline`
 
 Phase 5.8 follow-up architecture doc. Captures the design that
 unifies the picker and the cmdline-completion popup onto a

@@ -2,7 +2,6 @@
 title = "Tree-sitter Structural Motions"
 +++
 
-# Tree-sitter Structural Motions
 
 Design fragment for Lattice's **structural motions** — `]f` (next function),
 `[c` (previous class), `]F` (next function end), `[a` (previous argument), etc.

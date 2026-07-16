@@ -2,7 +2,6 @@
 title = "Fold architecture"
 +++
 
-# Fold architecture
 
 Authoritative design for Lattice's fold engine: the provider
 abstraction underneath `:set foldmethod=`, how multiple fold

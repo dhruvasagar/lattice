@@ -2,7 +2,6 @@
 title = "GPUI Window Chrome & Control"
 +++
 
-# GPUI Window Chrome & Control
 
 Two configurable GPUI-window behaviors: a **borderless** (decoration-free)
 window, and **maximize-on-launch** driven by the boot `Startup` event. Both are

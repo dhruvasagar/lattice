@@ -2,7 +2,6 @@
 title = "N-way Diff Membership (D.8)"
 +++
 
-# N-way Diff Membership (D.8)
 
 **Status:** design, awaiting implementation. Successor to D.6's
 fixed-arity (two-way / three-way) descriptor shape. The "what" + "why"

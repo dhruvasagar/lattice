@@ -2,7 +2,6 @@
 title = "Popup unification — a popup is a regular buffer in a box"
 +++
 
-# Popup unification — a popup is a regular buffer in a box
 
 A popup must render its content through the **exact same path** as a
 regular buffer pane. The only thing popup-specific is the *box* it

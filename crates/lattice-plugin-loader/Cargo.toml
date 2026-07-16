@@ -61,6 +61,10 @@ tokio = { workspace = true, features = ["rt", "rt-multi-thread"] }
 # Cross-platform plugins-dir resolution (`<data>/lattice/plugins/`, XDG on
 # Linux / Application Support on macOS / LocalAppData on Windows).
 dirs = { workspace = true }
+# Filesystem watcher for the init-artifact auto-reload (PL8.D.4): watch
+# `<config>/lattice/init/init.wasm` and `:reload-config` when a rebuild rewrites
+# it. Same crate the LSP `didChangeWatchedFiles` watcher uses.
+notify = { workspace = true }
 # Typed load-error surface (no panics on any load path -- the four-artefact
 # graceful-error clause; a bad plugin is logged + skipped, never fatal).
 thiserror = { workspace = true }

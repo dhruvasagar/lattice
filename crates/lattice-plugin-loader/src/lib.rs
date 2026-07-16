@@ -67,6 +67,7 @@
 pub mod discovery;
 mod ex_commands;
 pub mod install;
+pub mod watch;
 
 pub use discovery::{
     DiscoveredPlugin, default_init_dir, default_plugins_dir, discover, discover_one,
@@ -242,6 +243,11 @@ pub enum PluginLoaderError {
     #[error("plugin `{0}` has no on-disk source to reload from")]
     NotReloadable(String),
 }
+
+/// The canonical id of the user-config plugin — the `:reload-config` /
+/// auto-reload target, and the `id = "init"` a `<config>/lattice/init/plugin.toml`
+/// declares.
+pub(crate) const INIT_PLUGIN_ID: &str = "init";
 
 /// Match a loaded record against a `:plugin-unload` / `:plugin-reload` target —
 /// its manifest id (the common case) or its numeric host-issued plugin id.
@@ -625,6 +631,26 @@ impl PluginLoader {
         };
         self.unload(target);
         self.load_path(&dir, tier).await
+    }
+
+    /// Load the `init` config if it isn't loaded, or reload it if it is — the
+    /// idempotent "make init reflect what's on disk" the auto-reload watcher
+    /// (PL8.D.4) fires on every change to `<config>/lattice/init/`. First good
+    /// build loads; a rebuild reloads (unbinding the old keymaps / commands and
+    /// re-applying); a *broken* rebuild leaves `init` unloaded (reload unloads
+    /// before it fails to re-load), which the next good build heals — `is_loaded`
+    /// is then false, so this loads rather than reloads. Errors propagate for the
+    /// caller to log; never panics.
+    pub async fn sync_init(
+        &self,
+        init_dir: &std::path::Path,
+        tier: TrustTier,
+    ) -> Result<PluginId, PluginLoaderError> {
+        if self.is_loaded(INIT_PLUGIN_ID) {
+            self.reload(INIT_PLUGIN_ID, tier).await
+        } else {
+            self.load_path(init_dir, tier).await
+        }
     }
 
     /// Reverse a plugin's registry contributions against the live registries.

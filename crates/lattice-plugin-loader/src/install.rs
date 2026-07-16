@@ -87,6 +87,9 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     // defaults. An absent init dir (the common case — no user config) is a benign
     // debug skip, never a warn.
     if let Some(init_dir) = crate::default_init_dir() {
+        // PL8.D.4: watch the init dir so a rebuilt `init.wasm` auto-reloads
+        // without a manual `:reload-config`. A no-op if the dir doesn't exist.
+        crate::watch::spawn_init_watcher(loader.clone(), init_dir.clone(), boot.runtime_handle());
         boot.runtime_handle().spawn(async move {
             match loader.load_path(&init_dir, TrustTier::Bundled).await {
                 Ok(id) => {

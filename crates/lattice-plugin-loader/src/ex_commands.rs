@@ -183,9 +183,7 @@ fn reload_spec(loader: Arc<PluginLoader>) -> ExCommandSpec {
     }
 }
 
-/// The canonical id of the user-config plugin — the `:reload-config` target and
-/// the `id = "init"` a `<config>/lattice/init/plugin.toml` declares.
-const INIT_PLUGIN_ID: &str = "init";
+use crate::INIT_PLUGIN_ID;
 
 fn reload_config_spec(loader: Arc<PluginLoader>) -> ExCommandSpec {
     ExCommandSpec {

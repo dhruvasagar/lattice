@@ -4422,6 +4422,7 @@ dependencies = [
  "lattice-plugin-host",
  "lattice-protocol",
  "lattice-runtime",
+ "notify",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",

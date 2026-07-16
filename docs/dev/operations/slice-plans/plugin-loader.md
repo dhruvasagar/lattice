@@ -422,11 +422,32 @@ declaration), broad `editor_capabilities` (trusted user config), optional
   lands, and `:reload-config` re-instantiates from disk with **no binding
   accumulation** (the old binding unbound + re-bound once — validates D.2's
   per-binding teardown).
+- **PL8.D.4 — init-artifact auto-reload watcher.** ✅ `watch::spawn_init_watcher`
+  watches `<config>/lattice/init/` with `notify` and calls the new
+  `PluginLoader::sync_init` (load-or-reload) on every settled change (300ms
+  debounce coalesces a build's event burst). So `cargo build` → the editor picks
+  up the new `init.wasm` with no manual `:reload-config`. Watches the *artifact*,
+  not the Rust source (saving `init.rs` doesn't change `init.wasm`). A broken
+  rebuild leaves `init` unloaded (logged); the next good build's write heals it
+  (`sync_init` loads when absent, reloads when present). A watcher that can't be
+  created disables auto-reload with a warning, never fails boot. Tests: `sync_init`
+  (deterministic load-then-reload, no binding accumulation) + `init_watch.rs`
+  (real `notify` integration — rewriting `init.wasm` triggers a reload, observed
+  via a counting provenance sink).
 
 **Exit ✅:** a user `init.rs` (multi-seam plugin) that registers a keybind /
 command / option / autocmd takes effect at boot (loaded from
-`<config>/lattice/init/` with the `Bundled` tier, after builtins) and survives
-`:reload-config` (fresh Store, old contributions reversed). PL8.D complete.
+`<config>/lattice/init/` with the `Bundled` tier, after builtins), survives
+`:reload-config` (fresh Store, old contributions reversed), and auto-reloads when
+its artifact is rebuilt. PL8.D complete.
+
+> **Follow-on (future slice): `:plugin-build`.** Today the auto-reload watches the
+> compiled `init.wasm`; the user rebuilds externally (`cargo build`). A
+> `:plugin-build` ex-command that compiles a plugin's / init's Rust source →
+> `wasm32-wasip2` artifact from inside the editor (the watcher then reloads it)
+> would close the edit→build→reload loop entirely. Deferred — sequence after the
+> event→command (tier-2) work, since it also wants build output surfaced in
+> `*messages*` / a compilation buffer.
 
 ### PL8.F — Intern-leak reclamation  📝
 - The interner leak (Low–Medium, no consumer until a reload path exists) is reclaimed

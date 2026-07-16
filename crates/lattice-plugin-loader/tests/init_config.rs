@@ -116,3 +116,29 @@ async fn init_loads_as_a_plugin_and_survives_reload_config() {
         LookupResult::Bound { .. }
     ));
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sync_init_loads_when_absent_then_reloads_when_present() {
+    let Some(wasm) = keymap_wasm() else {
+        eprintln!("skipping: keymap-guest fixture not built");
+        return;
+    };
+    let base = tempfile::tempdir().unwrap();
+    let init_dir = base.path().join("config").join("lattice").join("init");
+    write_init_dir(&init_dir, &wasm);
+
+    let keymap = KeymapHandle::new();
+    let loader = loader(base.path(), keymap.clone());
+
+    // Not loaded → sync_init loads.
+    assert!(!loader.is_loaded("init"));
+    let id1 = loader.sync_init(&init_dir, TrustTier::Bundled).await.unwrap();
+    assert!(loader.is_loaded("init"));
+    assert_eq!(keymap.binding_count(), 1);
+
+    // Loaded → sync_init reloads (fresh id, no binding accumulation).
+    let id2 = loader.sync_init(&init_dir, TrustTier::Bundled).await.unwrap();
+    assert!(loader.is_loaded("init"));
+    assert_ne!(id1.0, id2.0, "reload minted a fresh Store/id");
+    assert_eq!(keymap.binding_count(), 1, "reload did not accumulate bindings");
+}

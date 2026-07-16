@@ -37,3 +37,6 @@ assets/tmp/
 *:Zone.Identifier
 
 .tokensave/
+
+# Zola build output
+site/public/

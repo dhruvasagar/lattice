@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}{{ config.title }}{% endblock title %} — Lattice</title>
+  <meta name="description" content="{% block description %}{{ config.description }}{% endblock description %}">
+  <link rel="icon" type="image/svg+xml" href="{{ get_url(path='/favicon-64.svg') }}">
+  <link rel="icon" type="image/x-icon" href="{{ get_url(path='/favicon.ico') }}">
+  <link rel="apple-touch-icon" href="{{ get_url(path='/apple-touch-icon.png') }}">
+  <link rel="stylesheet" href="{{ get_url(path='style.css') }}">
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a href="{{ get_url(path='/') }}" class="logo">
+        <svg width="24" height="29" viewBox="0 0 24 29" fill="none" aria-hidden="true">
+          <path d="M0 5h5v19h14v5H0V5Z" fill="currentColor"/>
+          <path d="M5 0h19v24h-5V5H5V0Z" fill="currentColor"/>
+          <rect x="9" y="9" width="6" height="12" fill="#f59e0b" rx="1"/>
+        </svg>
+        Lattice
+      </a>
+      <nav class="nav-links">
+        <a href="{{ get_url(path='/docs/') }}">Docs</a>
+        <a href="{{ config.extra.github_repo }}">GitHub</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    {% block content %}{% endblock content %}
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <div class="footer-grid">
+        <div>
+          <h4>Lattice</h4>
+          <p>{{ config.extra.tagline }}</p>
+        </div>
+        <div>
+          <h4>Resources</h4>
+          <ul>
+            <li><a href="{{ get_url(path='/docs/') }}">Documentation</a></li>
+            <li><a href="{{ get_url(path='/docs/getting-started/') }}">Getting Started</a></li>
+            <li><a href="{{ config.extra.github_repo }}/blob/main/docs/dev/architecture/design.md">Design Spec</a></li>
+          </ul>
+        </div>
+        <div>
+          <h4>Community</h4>
+          <ul>
+            <li><a href="{{ config.extra.github_repo }}">GitHub</a></li>
+            <li><a href="{{ config.extra.github_repo }}/issues">Issue Tracker</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <p>Lattice is open source under the <a href="{{ config.extra.github_repo }}/blob/main/LICENSE">MIT License</a>.</p>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>

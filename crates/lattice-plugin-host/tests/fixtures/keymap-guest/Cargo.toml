@@ -1,0 +1,23 @@
+# PL8.D.1 keymap fixture guest — a minimal `wasm32-wasip2` component implementing
+# the `keymap-plugin` world: from its `register-keymap` export it binds a couple
+# of user keybindings via the imported `keymap.register-binding` (one to a real
+# command, one to an unregistered command to exercise the graceful-skip path).
+# Standalone workspace (`[workspace]` below) so it targets wasm32-wasip2 without
+# inheriting the host toolchain — mirrors the sibling `config-guest` fixture.
+[package]
+name = "keymap-guest"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.58"
+
+[profile.release]
+opt-level = "s"
+strip = true
+
+[workspace]

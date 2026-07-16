@@ -70,6 +70,11 @@ fn main() {
         "MODES_GUEST_WASM",
     );
     build_guest(
+        &fixtures.join("keymap-guest"),
+        "keymap-guest",
+        "KEYMAP_GUEST_WASM",
+    );
+    build_guest(
         &manifest_dir
             .join("..")
             .join("..")

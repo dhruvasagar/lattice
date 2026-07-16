@@ -130,6 +130,7 @@ pub enum PluginSeam {
     Modes,
     Config,
     Decorations,
+    Keymap,
 }
 
 impl PluginSeam {
@@ -143,6 +144,7 @@ impl PluginSeam {
             PluginSeam::Modes => "modes",
             PluginSeam::Config => "config",
             PluginSeam::Decorations => "decorations",
+            PluginSeam::Keymap => "keymap",
         }
     }
 }
@@ -165,6 +167,7 @@ impl FromStr for PluginSeam {
             "modes" => PluginSeam::Modes,
             "config" => PluginSeam::Config,
             "decorations" => PluginSeam::Decorations,
+            "keymap" => PluginSeam::Keymap,
             _ => return Err(()),
         })
     }
@@ -238,7 +241,7 @@ pub enum ManifestError {
 
     /// A `provides` entry was not a recognised seam name.
     #[error(
-        "unrecognised plugin seam `{0}` (expected picker-source / completion-source / grammar / events / modes / config / decorations)"
+        "unrecognised plugin seam `{0}` (expected picker-source / completion-source / grammar / events / modes / config / decorations / keymap)"
     )]
     Seam(String),
 }

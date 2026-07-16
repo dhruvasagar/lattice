@@ -363,13 +363,52 @@ trait.
   `no_per_frame_wasm_guard` invariant holds); a trapping producer keeps the last-good
   snapshot with zero flicker.
 
-### PL8.D — `init.rs`-as-WASM user config  📝
-- Load the user's `init.rs`-compiled component through `instantiate_plugin` with a
-  `Bundled`-tier manifest (boot-capability set) and `activate` it during boot, after
-  the native builtins register (so user keymaps/autocmds/commands layer on top).
-- Consumes the reload seam (PH7.12) for `:reload-config` (unload + re-activate).
-- **Exit:** a user `init.rs` that registers a keymap / autocmd / command takes effect
-  at boot and survives `:reload-config`.
+### PL8.D — `init.rs`-as-WASM user config  🚧
+`init.rs` is **just another plugin**, loaded from `<config>/lattice/init/`
+(manifest'd dir — reuses `discover_one` verbatim) instead of
+`<data>/lattice/plugins/`. Its config kinds map to seams: commands→`grammar`,
+options→`config`, autocmds→`events`, minor modes→`modes`, and — the one gap —
+plain user keybinds→a **new `keymap` seam**. Two design forks were resolved with
+Dhruva:
+
+- **Not a unified "init world."** The host's deliberate sync/async **linker
+  split** (`grammar_linker` = `add_to_linker_sync` for the keystroke hot-path;
+  everything else `add_to_linker_async`) means one component instance reaches
+  only one import table. So init.rs is a **multi-seam plugin** — one instance per
+  declared seam, each against its correct linker — reusing the PL8.B drain
+  machinery. This is forced by the architecture, not a preference.
+- **Keymap gap → a new `keymap` seam** (Dhruva's choice over reuse-a-user-mode /
+  defer). User global bindings have a natural home: `KeymapLayer::User` (already
+  exists), gated by `KeymapCapability::User` — non-`Builtin` per the standing
+  rule, sitting above the builtin vim grammar.
+
+The `init/plugin.toml` is a normal `PluginManifest`: `id = "init"`, `provides =
+["keymap", "grammar", "config", "events", ...]` (the load-bearing seam
+declaration), broad `editor_capabilities` (trusted user config), optional
+`capabilities` / `doc`.
+
+**Decomposition:**
+
+- **PL8.D.1 — the `keymap` seam.** 📝 New `wit/keymap.wit` (a `keymap` register
+  interface — `register-binding(mode, chords, command-name)` — + a
+  `keymap-plugin` world importing it + exporting `register-keymap`), host
+  `bindgen!` + async-linker import wiring registering into `KeymapLayer::User`
+  (capability-gated `KeymapCapability::User`), `PluginHost::spawn_keymap_plugin`
+  returning the bindings for teardown, and `"keymap"` added to `PluginSeam` +
+  the manifest `provides` vocabulary. Fixture guest + host round-trip test.
+  Registration-only (async linker, one-shot at load); binding *resolution* at
+  keystroke stays native (`KeymapHandle`) — no hot-path WASM.
+- **PL8.D.2 — loader `drain_keymap`.** 📝 Drive `spawn_keymap_plugin`, record the
+  bindings as teardown tokens (extend `PluginTeardown` with a keymap surface so
+  unload removes the `KeymapLayer::User` entries). Drain + unload test.
+- **PL8.D.3 — boot-load init + `:reload-config`.** 📝 Discover
+  `<config>/lattice/init/` at `install` (a second discovery source alongside the
+  plugins dir), load with a boot-capability tier **after** native builtins
+  register (user config layers on top). Register the loader-owned `:reload-config`
+  (option A — reload the `init` plugin). Boot pin + reload test.
+
+**Exit:** a user `init.rs` (multi-seam plugin) that registers a keybind /
+command / option / autocmd takes effect at boot and survives `:reload-config`.
 
 ### PL8.F — Intern-leak reclamation  📝
 - The interner leak (Low–Medium, no consumer until a reload path exists) is reclaimed

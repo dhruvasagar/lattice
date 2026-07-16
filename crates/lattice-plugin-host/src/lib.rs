@@ -72,6 +72,7 @@ pub mod events_host;
 pub mod grammar_host;
 pub mod grammar_trampoline;
 pub mod host_services;
+pub mod keymap_host;
 pub mod manifest;
 pub mod mode_host;
 pub mod picker_host;
@@ -567,6 +568,16 @@ struct PluginState {
     /// host drains it after the registration export returns and registers each
     /// into the `ModeRegistry` (`spawn_mode_plugin`). Empty for a non-mode plugin.
     mode_contributions: mode_host::ModeContributions,
+    /// The keymap handle + command-registry snapshot a keymap plugin binds user
+    /// keybindings against via the `keymap` seam (PL8.D.1). `Some` only for a
+    /// plugin spawned via [`PluginHost::spawn_keymap_plugin`]; `None` otherwise,
+    /// in which case a `register-binding` returns `false` (the honest "no keymap
+    /// wired" degradation).
+    keymap_ctx: Option<keymap_host::KeymapBindCtx>,
+    /// The user keybindings this plugin bound via `register-binding` (PL8.D.1),
+    /// recorded as teardown tokens so the loader unbinds the `KeymapLayer::User`
+    /// entries on unload (PL8.D.2). Empty for a non-keymap plugin.
+    keymap_contributions: Vec<keymap_host::KeymapBindingToken>,
 }
 
 /// The bus-publish handle a plugin needs to emit custom events (PH7.8b.2). Set
@@ -781,6 +792,39 @@ impl crate::config_host::bindings::lattice::plugin_host::config::Host for Plugin
 /// outcome surfaces at drain time), so bindgen omits the outer `wasmtime::Result`
 /// (the `grammar` / `config` shape). The WIT declaration projects to the native
 /// [`mode_host::PluginModeDecl`] here (kind / policy / capability flags → native).
+impl crate::keymap_host::bindings::lattice::plugin_host::keymap::Host for PluginState {
+    fn register_binding(
+        &mut self,
+        binding_mode: crate::keymap_host::bindings::lattice::plugin_host::keymap::BindingMode,
+        chord: String,
+        command: String,
+    ) -> bool {
+        // Clone the wired context out first so the immutable borrow ends before
+        // the `keymap_contributions` push (the `config_host` register-option
+        // borrow-split precedent).
+        let Some(ctx) = self.keymap_ctx.as_ref() else {
+            tracing::warn!(
+                chord,
+                command,
+                "register-binding skipped: no keymap wired (degraded — host not spawned onto a keymap)"
+            );
+            return false;
+        };
+        let keymap = ctx.keymap.clone();
+        let commands = std::sync::Arc::clone(&ctx.commands);
+        let plugin_id = ctx.plugin_id.0;
+        let mode = crate::keymap_host::project_binding_mode(binding_mode);
+
+        let bound =
+            crate::keymap_host::bind_user_keybinding(&keymap, &commands, plugin_id, mode, &chord, &command);
+        if bound {
+            self.keymap_contributions
+                .push(crate::keymap_host::KeymapBindingToken { mode, chord });
+        }
+        bound
+    }
+}
+
 impl crate::mode_host::bindings::lattice::plugin_host::modes::Host for PluginState {
     fn register_mode(
         &mut self,
@@ -1009,6 +1053,16 @@ impl PluginHost {
             |state: &mut PluginState| state,
         )
         .map_err(|e| PluginHostError::Linker(e.into()))?;
+        // The `keymap` guest→host binding-registration seam (PL8.D.1). Sync host
+        // func (`register-binding` resolves + binds into `KeymapLayer::User`,
+        // recording a teardown token — no await), inert for worlds that don't
+        // import `keymap`. Async linker: registration is off the keystroke path
+        // (binding *resolution* stays native).
+        crate::keymap_host::bindings::lattice::plugin_host::keymap::add_to_linker::<_, HasSelf<_>>(
+            &mut linker,
+            |state: &mut PluginState| state,
+        )
+        .map_err(|e| PluginHostError::Linker(e.into()))?;
         // The grammar seam's SYNC linker (PH7.7b/c). The `grammar` register API
         // (`register-*`) is guest→host sync host funcs (they only record into
         // `PluginState`). It is wired into a SECOND linker whose WASI is `sync`
@@ -1181,6 +1235,10 @@ impl PluginHost {
             // Drained by `spawn_mode_plugin` into the `ModeRegistry` after
             // `register-modes` returns (PH7.11a).
             mode_contributions: mode_host::ModeContributions::default(),
+            // Set by `spawn_keymap_plugin`; a plugin not spawned onto a keymap
+            // cannot bind (register-binding → false).
+            keymap_ctx: None,
+            keymap_contributions: Vec::new(),
         };
         let mut store = Store::new(&self.engine, state);
         store

@@ -212,19 +212,13 @@ img { max-width: 100%; height: auto; }
   .hero-logo-row {
     display: flex;
     align-items: center;
-    gap: 14px;
+    gap: 8px;
   }
 
   .hero-mark {
     height: 68px;
     width: auto;
     flex-shrink: 0;
-  }
-
-  .hero-text-group {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
   }
 
   .hero-title {
@@ -245,6 +239,7 @@ img { max-width: 100%; height: auto; }
     color: $text-muted;
     margin: 0;
     line-height: 1.3;
+    margin-top: 24px;
   }
 
   .hero-subtitle {
@@ -695,9 +690,8 @@ img { max-width: 100%; height: auto; }
 
     .hero-title { font-size: 48px; }
     .hero-mark { height: 34px; }
-    .hero-tagline { font-size: 16px; }
-    .hero-logo-row { gap: 10px; }
-    .hero-text-group { gap: 6px; }
+    .hero-tagline { font-size: 16px; margin-top: 16px; }
+    .hero-logo-row { gap: 6px; }
     .hero-actions { flex-direction: column; align-items: center; }
   }
 

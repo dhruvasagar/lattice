@@ -970,6 +970,27 @@ impl KeymapHandle {
         self.try_bind(capability, layer, mode, &path, command, source)
     }
 
+    /// Capability-gated [`Self::unbind`] from a vim-notation chord
+    /// **string** — the symmetric counterpart to
+    /// [`try_bind_chord_string`](Self::try_bind_chord_string), so a
+    /// caller that bound by string (a plugin's `register-binding`,
+    /// PL8.D) can reverse it by the same string on unload without
+    /// re-parsing to `ChordPattern`s itself. An unparseable chord is
+    /// [`KeymapError::InvalidChord`]; a capability denial is
+    /// [`KeymapError::CapabilityDenied`]; `Ok(None)` means the path
+    /// wasn't bound (idempotent re-unbind).
+    pub fn try_unbind_chord_string(
+        &self,
+        capability: KeymapCapability,
+        layer: KeymapLayer,
+        mode: BindingMode,
+        chord_str: &str,
+    ) -> Result<Option<Arc<BoundCommand>>, KeymapError> {
+        let chords = parse_chord_sequence(chord_str).map_err(KeymapError::InvalidChord)?;
+        let path: Vec<ChordPattern> = chords.into_iter().map(ChordPattern::Literal).collect();
+        self.try_unbind(capability, layer, mode, &path)
+    }
+
     /// Capability-gated [`Self::unbind`]. Returns the dropped
     /// binding (or `None` when the path wasn't bound) so the
     /// host can echo "unbound `dd` (was: delete-line)".

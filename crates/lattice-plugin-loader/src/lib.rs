@@ -443,6 +443,12 @@ impl PluginLoader {
                             .await?;
                         loaded_id.get_or_insert(id);
                     }
+                    PluginSeam::Keymap => {
+                        let id = self
+                            .drain_keymap(&component, manifest, tier, &mut record)
+                            .await?;
+                        loaded_id.get_or_insert(id);
+                    }
                     other => tracing::warn!(
                         seam = %other,
                         plugin = %manifest.id,
@@ -1042,6 +1048,58 @@ impl PluginLoader {
             mode = %mode_id,
             "completion plugin registered its source on a universal carrier mode"
         );
+        Ok(id)
+    }
+
+    /// Drain the keymap seam (PL8.D): bind the plugin's user keybindings into
+    /// `KeymapLayer::User` and record them as teardown tokens (unbound on unload).
+    ///
+    /// Direct registration, like config — the seam binds into the shared,
+    /// interior-mutable [`KeymapHandle`] during `register-keymap`, so there is no
+    /// RCU and no actor task. The command-registry snapshot resolves each
+    /// binding's command name at bind time; an unregistered command / unparseable
+    /// chord / withheld `KeymapCapability::User` binds nothing (logged, no trap).
+    /// The first consumer is the user's `init.rs` (PL8.D.3).
+    async fn drain_keymap(
+        &self,
+        component: &lattice_plugin_host::Component,
+        manifest: &PluginManifest,
+        tier: TrustTier,
+        record: &mut LoadedRecord,
+    ) -> Result<PluginId, PluginLoaderError> {
+        let keymap = self
+            .env
+            .keymap
+            .as_ref()
+            .ok_or(PluginLoaderError::NotWired("keymap"))?;
+        let commands = self
+            .env
+            .command_registry
+            .as_ref()
+            .ok_or(PluginLoaderError::NotWired("keymap"))?;
+
+        // Owned command snapshot for bind-time command-name resolution.
+        let commands_snapshot = commands.load_full();
+        let (id, tokens) = self
+            .host
+            .spawn_keymap_plugin(
+                component,
+                manifest,
+                tier,
+                PluginBudget::default(),
+                keymap,
+                &commands_snapshot,
+            )
+            .await?;
+
+        tracing::debug!(
+            plugin = %manifest.id,
+            bindings = tokens.len(),
+            "keymap plugin bound user keybindings into KeymapLayer::User"
+        );
+        // Teardown tokens: each binding is unbound from `KeymapLayer::User` on
+        // unload / reload.
+        record.teardown.keymap_bindings = tokens;
         Ok(id)
     }
 }

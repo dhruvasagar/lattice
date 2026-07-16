@@ -183,4 +183,5 @@ fn report_total(report: &lattice_plugin_host::TeardownReport) -> usize {
         + report.config_options
         + report.events_defined
         + report.subscriptions
+        + report.keymap_bindings
 }

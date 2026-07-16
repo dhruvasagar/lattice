@@ -398,9 +398,18 @@ declaration), broad `editor_capabilities` (trusted user config), optional
   the manifest `provides` vocabulary. Fixture guest + host round-trip test.
   Registration-only (async linker, one-shot at load); binding *resolution* at
   keystroke stays native (`KeymapHandle`) — no hot-path WASM.
-- **PL8.D.2 — loader `drain_keymap`.** 📝 Drive `spawn_keymap_plugin`, record the
-  bindings as teardown tokens (extend `PluginTeardown` with a keymap surface so
-  unload removes the `KeymapLayer::User` entries). Drain + unload test.
+- **PL8.D.2 — loader `drain_keymap`.** ✅ `drain_keymap` drives
+  `spawn_keymap_plugin` (direct registration like config — the shared
+  interior-mutable `KeymapHandle`, no RCU/actor) and records the bindings as
+  teardown tokens. `PluginTeardown` grew a `keymap_bindings` surface (+
+  `TeardownReport.keymap_bindings`) reversed via a new
+  `KeymapHandle::try_unbind_chord_string` (the symmetric string-unbind counterpart
+  to `try_bind_chord_string`) — needed for both `:plugin-unload` consistency
+  *and* `:reload-config` correctness (a binding removed from init.rs must clear,
+  which re-binding alone can't do). Per-binding (not wholesale User-layer clear)
+  because the User layer is shared. Test `keymap_drain.rs`: a discovered keymap
+  plugin binds `<C-s>`→`ex:write` into `KeymapLayer::User`, unload unbinds it
+  (`report.keymap_bindings == 1`, binding gone).
 - **PL8.D.3 — boot-load init + `:reload-config`.** 📝 Discover
   `<config>/lattice/init/` at `install` (a second discovery source alongside the
   plugins dir), load with a boot-capability tier **after** native builtins

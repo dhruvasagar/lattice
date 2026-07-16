@@ -28,7 +28,7 @@
 
 use lattice_config::ConfigRegistry;
 use lattice_grammar::CommandRegistry;
-use lattice_keymap::{KeymapHandle, KeymapLayer, ModeId};
+use lattice_keymap::{KeymapCapability, KeymapHandle, KeymapLayer, ModeId};
 use lattice_mode::ModeRegistry;
 use lattice_picker::source::PickerRegistry;
 use lattice_protocol::event_registry::unregister_runtime_event;
@@ -64,6 +64,10 @@ pub struct PluginTeardown {
     /// Event-bus subscription ids the plugin's `subscribe` calls produced
     /// (`EventBus::unsubscribe`); the `Vec` `spawn_event_plugin` returns.
     pub subscriptions: Vec<SubscriptionId>,
+    /// User keybindings the plugin bound via the `keymap` seam (PL8.D) — each
+    /// reversed by `KeymapHandle::try_unbind_chord_string` from `KeymapLayer::User`.
+    /// The `Vec` `spawn_keymap_plugin` returns.
+    pub keymap_bindings: Vec<crate::keymap_host::KeymapBindingToken>,
 }
 
 impl PluginTeardown {
@@ -77,6 +81,7 @@ impl PluginTeardown {
             config_options: Vec::new(),
             events_defined: Vec::new(),
             subscriptions: Vec::new(),
+            keymap_bindings: Vec::new(),
         }
     }
 
@@ -120,6 +125,23 @@ impl PluginTeardown {
                 report.subscriptions += 1;
             }
         }
+        for binding in &self.keymap_bindings {
+            // Reverse the `KeymapLayer::User` binding by the same chord string the
+            // plugin bound with (`KeymapCapability::User`). `Ok(Some(_))` = a
+            // binding was dropped; an already-removed / unparseable entry is a
+            // graceful no-op (idempotent re-unload).
+            if matches!(
+                reg.keymap.try_unbind_chord_string(
+                    KeymapCapability::User,
+                    KeymapLayer::User,
+                    binding.mode,
+                    &binding.chord,
+                ),
+                Ok(Some(_))
+            ) {
+                report.keymap_bindings += 1;
+            }
+        }
 
         report
     }
@@ -154,6 +176,7 @@ pub struct TeardownReport {
     pub config_options: usize,
     pub events_defined: usize,
     pub subscriptions: usize,
+    pub keymap_bindings: usize,
 }
 
 #[cfg(test)]
@@ -273,6 +296,7 @@ mod tests {
                 config_options: 1,
                 events_defined: 0,
                 subscriptions: 1,
+                keymap_bindings: 0,
             }
         );
 

@@ -2016,8 +2016,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Reflex,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Arc::new(parse_optional_path),
-            apply: Arc::new(|ctx| {
+            parse_args: Box::new(parse_optional_path),
+            apply: Box::new(|ctx| {
                 let path = match &ctx.args {
                     Args::String(s) => Some(s.clone()),
                     Args::None => None,
@@ -2043,8 +2043,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             latency_class: LatencyClass::Reflex,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Arc::new(parse_no_args),
-            apply: Arc::new(|_| Ok(Effect::PrintWorkingDir)),
+            parse_args: Box::new(parse_no_args),
+            apply: Box::new(|_| Ok(Effect::PrintWorkingDir)),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },

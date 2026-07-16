@@ -2803,6 +2803,18 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
             // Canonicalize to resolve symlinks / `.` / `..`.
             let canonical = target.canonicalize().unwrap_or(target);
             editor.current_dir = Some(canonical.clone());
+            // Update the CurrentDirHandle service so mode-owned
+            // handlers (e.g. search `gr` refresh) pick up the new pwd.
+            #[cfg(feature = "search")]
+            if let Some(current_dir_handle) =
+                editor.services.get::<
+                    lattice_multibuffer::providers::search::CurrentDirHandle,
+                >()
+            {
+                if let Ok(mut dir) = current_dir_handle.lock() {
+                    *dir = Some(canonical.clone());
+                }
+            }
             editor.set_message(
                 EchoLevel::Info,
                 canonical.display().to_string(),
@@ -7214,8 +7226,14 @@ impl Editor {
                             lattice_multibuffer::providers::search::SearchContextSize,
                         >(self.active_pane_buffer_id());
                         let context_lines: u32 = if raw < 0 { 0 } else { raw as u32 };
+                        let root = self
+                            .current_dir
+                            .clone()
+                            .or_else(|| std::env::current_dir().ok())
+                            .unwrap_or_else(|| std::path::PathBuf::from("."));
                         let options =
                             lattice_multibuffer::providers::search::ProjectSearchOptions {
+                                root,
                                 context_lines,
                                 ..lattice_multibuffer::providers::search::ProjectSearchOptions::default()
                             };

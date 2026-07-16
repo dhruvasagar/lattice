@@ -315,7 +315,7 @@ selects uniformly.
 > substrate (`textobjects.scm` + `scope_at_cursor`) landed in N.1.0; the
 > `zn` narrow operator in N.1.3.
 > Design:
-> [`../dev/architecture/tree-sitter-text-objects.md`](../dev/architecture/tree-sitter-text-objects.md).
+> [`../dev/architecture/tree-sitter-text-objects.md`](../dev/architecture/tree-sitter-text-objects).
 
 The objects above are delimiter- and whitespace-based — they don't
 know what a *function* or a *type* is. Tree-sitter text objects add
@@ -368,13 +368,13 @@ any motion or text object: `znaf` narrows a function, `znic` an
 inner class, `znip` a paragraph, `zni{` inside braces, `znG` to
 end-of-file. Edits in the narrow view save back to the source file;
 `:widen` (or `q`) closes it. See
-[`../dev/architecture/narrow-mode.md`](../dev/architecture/narrow-mode.md).
+[`../dev/architecture/narrow-mode.md`](../dev/architecture/narrow-mode).
 
 **Language coverage today:** Rust, Python, JavaScript ship a
 `textobjects.scm`. A language with no query simply has no
 tree-sitter objects (the delimiter objects above still work).
 Adding a language's objects is one query file — see
-[languages.md](languages.md).
+[languages.md](languages).
 
 ---
 

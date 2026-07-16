@@ -3,21 +3,19 @@
 {% block content %}
 <section class="hero">
   <div class="container hero-inner">
-    <div class="hero-brand">
-      <div class="hero-logo-row">
-        <svg class="hero-mark" viewBox="0 0 100 120" role="img" aria-label="Lattice logo">
-          <path d="M 0 20 L 20 20 L 20 100 L 80 100 L 80 120 L 0 120 Z" fill="#1f6feb"/>
-          <path d="M 20 0 L 100 0 L 100 100 L 80 100 L 80 20 L 20 20 Z" fill="#1f6feb"/>
-          <rect x="40" y="36" width="20" height="48" fill="#f59e0b"/>
-        </svg>
-        <h1 class="hero-title">Lattice</h1>
-      </div>
-      <p class="hero-tagline">A modal, GPU-accelerated, plugin-first text editor in Rust</p>
+    <div class="hero-mark">
+      <svg width="120" height="145" viewBox="0 0 100 120" fill="none" aria-hidden="true">
+        <path d="M0 20h20v80h60v20H0V20Z" fill="currentColor"/>
+        <path d="M20 0h80v100H80V20H20V0Z" fill="currentColor"/>
+        <rect x="40" y="36" width="20" height="48" fill="#f59e0b" rx="2"/>
+      </svg>
     </div>
+    <h1 class="hero-title">Lattice</h1>
+    <p class="hero-tagline">{{ config.description }}</p>
     <p class="hero-subtitle">{{ config.extra.tagline }}</p>
     <div class="hero-actions">
       <a href="{{ get_url(path='/docs/getting-started/') }}" class="btn btn-primary">Get Started</a>
-      <a href="{{ config.extra.github_repo }}" class="btn btn-secondary">View on GitHub <span class="arrow">→</span></a>
+      <a href="{{ get_url(path='/install/') }}" class="btn btn-secondary">Install <span class="arrow">→</span></a>
     </div>
   </div>
 </section>
@@ -70,6 +68,29 @@
   </div>
 </section>
 
+<section class="status">
+  <div class="container">
+    <h2 class="section-title">Current Status</h2>
+    <div class="status-grid">
+      <div class="status-card">
+        <span class="status-badge status-active">Phase 1+</span>
+        <p>Modal engine, ex-commands, async actor, snapshot model, completion, help, basic perf benches, CI — <strong>active development</strong>.</p>
+        <a href="https://github.com/dhruvasagar/lattice/blob/main/docs/dev/operations/implementation.md" class="status-link">View implementation ledger →</a>
+      </div>
+      <div class="status-card">
+        <span class="status-badge status-bench">~0.7ms p50</span>
+        <p>Keystroke→glyph latency (TUI, debug build, 2300-line file). Ratcheted — CI fails on regression. Target: within one display frame.</p>
+        <a href="https://github.com/dhruvasagar/lattice/blob/main/docs/dev/operations/benchmarks.md" class="status-link">View benchmarks →</a>
+      </div>
+      <div class="status-card">
+        <span class="status-badge status-milestone">v0.1.0</span>
+        <p>Pre-1.0 breaking changes expected. Pluggable WASM init, plugin lifecycle, keymap teardown, decoration rendering, and more in progress.</p>
+        <a href="{{ get_url(path='/docs/') }}" class="status-link">Read the docs →</a>
+      </div>
+    </div>
+  </div>
+</section>
+
 <section class="quickstart">
   <div class="container">
     <h2 class="section-title">Quick Start</h2>
@@ -95,7 +116,10 @@ cargo test --workspace</code></pre>
   <div class="container">
     <h2>Ready to try Lattice?</h2>
     <p>Open source. MIT licensed. Built with Rust.</p>
-    <a href="{{ get_url(path='/docs/getting-started/') }}" class="btn btn-primary btn-lg">Read the Docs</a>
+    <div class="cta-actions">
+      <a href="{{ get_url(path='/docs/getting-started/') }}" class="btn btn-primary btn-lg">Read the Docs</a>
+      <a href="{{ get_url(path='/why-lattice/') }}" class="btn btn-outline btn-lg">Why Lattice?</a>
+    </div>
   </div>
 </section>
 {% endblock content %}

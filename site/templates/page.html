@@ -7,9 +7,14 @@
 <div class="docs-layout">
   <aside class="sidebar">
     <nav>
+      {% set parent = get_section(path=page.ancestors | last) %}
+      {% if parent.ancestors and parent.ancestors | length > 1 %}
+      <div class="sidebar-back">
+        <a href="{{ parent.permalink }}">← {{ parent.title }}</a>
+      </div>
+      {% endif %}
       <ul>
-        {% set section = get_section(path="docs/_index.md") %}
-        {% for p in section.pages %}
+        {% for p in parent.pages %}
         <li>
           <a href="{{ p.permalink }}"{% if p.permalink == page.permalink %} class="active"{% endif %}>
             {{ p.title }}

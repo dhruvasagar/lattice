@@ -34,7 +34,7 @@ asynchronicity.
 > All multi-result LSP lookups + `:diagnostics` route through
 > a unified vertico picker; tag stack `<C-t>` pops drill-down
 > chains. Per-feature status tracked in
-> [`../dev/notes/lsp-features.md`](../dev/notes/lsp-features.md).
+> [`../dev/notes/lsp-features.md`](../dev/notes/lsp-features).
 
 ---
 
@@ -56,7 +56,7 @@ asynchronicity.
 | **Document highlight**      | Parking the cursor on an identifier paints a soft bg tint on every occurrence (read / write / text variants). Gated by `lsp-document-highlight-mode`.                                                                                                              |
 | **Inlay hints**             | Type annotations, parameter names, lifetime hints rendered as italic dim virtual text. Gated by `lsp-inlay-hint-mode` (toggle with `:lsp-inlay-hint-mode`).                                                                                                       |
 | **Semantic tokens**         | LSP-aware syntax highlighting that augments tree-sitter (e.g. distinguishes mutable vs immutable bindings, type vs value namespaces). `full` + `full/delta` paths both used. Gated by `lsp-semantic-tokens-mode`.                                                |
-| **Folding**                 | `:set foldmethod=lsp` uses server-driven folds via `textDocument/foldingRange`; gated by `lsp-folding-mode`. See [`folding.md`](folding.md).                                                                                                                       |
+| **Folding**                 | `:set foldmethod=lsp` uses server-driven folds via `textDocument/foldingRange`; gated by `lsp-folding-mode`. See [`folding.md`](folding).                                                                                                                       |
 | **Selection range**         | `:lsp-expand-region` widens Visual selection to the next semantic range (token → expr → block → fn); `:lsp-shrink-region` walks back. Gated by `lsp-selection-range-mode`.                                                                                       |
 | **Call hierarchy**          | `:lsp-incoming-calls` / `:lsp-outgoing-calls` open pickers of callers / callees at the cursor.                                                                                                                                                                    |
 | **Type hierarchy**          | `:lsp-supertypes` / `:lsp-subtypes` open pickers of super / sub types at the cursor.                                                                                                                                                                              |
@@ -67,7 +67,7 @@ asynchronicity.
 | **Progress**                | Server `$/progress` notifications accumulate per `(server_id, token)`; the most-recent active entry surfaces in the modeline `[<server>: <task>]` segment. `:lsp-progress-cancel <server>` cancels cancellable entries. Gated by `lsp-progress-mode`.            |
 
 The full feature matrix (every LSP 3.17 capability + status)
-lives in [`../dev/notes/lsp-features.md`](../dev/notes/lsp-features.md).
+lives in [`../dev/notes/lsp-features.md`](../dev/notes/lsp-features).
 
 ---
 
@@ -269,7 +269,7 @@ args = ["--stdio"]
 ```
 
 The keys mirror `ServerConfig` (see
-[`../dev/architecture/lsp-architecture.md`](../dev/architecture/lsp-architecture.md) for the
+[`../dev/architecture/lsp-architecture.md`](../dev/architecture/lsp-architecture) for the
 schema).
 
 ### Per-language overrides
@@ -547,7 +547,7 @@ not yet supported (multi-root workspace folders are post-1.0).
 ### Toggling features off
 
 Every LSP feature has a sub-mode (M.6 cascade). The full list
-lives in [`lsp-mode.md`](lsp-mode.md); common ones:
+lives in [`lsp-mode.md`](lsp-mode); common ones:
 
 - `:lsp-diagnostics-mode` — hides gutter glyphs + inline underlines
 - `:lsp-inlay-hint-mode` — hides inlay-hint virtual text
@@ -564,11 +564,11 @@ sub-mode to active.
 
 ## Related
 
-- **[`folding.md`](folding.md)** — fold engine; LSP fold ranges
+- **[`folding.md`](folding)** — fold engine; LSP fold ranges
   merge in via `FoldMethod::Lsp` (4.4).
-- **[`../dev/notes/lsp-features.md`](../dev/notes/lsp-features.md)** — feature
+- **[`../dev/notes/lsp-features.md`](../dev/notes/lsp-features)** — feature
   matrix.
-- **[`../dev/architecture/lsp-architecture.md`](../dev/architecture/lsp-architecture.md)** —
+- **[`../dev/architecture/lsp-architecture.md`](../dev/architecture/lsp-architecture)** —
   developer-facing architecture.
-- **[`../dev/architecture/design.md#54-lsp-subsystem`](../dev/architecture/design.md)** §5.4 —
+- **[`../dev/architecture/design.md#54-lsp-subsystem`](../dev/architecture/design)** §5.4 —
   canonical design.

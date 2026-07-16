@@ -370,7 +370,7 @@ For mode authors curious about the Rust API — `Mode::keymap()`
 + `Keymap::new().bind_chord(...)` (chain form) +
 `Keymap::from_entries(&[keymap_entry!{...}])` (table form),
 source-location capture, the chord-string notation — see
-[`../dev/notes/mode-keymap-authoring.md`](../dev/notes/mode-keymap-authoring.md).
+[`../dev/notes/mode-keymap-authoring.md`](../dev/notes/mode-keymap-authoring).
 
 ---
 

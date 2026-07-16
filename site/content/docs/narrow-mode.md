@@ -6,14 +6,14 @@ title = "Narrow mode"
 # Narrow mode
 
 Narrowing focuses the editor on one region of a file — a function, a
-paragraph, a selected range — and hides the rest. Unlike a [fold](folding.md)
+paragraph, a selected range — and hides the rest. Unlike a [fold](folding)
 (which only collapses the *display*), a narrow view is a real, editable
 buffer showing **only** the narrowed lines. You edit inside the view; the
 changes flow back to the underlying file. `:widen` restores the full
 buffer.
 
 This is emacs's `narrow-to-region` reimagined on lattice's
-[multibuffer](multibuffer.md) substrate: a narrow view is a one-excerpt
+[multibuffer](multibuffer) substrate: a narrow view is a one-excerpt
 multibuffer over the source. Two things fall out of that for free — you
 can open **several** narrow views of the same file (in splits) and they
 stay live-synced as you edit, and a narrow is always exactly **one hop**
@@ -37,7 +37,7 @@ exactly like `d` / `y` / `c`. Whatever span you can delete, you can narrow.
 | `znn`     | the current line (the doubled operator, like `dd`)|
 
 The structural text objects (`af` / `ac` / `aa` / `al`, see
-[modal editing](modal-editing.md#tree-sitter-text-objects)) make `zn`
+[modal editing](modal-editing#tree-sitter-text-objects)) make `zn`
 structural: `znaf` narrows the enclosing function, `znac` the enclosing
 type — and they work *inside* an existing narrow or search view too.
 
@@ -98,9 +98,9 @@ source, and the fresh view is one excerpt of the real buffer. So:
 
 ## See also
 
-- [Multibuffer views](multibuffer.md) — the substrate narrow is built on,
+- [Multibuffer views](multibuffer) — the substrate narrow is built on,
   and the model behind side-by-side live-synced views.
-- [Modal editing → tree-sitter text objects](modal-editing.md#tree-sitter-text-objects)
+- [Modal editing → tree-sitter text objects](modal-editing#tree-sitter-text-objects)
   — the `af` / `ac` / … objects that make `zn` structural.
-- [Folding](folding.md) — collapse structure without hiding it; the
+- [Folding](folding) — collapse structure without hiding it; the
   display-only cousin of narrow.

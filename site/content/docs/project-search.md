@@ -6,7 +6,7 @@ title = "Project search"
 # Project search
 
 `:search` walks the project, collects every line matching your
-query, and streams the results into a [multibuffer](multibuffer.md)
+query, and streams the results into a [multibuffer](multibuffer)
 view — one excerpt per match, grouped under each file's header. The
 scan runs off the UI thread, so results appear progressively and the
 editor stays responsive even on a large tree.
@@ -26,7 +26,7 @@ editor stays responsive even on a large tree.
 | `:search <query>`   | Project-wide search for the literal `<query>`; opens a results multibuffer |
 | `<CR>`              | (in results) Jump to the source file + line of the match under the cursor |
 | `gr`               | (in results) Re-run the scan with the same query                 |
-| `]e` / `[e`        | Move between matches (excerpt motions — see [multibuffer.md](multibuffer.md)) |
+| `]e` / `[e`        | Move between matches (excerpt motions — see [multibuffer.md](multibuffer)) |
 | `:multibuffer-expand [n]` | Show `n` lines of context around the match under the cursor |
 
 ---
@@ -54,7 +54,7 @@ files`) and a summary when it finishes (`Done — N hits in M files`).
 - **`<CR>`** opens the source file in the active pane at the matched
   line and records the position in the jump list, so `<C-o>` brings
   you back — the same round-trip as `gd` or a tag jump. See
-  [position history in modal-editing.md](modal-editing.md).
+  [position history in modal-editing.md](modal-editing).
 - **`gr`** re-runs the scan with the view's current query (after
   you've edited files and want fresh results). It clears the view,
   resets the headerline, and streams again.

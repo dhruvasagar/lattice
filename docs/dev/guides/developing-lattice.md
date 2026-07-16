@@ -7,7 +7,7 @@ ex-command, a minor mode).
 
 It is deliberately **task-oriented and opinionated**. For the *what and why* of
 the system, the authoritative sources are the design spec and the status
-ledger — see [Navigating the docs](#navigating-the-docs) at the end. When this
+ledger — see [Navigating the docs](#9-navigating-the-docs) at the end. When this
 guide and those disagree, **they win** and this guide is the bug.
 
 > New to the project as a *user*? Read the [README](../../../README.md) first

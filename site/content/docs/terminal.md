@@ -12,9 +12,9 @@ leaving Lattice.
 
 > **Status:** Design complete; implementation in progress. See
 > the developer-facing
-> [`docs/dev/architecture/terminal-mode.md`](../dev/architecture/terminal-mode.md)
+> [`docs/dev/architecture/terminal-mode.md`](../dev/architecture/terminal-mode)
 > and
-> [`docs/dev/operations/slice-plans/terminal-mode.md`](../dev/operations/slice-plans/terminal-mode.md).
+> [`docs/dev/operations/slice-plans/terminal-mode.md`](../dev/operations/slice-plans/terminal-mode).
 > This user-facing doc describes the intended user experience
 > once T1–T4 ship.
 
@@ -358,7 +358,7 @@ gt / gT / 2gt            " switch tabs
 - **Session save/restore** — closing Lattice closes all
   terminals. Persistent terminals across sessions are tied to
   the broader session-restore feature
-  ([design.md §15:27](../dev/architecture/design.md#15-open-questions))
+  ([design.md §15:27](../dev/architecture/design#15-open-questions))
   — deferred.
 - **Live shell config reload** — Lattice doesn't read shell
   dotfiles. Your shell reads them; changes apply on the next
@@ -368,11 +368,11 @@ gt / gT / 2gt            " switch tabs
 
 ## Related
 
-- [`modal-editing.md`](modal-editing.md) — the vim grammar that
+- [`modal-editing.md`](modal-editing) — the vim grammar that
   drives Normal-in-terminal.
-- [`buffers.md`](buffers.md) — buffer concepts that terminals
+- [`buffers.md`](buffers) — buffer concepts that terminals
   participate in.
-- [`options.md`](options.md) — full `:set` reference, including
+- [`options.md`](options) — full `:set` reference, including
   the `terminal.*` group.
-- [`docs/dev/architecture/terminal-mode.md`](../dev/architecture/terminal-mode.md)
+- [`docs/dev/architecture/terminal-mode.md`](../dev/architecture/terminal-mode)
   — developer reference (implementation details).

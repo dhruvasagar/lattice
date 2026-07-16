@@ -20,7 +20,7 @@ detection.
 > cascade), the syntax-highlighted heading render, and the
 > operator semantics described here are the **planned** v1
 > behavior tracked under task C.2 in
-> [`../dev/operations/implementation.md`](../dev/operations/implementation.md). Manual folds
+> [`../dev/operations/implementation.md`](../dev/operations/implementation). Manual folds
 > (`zf` / `zo` / `zc` / `za` / `zR` / `zM` / `zd`) are
 > shipped today; the rest of this doc is the contract for
 > the rollout.
@@ -85,12 +85,12 @@ On top of whatever `foldmethod` is active, some features contribute
 their own **overlay** folds — they're added to the fold set rather than
 replacing the primary provider, and they come and go with the feature:
 
-- A [diff](diff.md) session adds **hunk folds** (collapse a change, open
+- A [diff](diff) session adds **hunk folds** (collapse a change, open
   by default) and **unchanged-region folds** (collapse the code between
   changes, closed by default — so a diff opens showing only the
   changes). See [Folding the unchanged
-  code](diff.md#folding-the-unchanged-code).
-- A [multibuffer](multibuffer.md) view adds excerpt and file-boundary
+  code](diff#folding-the-unchanged-code).
+- A [multibuffer](multibuffer) view adds excerpt and file-boundary
   folds.
 
 Overlay folds use the same `z*` vocabulary as everything else — `za` on
@@ -541,12 +541,12 @@ chooses the glyph based on `app.fold_state_at(line)`:
 
 ## See also
 
-- [`../dev/operations/implementation.md`](../dev/operations/implementation.md) — current build
+- [`../dev/operations/implementation.md`](../dev/operations/implementation) — current build
   status; check the Phase 1 row + the "Up next" list for fold
   rollout progress.
-- [`../dev/architecture/design.md`](../dev/architecture/design.md) §15:18 — fold storage / interaction
+- [`../dev/architecture/design.md`](../dev/architecture/design) §15:18 — fold storage / interaction
   open question (resolved by the design here).
-- [`../dev/architecture/fold-architecture.md`](../dev/architecture/fold-architecture.md) — the fold
+- [`../dev/architecture/fold-architecture.md`](../dev/architecture/fold-architecture) — the fold
   engine design (providers, overlays, the recompute pipeline);
   §6.1 covers the org-cycle internals (containment-derived
   hierarchy, stateless `closed`-flag inference).

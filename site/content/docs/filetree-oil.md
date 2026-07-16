@@ -174,5 +174,5 @@ is shared between the two surfaces; the buffer kinds are
 `BufferKind::FileTree` (read-only) and `BufferKind::Oil` (read-write).
 Both are first-class buffers in the registry — the renderer treats
 them like documents with custom display providers. Design rationale
-lives in [`../dev/architecture/design.md`](../dev/architecture/design.md)
+lives in [`../dev/architecture/design.md`](../dev/architecture/design)
 §5.6.7 (iconography) and §5.9 (buffer model).

@@ -30,7 +30,7 @@ feature uses — it is not a second-class bolt-on.
 > config path — those are **Phase 8** (the plugin *manager*). So today you can
 > *introspect* the plugin API and understand the model (below), and — if you
 > write plugins — build and test a guest against the host library (see the
-> [authoring guide](../dev/guides/plugin-authoring.md)); you cannot yet drop a
+> [authoring guide](../dev/guides/plugin-authoring)); you cannot yet drop a
 > `.wasm` into a config directory and have the editor pick it up.
 
 ---
@@ -137,10 +137,10 @@ You can already write a Component Model guest against the WIT package and test i
 against the host library today — the editor-side loader is the only missing
 piece. For the toolchain (`wasm32-wasip2`, `wit-bindgen`), a seam-by-seam
 walkthrough, the manifest format, fuel budgets, and a worked `fuzzy-finder`
-example, see the **[plugin authoring guide](../dev/guides/plugin-authoring.md)**.
+example, see the **[plugin authoring guide](../dev/guides/plugin-authoring)**.
 
 ## See also
 
-- [Options / configuration](options.md) — the typed-option system plugins register into.
-- [Modes](modes.md) — major/minor modes, which Phase 8 ships as components.
-- [Completion](completion.md) and [LSP](lsp.md) — seams a completion-source plugin mirrors.
+- [Options / configuration](options) — the typed-option system plugins register into.
+- [Modes](modes) — major/minor modes, which Phase 8 ships as components.
+- [Completion](completion) and [LSP](lsp) — seams a completion-source plugin mirrors.

@@ -37,9 +37,9 @@ and "what produced the excerpts" are independent axes.
                               across files)
 ```
 
-- **Search results** ([project-search.md](project-search.md)) — each
+- **Search results** ([project-search.md](project-search)) — each
   match is a one-line excerpt under its file's header.
-- **Diff** ([diff.md](diff.md)) — changed hunks become excerpts; a
+- **Diff** ([diff.md](diff)) — changed hunks become excerpts; a
   single-file diff draws hunks from one file, a project-wide diff
   draws them from many.
 
@@ -129,11 +129,11 @@ contract that would invert the range is a no-op.
   reachable with `:b N` / `:bn` / `:bp`, has a name, and saves
   through normal `:w`. There is no separate "multibuffer mode" you
   have to learn — the vim grammar applies unchanged. See
-  [buffers.md](buffers.md).
+  [buffers.md](buffers).
 - **Folding** — the `z*` vocabulary folds an excerpt to its header
   row, and folds a whole file's excerpts to a single summary row, so a
   50-file view collapses to a 50-row outline. This rides the standard
-  fold commands (see [folding.md](folding.md)); the per-excerpt (M.7)
+  fold commands (see [folding.md](folding)); the per-excerpt (M.7)
   and per-file (M.8) fold providers register automatically when a
   multibuffer is active.
 - **Async status** — providers that build a view in the background

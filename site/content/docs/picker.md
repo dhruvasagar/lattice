@@ -23,8 +23,8 @@ code in the buffer's own syntax colours.
 > across every source, syntax-highlighted previews for
 > `lines` / `outline` / `grep`, and frecency (MRU) ranking with
 > disk persistence. LSP-backed pickers (references, symbols, code
-> actions) live in [lsp.md](lsp.md); the theme picker lives in
-> [themes.md](themes.md). Plugin-contributed sources are Phase 7.
+> actions) live in [lsp.md](lsp); the theme picker lives in
+> [themes.md](themes). Plugin-contributed sources are Phase 7.
 
 ---
 
@@ -38,7 +38,7 @@ code in the buffer's own syntax colours.
 | `:files [root]`           | File picker (alias for `:picker files [root]`) |
 | `:recent`                 | Recently-edited files (alias for `:picker recent`) |
 | `:buffers` / `:b`         | Buffer switcher (fuzzy picker; `:ls` is the static text listing) |
-| `:colorscheme`            | Theme picker, with live preview (see [themes.md](themes.md)) |
+| `:colorscheme`            | Theme picker, with live preview (see [themes.md](themes)) |
 
 ### Inside an open picker
 
@@ -84,7 +84,7 @@ buffer" read the buffer you were in when you opened the picker.
 `:picker grep` is a **live** source: it re-runs the search backend
 as you type and streams hits in. It jumps to a single chosen hit —
 for a persistent, editable multibuffer of *all* matches, use
-[`:search`](project-search.md) instead.
+[`:search`](project-search) instead.
 
 ### Tab completion inside `:picker`
 
@@ -150,7 +150,7 @@ simply leave the cell blank — no placeholder, no error.
 
 Marginalia is the same mechanism the insert-mode completion popup
 uses for its annotation column; see
-[completion.md](completion.md) for that surface.
+[completion.md](completion) for that surface.
 
 ### Colouring the columns
 
@@ -175,7 +175,7 @@ picker marginalia and buffer syntax in lockstep. The slots
 
 The file-metadata columns (permissions, size, mtime) in the
 `files` and `recent` pickers reuse the permission / size / mtime
-slots documented in [filetree-oil.md](filetree-oil.md). Picker
+slots documented in [filetree-oil.md](filetree-oil). Picker
 rows don't carry a file-type icon column today — icons appear in
 the file tree and multibuffer headers, not here.
 
@@ -231,7 +231,7 @@ than refusing to open.
 | `picker.grep.max-hits` | `2000` | Cap on hits surfaced per `:picker grep`. |
 
 Set any of these with `:set <name>=<value>`, or edit them through
-`:customize`. See [options.md](options.md).
+`:customize`. See [options.md](options).
 
 ---
 
@@ -240,11 +240,11 @@ Set any of these with `:set <name>=<value>`, or edit them through
 Several features open the same picker over their own sources:
 
 - **LSP** — `gr` (references), `:lsp-symbols` (document symbols),
-  `:lsp-workspace-symbol`, `:lsp-code-action`. See [lsp.md](lsp.md).
+  `:lsp-workspace-symbol`, `:lsp-code-action`. See [lsp.md](lsp).
 - **Themes** — bare `:colorscheme` opens the live-preview theme
-  picker. See [themes.md](themes.md).
+  picker. See [themes.md](themes).
 - **Buffers** — `:b` opens the buffer switcher; `:ls` / `:buffers`
-  print a flat listing. See [buffers.md](buffers.md).
+  print a flat listing. See [buffers.md](buffers).
 
 They all share this keymap, ranking, and marginalia machinery —
 the muscle memory carries across.

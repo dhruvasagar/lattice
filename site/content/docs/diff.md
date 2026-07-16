@@ -89,7 +89,7 @@ vertically aligned as you scroll. When a diff opens, the cursor also
 **jumps to the first change** so you start at something that matters
 instead of the top of the file.
 
-These are just folds — the normal [fold](folding.md) vocabulary drives
+These are just folds — the normal [fold](folding) vocabulary drives
 them:
 
 - `zR` opens every fold (show the whole file); `zM` re-collapses to the
@@ -157,7 +157,7 @@ with the merged content (or `:diff-reject` abandons it).
 
 ## Autoread conflicts
 
-When [`autoread`](buffers.md#external-file-changes-autoread) finds that a
+When [`autoread`](buffers#external-file-changes-autoread) finds that a
 file changed on disk **while you had unsaved edits**, it won't silently
 reload (that would lose your work) and it won't overwrite the disk. It
 opens a **two-way diff resolver** so you reconcile the two versions hunk
@@ -211,7 +211,7 @@ only the finish line for the whole session:
 ## Relationship to multibuffer views
 
 A **project-wide** diff — every changed hunk across many files in one
-scrollable, editable view — is a [multibuffer](multibuffer.md) whose
+scrollable, editable view — is a [multibuffer](multibuffer) whose
 excerpts are the hunks. The per-pane diff described here and a
 project-wide diff are the same diff engine surfaced two ways: side-by-
 side panes for one file, composed excerpts for many. The hunk

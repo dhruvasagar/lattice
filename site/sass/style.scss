@@ -201,45 +201,26 @@ img { max-width: 100%; height: auto; }
     gap: 16px;
   }
 
-  .hero-brand {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    max-width: 960px;
-    width: 100%;
-  }
-
-  .hero-logo-row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-
   .hero-mark {
-    height: 68px;
-    width: auto;
-    flex-shrink: 0;
+    color: $brand-blue;
+    margin-bottom: 8px;
+    svg { display: block; }
   }
 
   .hero-title {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
-    font-size: 96px;
-    font-weight: 500;
-    letter-spacing: -2px;
+    font-size: 3.5rem;
+    font-weight: 800;
+    letter-spacing: -0.03em;
     color: $brand-blue;
-    line-height: 1;
-    margin: 0;
+    line-height: 1.1;
   }
 
   .hero-tagline {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
-    font-size: 22px;
-    font-weight: 400;
-    letter-spacing: 0.5px;
-    color: $text-muted;
-    margin: 0;
-    line-height: 1.3;
-    margin-top: 24px;
+    font-size: 1.375rem;
+    font-weight: 500;
+    color: $text;
+    max-width: 640px;
+    line-height: 1.4;
   }
 
   .hero-subtitle {
@@ -568,6 +549,144 @@ img { max-width: 100%; height: auto; }
   }
 }
 
+// Subsection grid (dev index, overview pages)
+.subsection-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+  margin: 32px 0;
+}
+
+.subsection-card {
+  display: block;
+  padding: 24px;
+  border: 1px solid $border;
+  border-radius: 12px;
+  background: $bg;
+  text-decoration: none !important;
+  transition: box-shadow 0.2s ease, transform 0.2s ease;
+
+  &:hover {
+    box-shadow: 0 4px 24px rgba(0,0,0,0.06);
+    transform: translateY(-2px);
+  }
+
+  h3 {
+    font-size: 1.125rem;
+    font-weight: 600;
+    color: $brand-blue;
+    margin-bottom: 8px;
+  }
+
+  p {
+    font-size: 0.875rem;
+    color: $text-muted;
+    line-height: 1.5;
+    margin: 0;
+  }
+}
+
+// Sidebar back link
+.sidebar-back {
+  padding: 0 20px 12px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid $border;
+
+  a {
+    font-size: 0.8125rem;
+    font-weight: 500;
+    color: $text-muted !important;
+    padding: 0 !important;
+    border-left: none !important;
+
+    &:hover {
+      color: $brand-blue !important;
+      background: none !important;
+    }
+  }
+}
+
+// Full-width docs content (no sidebar, e.g. dev index)
+.docs-content-full {
+  max-width: 800px;
+  margin: 0 auto;
+}
+
+// Status section
+.status {
+  padding: 80px 0;
+  background: $bg-alt;
+
+  .status-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 24px;
+  }
+
+  .status-card {
+    padding: 28px;
+    background: $bg;
+    border: 1px solid $border;
+    border-radius: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+
+    p {
+      font-size: 0.9375rem;
+      line-height: 1.6;
+      color: $text-muted;
+      margin: 0;
+      flex: 1;
+    }
+  }
+
+  .status-link {
+    font-size: 0.875rem;
+    font-weight: 500;
+  }
+}
+
+.status-badge {
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 6px;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  align-self: flex-start;
+}
+
+.status-active {
+  background: rgba($brand-amber, 0.12);
+  color: darken($brand-amber, 10%);
+}
+
+.status-bench {
+  background: rgba($brand-blue, 0.1);
+  color: $brand-blue;
+}
+
+.status-milestone {
+  background: rgba(#10b981, 0.1);
+  color: #059669;
+}
+
+// CTA actions
+.cta-actions {
+  display: flex;
+  gap: 16px;
+  justify-content: center;
+  margin-top: 24px;
+}
+
+.btn-outline {
+  background: transparent;
+  color: white;
+  border: 2px solid rgba(white, 0.5);
+  &:hover { background: rgba(white, 0.1); border-color: white; color: white; }
+}
+
 // Dark mode
 @media (prefers-color-scheme: dark) {
   body {
@@ -595,6 +714,8 @@ img { max-width: 100%; height: auto; }
 
   .hero {
     background: linear-gradient(135deg, #0d1b3e 0%, #161b22 50%, #1a0d2e 100%);
+
+    .hero-tagline { color: $dark-text; }
   }
 
   .features {
@@ -679,6 +800,47 @@ img { max-width: 100%; height: auto; }
     border-color: lighten($brand-blue, 10%);
     &:hover { background: rgba($brand-blue, 0.15); }
   }
+
+  .subsection-card {
+    border-color: $dark-border;
+    background: $dark-bg-alt;
+    &:hover { box-shadow: 0 4px 24px rgba(0,0,0,0.4); }
+    h3 { color: lighten($brand-blue, 10%); }
+    p { color: $dark-text-muted; }
+  }
+
+  .sidebar-back {
+    border-color: $dark-border;
+    a { color: $dark-text-muted !important; }
+  }
+
+  .status {
+    background: $dark-bg-alt;
+    .status-card {
+      background: $dark-bg;
+      border-color: $dark-border;
+      p { color: $dark-text-muted; }
+    }
+  }
+
+  .status-active {
+    background: rgba($brand-amber, 0.15);
+    color: $brand-amber;
+  }
+
+  .status-bench {
+    background: rgba($brand-blue, 0.15);
+    color: lighten($brand-blue, 10%);
+  }
+
+  .status-milestone {
+    background: rgba(#10b981, 0.15);
+    color: #34d399;
+  }
+
+  .btn-outline {
+    &:hover { background: rgba(white, 0.08); }
+  }
 }
 
 // Responsive
@@ -688,10 +850,8 @@ img { max-width: 100%; height: auto; }
   .hero {
     padding: 48px 0;
 
-    .hero-title { font-size: 48px; }
-    .hero-mark { height: 34px; }
-    .hero-tagline { font-size: 16px; margin-top: 16px; }
-    .hero-logo-row { gap: 6px; }
+    .hero-title { font-size: 2.25rem; }
+    .hero-tagline { font-size: 1.125rem; }
     .hero-actions { flex-direction: column; align-items: center; }
   }
 
@@ -739,6 +899,19 @@ img { max-width: 100%; height: auto; }
   .site-footer .footer-grid {
     grid-template-columns: 1fr;
     gap: 32px;
+  }
+
+  .subsection-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .status-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .cta-actions {
+    flex-direction: column;
+    align-items: center;
   }
 
   .btn-lg { width: 100%; text-align: center; }

@@ -22,7 +22,10 @@
         Lattice
       </a>
       <nav class="nav-links">
+        <a href="{{ get_url(path='/why-lattice/') }}">Why Lattice</a>
         <a href="{{ get_url(path='/docs/') }}">Docs</a>
+        <a href="{{ get_url(path='/dev/') }}">Dev Docs</a>
+        <a href="{{ get_url(path='/faq/') }}">FAQ</a>
         <a href="{{ config.extra.github_repo }}">GitHub</a>
       </nav>
     </div>
@@ -40,10 +43,12 @@
           <p>{{ config.extra.tagline }}</p>
         </div>
         <div>
-          <h4>Resources</h4>
+          <h4>Learn</h4>
           <ul>
-            <li><a href="{{ get_url(path='/docs/') }}">Documentation</a></li>
+            <li><a href="{{ get_url(path='/why-lattice/') }}">Why Lattice?</a></li>
             <li><a href="{{ get_url(path='/docs/getting-started/') }}">Getting Started</a></li>
+            <li><a href="{{ get_url(path='/install/') }}">Installation</a></li>
+            <li><a href="{{ get_url(path='/cheatsheet/') }}">Quick Reference</a></li>
             <li><a href="{{ config.extra.github_repo }}/blob/main/docs/dev/architecture/design.md">Design Spec</a></li>
           </ul>
         </div>

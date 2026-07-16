@@ -3,7 +3,6 @@ title = "Multibuffer views"
 +++
 
 
-# Multibuffer views
 
 A **multibuffer** composes excerpts drawn from one or more source
 files into a single buffer you can scroll, navigate, fold, and

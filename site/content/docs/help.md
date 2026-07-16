@@ -3,7 +3,6 @@ title = "Help system"
 +++
 
 
-# Help system
 
 Lattice is self-documenting. Every command, option, mode, event, and
 key binding carries metadata that the help system surfaces on demand.

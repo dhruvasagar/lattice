@@ -3,7 +3,6 @@ title = "Folding"
 +++
 
 
-# Folding
 
 Folds collapse a contiguous range of buffer lines into a single
 visual line so you can navigate large files by structure instead

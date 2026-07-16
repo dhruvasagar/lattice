@@ -3,7 +3,6 @@ title = "Languages"
 +++
 
 
-# Languages
 
 Lattice's syntax features (highlighting, folding, indent, navigation
 by AST) are driven by [tree-sitter](https://tree-sitter.github.io/)

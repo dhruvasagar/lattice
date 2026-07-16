@@ -3,7 +3,6 @@ title = "Getting started"
 +++
 
 
-# Getting started
 
 Lattice is a modal editor: the keys you press mean different things
 depending on the **mode** you're in. If you've used vim, everything

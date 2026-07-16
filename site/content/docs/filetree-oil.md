@@ -3,7 +3,6 @@ title = "File tree & Oil"
 +++
 
 
-# File tree & Oil
 
 Lattice ships two ways to browse and edit your project's filesystem from
 inside the editor:

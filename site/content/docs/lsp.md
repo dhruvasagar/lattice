@@ -3,7 +3,6 @@ title = "Language Server Protocol (LSP)"
 +++
 
 
-# Language Server Protocol (LSP)
 
 LSP integration brings IDE features — go-to-definition, hover,
 diagnostics, completion, rename, code actions, formatting,

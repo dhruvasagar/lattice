@@ -3,7 +3,6 @@ title = "emacs-keys-mode (the `<C-x>` leader)"
 +++
 
 
-# emacs-keys-mode (the `<C-x>` leader)
 
 Lattice is a vim-modal editor (see
 [`modal-editing`](../modal-editing/)). But emacs's `C-x` prefix

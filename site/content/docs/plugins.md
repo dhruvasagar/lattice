@@ -3,7 +3,6 @@ title = "Plugins"
 +++
 
 
-# Plugins
 
 Extensibility is one of lattice's four paramount goals (CLAUDE.md #2). The
 extension substrate is a **WebAssembly Component Model** host: plugins ship as

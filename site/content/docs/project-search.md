@@ -3,7 +3,6 @@ title = "Project search"
 +++
 
 
-# Project search
 
 `:search` walks the project, collects every line matching your
 query, and streams the results into a [multibuffer](multibuffer)

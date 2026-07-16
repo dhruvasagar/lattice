@@ -3,7 +3,6 @@ title = "Claude Code IDE integration"
 +++
 
 
-# Claude Code IDE integration
 
 Lattice can act as the **IDE side** of Anthropic's Claude Code agent.
 An external `claude` CLI attaches to the editor over a loopback

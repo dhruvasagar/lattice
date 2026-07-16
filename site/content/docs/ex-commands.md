@@ -3,7 +3,6 @@ title = "Ex-commands"
 +++
 
 
-# Ex-commands
 
 The `:` line. Type `:` from Normal mode to enter the cmdline,
 type a command, hit `<CR>` to run.

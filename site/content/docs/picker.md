@@ -3,7 +3,6 @@ title = "Picker & marginalia"
 +++
 
 
-# Picker & marginalia
 
 The picker is one vertico-style fuzzy finder that works over
 **every** source. You type `:picker <source>`, the picker walks

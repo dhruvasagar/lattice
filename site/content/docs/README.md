@@ -3,7 +3,6 @@ title = "Help"
 +++
 
 
-# Help
 
 User-facing reference for lattice features, organized by topic. The
 goal here is what `:help` does in vim and `C-h i` does in emacs:

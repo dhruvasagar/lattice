@@ -3,7 +3,6 @@ title = "Insert-mode completion"
 +++
 
 
-# Insert-mode completion
 
 Completion in lattice surfaces inside Insert mode as a popup
 near the cursor: type some characters, press the trigger

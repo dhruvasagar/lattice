@@ -3,7 +3,6 @@ title = "Configuring lattice with `init.rs`"
 +++
 
 
-# Configuring lattice with `init.rs`
 
 lattice has **one** extension substrate — WebAssembly. There is no vimscript, no
 Lua, no elisp. Your configuration is a small Rust program, `init.rs`, compiled to

@@ -3,7 +3,6 @@ title = "Buffers and panes"
 +++
 
 
-# Buffers and panes
 
 A *buffer* in lattice is anything you can navigate with motions:
 a code file, a help view, a file tree. Documents and trees both

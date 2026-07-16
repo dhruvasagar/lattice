@@ -3,7 +3,6 @@ title = "Tutor"
 +++
 
 
-# Tutor
 
 The **tutor** is an interactive, gamified lesson sequence — vim's `vimtutor`
 crossed with an arcade scoreboard. You learn lattice *inside* lattice: each

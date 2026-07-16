@@ -3,7 +3,6 @@ title = "Diff & merge"
 +++
 
 
-# Diff & merge
 
 Lattice diffs two (or three) buffers side by side, marks the changed
 lines in the sign column, and lets you move and transfer hunks with

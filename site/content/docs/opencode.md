@@ -3,7 +3,6 @@ title = "opencode agent"
 +++
 
 
-# opencode agent
 
 `:opencode` runs the **opencode** coding agent's native terminal UI in a
 lattice terminal buffer. You get opencode's complete interface — its

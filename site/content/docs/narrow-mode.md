@@ -3,7 +3,6 @@ title = "Narrow mode"
 +++
 
 
-# Narrow mode
 
 Narrowing focuses the editor on one region of a file — a function, a
 paragraph, a selected range — and hides the rest. Unlike a [fold](folding)

@@ -3,7 +3,6 @@ title = "`lsp-mode`"
 +++
 
 
-# `lsp-mode`
 
 `lsp-mode` is the per-buffer gate that controls whether LSP
 features run for a given buffer. When the mode is *active*,

@@ -3,7 +3,6 @@ title = "Terminal Mode"
 +++
 
 
-# Terminal Mode
 
 Lattice embeds a real shell inside the editor as a buffer.
 Open one with `:terminal`, type commands, scroll the output

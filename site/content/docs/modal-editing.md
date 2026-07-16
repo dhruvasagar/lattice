@@ -3,7 +3,6 @@ title = "Modal editing"
 +++
 
 
-# Modal editing
 
 Lattice is a **modal** editor. Different keystrokes do different
 things depending on which mode you're in. The modes are a small

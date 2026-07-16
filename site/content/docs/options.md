@@ -3,7 +3,6 @@ title = "Options"
 +++
 
 
-# Options
 
 Options are lattice's **typed configuration knobs**. Every
 toggle, threshold, and behavior selector — `number`, `tabstop`,

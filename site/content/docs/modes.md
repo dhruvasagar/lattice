@@ -3,7 +3,6 @@ title = "Modes"
 +++
 
 
-# Modes
 
 Lattice's mode system has two orthogonal axes:
 

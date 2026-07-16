@@ -3,7 +3,6 @@ title = "Themes & colorschemes"
 +++
 
 
-# Themes & colorschemes
 
 A **theme** is the editor's colour identity — syntax highlighting,
 gutter signs, the modeline, diff tints, popups, the canvas itself. In

@@ -3,7 +3,6 @@ title = "Modeline"
 +++
 
 
-# Modeline
 
 The **modeline** is the one-row status footer at the bottom of every
 pane: the modal tag, buffer path, cursor position, language, and any

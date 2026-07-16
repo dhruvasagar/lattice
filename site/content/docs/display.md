@@ -3,7 +3,6 @@ title = "Display & layout"
 +++
 
 
-# Display & layout
 
 How buffer content is laid out on screen: wrapping long lines, how
 wide a tab is, how close the cursor gets to the viewport edge, and

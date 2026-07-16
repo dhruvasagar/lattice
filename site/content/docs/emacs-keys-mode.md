@@ -6,7 +6,7 @@ title = "emacs-keys-mode (the `<C-x>` leader)"
 # emacs-keys-mode (the `<C-x>` leader)
 
 Lattice is a vim-modal editor (see
-[`modal-editing`](./modal-editing/)). But emacs's `C-x` prefix
+[`modal-editing`](../modal-editing/)). But emacs's `C-x` prefix
 map — `C-x C-f` to find a file, `C-x b` to switch buffer, `C-x 2`
 to split a window — is muscle memory for a lot of people, and the
 two vocabularies don't actually collide: vim owns the alphabetic
@@ -54,7 +54,7 @@ panic) rather than breaking boot.
 
 The `emacs-keys` *option* and the `emacs-keys-mode` *mode* are
 distinct names (the `-mode` suffix is the mode-id convention — see
-[`modes`](./modes/)). You toggle the feature with `:set
+[`modes`](../modes/)). You toggle the feature with `:set
 emacs-keys`, not `:emacs-keys-mode`.
 
 ### It's live everywhere — not just code buffers
@@ -155,7 +155,7 @@ The tribute is **additive**. It does not change the vim grammar:
   / Replace / the `:` and `/` lines are all unaffected.
 - **No alphabetic motion is remapped.** `h` `j` `k` `l`, `w` `b` `e`,
   operators, text objects, counts — all exactly as
-  [`modal-editing`](./modal-editing/) describes. The tribute lives
+  [`modal-editing`](../modal-editing/) describes. The tribute lives
   behind a `Ctrl`-prefix leader, off in its own corner of the keymap.
 - **It's one minor mode among many.** It shows up in `:list-modes`,
   carries metadata in `:describe-mode emacs-keys-mode`, and its
@@ -172,12 +172,12 @@ is always one option away — `:set noemacs-keys`.
 
 ## See also
 
-- [`modal-editing`](./modal-editing/) — the vim grammar this
+- [`modal-editing`](../modal-editing/) — the vim grammar this
   layers on top of (Normal / Insert / Visual, operators, motions).
-- [`modes`](./modes/) — major + minor modes, `:<mode-name>`
+- [`modes`](../modes/) — major + minor modes, `:<mode-name>`
   toggles, the option-resolution model, and the keymap-precedence
   rules the leader plays by.
-- [`options`](./options/) — `:set` + `:customize`, the typed
+- [`options`](../options/) — `:set` + `:customize`, the typed
   options `emacs-keys` and `emacs-keys-prefix` live in.
 - `docs/dev/architecture/emacs-keys.md` — the design fragment
   (the *what* and *why*); `docs/dev/operations/slice-plans/archive/emacs-keys.md`

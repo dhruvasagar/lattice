@@ -25,7 +25,7 @@ the server down.
 ```
 
 The `:lsp-mode` ex-command is auto-generated like every
-mode's toggle command; see [modes](./modes/) for the
+mode's toggle command; see [modes](../modes/) for the
 broader convention.
 
 ## Auto-activation
@@ -136,7 +136,7 @@ Running `:text-mode` on a buffer that had `lsp-mode` active
 leaves `lsp-mode` active. State is owned per-mode in typed
 `BufferLocals`; major swaps can't corrupt or clear minor
 state. To turn LSP off after a major swap, run `:lsp-mode`
-explicitly. (See [modes](./modes/) for the design rationale
+explicitly. (See [modes](../modes/) for the design rationale
 -- this is the deliberate departure from emacs's
 `kill-all-local-variables` footgun.)
 
@@ -167,7 +167,7 @@ LSP event catalogue.
 
 ## See also
 
-- [modes](./modes/) -- the broader major / minor mode
+- [modes](../modes/) -- the broader major / minor mode
   system this lives inside.
-- [lsp](./lsp/) -- the LSP feature surface (servers,
+- [lsp](../lsp/) -- the LSP feature surface (servers,
   capabilities, configuration).

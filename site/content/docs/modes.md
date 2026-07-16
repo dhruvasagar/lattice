@@ -10,7 +10,7 @@ Lattice's mode system has two orthogonal axes:
 - **Modal state** — Normal / Insert / Visual / Operator-Pending /
   Command / Search / Replace. The vim-grammar state machine
   driven by keys. Buffer-local but transient. See
-  [`modal-editing`](./modal-editing/) for the grammar; this
+  [`modal-editing`](../modal-editing/) for the grammar; this
   page is about the *other* axis.
 - **Major + minor modes** — the editor's *behaviour layers*. A
   buffer always has zero or one **major mode** (its content
@@ -85,7 +85,7 @@ mode's auto-generated toggle.
 | `lsp-code-action-mode`   | `:lsp-code-action`.                                              |
 | `lsp-nav-mode`           | `gd` / `gD` / `gy` / `gI` definition family + `gr` references.   |
 
-See [`lsp-mode`](./lsp-mode/) for the full sub-mode contract.
+See [`lsp-mode`](../lsp-mode/) for the full sub-mode contract.
 
 #### Display modes (M.7)
 
@@ -104,7 +104,7 @@ toggling the mode flips the option's resolved value (one-way
 ratchet — the typed-option layer keeps the user's last `:set`
 across mode toggles, so flipping the mode doesn't silently
 rewrite a global default). See
-[`options`](./options/) for the layer model.
+[`options`](../options/) for the layer model.
 
 #### Other minors
 
@@ -432,7 +432,7 @@ the current buffer, each row gets a `[mode-shadow]` indicator
 — the user understands that a `:set` write would be overridden
 by the mode-contribution layer until the mode deactivates.
 
-See [`options`](./options/) for the customize surface.
+See [`options`](../options/) for the customize surface.
 
 ---
 
@@ -490,13 +490,13 @@ rust-mode` opens the rust-mode *focused view*.
 
 ## See also
 
-- [`modal-editing`](./modal-editing/) — the *other* mode
+- [`modal-editing`](../modal-editing/) — the *other* mode
   axis: Normal / Insert / Visual / etc.
-- [`lsp-mode`](./lsp-mode/) — the LSP umbrella minor + nine
+- [`lsp-mode`](../lsp-mode/) — the LSP umbrella minor + nine
   sub-modes (M.6 family).
-- [`options`](./options/) — typed-options model + the
+- [`options`](../options/) — typed-options model + the
   customize buffer view + the layered resolver.
-- [`completion`](./completion/) — insert-mode completion
+- [`completion`](../completion/) — insert-mode completion
   (will become a minor mode in M.7+ wave).
 - `docs/dev/architecture/mode-architecture.md` — full design
   spec including capability gates, conflict policy, migration

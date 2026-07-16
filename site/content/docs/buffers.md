@@ -181,7 +181,7 @@ affects performance. Your own `:w` never triggers a spurious reload.
 
 - `:help` (no arg) -- open the topic index.
 - `:help <topic>` -- open a free-form doc. `<Tab>` lists registered
-  topics. The index page links every topic via `[name](./name/)`
+  topics. The index page links every topic via `[name](../name/)`
   markdown links so `<CR>` jumps.
 - `:describe-command name` -- introspection-driven doc for a
   registered command. Cross-links to `:help <topic>` when a topic

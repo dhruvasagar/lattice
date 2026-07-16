@@ -107,7 +107,7 @@ the keymap equivalents.
 
 ### LSP
 
-See [`lsp`](./lsp/) for the full inventory. Most-used:
+See [`lsp`](../lsp/) for the full inventory. Most-used:
 
 | Command                        | Action                                                |
 |--------------------------------|-------------------------------------------------------|
@@ -400,13 +400,13 @@ diverges).
 
 ## See also
 
-- [`modal-editing`](./modal-editing/) — the keymap-side of
+- [`modal-editing`](../modal-editing/) — the keymap-side of
   the editor.
-- [`buffers`](./buffers/) — buffer / pane commands in
+- [`buffers`](../buffers/) — buffer / pane commands in
   context.
-- [`options`](./options/) — `:set` + `:customize` deep dive.
-- [`modes`](./modes/) — `:<mode-name>` toggle + introspection.
-- [`lsp`](./lsp/) — every `:lsp-*` command in context.
-- [`completion`](./completion/) — cmdline completion mechanics.
+- [`options`](../options/) — `:set` + `:customize` deep dive.
+- [`modes`](../modes/) — `:<mode-name>` toggle + introspection.
+- [`lsp`](../lsp/) — every `:lsp-*` command in context.
+- [`completion`](../completion/) — cmdline completion mechanics.
 - `docs/dev/architecture/design.md` §5.2.1 — unified command /
   grammar dispatcher (developer reference).

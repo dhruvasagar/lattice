@@ -37,7 +37,7 @@ selection.
 
 > The other axis — **major + minor modes** — is orthogonal to
 > this. Modal state is your hands; major/minor modes are the
-> editor's behaviour layers. See [`modes`](./modes/) for that
+> editor's behaviour layers. See [`modes`](../modes/) for that
 > axis.
 
 ---
@@ -538,17 +538,17 @@ rows still get the replicated text.
 
 ## See also
 
-- [`modes`](./modes/) — major + minor modes (the *other*
+- [`modes`](../modes/) — major + minor modes (the *other*
   mode axis).
-- [`buffers`](./buffers/) — buffers, panes, splits.
-- [`folding`](./folding/) — fold-aware motions + operators
+- [`buffers`](../buffers/) — buffers, panes, splits.
+- [`folding`](../folding/) — fold-aware motions + operators
   (`zj`/`zk`, dd-on-fold semantics).
-- [`completion`](./completion/) — insert-mode completion +
+- [`completion`](../completion/) — insert-mode completion +
   ghost text.
-- [`ex-commands`](./ex-commands/) — the `:` line.
-- [`options`](./options/) — `:set` + `:customize`.
-- [`lsp`](./lsp/) — LSP feature surface.
-- [`tutor`](./tutor/) — interactive lesson sequence (when
+- [`ex-commands`](../ex-commands/) — the `:` line.
+- [`options`](../options/) — `:set` + `:customize`.
+- [`lsp`](../lsp/) — LSP feature surface.
+- [`tutor`](../tutor/) — interactive lesson sequence (when
   available).
 - `docs/dev/architecture/keymap-architecture.md` — developer
   reference for the keymap registry + dispatch.

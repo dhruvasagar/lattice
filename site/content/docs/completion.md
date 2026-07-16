@@ -197,7 +197,7 @@ overrides three Insert-mode keys until the snippet exits:
 
 When you land on a placeholder that has a **default**
 (`${1:value}`), its text is **selected** (the buffer enters
-[Select mode](./modal-editing/)) — so the first character you
+[Select mode](../modal-editing/)) — so the first character you
 type **replaces the whole default** and drops you into Insert,
 the conventional "type to replace the placeholder" behaviour. To
 keep the default instead, just start editing it: any motion or

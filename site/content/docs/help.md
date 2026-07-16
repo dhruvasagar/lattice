@@ -279,9 +279,9 @@ the command you are building.
 
 ## See also
 
-- [`modal-editing`](./modal-editing/) — the vim grammar; mode
+- [`modal-editing`](../modal-editing/) — the vim grammar; mode
   entry/exit; registers, marks, macros.
-- [`modes`](./modes/) — major + minor modes; how modes contribute
+- [`modes`](../modes/) — major + minor modes; how modes contribute
   keymaps and what each mode offers.
-- [`options`](./options/) — `:set`, `:customize`, TOML config.
-- [`ex-commands`](./ex-commands/) — the full `:` command reference.
+- [`options`](../options/) — `:set`, `:customize`, TOML config.
+- [`ex-commands`](../ex-commands/) — the full `:` command reference.

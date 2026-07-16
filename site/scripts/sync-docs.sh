@@ -54,7 +54,11 @@ def sync_dir(src_dir, dst_dir, link_mods=None):
         if link_mods and 'strip_md' in link_mods:
             body = strip_md_from_links(body)
         if link_mods and 'help_topic' in link_mods:
-            body = re.sub(r'\(help:([a-zA-Z0-9_-]+)\)', r'(./\1/)', body)
+            # Zola pages are emitted as directories:
+            #   content/docs/themes.md -> /docs/themes/
+            # Inside a page like /docs/modal-editing/, `./themes/` would incorrectly
+            # resolve to /docs/modal-editing/themes/. Use `../` to anchor at /docs/.
+            body = re.sub(r'\(help:([a-zA-Z0-9_-]+)\)', r'(../\1/)', body)
             body = re.sub(r'\[([^\]]*)\]\((?:mode|event):[^)]+\)', r'`\1`', body)
 
         dst_file = os.path.join(dst_dir, b)

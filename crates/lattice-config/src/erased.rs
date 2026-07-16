@@ -22,9 +22,9 @@ use crate::option_type::OptionType;
 /// the concrete `Option<T>` when a typed handle reads. Required
 /// rather than auto-derived so the bound stays explicit.
 pub trait ErasedOption: Send + Sync {
-    fn name(&self) -> &'static str;
+    fn name(&self) -> &str;
     fn aliases(&self) -> &'static [&'static str];
-    fn doc(&self) -> &'static str;
+    fn doc(&self) -> &str;
     fn type_label(&self) -> &'static str;
 
     /// Parse `value` against the option's [`OptionType`], run the
@@ -112,16 +112,16 @@ pub trait ErasedOption: Send + Sync {
 }
 
 impl<T: OptionType> ErasedOption for Option<T> {
-    fn name(&self) -> &'static str {
-        self.name
+    fn name(&self) -> &str {
+        &self.name
     }
 
     fn aliases(&self) -> &'static [&'static str] {
         self.aliases
     }
 
-    fn doc(&self) -> &'static str {
-        self.doc
+    fn doc(&self) -> &str {
+        &self.doc
     }
 
     fn type_label(&self) -> &'static str {
@@ -163,7 +163,7 @@ impl<T: OptionType> ErasedOption for Option<T> {
     }
 
     fn name_forms(&self) -> Vec<String> {
-        T::name_forms(self.name)
+        T::name_forms(self.name.as_ref())
     }
 
     fn is_bool(&self) -> bool {

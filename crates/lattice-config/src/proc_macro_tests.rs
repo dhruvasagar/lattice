@@ -98,12 +98,17 @@ fn build_spec_carries_alias_and_validator() {
     let registry = ConfigRegistry::new();
     let _h = registry.register(spec);
     // Aliases are reachable via the registry's lookup-by-name.
+    // PL8.F: `name()` now borrows the (temporary) looked-up option, so own it
+    // for the comparison via `.as_deref()`.
     assert_eq!(
-        registry.lookup("ts2").map(|o| o.name()),
+        registry.lookup("ts2").map(|o| o.name().to_owned()).as_deref(),
         Some("test-proc.with-aliases")
     );
     assert_eq!(
-        registry.lookup("tsalt").map(|o| o.name()),
+        registry
+            .lookup("tsalt")
+            .map(|o| o.name().to_owned())
+            .as_deref(),
         Some("test-proc.with-aliases")
     );
 

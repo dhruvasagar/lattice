@@ -148,12 +148,12 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             parse_args: Arc::new(parse_optional_path),
             apply: Arc::new(apply_write),
             args_schema: vec![ArgSpec {
-                name: "path",
+                name: "path".into(),
                 kind: ArgKind::String,
-                doc: "Destination path. Absent = overwrite current file.",
-                prompt: "path:",
+                doc: "Destination path. Absent = overwrite current file.".into(),
+                prompt: "path:".into(),
                 default: ArgDefault::None,
-                completion: Some("gen:files"),
+                completion: Some("gen:files".into()),
             }],
             surface_form: SurfaceForm::Keyword,
         },
@@ -376,12 +376,12 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             // generator so `:set <Tab>` enumerates option names and
             // `:set foldmethod=<Tab>` enumerates valid values.
             args_schema: vec![ArgSpec {
-                name: "option",
+                name: "option".into(),
                 kind: ArgKind::String,
-                doc: "Option name, `name=value`, `name?`, or `noname`.",
-                prompt: "option:",
+                doc: "Option name, `name=value`, `name?`, or `noname`.".into(),
+                prompt: "option:".into(),
                 default: ArgDefault::Required,
-                completion: Some("gen:options"),
+                completion: Some("gen:options".into()),
             }],
             surface_form: SurfaceForm::Keyword,
         },
@@ -396,12 +396,12 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             parse_args: Arc::new(parse_required_string),
             apply: Arc::new(apply_set_local),
             args_schema: vec![ArgSpec {
-                name: "option",
+                name: "option".into(),
                 kind: ArgKind::String,
-                doc: "Option name, `name=value`, `noname`, or `name&` to clear.",
-                prompt: "option:",
+                doc: "Option name, `name=value`, `noname`, or `name&` to clear.".into(),
+                prompt: "option:".into(),
                 default: ArgDefault::Required,
-                completion: Some("gen:options"),
+                completion: Some("gen:options".into()),
             }],
             surface_form: SurfaceForm::Keyword,
         },
@@ -416,12 +416,12 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             parse_args: Arc::new(parse_required_string),
             apply: Arc::new(apply_set_global),
             args_schema: vec![ArgSpec {
-                name: "option",
+                name: "option".into(),
                 kind: ArgKind::String,
-                doc: "Option name, `name=value`, `noname`, or `name?` to query global value.",
-                prompt: "option:",
+                doc: "Option name, `name=value`, `noname`, or `name?` to query global value.".into(),
+                prompt: "option:".into(),
                 default: ArgDefault::Required,
-                completion: Some("gen:options"),
+                completion: Some("gen:options".into()),
             }],
             surface_form: SurfaceForm::Keyword,
         },
@@ -439,10 +439,10 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             parse_args: Arc::new(parse_optional_path),
             apply: Arc::new(apply_colorscheme),
             args_schema: vec![ArgSpec {
-                name: "name",
+                name: "name".into(),
                 kind: ArgKind::String,
-                doc: "Theme name (`catppuccin-mocha`, `catppuccin-macchiato`). Omit to open the live-preview picker.",
-                prompt: "colorscheme:",
+                doc: "Theme name (`catppuccin-mocha`, `catppuccin-macchiato`). Omit to open the live-preview picker.".into(),
+                prompt: "colorscheme:".into(),
                 // T.12a: optional — no-arg opens the picker.
                 default: ArgDefault::None,
                 // T.12 wires a `gen:colorschemes` completion generator;
@@ -462,12 +462,12 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             parse_args: Arc::new(parse_optional_path),
             apply: Arc::new(apply_edit),
             args_schema: vec![ArgSpec {
-                name: "path",
+                name: "path".into(),
                 kind: ArgKind::String,
-                doc: "File path to open. Absent = reload current file.",
-                prompt: "path:",
+                doc: "File path to open. Absent = reload current file.".into(),
+                prompt: "path:".into(),
                 default: ArgDefault::None,
-                completion: Some("gen:files"),
+                completion: Some("gen:files".into()),
             }],
             surface_form: SurfaceForm::Keyword,
         },
@@ -501,16 +501,17 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                     "Replacement text (empty deletes matches)",
                 ),
                 ArgSpec {
-                    name: "flags",
+                    name: "flags".into(),
                     kind: ArgKind::String,
-                    doc: "Flags string (currently `g` honoured; others ignored)",
-                    prompt: "",
+                    doc: "Flags string (currently `g` honoured; others ignored)".into(),
+                    prompt: "".into(),
                     default: ArgDefault::Literal(ArgValue::String(String::new())),
                     completion: None,
                 },
             ],
             surface_form: SurfaceForm::Delimiter {
-                hint: ":s/pattern/replacement/[flags]  (or :%s/.../.../  for whole buffer)",
+                hint: ":s/pattern/replacement/[flags]  (or :%s/.../.../  for whole buffer)"
+                    .into(),
             },
         },
     );
@@ -526,10 +527,10 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             args_schema: vec![
                 ArgSpec::required("pattern", ArgKind::Pattern, "Match pattern (literal in v1)"),
                 ArgSpec {
-                    name: "inverted",
+                    name: "inverted".into(),
                     kind: ArgKind::Bool,
-                    doc: "True for `:v` form -- match lines NOT matching the pattern.",
-                    prompt: "",
+                    doc: "True for `:v` form -- match lines NOT matching the pattern.".into(),
+                    prompt: "".into(),
                     default: ArgDefault::Literal(ArgValue::Bool(false)),
                     completion: None,
                 },
@@ -540,7 +541,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                 ),
             ],
             surface_form: SurfaceForm::Delimiter {
-                hint: ":g/pattern/body  (or :v/pattern/body  for inverted)",
+                hint: ":g/pattern/body  (or :v/pattern/body  for inverted)".into(),
             },
         },
     );
@@ -554,12 +555,12 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             parse_args: Arc::new(parse_required_string),
             apply: Arc::new(apply_describe_command),
             args_schema: vec![ArgSpec {
-                name: "name",
+                name: "name".into(),
                 kind: ArgKind::String,
-                doc: "Registered command name (`ex:write`, `motion:word-forward`, ...)",
-                prompt: "command:",
+                doc: "Registered command name (`ex:write`, `motion:word-forward`, ...)".into(),
+                prompt: "command:".into(),
                 default: ArgDefault::Required,
-                completion: Some("gen:commands"),
+                completion: Some("gen:commands".into()),
             }],
             surface_form: SurfaceForm::Keyword,
         },
@@ -587,10 +588,10 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             parse_args: Arc::new(parse_required_string),
             apply: Arc::new(apply_apropos),
             args_schema: vec![ArgSpec {
-                name: "pattern",
+                name: "pattern".into(),
                 kind: ArgKind::String,
-                doc: "Case-insensitive substring matched against name and doc",
-                prompt: "apropos:",
+                doc: "Case-insensitive substring matched against name and doc".into(),
+                prompt: "apropos:".into(),
                 default: ArgDefault::Required,
                 completion: None,
             }],
@@ -607,10 +608,10 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             parse_args: Arc::new(parse_required_string),
             apply: Arc::new(apply_describe_key),
             args_schema: vec![ArgSpec {
-                name: "chord",
+                name: "chord".into(),
                 kind: ArgKind::Chord,
-                doc: "Chord notation (`j`, `dw`, `<C-d>`, `gg`, `<Esc>`, ...)",
-                prompt: "key:",
+                doc: "Chord notation (`j`, `dw`, `<C-d>`, `gg`, `<Esc>`, ...)".into(),
+                prompt: "key:".into(),
                 default: ArgDefault::Required,
                 completion: None,
             }],
@@ -688,12 +689,12 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                 _ => Ok(Effect::AppAction(AppEffect::NewTab)),
             }),
             args_schema: vec![ArgSpec {
-                name: "path",
+                name: "path".into(),
                 kind: ArgKind::String,
-                doc: "Optional file path to open in the new tab",
-                prompt: "",
+                doc: "Optional file path to open in the new tab".into(),
+                prompt: "".into(),
                 default: ArgDefault::None,
-                completion: Some("gen:files"),
+                completion: Some("gen:files".into()),
             }],
             surface_form: SurfaceForm::Keyword,
         },
@@ -728,10 +729,10 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                 _ => Ok(Effect::AppAction(AppEffect::TerminalSpawn(None))),
             }),
             args_schema: vec![ArgSpec {
-                name: "cmd",
+                name: "cmd".into(),
                 kind: ArgKind::String,
-                doc: "Optional command line (default: $SHELL or /bin/sh)",
-                prompt: "",
+                doc: "Optional command line (default: $SHELL or /bin/sh)".into(),
+                prompt: "".into(),
                 default: ArgDefault::None,
                 completion: None,
             }],
@@ -755,10 +756,10 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                 _ => Ok(Effect::AppAction(AppEffect::TerminalSpawnInNewTab(None))),
             }),
             args_schema: vec![ArgSpec {
-                name: "cmd",
+                name: "cmd".into(),
                 kind: ArgKind::String,
-                doc: "Optional command line (default: $SHELL or /bin/sh)",
-                prompt: "",
+                doc: "Optional command line (default: $SHELL or /bin/sh)".into(),
+                prompt: "".into(),
                 default: ArgDefault::None,
                 completion: None,
             }],
@@ -884,12 +885,12 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                 })
             }),
             args_schema: vec![ArgSpec {
-                name: "root",
+                name: "root".into(),
                 kind: ArgKind::String,
-                doc: "Directory to walk. Absent = current document's parent / cwd.",
-                prompt: "root:",
+                doc: "Directory to walk. Absent = current document's parent / cwd.".into(),
+                prompt: "root:".into(),
                 default: ArgDefault::None,
-                completion: Some("gen:files"),
+                completion: Some("gen:files".into()),
             }],
             surface_form: SurfaceForm::Keyword,
         },
@@ -942,17 +943,17 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                 Ok(Effect::OpenPicker { source, args })
             }),
             args_schema: vec![ArgSpec {
-                name: "source",
+                name: "source".into(),
                 kind: ArgKind::String,
-                doc: "Picker source id (`files`, `recent`, `buffers`, ...).",
-                prompt: "source:",
+                doc: "Picker source id (`files`, `recent`, `buffers`, ...).".into(),
+                prompt: "source:".into(),
                 default: ArgDefault::Required,
                 // `gen:picker-sources` walks the App's
                 // `picker_registry` (Arc-shared, captured Weakly
                 // by the generator) and emits one candidate per
                 // registered source id. Adding a new picker source
                 // surfaces in `:picker <Tab>` automatically.
-                completion: Some("gen:picker-sources"),
+                completion: Some("gen:picker-sources".into()),
             }],
             surface_form: SurfaceForm::Keyword,
         },
@@ -973,12 +974,12 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                 Ok(Effect::OpenFileTree { root })
             }),
             args_schema: vec![ArgSpec {
-                name: "root",
+                name: "root".into(),
                 kind: ArgKind::String,
-                doc: "Directory to open as the tree root. Absent = current dir.",
-                prompt: "root:",
+                doc: "Directory to open as the tree root. Absent = current dir.".into(),
+                prompt: "root:".into(),
                 default: ArgDefault::None,
-                completion: Some("gen:files"),
+                completion: Some("gen:files".into()),
             }],
             surface_form: SurfaceForm::Keyword,
         },
@@ -1012,12 +1013,12 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                 Ok(Effect::OpenOil { dir })
             }),
             args_schema: vec![ArgSpec {
-                name: "dir",
+                name: "dir".into(),
                 kind: ArgKind::String,
-                doc: "Directory to open. Absent = current document's parent.",
-                prompt: "dir:",
+                doc: "Directory to open. Absent = current document's parent.".into(),
+                prompt: "dir:".into(),
                 default: ArgDefault::None,
-                completion: Some("gen:files"),
+                completion: Some("gen:files".into()),
             }],
             surface_form: SurfaceForm::Keyword,
         },
@@ -1037,12 +1038,12 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                 _ => Err(CommandError::BadArgs("expected option name".into())),
             }),
             args_schema: vec![ArgSpec {
-                name: "name",
+                name: "name".into(),
                 kind: ArgKind::String,
-                doc: "Registered option name (or alias).",
-                prompt: "option:",
+                doc: "Registered option name (or alias).".into(),
+                prompt: "option:".into(),
                 default: ArgDefault::Required,
-                completion: Some("gen:options"),
+                completion: Some("gen:options".into()),
             }],
             surface_form: SurfaceForm::Keyword,
         },
@@ -1066,15 +1067,15 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                 _ => Err(CommandError::BadArgs("expected element name".into())),
             }),
             args_schema: vec![ArgSpec {
-                name: "name",
+                name: "name".into(),
                 kind: ArgKind::String,
                 // `gen:elements` is a host generator (the theme registry is a
                 // host-side ServiceRegistry service); it's registered in
                 // `editor_boot.rs` and walks `ThemeRegistry::element_names`.
-                doc: "Registered theme-element name (e.g. `syntax.keyword`, `diff.add.sign`).",
-                prompt: "element:",
+                doc: "Registered theme-element name (e.g. `syntax.keyword`, `diff.add.sign`).".into(),
+                prompt: "element:".into(),
                 default: ArgDefault::Required,
-                completion: Some("gen:elements"),
+                completion: Some("gen:elements".into()),
             }],
             surface_form: SurfaceForm::Keyword,
         },
@@ -1105,11 +1106,12 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             parse_args: Arc::new(parse_optional_string),
             apply: Arc::new(apply_describe_plugin_api),
             args_schema: vec![ArgSpec {
-                name: "seam",
+                name: "seam".into(),
                 kind: ArgKind::String,
                 doc: "Plugin-API interface name (`host-services`, `picker-source`, \
-                      `grammar`, ...). Omit to list every seam.",
-                prompt: "seam:",
+                      `grammar`, ...). Omit to list every seam."
+                    .into(),
+                prompt: "seam:".into(),
                 default: ArgDefault::None,
                 // A `gen:plugin-apis` completion generator is a follow-up (the
                 // catalog lives host-side in `lattice-plugin-api`, which the
@@ -1148,10 +1150,10 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             parse_args: Arc::new(parse_optional_string),
             apply: Arc::new(apply_export_plugin_api),
             args_schema: vec![ArgSpec {
-                name: "format",
+                name: "format".into(),
                 kind: ArgKind::String,
-                doc: "`markdown` (default) or `json`.",
-                prompt: "format:",
+                doc: "`markdown` (default) or `json`.".into(),
+                prompt: "format:".into(),
                 default: ArgDefault::None,
                 completion: None,
             }],
@@ -1188,10 +1190,10 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                 _ => Err(CommandError::BadArgs("expected a plugin name".into())),
             }),
             args_schema: vec![ArgSpec {
-                name: "name",
+                name: "name".into(),
                 kind: ArgKind::String,
-                doc: "Loaded plugin name (e.g. `git-gutter`).",
-                prompt: "plugin:",
+                doc: "Loaded plugin name (e.g. `git-gutter`).".into(),
+                prompt: "plugin:".into(),
                 default: ArgDefault::Required,
                 // `gen:plugins` completion is a follow-up (the loaded-plugin
                 // registry is host-side + empty until Phase-8).
@@ -1244,12 +1246,12 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                 _ => Err(CommandError::BadArgs("expected event name".into())),
             }),
             args_schema: vec![ArgSpec {
-                name: "name",
+                name: "name".into(),
                 kind: ArgKind::String,
-                doc: "Registered event name (e.g. `lsp.buffer-attached`).",
-                prompt: "event:",
+                doc: "Registered event name (e.g. `lsp.buffer-attached`).".into(),
+                prompt: "event:".into(),
                 default: ArgDefault::Required,
-                completion: Some("gen:events"),
+                completion: Some("gen:events".into()),
             }],
             surface_form: SurfaceForm::Keyword,
         },
@@ -1285,12 +1287,12 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                 _ => Err(CommandError::BadArgs("expected mode name".into())),
             }),
             args_schema: vec![ArgSpec {
-                name: "name",
+                name: "name".into(),
                 kind: ArgKind::String,
-                doc: "Registered mode name (e.g. `lsp-mode`, `text-mode`).",
-                prompt: "mode:",
+                doc: "Registered mode name (e.g. `lsp-mode`, `text-mode`).".into(),
+                prompt: "mode:".into(),
                 default: ArgDefault::Required,
-                completion: Some("gen:modes"),
+                completion: Some("gen:modes".into()),
             }],
             surface_form: SurfaceForm::Keyword,
         },
@@ -1312,12 +1314,12 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                 _ => Err(CommandError::BadArgs("expected option name".into())),
             }),
             args_schema: vec![ArgSpec {
-                name: "name",
+                name: "name".into(),
                 kind: ArgKind::String,
-                doc: "Registered option name (e.g. `number`, `tabstop`).",
-                prompt: "option:",
+                doc: "Registered option name (e.g. `number`, `tabstop`).".into(),
+                prompt: "option:".into(),
                 default: ArgDefault::Required,
-                completion: Some("gen:options"),
+                completion: Some("gen:options".into()),
             }],
             surface_form: SurfaceForm::Keyword,
         },
@@ -1348,10 +1350,10 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                 )),
             }),
             args_schema: vec![ArgSpec {
-                name: "lesson",
+                name: "lesson".into(),
                 kind: ArgKind::String,
-                doc: "Lesson number (default: 1).",
-                prompt: "lesson:",
+                doc: "Lesson number (default: 1).".into(),
+                prompt: "lesson:".into(),
                 default: ArgDefault::None,
                 completion: None,
             }],
@@ -1408,13 +1410,14 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                 )),
             }),
             args_schema: vec![ArgSpec {
-                name: "name",
+                name: "name".into(),
                 kind: ArgKind::String,
                 doc: "Group name (e.g. `editor`, `lsp`) OR mode name \
-                      ending in `-mode` (e.g. `lsp-completion-mode`).",
-                prompt: "customize:",
+                      ending in `-mode` (e.g. `lsp-completion-mode`)."
+                    .into(),
+                prompt: "customize:".into(),
                 default: ArgDefault::None,
-                completion: Some("gen:customize"),
+                completion: Some("gen:customize".into()),
             }],
             surface_form: SurfaceForm::Keyword,
         },
@@ -1436,10 +1439,10 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                 Ok(Effect::OpenHover { markdown })
             }),
             args_schema: vec![ArgSpec {
-                name: "markdown",
+                name: "markdown".into(),
                 kind: ArgKind::String,
-                doc: "Markdown body of the hover popup.",
-                prompt: "hover:",
+                doc: "Markdown body of the hover popup.".into(),
+                prompt: "hover:".into(),
                 default: ArgDefault::None,
                 completion: None,
             }],
@@ -1489,12 +1492,12 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                 Ok(Effect::OpenLspLog { server_id })
             }),
             args_schema: vec![ArgSpec {
-                name: "server",
+                name: "server".into(),
                 kind: ArgKind::String,
-                doc: "Server id (e.g. `rust`, `python`). Absent = subsystem-wide log.",
-                prompt: "server:",
+                doc: "Server id (e.g. `rust`, `python`). Absent = subsystem-wide log.".into(),
+                prompt: "server:".into(),
                 default: ArgDefault::None,
-                completion: Some("gen:lsp-servers"),
+                completion: Some("gen:lsp-servers".into()),
             }],
             surface_form: SurfaceForm::Keyword,
         },
@@ -1516,12 +1519,12 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                 )),
             }),
             args_schema: vec![ArgSpec {
-                name: "server",
+                name: "server".into(),
                 kind: ArgKind::String,
-                doc: "Server id to toggle trace on.",
-                prompt: "server:",
+                doc: "Server id to toggle trace on.".into(),
+                prompt: "server:".into(),
                 default: ArgDefault::None,
-                completion: Some("gen:lsp-servers"),
+                completion: Some("gen:lsp-servers".into()),
             }],
             surface_form: SurfaceForm::Keyword,
         },
@@ -1542,12 +1545,12 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                 Ok(Effect::OpenLspTraceLog { server_id })
             }),
             args_schema: vec![ArgSpec {
-                name: "server",
+                name: "server".into(),
                 kind: ArgKind::String,
-                doc: "Server id (e.g. `rust`). Absent = picker over every running instance.",
-                prompt: "server:",
+                doc: "Server id (e.g. `rust`). Absent = picker over every running instance.".into(),
+                prompt: "server:".into(),
                 default: ArgDefault::None,
-                completion: Some("gen:lsp-servers"),
+                completion: Some("gen:lsp-servers".into()),
             }],
             surface_form: SurfaceForm::Keyword,
         },
@@ -1595,12 +1598,12 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                 )),
             }),
             args_schema: vec![ArgSpec {
-                name: "server",
+                name: "server".into(),
                 kind: ArgKind::String,
-                doc: "Server id to restart.",
-                prompt: "server:",
+                doc: "Server id to restart.".into(),
+                prompt: "server:".into(),
                 default: ArgDefault::None,
-                completion: Some("gen:lsp-servers"),
+                completion: Some("gen:lsp-servers".into()),
             }],
             surface_form: SurfaceForm::Keyword,
         },
@@ -1620,12 +1623,12 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                 _ => Ok(Effect::LspProgressCancel { server_id: None }),
             }),
             args_schema: vec![ArgSpec {
-                name: "server",
+                name: "server".into(),
                 kind: ArgKind::String,
-                doc: "Optional server id; omit to cancel on every attached server.",
-                prompt: "server:",
+                doc: "Optional server id; omit to cancel on every attached server.".into(),
+                prompt: "server:".into(),
                 default: ArgDefault::None,
-                completion: Some("gen:lsp-servers"),
+                completion: Some("gen:lsp-servers".into()),
             }],
             surface_form: SurfaceForm::Keyword,
         },
@@ -1681,17 +1684,17 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                 )),
             }),
             args_schema: vec![ArgSpec {
-                name: "spec",
+                name: "spec".into(),
                 kind: ArgKind::String,
                 // Single-token completion lands the level form
                 // (`info`, `debug`, ...). The two-token
                 // `<server> <level>` form parses correctly at
                 // submit; v1 ships completion for the common
                 // (subsystem-wide) shape.
-                doc: "Either a level (`error`/`warn`/`info`/`debug`/`trace`) for the subsystem default, or `<server> <level>` for a per-server override.",
-                prompt: "[server] level:",
+                doc: "Either a level (`error`/`warn`/`info`/`debug`/`trace`) for the subsystem default, or `<server> <level>` for a per-server override.".into(),
+                prompt: "[server] level:".into(),
                 default: ArgDefault::None,
-                completion: Some("gen:log-levels"),
+                completion: Some("gen:log-levels".into()),
             }],
             surface_form: SurfaceForm::Keyword,
         },
@@ -1712,12 +1715,12 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                 Ok(Effect::LspLogClear { server_id })
             }),
             args_schema: vec![ArgSpec {
-                name: "server",
+                name: "server".into(),
                 kind: ArgKind::String,
-                doc: "Server id whose ring to clear. Absent = subsystem-wide.",
-                prompt: "server:",
+                doc: "Server id whose ring to clear. Absent = subsystem-wide.".into(),
+                prompt: "server:".into(),
                 default: ArgDefault::None,
-                completion: Some("gen:lsp-servers"),
+                completion: Some("gen:lsp-servers".into()),
             }],
             surface_form: SurfaceForm::Keyword,
         },
@@ -1793,10 +1796,10 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                 Ok(Effect::LspRename { new_name })
             }),
             args_schema: vec![ArgSpec {
-                name: "new-name",
+                name: "new-name".into(),
                 kind: ArgKind::String,
-                doc: "Replacement identifier. Empty -> use the server's prepareRename placeholder.",
-                prompt: "new name:",
+                doc: "Replacement identifier. Empty -> use the server's prepareRename placeholder.".into(),
+                prompt: "new name:".into(),
                 default: ArgDefault::None,
                 completion: None,
             }],
@@ -1848,10 +1851,10 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                 Ok(Effect::LspWorkspaceSymbol { query })
             }),
             args_schema: vec![ArgSpec {
-                name: "query",
+                name: "query".into(),
                 kind: ArgKind::String,
-                doc: "Server-side substring filter; empty returns the server's idea of \"every workspace symbol\".",
-                prompt: "query:",
+                doc: "Server-side substring filter; empty returns the server's idea of \"every workspace symbol\".".into(),
+                prompt: "query:".into(),
                 default: ArgDefault::None,
                 completion: None,
             }],
@@ -2024,12 +2027,12 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                 Ok(Effect::OpenHelpTopic { topic })
             }),
             args_schema: vec![ArgSpec {
-                name: "topic",
+                name: "topic".into(),
                 kind: ArgKind::String,
-                doc: "Topic name (`folding`, `buffers`, ...). Absent = index.",
-                prompt: "topic:",
+                doc: "Topic name (`folding`, `buffers`, ...). Absent = index.".into(),
+                prompt: "topic:".into(),
                 default: ArgDefault::None,
-                completion: Some("gen:help-topics"),
+                completion: Some("gen:help-topics".into()),
             }],
             surface_form: SurfaceForm::Keyword,
         },
@@ -3101,7 +3104,7 @@ mod tests {
         for id in [ex.describe_option, ex.describe_option_resolution] {
             let spec = registry.ex_command_spec(id.0).unwrap();
             assert_eq!(spec.args_schema.len(), 1);
-            assert_eq!(spec.args_schema[0].completion, Some("gen:options"));
+            assert_eq!(spec.args_schema[0].completion.as_deref(), Some("gen:options"));
         }
     }
 
@@ -3125,7 +3128,7 @@ mod tests {
             let cmd = registry.lookup(id.0).unwrap();
             let spec = registry.ex_command_spec(id.0).unwrap();
             assert_eq!(
-                spec.args_schema[0].completion,
+                spec.args_schema[0].completion.as_deref(),
                 Some(*expected),
                 "{} should complete against {expected}",
                 cmd.name
@@ -3146,7 +3149,7 @@ mod tests {
             let cmd = registry.lookup(id.0).unwrap();
             let spec = registry.ex_command_spec(id.0).unwrap();
             assert_eq!(
-                spec.args_schema[0].completion,
+                spec.args_schema[0].completion.as_deref(),
                 Some("gen:lsp-servers"),
                 "{} should complete against gen:lsp-servers",
                 cmd.name
@@ -3159,7 +3162,7 @@ mod tests {
         let cmd = registry.lookup(ex.lsp_log_level.0).unwrap();
         let spec = registry.ex_command_spec(ex.lsp_log_level.0).unwrap();
         assert_eq!(
-            spec.args_schema[0].completion,
+            spec.args_schema[0].completion.as_deref(),
             Some("gen:log-levels"),
             "{} should complete against gen:log-levels",
             cmd.name

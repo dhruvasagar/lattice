@@ -432,16 +432,16 @@ impl FilesSource {
         use lattice_grammar::args::{ArgDefault, ArgKind, ArgSpec};
         Self {
             spec: PickerSourceSpec {
-                id: "files",
-                doc: "File picker rooted at the current working directory (recursive). Pass an explicit path to override.",
-                args_hint: "[root]",
+                id: "files".into(),
+                doc: "File picker rooted at the current working directory (recursive). Pass an explicit path to override.".into(),
+                args_hint: "[root]".into(),
                 args_schema: vec![ArgSpec {
-                    name: "root",
+                    name: "root".into(),
                     kind: ArgKind::String,
-                    doc: "Directory to walk recursively. Absent = current working directory.",
-                    prompt: "root:",
+                    doc: "Directory to walk recursively. Absent = current working directory.".into(),
+                    prompt: "root:".into(),
                     default: ArgDefault::None,
-                    completion: Some("gen:files"),
+                    completion: Some("gen:files".into()),
                 }],
                 live: false,
             },
@@ -1278,14 +1278,14 @@ impl GrepSource {
         use lattice_grammar::args::{ArgDefault, ArgKind, ArgSpec};
         Self {
             spec: PickerSourceSpec {
-                id: "grep",
-                doc: "Live recursive text search via the configured backend (`rg`/`ag`/`grep`). Re-runs as you type; `<CR>` jumps to the chosen hit.",
-                args_hint: "[pattern]",
+                id: "grep".into(),
+                doc: "Live recursive text search via the configured backend (`rg`/`ag`/`grep`). Re-runs as you type; `<CR>` jumps to the chosen hit.".into(),
+                args_hint: "[pattern]".into(),
                 args_schema: vec![ArgSpec {
-                    name: "pattern",
+                    name: "pattern".into(),
                     kind: ArgKind::String,
-                    doc: "Optional initial pattern. When given, seeds the picker prompt; without it, picker opens empty and runs the first grep on the first keystroke.",
-                    prompt: "pattern:",
+                    doc: "Optional initial pattern. When given, seeds the picker prompt; without it, picker opens empty and runs the first grep on the first keystroke.".into(),
+                    prompt: "pattern:".into(),
                     default: ArgDefault::None,
                     completion: None,
                 }],
@@ -2127,10 +2127,10 @@ mod tests {
     fn format_args_hint_renders_required_vs_optional() {
         use lattice_grammar::args::{ArgDefault, ArgKind, ArgSpec};
         let required = ArgSpec {
-            name: "path",
+            name: "path".into(),
             kind: ArgKind::String,
-            doc: "",
-            prompt: "",
+            doc: "".into(),
+            prompt: "".into(),
             default: ArgDefault::Required,
             completion: None,
         };

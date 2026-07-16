@@ -35,6 +35,7 @@
 //! The registry interface is therefore deliberately small:
 //! `register`, `get`, `iter`. Nothing host-specific leaks in.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -58,13 +59,16 @@ use crate::outcome::PickerAcceptOutcome;
 /// through the existing `gen:*` source plumbing.
 #[derive(Debug, Clone)]
 pub struct PickerSourceSpec {
-    pub id: &'static str,
-    pub doc: &'static str,
+    /// PL8.F: `Cow<'static, str>` — builtins pass zero-cost `Cow::Borrowed`
+    /// literals; a plugin source (crossing WIT) passes `Cow::Owned` that frees
+    /// on `PickerRegistry::unregister`, replacing the old `Box::leak` intern.
+    pub id: Cow<'static, str>,
+    pub doc: Cow<'static, str>,
     pub args_schema: Vec<ArgSpec>,
     /// Parameter-hint line shown while the user is typing args
     /// after the source id. Empty string = no hint (the
     /// cmdline falls back to per-arg `ArgSpec::doc`).
-    pub args_hint: &'static str,
+    pub args_hint: Cow<'static, str>,
     /// True if this source re-executes its data fetch on every
     /// (debounced) query change instead of returning a fixed
     /// candidate set the picker fuzzy-filters. Live sources
@@ -78,12 +82,12 @@ pub struct PickerSourceSpec {
 impl PickerSourceSpec {
     /// Sugar for declaring a no-arg picker source (`files`,
     /// `recent`, `buffers`, etc.).
-    pub fn no_args(id: &'static str, doc: &'static str) -> Self {
+    pub fn no_args(id: impl Into<Cow<'static, str>>, doc: impl Into<Cow<'static, str>>) -> Self {
         Self {
-            id,
-            doc,
+            id: id.into(),
+            doc: doc.into(),
             args_schema: Vec::new(),
-            args_hint: "",
+            args_hint: Cow::Borrowed(""),
             live: false,
         }
     }
@@ -117,7 +121,10 @@ impl PickerSourceSpec {
 /// `Arc`-shared generators.
 #[derive(Debug, Default, Clone)]
 pub struct PickerRegistry {
-    sources: HashMap<&'static str, RegistryEntry>,
+    // PL8.F: keyed by `Cow<'static, str>` (was `&'static str`) so a plugin
+    // source's owned id frees on `unregister` — lookups still take `&str` via
+    // `Cow: Borrow<str>`.
+    sources: HashMap<Cow<'static, str>, RegistryEntry>,
 }
 
 /// The runtime-mutable registry handle the editor holds and shares as a service.
@@ -166,7 +173,7 @@ impl PickerRegistry {
     /// [`Self::register_generator`] when the source's
     /// `PickerSourceGenerator` impl lands.
     pub fn register(&mut self, spec: PickerSourceSpec) {
-        let id = spec.id;
+        let id = spec.id.clone();
         self.sources.insert(
             id,
             RegistryEntry {
@@ -182,7 +189,7 @@ impl PickerRegistry {
     /// fully trait-driven sources.
     pub fn register_generator(&mut self, generator: std::sync::Arc<dyn PickerSourceGenerator>) {
         let spec = generator.spec().clone();
-        let id = spec.id;
+        let id = spec.id.clone();
         self.sources.insert(
             id,
             RegistryEntry {
@@ -228,14 +235,17 @@ impl PickerRegistry {
     /// Walk every registered source in id-sorted order.
     /// Deterministic for tab-completion and `:describe-picker`
     /// listings; tests can rely on the order.
-    pub fn iter(&self) -> impl Iterator<Item = (&'static str, &PickerSourceSpec)> + '_ {
-        let mut ids: Vec<&'static str> = self.sources.keys().copied().collect();
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &PickerSourceSpec)> + '_ {
+        // PL8.F: keys are `Cow` now — borrow each as `&str` (was `.copied()` on
+        // `&'static str` keys). `self.sources[id]` still indexes via
+        // `Cow: Borrow<str>`.
+        let mut ids: Vec<&str> = self.sources.keys().map(|k| k.as_ref()).collect();
         ids.sort_unstable();
         ids.into_iter().map(move |id| (id, &self.sources[id].spec))
     }
 
-    pub fn ids(&self) -> impl Iterator<Item = &'static str> + '_ {
-        let mut ids: Vec<&'static str> = self.sources.keys().copied().collect();
+    pub fn ids(&self) -> impl Iterator<Item = &str> + '_ {
+        let mut ids: Vec<&str> = self.sources.keys().map(|k| k.as_ref()).collect();
         ids.sort_unstable();
         ids.into_iter()
     }
@@ -463,7 +473,7 @@ mod tests {
         reg.register(spec("buffers"));
         reg.register(spec("files"));
         reg.register(spec("lines"));
-        let ids: Vec<&'static str> = reg.iter().map(|(id, _)| id).collect();
+        let ids: Vec<&str> = reg.iter().map(|(id, _)| id).collect();
         assert_eq!(ids, vec!["buffers", "files", "lines", "recent"]);
     }
 
@@ -482,7 +492,7 @@ mod tests {
         reg.register(spec("zeta"));
         reg.register(spec("alpha"));
         reg.register(spec("mu"));
-        let ids: Vec<&'static str> = reg.ids().collect();
+        let ids: Vec<&str> = reg.ids().collect();
         assert_eq!(ids, vec!["alpha", "mu", "zeta"]);
     }
 

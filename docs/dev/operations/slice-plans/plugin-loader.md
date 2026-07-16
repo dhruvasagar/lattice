@@ -550,17 +550,44 @@ its artifact is rebuilt. PL8.D complete.
 > principle — see the status snapshot), and wants build output surfaced in
 > `*messages*` / a compilation buffer. Deferred.
 
-### PL8.F — Intern-leak reclamation  📝 (now ready — the reload path exists as of PL8.C/D)
-- The interner leak (Low–Medium): plugin option `name`/`doc` are `Box::leak`ed to
+### PL8.F — Intern-leak reclamation  ✅
+- The interner leak (Low–Medium): plugin option `name`/`doc` were `Box::leak`ed to
   `&'static str` in `config_host::build_and_register` (documented there, PH7.12b.2
-  decision C). Harmless for load-once, but repeated `:plugin-reload` /
-  `:reload-config` (now real, PL8.C/D) grows the leaked strings unbounded. The
-  durable fix is a `Cow<'static, str>` on the native option type so the bytes free
-  with the entry on `ConfigRegistry::unregister` — a ~100-site sweep of stable
-  types (picker / grammar / config), which is why it was deferred until a reload
-  consumer existed to exercise it.
-- **Exit:** a reload-loop test (`:plugin-reload` a config plugin N times) shows the
-  interned-string footprint bounded, not growing per reload.
+  decision C), plus the same `Box::leak` intern in `boundary_picker.rs`
+  (`PickerSourceSpec` + `ArgSpec`) and `boundary_grammar.rs` (`SurfaceForm::Delimiter.hint`).
+  Harmless for load-once, but repeated `:plugin-reload` / `:reload-config` (real
+  as of PL8.C/D) grew the leaked strings unbounded.
+- **Exit ✅:** a reload-loop test (`config_reload_leak.rs` — reloads the
+  `config-guest` fixture 12×) shows the live option footprint bounded (stays at 3,
+  not 3·N), and a final unload reclaims every option.
+
+> **Landed 2026-07-16 (combined single-slice sweep, confirmed with Dhruva).** The
+> durable `Cow<'static, str>` fix, across all three seams in one commit:
+>
+> - **Config** (`lattice-config`): `Option<T>.name`/`.doc` → `Cow<'static, str>`;
+>   `name()` → `-> &str`; `new`/`builder` + the `ErasedOption` trait take/return
+>   accordingly; `try_register` owns the name up front (borrow-after-move). The 96
+>   `options!`-macro options + ~58 literal call sites compiled unchanged (the
+>   `impl Into<Cow<'static, str>>` constructors coerce `&'static str` literals).
+> - **Grammar** (`lattice-grammar`): the shared `ArgSpec.{name,doc,prompt,completion}`
+>   → `Cow`; `SurfaceForm::Delimiter.hint` → `Cow` (dropping `Copy` — the one
+>   `Copy`-reliance break was `excommand.rs`'s by-value `if let` + the
+>   `WrongSurfaceForm.hint` carried field, both now `Cow`/by-ref). The ~55 `ArgSpec {…}`
+>   struct-literals took a scripted `.into()` sweep (scoped to `ArgSpec` blocks;
+>   the compiler enumerated the multi-line-string + `SurfaceForm` stragglers).
+> - **Picker** (`lattice-picker`): `PickerSourceSpec.{id,doc,args_hint}` → `Cow`;
+>   the `PickerRegistry` HashMap key → `Cow<'static,str>` (lookups still take
+>   `&str` via `Cow: Borrow<str>`); `iter`/`ids` return `&str` (was `.copied()`).
+> - **Leak removal**: `boundary_picker.rs` (`ArgSpec`/`PickerSourceSpec::from_wit`)
+>   and `boundary_grammar.rs` (`Delimiter.hint`) drop `intern`/`Box::leak` — the
+>   plugin's WIT strings cross as `Cow::Owned` and free with the registry entry on
+>   `unregister` / `unregister_plugin`. No `unsafe`. Both `intern` fns deleted.
+>
+> Downstream consumers (`lattice-host` dispatch/excommand, `lattice-ui-tui` tests)
+> took mechanical `.as_deref()` / guard-binding fixes. Green: config (160) /
+> grammar (221) / picker (62) / plugin-host (160) / loader (26, +`config_reload_leak`) /
+> host (794) suites, workspace `--tests` check, GPUI `--features window`, clippy
+> clean. No bench: the change is load/unload-time (off the keystroke path).
 
 ### PL8.G — Modes-as-components (bundled major/minor as WASM)  📝 (shades into 8b)
 - Ship a built-in mode as a WASM component through `spawn_mode_plugin` to validate the
@@ -612,8 +639,12 @@ loader `drain_decorations` + decoration teardown surface; both renderers merge t
 cache at the existing gutter partition (lockstep). Renderers stay free of
 plugin-host (guard holds). All seam drains now exhaustive.
 
-**Next: PL8.F** (intern-leak reclamation — now ready, the reload path exists),
-then **PL8.G / PL8.H** (→ Phase 8b).
+**Done (cont.):** PL8.F ✅ (intern-leak reclamation — the durable `Cow<'static, str>`
+sweep across config / grammar / picker + boundary leak removal; `config_reload_leak`
+proves the footprint stays bounded across 12 reloads).
+
+**Next: PL8.G / PL8.H** (→ Phase 8b): modes-as-components + the buffer-backed
+plugin-manager surface.
 
 **Design decisions settled this session (don't re-litigate):**
 - **Tier-2 "event→command" is resolved as a principle, NOT `:autocmd`/`SubscriptionTarget::Invocation`.**

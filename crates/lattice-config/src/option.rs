@@ -6,6 +6,7 @@
 //! [`Option::set`] (or, more commonly, via the registry's
 //! `parse_and_set` driven by `:set foo=value`).
 
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
@@ -22,9 +23,13 @@ pub type ValidateFn<T> = fn(&T) -> Result<(), String>;
 /// handed to [`crate::ConfigRegistry::register`], which returns a
 /// typed [`OptionHandle`] consumers use to read / write.
 pub struct Option<T: OptionType> {
-    pub(crate) name: &'static str,
+    /// PL8.F: `Cow<'static, str>` so a builtin passes a zero-cost
+    /// `Cow::Borrowed` string literal while a plugin-contributed option passes a
+    /// `Cow::Owned(String)` that frees with the entry on
+    /// `ConfigRegistry::unregister` — replacing the old `Box::leak` intern.
+    pub(crate) name: Cow<'static, str>,
     pub(crate) aliases: &'static [&'static str],
-    pub(crate) doc: &'static str,
+    pub(crate) doc: Cow<'static, str>,
     /// Optional post-parse validator. Runs *after* `T::parse`
     /// succeeds and *before* the value is committed to the cell.
     /// Returning `Err(_)` cancels the set with that message;
@@ -54,12 +59,16 @@ impl<T: OptionType> Option<T> {
     /// Build a typed option with a default value. Most options use
     /// the [`OptionBuilder`] (see [`Option::builder`]) instead so
     /// optional fields don't need defaults restated.
-    pub fn new(name: &'static str, default: T, doc: &'static str) -> Self {
+    pub fn new(
+        name: impl Into<Cow<'static, str>>,
+        default: T,
+        doc: impl Into<Cow<'static, str>>,
+    ) -> Self {
         let default_formatted = default.format();
         Self {
-            name,
+            name: name.into(),
             aliases: &[],
-            doc,
+            doc: doc.into(),
             validate: None,
             default_formatted,
             cell: ArcSwap::from_pointee(default),
@@ -75,18 +84,25 @@ impl<T: OptionType> Option<T> {
     ///         .ok_or_else(|| format!("out of range: {i}")))
     ///     .build()
     /// ```
-    pub fn builder(name: &'static str, default: T, doc: &'static str) -> OptionBuilder<T> {
+    pub fn builder(
+        name: impl Into<Cow<'static, str>>,
+        default: T,
+        doc: impl Into<Cow<'static, str>>,
+    ) -> OptionBuilder<T> {
         OptionBuilder {
-            name,
+            name: name.into(),
             aliases: &[],
-            doc,
+            doc: doc.into(),
             default,
             validate: None,
         }
     }
 
-    pub fn name(&self) -> &'static str {
-        self.name
+    /// Borrows the option's name. PL8.F: was `-> &'static str` when the field was
+    /// a leaked `&'static str`; a `Cow` field can only lend a `&str` bound to
+    /// `&self`, so callers that need an owned name `.to_owned()` it (registry).
+    pub fn name(&self) -> &str {
+        &self.name
     }
 
     /// Wait-free read of the current value. The returned `Arc<T>`
@@ -120,9 +136,9 @@ impl<T: OptionType> Option<T> {
 
 /// Fluent constructor for [`Option<T>`]. See [`Option::builder`].
 pub struct OptionBuilder<T: OptionType> {
-    name: &'static str,
+    name: Cow<'static, str>,
     aliases: &'static [&'static str],
-    doc: &'static str,
+    doc: Cow<'static, str>,
     default: T,
     validate: std::option::Option<ValidateFn<T>>,
 }

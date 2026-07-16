@@ -94,10 +94,10 @@ fn echo(level: EchoLevel, text: impl Into<String>) -> Effect {
 /// over the loaded set for unload/reload; a path completer for load).
 fn string_arg(name: &'static str, doc: &'static str, prompt: &'static str) -> Vec<ArgSpec> {
     vec![ArgSpec {
-        name,
+        name: name.into(),
         kind: ArgKind::String,
-        doc,
-        prompt,
+        doc: doc.into(),
+        prompt: prompt.into(),
         default: ArgDefault::None,
         completion: None,
     }]

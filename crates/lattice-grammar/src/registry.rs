@@ -328,7 +328,10 @@ type ExApplyFn =
 /// `try_parse_global`. UI surfaces (completion, command palette)
 /// hide `Delimiter` commands because there's no useful keyword-form
 /// completion for them; the user types the delimiter directly.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+// PL8.F: no longer `Copy` — the `hint` became `Cow<'static, str>` (a plugin
+// delimiter command's hint crosses WIT as an owned string and must free on
+// unregister). Consumers that bound it by value now bind by reference.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum SurfaceForm {
     /// Type the command word, optionally with `!`, then args
     /// separated by whitespace. The default for most commands.
@@ -338,7 +341,7 @@ pub enum SurfaceForm {
     /// errors with a redirect message; the embedded `hint` is the
     /// canonical syntax shown in that error (`:s/pat/repl/`,
     /// `:g/pat/body`).
-    Delimiter { hint: &'static str },
+    Delimiter { hint: std::borrow::Cow<'static, str> },
 }
 
 #[derive(Clone)]

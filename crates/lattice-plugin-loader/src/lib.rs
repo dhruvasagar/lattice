@@ -762,7 +762,9 @@ impl PluginLoader {
         // loudly rather than registering a broken source.
         let source = WasmPickerSource::connect(client).await?;
         let id = source.plugin_id();
-        let source_id: &'static str = source.spec().id;
+        // PL8.F: `spec().id` is `Cow` now — own it for the teardown token
+        // before `source` moves into the generator below.
+        let source_id = source.spec().id.to_string();
 
         // Copy-on-write RCU into the wait-free registry: clone the current
         // snapshot, add the source, publish. Concurrent picker-open readers keep
@@ -776,7 +778,7 @@ impl PluginLoader {
 
         record.tasks.push(task);
         // Teardown token: the picker registry unregisters this source by id.
-        record.teardown.picker_sources.push(source_id.to_string());
+        record.teardown.picker_sources.push(source_id);
         Ok(id)
     }
 

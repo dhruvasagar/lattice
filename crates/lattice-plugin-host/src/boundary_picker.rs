@@ -73,22 +73,10 @@ use lattice_protocol::chord::{
     SpecialKey as NativeSpecialKey,
 };
 
-/// Intern a plugin-supplied owned string into a `&'static str`. The native
-/// picker/grammar spec types (`PickerSourceSpec`, `ArgSpec`) hold `&'static str`
-/// for compile-time source ids; a WASM plugin supplies runtime strings, so the
-/// adapter leaks them once at registration. Bounded by loaded-source count; no
-/// `unsafe` (keeps the workspace `unsafe_code = "deny"` gate intact).
-///
-/// Reclaiming these on unload is **deferred** (PH7.12b.2, decision C): the
-/// registry ENTRY is removed on teardown (`PickerRegistry::unregister`,
-/// PH7.12b.1a) — only the `&'static str` bytes linger, and only under *repeated*
-/// hot-reload (a v1 plugin loads once). The durable fix (`Cow<'static, str>` on
-/// the native spec types so the string frees with the entry, keeping no-unsafe)
-/// is a ~100-site sweep disproportionate to a Low–Medium leak with no consumer
-/// until Phase-8 reload wiring; it lands *with* that consumer.
-fn intern(s: String) -> &'static str {
-    Box::leak(s.into_boxed_str())
-}
+// PL8.F: the `intern`/`Box::leak` helper is gone. The native picker/grammar
+// spec types (`PickerSourceSpec`, `ArgSpec`) now hold `Cow<'static, str>`, so a
+// plugin's WIT-supplied runtime strings cross as `Cow::Owned` and free with the
+// registry entry on `unregister` — no leak, still no `unsafe`.
 
 // ---- Marginalia: KeyChord + Annotation ----
 
@@ -301,18 +289,21 @@ impl WitBoundary for NativeArgSpec {
             doc: self.doc.to_string(),
             prompt: self.prompt.to_string(),
             default: self.default.to_wit()?,
-            completion: self.completion.map(str::to_string),
+            completion: self.completion.as_deref().map(str::to_string),
         })
     }
 
     fn from_wit(wit: WitArgSpec) -> Result<Self, String> {
+        // PL8.F: the plugin's runtime strings become `Cow::Owned` on the native
+        // `ArgSpec` — no `Box::leak`. They free with the command entry on
+        // `unregister_plugin`.
         Ok(NativeArgSpec {
-            name: intern(wit.name),
+            name: wit.name.into(),
             kind: NativeArgKind::from_wit(wit.kind)?,
-            doc: intern(wit.doc),
-            prompt: intern(wit.prompt),
+            doc: wit.doc.into(),
+            prompt: wit.prompt.into(),
             default: NativeArgDefault::from_wit(wit.default)?,
-            completion: wit.completion.map(intern),
+            completion: wit.completion.map(Into::into),
         })
     }
 }
@@ -335,15 +326,17 @@ impl WitBoundary for NativePickerSourceSpec {
     }
 
     fn from_wit(wit: WitPickerSourceSpec) -> Result<Self, String> {
+        // PL8.F: `Cow::Owned` — the plugin's id/doc/args_hint free on
+        // `PickerRegistry::unregister`, no `Box::leak`.
         Ok(NativePickerSourceSpec {
-            id: intern(wit.id),
-            doc: intern(wit.doc),
+            id: wit.id.into(),
+            doc: wit.doc.into(),
             args_schema: wit
                 .args_schema
                 .into_iter()
                 .map(NativeArgSpec::from_wit)
                 .collect::<Result<Vec<_>, String>>()?,
-            args_hint: intern(wit.args_hint),
+            args_hint: wit.args_hint.into(),
             live: wit.live,
         })
     }
@@ -680,18 +673,18 @@ mod tests {
     #[test]
     fn arg_spec_round_trips_through_intern() {
         let native = NativeArgSpec {
-            name: "root",
+            name: "root".into(),
             kind: NativeArgKind::String,
-            doc: "directory to walk",
-            prompt: "root:",
+            doc: "directory to walk".into(),
+            prompt: "root:".into(),
             default: NativeArgDefault::Literal(NativeArgValue::String("/tmp".into())),
-            completion: Some("gen:files"),
+            completion: Some("gen:files".into()),
         };
         let back = NativeArgSpec::from_wit(native.to_wit().unwrap()).unwrap();
         assert_eq!(back.name, "root");
         assert_eq!(back.doc, "directory to walk");
         assert_eq!(back.prompt, "root:");
-        assert_eq!(back.completion, Some("gen:files"));
+        assert_eq!(back.completion.as_deref(), Some("gen:files"));
         assert!(matches!(back.kind, NativeArgKind::String));
         assert!(matches!(
             back.default,
@@ -702,17 +695,17 @@ mod tests {
     #[test]
     fn picker_source_spec_round_trips() {
         let native = NativePickerSourceSpec {
-            id: "files",
-            doc: "file picker",
+            id: "files".into(),
+            doc: "file picker".into(),
             args_schema: vec![NativeArgSpec {
-                name: "root",
+                name: "root".into(),
                 kind: NativeArgKind::String,
-                doc: "dir",
-                prompt: "root:",
+                doc: "dir".into(),
+                prompt: "root:".into(),
                 default: NativeArgDefault::None,
-                completion: Some("gen:files"),
+                completion: Some("gen:files".into()),
             }],
-            args_hint: "[root]",
+            args_hint: "[root]".into(),
             live: false,
         };
         let back = NativePickerSourceSpec::from_wit(native.to_wit().unwrap()).unwrap();

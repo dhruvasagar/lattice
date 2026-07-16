@@ -22,6 +22,8 @@
 //! `ArgValue` is a small typed enum -- not a dynamic value bag -- so callers
 //! get static type checks at the boundary.
 
+use std::borrow::Cow;
+
 use serde::{Deserialize, Serialize};
 
 use crate::command::CommandInvocation;
@@ -178,51 +180,63 @@ pub enum ArgDefault {
 pub struct ArgSpec {
     /// Identifier shown in `:describe-command` output and used as the
     /// minibuffer prompt label.
-    pub name: &'static str,
+    ///
+    /// PL8.F: `Cow<'static, str>` — a builtin passes a zero-cost `Cow::Borrowed`
+    /// literal; a plugin-contributed schema (crossing WIT) passes `Cow::Owned`
+    /// that frees on `unregister_plugin`, replacing the old `Box::leak` intern.
+    pub name: Cow<'static, str>,
     pub kind: ArgKind,
     /// One-line documentation. Surfaced in palette tooltips and
     /// `:describe-command`.
-    pub doc: &'static str,
+    pub doc: Cow<'static, str>,
     /// Prompt shown when the runtime needs to ask for this arg
     /// interactively. Empty string means "use `name` as the prompt".
-    pub prompt: &'static str,
+    pub prompt: Cow<'static, str>,
     pub default: ArgDefault,
     /// Name of the registered completion source (`gen:commands`,
     /// `gen:files`, etc. -- see `lattice-completion`) that fires
     /// when the user is typing this arg. `None` = no completion
     /// (free-form text). Wire-form is the source name (not its
     /// runtime id) so the schema is constructable as a literal.
-    pub completion: Option<&'static str>,
+    pub completion: Option<Cow<'static, str>>,
 }
 
 impl ArgSpec {
     /// Sugar for declaring a required arg with no fancy default.
-    pub fn required(name: &'static str, kind: ArgKind, doc: &'static str) -> Self {
+    pub fn required(
+        name: impl Into<Cow<'static, str>>,
+        kind: ArgKind,
+        doc: impl Into<Cow<'static, str>>,
+    ) -> Self {
         Self {
-            name,
+            name: name.into(),
             kind,
-            doc,
-            prompt: "",
+            doc: doc.into(),
+            prompt: Cow::Borrowed(""),
             default: ArgDefault::Required,
             completion: None,
         }
     }
 
     /// Sugar for declaring an optional arg.
-    pub fn optional(name: &'static str, kind: ArgKind, doc: &'static str) -> Self {
+    pub fn optional(
+        name: impl Into<Cow<'static, str>>,
+        kind: ArgKind,
+        doc: impl Into<Cow<'static, str>>,
+    ) -> Self {
         Self {
-            name,
+            name: name.into(),
             kind,
-            doc,
-            prompt: "",
+            doc: doc.into(),
+            prompt: Cow::Borrowed(""),
             default: ArgDefault::None,
             completion: None,
         }
     }
 
     /// Builder helper: attach a completion source by registered name.
-    pub fn with_completion(mut self, source_name: &'static str) -> Self {
-        self.completion = Some(source_name);
+    pub fn with_completion(mut self, source_name: impl Into<Cow<'static, str>>) -> Self {
+        self.completion = Some(source_name.into());
         self
     }
 }

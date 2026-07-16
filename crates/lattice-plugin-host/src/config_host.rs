@@ -81,20 +81,13 @@ pub(crate) fn register_plugin_option(
 /// Parse `default` for the concrete `T`, then register `Option<T>`. The default
 /// is parsed FIRST so a malformed default never leaks the name/doc strings.
 ///
-/// Runtime option metadata is process-lifetime: a plugin's `name`/`doc` arrive as
-/// owned `String`s over WIT, but `ConfigRegistry` stores `&'static str`. We
-/// `Box::leak` them — bounded (a few options per plugin, once at load). A v1
-/// plugin loads once and its options live for the process, so this is not a leak
-/// in practice; it only grows under *repeated* hot-reload.
-///
-/// Reclaiming these strings on unload was evaluated for PH7.12b and **deferred**
-/// (PH7.12b.2, decision C): the entry itself IS removed on teardown
-/// (`ConfigRegistry::unregister`, PH7.12b.1b) — only the `&'static str` bytes
-/// linger. The durable fix is a `Cow<'static, str>` on the native option type so
-/// the string frees with the entry, but that is a ~100-site sweep of stable
-/// types (picker/grammar/config) disproportionate to a Low–Medium leak that has
-/// no consumer until Phase-8 reload wiring exists to exercise it. It lands *with*
-/// that consumer, not ahead of it.
+/// A plugin's `name`/`doc` arrive as owned `String`s over WIT. PL8.F made
+/// `ConfigRegistry`'s option `name`/`doc` `Cow<'static, str>`, so these pass
+/// straight through as `Cow::Owned` — no `Box::leak`. The strings free with the
+/// entry on `ConfigRegistry::unregister` (PH7.12b.1b), so repeated
+/// `:plugin-reload` / `:reload-config` no longer grows the interned-string
+/// footprint (the leak PH7.12b.2 decision C deferred until the reload consumer
+/// existed to exercise it — now closed).
 fn build_and_register<T: OptionType>(
     registry: &ConfigRegistry,
     name: &str,
@@ -104,10 +97,12 @@ fn build_and_register<T: OptionType>(
     let Ok(value) = T::parse(default) else {
         return false;
     };
-    let name: &'static str = Box::leak(name.to_owned().into_boxed_str());
-    let doc: &'static str = Box::leak(doc.to_owned().into_boxed_str());
+    // PL8.F: the plugin's runtime `name`/`doc` become `Cow::Owned` on the native
+    // option — no `Box::leak`. They free with the entry on
+    // `ConfigRegistry::unregister`, so repeated `:plugin-reload` / `:reload-config`
+    // no longer grows the interned-string footprint.
     registry
-        .try_register(ConfigOption::<T>::new(name, value, doc))
+        .try_register(ConfigOption::<T>::new(name.to_owned(), value, doc.to_owned()))
         .is_ok()
 }
 

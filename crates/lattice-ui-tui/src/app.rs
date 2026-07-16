@@ -1908,7 +1908,7 @@ mod tests {
                 continue;
             };
             for arg in &spec.args_schema {
-                if let Some(source) = arg.completion {
+                if let Some(source) = arg.completion.as_deref() {
                     assert!(
                         a.editor
                             .completion_registry

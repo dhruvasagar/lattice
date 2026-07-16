@@ -7791,7 +7791,7 @@ impl Editor {
                 prefix,
                 replace_start,
                 ..
-            } => match arg_spec.completion {
+            } => match arg_spec.completion.as_deref() {
                 Some(name) => (name, prefix.clone(), *replace_start),
                 None => {
                     return Err(CompletionComputeError::NoCompletionForArg(

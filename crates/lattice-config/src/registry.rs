@@ -198,10 +198,13 @@ impl ConfigRegistry {
         option: Option<T>,
     ) -> Result<OptionHandle<T>, ConfigError> {
         let mut inner = self.inner.lock().expect("ConfigRegistry poisoned");
-        let name = option.name();
+        // PL8.F: own the name up front — `option.name()` now borrows `option`
+        // (a `Cow` field), and `option` is moved into the `Arc` below, so the
+        // key insert at the tail would otherwise be a borrow-after-move.
+        let name = option.name().to_owned();
         let aliases = option.aliases;
-        if inner.by_name.contains_key(name) {
-            return Err(ConfigError::DuplicateName(name.to_string()));
+        if inner.by_name.contains_key(name.as_str()) {
+            return Err(ConfigError::DuplicateName(name));
         }
         for a in aliases {
             if inner.by_name.contains_key(*a) {
@@ -222,7 +225,7 @@ impl ConfigRegistry {
                 inner.by_id.len() - 1
             }
         };
-        inner.by_name.insert(name.to_string(), idx);
+        inner.by_name.insert(name, idx);
         for a in aliases {
             inner.by_name.insert((*a).to_string(), idx);
         }
@@ -857,7 +860,10 @@ mod tests {
         r.register(Option::<bool>::new("a", true, ""));
         r.register(Option::<i64>::new("b", 0, ""));
         r.register(Option::<bool>::new("c", false, ""));
-        let names: Vec<&str> = r.iter().iter().map(|o| o.name()).collect();
+        // PL8.F: bind the `iter()` temp so the `&str` names (now borrowed from
+        // each Arc's `Cow` field, not `'static`) outlive the collect.
+        let opts = r.iter();
+        let names: Vec<&str> = opts.iter().map(|o| o.name()).collect();
         assert_eq!(names, vec!["a", "b", "c"]);
     }
 

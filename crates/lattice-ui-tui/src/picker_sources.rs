@@ -298,7 +298,7 @@ mod tests {
             empty_reverse(),
             None,
         );
-        let ids: Vec<&'static str> = generators.iter().map(|g| g.spec().id).collect();
+        let ids: Vec<&str> = generators.iter().map(|g| g.spec().id.as_ref()).collect();
         assert_eq!(
             ids,
             vec![

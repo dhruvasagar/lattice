@@ -42,18 +42,6 @@ use lattice_grammar::registry::{
 };
 
 /// Intern a plugin-supplied owned string as `&'static str`. `SurfaceForm`'s
-/// `Delimiter { hint }` is `&'static str` (a native builtin uses a literal); a
-/// plugin supplies a runtime string, leaked once when the ex-command spec
-/// crosses. Bounded by the loaded-source count. Reclaiming on unload is
-/// **deferred** (PH7.12b.2, decision C): the grammar ENTRY is removed on
-/// teardown (`CommandRegistry::unregister_plugin`, PH7.12b.1a) — only the bytes
-/// linger, and only under *repeated* hot-reload. Same `boundary_picker::intern`
-/// rationale: the `Cow<'static, str>` fix lands with the Phase-8 reload consumer,
-/// not ahead of it.
-fn intern(s: String) -> &'static str {
-    Box::leak(s.into_boxed_str())
-}
-
 impl WitBoundary for NativeLatencyClass {
     type Wit = WitLatencyClass;
 
@@ -87,7 +75,9 @@ impl WitBoundary for NativeSurfaceForm {
     fn from_wit(wit: WitSurfaceForm) -> Result<Self, String> {
         Ok(match wit {
             WitSurfaceForm::Keyword => NativeSurfaceForm::Keyword,
-            WitSurfaceForm::Delimiter(hint) => NativeSurfaceForm::Delimiter { hint: intern(hint) },
+            // PL8.F: `Cow::Owned` — the plugin's delimiter hint frees with the
+            // command entry on `unregister_plugin`, no `Box::leak`.
+            WitSurfaceForm::Delimiter(hint) => NativeSurfaceForm::Delimiter { hint: hint.into() },
         })
     }
 }
@@ -210,7 +200,7 @@ mod tests {
             NativeSurfaceForm::Keyword
         );
         let delim = NativeSurfaceForm::Delimiter {
-            hint: ":s/pat/repl/",
+            hint: ":s/pat/repl/".into(),
         };
         let back = NativeSurfaceForm::from_wit(delim.to_wit().unwrap()).unwrap();
         assert_eq!(back, delim);

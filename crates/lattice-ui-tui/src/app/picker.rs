@@ -591,7 +591,10 @@ mod tests {
     #[test]
     fn boot_registers_builtin_picker_sources() {
         let app = app_with("hi\n", 5);
-        let ids: Vec<&'static str> = app.editor.picker_registry.load().ids().collect();
+        // PL8.F: `ids()` now borrows the registry (was `&'static str`), so bind
+        // the `load()` guard for the collect's lifetime.
+        let reg = app.editor.picker_registry.load();
+        let ids: Vec<&str> = reg.ids().collect();
         assert!(ids.contains(&"files"));
         assert!(ids.contains(&"recent"));
         assert!(ids.contains(&"buffers"));
@@ -835,7 +838,8 @@ mod tests {
             ]
         );
         // Sanity: matches what the registry itself reports.
-        let registry_ids: Vec<&'static str> = app.editor.picker_registry.load().ids().collect();
+        let registry = app.editor.picker_registry.load();
+        let registry_ids: Vec<&str> = registry.ids().collect();
         let mut expected: Vec<String> = registry_ids.iter().map(|s| s.to_string()).collect();
         expected.sort();
         assert_eq!(ids, expected);

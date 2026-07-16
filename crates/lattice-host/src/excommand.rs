@@ -41,7 +41,13 @@ pub enum ExCommandError {
     /// surface form is `Delimiter`. `name` is the canonical command
     /// name, `hint` is the syntax to use instead.
     #[error("`{name}` uses delimiter syntax; type `{hint}`")]
-    WrongSurfaceForm { name: String, hint: &'static str },
+    WrongSurfaceForm {
+        name: String,
+        // PL8.F: `SurfaceForm::Delimiter.hint` became `Cow<'static, str>` (a
+        // plugin delimiter command's hint is owned + frees on unregister), so
+        // this carried field can't stay `&'static str`.
+        hint: std::borrow::Cow<'static, str>,
+    },
 }
 
 /// Parse a `:` line into a [`CommandInvocation`] dispatchable through
@@ -243,10 +249,12 @@ fn parse_ex_command(
     // form by hand. Surface a precise error with the right syntax
     // hint instead of letting the call fall through to a generic
     // `parse_args` failure (which would say "invalid args").
-    if let lattice_grammar::SurfaceForm::Delimiter { hint } = spec.surface_form {
+    // PL8.F: `SurfaceForm` is no longer `Copy` — bind the hint by reference and
+    // clone it into the owned error field.
+    if let lattice_grammar::SurfaceForm::Delimiter { hint } = &spec.surface_form {
         return Err(ExCommandError::WrongSurfaceForm {
             name: entry.name.clone(),
-            hint,
+            hint: hint.clone(),
         });
     }
     if bang && !spec.accepts_bang {

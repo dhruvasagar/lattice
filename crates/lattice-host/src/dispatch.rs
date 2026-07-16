@@ -1422,6 +1422,10 @@ impl Editor {
             }),
             // §12 paint gate (computed above, before the literal).
             paint_revision,
+            // PL8.E: publish a clone of the WASM decoration cache slot. The
+            // clone shares the `ArcSwap`, so producer-task writes after this
+            // publish are observed by the renderer without republishing.
+            wasm_gutter_decorations: self.wasm_decorations.cache.clone(),
             ..RenderState::default()
         }
     }
@@ -1515,6 +1519,15 @@ impl Editor {
         // Lifecycle chrome.
         self.should_quit.hash(&mut h);
         self.terminal_width.hash(&mut h);
+        // PL8.E: WASM gutter decorations arrive off-keystroke (a producer task
+        // writes the cache + bumps this generation). Fold it in so a decoration
+        // arrival with no keystroke in flight repaints the gutter — the cache is
+        // an `ArcSwap` shared by clone, so its content change is otherwise
+        // invisible to this hash.
+        self.wasm_decorations
+            .generation
+            .load(std::sync::atomic::Ordering::Relaxed)
+            .hash(&mut h);
         h.finish()
     }
 
@@ -13293,6 +13306,9 @@ impl Editor {
         self.maybe_request_code_lens();
         self.maybe_request_document_color();
         self.maybe_request_semantic_tokens();
+        // PL8.E: WASM decoration refresh — same single-flight, cache-gated shape
+        // as the LSP pumps. No-op with no decoration plugin loaded.
+        self.maybe_refresh_wasm_decorations();
         // 5.8.AA.r: code-action apply chain folded host-side; the
         // drain emits `RendererSignal`s from the inline
         // workspace-edit + executeCommand path so both peers consume

@@ -47,6 +47,9 @@ pub fn install(boot: &mut impl SubsystemBoot) {
             .service::<lattice_keymap::KeymapHandle>()
             .map(|h| (*h).clone()),
         meta_sink: boot.service::<PluginMetaSinkHandle>().map(|h| (*h).clone()),
+        decoration_registry: boot
+            .service::<lattice_mode::GutterDecorationSourceRegistryHandle>()
+            .map(|h| (*h).clone()),
     };
     if services.picker_registry.is_none() {
         // The host always registers the picker registry; its absence means a

@@ -3864,6 +3864,33 @@ pub(crate) fn compose_pane_lines(
                 }
             }
         }
+        // PL8.E: merge WASM plugin gutter decorations (host-cached, read
+        // wait-free) into the SAME partition. Never runs WASM at paint time —
+        // the producer wrote this cache off the render path; here we only read
+        // it. Identical partition as the native mode walk above, so plugin marks
+        // paint through the identical glyph/style mapping downstream.
+        {
+            use lattice_host::per_buffer_cache::PerBufferCacheExt;
+            if let Some(cache) = rs_deco.wasm_gutter_decorations.get_for(ctx.buffer_id) {
+                for deco in &cache.decorations {
+                    match deco {
+                        GutterDecoration::Diff { line, kind } => {
+                            diff_map.entry(*line).or_insert(*kind);
+                        }
+                        GutterDecoration::Severity { line, level } => {
+                            sev_map
+                                .entry(*line)
+                                .and_modify(|e| {
+                                    if *level > *e {
+                                        *e = *level;
+                                    }
+                                })
+                                .or_insert(*level);
+                        }
+                    }
+                }
+            }
+        }
         (diff_map, sev_map)
     };
     let mut out: Vec<Line<'static>> = Vec::with_capacity(height as usize);

@@ -343,7 +343,7 @@ plugins yet.
 > silently `NotWired` in the real editor; guarded by
 > `plugin_loader_captures_every_drain_service`).
 
-### PL8.E — WASM decorations: producer → per-buffer cache → renderer  📝 (hot path — paramount #1) ← **NEXT SLICE**
+### PL8.E — WASM decorations: producer → per-buffer cache → renderer  ✅ (hot path — paramount #1)
 The one UX-vigilant slice, and the **last un-drained seam**. The producer
 (`WasmDecorationSource::gutter_decorations`, async) + `spawn_decoration_source`
 exist in the runtime; there is **no** per-buffer cache on the host and the
@@ -395,6 +395,73 @@ level }`) both renderers already paint at the `mode.gutter_decorations` partitio
 keystroke→glyph latency shows no per-frame WASM (the `no_per_frame_wasm_guard`
 invariant holds); a trapping producer keeps the last-good snapshot with zero
 flicker.
+
+> **Landed 2026-07-16.** Built as pattern-composition (no design fork), E.1–E.4.
+>
+> **Home decision (deviation from the plan's `WasmDecorationProviderRegistry`
+> name).** The producer trait + registry live in **`lattice-mode`**
+> (`decoration_source.rs`): `AsyncGutterDecorationSource` (the native async
+> producer trait) + `GutterDecorationSourceRegistry` +
+> `GutterDecorationSourceRegistryHandle = Arc<ArcSwap<…>>`. Named *generically*
+> (not `Wasm…`) because it holds native trait objects — the picker precedent
+> (`PickerRegistry`/`PickerSourceGenerator`), where the WASM source is one
+> implementor. This keeps `lattice-host` **and the renderers** free of any
+> `lattice-plugin-host` dependency: `impl AsyncGutterDecorationSource for
+> WasmDecorationSource` lives in plugin-host, the loader hands a trait object
+> across the seam, and the renderer reads only cached `lattice_mode::GutterDecoration`s
+> — the same indirection completion (`AsyncCompletionSource`) uses. The
+> `no_per_frame_wasm_guard` invariant (renderers must not name plugin-host) holds
+> structurally.
+>
+> **E.1 — host foundation.** `WasmGutterDecorationCache { document_version,
+> decorations }` + a cohesive `WasmDecorationState` bundle on `Editor` (one
+> field: cache + registry handle + paint `generation: AtomicU64` + single-flight
+> `pending` + `last_registry_epoch`) — so the boot struct literal grows by one
+> line (`WasmDecorationState::with_registry`). `RenderState` gains a
+> `wasm_gutter_decorations` `PerBufferCache` clone (published in
+> `build_render_state`). `Editor::maybe_refresh_wasm_decorations` (in
+> `wasm_decorations.rs`, called from `run_tick_pending` next to the LSP pumps) is
+> modelled on `maybe_request_inlay_hint`: version + **registry-epoch** gated
+> (a `:plugin-load`ed producer repaints without an edit; an unloaded one's marks
+> clear), single-flight, spawns producers on `spawn_on_lsp_runtime` (off the
+> actor thread), each writing the merged result via `insert_for`, bumping
+> `generation`, and firing `async_landed`. `compute_paint_revision` folds
+> `generation` so an off-keystroke decoration arrival repaints the gutter. Boot
+> registers the registry as a service (`editor_boot.rs`, next to the picker
+> registry) + clones it onto the editor.
+>
+> **E.2 — loader `drain_decorations`.** RCU-registers the plugin's
+> `WasmDecorationSource` (wrapped as `Arc<dyn AsyncGutterDecorationSource>`) into
+> the registry (load → clone → register → store, like the picker seam); the
+> producer actor runs on the runtime (off keystroke). `PluginTeardown` grew a
+> `decoration_sources: Vec<u64>` surface (+ `TeardownReport.decoration_sources` +
+> `TeardownRegistries.decorations`) reversed via
+> `GutterDecorationSourceRegistry::unregister`. `LoaderServices` +
+> `WiredSeams`/`all()` + `install` capture gain `decoration_registry`; the boot
+> pin `plugin_loader_captures_every_drain_service` now asserts it wired. The
+> `PluginSeam` match in `load_discovered` is now **exhaustive** (decorations was
+> the last un-drained seam; a new variant must add its drain — compiler-enforced).
+>
+> **E.3 — renderer merge (lockstep).** Both peers merge
+> `rs.wasm_gutter_decorations.get_for(buffer_id).decorations` into the SAME
+> `(diff_map, sev_map)` partition they already build from `Mode::gutter_decorations`
+> — TUI `render.rs`, GPUI `window.rs`, same patch. Plugin marks paint through the
+> identical glyph/style/tint mapping downstream; no renderer knows the marks came
+> from WASM. Parity audit: `grep -rn "wasm_gutter_decorations" crates/lattice-ui-gpui/`
+> non-empty.
+>
+> **E.4 — tests.** `lattice-plugin-loader/tests/decoration_drain.rs` (the
+> `decorations-guest` fixture loads, its producer registers + is callable —
+> Diff/Change@0, Severity/Error@1, Diff/Add@last — and unload reverses it,
+> `report.decoration_sources == 1`; a no-registry loader skips it, not fatal).
+> `lattice-host/tests/wasm_decoration_cache.rs` (a native stub producer: the
+> refresh writes the cache off-thread + bumps `generation` + fires `async_landed`,
+> is single-flight/version-gated, and an **erroring producer keeps the prior
+> snapshot** — zero flicker). No new bench: the perf-critical property (no
+> per-frame WASM) is structural — the renderer reads a native cache and cannot
+> reach the producer — and pinned by the existing `no_per_frame_wasm_guard` +
+> `keystroke_publish_ratchet`. Graceful degradation throughout: `NotWired` skip,
+> `Err`→keep-prior (no clear), all-error→no write, missing-handle teardown no-op.
 
 ### PL8.D — `init.rs`-as-WASM user config  ✅
 `init.rs` is **just another plugin**, loaded from `<config>/lattice/init/`
@@ -530,12 +597,23 @@ command-registry + keymap services) · PL8.C ✅ (`:plugin-load` / `-unload` /
 `-reload` + `PluginTeardown` lifecycle, option A — loader self-registers, zero
 host code) · PL8.D ✅ (D.1 keymap seam → `KeymapLayer::User`; D.2 `drain_keymap` +
 keymap teardown surface; D.3 boot-load `init.rs` from `<config>/lattice/init/` +
-`:reload-config`; D.4 init-artifact auto-reload watcher via `notify`).
+`:reload-config`; D.4 init-artifact auto-reload watcher via `notify`) · PL8.E ✅
+(WASM decorations — the last un-drained seam + the hot-path slice: producer trait
++ registry in `lattice-mode`, host per-buffer cache + off-thread refresh, loader
+`drain_decorations` + teardown, both renderers merge at the gutter partition in
+lockstep; renderers stay free of plugin-host).
 
-**Next: PL8.E** (WASM decorations — the last un-drained seam + the hot-path slice).
-Assessed as **pattern-composition, no design fork** (LSP-async-cache + DiffSignRenderState
-+ picker-registration); decomposition E.1–E.4 above. Then **PL8.F** (intern-leak,
-now ready — the reload path exists), **PL8.G / PL8.H** (→ Phase 8b).
+**Done (cont.):** PL8.E ✅ (WASM decorations — the last un-drained seam + the
+hot-path slice): producer trait + registry in `lattice-mode`
+(`AsyncGutterDecorationSource` / `GutterDecorationSourceRegistry`, generic-named
+per the picker precedent); host per-buffer cache + `maybe_refresh_wasm_decorations`
+drive (registry-epoch + version gated, off-thread, `generation`→`compute_paint_revision`);
+loader `drain_decorations` + decoration teardown surface; both renderers merge the
+cache at the existing gutter partition (lockstep). Renderers stay free of
+plugin-host (guard holds). All seam drains now exhaustive.
+
+**Next: PL8.F** (intern-leak reclamation — now ready, the reload path exists),
+then **PL8.G / PL8.H** (→ Phase 8b).
 
 **Design decisions settled this session (don't re-litigate):**
 - **Tier-2 "event→command" is resolved as a principle, NOT `:autocmd`/`SubscriptionTarget::Invocation`.**

@@ -1835,6 +1835,33 @@ impl EditorView {
                     }
                 }
             }
+            // PL8.E: merge WASM plugin gutter decorations (host-cached, read
+            // wait-free) into the SAME partition. Never runs WASM at paint
+            // time — the producer wrote this cache off the render path; the
+            // renderer only reads it, so plugin marks paint through the
+            // identical glyph/tint mapping below. Lockstep with the TUI peer.
+            {
+                use lattice_host::per_buffer_cache::PerBufferCacheExt;
+                if let Some(cache) = rs_guard.wasm_gutter_decorations.get_for(pane.buffer_id) {
+                    for deco in &cache.decorations {
+                        match deco {
+                            GutterDecoration::Diff { line, kind } => {
+                                diff_map.entry(*line).or_insert(*kind);
+                            }
+                            GutterDecoration::Severity { line, level } => {
+                                sev_map
+                                    .entry(*line)
+                                    .and_modify(|e| {
+                                        if *level > *e {
+                                            *e = *level;
+                                        }
+                                    })
+                                    .or_insert(*level);
+                            }
+                        }
+                    }
+                }
+            }
             (diff_map, sev_map)
         };
         // T.6.t: hoist the four severity glyphs out of the per-line

@@ -180,6 +180,14 @@ pub struct RenderState {
     /// dual: it gates cell rebuilds; this gates everything else
     /// (`lattice-cells/src/version.rs` enumerates the overlay set).
     pub paint_revision: u64,
+    /// PL8.E: per-buffer WASM gutter-decoration cache. A clone of `Editor`'s
+    /// `wasm_decorations.cache` slot, so an off-render-path producer task's
+    /// writes are observed without republishing this snapshot. Renderers merge
+    /// `get_for(buffer_id).decorations` into the same gutter partition they walk
+    /// for `Mode::gutter_decorations` — the producer never runs at paint time
+    /// (paramount #1). Empty when no decoration plugin is loaded.
+    pub wasm_gutter_decorations:
+        crate::per_buffer_cache::PerBufferCache<crate::wasm_decorations::WasmGutterDecorationCache>,
 }
 
 impl Default for RenderState {
@@ -212,6 +220,7 @@ impl Default for RenderState {
             diff: Arc::new(DiffRenderState::default()),
             virtual_rows: Arc::new(VirtualRowsRenderState::default()),
             paint_revision: 0,
+            wasm_gutter_decorations: crate::per_buffer_cache::empty(),
         }
     }
 }

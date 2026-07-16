@@ -53,7 +53,7 @@ enum DecorationCall {
 /// The `Send + Sync` handle a caller holds. Cloning is cheap (an mpsc `Sender`
 /// clone); every clone talks to the same actor / `Store`, so calls serialize on
 /// the single-consumer loop the `!Sync` `Store` needs.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct DecorationClient {
     tx: mpsc::UnboundedSender<DecorationCall>,
     id: PluginId,

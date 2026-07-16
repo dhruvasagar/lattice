@@ -169,6 +169,7 @@ pub mod editor_actor;
 // Phase 5.8.AF.5 / Slice 3a: renderer's wait-free read contract
 // with the host. See `render_state` module docs.
 pub mod render_state;
+pub mod wasm_decorations;
 pub mod renderer;
 pub mod state;
 // Phase 5.7.B.9: synthetic-buffer + messages helpers migrate

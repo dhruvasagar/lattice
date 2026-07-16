@@ -66,6 +66,7 @@ pub mod buffer_store;
 pub mod capability;
 pub mod context;
 pub mod contributions;
+pub mod decoration_source;
 // BC.5: `emacs-keys-mode` — a default-on universal builtin minor mode (the
 // `<C-x>` leader tribute). Moved here from `lattice-host`; registered with the
 // foundation modes. The host keeps only the keymap-layer push (config + the
@@ -132,6 +133,10 @@ pub use crate::contributions::{
     Keymap,
     KeymapBinding,
     Subscription, // MO.4.c: real RAII type; use in mode Guards
+};
+pub use crate::decoration_source::{
+    AsyncGutterDecorationSource, DecorationFuture, GutterDecorationSourceRegistry,
+    GutterDecorationSourceRegistryHandle,
 };
 pub use crate::error::ModeActivationError;
 pub use crate::event::ModeEvent;

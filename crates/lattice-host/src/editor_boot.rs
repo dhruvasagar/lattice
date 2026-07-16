@@ -887,6 +887,21 @@ impl Editor {
             )));
         boot.register_service::<lattice_picker::PickerRegistryHandle>(picker_registry.clone());
 
+        // PL8.E: the runtime-mutable registry of async gutter-decoration
+        // producers. Held behind `ArcSwap` so the plugin loader
+        // (`drain_decorations`) RCU-registers a loaded decoration plugin's
+        // producer while the host's per-tick refresh reads it wait-free.
+        // Registered as a service so `lattice-plugin-loader` reaches it without
+        // a host dep, and cloned onto the `Editor` below so the refresh drives
+        // it. Starts empty — no producer until a decoration plugin loads.
+        let decoration_registry: lattice_mode::GutterDecorationSourceRegistryHandle =
+            Arc::new(arc_swap::ArcSwap::from_pointee(
+                lattice_mode::GutterDecorationSourceRegistry::new(),
+            ));
+        boot.register_service::<lattice_mode::GutterDecorationSourceRegistryHandle>(
+            decoration_registry.clone(),
+        );
+
         // MRU cache load. Honor `picker.mru.persist` at boot;
         // failure modes: no persist path (sandboxed), no file
         // (fresh install), or corrupt file (log + reset).
@@ -1564,6 +1579,13 @@ impl Editor {
             syntax,
             last_parsed_text_version,
             picker_registry: picker_registry.clone(),
+            // PL8.E: hand the decoration-producer registry to the editor so the
+            // per-tick refresh (`maybe_refresh_wasm_decorations`) drives loaded
+            // producers off the render path. The loader registers into the same
+            // handle via the service registered above.
+            wasm_decorations: crate::wasm_decorations::WasmDecorationState::with_registry(
+                decoration_registry.clone(),
+            ),
             picker_mru,
             picker_mru_path,
             // MH.A3 (2026-06-19): clone so the `services:` block below

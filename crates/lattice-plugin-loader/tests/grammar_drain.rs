@@ -102,6 +102,7 @@ async fn discovered_grammar_plugin_registers_and_dispatches_through_the_registry
             bus: Some(Arc::new(EventBus::new())),
             command_registry: Some(command_registry.clone()),
             meta_sink: Some(sink.clone() as Arc<dyn PluginMetaSink>),
+            decoration_registry: Some(std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(lattice_mode::GutterDecorationSourceRegistry::default()))),
             ..Default::default()
         },
     );

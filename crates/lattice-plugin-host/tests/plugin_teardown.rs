@@ -114,6 +114,7 @@ async fn crash_then_unload_then_reload_delivers_on_a_fresh_instance() {
     let mut modes = ModeRegistry::new();
     let keymap = KeymapHandle::new();
     let config = ConfigRegistry::new();
+    let mut decorations = lattice_mode::GutterDecorationSourceRegistry::new();
     let report = {
         let mut reg = TeardownRegistries {
             commands: &mut commands,
@@ -122,6 +123,7 @@ async fn crash_then_unload_then_reload_delivers_on_a_fresh_instance() {
             keymap: &keymap,
             config: &config,
             bus: &bus,
+            decorations: &mut decorations,
         };
         teardown_a.unload(&mut reg)
     };

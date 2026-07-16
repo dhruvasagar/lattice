@@ -81,14 +81,14 @@ use lattice_config::ConfigRegistry;
 use lattice_grammar::CommandRegistryHandle;
 use lattice_keymap::KeymapHandle;
 use lattice_mode::{
-    ActivationPolicy, CapabilitySet, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind,
-    ModeRegistryHandle, PluginMetaSinkHandle,
+    ActivationPolicy, AsyncGutterDecorationSource, CapabilitySet, GutterDecorationSourceRegistryHandle,
+    LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, ModeRegistryHandle, PluginMetaSinkHandle,
 };
 use lattice_picker::{PickerRegistryHandle, PickerSourceGenerator};
 use lattice_plugin_host::{
     LoadedPlugin, ManifestError, PluginBudget, PluginHost, PluginHostError, PluginId,
     PluginManifest, PluginSeam, PluginTeardown, TeardownRegistries, TeardownReport, TrustTier,
-    WasmCompletionSource, WasmPickerSource,
+    WasmCompletionSource, WasmDecorationSource, WasmPickerSource,
 };
 use lattice_runtime::EventBus;
 use tokio::runtime::Handle;
@@ -163,6 +163,10 @@ pub struct LoaderServices {
     pub keymap: Option<KeymapHandle>,
     /// The provenance sink — records `PluginId → name/doc` for `:list-plugins`.
     pub meta_sink: Option<PluginMetaSinkHandle>,
+    /// PL8.E: the runtime-mutable decoration-producer registry (RCU-register a
+    /// loaded decoration plugin's `WasmDecorationSource`). The host's per-tick
+    /// `maybe_refresh_wasm_decorations` reads the same handle wait-free.
+    pub decoration_registry: Option<GutterDecorationSourceRegistryHandle>,
 }
 
 /// Which drain-required services the loader captured at [`install`] time —
@@ -180,6 +184,7 @@ pub struct WiredSeams {
     pub mode_registry: bool,
     pub keymap: bool,
     pub meta_sink: bool,
+    pub decoration_registry: bool,
 }
 
 impl WiredSeams {
@@ -195,6 +200,7 @@ impl WiredSeams {
             && self.mode_registry
             && self.keymap
             && self.meta_sink
+            && self.decoration_registry
     }
 }
 
@@ -351,6 +357,7 @@ impl PluginLoader {
             mode_registry: self.env.mode_registry.is_some(),
             keymap: self.env.keymap.is_some(),
             meta_sink: self.env.meta_sink.is_some(),
+            decoration_registry: self.env.decoration_registry.is_some(),
         }
     }
 
@@ -457,11 +464,16 @@ impl PluginLoader {
                             .await?;
                         loaded_id.get_or_insert(id);
                     }
-                    other => tracing::warn!(
-                        seam = %other,
-                        plugin = %manifest.id,
-                        "plugin declares a seam the loader does not drain yet (PL8.B follow-on); skipped"
-                    ),
+                    PluginSeam::Decorations => {
+                        let id = self
+                            .drain_decorations(&component, manifest, tier, &mut record)
+                            .await?;
+                        loaded_id.get_or_insert(id);
+                    }
+                    // Exhaustive: every `PluginSeam` variant is now drained
+                    // (PL8.E closed the last, decorations). A new seam variant
+                    // must add its drain here — the compiler enforces it rather
+                    // than a silent skip.
                 }
             }
         }
@@ -667,6 +679,7 @@ impl PluginLoader {
             Some(config),
             Some(keymap),
             Some(bus),
+            Some(deco_h),
         ) = (
             self.env.command_registry.as_ref(),
             self.env.picker_registry.as_ref(),
@@ -674,6 +687,7 @@ impl PluginLoader {
             self.env.config_registry.as_ref(),
             self.env.keymap.as_ref(),
             self.env.bus.as_ref(),
+            self.env.decoration_registry.as_ref(),
         )
         else {
             tracing::warn!(
@@ -686,6 +700,7 @@ impl PluginLoader {
         let mut commands = (**cmd_h.load()).clone();
         let mut pickers = (**pick_h.load()).clone();
         let mut modes = (**mode_h.load()).clone();
+        let mut decorations = (**deco_h.load()).clone();
         let report = {
             let mut reg = TeardownRegistries {
                 commands: &mut commands,
@@ -694,6 +709,7 @@ impl PluginLoader {
                 keymap,
                 config: &**config,
                 bus: &**bus,
+                decorations: &mut decorations,
             };
             teardown.unload(&mut reg)
         };
@@ -701,6 +717,7 @@ impl PluginLoader {
         cmd_h.store(Arc::new(commands));
         pick_h.store(Arc::new(pickers));
         mode_h.store(Arc::new(modes));
+        deco_h.store(Arc::new(decorations));
         report
     }
 
@@ -1128,6 +1145,75 @@ impl PluginLoader {
         // Teardown tokens: each binding is unbound from `KeymapLayer::User` on
         // unload / reload.
         record.teardown.keymap_bindings = tokens;
+        Ok(id)
+    }
+
+    /// Drain the decorations seam (PL8.E): spawn the producer actor, wrap the
+    /// plugin's [`WasmDecorationSource`] as a native
+    /// [`AsyncGutterDecorationSource`], and RCU-register it into the
+    /// runtime-mutable [`GutterDecorationSourceRegistryHandle`] the host's
+    /// per-tick refresh drives.
+    ///
+    /// The decoration producer is the one hot-path-sensitive seam: it must NEVER
+    /// run at paint time (a per-frame WASM call would violate paramount #1). The
+    /// host caches its output per buffer and the renderer reads only the cache;
+    /// the async `gutter_decorations` runs on the spawned actor (off the
+    /// keystroke path), mirroring the picker / completion actor seams — driven on
+    /// the runtime, recorded on `record` for unload. A missing service degrades
+    /// the seam to a logged skip (`NotWired`); a spawn trap maps to
+    /// `PluginLoaderError::Host` and skips only this plugin.
+    async fn drain_decorations(
+        &self,
+        component: &lattice_plugin_host::Component,
+        manifest: &PluginManifest,
+        tier: TrustTier,
+        record: &mut LoadedRecord,
+    ) -> Result<PluginId, PluginLoaderError> {
+        let bus = self
+            .env
+            .bus
+            .as_ref()
+            .ok_or(PluginLoaderError::NotWired("decorations"))?;
+        let runtime = self
+            .env
+            .runtime
+            .as_ref()
+            .ok_or(PluginLoaderError::NotWired("decorations"))?;
+        let registry = self
+            .env
+            .decoration_registry
+            .as_ref()
+            .ok_or(PluginLoaderError::NotWired("decorations"))?;
+
+        let (client, actor) = self
+            .host
+            .spawn_decoration_source(component, manifest, tier, PluginBudget::default(), bus)
+            .await?;
+        // Drive the producer actor on the multi-thread runtime (off the keystroke
+        // path). Unlike picker / completion there is no `connect` spec round-trip
+        // — a decoration source carries no id/doc metadata; it is a pure producer.
+        let task = runtime.spawn(actor.run());
+        let source = WasmDecorationSource::new(client);
+        let id = source.plugin_id();
+
+        // Copy-on-write RCU into the wait-free registry (load → clone → register
+        // → store), like the picker seam. Concurrent host refreshes keep reading
+        // the prior snapshot until the store lands — no lock on the read path.
+        let producer: Arc<dyn AsyncGutterDecorationSource> = Arc::new(source);
+        registry.rcu(|current| {
+            let mut next = (**current).clone();
+            next.register(producer.clone());
+            Arc::new(next)
+        });
+
+        record.tasks.push(task);
+        // Teardown token: the decoration registry unregisters this producer by id.
+        record.teardown.decoration_sources.push(id.0 as u64);
+        tracing::debug!(
+            plugin = %manifest.id,
+            id = id.0,
+            "decoration plugin registered its gutter-decoration producer"
+        );
         Ok(id)
     }
 }

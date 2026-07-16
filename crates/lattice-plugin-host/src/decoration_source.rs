@@ -20,9 +20,32 @@ use crate::{DecorationClient, PluginId};
 /// An async gutter-decoration producer over a plugin's [`DecorationClient`].
 /// Cheap to clone (the client is an mpsc `Sender` clone); every clone talks to
 /// the same actor / `Store`.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct WasmDecorationSource {
     client: DecorationClient,
+}
+
+/// PL8.E: expose the WASM producer as the native
+/// [`AsyncGutterDecorationSource`](lattice_mode::AsyncGutterDecorationSource) the
+/// host's decoration registry holds — the same trait-object indirection the
+/// completion (`AsyncCompletionSource`) and picker (`PickerSourceGenerator`)
+/// seams use, so `lattice-host` and the renderers never name this crate.
+impl lattice_mode::AsyncGutterDecorationSource for WasmDecorationSource {
+    fn source_id(&self) -> u64 {
+        self.plugin_id().0 as u64
+    }
+
+    fn produce(
+        &self,
+        buffer_id: u64,
+        path: Option<std::path::PathBuf>,
+        line_count: u32,
+    ) -> lattice_mode::DecorationFuture<'_> {
+        Box::pin(async move {
+            self.gutter_decorations(buffer_id, path.as_deref(), line_count)
+                .await
+        })
+    }
 }
 
 impl WasmDecorationSource {

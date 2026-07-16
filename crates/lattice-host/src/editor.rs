@@ -1209,6 +1209,13 @@ pub struct Editor {
     /// Renderers read wait-free via
     /// `rs.lsp.inlay_hints.get_for(buffer_id)`.
     pub lsp_inlay_hints_cache: crate::per_buffer_cache::PerBufferCache<LspInlayHintCache>,
+    /// PL8.E: WASM gutter-decoration wiring (per-buffer cache + producer
+    /// registry handle + off-keystroke paint generation + single-flight
+    /// bookkeeping), bundled so this struct grows by one field. The per-tick
+    /// `maybe_refresh_wasm_decorations` drives the producers off the render
+    /// path; renderers read `rs.wasm_gutter_decorations`. Inert in
+    /// `Editor::default()` (no registry wired).
+    pub wasm_decorations: crate::wasm_decorations::WasmDecorationState,
     /// Per-buffer `documentLink` cache.
     /// Per-buffer `textDocument/documentLink` cache. Phase
     /// 5.8.AF.5 / Slice 3b.4: `PerBufferCache<T>` so the spawned

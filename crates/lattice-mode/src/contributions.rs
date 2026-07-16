@@ -72,7 +72,7 @@ pub enum GutterSeverityLevel {
 
 /// A single gutter decoration contributed by a [`crate::Mode`].
 /// Each variant maps to one physical gutter column.
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum GutterDecoration {
     /// Diff-sign column (between severity and line numbers).
     Diff { line: u32, kind: GutterDiffKind },

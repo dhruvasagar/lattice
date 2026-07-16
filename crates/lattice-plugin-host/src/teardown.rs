@@ -20,16 +20,17 @@
 //! untripped [`Quarantine`](crate::Quarantine). So reload = `unload` + `spawn_*`,
 //! composed by the caller (the Phase-8 plugin manager), not a bespoke method.
 //!
-//! **Completion + decoration** are absent by design: the host never registers
-//! them with plugin provenance (completion goes through the generic
-//! builtin-stamped `register_generator`, decoration has no registry — mode-owned
-//! in Phase 8), so their teardown is pure channel-drop — dropping the client
-//! ends the actor loop. Nothing to reverse here.
+//! **Completion** is absent by design: the host never registers it with plugin
+//! provenance (it goes through the generic builtin-stamped `register_generator`),
+//! so its teardown is pure channel-drop — dropping the client ends the actor
+//! loop. **Decoration** (PL8.E) *does* have a registry — the loader RCU-registers
+//! its producer into the [`GutterDecorationSourceRegistry`] — so its teardown
+//! unregisters by producer id, like the picker surface.
 
 use lattice_config::ConfigRegistry;
 use lattice_grammar::CommandRegistry;
 use lattice_keymap::{KeymapCapability, KeymapHandle, KeymapLayer, ModeId};
-use lattice_mode::ModeRegistry;
+use lattice_mode::{GutterDecorationSourceRegistry, ModeRegistry};
 use lattice_picker::source::PickerRegistry;
 use lattice_protocol::event_registry::unregister_runtime_event;
 use lattice_runtime::{EventBus, SubscriptionId};
@@ -68,6 +69,10 @@ pub struct PluginTeardown {
     /// reversed by `KeymapHandle::try_unbind_chord_string` from `KeymapLayer::User`.
     /// The `Vec` `spawn_keymap_plugin` returns.
     pub keymap_bindings: Vec<crate::keymap_host::KeymapBindingToken>,
+    /// PL8.E: decoration producer ids the plugin registered into the
+    /// [`GutterDecorationSourceRegistry`] — each reversed via
+    /// `GutterDecorationSourceRegistry::unregister`. Mirrors `picker_sources`.
+    pub decoration_sources: Vec<u64>,
 }
 
 impl PluginTeardown {
@@ -82,6 +87,7 @@ impl PluginTeardown {
             events_defined: Vec::new(),
             subscriptions: Vec::new(),
             keymap_bindings: Vec::new(),
+            decoration_sources: Vec::new(),
         }
     }
 
@@ -142,6 +148,9 @@ impl PluginTeardown {
                 report.keymap_bindings += 1;
             }
         }
+        for source_id in &self.decoration_sources {
+            report.decoration_sources += reg.decorations.unregister(*source_id);
+        }
 
         report
     }
@@ -161,6 +170,8 @@ pub struct TeardownRegistries<'a> {
     pub keymap: &'a KeymapHandle,
     pub config: &'a ConfigRegistry,
     pub bus: &'a EventBus,
+    /// PL8.E: the decoration-producer registry (`unregister` by producer id).
+    pub decorations: &'a mut GutterDecorationSourceRegistry,
 }
 
 /// Count of what an [`unload`](PluginTeardown::unload) actually removed, per
@@ -177,6 +188,8 @@ pub struct TeardownReport {
     pub events_defined: usize,
     pub subscriptions: usize,
     pub keymap_bindings: usize,
+    /// PL8.E: decoration producers unregistered.
+    pub decoration_sources: usize,
 }
 
 #[cfg(test)]
@@ -272,6 +285,7 @@ mod tests {
         teardown.config_options = vec!["p7.opt".to_string()];
         teardown.subscriptions = vec![plugin_sub];
 
+        let mut decorations = GutterDecorationSourceRegistry::new();
         let report = {
             let mut reg = TeardownRegistries {
                 commands: &mut commands,
@@ -280,6 +294,7 @@ mod tests {
                 keymap: &keymap,
                 config: &config,
                 bus: &bus,
+                decorations: &mut decorations,
             };
             teardown.unload(&mut reg)
         };
@@ -297,6 +312,7 @@ mod tests {
                 events_defined: 0,
                 subscriptions: 1,
                 keymap_bindings: 0,
+                decoration_sources: 0,
             }
         );
 
@@ -323,6 +339,7 @@ mod tests {
             keymap: &keymap,
             config: &config,
             bus: &bus,
+            decorations: &mut decorations,
         };
         assert_eq!(teardown.unload(&mut reg), TeardownReport::default());
     }

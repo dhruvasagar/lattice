@@ -83,6 +83,7 @@ async fn discovered_completion_plugin_rides_a_universal_carrier_mode() {
             bus: Some(Arc::new(EventBus::new())),
             mode_registry: Some(mode_registry.clone()),
             meta_sink: Some(sink.clone() as Arc<dyn PluginMetaSink>),
+            decoration_registry: Some(std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(lattice_mode::GutterDecorationSourceRegistry::default()))),
             ..Default::default()
         },
     );

@@ -72,6 +72,7 @@ fn loader_with_ex_commands(base: &std::path::Path) -> (PluginLoaderHandle, Comma
             config_registry: Some(Arc::new(ConfigRegistry::default())),
             keymap: Some(KeymapHandle::new()),
             meta_sink: Some(Arc::new(RecordingSink::default()) as Arc<dyn PluginMetaSink>),
+            decoration_registry: Some(std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(lattice_mode::GutterDecorationSourceRegistry::default()))),
         },
     ));
     loader.register_ex_commands();

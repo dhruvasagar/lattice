@@ -70,10 +70,31 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     // eventual-consistency the UX contract permits for non-edited content. A
     // missing plugins dir (the common case) is a benign empty scan.
     if let Some(dir) = crate::default_plugins_dir() {
+        let loader = loader.clone();
         boot.runtime_handle().spawn(async move {
             let n = loader.discover_and_load(&dir, TrustTier::UserInstalled).await;
             if n > 0 {
                 tracing::info!(count = n, dir = %dir.display(), "plugins loaded from disk");
+            }
+        });
+    }
+
+    // PL8.D.3: the user's `init.rs` — a single plugin dir at
+    // `<config>/lattice/init/`, loaded with a boot-capability (`Bundled`) tier
+    // (the user's own trusted config, not an external install). Loaded OFF the
+    // boot thread, AFTER the native builtins register (this `install` is seated
+    // late in boot), so user keymaps / commands / options layer on top of the
+    // defaults. An absent init dir (the common case — no user config) is a benign
+    // debug skip, never a warn.
+    if let Some(init_dir) = crate::default_init_dir() {
+        boot.runtime_handle().spawn(async move {
+            match loader.load_path(&init_dir, TrustTier::Bundled).await {
+                Ok(id) => {
+                    tracing::info!(id = id.0, dir = %init_dir.display(), "user init.rs config loaded")
+                }
+                Err(err) => {
+                    tracing::debug!(dir = %init_dir.display(), error = %err, "no user init.rs loaded")
+                }
             }
         });
     }

@@ -68,7 +68,9 @@ pub mod discovery;
 mod ex_commands;
 pub mod install;
 
-pub use discovery::{DiscoveredPlugin, default_plugins_dir, discover, discover_one};
+pub use discovery::{
+    DiscoveredPlugin, default_init_dir, default_plugins_dir, discover, discover_one,
+};
 pub use install::install;
 
 use std::sync::{Arc, Mutex};

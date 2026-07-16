@@ -116,12 +116,25 @@ async fn all_three_commands_register_with_plain_names() {
     let snapshot = commands.load();
     // Plain names resolve directly via `id_by_name` — no `expand_alias` host
     // entry (option A: zero host code).
-    for name in ["plugin-load", "plugin-unload", "plugin-reload"] {
+    for name in ["plugin-load", "plugin-unload", "plugin-reload", "reload-config"] {
         assert!(
             snapshot.id_by_name(name).is_some(),
             "`{name}` registered under its plain name"
         );
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reload_config_echoes_and_takes_no_arg() {
+    let base = tempfile::tempdir().unwrap();
+    let (_loader, commands) = loader_with_ex_commands(base.path());
+    // `:reload-config` takes no argument — invoking it (no `init` loaded here)
+    // still echoes the "reloading…" acknowledgement and spawns the reload (which
+    // no-ops on a missing `init`, reported in *messages*), never a panic.
+    let effect = invoke(&commands, "reload-config", None);
+    let (level, text) = echo_text(&effect);
+    assert_eq!(*level, EchoLevel::Info);
+    assert!(text.contains("init.rs"), "acknowledges the config reload: {text}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

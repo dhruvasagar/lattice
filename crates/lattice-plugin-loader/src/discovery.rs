@@ -28,6 +28,16 @@ pub fn default_plugins_dir() -> Option<PathBuf> {
     dirs::data_dir().map(|d| d.join("lattice").join("plugins"))
 }
 
+/// The user's `init.rs` config plugin directory: `<config>/lattice/init/` (XDG
+/// config on Linux, Application Support on macOS, RoamingAppData on Windows).
+/// Holds the user's `init.rs`-compiled component + its `plugin.toml` (`id =
+/// "init"`, `provides = [...]` for the seams it uses). Loaded at boot with a
+/// boot-capability (`Bundled`) tier — it's the user's own trusted config, not an
+/// external install. `None` if the platform has no config dir.
+pub fn default_init_dir() -> Option<PathBuf> {
+    dirs::config_dir().map(|d| d.join("lattice").join("init"))
+}
+
 /// Scan `dir` for plugin subdirectories, returning every one that parses. A
 /// missing `dir` yields an empty list (no plugins installed — normal). Each
 /// subdirectory needs a `plugin.toml` + exactly one `.wasm`; anything else is

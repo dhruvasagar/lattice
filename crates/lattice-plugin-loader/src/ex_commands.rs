@@ -51,6 +51,15 @@ pub(crate) fn register_all(registry: &mut CommandRegistry, loader: &Arc<PluginLo
          `*messages*`.",
         reload_spec(Arc::clone(loader)),
     );
+    registry.register_ex_command(
+        "reload-config",
+        "Reload the user's `init.rs` configuration (`:reload-config`) — unload the \
+         `init` plugin and re-instantiate it from `<config>/lattice/init/` with a \
+         fresh, untripped quarantine, so edited keymaps / commands / options take \
+         effect without restarting. Reloads asynchronously (reported in \
+         `*messages*`). A no-op if no `init` config is loaded.",
+        reload_config_spec(Arc::clone(loader)),
+    );
 }
 
 /// Parse the rest of the command line as a single trimmed string argument
@@ -170,6 +179,29 @@ fn reload_spec(loader: Arc<PluginLoader>) -> ExCommandSpec {
             "Loaded plugin's manifest id or numeric plugin id.",
             "plugin:",
         ),
+        surface_form: SurfaceForm::Keyword,
+    }
+}
+
+/// The canonical id of the user-config plugin — the `:reload-config` target and
+/// the `id = "init"` a `<config>/lattice/init/plugin.toml` declares.
+const INIT_PLUGIN_ID: &str = "init";
+
+fn reload_config_spec(loader: Arc<PluginLoader>) -> ExCommandSpec {
+    ExCommandSpec {
+        latency_class: LatencyClass::Reflex,
+        accepts_bang: false,
+        accepts_range: false,
+        // `:reload-config` takes no argument — ignore any trailing text.
+        parse_args: Arc::new(|_line: &str, _bang: bool| Ok(Args::None)),
+        apply: Arc::new(move |_ctx: &ExCommandContext| {
+            loader.spawn_reload(INIT_PLUGIN_ID.to_string());
+            Ok(echo(
+                EchoLevel::Info,
+                "reloading user config (init.rs)…",
+            ))
+        }),
+        args_schema: Vec::new(),
         surface_form: SurfaceForm::Keyword,
     }
 }

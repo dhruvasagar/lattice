@@ -363,7 +363,7 @@ trait.
   `no_per_frame_wasm_guard` invariant holds); a trapping producer keeps the last-good
   snapshot with zero flicker.
 
-### PL8.D — `init.rs`-as-WASM user config  🚧
+### PL8.D — `init.rs`-as-WASM user config  ✅
 `init.rs` is **just another plugin**, loaded from `<config>/lattice/init/`
 (manifest'd dir — reuses `discover_one` verbatim) instead of
 `<data>/lattice/plugins/`. Its config kinds map to seams: commands→`grammar`,
@@ -410,14 +410,23 @@ declaration), broad `editor_capabilities` (trusted user config), optional
   because the User layer is shared. Test `keymap_drain.rs`: a discovered keymap
   plugin binds `<C-s>`→`ex:write` into `KeymapLayer::User`, unload unbinds it
   (`report.keymap_bindings == 1`, binding gone).
-- **PL8.D.3 — boot-load init + `:reload-config`.** 📝 Discover
-  `<config>/lattice/init/` at `install` (a second discovery source alongside the
-  plugins dir), load with a boot-capability tier **after** native builtins
-  register (user config layers on top). Register the loader-owned `:reload-config`
-  (option A — reload the `init` plugin). Boot pin + reload test.
+- **PL8.D.3 — boot-load init + `:reload-config`.** ✅ `install` loads
+  `<config>/lattice/init/` (`default_init_dir`, `dirs::config_dir()`) via
+  `load_path` with the `Bundled` tier (trusted user config), OFF the boot thread,
+  AFTER the native builtins register (install is seated late in boot) so user
+  keymaps / commands / options layer on top. An absent init dir (the common case)
+  is a benign debug skip. The loader self-registers `:reload-config` (option A,
+  the 4th loader-owned ex-command) = `reload("init")` — the `init` manifest id is
+  the convention. Boot pin extended (`reload-config` registered at boot); test
+  `init_config.rs`: init loads from a config dir under `Bundled`, its keybinding
+  lands, and `:reload-config` re-instantiates from disk with **no binding
+  accumulation** (the old binding unbound + re-bound once — validates D.2's
+  per-binding teardown).
 
-**Exit:** a user `init.rs` (multi-seam plugin) that registers a keybind /
-command / option / autocmd takes effect at boot and survives `:reload-config`.
+**Exit ✅:** a user `init.rs` (multi-seam plugin) that registers a keybind /
+command / option / autocmd takes effect at boot (loaded from
+`<config>/lattice/init/` with the `Bundled` tier, after builtins) and survives
+`:reload-config` (fresh Store, old contributions reversed). PL8.D complete.
 
 ### PL8.F — Intern-leak reclamation  📝
 - The interner leak (Low–Medium, no consumer until a reload path exists) is reclaimed

@@ -343,25 +343,58 @@ plugins yet.
 > silently `NotWired` in the real editor; guarded by
 > `plugin_loader_captures_every_drain_service`).
 
-### PL8.E — WASM decorations: producer → per-buffer cache → renderer  📝 (hot path — paramount #1)
-The one UX-vigilant slice. The producer (`WasmDecorationSource::gutter_decorations`,
-async) + `spawn_decoration_source` exist in the runtime; there is **no** per-buffer
-cache on the host and the renderers read only the native sync `Mode::gutter_decorations`
-trait.
+### PL8.E — WASM decorations: producer → per-buffer cache → renderer  📝 (hot path — paramount #1) ← **NEXT SLICE**
+The one UX-vigilant slice, and the **last un-drained seam**. The producer
+(`WasmDecorationSource::gutter_decorations`, async) + `spawn_decoration_source`
+exist in the runtime; there is **no** per-buffer cache on the host and the
+renderers read only the native sync `Mode::gutter_decorations` trait.
 
-- Add a per-buffer `Vec<GutterDecoration>` cache on the host (published via the
-  `RenderState` snapshot mechanism, alongside `DiffSignRenderState` /
-  `VirtualRowsRenderState` — **not** a per-frame read of WASM).
-- Drive `WasmDecorationSource::gutter_decorations` **off the render path** on triggers
-  (edit / scroll / diagnostic change), `spawn_blocking`/actor, write the result into
-  the cache; on any producer `Err` keep the prior snapshot (no flicker).
-- Both renderers merge the cached WASM decorations into the same partition they
-  already walk (TUI `render.rs:3847`, GPUI `window.rs:1818`) — **lockstep per the
-  cross-renderer rule**; end-of-slice `grep` audit for GPUI parity.
-- **Exit:** a decoration-producing plugin's gutter marks paint in both renderers;
-  keystroke→glyph latency bench shows no per-frame WASM on the hot path (the
-  `no_per_frame_wasm_guard` invariant holds); a trapping producer keeps the last-good
-  snapshot with zero flicker.
+**Assessment (done 2026-07-16): pattern-composition, NOT a fresh design fork —
+build it, don't re-review.** It composes three established patterns:
+- **cache + publish** ← `DiffSignRenderState` / `VirtualRowsRenderState` (a
+  per-buffer sub-state published into the `ArcSwap<RenderState>` snapshot;
+  `render_state.rs` + `publish_render_state()` chokepoint in `dispatch.rs`);
+- **off-render-path async producer → Arc-backed per-buffer cache** ← the LSP async
+  caches (`lsp_inlay_hints_cache` / `lsp_semantic_tokens_cache`: a spawned request
+  task writes directly into the per-buffer cache via `PerBufferCacheExt::insert_for`,
+  and `run_tick_pending` publishes on the cache-version flip);
+- **loader registers the producer** ← the picker seam (`drain_picker` RCU-registers
+  into a host-owned registry service).
+
+Ready to build: the `decorations-guest` fixture is **built**
+(`tests/fixtures/decorations-guest/target/.../decorations_guest.wasm`, 51.5K);
+`GutterDecoration` is the SAME enum (`Diff { line, kind }` / `Severity { line,
+level }`) both renderers already paint at the `mode.gutter_decorations` partition
+(TUI `render.rs`, GPUI `window.rs:1818`).
+
+**Decomposition:**
+- **PL8.E.1 — host foundation** 📝: a per-buffer `Vec<GutterDecoration>` cache
+  (Arc-backed, LSP-cache shape) + a `RenderState` field for it + a
+  `WasmDecorationProviderRegistry` service (alias `Arc<…>`, ServiceRegistry
+  TypeId rule) the loader registers producers into; the off-render-path drive —
+  on trigger (edit / scroll / diagnostic change) spawn the producer on the
+  runtime, the spawned task writes the result into the cache (`insert_for`), and
+  `run_tick_pending` publishes; on producer `Err`, keep the prior snapshot (no
+  flicker). NO per-frame WASM — the renderer reads only the cache.
+- **PL8.E.2 — loader `drain_decorations`** 📝: `spawn_decoration_source`, register
+  the producer into the `WasmDecorationProviderRegistry`, record the teardown
+  token (unregister on unload — extend `PluginTeardown` with a decoration
+  surface). Wire the `PluginSeam::Decorations` arm.
+- **PL8.E.3 — renderer merge (lockstep)** 📝: both renderers merge the cached
+  WASM decorations into the same partition they already walk for
+  `mode.gutter_decorations` (TUI + GPUI **in the same patch**, cross-renderer
+  rule); end-of-slice `grep -rn "decoration cache" crates/lattice-ui-gpui/` parity
+  audit.
+- **PL8.E.4 — fixture test + bench** 📝: a `decorations-guest`-driven e2e (a
+  plugin's gutter marks reach the cache + paint) + a keystroke→glyph bench / the
+  `lattice-plugin-host/tests/no_per_frame_wasm_guard.rs` invariant proving no
+  per-frame WASM; a trapping producer keeps the last-good snapshot (zero flicker
+  test).
+
+**Exit:** a decoration-producing plugin's gutter marks paint in both renderers;
+keystroke→glyph latency shows no per-frame WASM (the `no_per_frame_wasm_guard`
+invariant holds); a trapping producer keeps the last-good snapshot with zero
+flicker.
 
 ### PL8.D — `init.rs`-as-WASM user config  ✅
 `init.rs` is **just another plugin**, loaded from `<config>/lattice/init/`
@@ -445,16 +478,22 @@ its artifact is rebuilt. PL8.D complete.
 > compiled `init.wasm`; the user rebuilds externally (`cargo build`). A
 > `:plugin-build` ex-command that compiles a plugin's / init's Rust source →
 > `wasm32-wasip2` artifact from inside the editor (the watcher then reloads it)
-> would close the edit→build→reload loop entirely. Deferred — sequence after the
-> event→command (tier-2) work, since it also wants build output surfaced in
-> `*messages*` / a compilation buffer.
+> would close the edit→build→reload loop entirely. It's also the flagship first
+> consumer of an event-handler-callable API (per the settled event-handler
+> principle — see the status snapshot), and wants build output surfaced in
+> `*messages*` / a compilation buffer. Deferred.
 
-### PL8.F — Intern-leak reclamation  📝
-- The interner leak (Low–Medium, no consumer until a reload path exists) is reclaimed
-  as part of the first reload consumer (D/H). Small; lands *with* its consumer, not
-  standalone.
-- **Exit:** repeated reload does not grow the interner unbounded (assert via a
-  reload-loop test).
+### PL8.F — Intern-leak reclamation  📝 (now ready — the reload path exists as of PL8.C/D)
+- The interner leak (Low–Medium): plugin option `name`/`doc` are `Box::leak`ed to
+  `&'static str` in `config_host::build_and_register` (documented there, PH7.12b.2
+  decision C). Harmless for load-once, but repeated `:plugin-reload` /
+  `:reload-config` (now real, PL8.C/D) grows the leaked strings unbounded. The
+  durable fix is a `Cow<'static, str>` on the native option type so the bytes free
+  with the entry on `ConfigRegistry::unregister` — a ~100-site sweep of stable
+  types (picker / grammar / config), which is why it was deferred until a reload
+  consumer existed to exercise it.
+- **Exit:** a reload-loop test (`:plugin-reload` a config plugin N times) shows the
+  interned-string footprint bounded, not growing per reload.
 
 ### PL8.G — Modes-as-components (bundled major/minor as WASM)  📝 (shades into 8b)
 - Ship a built-in mode as a WASM component through `spawn_mode_plugin` to validate the
@@ -478,3 +517,46 @@ its artifact is rebuilt. PL8.D complete.
 dependency de-risk). Then B+C give the real load path + user surface; E closes the
 hot-path decoration gap on its own UX-vigilant slice. D brings `init.rs`. F rides D.
 G/H are the "as-components" + management surface that bridge into Phase 8b.
+
+---
+
+## Status snapshot — 2026-07-16 (session handoff)
+
+Branch `phase-8-plugin-loader`, **~22 commits ahead of `main`**, green throughout.
+
+**Done:** PL8.A ✅ · PL8.B ✅ (all 6 seam drains: picker / config / events /
+grammar / modes / completion, + the boot-ordering fix seating `install` after the
+command-registry + keymap services) · PL8.C ✅ (`:plugin-load` / `-unload` /
+`-reload` + `PluginTeardown` lifecycle, option A — loader self-registers, zero
+host code) · PL8.D ✅ (D.1 keymap seam → `KeymapLayer::User`; D.2 `drain_keymap` +
+keymap teardown surface; D.3 boot-load `init.rs` from `<config>/lattice/init/` +
+`:reload-config`; D.4 init-artifact auto-reload watcher via `notify`).
+
+**Next: PL8.E** (WASM decorations — the last un-drained seam + the hot-path slice).
+Assessed as **pattern-composition, no design fork** (LSP-async-cache + DiffSignRenderState
++ picker-registration); decomposition E.1–E.4 above. Then **PL8.F** (intern-leak,
+now ready — the reload path exists), **PL8.G / PL8.H** (→ Phase 8b).
+
+**Design decisions settled this session (don't re-litigate):**
+- **Tier-2 "event→command" is resolved as a principle, NOT `:autocmd`/`SubscriptionTarget::Invocation`.**
+  Event handlers act by calling the **underlying API** (WIT imports for plugins /
+  `init.rs`, native imports for internal handlers) using the `Event` payload's
+  context — never by invoking `:` command strings and never by returning effects.
+  `:` commands are thin front-ends over those APIs. No declarative `:autocmd`. No
+  `buffer N` targeted-dispatch (defer buffer-registry exposure until a real use
+  case). See the memory `event-handlers-call-apis-not-commands`. The WASM
+  `on-event` already delivers the full typed `Event`; expanding the imported-API
+  surface is incremental + per-use-case (flagship: plugin build/reload, gated on
+  `:plugin-build`).
+- **`:plugin-build`** (compile source → `wasm32-wasip2` from inside the editor,
+  the watcher then reloads) is a future slice — sequence after the first concrete
+  API-exposure use case; wants build output in `*messages*` / a compilation buffer.
+
+**Uncommitted in the working tree (intentionally):**
+- `docs/user/init.md` (+ its `docs/user/README.md` index entry) — the user-facing
+  `init.rs` guide, **held uncommitted** until the real event-handler-action APIs
+  land, then finalize against actual APIs. Its events section must be corrected to
+  "handlers call APIs via imports" (not the effect-return framing it currently
+  sketches) per the settled principle above.
+- A separate `:cd` / `:pwd` feature (11 files, Dhruva's parallel work) — leave
+  untouched; stage commits **explicitly** (never `git add -A`) so it isn't swept in.

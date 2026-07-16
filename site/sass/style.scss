@@ -201,26 +201,10 @@ img { max-width: 100%; height: auto; }
     gap: 16px;
   }
 
-  .hero-mark {
-    color: $brand-blue;
-    margin-bottom: 8px;
-    svg { display: block; }
-  }
-
-  .hero-title {
-    font-size: 3.5rem;
-    font-weight: 800;
-    letter-spacing: -0.03em;
-    color: $brand-blue;
-    line-height: 1.1;
-  }
-
-  .hero-tagline {
-    font-size: 1.375rem;
-    font-weight: 500;
-    color: $text;
-    max-width: 640px;
-    line-height: 1.4;
+  .hero-banner {
+    max-width: 680px;
+    width: 100%;
+    height: auto;
   }
 
   .hero-subtitle {
@@ -576,8 +560,6 @@ img { max-width: 100%; height: auto; }
 
   .hero {
     background: linear-gradient(135deg, #0d1b3e 0%, #161b22 50%, #1a0d2e 100%);
-
-    .hero-tagline { color: $dark-text; }
   }
 
   .features {
@@ -671,8 +653,6 @@ img { max-width: 100%; height: auto; }
   .hero {
     padding: 48px 0;
 
-    .hero-title { font-size: 2.25rem; }
-    .hero-tagline { font-size: 1.125rem; }
     .hero-actions { flex-direction: column; align-items: center; }
   }
 

@@ -3,15 +3,7 @@
 {% block content %}
 <section class="hero">
   <div class="container hero-inner">
-    <div class="hero-mark">
-      <svg width="120" height="145" viewBox="0 0 100 120" fill="none" aria-hidden="true">
-        <path d="M0 20h20v80h60v20H0V20Z" fill="currentColor"/>
-        <path d="M20 0h80v100H80V20H20V0Z" fill="currentColor"/>
-        <rect x="40" y="36" width="20" height="48" fill="#f59e0b" rx="2"/>
-      </svg>
-    </div>
-    <h1 class="hero-title">Lattice</h1>
-    <p class="hero-tagline">{{ config.description }}</p>
+    <img src="{{ get_url(path='/readme-banner.svg') }}" alt="Lattice" class="hero-banner">
     <p class="hero-subtitle">{{ config.extra.tagline }}</p>
     <div class="hero-actions">
       <a href="{{ get_url(path='/docs/getting-started/') }}" class="btn btn-primary">Get Started</a>

@@ -943,7 +943,10 @@ impl App {
             // `Action::ApplyEdit` on `out.next_actions` (drained by the
             // dispatch wrapper); nothing renderer-coupled here.
             | Effect::ApplyEdit { .. }
-            | Effect::Edits(_) => {}
+            | Effect::Edits(_)
+            // Host-applied cd/pwd effects.
+            | Effect::ChangeDir(_)
+            | Effect::PrintWorkingDir => {}
             // 5.5.E.7.7: `Edits` migrated to `Editor::handle_effect`;
             // routed through the grouped no-op above. `handle_edits`
             // and `publish_document_changed` wrappers retired in the
@@ -1319,7 +1322,9 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::Tutor { .. }
         | Effect::AppAction(_)
         | Effect::RecordJump
-        | Effect::OpenDashboard => false,
+        | Effect::OpenDashboard
+        | Effect::ChangeDir(_)
+        | Effect::PrintWorkingDir => false,
     }
 }
 
@@ -1447,7 +1452,9 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::Tutor { .. }
         | Effect::AppAction(_)
         | Effect::RecordJump
-        | Effect::OpenDashboard => false,
+        | Effect::OpenDashboard
+        | Effect::ChangeDir(_)
+        | Effect::PrintWorkingDir => false,
     }
 }
 

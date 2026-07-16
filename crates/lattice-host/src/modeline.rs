@@ -151,6 +151,26 @@ pub fn modal_label_short(rs: &RenderState) -> &'static str {
     }
 }
 
+/// Shorten a path to be relative to a base directory if the
+/// `path.relative` option is enabled and a base directory is set.
+fn maybe_shorten_path(path: &std::path::Path, rs: &RenderState) -> String {
+    let relative = rs
+        .options
+        .config
+        .get_typed::<lattice_config::core_options::PathRelative>()
+        .map(|v| *v)
+        .unwrap_or(false);
+    if relative {
+        if let Some(ref cwd) = rs.current_dir {
+            if let Ok(rel) = path.strip_prefix(cwd) {
+                let s = rel.display().to_string();
+                return if s.is_empty() { ".".to_string() } else { s };
+            }
+        }
+    }
+    path.display().to_string()
+}
+
 /// The buffer-label segment for `pane`: a pane provider's custom label
 /// when one is supplied (`provider_label` — the file-tree / oil / help
 /// M.4 mechanism, resolved renderer-side and passed in so the assembly
@@ -174,7 +194,7 @@ pub fn pane_path_segment(
     }
     let label = reg
         .document_path(pane.buffer_id)
-        .map(|p| p.display().to_string())
+        .map(|p| maybe_shorten_path(p.as_path(), rs))
         .or_else(|| reg.name_of(pane.buffer_id))
         .unwrap_or_else(|| "[no name]".to_string());
     // Suppress the dirty marker for synthetics (streamed buffers the

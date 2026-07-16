@@ -206,6 +206,12 @@ crate::options! {
     #[name("clipboard")]
     pub ClipboardEnabled: bool = true;
 
+    /// Show buffer-relative paths (modeline, LSP references, etc.)
+    /// instead of absolute paths. Requires `:cd` to set the base
+    /// directory; falls back to absolute when no base is set.
+    #[name("path.relative")]
+    pub PathRelative: bool = false;
+
     /// Ignore case in search patterns.
     #[aliases("ic")]
     #[name("ignorecase")]

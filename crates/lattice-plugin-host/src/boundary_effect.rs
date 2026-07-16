@@ -736,6 +736,8 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
         // NarrowTrigger-carrying AppEffect still propagates its typed error).
         NativeEffect::AppAction(app) => WitEffect::AppAction(app.to_wit()?),
         NativeEffect::RecordJump => WitEffect::RecordJump,
+        // Host-only ex-commands (no WIT mirror; plugins never see them).
+        NativeEffect::ChangeDir(_) | NativeEffect::PrintWorkingDir => WitEffect::None,
         NativeEffect::OpenAiLog { session } => WitEffect::OpenAiLog(session.clone()),
         NativeEffect::OpenSyntheticBuffer { name, mode_id } => {
             WitEffect::OpenSyntheticBuffer(WitOpenSyntheticBufferPayload {

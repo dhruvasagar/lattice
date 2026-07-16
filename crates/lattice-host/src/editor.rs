@@ -856,6 +856,9 @@ pub struct Editor {
     /// an `ArcSwap<T>`; `:set` parses against it; the
     /// customize buffer view (post-1.0) reads + writes
     /// through the same surface.
+    /// User-set working directory (`:cd`). `None` falls back to
+    /// `std::env::current_dir()` for path resolution.
+    pub current_dir: Option<PathBuf>,
     pub config: Arc<ConfigRegistry>,
     /// Hot-path read cache for the option values.
     /// Repopulated by `rebuild_option_cache` after every

@@ -574,6 +574,9 @@ static ALIAS_TABLE: &[(&str, &str)] = &[
     ("lsp-complete", "ex:lsp-complete"),
     ("lsp-rename", "ex:lsp-rename"),
     ("lsp-code-action", "ex:lsp-code-action"),
+    ("cd", "ex:cd"),
+    ("chdir", "ex:cd"),
+    ("pwd", "ex:pwd"),
 ];
 
 /// Built-in aliases as a `(short, canonical)` map. Exposed for tests

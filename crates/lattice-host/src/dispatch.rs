@@ -1074,6 +1074,7 @@ impl Editor {
             // is written through `self.modeline` (ML.1); mode/plugin
             // content arrives via ModelineElementUpdate (ML.3).
             modeline_elements: modeline_snapshot,
+            current_dir: self.current_dir.clone(),
             // Slice 3c.final.B.10: typed-options registry handle.
             // The inner `ConfigRegistry` is already Arc-shared on
             // the editor side, so the publish is one Arc clone.
@@ -2770,6 +2771,51 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
             // capturing must happen before `OpenBuffer` changes
             // `editor.cursor` / `editor.active_buffer_id()`.
             editor.push_position_history(editor.cursor, PositionSource::AutoJump);
+        }
+        Effect::ChangeDir(path) => {
+            let target = match path {
+                Some(p) => {
+                    let pth = normalize_user_path_with_cwd(
+                        std::path::Path::new(&p),
+                        editor.current_dir.as_deref(),
+                    );
+                    // If the resolved path is a file, use its parent.
+                    if pth.is_dir() {
+                        pth
+                    } else if let Some(parent) = pth.parent() {
+                        parent.to_path_buf()
+                    } else {
+                        pth
+                    }
+                }
+                // No arg -> HOME.
+                None => match std::env::var_os("HOME") {
+                    Some(h) => std::path::PathBuf::from(h),
+                    None => {
+                        editor.set_message(
+                            EchoLevel::Error,
+                            "cd: HOME is not set".to_string(),
+                        );
+                        return;
+                    }
+                },
+            };
+            // Canonicalize to resolve symlinks / `.` / `..`.
+            let canonical = target.canonicalize().unwrap_or(target);
+            editor.current_dir = Some(canonical.clone());
+            editor.set_message(
+                EchoLevel::Info,
+                canonical.display().to_string(),
+            );
+        }
+        Effect::PrintWorkingDir => {
+            let cwd = editor
+                .current_dir
+                .clone()
+                .or_else(|| std::env::current_dir().ok())
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "<unknown>".to_string());
+            editor.set_message(EchoLevel::Info, cwd);
         }
         Effect::ClearSearchHighlight => {
             // `:nohlsearch` -- drop the current-match highlight and
@@ -10768,7 +10814,7 @@ impl Editor {
                 }
             },
         };
-        let target = normalize_user_path(&target);
+        let target = normalize_user_path_with_cwd(&target, self.current_dir.as_deref());
         if let Ok(meta) = std::fs::metadata(&target)
             && meta.is_dir()
         {
@@ -17302,7 +17348,7 @@ impl Editor {
                 },
             },
         };
-        let dir = normalize_user_path(&dir);
+        let dir = normalize_user_path_with_cwd(&dir, self.current_dir.as_deref());
         if let Some(existing_id) = self.oil_with_dir(&dir) {
             self.activate_oil(existing_id);
             self.set_message(
@@ -18480,7 +18526,7 @@ impl Editor {
         path: std::path::PathBuf,
         target_line: Option<u32>,
     ) -> Vec<RendererSignal> {
-        let path = normalize_user_path(&path);
+        let path = normalize_user_path_with_cwd(&path, self.current_dir.as_deref());
         // Already-open file: preview the REAL (parsed + attached) buffer as
         // an isolated projection — PI.3, no activation, no cursor/scroll
         // disturbance of the committed buffer.
@@ -30263,7 +30309,9 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         // I5.1: a terminal spawn opens a new buffer — no yank, no in-place edit.
         | Effect::SpawnTerminal { .. }
         | Effect::TerminalInput(_)
-        | Effect::AppAction(_) => false,
+        | Effect::AppAction(_)
+        | Effect::ChangeDir(_)
+        | Effect::PrintWorkingDir => false,
     }
 }
 
@@ -30393,7 +30441,9 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         // I5.1: a terminal spawn opens a new buffer — no yank, no in-place edit.
         | Effect::SpawnTerminal { .. }
         | Effect::TerminalInput(_)
-        | Effect::AppAction(_) => false,
+        | Effect::AppAction(_)
+        | Effect::ChangeDir(_)
+        | Effect::PrintWorkingDir => false,
     }
 }
 
@@ -30989,13 +31039,25 @@ pub fn flatten_workspace_edit(
 /// `lattice-ui-tui::app::normalize_user_path` so the host-side
 /// `do_edit` migration can reach it without dragging in the App.
 pub fn normalize_user_path(path: &std::path::Path) -> std::path::PathBuf {
+    normalize_user_path_with_cwd(path, None)
+}
+
+/// Like [`normalize_user_path`] but uses the provided `cwd` for
+/// relative path resolution instead of `std::env::current_dir()`.
+pub fn normalize_user_path_with_cwd(
+    path: &std::path::Path,
+    cwd: Option<&std::path::Path>,
+) -> std::path::PathBuf {
     let expanded = expand_tilde(path);
     if expanded.is_absolute() {
         return expanded;
     }
-    match std::env::current_dir() {
-        Ok(cwd) => cwd.join(expanded),
-        Err(_) => expanded,
+    match cwd {
+        Some(dir) => dir.join(expanded),
+        None => match std::env::current_dir() {
+            Ok(cwd) => cwd.join(expanded),
+            Err(_) => expanded,
+        },
     }
 }
 

@@ -10,7 +10,7 @@
         <rect x="40" y="36" width="20" height="48" fill="#f59e0b" rx="2"/>
       </svg>
     </div>
-    <h1 class="hero-title">Lattice</h1>
+    <h1 class="hero-title">Lattice <span class="version-hero">v{{ version.latest }}</span></h1>
     <p class="hero-tagline">{{ config.description }}</p>
     <p class="hero-subtitle">{{ config.extra.tagline }}</p>
     <div class="hero-actions">
@@ -83,7 +83,7 @@
         <a href="https://github.com/dhruvasagar/lattice/blob/main/docs/dev/operations/benchmarks.md" class="status-link">View benchmarks →</a>
       </div>
       <div class="status-card">
-        <span class="status-badge status-milestone">v0.1.0</span>
+        <span class="status-badge status-milestone">v{{ version.latest }}</span>
         <p>Pre-1.0 breaking changes expected. Pluggable WASM init, plugin lifecycle, keymap teardown, decoration rendering, and more in progress.</p>
         <a href="{{ get_url(path='/docs/') }}" class="status-link">Read the docs →</a>
       </div>

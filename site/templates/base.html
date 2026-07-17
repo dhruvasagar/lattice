@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{% block title %}{{ config.title }}{% endblock title %}</title>
+{% set version = load_data(path="data/version.toml") -%}
   <meta name="description" content="{% block description %}{{ config.description }}{% endblock description %}">
   <link rel="icon" type="image/svg+xml" href="{{ get_url(path='/favicon-64.svg') }}">
   <link rel="icon" type="image/x-icon" href="{{ get_url(path='/favicon.ico') }}">
@@ -20,6 +21,7 @@
           <rect x="9" y="9" width="6" height="12" fill="#f59e0b" rx="1"/>
         </svg>
         Lattice
+        <span class="version-header">v{{ version.latest }}</span>
       </a>
       <nav class="nav-links">
         <a href="{{ get_url(path='/why-lattice/') }}">Why Lattice</a>
@@ -39,7 +41,7 @@
     <div class="container">
       <div class="footer-grid">
         <div>
-          <h4>Lattice</h4>
+          <h4>Lattice <span class="version-footer">v{{ version.latest }}</span></h4>
           <p>{{ config.extra.tagline }}</p>
         </div>
         <div>

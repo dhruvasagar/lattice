@@ -93,6 +93,16 @@ img { max-width: 100%; height: auto; }
     svg { color: $brand-blue; flex-shrink: 0; }
   }
 
+  .version-header {
+    color: $text-muted;
+    font-size: 0.75rem;
+    font-weight: 500;
+    margin-left: -4px;
+    align-self: flex-end;
+    line-height: 1;
+    margin-bottom: 6px;
+  }
+
   .nav-links {
     display: flex;
     gap: 24px;
@@ -125,6 +135,14 @@ img { max-width: 100%; height: auto; }
     letter-spacing: 0.05em;
     color: $text-muted;
     margin-bottom: 12px;
+  }
+
+  .version-footer {
+    text-transform: none;
+    font-size: 0.75rem;
+    font-weight: 400;
+    color: $text-muted;
+    margin-left: 6px;
   }
 
   p {
@@ -213,6 +231,17 @@ img { max-width: 100%; height: auto; }
     letter-spacing: -0.03em;
     color: $brand-blue;
     line-height: 1.1;
+    display: inline-flex;
+    align-items: flex-end;
+    gap: 8px;
+  }
+
+  .version-hero {
+    font-size: 1.25rem;
+    font-weight: 500;
+    color: $text-muted;
+    align-self: flex-end;
+    line-height: 2.8;
   }
 
   .hero-tagline {
@@ -851,6 +880,7 @@ img { max-width: 100%; height: auto; }
     padding: 48px 0;
 
     .hero-title { font-size: 2.25rem; }
+    .version-hero { font-size: 1rem; }
     .hero-tagline { font-size: 1.125rem; }
     .hero-actions { flex-direction: column; align-items: center; }
   }

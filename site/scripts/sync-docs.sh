@@ -10,6 +10,24 @@ script_dir = os.path.dirname(os.path.abspath(__file__))
 site_dir = os.path.dirname(script_dir)
 repo_root = os.path.join(site_dir, '..')
 
+RE_VERSION = re.compile(r'^version\s*=\s*"([^"]+)"', re.MULTILINE)
+
+def read_version():
+    """Read version from workspace Cargo.toml."""
+    cargo_path = os.path.join(repo_root, 'Cargo.toml')
+    with open(cargo_path, encoding='utf-8') as fh:
+        m = RE_VERSION.search(fh.read())
+    return m.group(1) if m else '0.0.0'
+
+def write_version_data():
+    """Write version data for Zola's load_data."""
+    version = read_version()
+    dst = os.path.join(site_dir, 'data', 'version.toml')
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    with open(dst, 'w', encoding='utf-8') as fh:
+        fh.write(f'latest = "{version}"\n')
+    print(f'  Version: {version}')
+
 def strip_frontmatter(content):
     return re.sub(r'^---\n.*?\n---\n', '', content, count=1, flags=re.DOTALL)
 
@@ -68,6 +86,10 @@ def sync_dir(src_dir, dst_dir, link_mods=None):
         dst_file = os.path.join(dst_dir, b)
         write_doc(dst_file, title, body)
         print(f'  {os.path.relpath(dst_file, site_dir)}')
+
+# --- Version data ---
+print('Updating version data...')
+write_version_data()
 
 # --- User docs ---
 print('Syncing user docs...')

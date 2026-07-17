@@ -12,6 +12,5 @@ taxonomies = []
 [extra]
 github_repo = "https://github.com/dhruvasagar/lattice"
 tagline = "Combines vim's modal editing power with emacs's extensibility model on a non-blocking, multi-threaded core."
-latest_version = "0.1.0"
 # GitHub Actions dispatcher URL — uncomment when deploy workflow is ready
 # deploy_ref = "https://github.com/dhruvasagar/lattice/actions/workflows/deploy-docs.yml"

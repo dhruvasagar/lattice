@@ -63,6 +63,11 @@ lattice-completion = { path = "../lattice-completion" }
 # payload types the `effect` variant composes.
 lattice-protocol = { path = "../lattice-protocol" }
 lattice-core = { path = "../lattice-core" }
+# PO.1 (plugin observability): `trace::PluginTracePushed` is a typed event
+# declared via `lattice_protocol::register_event!`, whose expansion registers an
+# `#[linkme::distributed_slice]` descriptor — so the invoking crate needs linkme
+# in scope (the `lattice-lsp` `LspLogPushed` precedent).
+linkme = { workspace = true }
 # PH7.3c: the `document` resource is backed by `Arc<DocumentSnapshot>` (decision
 # A -- a point-in-time immutable view; `get-text-range` slices this snapshot's
 # rope). `DocumentSnapshot` lives in lattice-runtime.

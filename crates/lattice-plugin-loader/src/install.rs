@@ -14,7 +14,9 @@ use std::sync::Arc;
 use lattice_config::ConfigRegistry;
 use lattice_mode::{PluginMetaSinkHandle, SubsystemBoot};
 use lattice_picker::PickerRegistryHandle;
-use lattice_plugin_host::{PluginHost, TrustTier};
+use lattice_plugin_host::{
+    PluginHost, PluginTracePushed, PluginTracer, PluginTracerHandle, TrustTier,
+};
 
 use crate::{LoaderServices, PluginLoader, PluginLoaderHandle};
 
@@ -69,6 +71,19 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     // subscription drained on the runtime flips a trapped plugin to quarantined.
     loader.subscribe_health();
     boot.register_service::<PluginLoaderHandle>(loader.clone());
+
+    // PO.1 (plugin observability): stand the boundary tracer up as a boot
+    // service, its publisher bound to the runtime bus so every appended
+    // `PluginTraceRecord` streams as a typed `PluginTracePushed` event (the
+    // `LspLogger` boot-wiring precedent). The seams emit into it (PO.2/PO.3); the
+    // trace-buffer views subscribe (PO.4). Off the hot path by contract — this
+    // only wires the pipe.
+    let tracer: PluginTracerHandle = Arc::new(PluginTracer::with_defaults());
+    let trace_bus = boot.event_bus().clone();
+    tracer.set_event_publisher(Box::new(move |record| {
+        trace_bus.publish_typed(PluginTracePushed { record });
+    }));
+    boot.register_service::<PluginTracerHandle>(tracer);
 
     // Discover + load on-disk plugins OFF the boot thread: a plugin cold-start
     // must not delay boot, and the load path is async (instantiate/activate/

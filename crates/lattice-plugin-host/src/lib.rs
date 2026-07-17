@@ -79,6 +79,7 @@ pub mod picker_host;
 pub mod picker_source;
 pub mod picker_task;
 pub mod teardown;
+pub mod trace;
 pub mod trampoline;
 
 pub use boundary::WitBoundary;
@@ -95,6 +96,10 @@ pub use manifest::{
 pub use picker_source::WasmPickerSource;
 pub use picker_task::{PickerActor, PickerClient};
 pub use teardown::{PluginTeardown, TeardownRegistries, TeardownReport};
+pub use trace::{
+    Direction, PluginTraceRecord, PluginTracePushed, PluginTracer, PluginTracerHandle,
+    TraceLevel, TraceOutcome,
+};
 /// The compiled component — the return type of [`PluginHost::compile`],
 /// re-exported so callers (the plugin loader) can name it without a direct
 /// `wasmtime` dependency.

@@ -4397,6 +4397,7 @@ dependencies = [
  "lattice-plugin-sdk",
  "lattice-protocol",
  "lattice-runtime",
+ "linkme",
  "proptest",
  "serde",
  "tempfile",

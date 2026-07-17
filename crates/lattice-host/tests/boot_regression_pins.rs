@@ -200,6 +200,21 @@ fn plugin_loader_service_present_at_boot() {
 }
 
 #[test]
+fn plugin_tracer_service_present_at_boot() {
+    // PO.1: `lattice_plugin_loader::install` stands the boundary tracer up and
+    // registers it (publisher bound to the runtime bus). Pinned so a boot
+    // restructure that drops it fails before it lands — the seams (PO.2/PO.3) and
+    // the trace-buffer views (PO.4) both resolve it via this service.
+    assert!(
+        boot()
+            .services
+            .get::<lattice_plugin_host::PluginTracerHandle>()
+            .is_some(),
+        "PluginTracerHandle must be registered at boot (PO.1)"
+    );
+}
+
+#[test]
 fn plugin_loader_captures_every_drain_service() {
     // PL8.B: the loader's `install` captures its drain-required services via
     // `boot.service::<T>()`, which returns `None` for any service registered

@@ -788,6 +788,35 @@ mode-ownership acid test passing from the guest side).
 - **`:plugin-build`** (compile source → `wasm32-wasip2` from inside the editor,
   the watcher then reloads) is a future slice — sequence after the first concrete
   API-exposure use case; wants build output in `*messages*` / a compilation buffer.
+- **Plugin observability — settled 2026-07-17 (own design fragment + slices,
+  AFTER PL8.H.2/.3).** A layered stack anchored on the insight that *the host owns
+  the whole Component-Model boundary*, so the richest **language-agnostic** signal
+  (independent of the guest's source language — Rust/Zig/Go/AS) is instrumenting
+  our side of every WIT import/export. The Emacs-debugger analogy is corrected:
+  we don't own the guest runtime, so a step-debugger isn't the model — for a
+  message-passing architecture the right granularity is the **boundary interaction
+  trace + crash forensics**. Layers: **0** lifecycle+health+crash-isolation (built:
+  `PluginCrashed`/quarantine/H.1 status; the `:plugins` view is its surface);
+  **1** host-boundary trace (every call: name/args-summary/duration/fuel-delta/
+  result-or-trap), config-gated verbosity, routed to a plugin-trace buffer; **2** a
+  `wasi:logging`-style host import so guests emit their own structured logs,
+  host-captured. **Layer 3** (wasmtime DWARF/gdb source-level step-debug) is
+  **deferred** as a documented author-only escape hatch — not core. Decisions:
+  boundary-trace-first (portable, no guest cooperation); verbosity a typed option;
+  **surface = one shared underlying stream + per-plugin filtered views** (drill-in
+  from the manager view). **Hard constraint (paramount #1 + #4) — tracing is NEVER
+  on the editor hot path (Dhruva, 2026-07-17):** trace records are **streamed via
+  the event bus, exactly like LSP logs** (`LspLogPushed` → off-thread drain →
+  synthetic buffer, the `MessagesLayer`/lsp-trace precedent). Nothing is formatted
+  or written on the UI/actor thread — the drain side (off-thread) does all
+  formatting + buffer append. Even the grammar/sync-trampoline seam (keystroke hot
+  path, typed call < 500ns p99) never synchronously traces: emission is at most a
+  cheap non-blocking enqueue behind a per-plugin atomic gate (zero-alloc /
+  zero-arg-format when off), and by default the hot-path seam carries only
+  lifecycle/crash signal, not per-call traces. Async seams
+  (picker/completion/decorations/events) are already off-thread and stream richly.
+  Full design fragment (`docs/dev/architecture/plugin-observability.md`) to be
+  written when PL8.H.2/.3 land.
 
 **Uncommitted in the working tree (intentionally):**
 - `docs/user/init.md` (+ its `docs/user/README.md` index entry) — the user-facing

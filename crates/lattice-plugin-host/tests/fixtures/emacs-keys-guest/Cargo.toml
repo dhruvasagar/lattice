@@ -1,0 +1,25 @@
+# PL8.G modes-as-components fixture guest — the emacs-keys `<C-x>` leader tribute
+# shipped as a WASM component (not native). A minimal `wasm32-wasip2` component
+# implementing the `modes-plugin` world: from its `register-modes` export it
+# declares ONE minor mode (`emacs-keys-plugin-mode`) whose whole behavior is a
+# keymap layer binding leader chords to EXISTING commands — the same shape the
+# native `emacs-keys-mode` uses, proving the §5.8.3 "modes as components" path.
+# Standalone workspace (`[workspace]` below) so it targets wasm32-wasip2 without
+# inheriting the host toolchain — mirrors the sibling `modes-guest` fixture.
+[package]
+name = "emacs-keys-guest"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.58"
+
+[profile.release]
+opt-level = "s"
+strip = true
+
+[workspace]

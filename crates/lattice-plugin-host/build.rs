@@ -75,6 +75,11 @@ fn main() {
         "KEYMAP_GUEST_WASM",
     );
     build_guest(
+        &fixtures.join("emacs-keys-guest"),
+        "emacs-keys-guest",
+        "EMACS_KEYS_GUEST_WASM",
+    );
+    build_guest(
         &manifest_dir
             .join("..")
             .join("..")

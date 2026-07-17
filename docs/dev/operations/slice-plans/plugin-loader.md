@@ -589,12 +589,55 @@ its artifact is rebuilt. PL8.D complete.
 > host (794) suites, workspace `--tests` check, GPUI `--features window`, clippy
 > clean. No bench: the change is load/unload-time (off the keystroke path).
 
-### PL8.G — Modes-as-components (bundled major/minor as WASM)  📝 (shades into 8b)
+### PL8.G — Modes-as-components (bundled major/minor as WASM)  ✅ (shades into 8b)
 - Ship a built-in mode as a WASM component through `spawn_mode_plugin` to validate the
   full mode seam end-to-end (the design's §5.8.3 "as components" goal). Built-in modes
   stay native by default; this proves the extension path.
 - **Exit:** one mode loads as a component, registers its `MinorMode` keymap layer, and
   passes the mode-ownership acid test from the guest side.
+
+> **Landed 2026-07-16 — option (B), confirmed with Dhruva (real-dispatch
+> end-to-end through a booted editor).** The subject is the **emacs-keys leader
+> tribute** itself — a real native builtin minor mode
+> (`lattice-mode/src/emacs_keys_mode.rs`, the very "EmacsKeysMode template" the
+> mode-host docs cite) whose entire behavior IS a keymap layer of
+> leader→existing-command bindings, so it is fully expressible through the
+> declarative mode seam (no seam extension — `try_bind_chord_string` already
+> parses the multi-chord `<C-x>` sequences via `parse_chord_sequence`).
+>
+> **Fixture** `tests/fixtures/emacs-keys-guest` (built by `build.rs` →
+> `EMACS_KEYS_GUEST_WASM`, ~50K): a `modes-plugin`-world component declaring ONE
+> minor mode `emacs-keys-plugin-mode` (`Universal`) via the canonical WIT
+> `register-mode`, binding two **component-exclusive** leader chords to existing
+> commands — `<C-x>e` → `action:split-pane-horizontal`, `<C-x>w` → `ex:write`.
+>
+> **Why a distinct id + distinct chords (not `emacs-keys-mode` verbatim):** the
+> native mode is still registered (foundation mode) — "modes stay native by
+> default" — so a component re-declaring `emacs-keys-mode` would hit the
+> registry's duplicate-id gate. A distinct id is the realistic case (a plugin
+> shipping its own leader mode). Distinct chords make the dispatch proof
+> unambiguous: active mode layers MERGE into one composite trie at lookup
+> (`lookup_with_context`'s `merge_over`), so a chord the native `<C-x>` layer
+> lacks (`<C-x>e`) can only resolve via the component's layer.
+>
+> **Test** `lattice-host/tests/emacs_keys_as_component.rs` (mirrors the native
+> `emacs_keys_dispatch.rs` harness): boots a real `Editor`, wires a
+> tempdir-`PluginHost` loader to the editor's LIVE `mode_registry` / `keymap` /
+> command registry, loads the component, activates it (publish `MajorEntered` +
+> drain), then dispatches `<C-x>e` through `Editor::dispatch_chord` and asserts it
+> resolves `action:split-pane-horizontal` AND grows the pane tree 1→2 — a
+> component-shipped mode driving a real editor action, indistinguishable from
+> native at the dispatch layer. Also asserts ownership/gating (the `<C-x>e`
+> binding resolves only when `emacs-keys-plugin-mode` is active, never globally)
+> and the graceful-skip path (no wired mode registry → `NotWired("modes")` skip,
+> editor uncorrupted).
+>
+> **Mode-ownership acid test, guest side:** the only production change is
+> `build.rs` registering the new fixture — **zero** `Editor::` methods, **zero**
+> host `Action` variants. The plugin mode reaches dispatch through the same
+> generic path builtins use. No bench: registration/activation are off the
+> keystroke path and chord *resolution* stays native (no hot-path WASM), pinned
+> by the existing `no_per_frame_wasm_guard`.
 
 ### PL8.H — Plugin-manager surface (reload + health, buffer-backed)  📝 (shades into 8b)
 - A `:plugins` buffer-backed view (everything-is-a-buffer) listing loaded plugins,
@@ -643,8 +686,15 @@ plugin-host (guard holds). All seam drains now exhaustive.
 sweep across config / grammar / picker + boundary leak removal; `config_reload_leak`
 proves the footprint stays bounded across 12 reloads).
 
-**Next: PL8.G / PL8.H** (→ Phase 8b): modes-as-components + the buffer-backed
-plugin-manager surface.
+**Done (cont.):** PL8.G ✅ (modes-as-components — the emacs-keys leader tribute
+shipped as a WASM component through the mode seam; loads into a real booted
+editor's live registries, activates, and its `<C-x>e` leader chord dispatches
+`action:split-pane-horizontal` through the real dispatcher (pane 1→2),
+indistinguishable from native; zero host `Editor::`/`Action` additions — the
+mode-ownership acid test passing from the guest side).
+
+**Next: PL8.H** (→ Phase 8b): the buffer-backed plugin-manager surface
+(`:plugins` view — loaded plugins, health, reload/unload actions).
 
 **Design decisions settled this session (don't re-litigate):**
 - **Tier-2 "event→command" is resolved as a principle, NOT `:autocmd`/`SubscriptionTarget::Invocation`.**

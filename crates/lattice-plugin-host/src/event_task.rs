@@ -69,12 +69,21 @@ pub struct EventActor {
     /// one `PluginCrashed` and short-circuiting every later delivery before it
     /// re-enters the dead `Store`.
     quarantine: crate::Quarantine,
+    /// PO.2: the boundary tracer, wired by the loader via with_tracer; None in tests / pre-wire.
+    tracer: Option<crate::trace::PluginTracerHandle>,
 }
 
 impl EventActor {
     /// The host-issued identity of this plugin.
     pub fn id(&self) -> PluginId {
         self.id
+    }
+
+    /// PO.2: attach the boundary tracer (the loader calls this before spawning
+    /// run()). Off the hot path — the seam is async.
+    pub fn with_tracer(mut self, tracer: Option<crate::trace::PluginTracerHandle>) -> Self {
+        self.tracer = tracer;
+        self
     }
 
     /// Drive the actor to completion. Delivers each event in arrival order; the
@@ -123,12 +132,33 @@ impl EventActor {
             tracing::warn!(plugin = self.id.0, handler, %error, "event delivery skipped: arm failed");
             return;
         }
-        match self
+        let __trace_start = std::time::Instant::now();
+        let call_result = self
             .bindings
             .call_on_event(&mut self.store, handler, &wit)
-            .await
-        {
-            Ok(()) => {}
+            .await;
+        match call_result {
+            Ok(()) => {
+                // PO.2: record the successful guest-export crossing at Debug
+                // (dropped by the default Info gate — no per-delivery noise
+                // unless this plugin is raised to debug/trace). Off the hot
+                // path: the event seam is async, emission a cheap gated push.
+                if let Some(tracer) = self.tracer.as_ref() {
+                    use crate::trace::{Direction, PluginTraceRecord, TraceLevel, TraceOutcome};
+                    tracer.trace(PluginTraceRecord {
+                        plugin: self.id.0,
+                        seam: crate::PluginSeam::Events,
+                        direction: Direction::GuestExport,
+                        call: std::borrow::Cow::Borrowed("on-event"),
+                        level: TraceLevel::Debug,
+                        outcome: TraceOutcome::Ok {
+                            micros: __trace_start.elapsed().as_micros() as u64,
+                            fuel_delta: 0,
+                        },
+                        detail: None,
+                    });
+                }
+            }
             Err(source) => {
                 // Trap (fuel/epoch/wasm) or guest panic: skip this delivery,
                 // never propagate — the host, bus, and every other subscriber
@@ -143,6 +173,23 @@ impl EventActor {
                     ?kind,
                     "plugin event handler trapped; delivery skipped"
                 );
+                // PO.2: record the trapped crossing at Error (always kept),
+                // mirroring `trip_and_map_traced`'s Trap outcome shape.
+                if let Some(tracer) = self.tracer.as_ref() {
+                    use crate::trace::{Direction, PluginTraceRecord, TraceLevel, TraceOutcome};
+                    tracer.trace(PluginTraceRecord {
+                        plugin: self.id.0,
+                        seam: crate::PluginSeam::Events,
+                        direction: Direction::GuestExport,
+                        call: std::borrow::Cow::Borrowed("on-event"),
+                        level: TraceLevel::Error,
+                        outcome: TraceOutcome::Trap {
+                            kind: kind.label().to_string(),
+                            func: "on-event".to_string(),
+                        },
+                        detail: None,
+                    });
+                }
                 self.quarantine.trip("on-event", kind);
             }
         }
@@ -256,6 +303,7 @@ impl PluginHost {
             rx,
             id,
             quarantine: crate::Quarantine::new(id, Arc::clone(bus)),
+            tracer: None,
         };
         Ok((subscription_ids, actor))
     }

@@ -183,6 +183,10 @@ pub struct LoaderServices {
     /// loaded decoration plugin's `WasmDecorationSource`). The host's per-tick
     /// `maybe_refresh_wasm_decorations` reads the same handle wait-free.
     pub decoration_registry: Option<GutterDecorationSourceRegistryHandle>,
+    /// PO.2: the boundary tracer the loader attaches to each async seam actor
+    /// (`actor.with_tracer(...)` before spawning `run()`), so the actor emits a
+    /// `PluginTraceRecord` per guest call. `None` degrades to no tracing.
+    pub tracer: Option<lattice_plugin_host::PluginTracerHandle>,
 }
 
 /// Which drain-required services the loader captured at [`install`] time —
@@ -853,6 +857,9 @@ impl PluginLoader {
         // Drive the actor's request loop on the multi-thread runtime FIRST —
         // `connect` below issues a `spec()` guest call over the client channel,
         // which the actor must be running to answer (else the await deadlocks).
+        // PO.2: attach the boundary tracer so the actor emits a trace record per
+        // guest call (a no-op when unwired).
+        let actor = actor.with_tracer(self.env.tracer.clone());
         let task = runtime.spawn(actor.run());
 
         // The spec fetch is a guest call; a malformed spec fails registration
@@ -931,6 +938,9 @@ impl PluginLoader {
             .spawn_event_plugin(component, manifest, tier, PluginBudget::event(), bus)
             .await?;
         let id = actor.id();
+        // PO.2: attach the boundary tracer so the actor emits a trace record per
+        // guest call (a no-op when unwired).
+        let actor = actor.with_tracer(self.env.tracer.clone());
         let task = runtime.spawn(actor.run());
         record.tasks.push(task);
         tracing::debug!(
@@ -1141,6 +1151,9 @@ impl PluginLoader {
             .await?;
         // Drive the actor FIRST — `connect` issues a `spec()` guest call over the
         // client channel, which the actor must be running to answer.
+        // PO.2: attach the boundary tracer so the actor emits a trace record per
+        // guest call (a no-op when unwired).
+        let actor = actor.with_tracer(self.env.tracer.clone());
         let task = runtime.spawn(actor.run());
         let source = WasmCompletionSource::connect(client).await?;
         let id = source.plugin_id();
@@ -1291,6 +1304,9 @@ impl PluginLoader {
         // Drive the producer actor on the multi-thread runtime (off the keystroke
         // path). Unlike picker / completion there is no `connect` spec round-trip
         // — a decoration source carries no id/doc metadata; it is a pure producer.
+        // PO.2: attach the boundary tracer so the actor emits a trace record per
+        // guest call (a no-op when unwired).
+        let actor = actor.with_tracer(self.env.tracer.clone());
         let task = runtime.spawn(actor.run());
         let source = WasmDecorationSource::new(client);
         let id = source.plugin_id();

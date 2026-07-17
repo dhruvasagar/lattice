@@ -32,6 +32,17 @@ pub fn install(boot: &mut impl SubsystemBoot) {
         }
     };
 
+    // PO.1 (plugin observability): stand the boundary tracer up — its publisher
+    // bound to the runtime bus so every appended `PluginTraceRecord` streams as a
+    // typed `PluginTracePushed` event (the `LspLogger` boot-wiring precedent). The
+    // seams emit into it (PO.2/PO.3, via `LoaderServices.tracer`); the trace-buffer
+    // views subscribe (PO.4). Off the hot path by contract — this only wires it.
+    let tracer: PluginTracerHandle = Arc::new(PluginTracer::with_defaults());
+    let trace_bus = boot.event_bus().clone();
+    tracer.set_event_publisher(Box::new(move |record| {
+        trace_bus.publish_typed(PluginTracePushed { record });
+    }));
+
     // Capture the editor environment from the generic boot seams. `service`
     // returns `Arc<Handle-alias>` (double-Arc); unwrap one layer to the handle.
     let services = LoaderServices {
@@ -52,6 +63,7 @@ pub fn install(boot: &mut impl SubsystemBoot) {
         decoration_registry: boot
             .service::<lattice_mode::GutterDecorationSourceRegistryHandle>()
             .map(|h| (*h).clone()),
+        tracer: Some(tracer.clone()),
     };
     if services.picker_registry.is_none() {
         // The host always registers the picker registry; its absence means a
@@ -72,17 +84,9 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     loader.subscribe_health();
     boot.register_service::<PluginLoaderHandle>(loader.clone());
 
-    // PO.1 (plugin observability): stand the boundary tracer up as a boot
-    // service, its publisher bound to the runtime bus so every appended
-    // `PluginTraceRecord` streams as a typed `PluginTracePushed` event (the
-    // `LspLogger` boot-wiring precedent). The seams emit into it (PO.2/PO.3); the
-    // trace-buffer views subscribe (PO.4). Off the hot path by contract — this
-    // only wires the pipe.
-    let tracer: PluginTracerHandle = Arc::new(PluginTracer::with_defaults());
-    let trace_bus = boot.event_bus().clone();
-    tracer.set_event_publisher(Box::new(move |record| {
-        trace_bus.publish_typed(PluginTracePushed { record });
-    }));
+    // PO.1: register the tracer (built above) as a boot service so the
+    // trace-buffer views (PO.4) resolve it; the seams already hold it via
+    // `LoaderServices.tracer`.
     boot.register_service::<PluginTracerHandle>(tracer);
 
     // Discover + load on-disk plugins OFF the boot thread: a plugin cold-start

@@ -194,12 +194,21 @@ pub struct PickerActor {
     /// `PluginCrashed`, and every later call returns `Quarantined` without
     /// re-entering the dead `Store`.
     quarantine: crate::Quarantine,
+    /// PO.2: the boundary tracer, wired by the loader via with_tracer; None in tests / pre-wire.
+    tracer: Option<crate::trace::PluginTracerHandle>,
 }
 
 impl PickerActor {
     /// The host-issued identity of this plugin (matches its [`PickerClient::id`]).
     pub fn id(&self) -> PluginId {
         self.id
+    }
+
+    /// PO.2: attach the boundary tracer (the loader calls this before spawning
+    /// run()). Off the hot path — the seam is async.
+    pub fn with_tracer(mut self, tracer: Option<crate::trace::PluginTracerHandle>) -> Self {
+        self.tracer = tracer;
+        self
     }
 
     /// Drive the actor to completion. Serves each [`PickerCall`] in arrival
@@ -235,12 +244,21 @@ impl PickerActor {
             return Err(PluginHostError::Quarantined { func: "spec" });
         }
         arm_store(&mut self.store, self.budget)?;
+        let __trace_start = std::time::Instant::now();
         let result = self
             .bindings
             .lattice_plugin_host_picker_source()
             .call_spec(&mut self.store)
             .await;
-        crate::trip_and_map(&mut self.quarantine, "spec", result)
+        crate::trip_and_map_traced(
+            self.tracer.as_ref(),
+            self.id.0,
+            crate::PluginSeam::PickerSource,
+            &mut self.quarantine,
+            "spec",
+            __trace_start,
+            result,
+        )
     }
 
     async fn call_init(
@@ -252,12 +270,21 @@ impl PickerActor {
             return Err(PluginHostError::Quarantined { func: "init" });
         }
         arm_store(&mut self.store, self.budget)?;
+        let __trace_start = std::time::Instant::now();
         let result = self
             .bindings
             .lattice_plugin_host_picker_source()
             .call_init(&mut self.store, ctx, args)
             .await;
-        crate::trip_and_map(&mut self.quarantine, "init", result)
+        crate::trip_and_map_traced(
+            self.tracer.as_ref(),
+            self.id.0,
+            crate::PluginSeam::PickerSource,
+            &mut self.quarantine,
+            "init",
+            __trace_start,
+            result,
+        )
     }
 
     async fn call_accept(
@@ -269,12 +296,21 @@ impl PickerActor {
             return Err(PluginHostError::Quarantined { func: "accept" });
         }
         arm_store(&mut self.store, self.budget)?;
+        let __trace_start = std::time::Instant::now();
         let result = self
             .bindings
             .lattice_plugin_host_picker_source()
             .call_accept(&mut self.store, ctx, routing)
             .await;
-        crate::trip_and_map(&mut self.quarantine, "accept", result)
+        crate::trip_and_map_traced(
+            self.tracer.as_ref(),
+            self.id.0,
+            crate::PluginSeam::PickerSource,
+            &mut self.quarantine,
+            "accept",
+            __trace_start,
+            result,
+        )
     }
 }
 
@@ -323,6 +359,7 @@ impl PluginHost {
             rx,
             id,
             quarantine: crate::Quarantine::new(id, Arc::clone(bus)),
+            tracer: None,
         };
         Ok((client, actor))
     }

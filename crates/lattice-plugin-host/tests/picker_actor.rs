@@ -80,6 +80,61 @@ async fn spawn(host: &PluginHost) -> lattice_plugin_host::PickerClient {
     client
 }
 
+/// PO.2: with a tracer attached, each guest export the actor calls emits a
+/// boundary `PluginTraceRecord`. The client awaits each reply, so by the time a
+/// call returns the actor has already emitted — no polling needed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn picker_calls_emit_boundary_trace_records() {
+    let Some(_) = guest_wasm() else {
+        eprintln!("SKIP: picker_actor trace — fixture guest not built");
+        return;
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let host = host_in(&tmp);
+
+    // Default `Debug` so per-call (Debug-level) records are kept.
+    let tracer: lattice_plugin_host::PluginTracerHandle = std::sync::Arc::new(
+        lattice_plugin_host::PluginTracer::new(lattice_plugin_host::TraceLevel::Debug, 64),
+    );
+    let component = host
+        .compile(&std::fs::read(guest_wasm().unwrap()).unwrap())
+        .unwrap();
+    let (client, actor) = host
+        .spawn_picker_source(
+            &component,
+            &manifest(),
+            TrustTier::Bundled,
+            PluginBudget::default(),
+            &std::sync::Arc::new(lattice_runtime::EventBus::new()),
+        )
+        .await
+        .expect("picker source instantiates");
+    tokio::spawn(actor.with_tracer(Some(tracer.clone())).run());
+
+    let _ = client.spec().await.expect("spec reaches the guest");
+    let _ = client
+        .init(ctx("/ws"), vec!["hello".into()])
+        .await
+        .expect("init reaches the guest");
+
+    let recs = tracer.snapshot_global();
+    assert!(
+        recs.iter()
+            .any(|r| r.call == "spec"
+                && matches!(r.seam, lattice_plugin_host::PluginSeam::PickerSource)),
+        "the `spec` guest call emitted a PickerSource boundary trace"
+    );
+    assert!(
+        recs.iter().any(|r| r.call == "init"),
+        "the `init` guest call emitted a trace"
+    );
+    assert!(
+        recs.iter()
+            .all(|r| matches!(r.outcome, lattice_plugin_host::TraceOutcome::Ok { .. })),
+        "happy-path calls record an Ok outcome (no traps)"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn spec_init_accept_round_trip_through_the_channel() {
     let Some(_) = guest_wasm() else {

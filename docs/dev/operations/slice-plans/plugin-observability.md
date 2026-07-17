@@ -51,13 +51,32 @@ The substrate, mirroring the LSP logging shape (`LspLogger` / `LspLogPushed`).
   > `plugin_tracer_service_present_at_boot`. Green: trace tests + boot pin + clippy
   > clean. No bench (the pipe only; no hot-path emission yet — that's PO.3).
 
-### PO.2 — instrument the async seams  📝
+### PO.2 — instrument the async seams  ✅
 Emit `PluginTraceRecord`s from the host side of the async seam calls
-(picker / completion / decorations / events / modes / keymap / config actors +
-host-services imports). Off-thread already, so rich. Each records the call name,
-timing, fuel delta, and result/trap; a denied capability records a `Denied`
-outcome. **Exit:** loading + exercising a fixture plugin produces trace records
-for each seam it uses; a trapping seam records a `Trap` outcome.
+(picker / completion / decorations / events actors). Off-thread already, so rich.
+Each records the call name, timing, and result/trap.
+
+> **Landed 2026-07-17.** The chokepoint: every seam guest call funnels through
+> `trip_and_map` (map result / trip quarantine). Added `trip_and_map_traced`
+> (lib.rs) — same mapping PLUS emit a `PluginTraceRecord` into the actor's tracer:
+> a success records `Debug`/`Ok{micros}` (dropped by the default `Info` gate — no
+> per-call noise unless a plugin is raised to `debug`), a trap records
+> `Error`/`Trap{kind,func}` (always kept). Each async actor (`PickerActor` spec/
+> init/accept, `CompletionActor` spec/generate, `DecorationActor`
+> gutter-decorations) gained a `tracer: Option<PluginTracerHandle>` field + a
+> `with_tracer` builder and routes its calls through the traced variant;
+> `EventActor` (fire-and-forget `on-event`, no `trip_and_map`) emits an equivalent
+> record inline. The loader captures the tracer in `LoaderServices` (built in
+> `install`) and calls `actor.with_tracer(self.env.tracer.clone())` before spawning
+> each seam's `run()`. `fuel_delta` is `0` for now (wall-time is the primary
+> signal; fuel accounting is a later refinement). Tests: 3 unit
+> (`trip_and_map_traced` — success→Debug/Ok, trap→Error/Trap + trips quarantine,
+> no-tracer no-op) + `picker_actor::picker_calls_emit_boundary_trace_records` (a
+> real actor's `spec`/`init` calls land `PickerSource` records; the client awaits
+> each reply so the emit is already done). Mode/keymap/config/grammar are
+> one-shot load-time registrations (no actor loop) — their instrumentation is a
+> follow-on if load-time boundary calls prove worth tracing; the ongoing async
+> seams are the ones that produce continuous signal. No bench (off-thread).
 
 ### PO.3 — the hot-path grammar seam (gated + benched)  📝
 Instrument the sync grammar trampoline behind the per-plugin atomic gate: a

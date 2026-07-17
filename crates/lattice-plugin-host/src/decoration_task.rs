@@ -99,12 +99,21 @@ pub struct DecorationActor {
     /// Crash-quarantine (PH7.12): the first `gutter-decorations` trap trips this,
     /// fires one `PluginCrashed`, and every later call returns `Quarantined`.
     quarantine: crate::Quarantine,
+    /// PO.2: the boundary tracer, wired by the loader via with_tracer; None in tests / pre-wire.
+    tracer: Option<crate::trace::PluginTracerHandle>,
 }
 
 impl DecorationActor {
     /// The host-issued identity of this plugin.
     pub fn id(&self) -> PluginId {
         self.id
+    }
+
+    /// PO.2: attach the boundary tracer (the loader calls this before spawning
+    /// run()). Off the hot path — the seam is async.
+    pub fn with_tracer(mut self, tracer: Option<crate::trace::PluginTracerHandle>) -> Self {
+        self.tracer = tracer;
+        self
     }
 
     /// Drive the actor to completion — see `completion_task::CompletionActor::run`.
@@ -128,12 +137,21 @@ impl DecorationActor {
             });
         }
         arm_store(&mut self.store, self.budget)?;
+        let __trace_start = std::time::Instant::now();
         let result = self
             .bindings
             .lattice_plugin_host_decorations()
             .call_gutter_decorations(&mut self.store, ctx)
             .await;
-        crate::trip_and_map(&mut self.quarantine, "gutter-decorations", result)
+        crate::trip_and_map_traced(
+            self.tracer.as_ref(),
+            self.id.0,
+            crate::PluginSeam::Decorations,
+            &mut self.quarantine,
+            "gutter-decorations",
+            __trace_start,
+            result,
+        )
     }
 }
 
@@ -174,6 +192,7 @@ impl PluginHost {
             rx,
             id,
             quarantine: crate::Quarantine::new(id, Arc::clone(bus)),
+            tracer: None,
         };
         Ok((client, actor))
     }

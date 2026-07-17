@@ -119,12 +119,21 @@ pub struct CompletionActor {
     /// Crash-quarantine (PH7.12): the first export trap trips this, fires one
     /// `PluginCrashed`, and every later call returns `Quarantined`.
     quarantine: crate::Quarantine,
+    /// PO.2: the boundary tracer, wired by the loader via with_tracer; None in tests / pre-wire.
+    tracer: Option<crate::trace::PluginTracerHandle>,
 }
 
 impl CompletionActor {
     /// The host-issued identity of this plugin.
     pub fn id(&self) -> PluginId {
         self.id
+    }
+
+    /// PO.2: attach the boundary tracer (the loader calls this before spawning
+    /// run()). Off the hot path — the seam is async.
+    pub fn with_tracer(mut self, tracer: Option<crate::trace::PluginTracerHandle>) -> Self {
+        self.tracer = tracer;
+        self
     }
 
     /// Drive the actor to completion — see `picker_task::PickerActor::run`.
@@ -146,12 +155,21 @@ impl CompletionActor {
             return Err(PluginHostError::Quarantined { func: "spec" });
         }
         arm_store(&mut self.store, self.budget)?;
+        let __trace_start = std::time::Instant::now();
         let result = self
             .bindings
             .lattice_plugin_host_completion_source()
             .call_spec(&mut self.store)
             .await;
-        crate::trip_and_map(&mut self.quarantine, "spec", result)
+        crate::trip_and_map_traced(
+            self.tracer.as_ref(),
+            self.id.0,
+            crate::PluginSeam::CompletionSource,
+            &mut self.quarantine,
+            "spec",
+            __trace_start,
+            result,
+        )
     }
 
     async fn call_generate(
@@ -162,12 +180,21 @@ impl CompletionActor {
             return Err(PluginHostError::Quarantined { func: "generate" });
         }
         arm_store(&mut self.store, self.budget)?;
+        let __trace_start = std::time::Instant::now();
         let result = self
             .bindings
             .lattice_plugin_host_completion_source()
             .call_generate(&mut self.store, ctx)
             .await;
-        crate::trip_and_map(&mut self.quarantine, "generate", result)
+        crate::trip_and_map_traced(
+            self.tracer.as_ref(),
+            self.id.0,
+            crate::PluginSeam::CompletionSource,
+            &mut self.quarantine,
+            "generate",
+            __trace_start,
+            result,
+        )
     }
 }
 
@@ -209,6 +236,7 @@ impl PluginHost {
             rx,
             id,
             quarantine: crate::Quarantine::new(id, Arc::clone(bus)),
+            tracer: None,
         };
         Ok((client, actor))
     }

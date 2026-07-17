@@ -482,6 +482,144 @@ pub(crate) fn trip_and_map<T>(
     }
 }
 
+/// PO.2 — the traced [`trip_and_map`]: map the guest result AND emit a boundary
+/// [`PluginTraceRecord`](crate::trace::PluginTraceRecord) into `tracer` (when a
+/// seam actor was wired with one). A successful call records at `Debug` — dropped
+/// by the default `Info` gate, so there is no per-call noise unless the plugin is
+/// raised to `debug`/`trace`; a trap records at `Error`, always kept. The seams
+/// are async (off the actor thread), and emission is a cheap gated push, so this
+/// stays off the editor hot path (design §4). `fuel_delta` is `0` for now — wall
+/// time is the primary signal; fuel accounting is a later refinement.
+pub(crate) fn trip_and_map_traced<T>(
+    tracer: Option<&crate::trace::PluginTracerHandle>,
+    plugin: u32,
+    seam: PluginSeam,
+    quarantine: &mut Quarantine,
+    func: &'static str,
+    start: std::time::Instant,
+    result: wasmtime::Result<T>,
+) -> Result<T, PluginHostError> {
+    let micros = start.elapsed().as_micros() as u64;
+    let mapped = trip_and_map(quarantine, func, result);
+    if let Some(tracer) = tracer {
+        use crate::trace::{Direction, PluginTraceRecord, TraceLevel, TraceOutcome};
+        let (level, outcome) = match &mapped {
+            Ok(_) => (
+                TraceLevel::Debug,
+                TraceOutcome::Ok {
+                    micros,
+                    fuel_delta: 0,
+                },
+            ),
+            Err(PluginHostError::Trap { kind, .. }) => (
+                TraceLevel::Error,
+                TraceOutcome::Trap {
+                    kind: kind.label().to_string(),
+                    func: func.to_string(),
+                },
+            ),
+            // A non-trap host error (e.g. a linker/encode failure) — surface it
+            // at Warn without a trap classification.
+            Err(_) => (
+                TraceLevel::Warn,
+                TraceOutcome::Ok {
+                    micros,
+                    fuel_delta: 0,
+                },
+            ),
+        };
+        tracer.trace(PluginTraceRecord {
+            plugin,
+            seam,
+            direction: Direction::GuestExport,
+            call: std::borrow::Cow::Borrowed(func),
+            level,
+            outcome,
+            detail: None,
+        });
+    }
+    mapped
+}
+
+#[cfg(test)]
+mod trip_and_map_traced_tests {
+    #![allow(clippy::unwrap_used)]
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::trace::{PluginTracer, PluginTracerHandle, TraceLevel, TraceOutcome};
+
+    fn tracer() -> PluginTracerHandle {
+        // Trace-level default so per-call `Debug` records are kept in the test.
+        Arc::new(PluginTracer::new(TraceLevel::Trace, 16))
+    }
+
+    fn quarantine() -> Quarantine {
+        Quarantine::new(PluginId(7), Arc::new(lattice_runtime::EventBus::new()))
+    }
+
+    #[test]
+    fn a_successful_call_records_a_debug_ok() {
+        let t = tracer();
+        let mut q = quarantine();
+        let out: Result<u32, _> = trip_and_map_traced(
+            Some(&t),
+            7,
+            PluginSeam::Grammar,
+            &mut q,
+            "apply-motion",
+            std::time::Instant::now(),
+            Ok(42u32),
+        );
+        assert_eq!(out.unwrap(), 42);
+        let recs = t.snapshot_plugin(7);
+        assert_eq!(recs.len(), 1);
+        assert_eq!(recs[0].call, "apply-motion");
+        assert_eq!(recs[0].level, TraceLevel::Debug);
+        assert!(matches!(recs[0].outcome, TraceOutcome::Ok { .. }));
+        assert!(matches!(recs[0].direction, crate::trace::Direction::GuestExport));
+    }
+
+    #[test]
+    fn a_trap_records_an_error_trap_and_trips_quarantine() {
+        let t = tracer();
+        let mut q = quarantine();
+        let out: Result<u32, _> = trip_and_map_traced(
+            Some(&t),
+            7,
+            PluginSeam::PickerSource,
+            &mut q,
+            "init",
+            std::time::Instant::now(),
+            Err(wasmtime::Error::msg("boom")),
+        );
+        assert!(out.is_err());
+        assert!(q.is_tripped(), "a trap trips the quarantine");
+        let recs = t.snapshot_plugin(7);
+        assert_eq!(recs[0].level, TraceLevel::Error);
+        assert!(
+            matches!(&recs[0].outcome, TraceOutcome::Trap { func, kind } if func == "init" && kind == "trap"),
+            "a generic error classifies as a `trap`-kind Trap outcome"
+        );
+    }
+
+    #[test]
+    fn no_tracer_is_a_no_op_but_still_maps() {
+        let mut q = quarantine();
+        // Below-the-gate + no tracer: the mapping still happens, nothing recorded.
+        let out: Result<u32, _> = trip_and_map_traced(
+            None,
+            7,
+            PluginSeam::Grammar,
+            &mut q,
+            "apply-motion",
+            std::time::Instant::now(),
+            Ok(1u32),
+        );
+        assert_eq!(out.unwrap(), 1);
+    }
+}
+
 /// A background thread that bumps the engine epoch on a fixed interval, so
 /// per-store epoch deadlines actually fire. Stopped and joined on drop.
 struct EpochTicker {

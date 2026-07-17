@@ -563,6 +563,12 @@ impl Editor {
         // `Editor::do_open_dashboard`), and the built-in `DashboardRegistry`
         // service. See `lattice_dashboard::install` + dashboard.md §9.
         lattice_dashboard::install(&mut boot);
+        // PL8.H.2: the plugin-manager view — registers `plugins-mode` (major,
+        // read-only) + the `:plugins` ex-command (returns
+        // `Effect::OpenSyntheticBuffer`, applied by `Editor::open_synthetic_buffer`).
+        // A pure provider crate: the mode resolves `PluginLoaderHandle` at
+        // activation, so this needs no ordering vs the loader install below.
+        lattice_plugin_manager::install(&mut boot);
         // LSP (BC.8a — last + largest, sub-sliced BC.8a–e): registers the LSP
         // modes (`lsp-completion-mode` reads the supervisor handle via
         // `boot.service::<LspSupervisorHandle>()`, registered in Phase A) + the

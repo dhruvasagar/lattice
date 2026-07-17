@@ -54,6 +54,10 @@ lattice-plugin-api = { path = "../lattice-plugin-api" }
 # this transitive host->plugin-host edge: it checks only DIRECT renderer deps,
 # and all plugin interaction stays host-mediated + off-thread.
 lattice-plugin-loader = { path = "../lattice-plugin-loader" }
+# PL8.H.2: the buffer-backed `:plugins` manager view. A pure provider crate
+# (registers `plugins-mode` + the `:plugins` ex-command via the generic
+# `SubsystemBoot` seam); one install line, zero `Editor::` methods.
+lattice-plugin-manager = { path = "../lattice-plugin-manager" }
 lattice-protocol = { path = "../lattice-protocol" }
 # K.3 (2026-06-07): keymap types moved to lattice-keymap
 lattice-keymap = { path = "../lattice-keymap" }

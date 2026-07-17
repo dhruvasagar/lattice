@@ -1,0 +1,51 @@
+[package]
+name = "lattice-plugin-manager"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# Phase 8 (PL8.H): the buffer-backed `:plugins` manager view. A pure PROVIDER
+# crate (the `oil` / `lattice-dashboard` shape): it owns `plugins-mode` (major,
+# read-only) + the `:plugins` ex-command, and reads the loader's `plugin_status()`
+# via the `PluginLoaderHandle` service at activation. It installs through the
+# generic `SubsystemBoot` seam (one line in the host's Phase-B list), so wiring it
+# in adds ZERO `Editor::` methods + zero host `Action` variants (mode-ownership
+# acid test). NOT a renderer — it produces Document content the renderers paint,
+# so naming `lattice-plugin-host` capability types here does not touch the
+# no-per-frame-WASM renderer guard.
+#
+# Design: the plugin-loader slice plan (PL8.H). Interactivity (reload/unload
+# chords) lands in PL8.H.3.
+
+[dependencies]
+# The install surface (`SubsystemBoot`) + the mode substrate (`Mode`,
+# `ModeContext`, `ModeId`, `CapabilitySet`, `LifecycleFuture`, `Subscription`,
+# `BufferStoreHandle`, `OptionOverrideSet`).
+lattice-mode = { path = "../lattice-mode" }
+# `Effect::OpenSyntheticBuffer` + the ex-command registration surface
+# (`CommandRegistry`, `ExCommandSpec`, `EchoLevel`).
+lattice-grammar = { path = "../lattice-grammar" }
+# The read model this view renders: `PluginLoaderHandle` + `plugin_status()` ->
+# `Vec<PluginStatus>` (PL8.H.1). Resolved via the service registry at activation.
+lattice-plugin-loader = { path = "../lattice-plugin-loader" }
+# `Capability` / `TrustTier` — the structured capability + tier types carried by
+# `PluginStatus`, rendered into the status table. Naming them here is fine: this
+# is a view crate, not a renderer (the guard checks direct renderer deps only).
+lattice-plugin-host = { path = "../lattice-plugin-host" }
+# `Event` / `EventKind` — the view subscribes to `PluginCrashed` to re-render
+# health live while the buffer is open.
+lattice-protocol = { path = "../lattice-protocol" }
+# `EventFilter` / `SubscriptionTarget` for the crash subscription; `Document`
+# handle for the buffer write.
+lattice-runtime = { path = "../lattice-runtime" }
+# `BufferId` for the buffer-store lookup.
+lattice-core = { path = "../lattice-core" }
+# `ReadOnly` / `NoFile` option overrides via `Mode::options()`.
+lattice-config = { path = "../lattice-config" }
+# Off-thread buffer writes + the crash-subscription drain (never the actor thread).
+tokio = { workspace = true, features = ["rt", "sync"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros"] }

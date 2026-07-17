@@ -690,10 +690,32 @@ zero host `Action` variants; the view owns its full surface in its own crate.
   > `mark_quarantined` flips + ignores unknown ids; the full `PluginCrashed`-event
   > → quarantined path through `subscribe_health`; unload drops from the set. Green:
   > full loader suite + clippy clean + host builds. No bench (off keystroke path).
-- **PL8.H.2 — buffer-backed `:plugins` view (read render)** 📝: new
+- **PL8.H.2 — buffer-backed `:plugins` view (read render)** ✅: new
   `lattice-plugin-manager` crate; a synthetic Document rendering the status table
-  (name / health / caps); scan/health progress on the **headerline** (async-status
-  standing rule), not a status line. `:plugins` ex-command opens/refreshes it.
+  (name / health / caps); `:plugins` ex-command opens it.
+
+  > **Landed 2026-07-17.** New crate `lattice-plugin-manager` — a pure PROVIDER
+  > crate (zero host code). `render.rs`: `render_status(&[PluginStatus]) -> String`
+  > (adaptive-width table: NAME / HEALTH / TIER / CAPABILITIES; granted caps in
+  > wire form + `(denied: …)`; a quarantined row trails `[trap: <kind> in <func>]`;
+  > explicit empty state). `mode.rs`: `PluginManagerMode` (major, `ReadOnly` +
+  > `NoFile` via `Mode::options`), `on_activate` resolves `PluginLoaderHandle` +
+  > `BufferStoreHandle` via `ctx.service()`, renders the snapshot, and writes it
+  > **off the actor thread** (full-range `Edit::replace`, spawned) — plus a
+  > `PluginCrashed` `Channel` subscription that re-renders health live (the LSP-log
+  > precedent; `Subscription` guard unsubscribes on deactivate). `lib.rs`:
+  > `install(boot)` registers the mode via `boot.modes_mut()` + the `:plugins`
+  > ex-command via `boot.commands_mut()` (seated in the Phase-B list before the
+  > freeze; needs no loader-install ordering — the mode resolves the loader service
+  > at *activation*). `:plugins` returns the generic
+  > `Effect::OpenSyntheticBuffer { name: "*plugins*", mode_id: "plugins-mode" }`;
+  > the host's existing `open_synthetic_buffer` ensures the buffer + activates the
+  > mode → content projects. **Acid test: one install line in `editor_boot.rs`,
+  > zero `Editor::` methods, zero host `Action` variants.** Tests: `render` (4 —
+  > empty state, per-row health/tier, granted+denied caps, empty-grant dash) +
+  > `lattice-host/tests/plugins_manager_view.rs` (2 — `:plugins` registered at
+  > boot; opening `*plugins*` activates `plugins-mode`). Green: crate + clippy
+  > clean + host builds. No bench (open/render off the keystroke path).
 - **PL8.H.3 — interactivity** 📝: the view's minor mode + gated `MinorMode` keymap
   layer (`r`→reload, `x`→unload, `K`/`Enter`→`:describe-plugin`, `gr`→refresh)
   whose handler bodies call the loader's existing `unload`/`reload` APIs; the view

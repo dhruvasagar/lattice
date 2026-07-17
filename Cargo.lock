@@ -4239,6 +4239,7 @@ dependencies = [
  "lattice-plugin-api",
  "lattice-plugin-host",
  "lattice-plugin-loader",
+ "lattice-plugin-manager",
  "lattice-protocol",
  "lattice-runtime",
  "lattice-snippet",
@@ -4430,6 +4431,22 @@ dependencies = [
  "tokio",
  "tracing",
  "wat",
+]
+
+[[package]]
+name = "lattice-plugin-manager"
+version = "0.1.0"
+dependencies = [
+ "lattice-config",
+ "lattice-core",
+ "lattice-grammar",
+ "lattice-mode",
+ "lattice-plugin-host",
+ "lattice-plugin-loader",
+ "lattice-protocol",
+ "lattice-runtime",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

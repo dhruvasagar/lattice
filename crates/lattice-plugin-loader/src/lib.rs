@@ -86,13 +86,17 @@ use lattice_mode::{
 };
 use lattice_picker::{PickerRegistryHandle, PickerSourceGenerator};
 use lattice_plugin_host::{
-    LoadedPlugin, ManifestError, PluginBudget, PluginHost, PluginHostError, PluginId,
+    Capability, LoadedPlugin, ManifestError, PluginBudget, PluginHost, PluginHostError, PluginId,
     PluginManifest, PluginSeam, PluginTeardown, TeardownRegistries, TeardownReport, TrustTier,
     WasmCompletionSource, WasmDecorationSource, WasmPickerSource,
 };
-use lattice_runtime::EventBus;
+use lattice_protocol::{Event, EventKind};
+use lattice_runtime::{EventBus, EventFilter, SubscriptionTarget};
 use tokio::runtime::Handle;
 use tokio::task::JoinHandle;
+
+mod status;
+pub use status::{PluginHealth, PluginStatus};
 
 /// The service handle other layers reach the loader through — the ex-command
 /// surface (PL8.C), the plugin-manager view (PL8.H). Per the `ServiceRegistry`
@@ -126,6 +130,18 @@ struct LoadedRecord {
     /// `PluginTeardown::unload` consumes it against the live registries on
     /// `:plugin-unload` / reload.
     teardown: PluginTeardown,
+    /// PL8.H.1: the trust tier this plugin loaded under — reported in the
+    /// manager view's status, and the gate that decides `denied` below.
+    tier: TrustTier,
+    /// PL8.H.1: capabilities the plugin requested AND received under `tier`
+    /// (`requested` minus `denied`). Computed once at load from the manifest.
+    granted: Vec<Capability>,
+    /// PL8.H.1: requested-but-withheld capabilities (tier-gated). Never fatal —
+    /// the plugin loaded degraded; the manager view surfaces this.
+    denied: Vec<Capability>,
+    /// PL8.H.1: live health — `Healthy` at load, flipped to `Quarantined` by the
+    /// `Event::PluginCrashed` subscription ([`PluginLoader::subscribe_health`]).
+    health: PluginHealth,
 }
 
 /// The editor-side runtime environment the loader drives seams against —
@@ -402,6 +418,19 @@ impl PluginLoader {
         let manifest = &plugin.manifest;
         let component = self.host.compile(&plugin.component_bytes)?;
 
+        // PL8.H.1: resolve the capability grant once for the manager-view status.
+        // `grant` is pure (manifest + tier), so this mirrors exactly what each
+        // seam spawn computes internally — `denied` is the tier-withheld set,
+        // `granted` the requested capabilities that survived it.
+        let outcome = lattice_plugin_host::grant(manifest, tier);
+        let denied = outcome.denied.clone();
+        let granted: Vec<Capability> = manifest
+            .requested
+            .iter()
+            .filter(|cap| !denied.contains(cap))
+            .cloned()
+            .collect();
+
         let mut record = LoadedRecord {
             id: PluginId(0),
             name: manifest.id.clone(),
@@ -409,6 +438,10 @@ impl PluginLoader {
             lifecycle: None,
             tasks: Vec::new(),
             teardown: PluginTeardown::new(PluginId(0)),
+            tier,
+            granted,
+            denied,
+            health: PluginHealth::Healthy,
         };
         let mut loaded_id: Option<PluginId> = None;
 
@@ -501,6 +534,70 @@ impl PluginLoader {
         // One-shot, user-actionable event (the "LSP server attached" class).
         tracing::info!(plugin = %manifest.id, id = id.0, "plugin loaded");
         Ok(id)
+    }
+
+    /// PL8.H.1: a read-only snapshot of every loaded plugin — identity, trust
+    /// tier, capabilities granted/denied, and health — for the `:plugins`
+    /// manager view (PL8.H.2/.3). Cloned out under the loaded-set lock, so the
+    /// view renders a stable frame while loads/unloads proceed.
+    pub fn plugin_status(&self) -> Vec<PluginStatus> {
+        self.loaded
+            .lock()
+            .expect("plugin-loader loaded-set mutex poisoned")
+            .iter()
+            .map(|r| PluginStatus {
+                id: r.id.0,
+                name: r.name.clone(),
+                tier: r.tier,
+                granted: r.granted.clone(),
+                denied: r.denied.clone(),
+                health: r.health.clone(),
+            })
+            .collect()
+    }
+
+    /// PL8.H.1: mark the plugin `plugin` quarantined (its instance trapped) — the
+    /// body of the `Event::PluginCrashed` subscription ([`subscribe_health`]),
+    /// exposed directly so a test can drive the health flip without a live bus.
+    /// A crash id matching no loaded plugin is ignored (it may have been unloaded
+    /// between the trap and the drain) — never a panic.
+    ///
+    /// [`subscribe_health`]: Self::subscribe_health
+    pub fn mark_quarantined(&self, plugin: u32, func: String, kind: String) {
+        let mut loaded = self
+            .loaded
+            .lock()
+            .expect("plugin-loader loaded-set mutex poisoned");
+        if let Some(record) = loaded.iter_mut().find(|r| r.id.0 == plugin) {
+            record.health = PluginHealth::Quarantined { func, kind };
+        }
+    }
+
+    /// PL8.H.1: subscribe to `Event::PluginCrashed` so a trapped plugin's health
+    /// flips to `Quarantined` in the manager view. Filtered by kind (indexed
+    /// dispatch); events drain on the shared runtime via a `Channel` sink, OFF
+    /// the keystroke path (the bus calls the sink lock-dropped). Holds a
+    /// `Weak<Self>` so the drain task never keeps the loader alive — the loop
+    /// ends when the loader drops. Called once by [`install`]; a no-op if no
+    /// bus/runtime was wired (the minimal test constructor).
+    pub fn subscribe_health(self: &Arc<Self>) {
+        let (Some(bus), Some(runtime)) = (self.env.bus.as_ref(), self.env.runtime.as_ref()) else {
+            return;
+        };
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
+        bus.subscribe(
+            EventFilter::kind(EventKind::PluginCrashed),
+            SubscriptionTarget::Channel(tx),
+        );
+        let weak = Arc::downgrade(self);
+        runtime.spawn(async move {
+            while let Some(event) = rx.recv().await {
+                if let Event::PluginCrashed { plugin, func, kind } = event {
+                    let Some(loader) = weak.upgrade() else { break };
+                    loader.mark_quarantined(plugin, func, kind);
+                }
+            }
+        });
     }
 
     /// Self-register the `:plugin-load` / `:plugin-unload` / `:plugin-reload`

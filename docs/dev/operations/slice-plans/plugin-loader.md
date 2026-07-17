@@ -639,12 +639,68 @@ its artifact is rebuilt. PL8.D complete.
 > keystroke path and chord *resolution* stays native (no hot-path WASM), pinned
 > by the existing `no_per_frame_wasm_guard`.
 
-### PL8.H — Plugin-manager surface (reload + health, buffer-backed)  📝 (shades into 8b)
+### PL8.H — Plugin-manager surface (reload + health, buffer-backed)  🚧 (shades into 8b)
 - A `:plugins` buffer-backed view (everything-is-a-buffer) listing loaded plugins,
   health (quarantined? via `Event::PluginCrashed`), capabilities granted/denied, with
   reload/unload actions. Async status → headerline per the standing rule.
 - **Exit:** the manager view lists plugins + health; a crashed plugin shows quarantined;
   reload/unload from the view work.
+
+**Substrate assessment (2026-07-17).** Today `PluginMeta { name, doc }` carries no
+health, no capabilities; `:list-plugins` is a read-only `HelpBuffer` (PI.4). The
+exit *requires* in-view reload/unload, so a read-only enriched list does NOT
+satisfy it — the view must be interactive. Two new things are needed: (1) a
+loader **status data model** (the load-time capability grant/denied outcome is
+computed then dropped; no health/quarantine set is tracked), and (2) an
+**interactive buffer-backed view** owning its mode + keymap + handlers.
+
+**Home decision — option (b), confirmed with Dhruva: a new `lattice-plugin-manager`
+crate** modelled on `oil` (a mode-owned interactive synthetic buffer). The
+dependency direction is fixed (`host → loader`; the loader cannot reach host
+synthetic-buffer/Document machinery without a cycle), so the view registers
+through the generic host boot primitive (the `oil` `register_*_modes(boot.…)`
+shape) and reads loader status via the `PluginLoaderHandle` service. Rejected:
+(a) a host module (`dashboard`/`tutor` precedent) — fails the mode-ownership acid
+test (keymap + handler bodies land on the host); (c) fold the view into the loader
+crate — drags wasmtime into a pure-UI view and conflates the runtime-composing
+loader with a view concern. (b) passes the acid test: zero new `Editor::` methods,
+zero host `Action` variants; the view owns its full surface in its own crate.
+
+**Decomposition:**
+
+- **PL8.H.1 — loader status data model** ✅: retain per-plugin capability
+  `{granted, denied}` at load (today `build_plugin_wasi`'s `outcome` is dropped
+  after the `denied` warn); subscribe to `Event::PluginCrashed` to track a
+  quarantined/health set; expose a wasmtime-free `plugin_status()` query
+  (id · name · tier · caps granted/denied · health) on the loader — the loader
+  already owns the data + the `unload`/`reload` APIs.
+
+  > **Landed 2026-07-17.** New `status.rs` (`PluginHealth { Healthy | Quarantined
+  > { func, kind } }` + `PluginStatus { id, name, tier, granted, denied, health }`
+  > — structured, not pre-formatted, so the view owns presentation). `LoadedRecord`
+  > gained `tier` / `granted` / `denied` / `health`; `load_discovered` computes the
+  > grant once via the pure `lattice_plugin_host::grant(manifest, tier)` (the same
+  > outcome each seam spawn computes internally — `granted = requested − denied`).
+  > `PluginLoader::plugin_status()` clones a stable snapshot under the loaded-set
+  > lock; `mark_quarantined(id, func, kind)` flips health (unknown id = benign
+  > no-op); `subscribe_health(self: &Arc<Self>)` subscribes a `PluginCrashed`
+  > `Channel` sink drained on the runtime (`Weak<Self>`, off keystroke path),
+  > wired in `install`. `lattice-protocol` promoted dev-dep → dep (Event/EventKind).
+  > Tests (`plugin_status.rs`, 5): caps denied@`UserInstalled` / granted@`Bundled`;
+  > `mark_quarantined` flips + ignores unknown ids; the full `PluginCrashed`-event
+  > → quarantined path through `subscribe_health`; unload drops from the set. Green:
+  > full loader suite + clippy clean + host builds. No bench (off keystroke path).
+- **PL8.H.2 — buffer-backed `:plugins` view (read render)** 📝: new
+  `lattice-plugin-manager` crate; a synthetic Document rendering the status table
+  (name / health / caps); scan/health progress on the **headerline** (async-status
+  standing rule), not a status line. `:plugins` ex-command opens/refreshes it.
+- **PL8.H.3 — interactivity** 📝: the view's minor mode + gated `MinorMode` keymap
+  layer (`r`→reload, `x`→unload, `K`/`Enter`→`:describe-plugin`, `gr`→refresh)
+  whose handler bodies call the loader's existing `unload`/`reload` APIs; the view
+  re-renders on the resulting status change. Mode-ownership acid test from the
+  view side: zero new `Editor::` methods, zero host `Action` variants.
+
+No bench (registration / status / actions are all off the keystroke path).
 
 ---
 

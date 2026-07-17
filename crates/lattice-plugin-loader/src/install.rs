@@ -65,6 +65,9 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     // command registry — zero host code, the full command surface owned by the
     // loader crate.
     loader.register_ex_commands();
+    // PL8.H.1: track plugin health for the manager view — a `PluginCrashed`
+    // subscription drained on the runtime flips a trapped plugin to quarantined.
+    loader.subscribe_health();
     boot.register_service::<PluginLoaderHandle>(loader.clone());
 
     // Discover + load on-disk plugins OFF the boot thread: a plugin cold-start

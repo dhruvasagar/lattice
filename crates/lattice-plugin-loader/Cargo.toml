@@ -55,6 +55,11 @@ lattice-grammar = { path = "../lattice-grammar" }
 # Shared (not RCU'd): its writes are internally mutex+ArcSwap-routed, so a `&`
 # ref mutates it; the loader captures a clone from the boot service.
 lattice-keymap = { path = "../lattice-keymap" }
+# PL8.H.1: `Event` / `EventKind` — the loader subscribes to `PluginCrashed` to
+# track per-plugin health for the manager view (`subscribe_health`). A leaf crate
+# already in the graph (via `lattice-runtime`); named directly now the loader
+# constructs an `EventFilter::kind(EventKind::PluginCrashed)` + matches `Event`.
+lattice-protocol = { path = "../lattice-protocol" }
 # The shared runtime handle the loader drives seam actors + off-boot discovery
 # on (never the current-thread editor actor).
 tokio = { workspace = true, features = ["rt", "rt-multi-thread"] }

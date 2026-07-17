@@ -24,6 +24,7 @@ use std::sync::Arc;
 use lattice_grammar::{Args, Effect, ExCommandSpec, LatencyClass, SurfaceForm};
 use lattice_mode::SubsystemBoot;
 
+mod actions;
 mod mode;
 mod render;
 
@@ -42,6 +43,10 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     boot.modes_mut()
         .register(PluginManagerMode)
         .expect("plugins-mode registers without conflict");
+
+    // PL8.H.3: the in-view `action:plugins-*` commands (dead-body) so the mode's
+    // keymap `cmd:` names resolve; the mode's `action_handlers` do the work.
+    actions::register_actions(boot.commands_mut());
 
     boot.commands_mut().register_ex_command(
         "plugins",

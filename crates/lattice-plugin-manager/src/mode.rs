@@ -19,15 +19,16 @@
 
 use std::sync::Arc;
 
-use lattice_mode::{
-    CapabilitySet, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, OptionOverrideSet,
-    Subscription,
-};
 use lattice_mode::BufferStoreHandle;
+use lattice_mode::{
+    ActionHandlerContribution, CapabilitySet, Keymap, KeymapEntry, LifecycleFuture, Mode,
+    ModeContext, ModeId, ModeKind, OptionOverrideSet, Subscription, keymap_entry,
+};
 use lattice_plugin_loader::PluginLoaderHandle;
 use lattice_protocol::{Event, EventKind};
 use lattice_runtime::{Document, EventFilter, SubscriptionTarget};
 
+use crate::actions;
 use crate::render::{render_status, PLUGINS_MODE_ID};
 
 /// The `*plugins*` buffer's major mode.
@@ -42,7 +43,7 @@ impl PluginManagerMode {
 /// Replace the whole buffer with `text` (a full-range edit). The manager view is
 /// a snapshot, not an append log, so every render overwrites. Runs on the caller's
 /// task; callers spawn it off the actor thread.
-async fn write_all(handle: &Arc<dyn Document>, text: String) {
+pub(crate) async fn write_all(handle: &Arc<dyn Document>, text: String) {
     let snap = handle.snapshot();
     let last_line = snap.buffer.line_count().saturating_sub(1);
     let last_len = snap.buffer.line(last_line).unwrap_or_default().len() as u32;
@@ -60,6 +61,26 @@ async fn write_all(handle: &Arc<dyn Document>, text: String) {
 fn current_status_text(ctx: &ModeContext) -> Option<String> {
     let loader = ctx.service::<PluginLoaderHandle>()?;
     Some(render_status(&loader.plugin_status()))
+}
+
+/// Re-render the manager buffer from the pre-rendered `text`, OFF the actor
+/// thread — the shared refresh the PL8.H.3 action handlers use after a reload /
+/// unload / explicit refresh. A no-op if there's no current runtime or the
+/// buffer is gone (never a panic).
+pub(crate) fn spawn_write(
+    store: &BufferStoreHandle,
+    buffer_id: lattice_core::BufferId,
+    text: String,
+) {
+    let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+        return;
+    };
+    let Some(handle) = store.handle_for(buffer_id) else {
+        return;
+    };
+    runtime.spawn(async move {
+        write_all(&handle, text).await;
+    });
 }
 
 impl Mode for PluginManagerMode {
@@ -84,6 +105,39 @@ impl Mode for PluginManagerMode {
 
     fn required_capabilities(&self) -> CapabilitySet {
         CapabilitySet::empty()
+    }
+
+    /// The in-view chords (PL8.H.3). Pushed under `KeymapLayer::MajorMode(
+    /// plugins-mode)` by the host's mode-keymap walk; gated to the `*plugins*`
+    /// buffer. Each `cmd:` resolves to an `action:plugins-*` command registered
+    /// at `install`, and the mode's `action_handlers` below intercept them.
+    fn keymap(&self) -> Keymap {
+        Keymap::from_entries(plugins_keymap_entries())
+    }
+
+    /// The reload / unload / describe / refresh handlers (bodies in
+    /// [`crate::actions`]). Registered globally by the host's
+    /// `register_mode_action_handlers` walk, gated to `plugins-mode`-active
+    /// buffers.
+    fn action_handlers(&self) -> Vec<ActionHandlerContribution> {
+        vec![
+            ActionHandlerContribution {
+                action_name: actions::RELOAD,
+                handler: actions::reload_handler(),
+            },
+            ActionHandlerContribution {
+                action_name: actions::UNLOAD,
+                handler: actions::unload_handler(),
+            },
+            ActionHandlerContribution {
+                action_name: actions::DESCRIBE,
+                handler: actions::describe_handler(),
+            },
+            ActionHandlerContribution {
+                action_name: actions::REFRESH,
+                handler: actions::refresh_handler(),
+            },
+        ]
     }
 
     fn on_activate(&self, ctx: ModeContext) -> LifecycleFuture<'_, Self::Guard> {
@@ -136,4 +190,42 @@ impl Mode for PluginManagerMode {
             Ok(Some(Subscription::new(bus_handle, sub_id)))
         })
     }
+}
+
+/// The `plugins-mode` in-view chords. `cmd:` literals MUST match the
+/// `crate::actions` command-name consts (the `keymap_entry!` macro requires a
+/// literal, so they can't reference the const directly) — pinned by
+/// `keymap_cmds_have_registered_handlers`.
+fn plugins_keymap_entries() -> &'static [KeymapEntry] {
+    use std::sync::OnceLock;
+    static ENTRIES: OnceLock<Vec<KeymapEntry>> = OnceLock::new();
+    ENTRIES.get_or_init(|| {
+        vec![
+            keymap_entry! {
+                mode: Normal, chord: "r",
+                doc: "plugins: reload the plugin under the cursor",
+                cmd: "action:plugins-reload"
+            },
+            keymap_entry! {
+                mode: Normal, chord: "x",
+                doc: "plugins: unload the plugin under the cursor",
+                cmd: "action:plugins-unload"
+            },
+            keymap_entry! {
+                mode: Normal, chord: "K",
+                doc: "plugins: describe the plugin under the cursor",
+                cmd: "action:plugins-describe"
+            },
+            keymap_entry! {
+                mode: Normal, chord: "<CR>",
+                doc: "plugins: describe the plugin under the cursor",
+                cmd: "action:plugins-describe"
+            },
+            keymap_entry! {
+                mode: Normal, chord: "gr",
+                doc: "plugins: refresh the plugin list",
+                cmd: "action:plugins-refresh"
+            },
+        ]
+    })
 }

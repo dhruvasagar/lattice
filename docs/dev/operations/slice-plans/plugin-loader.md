@@ -639,7 +639,7 @@ its artifact is rebuilt. PL8.D complete.
 > keystroke path and chord *resolution* stays native (no hot-path WASM), pinned
 > by the existing `no_per_frame_wasm_guard`.
 
-### PL8.H — Plugin-manager surface (reload + health, buffer-backed)  🚧 (shades into 8b)
+### PL8.H — Plugin-manager surface (reload + health, buffer-backed)  ✅ (shades into 8b)
 - A `:plugins` buffer-backed view (everything-is-a-buffer) listing loaded plugins,
   health (quarantined? via `Event::PluginCrashed`), capabilities granted/denied, with
   reload/unload actions. Async status → headerline per the standing rule.
@@ -716,11 +716,33 @@ zero host `Action` variants; the view owns its full surface in its own crate.
   > `lattice-host/tests/plugins_manager_view.rs` (2 — `:plugins` registered at
   > boot; opening `*plugins*` activates `plugins-mode`). Green: crate + clippy
   > clean + host builds. No bench (open/render off the keystroke path).
-- **PL8.H.3 — interactivity** 📝: the view's minor mode + gated `MinorMode` keymap
-  layer (`r`→reload, `x`→unload, `K`/`Enter`→`:describe-plugin`, `gr`→refresh)
-  whose handler bodies call the loader's existing `unload`/`reload` APIs; the view
-  re-renders on the resulting status change. Mode-ownership acid test from the
-  view side: zero new `Editor::` methods, zero host `Action` variants.
+- **PL8.H.3 — interactivity** ✅: the view's gated `MajorMode(plugins-mode)` keymap
+  layer (`r`→reload, `x`→unload, `K`/`<CR>`→`:describe-plugin`, `gr`→refresh) whose
+  handler bodies call the loader's existing `unload`/`reload` APIs; the view
+  re-renders on the resulting status change.
+
+  > **Landed 2026-07-17.** New `actions.rs`: the four `action:plugins-*` command
+  > names + `register_actions` (dead-body, so the keymap `cmd:` resolves; the
+  > `repl-mode` precedent) + the handler closures. Each reads the loader + buffer
+  > store from the `ActionContext` service registry (nothing captured at
+  > registration; a missing service → no-op, never a panic) and maps the cursor
+  > line → plugin by index (`cursor.line − HEADER_LINES`, render order ==
+  > `plugin_status()` order — pinned by `header_occupies_exactly_three_lines`).
+  > `unload` (sync) tears down + re-renders; `reload` spawns the async
+  > unload+re-instantiate then re-renders (off the actor thread); `describe`
+  > returns `Effect::DescribePlugin`; `refresh` re-renders. `PluginManagerMode`
+  > gains `keymap()` (5 entries — `K`/`<CR>` both describe) + `action_handlers()`;
+  > the host's `keymap_mode_contributions` + `register_mode_action_handlers` walks
+  > pick them up automatically (pushed under `MajorMode(plugins-mode)`, gated to
+  > the buffer). `install` calls `actions::register_actions(boot.commands_mut())`.
+  > **Acid test still holds: zero new `Editor::` methods, zero host `Action`
+  > variants.** Tests: `actions` unit (the 4 commands register) +
+  > `plugins_manager_view.rs` `plugins_mode_chords_override_in_its_layer` (the
+  > `action:plugins-*` commands register at boot; `x` binds to
+  > `action:plugins-unload` in the plugins-mode layer, proving the `cmd:` literals
+  > resolve + the keymap pushed; and `x` is NOT globally overridden — the gate
+  > holds). Green: crate (7) + host (3) + clippy clean. No bench (off keystroke
+  > path).
 
 No bench (registration / status / actions are all off the keystroke path).
 
@@ -771,8 +793,17 @@ editor's live registries, activates, and its `<C-x>e` leader chord dispatches
 indistinguishable from native; zero host `Editor::`/`Action` additions — the
 mode-ownership acid test passing from the guest side).
 
-**Next: PL8.H** (→ Phase 8b): the buffer-backed plugin-manager surface
-(`:plugins` view — loaded plugins, health, reload/unload actions).
+**Done (cont.):** PL8.H ✅ (plugin-manager surface — the new `lattice-plugin-manager`
+provider crate: H.1 loader status data model (caps granted/denied + health via a
+`PluginCrashed` subscription); H.2 the buffer-backed `:plugins` view (major mode
+projects the status table off-thread, opened via the generic
+`Effect::OpenSyntheticBuffer`); H.3 the `MajorMode(plugins-mode)` keymap layer +
+`r`/`x`/`K`/`<CR>`/`gr` handlers calling the loader's `unload`/`reload`. Zero host
+`Editor::` methods, zero host `Action` variants — one install line).
+
+**PL8 (Phase 8) is complete.** Next: **Phase 8b** (bundled first-party plugins as
+components) + the settled **plugin observability** stack (Layers 0–2, its own
+design fragment — see the settled-decisions note above).
 
 **Design decisions settled this session (don't re-litigate):**
 - **Tier-2 "event→command" is resolved as a principle, NOT `:autocmd`/`SubscriptionTarget::Invocation`.**

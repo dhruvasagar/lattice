@@ -11,6 +11,13 @@ use lattice_plugin_loader::{PluginHealth, PluginStatus};
 pub const PLUGINS_BUFFER_NAME: &str = "*plugins*";
 pub const PLUGINS_MODE_ID: &str = "plugins-mode";
 
+/// Buffer lines the header occupies before the first plugin row: the title
+/// (`# Plugins (N loaded)`), a blank line, and the column header. The
+/// interactivity layer (PL8.H.3) maps `cursor.line - HEADER_LINES` → the plugin
+/// at that index (render order == `plugin_status()` order), so this MUST match
+/// the header `render_status` emits — pinned by `header_occupies_exactly_three_lines`.
+pub const HEADER_LINES: usize = 3;
+
 /// Short health label for the status column. Kept terse; the crash provenance
 /// (which export trapped, and how) trails the row so the column stays narrow.
 fn health_label(health: &PluginHealth) -> &'static str {
@@ -162,6 +169,21 @@ mod tests {
         let row = out.lines().find(|l| l.contains("cap-plugin")).unwrap();
         assert!(row.contains("net:http:crates.io"), "granted cap in wire form");
         assert!(row.contains("(denied: proc:spawn)"), "denied cap noted");
+    }
+
+    #[test]
+    fn header_occupies_exactly_three_lines() {
+        // The interactivity layer relies on the first plugin row landing at
+        // line index `HEADER_LINES`. Pin it against a render drift.
+        let out = render_status(&[status("first", TrustTier::Bundled, PluginHealth::Healthy)]);
+        let lines: Vec<&str> = out.lines().collect();
+        assert!(lines[0].starts_with("# Plugins"), "line 0 is the title");
+        assert!(lines[1].is_empty(), "line 1 is blank");
+        assert!(lines[2].contains("NAME"), "line 2 is the column header");
+        assert!(
+            lines[HEADER_LINES].contains("first"),
+            "the first plugin row lands at line HEADER_LINES"
+        );
     }
 
     #[test]

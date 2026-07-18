@@ -141,6 +141,10 @@ impl Mode for PluginManagerMode {
                 action_name: actions::TRACE,
                 handler: actions::trace_handler(),
             },
+            ActionHandlerContribution {
+                action_name: actions::TRACE_LEVEL,
+                handler: actions::trace_level_handler(),
+            },
         ]
     }
 
@@ -234,6 +238,11 @@ fn plugins_keymap_entries() -> &'static [KeymapEntry] {
                 mode: Normal, chord: "t",
                 doc: "plugins: open the boundary trace for the plugin under the cursor",
                 cmd: "action:plugins-trace"
+            },
+            keymap_entry! {
+                mode: Normal, chord: "T",
+                doc: "plugins: cycle the trace verbosity of the plugin under the cursor",
+                cmd: "action:plugins-trace-level"
             },
         ]
     })

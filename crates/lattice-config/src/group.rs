@@ -271,6 +271,15 @@ impl OptionGroup for Diagnostics {
         "Diagnostics presentation: inline end-of-line summary scope + min-severity.";
 }
 
+/// Plugin observability options: `plugin.trace-level` (the global default
+/// boundary-trace verbosity the host's `PluginTracer` gates on). PO.4.3.
+pub struct Plugin;
+impl OptionGroup for Plugin {
+    const NAME: &'static str = "plugin";
+    const DOC: &'static str =
+        "Plugin observability: the global default boundary-trace verbosity.";
+}
+
 /// GPUI window options: OS chrome (`ui.window.decorations`) and
 /// maximize-on-launch (`ui.window.start-maximized`). GPUI peer only.
 pub struct Window;

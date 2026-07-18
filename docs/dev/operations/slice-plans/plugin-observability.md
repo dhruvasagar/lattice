@@ -112,7 +112,7 @@ The bench is the load-bearing artefact here.
 > ~104 ns, never on the default path. Green: trace unit + grammar_source + perf
 > ratchet + clippy.
 
-### PO.4 — the trace-buffer views (shared + per-plugin)  🚧
+### PO.4 — the trace-buffer views (shared + per-plugin)  ✅
 `*plugin-trace*` (shared stream) + `*plugin-trace:<name>*` (per-plugin filtered)
 synthetic Documents — read-only modes whose `on_activate` seeds from the ring and
 subscribes to `PluginTracePushed` for the live tail (the `lsp-trace-mode`
@@ -158,11 +158,26 @@ verbosity live. Sub-sliced into three commits (confirmed 2026-07-18).
 > (per-plugin name round-trip) +2 manager (five action commands, name round-trip)
 > +1 host (`t` binds to `action:plugins-trace` in the plugins-mode layer).
 
-#### PO.4.3 — live verbosity option  📝
-A typed enum option `plugin.trace-level` (default `info`) + an `Event::OptionChanged`
-observer wired at boot calling `tracer.set_default_level(parsed)` (PO.3's republish
-reaches the hot gates live). Per-plugin override via a `:plugins` manager chord
-(`tracer.set_plugin_level(id, …)`).
+#### PO.4.3 — live verbosity option  ✅
+> **Landed 2026-07-18.** The global default + the per-plugin override, both live.
+> **Global:** a typed enum option `plugin.trace-level` (`lattice-config`
+> `plugin_options.rs` — a `PluginTraceLevel` value type + `impl OptionType` +
+> the `options!` decl, mirroring `diagnostics_options`; new `Plugin` option group).
+> The loader's `install` OWNS the observer (Mechanism B, the dashboard
+> `install_recompose_triggers` precedent — NOT a host `dispatch.rs` cascade arm, so
+> the App stays a thin host): it subscribes an `OptionChanged` channel, name-filters
+> `plugin.trace-level`, and bridges the event's `new: String` into a level via
+> `TraceLevel::parse` (no `lattice-config` value-type coupling — the labels match),
+> calling `tracer.set_default_level`. PO.3's republish then reaches every
+> un-overridden hot gate on the next keystroke. **Per-plugin:** a `T` chord on a
+> `:plugins` row cycles that plugin's level (`TraceLevel::cycle_next` →
+> `tracer.set_plugin_level(id, …)`, echoed) — both binding and handler in the
+> manager (mode-ownership). Added `TraceLevel::{as_str, ALL, cycle_next, parse}`
+> (plugin-host), and `format_trace_line`'s level tag now single-sources on `as_str`.
+> Tests: +4 config (`plugin_options`: default/set/bad-value/label-round-trip) +3
+> plugin-host (`cycle_next` wraps, `parse` inverse of `as_str`) +1 host
+> (`plugin_trace_view`: `:set plugin.trace-level=debug` raises the tracer default
+> live, end-to-end). No bench (off the hot path).
 
 ### PO.5 — `wasi:logging` guest import (Layer 2)  📝
 A `wasi:logging/logging`-shaped host import in `wit/`; the host impl routes each

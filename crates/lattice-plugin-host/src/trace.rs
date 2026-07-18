@@ -40,6 +40,42 @@ pub enum TraceLevel {
 }
 
 impl TraceLevel {
+    /// The lowercase wire / display label (`off` / `error` / … / `trace`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TraceLevel::Off => "off",
+            TraceLevel::Error => "error",
+            TraceLevel::Warn => "warn",
+            TraceLevel::Info => "info",
+            TraceLevel::Debug => "debug",
+            TraceLevel::Trace => "trace",
+        }
+    }
+
+    /// The six levels least→most verbose — the canonical order for enumeration
+    /// (`:set` completion, the customize view) and cycling.
+    pub const ALL: [TraceLevel; 6] = [
+        TraceLevel::Off,
+        TraceLevel::Error,
+        TraceLevel::Warn,
+        TraceLevel::Info,
+        TraceLevel::Debug,
+        TraceLevel::Trace,
+    ];
+
+    /// The next level in [`ALL`](Self::ALL) order, wrapping `Trace → Off` — the
+    /// manager view's per-plugin cycle chord (PO.4.3).
+    pub fn cycle_next(self) -> TraceLevel {
+        TraceLevel::from_u8((self.as_u8() + 1) % Self::ALL.len() as u8)
+    }
+
+    /// Parse a lowercase label (inverse of [`as_str`](Self::as_str)), `None` for
+    /// an unknown word. The loader uses this to bridge a `plugin.trace-level`
+    /// `OptionChanged` (whose value arrives as a string) into a level (PO.4.3).
+    pub fn parse(s: &str) -> Option<TraceLevel> {
+        TraceLevel::ALL.into_iter().find(|l| l.as_str() == s)
+    }
+
     /// The numeric encoding stored in the [`HotGate`] atomic.
     #[inline]
     pub fn as_u8(self) -> u8 {
@@ -416,6 +452,27 @@ mod tests {
         }
         // An out-of-range byte fails closed to `Off`.
         assert_eq!(TraceLevel::from_u8(200), TraceLevel::Off);
+    }
+
+    #[test]
+    fn cycle_next_walks_all_and_wraps() {
+        let mut seen = Vec::new();
+        let mut lvl = TraceLevel::Off;
+        for _ in 0..TraceLevel::ALL.len() {
+            seen.push(lvl);
+            lvl = lvl.cycle_next();
+        }
+        assert_eq!(seen, TraceLevel::ALL.to_vec(), "cycle visits every level in order");
+        assert_eq!(lvl, TraceLevel::Off, "Trace wraps back to Off");
+        assert_eq!(TraceLevel::Info.as_str(), "info");
+    }
+
+    #[test]
+    fn parse_is_the_inverse_of_as_str() {
+        for lvl in TraceLevel::ALL {
+            assert_eq!(TraceLevel::parse(lvl.as_str()), Some(lvl));
+        }
+        assert_eq!(TraceLevel::parse("loud"), None);
     }
 
     #[test]

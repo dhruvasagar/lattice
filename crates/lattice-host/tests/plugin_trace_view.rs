@@ -9,8 +9,11 @@
 
 #![allow(clippy::unwrap_used, clippy::panic)]
 
+use std::time::Duration;
+
 use lattice_core::Document as CoreDocument;
 use lattice_host::editor::Editor;
+use lattice_plugin_host::{PluginTracerHandle, TraceLevel};
 use lattice_plugin_trace::PluginTraceMode;
 
 #[test]
@@ -40,5 +43,42 @@ async fn opening_the_trace_buffer_activates_plugin_trace_mode() {
         major,
         Some(PluginTraceMode::mode_id()),
         "the trace buffer's major mode is the provider-registered plugin-trace-mode"
+    );
+}
+
+#[tokio::test]
+async fn set_plugin_trace_level_raises_the_tracer_default_live() {
+    // PO.4.3: `:set plugin.trace-level=debug` → the config publishes
+    // `OptionChanged` → the loader's observer parses it → `tracer.set_default_level`.
+    // End-to-end proof the whole live chain is wired.
+    let editor = Editor::boot(CoreDocument::from_text("x\n"));
+    let tracer = editor
+        .services
+        .get::<PluginTracerHandle>()
+        .expect("PluginTracer registered at boot");
+    // An unknown plugin id reads the global default gate.
+    assert_eq!(
+        tracer.plugin_level(u32::MAX),
+        TraceLevel::Info,
+        "the default gate is Info before any :set"
+    );
+
+    editor
+        .config
+        .parse_and_set_command("plugin.trace-level=debug")
+        .expect("plugin.trace-level accepts `debug`");
+
+    // The observer runs on the editor runtime (not this test runtime); poll.
+    let mut raised = false;
+    for _ in 0..200 {
+        if tracer.plugin_level(u32::MAX) == TraceLevel::Debug {
+            raised = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        raised,
+        "the loader observer raised the tracer default to Debug live"
     );
 }

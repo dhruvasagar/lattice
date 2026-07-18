@@ -33,16 +33,10 @@ pub fn parse_per_plugin_name(buffer_name: &str) -> Option<&str> {
         .and_then(|rest| rest.strip_suffix('*'))
 }
 
-/// The fixed-width level tag (padded so lines align in the column).
-fn level_tag(level: TraceLevel) -> &'static str {
-    match level {
-        TraceLevel::Off => "off  ",
-        TraceLevel::Error => "error",
-        TraceLevel::Warn => "warn ",
-        TraceLevel::Info => "info ",
-        TraceLevel::Debug => "debug",
-        TraceLevel::Trace => "trace",
-    }
+/// The level tag, right-padded to `error`/`trace` width so lines align in the
+/// column. The label itself is single-sourced on `TraceLevel::as_str`.
+fn level_tag(level: TraceLevel) -> String {
+    format!("{:<5}", level.as_str())
 }
 
 /// Compact a fuel count (`1234` → `1.2k`, `56` → `56`). Trace lines want the

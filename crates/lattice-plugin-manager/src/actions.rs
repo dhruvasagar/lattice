@@ -22,7 +22,7 @@ use std::sync::Arc;
 use lattice_grammar::registry::ActionSpec;
 use lattice_grammar::{CommandRegistry, EchoLevel, Effect};
 use lattice_mode::{ActionContext, ActionHandler, BufferStoreHandle};
-use lattice_plugin_host::TrustTier;
+use lattice_plugin_host::{PluginTracerHandle, TrustTier};
 use lattice_plugin_loader::PluginLoaderHandle;
 
 use crate::render::{self, HEADER_LINES};
@@ -35,6 +35,7 @@ pub const UNLOAD: &str = "action:plugins-unload";
 pub const DESCRIBE: &str = "action:plugins-describe";
 pub const REFRESH: &str = "action:plugins-refresh";
 pub const TRACE: &str = "action:plugins-trace";
+pub const TRACE_LEVEL: &str = "action:plugins-trace-level";
 
 /// Register the four `action:plugins-*` commands (dead-body — the mode's handler
 /// closures do the work) so the keymap's `cmd:` names resolve at boot. The
@@ -52,6 +53,10 @@ pub fn register_actions(commands: &mut CommandRegistry) {
             TRACE,
             "plugins: open the boundary trace for the plugin under the cursor (mode-owned).",
         ),
+        (
+            TRACE_LEVEL,
+            "plugins: cycle the trace verbosity of the plugin under the cursor (mode-owned).",
+        ),
     ] {
         commands.register_action(
             name,
@@ -64,12 +69,19 @@ pub fn register_actions(commands: &mut CommandRegistry) {
     }
 }
 
-/// The manifest id of the plugin whose row the cursor is on, or `None` when the
-/// cursor is on a header line / past the last row (the action then no-ops).
-fn plugin_name_at(ctx: &ActionContext<'_>) -> Option<String> {
+/// The `(host-issued id, manifest name)` of the plugin whose row the cursor is
+/// on, or `None` when the cursor is on a header line / past the last row (the
+/// action then no-ops). The id keys the tracer; the name is for display.
+fn plugin_row_at(ctx: &ActionContext<'_>) -> Option<(u32, String)> {
     let loader = ctx.services.get::<PluginLoaderHandle>()?;
     let idx = (ctx.cursor.line as usize).checked_sub(HEADER_LINES)?;
-    loader.plugin_status().get(idx).map(|s| s.name.clone())
+    loader.plugin_status().get(idx).map(|s| (s.id, s.name.clone()))
+}
+
+/// The manifest name of the plugin under the cursor (the row → name half of
+/// [`plugin_row_at`]).
+fn plugin_name_at(ctx: &ActionContext<'_>) -> Option<String> {
+    plugin_row_at(ctx).map(|(_, name)| name)
 }
 
 /// Re-render the manager buffer from the current status (off the actor thread).
@@ -162,6 +174,24 @@ pub fn trace_handler() -> ActionHandler {
     })
 }
 
+/// `T` — cycle the trace verbosity of the plugin under the cursor
+/// (off→error→warn→info→debug→trace→off) via `tracer.set_plugin_level` (PO.3's
+/// per-plugin gate; PO.4.3). The tracer republishes to that plugin's hot gate, so
+/// the change is live on the next keystroke — no re-render needed (the level
+/// isn't a status-table column). A missing tracer service no-ops.
+pub fn trace_level_handler() -> ActionHandler {
+    Arc::new(|ctx: &ActionContext<'_>| -> Option<Effect> {
+        let (id, name) = plugin_row_at(ctx)?;
+        let tracer = ctx.services.get::<PluginTracerHandle>()?;
+        let next = tracer.plugin_level(id).cycle_next();
+        tracer.set_plugin_level(id, next);
+        Some(Effect::Echo {
+            level: EchoLevel::Info,
+            text: format!("plugin `{name}` trace level → {}", next.as_str()),
+        })
+    })
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -171,7 +201,7 @@ mod tests {
     fn register_actions_registers_the_action_commands() {
         let mut commands = CommandRegistry::new();
         register_actions(&mut commands);
-        for name in [RELOAD, UNLOAD, DESCRIBE, REFRESH, TRACE] {
+        for name in [RELOAD, UNLOAD, DESCRIBE, REFRESH, TRACE, TRACE_LEVEL] {
             assert!(
                 commands.id_by_name(name).is_some(),
                 "`{name}` must be registered so the keymap `cmd:` resolves"

@@ -15,8 +15,10 @@ use lattice_config::ConfigRegistry;
 use lattice_mode::{PluginMetaSinkHandle, SubsystemBoot};
 use lattice_picker::PickerRegistryHandle;
 use lattice_plugin_host::{
-    PluginHost, PluginTracePushed, PluginTracer, PluginTracerHandle, TrustTier,
+    PluginHost, PluginTracePushed, PluginTracer, PluginTracerHandle, TraceLevel, TrustTier,
 };
+use lattice_protocol::{Event, EventKind};
+use lattice_runtime::{EventFilter, SubscriptionTarget};
 
 use crate::{LoaderServices, PluginLoader, PluginLoaderHandle};
 
@@ -83,6 +85,35 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     // subscription drained on the runtime flips a trapped plugin to quarantined.
     loader.subscribe_health();
     boot.register_service::<PluginLoaderHandle>(loader.clone());
+
+    // PO.4.3: observe `:set plugin.trace-level=…` and push the new default into
+    // the tracer live — PO.3's republish then reaches every un-overridden hot gate
+    // on the next keystroke. Mechanism B (the dashboard `install_recompose_triggers`
+    // precedent): the subsystem that OWNS the tracer subscribes its own
+    // `OptionChanged` channel and name-filters, rather than adding a plugin arm to
+    // the host's option cascade (mode-ownership — the App stays a thin host). The
+    // event carries the new value as a string, so no `lattice-config` value-type
+    // coupling — `TraceLevel::parse` bridges (the labels match `PluginTraceLevel`).
+    let observer_tracer = tracer.clone();
+    let (option_tx, mut option_rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
+    boot.event_bus().subscribe(
+        EventFilter::kind(EventKind::OptionChanged),
+        SubscriptionTarget::Channel(option_tx),
+    );
+    boot.runtime_handle().spawn(async move {
+        while let Some(event) = option_rx.recv().await {
+            let Event::OptionChanged { name, new, .. } = event else {
+                continue;
+            };
+            if name != "plugin.trace-level" {
+                continue;
+            }
+            match TraceLevel::parse(&new) {
+                Some(level) => observer_tracer.set_default_level(level),
+                None => tracing::warn!(value = %new, "ignoring unparseable plugin.trace-level"),
+            }
+        }
+    });
 
     // PO.1: register the tracer (built above) as a boot service so the
     // trace-buffer views (PO.4) resolve it; the seams already hold it via

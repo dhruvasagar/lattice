@@ -137,6 +137,10 @@ impl Mode for PluginManagerMode {
                 action_name: actions::REFRESH,
                 handler: actions::refresh_handler(),
             },
+            ActionHandlerContribution {
+                action_name: actions::TRACE,
+                handler: actions::trace_handler(),
+            },
         ]
     }
 
@@ -225,6 +229,11 @@ fn plugins_keymap_entries() -> &'static [KeymapEntry] {
                 mode: Normal, chord: "gr",
                 doc: "plugins: refresh the plugin list",
                 cmd: "action:plugins-refresh"
+            },
+            keymap_entry! {
+                mode: Normal, chord: "t",
+                doc: "plugins: open the boundary trace for the plugin under the cursor",
+                cmd: "action:plugins-trace"
             },
         ]
     })

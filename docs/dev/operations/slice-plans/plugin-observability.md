@@ -142,11 +142,21 @@ verbosity live. Sub-sliced into three commits (confirmed 2026-07-18).
 > `plugin_trace_mode_registered_at_boot` + `plugin-trace` in the ex-command pin).
 > No bench (off the hot path — the emit gate was PO.3's bench).
 
-#### PO.4.2 — the per-plugin view + manager `t` drill-in  📝
-The same mode parses a `*plugin-trace:<name>*` buffer name → resolves name→id via
-`PluginLoaderHandle.plugin_status()` → filters seed + drain to that id. A `t` chord
-+ `action:plugins-trace` handler in `lattice-plugin-manager` (mode owns both) emits
-`OpenSyntheticBuffer{ "*plugin-trace:<name>*", "plugin-trace-mode" }`.
+#### PO.4.2 — the per-plugin view + manager `t` drill-in  ✅
+> **Landed 2026-07-18.** The mode gained a `TraceFilter` (`Shared` / `Plugin(id)` /
+> `Unknown`) resolved once at activation from the buffer name: `resolve_filter`
+> parses `*plugin-trace:<name>*` (`parse_per_plugin_name`) and maps `<name>→id` via
+> `PluginLoaderHandle.plugin_status()`; an unloaded name is `Unknown` (an empty
+> view, never the firehose that would mislabel the buffer). Seed reads the matching
+> ring (`snapshot_plugin(id)` vs `snapshot_global()`); the drain filters the same
+> way. `lattice-plugin-manager` gained a `t` chord → `action:plugins-trace` + a
+> `trace_handler` (both in the manager — mode-ownership) that reads the row's
+> plugin and emits `OpenSyntheticBuffer{ per_plugin_buffer_name(name),
+> TRACE_MODE_ID }`; the buffer-name scheme is single-sourced in `lattice-plugin-trace`
+> (manager depends on it — acyclic) so producer/consumer can't drift. Tests: +2
+> mode (`resolve_filter` shared-without-loader / unresolvable→Unknown) +1 format
+> (per-plugin name round-trip) +2 manager (five action commands, name round-trip)
+> +1 host (`t` binds to `action:plugins-trace` in the plugins-mode layer).
 
 #### PO.4.3 — live verbosity option  📝
 A typed enum option `plugin.trace-level` (default `info`) + an `Event::OptionChanged`

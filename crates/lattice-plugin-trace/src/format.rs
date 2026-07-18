@@ -13,9 +13,25 @@
 use lattice_plugin_host::{Direction, PluginTraceRecord, TraceLevel, TraceOutcome};
 
 /// The shared synthetic buffer name + the major mode that owns the trace views.
-/// (The per-plugin `*plugin-trace:<name>*` name helpers land in PO.4.2.)
 pub const SHARED_BUFFER_NAME: &str = "*plugin-trace*";
 pub const TRACE_MODE_ID: &str = "plugin-trace-mode";
+
+/// The per-plugin buffer name for `plugin` (`*plugin-trace:<name>*`) — the
+/// manager `t` drill-in target (PO.4.2). Single-sources the naming scheme with
+/// [`parse_per_plugin_name`] so the manager (producer) and the mode (consumer)
+/// can't drift.
+pub fn per_plugin_buffer_name(plugin: &str) -> String {
+    format!("*plugin-trace:{plugin}*")
+}
+
+/// The plugin name inside a `*plugin-trace:<name>*` buffer name, or `None` for
+/// the shared `*plugin-trace*` (or any non-trace name). Inverse of
+/// [`per_plugin_buffer_name`].
+pub fn parse_per_plugin_name(buffer_name: &str) -> Option<&str> {
+    buffer_name
+        .strip_prefix("*plugin-trace:")
+        .and_then(|rest| rest.strip_suffix('*'))
+}
 
 /// The fixed-width level tag (padded so lines align in the column).
 fn level_tag(level: TraceLevel) -> &'static str {
@@ -160,5 +176,15 @@ mod tests {
         let line = format_trace_line(&r);
         assert!(line.contains("«apply-motion"), "guest→host glyph, got {line}");
         assert!(line.ends_with("→ denied(fs)"), "got {line}");
+    }
+
+    #[test]
+    fn per_plugin_name_round_trips() {
+        let name = per_plugin_buffer_name("fuzzy-finder");
+        assert_eq!(name, "*plugin-trace:fuzzy-finder*");
+        assert_eq!(parse_per_plugin_name(&name), Some("fuzzy-finder"));
+        // The shared name (and anything else) has no per-plugin id.
+        assert_eq!(parse_per_plugin_name(SHARED_BUFFER_NAME), None);
+        assert_eq!(parse_per_plugin_name("*scratch*"), None);
     }
 }

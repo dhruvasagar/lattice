@@ -25,9 +25,23 @@ use lattice_mode::{
     OptionOverrideSet, Subscription,
 };
 use lattice_plugin_host::{PluginTraceRecord, PluginTracePushed, PluginTracerHandle};
+use lattice_plugin_loader::PluginLoaderHandle;
 use lattice_runtime::Document;
 
-use crate::format::{TRACE_MODE_ID, format_trace_line};
+use crate::format::{TRACE_MODE_ID, format_trace_line, parse_per_plugin_name};
+
+/// Which records a trace buffer shows, decided once at activation from the
+/// buffer's synthetic name (design §6).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum TraceFilter {
+    /// `*plugin-trace*` — every plugin's records, interleaved (the firehose).
+    Shared,
+    /// `*plugin-trace:<name>*` where `<name>` resolved to this host-issued id.
+    Plugin(u32),
+    /// `*plugin-trace:<name>*` whose `<name>` is not a loaded plugin — an empty
+    /// view (never the firehose, which would mislabel the buffer).
+    Unknown,
+}
 
 /// The `*plugin-trace*` / `*plugin-trace:<name>*` buffers' major mode.
 pub struct PluginTraceMode;
@@ -52,21 +66,40 @@ pub(crate) async fn append_text(handle: &Arc<dyn Document>, text: String) {
     let _ = handle.apply_edit_batch(vec![edit]).await;
 }
 
-/// Whether a record belongs in a view filtered to `filter` (`None` = the shared
-/// firehose keeps everything).
-fn keep(record: &PluginTraceRecord, filter: Option<u32>) -> bool {
-    filter.is_none_or(|id| record.plugin == id)
+/// Whether a record belongs in a view with `filter`.
+fn keep(record: &PluginTraceRecord, filter: TraceFilter) -> bool {
+    match filter {
+        TraceFilter::Shared => true,
+        TraceFilter::Plugin(id) => record.plugin == id,
+        TraceFilter::Unknown => false,
+    }
 }
 
 /// Join the matching records into buffer text (one `format_trace_line` per line,
 /// trailing newline). Empty when nothing matches.
-fn render_records(records: &[PluginTraceRecord], filter: Option<u32>) -> String {
+fn render_records(records: &[PluginTraceRecord], filter: TraceFilter) -> String {
     let mut text = String::new();
     for record in records.iter().filter(|r| keep(r, filter)) {
         text.push_str(&format_trace_line(record));
         text.push('\n');
     }
     text
+}
+
+/// Resolve the buffer's filter from its synthetic name: `*plugin-trace*` →
+/// `Shared`; `*plugin-trace:<name>*` → `Plugin(id)` via the loader's
+/// `plugin_status()` name→id map, or `Unknown` if `<name>` isn't loaded.
+fn resolve_filter(name: &str, loader: Option<&PluginLoaderHandle>) -> TraceFilter {
+    let Some(plugin_name) = parse_per_plugin_name(name) else {
+        return TraceFilter::Shared;
+    };
+    let id = loader.and_then(|l| {
+        l.plugin_status()
+            .into_iter()
+            .find(|s| s.name == plugin_name)
+            .map(|s| s.id)
+    });
+    id.map_or(TraceFilter::Unknown, TraceFilter::Plugin)
 }
 
 impl Mode for PluginTraceMode {
@@ -111,14 +144,21 @@ impl Mode for PluginTraceMode {
                 return Ok(None);
             };
 
-            // PO.4.1 serves the shared firehose (no filter). PO.4.2 resolves the
-            // per-plugin id from a `*plugin-trace:<name>*` buffer name here.
-            let filter: Option<u32> = None;
+            // The filter is decided once, from the buffer name: `*plugin-trace*` →
+            // the firehose; `*plugin-trace:<name>*` → that plugin (or an empty
+            // `Unknown` view if it isn't loaded), resolved via the loader.
+            let name = store.name_for(buffer_id).unwrap_or_default();
+            let filter = resolve_filter(&name, ctx.service::<PluginLoaderHandle>().as_deref());
 
-            // Seed from the ring so pre-existing records are visible the moment
-            // the buffer opens (the `lsp-log-mode` seed). Off-thread — the format
-            // is O(ring) and must not run on activation's synchronous path.
-            let seed = render_records(&tracer.snapshot_global(), filter);
+            // Seed from the matching ring so pre-existing records are visible the
+            // moment the buffer opens (the `lsp-log-mode` seed). Off-thread — the
+            // format is O(ring) and must not run on activation's synchronous path.
+            let snapshot = match filter {
+                TraceFilter::Plugin(id) => tracer.snapshot_plugin(id),
+                TraceFilter::Shared => tracer.snapshot_global(),
+                TraceFilter::Unknown => Vec::new(),
+            };
+            let seed = render_records(&snapshot, filter);
             if !seed.is_empty() {
                 let handle_seed = handle.clone();
                 runtime.spawn(async move {
@@ -173,22 +213,45 @@ mod tests {
     #[test]
     fn the_shared_view_keeps_every_plugins_records() {
         let records = [rec(1), rec(2), rec(1)];
-        let text = render_records(&records, None);
+        let text = render_records(&records, TraceFilter::Shared);
         assert_eq!(text.lines().count(), 3);
     }
 
     #[test]
     fn a_plugin_filter_keeps_only_that_plugin() {
         let records = [rec(1), rec(2), rec(1)];
-        let text = render_records(&records, Some(1));
+        let text = render_records(&records, TraceFilter::Plugin(1));
         assert_eq!(text.lines().count(), 2, "two records for plugin 1");
         assert!(text.lines().all(|l| l.contains("[plugin:1]")));
     }
 
     #[test]
     fn no_matches_render_empty() {
-        assert!(render_records(&[rec(1)], Some(9)).is_empty());
-        assert!(render_records(&[], None).is_empty());
+        // A plugin filter with no matching records.
+        assert!(render_records(&[rec(1)], TraceFilter::Plugin(9)).is_empty());
+        // The `Unknown` view (an unloaded plugin name) keeps nothing, even
+        // records that exist.
+        assert!(render_records(&[rec(1), rec(2)], TraceFilter::Unknown).is_empty());
+        assert!(render_records(&[], TraceFilter::Shared).is_empty());
+    }
+
+    #[test]
+    fn the_shared_name_resolves_to_the_firehose_without_a_loader() {
+        assert_eq!(
+            resolve_filter("*plugin-trace*", None),
+            TraceFilter::Shared,
+            "the shared name never needs the loader"
+        );
+    }
+
+    #[test]
+    fn an_unresolvable_per_plugin_name_is_the_unknown_view() {
+        // Per-plugin name but no loader (or plugin not loaded) → empty, NOT the
+        // firehose (which would mislabel the buffer).
+        assert_eq!(
+            resolve_filter("*plugin-trace:ghost*", None),
+            TraceFilter::Unknown
+        );
     }
 
     #[test]

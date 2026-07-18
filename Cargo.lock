@@ -4445,6 +4445,7 @@ dependencies = [
  "lattice-mode",
  "lattice-plugin-host",
  "lattice-plugin-loader",
+ "lattice-plugin-trace",
  "lattice-protocol",
  "lattice-runtime",
  "tokio",

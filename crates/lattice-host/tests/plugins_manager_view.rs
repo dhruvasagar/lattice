@@ -53,18 +53,35 @@ fn plugins_mode_chords_override_in_its_layer() {
     let editor = Editor::boot(CoreDocument::from_text("x\n"));
     let registry = editor.registry.load();
 
-    // The four action commands self-register at boot.
+    // The action commands self-register at boot.
     for name in [
         "action:plugins-reload",
         "action:plugins-unload",
         "action:plugins-describe",
         "action:plugins-refresh",
+        "action:plugins-trace",
     ] {
         assert!(
             registry.id_by_name(name).is_some(),
             "`{name}` registered at boot"
         );
     }
+
+    // PO.4.2: `t` in plugins-mode drills into the plugin's boundary trace.
+    let t = lattice_protocol::parse_chord_sequence("t").unwrap();
+    let plugins_mode_t = ModeId::new("plugins-mode");
+    let LookupResult::Bound { command, .. } = editor.keymap.lookup_with_context(
+        BindingMode::Normal,
+        &t,
+        &[plugins_mode_t.clone()],
+    ) else {
+        panic!("`t` should be bound in the plugins-mode layer");
+    };
+    assert_eq!(
+        command.command.command,
+        registry.id_by_name("action:plugins-trace").unwrap(),
+        "`t` in plugins-mode opens the per-plugin trace"
+    );
 
     // `x` is the vim delete-char builtin; with plugins-mode active its
     // MajorMode layer overrides it to `action:plugins-unload`.

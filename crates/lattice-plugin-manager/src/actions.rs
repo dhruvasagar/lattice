@@ -34,6 +34,7 @@ pub const RELOAD: &str = "action:plugins-reload";
 pub const UNLOAD: &str = "action:plugins-unload";
 pub const DESCRIBE: &str = "action:plugins-describe";
 pub const REFRESH: &str = "action:plugins-refresh";
+pub const TRACE: &str = "action:plugins-trace";
 
 /// Register the four `action:plugins-*` commands (dead-body — the mode's handler
 /// closures do the work) so the keymap's `cmd:` names resolve at boot. The
@@ -47,6 +48,10 @@ pub fn register_actions(commands: &mut CommandRegistry) {
             "plugins: describe the plugin under the cursor (mode-owned).",
         ),
         (REFRESH, "plugins: refresh the plugin list (mode-owned)."),
+        (
+            TRACE,
+            "plugins: open the boundary trace for the plugin under the cursor (mode-owned).",
+        ),
     ] {
         commands.register_action(
             name,
@@ -141,20 +146,52 @@ pub fn refresh_handler() -> ActionHandler {
     })
 }
 
+/// `t` — open the per-plugin boundary-trace view (`*plugin-trace:<name>*`) for the
+/// plugin under the cursor. Returns the generic `OpenSyntheticBuffer` effect; the
+/// host ensures the buffer under `plugin-trace-mode`, whose `on_activate` resolves
+/// the name back to the plugin id and filters the tracer ring (PO.4.2). The
+/// buffer-name scheme is single-sourced via `lattice_plugin_trace` so the manager
+/// (producer) and the mode (consumer) can't drift.
+pub fn trace_handler() -> ActionHandler {
+    Arc::new(|ctx: &ActionContext<'_>| -> Option<Effect> {
+        let name = plugin_name_at(ctx)?;
+        Some(Effect::OpenSyntheticBuffer {
+            name: lattice_plugin_trace::per_plugin_buffer_name(&name),
+            mode_id: lattice_plugin_trace::TRACE_MODE_ID.to_string(),
+        })
+    })
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
 
     #[test]
-    fn register_actions_registers_the_four_commands() {
+    fn register_actions_registers_the_action_commands() {
         let mut commands = CommandRegistry::new();
         register_actions(&mut commands);
-        for name in [RELOAD, UNLOAD, DESCRIBE, REFRESH] {
+        for name in [RELOAD, UNLOAD, DESCRIBE, REFRESH, TRACE] {
             assert!(
                 commands.id_by_name(name).is_some(),
                 "`{name}` must be registered so the keymap `cmd:` resolves"
             );
         }
+    }
+
+    #[test]
+    fn the_trace_handler_opens_the_per_plugin_trace_buffer() {
+        // The `t` handler's buffer name must round-trip through the trace crate's
+        // parser — the single-sourced naming contract the mode relies on.
+        let name = lattice_plugin_trace::per_plugin_buffer_name("fuzzy-finder");
+        assert_eq!(
+            lattice_plugin_trace::parse_per_plugin_name(&name),
+            Some("fuzzy-finder"),
+        );
+        assert_eq!(
+            lattice_plugin_trace::TRACE_MODE_ID,
+            "plugin-trace-mode",
+            "the drill-in targets the mode the trace crate registers"
+        );
     }
 }

@@ -30,7 +30,10 @@ use lattice_mode::SubsystemBoot;
 mod format;
 mod mode;
 
-pub use format::{SHARED_BUFFER_NAME, TRACE_MODE_ID, format_trace_line};
+pub use format::{
+    SHARED_BUFFER_NAME, TRACE_MODE_ID, format_trace_line, parse_per_plugin_name,
+    per_plugin_buffer_name,
+};
 pub use mode::PluginTraceMode;
 
 /// Install the plugin-trace views: register `plugin-trace-mode` + the

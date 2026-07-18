@@ -33,6 +33,11 @@ lattice-plugin-loader = { path = "../lattice-plugin-loader" }
 # `PluginStatus`, rendered into the status table. Naming them here is fine: this
 # is a view crate, not a renderer (the guard checks direct renderer deps only).
 lattice-plugin-host = { path = "../lattice-plugin-host" }
+# PO.4.2: the `t` drill-in opens the per-plugin `*plugin-trace:<name>*` view — we
+# call `per_plugin_buffer_name` + `TRACE_MODE_ID` so the buffer-name scheme is
+# single-sourced with the mode that parses it (no string drift). Acyclic: the
+# trace crate does not depend on the manager.
+lattice-plugin-trace = { path = "../lattice-plugin-trace" }
 # `Event` / `EventKind` — the view subscribes to `PluginCrashed` to re-render
 # health live while the buffer is open.
 lattice-protocol = { path = "../lattice-protocol" }

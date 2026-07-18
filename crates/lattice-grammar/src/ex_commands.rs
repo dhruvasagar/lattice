@@ -2031,7 +2031,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                 doc: "Directory path. Absent = HOME.",
                 prompt: "directory:",
                 default: ArgDefault::None,
-                completion: Some("gen:path"),
+                completion: Some("gen:directories"),
             }],
             surface_form: SurfaceForm::Keyword,
         },

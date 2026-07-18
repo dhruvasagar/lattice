@@ -7,6 +7,9 @@
 //!   cache effectively never expires).
 //! - [`FilesGenerator`] -- filesystem entries for a path-shaped
 //!   prefix. Caches per-directory with a 1-second soft TTL.
+//! - [`DirectoriesGenerator`] -- like [`FilesGenerator`] but only
+//!   emits directory entries. Intended for `:cd` and similar
+//!   directory-only commands.
 //!
 //! Other host-state generators (chords, registers, marks, buffers)
 //! live in `lattice-ui-tui` because they need App-level state.
@@ -102,89 +105,45 @@ impl CandidateGenerator for CommandsGenerator {
     }
 }
 
+/// `gen:directories`. Resolves the prefix into a directory + basename
+/// pattern, then lists *only directories* of that directory matching
+/// the basename prefix. Like [`FilesGenerator`] but omits regular files.
+pub struct DirectoriesGenerator;
+
 /// `gen:files`. Resolves the prefix into a directory + basename
 /// pattern, then lists entries of that directory matching the
 /// basename prefix. Returns directories with a trailing `/` so the
 /// user can keep tab-completing into nested paths.
 pub struct FilesGenerator;
 
-impl CandidateGenerator for FilesGenerator {
+impl CandidateGenerator for DirectoriesGenerator {
     fn generate(&self, ctx: &GenerateContext<'_>) -> Vec<RawCandidate> {
-        // Split prefix at the last `/`. Everything before is the
-        // directory; everything after (or the whole prefix if no
-        // `/`) is the basename. Resolve `~` to $HOME for Unix
-        // paths.
-        let (dir_str, basename) = match ctx.prefix.rfind('/') {
-            Some(i) => (&ctx.prefix[..=i], &ctx.prefix[i + 1..]),
-            None => ("", ctx.prefix),
-        };
-        let dir_path = expand_tilde(dir_str);
-
-        let read_dir = match std::fs::read_dir(&dir_path) {
-            Ok(rd) => rd,
-            Err(_) => return Vec::new(),
-        };
-
-        let basename_lower = basename.to_ascii_lowercase();
-        let mut out: Vec<RawCandidate> = Vec::new();
-        for entry in read_dir.flatten() {
-            let name_os = entry.file_name();
-            let name = name_os.to_string_lossy();
-            // Filter by basename prefix (case-insensitive when
-            // ctx.case_sensitive is false). Matcher will further
-            // refine; this filter just prevents the candidate set
-            // from being thousands of entries on big directories.
-            if !ctx.case_sensitive && !name.to_ascii_lowercase().starts_with(&basename_lower) {
-                continue;
-            }
-            if ctx.case_sensitive && !name.starts_with(basename) {
-                continue;
-            }
-            let metadata = entry.metadata();
-            let is_dir = metadata.as_ref().map(|m| m.is_dir()).unwrap_or(false);
-            let size = metadata.as_ref().ok().map(|m| m.len());
-            // Reconstruct the full text the user types: the
-            // original directory part plus the basename, plus
-            // a trailing `/` if it's a directory.
-            let mut text = String::with_capacity(dir_str.len() + name.len() + 1);
-            text.push_str(dir_str);
-            text.push_str(&name);
-            if is_dir {
-                text.push('/');
-            }
-            let display = if is_dir {
-                format!("{name}/")
-            } else {
-                name.to_string()
-            };
-            out.push(RawCandidate {
-                text,
-                display,
-                kind: if is_dir {
-                    CandidateKind::Directory
-                } else {
-                    CandidateKind::File
-                },
-                data: CandidateData::File {
-                    path: entry.path(),
-                    is_dir,
-                    size,
-                },
-                source: None,
-                accept_action: None,
-                annotations: Vec::new(),
-                display_spans: Vec::new(),
-            });
-        }
-        out.sort_by(|a, b| a.text.cmp(&b.text));
-        out
+        fs_entries(ctx, false)
     }
 
     fn cache_key(&self, ctx: &GenerateContext<'_>) -> Option<CacheKey> {
-        // Cache per resolved directory. Two cmdlines for the same
-        // directory share a cache entry; typing more chars in the
-        // basename re-uses it (matcher does the filtering against
-        // the cached candidate set).
+        let dir_str = match ctx.prefix.rfind('/') {
+            Some(i) => &ctx.prefix[..=i],
+            None => "",
+        };
+        let dir = expand_tilde(dir_str);
+        Some(CacheKey::new(format!(
+            "gen:directories:{}",
+            dir.to_string_lossy()
+        )))
+    }
+
+    fn cache_ttl(&self) -> Duration {
+        Duration::from_secs(1)
+    }
+}
+
+impl CandidateGenerator for FilesGenerator {
+    fn generate(&self, ctx: &GenerateContext<'_>) -> Vec<RawCandidate> {
+        fs_entries(ctx, true)
+    }
+
+    fn cache_key(&self, ctx: &GenerateContext<'_>) -> Option<CacheKey> {
         let dir_str = match ctx.prefix.rfind('/') {
             Some(i) => &ctx.prefix[..=i],
             None => "",
@@ -197,10 +156,73 @@ impl CandidateGenerator for FilesGenerator {
     }
 
     fn cache_ttl(&self) -> Duration {
-        // Files mutate. 1s is enough to dedupe rapid keystrokes
-        // without hiding genuine filesystem changes.
         Duration::from_secs(1)
     }
+}
+
+/// Shared helper: list filesystem entries matching the prefix.
+/// When `include_files` is false, only directories are emitted.
+fn fs_entries(ctx: &GenerateContext<'_>, include_files: bool) -> Vec<RawCandidate> {
+    let (dir_str, basename) = match ctx.prefix.rfind('/') {
+        Some(i) => (&ctx.prefix[..=i], &ctx.prefix[i + 1..]),
+        None => ("", ctx.prefix),
+    };
+    let dir_path = expand_tilde(dir_str);
+
+    let read_dir = match std::fs::read_dir(&dir_path) {
+        Ok(rd) => rd,
+        Err(_) => return Vec::new(),
+    };
+
+    let basename_lower = basename.to_ascii_lowercase();
+    let mut out: Vec<RawCandidate> = Vec::new();
+    for entry in read_dir.flatten() {
+        let name_os = entry.file_name();
+        let name = name_os.to_string_lossy();
+        if !ctx.case_sensitive && !name.to_ascii_lowercase().starts_with(&basename_lower) {
+            continue;
+        }
+        if ctx.case_sensitive && !name.starts_with(basename) {
+            continue;
+        }
+        let metadata = entry.metadata();
+        let is_dir = metadata.as_ref().map(|m| m.is_dir()).unwrap_or(false);
+        if !include_files && !is_dir {
+            continue;
+        }
+        let size = metadata.as_ref().ok().map(|m| m.len());
+        let mut text = String::with_capacity(dir_str.len() + name.len() + 1);
+        text.push_str(dir_str);
+        text.push_str(&name);
+        if is_dir {
+            text.push('/');
+        }
+        let display = if is_dir {
+            format!("{name}/")
+        } else {
+            name.to_string()
+        };
+        out.push(RawCandidate {
+            text,
+            display,
+            kind: if is_dir {
+                CandidateKind::Directory
+            } else {
+                CandidateKind::File
+            },
+            data: CandidateData::File {
+                path: entry.path(),
+                is_dir,
+                size,
+            },
+            source: None,
+            accept_action: None,
+            annotations: Vec::new(),
+            display_spans: Vec::new(),
+        });
+    }
+    out.sort_by(|a, b| a.text.cmp(&b.text));
+    out
 }
 
 fn expand_tilde(p: &str) -> PathBuf {

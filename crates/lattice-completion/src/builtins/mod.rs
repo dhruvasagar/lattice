@@ -17,6 +17,7 @@ use crate::registry::{AnnotatorId, CompletionRegistry, GeneratorId, MatcherId, R
 pub struct CompletionBuiltins {
     pub gen_commands: GeneratorId,
     pub gen_files: GeneratorId,
+    pub gen_directories: GeneratorId,
     pub match_prefix: MatcherId,
     pub match_substring: MatcherId,
     pub match_fuzzy: MatcherId,
@@ -39,6 +40,11 @@ pub fn populate(registry: &mut CompletionRegistry) -> CompletionBuiltins {
         "gen:files",
         "Filesystem entries matching the prefix's directory + basename pattern.",
         generators::FilesGenerator,
+    );
+    let gen_directories = registry.register_generator(
+        "gen:directories",
+        "Directory entries only (like gen:files but filters out regular files).",
+        generators::DirectoriesGenerator,
     );
     let match_prefix = registry.register_matcher(
         "match:prefix",
@@ -91,6 +97,7 @@ pub fn populate(registry: &mut CompletionRegistry) -> CompletionBuiltins {
     CompletionBuiltins {
         gen_commands,
         gen_files,
+        gen_directories,
         match_prefix,
         match_substring,
         match_fuzzy,

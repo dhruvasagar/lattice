@@ -551,7 +551,8 @@ impl PluginLoader {
     /// manager view (PL8.H.2/.3). Cloned out under the loaded-set lock, so the
     /// view renders a stable frame while loads/unloads proceed.
     pub fn plugin_status(&self) -> Vec<PluginStatus> {
-        self.loaded
+        let mut rows: Vec<PluginStatus> = self
+            .loaded
             .lock()
             .expect("plugin-loader loaded-set mutex poisoned")
             .iter()
@@ -563,7 +564,15 @@ impl PluginLoader {
                 denied: r.denied.clone(),
                 health: r.health.clone(),
             })
-            .collect()
+            .collect();
+        // Stable, name-sorted order (not raw load order). The `:plugins` view keys
+        // its in-view chords on `cursor.line → this Vec's index`, and a `:plugin`
+        // reload internally unloads + re-appends (moving the record to the end of
+        // `loaded`). Sorting by name keeps a reloaded plugin's row in place, so the
+        // cursor still targets it, and makes the list order predictable for the
+        // user rather than discovery-order. Names are unique per loaded set.
+        rows.sort_by(|a, b| a.name.cmp(&b.name));
+        rows
     }
 
     /// PL8.H.1: mark the plugin `plugin` quarantined (its instance trapped) — the

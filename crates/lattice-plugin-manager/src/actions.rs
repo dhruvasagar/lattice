@@ -14,8 +14,9 @@
 //! `plugin_status()` rows in order). Every handler reads the loader + buffer
 //! store from the [`ActionContext`] service registry, so nothing is captured at
 //! registration — a missing service degrades the action to a no-op, never a
-//! panic. Reload / unload run off the actor thread; the view re-renders from the
-//! fresh status afterward.
+//! panic. Reload runs off the actor thread (async unload + re-instantiate);
+//! unload is a synchronous teardown; both re-render from the fresh status
+//! afterward.
 
 use std::sync::Arc;
 
@@ -222,6 +223,40 @@ mod tests {
             lattice_plugin_trace::TRACE_MODE_ID,
             "plugin-trace-mode",
             "the drill-in targets the mode the trace crate registers"
+        );
+    }
+
+    #[test]
+    fn every_handler_no_ops_without_its_services() {
+        use lattice_mode::ServiceRegistry;
+        use lattice_protocol::ids::BufferId;
+        use lattice_protocol::position::Position;
+        use lattice_runtime::EventBus;
+        // An empty registry: no loader, buffer store, or tracer. Every handler must
+        // degrade to a benign no-op (never a panic) — the module's stated contract
+        // that a missing service short-circuits at the `ctx.services.get()?`.
+        let services = ServiceRegistry::new();
+        let events = EventBus::new();
+        let ctx = ActionContext {
+            buffer_id: BufferId::new(0),
+            cursor: Position { line: 5, byte: 0 },
+            services: &services,
+            events: &events,
+        };
+        assert!(reload_handler()(&ctx).is_none(), "reload no-ops without a loader");
+        assert!(unload_handler()(&ctx).is_none(), "unload no-ops without a loader");
+        assert!(
+            describe_handler()(&ctx).is_none(),
+            "describe no-ops without a loader"
+        );
+        assert!(trace_handler()(&ctx).is_none(), "trace no-ops without a loader");
+        assert!(
+            trace_level_handler()(&ctx).is_none(),
+            "trace-level no-ops without a loader"
+        );
+        assert!(
+            refresh_handler()(&ctx).is_none(),
+            "refresh returns None regardless"
         );
     }
 }

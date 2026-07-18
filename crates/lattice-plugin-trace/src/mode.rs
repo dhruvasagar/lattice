@@ -150,28 +150,33 @@ impl Mode for PluginTraceMode {
             let name = store.name_for(buffer_id).unwrap_or_default();
             let filter = resolve_filter(&name, ctx.service::<PluginLoaderHandle>().as_deref());
 
-            // Seed from the matching ring so pre-existing records are visible the
-            // moment the buffer opens (the `lsp-log-mode` seed). Off-thread — the
-            // format is O(ring) and must not run on activation's synchronous path.
-            let snapshot = match filter {
-                TraceFilter::Plugin(id) => tracer.snapshot_plugin(id),
-                TraceFilter::Shared => tracer.snapshot_global(),
-                TraceFilter::Unknown => Vec::new(),
-            };
-            let seed = render_records(&snapshot, filter);
-            if !seed.is_empty() {
-                let handle_seed = handle.clone();
-                runtime.spawn(async move {
-                    append_text(&handle_seed, seed).await;
-                });
-            }
-
-            // Live tail: subscribe to `PluginTracePushed`, drain OFF-thread, batch
-            // a burst, format + append. The `LspLogPushed` drain, verbatim.
+            // Subscribe to the live tail FIRST (cheap + synchronous), so records
+            // pushed while the seed renders are buffered in the channel rather than
+            // lost in the gap between snapshot and subscription. A record in the
+            // tiny [subscribe, snapshot] window may then appear once more in the
+            // tail — acceptable for a best-effort trace log, and strictly better
+            // than dropping it.
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<PluginTracePushed>();
             let sub_id = ctx.events().subscribe_typed::<PluginTracePushed>(tx);
             let bus_handle = ctx.events_handle();
+
+            // ONE off-thread task does BOTH the seed and the live tail, so the
+            // O(ring) snapshot-clone + `render_records` format NEVER runs on the
+            // actor thread (paramount #1 — the future's synchronous prefix, which
+            // the cascade polls inline, must not do document-proportional work).
+            // Seed first (pre-existing records), then drain the tail in order.
+            let tracer = tracer.clone();
             runtime.spawn(async move {
+                let snapshot = match filter {
+                    TraceFilter::Plugin(id) => tracer.snapshot_plugin(id),
+                    TraceFilter::Shared => tracer.snapshot_global(),
+                    TraceFilter::Unknown => Vec::new(),
+                };
+                let seed = render_records(&snapshot, filter);
+                if !seed.is_empty() {
+                    append_text(&handle, seed).await;
+                }
+                // The `LspLogPushed` drain, verbatim: batch a burst, format, append.
                 while let Some(first) = rx.recv().await {
                     let mut batch = vec![first.record];
                     while let Ok(more) = rx.try_recv() {

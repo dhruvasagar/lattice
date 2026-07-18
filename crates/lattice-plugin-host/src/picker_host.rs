@@ -33,6 +33,7 @@ pub(crate) mod bindings {
             // incompatible copy).
             "lattice:plugin-host/types": crate::lattice::plugin_host::types,
             "lattice:plugin-host/host-services": crate::lattice::plugin_host::host_services,
+            "lattice:plugin-host/logging": crate::lattice::plugin_host::logging,
         },
     });
 }

@@ -179,9 +179,33 @@ verbosity live. Sub-sliced into three commits (confirmed 2026-07-18).
 > (`plugin_trace_view`: `:set plugin.trace-level=debug` raises the tracer default
 > live, end-to-end). No bench (off the hot path).
 
-### PO.5 — `wasi:logging` guest import (Layer 2)  📝
+### PO.5 — `wasi:logging` guest import (Layer 2)  ✅
 A `wasi:logging/logging`-shaped host import in `wit/`; the host impl routes each
 guest `log(level, context, message)` into the same `PluginTracer` (a
 `HostImport` record, `seam = logging`). Fixture guest + host round-trip test.
 **Exit:** a guest that calls the logging import has its lines captured into the
 trace buffer, interleaved with the boundary trace.
+
+> **Landed 2026-07-18.** `wit/logging.wit` — a `wasi:logging`-shaped `logging`
+> interface (`enum level { trace..critical }`, `log(level, context, message)`),
+> `import`ed into the 5 host-services worlds (plugin + picker-source +
+> completion-source + decorations + events) and shared via one bindgen
+> `with`-reuse (the `host-services` pattern — a single generated module, one
+> `Host` impl). `PluginSeam::Logging` added. Host side: `impl logging::Host for
+> PluginState` routes each `log` into the plugin's tracer as a
+> `Direction::HostImport` record (`seam = logging`, `context`→`call`,
+> `message`→`detail`, `critical`→`Error`), gated by the plugin's level exactly
+> like a boundary record; a plugin with no tracer wired debug-drops (the
+> `event_emit` graceful precedent). `logging::add_to_linker` on the ASYNC linker
+> only (never the sync grammar linker — grammar can't reach it, keeping the
+> keystroke path clean). Wiring: `PluginHost` gained a set-once
+> `OnceLock<PluginTracerHandle>` (`set_tracer`, called by the loader install) +
+> `log_ctx_for`; each async instantiate/spawn path stamps `PluginState.log_ctx`
+> after `alloc_id`. `format_trace_line` renders logging records as `{level}
+> [plugin:{id}] logging {context}: {message}` (the message, not a spurious
+> `→ ok 0µs`). First base-`plugin`-world fixture (`logging-guest`) whose `activate`
+> calls `log` at four levels/contexts. Tests: +1 manifest (seam round-trip incl.
+> Logging) +2 format (logging with/without context) +2 host (`logging_source`:
+> Info gate keeps info/warn/error + drops debug; Trace keeps all four; records
+> tagged `logging`/`host-import`, context→call, message→detail). No bench (async
+> import, off the hot path). **Completes the observability stack (PO.1–PO.5).**

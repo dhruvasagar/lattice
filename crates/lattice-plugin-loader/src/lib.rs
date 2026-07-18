@@ -507,7 +507,13 @@ impl PluginLoader {
                             .await?;
                         loaded_id.get_or_insert(id);
                     }
-                    // Exhaustive: every `PluginSeam` variant is now drained
+                    // PO.5: `logging` is a host import the guest CONSUMES (Layer 2),
+                    // not a contribution it provides — it never appears in a
+                    // well-formed `provides`, and the import is wired into the
+                    // linker for every async world regardless. A malformed manifest
+                    // that lists it drains nothing (no-op), never an error.
+                    PluginSeam::Logging => {}
+                    // Exhaustive: every contribution `PluginSeam` variant is drained
                     // (PL8.E closed the last, decorations). A new seam variant
                     // must add its drain here — the compiler enforces it rather
                     // than a silent skip.

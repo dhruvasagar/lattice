@@ -53,5 +53,6 @@ interface picker-source {
 /// types the boundary round-trips.
 world picker-source-plugin {
     import host-services;
+    import logging;
     export picker-source;
 }

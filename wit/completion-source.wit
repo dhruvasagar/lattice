@@ -39,5 +39,6 @@ interface completion-source {
 /// are the SAME Rust types the boundary round-trips.
 world completion-source-plugin {
     import host-services;
+    import logging;
     export completion-source;
 }

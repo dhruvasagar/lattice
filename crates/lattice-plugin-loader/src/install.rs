@@ -44,6 +44,10 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     tracer.set_event_publisher(Box::new(move |record| {
         trace_bus.publish_typed(PluginTracePushed { record });
     }));
+    // PO.5: hand the tracer to the host so each instantiate/spawn stamps the
+    // plugin's `log_ctx` and the guest `logging` seam (Layer 2) routes into the
+    // same ring as the boundary trace.
+    host.set_tracer(tracer.clone());
 
     // Capture the editor environment from the generic boot seams. `service`
     // returns `Arc<Handle-alias>` (double-Arc); unwrap one layer to the handle.

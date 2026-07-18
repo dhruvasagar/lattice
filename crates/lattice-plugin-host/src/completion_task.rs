@@ -227,6 +227,8 @@ impl PluginHost {
                 .await
                 .map_err(|e| PluginHostError::Instantiate(e.into()))?;
         let id = self.alloc_id();
+        // PO.5: route this plugin's `logging` calls into the tracer (Layer 2).
+        store.data_mut().log_ctx = self.log_ctx_for(id);
         let (tx, rx) = mpsc::unbounded();
         let client = CompletionClient { tx, id };
         let actor = CompletionActor {

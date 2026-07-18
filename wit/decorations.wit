@@ -35,5 +35,6 @@ interface decorations {
 /// values are the SAME Rust types the boundary round-trips (`boundary_decoration.rs`).
 world decorations-plugin {
     import host-services;
+    import logging;
     export decorations;
 }

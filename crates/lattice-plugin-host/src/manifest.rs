@@ -131,6 +131,10 @@ pub enum PluginSeam {
     Config,
     Decorations,
     Keymap,
+    /// The `wasi:logging`-shaped guest→host logging import (PO.5, Layer 2). Not a
+    /// native trait seam — the guest's own narrative, host-captured into the same
+    /// tracer as the boundary trace.
+    Logging,
 }
 
 impl PluginSeam {
@@ -145,6 +149,7 @@ impl PluginSeam {
             PluginSeam::Config => "config",
             PluginSeam::Decorations => "decorations",
             PluginSeam::Keymap => "keymap",
+            PluginSeam::Logging => "logging",
         }
     }
 }
@@ -168,6 +173,7 @@ impl FromStr for PluginSeam {
             "config" => PluginSeam::Config,
             "decorations" => PluginSeam::Decorations,
             "keymap" => PluginSeam::Keymap,
+            "logging" => PluginSeam::Logging,
             _ => return Err(()),
         })
     }
@@ -365,6 +371,27 @@ mod tests {
             let cap: Capability = s.parse().unwrap();
             assert_eq!(cap.to_string(), s);
         }
+    }
+
+    #[test]
+    fn plugin_seam_as_str_round_trips_from_str_for_every_variant() {
+        // Every variant's wire word parses back to itself — pins the `as_str` /
+        // `from_str` symmetry the trace-record + manifest paths both rely on.
+        for seam in [
+            PluginSeam::PickerSource,
+            PluginSeam::CompletionSource,
+            PluginSeam::Grammar,
+            PluginSeam::Events,
+            PluginSeam::Modes,
+            PluginSeam::Config,
+            PluginSeam::Decorations,
+            PluginSeam::Keymap,
+            PluginSeam::Logging,
+        ] {
+            assert_eq!(PluginSeam::from_str(seam.as_str()), Ok(seam));
+        }
+        assert_eq!(PluginSeam::from_str("logging"), Ok(PluginSeam::Logging));
+        assert!(PluginSeam::from_str("nonsense").is_err());
     }
 
     #[test]

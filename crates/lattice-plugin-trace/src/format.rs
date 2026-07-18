@@ -10,7 +10,7 @@
 //!   `error [plugin:3] grammar apply-motion → trap(fuel)`
 //!   `error [plugin:3] logging log → denied(fs)`
 
-use lattice_plugin_host::{Direction, PluginTraceRecord, TraceLevel, TraceOutcome};
+use lattice_plugin_host::{Direction, PluginSeam, PluginTraceRecord, TraceLevel, TraceOutcome};
 
 /// The shared synthetic buffer name + the major mode that owns the trace views.
 pub const SHARED_BUFFER_NAME: &str = "*plugin-trace*";
@@ -79,7 +79,30 @@ fn direction_arrow(direction: Direction) -> &'static str {
 
 /// Format one record into a single line (no trailing newline — the drain joins
 /// with `\n`).
+///
+/// A **logging** record (Layer 2, the guest's own narrative) has no meaningful
+/// timing/outcome — the message is the point — so it renders
+/// `{level} [plugin:{id}] logging {context}: {message}`, with `context` in `call`
+/// and `message` in `detail`. Every other record is a boundary call:
+/// `{level} [plugin:{id}] {seam} {»/«}{call} → {outcome}`.
 pub fn format_trace_line(record: &PluginTraceRecord) -> String {
+    if record.seam == PluginSeam::Logging {
+        let message = record.detail.as_deref().unwrap_or("");
+        let context = record.call.as_ref();
+        return if context.is_empty() {
+            format!(
+                "{lvl} [plugin:{id}] logging: {message}",
+                lvl = level_tag(record.level),
+                id = record.plugin,
+            )
+        } else {
+            format!(
+                "{lvl} [plugin:{id}] logging {context}: {message}",
+                lvl = level_tag(record.level),
+                id = record.plugin,
+            )
+        };
+    }
     format!(
         "{lvl} [plugin:{id}] {seam} {dir}{call} → {outcome}",
         lvl = level_tag(record.level),
@@ -170,6 +193,34 @@ mod tests {
         let line = format_trace_line(&r);
         assert!(line.contains("«apply-motion"), "guest→host glyph, got {line}");
         assert!(line.ends_with("→ denied(fs)"), "got {line}");
+    }
+
+    fn log_rec(context: &str, message: &str) -> PluginTraceRecord {
+        PluginTraceRecord {
+            plugin: 3,
+            seam: PluginSeam::Logging,
+            direction: Direction::HostImport,
+            call: context.to_string().into(),
+            level: TraceLevel::Info,
+            outcome: TraceOutcome::Ok {
+                micros: 0,
+                fuel_delta: 0,
+            },
+            detail: Some(message.to_string()),
+        }
+    }
+
+    #[test]
+    fn a_logging_record_renders_the_message_not_the_outcome() {
+        // The guest's own narrative — no `→ ok 0µs` noise; the message is shown.
+        let line = format_trace_line(&log_rec("parser", "reindexed 40 files"));
+        assert_eq!(line, "info  [plugin:3] logging parser: reindexed 40 files");
+    }
+
+    #[test]
+    fn a_logging_record_without_context_omits_the_category() {
+        let line = format_trace_line(&log_rec("", "hello"));
+        assert_eq!(line, "info  [plugin:3] logging: hello");
     }
 
     #[test]

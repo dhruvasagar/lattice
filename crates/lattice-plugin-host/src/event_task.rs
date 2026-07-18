@@ -240,6 +240,9 @@ impl PluginHost {
             plugin_id: id,
             bus: Arc::clone(bus),
         });
+        // PO.5: route this plugin's `logging` calls into the tracer (Layer 2),
+        // also before `register-events` — a guest may narrate from there.
+        store.data_mut().log_ctx = self.log_ctx_for(id);
 
         // Drive subscription registration: the guest calls the imported
         // `events.subscribe(filter, handler)` inside `register-events`, recording

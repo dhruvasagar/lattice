@@ -79,6 +79,14 @@ fn main() {
         "emacs-keys-guest",
         "EMACS_KEYS_GUEST_WASM",
     );
+    // PO.5: the `logging` (Layer 2) fixture — a base `plugin`-world guest whose
+    // `activate` calls the imported `logging.log`; `tests/logging_source.rs`
+    // asserts the lines reach the tracer.
+    build_guest(
+        &fixtures.join("logging-guest"),
+        "logging-guest",
+        "LOGGING_GUEST_WASM",
+    );
     build_guest(
         &manifest_dir
             .join("..")

@@ -27,6 +27,7 @@ pub(crate) mod bindings {
             // here is the same Rust type `WitBoundary` round-trips.
             "lattice:plugin-host/types": crate::lattice::plugin_host::types,
             "lattice:plugin-host/host-services": crate::lattice::plugin_host::host_services,
+            "lattice:plugin-host/logging": crate::lattice::plugin_host::logging,
         },
     });
 }

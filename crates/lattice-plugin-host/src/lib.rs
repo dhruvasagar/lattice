@@ -721,6 +721,10 @@ struct PluginState {
     /// recorded as teardown tokens so the loader unbinds the `KeymapLayer::User`
     /// entries on unload (PL8.D.2). Empty for a non-keymap plugin.
     keymap_contributions: Vec<keymap_host::KeymapBindingToken>,
+    /// PO.5: the guest `logging` seam's routing target — the plugin id + tracer.
+    /// `Some` once an async instantiate/spawn path stamps it ([`LogCtx`]); `None`
+    /// for the sync grammar guest and any pre-tracer path (a `log` debug-drops).
+    log_ctx: Option<LogCtx>,
 }
 
 /// The bus-publish handle a plugin needs to emit custom events (PH7.8b.2). Set
@@ -734,6 +738,18 @@ struct EventEmitCtx {
     plugin_id: PluginId,
     /// The bus `emit-event` publishes `Event::Plugin` onto.
     bus: Arc<EventBus>,
+}
+
+/// PO.5: what the guest `logging` seam needs to route a `log` call — the plugin's
+/// host-issued id (keys the trace record) + the shared tracer. Set on
+/// [`PluginState`] by each async instantiate/spawn path
+/// ([`PluginHost::log_ctx_for`]); the `EventEmitCtx` analog for Layer 2.
+struct LogCtx {
+    /// The host-issued id stamped on every `PluginTraceRecord` from this plugin.
+    plugin: u32,
+    /// The sink the guest's log lines land in (the same tracer as the boundary
+    /// trace, so the two interleave in `*plugin-trace*`).
+    tracer: crate::trace::PluginTracerHandle,
 }
 
 impl WasiView for PluginState {
@@ -787,6 +803,62 @@ impl crate::lattice::plugin_host::host_services::Host for PluginState {
                 );
             }
         }
+    }
+}
+
+/// Host impl of the `logging` guest→host seam (PO.5, Layer 2). Routes each guest
+/// `log(level, context, message)` into the plugin's tracer as a
+/// [`Direction::HostImport`](crate::trace::Direction::HostImport) record with
+/// `seam = logging`, so the guest's own narrative interleaves with the boundary
+/// trace in `*plugin-trace*`. The `context` becomes the record's `call` (the
+/// guest's category) and the `message` its `detail`; `tracer.trace` gates it by
+/// the plugin's level, exactly like a boundary record. A plugin with no `log_ctx`
+/// wired (the sync grammar guest, or a pre-tracer path) degrades to a debug-drop —
+/// never a panic (the graceful-failure clause). Sync host func (only a ring push),
+/// so bindgen omits the outer `wasmtime::Result`.
+impl crate::lattice::plugin_host::logging::Host for PluginState {
+    fn log(
+        &mut self,
+        level: crate::lattice::plugin_host::logging::Level,
+        context: String,
+        message: String,
+    ) {
+        use crate::trace::{Direction, PluginTraceRecord, TraceOutcome};
+        let Some(ctx) = &self.log_ctx else {
+            tracing::debug!(%context, %message, "plugin log dropped: no tracer wired");
+            return;
+        };
+        ctx.tracer.trace(PluginTraceRecord {
+            plugin: ctx.plugin,
+            seam: PluginSeam::Logging,
+            direction: Direction::HostImport,
+            // The guest's chosen category rides in `call`; the formatter renders
+            // `logging <context>: <message>` for Layer-2 records.
+            call: std::borrow::Cow::Owned(context),
+            level: map_log_level(level),
+            // Logging carries no timing/fuel — the outcome is a nominal Ok; the
+            // formatter shows the message, not the outcome, for logging records.
+            outcome: TraceOutcome::Ok {
+                micros: 0,
+                fuel_delta: 0,
+            },
+            detail: Some(message),
+        });
+    }
+}
+
+/// Map a `wasi:logging`-shaped [`Level`](crate::lattice::plugin_host::logging::Level)
+/// to a host [`TraceLevel`](crate::trace::TraceLevel). `critical` folds into
+/// `Error` (the tracer has no separate critical tier).
+fn map_log_level(level: crate::lattice::plugin_host::logging::Level) -> crate::trace::TraceLevel {
+    use crate::lattice::plugin_host::logging::Level;
+    use crate::trace::TraceLevel;
+    match level {
+        Level::Trace => TraceLevel::Trace,
+        Level::Debug => TraceLevel::Debug,
+        Level::Info => TraceLevel::Info,
+        Level::Warn => TraceLevel::Warn,
+        Level::Error | Level::Critical => TraceLevel::Error,
     }
 }
 
@@ -1102,6 +1174,13 @@ pub struct PluginHost {
     // Monotonic source of host-issued `PluginId`s. `&self` methods allocate,
     // so this is atomic.
     next_id: AtomicU32,
+    // PO.5: the boundary tracer, so each instantiate/spawn path can stamp a
+    // plugin's `PluginState.log_ctx` (the guest `logging` seam routes into it).
+    // Set once by the loader (`set_tracer`) after it builds the tracer — the host
+    // is constructed first (`install.rs`), so `OnceLock` gives set-once storage
+    // through the shared `Arc<PluginHost>` without a constructor reorder. `None`
+    // (unset) → a guest `log` degrades to a debug-drop, like `event_emit`.
+    tracer: std::sync::OnceLock<crate::trace::PluginTracerHandle>,
     // Dropped last; keeps the ticker alive for the host's lifetime and stops
     // it on drop.
     _epoch_ticker: EpochTicker,
@@ -1206,6 +1285,17 @@ impl PluginHost {
             |state: &mut PluginState| state,
         )
         .map_err(|e| PluginHostError::Linker(e.into()))?;
+        // The `logging` guest→host seam (PO.5, Layer 2). Sync host func (`log`
+        // only pushes into the `PluginTracer` ring), wired into the ASYNC linker —
+        // logging is off the keystroke path (NOT in the sync grammar linker, so a
+        // grammar guest can never reach it). Inert for worlds that don't import
+        // `logging`. Shared across the async-seam worlds via the bindgen
+        // `with`-reuse of this one generated module.
+        crate::lattice::plugin_host::logging::add_to_linker::<_, HasSelf<_>>(
+            &mut linker,
+            |state: &mut PluginState| state,
+        )
+        .map_err(|e| PluginHostError::Linker(e.into()))?;
         // The grammar seam's SYNC linker (PH7.7b/c). The `grammar` register API
         // (`register-*`) is guest→host sync host funcs (they only record into
         // `PluginState`). It is wired into a SECOND linker whose WASI is `sync`
@@ -1230,7 +1320,27 @@ impl PluginHost {
             cache,
             data_dir_base: data_dir_base.into(),
             next_id: AtomicU32::new(0),
+            tracer: std::sync::OnceLock::new(),
             _epoch_ticker: epoch_ticker,
+        })
+    }
+
+    /// Install the boundary tracer (PO.5) — the loader calls this once, after it
+    /// builds the tracer, so every subsequent instantiate/spawn stamps the
+    /// plugin's `log_ctx` and the guest `logging` seam routes into the ring.
+    /// Idempotent: a second call is ignored (the tracer is set once per host).
+    pub fn set_tracer(&self, tracer: crate::trace::PluginTracerHandle) {
+        let _ = self.tracer.set(tracer);
+    }
+
+    /// Build the [`LogCtx`] for a freshly-allocated `id` — `Some` once a tracer is
+    /// installed ([`set_tracer`](Self::set_tracer)), else `None` (a guest `log`
+    /// then degrades to a debug-drop). Stamped onto the store in each async
+    /// instantiate/spawn path.
+    fn log_ctx_for(&self, id: PluginId) -> Option<LogCtx> {
+        self.tracer.get().map(|tracer| LogCtx {
+            plugin: id.0,
+            tracer: tracer.clone(),
         })
     }
 
@@ -1283,14 +1393,18 @@ impl PluginHost {
         // No grant, no data dir: the guest reaches no filesystem at all — and a
         // host-services `walk` from such a plugin is denied (empty grant).
         let wasi = WasiCtxBuilder::new().build();
-        let (store, bindings) = self
+        let (mut store, bindings) = self
             .instantiate_inner(component, wasi, CapabilityGrant::default(), budget)
             .await?;
+        // PO.5: stamp the logging route once the id is allocated, so a `plugin`-
+        // world guest's `log` reaches the tracer.
+        let id = self.alloc_id();
+        store.data_mut().log_ctx = self.log_ctx_for(id);
         Ok(LoadedPlugin {
             store,
             bindings,
             budget,
-            id: self.alloc_id(),
+            id,
             grant: CapabilityGrant::default(),
             denied: Vec::new(),
             data_dir: None,
@@ -1320,14 +1434,17 @@ impl PluginHost {
         budget: PluginBudget,
     ) -> Result<LoadedPlugin, PluginHostError> {
         let (wasi, outcome, data_dir) = self.build_plugin_wasi(manifest, tier);
-        let (store, bindings) = self
+        let (mut store, bindings) = self
             .instantiate_inner(component, wasi, outcome.grant.clone(), budget)
             .await?;
+        // PO.5: stamp the logging route once the id is allocated.
+        let id = self.alloc_id();
+        store.data_mut().log_ctx = self.log_ctx_for(id);
         Ok(LoadedPlugin {
             store,
             bindings,
             budget,
-            id: self.alloc_id(),
+            id,
             grant: outcome.grant,
             denied: outcome.denied,
             data_dir: Some(data_dir),
@@ -1382,6 +1499,10 @@ impl PluginHost {
             // cannot bind (register-binding → false).
             keymap_ctx: None,
             keymap_contributions: Vec::new(),
+            // Stamped by each async instantiate/spawn path (`log_ctx_for`) once
+            // the id is allocated; `None` here + for the sync grammar guest (which
+            // never imports `logging`) → a guest `log` is a debug-drop.
+            log_ctx: None,
         };
         let mut store = Store::new(&self.engine, state);
         store

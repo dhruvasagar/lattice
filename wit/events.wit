@@ -48,6 +48,7 @@ world events-plugin {
     /// Capability-gated services a handler may reach (e.g. an fs `walk` from a
     /// project-watcher hook). Inert for a handler that calls nothing.
     import host-services;
+    import logging;
     use types.{event};
 
     /// Called once by the host to drive subscription registration; the guest

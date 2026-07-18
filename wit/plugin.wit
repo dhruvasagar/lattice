@@ -89,6 +89,14 @@ world plugin {
 	/// `PluginState` to. Guests that don't call it are unaffected.
 	import host-services;
 
+	/// Guest→host logging (PO.5, Layer 2). The guest emits its own narrative;
+	/// the host routes each `log` into the same `PluginTracer` as the boundary
+	/// trace (a `host-import` record, `seam = logging`). `import`ed (not `use`d)
+	/// so bindgen generates the host `Host` trait + `add_to_linker`. Guests that
+	/// don't call it are unaffected. Shared across the async-seam worlds via the
+	/// bindgen `with`-reuse (the `host-services` pattern).
+	import logging;
+
 	/// Called once when the component is first instantiated. Runs config /
 	/// contribution registration for `init.rs`; no-op for the scaffold.
 	export activate: func();

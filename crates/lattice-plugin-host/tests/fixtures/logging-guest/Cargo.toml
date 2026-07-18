@@ -1,0 +1,27 @@
+# PO.5 logging fixture guest — a minimal `wasm32-wasip2` component implementing
+# the base `plugin` lifecycle world. From its `activate` export it calls the
+# imported `logging.log` a few times at different levels/contexts; the host test
+# (`tests/logging_source.rs`) instantiates it with a tracer wired and asserts the
+# lines land in the `PluginTracer` as `seam = logging`, `direction = host-import`
+# records — proving Layer 2 (the guest's own narrative) end to end.
+#
+# Standalone workspace (`[workspace]` below) so it is NOT part of the parent
+# workspace — it targets wasm32-wasip2 and must not inherit the host toolchain's
+# lints/target. Mirrors the sibling `events-guest` fixture's setup.
+[package]
+name = "logging-guest"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.58"
+
+[profile.release]
+opt-level = "s"
+strip = true
+
+[workspace]

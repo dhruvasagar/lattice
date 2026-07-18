@@ -72,6 +72,7 @@ fn rig(base: &std::path::Path, config: Arc<ConfigRegistry>) -> PluginLoader {
             config_registry: Some(config),
             keymap: Some(KeymapHandle::new()),
             decoration_registry: Some(decorations),
+            tracer: None,
             meta_sink: None,
         },
     )

@@ -155,5 +155,12 @@ harness = false
 name = "grammar_roundtrip"
 harness = false
 
+# PO.3: the hot-path grammar-trace gate — the same motion round-trip untraced vs.
+# trace-off (default gate) vs. trace-debug. Pins that instrumentation adds ≈0 to
+# the keystroke path when off (design §4). Skips without the wasm target.
+[[bench]]
+name = "grammar_trace_gate"
+harness = false
+
 [lints]
 workspace = true

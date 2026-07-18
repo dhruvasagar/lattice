@@ -78,13 +78,39 @@ Each records the call name, timing, and result/trap.
 > follow-on if load-time boundary calls prove worth tracing; the ongoing async
 > seams are the ones that produce continuous signal. No bench (off-thread).
 
-### PO.3 — the hot-path grammar seam (gated + benched)  📝
+### PO.3 — the hot-path grammar seam (gated + benched)  ✅
 Instrument the sync grammar trampoline behind the per-plugin atomic gate: a
 relaxed load + predicted-not-taken branch when off (zero alloc / zero format),
 a cheap enqueue when on; all formatting off-thread. **Exit:** with tracing off,
 the keystroke→glyph bench shows ≈0 delta vs. the current ratchet (the perf gate
 holds); with a plugin traced at `debug`, its grammar calls appear in the buffer.
 The bench is the load-bearing artefact here.
+
+> **Landed 2026-07-18.** The tracer became the single owner of verbosity and now
+> *publishes* a per-plugin hot-path gate: `HotGate` (an `Arc<AtomicU8>` over the
+> effective `TraceLevel`, `trace.rs`), handed to the trampoline and read once per
+> guest call with a relaxed load. `TraceLevel` gained `#[repr(u8)]` +
+> `as_u8`/`from_u8` (fails closed to `Off`). `PluginTracer` grew a `gates` cache +
+> `hot_gate(plugin)` (seeds to the effective level, cached so clones share the
+> atomic); `set_plugin_level` / `set_default_level` republish to the live gates
+> (override → that plugin; default → every un-overridden gate), so `:set
+> plugin.trace-level` (PO.4) flows to the next keystroke with no lock; `forget_plugin`
+> drops the gate. The sync trampoline's `run_callback` (`grammar_trampoline.rs`)
+> now reads `gate.records_calls()` (a single relaxed load + not-taken branch): a
+> *success* times + emits `Debug`/`Ok` **only** when the gate admits it (off at the
+> default `Info` — the hot-path zero-cost state); a guest `err` emits `Warn` (kept
+> at the default gate, mirroring the async seam); a trap emits `Error`/`Trap` (cold,
+> once per quarantine trip). `instantiate_grammar_plugin` took an
+> `Option<&PluginTracerHandle>` (the loader passes `env.tracer`; tests / benches
+> pass `None`, getting `HotGate::disabled`). Tests: 8 unit in `trace.rs` (gate
+> round-trip / seed / republish-on-set / default-propagation-skips-overrides /
+> cache-shares-atomic / disabled / forget) + 3 real-fixture integration in
+> `grammar_source.rs` (default gate records nothing; raised-to-`Debug` captures the
+> `apply-motion` call; a guest `err` records `Warn` at the default gate). Bench
+> `grammar_trace_gate.rs` (benchmarks.md → PO.3): **trace-off is ≈ +1 ns (~0.3 %)
+> vs. untraced** — the gate load + branch is the whole off-state cost; `debug` adds
+> ~104 ns, never on the default path. Green: trace unit + grammar_source + perf
+> ratchet + clippy.
 
 ### PO.4 — the trace-buffer views (shared + per-plugin)  📝
 `*plugin-trace*` (shared stream) + `*plugin-trace:<name>*` (per-plugin filtered)

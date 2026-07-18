@@ -263,6 +263,7 @@ fn grammar_round_trip_stays_within_ceiling() {
             &manifest,
             TrustTier::Bundled,
             &std::sync::Arc::new(lattice_runtime::EventBus::new()),
+            None,
         )
         .unwrap();
     // Leak the host so its engine + epoch ticker outlive the dispatched closures

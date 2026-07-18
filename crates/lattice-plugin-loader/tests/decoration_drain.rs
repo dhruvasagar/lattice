@@ -96,6 +96,7 @@ fn rig(base: &std::path::Path) -> Rig {
             config_registry: Some(Arc::new(ConfigRegistry::default())),
             keymap: Some(KeymapHandle::new()),
             decoration_registry: Some(decorations.clone()),
+            tracer: None,
             meta_sink: Some(sink.clone() as Arc<dyn PluginMetaSink>),
         },
     );

@@ -81,6 +81,7 @@ async fn rewriting_the_init_artifact_auto_reloads() {
             config_registry: Some(Arc::new(ConfigRegistry::default())),
             meta_sink: Some(sink.clone() as Arc<dyn PluginMetaSink>),
             decoration_registry: Some(std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(lattice_mode::GutterDecorationSourceRegistry::default()))),
+            tracer: None,
         },
     ));
 

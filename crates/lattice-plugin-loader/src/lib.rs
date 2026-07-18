@@ -1001,9 +1001,16 @@ impl PluginLoader {
         // SYNC end to end (no async host import to drive) — instantiation +
         // `register-grammar` run at load time, off the keystroke path (the
         // sibling `self.host.compile` above is likewise a synchronous call).
-        let set = self
-            .host
-            .instantiate_grammar_plugin(component, manifest, tier, bus)?;
+        // PO.3: attach the boundary tracer so the sync grammar trampoline emits a
+        // gated boundary-trace record per guest call (zero cost at the default
+        // gate — a single relaxed-atomic load; design §4).
+        let set = self.host.instantiate_grammar_plugin(
+            component,
+            manifest,
+            tier,
+            bus,
+            self.env.tracer.as_ref(),
+        )?;
         let id = set.plugin_id();
         let count = set.len();
 

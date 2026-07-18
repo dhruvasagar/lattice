@@ -88,6 +88,7 @@ async fn discovered_keymap_plugin_binds_then_unbinds_on_unload() {
             config_registry: Some(Arc::new(ConfigRegistry::default())),
             meta_sink: Some(sink.clone() as Arc<dyn PluginMetaSink>),
             decoration_registry: Some(std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(lattice_mode::GutterDecorationSourceRegistry::default()))),
+            tracer: None,
         },
     );
 

@@ -47,6 +47,9 @@ use crate::boundary_grammar::{
 };
 use crate::grammar_host::RecordedContribution;
 use crate::grammar_host::bindings::GrammarPlugin;
+use crate::trace::{
+    Direction, HotGate, PluginTraceRecord, PluginTracerHandle, TraceLevel, TraceOutcome,
+};
 use crate::lattice::plugin_host::types::{
     ActionSpec as WitActionSpec, ArgSpec as WitArgSpec, ExCommandSpec as WitExCommandSpec,
     MotionSpec as WitMotionSpec, OperatorSpec as WitOperatorSpec,
@@ -71,6 +74,39 @@ struct GrammarGuest {
     /// `PluginCrashed` on the bus — and every later keystroke short-circuits to a
     /// no-op instead of re-trapping the dead `Store` at held-key frequency.
     quarantine: Quarantine,
+    /// This plugin's host-issued id — the key on every emitted trace record.
+    plugin: u32,
+    /// PO.3 hot-path gate: the published per-plugin verbosity atomic. Read once
+    /// per guest call with a relaxed load (design §4); at the default `Info` gate
+    /// a successful call emits nothing (zero timing / alloc / format).
+    gate: HotGate,
+    /// The boundary tracer, when wired at load time. `None` in tests / benches
+    /// and when the loader has no tracer — the whole trampoline then costs one
+    /// `records_calls()` load + a not-taken branch per call.
+    tracer: Option<PluginTracerHandle>,
+}
+
+/// Emit one grammar boundary-trace record into the wired tracer. Off the hot
+/// path: only called after [`HotGate::records_calls`] admitted a success, or on
+/// the cold guest-err / trap branches. The tracer re-gates internally, so a
+/// racing verbosity drop still drops the record.
+#[inline]
+fn emit_trace(
+    tracer: &PluginTracerHandle,
+    plugin: u32,
+    func: &'static str,
+    level: TraceLevel,
+    outcome: TraceOutcome,
+) {
+    tracer.trace(PluginTraceRecord {
+        plugin,
+        seam: crate::PluginSeam::Grammar,
+        direction: Direction::GuestExport,
+        call: std::borrow::Cow::Borrowed(func),
+        level,
+        outcome,
+        detail: None,
+    });
 }
 
 /// Lock the guest, arm the Reflex-class grammar budget, and run one synchronous
@@ -97,19 +133,75 @@ fn run_callback<T>(
         store,
         bindings,
         quarantine,
+        plugin,
+        gate,
+        tracer,
     } = &mut *guard;
     // Reflex-class budget (audit F1): a runaway plugin motion traps well inside a
     // frame instead of stalling the keystroke.
     arm_store(store, PluginBudget::grammar())
         .map_err(|e| CommandError::Plugin(format!("{func}: arm store: {e}")))?;
+
+    // Design §4 hot-path contract — a single relaxed-atomic gate load + a
+    // predicted-not-taken branch. At the default `Info` gate `record_calls` is
+    // false, so a *successful* call below does ZERO timing / allocation /
+    // formatting: the trampoline's only added cost is this load and branch.
+    let record_calls = gate.records_calls();
+    let start = record_calls.then(std::time::Instant::now);
+
     match call(bindings, store) {
-        Ok(Ok(value)) => Ok(value),
-        Ok(Err(guest_err)) => Err(CommandError::Plugin(format!("{func}: {guest_err}"))),
+        Ok(Ok(value)) => {
+            if let (Some(start), Some(tracer)) = (start, tracer.as_ref()) {
+                emit_trace(
+                    tracer,
+                    *plugin,
+                    func,
+                    TraceLevel::Debug,
+                    TraceOutcome::Ok {
+                        micros: start.elapsed().as_micros() as u64,
+                        fuel_delta: 0,
+                    },
+                );
+            }
+            Ok(value)
+        }
+        Ok(Err(guest_err)) => {
+            // A guest-signalled `err` — rare and user-actionable. Recorded at
+            // `Warn` (kept at the default gate, mirroring the async seam's
+            // non-trap error), off the common keystroke path.
+            if let Some(tracer) = tracer.as_ref() {
+                emit_trace(
+                    tracer,
+                    *plugin,
+                    func,
+                    TraceLevel::Warn,
+                    TraceOutcome::Ok {
+                        micros: start.map_or(0, |s| s.elapsed().as_micros() as u64),
+                        fuel_delta: 0,
+                    },
+                );
+            }
+            Err(CommandError::Plugin(format!("{func}: {guest_err}")))
+        }
         Err(trap) => {
             // The trap taints the instance irrecoverably: trip quarantine so the
             // crash fires once and later keystrokes short-circuit above.
             let kind = classify_trap(&trap);
             quarantine.trip(func, kind);
+            // Always recorded (Error) — the lifecycle/crash signal the default
+            // gate carries per §4. Cold path (a trap trips quarantine once).
+            if let Some(tracer) = tracer.as_ref() {
+                emit_trace(
+                    tracer,
+                    *plugin,
+                    func,
+                    TraceLevel::Error,
+                    TraceOutcome::Trap {
+                        kind: kind.label().to_string(),
+                        func: func.to_string(),
+                    },
+                );
+            }
             Err(CommandError::Plugin(format!(
                 "{func} trapped ({kind}): {trap}"
             )))
@@ -332,12 +424,20 @@ impl PluginHost {
     /// a *runtime* `apply` failure is graceful (a no-op, §8), handled in the
     /// trampoline. Instantiation + `register-grammar` run under the generous
     /// lifecycle budget; per-`apply` calls arm the Reflex budget (audit F1).
+    ///
+    /// PO.3: pass `Some(tracer)` to instrument the sync grammar seam. Each guest
+    /// call then reads the plugin's published [`HotGate`] once (a relaxed atomic
+    /// load); at the default `Info` gate that is the trampoline's only added cost
+    /// (design §4). `None` (tests / benches / a tracer-less loader) skips even the
+    /// gate handoff. The tracer's `hot_gate(id)` is seeded to the plugin's current
+    /// effective level and updated live by `:set plugin.trace-level`.
     pub fn instantiate_grammar_plugin(
         &self,
         component: &Component,
         manifest: &PluginManifest,
         tier: TrustTier,
         bus: &Arc<EventBus>,
+        tracer: Option<&PluginTracerHandle>,
     ) -> Result<GrammarContributionSet, PluginHostError> {
         let (wasi, outcome, _data_dir) = self.build_plugin_wasi(manifest, tier);
         for denied in &outcome.denied {
@@ -361,6 +461,10 @@ impl PluginHost {
         let recorded = store.data_mut().grammar_contributions.take();
         let id = self.alloc_id();
 
+        // PO.3: fetch this plugin's published hot-path gate (seeded to its current
+        // effective level), or a permanently-off gate when no tracer is wired.
+        let gate = tracer.map_or_else(HotGate::disabled, |t| t.hot_gate(id.0));
+
         // Move the store + bindings behind the shared lock every trampoline reads.
         // The `Quarantine` rides inside so one `apply-*` trap quarantines every
         // contribution from this plugin (they share the one guest).
@@ -368,6 +472,9 @@ impl PluginHost {
             store,
             bindings,
             quarantine: Quarantine::new(id, Arc::clone(bus)),
+            plugin: id.0,
+            gate,
+            tracer: tracer.cloned(),
         }));
 
         let mut set = GrammarContributionSet {

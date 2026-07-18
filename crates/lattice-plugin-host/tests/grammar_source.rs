@@ -27,8 +27,12 @@ use lattice_grammar::error::CommandError;
 use lattice_grammar::registry::{CommandRegistry, TextObjectEnv};
 use lattice_grammar::source::SourceLayer;
 use lattice_mode::CapabilitySet;
-use lattice_plugin_host::{PluginHost, PluginManifest, TrustTier};
+use lattice_plugin_host::{
+    PluginHost, PluginManifest, PluginTracer, PluginTracerHandle, TraceLevel, TraceOutcome,
+    TrustTier,
+};
 use lattice_protocol::position::Position;
+use std::sync::Arc;
 use tempfile::TempDir;
 
 /// The fixture grammar component path, or `None` when it wasn't built (skip).
@@ -52,6 +56,7 @@ fn load(dir: &TempDir) -> (CommandRegistry, u32) {
             &manifest,
             TrustTier::Bundled,
             &std::sync::Arc::new(lattice_runtime::EventBus::new()),
+            None,
         )
         .expect("instantiate + register-grammar");
     let plugin_id = set.plugin_id().0;
@@ -65,6 +70,119 @@ fn load(dir: &TempDir) -> (CommandRegistry, u32) {
     let mut registry = CommandRegistry::new();
     set.register_all(&mut registry);
     (registry, plugin_id)
+}
+
+/// Like [`load`], but wires a `PluginTracer` (default `Info` gate) into the
+/// grammar seam — the PO.3 traced-trampoline path. Returns `(registry,
+/// plugin_id, tracer)` so a test can raise the plugin's level and inspect the
+/// ring after dispatch.
+fn load_traced(dir: &TempDir) -> (CommandRegistry, u32, PluginTracerHandle) {
+    let host = PluginHost::with_dirs(dir.path().join("cache"), dir.path().join("data"))
+        .expect("host builds with tempdirs");
+    let component = host
+        .compile(&std::fs::read(guest_wasm().unwrap()).unwrap())
+        .expect("compile grammar fixture");
+    let manifest = PluginManifest::new("grammar-fixture", Vec::new(), CapabilitySet::empty());
+    let tracer: PluginTracerHandle = Arc::new(PluginTracer::with_defaults());
+    let set = host
+        .instantiate_grammar_plugin(
+            &component,
+            &manifest,
+            TrustTier::Bundled,
+            &std::sync::Arc::new(lattice_runtime::EventBus::new()),
+            Some(&tracer),
+        )
+        .expect("instantiate + register-grammar");
+    let plugin_id = set.plugin_id().0;
+    let mut registry = CommandRegistry::new();
+    set.register_all(&mut registry);
+    (registry, plugin_id, tracer)
+}
+
+/// Dispatch `down-n` from line 1 with count 3 (→ line 4) against `registry`.
+fn dispatch_down_n(registry: &CommandRegistry) {
+    let motion_id = registry.id_by_name("down-n").unwrap();
+    let buffer = Buffer::from_text("l0\nl1\nl2\nl3\nl4\nl5\n");
+    let cancel = CancellationToken::never();
+    let target = execute_motion_only(
+        registry,
+        &buffer,
+        BufferId(1),
+        Position { line: 1, byte: 0 },
+        CommandInvocation::of(motion_id).with_count(Count(3)),
+        &cancel,
+        TextObjectEnv::default(),
+    )
+    .expect("plugin motion dispatches");
+    assert_eq!(target, Position { line: 4, byte: 0 });
+}
+
+#[test]
+fn traced_motion_at_the_default_gate_records_nothing() {
+    if guest_wasm().is_none() {
+        eprintln!("SKIP: grammar fixture guest not built");
+        return;
+    }
+    let dir = TempDir::new().unwrap();
+    let (registry, plugin_id, tracer) = load_traced(&dir);
+
+    // The hot-path off state (design §4): at the default `Info` gate a *successful*
+    // grammar call emits nothing — the trampoline's only cost is the gate load.
+    dispatch_down_n(&registry);
+    assert!(
+        tracer.snapshot_plugin(plugin_id).is_empty(),
+        "a successful motion at the default gate leaves the trace ring empty"
+    );
+}
+
+#[test]
+fn traced_motion_raised_to_debug_records_a_boundary_trace() {
+    if guest_wasm().is_none() {
+        eprintln!("SKIP: grammar fixture guest not built");
+        return;
+    }
+    let dir = TempDir::new().unwrap();
+    let (registry, plugin_id, tracer) = load_traced(&dir);
+
+    // Raise this one plugin live — republished to the already-handed-out hot gate.
+    tracer.set_plugin_level(plugin_id, TraceLevel::Debug);
+    dispatch_down_n(&registry);
+
+    let recs = tracer.snapshot_plugin(plugin_id);
+    assert_eq!(recs.len(), 1, "the raised gate captures the guest call");
+    assert_eq!(recs[0].call, "apply-motion");
+    assert_eq!(recs[0].level, TraceLevel::Debug);
+    assert!(matches!(recs[0].outcome, TraceOutcome::Ok { .. }));
+}
+
+#[test]
+fn traced_guest_err_records_a_warn_even_at_the_default_gate() {
+    if guest_wasm().is_none() {
+        eprintln!("SKIP: grammar fixture guest not built");
+        return;
+    }
+    let dir = TempDir::new().unwrap();
+    let (registry, plugin_id, tracer) = load_traced(&dir);
+    let fails_id = registry.id_by_name("fails").unwrap();
+
+    // A guest `err` is user-actionable and rare → recorded at `Warn`, which the
+    // default `Info` gate keeps (mirrors the async seam's non-trap error).
+    let buffer = Buffer::from_text("l0\nl1\n");
+    let cancel = CancellationToken::never();
+    let _ = execute_motion_only(
+        &registry,
+        &buffer,
+        BufferId(1),
+        Position { line: 0, byte: 0 },
+        CommandInvocation::of(fails_id),
+        &cancel,
+        TextObjectEnv::default(),
+    )
+    .expect_err("the guest err is a typed CommandError");
+
+    let recs = tracer.snapshot_plugin(plugin_id);
+    assert_eq!(recs.len(), 1, "the guest err is captured at the default gate");
+    assert_eq!(recs[0].level, TraceLevel::Warn);
 }
 
 #[test]

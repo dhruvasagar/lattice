@@ -97,7 +97,7 @@ pub use picker_source::WasmPickerSource;
 pub use picker_task::{PickerActor, PickerClient};
 pub use teardown::{PluginTeardown, TeardownRegistries, TeardownReport};
 pub use trace::{
-    Direction, PluginTraceRecord, PluginTracePushed, PluginTracer, PluginTracerHandle,
+    Direction, HotGate, PluginTraceRecord, PluginTracePushed, PluginTracer, PluginTracerHandle,
     TraceLevel, TraceOutcome,
 };
 /// The compiled component — the return type of [`PluginHost::compile`],

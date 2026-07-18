@@ -129,6 +129,34 @@ this bench caught). Built-in motions stay native and pay none of this.
 
 ---
 
+## PO.3 — the hot-path grammar-trace gate (design §4, 2026-07-18)
+
+The load-bearing artefact of PO.3: does instrumenting the sync grammar seam cost
+anything on the keystroke path *when a user hasn't opted a plugin into tracing*?
+The contract (`docs/dev/architecture/plugin-observability.md` §4) is **zero-alloc,
+zero-arg-format when off** — a single relaxed-atomic per-plugin gate load and a
+predicted-not-taken branch. The bench times the same `down-n` motion round-trip
+(the PH7.7d shape) in three states.
+
+Bench: `crates/lattice-plugin-host/benches/grammar_trace_gate.rs`.
+
+| State | Release median | Notes |
+|---|---|---|
+| `grammar_seam_untraced` | **~447 ns** | No tracer wired — the pre-PO.3 baseline. |
+| `grammar_seam_trace_off` | **~448 ns** | Tracer wired, default `Info` gate (the common keystroke). |
+| `grammar_seam_trace_debug` | ~551 ns | The plugin raised to `Debug` — every call times + enqueues a record. |
+
+**Read:** trace-off vs. untraced is **≈ +1 ns (~0.3 %)** — inside run-to-run noise,
+i.e. the gate load + not-taken branch is all the off-state pays, exactly the §4
+contract. The exit criterion ("tracing off shows ≈0 delta vs. the ratchet") holds:
+the `grammar_round_trip` ratchet (250 µs debug ceiling) is untouched. Turning a
+plugin *up* to `Debug` adds ~104 ns (an `Instant` pair + a bounded-ring push +
+event publish) — never on the default path, and still ~9× under the 5 µs p99 seam
+budget even while tracing. Formatting + buffer append stay off-thread on the PO.4
+drain (not in this measurement).
+
+---
+
 ## PH7.8 — event/hook delivery (the §7 "major-mode event handler" gate, 2026-07-12)
 
 The **off-keystroke** async cost a plugin hook pays per delivered event: the

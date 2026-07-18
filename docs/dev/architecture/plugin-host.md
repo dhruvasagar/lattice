@@ -1,18 +1,22 @@
 # Plugin Host (Phase 7) — WASM Component Model extension substrate
 
-**Status:** 🚧 in build (design 2026-07-01; last refreshed 2026-07-13). **PH7.0–7.9 have
+**Status:** ✅ Phase 7 complete (design 2026-07-01; last refreshed 2026-07-18). **PH7.0–7.12
 landed** — the `lattice-plugin-host` crate, the `wit/` package, the capability/WASI model, the
 boundary mirrors (`Effect`/picker/completion/grammar/event/decoration), the `fuzzy-finder`
 validation plugin (⭐ Phase-7 exit), the grammar-extension sync seam (PH7.7), the **event/hook
-seam** (PH7.8), the **decoration seam** (PH7.9 — the `Mode::gutter_decorations` mirror as an
-async off-render producer; `ui` row type-mirror-only; renderer read-from-cache is a tracked
-Phase-8 boot-wiring item), and CI perf gates all exist; 7.10–7.12 pending. This fragment is the
-detailed "what/why" that expands
+seam** (PH7.8), the **decoration seam** (PH7.9), config/modes/keymap seams, host-services
+(`walk`), and the teardown + graceful-degradation audit, plus CI perf gates. **Phase 8 landed on
+top** (branch `phase-8-plugin-loader`): the `lattice-plugin-loader` (discovery + `:plugin-load`/
+`unload`/`reload` + `init.rs`), the `:plugins` manager view (PL8.H), and the **plugin
+observability** stack (PO.1–PO.5 — see the sibling fragment
+[`plugin-observability.md`](plugin-observability.md): the boundary tracer, the gated hot-path
+grammar seam, the `*plugin-trace*` buffer views, the live `plugin.trace-level` option, and the
+`wasi:logging` guest import). This fragment is the detailed "what/why" that expands
 `design.md` §5.5 (Plugin Subsystem), §9 (Plugin API), §10 (extension tiers), §3.1
 (core-vs-plugin split), §14 (risks). Slice sequencing + landed status lives in
-`docs/dev/operations/slice-plans/plugin-host.md`; a conformance review of the whole host
-against the paramount goals + the three extension goals (grammar / modes / rich UI) is
-`docs/dev/audit/plugin-host-architecture.md`.
+`docs/dev/operations/slice-plans/plugin-host.md` (+ `plugin-loader.md`, `plugin-observability.md`);
+a conformance review of the whole host against the paramount goals + the three extension goals
+(grammar / modes / rich UI) is `docs/dev/audit/plugin-host-architecture.md`.
 
 > **Superseded (PH7.7, 2026-07-12) — the grammar seam is synchronous, not async.** §3's
 > "Async ABI is canonical … no synchronous path from UI input to plugin code" and §4.1's

@@ -1,6 +1,6 @@
 ---
-summary: "The WASM plugin host: what plugins are, the capability + fuel + crash-isolation security model, the plugin-API introspection commands, and what is live today vs. Phase 8."
-related: [plugin, wasm, extension, capability, modes]
+summary: "The WASM plugin host: loading + managing plugins, the capability + fuel + crash-isolation security model, the :plugins manager view, boundary-trace observability, and the plugin API introspection commands."
+related: [plugin, wasm, extension, capability, modes, trace, observability]
 ---
 
 # Plugins
@@ -19,42 +19,117 @@ already uses internally. A plugin that contributes a picker source, a completion
 source, a motion, or an event hook plugs into the *same* seam the built-in
 feature uses — it is not a second-class bolt-on.
 
-> **Status:** Phase 7 (the plugin **host runtime**) is complete — the
-> `lattice-plugin-host` crate, the WIT API package, the capability/fuel/
-> crash-isolation model, every extension seam (exercised end-to-end by guest
-> fixtures), the `fuzzy-finder` validation plugin, and the CI overhead gates all
-> ship today.
->
-> **What is not wired yet: loading a plugin into the running editor.** There is
-> no `:load-plugin` command, no on-disk plugin discovery, and no `init.rs`
-> config path — those are **Phase 8** (the plugin *manager*). So today you can
-> *introspect* the plugin API and understand the model (below), and — if you
-> write plugins — build and test a guest against the host library (see the
-> [authoring guide](../dev/guides/plugin-authoring.md)); you cannot yet drop a
-> `.wasm` into a config directory and have the editor pick it up.
+> **Status:** the plugin **host runtime** (Phase 7) and the **editor-side
+> loader + manager** (Phase 8) both ship today: on-disk discovery, the
+> `:plugin-load` / `:plugin-unload` / `:plugin-reload` commands, the `:plugins`
+> manager view, the `init.rs` config path, and the full boundary-trace
+> observability stack (`:plugin-trace`, `plugin.trace-level`, guest logging). The
+> frontier is the **bundled reference plugins** (`git-gutter`, `auto-pair`,
+> rainbow-delimiters) and shipping the built-in major modes *as components* — the
+> mechanism is done; those payloads are the next slices.
 
 ---
 
-## What you can do today: introspect the API
+## Quick reference
 
-The plugin API is **self-documenting from day one** (design §5.11). The `wit/`
-interface package is compiled into a browsable catalog, so you can see exactly
-what a plugin *will* be able to do without reading source. These commands work
-now:
-
-| Command | What it does |
+| Command / keystroke | Meaning |
 |---|---|
-| `:list-plugin-apis` | List every plugin-API interface (*seam*) the WIT package exposes — one row per seam with its direction and capability. |
-| `:describe-plugin-api [<seam>]` | Open a help view for one seam (`host-services`, `picker-source`, `grammar`, `events`, …) showing its functions, direction, and required capability. Omit the seam to list all of them. `<Tab>`-completes the seam name. |
-| `:export-plugin-api [markdown\|json]` | Export the whole API catalog as Markdown (default) or JSON — useful for generating plugin scaffolding or offline reference. |
+| `:plugin-load <path>` | Load a `.wasm` component from `<path>` (under its manifest's capability grant). |
+| `:plugin-unload <name>` | Unload a plugin by name (or numeric id): abort its tasks, reverse every registry contribution. |
+| `:plugin-reload <name>` | Unload then re-load from disk — a fresh instance with an untripped quarantine. |
+| `:plugins` | Open the **manager view** — a buffer listing every loaded plugin with health, tier, and capabilities. |
+| `:plugin-trace` | Open `*plugin-trace*` — the live boundary-trace firehose across all plugins. |
+| `:reload-config` | Re-load your `init.rs` config module. |
+| `:set plugin.trace-level=debug` | Raise the global trace verbosity (see [observability](#observability-what-a-plugin-is-doing)). |
+| `:list-plugin-apis` / `:describe-plugin-api [<seam>]` | Browse the plugin **API catalog** (the WIT seams). |
+| `:list-plugins` / `:describe-plugin <name>` | List / describe the currently-loaded plugins. |
 
-Two more commands exist for *loaded* plugins, but until the Phase-8 loader lands
-they report an empty set:
+In the `:plugins` view: `r` reload · `x` unload · `K` / `<CR>` describe · `gr`
+refresh · `t` open that plugin's trace · `T` cycle its trace verbosity.
 
-| Command | Today's behavior |
+---
+
+## Loading a plugin
+
+A plugin is a `wasm32-wasip2` component plus a `manifest.toml` declaring its id,
+the seams it provides, and the capabilities it requests. Load one explicitly
+with `:plugin-load <path>`, or drop it into the plugins directory for automatic
+discovery at startup. On load the host computes the plugin's capability grant
+(what it requested ∩ what its trust tier permits), creates its private data dir,
+and drives the `compile → instantiate → activate` spine — off the boot thread, so
+a plugin's cold-start never delays startup.
+
+`:plugin-unload <name>` reverses everything: it aborts the plugin's running
+actor tasks and undoes every registry contribution (its motions, options, modes,
+keymaps, decorations) by provenance. `:plugin-reload <name>` does an unload +
+fresh load from the same on-disk source — the way to pick up a rebuilt `.wasm`,
+and the way to revive a plugin that crashed (a reloaded instance gets a fresh,
+untripped quarantine).
+
+### `init.rs` — configuration as a plugin
+
+Your user configuration is itself a plugin: `init.rs` compiled to WASM, loaded
+at boot with a trusted (bundled) capability set. Anything *programmable* —
+keymaps, autocmds/hooks, custom commands — lives there as code; static option
+overrides stay in TOML. `:reload-config` re-loads it, and a rebuilt `init.wasm`
+is auto-detected and reloaded without a manual command.
+
+---
+
+## The `:plugins` manager view
+
+`:plugins` opens a read-only buffer listing every loaded plugin — its name,
+health (`ok`, or `quarantined` after a crash), trust tier, and the capabilities
+granted (with any denied ones noted). It updates live: a plugin that crashes
+while the view is open flips to `quarantined` immediately.
+
+It is a real buffer (everything-is-a-buffer), so ordinary motions work, and it
+carries in-view chords on the row under the cursor:
+
+| Key | Action |
 |---|---|
-| `:list-plugins` | *"No plugins are loaded. (The plugin loader is wired in at Phase 8.)"* |
-| `:describe-plugin <name>` | Same — nothing is loaded to describe yet. |
+| `r` | Reload the plugin under the cursor |
+| `x` | Unload it |
+| `K` / `<CR>` | Open its documentation (`:describe-plugin`) |
+| `gr` | Refresh the list (pick up out-of-band loads) |
+| `t` | Open that plugin's boundary trace (`*plugin-trace:<name>*`) |
+| `T` | Cycle that plugin's trace verbosity (off → error → … → trace) |
+
+---
+
+## Observability: what a plugin is doing
+
+Because every plugin interaction is host-mediated, the host can show you **every
+call in and out of a plugin** — its name, timing, fuel cost, result or trap,
+capability denials — *independent of the plugin's source language*. This
+"boundary trace" is lattice's plugin debugger: it is a property of the
+message-passing architecture, not a language-specific add-on.
+
+**The trace buffers.** `:plugin-trace` opens `*plugin-trace*`, the interleaved
+firehose across all plugins. Pressing `t` on a `:plugins` row opens
+`*plugin-trace:<name>*`, filtered to that one plugin. Both are read-only buffers
+that seed from the in-memory ring and live-tail new records. A line reads:
+
+```
+debug [plugin:3] grammar »apply-motion → ok 34µs
+error [plugin:3] grammar »apply-motion → trap(fuel)
+info  [plugin:3] logging index: reindexed 40 files
+```
+
+**Verbosity.** Tracing is **off the keystroke hot path** and **off by default** —
+at the default `info` level you see only lifecycle/crash signal, not per-call
+noise. Raise it globally with `:set plugin.trace-level=debug` (or `trace`), or
+per-plugin with `T` in the `:plugins` view. The change is live on the next
+keystroke, and raising one plugin's verbosity never costs another anything.
+
+**Guest logging.** A plugin can also emit its *own* narrative through a
+`wasi:logging`-shaped host import (`log(level, context, message)`) — "parsing
+X", "reindexed 40 files". Those lines are captured into the same trace buffer,
+tagged by plugin and level, interleaved with the boundary trace, so a plugin
+author sees both the host's observed behavior and the guest's stated intent in
+one place. Guest logs obey the same per-plugin verbosity gate.
+
+---
 
 ## The extension seams
 
@@ -71,10 +146,15 @@ path are the same code shape.
 | **decorations** | Produce gutter/line decorations as an off-render producer (the `git-gutter`-style seam). |
 | **config** | Register typed options into the same registry `:set` reads. |
 | **modes** | Declare a major/minor mode (kind, keymap, capabilities) that registers into the mode registry. |
+| **keymap** | Bind user keys above the built-in grammar (the `init.rs` keybinding path). |
 | **host-services** | Call back into the editor for capability-gated services (e.g. filesystem enumeration). |
+| **logging** | Emit the plugin's own log narrative into the boundary trace (Layer 2). |
 
 Run `:describe-plugin-api <seam>` for the exact function signatures of any of
-these.
+these; `:list-plugin-apis` lists them all, and `:export-plugin-api` dumps the
+whole catalog as Markdown or JSON (useful for scaffolding).
+
+---
 
 ## The security model
 
@@ -96,11 +176,13 @@ are explicit and prefix-scoped:
 | editor caps (`lsp`, `tree-sitter`, `folds`, `diagnostics`, `writable`, `buffer-uri`) | Access to specific editor subsystems, for plugin-declared modes. |
 
 Every plugin also gets a private, always-writable data directory (mounted at
-`/data`); denied capabilities are surfaced, not silently dropped.
+`/data`); denied capabilities are surfaced, not silently dropped. A plugin's
+manifest id must be a single safe path component — it keys that writable data
+dir, so a path-escaping id is rejected at load.
 
 **Trust tiers.** *Bundled* plugins (shipped with lattice) are pre-granted.
-*User-installed* plugins would prompt for consent before a grant — the
-prompt-and-narrow flow arrives with the Phase-8 manager.
+*User-installed* plugins receive only the capabilities their tier permits;
+anything the tier withholds is denied and surfaced.
 
 **Fuel + time budget.** Every plugin call runs under both a *fuel* cap (a bound
 on how much work it may do) and an *epoch* deadline (wall-clock, ~1 ms tick). A
@@ -114,33 +196,18 @@ deadline, panics, or hits an out-of-bounds access) it is **quarantined**: a
 single `PluginCrashed` event is published, and every later call to that instance
 short-circuits instead of re-entering the dead instance. Only the offending
 plugin is affected — the event bus, other plugins, and the editor keep running.
-(Automatic reload of a quarantined plugin is a later slice.)
+Revive it with `:plugin-reload` (or `r` in the `:plugins` view).
 
-## Coming in Phase 8
-
-Phase 7 built and proved the runtime; Phase 8 makes it reachable from a running
-editor:
-
-- **The plugin manager / loader** — on-disk discovery of plugins + their
-  `manifest.toml`, and the load path itself.
-- **Bundled reference plugins** — `git-gutter`, `auto-pair`, rainbow-delimiters,
-  and the built-in major modes shipping *as components*.
-- **`init.rs` as configuration** — your user config compiled to WASM and loaded
-  with a boot-capability set (keymaps, autocmds, custom commands as code; TOML
-  stays for static option overrides).
-- **Decoration rendering** — the renderer reading plugin-produced decorations
-  (the producer half already works).
+---
 
 ## Writing a plugin
 
-You can already write a Component Model guest against the WIT package and test it
-against the host library today — the editor-side loader is the only missing
-piece. For the toolchain (`wasm32-wasip2`, `wit-bindgen`), a seam-by-seam
-walkthrough, the manifest format, fuel budgets, and a worked `fuzzy-finder`
-example, see the **[plugin authoring guide](../dev/guides/plugin-authoring.md)**.
+For the toolchain (`wasm32-wasip2`, `wit-bindgen`), a seam-by-seam walkthrough,
+the manifest format, fuel budgets, and a worked `fuzzy-finder` example, see the
+**[plugin authoring guide](../dev/guides/plugin-authoring.md)**.
 
 ## See also
 
-- [Options / configuration](options.md) — the typed-option system plugins register into.
-- [Modes](modes.md) — major/minor modes, which Phase 8 ships as components.
+- [Options / configuration](options.md) — the typed-option system plugins register into (and where `plugin.trace-level` lives).
+- [Modes](modes.md) — major/minor modes, shipping as components.
 - [Completion](completion.md) and [LSP](lsp.md) — seams a completion-source plugin mirrors.

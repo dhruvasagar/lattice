@@ -167,8 +167,11 @@ fn run_callback<T>(
         }
         Ok(Err(guest_err)) => {
             // A guest-signalled `err` — rare and user-actionable. Recorded at
-            // `Warn` (kept at the default gate, mirroring the async seam's
-            // non-trap error), off the common keystroke path.
+            // `Warn` so it is KEPT at the default `Info` gate, off the common
+            // keystroke path. The sync trampoline sees the guest's inner
+            // `Result::Err` directly; the async seams cannot (they observe only
+            // the outer `wasmtime::Result`, so a guest err crosses as a nominal
+            // `Ok` there) — this seam is deliberately richer, not a mirror.
             if let Some(tracer) = tracer.as_ref() {
                 emit_trace(
                     tracer,

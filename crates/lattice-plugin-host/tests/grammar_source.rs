@@ -5,14 +5,15 @@
 //! contributions into a native `CommandRegistry`, and dispatches them through the
 //! real `lattice_grammar` dispatcher — proving the whole seam end to end:
 //!   - registration crosses (the guest's `register-grammar` → the `register-*`
-//!     host funcs → 3 native specs: 2 motions + 1 text object),
+//!     host funcs → 4 native specs: 3 motions + 1 text object),
 //!   - provenance is host-stamped `SourceLayer::Plugin(id)` (a plugin cannot
 //!     forge it),
 //!   - a plugin motion dispatches through `execute_motion_only` — the **sync**
 //!     trampoline fires into the guest and the `motion-result` crosses back
 //!     (target = cursor line + count),
 //!   - a guest-returned `err` degrades gracefully to `CommandError::Plugin` (a
-//!     no-op), distinct from a host trap (§8).
+//!     no-op), distinct from a host **trap**, which trips the quarantine + emits
+//!     one Error trace and short-circuits later keystrokes (§8, PH7.12).
 //!
 //! Skips when the fixture wasn't built (no `wasm32-wasip2` target — see build.rs).
 
@@ -60,11 +61,11 @@ fn load(dir: &TempDir) -> (CommandRegistry, u32) {
         )
         .expect("instantiate + register-grammar");
     let plugin_id = set.plugin_id().0;
-    // 2 motions (down-n, fails) + 1 text object (to-cursor).
+    // 3 motions (down-n, fails, traps) + 1 text object (to-cursor).
     assert_eq!(
         set.len(),
-        3,
-        "guest contributed motion + text object + failing motion"
+        4,
+        "guest contributed down-n + to-cursor + fails + traps"
     );
 
     let mut registry = CommandRegistry::new();
@@ -166,7 +167,7 @@ fn traced_guest_err_records_a_warn_even_at_the_default_gate() {
     let fails_id = registry.id_by_name("fails").unwrap();
 
     // A guest `err` is user-actionable and rare → recorded at `Warn`, which the
-    // default `Info` gate keeps (mirrors the async seam's non-trap error).
+    // default `Info` gate keeps (the sync seam sees the guest's inner err directly).
     let buffer = Buffer::from_text("l0\nl1\n");
     let cancel = CancellationToken::never();
     let _ = execute_motion_only(
@@ -261,4 +262,57 @@ fn plugin_motion_guest_err_degrades_to_a_graceful_no_op() {
         matches!(err, CommandError::Plugin(_)),
         "guest err maps to CommandError::Plugin, got {err:?}"
     );
+}
+
+#[test]
+fn a_trapping_motion_quarantines_and_short_circuits() {
+    if guest_wasm().is_none() {
+        eprintln!("SKIP: grammar fixture guest not built");
+        return;
+    }
+    let dir = TempDir::new().unwrap();
+    let (registry, plugin_id, tracer) = load_traced(&dir);
+    let traps_id = registry.id_by_name("traps").unwrap();
+    let buffer = Buffer::from_text("l0\nl1\nl2\n");
+    let cancel = CancellationToken::never();
+
+    // First dispatch: the guest panics → a host trap. The trampoline classifies
+    // it, trips the quarantine, and returns CommandError::Plugin — a graceful
+    // no-op on the keystroke path, never a panic (§8).
+    let err1 = execute_motion_only(
+        &registry,
+        &buffer,
+        BufferId(1),
+        Position { line: 0, byte: 0 },
+        CommandInvocation::of(traps_id),
+        &cancel,
+        TextObjectEnv::default(),
+    )
+    .expect_err("a trapping motion is a typed CommandError, not a success/panic");
+    assert!(matches!(err1, CommandError::Plugin(_)), "got {err1:?}");
+
+    // Second dispatch: the quarantine short-circuits at the top of run_callback,
+    // BEFORE re-entering the dead Store — still a typed error, never a re-trap.
+    let err2 = execute_motion_only(
+        &registry,
+        &buffer,
+        BufferId(1),
+        Position { line: 0, byte: 0 },
+        CommandInvocation::of(traps_id),
+        &cancel,
+        TextObjectEnv::default(),
+    )
+    .expect_err("a quarantined plugin short-circuits to a no-op");
+    assert!(matches!(err2, CommandError::Plugin(_)), "got {err2:?}");
+
+    // Exactly ONE Error/Trap trace record: the trip emits once; the re-trip
+    // returns before the emit, so the second dispatch adds nothing (no
+    // per-keystroke Error flood on a dead plugin).
+    let traps: Vec<_> = tracer
+        .snapshot_plugin(plugin_id)
+        .into_iter()
+        .filter(|r| matches!(r.outcome, TraceOutcome::Trap { .. }))
+        .collect();
+    assert_eq!(traps.len(), 1, "one trap record from the trip, none from the re-trip");
+    assert_eq!(traps[0].level, TraceLevel::Error);
 }

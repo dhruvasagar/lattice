@@ -529,6 +529,32 @@ mod tests {
     }
 
     #[test]
+    fn a_poisoned_publisher_mutex_still_records_and_never_panics() {
+        // Observability must never crash the editor: a panic while a trace guard is
+        // held poisons the mutex, and the next tracer call must recover the guard
+        // (lock() → into_inner) rather than re-panic. Drive it via a panicking
+        // publisher (the closure runs while the publisher mutex is held).
+        let t = PluginTracer::new(TraceLevel::Info, 8);
+        t.set_event_publisher(Box::new(|_| panic!("boom in the publisher closure")));
+        // The push to the rings happens BEFORE the publisher fires, so record #1
+        // lands even though the publisher then panics + poisons its mutex.
+        let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            t.trace(rec(1, TraceLevel::Info));
+        }));
+        assert!(poisoned.is_err(), "the panicking publisher unwound");
+        assert_eq!(t.snapshot_plugin(1).len(), 1, "record #1 landed pre-publish");
+        // Replace the publisher (locks the POISONED publisher mutex — must recover),
+        // then trace again (locks it again to publish). Neither may panic.
+        t.set_event_publisher(Box::new(|_| {}));
+        t.trace(rec(1, TraceLevel::Info));
+        assert_eq!(
+            t.snapshot_plugin(1).len(),
+            2,
+            "the tracer recovered the poisoned mutex and kept recording"
+        );
+    }
+
+    #[test]
     fn forget_plugin_drops_its_ring_and_override() {
         let t = PluginTracer::new(TraceLevel::Trace, 8);
         t.set_plugin_level(1, TraceLevel::Trace);

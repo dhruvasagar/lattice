@@ -245,11 +245,41 @@ pub enum ManifestError {
     #[error("plugin manifest `id` must not be empty")]
     EmptyId,
 
+    /// The `id` field was not a single, safe path component. The id keys the
+    /// per-plugin on-disk data dir (joined into a path + mounted WRITABLE into
+    /// the guest), so a `/`, `\`, `.`, `..`, or absolute id would let a crafted
+    /// manifest escape its sandbox and write outside the data dir. Rejected.
+    #[error("plugin manifest `id` `{0}` must be a single path component (no `/`, `\\`, `.`, `..`, or absolute path)")]
+    InvalidId(String),
+
     /// A `provides` entry was not a recognised seam name.
     #[error(
         "unrecognised plugin seam `{0}` (expected picker-source / completion-source / grammar / events / modes / config / decorations / keymap)"
     )]
     Seam(String),
+}
+
+/// Is `id` a single, safe path component — usable as a directory name that
+/// cannot escape its parent? The plugin id keys the per-plugin data dir, which
+/// is joined into a host path and mounted writable into the guest; a crafted id
+/// (`/etc/cron.d`, `../../.ssh`, `.`) would otherwise relocate that writable
+/// mount outside the sandbox with no fs grant (the CRITICAL isolation contract,
+/// lib.rs `build_plugin_wasi`). Accepts exactly one `Component::Normal`; rejects
+/// empty, absolute, separators, and `.` / `..`.
+pub fn is_safe_plugin_id(id: &str) -> bool {
+    use std::path::Component;
+    if id.trim().is_empty() {
+        return false;
+    }
+    let path = std::path::Path::new(id);
+    if path.is_absolute() {
+        return false;
+    }
+    let mut comps = path.components();
+    matches!(
+        (comps.next(), comps.next()),
+        (Some(Component::Normal(_)), None)
+    )
 }
 
 impl PluginManifest {
@@ -275,6 +305,11 @@ impl PluginManifest {
         let raw: RawManifest = toml::from_str(text)?;
         if raw.id.trim().is_empty() {
             return Err(ManifestError::EmptyId);
+        }
+        // SECURITY (isolation): the id keys the writable per-plugin data mount, so
+        // an untrusted on-disk manifest MUST NOT carry a path-escaping id.
+        if !is_safe_plugin_id(&raw.id) {
+            return Err(ManifestError::InvalidId(raw.id));
         }
         let requested = raw
             .capabilities
@@ -371,6 +406,49 @@ mod tests {
             let cap: Capability = s.parse().unwrap();
             assert_eq!(cap.to_string(), s);
         }
+    }
+
+    #[test]
+    fn a_safe_id_is_a_single_normal_component() {
+        for ok in ["git-gutter", "fuzzy_finder", "a.b.c", "plugin123", "with space"] {
+            assert!(is_safe_plugin_id(ok), "`{ok}` should be accepted");
+        }
+    }
+
+    #[test]
+    fn a_path_escaping_id_is_rejected() {
+        // SECURITY: each of these, joined into the writable data-mount path, would
+        // escape the sandbox — they MUST be rejected (the CRITICAL isolation fix).
+        for bad in [
+            "",
+            "   ",
+            "/etc/cron.d",       // absolute → base discarded
+            "../../../.ssh",     // traversal
+            "..",                // parent
+            ".",                 // current
+            "a/b",               // separator (nested)
+            "sub/../../escape",  // mixed
+            "/",                 // root
+        ] {
+            assert!(!is_safe_plugin_id(bad), "`{bad}` must be rejected");
+        }
+    }
+
+    #[test]
+    fn from_toml_rejects_a_path_escaping_id() {
+        // The untrusted on-disk parse path refuses a crafted id with a typed error.
+        for bad in ["/etc/cron.d", "../../victim", ".."] {
+            let toml = format!("id = \"{bad}\"\n");
+            assert!(
+                matches!(
+                    PluginManifest::from_toml_str(&toml),
+                    Err(ManifestError::InvalidId(_))
+                ),
+                "`{bad}` must parse to InvalidId, not load"
+            );
+        }
+        // A normal id still parses.
+        assert!(PluginManifest::from_toml_str("id = \"git-gutter\"\n").is_ok());
     }
 
     #[test]

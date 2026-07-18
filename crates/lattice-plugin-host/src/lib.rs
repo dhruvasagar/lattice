@@ -291,6 +291,12 @@ pub enum PluginHostError {
     #[error("failed to build the wasmtime engine")]
     Engine(#[source] anyhow::Error),
 
+    /// The epoch-ticker background thread could not be spawned (the OS refused a
+    /// thread). Surfaced rather than panicked — no host-construction path panics
+    /// (the "every failure mode is a value" invariant).
+    #[error("failed to spawn the epoch-ticker thread")]
+    EpochTicker(#[source] std::io::Error),
+
     /// The component linker could not be populated with the WASI host
     /// functions (PH7.2). A host-setup failure, surfaced rather than panicked.
     #[error("failed to add WASI to the plugin component linker")]
@@ -628,7 +634,7 @@ struct EpochTicker {
 }
 
 impl EpochTicker {
-    fn spawn(engine: &Engine, interval: Duration) -> Self {
+    fn spawn(engine: &Engine, interval: Duration) -> Result<Self, PluginHostError> {
         let stop = Arc::new(AtomicBool::new(false));
         let engine = engine.clone(); // `Engine` is a cheap Arc-backed handle.
         let stop_flag = Arc::clone(&stop);
@@ -640,11 +646,11 @@ impl EpochTicker {
                     engine.increment_epoch();
                 }
             })
-            .expect("spawning the epoch-ticker thread");
-        Self {
+            .map_err(PluginHostError::EpochTicker)?;
+        Ok(Self {
             stop,
             handle: Some(handle),
-        }
+        })
     }
 }
 
@@ -1311,7 +1317,7 @@ impl PluginHost {
             |state: &mut PluginState| state,
         )
         .map_err(|e| PluginHostError::Linker(e.into()))?;
-        let epoch_ticker = EpochTicker::spawn(&engine, EPOCH_TICK_INTERVAL);
+        let epoch_ticker = EpochTicker::spawn(&engine, EPOCH_TICK_INTERVAL)?;
 
         Ok(Self {
             engine,
@@ -1526,14 +1532,34 @@ impl PluginHost {
         tier: TrustTier,
     ) -> (WasiCtx, GrantOutcome, PathBuf) {
         let outcome = grant(manifest, tier);
-        let data_dir = self.data_dir_base.join(&manifest.id).join("data");
-        if let Err(err) = std::fs::create_dir_all(&data_dir) {
-            tracing::warn!(
-                path = %data_dir.display(),
-                error = %err,
-                "plugin data dir create failed; the data mount is degraded"
+        // SECURITY (isolation, defense-in-depth): the id is validated at parse
+        // (`from_toml_str` rejects a path-escaping id), but a programmatic
+        // `PluginManifest::new` bypasses that. Re-check HERE — the true security
+        // boundary — before joining the id into a WRITABLE mount path: an unsafe
+        // id degrades to NO data mount (an empty scoped WASI view), never an
+        // out-of-sandbox writable dir. A crafted `/etc/cron.d` / `../../.ssh` id
+        // can therefore never relocate the mount, grant or no grant.
+        let data_dir = if crate::manifest::is_safe_plugin_id(&manifest.id) {
+            let dir = self.data_dir_base.join(&manifest.id).join("data");
+            if let Err(err) = std::fs::create_dir_all(&dir) {
+                tracing::warn!(
+                    path = %dir.display(),
+                    error = %err,
+                    "plugin data dir create failed; the data mount is degraded"
+                );
+            }
+            dir
+        } else {
+            tracing::error!(
+                id = %manifest.id,
+                "plugin id is not a safe path component; refusing the data mount (no /data)"
             );
-        }
+            // A path inside the base that is NOT preopened (no create, no mount):
+            // build_wasi_ctx only preopens dirs it is told to; an absent data dir
+            // means the guest simply has no /data. Return the (unmounted) intended
+            // path for the caller's bookkeeping without ever creating/mounting it.
+            self.data_dir_base.join("__invalid__").join("data")
+        };
         let wasi = build_wasi_ctx(&outcome.grant, &data_dir);
         (wasi, outcome, data_dir)
     }

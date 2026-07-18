@@ -722,6 +722,14 @@ impl PluginLoader {
         if let Some(sink) = &self.env.meta_sink {
             sink.unregister_plugin(record.id.0);
         }
+        // PO.1/PO.5: reclaim this plugin's boundary-trace state (its per-plugin
+        // ring, gate override, and hot-path gate). ids are monotonic, so without
+        // this every unload/reload would leak a ring — the global ring keeps the
+        // historical records. The tracer lock is poison-tolerant, so this never
+        // fails the unload.
+        if let Some(tracer) = &self.env.tracer {
+            tracer.forget_plugin(record.id.0);
+        }
         tracing::info!(
             plugin = %record.name,
             id = record.id.0,

@@ -63,6 +63,20 @@ impl Guest for Component {
             },
             99,
         );
+        // A motion whose callback TRAPS (a guest panic → wasm `unreachable`),
+        // distinct from a guest err: exercises the trampoline's trap branch
+        // (quarantine trip + one PluginCrashed + Error/Trap trace) and the
+        // re-trip short-circuit on the next dispatch (§8, PH7.12).
+        grammar::register_motion(
+            "traps",
+            "always traps the guest (fixture)",
+            &MotionSpec {
+                jump: false,
+                exclusive: false,
+                args_schema: Vec::new(),
+            },
+            3,
+        );
     }
 }
 
@@ -76,6 +90,9 @@ impl Callbacks for Component {
                 },
                 linewise: true,
             }),
+            // A host TRAP (not a guest err): panic → wasm `unreachable`. The host
+            // classifies it, trips the quarantine, and short-circuits later calls.
+            3 => panic!("fixture: deliberate trap"),
             other => Err(format!("fixture: unknown motion callback {other}")),
         }
     }

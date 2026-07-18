@@ -119,11 +119,17 @@ impl EventActor {
         let wit = match event.to_wit() {
             Ok(w) => w,
             Err(error) => {
-                tracing::warn!(
+                // `debug!`, not `warn!`: a wildcard-filter subscription (`kinds:
+                // none`) matches host-internal events whose `to_wit` deliberately
+                // returns Err (e.g. `Event::PluginCrashed`), so this fires once per
+                // crash — a `warn!` would flood `*messages*` per the log-levels
+                // rule. Not user-actionable: the event simply can't cross to a
+                // guest. A subscriber that wanted it would filter by a real kind.
+                tracing::debug!(
                     plugin = self.id.0,
                     handler,
                     %error,
-                    "event dropped: WIT projection failed"
+                    "event not delivered: no WIT projection (host-internal or non-UTF-8)"
                 );
                 return;
             }

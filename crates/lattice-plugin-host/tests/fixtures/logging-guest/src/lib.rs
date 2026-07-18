@@ -29,6 +29,11 @@ impl Guest for Component {
         logging::log(Level::Warn, "index", "reindex found 2 stale entries");
         logging::log(Level::Debug, "detail", "walked 40 files in 3ms");
         logging::log(Level::Error, "", "a context-less error line");
+        // `critical` folds into the host's `error` level; `trace` is the most
+        // verbose (kept only when the plugin is raised to trace). Exercises
+        // map_log_level's Critical→Error fold + Trace mapping.
+        logging::log(Level::Critical, "fatal", "critical folds to error");
+        logging::log(Level::Trace, "verbose", "trace-level narration");
     }
 
     fn deactivate() {

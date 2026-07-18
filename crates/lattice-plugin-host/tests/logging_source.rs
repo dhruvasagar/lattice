@@ -47,15 +47,16 @@ async fn guest_log_lines_land_in_the_tracer_as_logging_records() {
         eprintln!("SKIP: logging fixture guest not built");
         return;
     }
-    // The default `Info` gate keeps the guest's info/warn/error lines; its `debug`
-    // line is dropped (the gate applies to Layer 2 exactly as to Layer 1).
+    // The default `Info` gate keeps info/warn/error (+ critical, which folds to
+    // error); the guest's `debug` and `trace` lines are dropped — the gate applies
+    // to Layer 2 exactly as to Layer 1.
     let (tracer, id) = activate_logging_guest(TraceLevel::Info).await;
 
     let recs = tracer.snapshot_plugin(id);
     assert_eq!(
         recs.len(),
-        3,
-        "info + warn + error kept at the Info gate; debug dropped — got {recs:#?}"
+        4,
+        "info + warn + error + critical(→error) kept at Info; debug + trace dropped — got {recs:#?}"
     );
     for r in &recs {
         assert_eq!(r.seam, PluginSeam::Logging, "tagged as the logging seam");
@@ -74,9 +75,13 @@ async fn guest_log_lines_land_in_the_tracer_as_logging_records() {
         "the guest's message rides in `detail`"
     );
     // The error line has no context (empty `call`) and maps to Error level.
-    let err = recs.iter().find(|r| r.level == TraceLevel::Error).unwrap();
-    assert_eq!(err.call, "");
+    let err = recs.iter().find(|r| r.call == "").unwrap();
+    assert_eq!(err.level, TraceLevel::Error);
     assert_eq!(err.detail.as_deref(), Some("a context-less error line"));
+    // `critical` folds into Error (map_log_level) and is kept at the Info gate.
+    let critical = recs.iter().find(|r| r.call == "fatal").unwrap();
+    assert_eq!(critical.level, TraceLevel::Error, "critical maps to Error");
+    assert_eq!(critical.detail.as_deref(), Some("critical folds to error"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -85,12 +90,38 @@ async fn raising_the_gate_captures_the_guest_debug_line() {
         eprintln!("SKIP: logging fixture guest not built");
         return;
     }
-    // At `Trace` all four activate lines (info/warn/debug/error) are kept — the
-    // guest's `debug` narrative appears once the plugin is raised.
+    // At `Trace` all six activate lines are kept — the guest's `debug` and
+    // `trace` narrative appears once the plugin is raised.
     let (tracer, id) = activate_logging_guest(TraceLevel::Trace).await;
     let recs = tracer.snapshot_plugin(id);
-    assert_eq!(recs.len(), 4, "every activate line kept at Trace — got {recs:#?}");
+    assert_eq!(recs.len(), 6, "every activate line kept at Trace — got {recs:#?}");
     let debug = recs.iter().find(|r| r.level == TraceLevel::Debug).unwrap();
     assert_eq!(debug.call, "detail");
     assert_eq!(debug.detail.as_deref(), Some("walked 40 files in 3ms"));
+    // The `trace`-level line maps to Trace (map_log_level's most-verbose arm).
+    let trace = recs.iter().find(|r| r.call == "verbose").unwrap();
+    assert_eq!(trace.level, TraceLevel::Trace);
+    assert_eq!(trace.detail.as_deref(), Some("trace-level narration"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_guest_log_without_a_tracer_wired_is_a_graceful_drop() {
+    if guest_wasm().is_none() {
+        eprintln!("SKIP: logging fixture guest not built");
+        return;
+    }
+    // PO.5 degradation contract: with NO tracer wired on the host, `log_ctx` is
+    // None, so each guest `log` debug-drops. The guest must still activate cleanly
+    // — never a panic (the `event_emit`-None precedent).
+    let path = guest_wasm().unwrap();
+    let dirs = tempfile::tempdir().unwrap();
+    let host =
+        PluginHost::with_dirs(dirs.path().join("cache"), dirs.path().join("data")).unwrap();
+    // Deliberately do NOT call host.set_tracer.
+    let component = host.compile(&std::fs::read(path).unwrap()).unwrap();
+    let mut plugin = host.instantiate(&component).await.unwrap();
+    plugin
+        .activate()
+        .await
+        .expect("activate succeeds even though every log() drops (no tracer wired)");
 }

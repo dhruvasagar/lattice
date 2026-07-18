@@ -4240,6 +4240,7 @@ dependencies = [
  "lattice-plugin-host",
  "lattice-plugin-loader",
  "lattice-plugin-manager",
+ "lattice-plugin-trace",
  "lattice-protocol",
  "lattice-runtime",
  "lattice-snippet",
@@ -4466,6 +4467,22 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.118",
+]
+
+[[package]]
+name = "lattice-plugin-trace"
+version = "0.1.0"
+dependencies = [
+ "lattice-config",
+ "lattice-core",
+ "lattice-grammar",
+ "lattice-mode",
+ "lattice-plugin-host",
+ "lattice-plugin-loader",
+ "lattice-protocol",
+ "lattice-runtime",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

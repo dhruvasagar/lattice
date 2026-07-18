@@ -1,0 +1,50 @@
+[package]
+name = "lattice-plugin-trace"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# Phase 8 (PO.4): the buffer-backed plugin boundary-trace views. A pure PROVIDER
+# crate (the `lattice-plugin-manager` / `oil` / `lattice-dashboard` shape): it
+# owns `plugin-trace-mode` (major, read-only) + the `:plugin-trace` ex-command,
+# and reads the host's `PluginTracer` (PO.1) via the `PluginTracerHandle` service
+# at activation. One mode serves BOTH the shared `*plugin-trace*` firehose and the
+# per-plugin `*plugin-trace:<name>*` filtered view — the mode parses its own
+# buffer name to pick the filter (the `lsp-server-log-mode` precedent). Installs
+# through the generic `SubsystemBoot` seam (one line in the host's Phase-B list),
+# so wiring it in adds ZERO `Editor::` methods + zero host `Action` variants
+# (mode-ownership acid test). NOT a renderer — it produces Document content the
+# renderers paint.
+#
+# Design: `docs/dev/architecture/plugin-observability.md` §6. Slice plan: PO.4.
+
+[dependencies]
+# The install surface (`SubsystemBoot`) + the mode substrate (`Mode`,
+# `ModeContext`, `ModeId`, `CapabilitySet`, `LifecycleFuture`, `Subscription`,
+# `BufferStoreHandle`, `OptionOverrideSet`).
+lattice-mode = { path = "../lattice-mode" }
+# `Effect::OpenSyntheticBuffer` + the ex-command registration surface
+# (`CommandRegistry`, `ExCommandSpec`).
+lattice-grammar = { path = "../lattice-grammar" }
+# The read model: `PluginTracerHandle` + `PluginTraceRecord` / `PluginTracePushed`
+# / `PluginSeam` / `TraceOutcome` / `TraceLevel` (PO.1/PO.3). The view seeds from
+# the ring + subscribes to the pushed event.
+lattice-plugin-host = { path = "../lattice-plugin-host" }
+# `PluginLoaderHandle` + `plugin_status()` — resolves a plugin name → its
+# host-issued id for the per-plugin `*plugin-trace:<name>*` filter.
+lattice-plugin-loader = { path = "../lattice-plugin-loader" }
+# `Document` handle for the buffer write.
+lattice-runtime = { path = "../lattice-runtime" }
+# `BufferId` for the buffer-store lookup.
+lattice-core = { path = "../lattice-core" }
+# `Position` / `Edit` for the append writes.
+lattice-protocol = { path = "../lattice-protocol" }
+# `ReadOnly` / `NoFile` option overrides via `Mode::options()`.
+lattice-config = { path = "../lattice-config" }
+# Off-thread buffer writes + the trace-subscription drain (never the actor thread).
+tokio = { workspace = true, features = ["rt", "sync"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros"] }

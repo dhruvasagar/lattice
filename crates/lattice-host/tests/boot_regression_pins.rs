@@ -112,6 +112,13 @@ fn claude_code_mode_registered_at_boot() {
     assert_mode(&boot(), "claude-code-mode");
 }
 
+#[test]
+fn plugin_trace_mode_registered_at_boot() {
+    // PO.4.1: the plugin boundary-trace view's major mode, registered by
+    // `lattice_plugin_trace::install` in the Phase-B list.
+    assert_mode(&boot(), "plugin-trace-mode");
+}
+
 // ── Subsystem-wired ex-commands ────────────────────────────────────────────
 
 #[test]
@@ -123,6 +130,8 @@ fn subsystem_ex_commands_resolve_by_name() {
     // multibuffer narrow provider (register_narrow_ex_commands)
     assert_command(&editor, "narrow");
     assert_command(&editor, "widen");
+    // PO.4.1: the plugin-trace view's ex-command.
+    assert_command(&editor, "plugin-trace");
 }
 
 // ── Services (exact register-site type per the Arc/TypeId rule) ─────────────

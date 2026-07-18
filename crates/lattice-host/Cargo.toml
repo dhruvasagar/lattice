@@ -58,6 +58,10 @@ lattice-plugin-loader = { path = "../lattice-plugin-loader" }
 # (registers `plugins-mode` + the `:plugins` ex-command via the generic
 # `SubsystemBoot` seam); one install line, zero `Editor::` methods.
 lattice-plugin-manager = { path = "../lattice-plugin-manager" }
+# PO.4: the buffer-backed plugin boundary-trace views. A pure provider crate
+# (registers `plugin-trace-mode` + the `:plugin-trace` ex-command via the generic
+# `SubsystemBoot` seam); one install line, zero `Editor::` methods.
+lattice-plugin-trace = { path = "../lattice-plugin-trace" }
 lattice-protocol = { path = "../lattice-protocol" }
 # K.3 (2026-06-07): keymap types moved to lattice-keymap
 lattice-keymap = { path = "../lattice-keymap" }

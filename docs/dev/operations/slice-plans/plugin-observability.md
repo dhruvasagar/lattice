@@ -112,7 +112,7 @@ The bench is the load-bearing artefact here.
 > ~104 ns, never on the default path. Green: trace unit + grammar_source + perf
 > ratchet + clippy.
 
-### PO.4 — the trace-buffer views (shared + per-plugin)  📝
+### PO.4 — the trace-buffer views (shared + per-plugin)  🚧
 `*plugin-trace*` (shared stream) + `*plugin-trace:<name>*` (per-plugin filtered)
 synthetic Documents — read-only modes whose `on_activate` seeds from the ring and
 subscribes to `PluginTracePushed` for the live tail (the `lsp-trace-mode`
@@ -120,7 +120,39 @@ precedent). A `t` chord on a row in the `:plugins` manager view (PL8.H) drills
 into that plugin's trace. Verbosity a typed option (`plugin.trace-level` +
 per-plugin override), live. **Exit:** the shared + a per-plugin view open and
 live-tail; the manager `t` drill-in works; `:set plugin.trace-level=debug` raises
-verbosity live.
+verbosity live. Sub-sliced into three commits (confirmed 2026-07-18).
+
+#### PO.4.1 — the shared `*plugin-trace*` view  ✅
+> **Landed 2026-07-18.** New pure-provider crate `lattice-plugin-trace` (the
+> `lattice-plugin-manager` shape): `plugin-trace-mode` (major, read-only, no-file)
+> + the `:plugin-trace` ex-command → `Effect::OpenSyntheticBuffer{
+> "*plugin-trace*", "plugin-trace-mode" }`. ONE mode serves both surfaces (design
+> §6): `on_activate` computes an `Option<u32>` plugin filter (`None` for the shared
+> firehose; PO.4.2 parses `*plugin-trace:<name>*`), seeds from
+> `tracer.snapshot_global()`, subscribes `PluginTracePushed`, and drains OFF-thread
+> (the `lsp-log-mode` batch-append verbatim — nothing formats on the UI/actor
+> thread). `format_trace_line` (`format.rs`) owns presentation: `{level}
+> [plugin:{id}] {seam} {»/«}{call} → {outcome}` where outcome is `ok Nµs[, k fuel]`
+> / `guest-err` (a Warn-level Ok — the PO.3 grammar no-op) / `trap(kind)` /
+> `denied(cap)`. Wired one line into the host Phase-B list (`editor_boot.rs`); ZERO
+> `Editor::` methods, zero host `Action` variants (the acid test holds). Tests: 9
+> provider (5 `format` — success/fuel/guest-err/trap/denied; 4 `mode` —
+> shared-keeps-all / filter-keeps-one / empty / read-only-no-file-major) + 3 host
+> (`plugin_trace_view` ex-command-registered + open-activates-mode; boot pin
+> `plugin_trace_mode_registered_at_boot` + `plugin-trace` in the ex-command pin).
+> No bench (off the hot path — the emit gate was PO.3's bench).
+
+#### PO.4.2 — the per-plugin view + manager `t` drill-in  📝
+The same mode parses a `*plugin-trace:<name>*` buffer name → resolves name→id via
+`PluginLoaderHandle.plugin_status()` → filters seed + drain to that id. A `t` chord
++ `action:plugins-trace` handler in `lattice-plugin-manager` (mode owns both) emits
+`OpenSyntheticBuffer{ "*plugin-trace:<name>*", "plugin-trace-mode" }`.
+
+#### PO.4.3 — live verbosity option  📝
+A typed enum option `plugin.trace-level` (default `info`) + an `Event::OptionChanged`
+observer wired at boot calling `tracer.set_default_level(parsed)` (PO.3's republish
+reaches the hot gates live). Per-plugin override via a `:plugins` manager chord
+(`tracer.set_plugin_level(id, …)`).
 
 ### PO.5 — `wasi:logging` guest import (Layer 2)  📝
 A `wasi:logging/logging`-shaped host import in `wit/`; the host impl routes each

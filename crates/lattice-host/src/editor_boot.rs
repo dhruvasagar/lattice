@@ -569,6 +569,12 @@ impl Editor {
         // A pure provider crate: the mode resolves `PluginLoaderHandle` at
         // activation, so this needs no ordering vs the loader install below.
         lattice_plugin_manager::install(&mut boot);
+        // PO.4.1: the plugin boundary-trace views — registers `plugin-trace-mode`
+        // (major, read-only) + the `:plugin-trace` ex-command (returns
+        // `Effect::OpenSyntheticBuffer`). A pure provider crate: the mode resolves
+        // `PluginTracerHandle` at activation (registered by the loader install),
+        // so this needs no ordering vs the loader install.
+        lattice_plugin_trace::install(&mut boot);
         // LSP (BC.8a — last + largest, sub-sliced BC.8a–e): registers the LSP
         // modes (`lsp-completion-mode` reads the supervisor handle via
         // `boot.service::<LspSupervisorHandle>()`, registered in Phase A) + the

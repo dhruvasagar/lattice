@@ -32,6 +32,7 @@ members = [
 	"crates/lattice-plugin-host",
 	"crates/lattice-plugin-loader",
 	"crates/lattice-plugin-manager",
+	"crates/lattice-plugin-trace",
 	"crates/lattice-plugin-api",
 	"crates/lattice-plugin-sdk",
 	"crates/lattice-plugin-sdk-derive",

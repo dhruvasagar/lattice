@@ -625,12 +625,20 @@ fn main_loop(terminal: &mut Terminal<TermBackend>, mut app: App) -> Result<()> {
         } else {
             None
         };
+        // Pin the ActiveDocumentRenderState snapshot so every
+        // `app.ad()` call inside the draw sees the same cursor,
+        // scroll, option, and modal state — without the pin the
+        // actor can publish a new RenderState between any two
+        // independent ad() calls, causing the cursorline highlight
+        // and cursor blink position to disagree.
+        app.pin_render_state();
         let mut completion_docs_dims: Option<(u32, u32)> = None;
         terminal
             .draw(|frame| {
                 completion_docs_dims = draw_frame(frame, &app, &frame_snap);
             })
             .context("draw frame")?;
+        app.unpin_render_state();
         // PU.5c: completion-docs popup geometry hand-off (diff-then-send,
         // peer of the floating-popup feedback above). `draw_frame` returns
         // the docs popup's inner (rows, cols) when shown — computed at the

@@ -175,6 +175,9 @@ impl<'a> FrameView<'a> {
         let (folds, foldenable) = rs.folds_for_buffer(doc_id);
         let fold_index = lattice_host::folds::FoldIndex::from_folds(&folds, foldenable);
         let inlay_hints = rs.inlay_hints_for_buffer(doc_id);
+        // Snapshot ad() once so wrap_lines and sign_column come from
+        // the same atomic snapshot as the outer RenderState.
+        let ad = rs.active_document.load();
         Self {
             app,
             folds,
@@ -188,9 +191,9 @@ impl<'a> FrameView<'a> {
             lsp_semantic_tokens_enabled: app.lsp_semantic_tokens_mode_enabled_for(doc_id),
             lsp_document_highlight_enabled: app.lsp_document_highlight_mode_enabled_for(doc_id),
             lsp_progress_enabled: app.lsp_progress_mode_enabled_for(doc_id),
-            wrap_lines: app.ad().option_cache.wrap_lines,
-            sign_column: app.ad().option_cache.sign_column,
-            content_left_pad: app.ad().option_cache.content_left_pad,
+            wrap_lines: ad.option_cache.wrap_lines,
+            sign_column: ad.option_cache.sign_column,
+            content_left_pad: ad.option_cache.content_left_pad,
         }
     }
 
@@ -3404,10 +3407,15 @@ fn draw_buffer(frame: &mut Frame, area: Rect, app: &App, snap: &DocumentSnapshot
     // Place the buffer-area cursor only when the prompt isn't claiming it.
     // In Command (`:`) and Search (`/`, `?`) modal states the cursor lives
     // in the bottom prompt row -- handled by `draw_command_or_echo`.
-    let prompt_owns_cursor = matches!(app.ad().modal, ModalState::Command | ModalState::Search(_));
+    // Snapshot ad() once so prompt_owns_cursor and cursor_screen_position
+    // read from the same atomic snapshot.
+    let ad = app.ad();
+    let prompt_owns_cursor = matches!(ad.modal, ModalState::Command | ModalState::Search(_));
     if !prompt_owns_cursor {
         let view = FrameView::from_app(app);
-        if let Some((screen_x, screen_y)) = cursor_screen_position(&view, snap, area) {
+        if let Some((screen_x, screen_y)) = cursor_screen_position_at(
+            &view, snap, area, ad.cursor, ad.scroll, app.panes().tree.active().id,
+        ) {
             frame.set_cursor_position((screen_x, screen_y));
         }
     }
@@ -3567,15 +3575,20 @@ pub fn compose_visible_lines(
     // future Web) can't see a torn mid-render view if a
     // concurrent input event mutates the underlying App fields.
     let view = FrameView::from_app(app);
+    // Snapshot ad() once so cursor, scroll, and option reads
+    // come from the same atomic snapshot — without this the
+    // actor can publish between two app.ad() calls and the
+    // cursorline highlight lands on a stale line.
+    let ad = app.ad();
     let ctx = PaneComposeCtx {
         is_active: true,
         pane_id: app.panes().tree.active().id,
-        buffer_id: app.ad().document_buffer_id,
-        cursor_line: app.ad().cursor.line,
-        cursor_line_highlight: app.ad().option_cache.current_line_highlight,
-        scroll: app.ad().scroll,
-        leftcol: app.ad().leftcol,
-        display_line_numbers: app.ad().display_line_numbers.clone(),
+        buffer_id: ad.document_buffer_id,
+        cursor_line: ad.cursor.line,
+        cursor_line_highlight: ad.option_cache.current_line_highlight,
+        scroll: ad.scroll,
+        leftcol: ad.leftcol,
+        display_line_numbers: ad.display_line_numbers.clone(),
     };
     compose_pane_lines(&view, snap, height, width, &ctx)
 }
@@ -6020,6 +6033,7 @@ fn buffer_line_to_visible_row_with(
     None
 }
 
+#[allow(dead_code)]
 fn cursor_screen_position(
     view: &FrameView<'_>,
     snap: &DocumentSnapshot,
@@ -6052,6 +6066,11 @@ fn cursor_screen_position_at(
     // active document caret; `PaneId::POPUP` for a focused popup.
     pane_id: lattice_core::ui::pane::PaneId,
 ) -> Option<(u16, u16)> {
+    // Snapshot ad() once so wrap_lines, leftcol, and tabstop come
+    // from the same atomic snapshot — without this the cursor
+    // screen position and cursorline highlight can disagree when
+    // the actor publishes between two independent app.ad() calls.
+    let ad = view.app.ad();
     if cursor.line < scroll {
         return None;
     }
@@ -6073,7 +6092,7 @@ fn cursor_screen_position_at(
     // broken at. Must match `compose_visible_lines_inner`'s
     // `buffer_w` exactly so the cursor row/col agree with what is
     // painted. `0` when `:set wrap` is off (no wrapping).
-    let wrap_width = if view.app.ad().option_cache.wrap_lines {
+    let wrap_width = if ad.option_cache.wrap_lines {
         (area.width as u32)
             .saturating_sub(gutter_w)
             .saturating_sub(sign_columns_width(view))
@@ -6120,7 +6139,7 @@ fn cursor_screen_position_at(
         &snap.buffer,
         cursor,
         inlay_hints,
-        view.app.ad().option_cache.tabstop,
+        ad.option_cache.tabstop,
     );
     // W.4.t: split that column across wrap segments. The cursor's
     // own segment index (`display_col / wrap_width`) adds to the
@@ -6155,10 +6174,10 @@ fn cursor_screen_position_at(
     // only — under wrap the host pins `leftcol = 0`. `saturating_sub`
     // guards the (transient) case where the cursor sits left of the
     // anchor before the next `ensure_cursor_horizontally_visible`.
-    let leftcol = if view.app.ad().option_cache.wrap_lines {
+    let leftcol = if ad.option_cache.wrap_lines {
         0
     } else {
-        view.app.ad().leftcol
+        ad.leftcol
     };
     let col = sign_columns_width(view) + gutter_w + body_col.saturating_sub(leftcol);
     let row = row_in_view

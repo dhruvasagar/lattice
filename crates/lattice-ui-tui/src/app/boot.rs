@@ -123,6 +123,7 @@ impl App {
             #[cfg(test)]
             editor: editor_field,
             render_state,
+            frame_ad: std::sync::Mutex::new(None),
             syntax_static_overlay_quads_cell,
             pane_render_registry: crate::render::build_pane_render_registry(),
             theme: crate::theme::Theme::default(),

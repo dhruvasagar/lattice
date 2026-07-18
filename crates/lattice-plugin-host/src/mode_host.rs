@@ -251,6 +251,9 @@ impl PluginHost {
                 .await
                 .map_err(|e| PluginHostError::Instantiate(e.into()))?;
         let plugin_id = self.alloc_id();
+        // PO.5: route this plugin's `logging` calls into the tracer (Layer 2) —
+        // before register-modes, so the guest may narrate from there.
+        store.data_mut().log_ctx = self.log_ctx_for(plugin_id);
 
         arm_store(&mut store, budget)?;
         bindings

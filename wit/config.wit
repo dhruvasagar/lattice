@@ -45,5 +45,6 @@ interface config {
 /// `ConfigRegistry` (no async, off any hot path).
 world config-plugin {
     import config;
+    import logging;
     export register-options: func();
 }

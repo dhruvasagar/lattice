@@ -188,10 +188,15 @@ trace buffer, interleaved with the boundary trace.
 
 > **Landed 2026-07-18.** `wit/logging.wit` — a `wasi:logging`-shaped `logging`
 > interface (`enum level { trace..critical }`, `log(level, context, message)`),
-> `import`ed into the 5 host-services worlds (plugin + picker-source +
-> completion-source + decorations + events) and shared via one bindgen
-> `with`-reuse (the `host-services` pattern — a single generated module, one
-> `Host` impl). `PluginSeam::Logging` added. Host side: `impl logging::Host for
+> `import`ed into ALL 8 async-linker worlds (plugin + picker-source +
+> completion-source + decorations + events + config + modes + keymap; grammar,
+> the sync seam, is excluded per the hot-path contract). The 5 that already carry
+> `host-services` share the single generated `logging` module via the bindgen
+> `with`-reuse; the other 3 (config/modes/keymap) have no `with` block, so their
+> import is satisfied by NAME against the shared async linker (one `add_to_linker`
+> in `lib.rs`, one `Host` impl). `log_ctx` is stamped in every async
+> instantiate/spawn path — for config/modes/keymap, before the one-shot
+> `register-*` export so a guest can narrate during registration. `PluginSeam::Logging` added. Host side: `impl logging::Host for
 > PluginState` routes each `log` into the plugin's tracer as a
 > `Direction::HostImport` record (`seam = logging`, `context`→`call`,
 > `message`→`detail`, `critical`→`Error`), gated by the plugin's level exactly

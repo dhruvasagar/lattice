@@ -137,6 +137,9 @@ impl PluginHost {
             commands: Arc::clone(commands),
             plugin_id,
         });
+        // PO.5: route this plugin's `logging` calls into the tracer (Layer 2) —
+        // before register-keymap, so the guest may narrate from there.
+        store.data_mut().log_ctx = self.log_ctx_for(plugin_id);
 
         arm_store(&mut store, budget)?;
         bindings

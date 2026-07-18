@@ -50,5 +50,6 @@ interface keymap {
 /// `bool` return.
 world keymap-plugin {
     import keymap;
+    import logging;
     export register-keymap: func();
 }

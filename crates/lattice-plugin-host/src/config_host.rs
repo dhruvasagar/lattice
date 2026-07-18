@@ -140,9 +140,19 @@ impl PluginHost {
                 .await
                 .map_err(|e| PluginHostError::Instantiate(e.into()))?;
 
+        // A host-issued id so a config-only plugin keys `:list-plugins` /
+        // provenance uniformly with the seam plugins that mint one (picker /
+        // event). The config contributions register into `ConfigRegistry` by
+        // name, not by `SourceLayer::Plugin(id)`, so this id backs the loader's
+        // loaded-record, not per-option provenance. Allocated BEFORE
+        // `register-options` so the guest can also narrate from there (PO.5).
+        let id = self.alloc_id();
+
         // Wire the registry BEFORE `register-options` runs so the guest's imported
         // `register-option` / `get-option` reach it.
         store.data_mut().config_registry = Some(Arc::clone(registry));
+        // PO.5: route this plugin's `logging` calls into the tracer (Layer 2).
+        store.data_mut().log_ctx = self.log_ctx_for(id);
 
         arm_store(&mut store, budget)?;
         bindings
@@ -154,12 +164,6 @@ impl PluginHost {
                 source: source.into(),
             })?;
 
-        // A host-issued id so a config-only plugin keys `:list-plugins` /
-        // provenance uniformly with the seam plugins that mint one (picker /
-        // event). The config contributions register into `ConfigRegistry` by
-        // name, not by `SourceLayer::Plugin(id)`, so this id backs the loader's
-        // loaded-record, not per-option provenance.
-        let id = self.alloc_id();
         let names = store.data_mut().config_contributions.drain(..).collect();
         Ok((id, names))
     }

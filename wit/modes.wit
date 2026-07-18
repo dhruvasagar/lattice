@@ -96,5 +96,6 @@ interface modes {
 /// `register-grammar` / `register-events` precedent). Synchronous.
 world modes-plugin {
     import modes;
+    import logging;
     export register-modes: func();
 }

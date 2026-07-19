@@ -186,7 +186,7 @@ plugins yet.
 > 73s. No bench artefact: PL8.A is boot-only (runs once, off the keystroke
 > path) — the perf-relevant slice is PL8.E (the hot-path decoration cache).
 
-### PL8.B — On-disk discovery + load orchestration  🚧
+### PL8.B — On-disk discovery + load orchestration  ✅
 - Discovery: resolve the plugins dir (`dirs`-based, `<data>/lattice/plugins/`),
   scan for components + their `PluginManifest` TOML, parse (`PluginManifest::from_toml_str`).
 - Orchestration in the loader: per discovered plugin, `compile → instantiate_plugin`
@@ -368,7 +368,7 @@ level }`) both renderers already paint at the `mode.gutter_decorations` partitio
 (TUI `render.rs`, GPUI `window.rs:1818`).
 
 **Decomposition:**
-- **PL8.E.1 — host foundation** 📝: a per-buffer `Vec<GutterDecoration>` cache
+- **PL8.E.1 — host foundation** ✅: a per-buffer `Vec<GutterDecoration>` cache
   (Arc-backed, LSP-cache shape) + a `RenderState` field for it + a
   `WasmDecorationProviderRegistry` service (alias `Arc<…>`, ServiceRegistry
   TypeId rule) the loader registers producers into; the off-render-path drive —
@@ -376,16 +376,16 @@ level }`) both renderers already paint at the `mode.gutter_decorations` partitio
   runtime, the spawned task writes the result into the cache (`insert_for`), and
   `run_tick_pending` publishes; on producer `Err`, keep the prior snapshot (no
   flicker). NO per-frame WASM — the renderer reads only the cache.
-- **PL8.E.2 — loader `drain_decorations`** 📝: `spawn_decoration_source`, register
+- **PL8.E.2 — loader `drain_decorations`** ✅: `spawn_decoration_source`, register
   the producer into the `WasmDecorationProviderRegistry`, record the teardown
   token (unregister on unload — extend `PluginTeardown` with a decoration
   surface). Wire the `PluginSeam::Decorations` arm.
-- **PL8.E.3 — renderer merge (lockstep)** 📝: both renderers merge the cached
+- **PL8.E.3 — renderer merge (lockstep)** ✅: both renderers merge the cached
   WASM decorations into the same partition they already walk for
   `mode.gutter_decorations` (TUI + GPUI **in the same patch**, cross-renderer
   rule); end-of-slice `grep -rn "decoration cache" crates/lattice-ui-gpui/` parity
   audit.
-- **PL8.E.4 — fixture test + bench** 📝: a `decorations-guest`-driven e2e (a
+- **PL8.E.4 — fixture test + bench** ✅: a `decorations-guest`-driven e2e (a
   plugin's gutter marks reach the cache + paint) + a keystroke→glyph bench / the
   `lattice-plugin-host/tests/no_per_frame_wasm_guard.rs` invariant proving no
   per-frame WASM; a trapping producer keeps the last-good snapshot (zero flicker
@@ -489,7 +489,7 @@ declaration), broad `editor_capabilities` (trusted user config), optional
 
 **Decomposition:**
 
-- **PL8.D.1 — the `keymap` seam.** 📝 New `wit/keymap.wit` (a `keymap` register
+- **PL8.D.1 — the `keymap` seam.** ✅ New `wit/keymap.wit` (a `keymap` register
   interface — `register-binding(mode, chords, command-name)` — + a
   `keymap-plugin` world importing it + exporting `register-keymap`), host
   `bindgen!` + async-linker import wiring registering into `KeymapLayer::User`

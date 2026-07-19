@@ -25,7 +25,8 @@ use crate::lattice::plugin_host::types::{
     Event as WitEvent, EventAppliedEdit as WitEventAppliedEdit, EventDocumentChanged,
     EventDocumentOpened, EventDocumentPath, EventFilter as WitEventFilter,
     EventKind as WitEventKind, EventModalModeChanged, EventModeLifecycle, EventOptionChanged,
-    EventPlugin as WitEventPlugin, EventSelectionsChanged,
+    EventPlugin as WitEventPlugin, EventPluginLifecycle as WitEventPluginLifecycle,
+    EventSelectionsChanged,
 };
 use lattice_keymap::ModeId;
 use lattice_protocol::event::AppliedEdit as NativeEventAppliedEdit;
@@ -95,6 +96,10 @@ impl WitBoundary for NativeEventKind {
                         .to_string(),
                 );
             }
+            // CI.1: plugin-lifecycle signals ARE deliverable — an init.rs
+            // subscribes to run deferred config.
+            NativeEventKind::PluginLoaded => WitEventKind::PluginLoaded,
+            NativeEventKind::PluginUnloaded => WitEventKind::PluginUnloaded,
         })
     }
 
@@ -114,6 +119,8 @@ impl WitBoundary for NativeEventKind {
             WitEventKind::MinorActivated => NativeEventKind::MinorActivated,
             WitEventKind::MinorDeactivated => NativeEventKind::MinorDeactivated,
             WitEventKind::Plugin => NativeEventKind::Plugin,
+            WitEventKind::PluginLoaded => NativeEventKind::PluginLoaded,
+            WitEventKind::PluginUnloaded => NativeEventKind::PluginUnloaded,
         })
     }
 }
@@ -208,6 +215,19 @@ impl WitBoundary for NativeEvent {
                         .to_string(),
                 );
             }
+            // CI.1: plugin-lifecycle signals ARE delivered to guests.
+            NativeEvent::PluginLoaded { name, id } => {
+                WitEvent::PluginLoaded(WitEventPluginLifecycle {
+                    name: name.clone(),
+                    id: *id,
+                })
+            }
+            NativeEvent::PluginUnloaded { name, id } => {
+                WitEvent::PluginUnloaded(WitEventPluginLifecycle {
+                    name: name.clone(),
+                    id: *id,
+                })
+            }
         })
     }
 
@@ -274,6 +294,14 @@ impl WitBoundary for NativeEvent {
             WitEvent::Plugin(p) => NativeEvent::Plugin {
                 name: p.name,
                 payload: p.payload,
+            },
+            WitEvent::PluginLoaded(p) => NativeEvent::PluginLoaded {
+                name: p.name,
+                id: p.id,
+            },
+            WitEvent::PluginUnloaded(p) => NativeEvent::PluginUnloaded {
+                name: p.name,
+                id: p.id,
             },
         })
     }

@@ -541,6 +541,16 @@ impl PluginLoader {
             .lock()
             .expect("plugin-loader loaded-set mutex poisoned")
             .push(record);
+        // CI.1: announce the load AFTER the full drain (every seam registered) so
+        // a subscriber's handler observes a fully-loaded plugin — an `init.rs`
+        // runs its deferred `on-plugin-loaded` config here. Fires for `init.rs`
+        // itself too (harmless: handlers match other plugins by name).
+        if let Some(bus) = &self.env.bus {
+            bus.publish(lattice_protocol::Event::PluginLoaded {
+                name: manifest.id.clone(),
+                id: id.0,
+            });
+        }
         // One-shot, user-actionable event (the "LSP server attached" class).
         tracing::info!(plugin = %manifest.id, id = id.0, "plugin loaded");
         Ok(id)
@@ -729,6 +739,15 @@ impl PluginLoader {
         // fails the unload.
         if let Some(tracer) = &self.env.tracer {
             tracer.forget_plugin(record.id.0);
+        }
+        // CI.1: announce the unload AFTER teardown reversed every contribution, so
+        // a handler tears down its own dependent setup against a plugin that's
+        // already gone from the registries.
+        if let Some(bus) = &self.env.bus {
+            bus.publish(lattice_protocol::Event::PluginUnloaded {
+                name: record.name.clone(),
+                id: record.id.0,
+            });
         }
         tracing::info!(
             plugin = %record.name,

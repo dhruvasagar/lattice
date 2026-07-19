@@ -181,6 +181,18 @@ pub enum Event {
         func: String,
         kind: String,
     },
+    /// A plugin finished loading (CI.1): every seam drained, its modes /
+    /// options / commands all registered. Published by the loader at
+    /// `load_discovered` completion. UNLIKE [`Self::PluginCrashed`], this IS
+    /// delivered to guests — an `init.rs` subscribes (filtered by `name`) to run
+    /// deferred config against a now-present plugin (`with-eval-after-load`;
+    /// config-and-init.md). `name` is the manifest id; `id` the host-issued
+    /// numeric plugin id.
+    PluginLoaded { name: String, id: u32 },
+    /// A plugin was unloaded (CI.1): teardown reversed its contributions
+    /// (`:plugin-unload` / crash-teardown). Delivered to guests so a handler can
+    /// tear down its own dependent setup. Fields mirror [`Self::PluginLoaded`].
+    PluginUnloaded { name: String, id: u32 },
 }
 
 // M.5.3.b: `LspLogPushed`, `LspBufferAttached`, and
@@ -212,6 +224,8 @@ impl Event {
             Event::MinorDeactivated { .. } => EventKind::MinorDeactivated,
             Event::Plugin { .. } => EventKind::Plugin,
             Event::PluginCrashed { .. } => EventKind::PluginCrashed,
+            Event::PluginLoaded { .. } => EventKind::PluginLoaded,
+            Event::PluginUnloaded { .. } => EventKind::PluginUnloaded,
         }
     }
 }
@@ -243,6 +257,11 @@ pub enum EventKind {
     /// crash-notification surface or the Phase-8 plugin manager subscribes to
     /// every plugin crash with one filter.
     PluginCrashed,
+    /// Discriminator for [`Event::PluginLoaded`] (CI.1) — the plugin-load
+    /// lifecycle signal an `init.rs` subscribes to for deferred config.
+    PluginLoaded,
+    /// Discriminator for [`Event::PluginUnloaded`] (CI.1).
+    PluginUnloaded,
 }
 
 /// An edit as actually applied to the buffer (the original `Edit` plus the

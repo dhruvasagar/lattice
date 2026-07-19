@@ -1092,6 +1092,11 @@ interface types {
         // events share this one kind; the per-event `name` is not a bus
         // discriminator — a subscriber filters by name in its `on-event`.
         plugin,
+        // CI.1: plugin-lifecycle signals delivered to guests. An `init.rs`
+        // subscribes to `plugin-loaded` (filtering by name in its handler) to run
+        // deferred config against a now-present plugin (`with-eval-after-load`).
+        plugin-loaded,
+        plugin-unloaded,
     }
 
     /// Mirrors `lattice_runtime::EventFilter` — the DECLARATIVE subset a plugin
@@ -1127,6 +1132,16 @@ interface types {
         minor-activated(event-mode-lifecycle),
         minor-deactivated(event-mode-lifecycle),
         plugin(event-plugin),
+        plugin-loaded(event-plugin-lifecycle),
+        plugin-unloaded(event-plugin-lifecycle),
+    }
+
+    /// `Event::PluginLoaded` / `Event::PluginUnloaded` payload (CI.1). `name` is
+    /// the plugin's manifest id (what a handler matches on); `id` the host-issued
+    /// numeric plugin id.
+    record event-plugin-lifecycle {
+        name: string,
+        id: u32,
     }
 
     /// `Event::DocumentOpened` payload. `path` is `none` for scratch buffers.

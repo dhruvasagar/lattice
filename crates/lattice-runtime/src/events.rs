@@ -715,7 +715,11 @@ fn event_path(event: &Event) -> Option<&Path> {
         // wants path-based routing filters inside its own handler (PH7.8b).
         | Event::Plugin { .. }
         // A crash event carries the plugin id, not a path (PH7.12).
-        | Event::PluginCrashed { .. } => None,
+        | Event::PluginCrashed { .. }
+        // Plugin-lifecycle events carry a name + id, not a path (CI.1); a
+        // handler filters by name.
+        | Event::PluginLoaded { .. }
+        | Event::PluginUnloaded { .. } => None,
     }
 }
 
@@ -748,7 +752,10 @@ fn event_major_mode(event: &Event) -> Option<&str> {
         // wants major-mode routing filters inside its own handler (PH7.8b).
         | Event::Plugin { .. }
         // A crash event is not tied to a buffer's major mode (PH7.12).
-        | Event::PluginCrashed { .. } => None,
+        | Event::PluginCrashed { .. }
+        // Plugin-lifecycle events are not tied to a buffer's major mode (CI.1).
+        | Event::PluginLoaded { .. }
+        | Event::PluginUnloaded { .. } => None,
     }
 }
 

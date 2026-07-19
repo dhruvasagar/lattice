@@ -71,6 +71,8 @@ fn label(ev: &Event) -> &'static str {
         Event::MinorActivated(_) => "minor-activated",
         Event::MinorDeactivated(_) => "minor-deactivated",
         Event::Plugin(_) => "plugin",
+        Event::PluginLoaded(_) => "plugin-loaded",
+        Event::PluginUnloaded(_) => "plugin-unloaded",
     }
 }
 

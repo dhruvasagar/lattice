@@ -1,155 +1,265 @@
-# auto-pair — the trivial-first bundled plugin
+# auto-pair — the first bundled plugin (auto + manual pairing)
 
 > **Design fragment.** Contracts, data model, rationale, rejected alternatives,
-> paramount-goal alignment. Slice sequencing is the compact §7 below (inline
-> while small; splits to `../operations/slice-plans/plugin-auto-pair.md` if it
-> grows). Sibling fragments: [`plugin-host.md`](plugin-host.md) (the seam spine),
+> paramount-goal alignment. Slice sequencing is §12 (inline while small; splits to
+> a slice-plan file if it grows). Sibling fragments:
+> [`plugin-host.md`](plugin-host.md) (the seam spine),
 > [`keymap-architecture.md`](keymap-architecture.md) (the layered keymap the
-> insert-mode bindings land in).
+> insert-mode bindings + the *declining-binding* fall-through land in),
+> [`lighthouse.md`](lighthouse.md) (the next 8b plugin, sequenced after this).
 >
-> **Status: 📝 designed, not built.** The **first real bundled 8b plugin**,
-> chosen to de-risk the packaging/load pipeline with **zero new host surface** —
-> every seam it uses (grammar `register-action`, keymap `register-binding`) is
-> already wired end-to-end. Sequenced BEFORE lighthouse
-> ([`lighthouse.md`](lighthouse.md)), whose real cost is a four-seam host
-> extension.
+> **Status: 📝 designed, not built.** The **first bundled 8b plugin.** It is *not*
+> host-free (an earlier draft assumed so) — porting the manual style forces three
+> small, **general** host prerequisites (§5). Those are the real cost and the real
+> value: they are reusable capabilities many future plugins need, validated here on
+> a concrete UX.
 
-## 1. Why (and why *this* one first)
+## 1. Why
 
-Auto-pairing — type `(`, get `()` with the cursor between — is a universal
-editor expectation, and one of design.md §5.5.6's named "editing helpers"
-bundled plugins. But its purpose *here* is strategic: it is the **pipeline
-validator**. Shipping it proves the whole first-party bundled-plugin path end to
-end — a plugin crate → a `wasm32-wasip2` component + `manifest.toml` → on-disk
-discovery → `activate` → live seam contributions — on a *real*, user-visible
-workload, with **no new host work** (unlike lighthouse, which forces four host
-seams). Get this working and the packaging/distribution/load pipeline is proven;
-then lighthouse can invest in the host-services extension against a known-good
-pipeline.
+Auto-pairing is a universal editor expectation and one of design.md §5.5.6's named
+"editing helpers" bundled plugins. Its purpose *here* is to be the **first real
+first-party plugin** — proving the bundled-plugin pipeline (crate →
+`wasm32-wasip2` component + `manifest.toml` → discovery → `activate` → live seam
+contributions) on a genuine, user-visible workload — while building out the host
+surface (§5) that the plugin ecosystem needs regardless.
 
-It also validates two things a pure-grammar plugin wouldn't: the **insert-mode
-keymap-binding** path and **insert-mode plugin-action dispatch** (a plugin action
-that runs on a printable keystroke and returns an edit).
+It ships **two styles**, gated by config:
 
-## 2. What it does (v1 — tight)
+- **`auto`** (default) — the familiar behavior: type an opener, get the pair.
+- **`manual`** — type openers freely; a single key closes the nearest unmatched
+  opener by a backward stack scan. This is a port of the author's
+  [`vim-pairify`](https://github.com/dhruvasagar/vim-pairify) model (see §3), and
+  is the *recommended* style: it eliminates every "surprise insertion" failure
+  mode that makes auto-pairing perennially fiddly (§10).
 
-- Type an **opener** (`(` `[` `{` `"` `'` `` ` ``) → insert the matching closer
-  and leave the cursor **between** the pair.
-- Type a **closer** (`)` `]` `}` `"` `'` `` ` ``) when the character right after
-  the cursor **is that closer** → step **over** it (move the cursor right)
-  instead of inserting a second one.
+## 2. The two styles + config gating
 
-That is the whole v1 contract. It matches the muscle-memory minimum every editor
-provides; nothing surprising, nothing that inserts a character the user didn't
-expect.
+A typed option `auto-pairs-style` = `auto` | `manual`, default `auto`, registered
+via the **config** seam. The plugin reads it and registers the matching insert-mode
+keymap; on an `OptionChanged` for it (via the **events** seam), it re-registers —
+so the style flips live. Two more options: `auto-pairs-close-key` (default
+`<C-j>`, the manual close key) and the pairs table (§4), modifiable at runtime.
 
-### The pair table
+| Style | Openers `( [ { < " ' \`` | Closers | Close key |
+|---|---|---|---|
+| `auto` | insert the matching closer, caret between | typed closer before that closer → step over | — |
+| `manual` | plain self-insert (unbound) | plain self-insert | one key → close nearest unmatched (§3), else fall through (§6) |
 
-| Opener | Closer | Notes |
-|---|---|---|
-| `(` | `)` | |
-| `[` | `]` | |
-| `{` | `}` | |
-| `"` | `"` | same char open/close |
-| `'` | `'` | same char open/close |
-| `` ` `` | `` ` `` | same char open/close |
+This makes the plugin exercise **four** seams (grammar / keymap / config / events)
+— richer pipeline validation than an auto-only plan.
 
-Same-char pairs (`"`/`'`/`` ` ``) get the skip-over rule but **not** a naive
-"always open" — v1 keeps it simple (open on type, skip on the matching next
-char); the "don't open a second quote right after a word" refinement is v2.
+## 3. The manual-close algorithm (`find_pair`, ported)
 
-## 3. Seam usage (the mechanism)
+Scan the scope text (§7) **backward** from the cursor, maintaining a stack of
+*closers* seen. Faithful to `pairify#find_pair`:
 
-Two already-wired seams, no host changes:
+```
+for char, scanning backward from the cursor:
+  if char is a CLOSER (in right-map):
+    if char == '>' and the char before it is ' '   → skip (comparison operator)
+    elif stack nonempty and symmetric(char) and stack.top == char → pop  # balanced quote pair
+    else → push char
+  elif char is an OPENER (in left-map):
+    if char == '<' and the char after it is ' '     → skip (comparison operator)
+    elif stack nonempty and complement(char, stack.top) → pop            # matched bracket pair
+    elif stack empty → return left-map[char]         # nearest UNMATCHED open → its closer
+  # (continue)
+end → return stack.bottom or ''                       # stray closer, or nothing
+```
 
-1. **grammar `register-action`** — the plugin registers one action per behavior.
-   An action's `apply-action(ctx)` reads the projected `action-context` (cursor +
-   buffer snapshot) and returns an `Effect` (an edit):
-   - `auto-pair-open-<name>` → an edit inserting `"<open><close>"` at the cursor
-     and positioning the caret between them.
-   - `auto-pair-close-<name>` → if `char-after-cursor == <close>`, an effect that
-     moves the caret right (skip-over); else an edit inserting `<close>`.
-2. **keymap `register-binding`** — bind the printable openers/closers in
-   **Insert** `binding-mode` to those action command names:
-   `register-binding(insert, "(", "auto-pair-open-paren")`, … The binding lands in
-   the plugin's `KeymapLayer::User`-equivalent, above the default insert-mode
-   self-insert, so the action fires instead of the raw character insert.
+- **Symmetric pairs** (`"` `'` `` ` ``, where open == close): the `symmetric(char)`
+  branch pairs them by adjacency on the stack — the port of `s:is_symmetric` /
+  `s:is_complement`. No open-vs-close ambiguity: consecutive same chars balance.
+- **`<` / `>`**: the space-adjacency heuristic skips comparison operators (`a < b`,
+  `a -> b`), so angle brackets only pair as generics/tags.
+- **Return value** is the **closer to insert** at the cursor. `''` → nothing
+  unmatched → **fall through** (§6).
+- **Early exit**: it returns at the *first* unmatched opener going backward, so the
+  typical scan is short (a few chars / the enclosing structure), independent of
+  file size.
 
-The keystroke path: insert-mode `(` → the keymap resolves it to the plugin's
-action command → the grammar dispatcher runs `apply-action` (the **sync
-trampoline** — this is why grammar is the one synchronous seam) → the edit
-`Effect` crosses back and the host applies it. All within the Reflex sub-frame
-budget; the action's guest logic is trivial (a couple of field reads + one edit),
-far inside the fuel/epoch bound.
+## 4. The pairs table
 
-> **Build-time validation gate.** The one assumption to confirm early: an
-> insert-mode `register-binding` to a plugin **action** actually intercepts a
-> printable key before the default self-insert, and the action's edit `Effect`
-> applies in insert mode. If insert-mode plugin-action dispatch turns out
-> unwired, that is a small host slice (wiring the insert-layer keymap → grammar
-> action path) — surfaced here so it is designed, not discovered mid-build.
+Two maps (`left`: opener→closer, `right`: closer→opener), the `vim-pairify`
+default, modifiable at runtime (per-language additions, user overrides):
 
-## 4. Capabilities
+```
+left:  ( → )   [ → ]   { → }   < → >   ' → '   " → "   ` → `
+right: ) → (   ] → [   } → {   > → <   ' → '   " → "   ` → `
+```
 
-**None.** Auto-pair is pure editing — it reads the buffer snapshot the action
-context already projects and returns edits. Its `manifest.toml` requests **zero**
-capabilities: no `fs`, no `net`, no `proc`. This is the point — the simplest
-possible trust surface for the pipeline validator. (Contrast lighthouse:
-`net:http` + `proc:spawn` + `fs:write`.)
+The table is the plugin's data; the host never interprets it. v1 ships the static
+default; per-language tables + a user-facing add/remove API are v2.
 
-## 5. Paramount-goal alignment
+## 5. Seam usage + the three host prerequisites (LOAD-BEARING)
 
-- **#2 Extensibility.** The end-to-end proof that a first-party feature ships *as
-  a component* — the bundled-plugin pipeline (build → manifest → discovery →
-  activate → contribute) exercised on a real workload, dogfooding the host with
-  zero new surface.
-- **#1 Performance.** The actions run on the sync grammar trampoline (the one
+The plugin uses four **wired** seams — grammar `register-action`, keymap
+`register-binding`, config `register-option`, events `subscribe` (OptionChanged).
+But the *actions* need to read buffer text, which the grammar seam cannot do today
+— so auto-pair forces three small, general host additions:
+
+### 5.1 Grammar-context `document` handle + cursor  (prerequisite AP.0.1)
+
+`action-context` carries only `args`/`register`/`count` — no cursor, no buffer.
+The pairing actions need the cursor byte offset + backward text. **Extend the
+grammar callback contexts with a `document` resource handle + the cursor** — the
+exact pattern the **picker** seam already has (`init(ctx)` takes a `document`; the
+guest calls `document.slice(start, end)`, bulk rope never crosses). The read
+machinery exists; this wires it into the grammar action/motion/text-object
+contexts. General: every grammar plugin that reasons about surrounding text needs
+it.
+
+### 5.2 Declining / fall-through bindings  (prerequisite AP.0.2)
+
+The manual close key must **fall through** when `find_pair` returns `''` — so
+`<C-j>` still does whatever else is bound (completion nav, newline, a user remap;
+requirement #4). A plugin binding normally *shadows* lower layers. Add a dispatch
+capability: **an action may return "declined," and the dispatcher resumes at the
+next keymap layer** (the built-in / user binding for that chord). General +
+reusable (any conditional plugin binding wants it), and — unlike a per-keystroke
+guest *predicate* — the guest runs only when the key is actually pressed, never on
+the hot path.
+
+### 5.3 tree-sitter query seam  (prerequisite AP.0.3) — **v1**
+
+Lexically scoping the backward scan to the current function/class/block (§7) — and,
+far more broadly, letting *any* plugin **query the syntax tree, resolve the node at
+a position, walk it, and find the enclosing scope** — is a **foundational**
+extensibility capability, not an auto-pair detail. lattice parses every language
+with tree-sitter; a plugin seam over it directly serves **paramount goal #3**
+(extensible modal editing, including "future tree-sitter-driven variants" of
+motions / text objects) and unlocks a whole class of structural plugins (motions,
+text objects, folds, refactors, rainbow-delimiters, …). **Promoted to v1
+(2026-07-19, Dhruva):** a truly customizable, tree-sitter-driven editor needs this
+seam early, not as a late refinement. It gets its **own design fragment**
+([`plugin-treesitter-seam.md`](plugin-treesitter-seam.md), in design); auto-pair
+is its first consumer (the enclosing-scope query bounds the scan). Complex, but
+core — see that fragment for the query/node/cursor API, the capability model, and
+the tree-mutation-under-read hazard.
+
+## 6. Fall-through (the manual no-op)
+
+Manual close key pressed, `find_pair` → `''` (nothing unmatched above): the action
+returns **declined** (§5.2). The dispatcher then runs the next binding for the
+close key — completion navigation if a menu is up, a newline, or the user's own
+remap. The plugin never hardcodes `<C-j>`'s default, so it composes with the rest
+of the keymap exactly as the `vim-pairify` `<expr>` fall-through did.
+
+## 7. Scope of the backward scan — lexical, via tree-sitter (the perf spine)
+
+The lesson from `vim-pairify`: on **very large buffers, reading buffer text to
+scan costs real time + memory**; even lazy, allocation-free access scales poorly.
+The better model — and the **v1 model** here — is to **query the current lexical
+scope** (the enclosing function / class / block, via the tree-sitter seam §5.3)
+and slice + scan **only that scope's byte range**. This is simultaneously:
+
+- **fast** — bounded to the enclosing scope, so buffer size is irrelevant; the
+  `document.slice` reads only the scope's bytes (lazy, no whole-buffer
+  allocation), and `find_pair`'s early-exit trims it further; and
+- **correct** — a stray unbalanced pair in another function never leaks into the
+  result.
+
+This is *why* the tree-sitter seam is a v1 prerequisite, not a v2 nicety: it is
+the mechanism that keeps the scan bounded regardless of file size.
+
+**Fallback (no parse tree):** for an unparsed language / scratch buffer where
+tree-sitter has no enclosing scope, degrade to a cursor-backward `document.slice`
+with `find_pair`'s early-exit and a generous line cap — never a whole-buffer
+materialization.
+
+## 8. Capabilities
+
+**None.** Pure editing — reads the buffer via the (host-owned, capability-free)
+`document` handle and returns edits. `manifest.toml` requests no `fs` / `net` /
+`proc`. The simplest trust surface (contrast lighthouse's `net`+`proc`+`fs:write`).
+
+## 9. Paramount-goal alignment
+
+- **#2 Extensibility.** The first first-party feature shipped *as a component*,
+  and the vehicle that builds three reusable host capabilities (grammar
+  doc-handle; declining bindings; later, scope query) validated on real UX.
+- **#1 Performance.** Actions run on the sync grammar trampoline (the one
   on-keystroke seam) but are trivial guest logic under the Reflex budget; the
-  boundary-trace `HotGate` keeps them free to observe. No async, no I/O.
-- **UX (higher court).** Correct-by-construction v1: only ever inserts the closer
-  the user's opener implies, only ever skips a closer that is already there. No
-  surprise edits — the veto bar for an editing helper.
+  backward scan early-exits and is bounded; the boundary-trace `HotGate` keeps it
+  free to observe. No async, no I/O. The `document.slice` reads only the bytes the
+  scan touches.
+- **UX (higher court).** `auto` is the familiar default; `manual` is *surprise-free
+  by construction* (§10). Neither ever inserts a character the user didn't intend.
 
-## 6. Rejected alternatives
+## 10. UX rationale
 
-- **Native auto-pair.** Rejected: it would not dogfood the bundled-plugin
-  pipeline, which is the entire reason to build this first. (Built-in vim grammar
-  stays native by design; auto-pair is an *extension*, the right place to prove
-  the plugin path.)
-- **A static keymap-only mapping** (`inoremap ( ()<Left>`-style). Rejected: it
-  cannot do the **skip-over** rule (which needs to read the char after the cursor)
-  and has no path to the v2 context refinements. The grammar-action indirection is
-  what buys real logic.
-- **The events/hooks seam** (react to an insert event). Rejected: too indirect
-  and too late for a per-keystroke edit — the pair must be inserted *as* the key
-  is handled, not observed after the fact; that is exactly what the sync grammar
-  action provides.
-- **A pure-grammar plugin (a text-object/ex-command) as the pipeline validator.**
-  Rejected as the first pick: it validates less — no insert-mode binding, no
-  insert-mode action dispatch — so auto-pair de-risks more of the pipeline for the
-  same packaging cost.
+- **Default `auto`.** Muscle memory across editors is auto; it must be the default
+  so nothing surprises a newcomer. `manual` is opt-in via `auto-pairs-style`.
+- **`manual` is the flagship.** It removes *every* auto-pairing failure mode:
+  no spurious closers, no fighting an auto-inserted char, no orphaned closer after
+  deleting an opener, no wrong-context insertions. You type exactly your
+  keystrokes; the one close key derives the correct closer from the stack and
+  closes inside-out on repeat. Correctness is *one* algorithm (§3), not N context
+  heuristics.
+- **`auto` must still be credible.** A *basic* auto (open-insert + close-skip only)
+  feels broken the moment you backspace an opener and get a stray closer. So auto
+  v1 includes **backspace-deletes-the-empty-pair**; word-boundary / string-comment
+  suppression is v2.
+- **The close key (`<C-j>`) falls through** so it stays useful when there's nothing
+  to close — the property that makes a single, always-available key ergonomic.
 
-## 7. Slices
+## 11. Rejected alternatives
 
-Small enough to sequence inline; splits to a slice-plan file if v2 grows it.
+- **Native auto-pair.** Rejected: would not dogfood the plugin pipeline (the point
+  of doing it first) and would not force the reusable host surface (§5) the
+  ecosystem needs anyway. Built-in vim grammar stays native; auto-pair is an
+  *extension*.
+- **Static keymap-only mapping** (`inoremap ( ()<Left>`). Rejected: cannot do
+  skip-over, backspace-delete, or the manual backward scan (all need to read
+  buffer text). The grammar-action + doc-handle indirection is what buys real
+  logic.
+- **Per-keystroke guest predicate for fall-through.** Rejected in favor of
+  declining bindings (§5.2): a predicate runs a guest call on *every* press of the
+  key; declining runs the guest only when the action fires and cleanly resumes the
+  layer stack.
+- **Events/hooks seam for the pairing.** Rejected: too indirect + too late for a
+  per-keystroke edit; the pair must be produced *as* the key is handled (the sync
+  grammar action), not observed after.
 
-- **AP.1 — crate scaffold + the pipeline** 📝: `plugins/auto-pair/` guest
-  (`wasm32-wasip2`, `crate-type = ["cdylib"]`, `wit-bindgen`) + `manifest.toml`
-  (id `auto-pair`, `provides = ["grammar", "keymap"]`, **no** capabilities);
-  `register-grammar` registers the open/close actions, `register-keymap` binds the
-  insert-mode chords. **Exit:** the crate builds to a component; a host round-trip
-  test loads it via the loader and the actions + bindings register (provenance
-  `SourceLayer::Plugin`).
-- **AP.2 — the behavior + the insert-mode dispatch proof** 📝: the open-insert +
-  close-skip action bodies; the build-time gate (§3) proven — an insert-mode `(`
-  dispatches the plugin action and the pair lands, a `)` before a `)` skips. If
-  insert-mode plugin-action dispatch needs host wiring, that host slice lands
-  here. **Exit:** typing `(` yields `()` with the caret between; typing `)` at a
-  `)` steps over; asserted end-to-end through the loaded plugin.
-- **AP.3 — bundling** 📝: ship `auto-pair.wasm` compiled-in / in `core-plugins/`,
-  loaded pre-granted at boot (it needs no grant). **Exit:** a fresh editor
-  auto-pairs out of the box; `:plugins` lists it.
+## 12. Slices
 
-**Deferred to v2:** wrap-selection (type `(` with a Visual selection → surround
-it), backspace-deletes-the-empty-pair, don't-open before a word char, string/
-comment suppression, and per-language pair tables.
+- **AP.0 — host prerequisites** 📝 (general capabilities; `lattice-plugin-host`):
+  - **AP.0.1 — grammar-context `document` handle + cursor** (§5.1): extend the
+    grammar callback contexts (action first; motion/text-object as they need it)
+    with a `document` resource + the cursor, mirroring the picker seam. Test: a
+    grammar-guest action reads a text slice + the cursor round-trips. No bench
+    (read machinery exists; still off the async path — but note grammar is sync, so
+    a `document.slice` on the keystroke path must be bounded, which the scan is).
+  - **AP.0.2 — declining / fall-through bindings** (§5.2): a "declined" action
+    outcome that resumes keymap resolution at the next layer. Test: a plugin action
+    declines → the built-in / a lower-layer binding for the same chord runs;
+    accepts → it doesn't.
+  - **AP.0.3 — tree-sitter query seam** (§5.3, its own fragment
+    [`plugin-treesitter-seam.md`](plugin-treesitter-seam.md)): the foundational
+    plugin↔tree-sitter surface — query, node-at-position, walk, enclosing-scope.
+    Auto-pair's first use is the enclosing-scope query that bounds the scan (§7);
+    the seam is general (structural motions / text-objects / folds consume it too).
+    The largest AP.0 slice; sequenced as its own design + build.
+- **AP.1 — crate scaffold + registration** 📝: `plugins/auto-pair/` guest +
+  `manifest.toml` (id `auto-pair`, `provides = ["grammar","keymap","config"]`, **no
+  capabilities**); register the pairing actions, the `auto-pairs-style` /
+  `auto-pairs-close-key` options, and the OptionChanged subscription; register the
+  style-appropriate insert-mode bindings. **Exit:** loads via the loader; the
+  contributions register with `SourceLayer::Plugin` provenance.
+- **AP.2 — `auto` style** 📝: open-insert + close-skip + backspace-delete-empty-
+  pair (reads via AP.0.1). **Exit:** `(` → `()` caret-between; `)` before `)` steps
+  over; backspace in `()` deletes both — asserted through the loaded plugin.
+- **AP.3 — `manual` style** 📝: the `find_pair` port (§3) + the close key + the
+  fall-through (AP.0.2), scanning **only the enclosing lexical scope** (AP.0.3 /
+  §7), with the cursor-backward `document.slice` fallback where there's no parse
+  tree. **Exit:** with `auto-pairs-style=manual`, the close key closes the nearest
+  unmatched open within the scope (inside-out on repeat, symmetric pairs + `<`/`>`
+  handled), falls through when nothing is unmatched, and stays bounded on a large
+  buffer.
+- **AP.4 — bundling** 📝: ship `auto-pair.wasm` compiled-in / in `core-plugins/`,
+  pre-granted at boot (needs no grant). **Exit:** a fresh editor auto-pairs out of
+  the box; `:plugins` lists it; `:set auto-pairs-style=manual` flips it live.
+
+**Deferred to v2:** wrap-selection (opener with a Visual selection surrounds it),
+word-boundary / string-comment suppression (auto), and per-language pair tables +
+a user add/remove API. (Lexical-scope scanning via tree-sitter is **v1** — AP.0.3.)

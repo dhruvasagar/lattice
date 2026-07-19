@@ -199,6 +199,15 @@ async fn emacs_keys_leader_shipped_as_a_component_dispatches_like_native() {
         "with no modes active, the gated `<C-x>e` binding does not fire"
     );
 
+    // CI.3: a plugin-declared minor mode is registered available-but-OFF (the
+    // user, not the plugin author, owns activation). Enable it — as an init.rs
+    // `on-plugin-loaded` handler would — before it can auto-activate.
+    {
+        let mut next = (**editor.mode_registry.load()).clone();
+        next.set_minor_enabled(ModeId::new("emacs-keys-plugin-mode"), true);
+        editor.mode_registry.store(std::sync::Arc::new(next));
+    }
+
     // --- The real proof: activate the mode and dispatch the leader chord through
     // the SAME path native modes take. `<C-x>e` must resolve the pane split and
     // actually execute it — a component-shipped mode driving a real editor

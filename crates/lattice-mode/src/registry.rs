@@ -80,6 +80,14 @@ pub enum RegistrationError {
 pub struct ModeRegistry {
     modes: HashMap<ModeId, Arc<dyn DynMode>>,
     kind_index: HashMap<BufferKind, ModeId>,
+    /// CI.1/CI.3: minor modes the user has ENABLED. `auto_activatable_minors`
+    /// gates on this — a registered minor auto-activates only when enabled.
+    /// Native modes are auto-enabled at [`register`](Self::register); plugin
+    /// modes register via [`register_available`](Self::register_available) and
+    /// stay off until `enable-mode` / init.rs enables them (config-and-init.md).
+    /// Declaration (available) ≠ enablement (on) — the emacs global-minor-mode
+    /// model, so the user, not the plugin author, owns which extensions are live.
+    enabled: std::collections::HashSet<ModeId>,
 }
 
 /// The runtime-mutable mode-registry handle the editor holds and shares as a
@@ -110,6 +118,7 @@ impl ModeRegistry {
         Self {
             modes: HashMap::new(),
             kind_index: HashMap::new(),
+            enabled: std::collections::HashSet::new(),
         }
     }
 
@@ -123,6 +132,24 @@ impl ModeRegistry {
     /// binding in place — clobbering is treated as a developer bug,
     /// not a hot-swap mechanism.
     pub fn register<M: Mode>(&mut self, mode: M) -> Result<ModeId, RegistrationError> {
+        self.register_inner(mode, /* enable */ true)
+    }
+
+    /// Register a mode WITHOUT enabling it (CI.3) — the plugin path. The mode is
+    /// **available** (in the registry, its keymap layer exists, `:describe-mode`
+    /// and `:ls`-style introspection see it) but does NOT auto-activate until the
+    /// user enables it (`enable-mode` / an `init.rs` `on-plugin-loaded` handler).
+    /// Used by `register_plugin_mode`; native modes use [`register`](Self::register)
+    /// (auto-enabled). Declaration ≠ enablement (config-and-init.md §6).
+    pub fn register_available<M: Mode>(&mut self, mode: M) -> Result<ModeId, RegistrationError> {
+        self.register_inner(mode, /* enable */ false)
+    }
+
+    fn register_inner<M: Mode>(
+        &mut self,
+        mode: M,
+        enable: bool,
+    ) -> Result<ModeId, RegistrationError> {
         let id = <M as Mode>::id(&mode);
         // Convention (mode_id.rs): every mode id ends in `-mode`. This is
         // the single choke point every built-in and plugin mode flows
@@ -155,12 +182,34 @@ impl ModeRegistry {
                 }
             }
         }
+        if enable {
+            self.enabled.insert(id);
+        }
         Ok(id)
     }
 
     /// True iff this id is registered (any kind).
     pub fn is_registered(&self, id: ModeId) -> bool {
         self.modes.contains_key(&id)
+    }
+
+    /// Enable or disable a registered minor mode globally (CI.4). Enabling makes
+    /// it eligible for auto-activation per its `ActivationPolicy`
+    /// ([`auto_activatable_minors`](Self::auto_activatable_minors)); disabling
+    /// removes it from the enabled set. A no-op for an unregistered id (the
+    /// caller logs). The host re-activates open buffers after enabling
+    /// (config-and-init.md §6); the registry only holds the flag.
+    pub fn set_minor_enabled(&mut self, id: ModeId, enabled: bool) {
+        if enabled {
+            self.enabled.insert(id);
+        } else {
+            self.enabled.remove(&id);
+        }
+    }
+
+    /// True iff this minor mode is enabled (CI.3) — the auto-activation gate.
+    pub fn is_minor_enabled(&self, id: &ModeId) -> bool {
+        self.enabled.contains(id)
     }
 
     /// Remove a registered mode, the teardown seam for a plugin reload / unload
@@ -225,6 +274,10 @@ impl ModeRegistry {
             .iter()
             .filter(|(_, mode)| mode.kind() == ModeKind::Minor)
             .filter(|(_, mode)| mode.activation_policy().admits(major, buffer_kind))
+            // CI.3: enablement gates activation. Native modes are auto-enabled at
+            // registration (unchanged); a plugin minor stays inert until the user
+            // enables it (config-and-init.md §6).
+            .filter(|(id, _)| self.enabled.contains(*id))
             .map(|(id, _)| *id)
             .collect()
     }
@@ -984,6 +1037,51 @@ mod tests {
             r.auto_activatable_minors("help-mode", BufferKind::Help)
                 .is_empty(),
             "Global minors must not auto-activate in synthetic buffers"
+        );
+    }
+
+    #[test]
+    fn plugin_minor_is_inert_until_enabled() {
+        use crate::ActivationPolicy;
+        let mut r = ModeRegistry::new();
+
+        // Native (register): a Global minor auto-activates immediately.
+        let native = r
+            .register(MockMode::minor("native-mode").with_policy(ActivationPolicy::Global))
+            .unwrap();
+        // Plugin (register_available): a Global minor is registered but INERT.
+        let plugin = r
+            .register_available(MockMode::minor("plugin-mode").with_policy(ActivationPolicy::Global))
+            .unwrap();
+
+        assert!(r.is_registered(plugin), "plugin mode is available (registered)");
+        assert!(
+            !r.is_minor_enabled(&plugin),
+            "plugin mode is NOT enabled at registration"
+        );
+        assert!(r.is_minor_enabled(&native), "native mode is auto-enabled");
+
+        // Only the native minor fires — the plugin minor is gated out.
+        assert_eq!(
+            r.auto_activatable_minors("rust-mode", BufferKind::Document),
+            vec![native],
+            "the plugin minor does not auto-activate until enabled"
+        );
+
+        // Enable the plugin minor → now both fire.
+        r.set_minor_enabled(plugin, true);
+        let mut got = r.auto_activatable_minors("rust-mode", BufferKind::Document);
+        got.sort();
+        let mut expected = vec![native, plugin];
+        expected.sort();
+        assert_eq!(got, expected, "an enabled plugin minor auto-activates");
+
+        // Disable it → back to inert.
+        r.set_minor_enabled(plugin, false);
+        assert_eq!(
+            r.auto_activatable_minors("rust-mode", BufferKind::Document),
+            vec![native],
+            "disabling removes the plugin minor from activation"
         );
     }
 

@@ -154,7 +154,10 @@ pub(crate) fn register_plugin_mode(
         policy: decl.policy.clone(),
         caps: decl.caps,
     };
-    match registry.register(mode) {
+    // CI.3: a plugin mode registers **available but not enabled** — the user
+    // enables it (`enable-mode` / init.rs), the plugin author does not seize
+    // auto-activation (config-and-init.md §6).
+    match registry.register_available(mode) {
         Ok(id) => Some(id),
         Err(error) => {
             tracing::warn!(mode = %decl.id, %error, "register-mode rejected by the registry");

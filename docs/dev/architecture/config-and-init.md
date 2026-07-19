@@ -104,7 +104,11 @@ ordering all ride it later — not auto-pair scaffolding.
 logic, loops, conditionals, keymaps, custom commands, deferred handlers) are two
 front-ends over the SAME config registry — the "static settings stay declarative,
 logic stays code, one toolchain" split (CLAUDE.md). TOML covers what it can
-express; `init.rs` is the escape hatch.
+express; `init.rs` is the escape hatch. Both **set** option values through the
+same path: TOML at boot, `init.rs` via the config-seam **`set-option`** (CI.7),
+which wraps the `:set name=value` machinery (coerce + validate + `OptionChanged`).
+Without `set-option`, `init.rs` could only *declare* options, not override values
+— so it's load-bearing for the "two value-setting front-ends" claim.
 
 **Read discipline (the plugin contract):** a config consumer reads its options at
 **use time**, or **subscribes** to `OptionChanged` — it does NOT cache-at-load.
@@ -182,12 +186,19 @@ fn setup() {
 
 - **events** — new `plugin-loaded` (+ `plugin-unloaded`) `event-kind` / `event`
   arm; `init.rs` subscribes with a name filter.
-- **modes** — new `enable-mode(id)` / `disable-mode(id)`; `register_available`
+- **modes** — `enable-mode(id)` / `disable-mode(id)`; `register_available`
   (host-side) for plugin modes.
-- **config** — `set-option(name, value)` reachable from a handler (the existing
-  option registry + `OptionChanged`).
+- **config** — `set-option(name, value)` (CI.7): the value-setting front-end that
+  makes `init.rs` symmetric with `lattice.toml`. Backed by the SAME
+  `ConfigRegistry::parse_and_set_command` path `:set name=value` uses (type-coerce
+  + validate + publish `OptionChanged`); `false` on unknown option / invalid value
+  / no registry. Without it `init.rs` could only *declare* options, not set values
+  — a crippled front-end; it's the missing half, not a bolt-on.
 - **loader** — publishes `plugin-loaded` / `plugin-unloaded`; loads `init.rs`
   before plugin discovery.
-- No new *world* is needed — init.rs's manifest `provides` the seams it uses
-  (events + modes + config + keymap + grammar), exactly like any multi-seam plugin
-  (the AP.1.0 pattern).
+- **world** — lattice ships no combined "init" world (a mega-world would force a
+  user to implement every `register-*` export even for a keymap-only config). A
+  multi-seam `init.rs` declares its OWN combined world listing exactly the seams
+  it uses — the AP.1.0 multi-seam pattern; `provides` names the seams it
+  contributes into (`config`/`keymap`/`events`/`grammar`), while a seam it only
+  *calls* (`modes`, for `enable-mode`) is imported but not provided.

@@ -11,7 +11,7 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned. Every non-trivial sl
 the four artefacts (doc + bench-where-perf-relevant + test incl. failure modes +
 graceful error handling).
 
-**Status: ✅ CI.1–CI.6 complete.** The full config/init lifecycle ships: the
+**Status: ✅ CI.1–CI.7 complete.** The full config/init lifecycle ships: the
 `plugin-loaded` event, init-first ordering, the available-vs-enabled gate,
 `enable-mode` + open-buffer re-activation, auto-pair off-by-default enabled via
 init.rs, and the init.md rewrite.
@@ -86,6 +86,20 @@ booted editor with that init.rs has auto-pairs-mode active on a document buffer
 Test: the loader harness (auto_pair.rs precedent) with an init.rs fixture wired
 ahead of the auto-pair plugin. **Milestone: user-controlled, event-deferred plugin
 config working end to end.**
+
+### CI.7 — `config.set-option` (the missing value-setting front-end)  ✅
+Audit-driven (an init.md accuracy pass found the annotated example calling a
+`set-option` that didn't exist): the config seam had `register-option` (declare) +
+`get-option` (read) but **no way to SET a value**, so `init.rs` couldn't override
+options — a crippled config front-end contradicting §5's "two value-setting
+front-ends". Added `config.set-option(name, value) -> bool`, a thin wrapper over
+`ConfigRegistry::parse_and_set_command` (the `:set name=value` path: coerce +
+validate + publish `OptionChanged`); `false` on unknown option / invalid value /
+no registry. **Landed:** `config-guest` now `set-option`s a registered option and
+reads back the changed value (`config_source.rs`); init.md + the design fragment
+(§5, §9) corrected to the real API. This is what makes an `init.rs`
+`on-plugin-loaded` handler able to *configure* a plugin's options, not only enable
+its mode.
 
 ### CI.6 — init.md rewrite  ✅
 Rewrite `docs/user/init.md` for the settled model: the boot ordering (init-first),

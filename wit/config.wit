@@ -32,6 +32,17 @@ interface config {
     /// after a rejected default.
     register-option: func(name: string, ty: option-type, default: string, doc: string) -> bool;
 
+    /// Set (override) an EXISTING option's value (CI.7) — the init.rs config
+    /// front-end symmetric with `lattice.toml` and `:set`. Backed by the same
+    /// `parse_and_set_command` path `:set name=value` uses: the value string is
+    /// type-coerced and validated, and a successful set publishes
+    /// `OptionChanged` so subscribers react uniformly. Returns `false` (setting
+    /// nothing) if the option is unregistered, the value is invalid for its type,
+    /// or no registry is wired — never a trap. An `init.rs` `on-plugin-loaded`
+    /// handler uses this to configure a plugin's options the moment it loads
+    /// (config-and-init.md §5).
+    set-option: func(name: string, value: string) -> bool;
+
     /// Read an option's current value, formatted as a string (the `OptionType`
     /// `format` contract). `none` if no option by that name is registered. Works
     /// for ANY option (core or plugin) — a plugin can read a built-in option too.

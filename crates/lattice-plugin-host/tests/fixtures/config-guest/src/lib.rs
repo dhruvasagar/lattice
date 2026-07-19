@@ -62,9 +62,14 @@ impl Guest for Component {
         register::<Count>();
         register::<Label>();
 
+        // CI.7: SET an option value through the `set-option` seam (init.rs's
+        // config front-end), then read it back — proving the guest can override a
+        // value, not only declare one.
+        let _ = config::set_option(Count::NAME, "5");
+
         // Read `count` back through `get-option` and parse it typed (i64) via the
-        // SDK — the full declare→register→read→parse round-trip. Record it so the
-        // host test can observe the value crossed correctly.
+        // SDK — the full declare→set→read→parse round-trip. Record it so the host
+        // test can observe the SET value crossed correctly.
         let raw = config::get_option(Count::NAME).unwrap_or_default();
         let count = parse_option::<Count>(&raw).unwrap_or(-1);
         use std::io::Write;

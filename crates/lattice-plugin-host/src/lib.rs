@@ -1061,6 +1061,34 @@ impl crate::config_host::bindings::lattice::plugin_host::config::Host for Plugin
             .as_ref()
             .and_then(|registry| registry.lookup(&name).map(|opt| opt.get_formatted()))
     }
+
+    /// `set-option` (CI.7): override an existing option's value via the SAME
+    /// `parse_and_set_command` path `:set name=value` uses (coerce + validate +
+    /// publish `OptionChanged`). `false` on an unknown option / invalid value /
+    /// no registry — a logged no-op, never a trap.
+    fn set_option(&mut self, name: String, value: String) -> bool {
+        match &self.config_registry {
+            Some(registry) => match registry.parse_and_set_command(&format!("{name}={value}")) {
+                Ok(_) => true,
+                Err(err) => {
+                    tracing::warn!(
+                        option = %name,
+                        %value,
+                        %err,
+                        "set-option failed (unknown option or invalid value)"
+                    );
+                    false
+                }
+            },
+            None => {
+                tracing::warn!(
+                    option = %name,
+                    "set-option ignored: plugin has no config registry wired"
+                );
+                false
+            }
+        }
+    }
 }
 
 /// Host impl of the `modes` guest→host mode-declaration seam (PH7.11a, §5). The

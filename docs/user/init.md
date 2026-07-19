@@ -475,8 +475,15 @@ A binding to an unregistered command, or an unparseable chord, is skipped
 
 ## Options
 
-The `config` seam declares a typed option into the *same* registry `:set`,
-`:describe-option`, and `:customize` read — no special-casing.
+The `config` seam does two things: **`register-option`** declares a *new* typed
+option into the *same* registry `:set`, `:describe-option`, and `:customize` read
+(no special-casing), and **`set-option(name, value)`** overrides an *existing*
+option's value — exactly what `:set name=value` does (the value is type-coerced +
+validated, and `OptionChanged` fires). So `init.rs` is a value-setting config
+front-end alongside `lattice.toml`: `lattice.toml` for static values, `init.rs`
+for values you compute or set conditionally (per filetype, on a plugin loading).
+`set-option` returns `false` (a logged no-op) for an unknown option or an invalid
+value — it never mis-sets.
 
 ```rust
 // init.rs — a config-plugin. plugin.toml: provides = ["config"]
@@ -502,50 +509,62 @@ export!(Component);
 
 ## A complete annotated `init.rs`
 
-One realistic config, with each capability labeled. It `provides` the seams it
-uses (`plugin.toml`: `provides = ["events", "config", "keymap", "grammar"]`) and
-imports `modes` for `enable-mode`. Read it top to bottom: **immediate** config
-(options, keymaps, commands) runs when `init.rs` loads; **deferred** config (per
-plugin) runs from the `PluginLoaded` handler.
+A realistic config that uses several seams at once. Because it's multi-seam, you
+declare **one combined world** with the seams you use (the same pattern a bundled
+plugin like `auto-pair` uses) — put this in your own `wit/init.wit`:
+
+```wit
+// wit/init.wit
+package my:init;
+world init {
+    // Seams you contribute into (you implement their register-* export):
+    export register-options: func();   // config
+    export register-keymap: func();    // keymap
+    export register-events: func();    // events
+    export on-event: func(handler: u32, ev: event);
+    // Host functions you call — `config`/`keymap`/`events` you both provide AND
+    // call; `modes` you only CALL (`enable-mode`), so it's imported, not provided:
+    import config; import keymap; import events; import modes;
+    use lattice:plugin-host/types.{event};
+}
+```
+
+`plugin.toml`: `provides = ["config", "keymap", "events"]` — the seams you
+register into. (`modes` is *not* listed: you don't declare a mode, you only call
+`enable-mode` on one another plugin declared.) Read the guest top to bottom —
+**immediate** config runs when `init.rs` loads; **deferred** config runs from the
+`PluginLoaded` handler.
 
 ```rust
-// init.rs — plugin.toml: id = "init", provides = ["events","config","keymap","grammar"]
-wit_bindgen::generate!({ world: "init-config-plugin", path: "../../wit" });
+wit_bindgen::generate!({ world: "init", path: "wit" });
 
-use lattice::plugin_host::{config, events, keymap, modes};
+use lattice::plugin_host::keymap::BindingMode;
 use lattice::plugin_host::types::{Event, EventFilter, EventKind};
+use lattice::plugin_host::{config, events, keymap, modes};
 
 struct Component;
 
 impl Guest for Component {
-    // ── IMMEDIATE: option overrides (things lattice.toml could also do, but here
-    //    you might compute them) ───────────────────────────────────────────────
+    // ── IMMEDIATE: override option values (the config front-end; also settable
+    //    in lattice.toml, but here you might compute them) ──────────────────────
     fn register_options() {
         config::set_option("tabstop", "4");
-        config::set_option("ui.nerd-fonts", "on");
         config::set_option("plugin.trace-level", "info");
+        // set-option returns false (a logged no-op) for an unknown option or an
+        // invalid value — it never mis-sets.
     }
 
     // ── IMMEDIATE: keybindings above the builtin grammar ─────────────────────
     fn register_keymap() {
-        // <leader>w → :write ; gd → the LSP definition command.
-        keymap::bind("normal", "<leader>w", "ex:write");
-        keymap::bind("normal", "gd", "lsp-definition");
+        // <C-s> in Normal → :write ; gd → an LSP command (if lsp is loaded).
+        keymap::register_binding(BindingMode::Normal, "<C-s>", "ex:write");
+        keymap::register_binding(BindingMode::Normal, "gd", "lsp-definition");
     }
 
-    // ── IMMEDIATE: a custom ex-command (see "Custom grammar" above) ───────────
-    fn register_grammar() {
-        // … register-ex-command("reload-theme", …) etc.
-    }
-
-    // ── Subscribe the DEFERRED config hooks ──────────────────────────────────
+    // ── Subscribe the DEFERRED + event-flow hooks ────────────────────────────
     fn register_events() {
-        // React to plugins loading (deferred plugin config).
-        events::subscribe(&kind(EventKind::PluginLoaded), 1);
-        // Set options by filetype as buffers open.
-        events::subscribe(&kind(EventKind::DocumentOpened), 2);
-        // React to mode changes (e.g. toggle a UI element in Insert).
-        events::subscribe(&kind(EventKind::ModalModeChanged), 3);
+        events::subscribe(&kind(EventKind::PluginLoaded), 1); // deferred plugin config
+        events::subscribe(&kind(EventKind::DocumentOpened), 2); // options by filetype
     }
 
     fn on_event(handler: u32, ev: Event) {
@@ -553,21 +572,17 @@ impl Guest for Component {
             // DEFERRED: configure each plugin the moment it loads.
             (1, Event::PluginLoaded(p)) => match p.name.as_str() {
                 "auto-pair" => {
-                    modes::enable_mode("auto-pairs-mode");       // turn it on globally
-                    config::set_option("auto-pairs-style", "manual");
+                    modes::enable_mode("auto-pairs-mode");            // turn it on
+                    config::set_option("auto-pairs-style", "manual"); // and configure it
                 }
                 "git-gutter" => modes::enable_mode("git-gutter-mode"),
                 _ => {}
             },
-            // EVENT FLOW: per-filetype options as buffers open.
+            // EVENT FLOW: set options as buffers open (e.g. wrap for markdown).
             (2, Event::DocumentOpened(d)) => {
                 if d.path.as_deref().is_some_and(|p| p.ends_with(".md")) {
                     config::set_option("wrap", "on");
                 }
-            }
-            // EVENT FLOW: react to a modal transition.
-            (3, Event::ModalModeChanged(m)) => {
-                let _ = m; // e.g. config::set_option(...) on entering Insert
             }
             _ => {}
         }
@@ -581,10 +596,12 @@ fn kind(k: EventKind) -> EventFilter {
 export!(Component);
 ```
 
-The pattern to internalize: **immediate config for what exists at load
-(native options, builtin keymaps); deferred `PluginLoaded` handlers for anything
-that belongs to a plugin.** Handlers call APIs (`enable-mode`, `set-option`),
-never `:` command strings.
+The pattern to internalize: **immediate config for what exists at load (option
+values via `set-option`, builtin/LSP keymaps via `register-binding`); deferred
+`PluginLoaded` handlers for anything that belongs to a plugin** (`enable-mode`,
+its options). Handlers call APIs (`enable-mode`, `set-option`), never `:` command
+strings. Add a custom command by also `provide`-ing `grammar` (see
+[Custom grammar](#custom-grammar-commands-motions-text-objects-operators-ex-commands)).
 
 ---
 

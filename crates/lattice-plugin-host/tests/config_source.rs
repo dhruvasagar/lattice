@@ -75,18 +75,20 @@ async fn plugin_declares_options_into_the_shared_registry_end_to_end() {
     assert_eq!(enabled.type_label(), "boolean");
     assert_eq!(enabled.get_formatted(), "true");
 
+    // CI.7: the guest called `set-option("config-fixture.count", "5")` during
+    // registration — the value was overridden through the seam (default was 3).
     let count = registry.lookup("config-fixture.count").expect("registered");
     assert_eq!(count.type_label(), "integer");
-    assert_eq!(count.get_formatted(), "3");
+    assert_eq!(count.get_formatted(), "5", "set-option overrode the default via the seam");
 
     let label = registry.lookup("config-fixture.label").expect("registered");
     assert_eq!(label.type_label(), "string");
     assert_eq!(label.get_formatted(), "hello");
 
-    // The guest read `config-fixture.count` back through `get-option` during
-    // registration and recorded it — the value crossed the registry round-trip.
+    // The guest read `config-fixture.count` back through `get-option` after the
+    // `set-option` — the SET value (5, not the default 3) crossed the round-trip.
     let logged = std::fs::read_to_string(option_log(&data_base)).unwrap_or_default();
-    assert_eq!(logged.trim(), "count=3", "get-option returned the default");
+    assert_eq!(logged.trim(), "count=5", "get-option returned the set-option value");
 
     // A plugin option is a first-class registry entry: `:set` works uniformly and
     // the value round-trips (this is what `:set config-fixture.count=7` drives).

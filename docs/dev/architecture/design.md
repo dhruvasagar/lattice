@@ -980,6 +980,43 @@ The strategy: features that *aren't architecturally core* but *are essential to 
 6. **Ex-command registration** through WIT (already in §5.2.1's plan; called out here as a load-bearing dependency).
 7. **§5.12 typed-options registration** through WIT -- plugins register `lsp-manager.install_root`, `lsp-manager.github_token`, etc. into the same `ConfigRegistry` core options live in.
 
+#### 5.5.7 Editor-side loading, the manager view, and observability
+
+> **Built (Phase 8).** The runtime (§5.5.1–5.5.2) is Phase 7; this subsection is
+> the editor-side surface that makes it reachable. Detail lives in the fragments
+> [`plugin-host.md`](plugin-host.md) (the seam spine + capability model) and
+> [`plugin-observability.md`](plugin-observability.md) (the trace stack); slice
+> sequencing in `../operations/slice-plans/plugin-loader.md` +
+> `plugin-observability.md`.
+
+**Loading.** The `lattice-plugin-loader` crate stands the host up at boot as a
+`PluginLoaderHandle` service and drives `compile → instantiate → activate` off the
+boot thread. On-disk discovery loads plugins from
+`${XDG_DATA_HOME}/lattice/plugins/`; `:plugin-load <path>` / `:plugin-unload
+<name>` / `:plugin-reload <name>` load / reverse / re-instantiate on demand. The
+user's `init.rs` is itself a boot-capability plugin (keymaps / autocmds / custom
+commands as code), auto-reloaded on rebuild. Unload reverses every registry
+contribution by provenance; reload mints a fresh, untripped quarantine.
+
+**The `:plugins` manager view.** A read-only buffer (everything-is-a-buffer)
+listing every loaded plugin's health / tier / capabilities, live-updating on
+`PluginCrashed`, with in-view chords (`r` reload, `x` unload, `K` describe, `gr`
+refresh, `t` open trace, `T` cycle trace verbosity). The mode owns both its chord
+bindings and their handler bodies (the mode-ownership rule) — zero host `Editor::`
+methods.
+
+**Observability (the boundary is the seam).** Because every plugin interaction is
+host-mediated, the host records **every** host↔guest call — name, timing, fuel,
+result-or-trap, capability denials — *independent of the guest's source language*.
+This boundary trace is lattice's plugin debugger. It is **never on the editor hot
+path**: records stream via the event bus (the LSP-log precedent), formatted +
+appended off-thread; the one synchronous seam (grammar) gates on a per-plugin
+relaxed-atomic `HotGate` that costs ≈0 when off (benched). Surfaces: the
+`*plugin-trace*` firehose + per-plugin `*plugin-trace:<name>*` buffers
+(`:plugin-trace` / the manager `t` drill-in), a live typed `plugin.trace-level`
+option (global + per-plugin), and a `wasi:logging`-shaped guest import so a plugin
+emits its own narrative into the same buffer (Layer 2).
+
 ### 5.6 Rendering -- The Layered Architecture
 
 #### 5.6.1 The Renderer trait
@@ -3059,14 +3096,20 @@ lattice/
 ## 13. Roadmap
 
 > **Progress (see `../operations/implementation.md` for the live ledger):**
-> Phases 0–7 shipped. Phase 7 (the plugin **host runtime**) is complete —
+> Phases 0–8 shipped. Phase 7 (the plugin **host runtime**) is complete —
 > `lattice-plugin-host`, the `wit/` API package, the capability/fuel/
 > crash-isolation model, and every extension seam, exercised end-to-end by
 > guest fixtures, with the `fuzzy-finder` validation plugin and CI overhead
-> gates. **Editor-side loading of plugins** (the plugin manager, on-disk
-> discovery, `init.rs`-as-WASM config, modes/reference-plugins as components)
-> is **Phase 8** — the runtime exists; wiring it into the editor is next. The
-> week numbers below are the original plan, retained as the historical spec.
+> gates. **Phase 8 (editor-side plugin loading) landed** (branch
+> `phase-8-plugin-loader`): the `lattice-plugin-loader` crate (on-disk discovery
+> + `:plugin-load`/`unload`/`reload` + `init.rs`-as-WASM config), the buffer-backed
+> `:plugins` **manager view**, and the full **plugin-observability** stack
+> (`lattice-plugin-trace`: the boundary tracer, the gated hot-path grammar seam,
+> the `*plugin-trace*` buffer views, the live `plugin.trace-level` option, and the
+> `wasi:logging` guest import — see [`plugin-observability.md`](plugin-observability.md)).
+> **Remaining Phase-8 work:** the bundled first-party reference plugins and
+> repackaging the built-in modes as WASM components (8b). The week numbers below
+> are the original plan, retained as the historical spec.
 
 ### Phase 0: Foundation (weeks 1-2)
 Workspace, `lattice-core`, document/buffer/undo, file I/O, protocol enums, snapshot tests. **Exit:** programmatic edit roundtrip.
@@ -3085,6 +3128,14 @@ Diagnostics, completion, hover, definition, references; cancellation; version tr
 
 ### Phase 5: GPU Rendering Foundation (weeks 12-14)
 `lattice-render`, `lattice-render-editor` monospace path, `lattice-ui-gpui` compositor with splits and tabs, theme system. **Exit:** GPU code editor with terminal feature parity, smooth scrolling.
+
+> **Superseded (as-built):** the `lattice-render` / `lattice-render-editor` /
+> `lattice-render-document` crates below were dropped. The App→`Editor`
+> composition (Phase 5.B) put the renderer-neutral core in `lattice-host` and
+> ships one `Renderer` marker per frontend (`lattice-ui-tui` built,
+> `lattice-ui-gpui` peer); the shared paint substrate is the **cell-grid**
+> (`lattice-cells` `CellMatrix`, see `cell-grid-renderer.md`), not a taffy+
+> cosmic-text document renderer. See §5.6 (which carries the same correction).
 
 ### Phase 6: Document Renderer + UI Components (weeks 15-18)
 - `lattice-render-document` (taffy + cosmic-text).

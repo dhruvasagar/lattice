@@ -1922,7 +1922,7 @@ impl DiffSubsystem {
             } => Some(lattice_grammar::Effect::ApplyEdit {
                 target: active_buffer,
                 edit,
-                cursor: Some(post_cursor_row),
+                cursor: Some(lattice_protocol::position::Position::new(post_cursor_row, 0)),
             }),
             DiffGetOutcome::TargetRequired { available_targets } => {
                 Some(target_required_echo("diffget", &available_targets))
@@ -1957,7 +1957,7 @@ impl DiffSubsystem {
             } => Some(lattice_grammar::Effect::ApplyEdit {
                 target: target_buffer_id,
                 edit,
-                cursor: Some(post_cursor_row),
+                cursor: Some(lattice_protocol::position::Position::new(post_cursor_row, 0)),
             }),
             DiffPutOutcome::NoPeerBuffer => Some(lattice_grammar::Effect::Echo {
                 level: lattice_grammar::EchoLevel::Error,
@@ -2093,7 +2093,7 @@ impl DiffSubsystem {
             } => Some(lattice_grammar::Effect::ApplyEdit {
                 target: active_buffer,
                 edit,
-                cursor: Some(post_cursor_row),
+                cursor: Some(lattice_protocol::position::Position::new(post_cursor_row, 0)),
             }),
             _ => None,
         }
@@ -4001,7 +4001,7 @@ mod tests {
                 cursor,
             }) => {
                 assert_eq!(target, key, "diff-get edits the active (cursor) buffer");
-                assert_eq!(cursor, Some(3));
+                assert_eq!(cursor, Some(lattice_protocol::position::Position::new(3, 0)));
                 assert_eq!(edit, plan_edit);
             }
             other => panic!("expected ApplyEdit, got {other:?}"),
@@ -5196,7 +5196,7 @@ mod tests {
                 cursor,
             }) => {
                 assert_eq!(target, local, "keep-theirs edits the active/local side");
-                assert_eq!(cursor, Some(0));
+                assert_eq!(cursor, Some(lattice_protocol::position::Position::new(0, 0)));
                 match edit.kind {
                     lattice_protocol::edit::EditKind::Replace { ref text } => {
                         assert_eq!(text, "REMOTE\n");

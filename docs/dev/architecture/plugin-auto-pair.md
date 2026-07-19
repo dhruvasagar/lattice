@@ -91,7 +91,7 @@ right: ) → (   ] → [   } → {   > → <   ' → '   " → "   ` → `
 The table is the plugin's data; the host never interprets it. v1 ships the static
 default; per-language tables + a user-facing add/remove API are v2.
 
-## 5. Seam usage + the three host prerequisites (LOAD-BEARING)
+## 5. Seam usage + the host prerequisites (LOAD-BEARING)
 
 The plugin uses four **wired** seams — grammar `register-action`, keymap
 `register-binding`, config `register-option`, events `subscribe` (OptionChanged).
@@ -165,6 +165,22 @@ seam early, not as a late refinement. It gets its **own design fragment**
 is its first consumer (the enclosing-scope query bounds the scan). Complex, but
 core — see that fragment for the query/node/cursor API, the capability model, and
 the tree-mutation-under-read hazard.
+
+### 5.4 Column-precise edit effect  (prerequisite AP.2) — **done**
+
+An open action must place the caret *between* the inserted `()`, and a
+close-insert after the `)` — column-precise positions the edit vocabulary didn't
+express. Two general additions (not auto-pair-specific — every editing plugin
+benefits): `action-context` gains **`buffer-id`** (the `target` an action names
+in an `apply-edit`; mirrors `motion-context`), and **`apply-edit-payload.cursor`**
+became `option<position>` (was `option<u32>`, a *row*) so `Effect::ApplyEdit` can
+park the caret at any line+byte. `ApplyEdit` stays the single general precise-edit
+primitive for native and WASM (the `feedback_effect_vocabulary_is_host_boundary`
+principle) — no auto-pair-shaped effects added. Native row-start callers
+(diff / ai) pass `Position::new(row, 0)`, behaviour-preserving. Close-**skip** (step
+over an existing `)`) is a pure caret move with no text change, so it uses
+`selection-change` (collapsed at cursor+1), not a no-op edit — no spurious
+`DocumentChanged`.
 
 ## 6. Fall-through (the manual no-op)
 

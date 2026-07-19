@@ -318,7 +318,7 @@ pub enum Action {
     ApplyEdit {
         target: lattice_core::BufferId,
         edit: lattice_protocol::edit::Edit,
-        cursor: Option<u32>,
+        cursor: Option<lattice_protocol::position::Position>,
     },
     // M.10.7 (2026-06-03): four dead Action variants deleted —
     // `MultibufferExpand`, `SearchTrigger`, `SearchJumpToSource`,

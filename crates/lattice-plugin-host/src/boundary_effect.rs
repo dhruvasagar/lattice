@@ -514,7 +514,7 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
         } => WitEffect::ApplyEdit(WitApplyEditPayload {
             target: target.0,
             edit: edit.to_wit()?,
-            cursor: *cursor,
+            cursor: cursor.as_ref().map(|p| p.to_wit()).transpose()?,
         }),
         NativeEffect::SelectionChange(set) => WitEffect::SelectionChange(set.to_wit()?),
         NativeEffect::Yank {
@@ -769,7 +769,7 @@ fn effect_from_wit(w: WitEffect) -> Result<NativeEffect, String> {
         WitEffect::ApplyEdit(p) => NativeEffect::ApplyEdit {
             target: BufferId(p.target),
             edit: NativeEdit::from_wit(p.edit)?,
-            cursor: p.cursor,
+            cursor: p.cursor.map(NativePosition::from_wit).transpose()?,
         },
         WitEffect::SelectionChange(set) => {
             NativeEffect::SelectionChange(NativeSelectionSet::from_wit(set)?)
@@ -1197,7 +1197,7 @@ mod tests {
             NativeEffect::ApplyEdit {
                 target: BufferId(2),
                 edit: sample_edit(),
-                cursor: Some(3),
+                cursor: Some(NativePosition::new(3, 0)),
             },
             NativeEffect::ApplyEdit {
                 target: BufferId(0),

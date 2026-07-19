@@ -18,9 +18,15 @@
 use std::sync::{Arc, Mutex};
 
 use lattice_config::ConfigRegistry;
+use lattice_core::Document;
+use lattice_core::buffers::BufferId;
+use lattice_grammar::command::CommandInvocation;
+use lattice_grammar::dispatcher::execute;
 use lattice_grammar::registry::CommandRegistry;
-use lattice_grammar::CommandRegistryHandle;
+use lattice_grammar::{CancellationToken, CommandRegistryHandle, Effect};
 use lattice_keymap::{BindingMode, KeymapHandle, LookupResult};
+use lattice_protocol::edit::EditKind;
+use lattice_protocol::position::Position;
 use lattice_mode::{ModeId, ModeRegistry, ModeRegistryHandle, PluginMetaSink};
 use lattice_plugin_host::{PluginHost, TrustTier};
 use lattice_plugin_loader::{LoaderServices, PluginLoader};
@@ -114,7 +120,7 @@ async fn bundled_auto_pair_registers_grammar_modes_and_config_through_the_loader
 
     // 1. GRAMMAR — the pairing actions registered (sync drain).
     let commands = command_registry.load();
-    for action in ["auto-pair-open-round", "auto-pair-close-round", "auto-pair-backspace"] {
+    for action in ["auto-pair-open-round", "auto-pair-close-round"] {
         assert!(
             commands.id_by_name(action).is_some(),
             "the grammar action `{action}` registered from the plugin"
@@ -156,7 +162,86 @@ async fn bundled_auto_pair_registers_grammar_modes_and_config_through_the_loader
     }
 
     // Provenance recorded for `:list-plugins`.
-    let recorded = sink.registered.lock().unwrap();
-    assert_eq!(recorded.len(), 1, "one plugin's provenance recorded");
-    assert_eq!(recorded[0].1, "auto-pair", "under its manifest id");
+    {
+        let recorded = sink.registered.lock().unwrap();
+        assert_eq!(recorded.len(), 1, "one plugin's provenance recorded");
+        assert_eq!(recorded[0].1, "auto-pair", "under its manifest id");
+    }
+
+    // ── AP.2 behavior — the `auto` style, dispatched through the loaded plugin ──
+    // The trampoline holds the grammar guest alive (the loader keeps it loaded),
+    // so dispatching the registered actions fires the real guest sync.
+    let open = commands.id_by_name("auto-pair-open-round").unwrap();
+    let close = commands.id_by_name("auto-pair-close-round").unwrap();
+
+    // open `(` on an empty buffer → insert `()` with the caret BETWEEN.
+    let mut doc = Document::from_text("");
+    let effect = execute(
+        &commands,
+        &mut doc,
+        BufferId(1),
+        Position::new(0, 0),
+        CommandInvocation::of(open),
+        &CancellationToken::never(),
+    )
+    .expect("open dispatches");
+    match effect {
+        Effect::ApplyEdit { target, edit, cursor } => {
+            assert_eq!(target, BufferId(1), "targets the active buffer");
+            assert!(
+                matches!(&edit.kind, EditKind::Replace { text } if text == "()"),
+                "inserts the pair, got {:?}",
+                edit.kind
+            );
+            assert_eq!(cursor, Some(Position::new(0, 1)), "caret parked between the pair");
+        }
+        other => panic!("open: expected ApplyEdit, got {other:?}"),
+    }
+
+    // close `)` with a `)` right after the caret → STEP OVER (pure caret move,
+    // no text change). Buffer `()`, caret between at (0,1).
+    let mut doc = Document::from_text("()");
+    let effect = execute(
+        &commands,
+        &mut doc,
+        BufferId(1),
+        Position::new(0, 1),
+        CommandInvocation::of(close),
+        &CancellationToken::never(),
+    )
+    .expect("close (skip) dispatches");
+    match effect {
+        Effect::SelectionChange(set) => {
+            assert_eq!(
+                set.primary().head,
+                Position::new(0, 2),
+                "caret stepped past the existing )"
+            );
+        }
+        other => panic!("close-skip: expected SelectionChange, got {other:?}"),
+    }
+
+    // close `)` with a non-`)` after the caret → INSERT `)`. Buffer `ab`, caret
+    // at (0,1) (before `b`).
+    let mut doc = Document::from_text("ab");
+    let effect = execute(
+        &commands,
+        &mut doc,
+        BufferId(1),
+        Position::new(0, 1),
+        CommandInvocation::of(close),
+        &CancellationToken::never(),
+    )
+    .expect("close (insert) dispatches");
+    match effect {
+        Effect::ApplyEdit { edit, cursor, .. } => {
+            assert!(
+                matches!(&edit.kind, EditKind::Replace { text } if text == ")"),
+                "inserts a close paren, got {:?}",
+                edit.kind
+            );
+            assert_eq!(cursor, Some(Position::new(0, 2)), "caret after the inserted )");
+        }
+        other => panic!("close-insert: expected ApplyEdit, got {other:?}"),
+    }
 }

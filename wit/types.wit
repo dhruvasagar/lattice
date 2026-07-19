@@ -366,7 +366,10 @@ interface types {
         /// The target `BufferId` (its inner `u32`).
         target: u32,
         edit: edit,
-        cursor: option<u32>,
+        /// Where to park the caret after the edit — a column-precise `position`
+        /// (line + byte), so a plugin action can place it *between* an inserted
+        /// pair, not only at a row start (AP.2). `none` leaves the caret put.
+        cursor: option<position>,
     }
     record yank-payload {
         register: register,
@@ -1007,6 +1010,9 @@ interface types {
         /// the `borrow<document>` handle `apply-action` receives to read the
         /// buffer around the cursor.
         cursor: position,
+        /// The active buffer's id (AP.2) — the `target` a plugin action names in
+        /// an `apply-edit` effect. Mirrors `motion-context.buffer-id`.
+        buffer-id: u32,
     }
 
     /// Mirrors `lattice_grammar::registry::MotionSpec` (metadata; `apply` is a

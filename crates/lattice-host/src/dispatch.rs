@@ -15215,12 +15215,15 @@ impl Editor {
         &mut self,
         target: lattice_core::BufferId,
         edit: lattice_protocol::edit::Edit,
-        cursor: Option<u32>,
+        cursor: Option<lattice_protocol::position::Position>,
     ) {
         match self.apply_targeted_edit(target, edit) {
             Ok(_) => {
-                if let Some(row) = cursor {
-                    self.cursor = lattice_protocol::position::Position::new(row, 0);
+                // Column-precise post-edit caret (AP.2): a plugin action places
+                // the caret exactly (e.g. between an inserted `()`); native
+                // row-start callers pass `Position::new(row, 0)`.
+                if let Some(pos) = cursor {
+                    self.cursor = pos;
                 }
             }
             Err(err) => {
@@ -34645,7 +34648,7 @@ mod tests {
         let outcome = editor.handle_effect(lattice_grammar::Effect::ApplyEdit {
             target,
             edit,
-            cursor: Some(1),
+            cursor: Some(lattice_protocol::position::Position::new(1, 0)),
         });
         assert!(
             matches!(outcome.next_actions.as_slice(), [Action::ApplyEdit { .. }]),

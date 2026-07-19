@@ -398,6 +398,9 @@ pub struct ActionContext {
     /// ignore it; a plugin action pairs it with `buffer` (below) to
     /// read the text around the cursor.
     pub cursor: Position,
+    /// The active buffer's id (AP.2) — the `target` a plugin action
+    /// names in an `Effect::ApplyEdit`. Mirrors `MotionContext::buffer_id`.
+    pub buffer_id: BufferId,
     /// A point-in-time view of the buffer the action fired in
     /// (AP.0.1). An owned `Buffer` — a `ropey::Rope` clone is O(1)
     /// (Arc-shared nodes), so carrying it costs nothing on the

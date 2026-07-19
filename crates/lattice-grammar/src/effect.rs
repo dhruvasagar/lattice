@@ -160,7 +160,11 @@ pub enum Effect {
     /// routing through the active-document pipeline (LSP `didChange` +
     /// syntax reparse + highlight shift) when `target` is the focused
     /// buffer, or the peer-buffer registry handle otherwise; when
-    /// `cursor` is `Some`, it then parks the active cursor at that row.
+    /// `cursor` is `Some`, it then parks the active cursor at that
+    /// **position** (line + byte) — column-precise, so a plugin action
+    /// (auto-pair) can place the caret *between* an inserted pair, not
+    /// only at a row start (AP.2). Native row-start callers pass
+    /// `Position::new(row, 0)`.
     ///
     /// Distinct from [`Effect::Edits`], which carries `AppliedEdit`s the
     /// grammar dispatcher already applied to the active document (routed
@@ -174,7 +178,7 @@ pub enum Effect {
     ApplyEdit {
         target: lattice_core::BufferId,
         edit: lattice_protocol::edit::Edit,
-        cursor: Option<u32>,
+        cursor: Option<lattice_protocol::position::Position>,
     },
     SelectionChange(SelectionSet),
     Yank {

@@ -862,7 +862,7 @@ fn newline_handler() -> ActionHandler {
         Some(Effect::ApplyEdit {
             target,
             edit,
-            cursor: Some(ctx.cursor.line + 1),
+            cursor: Some(lattice_protocol::position::Position::new(ctx.cursor.line + 1, 0)),
         })
     })
 }

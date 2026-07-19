@@ -77,11 +77,26 @@ through the real loader; all three seams' contributions register (actions with
 options in the config registry). Scaffold ships the round-bracket pair + backspace
 with **no-op action bodies**; AP.2 fills the `auto` behavior.
 
-### AP.2 — `auto` style  📝
-Open-insert + close-skip + backspace-deletes-the-empty-pair (reads via AP.0.1).
-**Exit:** `(` → `()` caret-between; `)` before `)` steps over; backspace in `()`
-deletes both — asserted through the loaded plugin. **Milestone: a shippable,
-default-on auto-pair without the tree-sitter seam.**
+### AP.2 — `auto` style (open + close-skip)  ✅
+The `auto` behavior for the round-bracket pair, reading the buffer via AP.0.1.
+Required a small **edit-model extension** (general host API, not auto-pair-
+specific): `action-context` gains `buffer-id` (the `target` an action names in an
+`apply-edit`), and `apply-edit-payload.cursor` changed from `option<u32>` (a row)
+to `option<position>` (column-precise) so an action can park the caret *between*
+an inserted pair — the native `Effect::ApplyEdit.cursor` became `Option<Position>`
+(the ~7 native diff/ai callers pass `Position::new(row, 0)`, behaviour-preserving).
+**Landed:** `(` → `()` caret-between (a precise-cursor `apply-edit`); `)` before a
+`)` steps over via `selection-change` (pure caret move, no spurious edit), else
+inserts `)`. Asserted end-to-end through the loaded plugin (`tests/auto_pair.rs`
+dispatches the real guest and checks the effects). Graceful: an out-of-range read
+falls through to insert.
+
+**Backspace deferred to Wave 2** (was in AP.2's original exit): deleting the empty
+pair on `<BS>` needs the action to DECLINE to the builtin backspace when the caret
+isn't inside a pair (AP.0.2 fall-through). Binding `<BS>` without that forces the
+plugin to reimplement normal backspace (grapheme deletion, line-joins) —
+reinventing the builtin (heuristic #1 forbids). It lands with AP.0.2. **Milestone:
+a shippable, default-on auto-pair (open + close) without the tree-sitter seam.**
 
 ## Wave 2
 
@@ -89,8 +104,12 @@ default-on auto-pair without the tree-sitter seam.**
 General host prereq (design fragment §5.2). A "declined" action outcome that
 resumes keymap resolution at the next lower layer — so the manual close key falls
 through when nothing is unmatched (requirement #4: completion nav / newline / a
-user remap still run). **Exit:** a plugin action declines → a lower-layer / builtin
-binding for the same chord runs; accepts → it doesn't.
+user remap still run). **Also unblocks auto-`<BS>`** (deferred from AP.2): the
+backspace action declines to the builtin when the caret isn't inside an empty
+pair, instead of reimplementing normal backspace. **Exit:** a plugin action
+declines → a lower-layer / builtin binding for the same chord runs; accepts → it
+doesn't. Then bind `<BS>` → `auto-pair-backspace` (delete the empty pair, else
+decline).
 
 ### AP.0.3 — tree-sitter query seam  📝
 The enclosing-scope query that bounds the manual scan (design fragment §5.3, §7).

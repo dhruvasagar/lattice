@@ -163,6 +163,7 @@ pub fn project_action_context(ctx: &NativeActionContext) -> Result<WitActionCont
         register: ctx.register.to_wit()?,
         count: ctx.count.get(),
         cursor: ctx.cursor.to_wit()?,
+        buffer_id: ctx.buffer_id.0,
     })
 }
 
@@ -308,14 +309,16 @@ mod tests {
             register: Register::System,
             count: Count(3),
             cursor: pos(4, 2),
+            buffer_id: BufferId(7),
             buffer: Buffer::from_text("hello\nworld\n"),
             cancel: CancellationToken::never(),
         };
         let wit = project_action_context(&ctx).unwrap();
         assert_eq!(wit.count, 3);
         assert!(matches!(wit.register, WitRegister::System));
-        // The cursor scalar crosses in the record; bulk text does not.
+        // The cursor scalar + buffer id cross in the record; bulk text does not.
         assert_eq!(wit.cursor.line, 4);
         assert_eq!(wit.cursor.byte, 2);
+        assert_eq!(wit.buffer_id, 7);
     }
 }

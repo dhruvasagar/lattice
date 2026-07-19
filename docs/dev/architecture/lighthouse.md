@@ -1,8 +1,9 @@
 # Lighthouse — the LSP server manager (bundled plugin)
 
 > **Design fragment.** Contracts, data model, rationale, rejected alternatives,
-> paramount-goal alignment. Slice sequencing lives in a future slice plan
-> (`../operations/slice-plans/lighthouse.md`, TBD). Sibling fragments:
+> paramount-goal alignment. Slice sequencing lives in
+> [`../operations/slice-plans/lighthouse.md`](../operations/slice-plans/lighthouse.md)
+> (LH.0 host seams → LH.1 plugin → LH.2 bundling). Sibling fragments:
 > [`plugin-host.md`](plugin-host.md) (the seam spine + capability model),
 > [`lsp-architecture.md`](lsp-architecture.md) (the supervisor/actor/client the
 > installed servers plug into).

@@ -32,3 +32,10 @@ that's the signal to re-read the audit before "just patching it."
   registries; WASM off the keystroke path with grammar the one bounded sync
   exception; guest emits data, host owns draw/dispatch) + 8 findings across the
   pending seams.
+- [`plugin-observability-review.md`](plugin-observability-review.md) — adversarial
+  code review of the plugin observability stack (PO.1–5) + the `:plugins` manager
+  (PL8.H); the invariants (tracing off the hot path; sandbox-tight capability
+  model; observability never crashes the editor; modes own their surface) + the
+  confirmed findings (a CRITICAL `manifest.id` sandbox escape, a trace-ring leak, a
+  seed-on-the-actor-thread violation, …), what was fixed, and the deferred
+  follow-ons. Includes the parallel design.md drift-audit summary.

@@ -982,6 +982,20 @@ The strategy: features that *aren't architecturally core* but *are essential to 
 6. **Ex-command registration** through WIT (already in §5.2.1's plan; called out here as a load-bearing dependency).
 7. **§5.12 typed-options registration** through WIT -- plugins register `lsp-manager.install_root`, `lsp-manager.github_token`, etc. into the same `ConfigRegistry` core options live in.
 
+> **8b design (in progress, 2026-07):** the first-wave bundled plugins now have
+> design fragments. **[`plugin-auto-pair.md`](plugin-auto-pair.md)** — the
+> trivial-first plugin (`auto` + `manual` pairing) — forces two more general host
+> seams beyond the above (a **grammar-context `document` handle** so a grammar
+> action can read buffer text, and **declining / fall-through bindings**), plus
+> the **[`plugin-treesitter-seam.md`](plugin-treesitter-seam.md)** query seam
+> (**promoted to v1** — foundational to the tree-sitter-driven grammar of
+> paramount #3; it publishes the host's parse tree to plugins so structural
+> motions / text objects / folds can be plugins). **[`lighthouse.md`](lighthouse.md)**
+> (the LSP server manager) is where prerequisites 1–5 above land as an implemented
+> host-services extension. Slice plans:
+> [`../operations/slice-plans/`](../operations/slice-plans/)
+> (`plugin-auto-pair` / `plugin-treesitter-seam` / `lighthouse`).
+
 #### 5.5.7 Editor-side loading, the manager view, and observability
 
 > **Built (Phase 8).** The runtime (§5.5.1–5.5.2) is Phase 7; this subsection is
@@ -2930,6 +2944,17 @@ variance.
 - Spawn native OS threads (use async tasks via host primitives instead; see §5.5.1).
 
 ### 9.4 WIT interface (sketch)
+
+> **Illustrative sketch, not the canonical package.** The built WIT is
+> `wit/*.wit` (`lattice:plugin-host@0.1.0`) — the exercised seams
+> (picker-source / completion-source / grammar / events / decorations / config /
+> modes / keymap / host-services / logging), see
+> [`plugin-host.md`](plugin-host.md) + [`plugin-observability.md`](plugin-observability.md).
+> **Designed-but-not-yet-built seams:** the **tree-sitter query seam**
+> ([`plugin-treesitter-seam.md`](plugin-treesitter-seam.md), v1), and the
+> lighthouse host-services extensions (`http-fetch` / `spawn-process` + task
+> surface / `register-server`, [`lighthouse.md`](lighthouse.md)). The block below
+> is kept for the shape of the contract.
 
 ```wit
 package lattice:plugin@0.1.0;

@@ -54,6 +54,10 @@ changing it.
 | [lsp-architecture.md](dev/architecture/lsp-architecture.md)      | LSP supervisor / actor / client, attach lifecycle, capability gating.                          |
 | [insert-completion.md](dev/architecture/insert-completion.md)    | Insert-mode completion: sources, ranking, popup, ghost text.                                   |
 | [plugin-host.md](dev/architecture/plugin-host.md)                | Plugin host design fragment: the exercised-trait → WIT-mirror spine, capability/security model, per-seam rationale. |
+| [plugin-observability.md](dev/architecture/plugin-observability.md) | Plugin boundary-trace observability (PO.1–5): the tracer, the gated hot-path grammar seam, the `*plugin-trace*` views, `plugin.trace-level`, `wasi:logging`. |
+| [plugin-treesitter-seam.md](dev/architecture/plugin-treesitter-seam.md) | **v1 foundational** plugin↔tree-sitter query seam: point-in-time snapshot, node/cursor resources, host-side queries. Unlocks structural plugins (motions/text-objects/folds). |
+| [plugin-auto-pair.md](dev/architecture/plugin-auto-pair.md)      | The first bundled 8b plugin: `auto` + `manual` pairing (the `vim-pairify` backward-stack close), its host prerequisites. |
+| [lighthouse.md](dev/architecture/lighthouse.md)                  | The LSP server manager bundled plugin + the four host-services seams it forces (net/proc/task/register-server). |
 | [diagrams.md](dev/architecture/diagrams.md)                      | ASCII architecture diagrams (3-layer, threading, buffers/panes, mode resolver, LSP, completion).|
 
 ## dev/guides/
@@ -76,7 +80,7 @@ right now."**
 | [benchmarks.md](dev/operations/benchmarks.md)                             | Latest measured perf numbers + how to reproduce them.           |
 | [verify.md](dev/operations/verify.md)                                     | Manual verification checklist for end-to-end smoke testing.     |
 | [embedded-docs-budget.md](dev/operations/embedded-docs-budget.md)         | Size-budget rationale + escape options when embedded user docs grow past the trigger. |
-| [slice-plans/](dev/operations/slice-plans/)                               | Sliced rollout plans, one file per subsystem (diff, multibuffer, virtual rows, terminal, completion-pipeline). Sequencing-only; design lives in `dev/architecture/`. |
+| [slice-plans/](dev/operations/slice-plans/)                               | Sliced rollout plans, one file per subsystem (diff, multibuffer, virtual rows, terminal, completion-pipeline, plugin-loader, plugin-observability, plugin-auto-pair, plugin-treesitter-seam, lighthouse). Sequencing-only; design lives in `dev/architecture/`. |
 
 ## dev/audit/
 

@@ -222,23 +222,11 @@ interface tree-sitter {
 
 ## 11. Slices
 
-- **TS.1 — the snapshot + node core** 📝: `wit/tree-sitter.wit` (the interface);
-  the host `tree-snapshot` / `node` resources backed by `Arc<SyntaxSnapshot>` +
-  `tree_sitter::Node`; `root` / `node-at` / `enclosing` / projection / navigation;
-  the `tree-sitter` capability gate; wire the handle into the grammar action
-  context (with the AP.0.1 `document` handle). **Exit:** a fixture guest resolves
-  the enclosing node of the cursor + walks its named children; a plugin without
-  the grant gets no handle. Bench: `enclosing(pos, kinds)` on the sync path is a
-  bounded parse-free walk (pin it ≪ the grammar Reflex budget).
-- **TS.2 — queries + cursor** 📝: `compile-query` / `run-query` (host-side
-  predicate eval) + the `tree-cursor` resource. **Exit:** a fixture runs a query
-  with an `#eq?` predicate over a range and gets only surviving captures; a
-  cursor walks the tree. No hot-path bench (queries off-thread).
-- **TS.3 — first structural consumer** 📝: prove the seam end to end through a
-  real plugin — either auto-pair's `manual` scope query (its AP.3), or a small
-  structural-motion fixture. **Exit:** a plugin's structural behavior is driven
-  entirely through the seam, coherent under an edit (eventual-consistency, no
-  torn read).
+Sequencing, exit criteria, and status live in the slice plan
+([`../operations/slice-plans/plugin-treesitter-seam.md`](../operations/slice-plans/plugin-treesitter-seam.md)):
+**TS.1** the snapshot + node core (enough for auto-pair's `enclosing`) → **TS.2**
+queries + the cursor walk (the structural-plugin class) → **TS.3** a first
+structural consumer end to end.
 
 **Deferred:** query cursors with incremental match streaming, anonymous-node
 access, tree editing from WASM (the host owns parsing — likely never), and a

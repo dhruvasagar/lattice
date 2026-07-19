@@ -223,42 +223,17 @@ materialization.
 
 ## 12. Slices
 
-- **AP.0 — host prerequisites** 📝 (general capabilities; `lattice-plugin-host`):
-  - **AP.0.1 — grammar-context `document` handle + cursor** (§5.1): extend the
-    grammar callback contexts (action first; motion/text-object as they need it)
-    with a `document` resource + the cursor, mirroring the picker seam. Test: a
-    grammar-guest action reads a text slice + the cursor round-trips. No bench
-    (read machinery exists; still off the async path — but note grammar is sync, so
-    a `document.slice` on the keystroke path must be bounded, which the scan is).
-  - **AP.0.2 — declining / fall-through bindings** (§5.2): a "declined" action
-    outcome that resumes keymap resolution at the next layer. Test: a plugin action
-    declines → the built-in / a lower-layer binding for the same chord runs;
-    accepts → it doesn't.
-  - **AP.0.3 — tree-sitter query seam** (§5.3, its own fragment
-    [`plugin-treesitter-seam.md`](plugin-treesitter-seam.md)): the foundational
-    plugin↔tree-sitter surface — query, node-at-position, walk, enclosing-scope.
-    Auto-pair's first use is the enclosing-scope query that bounds the scan (§7);
-    the seam is general (structural motions / text-objects / folds consume it too).
-    The largest AP.0 slice; sequenced as its own design + build.
-- **AP.1 — crate scaffold + registration** 📝: `plugins/auto-pair/` guest +
-  `manifest.toml` (id `auto-pair`, `provides = ["grammar","keymap","config"]`, **no
-  capabilities**); register the pairing actions, the `auto-pairs-style` /
-  `auto-pairs-close-key` options, and the OptionChanged subscription; register the
-  style-appropriate insert-mode bindings. **Exit:** loads via the loader; the
-  contributions register with `SourceLayer::Plugin` provenance.
-- **AP.2 — `auto` style** 📝: open-insert + close-skip + backspace-delete-empty-
-  pair (reads via AP.0.1). **Exit:** `(` → `()` caret-between; `)` before `)` steps
-  over; backspace in `()` deletes both — asserted through the loaded plugin.
-- **AP.3 — `manual` style** 📝: the `find_pair` port (§3) + the close key + the
-  fall-through (AP.0.2), scanning **only the enclosing lexical scope** (AP.0.3 /
-  §7), with the cursor-backward `document.slice` fallback where there's no parse
-  tree. **Exit:** with `auto-pairs-style=manual`, the close key closes the nearest
-  unmatched open within the scope (inside-out on repeat, symmetric pairs + `<`/`>`
-  handled), falls through when nothing is unmatched, and stays bounded on a large
-  buffer.
-- **AP.4 — bundling** 📝: ship `auto-pair.wasm` compiled-in / in `core-plugins/`,
-  pre-granted at boot (needs no grant). **Exit:** a fresh editor auto-pairs out of
-  the box; `:plugins` lists it; `:set auto-pairs-style=manual` flips it live.
+Sequencing, exit criteria, and status live in the slice plan
+([`../operations/slice-plans/plugin-auto-pair.md`](../operations/slice-plans/plugin-auto-pair.md)),
+built in two waves:
+
+- **Wave 1 (pipeline proof + `auto` style, shippable):** AP.0.1 grammar-context
+  `document` handle (§5.1) → AP.1 crate scaffold + registration → AP.2 `auto` style
+  (open-insert + close-skip + backspace-delete-empty-pair).
+- **Wave 2 (foundation + `manual` style):** AP.0.2 declining/fall-through bindings
+  (§5.2) + AP.0.3 the tree-sitter query seam (§5.3, its own fragment +
+  [slice plan](../operations/slice-plans/plugin-treesitter-seam.md)) → AP.3
+  `manual` style (`find_pair`, scope-bounded) → AP.4 bundling.
 
 **Deferred to v2:** wrap-selection (opener with a Visual selection surrounds it),
 word-boundary / string-comment suppression (auto), and per-language pair tables +

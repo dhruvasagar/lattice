@@ -102,14 +102,17 @@ sandbox grant — see [the safety model](#the-safety-model) and
 a major mode entered. This is the `:autocmd` / `add-hook` equivalent, unified
 into one typed event bus.
 
-> **Handlers act via APIs, not command strings.** A handler *sees* the transition
-> and reacts by calling the **imported host APIs** — `enable-mode`, `set-option`,
-> `register-binding`, an `fs` `walk`, emitting its own plugin event — never by
-> running a `:` command string or returning an effect. (This is the standing
+> **Handlers act via APIs, not command strings** — but only the APIs their
+> **world imports**. A standalone `events-plugin` imports `events` + `host-services`
+> + `logging`, so its handler can `walk` the fs, emit its own plugin event, or log
+> — nothing more. To call `enable-mode` / `set-option` / `register-binding` from a
+> handler, your world must *also* import `modes` / `config` / `keymap` — a
+> **combined world** (see the [complete annotated example](#a-complete-annotated-initrs)).
+> A handler never runs a `:` command string or returns an effect (the standing
 > `event-handlers-call-apis-not-commands` rule: `:` commands are user-facing
-> front-ends; a handler calls the underlying API directly.) Direct **buffer
-> mutation** and **before-class veto** (a handler that rewrites content or aborts
-> a save) are still deferred.
+> front-ends; a handler calls the underlying API). Direct **buffer mutation** and
+> **before-class veto** (a handler that rewrites content or aborts a save) are
+> still deferred.
 
 You implement the `events-plugin` world: subscribe your handlers in
 `register_events`, then dispatch them in `on_event`.

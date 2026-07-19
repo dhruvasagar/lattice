@@ -193,6 +193,14 @@ pub enum Event {
     /// (`:plugin-unload` / crash-teardown). Delivered to guests so a handler can
     /// tear down its own dependent setup. Fields mirror [`Self::PluginLoaded`].
     PluginUnloaded { name: String, id: u32 },
+    /// A request to enable/disable a minor mode globally (CI.4) — the
+    /// guest-to-Editor bridge for `enable-mode` / `disable-mode`. A plugin
+    /// (init.rs) calls the modes-seam `enable-mode` from an `on-plugin-loaded`
+    /// handler; the host publishes THIS, and the Editor (which owns the mode
+    /// registry + the open-buffer set + the activator) flips the enablement and
+    /// re-activates open buffers. Host-internal — NOT delivered back to guests
+    /// (like [`Self::PluginCrashed`]). `mode` is the mode id.
+    ModeEnablementRequested { mode: String, enabled: bool },
 }
 
 // M.5.3.b: `LspLogPushed`, `LspBufferAttached`, and
@@ -226,6 +234,7 @@ impl Event {
             Event::PluginCrashed { .. } => EventKind::PluginCrashed,
             Event::PluginLoaded { .. } => EventKind::PluginLoaded,
             Event::PluginUnloaded { .. } => EventKind::PluginUnloaded,
+            Event::ModeEnablementRequested { .. } => EventKind::ModeEnablementRequested,
         }
     }
 }
@@ -262,6 +271,9 @@ pub enum EventKind {
     PluginLoaded,
     /// Discriminator for [`Event::PluginUnloaded`] (CI.1).
     PluginUnloaded,
+    /// Discriminator for [`Event::ModeEnablementRequested`] (CI.4) — the
+    /// host-internal enable/disable-minor-mode bridge the Editor handles.
+    ModeEnablementRequested,
 }
 
 /// An edit as actually applied to the buffer (the original `Edit` plus the

@@ -1184,6 +1184,39 @@ impl crate::mode_host::bindings::lattice::plugin_host::modes::Host for PluginSta
             keymap,
         });
     }
+
+    /// `enable-mode` (CI.4): request the Editor enable a minor mode globally. The
+    /// guest can't reach the activator, so this publishes
+    /// `Event::ModeEnablementRequested` onto the bus; the Editor flips the
+    /// registry + re-activates open buffers. Degrades to a `warn` when no bus is
+    /// wired (the "not boot-wired yet" case, like `emit-event`), never a trap.
+    fn enable_mode(&mut self, id: String) {
+        self.request_mode_enablement(id, true);
+    }
+
+    /// `disable-mode` (CI.4): the inverse of [`enable_mode`](Self::enable_mode).
+    fn disable_mode(&mut self, id: String) {
+        self.request_mode_enablement(id, false);
+    }
+}
+
+impl PluginState {
+    /// Shared body of `enable-mode` / `disable-mode` (CI.4): publish the
+    /// host-internal enablement request onto the plugin's bus (the same
+    /// `event_emit` handle `emit-event` uses).
+    fn request_mode_enablement(&mut self, mode: String, enabled: bool) {
+        match &self.event_emit {
+            Some(ctx) => ctx.bus.publish(lattice_protocol::Event::ModeEnablementRequested {
+                mode,
+                enabled,
+            }),
+            None => tracing::warn!(
+                %mode,
+                enabled,
+                "enable-mode/disable-mode dropped: no bus wired (plugin not spawned onto a bus)"
+            ),
+        }
+    }
 }
 
 /// A host-issued plugin identity. Monotonic, allocated by the [`PluginHost`] at

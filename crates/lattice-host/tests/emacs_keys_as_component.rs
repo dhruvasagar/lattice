@@ -287,3 +287,77 @@ async fn emacs_keys_component_without_a_wired_mode_registry_is_skipped_not_fatal
         "nothing registered into the editor's mode registry"
     );
 }
+
+/// CI.4: a plugin's `enable-mode` (here, the host-internal
+/// `Event::ModeEnablementRequested` it publishes) activates the mode on an
+/// ALREADY-OPEN buffer — the re-activation bridge that makes "enable auto-pair in
+/// init.rs" affect the launch buffer even though the plugin loaded async after
+/// render (config-and-init.md §6).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn enable_mode_event_activates_a_plugin_mode_on_open_buffers() {
+    let Some(wasm) = emacs_keys_guest_wasm() else {
+        eprintln!("skipping: emacs-keys-guest wasm not built (no wasm32-wasip2 target)");
+        return;
+    };
+    let base = tempfile::tempdir().unwrap();
+    let plugins_dir = base.path().join("plugins");
+    write_plugin_dir(&plugins_dir, "emacs-keys-fixture", "modes", &wasm);
+    let mut editor = Editor::boot(CoreDocument::from_text("hello world\n"));
+    let loaded = loader_over_editor(&editor, base.path())
+        .discover_and_load(&plugins_dir, TrustTier::Bundled)
+        .await;
+    assert_eq!(loaded, 1, "the plugin mode loads (available-but-off)");
+
+    let mode = ModeId::new("emacs-keys-plugin-mode");
+    let buf = editor.document_buffer_id;
+
+    // Bring the buffer's major live. The plugin mode is available-but-OFF (CI.3),
+    // so it does NOT auto-activate.
+    activate_modes(&mut editor);
+    assert!(
+        !editor
+            .active_modes
+            .get(&buf)
+            .map(|m| m.is_active(mode))
+            .unwrap_or(false),
+        "the plugin mode is inert until enabled"
+    );
+
+    // Publish the enablement request (as a plugin's `enable-mode` does) + drain.
+    editor
+        .event_bus
+        .publish(lattice_protocol::Event::ModeEnablementRequested {
+            mode: "emacs-keys-plugin-mode".into(),
+            enabled: true,
+        });
+    let _ = editor.drain_mode_enablement();
+    assert!(
+        editor
+            .active_modes
+            .get(&buf)
+            .map(|m| m.is_active(mode))
+            .unwrap_or(false),
+        "enable-mode activates the mode on the already-open buffer (CI.4 re-activation)"
+    );
+    assert!(
+        editor.mode_registry.load().is_minor_enabled(&mode),
+        "the registry enablement flag flipped"
+    );
+
+    // Disable → deactivated on the open buffer.
+    editor
+        .event_bus
+        .publish(lattice_protocol::Event::ModeEnablementRequested {
+            mode: "emacs-keys-plugin-mode".into(),
+            enabled: false,
+        });
+    let _ = editor.drain_mode_enablement();
+    assert!(
+        !editor
+            .active_modes
+            .get(&buf)
+            .map(|m| m.is_active(mode))
+            .unwrap_or(false),
+        "disable-mode deactivates it on the open buffer"
+    );
+}

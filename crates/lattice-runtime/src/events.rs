@@ -719,7 +719,9 @@ fn event_path(event: &Event) -> Option<&Path> {
         // Plugin-lifecycle events carry a name + id, not a path (CI.1); a
         // handler filters by name.
         | Event::PluginLoaded { .. }
-        | Event::PluginUnloaded { .. } => None,
+        | Event::PluginUnloaded { .. }
+        // The enablement request carries a mode name, not a path (CI.4).
+        | Event::ModeEnablementRequested { .. } => None,
     }
 }
 
@@ -755,7 +757,9 @@ fn event_major_mode(event: &Event) -> Option<&str> {
         | Event::PluginCrashed { .. }
         // Plugin-lifecycle events are not tied to a buffer's major mode (CI.1).
         | Event::PluginLoaded { .. }
-        | Event::PluginUnloaded { .. } => None,
+        | Event::PluginUnloaded { .. }
+        // The enablement request is not tied to a buffer's major mode (CI.4).
+        | Event::ModeEnablementRequested { .. } => None,
     }
 }
 

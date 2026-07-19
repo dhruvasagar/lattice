@@ -100,6 +100,14 @@ impl WitBoundary for NativeEventKind {
             // subscribes to run deferred config.
             NativeEventKind::PluginLoaded => WitEventKind::PluginLoaded,
             NativeEventKind::PluginUnloaded => WitEventKind::PluginUnloaded,
+            // CI.4: host-internal enable/disable bridge — the Editor handles it,
+            // never a guest (no WIT variant), like `plugin-crashed`.
+            NativeEventKind::ModeEnablementRequested => {
+                return Err(
+                    "event-kind `mode-enablement-requested` is host-internal, not deliverable to plugins"
+                        .to_string(),
+                );
+            }
         })
     }
 
@@ -227,6 +235,13 @@ impl WitBoundary for NativeEvent {
                     name: name.clone(),
                     id: *id,
                 })
+            }
+            // CI.4: host-internal — never routed to a guest.
+            NativeEvent::ModeEnablementRequested { .. } => {
+                return Err(
+                    "event `mode-enablement-requested` is host-internal, not deliverable to plugins"
+                        .to_string(),
+                );
             }
         })
     }

@@ -13299,6 +13299,9 @@ impl Editor {
         signals.extend(self.drain_pending_definitions());
         signals.extend(self.drain_mode_lifecycle_events());
         signals.extend(self.drain_minor_activation());
+        // CI.4: apply any pending `enable-mode` / `disable-mode` (a plugin's
+        // deferred config) — flip enablement + re-activate open buffers.
+        signals.extend(self.drain_mode_enablement());
         self.drain_pending_references();
         self.drain_pending_symbols();
         // 5.8.AF.5 / Slice 3b.0: `drain_pending_document_highlight`
@@ -14540,6 +14543,81 @@ impl Editor {
         let mut signals = Vec::new();
         for (buffer_id, mode_id) in to_activate {
             signals.extend(self.activate_mode_by_id(buffer_id, mode_id));
+        }
+        signals
+    }
+
+    /// CI.4: drain `Event::ModeEnablementRequested` (a plugin's `enable-mode` /
+    /// `disable-mode`) — flip the mode registry's enablement, then re-activate or
+    /// deactivate the mode across ALL open buffers whose major admits it (the
+    /// enablement is global, not per-buffer). This is the guest→activator bridge:
+    /// a guest can't reach the Editor, so `enable-mode` publishes and this drains
+    /// (config-and-init.md §6). Runs per-tick alongside `drain_minor_activation`.
+    pub fn drain_mode_enablement(&mut self) -> Vec<RendererSignal> {
+        let Some(mut rx) = self.pending_mode_enablement_rx.take() else {
+            return Vec::new();
+        };
+        let mut requests: Vec<(lattice_mode::ModeId, bool)> = Vec::new();
+        while let Ok(evt) = rx.try_recv() {
+            if let lattice_protocol::Event::ModeEnablementRequested { mode, enabled } = evt {
+                requests.push((lattice_mode::ModeId::new(&mode), enabled));
+            }
+        }
+        self.pending_mode_enablement_rx = Some(rx);
+
+        let mut signals = Vec::new();
+        for (mode_id, enabled) in requests {
+            // Flip the enablement flag (RCU) and read the mode's eligible scope.
+            let mut next = (**self.mode_registry.load()).clone();
+            next.set_minor_enabled(mode_id, enabled);
+            let policy = next.get(mode_id).map(|m| m.activation_policy());
+            self.mode_registry.store(std::sync::Arc::new(next));
+            let Some(policy) = policy else {
+                tracing::warn!(mode = %mode_id, "enable/disable-mode: unknown mode id, skipped");
+                continue;
+            };
+
+            // Decide per OPEN buffer (not just those with an active_modes entry —
+            // a buffer whose modes haven't been touched still needs the newly
+            // enabled mode). Collect first to end the immutable borrow before the
+            // `&mut self` activate/deactivate calls. `admits` is major-independent
+            // for Global/Universal (only kind matters); a `Majors(list)` policy
+            // reads the buffer's major from `active_modes` when present (absent →
+            // empty → doesn't match a specific-major allowlist, the safe default).
+            let decisions: Vec<(BufferId, bool)> = self
+                .buffers
+                .sorted_ids()
+                .into_iter()
+                .filter_map(|bid| {
+                    let kind = self.buffers.kind_of(bid)?;
+                    let major = self
+                        .active_modes
+                        .get(&bid)
+                        .and_then(|m| m.major())
+                        .map(|m| m.as_str().to_string())
+                        .unwrap_or_default();
+                    let admits = policy.admits(&major, kind);
+                    let active = self
+                        .active_modes
+                        .get(&bid)
+                        .map(|m| m.is_active(mode_id))
+                        .unwrap_or(false);
+                    if enabled && admits && !active {
+                        Some((bid, true)) // activate
+                    } else if !enabled && active {
+                        Some((bid, false)) // deactivate
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            for (buffer_id, activate) in decisions {
+                signals.extend(if activate {
+                    self.activate_mode_by_id(buffer_id, mode_id)
+                } else {
+                    self.deactivate_mode_by_id(buffer_id, mode_id)
+                });
+            }
         }
         signals
     }

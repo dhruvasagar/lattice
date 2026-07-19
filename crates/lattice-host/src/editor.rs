@@ -1714,6 +1714,11 @@ pub struct Editor {
     /// just-entered major on this buffer's kind.
     pub pending_major_entered_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<lattice_protocol::Event>>,
+    /// CI.4: receives `Event::ModeEnablementRequested` (a plugin's `enable-mode`)
+    /// so the per-tick `drain_mode_enablement` flips the mode registry and
+    /// re-activates open buffers.
+    pub pending_mode_enablement_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<lattice_protocol::Event>>,
     pub pending_insert_completion_lsp_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<InsertCompletionLspOutcome>>,
     pub pending_insert_completion_lsp_token: Option<CancellationToken>,

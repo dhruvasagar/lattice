@@ -715,6 +715,18 @@ impl Editor {
             lattice_runtime::EventFilter::kind(lattice_protocol::EventKind::MajorEntered),
             lattice_runtime::SubscriptionTarget::Channel(major_entered_tx),
         );
+        // CI.4: the mode-enablement bridge. A plugin's `enable-mode` publishes
+        // `Event::ModeEnablementRequested`; the per-tick `drain_mode_enablement`
+        // flips the mode registry + re-activates open buffers (the guest can't
+        // reach the activator, so it routes through here — config-and-init.md §6).
+        let (mode_enablement_tx, mode_enablement_rx) =
+            tokio::sync::mpsc::unbounded_channel::<lattice_protocol::Event>();
+        event_bus.subscribe(
+            lattice_runtime::EventFilter::kind(
+                lattice_protocol::EventKind::ModeEnablementRequested,
+            ),
+            lattice_runtime::SubscriptionTarget::Channel(mode_enablement_tx),
+        );
         // SN.2: the live snippet session, shared between the host
         // (creates it on expand) and `SnippetActiveMode`'s
         // `<Tab>`/`<S-Tab>` handlers (navigate it). The same Arc is
@@ -1945,6 +1957,7 @@ impl Editor {
             pending_lsp_detach_rx: Some(lsp_detach_rx),
             pending_mode_lifecycle_rx: Some(mode_lifecycle_rx),
             pending_major_entered_rx: Some(major_entered_rx),
+            pending_mode_enablement_rx: Some(mode_enablement_rx),
             pending_inlay_hint_refresh_rx: Some(lsp_inlay_refresh_rx),
             inlay_refresh_pending: std::collections::HashSet::new(),
             semantic_tokens_refresh_pending: std::collections::HashSet::new(),

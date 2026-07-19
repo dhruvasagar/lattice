@@ -88,6 +88,18 @@ interface modes {
     /// ModeRegistry`, not a live handle). Registration failures (bad `-mode`
     /// suffix, id collision, `major` kind) are logged + skipped at drain.
     register-mode: func(decl: mode-declaration);
+
+    /// Enable a registered minor mode globally (CI.4) — the user-enablement path
+    /// (config-and-init.md §6). A plugin minor mode is registered
+    /// available-but-off; an `init.rs` `on-plugin-loaded` handler calls this to
+    /// turn it on. The host publishes a `mode-enablement-requested` signal and
+    /// the Editor flips the enablement + re-activates open buffers (this call is
+    /// the request, not the apply — the guest can't reach the activator). A
+    /// no-bus / unknown-id case is a `warn` + drop (graceful), never a trap.
+    enable-mode: func(id: string);
+    /// Disable a registered minor mode globally (CI.4) — the inverse of
+    /// `enable-mode`; the Editor deactivates it on open buffers.
+    disable-mode: func(id: string);
 }
 
 /// The world a mode-declaring plugin implements. Imports the `modes` register

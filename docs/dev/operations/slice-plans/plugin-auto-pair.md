@@ -20,7 +20,7 @@ The `auto` style needs only AP.0.1 (buffer read); the `manual` style adds AP.0.2
 
 ```
 Wave 1 (pipeline proof + auto style, shippable):
-  AP.0.1 ──► AP.1 ──► AP.2
+  AP.0.1 ──► AP.1.0 ──► AP.1 ──► AP.2
 
 Wave 2 (foundation + manual style):
   AP.0.2 ─┐
@@ -46,13 +46,36 @@ degrades to a typed `err` (no trap); a `perf_ratchet` case pins the added
 snapshot/table cost inside the grammar Reflex budget (10µs debug). All four
 artefacts shipped (doc §5.1 + ratchet + tests + graceful error).
 
-### AP.1 — crate scaffold + registration  📝
-`plugins/auto-pair/` guest (`wasm32-wasip2`, `wit-bindgen`) + `manifest.toml`
-(id `auto-pair`, `provides = ["grammar","keymap","config"]`, **no capabilities**);
-register the pairing actions, the `auto-pairs-style` / `auto-pairs-close-key`
-options + the `OptionChanged` subscription, and the style-appropriate insert-mode
-bindings. **Exit:** loads via the loader; contributions register with
-`SourceLayer::Plugin` provenance.
+### AP.1.0 — multi-seam feasibility + superset linkers  ✅
+The blocker AP.1 surfaced: one plugin `.wasm` provides the SYNC grammar seam AND
+the async modes/config seams, but a component's import set is fixed while grammar
+instantiates against a sync linker and modes/config against the async linker.
+**Resolved:** every seam import host-func is sync (only exports are async), so
+BOTH linkers become supersets — the async linker gains grammar+buffer, the sync
+grammar linker gains modes+config (NOT logging: the combined world omits it,
+preserving "no logging on the grammar hot path"). The loader already
+re-instantiates per `provides` entry, so no loader-model change. **Landed:** the
+`multiseam-guest` fixture (one component, three seams) + `tests/multiseam.rs`
+compiles it once and drains each seam from the same artifact — all register.
+Isolation cost (grammar linker now carries the sync modes/config register funcs,
+inert unless imported) accepted for single-artifact multi-seam plugins.
+
+### AP.1 — crate scaffold + registration  ✅
+`plugins/auto-pair/` guest (`wasm32-wasip2`, `wit-bindgen`, world
+`auto-pair-plugin`) + `plugin.toml` (id `auto-pair`,
+`provides = ["grammar","modes","config"]` — **modes**, not keymap: the mode owns
+its keymap per the mode-ownership rule; grammar BEFORE modes so the keymap
+resolves the plugin's own actions; **no capabilities**). Registers the pairing
+actions (one per opener/closer — a mode keymap binding carries no args, so the
+action can't otherwise know which pair fired), the `auto-pairs-mode` `global`
+minor mode owning the insert-mode keymap, and the `auto-pairs-style` /
+`auto-pairs-close-key` options (behavior is option-gated in the handlers — no
+`OptionChanged` re-binding; the keymap set stays stable across `:set`).
+**Landed:** `tests/auto_pair.rs` (in the loader crate) discovers + loads it
+through the real loader; all three seams' contributions register (actions with
+`SourceLayer::Plugin` provenance, the mode owning a gated `MinorMode` keymap, the
+options in the config registry). Scaffold ships the round-bracket pair + backspace
+with **no-op action bodies**; AP.2 fills the `auto` behavior.
 
 ### AP.2 — `auto` style  📝
 Open-insert + close-skip + backspace-deletes-the-empty-pair (reads via AP.0.1).

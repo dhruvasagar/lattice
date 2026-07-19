@@ -1,0 +1,27 @@
+package lattice:plugin-host@0.1.0;
+
+/// The `auto-pair` bundled plugin's world (AP.1). ONE component providing three
+/// seams — the multi-seam shape proven by the AP.1.0 spike:
+///   - **grammar** — the pairing actions (`auto-pair-open-*` / `auto-pair-close-*`
+///     / `auto-pair-backspace`), fired on insert-mode chords; `apply-action` reads
+///     the buffer around the cursor via the AP.0.1 `borrow<document>` handle,
+///   - **modes** — the `auto-pairs-mode` minor mode owning the insert-mode keymap
+///     (the mode-ownership rule: bindings live at `MinorMode(auto-pairs-mode)`,
+///     never the builtin layer),
+///   - **config** — the `auto-pairs-style` / `auto-pairs-close-key` options.
+///
+/// `logging` is intentionally NOT imported: keeping it out of the combined world
+/// keeps `log` off the sync grammar linker (the "no logging on the grammar hot
+/// path" invariant). The host instantiates this same `.wasm` once per seam —
+/// grammar sync, modes+config async — against the superset linkers (AP.1.0).
+world auto-pair-plugin {
+    import grammar;
+    import buffer;
+    import modes;
+    import config;
+
+    export register-grammar: func();
+    export grammar-callbacks;
+    export register-modes: func();
+    export register-options: func();
+}

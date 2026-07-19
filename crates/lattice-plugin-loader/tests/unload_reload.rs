@@ -144,8 +144,8 @@ async fn unload_reverses_picker_and_grammar_contributions() {
     });
     let report = r.loader.unload("grammar-fixture").expect("grammar was loaded");
     assert_eq!(
-        report.commands, 4,
-        "all four grammar contributions (down-n / to-cursor / fails / traps) reversed"
+        report.commands, 5,
+        "all five grammar contributions (down-n / to-cursor / fails / traps / read-at-cursor) reversed"
     );
     assert!(
         r.commands.load().id_by_name("down-n").is_none(),

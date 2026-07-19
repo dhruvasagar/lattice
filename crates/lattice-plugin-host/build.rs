@@ -103,6 +103,19 @@ fn main() {
         "fuzzy-finder",
         "FUZZY_FINDER_WASM",
     );
+    // AP.1: the first bundled plugin — a multi-seam component (grammar + modes +
+    // config). Built here so the loader integration test (loaded by known path,
+    // like the mode/config drains) and the eventual bundling (AP.4) have the
+    // `.wasm`.
+    build_guest(
+        &manifest_dir
+            .join("..")
+            .join("..")
+            .join("plugins")
+            .join("auto-pair"),
+        "auto-pair",
+        "AUTO_PAIR_WASM",
+    );
 }
 
 /// Build one standalone `wasm32-wasip2` guest crate at `guest_dir` to a

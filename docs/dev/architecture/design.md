@@ -411,7 +411,7 @@ pub struct Pending {
 
 **Atomicity scope.** A single `CommandInvocation` is atomic *within one document*: edits, selection updates, and the resulting `Effect` commit together or not at all. Cross-document and cross-pane invocations (`:bufdo`, `:windo`, plugin-orchestrated multi-buffer refactors) are a sequence of per-document atoms with explicit failure modes, not a global transaction -- the cost of distributed transactions over actor mailboxes is not worth the use cases.
 
-**Backpressure.** Each document actor has a bounded mailbox. When full, the dispatcher returns `CommandError::Busy` rather than blocking; the caller decides (input loop drops to a "buffer is busy" indicator; scripts retry with backoff). The event bus uses the same discipline: subscriber queues are bounded, and a slow subscriber gets dropped events with a counter, not backpressure on the publisher.
+**Backpressure.** *(As-built correction: the document actor uses an **unbounded** mailbox; the `CommandError::Busy` variant below was never built.)* The original design gave each document actor a bounded mailbox returning `CommandError::Busy` when full. The implementation deliberately switched to an unbounded mailbox (actor-seam audit / H3): keystroke commands must never be rejected or blocked, and the actor drains them in order — the real backpressure is the single-writer serialization, not a queue cap. The event bus *does* keep the bounded-queue discipline: subscriber queues are bounded, and a slow subscriber gets dropped events with a counter, not backpressure on the publisher.
 
 The vim user experience is preserved exactly:
 
@@ -472,6 +472,8 @@ pub enum Range {
 	Selection,                                     // current Visual / active region
 	Custom(RangeId, Args),                         // plugin-registered range
 }
+// As-built: `Custom` carries no `Args` (just the RangeId), and `RangeBound::Pattern`
+// holds the pattern as a `String` (compiled at use), not a pre-built `Regex`.
 
 pub enum RangeBound {
 	Line(u32), Mark(char), CurrentLine, LastLine,
@@ -1299,6 +1301,12 @@ At end-of-frame the `Arc` drops; if the actor has since published newer snapshot
 Two panes rendering the same document at the same vsync may capture *different* snapshots if their frame work straddles a publish. This is intentional. Forcing same-version across panes would require a global frame fence that holds back the leading pane's render until the trailing one is ready -- the wrong tradeoff against latency. Visually, pane B may render one snapshot behind pane A; this is below human perception at >= 60Hz.
 
 ##### Multi-pane selection transformation under remote edits
+
+> **As-built:** the snapshot / `ArcSwap`-published coherence core is built; the
+> *multi-pane* selection-transformation described here (cross-pane divergent
+> snapshots, transforming selections owned by other panes) is the design contract
+> but is **n/a in the single-pane-per-document v1** — it activates when the same
+> document is edited-and-rendered concurrently across panes.
 
 When the actor commits an edit, the resulting `AppliedEdit` is **applied to all open selections on that document** (including selections owned by panes other than the one that issued the edit) before the next snapshot is published. The transformed selections become part of the new snapshot's `Arc<SelectionSet>`. Panes whose next frame uses that snapshot see selections at correct positions; panes using an older snapshot continue to see selections at the older positions -- which are still internally coherent with that older snapshot's text. There is no "selection points at byte 100 but the text shifted" torn state, ever.
 
@@ -2482,6 +2490,17 @@ Lattice integrates two coding agents — Claude Code and opencode. The seam is t
 ---
 
 ## 6. The Core Protocol
+
+> **As-built note.** The `Command` and `Event` enums in §6.1/§6.2 are an
+> *illustrative sketch* of the client↔core protocol, not the built types. As
+> shipped: clients drive the core through **typed `EditorHandle` methods** (not a
+> single `Command` enum with reply channels); the document actor's internal
+> mailbox carries an `ActorMsg`; and editing commands flow as **`CommandInvocation`**
+> through the unified dispatcher (§5.2.1). The outbound event type is
+> `lattice_protocol::Event` — richer than the §6.2 sketch (it carries UI events,
+> `BeforeSave` / `BeforeQuit` / `OptionChanged`, and the LSP/plugin events, with
+> different mode-event names). Read §6.1/§6.2 as the shape of the contract, not
+> the enum definitions to code against.
 
 ### 6.1 Commands (clients to core)
 

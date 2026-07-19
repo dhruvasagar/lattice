@@ -1019,6 +1019,39 @@ emits its own narrative into the same buffer (Layer 2).
 
 ### 5.6 Rendering -- The Layered Architecture
 
+> **Superseded (as-built, 2026-07 — read this before the prose below).** §5.6.1–
+> §5.6.3 describe a pre-implementation rendering design that the build diverged
+> from. Three corrections:
+>
+> 1. **The `Renderer` trait is a bare marker, not a method surface.** The built
+>    `lattice_host::Renderer` (`crates/lattice-host/src/renderer.rs`) is
+>    `trait Renderer: 'static + Send + Sync` with exactly two associated types
+>    (`Theme`, `PaneRenderRegistry`) and **zero methods** — every implementor is a
+>    ZST *marker*, one per frontend. There is no `Content`/`Event`/`Config` +
+>    `set_content`/`handle_input`/`layout`/`paint`/`accessibility_tree`/`invalidate`
+>    surface; the frame-level trait that carried those was to live in a
+>    `lattice-render` crate that was **dropped** (ratatui's pull-based draw and
+>    GPUI's retained-mode element tree share no useful `Frame`/`InputEvent`/
+>    `LayoutConstraints` surface). The renderer-neutral core lives in
+>    `lattice-host` (the App→`Editor` composition, Phase 5.B).
+> 2. **The concrete renderers are per-frontend markers, not per-content-kind.**
+>    `EditorRenderer` / `DocumentRenderer` / `CanvasRenderer` do not exist. The
+>    real axis is **one `Renderer` marker per frontend**: `TuiRenderer`
+>    (`lattice-ui-tui`, built) and `GpuiRenderer` (`lattice-ui-gpui`, peer), plus
+>    `MinimalRenderer` for tests. "Editor / document / canvas" are render *paths*,
+>    not distinct `Renderer` types.
+> 3. **The paint substrate is the cell-grid, not four fast paths + taffy.** The
+>    §5.6.2 four-path taxonomy (`LineLayout` + Fenwick cumulative-height index) and
+>    the §5.6.3 taffy+cosmic-text `DocumentRenderer` are superseded by the
+>    **cell-grid** renderer (`lattice-cells` `CellMatrix`, `ArcSwap`-published,
+>    consumed by BOTH TUI and GPUI): a per-cell `paint_glyph` atlas fast path plus
+>    a single `Shaped` sibling path for rich text. See
+>    [`cell-grid-renderer.md`](cell-grid-renderer.md) for the authoritative design;
+>    `taffy` is not a layout engine here.
+>
+> The prose in §5.6.1–§5.6.3 below is retained for provenance (the original
+> intent); read it as the *why*, not the current *what*.
+
 #### 5.6.1 The Renderer trait
 
 ```rust
@@ -1141,6 +1174,18 @@ Window is a single GPU surface. Renderers render into regions. All renderers sha
 Deferred indefinitely. Architecturally the trait accommodates Servo embedding, system webview (`wry`/WebView2/WKWebView), or CEF. Decision punted.
 
 #### 5.6.7 Iconography and sprites (v1)
+
+> **Status (as-built): not yet built — text-glyph fallback only.** The
+> sprite-atlas mechanism described in this subsection (`SpriteSet` / `SpriteSpec`,
+> a GPU sprite atlas separate from the glyph atlas, plugin sprite registration,
+> `InlineSprite` / gutter / status / picker sprites, the bundled `builtin-icons`
+> set, TOML overrides) is **spec, not code**. What ships today is the
+> **BMP-block / Nerd-Font text-glyph** iconography (the degrade-gracefully icon
+> palette — Nerd Fonts v3 when `ui.nerd_fonts=on`, a BMP-block fallback
+> otherwise), used for the file tree / oil / gutter / picker leading icons. The
+> atlas-backed sprite path below remains the v1 design target. (The "Iconography
+> is v1 (§5.6.7)" line in the key-decisions summary + CLAUDE.md refers to this
+> design intent, not a shipped atlas.)
 
 Small graphical elements -- file-type icons in the file tree, severity icons in the diagnostics list and gutter, language logos in tab strips, status-line indicators (LSP healthy / sick, git branch), picker leading icons, notification level badges -- are first-class in v1. They are *not* Path 4: they are line-height-sized, atlas-backed, and rendered through the same GPU pipeline as glyphs.
 

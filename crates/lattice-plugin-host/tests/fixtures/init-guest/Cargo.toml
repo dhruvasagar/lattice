@@ -1,0 +1,23 @@
+# CI.5 init.rs-shape fixture — a `wasm32-wasip2` component modelling deferred
+# plugin config: from `register-events` it subscribes to `plugin-loaded`; its
+# `on-event` handler, when the awaited plugin ("auto-pair") loads, calls the
+# imported `modes.enable-mode` — the `with-eval-after-load` pattern. Loaded by
+# the CI.5 end-to-end test BEFORE the plugin it configures.
+# Standalone workspace (targets wasm32-wasip2, must not inherit the host toolchain).
+[package]
+name = "init-guest"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.58"
+
+[profile.release]
+opt-level = "s"
+strip = true
+
+[workspace]

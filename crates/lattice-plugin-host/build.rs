@@ -86,6 +86,9 @@ fn main() {
         "multiseam-guest",
         "MULTISEAM_GUEST_WASM",
     );
+    // CI.5: the init.rs-shape fixture — subscribes to plugin-loaded and calls
+    // enable-mode from its handler (the with-eval-after-load pattern).
+    build_guest(&fixtures.join("init-guest"), "init-guest", "INIT_GUEST_WASM");
     // PO.5: the `logging` (Layer 2) fixture — a base `plugin`-world guest whose
     // `activate` calls the imported `logging.log`; `tests/logging_source.rs`
     // asserts the lines reach the tracer.

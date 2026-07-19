@@ -1361,6 +1361,23 @@ impl PluginHost {
             |state: &mut PluginState| state,
         )
         .map_err(|e| PluginHostError::Linker(e.into()))?;
+        // Multi-seam support (AP.1 spike): a single plugin `.wasm` may `provide`
+        // grammar AND async seams (auto-pair: grammar + modes + config). Its
+        // import set is fixed, so the async linker (used for the mode/config
+        // drains) must ALSO satisfy the grammar + buffer imports. Both are sync
+        // host funcs (register-* only record; `document` reads are table lookups),
+        // so they are inert here for the async-only worlds and correct for a
+        // combined component. Symmetric to grammar-linker below.
+        crate::grammar_host::bindings::lattice::plugin_host::grammar::add_to_linker::<_, HasSelf<_>>(
+            &mut linker,
+            |state: &mut PluginState| state,
+        )
+        .map_err(|e| PluginHostError::Linker(e.into()))?;
+        crate::grammar_host::bindings::lattice::plugin_host::buffer::add_to_linker::<_, HasSelf<_>>(
+            &mut linker,
+            |state: &mut PluginState| state,
+        )
+        .map_err(|e| PluginHostError::Linker(e.into()))?;
         // The grammar seam's SYNC linker (PH7.7b/c). The `grammar` register API
         // (`register-*`) is guest→host sync host funcs (they only record into
         // `PluginState`). It is wired into a SECOND linker whose WASI is `sync`
@@ -1381,6 +1398,25 @@ impl PluginHost {
         // the reads are synchronous host-table lookups (no I/O), correct for the
         // dispatch-thread trampoline.
         crate::grammar_host::bindings::lattice::plugin_host::buffer::add_to_linker::<_, HasSelf<_>>(
+            &mut grammar_linker,
+            |state: &mut PluginState| state,
+        )
+        .map_err(|e| PluginHostError::Linker(e.into()))?;
+        // Multi-seam support (AP.1 spike): a combined plugin instantiated here for
+        // its GRAMMAR drain still imports its `modes` / `config` seams, so the sync
+        // grammar linker must satisfy them too. Both `register-mode` /
+        // `register-option` / `get-option` are sync host funcs that only record
+        // into `PluginState` (never called on the apply-action hot path — only
+        // during the registration exports, which run on the async drains), so they
+        // are safe here and inert for grammar-only guests. `logging` is
+        // deliberately NOT added — the combined `auto-pair` world omits it, so the
+        // "no logging reachable from the grammar hot path" invariant holds.
+        crate::config_host::bindings::lattice::plugin_host::config::add_to_linker::<_, HasSelf<_>>(
+            &mut grammar_linker,
+            |state: &mut PluginState| state,
+        )
+        .map_err(|e| PluginHostError::Linker(e.into()))?;
+        crate::mode_host::bindings::lattice::plugin_host::modes::add_to_linker::<_, HasSelf<_>>(
             &mut grammar_linker,
             |state: &mut PluginState| state,
         )

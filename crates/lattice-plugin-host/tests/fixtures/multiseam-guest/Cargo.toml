@@ -1,0 +1,23 @@
+# AP.1 spike fixture — a single `wasm32-wasip2` component providing THREE seams
+# at once (grammar + modes + config), the `auto-pair` shape. Built against the
+# combined `multiseam-fixture` world; the host instantiates the same artifact
+# once per seam (sync grammar / async modes+config) to prove a multi-seam plugin
+# loads end to end. Standalone workspace (targets wasm32-wasip2, must not inherit
+# the host toolchain). Mirrors the sibling single-seam fixtures' setup.
+[package]
+name = "multiseam-guest"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.58"
+
+[profile.release]
+opt-level = "s"
+strip = true
+
+[workspace]

@@ -79,6 +79,13 @@ fn main() {
         "emacs-keys-guest",
         "EMACS_KEYS_GUEST_WASM",
     );
+    // AP.1 spike: a single component providing grammar + modes + config, loaded
+    // once per seam by `tests/multiseam.rs` to prove multi-seam plugins work.
+    build_guest(
+        &fixtures.join("multiseam-guest"),
+        "multiseam-guest",
+        "MULTISEAM_GUEST_WASM",
+    );
     // PO.5: the `logging` (Layer 2) fixture — a base `plugin`-world guest whose
     // `activate` calls the imported `logging.log`; `tests/logging_source.rs`
     // asserts the lines reach the tracer.

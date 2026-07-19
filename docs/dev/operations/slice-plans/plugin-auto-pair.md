@@ -10,7 +10,18 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned. Every non-trivial sl
 the four artefacts (doc + bench-where-perf-relevant + test incl. failure modes +
 graceful error handling).
 
-**Status: 🚧 in progress — AP.0.1 ✅ (the `document`-handle prereq); AP.1+ planned.**
+**Status: 🚧 in progress — AP.0.1 ✅, AP.1.0 ✅, AP.1 ✅, AP.2 ✅ (open + close);
+AP.3 / AP.4 planned.**
+
+> **Mode enablement moved out (2026-07-19).** `auto-pairs-mode` is now
+> **available-but-off**, not self-activating — the user enables it via `init.rs`.
+> That model (available-vs-enabled, `enable-mode`, the `plugin-loaded` event,
+> init-first ordering) lives in its own fragment:
+> [`../../architecture/config-and-init.md`](../../architecture/config-and-init.md)
+> + [`config-and-init.md`](config-and-init.md) (slices CI.1–CI.6). auto-pair is
+> CI.5's consumer; AP.4 (bundle) ships the mode off by default. The earlier
+> `enable-mode`-at-top-level / re-activation-event / pending-value-store sketches
+> are **superseded** by that fragment.
 
 ## Sequencing — two waves
 
@@ -127,8 +138,12 @@ when nothing is unmatched, and stays bounded on a large buffer.
 
 ### AP.4 — bundling  📝
 Ship `auto-pair.wasm` compiled-in / in `core-plugins/`, pre-granted at boot (needs
-no grant). **Exit:** a fresh editor auto-pairs out of the box; `:plugins` lists it;
-`:set auto-pairs-style=manual` flips it live.
+no grant). Mode ships **off by default** (available-but-off, per
+[`config-and-init.md`](config-and-init.md) CI.3/CI.5) — the shipped default
+`init.rs` enables it with `on_plugin_loaded("auto-pair") → enable_mode(…)`, which
+the user can remove. **Exit:** a fresh editor with the default init.rs auto-pairs
+out of the box; `:plugins` lists auto-pair; removing the `enable_mode` line leaves
+it loaded but inert; `:set auto-pairs-style=manual` flips the style live.
 
 ## Deferred to v2
 

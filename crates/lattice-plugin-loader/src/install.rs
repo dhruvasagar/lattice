@@ -124,39 +124,46 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     // `LoaderServices.tracer`.
     boot.register_service::<PluginTracerHandle>(tracer);
 
-    // Discover + load on-disk plugins OFF the boot thread: a plugin cold-start
-    // must not delay boot, and the load path is async (instantiate/activate/
-    // spawn-seam). Contributions appear a frame or two after boot — the
-    // eventual-consistency the UX contract permits for non-edited content. A
-    // missing plugins dir (the common case) is a benign empty scan.
-    if let Some(dir) = crate::default_plugins_dir() {
+    // CI.2: `init.rs` loads FIRST, then on-disk plugins — in ONE task, off the
+    // boot thread. init.rs is config authority (`<config>/lattice/init/`, loaded
+    // with a boot-capability `Bundled` tier); it must register its
+    // `plugin-loaded` subscriptions BEFORE any plugin fires that event, so a
+    // deferred `on-plugin-loaded` handler can't miss its plugin
+    // (config-and-init.md §3). Both stay OFF the boot thread — a plugin
+    // cold-start must not delay boot; contributions appear a frame or two after
+    // boot (the eventual-consistency the UX contract permits). An absent init /
+    // plugins dir (the common case) is a benign skip.
+    let init_dir = crate::default_init_dir();
+    let plugins_dir = crate::default_plugins_dir();
+    // PL8.D.4: watch the init dir so a rebuilt `init.wasm` auto-reloads without a
+    // manual `:reload-config`. A no-op if the dir doesn't exist.
+    if let Some(ref dir) = init_dir {
+        crate::watch::spawn_init_watcher(loader.clone(), dir.clone(), boot.runtime_handle());
+    }
+    if init_dir.is_some() || plugins_dir.is_some() {
         let loader = loader.clone();
         boot.runtime_handle().spawn(async move {
-            let n = loader.discover_and_load(&dir, TrustTier::UserInstalled).await;
-            if n > 0 {
-                tracing::info!(count = n, dir = %dir.display(), "plugins loaded from disk");
-            }
-        });
-    }
-
-    // PL8.D.3: the user's `init.rs` — a single plugin dir at
-    // `<config>/lattice/init/`, loaded with a boot-capability (`Bundled`) tier
-    // (the user's own trusted config, not an external install). Loaded OFF the
-    // boot thread, AFTER the native builtins register (this `install` is seated
-    // late in boot), so user keymaps / commands / options layer on top of the
-    // defaults. An absent init dir (the common case — no user config) is a benign
-    // debug skip, never a warn.
-    if let Some(init_dir) = crate::default_init_dir() {
-        // PL8.D.4: watch the init dir so a rebuilt `init.wasm` auto-reloads
-        // without a manual `:reload-config`. A no-op if the dir doesn't exist.
-        crate::watch::spawn_init_watcher(loader.clone(), init_dir.clone(), boot.runtime_handle());
-        boot.runtime_handle().spawn(async move {
-            match loader.load_path(&init_dir, TrustTier::Bundled).await {
-                Ok(id) => {
-                    tracing::info!(id = id.0, dir = %init_dir.display(), "user init.rs config loaded")
+            // 1. init.rs first — AWAITED, so its subscriptions are live before
+            //    step 2 loads plugins that fire `plugin-loaded`.
+            if let Some(init_dir) = init_dir {
+                match loader.load_path(&init_dir, TrustTier::Bundled).await {
+                    Ok(id) => tracing::info!(
+                        id = id.0,
+                        dir = %init_dir.display(),
+                        "user init.rs config loaded"
+                    ),
+                    Err(err) => tracing::debug!(
+                        dir = %init_dir.display(),
+                        error = %err,
+                        "no user init.rs loaded"
+                    ),
                 }
-                Err(err) => {
-                    tracing::debug!(dir = %init_dir.display(), error = %err, "no user init.rs loaded")
+            }
+            // 2. Then the plugins the init.rs handlers react to.
+            if let Some(dir) = plugins_dir {
+                let n = loader.discover_and_load(&dir, TrustTier::UserInstalled).await;
+                if n > 0 {
+                    tracing::info!(count = n, dir = %dir.display(), "plugins loaded from disk");
                 }
             }
         });

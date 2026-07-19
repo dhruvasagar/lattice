@@ -2623,8 +2623,14 @@ we don't settle for µs targets just because incumbent editors do.
 - **Target (v1).** What every implementation MUST hit by v1.0.
   Tighter than the Today column on rows where we know the
   engineering path; relaxed where the Today column reflects a
-  legitimate trade we're keeping. CI fails on >10% regression
-  vs. main on any benchmark.
+  legitimate trade we're keeping. *CI enforcement (as-built):* CI
+  **records** the benchmark medians as baselines (`benchmarks.md`) and
+  fails only on a handful of **absolute-ceiling ratchet tests** on
+  specific hot-path rows (e.g. `perf_ratchet.rs`: the grammar
+  round-trip ceiling, the typed-call / grammar p99 budgets) — not a
+  blanket ">10% vs. main on any benchmark" gate. The ratchet bar only
+  moves down; the ceilings are generous enough to catch a gross
+  regression without tripping on runner variance.
 - **Today.** The current `docs/../operations/benchmarks.md` median. "—" means
   unmeasured (a gap; backs a row in `../operations/benchmarks.md`'s "what's
   NOT here" section).
@@ -2698,13 +2704,13 @@ the rationale states the constraint.
 | Fold recompute (markdown, 100 sections) | ~5µs  | <50µs       | 6.3µs | ⏹️       | Linear ATX heading walk; near floor.                                                                                                |
 | Fold recompute (syntax, 200-fn rust)    | ~3ms  | <5ms        | 3.9ms | <1ms    | `QueryCursor::matches` traversal across many pattern alternatives. Stretch via per-pattern caching + pruning never-folded captures. |
 
-#### Plugin host (§5.5; no host yet, targets gated when phase 7 lands)
+#### Plugin host (§5.5; Phase-7 host **built**; §7 budgets CI-gated via `perf_ratchet.rs`, medians in `benchmarks.md`)
 
 | Operation                               | Floor  | Target (v1) | Today | Stretch | Rationale                                                                            |
 |-----------------------------------------|--------|-------------|-------|---------|--------------------------------------------------------------------------------------|
-| Typed host fn call (1 scalar in, 1 out) | ~150ns | <500ns      | n/a   | <100ns  | wasmtime trampoline + 2 word copies. Floor is Cranelift's ABI marshalling.           |
-| Grammar-extension round-trip            | ~2µs   | <5µs        | n/a   | <1µs    | Two trampolines + closure invocation. Wasmtime AOT closes most of this.              |
-| Cold start, 50 lazily-loaded plugins    | ~10ms  | <30ms       | n/a   | <5ms    | Module deserialise + import resolution per plugin. Disk cache amortises across runs. |
+| Typed host fn call (1 scalar in, 1 out) | ~150ns | <500ns      | gated (`benchmarks.md`) | <100ns  | wasmtime trampoline + 2 word copies. Floor is Cranelift's ABI marshalling. p99 budget CI-gated. |
+| Grammar-extension round-trip            | ~2µs   | <5µs        | **~340ns** (release, real guest) | <1µs    | Two trampolines + closure invocation through the sync trampoline (PH7.7d). ~15× under the 5µs p99 budget; the `grammar_round_trip` ratchet gates it. |
+| Cold start, 50 lazily-loaded plugins    | ~10ms  | <30ms       | gated (`benchmarks.md`) | <5ms    | Module deserialise + import resolution per plugin. Disk cache amortises across runs. |
 
 #### Architectural levers, by row
 
@@ -2781,8 +2787,13 @@ isolation -- specific architecture decisions enable each one:
   any code claiming the keystroke path declares which class it
   belongs to so the arithmetic doesn't drift.
 
-CI fails on >10% regression vs. main on any benchmark, regardless
-of whether the row is "today" or "target."
+CI **records** every benchmark median as a baseline (`benchmarks.md`)
+and hard-fails on the **absolute-ceiling ratchet tests** for the
+load-bearing hot-path rows (`perf_ratchet.rs`); the ratchet bar only
+moves down. A blanket ">10% vs. main on every benchmark" gate is *not*
+in place today — the ceilings are deliberately generous (≥100× headroom
+on some rows) to catch a gross regression without tripping on runner
+variance.
 
 ### 8.3 Memory
 
@@ -2971,7 +2982,7 @@ Per §5.5.2, every WIT host function has a budget enforced in CI. Plugin authors
 - **`file-tree`** -- buffer-backed workspace navigation view.
 - **`outline`** -- buffer-backed document symbol view.
 - **`diagnostics-list`** -- buffer-backed workspace diagnostics view.
-- **`tree-sitter-motions`** (post-1.0 candidate; built early to validate the grammar extension API) -- motions and text objects driven by tree-sitter queries (`]f` next function, `iaf` inner argument, etc.).
+- **`tree-sitter-motions`** (post-1.0 plugin candidate — *not built*; structural tree-sitter motions/text-objects exist **natively** today under the TSM slices, but not as a validation plugin) -- motions and text objects driven by tree-sitter queries (`]f` next function, `iaf` inner argument, etc.).
 
 The reference plugins exercise every primitive: pickers, popups, buffer-backed views, status segments, gutter segments, modes, decorations, notifications, grammar extensions. If any is painful to write, the API needs to grow.
 
@@ -3172,7 +3183,7 @@ Path 4 (inline blocks). `org-mode`. `WebRenderer` (decision time). Remote / SSH.
 | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|
 | GPUI API churns | Medium | Medium | UI crate isolated; protocol-only dependency; wgpu + parley fallback. |
-| Plugin API (WIT) design proves wrong | High | High | Built-in modes / views / grammar extensions all built against the WIT before 1.0; `tree-sitter-motions` plugin built early to validate the grammar extension API. SemVer only after 1.0. WIT changes ARE breaking; design carefully upfront. |
+| Plugin API (WIT) design proves wrong | High | High | The WIT is validated before 1.0 by the `fuzzy-finder` plugin (⭐ Phase-7 exit) + a per-seam guest fixture for every interface (grammar / picker / completion / events / decorations / config / modes / keymap / logging), exercised end-to-end in CI. (`tree-sitter-motions` as a *plugin* is deferred post-1.0 — it is not the validator.) SemVer only after 1.0. WIT changes ARE breaking; design carefully upfront. |
 | **WASM host-call overhead exceeds budget** (new in v0.4) | **Medium** | **High** | **Per-call benchmarks gated in CI (typed call < 500ns p99; grammar-extension round-trip < 5μs p99). AOT compilation; module cache; resource handles; native host APIs for hot work. Built-in motions / text objects / operators stay native; WASM is for extensions only.** |
 | **Plugin cold-start tax at editor launch** (new in v0.4) | **Medium** | **Medium** | **Lazy instantiation; AOT module cache reused across launches; deferred activation on first invocation. Cold-start budget for 50 plugins: < 30ms total.** |
 | Per-line layout cache invalidation bugs | Medium | High | Property tests for cache coherence; content + style hashes. |
@@ -3180,7 +3191,7 @@ Path 4 (inline blocks). `org-mode`. `WebRenderer` (decision time). Remote / SSH.
 | LSP server quirks | High | Low | Per-server compatibility shims. |
 | Async cancellation correctness | Medium | High | Property tests; `tracing` spans on every async op. |
 | **Vim grammar edge cases** (revised in v0.4) | **High** | **Medium** | **Vim semantics are committed -- the grammar is not modified. Specific edge cases (rare register quirks, obscure block-visual behaviors) may be deferred for v1 with explicit tests documenting the gaps. The default keymap is a config file so users can patch differences locally.** |
-| **Grammar extension API churn** (new in v0.4) | **High** | **High** | **API is exercised end-to-end in v1 by the `tree-sitter-motions` plugin (built but possibly not shipped) plus internal test plugins. SemVer freeze on the grammar WIT only after the extension API has supported at least three real plugins.** |
+| **Grammar extension API churn** (new in v0.4) | **High** | **High** | **The grammar-extension API is exercised end-to-end in CI by the `grammar-guest` fixture (motions / text-objects / ex-commands, incl. the guest-err + trap/quarantine paths) through the sync trampoline. SemVer freeze on the grammar WIT only after the extension API has supported at least three real plugins. (`tree-sitter-motions` as a plugin is deferred post-1.0.)** |
 | Major mode plugin churn breaks buffers | Medium | High | Version pinning per plugin manifest; WIT protocol version declared per binding. |
 | Rich buffer scroll on huge documents | Medium | Medium | Eager layout < 50K lines; lazy with overscan above. |
 | Status segment thrash | Medium | Medium | Pull-not-push update model; per-segment update triggers; fail-isolated rendering. |

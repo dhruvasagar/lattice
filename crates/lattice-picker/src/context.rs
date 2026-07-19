@@ -21,6 +21,7 @@
 //! sizes (<100 buffers, <26 marks, <40 registers).
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use lattice_core::Buffer;
 use lattice_protocol::Position;
@@ -53,6 +54,11 @@ pub struct PickerContext<'a> {
     /// real content lives App-side and the host pastes via the
     /// `PasteRegister` outcome.
     pub registers: Vec<(String, String)>,
+    /// MARG.3 (2026-07-15): active minor+major mode names for the
+    /// current buffer. The command completion margin uses this to
+    /// filter out keybindings whose source minor/major mode is not
+    /// currently active (see [`KeybindingSource::Mode`]).
+    pub active_modes: Vec<Arc<str>>,
 }
 
 /// Snapshot of the active document buffer at the moment the

@@ -135,6 +135,8 @@ pub struct ExBuiltins {
     // `<C-x><C-s>` is the live trigger, now mode-owned). The expand
     // path no longer has an ex-command surface form.
     pub reload_snippets: ExCommandId,
+    pub cd: ExCommandId,
+    pub pwd: ExCommandId,
 }
 
 pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
@@ -2011,6 +2013,46 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             surface_form: SurfaceForm::Keyword,
         },
     );
+    let cd = registry.register_ex_command(
+        "ex:cd",
+        "Change the working directory (`:cd [path]`). No arg goes to HOME.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Arc::new(parse_optional_path),
+            apply: Arc::new(|ctx| {
+                let path = match &ctx.args {
+                    Args::String(s) => Some(s.clone()),
+                    Args::None => None,
+                    _ => return Err(CommandError::BadArgs("unexpected argument".into())),
+                };
+                Ok(Effect::ChangeDir(path))
+            }),
+            args_schema: vec![ArgSpec {
+                name: "path".into(),
+                kind: ArgKind::String,
+                doc: "Directory path. Absent = HOME.".into(),
+                prompt: "directory:".into(),
+                default: ArgDefault::None,
+                completion: Some("gen:directories".into()),
+            }],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    let pwd = registry.register_ex_command(
+        "ex:pwd",
+        "Print the current working directory (`:pwd`).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| Ok(Effect::PrintWorkingDir)),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
     let help = registry.register_ex_command(
         "ex:help",
         "Open the topic index or a named help topic (`:help [topic]`).",
@@ -2116,6 +2158,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
         lsp_rename,
         lsp_code_action,
         reload_snippets,
+        cd,
+        pwd,
     }
 }
 

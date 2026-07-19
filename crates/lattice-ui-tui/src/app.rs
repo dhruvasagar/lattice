@@ -325,6 +325,17 @@ pub struct App {
     /// the actor thread and read here -- identical contract,
     /// different writer.
     pub render_state: std::sync::Arc<arc_swap::ArcSwap<lattice_host::render_state::RenderState>>,
+    /// Per-frame pinned `ActiveDocumentRenderState`. When `Some`
+    /// (between `pin_render_state` / `unpin_render_state` calls),
+    /// [`Self::ad`] returns this cached snapshot so every `ad()` read
+    /// within a single frame draw sees the exact same cursor, scroll,
+    /// option, and modal state — regardless of how many call sites
+    /// exist or whether the actor publishes a new `RenderState` mid-
+    /// frame. Both the TUI and GPUI peers call pin/unpin (or equivalent
+    /// in their render loop); without this every independent `ad()`
+    /// site in a renderer loads a fresh `Arc` from the shared ArcSwap
+    /// and can see a torn snapshot relative to other sites.
+    frame_ad: std::sync::Mutex<Option<std::sync::Arc<lattice_host::render_state::ActiveDocumentRenderState>>>,
     /// Perf plan B.2 slice B.2.a: renderer-owned clone of the
     /// editor's `syntax_static_overlay_quads_cell`. The cell is the
     /// overlay worker's output channel — written by
@@ -993,14 +1004,36 @@ impl App {
     /// flips to read from a renderer-owned `render_state`
     /// field; call sites stay unchanged.
     pub fn ad(&self) -> std::sync::Arc<lattice_host::render_state::ActiveDocumentRenderState> {
-        // Slice 3c.atomic.A: read through the renderer-owned
-        // `render_state` Arc rather than `self.editor.render_state`.
-        // The two are the same `Arc<ArcSwap<RenderState>>` cell
-        // today (cloned at App::new), so observed values match
-        // byte-for-byte; the change isolates this method from the
-        // `self.editor` field so 3c.atomic can sever the Editor
-        // reference without disturbing reader call sites.
+        // Per-frame pin: when the renderer has pinned a snapshot
+        // (between pin/unpin calls), return it so all ad() call
+        // sites within one frame draw see the same cursor, scroll,
+        // options, and modal state — regardless of intermediate
+        // actor publications. Without the pin, each independent
+        // ad() loads a fresh Arc from the shared ArcSwap and can
+        // observe a different snapshot, causing the cursorline
+        // highlight and cursor blink position to disagree.
+        if let Some(pinned) = self.frame_ad.lock().unwrap().as_ref() {
+            return pinned.clone();
+        }
+        // Fall through to the live ArcSwap when no pin is active
+        // (e.g. during non-render reads).
         self.render_state.load().active_document.load_full()
+    }
+
+    /// Pin the current `ActiveDocumentRenderState` snapshot so every
+    /// [`ad()`](Self::ad) call until [`unpin_render_state`](Self::unpin_render_state)
+    /// returns the same `Arc`. Call at the start of each frame render
+    /// (before `terminal.draw()` in the TUI, before the GPUI render).
+    pub fn pin_render_state(&self) {
+        let snap = self.render_state.load().active_document.load_full();
+        *self.frame_ad.lock().unwrap() = Some(snap);
+    }
+
+    /// Release the per-frame pin so the next [`ad()`](Self::ad) call
+    /// loads a fresh snapshot from the actor. Call after each frame
+    /// render completes.
+    pub fn unpin_render_state(&self) {
+        *self.frame_ad.lock().unwrap() = None;
     }
 
     /// Phase 5.8.AF.5 / Slice 3c.final.B (group 1): wait-free

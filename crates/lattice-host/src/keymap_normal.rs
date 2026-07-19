@@ -383,6 +383,15 @@ pub fn register_normal_bindings(
         CommandInvocation::of(actions.repeat_last_change),
         source(),
     );
+    // `-` -- open oil for the parent directory of the current buffer's file,
+    // or navigate up one directory from within an oil buffer.
+    handle.bind(
+        layer,
+        mode,
+        &[lit_char('-')],
+        CommandInvocation::of(actions.oil_navigate_up),
+        source(),
+    );
     // Specials.
     handle.bind(
         layer,

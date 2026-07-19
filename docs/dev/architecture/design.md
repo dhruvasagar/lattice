@@ -1,9 +1,77 @@
 # Design Document: A Modal, GPU-Accelerated, Plugin-First Editor
 
-> **Status:** Draft v0.5
+> **Status:** Draft v0.6
 > **Codename:** `lattice` (placeholder -- rename freely)
 > **Author:** TBD
-> **Last updated:** 2026-05-08
+> **Last updated:** 2026-07-15
+
+---
+
+> **Status legend (v0.6).** This revision reconciled the spec against the
+> implemented code (main branch, through Phase 7). Where a subsection
+> describes design that has *not* yet shipped, it is fenced inline:
+>
+> - ✅ **built** — implemented and exercised (the default; unmarked prose is built).
+> - 🟡 **partial** — some of the described surface is built; the rest is planned.
+> - 📝 **planned** — designed but not yet implemented; kept here as the forward
+>   spec (design.md is authoritative for *what to build*, not only what exists).
+>
+> The companion ledger [`../operations/implementation.md`](../operations/implementation.md)
+> is the authoritative per-feature current-state record; this doc is the design.
+> When they disagree on *what exists today*, the ledger + the code win.
+
+---
+
+## Changes from v0.5
+
+This revision is a **reconciliation pass**: the spec had drifted from the
+implementation across many sections (the design predates most of Phases 4–7).
+v0.6 corrects the load-bearing divergences, replaces superseded designs with
+what actually landed, and fences not-yet-built design as 📝 planned rather than
+deleting it. Headline changes:
+
+- **§3 / §4 corrected.** "Major and minor modes are themselves implemented as
+  plugins" was false — modes are a **native `lattice-mode` trait** crate (WASM is
+  the *extension* substrate, not the mode substrate). The threading model dropped
+  the unused `rayon` pool (off-UI work is `spawn_blocking`) and now names the
+  dedicated `current_thread` editor actor. The tech stack fences `taffy` /
+  `cosmic-text` / `parley` / `wgpu` (none integrated) and adds the shipped
+  `ratatui` / `crossterm` (TUI), `imara-diff`, `fancy-regex`, `gpui`.
+- **§5.6 Rendering rewritten.** The per-buffer `Renderer` trait with
+  `EditorRenderer` / `DocumentRenderer`, four selectable GPU fast paths, a taffy
+  `DocumentRenderer`, and a v1 sprite atlas **never shipped**. What landed: an
+  off-thread **cell-grid / `DisplayMatrix`** (`lattice-cells`) consumed by the
+  `lattice-ui-tui` (ratatui) and `lattice-ui-gpui` (GPUI) peers behind a
+  marker-style `Renderer { Theme, PaneRenderRegistry }` trait. The old design is
+  demoted to a superseded-alternative note; the sprite atlas is fenced 📝.
+- **§5.1 / §5.2 corrected.** The published `Document` struct was fiction (the
+  real struct is lean; syntax / diagnostics / modes live in sibling crates); undo
+  is a linear `UndoStack`, not a persisted branching tree. Grammar `execute` is
+  **synchronous** (the `Pending` envelope is the runtime handle layer); the actor
+  mailbox is **unbounded** (`CommandError::Busy` was deliberately removed).
+- **§5.4 corrected.** LSP attach moved to `LspMode::on_activate` (the retired
+  `attach_driver` / `build_lsp_subsystem` are gone) under the mode-ownership rule.
+- **§5.9 / §5.10 / §5.12 reconciled.** UI structs updated to the shipped shapes
+  (binary `PaneNode`, `TabSlot`, `ModelineRegistry`, buffer-backed popups); the
+  event bus is a concrete `struct` in `lattice-runtime`; config is the v0.5
+  `OptionDecl` / `trait OptionType` registry over `lattice.toml`. Rich minibuffer,
+  notifications, scrollbars/minimap, before-event veto, `:autocmd`, and the
+  `init.rs`-as-WASM config path are fenced 📝 planned.
+- **§6 / §9 corrected.** The `Command` enum and cross-process MessagePack framing
+  are retired (in-process typed mailbox); the `Event` catalog matches
+  `lattice-protocol`. The WIT §9.4 rewritten to the shipped
+  `lattice:plugin-host` package: guest-**exported** capability worlds
+  (`picker-source`, `completion-source`, `decorations`) driven by the host, plus a
+  grammar callback trampoline — not the old import-return-id / monolithic `ui` model.
+- **§8 / §14 / §15 refreshed.** Perf numbers updated to `benchmarks.md`; the
+  Phase-7 plugin-host rows filled in (grammar round-trip ~340 ns, CI-gated) and the
+  WASM-overhead risks downgraded to mitigated; resolved open questions struck
+  (Replace mode, narrow-to-region, per-plugin async task, built-in snippets).
+- **§11 Project Layout rewritten** to the real 32-crate workspace (the
+  `lattice-render*` trisection, `lattice-modes`, `lattice-config-api`, and
+  `lattice-headless` never existed; `wit/` and `plugins/` corrected).
+- **Appendix B fenced.** Only interactive arg specs (B.1) and `:describe-buffer`
+  (B.10) are built; the rest marked 📝 / 🟡.
 
 ---
 
@@ -191,46 +259,60 @@ The editor is structured as **three strictly separated layers** communicating ex
 
 ```
 +------------------------------------------------------------------+
-|                   UI Layer (GPU-rendered)                        |
+|                   UI Layer (renderer peers)                      |
 |                                                                  |
-|  Window/tab management | Pane tree | Compositor | Input loop     |
-|  Popup manager | Picker manager | Notification queue             |
-|  Status bar | Buffer-backed views (placed in panes)              |
+|  Window/tab management | Pane tree | Input loop                  |
+|  Popup + picker (buffer-backed) | Echo area | Buffer-backed views|
 |                                                                  |
 |  +------------------------------------------------------------+  |
-|  |              Renderer trait (abstraction)                  |  |
-|  |   +----------------+ +------------------+ +-----------+    |  |
-|  |   | EditorRenderer | | DocumentRenderer | |  Future:  |    |  |
-|  |   |  (panes)       | |  (everything     | |    Web    |    |  |
-|  |   |                | |   else)          | |  Renderer |    |  |
-|  |   +----------------+ +------------------+ +-----------+    |  |
+|  |     lattice_host::Renderer  (marker trait: Theme,          |  |
+|  |     PaneRenderRegistry) -- consumes a per-pane DisplayMatrix|  |
+|  |   +----------------+ +----------------+ +---------------+   |  |
+|  |   |  TuiRenderer   | |  GpuiRenderer  | |   Future: Web |   |  |
+|  |   | (lattice-ui-   | | (lattice-ui-   | |   (placeholder|   |  |
+|  |   |  tui, ratatui) | |  gpui, GPUI)   | |    )          |   |  |
+|  |   +----------------+ +----------------+ +---------------+   |  |
 |  +------------------------------------------------------------+  |
 +------------------------------+-----------------------------------+
-					   Commands | Events
+			 CommandInvocation | RenderState snapshots
 							   v ^
 +------------------------------------------------------------------+
 |                          Core Layer                              |
 |                                                                  |
-|  Buffers (rope) | Documents | Selections | Undo Tree |           |
-|  Mode/Command Dispatcher | Tree-sitter | LSP Clients |           |
-|  Major/Minor Mode Registry | Plugin Host | File I/O |            |
-|  Workspace | Search | Status Segment Registry                    |
+|  Buffers (rope) | Documents | Selections | Undo stack |          |
+|  Grammar dispatcher | Tree-sitter | LSP clients |                |
+|  Major/Minor Mode Registry | File I/O | cell-grid worker |       |
+|  Workspace | Search | Modeline registry                         |
 +------------------------------+-----------------------------------+
-					   Commands | Events (same protocol as UI)
+			 (in-process typed mailbox + event bus)
 							   v ^
 +------------------------------------------------------------------+
-|                  Plugin Layer (WASM sandboxes)                   |
+|          Plugin Layer (WASM sandboxes) -- 📝 host built          |
+|          (Phase 7); editor-side loading is Phase 8               |
 +------------------------------------------------------------------+
 ```
 
-**Critical architectural property:** *the UI is just the most privileged client of the core.* Major and minor modes are themselves implemented as plugins.
+**Critical architectural property:** *the UI is just the most privileged client
+of the core.* Major and minor modes are a **native `lattice-mode` trait** (not
+WASM plugins) — the default keymap and grammar never cross the WASM boundary;
+WASM is the substrate for *extensions* (and, in a later phase, for shipping
+modes as components). See §5.8.
 
 **Threading model:**
 
-- **UI thread** (one): owns window, GPU surface, input event loop, layout, rendering. Renders at vsync. Does no blocking work.
-- **Core executor** (tokio multi-thread): owns buffers, command dispatcher, LSP clients, plugin instances.
-- **Render-prep workers** (rayon pool): parallel work -- syntax highlights, search/replace, indexing, text shaping for rich buffers.
-- **Blocking I/O thread pool** (`spawn_blocking`): file ops on slow filesystems, large files, tree-sitter parsing.
+- **UI / render thread** (one per renderer peer): owns the window / terminal,
+  input event loop, layout, rendering. Consumes published snapshots; does no
+  blocking work, no I/O, no parsing (paramount goal #4, §5.7).
+- **Editor actor** (a dedicated `current_thread` tokio task): owns the writable
+  `Document` and dispatches grammar; `&mut Editor` cannot escape it. Reads are
+  wait-free snapshot loads (arc-swap).
+- **Shared / LSP executors** (tokio multi-thread): LSP clients, background
+  subsystems, plugin instances (each plugin owns its own `wasmtime::Store` as a
+  task).
+- **Blocking pool** (`spawn_blocking`): file ops, large files, tree-sitter
+  parsing, cell-grid builds, diff computation — all CPU/IO work off the actor and
+  render threads. (An earlier draft named a `rayon` pool for render-prep; that was
+  never adopted — `spawn_blocking` covers it.)
 
 ### 3.1 Core vs plugin: the fast path / orchestration split
 
@@ -249,7 +331,7 @@ Concretely:
 | **Picker** | widget, keymap, popup geometry, matcher / ranker default impls. Used by ~10 surfaces; each fires off the keystroke path. | picker *sources* (fuzzy file finder, project-grep, command palette content) via the existing trait surface. |
 | **Insert-mode completion** | state machine, aggregator, popup widget, completion-popup minor mode, matcher / ranker traits. | sources beyond the bundled set (LSP + snippets + buffer-words + path + tree-sitter): AI / Copilot, project-specific generators. |
 | **Modal engine** | grammar, dispatcher, builtins (motions / operators / text objects), modal state machine. | new motions / text objects / operators via the grammar-extension trait surface. |
-| **Renderer** | layered architecture (TUI, GPU, document), pane tree, popup primitives, sprite atlas. | renderer overlays (e.g. inline-error decorations, custom gutter content); status-line segments. |
+| **Renderer** | the cell-grid / `DisplayMatrix` substrate (`lattice-cells`) + the `lattice-ui-tui` (ratatui) and `lattice-ui-gpui` (GPUI) peers, pane tree, buffer-backed popups. | renderer overlays (e.g. inline-error decorations, custom gutter content); modeline elements. |
 | **Buffer / Document** | rope, undo, edit dispatch, snapshot model. | content providers for non-file buffers (REPL, terminal, scratch:rust, magit-clone, diff viewer). |
 
 **What this isn't:** a closed shop. The trait surface is rich (CandidateGenerator / CandidateMatcher / CandidateRanker / CandidateAnnotator / SourceGenerator / Hook / EventSubscriber / SpriteSet / StatusSegment / FoldProvider / etc.). Plugins extend lattice through these traits — that's where extensibility lives. What the trait surface does *not* expose is the keystroke-frequency state machines themselves: those stay in core and the trait surface taps into them.
@@ -264,21 +346,24 @@ Concretely:
 
 | Concern               | Choice                                                             | Rationale                                                           |
 |-----------------------|--------------------------------------------------------------------|---------------------------------------------------------------------|
-| Language              | **Rust (stable)**                                                  | Memory and data-race safety; mature async; strong editor ecosystem. |
-| Async runtime         | **tokio** (multi-thread)                                           | Default; integrates everywhere.                                     |
+| Language              | **Rust**, edition 2024, pinned **1.94** (`rust-toolchain.toml`)    | Memory and data-race safety; mature async; strong editor ecosystem. |
+| Async runtime         | **tokio** (multi-thread shared/LSP pools + a `current_thread` editor actor) | Default; integrates everywhere.                           |
 | Buffer                | **`ropey`**                                                        | Battle-tested rope; O(log n) edits; cheap clones.                   |
 | Parser                | **`tree-sitter`**                                                  | Incremental, error-recovering, ubiquitous.                          |
+| Regex / search        | **`fancy-regex`**                                                  | Backreferences + look-around for `/` and `:s`.                      |
+| Diff                  | **`imara-diff`**                                                   | Fast Myers/histogram diff for the diff subsystem (§5.13).           |
 | LSP types             | **`lsp-types`**                                                    | Generated bindings; we write our own client.                        |
-| GPU rendering         | **GPUI** (preferred) or **`wgpu`** (fallback)                      | GPUI purpose-built; wgpu the fallback.                              |
-| Layout (UI furniture) | **`taffy`**                                                        | Standalone flexbox/block layout.                                    |
-| Text shaping          | **`cosmic-text`** or **`parley`**                                  | Full Unicode when needed; bypassed on monospace fast path.          |
-| Plugin runtime        | **`wasmtime`** + Component Model + WASI                            | Sandboxing, fuel limits, async host.                                |
-| Serialization         | **`serde`** + MessagePack (`rmp-serde`); WIT for plugin interfaces | Zero-cost in-process; Component Model for plugins.                  |
-| Config                | **TOML**                                                           | Single config tier. Anything beyond config is a WASM plugin (§10).  |
+| TUI renderer          | **`ratatui`** + **`crossterm`** (`lattice-ui-tui`)                 | First-class terminal peer (headless / SSH), not a fallback.         |
+| GPU renderer          | **GPUI** (`gpui`, optional `gui` feature; `lattice-ui-gpui`)       | Purpose-built GPU UI; peer of the TUI over a shared `DisplayMatrix`. |
+| Layout / text shaping | 📝 **`taffy`** / **`cosmic-text`** / **`parley`** (planned)         | Not integrated — the shipped renderer is a cell grid; GPUI shapes per-line. `wgpu` fallback likewise not pursued. |
+| Plugin runtime        | **`wasmtime`** (v46) + Component Model + WASI p2                   | Sandboxing, fuel + epoch limits, async host (Phase 7).              |
+| Serialization         | **`serde`**; **WIT** for plugin interfaces                        | In-process typed channels; Component Model for plugins. (Cross-process MessagePack framing was dropped — the editor is one process, §6.) |
+| Config                | **TOML** (`lattice.toml`)                                          | Static option tier; programmable config (`init.rs`→WASM) is 📝 planned (§10). |
+| Clipboard             | **`arboard`**                                                     | System clipboard integration.                                      |
 | CLI                   | **`clap`**                                                         | Standard.                                                           |
-| Logging               | **`tracing`** + `tracing-subscriber`                               | Structured logs, span timing.                                       |
-| Build                 | **`cargo`** workspace                                              | Crate boundaries enforce architecture.                              |
-| Testing               | **`cargo test`**, `insta`, `criterion`                             | Snapshot + benchmarks.                                              |
+| Logging               | **`tracing`** + `tracing-subscriber`                               | Structured logs, span timing; `MessagesLayer` tees to `*messages*`. |
+| Build                 | **`cargo`** workspace (32 crates)                                  | Crate boundaries enforce architecture.                             |
+| Testing               | **`cargo test`**, `criterion`                                     | ~3.5k tests + latency/throughput benches (ratcheted in CI).         |
 
 ---
 
@@ -288,63 +373,65 @@ Concretely:
 
 The atomic unit of editable text is a **`Buffer`**, internally backed by `ropey::Rope`. Buffers are wrapped in a **`Document`** with metadata.
 
+The `Document` is deliberately **lean** — it owns only text, selections, and
+undo. Syntax, diagnostics, modes, and modal state are *not* fields on it; they
+live in sibling crates keyed by buffer id (which is what lets `lattice-core`
+stay dependency-free at the bottom of the graph). The real shape
+(`lattice_core::Document`):
+
 ```rust
 struct Document {
 	id: DocumentId,
-	buffer: Buffer,
-	language: Option<LanguageId>,
-	syntax: Option<SyntaxState>,
-	diagnostics: Vec<Diagnostic>,
+	path: Option<PathBuf>,
+	buffer: Buffer,               // ropey-backed
+	version: u64,                 // bumps on any state change
+	text_version: u64,            // bumps only on text mutation (syntax-cache trigger)
 	selections: SelectionSet,
-	history: UndoTree,
-	version: u64,
-	encoding: Encoding,
-	line_ending: LineEnding,
-	dirty: bool,
-	major_mode: MajorModeId,
-	minor_modes: Vec<MinorModeId>,
-	rendering_profile: RenderingProfile,
+	undo: UndoStack,              // linear undo/redo (not a branching tree)
+	clean_position: Option<usize>,// undo depth matching on-disk state → `dirty` is derived
+	coalescing: bool,             // fold an insert session into one undo unit
+	group_has_entry: bool,
 }
 ```
 
+**Where the rest lives:** syntax → a `lattice-syntax` handle; diagnostics →
+`lattice-lsp`; language / major mode / minor modes → `App.active_modes`
+(per-*buffer*, in the host, because mode resolution needs `lattice-config`);
+modal state (§5.2) → the host's `Editor`. Keeping these off `Document` is what
+breaks the `lattice-core → lattice-mode` dependency (see `mode-architecture.md`).
+
 **Key properties:**
 - Cheap snapshotting via O(1) rope clone.
-- Versioning for stale-result rejection.
-- Branching undo tree, persisted to sidecar.
-- Selections support a primary cursor with charwise / linewise / blockwise visual extents (vim model). The data type is a set so multi-cursor is a clean post-1.0 extension; v1 invariants assume one selection.
-- Major mode determines parser, LSP server, keymaps, style mappings, rendering profile.
-- Modal state (Normal / Insert / Visual / Op-pending / Command / Search) lives on the Document as a separate field; see §5.2. Major mode and modal mode are orthogonal axes.
+- Versioning for stale-result rejection (`version` + `text_version`).
+- Dirtiness is **derived** (`clean_position` vs. current undo depth), not a stored flag.
+- Undo is a **linear `UndoStack`** (undo + redo vecs; a new edit clears redo). 📝 A branching undo tree + sidecar persistence are post-v1.
+- Selections support a primary cursor with charwise / linewise / blockwise visual extents (vim model). The type is a set so multi-cursor is a clean post-1.0 extension; v1 invariants assume one selection.
+- Modal state (Normal / Insert / Visual / Op-pending / Command / Search) is its own axis, orthogonal to major mode; see §5.2.
 
 **Synthetic Documents.** Help / log / scratch / messages / terminal-scrollback views are all `Document` instances on the same rope-backed abstraction. They differ from on-disk Documents along two orthogonal axes: `BufferMutability` (`ReadOnly` / `Interactive` / `Editable`, §5.9.8) and the absence of a file path. The grammar and rendering layers do not branch on "synthetic vs. file-backed"; mutability gates only operator-level edits via the read-only echo path. Terminal scrollback is the most recent addition — see [`terminal-as-document.md`](terminal-as-document.md) — but the model also covers help (§5.11), `*messages*`, LSP logs, and `:scratch`.
 
 #### 5.1.1 Position history (jump list + mark ring unified)
 
-Both vim's jump list and emacs's mark ring track "where the cursor was" -- the same underlying data, with different push policies. We unify them into one **position history** per buffer plus one global history, with each entry tagged by the source that pushed it:
+Both vim's jump list and emacs's mark ring track "where the cursor was" -- the same underlying data, with different push policies. We unify them into one **position history** with each entry tagged by the source that pushed it. It lives in the host (`lattice-host`, `state.rs`), fed by grammar via `Effect::RecordJump`; the real `PositionEntry` carries a `buffer` + registry `buffer_id` + `terminal_scroll_offset` (not a `DocumentId` / `timestamp`):
 
 ```rust
-struct PositionHistory {
-	entries: VecDeque<PositionEntry>,    // bounded ring
-	cursor: usize,                       // current index for next/prev navigation
-}
-
 struct PositionEntry {
-	document: DocumentId,
 	position: Position,
 	source: PositionSource,
-	timestamp: Instant,
+	buffer: /* name */,
+	buffer_id: BufferId,
+	terminal_scroll_offset: Option<u32>,
 }
 
 enum PositionSource {
-	AutoJump,        // pushed by "big motions" (vim jump list semantics)
-	ExplicitMark,    // pushed by user (emacs set-mark semantics)
-	PluginPush,      // pushed by plugins (LSP go-to-definition, fuzzy-finder hop, etc.)
-	NamedMark(char), // vim's a-zA-Z marks
+	AutoJump,        // ✅ pushed by "big motions" (vim jump list semantics)
+	NamedMark(char), // ✅ vim's a-zA-Z marks
+	ExplicitMark,    // 📝 reserved (emacs set-mark) — not yet wired
+	PluginPush,      // 📝 reserved (LSP / fuzzy-finder hops) — not yet wired
 }
 ```
 
-**Different keybindings walk different views.** `<C-o>` / `<C-i>` (vim) iterate over `AutoJump` and `PluginPush` entries; `g;` / `g,` (vim mark history) iterate over `NamedMark` entries; an emacs-style `pop-to-mark` walks `ExplicitMark` entries. All bindings consume the same data structure through filtered iterators -- no duplicate state.
-
-Plugins push entries through a typed API (`history.push(entry)`); LSP go-to-definition, fuzzy-finder selections, and search jumps all participate in the same history with `PositionSource::PluginPush`.
+**Different keybindings walk different views.** `<C-o>` / `<C-i>` (vim) iterate the jump-list (`AutoJump`) entries; `g;` / `g,` walk `NamedMark` entries. All bindings consume the same data structure through filtered iterators -- no duplicate state. The `ExplicitMark` / `PluginPush` sources are reserved slots (the enum and filtered-view machinery exist); the plugin-push typed API arrives with the plugin loader (Phase 8).
 
 ### 5.2 Modal Editing Engine
 
@@ -390,28 +477,43 @@ pub struct CommandInvocation {
 	pub count: Option<Count>,
 	pub register: Option<Register>,
 	pub range: Option<Range>,
+	pub target: Option<Target>,      // operator's motion / text-object target
+	pub bang: bool,                  // ex-command `!` (e.g. `:q!`)
 	pub args: Args,                  // typed per the command's signature
 }
 
-/// Submit an invocation. Returns immediately with a typed handle; the
-/// invocation runs on the document actor that owns the target buffer.
-/// This is the seam every command flows through -- vim chord, `:` line,
-/// keymap, plugin, palette -- so it MUST NOT block the caller.
-pub fn execute(inv: CommandInvocation) -> Result<Pending, CommandError>;
+/// Grammar dispatch is SYNCHRONOUS: it runs on the document actor that owns the
+/// buffer and returns the Effect directly. (`execute_with_env` / `execute` /
+/// `execute_motion_only` in `lattice-grammar`.)
+pub fn execute(reg: &CommandRegistry, doc: &mut Document, /* … */ inv: CommandInvocation)
+	-> GrammarResult<Effect>;
+```
 
-pub struct Pending {
-	pub id: InvocationId,
-	pub effect: oneshot::Receiver<Result<Effect, CommandError>>,
+**The async envelope is the *runtime handle* layer, not the grammar.** Grammar
+`execute` is a plain synchronous call. What makes command submission non-blocking
+is that it happens *inside the editor actor's own task*: the UI sends a
+`CommandInvocation` over the actor mailbox and gets back a `Pending<Effect>`
+(a oneshot the caller may `await` or drop), while the actor runs `execute`
+synchronously on its thread and publishes a fresh snapshot. So "sync grammar
+dispatch" and "never block the UI" are both true — the boundary is the mailbox
+(`lattice-runtime`), not the grammar dispatcher.
+
+```rust
+// lattice-runtime: the actor-handle seam the UI actually calls.
+pub struct Pending<T> { /* oneshot-backed; await or drop */ }
+impl RopeDocumentHandle {
+	pub fn dispatch(&self, inv: CommandInvocation, env: DispatchEnv) -> Pending<Effect>;
 }
 ```
 
-**Why async, not sync.** Commands may run synchronously on the document actor (`dw`, simple motions, single-buffer edits) or asynchronously (`:write` to a slow disk, `:!cmd`, plugin operators that fetch over LSP). The dispatcher cannot tell which without inspecting the registered body, and even sync-looking commands can fan out into hooks that must run before commit. Returning a `Pending` is uniform: callers that want to wait can `await` the receiver, callers that don't (the input loop, macro replay) hand it to a per-buffer queue.
+**Veto-class hooks are 📝 planned.** The design intends pre-mutation hooks
+(`BeforeApplyEdit`, `BeforeBufferWrite`) that run inline under a latency budget
+and may veto/mutate. Today the event bus is **observation-only** (§5.10.2) — the
+`Before*` veto/mutation path is not yet built.
 
-**Veto-class hooks are bounded-sync.** Hooks subscribed to pre-mutation events (`BeforeBufferWrite`, `BeforeApplyEdit`) run inline on the actor under a hard latency budget (target: 1 ms p99 per hook, total 5 ms p99); exceeding it is a logged warning, not a panic, and a repeat offender gets demoted to advisory-only. Observation-class hooks (`BufferChanged`, `ModeChanged`) are dispatched fire-and-forget after commit. This split is what keeps the UI's keystroke-to-glyph budget intact even with active plugins.
+**Atomicity scope.** A single `CommandInvocation` is atomic *within one document*: edits, selection updates, and the resulting `Effect` commit together or not at all. Cross-document and cross-pane invocations (📝 `:bufdo` / `:windo` are not yet built) would be a sequence of per-document atoms with explicit failure modes, not a global transaction.
 
-**Atomicity scope.** A single `CommandInvocation` is atomic *within one document*: edits, selection updates, and the resulting `Effect` commit together or not at all. Cross-document and cross-pane invocations (`:bufdo`, `:windo`, plugin-orchestrated multi-buffer refactors) are a sequence of per-document atoms with explicit failure modes, not a global transaction -- the cost of distributed transactions over actor mailboxes is not worth the use cases.
-
-**Backpressure.** *(As-built correction: the document actor uses an **unbounded** mailbox; the `CommandError::Busy` variant below was never built.)* The original design gave each document actor a bounded mailbox returning `CommandError::Busy` when full. The implementation deliberately switched to an unbounded mailbox (actor-seam audit / H3): keystroke commands must never be rejected or blocked, and the actor drains them in order — the real backpressure is the single-writer serialization, not a queue cap. The event bus *does* keep the bounded-queue discipline: subscriber queues are bounded, and a slow subscriber gets dropped events with a counter, not backpressure on the publisher.
+**Backpressure.** The actor mailbox is **unbounded** (`tokio::mpsc::unbounded`). An earlier design used a bounded mailbox that returned `CommandError::Busy` when full, but that dropped keystrokes under load (audit slice 6/H3) and was removed — `Busy` is gone from `CommandError`. The event bus still applies bounded-queue discipline for slow subscribers (drop-with-counter, no publisher backpressure).
 
 The vim user experience is preserved exactly:
 
@@ -432,7 +534,13 @@ The vim user experience is preserved exactly:
 
 **Two input surfaces, one substrate.** The vim DSL on `:` is the canonical surface for *user typing*; constructing a `CommandInvocation` directly via the WIT host is the canonical surface for *code* (plugins, `init.rs`, the Rust functional API, future scripting-shaped extensions). They meet at `CommandInvocation` -- byte-identical from `execute(...)`'s perspective regardless of origin. The DSL stays vim-shaped because vim users have decades of muscle memory and many idioms (`:%s/.../.../g`, `:1,5d`, `:wq!`) don't map cleanly to function-call syntax without re-implementing the DSL as a sugar layer; the typed surface stays typed because plugins want signatures, not strings. We deliberately do not unify the *input surface* -- only the *dispatch substrate*. (The corresponding non-goal is in §2.2.)
 
-**Every command is reachable from `:` via a small kind-prefix form.** Ex-commands keep the bare alias surface (`:wq`, `:write foo.txt`, `:set number` -- vim-shaped DSL, unchanged). Motions, operators, text-objects, and any plugin contribution registered as one of those kinds are reachable from `:` through a kind-prefix word + the registered name's tail (the part after the canonical `motion:` / `operator:` / `text-object:` namespace prefix):
+**📝 Every command reachable from `:` via a small kind-prefix form (planned).**
+The `CommandRegistry` already namespaces motions / operators / text-objects
+(`motion:` / `operator:` / `text-object:`), but the `:`-line kind-prefix parser
+below is **not yet built** — today motions/operators/text-objects are reached via
+the chord grammar, and `:` reaches ex-commands. The design: ex-commands keep the
+bare alias surface (`:wq`, `:write foo.txt`, `:set number`), and the other kinds
+become reachable through a kind-prefix word + the registered name's tail:
 
 - `:motion goto-first-line` runs the same `gg` motion the chord grammar reaches.
 - `:operator delete word-forward` runs the operator over the named motion (or text-object) target.
@@ -470,14 +578,14 @@ pub enum Range {
 	CurrentLine,                                   // .
 	Whole,                                         // %
 	Selection,                                     // current Visual / active region
-	Custom(RangeId, Args),                         // plugin-registered range
+	Custom(RangeId),                               // plugin-registered range
 }
 // As-built: `Custom` carries no `Args` (just the RangeId), and `RangeBound::Pattern`
 // holds the pattern as a `String` (compiled at use), not a pre-built `Regex`.
 
 pub enum RangeBound {
 	Line(u32), Mark(char), CurrentLine, LastLine,
-	Pattern(Regex), Offset(Box<RangeBound>, i32),
+	Pattern(String), Offset(Box<RangeBound>, i32),
 }
 
 pub struct Count(pub u32);
@@ -493,11 +601,11 @@ struct Builtins {
 	pub yank: OperatorId,
 	pub indent_left: OperatorId,
 	pub indent_right: OperatorId,
-	pub format: OperatorId,
 	pub upper: OperatorId,
 	pub lower: OperatorId,
 	pub toggle_case: OperatorId,
-	pub filter: OperatorId,
+	pub replace_char: OperatorId,       // `r`
+	// (illustrative subset; `format` / `filter` operators are 📝 not yet built)
 
 	// Motions
 	pub char_forward: MotionId,
@@ -540,48 +648,46 @@ Walks layered keymaps in priority order:
 
 Each keymap entry is `(chord_sequence) -> CommandInvocation`.
 
-Authoritative architecture reference: [`docs/keymap-architecture.md`](keymap-architecture.md). Covers the trie data structure, layer merging, performance commitments, plugin / user-config registration paths, and the migration plan from today's hand-rolled `input.rs` dispatcher.
+Resolution runs against the layered trie in the dedicated **`lattice-keymap`**
+crate; feature keymaps register at `KeymapLayer::MinorMode(mode_id)` /
+`MajorMode(mode_id)` (never `Builtin`). Authoritative reference:
+[`docs/keymap-architecture.md`](keymap-architecture.md) — the trie data structure,
+layer merging, performance commitments, and plugin / user-config registration paths.
 
 #### 5.2.4 Extensibility -- first-class
 
 Plugins extend the grammar by registering new commands. The same registration API serves operators, motions, text objects, and ex-commands; all become first-class citizens of the dispatcher:
 
+The registration API takes `(name, doc, spec)`; the spec's closures are
+`Arc<dyn Fn …>` and the caller's source location is captured via `#[track_caller]`
+(see §5.11.1). Registration returns a typed id (`MotionId` / `OperatorId` / …):
+
 ```rust
-registry.register_motion(MotionSpec {
-	id: "tree-sitter:next-function".into(),
-	args_schema: ArgsSchema::None,
-	evaluator: Box::new(|ctx, count, args| {
-		// query tree-sitter, return a new position
-	}),
-	jump: true,
-	exclusive: false,
-});
+let next_fn = registry.register_motion(
+	"motion:tree-sitter-next-function",
+	"Move to the start of the next function (tree-sitter).",
+	MotionSpec { apply: Arc::new(|ctx| { /* query tree-sitter → MotionResult */ }),
+		jump: true, exclusive: false, args_schema: vec![] },
+);
 
-registry.register_text_object(TextObjectSpec {
-	id: "git-hunk".into(),
-	args_schema: ArgsSchema::None,
-	evaluator: Box::new(|ctx, args| { /* compute Range covering the hunk */ }),
-});
-
-registry.register_operator(OperatorSpec {
-	id: "sort-lines".into(),
-	args_schema: ArgsSchema::None,
-	apply: Box::new(|ctx, range, register, args| { /* return Edit */ }),
-	repeatable: true,    // dot-repeat eligible
-});
-
-registry.register_ex_command(ExCommandSpec {
-	id: "git:blame".into(),
-	parse_args: Box::new(|raw| { /* string -> typed Args */ }),
-	apply: Box::new(|ctx, invocation| { /* return Effect */ }),
-});
+registry.register_operator(
+	"operator:sort-lines", "Sort the lines in the range.",
+	OperatorSpec { apply: Arc::new(|ctx| { /* → Effect::Edits */ }),
+		repeatable: true, args_schema: vec![], blockwise_per_row: false },
+);
 ```
 
-Every registration returns an id usable in keymaps, in `:` invocations, in scripts, and in plugin-to-plugin calls. **Tree-sitter-driven motions and text objects are post-v1, but the extension point is first-class today** -- a `tree-sitter-motions` plugin registers motions whose evaluators query the tree-sitter tree, with no host changes required.
+Plugins use the forgery-safe `register_plugin_motion(plugin_id, name, doc, spec)`
+family (§9), which stamps `SourceLayer::Plugin`. Every registration returns an id
+usable in keymaps, in `:` invocations, and in plugin-to-plugin calls.
+**Tree-sitter-driven structural motions and text objects are ✅ shipped** — 16 of
+them (`]f`/`[f`/`]c`/`[c`/`]a`/`[a`/`]l`/`[l` + the `af`/`ac`/`aa`/`al`/`aC`
+objects) live in `lattice-syntax`, registered through exactly this extension
+point with no host changes.
 
 The keymap-side companion of this extension point -- how plugins and user config bind chords to the ids returned here, layer priority across builtin / major-mode / minor-mode / user / per-buffer, and the trie merge cost on overlay push / pop -- is documented in [`docs/keymap-architecture.md`](keymap-architecture.md) §5 (extensibility) and §6 (layered registry).
 
-**Macros, marks, registers, and dot-repeat** are mechanical because every change flows through `execute(invocation)`. The `last change` for `.` is the most recent recorded `CommandInvocation`. **Macros record `CommandInvocation` sequences -- not raw keystrokes.** Replay survives keymap changes, plays back faster (no parse pass), and is editable as data: opening the macro register in a buffer-backed view (`*macro:q*`) yields a one-invocation-per-line buffer the user can hand-edit and re-store.
+**Macros, marks, registers, and dot-repeat** are mechanical because every change flows through `execute(invocation)`. The `last change` for `.` is the most recent recorded `CommandInvocation`. **Macros record resolved grammar `Action` sequences -- not raw keystrokes** (`MacroRecording { register, actions: Vec<Action> }`). Replay survives keymap changes, plays back faster (no parse pass), and is editable as data. (📝 The buffer-backed `*macro:q*` editing view is design intent, not yet built.)
 
 **Visual mode IS the active region.** When Visual is active, the current selection is automatically supplied as the `range` argument to any range-accepting command. Vim users see "operate on visual selection"; users coming from emacs see "operate on region." Both reduce to: the dispatcher receives `range = Some(Range::Selection)` when no explicit range is given and Visual is active. This is the `Range::Selection` variant added to the range type for exactly this purpose.
 
@@ -589,7 +695,7 @@ The keymap-side companion of this extension point -- how plugins and user config
 
 #### 5.2.5 Latency classes (the keystroke contract)
 
-Every command's `CommandSpec` declares a **latency class** that pins how the runtime schedules its work and what budget the CI test harness enforces:
+Every command's `CommandSpec` declares a **latency class** that pins how the runtime should schedule its work and what budget the CI harness will enforce:
 
 ```rust
 pub enum LatencyClass {
@@ -598,6 +704,15 @@ pub enum LatencyClass {
 	Background,  // no user-perceived sync budget; throughput-only
 }
 ```
+
+> **Status.** The `LatencyClass` enum is ✅ declared on every `CommandSpec` and
+> the cooperative **`CancellationToken`** is ✅ plumbed through `execute` (hot
+> loops poll it; a flip returns `CommandError::Cancelled` with no commit). The
+> **deadline-timer enforcement + CI budget gates** described below are 📝 not yet
+> built — the class is advisory today. The **event-bus completion choreography**
+> in "Events over invocation" is also 📝 aspirational: real insert-completion runs
+> through the `lattice-completion` pipeline (§5.11.3) + `gen:lsp` sources, not the
+> 7-step `CompletionRequested → … → CompletionRanked` bus flow sketched here.
 
 **Reflex.** Single-stroke editing primitives: cursor motion, char insert, mode entry, dot-repeat, simple delete, scroll. Their evaluator must commit a sync `Effect` within the keystroke budget. The input loop awaits the `Pending::effect` receiver on the keystroke path; if it's not ready by the deadline, the dispatcher cancels (see below) and the keystroke completes without a commit.
 
@@ -652,7 +767,10 @@ A command that fails its class's budget is a CI regression on the same gate that
 
 ### 5.3 Syntax: Tree-Sitter Integration
 
-Tree-sitter is responsible for **all** structural code understanding.
+Tree-sitter is responsible for **all** structural code understanding. Bundled
+grammars today: **Rust, Python, JavaScript, Markdown** (the last as a dual
+block+inline grammar, with code-block injections resolving fenced languages);
+more are added by registering into the process-wide `LangRegistry`.
 
 **Update flow** (Option B + C-series, slices B.1–B.5 / C.1–C.5):
 edit → `Buffer::apply_edit` returns `EditDelta` (~2ns) → App
@@ -675,7 +793,7 @@ fall back to full reparse without panic. Grammar-driven edits
 (operators) flow through the same chokepoint via slice C.5 so
 the byte-shift logic and `didChange` fire-out apply uniformly.
 
-**Highlight queries** evaluated lazily on visible viewport + overscan, cached per `(snapshot_ptr, text_version, viewport_range, fold_hash)`. Cache hit (steady-state norm: cursor blinking, no edit) is ~20ns; cache miss runs the QueryCursor walk (rayon-parallelized over patterns is post-1.0 work). Slice B.3 lit this up.
+**Highlight queries** evaluated lazily on visible viewport + overscan, cached per `(snapshot_ptr, text_version, viewport_range, fold_hash)`. Cache hit (steady-state norm: cursor blinking, no edit) is fast; cache miss runs the QueryCursor walk (parallelizing over patterns is post-1.0 work). Slice B.3 lit this up.
 
 **Structural motions:** `]f`/`[f`, `]c`/`[c`, `af`/`if`, `ae`/`ie`. `locals.scm` for scope-aware rename.
 
@@ -687,10 +805,10 @@ We write our own client. `tower-lsp` is server-side; `async-lsp` brings tower mi
 
 #### 5.4.1 Crate layout
 
-`lattice-lsp` is a self-contained crate; `lattice-ui-tui` consumes its public API. The module split mirrors the data-flow stages:
+`lattice-lsp` is a self-contained crate; `lattice-host` consumes its public API (attach is mode-owned, §5.4.3). The module split mirrors the data-flow stages:
 
 - `framing` -- LSP `Content-Length` header parser. Pure; stream-agnostic. Default 64 MiB per-message ceiling guards against runaway servers.
-- `jsonrpc` -- JSON-RPC 2.0 typed `Request` / `Response` / `Notification` with `RequestId` correlation (`Number` / `String` / `Null` accepted on the read path; `Number` emitted). Standard error codes (`-32700..=-32600`) plus LSP extensions (`-32099..=-32000`).
+- `jsonrpc` -- JSON-RPC 2.0 typed `Request` / `Response` / `Notification` with `RequestId` correlation. Now lives in `lattice_protocol::jsonrpc` and is re-exported as `lattice_lsp::jsonrpc`. Standard error codes (`-32700..=-32600`) plus LSP extensions (`-32099..=-32000`).
 - `codec` -- tokio `AsyncBufRead` / `AsyncWrite` codec. One `read_message` / `write_message` per LSP message; reuses scratch buffers so steady-state alloc count is one per round-trip (the body `Vec` from serde_json).
 - `transport` -- `tokio::process::Command` child-process spawn with `kill_on_drop`; captures stdin / stdout / stderr; `split()` yields the codec halves + retained `Child` so the actor's read / write loops own independent tasks.
 - `pending` -- `Pending<T>` (`oneshot::Receiver` wrapper parameterised over `LspError`). Mirrors `lattice_runtime::Pending` semantics: async-await, blocking_recv, or sync drop.
@@ -742,9 +860,9 @@ The supervisor keys actors by `(workspace_root, server_id)`. Implications:
 
 Spawn is lazy: the first `didOpen` for a `(workspace, server_id)` triggers `actor::spawn`. The handshake (`initialize` → `initialized`) completes before `open_buffer`'s reply lands, so once the supervisor's mailbox dispatches the next request the actor is fully attached. Spawn failures (binary not on `PATH`, handshake error, server response malformed) are logged via the supervisor's logger and the relevant attachment is skipped without sinking the buffer-open.
 
-**Attach is event-driven (paramount goal #4: asynchronicity).** Both the initial document and every subsequent `:e <path>` follow exactly one path: the publisher (`App::new` for the initial document, `App::do_edit` for follow-up opens) sets `BufferId → Uri` eagerly (the URI is a deterministic `uri_from_path`), publishes [`Event::DocumentOpened { id, path, version, text }`](§5.10.1), and **returns immediately**. The LSP attach driver (`lattice_lsp::attach_driver::spawn`, wired in `App::build_lsp_subsystem`) runs on the LSP runtime, owns one mpsc subscriber for `EventKind::DocumentOpened`, and serially submits each path-bearing event to the supervisor's mailbox via `LspSupervisorHandle::open_buffer`. The UI thread never parks on the LSP `initialize` round-trip — the editor's first frame draws as soon as `App::new` returns; rust-analyzer / pyright / gopls / etc. attach in the background and diagnostics flow whenever the server finishes initialising.
+**Attach is event-driven AND mode-owned (paramount goal #4 + the mode-ownership rule).** Both the initial document and every subsequent `:e <path>` follow one path: the publisher sets `BufferId → Uri` eagerly (the URI is a deterministic `uri_from_path`), publishes [`Event::DocumentOpened { id, path, version, text }`](§5.10.1), and **returns immediately**. The attach itself is owned by **`LspMode::on_activate`** (M-async.5): when the LSP minor mode activates on a buffer it subscribes to `DocumentOpened` and submits each path-bearing event to the supervisor's mailbox via `LspSupervisorHandle::open_buffer`, on the shared/LSP runtime. The earlier standalone `lattice_lsp::attach_driver::spawn` / `App::build_lsp_subsystem` wiring was **retired** in favour of this mode-owned path — a worked example of "modes own their full surface" (§5.8.2). The render thread never parks on the LSP `initialize` round-trip; servers attach in the background and diagnostics flow whenever a server finishes initialising.
 
-A `BufferId ↔ Uri` map lives on the App; `lattice-lsp` is below the UI layer in the crate graph and can't see `BufferId`. The App threads URIs into the supervisor's API.
+A `BufferId ↔ Uri` map lives in the host; `lattice-lsp` is below the host in the crate graph and can't see `BufferId`, so the host threads URIs into the supervisor's API.
 
 #### 5.4.4 Document synchronisation
 
@@ -861,7 +979,7 @@ Server priority is a single integer per `ServerConfig`; default 100. Used by the
 
 The `read_loop` detects pipe close and ends. The actor task observes the inbound `mpsc::Receiver::recv()` returning `None`, drains pending requests with `LspError::ActorGone`, signals the supervisor. The supervisor restarts with exponential backoff (100ms → 5s; max 5 retries) and re-issues `didOpen` for every URI it was tracking under that `(workspace, server_id)`. The diagnostics layer's per-server entries clear via `clear_server(&id)`; other servers attached to the same buffer keep working.
 
-Restart-with-backoff lives in the supervisor (App-side knowledge of which buffers were attached); the actor only signals "I'm gone." 4.1.h shipped the actor-side detection; 4.4 lands the supervisor-side restart loop.
+Restart-with-backoff lives in the supervisor (host-side knowledge of which buffers were attached); the actor only signals "I'm gone." Both halves shipped: 4.1.h the actor-side detection, 4.4 the supervisor-side restart loop (`restart_history` + `RESTART_WINDOW` + max-restarts in `supervisor.rs`).
 
 #### 5.4.10 Performance characteristics
 
@@ -949,7 +1067,18 @@ WASM call overhead is real but bounded. Ground rules:
 
 #### 5.5.6 Bundled plugins
 
-Lattice ships with a curated set of **bundled plugins** -- WASM Component Model packages compiled into the editor binary (or shipped in a known directory next to it) so they're available without a separate install step. They are the same shape as user-installed plugins; they just have a higher trust default and zero install friction.
+> **📝 Status (Phase 8 / 8b).** The plugin **host** is ✅ built (Phase 7:
+> Component Model, WIT seams, capability/fuel/epoch, WASI-fs isolation, AOT
+> cache, per-call CI budgets). But it is **not yet wired into the editor**
+> (`lattice-host` depends only on the wasmtime-free `lattice-plugin-api`
+> catalog, guard-tested) and **no bundled plugins ship** — `plugins/fuzzy-finder`
+> is a seam-parity test fixture, not a loaded plugin. Everything below is the
+> forward plan. Note much of this *functionality* already ships **natively**
+> (fuzzy-finder = `lattice-picker`, grep + git = `lattice-diff`, snippets =
+> `lattice-snippet`, outline = `:lsp-symbols`); the not-done work is repackaging
+> it as WASM components + the editor-side loader (§13, Phase 8).
+
+Lattice will ship with a curated set of **bundled plugins** -- WASM Component Model packages compiled into the editor binary (or shipped in a known directory next to it) so they're available without a separate install step. They are the same shape as user-installed plugins; they just have a higher trust default and zero install friction.
 
 The strategy: features that *aren't architecturally core* but *are essential to ship feature-complete out of the box* live here. Core stays narrow (buffers, modal grammar, command registry, renderer trait, runtime, plugin host); editor-quality wins (LSP server management, project-wide search, version-control UIs, snippets, surround / comment / auto-pair editing helpers) ship as bundled plugins. This dogfoods the plugin host on real workloads, gives third-party plugin authors high-quality reference implementations to study, and keeps the plugin API surface honest.
 
@@ -1035,147 +1164,106 @@ emits its own narrative into the same buffer (Layer 2).
 
 ### 5.6 Rendering -- The Layered Architecture
 
-> **Superseded (as-built, 2026-07 — read this before the prose below).** §5.6.1–
-> §5.6.3 describe a pre-implementation rendering design that the build diverged
-> from. Three corrections:
->
-> 1. **The `Renderer` trait is a bare marker, not a method surface.** The built
->    `lattice_host::Renderer` (`crates/lattice-host/src/renderer.rs`) is
->    `trait Renderer: 'static + Send + Sync` with exactly two associated types
->    (`Theme`, `PaneRenderRegistry`) and **zero methods** — every implementor is a
->    ZST *marker*, one per frontend. There is no `Content`/`Event`/`Config` +
->    `set_content`/`handle_input`/`layout`/`paint`/`accessibility_tree`/`invalidate`
->    surface; the frame-level trait that carried those was to live in a
->    `lattice-render` crate that was **dropped** (ratatui's pull-based draw and
->    GPUI's retained-mode element tree share no useful `Frame`/`InputEvent`/
->    `LayoutConstraints` surface). The renderer-neutral core lives in
->    `lattice-host` (the App→`Editor` composition, Phase 5.B).
-> 2. **The concrete renderers are per-frontend markers, not per-content-kind.**
->    `EditorRenderer` / `DocumentRenderer` / `CanvasRenderer` do not exist. The
->    real axis is **one `Renderer` marker per frontend**: `TuiRenderer`
->    (`lattice-ui-tui`, built) and `GpuiRenderer` (`lattice-ui-gpui`, peer), plus
->    `MinimalRenderer` for tests. "Editor / document / canvas" are render *paths*,
->    not distinct `Renderer` types.
-> 3. **The paint substrate is the cell-grid, not four fast paths + taffy.** The
->    §5.6.2 four-path taxonomy (`LineLayout` + Fenwick cumulative-height index) and
->    the §5.6.3 taffy+cosmic-text `DocumentRenderer` are superseded by the
->    **cell-grid** renderer (`lattice-cells` `CellMatrix`, `ArcSwap`-published,
->    consumed by BOTH TUI and GPUI): a per-cell `paint_glyph` atlas fast path plus
->    a single `Shaped` sibling path for rich text. See
->    [`cell-grid-renderer.md`](cell-grid-renderer.md) for the authoritative design;
->    `taffy` is not a layout engine here.
->
-> The prose in §5.6.1–§5.6.3 below is retained for provenance (the original
-> intent); read it as the *why*, not the current *what*.
+#### 5.6.1 The Renderer trait + the cell-grid substrate
 
-#### 5.6.1 The Renderer trait
+> **Reconciliation note (v0.6).** The original design (below, "Superseded
+> approach") specified a rich per-buffer `Renderer` trait with `EditorRenderer` /
+> `DocumentRenderer` implementers, four selectable GPU fast paths, an
+> `accessibility_tree`, a taffy-based `DocumentRenderer`, and a v1 sprite atlas.
+> That is **not** what shipped. What shipped is the **cell-grid / `DisplayMatrix`**
+> architecture described here.
+
+The renderer is split into a **renderer-neutral cell-grid substrate** (built off
+the render thread) and thin **peer renderers** that paint it. The trait a
+frontend implements is a marker that surfaces its renderer-specific associated
+types to the host's boot/dispatch machinery — it is *not* a per-buffer draw API:
 
 ```rust
-trait Renderer: Send {
-	type Content;
-	type Event;
-	type Config;
-
-	fn set_content(&mut self, content: Self::Content);
-	fn handle_input(&mut self, event: InputEvent) -> Vec<Self::Event>;
-	fn layout(&mut self, constraints: LayoutConstraints) -> LayoutResult;
-	fn paint(&mut self, frame: &mut Frame, viewport: Rect);
-	fn accessibility_tree(&self) -> AccessibilityNode;
-	fn invalidate(&mut self, region: InvalidationRegion);
+// lattice-host
+pub trait Renderer {
+	type Theme;                 // frontend-specific theme cache
+	type PaneRenderRegistry;    // frontend-specific per-kind provider table
 }
 ```
 
-| Renderer | Purpose | Status |
+| Impl | Crate | Role |
 |---|---|---|
-| `EditorRenderer` | Editable buffers (code and rich text) -- GPU primary | v1.0 |
-| `DocumentRenderer` | Read-only flowed content (popups, status lines, pickers, previews) -- GPU primary | v1.0 |
-| `TuiRenderer` | Terminal renderer for headless / SSH / low-bandwidth use | v1.0 (subset) |
-| `CanvasRenderer` | Plugin-driven custom UIs | v1.0 (limited API) |
-| `WebRenderer` | Full web-page rendering | Deferred placeholder |
+| `TuiRenderer` | `lattice-ui-tui` | ✅ terminal peer (ratatui + crossterm) — first-class, headless / SSH |
+| `GpuiRenderer` | `lattice-ui-gpui` | ✅ GPU peer (GPUI; `gui`/`window` cargo features) |
+| `MinimalRenderer` | `lattice-host` (tests) | headless test harness |
+| Web renderer | — | 📝 deferred placeholder |
 
-The **GPU UI is the primary v1 surface** -- variable fonts, sub-pixel-precise text, smooth scrolling, popups, pickers, the rich minibuffer. The **terminal UI is a first-class peer** intended for headless / SSH / low-bandwidth use, not a bootstrap dev fixture. It shares the input pipeline, command dispatcher, modal engine, tree-sitter, LSP, and plugin layer with the GPU UI -- only the renderer differs.
+**The shared substrate is the cell grid** (`lattice-cells`). A per-pane
+`DisplayMatrix` (rows of styled `CellMatrix` cells, plus virtual rows) is built
+**off the render thread** by a cells worker (on `spawn_blocking`) from the
+document snapshot + syntax spans + decorations, and published through `RenderState`
+(§5.7.2). Both peers consume the *same* `DisplayMatrix`: the TUI maps cells to
+ratatui spans; GPUI shapes each line via `WindowTextSystem::shape_line` against a
+glyph atlas. There is **no** per-buffer `Renderer` v-table, no `EditorRenderer` /
+`DocumentRenderer` split, and no `lattice-render*` crate — one grid, two painters.
 
-The TUI accepts the limits its substrate imposes:
-- Monospace cells only; variable fonts, mixed sizes, and sub-pixel positioning are out.
-- Color via 24-bit ANSI when supported, 8-color fallback otherwise.
-- Sprites (§5.6.7) degrade to text glyphs (nerd-font icons or ASCII placeholders); the icon registry returns a sprite *and* an optional fallback grapheme.
-- Path 3 (per-line shaped) rich-buffer rendering renders as plain monospace in the terminal.
-- Path 4 (inline blocks, post-1.0) is a no-op in the terminal; affected buffers fall back to placeholder text.
+Both peers are held to the same latency invariant: the paint body reads a
+published snapshot and does zero I/O / parsing / shaping-of-unchanged-content per
+frame (§5.7). Element fan-out is O(viewport rows), never O(chars).
 
-Beyond those, the TUI is held to the same input-latency invariants as the GPU UI: no plugin or background task may stall its event loop; rendering is damage-tracked, not full-redraw-per-frame.
+The renderer reads **mode-resolved options** for every per-frame decision (wrap, line numbers, gutter width, foldcolumn, decoration providers). There is no `BufferKind` branch in the render path: every buffer flows through the one cell-grid pipeline, parameterised by its `ResolvedOptions` snapshot. The hover popup is a floating-geometry view of a `markdown-mode` buffer with a `hover-mode` minor contributing `wrap=true, line-numbers=false, anchor=cursor` -- not a separate render code path. See [`docs/mode-architecture.md`](mode-architecture.md) §6.1 (resolution layers), §6.3 (caching), and §9.5 (renderer integration).
+
+<details><summary><b>Superseded approach (original v0.x design — not built)</b></summary>
+
+The original design specified a `trait Renderer { type Content/Event/Config;
+set_content / handle_input / layout / paint / accessibility_tree / invalidate }`
+with `EditorRenderer` (editable buffers) and `DocumentRenderer` (popups/pickers,
+taffy-based) implementers, plus `CanvasRenderer` / `WebRenderer`. This was
+retired: the peer renderers instead consume a shared `DisplayMatrix`, so per-buffer
+paint logic lives once in the cell-grid substrate rather than behind a trait
+each frontend re-implements. An accessibility tree was never built. The
+`lattice-render` / `-render-editor` / `-render-document` crate trisection (§11)
+was likewise dropped.
+
+</details>
 
 The renderer reads **mode-resolved options** for every per-frame decision (wrap, line numbers, gutter width, foldcolumn, statusline contributors, decoration providers). There is no `BufferKind` branch in the render path: every buffer flows through one pipeline, parameterised by its `ResolvedOptions` snapshot. The hover popup is a floating-geometry view of a `markdown-mode` buffer with a `hover-mode` minor contributing `wrap=true, line-numbers=false, anchor=cursor` -- not a separate render code path. See [`docs/mode-architecture.md`](mode-architecture.md) §6.1 (resolution layers), §6.3 (caching, with O(1) hot-path reads), and §9.5 (renderer integration).
 
-#### 5.6.2 EditorRenderer -- Layered fast paths
+#### 5.6.2 Building the cell grid (the content path)
 
-| Path | Latency | Applies to |
-|---|---|---|
-| **Pure monospace, no decorations** | <1ms full repaint, <100us damage | Plain code editing, default |
-| **Monospace with inline decorations** | 1-2ms full repaint | Code with LSP (squiggles, inlay hints, gutter) |
-| **Per-line shaped** (mixed sizes/fonts) | 3-5ms full repaint, sub-ms damage | Markdown, org-mode |
-| **Inline blocks** (images, LaTeX, charts) | 5-15ms first paint, cheap repaint | Specialized buffers |
+The `DisplayMatrix` for each pane is built off-thread from the published snapshot:
+walk the visible line range (+ overscan), fetch the cached highlight spans and
+the decoration/virtual-row contributions for those lines, and emit **styled cells
+per line** (`CellMatrix`) plus any virtual rows. This runs on a cells worker via
+`spawn_blocking` and publishes through `RenderState`; the render thread only
+*reads* the finished matrix. Fan-out is O(viewport rows).
 
-Each buffer's major mode declares its rendering profile; **a buffer never silently upgrades to a slower path**.
+Painting the matrix differs per peer:
 
-##### Path 1: Pure monospace
+- **TUI** (`lattice-ui-tui`) maps each cell to a ratatui styled span — monospace,
+  24-bit color where supported (8-color fallback), damage-tracked (not
+  full-redraw-per-frame).
+- **GPUI** (`lattice-ui-gpui`) shapes each visible line via
+  `WindowTextSystem::shape_line` against a glyph atlas and emits GPUI elements —
+  variable fonts + sub-pixel positioning available, but the *content* is the same
+  cell grid.
 
-Pipeline: visible-line-range determination -> cached highlight query -> walk rope by line, compute `glyph X = column * advance` (no shaping) -> GPU atlas lookup -> emit instance quads -> emit selection backgrounds -> emit cursor -> submit one or two draw calls.
+A `Document.rendering_profile` field exists as *data* (a per-buffer hint), but the
+renderer does **not** select among four separate GPU pipelines — the four
+"selectable fast paths" of the original design were not built. Incremental
+highlight + incremental cell build keep the steady state flat to ~100k lines;
+soft-wrap is supported on both peers.
 
-**Optimizations:** monospace fast path skips HarfBuzz shaping entirely; glyph atlas (alacritty/kitty/ghostty/Zed pattern); damage tracking via rope edit ranges; instanced rendering.
+> **📝 Planned rich-buffer rendering.** Per-line variable-height shaping with a
+> `LineLayout` cache + a Fenwick cumulative-height index (for markdown/org with
+> mixed font sizes), and Path-4 inline media blocks (images, LaTeX, charts), are
+> **not built**. Markdown today renders as styled monospace cells with syntax
+> highlighting; rich per-line geometry and inline blocks are post-1.0.
 
-Capable of 240Hz on modern laptop GPUs. Bottleneck is OS input latency.
+#### 5.6.3 Popups, pickers, and UI furniture
 
-##### Path 2: Monospace with decorations
-
-Same as path 1 plus extra passes for diagnostic squiggles, inlay hints (virtual inline text), gutter widgets, line highlights. Decorations submitted as data (range + style), composited on the renderer's schedule.
-
-##### Path 3: Per-line shaped (rich buffers)
-
-Per-line layout cache: each line shaped once via `cosmic-text`/`parley`, cached. Re-shape only when line content, style context, or font config changes.
-
-```rust
-struct LineLayout {
-	line_index: u64,
-	content_hash: u64,
-	style_context_hash: u64,
-	shaped_glyphs: Vec<ShapedGlyph>,
-	line_height: f32,
-	ascent: f32,
-	descent: f32,
-	cursor_positions: Vec<f32>,  // byte-offset to x-pixel
-}
-```
-
-**Cumulative-height index** (Fenwick tree) for variable-height lines: O(log n) scroll lookups.
-
-**Edit pipeline:** mutation -> identify affected lines (typically 1-2) -> mark cache dirty -> shape on rayon worker (50-200us/line) -> update Fenwick index -> renderer picks up new layout next frame; uses stale layout for one frame if shape isn't done.
-
-**Style mappings** are data, not code:
-
-```toml
-[style-mappings]
-heading_1   = { font = "ui_serif", size = 24, weight = "bold" }
-emphasis    = { italic = true }
-code_block  = { font = "code_mono", preserve_monospace = true }
-```
-
-`preserve_monospace = true` keeps code blocks within markdown on the fast path.
-
-##### Path 4: Inline blocks (post-1.0)
-
-For full-size embedded media: rendered LaTeX equations, embedded charts, image previews larger than line-height, code-output cells. Implemented as inline decorations with non-zero block size that participate in the cumulative-height index. Plugins produce blocks; the renderer composites cached textures.
-
-(Note: small in-line iconography -- file-type icons, severity icons, mode-line glyphs -- is a separate v1 capability handled by the sprite atlas in §5.6.7, not by Path 4.)
-
-#### 5.6.3 DocumentRenderer -- UI furniture
-
-Built on `taffy` + `cosmic-text`. Renders into the same shared GPU atlas.
-
-Pipeline: styled tree -> taffy layout (1-10ms) -> cosmic-text shaping (1-5ms) -> atlas rasterization -> emit quads.
-
-**Total: 5-20ms first paint of typical popup content. Subsequent frames re-emit cached geometry -- sub-ms.**
-
-Off the input path. Cannot affect editor responsiveness.
+There is **no** separate taffy-based `DocumentRenderer`. Popups (completion,
+hover, signature, diagnostics), pickers, and buffer-backed panels are all
+**Documents** (§5.9.8) rendered through the *same* cell-grid pipeline in a
+popup-shaped view — the hover popup is a `markdown-mode` buffer in floating
+geometry, not a bespoke text-layout path. This is what makes syntax highlighting,
+`:help`-consistent rendering, and vim motions work uniformly inside popups. The
+work is off the input path and cannot affect editor responsiveness.
 
 #### 5.6.4 Cursor positioning and logical/visual translation
 
@@ -1189,21 +1277,16 @@ Window is a single GPU surface. Renderers render into regions. All renderers sha
 
 Deferred indefinitely. Architecturally the trait accommodates Servo embedding, system webview (`wry`/WebView2/WKWebView), or CEF. Decision punted.
 
-#### 5.6.7 Iconography and sprites (v1)
+#### 5.6.7 Iconography and sprites (📝 planned; text glyphs today)
 
-> **Status (as-built): not yet built — text-glyph fallback only.** The
-> sprite-atlas mechanism described in this subsection (`SpriteSet` / `SpriteSpec`,
-> a GPU sprite atlas separate from the glyph atlas, plugin sprite registration,
-> `InlineSprite` / gutter / status / picker sprites, the bundled `builtin-icons`
-> set, TOML overrides) is **spec, not code**. What ships today is the
-> **BMP-block / Nerd-Font text-glyph** iconography (the degrade-gracefully icon
-> palette — Nerd Fonts v3 when `ui.nerd_fonts=on`, a BMP-block fallback
-> otherwise), used for the file tree / oil / gutter / picker leading icons. The
-> atlas-backed sprite path below remains the v1 design target. (The "Iconography
-> is v1 (§5.6.7)" line in the key-decisions summary + CLAUDE.md refers to this
-> design intent, not a shipped atlas.)
+> **📝 Status.** The `SpriteSet` / `SpriteSpec` / `SpriteSource` /
+> `Decoration::InlineSprite` types below **do not exist**. Icons today are
+> **nerd-font text glyphs with a BMP-block fallback** (Geometric Shapes + Misc
+> Symbols) — the `ui.nerd_fonts` option toggles between the two palettes, which
+> occupy the same cell width so column geometry is stable. The rasterized sprite
+> atlas is the forward design.
 
-Small graphical elements -- file-type icons in the file tree, severity icons in the diagnostics list and gutter, language logos in tab strips, status-line indicators (LSP healthy / sick, git branch), picker leading icons, notification level badges -- are first-class in v1. They are *not* Path 4: they are line-height-sized, atlas-backed, and rendered through the same GPU pipeline as glyphs.
+Small graphical elements -- file-type icons in the file tree, severity icons in the diagnostics list and gutter, language logos in tab strips, status-line indicators (LSP healthy / sick, git branch), picker leading icons, notification level badges. The planned design makes them atlas-backed, line-height-sized, and rendered through the same GPU pipeline as glyphs (not inline media blocks).
 
 ##### Sprite atlas
 
@@ -1266,24 +1349,26 @@ Sprites fit in line height. They participate in the existing decoration + gutter
 
 #### 5.6.8 Render-snapshot coherence (the core / renderer contract)
 
-Every frame the renderer reads a coherent view of `(buffer text, syntax tree, decorations, selections, layout cache)`. These pieces live on different actors -- text and selections on the document actor, syntax trees on `spawn_blocking` workers, decorations from any source publishing into the document's decoration layer, layout cache on rayon workers (shaped buffers only). The renderer cannot acquire a lock the document actor holds, and it cannot afford a synchronous "give me a snapshot" round-trip into the actor: that round-trip would put the keystroke-to-glyph budget at the mercy of the actor's mailbox depth.
+Every frame the renderer reads a coherent view of `(buffer text, syntax, decorations, selections)`. These pieces live on different actors -- text and selections on the document actor, syntax trees on `spawn_blocking` workers, decorations from any source. The renderer cannot acquire a lock the document actor holds, and it cannot afford a synchronous "give me a snapshot" round-trip into the actor: that round-trip would put the keystroke-to-glyph budget at the mercy of the actor's mailbox depth.
 
-The contract between core and renderer is therefore **publish-versioned, copy-on-write snapshots**: the document actor publishes immutable snapshots; the renderer reads the latest published snapshot with one atomic load per visible document at frame start, and uses *that snapshot* for the entire frame.
+The contract between core and renderer is therefore **publish-versioned, copy-on-write snapshots**: the document actor publishes an immutable `DocumentSnapshot`; the renderer reads the latest one with one atomic load per visible document at frame start, and uses *that snapshot* for the entire frame. The real snapshot carries only **text + selections + version metadata** — syntax spans, decorations, and the built cell grid publish through the separate `RenderState` sub-states (§5.7.2), each an arc-swap cell, and the cells worker composes them into the `DisplayMatrix`. Coherence still holds because each publish is a single atomic store.
 
 ```rust
 pub struct DocumentSnapshot {
-	pub document_id: DocumentId,
-	pub version: u64,                              // monotonic per document
-	pub text: Arc<RopeSnapshot>,                   // O(1) clone of ropey
-	pub selections: Arc<SelectionSet>,             // transformed against AppliedEdit
-	pub syntax: Option<Arc<SyntaxSnapshot>>,       // None for plain-text
-	pub decorations: Arc<DecorationLayer>,         // immutable; one layer per snapshot
-	pub layout: Option<Arc<LayoutCacheSnapshot>>,  // shaped buffers only
+	pub id: DocumentId,
+	pub version: u64,              // bumps on any change
+	pub text_version: u64,         // bumps only on text mutation
+	pub buffer: Buffer,            // O(1) rope clone
+	pub path: Option<PathBuf>,
+	pub dirty: bool,
+	pub selections: SelectionSet,
+	// NB: syntax / decorations / cell-grid are NOT fields here — they
+	// publish via RenderState sub-states (§5.7.2) and the cells worker.
 }
 
 /// One atomic-load-published-pointer per document. arc-swap is the
-/// canonical primitive; `Cache::load()` is wait-free and ~2ns.
-pub struct PublishedSnapshot(arc_swap::ArcSwap<DocumentSnapshot>);
+/// canonical primitive; `load()` is wait-free.
+pub struct PublishedSnapshot(Arc<arc_swap::ArcSwap<DocumentSnapshot>>);
 ```
 
 ##### Publish discipline (actor side)
@@ -1296,7 +1381,7 @@ The document actor holds the writable state. On every committed `Effect`, it con
 
 Snapshot construction p99 budget: **< 10 us** for buffers up to 100MB. No syscalls, no allocations beyond the changed fragments.
 
-Late arrivals from other actors -- tree-sitter completing a parse on a `spawn_blocking` worker, a plugin publishing decorations, rayon finishing a line shape -- submit their result to the document actor as an event. The actor folds the result into the *next* snapshot it publishes. Workers never publish snapshots themselves.
+Late arrivals from other actors -- tree-sitter completing a parse on a `spawn_blocking` worker, a plugin publishing decorations, the cells worker finishing a `DisplayMatrix` build -- submit their result to the document actor (or `RenderState`) as an event. The actor folds the result into the *next* snapshot it publishes. Workers never publish snapshots themselves.
 
 ##### Renderer discipline (read side)
 
@@ -1357,17 +1442,16 @@ This is the load-bearing async invariant of the editor. Every other piece of the
 
 | Component | Runs on |
 |---|---|
-| UI event loop | Dedicated UI thread |
-| Core dispatcher | tokio multi-thread |
-| Buffer mutations | Core executor (single-task-per-document) |
+| UI event loop | Dedicated UI / render thread (one per peer) |
+| Grammar dispatch + buffer mutations | The editor actor (a `current_thread` tokio task; one document actor per doc) |
 | Tree-sitter parses | `spawn_blocking` |
-| Text shaping (rich buffers) | rayon pool |
-| LSP I/O | tokio tasks |
+| Cell-grid (`DisplayMatrix`) build | `spawn_blocking` (cells worker) |
+| 📝 Text shaping (rich buffers) | `spawn_blocking` (planned; not built) |
+| LSP I/O | tokio tasks (shared / LSP runtimes) |
 | LSP file-watcher | Dedicated tokio task on the LSP runtime (§5.7.4) |
-| Plugin instances | tokio tasks (wasmtime async) |
-| Search/index | rayon pool |
-| File I/O (small) | tokio file ops |
-| File I/O (huge) | `spawn_blocking` |
+| Plugin instances | tokio tasks (wasmtime async), one `Store` each |
+| Search / diff / index | `spawn_blocking` |
+| File I/O | `spawn_blocking` |
 
 **The actor pattern for documents:** each open document owned by one tokio task; mutations via mpsc; reads via O(1) rope snapshot. No locks on the hot path.
 
@@ -1405,7 +1489,7 @@ pub struct RenderState {
 }
 ```
 
-Each sub-state is `Arc`-wrapped so subsystems publish independently -- a motion republishes `ActiveDocumentRenderState` (per-frame critical) without forcing `BuffersRenderState` (`:b N`-rate) to churn. The split tracks read frequency, not domain boundaries.
+Each sub-state is `Arc`-wrapped so subsystems publish independently -- a motion republishes `ActiveDocumentRenderState` (per-frame critical) without forcing `BuffersRenderState` (`:b N`-rate) to churn. The split tracks read frequency, not domain boundaries. (The set has since grown past the list above — e.g. `active_document` is itself a nested `Arc<ArcSwap<…>>` cell for the hottest reads, and there are additional sub-states such as modeline elements and the resolved-options registry — but the shape is unchanged: one arc-swap cell per read-frequency band.)
 
 `Editor::dispatch(...)` republishes after every action. Background tasks (LSP responses, syntax updates, etc.) publish their sub-state directly without re-snapshotting the whole world.
 
@@ -1442,7 +1526,7 @@ Every LSP feature drain in `run_tick_pending` migrates onto §5.7.2 + §5.7.3 th
 4. The corresponding sub-state on `RenderState` carries a clone of the cache slot; renderers read through `rs.lsp.X.load()` / `rs.lsp.X.get_for(id)`.
 5. Renderer-coupled side-effects the old drain ran inline (e.g. `recompute_folds` after a fold-cache write) move to the renderer-tick `maybe_request_X` via a "last cache version reflected" tracker, fired once per (buffer, version) transition.
 
-End state: `run_tick_pending` does not exist. The renderer reads `editor.render_state.load_full()`, paints, and hands input back. Subsystems publish on their own cadence.
+📝 Target end state: `run_tick_pending` disappears entirely — the renderer reads `editor.render_state.load_full()`, paints, and hands input back, with subsystems publishing on their own cadence. This is **in progress**: the primitives (§5.7.2/§5.7.3) are in place and the heavy drains (LSP file-watcher, most feature caches) have migrated, but `run_tick_pending` still exists today for the not-yet-relocated drains.
 
 #### 5.7.6 Paint-time savings — deferred-decision rationale
 
@@ -1456,7 +1540,7 @@ Lattice's "everything is a buffer" model means the active pane *is* the cursor-c
 
 **The reactive *semantic* is already delivered by the existing primitives.** `Arc<ArcSwapOption<T>>` (§5.7.3) and `PerBufferCache<T>` (§5.7.3) propagate writes across all clones atomically. The renderer's `rs.lsp.foo.load()` sees the spawned task's write within nanoseconds, no re-publication of `RenderState` needed. What `cx.notify()` would add on top is a *paint-side short-circuit* — and that only pays when the paint work it skips is substantial relative to the bookkeeping cost.
 
-**Simpler alternatives target the same idle-frame savings.** Per-pane input-keyed cache (`(buffer_id, cursor.line, scroll, viewport_dims, theme_epoch, syntax_version, diag_version)` → rendered output) is a strictly simpler design: no dirty bits, no event-bus subscriptions, no `Arc::ptr_eq` logic — just a hash-of-inputs cache. Cache key invalidates correctly: cursor moved → recompute (which is exactly what we want). Glyph atlas + line-layout caching at the rendering crate level (cosmic-text / parley already do shaping cache; we'd extend per-line layout) targets the same hot path more locally. Tree-sitter highlight span cache keyed on `(buffer_id, range, syntax_version)` is the syntax-side equivalent.
+**Simpler alternatives target the same idle-frame savings.** Per-pane input-keyed cache (`(buffer_id, cursor.line, scroll, viewport_dims, theme_epoch, syntax_version, diag_version)` → rendered output) is a strictly simpler design: no dirty bits, no event-bus subscriptions, no `Arc::ptr_eq` logic — just a hash-of-inputs cache. Cache key invalidates correctly: cursor moved → recompute (which is exactly what we want). Glyph atlas + line-layout caching at the renderer-peer level (GPUI's text system already caches shaping; the cell-grid caches incremental builds) targets the same hot path more locally. Tree-sitter highlight span cache keyed on `(buffer_id, range, syntax_version)` is the syntax-side equivalent.
 
 **Decision posture.** No commitment to adopt cx.notify()-shaped reactive publication. The substrate (§5.7.2 + §5.7.3) is already reactive in the load-bearing sense; further paint-side savings are an *open* question, gated on bench data:
 
@@ -1571,104 +1655,90 @@ Floating overlays (z-ordered above all):
 
 A window contains a recursive tree of panes. Each leaf is an editor view; each branch is a horizontal or vertical split.
 
+The real tree is a recursive **binary** split (each split is one branch with a
+left/right or top/bottom child + a ratio), not an n-ary `Vec` of children:
+
 ```rust
+// lattice-core/src/ui/pane.rs
 enum PaneNode {
-	Leaf(Pane),
-	Split {
-		orientation: SplitOrientation,
-		children: Vec<PaneNode>,
-		sizes: Vec<f32>,  // proportions, sum to 1.0
-	},
+	Leaf(usize),                               // index into the tab's pane list
+	HorizontalSplit { left: Box<PaneNode>,  right: Box<PaneNode>,  ratio: f32 },
+	VerticalSplit   { top:  Box<PaneNode>,  bottom: Box<PaneNode>, ratio: f32 },
 }
 
-struct Pane {
-	id: PaneId,
-	document: Option<DocumentId>,
-	scroll_position: ScrollPosition,
-	selection_focus: SelectionFocus,
-	header_line_config: HeaderLineConfig,
-	mode_line_config: ModeLineConfig,
-	show_gutter: bool,
-	show_minimap: bool,
+struct PaneState {
+	buffer_id: BufferId,
+	cursor: Position,
+	scroll: usize,
+	viewport_height: u32,
+	viewport_width: u32,
+	// … per-pane render/preview state
 }
 ```
 
-**Pane operations** (UI-layer commands):
-- `SplitPane { pane: PaneId, orientation, new_document: Option<DocumentId> }`
-- `ClosePane { pane: PaneId }`
-- `FocusPane { pane: PaneId }`
-- `ResizePane { pane: PaneId, delta: f32 }`
-- `SwapPanes { a: PaneId, b: PaneId }`
-- `MovePane { pane: PaneId, target: PaneId, position: SplitPosition }`
+Splits carry a `ratio` (`<C-w>+` / `<C-w>-` / `<C-w>>` / `<C-w>=` adjust it). Pane
+ops: split (`<C-w>s` / `<C-w>v`), close (`<C-w>c`), focus (`<C-w>hjkl` / `<C-w>w`),
+resize, `only` (`<C-w>o`), and `MovePaneToNewTab`. (There is no generic
+`SwapPanes` / `MovePane` in v1; `show_gutter` / `show_minimap` are not pane
+fields — gutter columns are global-ish options, minimap is 📝 unbuilt.)
 
-The same document can appear in multiple panes (and multiple windows). Each pane holds its own scroll/selection state; the buffer is shared.
+The same buffer can appear in multiple panes (and tabs). Each pane holds its own cursor/scroll state; the buffer is shared.
 
 #### 5.9.3 Tabs
 
 Tabs are a per-window grouping of documents, distinct from panes. A tab can hold multiple panes (a saved split layout). Tabs are optional -- users who prefer pure split-only navigation can disable the tab bar.
 
-```rust
-struct Tab {
-	id: TabId,
-	title: String,             // user-editable; defaults from primary document
-	pane_tree: PaneNode,
-	active_pane: PaneId,
-}
+There is no `Window` struct — the host `Editor` *is* the composition root and
+owns the tab list directly:
 
-struct Window {
-	id: WindowId,
-	tabs: Vec<Tab>,
-	active_tab: TabId,
-	layout: WindowLayout,      // saved layout state (split sizes, view placement)
+```rust
+// lattice-host: Editor.tabs: Vec<TabSlot>
+struct TabSlot {
+	id: TabId,
+	panes: PaneNode,           // this tab's pane tree
+	label: String,             // user-editable via :tabmove/:tabnew; defaults from buffer
 }
 ```
 
-**Tab operations:** create, close, rename, reorder, move-to-window, duplicate.
+**Tab operations (built):** `:tabnew [path]`, `:tabnext`/`:tabprev` (`gt`/`gT`/`{N}gt`),
+`:tabclose`, `:tabonly`, `:tabmove`, `MovePaneToNewTab`, `<C-PageDown>`/`<C-PageUp>`.
+The tabline shows via the `tabline.show` option (`never`/`auto`/`always`).
+(Move-to-*window* and duplicate are 📝 — there is a single window.)
 
 #### 5.9.4 Status lines: mode line and header line
 
-Two horizontal status surfaces per pane, both rendered by `DocumentRenderer`.
+Two horizontal status surfaces per pane, both painted through the shared cell-grid pipeline.
 
 **Mode line** (bottom of pane): the persistent status surface -- modal mode indicator, file info, cursor position, encoding, line ending, major mode, minor modes summary, LSP status, plugin contributions.
 
 **Header line** (top of pane, optional): contextual breadcrumb or symbol context -- file path with breadcrumbs, the current symbol (LSP `documentSymbol` containing cursor), tab-context, plugin contributions.
 
-Both are composed of **status segments** registered in a registry.
-
-##### Status segment registry
+The **mode line** is composed of **modeline elements** registered in a
+`ModelineRegistry` (`lattice-mode`, the ML.0–ML.5 redesign). Elements are
+event-driven, not pull-on-trigger: content updates arrive over the event bus as
+`ModelineElementUpdate`, so an element recomputes only when its data changes —
+never per keystroke:
 
 ```rust
-struct StatusSegmentSpec {
-	id: SegmentId,
-	line: StatusLine,                      // ModeLine | HeaderLine
-	position: SegmentPosition,             // Left | Center | Right
-	priority: i32,                         // ordering within position
-	update_trigger: UpdateTrigger,
-	content_provider: ContentProviderId,
-	visibility_predicate: Option<Predicate>,
-}
-
-enum UpdateTrigger {
-	OnEvent(EventKind),                    // e.g., SelectionChanged
-	Periodic(Duration),                    // e.g., clock segment
-	Manual,                                // explicit update_segment call
-}
-
-struct ContentProvider {
-	fn provide(&self, ctx: &SegmentContext) -> SegmentContent;
-}
-
-enum SegmentContent {
-	Text(StyledText),
-	Composite(Vec<SegmentContent>),
+// lattice-mode/src/modeline.rs
+struct ModelineElement {
+	id: ElementId,
+	zone: Zone,          // Left | Center | Right
+	priority: i32,       // ordering within the zone
+	// content published via ModelineElementUpdate over the event bus
 }
 ```
 
-Segments are **contributed**, not hardcoded. The core ships default segments (mode indicator, file path, cursor position, etc.). Plugins, major modes, and minor modes contribute additional segments.
+The **header line** is not a second segment registry — it is delivered as
+**view-header virtual rows** (`lattice-cells` headerline / `HeaderlineProvider`);
+async-buffer/multibuffer providers surface progress + breadcrumb content there
+(the standing rule that async-buffer status lives on the headerline, not the mode
+line or a notification).
 
-**Conflict resolution:** segments at the same `(position, priority)` are ordered by registration order. Users can override priority and visibility per segment in config.
-
-**Performance:** segments are pull-not-push -- the renderer queries content providers only when their `update_trigger` fires. A segment subscribed to `SelectionChanged` updates on cursor movement; one with `Periodic(1s)` updates once a second. This avoids the Emacs problem of every keystroke causing every modeline element to recompute.
+Elements are **contributed**, not hardcoded: the core ships defaults (modal
+indicator, file path, cursor position, encoding, EOL, major mode, LSP status) and
+modes / plugins register their own. Conflict resolution: same-`(zone, priority)`
+elements order by registration.
 
 **Default mode line (rust-mode example):**
 
@@ -1683,77 +1753,59 @@ Segments are **contributed**, not hardcoded. The core ships default segments (mo
 
 A vertical strip at the left of each pane showing line-aligned annotations. Like the status lines, gutter content comes from a registry of contributors.
 
+> **📝 Status.** The **gutter columns are hardcoded today** (`gutter_cols()` in
+> the cells worker) — line numbers (`number` / `relativenumber`), diagnostic
+> markers, and diff signs. The pluggable `GutterSegmentSpec` *registry* below is
+> the forward design; plugin-contributed columns (breakpoints, blame heatmap) are
+> not yet a seam.
+
+The planned registry mirrors the modeline element model:
+
 ```rust
 struct GutterSegmentSpec {
 	id: SegmentId,
 	column: GutterColumn,           // ordered columns left-to-right
 	width: GutterWidth,             // Fixed(n_chars) | Auto
 	content_provider: ContentProviderId,
-	update_trigger: UpdateTrigger,
-}
-
-enum GutterContent {
-	PerLine(Vec<LineContent>),
-	Range(RangeMap<LineContent>),
 }
 ```
 
-**Default gutter columns** (left to right): diagnostic markers, git diff markers, line numbers, fold indicators.
-
-Plugins add columns: breakpoint indicators (debugger plugin), git blame heatmap, custom markers.
+**Gutter columns today** (left to right): diagnostic markers, diff signs, line numbers, fold indicators.
 
 #### 5.9.6 Popup system
 
-Popups are floating, transient UI surfaces anchored to positions. They're rendered by `DocumentRenderer` and managed by a popup manager in the UI layer.
+Popups are floating, transient UI surfaces. Crucially, **a popup is a Document
+in a popup-shaped view** (§5.9.8 / §5.6.3) — not a bespoke non-buffer primitive
+with typed anchor/dismissal/interaction structs. The real shape carries only a
+placement + a focus mode; content, dismissal, and interaction come from the
+underlying buffer + its mode:
 
 ```rust
-enum PopupAnchor {
-	AtCursor,                                          // moves with cursor
-	AtPosition { document: DocumentId, position: Position },
-	AtScreenCoordinate { x: f32, y: f32 },
-	AtPaneCenter { pane: PaneId },
-	AtPaneCorner { pane: PaneId, corner: Corner },
+// lattice-host/src/ui/popup.rs
+enum PopupPlacement {
+	CursorAnchored,   // pinned to the symbol the popup was invoked from
+	Centered,
 }
 
-struct Popup {
-	id: PopupId,
-	anchor: PopupAnchor,
-	content: RichContent,
-	layer: PopupLayer,                  // ordering for overlapping popups
-	dismissal: DismissalRules,
-	interaction: InteractionMode,
-}
-
-struct DismissalRules {
-	on_cursor_move: bool,
-	on_buffer_edit: bool,
-	on_focus_change: bool,
-	on_escape: bool,
-	on_click_outside: bool,
-	timeout: Option<Duration>,
-}
-
-enum InteractionMode {
-	Passive,      // popup is informational; input goes to editor
-	Modal,        // popup captures input; editor inactive
-	Reactive,     // popup responds to specific keys (e.g., Tab to accept completion)
+enum PopupFocus {
+	Steal,            // popup captures input (State-B): pickers, code-action menus
+	Passive,          // informational; input goes to the editor: hover, signature
 }
 ```
 
-**Popup types and their typical configurations:**
+**Popup types:** completion, hover, signature help, diagnostic detail, code-action
+menu — each a buffer with a mode, placed `CursorAnchored` (hover/signature/
+completion pin to the invoking symbol via the stored anchor) or `Centered`
+(pickers). Focus is `Passive` for hover/signature, `Steal` for pickers /
+code-action menus. Dismissal (on cursor move, edit, Esc) is driven by the owning
+mode's lifecycle hooks — e.g. the hover-popup auto-dismiss-on-cursor-move hook
+lives in `Editor::dispatch` so it fires in both peers.
 
-| Popup | Anchor | Interaction | Dismissal |
-|---|---|---|---|
-| Completion | AtCursor | Reactive (Tab/Enter accept; Esc dismiss) | On cursor move, edit, focus change |
-| Hover | AtCursor | Passive | On cursor move, edit |
-| Signature help | AtCursor | Passive | On argument boundary or close paren |
-| Diagnostic detail | AtCursor | Passive | On cursor move |
-| Code action menu | AtCursor | Modal | On selection or Esc |
-| Notification | AtPaneCorner | Passive | After timeout |
+📝 A corner-anchored **notification** popup with stacking + timeout (the old
+`AtPaneCorner` row) is not built — see §5.9.9.
 
-**Layering:** when multiple popups overlap, the popup manager z-orders by `layer`. Notifications stay on top; modals next; passive hovers below them.
-
-**Performance:** popup content is laid out once on first display, cached, re-rendered on content change only. Showing or hiding a popup costs sub-millisecond -- it's just toggling visibility on cached geometry.
+**Performance:** because a popup is just another buffer view, it reuses the
+cell-grid layout + caching; showing / hiding is sub-millisecond.
 
 #### 5.9.7 Pickers
 
@@ -1807,13 +1859,13 @@ trait PreviewProvider {
 
 **Streaming results:** the picker stays responsive even with millions of files because `ContentProvider::items()` returns a stream. Items appear as they're discovered. The first matches appear in milliseconds; the picker is usable while enumeration continues.
 
-**Preview pane:** optional. When present, the picker layout splits into list-on-left, preview-on-right. Previews render via `EditorRenderer` (for code files) or `DocumentRenderer` (for documentation/non-code). Preview is async; missing previews show a placeholder.
+**Preview pane:** optional. When present, the picker layout splits into list-on-left, preview-on-right. Previews render through the same cell-grid pipeline as any buffer (in a read-only projection, §5.9.8). Preview is async; missing previews show a placeholder.
 
 **Plugin-defined pickers:** plugins create pickers by implementing `ContentProvider` and optionally `ItemRenderer`/`PreviewProvider` and calling `ui.open-picker(spec)`. Examples: a git-branch picker, a docker-container picker, a snippet picker.
 
-**Implementation seed (v1).** A minimal but real picker primitive lives in `lattice-ui-tui::picker::Picker` today: holds a query line, a substring-filtered candidate list (fed by a `PickerSource` enum), a selection cursor, and a `PickerAction` tag the host's accept dispatcher pattern-matches on. The first instantiation is the **buffer switcher** -- `:b` with no arg walks `BufferRegistry`, builds one row per entry with a kind-tagged marginalia (`doc` / `tree` / `help`, plus `(current)` on the active buffer), and `<CR>` activates the selected `BufferId` via `App::activate_buffer`. Filtering today is case-insensitive substring; the full pipeline-driven path (`lattice-completion` matcher / ranker / annotators) graduates the picker once `CommandLineSlot` is lifted out of the slot detector.
+**✅ Graduated.** The picker primitive now lives in its own **`lattice-picker`** crate (the "graduates to a sibling crate when the GPUI peer comes online" plan below has happened — both peers are online): `Picker` + `PickerRegistry` + `PickerSourceSpec`, a source registry, live-query subsystem, MRU frecency, and async syntax-highlighted preview. It holds a query line, a filtered candidate list (fed by registered sources), a selection cursor, and a `PickerAction` tag the host's accept dispatcher pattern-matches on. The first instantiation is the **buffer switcher** -- `:b` with no arg walks `BufferRegistry`, builds one row per entry with a kind-tagged marginalia (`doc` / `tree` / `help`, plus `(current)` on the active buffer), and `<CR>` activates the selected `BufferId` via `App::activate_buffer`. Filtering today is case-insensitive substring; the full pipeline-driven path (`lattice-completion` matcher / ranker / annotators) graduates the picker once `CommandLineSlot` is lifted out of the slot detector.
 
-**Renderer-agnostic by construction.** The picker module has no renderer-specific or host-specific imports beyond `lattice-completion`'s candidate shape. Host-coupled work (walking `BufferRegistry`, snapshotting the LSP supervisor, parsing host buffer ids) lives on the host side; the picker's only mutation entry is `Picker::set_raw_candidates(Vec<RawCandidate>)`. When the GPUI / wgpu renderer comes online, this module graduates to a sibling crate (`lattice-picker`) with zero file-by-file edits — only the host's render adapter is renderer-specific.
+**Renderer-agnostic by construction.** The `lattice-picker` crate has no renderer-specific or host-specific imports beyond `lattice-completion`'s candidate shape. Host-coupled work (walking `BufferRegistry`, snapshotting the LSP supervisor, parsing host buffer ids) lives on the host side; each renderer peer supplies only its own render adapter.
 
 **Layout.** Vertico-style: the picker's query line takes over the cmdline / echo row at the bottom, candidates render in the row band immediately below. The selected row sits at the TOP of the band (closest to the prompt below), alternatives fan upward in match-rank order. Reuses the cmdline completion popup's per-row painter (matched ranges + marginalia), so styling is consistent across surfaces.
 
@@ -1878,11 +1930,17 @@ The user opens any of these like opening a file: a command (`:open file-tree`, k
 
 **Implementation seed: help / log buffers in the registry.** The unified `BufferRegistry` carries the same `BufferData::Help(HelpBuffer)` variant the introspection layer (§5.11) uses for `:describe-*`, `:apropos`, `:diagnostics`, and the LSP log views. `App::open_help_in_pane(buffer)` is the in-pane entry point (durable record + active hot-path mirror); `App::open_help` is the popup overlay path (transient surfaces: hover, doc lookups, error toasts). De-dup by title means re-running `:lsp-log rust` surfaces the existing buffer rather than spawning a duplicate. The picker (§5.9.7) and the LSP command refactor (`:lsp-log` / `:lsp-server-log` / `:lsp-trace-log`) consume this primitive: candidate generation walks `BufferRegistry::help_ids_sorted()`, on-accept activates the chosen `BufferId` in the current pane.
 
-**Performance:** content providers are lazy. They populate on first display; they refresh on declared triggers (event, periodic, manual), all off the UI thread on the rayon pool. A buffer that is open but whose pane is not visible can be configured to suspend updates entirely.
+**Performance:** content providers are lazy. They populate on first display; they refresh on declared triggers (event, periodic, manual), all off the UI thread on the blocking pool (`spawn_blocking`). A buffer that is open but whose pane is not visible can be configured to suspend updates entirely.
 
 **Terminal buffers — Document-on-Normal.** The `terminal` buffer has two sub-states (`TerminalInsertMode` PTY-bound, `TerminalNormalMode` Document-bound). Insert mode encodes keystrokes to ANSI and the renderer paints the alacritty cell grid directly. Normal / Visual operates on a **synthetic, read-only Document** built from the scrollback at Insert→Normal transition; the central vim grammar (motions, text objects, marks, search, registers, visual modes) runs against that Document with no kind-specific branching. The renderer still paints the cell grid; a coord adapter remaps document-space selection ranges to cell coordinates at publish time. See [`terminal-as-document.md`](terminal-as-document.md) for the lifecycle, coord adapter, and slice plan.
 
-#### 5.9.9 Notifications
+#### 5.9.9 Notifications (📝 planned)
+
+> **📝 Status.** A dedicated notification subsystem (corner-anchored, stacking,
+> timeouts) is **not built**. Today the **echo area** (`set_message` / `EchoLevel`)
+> and the `*messages*` buffer cover the case, and async-buffer status routes to
+> the headerline by standing rule (§5.9.4). The design below is the forward plan;
+> revisit only if the echo area proves insufficient.
 
 Transient messages anchored to a window corner, queued and animated.
 
@@ -1914,7 +1972,9 @@ struct NotificationAction {
 
 #### 5.9.10 Minibuffer and echo area
 
-The "command line" surface is a **rich editing space, not a single-line widget.** It is implemented as a real buffer with a major mode, opened transiently, rendered by `EditorRenderer`. This is one of the highest-leverage simplifications in the design: every interactive prompt in the editor reuses the buffer, command-dispatch, decoration, popup, and renderer machinery -- nothing minibuffer-specific exists outside of "this buffer is currently the input focus."
+> **🟡 Status.** The command line is a **single-line widget today** (`Editor.command_line: String`), not yet a full buffer-with-a-major-mode. What *is* built: the `:` / `/` / `?` cmdline with completion popups, command history, and — notably — **live substitute preview** (`:s///` decorates the target buffer as you type). The "every prompt is a real buffer with `command-line` / `search-line` / `git-commit-line` / `repl-input` major modes, full vim grammar, tree-sitter highlighting, live error indicators" vision below is 📝 the forward design (see `mode-architecture.md`); the rich-minibuffer-as-buffer work is deferred.
+
+The design intent: the "command line" surface is a **rich editing space, not a single-line widget** — a real buffer with a major mode, opened transiently, painted through the cell-grid pipeline. Every interactive prompt would reuse the buffer, command-dispatch, decoration, popup, and renderer machinery -- nothing minibuffer-specific outside of "this buffer is currently the input focus."
 
 ##### Minibuffer as a buffer
 
@@ -1986,11 +2046,13 @@ The echo area is a separate, single-line surface used for transient one-line out
 
 A rolling history of every echo-area message and every notification is kept in a `*messages*` buffer (read-only, auto-scrolling) that the user can open in any pane to scroll back.
 
-#### 5.9.11 Scrollbars and minimap
+#### 5.9.11 Scrollbars and minimap (📝 planned)
+
+> **📝 Status.** Neither is built. Both are forward design.
 
 **Scrollbars:** modern style -- appear on scroll, fade out after a moment of inactivity. Show position indicator + diagnostics summary marks (errors/warnings as colored ticks along the scrollbar). Configurable: always-visible, on-scroll, never.
 
-**Minimap:** optional thumbnail of the file rendered at small scale on the right edge of the pane. Implemented as a low-resolution variant of `EditorRenderer` that re-renders only when the file or scroll position changes substantially (debounced). Shows diagnostics, search matches, current viewport indicator. Performance impact minimal due to debouncing and shared atlas.
+**Minimap:** optional thumbnail of the file rendered at small scale on the right edge of the pane, re-rendered (debounced) only when the file or scroll position changes substantially. Shows diagnostics, search matches, current viewport indicator.
 
 #### 5.9.12 Performance characteristics of the UI layer
 
@@ -2006,8 +2068,8 @@ A frame containing:
 ...costs roughly the same to render as a frame with just the editor pane. Reasoning:
 
 - The editor pane carries the heavy work; it's on the fast path.
-- Popups, buffer-backed views, status lines are all `DocumentRenderer` content (or low-traffic `EditorRenderer` content) -- laid out once, cached, re-rendered only on change.
-- Status segments update on triggers, not per-frame.
+- Popups, buffer-backed views, status lines are all low-traffic cell-grid content -- built once off-thread, cached, re-rendered only on change.
+- Modeline elements update on event, not per-frame.
 - All renderers share one GPU atlas and submission.
 
 **This is the architectural win over Emacs in concrete terms.** In Emacs, every UI element shares the redisplay engine with the buffer, so a busy UI taxes editor rendering. Here, the UI layer's complexity has near-zero impact on editor input latency.
@@ -2016,16 +2078,21 @@ A frame containing:
 
 Vim's `autocmd` and emacs's hooks both attach behavior to editor events. The two systems differ only in surface syntax; their semantics collapse into one primitive:
 
+The bus is a concrete **`struct EventBus` in `lattice-runtime`** (not a trait in
+`lattice-mode`), holding the writable `Document` actors' fan-in plus typed
+subscriptions:
+
 ```rust
-pub trait EventBus {
+// lattice-runtime/src/events.rs (shape)
+impl EventBus {
 	fn subscribe(&self, filter: EventFilter, sink: SubscriptionTarget) -> SubscriptionId;
 	fn unsubscribe(&self, id: SubscriptionId);
 	fn publish(&self, event: Event);
 }
 
 pub struct EventFilter {
-	pub kinds: Option<Vec<EventKind>>,        // BeforeSave, AfterSave, etc.
-	pub document_pattern: Option<Pattern>,    // path glob
+	pub kinds: Option<Vec<EventKind>>,        // e.g. DocumentSaved
+	pub path_glob: Option<String>,            // path glob (field is `path_glob`)
 	pub major_mode: Option<MajorModeId>,
 	pub predicate: Option<PredicateId>,       // arbitrary plugin-supplied
 }
@@ -2039,24 +2106,36 @@ pub enum SubscriptionTarget {
 
 #### 5.10.1 Event catalog
 
-Every meaningful editor state transition publishes a typed event. The catalog grows over time; the v1 baseline includes:
+The **protocol-level `Event` enum** (`lattice-protocol/src/event.rs`) carries
+editor state transitions. The real v1 variants:
 
-- **Document lifecycle:** `DocumentOpened` (live; carries `{ id, path, version, text }`; published by `App::new` for the initial buffer and `App::do_edit` for subsequent opens; the LSP attach driver in `lattice_lsp::attach_driver` is the canonical subscriber, and §5.4.3 describes the event-driven LSP attach in full), `BeforeSave`, `AfterSave`, `BeforeClose`, `DocumentClosed`, `BufferChanged`, `LanguageDetected`.
-- **Modal state:** `ModalModeChanged { from, to }`, `OperatorPendingEntered`, `OperatorPendingResolved`.
-- **Mode lifecycle:** `MajorEntered { buffer, mode }`, `MajorExiting { buffer, mode }`, `MinorActivated { buffer, mode }`, `MinorDeactivated { buffer, mode }`, `OptionConflict { buffer, option, modes }`. `MajorEntered` runs *after* the trait's `on_activate` hook (subscribers see a consistent state); `MajorExiting` runs *before* the trait's `on_deactivate` (subscribers can inspect what's about to be torn down). Deactivation is synchronous from the user's perspective; resource teardown can continue async post-event. See [`docs/mode-architecture.md`](mode-architecture.md) §7.
-- **Selection / cursor:** `SelectionsChanged`, `CursorMoved`, `JumpPushed { source }`.
-- **LSP:** `LspServerStarted`, `LspResponseReceived`, `DiagnosticsUpdated`, `CompletionAvailable`, `LspLogPushed { server_id, workspace, level, source, message }` (every `LspLogger::log` append; powers live-tail of `*lsp*` (aggregator) / `*lsp:<server>:<workspace>*` / `*lsp:<server>:<workspace>:trace*` buffers per §5.4.7 + §5.10.5).
-- **UI:** `PaneFocused`, `PaneClosed`, `WindowFocused`, `BufferViewOpened`.
-- **Plugin:** `PluginActivated`, `PluginCrashed`, `PluginDeactivated`.
-- **System:** `Idle { duration }`, `FocusGained`, `FocusLost`, `BeforeQuit`.
+- **Document lifecycle:** `DocumentOpened` (carries `{ id, path, version, text }`; §5.4.3 describes the mode-owned LSP attach that subscribes to it), `BeforeSave`, `DocumentSaved`, `DocumentClosed`, `DocumentChanged`.
+- **Modal state:** `ModalModeChanged { from, to }`.
+- **Mode lifecycle:** `MajorEntered { buffer, major }`, `MajorExiting { buffer, major }`, `MinorActivated { buffer, minor }`, `MinorDeactivated { buffer, minor }`. `MajorEntered` fires *after* `on_activate`; `MajorExiting` *before* `on_deactivate`. See [`docs/mode-architecture.md`](mode-architecture.md) §7.
+- **Selection:** `SelectionsChanged`.
+- **Options:** `OptionChanged`.
+- **Plugin:** `Plugin(payload)`, `PluginCrashed`.
 
-Each event carries a typed payload. `BeforeSave` carries `{ document, path, content_hash }`; `SelectionsChanged` carries `{ document, old, new }`; etc.
+Beyond this core enum, subsystems run **typed sub-buses** for their own payloads
+(not part of the protocol `Event`): LSP publishes `LspBufferAttached` /
+`LspLogPushed` / `LspDocumentChanged` etc. over its own typed bus; diagnostics
+flow over a `broadcast`. 📝 The richer catalog originally sketched here —
+`CursorMoved`, `AfterSave`, `Idle { duration }`, `FocusGained/Lost`,
+`BufferViewOpened`, UI/`Pane*` events — is **not** protocol-level today; those are
+either subsystem-typed or not yet added.
 
-#### 5.10.2 Hook handlers may *modify* events for "Before"-class events
+#### 5.10.2 Hook handlers may *modify* events for "Before"-class events (📝 planned)
 
-A subscription registered as `Invocation(...)` for an event with the `Before` semantics receives the typed payload, may mutate fields the event declares as mutable, and may veto by returning `Err`. `BeforeSave` handlers can rewrite content (formatters do this); `BeforeQuit` handlers can veto (with a reason that surfaces as a notification). For non-Before events the handler's return value is ignored except for error-logging.
+> **📝 Status.** The event bus is **observation-only** today (`event.rs` documents
+> "v1: observation-only"). The mutate/veto path below is not built.
 
-#### 5.10.3 Vim `:autocmd` and emacs hooks both desugar to this
+The design: a subscription registered as `Invocation(...)` for a `Before`-class event receives the typed payload, may mutate fields the event declares as mutable, and may veto by returning `Err`. `BeforeSave` handlers could rewrite content (formatters); `BeforeQuit` handlers could veto. For non-Before events the return value is ignored except for error-logging.
+
+#### 5.10.3 Vim `:autocmd` and emacs hooks both desugar to this (📝 planned)
+
+> **📝 Status.** The `:autocmd` / `:add-hook` ex-commands are **not built** — the
+> `subscribe(filter, target)` primitive exists and modes subscribe in Rust, but
+> the user-facing desugaring commands below are forward design.
 
 ```vim
 " vim
@@ -2086,7 +2165,7 @@ The `:autocmd` and `:add-hook` ex-commands are parser front-ends for this call.
 
 #### 5.10.4 Performance
 
-Subscriptions live in indexed maps keyed by `(EventKind, document_pattern_bucket, major_mode)`. Publishing an event evaluates the filter for matching buckets only, never iterating the global subscription list. WASM-hosted subscription handlers run on the publisher's tokio task via the async ABI; a slow handler does not delay other subscribers because each `Invocation` target is dispatched as a separate task.
+Subscriptions are indexed by `EventKind` (plus a wildcard bucket); the remaining filters (`path_glob`, `major_mode`, predicate) are AND-checked per candidate at publish time. Publishing evaluates only the matching kind bucket, never the global subscription list. WASM-hosted subscription handlers run on the publisher's tokio task via the async ABI; a slow handler does not delay other subscribers because each `Invocation` target is dispatched as a separate task.
 
 Subscriptions for `Before`-class events are bounded in count per event; if a user installs 100 `BeforeSave` hooks, the save runs them in registration order and each gets a fuel budget. A handler that exhausts fuel logs and is skipped; the save proceeds.
 
@@ -2155,26 +2234,28 @@ pub struct ServiceRegistry { /* typed Arc<dyn T> map */ }
 Every registered primitive in the editor -- commands, options, events, modes, keybindings -- carries metadata. The metadata is mandatory at registration time, not optional documentation, and the `:describe-...` family of commands renders it on demand.
 
 ```rust
-pub struct CommandMetadata {
+pub struct CommandSpec {           // lattice-grammar/src/command.rs
 	pub id: CommandId,
 	pub name: String,
+	pub kind: CommandKind,
 	pub doc: String,                          // markdown, multi-paragraph
-	pub args: Vec<ArgMetadata>,
-	pub since_version: Version,
-	pub source: SourceLocation,               // path, line, plugin
-	pub category: Category,
-	pub example_invocations: Vec<String>,
+	pub args_schema: Vec<ArgSpec>,
+	pub source: SourceLocation,               // path, line, plugin (§5.11.1)
+	pub latency_class: LatencyClass,
 }
 
-pub struct ArgMetadata {
-	pub name: String,
-	pub ty: ArgType,                          // typed (Path, Regex, OptionId, ...)
-	pub doc: String,
-	pub default: Option<DefaultValue>,
-	pub completion: Option<CompletionSourceId>,
-	pub validator: Option<ValidatorId>,
+pub struct ArgSpec {
+	pub name: &'static str,
+	pub kind: ArgKind,                        // typed (String, Path, Chord, ...)
+	pub doc: &'static str,
+	pub prompt: &'static str,
+	pub default: ArgDefault,
+	pub completion: Option<&'static str>,     // named generator, e.g. "gen:files"
 }
 ```
+
+(The original sketch carried `since_version` / `example_invocations` / a
+`Category` — not built; the real spec is the shape above.)
 
 Built-in introspection commands:
 
@@ -2188,7 +2269,7 @@ Built-in introspection commands:
 | `:describe-buffer` | `*help:buffer*` | Current buffer's mode stack, encoding, options, keymap chain |
 | `:apropos <pattern>` | `*help:apropos:<pattern>*` | Fuzzy search across all metadata |
 
-Each opens a buffer-backed help view (consistent with everything-is-a-buffer). The view is rendered by `EditorRenderer` for code-like content and `DocumentRenderer` for prose-heavy descriptions; cross-references inside it are clickable / followable via standard motions.
+Each opens a buffer-backed help view (`HelpContent` / `HelpBuffer` in `lattice-help`, consistent with everything-is-a-buffer), painted through the cell-grid pipeline like any buffer; cross-references inside it are clickable / followable via standard motions.
 
 **Cost model.** Metadata lives next to registrations and is only materialized when an introspection command runs. The catalog is queryable in O(1) by id and O(log N) by name; `:apropos` is a streaming picker (§5.9.7) over all metadata.
 
@@ -2242,7 +2323,7 @@ pub trait Introspectable {
 pub fn render_introspection(item: &dyn Introspectable) -> Vec<String>;
 ```
 
-`render_introspection` produces the help body in a uniform shape: `identifier (kind)` heading, doc, type-specific extra sections (e.g. `Arguments:` for commands), then one `[[file:...]]` link per source labelled (`Defined at:`, `Bound at:`, `Subscribed at:`, `Last set at:`, `Overridden at:`, `Activated at:`). Each `:describe-X` is a thin lookup-and-call.
+`render_introspection` produces the help body in a uniform shape: `identifier icon` heading (e.g. `ex:write :` or `motion:line-down →`), doc, type-specific extra sections (e.g. `Arguments:` for commands), then one `[[file:...]]` link per source labelled (`Defined at:`, `Bound at:`, `Subscribed at:`, `Last set at:`, `Overridden at:`, `Activated at:`). Each `:describe-X` is a thin lookup-and-call.
 
 `extra_sections()` is the open hook for type-specific structure: commands render their `args_schema`, options render their type and current value, events render their subscribers list, modes render their keymap and hooks. Adding a new registry means adding one trait impl; the renderer doesn't change.
 
@@ -2303,7 +2384,7 @@ The matcher / ranker / annotators always run live; only generation is cached.
 | Matcher | `match:fuzzy` | subsequence with byte-range tracking; score decays with skipped chars; prefix-bonus |
 | Ranker | `rank:score` | descending score (default) |
 | Ranker | `rank:alphabetical` | A-Z |
-| Annotator | `anno:kind-label` | `(motion)`, `(file)`, `(directory)`, etc. |
+| Annotator | `anno:kind-label` | `→` (motion), `:` (ex-command), `f` (file), etc. |
 | Annotator | `anno:doc-snippet` | first line of doc |
 
 Host-state generators (`gen:chords`, `gen:registers`, `gen:marks`, `gen:buffers`) live in the host crate (`lattice-ui-tui`) because they read App-level state; they register against the same `CompletionRegistry` like any plugin would.
@@ -2320,32 +2401,35 @@ Vim's `:set option=value` is a string-bag with no typing or validation, and vims
 
 #### 5.12.1 The typed option registry
 
+The v0.5 model shipped: **the option's *type* is its canonical identity**, not a
+string name. Each option is a unique Rust type carrying its own value/default/doc,
+and `OptionType` is a **trait** (not an enum). The registry stores type-erased
+handles; consumers hold typed handles for zero-overhead reads:
+
 ```rust
-pub struct OptionSpec {
-	pub id: OptionId,
-	pub name: String,                 // dotted path: "editor.line-numbers"
-	pub ty: OptionType,
-	pub default: Value,
-	pub doc: String,
-	pub group: GroupPath,             // "Editor" / "UI" / "LSP" / "Plugin: git-gutter"
-	pub validator: Option<ValidatorId>,
-	pub on_change: Option<EventKind>, // event published when value changes
-	pub scope: OptionScope,           // Global | PerDocument | PerWindow
+// lattice-config: option_decl.rs / option.rs / option_type.rs
+pub trait OptionType: 'static { /* Value assoc + parse/format */ }
+
+// A built-in option is a unit type implementing this and carrying its metadata:
+pub trait OptionDecl {
+	type Ty: OptionType;
+	const NAME: &'static str;     // dotted path, e.g. "editor.line-numbers"
+	const DEFAULT: /* Ty::Value */;
+	const DOC: &'static str;
+	const CUSTOMIZABLE: bool;
 }
 
-pub enum OptionType {
-	Bool, Int { min: Option<i64>, max: Option<i64> },
-	Float, String, Path, Regex,
-	Enum(Vec<String>),
-	List(Box<OptionType>),
-	Map(Box<OptionType>, Box<OptionType>),
-	Custom(TypeId),
-}
+// Each Option<T> owns an ArcSwap<T> value cell; the registry holds
+// Arc<dyn ErasedOption>; reads are type-driven: config.get::<Tabstop>().
 ```
 
-The registry is the single source of truth: every option's name, type, default, doc, group, validator, scope, and on-change event live here. `:set`, `:describe-option`, the customize buffer, the TOML deserializer, and any plugin / `init.rs` call all read from and write to the same `OptionSpec`.
-
-> **v0.5 update:** the v1 implementation evolves the `OptionSpec` shape so that **the option's *type* is the canonical identity, not its string name**. Each built-in option is a unique Rust type implementing an `Option` trait that carries `Value`, `DEFAULT`, `DOC`, and `CUSTOMIZABLE`. Hot-path access is type-driven (`config.get::<Tabstop>()`); strings appear only at boundaries (`:set`, TOML, plugin manifests). Cross-crate uniqueness is enforced by Rust's type system; display-name uniqueness by `linkme` aggregation; naming-rule constraints by `const fn` assertions in the declaration macros. The same model is mirrored for `OptionGroup` (the customize-organization unit, distinct from a mode). See [`docs/mode-architecture.md`](mode-architecture.md) §6.4 (option identity), §6.7.1.1 (groups), §6.8 (constraint enforcement table).
+The registry is the single source of truth. `:set`, `:describe-option`, the
+`gen:options` completion source, the customize buffer, and any plugin call all read
+and write the same store. Cross-crate uniqueness is enforced by the type system;
+display-name uniqueness by `linkme` aggregation; naming rules by `const fn`
+assertions in the declaration macros (`lattice-config-macros`). The same model is
+mirrored for `OptionGroup`. See [`docs/mode-architecture.md`](mode-architecture.md)
+§6.4 (option identity), §6.7.1.1 (groups), §6.8 (constraints).
 >
 > Layered resolution: modal-state override → buffer-local explicit `setlocal` → active minor modes (in activation order, with explicit priority for tie-breaks) → major mode → global `:set` → built-in default. Cached per buffer as `ResolvedOptions`, invalidated on mode toggle / option write. O(1) hot-path reads. (`mode-architecture.md` §6.1 / §6.3.)
 >
@@ -2353,12 +2437,20 @@ The registry is the single source of truth: every option's name, type, default, 
 
 #### 5.12.2 Two layers, both optional
 
-User configuration lives in two layered files at `~/.config/lattice/`:
+> **Status.** The **`lattice.toml`** static layer is ✅ built (`lattice-config`
+> loader over XDG paths, plus `.lattice/config.toml` for project-local overrides).
+> The **`init.rs`→WASM** layer is 📝 **not built** — it depends on editor-side
+> plugin loading (Phase 8). The only shipped WASM-config piece is the
+> `config`-plugin WIT seam (`config_host.rs`), which lets a plugin register
+> options from a prebuilt component.
+
+User configuration lives in two layered files (the config file is
+**`lattice.toml`**, not `options.toml`):
 
 ```
-~/.config/lattice/
-├── options.toml      # static option overrides; data only; no toolchain needed
-└── init.rs           # Rust source, compiled to WASM, loaded as a plugin with `boot` capability
+~/.config/lattice/            (XDG; + project-local .lattice/config.toml)
+├── lattice.toml      # ✅ static option overrides; data only; no toolchain needed
+└── init.rs           # 📝 planned: Rust → WASM, loaded as a plugin with `boot` capability
 ```
 
 | Layer          | Format                | Toolchain                                                  | Loaded                                                          | What it expresses                                                                                                                                                                   |
@@ -2370,7 +2462,7 @@ Either, both, or neither can be present. Both fall back to defaults when absent.
 
 The intended progression: a new user copies an `options.toml` example. When they outgrow declaration -- a keymap that needs context, a hook that does real work -- they migrate the affected piece into `init.rs`. The graduation cost is "learn the same API the plugin SDK exposes", because **`init.rs` is a plugin** -- the only thing distinguishing it from a third-party plugin is the `boot` capability and the well-known load path.
 
-#### 5.12.3 The `init.rs` plugin
+#### 5.12.3 The `init.rs` plugin (📝 planned — Phase 8)
 
 `init.rs` is a single source file. The host wraps it in a small generated crate (`Cargo.toml`, `src/lib.rs` shim, `[package.metadata.component]` entry) under `~/.cache/lattice/init-build/` and compiles it through `cargo-component build` against the published `lattice-config-api` crate, which re-exports the §5.5 / §9 WIT bindings under an ergonomic Rust-native shape.
 
@@ -2403,7 +2495,7 @@ fn init(c: &mut Config) {
 
 `Config` is the WIT-defined facet of the host plugins use, scoped to operations sensible at boot time: option setting, keymap registration, command registration, autocmd subscription, event-bus subscription, and the `invoke(CommandInvocation)` host call. Capabilities beyond `boot` (filesystem, network) are declared in the manifest the same way they would be for a third-party plugin and require the user's explicit acknowledgement; the `boot` capability alone is bounded.
 
-#### 5.12.4 Auto-build on first boot
+#### 5.12.4 Auto-build on first boot (📝 planned — Phase 8)
 
 The user does not run a build command manually. Boot sequence:
 
@@ -2431,30 +2523,25 @@ The `lattice config build` CLI subcommand is **not** on the user's critical path
 
 Values come from layered sources, resolved in this order (later wins):
 
-1. Built-in defaults (`OptionSpec::default`).
-2. Bundled config files (default keymap, theme).
-3. User options (`~/.config/lattice/options.toml`).
-4. User init module (`~/.config/lattice/init.rs`, compiled to WASM, run with `boot` capability).
-5. Project options (`.lattice/options.toml` at workspace root).
-6. Per-buffer overrides (modeline-style `:setlocal`).
+1. Built-in defaults (each option's `DEFAULT`).
+2. Bundled config (default keymap, theme).
+3. User options (`~/.config/lattice/lattice.toml`).  ✅
+4. 📝 User init module (`init.rs` → WASM, `boot` capability) — Phase 8, not built.
+5. Project options (`.lattice/config.toml` at workspace root).  ✅
+6. Per-buffer overrides (`:setlocal`) + the mode-resolution stack (§5.12.1).
 7. Programmatic / `:set` invocations during a session.
 
 `init.rs` runs after `options.toml` is applied so it can read what TOML did and override or extend. Project-level `init.rs` is **deferred** -- arbitrary code execution by virtue of `cd`-ing into a directory is a real attack surface; the eventual mechanism is a per-directory trust prompt with a hashed allowlist (vim's `:set exrc` with explicit trust). Until that lands, project-local code-config is unsupported.
 
 #### 5.12.6 The `:set` parser front-end
 
-`:set option=value`, `:set option!`, `:set option+=value`, `:set option^=value` are all parsed by the `:set` command's `parse_args` into a typed `SetOption` invocation:
+`:set option=value`, `:set option?` (query), `:set option!` (negate), and
+`:set option&` (reset) parse into a typed `ParsedSet` (`NameOnly` / `Query` /
+`Assign` / `Negate` / `Reset`). Scope is chosen at the command level —
+`:set` / `:setlocal` / `:setglobal` — rather than a field. (📝 The compound
+`+=` / `^=` / `-=` append/prepend/subtract ops are not yet built.)
 
-```rust
-struct SetOption {
-	option: OptionId,
-	op: SetOp,                        // Replace | Toggle | Append | Prepend | Subtract | Reset
-	value: Option<Value>,             // typed per option_spec.ty; absent for Toggle/Reset
-	scope: SetScope,                  // Global | Local
-}
-```
-
-Validation runs at the dispatcher; type errors surface as a parse error in the `command-line` minibuffer (live error indicator -- §5.9.10).
+Validation runs at the dispatcher; type errors surface as a parse error on the command line.
 
 `:set` is itself a registered command that dispatches through `execute(...)`; `init.rs`'s `c.set(name, value)` call lowers to the same invocation. There is one path that mutates an option, and it publishes the option's `on_change` event so subscribers (autocmds, `:customize` redraw, dependent options) react uniformly regardless of source.
 
@@ -2483,11 +2570,11 @@ All six entry points produce or consume the same typed `Value` against the same 
 
 ### 5.13 Diff System
 
-Lattice ships a diff subsystem covering the four flows users expect from a modern editor: inline overlay against a baseline (file vs. disk, file vs. git HEAD, file vs. AI-proposed content), side-by-side two-way diff, three-pane three-way merge, and hunk motions / transfer operators (`]c` / `[c` / `do` / `dp`) registered through the central `CommandRegistry` (§5.2.1). The deep-dive design lives in [`diff-system.md`](diff-system.md); the headline architectural decisions are: hunks are **data on the Core thread** owned by a `DiffSubsystem` and RCU-published via arc-swap, not a window-local UI flag (vim's mistake); two-way and three-way share **one** data model with `1..=3` participating documents (ediff's correct structural choice); inline overlay and side-by-side are **presentation transforms** (`DiffMap`) over that shared data, not separate subsystems (Zed's structural insight); the engine is `imara-diff` (Histogram default, what gitoxide ships) running on `spawn_blocking`. Two foundational primitives ship with the first slice: **displacing virtual rows** (deletion blocks, also consumed by multibuffer §5.14 and post-v1 inlay hints) and **scroll-binding pane groups** (used by side-by-side diff, vim's `:set scrollbind`, future `:windo`). Slice ledger is D.0–D.7 in [`../operations/implementation.md`](../operations/implementation.md).
+Lattice ships a diff subsystem covering the four flows users expect from a modern editor: inline overlay against a baseline (file vs. disk, file vs. git HEAD, file vs. AI-proposed content), side-by-side two-way diff, three-pane three-way merge, and hunk motions / transfer operators (`]c` / `[c` / `do` / `dp`) registered through the central `CommandRegistry` (§5.2.1). The deep-dive design lives in [`diff-system.md`](diff-system.md); the headline architectural decisions are: hunks are **data on the Core thread** owned by a `DiffSubsystem` and RCU-published via arc-swap, not a window-local UI flag (vim's mistake); two-way and three-way share **one** data model with `1..=3` participating documents (ediff's correct structural choice); inline overlay and side-by-side are **presentation transforms** over that shared data, not separate subsystems (Zed's structural insight) — realized as a `DiffSignMap` plus overlay / fold / filler modules rather than one `DiffMap` type; the engine is `imara-diff` (Histogram default, what gitoxide ships) running on `spawn_blocking`. Two foundational primitives ship with the first slice: **displacing virtual rows** (deletion blocks, also consumed by multibuffer §5.14 and post-v1 inlay hints) and **scroll-binding pane groups** (used by side-by-side diff, vim's `:set scrollbind`, future `:windo`). Slice ledger is D.0–D.7 in [`../operations/implementation.md`](../operations/implementation.md).
 
 ### 5.14 Multibuffer Views
 
-A `MultibufferDocument` is a `Document` whose content is composed of N **anchored excerpts** spliced from other Documents, where edits at the surface propagate back through the standard edit pipeline to the source buffers. This is the primitive that lights up project-wide diff, AI multi-file `openDiff`, search-as-buffer (`wgrep`-style), LSP references-as-buffer, and diagnostics-as-buffer with one implementation rather than five. The deep-dive design lives in [`multibuffer-views.md`](multibuffer-views.md); the headline architectural decisions are: **`Document` becomes a trait** with `RopeDocument` and `MultibufferDocument` implementations (the load-bearing refactor); excerpts hold the existing **anchor type** (§5.1.1) and track source-buffer edits automatically; edit propagation is a translation-table lookup → dispatch through the standard pipeline — undo / macros / autocmds / LSP `didChange` observe one consistent edit stream regardless of pane; **cross-pane coherence falls out of arc-swap** (§5.6.8) because there is only one underlying buffer; the **provider trait** (`MultibufferProvider`) is how grep, references, diff, AI proposals, and diagnostics populate excerpts — each is a single task that emits mutations. Multibuffer and diff are independent designs that meet at their consumers (project-wide diff, AI multi-file edits), not at their implementations. Slice ledger is M.0–M.6 in [`../operations/implementation.md`](../operations/implementation.md).
+A `MultibufferDocument` is a `Document` whose content is composed of N **anchored excerpts** spliced from other Documents, where edits at the surface propagate back through the standard edit pipeline to the source buffers. This is the primitive that lights up project-wide diff, AI multi-file `openDiff`, search-as-buffer (`wgrep`-style), LSP references-as-buffer, and diagnostics-as-buffer with one implementation rather than five. The deep-dive design lives in [`multibuffer-views.md`](multibuffer-views.md); the headline architectural decisions are: **`Document` becomes a trait** with `RopeDocument` and `MultibufferDocument` implementations (the load-bearing refactor); excerpts hold the existing **anchor type** (§5.1.1) and track source-buffer edits automatically; edit propagation is a translation-table lookup → dispatch through the standard pipeline — undo / macros / autocmds / LSP `didChange` observe one consistent edit stream regardless of pane; **cross-pane coherence falls out of arc-swap** (§5.6.8) because there is only one underlying buffer; providers populate excerpts by emitting mutations from a single task — **built today as concrete `search` + `narrow` providers** (📝 references / diagnostics / diff-as-multibuffer providers, and a generalized `MultibufferProvider` trait, are not yet built). Multibuffer and diff are independent designs that meet at their consumers (project-wide diff, AI multi-file edits), not at their implementations. Slice ledger is M.0–M.6 in [`../operations/implementation.md`](../operations/implementation.md).
 
 ### 5.15 Virtual Rows
 
@@ -2518,102 +2605,61 @@ Lattice integrates two coding agents — Claude Code and opencode. The seam is t
 
 ### 6.1 Commands (clients to core)
 
+> **Reconciliation note (v0.6).** The monolithic client→core `Command` enum
+> below was **retired** (its removal is documented in
+> `lattice-protocol/src/lib.rs`). There is no single wire enum; the real protocol
+> is a **typed actor handle** plus `CommandInvocation`.
+
+Clients drive the core through the per-document actor handle
+(`RopeDocumentHandle` in `lattice-runtime`), whose typed methods each return a
+`Pending<T>` (an awaitable-or-droppable oneshot):
+
 ```rust
-enum Command {
-	// Document management
-	OpenDocument { path: PathBuf, reply: oneshot::Sender<DocumentId> },
-	CloseDocument { id: DocumentId },
-	SaveDocument { id: DocumentId, reply: oneshot::Sender<Result<()>> },
-
-	// Editing
-	ApplyEdit { id: DocumentId, edit: Edit, reply: oneshot::Sender<EditResult> },
-	Undo { id: DocumentId },
-	Redo { id: DocumentId },
-
-	// Selection
-	SetSelections { id: DocumentId, selections: SelectionSet },
-	AddCursor { id: DocumentId, position: Position },
-
-	// Modal mode
-	EnterModalMode { mode: ModalMode },
-
-	// Major/Minor modes
-	SetMajorMode { id: DocumentId, mode: MajorModeId },
-	ActivateMinorMode { id: DocumentId, mode: MinorModeId },
-	DeactivateMinorMode { id: DocumentId, mode: MinorModeId },
-
-	// LSP-mediated
-	Complete { id: DocumentId, position: Position, reply: oneshot::Sender<CompletionList> },
-	Hover { id: DocumentId, position: Position, reply: oneshot::Sender<Option<Hover>> },
-	GotoDefinition { id: DocumentId, position: Position, reply: oneshot::Sender<Vec<Location>> },
-
-	// Decorations
-	AddDecoration { id: DocumentId, decoration: Decoration, reply: oneshot::Sender<DecorationId> },
-	RemoveDecoration { id: DocumentId, decoration_id: DecorationId },
-
-	// UI contributions
-	RegisterStatusSegment { spec: StatusSegmentSpec },
-	UpdateStatusSegment { id: SegmentId, content: SegmentContent },
-	RegisterGutterSegment { spec: GutterSegmentSpec },
-	RegisterBufferBackedView { spec: BufferViewSpec },        // file-tree, outline, etc.
-	OpenBufferView { view: BufferViewId, target: PaneTarget }, // place a buffer-view in a pane
-	OpenPicker { spec: PickerSpec, reply: oneshot::Sender<Option<ItemId>> },
-	ShowPopup { popup: Popup, reply: oneshot::Sender<PopupId> },
-	DismissPopup { id: PopupId },
-	PostNotification { notification: Notification },
-
-	// Grammar extension (new in v0.4)
-	RegisterMotion { spec: MotionSpec, reply: oneshot::Sender<MotionId> },
-	RegisterTextObject { spec: TextObjectSpec, reply: oneshot::Sender<TextObjectId> },
-	RegisterOperator { spec: OperatorSpec, reply: oneshot::Sender<OperatorId> },
-	RegisterExCommand { spec: ExCommandSpec, reply: oneshot::Sender<ExCommandId> },
-	InvokeCommand { invocation: CommandInvocation, reply: oneshot::Sender<Result<Effect>> },
-
-	// Subscriptions
-	Subscribe { events: EventFilter, sink: mpsc::Sender<Event> },
+impl RopeDocumentHandle {
+	fn snapshot(&self) -> Arc<DocumentSnapshot>;                 // wait-free read
+	fn dispatch(&self, inv: CommandInvocation, env: DispatchEnv) -> Pending<Effect>;
+	fn apply_edit(&self, edit: Edit) -> Pending<AppliedEdit>;
+	// … open / save / undo / redo etc.
 }
 ```
+
+Everything a client wants to *do* — a keystroke, a `:` line, a plugin operator,
+an LSP-mediated action — is expressed as a `CommandInvocation` (§5.2.1) dispatched
+through this handle; the grammar dispatcher runs it synchronously on the actor and
+the result comes back as an `Effect`. Registration of new commands / motions /
+etc. is a direct `CommandRegistry` call at boot (§5.2.4), not a wire message.
+UI-side concerns (popups, pickers, notifications, status segments) are host/renderer
+state, not core-protocol messages.
 
 ### 6.2 Events (core to clients)
 
+The protocol-level `Event` enum (`lattice-protocol/src/event.rs`) is the reconciled
+list from §5.10.1 — the earlier 25-variant sketch with UI / LSP / picker events was
+narrowed; those are subsystem-typed sub-buses now, not core protocol:
+
 ```rust
 enum Event {
-	// Document
-	DocumentOpened { id: DocumentId, path: PathBuf, language: Option<LanguageId> },
-	DocumentChanged { id: DocumentId, version: u64, edits: Vec<AppliedEdit> },
-	DocumentSaved { id: DocumentId },
-	DocumentClosed { id: DocumentId },
-
-	SelectionsChanged { id: DocumentId, selections: SelectionSet },
-	ModalModeChanged { from: ModalMode, to: ModalMode },
-
-	MajorModeChanged { id: DocumentId, from: Option<MajorModeId>, to: MajorModeId },
-	MinorModeActivated { id: DocumentId, mode: MinorModeId },
-	MinorModeDeactivated { id: DocumentId, mode: MinorModeId },
-
-	DiagnosticsUpdated { id: DocumentId, diagnostics: Vec<Diagnostic> },
-
-	LspServerStarted { server: ServerId, language: LanguageId },
-	LspServerCrashed { server: ServerId, error: String },
-
-	PluginActivated { plugin: PluginId },
-	PluginCrashed { plugin: PluginId, error: String },
-
-	// UI events
-	PaneFocused { pane: PaneId },
-	PaneClosed { pane: PaneId },
-	PopupShown { id: PopupId },
-	PopupDismissed { id: PopupId, reason: DismissalReason },
-	PickerOpened { id: PickerId },
-	PickerClosed { id: PickerId, selection: Option<ItemId> },
-	BufferViewOpened { view: BufferViewId, document: DocumentId, pane: PaneId },
-	NotificationPosted { id: NotificationId },
+	DocumentOpened { id, path, version, text },
+	BeforeSave { .. }, DocumentSaved { .. }, DocumentClosed { .. }, DocumentChanged { .. },
+	SelectionsChanged { .. },
+	ModalModeChanged { from, to },
+	OptionChanged { .. },
+	MajorEntered { buffer, major }, MajorExiting { buffer, major },
+	MinorActivated { buffer, minor }, MinorDeactivated { buffer, minor },
+	Plugin(PluginEventPayload), PluginCrashed { .. },
 }
 ```
 
+(LSP / diagnostics / UI events flow over their own typed buses — see §5.10.1.)
+
 ### 6.3 Wire format
 
-In-process: tokio mpsc channels with enums. Cross-process: same enums via MessagePack over Unix socket or TCP. Channel types are generic; in-process callers pay zero serialization cost.
+**In-process only.** The editor runs as a single process; the core protocol is
+tokio mpsc channels carrying typed values, zero serialization. The earlier
+**cross-process MessagePack-over-socket** framing was **abandoned** (documented in
+`lattice-protocol/src/lib.rs`). A JSON-RPC codec exists but for the *LSP* client
+(and a peer-agent channel), not the core editor protocol. Cross-process /
+remote-headless is 📝 not pursued in v1 (the TUI peer covers headless / SSH).
 
 ---
 
@@ -2621,19 +2667,19 @@ In-process: tokio mpsc channels with enums. Cross-process: same enums via Messag
 
 ### 7.1 User types `x` in normal mode (delete character) -- code buffer
 
-UI receives KeyEvent -> Command::DispatchKey -> Core resolves to Operator::Delete -> ApplyEdit -> buffer mutates -> Event::DocumentChanged -> tree-sitter reparse on worker, LSP didChange (debounced), plugins notified, renderer marks viewport dirty -> next vsync renders.
+UI receives KeyEvent -> translates to a `CommandInvocation` -> `handle.dispatch(inv)` -> the editor actor runs `execute(...)` -> returns `Effect::Edits` -> buffer mutates -> `Event::DocumentChanged` -> tree-sitter reparse on a `spawn_blocking` worker + cell-grid rebuild, LSP didChange (debounced), plugins notified, new snapshot published -> next frame renders.
 
 End-to-end 1-7: <2ms. Background work in parallel.
 
 ### 7.2 User types in a markdown heading -- rich buffer
 
-Same as above through buffer mutation. EditorRenderer (shaped path) marks line N's layout cache as dirty -> shape job dispatched to rayon worker -> worker shapes line (~100us) and updates Fenwick index -> next vsync uses fresh layout (or stale for one frame if not done).
+Same as above through buffer mutation. (📝 The shaped rich-buffer path — per-line layout cache + Fenwick height index on a `spawn_blocking` worker — is not built; markdown renders as styled monospace cells today, §5.6.2.)
 
 End-to-end input: <2ms regardless of shaping completion.
 
 ### 7.3 User triggers completion (insert mode, after `.`)
 
-Command::Complete -> LSP request -> 50-500ms wait (user keeps typing) -> version-aware cancellation if buffer changes -> eventual matching response -> Event::CompletionAvailable -> UI shows popup via DocumentRenderer -> first paint ~5-10ms; cached afterward.
+Completion trigger -> LSP request (via the `lattice-completion` pipeline + `gen:lsp` source) -> 50-500ms wait (user keeps typing) -> version-aware cancellation if buffer changes -> eventual matching response published to the completion sub-state -> the completion popup (a buffer view) updates -> first paint fast; cached afterward.
 
 ### 7.4 User opens command palette (Ctrl+Shift+P)
 
@@ -2643,7 +2689,7 @@ Command::Complete -> LSP request -> 50-500ms wait (user keeps typing) -> version
    - content_provider: built-in CommandPaletteProvider (returns all registered commands)
    - item_renderer: shows command name + binding + description
    - preview_provider: None
-3. Picker overlay appears (DocumentRenderer), centered, with input field focused.
+3. Picker overlay appears (a centered buffer-backed view), with input field focused.
 4. User types "form".
 5. Picker filters items via fuzzy match on each provider yield.
 6. User presses Enter on "format-buffer".
@@ -2676,8 +2722,8 @@ Throughout: editor pane keeps rendering, LSP keeps running, no other UI work is 
 3. Every async operation has cancellation.
 4. Plugins cannot block the host (wasmtime async + fuel).
 5. Allocations on the input path are bounded.
-6. Rendering paths are explicit per-buffer; no silent upgrade.
-7. Text shaping for rich buffers happens on workers.
+6. The cell grid is built off-thread (`spawn_blocking`); the render thread only reads a published `DisplayMatrix`.
+7. 📝 (planned) Text shaping for rich buffers happens on workers — the shaped path is unbuilt; markdown renders as monospace cells today.
 8. UI furniture (popups, buffer-backed views, status) is layout-once, cached, off the input path.
 
 ### 8.2 Performance commitments per path
@@ -2709,9 +2755,11 @@ we don't settle for µs targets just because incumbent editors do.
   blanket ">10% vs. main on any benchmark" gate. The ratchet bar only
   moves down; the ceilings are generous enough to catch a gross
   regression without tripping on runner variance.
-- **Today.** The current `docs/../operations/benchmarks.md` median. "—" means
-  unmeasured (a gap; backs a row in `../operations/benchmarks.md`'s "what's
-  NOT here" section).
+- **Today.** The current `docs/../operations/benchmarks.md` median. "—" / "n/a"
+  means unmeasured. **These cells are a point-in-time snapshot and drift** — the
+  live [`../operations/benchmarks.md`](../operations/benchmarks.md) is the
+  authoritative current number; reconcile there, not against a hand-transcribed
+  figure here (which may lag by a few µs / ns as the CI benches move).
 - **Stretch.** Credible with N-months-of-known-engineering, not
   novel research. Cited paths: GPU renderer, suffix-array search
   index, single-thread tokio runtime, sync edit fast-path,
@@ -2770,7 +2818,7 @@ the rationale states the constraint.
 |-------------------------------------------------------|-------|-------------|-----------------------------------------|---------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | Open 100MB log (first paint, viewport only)           | ~80ms | <100ms      | **76ms** (rope only, render unmeasured) | <30ms   | ropey rope construction at 1.3 GiB/s -- 76ms for 100MB measured. Initial viewport render is on top; well within budget. Tree-sitter parse runs in background; first paint shows raw text immediately. |
 | Open 100MB log (full ready, syntax + folds)           | ~80ms | <500ms      | unmeasured                              | <200ms  | Tree-sitter full parse (50ms-class on 100MB depending on grammar) + initial fold compute.                                                                                                             |
-| Open 10K-line markdown (full ready)                   | ~50ms | <500ms      | n/a                                     | <200ms  | Block parse + inline injection per visible paragraph; layout cache prebuilt on rayon pool.                                                                                                            |
+| Open 10K-line markdown (full ready)                   | ~50ms | <500ms      | n/a                                     | <200ms  | Block parse + inline injection per visible paragraph (📝 the shaped layout-cache path is unbuilt; renders as monospace cells today).                                                                   |
 | Tree-sitter incremental reparse (1-char edit) | scale-by-size | scale-by-size | **594µs (80 lines) / 325µs (1600) / 1.77ms (16k lines)** | --   | `Tree::edit` byte-delta + `Parser::parse(.., Some(&old_tree))` reuses unchanged subtrees. Beats full reparse 8× at 1600 lines, 14× at 16k lines. **Loses at <100 lines (594µs vs full 246µs)** -- tree-sitter's incremental algorithm has setup overhead that doesn't pay off for tiny inputs; both paths are sub-ms so nobody notices. Owned-Tree work in Option B + B.2's InputEdit threading lit this up. |
 | Tree-sitter full reparse                    | scale-by-size | scale-by-size | **246µs (80 lines) / 2.5ms (1600) / 25.5ms (16k lines)** | -- | Falsification anchor for the incremental row above + the file-load / cold-start path. At 16k lines this exceeds the 16ms-at-60Hz frame budget, which is why incremental matters; the keystroke path uses incremental, this row's the path file-load takes once. |
 
@@ -2782,13 +2830,13 @@ the rationale states the constraint.
 | Fold recompute (markdown, 100 sections) | ~5µs  | <50µs       | 6.3µs | ⏹️       | Linear ATX heading walk; near floor.                                                                                                |
 | Fold recompute (syntax, 200-fn rust)    | ~3ms  | <5ms        | 3.9ms | <1ms    | `QueryCursor::matches` traversal across many pattern alternatives. Stretch via per-pattern caching + pruning never-folded captures. |
 
-#### Plugin host (§5.5; Phase-7 host **built**; §7 budgets CI-gated via `perf_ratchet.rs`, medians in `benchmarks.md`)
+#### Plugin host (§5.5; ✅ Phase 7 shipped — CI-gated)
 
 | Operation                               | Floor  | Target (v1) | Today | Stretch | Rationale                                                                            |
 |-----------------------------------------|--------|-------------|-------|---------|--------------------------------------------------------------------------------------|
-| Typed host fn call (1 scalar in, 1 out) | ~150ns | <500ns      | gated (`benchmarks.md`) | <100ns  | wasmtime trampoline + 2 word copies. Floor is Cranelift's ABI marshalling. p99 budget CI-gated. |
-| Grammar-extension round-trip            | ~2µs   | <5µs        | **~340ns** (release, real guest) | <1µs    | Two trampolines + closure invocation through the sync trampoline (PH7.7d). ~15× under the 5µs p99 budget; the `grammar_round_trip` ratchet gates it. |
-| Cold start, 50 lazily-loaded plugins    | ~10ms  | <30ms       | gated (`benchmarks.md`) | <5ms    | Module deserialise + import resolution per plugin. Disk cache amortises across runs. |
+| Typed host fn call (1 scalar in, 1 out) | ~150ns | <500ns      | **CI-gated <500ns p99** | <100ns  | wasmtime trampoline + 2 word copies. Floor is Cranelift's ABI marshalling.           |
+| Grammar-extension round-trip            | ~2µs   | <5µs        | **~340ns release (CI-gated <5µs p99)** | <1µs    | Two trampolines + closure invocation. Wasmtime AOT closes most of this (PH7.7d).     |
+| Cold start, 50 lazily-loaded plugins    | ~10ms  | <30ms       | n/a   | <5ms    | Module deserialise + import resolution per plugin. Disk cache amortises across runs. |
 
 #### Architectural levers, by row
 
@@ -2943,7 +2991,25 @@ variance.
 - Access the raw filesystem outside their capability grant.
 - Spawn native OS threads (use async tasks via host primitives instead; see §5.5.1).
 
-### 9.4 WIT interface (sketch)
+### 9.4 WIT interface
+
+> **Reconciliation note (v0.6).** The original sketch (an
+> `import-host-functions-that-return-ids` model with a monolithic `ui` interface
+> and a rich `host-services` of `tree-sitter-query` / `ripgrep-search` /
+> `http-request` / `spawn`) was **not** what shipped. The Phase-7 `wit/` package
+> **inverts** it: guests **export** per-capability "source" worlds that the host
+> *drives*, plus a grammar callback trampoline. `ui.wit` and `command.wit` are
+> empty stubs; `host-services` is minimal. The real shape:
+
+The package is **`lattice:plugin-host@0.1.0`** (14 `wit/` files:
+`types`, `plugin`, `buffer`, `grammar`, `picker-source`, `completion-source`,
+`decorations`, `events`, `config`, `modes`, `host-services`, plus `ui` /
+`command` stubs and a test fixture).
+
+**The model: guests export worlds the host calls.** A picker/completion/decoration
+plugin *exports* its source world; the host instantiates it and drives it
+(`init` / `accept` / `gutter-decorations` / …). The guest doesn't call
+`register-picker(...)` and get an id back; the host owns the registry and pulls.
 
 > **Illustrative sketch, not the canonical package.** The built WIT is
 > `wit/*.wit` (`lattice:plugin-host@0.1.0`) — the exercised seams
@@ -2957,91 +3023,59 @@ variance.
 > is kept for the shape of the contract.
 
 ```wit
-package lattice:plugin@0.1.0;
+package lattice:plugin-host@0.1.0;
 
+// buffer.wit — a READ-ONLY document resource (no apply-edits from a source world)
 interface buffer {
-	resource document;
-
-	type document-id = u64;
-	record range { start: u32, end: u32 }
-	record text-edit { range: range, new-text: string }
-
-	open: func(id: document-id) -> result<document, error>;
-
-	// Methods on the resource read from host memory; no copy of the rope crosses the boundary.
-	get-version: func(doc: borrow<document>) -> u64;
-	get-line-count: func(doc: borrow<document>) -> u64;
-	get-text-range: func(doc: borrow<document>, r: range) -> result<string, error>;
-	apply-edits: func(doc: borrow<document>, edits: list<text-edit>) -> result<_, error>;
+	resource document {
+		version: func() -> u64;
+		line-count: func() -> u64;
+		text-range: func(start: u32, end: u32) -> result<string, error>;
+	}
 }
 
+// grammar.wit — register-by-name + a CALLBACK TRAMPOLINE (host holds callback ids)
 interface grammar {
-	// First-class extension points for the vim grammar.
-	register-motion: func(spec: motion-spec) -> motion-id;
-	register-text-object: func(spec: text-object-spec) -> text-object-id;
-	register-operator: func(spec: operator-spec) -> operator-id;
-	register-ex-command: func(spec: ex-command-spec) -> ex-command-id;
-
-	invoke: func(inv: command-invocation) -> result<effect, command-error>;
+	register-motion: func(name: string, doc: string, spec: motion-spec, callback: u32);
+	register-operator: func(name: string, doc: string, spec: operator-spec, callback: u32);
+	register-text-object: func(name: string, doc: string, spec: text-object-spec, callback: u32);
+	register-ex-command: func(name: string, doc: string, spec: ex-command-spec, callback: u32);
+}
+interface grammar-callbacks {              // EXPORTED by the guest; host invokes by id
+	eval-motion: func(callback: u32, ctx: motion-ctx) -> result<motion-result, command-error>;
+	// … eval-operator / eval-text-object / parse-ex / apply-ex
 }
 
-interface modes {
-	register-major-mode: func(spec: major-mode-spec) -> result<major-mode-id, error>;
-	register-minor-mode: func(spec: minor-mode-spec) -> result<minor-mode-id, error>;
-	activate-minor-mode: func(doc: document-id, mode: minor-mode-id) -> result<_, error>;
-	deactivate-minor-mode: func(doc: document-id, mode: minor-mode-id) -> result<_, error>;
+// picker-source.wit / completion-source.wit / decorations.wit — guest-EXPORTED worlds
+interface picker-source {                  // host drives these
+	init: func(args: list<string>) -> picker-init-result;
+	accept: func(item: u32) -> picker-accept;
 }
 
-interface decorations {
-	add-decoration: func(doc: document-id, dec: decoration) -> decoration-id;
-	remove-decoration: func(id: decoration-id);
-	update-decoration: func(id: decoration-id, dec: decoration);
-}
-
-interface ui {
-	// Sprites / icons (file-type icons, severity icons, status indicators, ...)
-	register-sprite-set: func(set: sprite-set) -> sprite-set-id;
-	register-sprite: func(spec: sprite-spec) -> sprite-id;
-
-	// Status / gutter
-	register-status-segment: func(spec: status-segment-spec) -> segment-id;
-	update-status-segment: func(id: segment-id, content: segment-content);
-	register-gutter-segment: func(spec: gutter-segment-spec) -> segment-id;
-
-	// Popups
-	show-popup: func(popup: popup-spec) -> popup-id;
-	dismiss-popup: func(id: popup-id);
-
-	// Pickers
-	open-picker: func(spec: picker-spec) -> result<option<item-id>, error>;
-
-	// Buffer-backed views (replaces v0.3 panels)
-	register-buffer-view: func(spec: buffer-view-spec) -> buffer-view-id;
-	open-buffer-view: func(view: buffer-view-id, target: pane-target) -> result<document-id, error>;
-
-	// Notifications
-	post-notification: func(notification: notification-spec) -> notification-id;
-	dismiss-notification: func(id: notification-id);
-}
-
+// host-services.wit — MINIMAL (no ts-query / ripgrep / http / spawn)
 interface host-services {
-	// Native host APIs that plugins call into. Heavy work runs native;
-	// the plugin orchestrates.
-	tree-sitter-query: func(doc: document-id, query: string, range: option<range>)
-		-> result<list<node-match>, error>;
-	ripgrep-search: func(query: rg-query) -> stream<rg-match>;
-	regex-find: func(pattern: string, haystack: string) -> result<list<match-range>, error>;
-	http-request: func(req: http-request) -> result<http-response, error>; // capability-gated
-	read-file: func(path: string) -> result<list<u8>, error>;             // capability-gated
-	spawn: func(cmd: subprocess-spec) -> result<subprocess-handle, error>; // capability-gated
+	walk: func(/* introspection walk */) -> list<catalog-entry>;
+	register-event: func(kind: string) -> sub-id;
+	emit-event: func(payload: event-payload);
 }
 
-interface plugin {
+// events.wit / config.wit / modes.wit — event subscribe+emit, option contribution, mode contribution
+// ui.wit, command.wit — EMPTY STUBS (reserved)
+
+interface plugin {                         // lifecycle, exported by every plugin
 	activate: func() -> result<_, error>;
 	on-event: func(e: event) -> result<_, error>;
 	deactivate: func() -> result<_, error>;
 }
 ```
+
+Rationale for the inversion: a source world the host *pulls* keeps the registry,
+lifecycle, and teardown host-owned (no plugin-held ids to leak on crash), and the
+callback-trampoline keeps grammar evaluators synchronous-on-keystroke without a
+round-trip through a guest-side registry. The rich `ui` surface (popups, pickers,
+status, notifications) and the heavy `host-services` (tree-sitter-query, ripgrep,
+http, spawn) from the sketch are 📝 not built — plugins that need those wait on
+later capability seams.
 
 ### 9.5 Concurrency for plugin authors
 
@@ -3063,15 +3097,23 @@ Per §5.5.2, every WIT host function has a budget enforced in CI. Plugin authors
 
 ### 9.7 Reference plugins shipping with v1.0
 
-- **`fuzzy-finder`** -- file / symbol / buffer pickers (validates picker primitive end-to-end).
-- **`git-gutter`** (minor mode) -- diff markers in gutter, blame popup.
-- **`linter-bridge`** -- adapter for non-LSP linters (eslint, ruff, shellcheck).
-- **`markdown-mode`** (major mode) -- markdown editing with live preview minor mode.
-- **`rust-mode`**, **`python-mode`**, **`javascript-mode`**, etc. -- bundled major modes.
-- **`file-tree`** -- buffer-backed workspace navigation view.
-- **`outline`** -- buffer-backed document symbol view.
-- **`diagnostics-list`** -- buffer-backed workspace diagnostics view.
-- **`tree-sitter-motions`** (post-1.0 plugin candidate — *not built*; structural tree-sitter motions/text-objects exist **natively** today under the TSM slices, but not as a validation plugin) -- motions and text objects driven by tree-sitter queries (`]f` next function, `iaf` inner argument, etc.).
+> **📝 Status.** Only **`fuzzy-finder`** exists as an actual WASM component
+> (a Phase-7 seam-parity fixture, not yet a loaded plugin). Every other entry is
+> either built **natively** (not as a plugin) or unbuilt: git markers →
+> `lattice-diff` (native); markdown/rust/python modes → native `lattice-syntax`
+> language modes; file-tree → native `lattice-file-tree`; outline → `:lsp-symbols`;
+> diagnostics-list → the native `:diagnostics` buffer; tree-sitter-motions →
+> shipped natively in `lattice-syntax` (§5.2.4). Repackaging these as WASM
+> components is Phase 8b work.
+
+- **`fuzzy-finder`** -- file / symbol / buffer pickers (validates picker primitive end-to-end). *(the one real component)*
+- **`git-gutter`** -- 📝 (native today via `lattice-diff`).
+- **`linter-bridge`** -- 📝 adapter for non-LSP linters.
+- **`markdown-mode` / `rust-mode` / `python-mode` / `javascript-mode`** -- 📝 (native language modes today).
+- **`file-tree`** -- 📝 (native `lattice-file-tree` today).
+- **`outline`** -- 📝 (native `:lsp-symbols` today).
+- **`diagnostics-list`** -- 📝 (native `:diagnostics` today).
+- **`tree-sitter-motions`** -- ✅ shipped natively in `lattice-syntax`, not as a plugin (`]f` next function, `af`/`ac` objects, etc.).
 
 The reference plugins exercise every primitive: pickers, popups, buffer-backed views, status segments, gutter segments, modes, decorations, notifications, grammar extensions. If any is painful to write, the API needs to grow.
 
@@ -3079,9 +3121,26 @@ The reference plugins exercise every primitive: pickers, popups, buffer-backed v
 
 ## 10. Configuration and Extension Tiers
 
-**Two tiers: TOML and WASM.** TOML covers configuration -- options, keymaps, layouts, theme, default minor-modes per major-mode. WASM (Component Model + WIT) is the single substrate for everything else: extensions, custom motions/operators/text-objects, plugin-provided modes, and live evaluation.
+**Two tiers: TOML and WASM.** TOML (`lattice.toml`) covers configuration --
+options today; keymaps / layouts / theme selection are partly TOML, partly
+mode-owned. WASM (Component Model + WIT) is the intended single substrate for
+everything else: extensions, custom motions/operators/text-objects,
+plugin-provided modes, and live evaluation.
 
-**Live evaluation in lattice means plugin authoring without restart**, not REPL-style sub-keystroke evaluation. A built-in `*scratch:rust*` buffer accepts Rust source; on `:eval` (or whatever the user binds), the host writes the source to a temp directory, invokes the system `rustc --target wasm32-wasip2`, dynamically loads the resulting component, and instantiates it against the same plugin host substrate shipped plugins use. The new commands / motions / decorations / event subscriptions become available immediately. Compile latency is 1-3 s -- explicitly *not* an emacs `M-x ielm` experience. Users wanting a sub-keystroke REPL install a community-shipped plugin that exposes a typed S-expression evaluator over the `CommandRegistry`; it is not a host concern.
+> **📝 Status.** The **TOML option tier is ✅ built** (`lattice-config`). The
+> **WASM tier's editor-side consumption** (user `init.rs`, live-eval, the layout /
+> keymap TOML expansions in the example below) is **Phase 8+** — the plugin *host*
+> exists (Phase 7) but is not yet wired into the editor. Treat the WASM-tier and
+> live-eval prose as forward design.
+
+**Live evaluation (📝 planned) means plugin authoring without restart**, not
+REPL-style sub-keystroke evaluation. The design: a built-in `*scratch:rust*`
+buffer accepts Rust source; on `:eval` the host writes it to a temp dir, invokes
+`rustc --target wasm32-wasip2`, and instantiates the resulting component against
+the same plugin host shipped plugins use — new commands / motions / decorations
+available immediately, ~1-3 s compile. Not built yet (depends on editor-side
+loading). Users wanting a sub-keystroke REPL would install a plugin exposing an
+evaluator over the `CommandRegistry`; not a host concern.
 
 **Why no in-process scripting language.** A second runtime (Lua via mlua, embedded Scheme, Rhai) doubles the API surface plugin authors must learn, doubles the binding maintenance, and divides the ecosystem between "plugin-shaped" and "scripting-shaped" extensions that should be the same shape. The Rust-WASM-only choice keeps every extension on one substrate with one set of tooling. The cost is the live-eval-experience tradeoff above; we accept it.
 
@@ -3120,59 +3179,86 @@ default-minor-modes = ["git-gutter", "rainbow-delimiters", "auto-pair"]
 
 ## 11. Project Layout (Cargo Workspace)
 
+The workspace is **32 crates** (`Cargo.toml` members), organized bottom-up so
+every crate depends only downward. (This tree was rewritten in v0.6 to match the
+code — the earlier `lattice-render*` trisection, `lattice-modes`,
+`lattice-config-api`, and `lattice-headless` were never built; rendering
+consolidated into the `ui-*` peers + `lattice-host`, modes into one
+`lattice-mode` crate, and the TUI serves the headless role.)
+
 ```
 lattice/
 |-- Cargo.toml
+|-- rust-toolchain.toml                # pins rustc 1.94, edition 2024
 |-- crates/
-|   |-- lattice-core/                  # buffers, documents, undo, dispatcher
-|   |-- lattice-grammar/               # vim modal state machine + command API
-|   |                                  #   (operators, motions, text objects, registers,
-|   |                                  #    ranges, ex-commands, dot-repeat, macros)
-|   |-- lattice-syntax/                # tree-sitter integration
-|   |-- lattice-lsp/                   # LSP client
-|   |-- lattice-plugin-host/           # wasmtime + Component Model + WIT bindings
-|   |-- lattice-modes/                 # major / minor mode registry
-|   |-- lattice-protocol/              # Command / Event enums; serde + msgpack
-|   |-- lattice-config/                # typed-options registry: `OptionType` trait,
-|   |                                  #   `Option<T>` (ArcSwap-backed value cell),
-|   |                                  #   `ErasedOption`, `ConfigRegistry`,
-|   |                                  #   `OptionsGenerator` (gen:options), `:set` parser,
-|   |                                  #   renderer-agnostic core options
-|   |                                  #   (`register_core_options → CoreOptions`).
-|   |                                  #   Phase 7+ adds options.toml + init.rs build/load.
-|   |-- lattice-config-api/            # WIT-bindings reexport consumed by user `init.rs`
-|   |-- lattice-render/                # Renderer trait, atlas, frame, fonts
-|   |-- lattice-render-editor/         # EditorRenderer (all paths)
-|   |-- lattice-render-document/       # DocumentRenderer (taffy-based)
-|   |-- lattice-ui-gpui/               # compositor, panes, popups, pickers,
-|   |                                  #   notifications, status lines
-|   |-- lattice-ui-tui/                # terminal UI for bootstrap / headless
-|   |-- lattice-headless/              # headless server (remote / SSH)
-|   `-- lattice-cli/                   # `lattice` binary
-|-- wit/                               # canonical WIT interface definitions
-|   |-- buffer.wit
-|   |-- grammar.wit
-|   |-- modes.wit
-|   |-- decorations.wit
-|   |-- ui.wit
-|   |-- host-services.wit
-|   `-- plugin.wit
-|-- plugins/                           # first-party plugins (compiled to component-model WASM)
-|   |-- fuzzy-finder/
-|   |-- git-gutter/
-|   |-- linter-bridge/
-|   |-- markdown-mode/
-|   |-- rust-mode/
-|   |-- python-mode/
-|   |-- file-tree/
-|   |-- outline/
-|   |-- diagnostics-list/
-|   `-- tree-sitter-motions/           # validates grammar extension API
-|-- grammars/                          # tree-sitter grammars
-|-- runtime/                           # bundled runtime assets (default keymap, themes)
+|   # -- bottom: shared types (no editor deps) --
+|   |-- lattice-protocol/              # Position/Range/Edit/Selection/Event/IDs; jsonrpc; CancellationToken
+|   # -- core: the editor engine --
+|   |-- lattice-core/                  # Buffer (ropey) + Document + linear UndoStack + file I/O + search
+|   |-- lattice-grammar/               # vim modal state machine + CommandRegistry + dispatcher + builtins
+|   |-- lattice-runtime/               # DocumentActor (tokio task/doc) + snapshots (arc-swap) + Pending<T> + EventBus
+|   |-- lattice-cells/                 # CellMatrix / DisplayMatrix / VirtualRow — the renderer-neutral cell grid
+|   # -- subsystems --
+|   |-- lattice-syntax/                # tree-sitter integration (rust/python/js/markdown), incremental reparse
+|   |-- lattice-lsp/                   # LSP client: actor pool, diagnostics, supervisor, watcher, lsp-modes
+|   |-- lattice-mode/                  # Mode trait (major/minor), registry, lifecycle, ServiceRegistry, modeline, event bus
+|   |-- lattice-keymap/                # layered keymap trie + chord resolution
+|   |-- lattice-completion/            # insert-completion pipeline: generators / matchers / rankers / annotators
+|   |-- lattice-config/                # typed-option registry (OptionDecl + trait OptionType, ArcSwap cells), :set, lattice.toml loader
+|   |-- lattice-config-macros/         # derive macros for typed options
+|   |-- lattice-picker/                # picker primitive: source registry, live-query, MRU frecency, preview
+|   |-- lattice-help/                  # HelpContent/HelpBuffer, Introspectable, :help + :describe-* backing
+|   |-- lattice-theme/                 # theme element registry (ArcSwap), palette resolution
+|   |-- lattice-snippet/               # snippet parser + registry + expansion mode
+|   |-- lattice-terminal/              # terminal buffer kind + PTY
+|   |-- lattice-file-tree/             # file-tree buffer kind
+|   |-- lattice-oil/                   # oil-style directory buffer kind
+|   |-- lattice-diff/                  # diff subsystem (imara-diff): signs, inline/side/three-way, ]c/[c/do/dp
+|   |-- lattice-multibuffer/           # multibuffer Document (excerpts) + search / narrow providers
+|   # -- host: the editor composition root (thin substrate) --
+|   |-- lattice-host/                  # Editor: boot, dispatch, BufferRegistry, RenderState, pane tree, tabs
+|   # -- renderer peers --
+|   |-- lattice-ui-tui/                # TUI peer (ratatui + crossterm); first-class, headless / SSH
+|   |-- lattice-ui-gpui/               # GPUI peer (optional `gui`/`window` features)
+|   # -- integrations --
+|   |-- lattice-ai/                    # AI coding-agent integrations (Claude Code over MCP, opencode ACP)
+|   |-- lattice-agent/                 # agent-log buffers + modes
+|   |-- lattice-dashboard/             # dashboard/start buffer
+|   # -- plugin substrate --
+|   |-- lattice-plugin-host/           # wasmtime (v46) + Component Model + WASI p2; capability/fuel/epoch; every seam
+|   |-- lattice-plugin-api/            # wasmtime-free introspection catalog (what lattice-host depends on today)
+|   |-- lattice-plugin-sdk/            # guest-side SDK for authoring plugins
+|   |-- lattice-plugin-sdk-derive/     # derive macros for the guest SDK
+|   # -- binary --
+|   `-- lattice-cli/                   # `lattice` binary (TUI default; `--features gui` links the GPUI peer)
+|-- wit/                               # canonical WIT interface definitions (package lattice:plugin-host@0.1.0)
+|   |-- types.wit                      # shared record/variant types
+|   |-- plugin.wit                     # top-level plugin world
+|   |-- buffer.wit                     # read-only `document` resource
+|   |-- command.wit                    # (stub)
+|   |-- grammar.wit                    # grammar contributions + callback trampoline
+|   |-- picker-source.wit              # guest-exported picker-source world
+|   |-- completion-source.wit          # guest-exported completion-source world
+|   |-- decorations.wit                # guest-exported decoration world
+|   |-- events.wit                     # event subscribe / emit
+|   |-- config.wit                     # plugin-contributed options
+|   |-- modes.wit                      # mode contributions
+|   |-- host-services.wit              # walk / register-event / emit-event
+|   |-- ui.wit                         # (stub)
+|   `-- trampoline-fixture.wit         # test fixture
+|-- plugins/
+|   `-- fuzzy-finder/                  # the PH7 validation plugin (seam parity + overhead bench)
+|-- assets/                            # icons, banner, desktop-entry, bundle resources
 |-- docs/
 `-- tests/
 ```
+
+> 📝 Bundled first-party plugins (git, grep, outline, format-on-save, …) and the
+> `init.rs`-as-WASM config path are Phase 8 / 8b — the host runtime exists, but
+> editor-side loading is not yet wired (§5.5.6, §5.12, §13). Much of that
+> *functionality* already ships **natively** (fuzzy-finder = `lattice-picker`,
+> git diff = `lattice-diff`, snippets = `lattice-snippet`, outline =
+> `:lsp-symbols`); the not-yet-done work is repackaging it as WASM components.
 
 ---
 
@@ -3185,11 +3271,17 @@ lattice/
 | Snapshot | `insta` | Editor scenarios; status segment outputs |
 | Property | `proptest` | Buffer invariants, layout cache coherence |
 | Benchmark | `criterion` | Hot paths in CI |
-| Fuzz | `cargo-fuzz` | Edits, command parser, MessagePack |
-| LSP integration | Real servers in Docker | rust-analyzer, pyright, gopls |
-| Plugin | Mock-core harness | Plugin API correctness |
-| Visual regression | Headless GPUI + screenshot diff | Rendering, popups, pickers, panels |
-| UI scenario | Synthetic input -> screenshot | Full-stack: keystroke through to rendered frame |
+| Fuzz | 📝 `cargo-fuzz` (planned) | Edits, command parser |
+| LSP integration | 🟡 real servers | rust-analyzer / pyright / etc. (Docker harness 📝) |
+| Plugin | `lattice-plugin-host` guest fixtures | every seam exercised end-to-end (Phase 7) |
+| Visual regression | 📝 headless screenshot diff (planned) | Rendering, popups, pickers |
+| UI scenario | synthetic input in host/ui-tui tests | keystroke → published state |
+
+> **Status.** Unit + integration + benchmark testing is heavily exercised
+> (**~3.5k tests**: ~1.5k ui-tui, ~650 host, ~190 grammar, ~180 lsp, plus the
+> rest) and the criterion latency benches are CI-ratcheted. The `cargo-fuzz`,
+> Dockerized-LSP, and screenshot-diff / visual-regression rows are 📝 aspirational.
+> `insta` snapshot + `proptest` are used lightly, not pervasively.
 
 ---
 
@@ -3207,9 +3299,12 @@ lattice/
 > (`lattice-plugin-trace`: the boundary tracer, the gated hot-path grammar seam,
 > the `*plugin-trace*` buffer views, the live `plugin.trace-level` option, and the
 > `wasi:logging` guest import — see [`plugin-observability.md`](plugin-observability.md)).
-> **Remaining Phase-8 work:** the bundled first-party reference plugins and
-> repackaging the built-in modes as WASM components (8b). The week numbers below
-> are the original plan, retained as the historical spec.
+> The mode/view *system* was built **natively** ahead of the plugin host, so
+> Phase 8's remaining work (8b) is the bundled first-party reference plugins +
+> repackaging the built-in modes as WASM components, not building the mode system.
+> The week numbers + crate names below are the original plan, retained as the
+> historical spec — several crate names never existed (`lattice-render*`,
+> `lattice-modes`; see §11 + the Phase-5/6 superseded notes below).
 
 ### Phase 0: Foundation (weeks 1-2)
 Workspace, `lattice-core`, document/buffer/undo, file I/O, protocol enums, snapshot tests. **Exit:** programmatic edit roundtrip.
@@ -3252,7 +3347,14 @@ Diagnostics, completion, hover, definition, references; cancellation; version tr
 `lattice-plugin-host` with wasmtime + Component Model + WIT bindings (`wit-bindgen`). AOT module cache; lazy instantiation; capability manifests; fuel limits; per-call overhead benchmarks gated in CI (typed call < 500ns p99; grammar-extension round-trip < 5μs p99). Async ABI wired through tokio. Reference plugin: `fuzzy-finder` (validates picker primitive end-to-end). **Exit:** a WASM plugin replicates the file picker without host changes; CI enforces overhead budgets.
 
 ### Phase 8: Major/Minor Modes + Reference Plugins (weeks 23-25)
-`lattice-modes` registry. Built-in major modes ship as components (rust, python, js, go, c, json, yaml, toml, markdown). Reference minor modes (git-gutter, auto-pair, rainbow-delimiters). Buffer-backed views (`file-tree`, `outline`, `diagnostics-list`) ship as components. **Exit:** mode and view systems fully exercised; the everything-is-a-buffer principle validated by the layout-from-config flow.
+**Reframed vs. the original plan:** the mode/view *system* is ✅ built natively
+(`lattice-mode` registry, major/minor axes, lifecycle, the LSP sub-mode cascade,
+help/diff/oil/file-tree/multibuffer modes) — the everything-is-a-buffer principle
+is already validated. What **remains** for Phase 8 is (a) the **editor-side plugin
+loader** (on-disk discovery, `:plugin-load`, `init.rs`-as-WASM), and (b)
+repackaging built-in modes + reference plugins **as WASM components** (§5.8.3
+goal). Built-in modes stay native by design; the as-components path is the
+extension story.
 
 ### Phase 9: Rich Buffer Rendering (weeks 26-28)
 Shaped path in `lattice-render-editor`. Per-line layout cache + Fenwick index. `markdown-mode`. Style mappings system. **Exit:** edit markdown with variable headings; latency indistinguishable from code.
@@ -3273,8 +3375,8 @@ Path 4 (inline blocks). `org-mode`. `WebRenderer` (decision time). Remote / SSH.
 |---|---|---|---|
 | GPUI API churns | Medium | Medium | UI crate isolated; protocol-only dependency; wgpu + parley fallback. |
 | Plugin API (WIT) design proves wrong | High | High | The WIT is validated before 1.0 by the `fuzzy-finder` plugin (⭐ Phase-7 exit) + a per-seam guest fixture for every interface (grammar / picker / completion / events / decorations / config / modes / keymap / logging), exercised end-to-end in CI. (`tree-sitter-motions` as a *plugin* is deferred post-1.0 — it is not the validator.) SemVer only after 1.0. WIT changes ARE breaking; design carefully upfront. |
-| **WASM host-call overhead exceeds budget** (new in v0.4) | **Medium** | **High** | **Per-call benchmarks gated in CI (typed call < 500ns p99; grammar-extension round-trip < 5μs p99). AOT compilation; module cache; resource handles; native host APIs for hot work. Built-in motions / text objects / operators stay native; WASM is for extensions only.** |
-| **Plugin cold-start tax at editor launch** (new in v0.4) | **Medium** | **Medium** | **Lazy instantiation; AOT module cache reused across launches; deferred activation on first invocation. Cold-start budget for 50 plugins: < 30ms total.** |
+| ✅ WASM host-call overhead exceeds budget | ~~Medium~~ **mitigated** | High | **Empirically bounded + CI-gated (Phase 7): grammar round-trip ~340ns release, typed-call <500ns p99, both green in CI.** AOT + module cache; built-in grammar stays native. Risk largely retired. |
+| ✅ Plugin cold-start tax at editor launch | ~~Medium~~ **mitigated** | Medium | Lazy instantiation + AOT module cache landed in the Phase-7 host; cold-start budget stands. Re-measure once the loader (Phase 8) instantiates real plugins. |
 | Per-line layout cache invalidation bugs | Medium | High | Property tests for cache coherence; content + style hashes. |
 | Tree-sitter performance on huge files | Low | High | Per-file thresholds; disable structural features above N MB. |
 | LSP server quirks | High | Low | Per-server compatibility shims. |
@@ -3306,16 +3408,16 @@ Path 4 (inline blocks). `org-mode`. `WebRenderer` (decision time). Remote / SSH.
 13. Notification persistence -- should errors persist across sessions until acknowledged.
 14. **Default layouts** (new in v0.4) -- which named layouts ship in default config so the everything-is-a-buffer model has good zero-config defaults.
 15. **Grammar extension API surface for tree-sitter motions** (new in v0.4) -- exact shape of the host's tree-sitter query API exposed to plugins (one-shot vs. cursor-based query iterator; range scoping; query caching).
-16. **Plugin async-task host primitive** (new in v0.4) -- name and shape of the host function that lets a plugin schedule background async work (`spawn-task` vs. `with-cancellation` vs. structured-concurrency primitive).
+16. ~~**Plugin async-task host primitive**~~ **Resolved** — each plugin owns its own `wasmtime::Store` run as a tokio task; background work is additional plugin-side tasks composed via the host's async ABI (§5.5.1 / §9.5). No separate `spawn-task` primitive was needed.
 17. **WASM AOT cache invalidation** (new in v0.4) -- when do we invalidate cached compiled modules (wasmtime version, target triple, plugin checksum, all three).
 18. **Folds** (deferred) -- vim has manual / indent / syntax / expr folds; tree-sitter gives us syntax folds nearly free. Open: storage (rope-side metadata vs. computed view), interaction with motions (`zj`/`zk`/`[z`/`]z`) and operators that target folded ranges, persistence across sessions.
-19. **Replace mode (`R`) dispatch** (deferred) -- overstrike is a third edit mode beside Normal/Insert. Open: whether to model it as a flag on Insert or as its own modal state in the state machine, and how dot-repeat records overstrike spans.
+19. ~~**Replace mode (`R`) dispatch**~~ **Resolved / built** — `R` overstrike ships as its own `ModalState::Replace` with per-char `ReplaceUndoLast` restore (`lattice-grammar`).
 20. ~~**Live evaluation / REPL parity** -- emacs's `M-x ielm`, `eval-last-sexp`, scratch buffer.~~ Resolved per §10 / §2.2: live evaluation in lattice means *plugin authoring without restart* via `*scratch:rust*` -> `rustc` -> dynamic plugin load, sharing the WASM plugin host substrate. In-process REPL with sub-keystroke evaluation is an explicit non-goal; users wanting it install a community-shipped plugin.
 21. **File watcher / auto-revert** (deferred) -- emacs's `auto-revert-mode` and external-change detection. Open: notify-based watcher per workspace, mtime poll fallback, conflict resolution UI when external + local edits diverge.
 22. **Bookmarks and cross-file marks** (deferred) -- vim's `'A`-`'Z` global marks and emacs's bookmark facility cover overlapping ground. Position history (§5.1.1) handles in-process navigation; bookmarks need persistence, naming, and a picker.
 23. **Function rebinding / advice** (deferred) -- emacs's `defadvice` / `advice-add`. The dispatcher already mediates every command, so wrapping is a registry-side concern. Open: advice ordering, removal semantics, interaction with WASM-defined commands, fuel accounting for advice chains.
-24. **Narrow-to-region** (deferred) -- emacs's `narrow-to-region` confines all operations to a sub-range. Open: model as a buffer-local view (cheap; commands see the narrowed range as `Whole`) vs. a transient overlay; interaction with multi-cursor and Visual.
-25. **Snippets and abbrev** (deferred) -- a built-in snippet engine vs. plugin-only. If built-in, integration with completion popups, with the rich minibuffer's parameter hints, and with LSP `textDocument/completion` snippet results.
+24. ~~**Narrow-to-region**~~ **Resolved / built** — narrow-mode (N.1, 2026-06-10): `zn` / `:narrow` build a `MultibufferDocumentHandle` view of the sub-range with tree-sitter text objects; `:widen` restores.
+25. **Snippets and abbrev** — 🟡 **snippet engine built** (`lattice-snippet`: parser, registry, expansion mode, integrated with completion). **Abbrev** (auto-expand-on-type) is still open.
 26. **Frames (multi-OS-window)** (deferred) -- emacs's frame concept. Decoupling is clean (each frame is a top-level window with its own pane tree); open question is workspace boundaries (one workspace per frame vs. shared) and how the position-history ring partitions across frames.
 27. **Session save / restore** (deferred) -- emacs `desktop.el`. What state is captured (open buffers, panes, layouts, registers, marks, position history, command history, ex-history, search history) and what is per-workspace vs. per-user-global.
 28. **DAP support** (deferred to post-1.0 plugin) -- LSP is in-host (§5.4) for latency reasons; DAP is similar shape. Open: in-host like LSP, or first reference plugin that exercises the WIT async/event surfaces under a real adversarial workload.
@@ -3329,13 +3431,13 @@ Path 4 (inline blocks). `org-mode`. `WebRenderer` (decision time). Remote / SSH.
 
 - **Buffer**: rope-backed in-memory text.
 - **Document**: buffer + metadata.
-- **Selection / Selection set**: (anchor, head) pairs; multi-cursor default.
+- **Selection / Selection set**: (anchor, head) pairs. The type is a *set* so multi-cursor is a clean post-1.0 extension; v1 uses a single selection with vim's visual extents (§2.2).
 - **Edit**: a primitive change at a range.
-- **Command / Event**: protocol messages between layers.
+- **CommandInvocation / Event**: the typed dispatch value and the typed event payload (the old monolithic `Command` enum was retired, §6.1).
 - **Modal mode**: input interpretation context (Normal, Insert, Visual).
 - **Major mode**: a buffer's primary content-type identity. Exactly one per buffer.
 - **Minor mode**: composable feature toggle. Zero or more per buffer.
-- **Rendering profile**: which EditorRenderer fast path a buffer uses.
+- **DisplayMatrix / cell grid**: the renderer-neutral per-pane styled-cell output both peers paint (§5.6).
 - **Style mapping**: major mode's table from syntax-tree node types to text styles.
 - **Layout cache**: per-line cache of shaped glyphs and metrics.
 - **Damage region**: range that has changed and needs re-rendering.
@@ -3345,14 +3447,13 @@ Path 4 (inline blocks). `org-mode`. `WebRenderer` (decision time). Remote / SSH.
 - **Capability**: explicit permission grant for a plugin.
 - **Fuel**: wasmtime's CPU budget mechanism.
 - **WIT**: WebAssembly Interface Types.
-- **Renderer**: trait implementation drawing a specific kind of content.
-- **Compositor**: arranges panes and composes renderer output into one GPU frame.
+- **Renderer**: a peer frontend (`TuiRenderer` / `GpuiRenderer`) painting the shared `DisplayMatrix`; the `Renderer` trait is a marker surfacing its `Theme` / `PaneRenderRegistry` types (§5.6.1).
 - **Pane**: a region of a window holding one document's view.
 - **Pane tree**: recursive split structure of a tab's panes.
 - **Tab**: per-window grouping holding a pane tree.
-- **Status segment**: contributed unit of mode line / header line content.
-- **Gutter segment**: contributed unit of gutter content (a column).
-- **Popup**: floating overlay anchored to a position.
+- **Modeline element**: contributed, event-driven unit of mode-line content (`ModelineRegistry`); the header line is delivered as virtual rows.
+- **Gutter column**: a gutter content column (hardcoded set today; registry 📝).
+- **Popup**: a Document in a floating popup-shaped view (§5.6.3).
 - **Picker**: fuzzy-search overlay for selecting from a list (file / symbol / command / etc.).
 - **Buffer-backed view**: a non-file buffer (file tree, outline, diagnostics, terminal, ...) placed in a pane like any other buffer.
 - **Notification**: transient corner-anchored message.
@@ -3408,7 +3509,7 @@ The metric "keystroke-to-glyph" measures the time from when the OS delivers a ke
 
 **Steady-state typing (code).** This is the most important metric and we should be at parity with or slightly faster than Neovim. Our pipeline (buffer mutation -> tree-sitter incremental edit -> atomic tree swap -> next-vsync render) is microseconds of Rust on the input path; the display work is GPU-accelerated with monospace fast path. Neovim's terminal-based pipeline adds a small PTY round-trip; ours doesn't. Realistic targets: ours <2ms, Neovim 2-4ms, both well below human perception. Against Emacs we should be 3-5x faster because Emacs's display engine carries machinery (variable fonts, mixed content) we don't pay for in code buffers.
 
-**Steady-state typing (rich content / markdown / org).** Neovim doesn't natively render variable fonts -- its rich-document plugins (`render-markdown.nvim`) work through grid-cell tricks rather than true variable-font rendering. So this is apples-to-oranges. The fair comparison is Emacs `org-mode`, where we should be 2-3x faster because shaping work runs on rayon workers off the input thread. Emacs's redisplay is single-threaded; shaping cost goes directly to perceived latency.
+**Steady-state typing (rich content / markdown / org).** Neovim doesn't natively render variable fonts -- its rich-document plugins (`render-markdown.nvim`) work through grid-cell tricks rather than true variable-font rendering. So this is apples-to-oranges. The fair comparison is Emacs `org-mode`, where the *design* (📝 shaped rich-buffer path, not yet built — §5.6.2) should be 2-3x faster because shaping would run on `spawn_blocking` workers off the input thread. Emacs's redisplay is single-threaded; shaping cost goes directly to perceived latency. (Today lattice renders markdown as highlighted monospace cells, which is already off-thread.)
 
 **Large file handling.** Neovim and Lattice both use rope-like structures and handle 100MB+ files comfortably. Emacs uses a gap buffer that performs poorly on large files; mitigated by `so-long-mode` but not gracefully.
 
@@ -3459,7 +3560,16 @@ If we deliver against the Section 8.2 commitments and avoid the Section A.6 risk
 
 ## Appendix B: Vim / Emacs Unifications (smaller wins)
 
-This appendix collects the smaller-scale unifications that fall out naturally from the v0.4 architecture. Each is a clarification or convenience -- none introduces new primitives, all reuse the existing command registry, event bus, buffer model, and minibuffer.
+This appendix collects the smaller-scale unifications that fall out naturally from the architecture. Each reuses the existing command registry, event bus, buffer model, and minibuffer.
+
+> **📝 Status (most of Appendix B is forward design).** Built today: **B.1**
+> interactive arg specs (incl. `Chord`-capture), **B.10** `:describe-buffer`.
+> Partial: **B.2** — only `:global` (`:g`) ships; `:v`/`:vglobal` and the whole
+> `:windo`/`:bufdo`/`:tabdo`/`:argdo` family are 📝 unbuilt. **B.4** — `*messages*`
+> ships; `*scratch*`/`*compilation*` do not. Not built (📝): **B.3** history
+> pickers, **B.5** `:redir`, **B.6** `:!`/shell-execute, **B.7** minor-modes
+> status segment, **B.8** idle hooks, **B.9** notification-to-`*messages*` teeing
+> (notifications themselves are unbuilt, §5.9.9). Read the rest as design intent.
 
 ### B.1 Interactive arg specs (emacs `(interactive ...)` done right)
 
@@ -3492,7 +3602,7 @@ When a `Chord`-required arg is submitted empty (`:describe-key<CR>`), instead of
 
 Both are registered ex-commands taking `(pattern: Regex, body: CommandInvocation)`. The `:g` parser produces a `CommandInvocation` for `global` whose `body` arg is itself a parsed `CommandInvocation` for `delete` with `range = Some(CurrentLine)`. The dispatcher iterates matching lines and invokes `body` for each. Same registry, no special form.
 
-The same pattern lets `:windo`, `:bufdo`, `:tabdo`, `:argdo` all be normal commands taking a `body` invocation arg.
+📝 The same pattern is *intended* to let `:vglobal` (`:v`), `:windo`, `:bufdo`, `:tabdo`, `:argdo` be normal commands taking a `body` invocation arg — none of those are built yet; only `:global` ships.
 
 ### B.3 Histories as pickers over registries
 

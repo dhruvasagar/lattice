@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+
+{% block title %}{{ page.title }} — Lattice{% endblock title %}
+{% block description %}{{ page.description | default(value=config.description) }}{% endblock description %}
+
+{% block content %}
+<div class="docs-layout">
+  <aside class="sidebar">
+    <nav>
+      {% set parent = get_section(path=page.ancestors | last) %}
+      {% if parent.ancestors and parent.ancestors | length > 1 %}
+      <div class="sidebar-back">
+        <a href="{{ parent.permalink }}">← {{ parent.title }}</a>
+      </div>
+      {% endif %}
+      <ul>
+        {% for p in parent.pages %}
+        <li>
+          <a href="{{ p.permalink }}"{% if p.permalink == page.permalink %} class="active"{% endif %}>
+            {{ p.title }}
+          </a>
+        </li>
+        {% endfor %}
+      </ul>
+    </nav>
+  </aside>
+  <article class="docs-content">
+    <h1>{{ page.title }}</h1>
+    {{ page.content | safe }}
+  </article>
+</div>
+{% endblock content %}

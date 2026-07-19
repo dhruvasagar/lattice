@@ -446,6 +446,33 @@ explicitly clear the default.
 Per-buffer overrides land with `:setlocal` (post-1.0); today
 the per-language form is the supported runtime control.
 
+## Kind icon reference
+
+Each completion candidate carries a **kind icon** in the
+annotation column (right side of the popup row) so you can
+identify the type of the suggestion at a glance:
+
+| Icon | Meaning |
+|------|---------|
+| `:`  | ex-command — e.g. `:write`, `:q` |
+| `→`  | motion — e.g. `w`, `j`, `gg` |
+| `~`  | operator — e.g. `d`, `c`, `y` |
+| `…`  | text-object — e.g. `iw`, `ap`, `it` |
+| `·`  | action — generic command action |
+| `=`  | option — a `:set`-able option |
+| `f`  | file or file path |
+| `d`  | directory |
+| `/`  | search pattern |
+| `b`  | buffer — a buffer entry |
+| `"`  | register — e.g. `"a`, `"0` |
+| `'`  | mark — e.g. `'a`, `'.` |
+| `@`  | chord — a key chord binding |
+| `+`  | plugin — a plugin-provided command or API |
+
+The same icon appears in help views (`:describe-command`,
+`:describe-key`, `:apropos`) as the kind indicator next to
+the identifier — for example, `ex:write :` or `motion:line-down →`.
+
 ## Troubleshooting
 
 **The popup doesn't open.** Check:

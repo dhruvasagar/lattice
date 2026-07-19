@@ -309,10 +309,10 @@ mod tests {
         a.apply(Action::CommandLineSubmit);
         let h = a.popup_help().expect("help view should open");
         assert!(h.title.contains("ex:write"));
-        // First two lines: "ex:write  (ex-command)" + blank.
+        // First two lines: "ex:write :" + blank.
         let lines = h.lines();
         assert!(lines[0].contains("ex:write"));
-        assert!(lines[0].contains("ex-command"));
+        assert!(lines[0].contains(":"));
     }
 
     /// PU.1b-3: the renderer→host popup-geometry feedback helper
@@ -1441,7 +1441,7 @@ mod tests {
         let h = a.popup_help().expect("describe-mode help");
         let body = h.content.as_string();
         assert!(body.contains("# mode :: line-numbers-mode"));
-        assert!(body.contains("- kind: `minor`"));
+        assert!(body.contains("- kind: ◇"));
         assert!(
             body.contains("contributed options"),
             "missing contributed-options section\n{body}",

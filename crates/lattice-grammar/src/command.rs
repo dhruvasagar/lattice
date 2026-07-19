@@ -121,6 +121,45 @@ impl CommandKind {
             CommandKind::Action => "action",
         }
     }
+
+    pub fn icon(self) -> char {
+        match self {
+            CommandKind::ExCommand => ':',
+            CommandKind::Motion => '→',
+            CommandKind::Operator => '~',
+            CommandKind::TextObject => '…',
+            CommandKind::Action => '·',
+        }
+    }
+}
+
+/// Map a kind-label string to its display icon. Covers all labels
+/// emitted by `KindLabelAnnotator` and `Introspectable::kind_label`.
+/// Returns `·` for unknown labels.
+pub fn kind_icon(label: &str) -> &'static str {
+    match label {
+        "ex-command" => ":",
+        "motion" => "→",
+        "operator" => "~",
+        "text-object" => "…",
+        "action" => "·",
+        "command" => "·",
+        "option" => "=",
+        "file" => "f",
+        "directory" => "d",
+        "pattern" => "/",
+        "buffer" => "b",
+        "register" => "\"",
+        "mark" => "'",
+        "chord" => "@",
+        "plugin" => "+",
+        "plugin-api" => "+",
+        "major" => "◆",
+        "minor" => "◇",
+        "stub" => "·",
+        "doc" => "·",
+        _ => "·",
+    }
 }
 
 /// How the runtime should schedule a command, and what budget the CI
@@ -315,5 +354,39 @@ mod tests {
         assert_eq!(CommandKind::TextObject.label(), "text-object");
         assert_eq!(CommandKind::ExCommand.label(), "ex-command");
         assert_eq!(CommandKind::Action.label(), "action");
+    }
+
+    #[test]
+    fn command_kind_icons() {
+        assert_eq!(CommandKind::ExCommand.icon(), ':');
+        assert_eq!(CommandKind::Motion.icon(), '→');
+        assert_eq!(CommandKind::Operator.icon(), '~');
+        assert_eq!(CommandKind::TextObject.icon(), '…');
+        assert_eq!(CommandKind::Action.icon(), '·');
+    }
+
+    #[test]
+    fn kind_icon_maps_all_labels() {
+        assert_eq!(kind_icon("ex-command"), ":");
+        assert_eq!(kind_icon("motion"), "→");
+        assert_eq!(kind_icon("operator"), "~");
+        assert_eq!(kind_icon("text-object"), "…");
+        assert_eq!(kind_icon("action"), "·");
+        assert_eq!(kind_icon("command"), "·");
+        assert_eq!(kind_icon("option"), "=");
+        assert_eq!(kind_icon("file"), "f");
+        assert_eq!(kind_icon("directory"), "d");
+        assert_eq!(kind_icon("pattern"), "/");
+        assert_eq!(kind_icon("buffer"), "b");
+        assert_eq!(kind_icon("register"), "\"");
+        assert_eq!(kind_icon("mark"), "'");
+        assert_eq!(kind_icon("chord"), "@");
+        assert_eq!(kind_icon("plugin"), "+");
+        assert_eq!(kind_icon("plugin-api"), "+");
+        assert_eq!(kind_icon("major"), "◆");
+        assert_eq!(kind_icon("minor"), "◇");
+        assert_eq!(kind_icon("stub"), "·");
+        assert_eq!(kind_icon("doc"), "·");
+        assert_eq!(kind_icon("unknown"), "·");
     }
 }

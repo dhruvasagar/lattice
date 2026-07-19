@@ -1439,6 +1439,16 @@ impl Editor {
         // ML.0b-2: same Arc as `Editor.modeline` below, so modes
         // register/update the instance the renderer snapshots.
         boot.register_service(modeline_service.clone());
+        // M.6.cd.1 (2026-07-16): CurrentDirHandle — shared current
+        // working directory for mode-owned handlers (e.g. search
+        // `gr` refresh) to re-resolve scan roots after `:cd`.
+        // Registered as an `Arc<Mutex<Option<PathBuf>>>` under the
+        // typed alias so the `ServiceRegistry` Arc/TypeId rule holds.
+        boot.register_service(
+            std::sync::Arc::<std::sync::Mutex<Option<std::path::PathBuf>>>::new(
+                std::sync::Mutex::new(std::env::current_dir().ok()),
+            ),
+        );
         // T-mode-1 (2026-05-27): TerminalStoreHandle so `TerminalNormalMode`
         // can install / clear the SyntheticDoc on a TerminalBuffer from its
         // lifecycle hooks. Same `BufferRegistry` backs both stores — cheap

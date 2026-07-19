@@ -1195,7 +1195,10 @@ impl GpuiApp {
             | Effect::TerminalInput(_)
             // I3/BC.8c follow-up: SaveBuffer host-applied (reuses do_write).
             | Effect::SaveBuffer { .. }
-            | Effect::RecordJump => {}
+            | Effect::RecordJump
+            // Host-applied cd/pwd effects (GPUI parity with TUI peer).
+            | Effect::ChangeDir(_)
+            | Effect::PrintWorkingDir => {}
             // Renderer-coupled effects whose body lives host-side.
             Effect::QuitEditor { force, scope } => {
                 self.mutate_editor(move |e| e.do_quit(force, scope))

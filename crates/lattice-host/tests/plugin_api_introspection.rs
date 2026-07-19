@@ -57,8 +57,8 @@ fn describe_plugin_api_renders_one_seam_via_the_spine() {
     let body = text(&content);
     // Uniform `Introspectable` heading + the two extra sections.
     assert!(
-        body.contains("host-services  (plugin-api)"),
-        "heading:\n{body}"
+        body.contains("host-services +"),
+        "heading (kind_icon: plugin-api → +):\n{body}"
     );
     assert!(body.contains("capability:  filesystem"), "capability prose");
     assert!(
@@ -208,7 +208,7 @@ fn describe_plugin_renders_registered_metadata_and_lists_it() {
         .build_describe_plugin_content("git-gutter")
         .expect("a registered plugin is describable");
     let body = text(&content);
-    assert!(body.contains("git-gutter  (plugin)"), "heading:\n{body}");
+    assert!(body.contains("git-gutter +"), "heading (kind_icon: plugin → +):\n{body}");
     assert!(
         body.contains("Shows git diff signs in the gutter."),
         "the plugin's own doc renders"

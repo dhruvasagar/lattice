@@ -505,6 +505,7 @@ Anchor: ../architecture/design.md §5.6 (renderer trait + layered architecture),
 
 ---
 
+<a id="phase-58af5--ui-thread-relocation-paramount-goal-4"></a>
 ## Phase 5.8.AF.5 — UI-thread relocation (paramount goal #4)
 
 Anchor: [../architecture/design.md §5.7](../architecture/design.md) (the async runtime + threading section, expanded with subsections §5.7.1 through §5.7.6 describing the architectural shape).

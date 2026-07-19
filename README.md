@@ -68,7 +68,7 @@ foundation:
   layered paint paths optimized per content type (code vs. rich text vs.
   inline media). TUI is a first-class peer — not a throwaway.
 
-The full design is in [`docs/dev/architecture/design.md`](docs/dev/architecture/design.md) (v0.4, ~2300 lines).
+The full design is in [`docs/dev/architecture/design.md`](docs/dev/architecture/design.md) (v0.6, ~3600 lines).
 
 ---
 
@@ -524,8 +524,9 @@ The granular pre-Phase-4 polish plan, plus the upcoming Phase 4 work:
 
 | Doc                                       | Purpose                                                  |
 |-------------------------------------------|----------------------------------------------------------|
-| [`docs/dev/architecture/design.md`](docs/dev/architecture/design.md)        | The design spec (v0.4, authoritative for what to build). |
-| [`docs/dev/operations/implementation.md`](docs/dev/operations/implementation.md) | Per-feature status ledger; updated per session.   |
+| [`docs/dev/guides/developing-lattice.md`](docs/dev/guides/developing-lattice.md) | **Start here to contribute** — dev loop, architecture mental model, mode-ownership, worked "add your first X" walkthroughs. |
+| [`docs/dev/architecture/design.md`](docs/dev/architecture/design.md)        | The design spec (v0.6, authoritative for what to build). |
+| [`docs/dev/operations/implementation.md`](docs/dev/operations/implementation.md) | Per-feature status ledger; the authoritative current-state record. |
 | [`docs/dev/operations/benchmarks.md`](docs/dev/operations/benchmarks.md)| Latest measured numbers vs. §8.2 commitments.            |
 | [`docs/dev/operations/verify.md`](docs/dev/operations/verify.md)        | Manual-verification checklist for recently shipped features. |
 | [`docs/dev/architecture/lsp-architecture.md`](docs/dev/architecture/lsp-architecture.md) | LSP developer reference (companion to DESIGN.md §5.4). |

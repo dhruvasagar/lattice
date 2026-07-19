@@ -90,6 +90,9 @@ pub struct RenderState {
     /// (ML.1/ML.2). Distinct from `modeline` above, which is the legacy
     /// cmdline/search sub-state — different surface, kept separate.
     pub modeline_elements: lattice_mode::ModelineSnapshot,
+    /// Editor's working directory set by `:cd`. `None` means
+    /// fall back to `std::env::current_dir()`.
+    pub current_dir: Option<std::path::PathBuf>,
     /// Slice 3c.final.B.10: typed-options registry published as a
     /// wait-free Arc clone so the renderer's
     /// `picker_display_is_minibuffer` (and any future per-frame
@@ -206,6 +209,7 @@ impl Default for RenderState {
             messages: Arc::new(MessagesRenderState::default()),
             modeline: Arc::new(ModelineRenderState::default()),
             modeline_elements: lattice_mode::ModelineSnapshot::default(),
+            current_dir: None,
             options: Arc::new(OptionsRenderState::default()),
             resolved_opts: Arc::new(ResolvedOptionsRenderState::default()),
             modes: Arc::new(ModesRenderState::default()),

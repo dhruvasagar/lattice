@@ -7,10 +7,26 @@
 
 use std::sync::Arc;
 
+use lattice_grammar::kind_icon;
 use lattice_protocol::KeyChord;
 
 use crate::candidate::{Annotation, CandidateData, CandidateKind, RenderedCandidate};
 use crate::traits::CandidateAnnotator;
+
+/// Structured provenance for a keybinding annotation: where the
+/// chord comes from. Used by both the filtering logic (show only
+/// if the source mode is active) and the display column (show the
+/// mode name alongside the chord).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeybindingSource {
+    /// Always-on layer: Builtin, User, or Buffer.
+    /// Always shows in the completion margin (no active-mode gate).
+    AlwaysOn,
+    /// A minor/major mode binding. The string is the mode's name
+    /// (e.g. `"emacs-keys-mode"`). Only shows when the mode is
+    /// active in the current buffer.
+    Mode(Arc<str>),
+}
 
 /// Reverse-lookup contract the keybinding annotator depends on:
 /// given a command's canonical name, return the chord
@@ -29,8 +45,26 @@ use crate::traits::CandidateAnnotator;
 /// chord don't get a misleading empty annotation. Implementors
 /// should NOT return `vec![]` to mean "lookup failed" — return
 /// it to mean "no binding," same thing semantically.
+///
+/// MARG.3 (2026-07-15): `chords_with_source` returns structured
+/// provenance alongside each chord so callers can filter by
+/// active modes and display the source mode label. The default
+/// impl wraps every chord from `chords_for` with
+/// [`KeybindingSource::AlwaysOn`] — implementors that maintain
+/// mode-aware caches (e.g. the host's keymap registry) should
+/// override this to return the real provenance.
 pub trait KeymapReverseLookup: Send + Sync {
     fn chords_for(&self, command_name: &str) -> Vec<KeyChord>;
+
+    /// Like [`chords_for`](Self::chords_for) but returns each
+    /// chord tagged with its [`KeybindingSource`] so callers can
+    /// filter by active mode and display provenance.
+    fn chords_with_source(&self, command_name: &str) -> Vec<(KeyChord, KeybindingSource)> {
+        self.chords_for(command_name)
+            .into_iter()
+            .map(|c| (c, KeybindingSource::AlwaysOn))
+            .collect()
+    }
 }
 
 /// `anno:kind-label`. Tags every candidate with `(command)`,
@@ -42,9 +76,6 @@ pub struct KindLabelAnnotator;
 impl CandidateAnnotator for KindLabelAnnotator {
     fn annotate(&self, c: &mut RenderedCandidate) {
         let label = match (&c.raw.kind, &c.raw.data) {
-            // For commands we have a per-spec kind label
-            // ("motion", "operator", "ex-command", ...) -- richer
-            // than the static `CandidateKind::Command`.
             (CandidateKind::Command, CandidateData::Command { kind_label, .. }) => {
                 kind_label.clone()
             }
@@ -64,7 +95,7 @@ impl CandidateAnnotator for KindLabelAnnotator {
             (CandidateKind::Extension(_), _) => return,
         };
         c.annotations
-            .push(Annotation::Kind(Arc::from(format!("({label})"))));
+            .push(Annotation::Kind(Arc::from(kind_icon(&label))));
     }
 }
 
@@ -128,25 +159,31 @@ impl KeybindingAnnotator {
 
 impl CandidateAnnotator for KeybindingAnnotator {
     fn annotate(&self, c: &mut RenderedCandidate) {
-        // Resolve the command name carried by command-kind
-        // candidates. Non-command candidates fall through —
-        // future surfaces (file → "open in split", option →
-        // "set option") could grow their own annotators
-        // against their own reverse maps; this one is
-        // command-only by contract.
         let name = match (&c.raw.kind, &c.raw.data) {
             (CandidateKind::Command, CandidateData::Command { name, .. }) => name.as_str(),
             _ => return,
         };
-        let chords = self.reverse.chords_for(name);
-        if chords.is_empty() {
-            // No binding registered for this command in any
-            // currently-active layer. Don't push an empty
-            // annotation — the renderer would still paint a
-            // zero-width styled span.
+        let source_chords = self.reverse.chords_with_source(name);
+        if source_chords.is_empty() {
             return;
         }
+        let chords: Vec<KeyChord> = source_chords.iter().map(|(chord, _)| *chord).collect();
         c.annotations.push(Annotation::Keybinding(chords));
+
+        let mut seen = std::collections::BTreeSet::new();
+        for (_, source) in &source_chords {
+            if let KeybindingSource::Mode(label) = source {
+                seen.insert(label.clone());
+            }
+        }
+        if !seen.is_empty() {
+            let joined: Arc<str> = seen
+                .into_iter()
+                .collect::<Vec<_>>()
+                .join(", ")
+                .into();
+            c.annotations.push(Annotation::Source(joined));
+        }
     }
 }
 
@@ -199,7 +236,7 @@ mod tests {
             },
         );
         KindLabelAnnotator.annotate(&mut c);
-        assert_eq!(display_texts(&c), vec!["(motion)"]);
+        assert_eq!(display_texts(&c), vec!["→"]);
     }
 
     #[test]
@@ -226,7 +263,7 @@ mod tests {
     fn kind_label_falls_back_to_command_for_non_command_data() {
         let mut c = rendered("x", CandidateKind::Command, CandidateData::Plain);
         KindLabelAnnotator.annotate(&mut c);
-        assert_eq!(display_texts(&c), vec!["(command)"]);
+        assert_eq!(display_texts(&c), vec!["·"]);
     }
 
     #[test]
@@ -241,7 +278,7 @@ mod tests {
             },
         );
         KindLabelAnnotator.annotate(&mut f);
-        assert_eq!(display_texts(&f), vec!["(file)"]);
+        assert_eq!(display_texts(&f), vec!["f"]);
 
         let mut d = rendered(
             "Documents",
@@ -253,7 +290,7 @@ mod tests {
             },
         );
         KindLabelAnnotator.annotate(&mut d);
-        assert_eq!(display_texts(&d), vec!["(directory)"]);
+        assert_eq!(display_texts(&d), vec!["d"]);
     }
 
     #[test]
@@ -360,7 +397,7 @@ mod tests {
         );
         KindLabelAnnotator.annotate(&mut c);
         DocSnippetAnnotator.annotate(&mut c);
-        assert_eq!(display_texts(&c), vec!["(ex-command)", "Write the buffer."]);
+        assert_eq!(display_texts(&c), vec![":", "Write the buffer."]);
         assert_eq!(c.annotations[0].category(), "kind");
         assert_eq!(c.annotations[1].category(), "doc");
     }

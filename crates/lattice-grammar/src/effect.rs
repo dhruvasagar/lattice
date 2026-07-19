@@ -430,6 +430,11 @@ pub enum Effect {
     /// `:ls` / `:buffers` -- render every open document buffer in a
     /// help-style view.
     ListBuffers,
+    /// `:cd [path]` -- change the editor's working directory.
+    /// No arg changes to the user's home directory.
+    ChangeDir(Option<String>),
+    /// `:pwd` -- print the current working directory.
+    PrintWorkingDir,
     /// `:b` with no arg -- open the vertico-style buffer switcher
     /// (DESIGN.md §5.9.7). The user types to filter, `<CR>` to
     /// switch. Type-aware completion in the cmdline can pre-fill

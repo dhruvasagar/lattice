@@ -1074,6 +1074,7 @@ impl Editor {
             // is written through `self.modeline` (ML.1); mode/plugin
             // content arrives via ModelineElementUpdate (ML.3).
             modeline_elements: modeline_snapshot,
+            current_dir: self.current_dir.clone(),
             // Slice 3c.final.B.10: typed-options registry handle.
             // The inner `ConfigRegistry` is already Arc-shared on
             // the editor side, so the publish is one Arc clone.
@@ -2783,6 +2784,63 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
             // capturing must happen before `OpenBuffer` changes
             // `editor.cursor` / `editor.active_buffer_id()`.
             editor.push_position_history(editor.cursor, PositionSource::AutoJump);
+        }
+        Effect::ChangeDir(path) => {
+            let target = match path {
+                Some(p) => {
+                    let pth = normalize_user_path_with_cwd(
+                        std::path::Path::new(&p),
+                        editor.current_dir.as_deref(),
+                    );
+                    // If the resolved path is a file, use its parent.
+                    if pth.is_dir() {
+                        pth
+                    } else if let Some(parent) = pth.parent() {
+                        parent.to_path_buf()
+                    } else {
+                        pth
+                    }
+                }
+                // No arg -> HOME.
+                None => match std::env::var_os("HOME") {
+                    Some(h) => std::path::PathBuf::from(h),
+                    None => {
+                        editor.set_message(
+                            EchoLevel::Error,
+                            "cd: HOME is not set".to_string(),
+                        );
+                        return;
+                    }
+                },
+            };
+            // Canonicalize to resolve symlinks / `.` / `..`.
+            let canonical = target.canonicalize().unwrap_or(target);
+            editor.current_dir = Some(canonical.clone());
+            // Update the CurrentDirHandle service so mode-owned
+            // handlers (e.g. search `gr` refresh) pick up the new pwd.
+            #[cfg(feature = "search")]
+            if let Some(current_dir_handle) =
+                editor.services.get::<
+                    lattice_multibuffer::providers::search::CurrentDirHandle,
+                >()
+            {
+                if let Ok(mut dir) = current_dir_handle.lock() {
+                    *dir = Some(canonical.clone());
+                }
+            }
+            editor.set_message(
+                EchoLevel::Info,
+                canonical.display().to_string(),
+            );
+        }
+        Effect::PrintWorkingDir => {
+            let cwd = editor
+                .current_dir
+                .clone()
+                .or_else(|| std::env::current_dir().ok())
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "<unknown>".to_string());
+            editor.set_message(EchoLevel::Info, cwd);
         }
         Effect::ClearSearchHighlight => {
             // `:nohlsearch` -- drop the current-match highlight and
@@ -5717,13 +5775,17 @@ impl Editor {
             .scrolloff
             .min(effective_height.saturating_sub(1) / 2);
 
-        // Top margin: at least `scrolloff` lines visible above the
-        // cursor (clamped at BOF). Doc-line space on purpose —
-        // scrolloff is *document* context, and interleaved virtual
-        // rows only add visible rows above the cursor, never remove
-        // context. With `scrolloff == 0` this is the classic
+        // Top margin: at least `scrolloff` visible rows above the
+        // cursor (clamped at BOF). Fold-aware: walk up from cursor
+        // counting only visible (non-fold-hidden) rows so closed
+        // folds don't make the top_limit jump too far. With
+        // `scrolloff == 0` this is the classic
         // `cursor.line < scroll` top clamp.
-        let top_limit = self.cursor.line.saturating_sub(scrolloff);
+        let top_limit = {
+            let fold_idx =
+                crate::folds::FoldIndex::from_folds(&self.folds, self.foldenable());
+            crate::folds::nth_visible_line_backward(&fold_idx, self.cursor.line, scrolloff)
+        };
         if top_limit < self.scroll {
             self.scroll = top_limit;
         }
@@ -7181,8 +7243,14 @@ impl Editor {
                             lattice_multibuffer::providers::search::SearchContextSize,
                         >(self.active_pane_buffer_id());
                         let context_lines: u32 = if raw < 0 { 0 } else { raw as u32 };
+                        let root = self
+                            .current_dir
+                            .clone()
+                            .or_else(|| std::env::current_dir().ok())
+                            .unwrap_or_else(|| std::path::PathBuf::from("."));
                         let options =
                             lattice_multibuffer::providers::search::ProjectSearchOptions {
+                                root,
                                 context_lines,
                                 ..lattice_multibuffer::providers::search::ProjectSearchOptions::default()
                             };
@@ -10158,6 +10226,19 @@ impl Editor {
             })
             .collect();
 
+        // MARG.3: collect active mode names so the command picker
+        // can filter keybindings whose source mode is not active.
+        let active_modes: Vec<Arc<str>> = self
+            .active_modes
+            .get(&active_id)
+            .map(|am| {
+                am.keymap_gated_ids()
+                    .into_iter()
+                    .map(|id| Arc::from(id.as_str()) as Arc<str>)
+                    .collect()
+            })
+            .unwrap_or_default();
+
         PickerContext {
             active_buffer,
             workspace_root,
@@ -10166,6 +10247,7 @@ impl Editor {
             buffers,
             marks,
             registers,
+            active_modes,
         }
     }
 
@@ -10786,7 +10868,7 @@ impl Editor {
                 }
             },
         };
-        let target = normalize_user_path(&target);
+        let target = normalize_user_path_with_cwd(&target, self.current_dir.as_deref());
         if let Ok(meta) = std::fs::metadata(&target)
             && meta.is_dir()
         {
@@ -16780,6 +16862,12 @@ impl Editor {
     /// nearest visible line. Called after every non-jump motion so
     /// the cursor's logical position never lands in a hidden region.
     /// `foldenable = false` suppresses entirely.
+    ///
+    /// Guarded against an infinite loop when a closed fold's body ends
+    /// at the last addressable line (fold.end_line == last): the
+    /// `(end + 1).min(last)` clamp in the `going_down` branch would
+    /// produce `last`, re-match the same fold, and loop forever.
+    /// Checking `fold.end_line >= last` breaks out instead.
     pub fn snap_cursor_past_closed_folds(&mut self, prev_line: u32) {
         if !self.foldenable() {
             return;
@@ -16800,8 +16888,18 @@ impl Editor {
                 .find(|f| f.closed && snapped > f.start_line && snapped <= f.end_line)
                 .copied();
             if let Some(fold) = in_closed {
+                // When the fold's body extends to the last addressable
+                // line, `fold.end_line + 1` is past-EOF. Clamping with
+                // `.min(last)` would produce `last`, which the next
+                // iteration matches again → infinite loop. Detect this
+                // and break, leaving the cursor at `last` (which
+                // `clamp_cursor_to_buffer` will handle if needed).
+                if fold.end_line >= last {
+                    snapped = last;
+                    break;
+                }
                 snapped = if going_down {
-                    (fold.end_line + 1).min(last)
+                    fold.end_line + 1
                 } else {
                     fold.start_line
                 };
@@ -17000,17 +17098,30 @@ impl Editor {
     }
 
     /// Vim's `H` (Top) / `M` (Middle) / `L` (Bottom) -- jump the
-    /// cursor to a viewport-relative line.
+    /// cursor to a viewport-relative line. Fold-aware: walks visible
+    /// (non-fold-hidden) lines from `scroll` instead of raw line
+    /// arithmetic, so closed folds don't skew the target position.
     pub fn do_jump_viewport(&mut self, vpos: lattice_grammar::ViewportPos) {
         let height = self.viewport_height.max(1);
-        let line = match vpos {
-            lattice_grammar::ViewportPos::Top => self.scroll,
-            lattice_grammar::ViewportPos::Middle => self.scroll + height / 2,
-            lattice_grammar::ViewportPos::Bottom => self.scroll + height.saturating_sub(1),
-        };
+        let fold_idx = crate::folds::FoldIndex::from_folds(&self.folds, self.foldenable());
         let buffer = self.active_text();
         let last = last_addressable_line(&buffer);
-        let line = line.min(last);
+        let total = buffer.line_count();
+        let line = match vpos {
+            lattice_grammar::ViewportPos::Top => self.scroll,
+            lattice_grammar::ViewportPos::Middle => {
+                crate::folds::nth_visible_line_forward(&fold_idx, self.scroll, height / 2, total)
+            }
+            lattice_grammar::ViewportPos::Bottom => {
+                crate::folds::nth_visible_line_forward(
+                    &fold_idx,
+                    self.scroll,
+                    height.saturating_sub(1),
+                    total,
+                )
+            }
+        }
+        .min(last);
         let len = buffer.line_byte_len(line);
         let byte = self.cursor.byte.min(len);
         self.cursor = lattice_protocol::position::Position::new(line, byte);
@@ -17024,6 +17135,10 @@ impl Editor {
 
     /// Vim's `zt` / `zz` / `zb` -- adjust scroll so the cursor
     /// lands at the requested viewport row; cursor doesn't move.
+    /// All three positions are fold-aware: closed fold bodies are
+    /// skipped when counting visible rows, so the cursor lands at the
+    /// correct visual position regardless of folded regions between
+    /// it and the viewport edge.
     pub fn do_scroll_cursor_to(&mut self, spos: lattice_grammar::ScrollPos) {
         // Terminal-Normal repositions the alacritty scrollback viewport,
         // not the document `self.scroll` field (which is inert for
@@ -17037,11 +17152,16 @@ impl Editor {
         let height = self.viewport_height.max(1);
         self.scroll = match spos {
             lattice_grammar::ScrollPos::Top => self.cursor.line,
-            // `zz`: cursor at the vertical centre. Doc-line math is
-            // tolerable here because centring leaves ~half a screen
-            // of slack below the cursor, so interleaved virtual rows
-            // can't push it off-screen.
-            lattice_grammar::ScrollPos::Center => self.cursor.line.saturating_sub(height / 2),
+            // `zz`: cursor at the vertical centre. Walk up from
+            // cursor, counting visible (non-fold-hidden) rows, so
+            // closed folds above the cursor don't make the scroll
+            // position too low. When there aren't enough visible
+            // rows above the cursor, scroll clamps to 0.
+            lattice_grammar::ScrollPos::Center => {
+                let fold_idx =
+                    crate::folds::FoldIndex::from_folds(&self.folds, self.foldenable());
+                crate::folds::nth_visible_line_backward(&fold_idx, self.cursor.line, height / 2)
+            }
             // `zb`: cursor at the bottom row — the same display-row
             // accounting as `ensure_cursor_visible`'s bottom clamp,
             // or excerpt headers push the cursor line behind the
@@ -17081,16 +17201,25 @@ impl Editor {
     /// Vim's `<C-f>` (down) / `<C-b>` (up) -- step cursor by
     /// viewport_height-2 lines with a 1-line overlap; scroll is
     /// reconciled by `ensure_cursor_visible` at the tail of apply.
+    /// Fold-aware: walks visible (non-fold-hidden) lines so closed
+    /// folds don't cause the cursor to skip too far or land inside
+    /// hidden fold bodies.
     pub fn do_page(&mut self, down: bool) {
         let height = self.viewport_height.max(1);
         let step = height.saturating_sub(2).max(1);
         let buffer = self.active_text();
         let last = last_addressable_line(&buffer);
+        let total = buffer.line_count();
         let new_line = if down {
-            self.cursor.line.saturating_add(step).min(last)
+            let fold_idx =
+                crate::folds::FoldIndex::from_folds(&self.folds, self.foldenable());
+            crate::folds::nth_visible_line_forward(&fold_idx, self.cursor.line, step, total)
         } else {
-            self.cursor.line.saturating_sub(step)
-        };
+            let fold_idx =
+                crate::folds::FoldIndex::from_folds(&self.folds, self.foldenable());
+            crate::folds::nth_visible_line_backward(&fold_idx, self.cursor.line, step)
+        }
+        .min(last);
         let len = buffer.line_byte_len(new_line);
         let byte = self.cursor.byte.min(len);
         self.cursor = lattice_protocol::position::Position::new(new_line, byte);
@@ -17105,19 +17234,28 @@ impl Editor {
         }
     }
 
-    /// Vim's `<C-e>` (down) / `<C-y>` (up) -- scroll one line.
-    /// Cursor follows so it stays on-screen.
+    /// Vim's `<C-e>` (down) / `<C-y>` (up) -- scroll one display
+    /// line. Fold-aware: advances `scroll` past closed fold bodies so
+    /// it lands on the next visible line, and pulls the cursor along
+    /// when it would scroll off-screen. `scroll` always points to a
+    /// visible (non-fold-hidden) line after the operation.
     pub fn do_scroll_line(&mut self, down: bool) {
         let height = self.viewport_height.max(1);
         let buffer = self.active_text();
+        let total = buffer.line_count();
+        let last = last_addressable_line(&buffer);
         if down {
-            let last = last_addressable_line(&buffer);
-            self.scroll = self.scroll.saturating_add(1).min(last);
+            let fold_idx =
+                crate::folds::FoldIndex::from_folds(&self.folds, self.foldenable());
+            self.scroll =
+                crate::folds::nth_visible_line_forward(&fold_idx, self.scroll, 1, total).min(last);
             if self.cursor.line < self.scroll {
                 self.cursor.line = self.scroll;
             }
         } else {
-            self.scroll = self.scroll.saturating_sub(1);
+            let fold_idx =
+                crate::folds::FoldIndex::from_folds(&self.folds, self.foldenable());
+            self.scroll = crate::folds::nth_visible_line_backward(&fold_idx, self.scroll, 1);
             let bottom = self.scroll + height.saturating_sub(1);
             if self.cursor.line > bottom {
                 self.cursor.line = bottom;
@@ -17323,7 +17461,7 @@ impl Editor {
                 },
             },
         };
-        let dir = normalize_user_path(&dir);
+        let dir = normalize_user_path_with_cwd(&dir, self.current_dir.as_deref());
         if let Some(existing_id) = self.oil_with_dir(&dir) {
             self.activate_oil(existing_id);
             self.set_message(
@@ -18501,7 +18639,7 @@ impl Editor {
         path: std::path::PathBuf,
         target_line: Option<u32>,
     ) -> Vec<RendererSignal> {
-        let path = normalize_user_path(&path);
+        let path = normalize_user_path_with_cwd(&path, self.current_dir.as_deref());
         // Already-open file: preview the REAL (parsed + attached) buffer as
         // an isolated projection — PI.3, no activation, no cursor/scroll
         // disturbance of the committed buffer.
@@ -27327,7 +27465,7 @@ impl Editor {
             let doc_match = spec.doc.to_ascii_lowercase().contains(&needle);
             if name_match || doc_match {
                 let first = spec.doc.lines().next().unwrap_or("").to_string();
-                hits.push((spec.name.clone(), spec.kind.label(), first));
+                hits.push((spec.name.clone(), lattice_grammar::kind_icon(spec.kind.label()), first));
             }
         }
         // PI.2: also search the plugin-API catalog (interface names + docs),
@@ -27347,7 +27485,7 @@ impl Editor {
                     .and_then(|d| d.lines().next())
                     .unwrap_or("")
                     .to_string();
-                hits.push((iface.name.clone(), "plugin-api", first));
+                hits.push((iface.name.clone(), lattice_grammar::kind_icon("plugin-api"), first));
             }
         }
         hits.sort_by(|a, b| a.0.cmp(&b.0));
@@ -27364,7 +27502,7 @@ impl Editor {
                 let pad_k = kind_w.saturating_sub(kind.len());
                 // Plugin-API seams describe via `:describe-plugin-api <seam>`
                 // (an exec-link), not the command describer.
-                let link = if kind == "plugin-api" {
+                let link = if kind == lattice_grammar::kind_icon("plugin-api") {
                     format!("[{name}](exec:describe-plugin-api {name})")
                 } else {
                     lattice_help::command_link(&name)
@@ -27609,7 +27747,7 @@ impl Editor {
                 ),
             };
             let first = spec.doc.lines().next().unwrap_or("").to_string();
-            rows.push((order, group, spec.name.clone(), spec.kind.label(), first));
+            rows.push((order, group, spec.name.clone(), lattice_grammar::kind_icon(spec.kind.label()), first));
         }
         rows.sort_by(|a, b| (a.0, &a.1, &a.2).cmp(&(b.0, &b.1, &b.2)));
 
@@ -27627,7 +27765,7 @@ impl Editor {
                 format!("  — {first}")
             };
             lines.push(format!(
-                "  {}  ({kind}){doc}",
+                "  {}  {kind}{doc}",
                 lattice_help::command_link(&name)
             ));
         }
@@ -29198,15 +29336,15 @@ impl Editor {
             lattice_mode::ModeKind::Major => active.and_then(|a| a.major()) == Some(mode_id),
             lattice_mode::ModeKind::Minor => active.map(|a| a.has_minor(mode_id)).unwrap_or(false),
         };
-        let kind_label = match mode.kind() {
-            lattice_mode::ModeKind::Major => "major",
-            lattice_mode::ModeKind::Minor => "minor",
+        let kind_icon = match mode.kind() {
+            lattice_mode::ModeKind::Major => "◆",
+            lattice_mode::ModeKind::Minor => "◇",
         };
 
         let mut lines: Vec<String> = Vec::new();
         lines.push(format!("# mode :: {mode_id}"));
         lines.push(String::new());
-        lines.push(format!("- kind: `{kind_label}`"));
+        lines.push(format!("- kind: {kind_icon}"));
         lines.push(format!(
             "- active on current buffer: {}",
             if is_active { "yes" } else { "no" }
@@ -30313,7 +30451,9 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         // I5.1: a terminal spawn opens a new buffer — no yank, no in-place edit.
         | Effect::SpawnTerminal { .. }
         | Effect::TerminalInput(_)
-        | Effect::AppAction(_) => false,
+        | Effect::AppAction(_)
+        | Effect::ChangeDir(_)
+        | Effect::PrintWorkingDir => false,
     }
 }
 
@@ -30443,7 +30583,9 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         // I5.1: a terminal spawn opens a new buffer — no yank, no in-place edit.
         | Effect::SpawnTerminal { .. }
         | Effect::TerminalInput(_)
-        | Effect::AppAction(_) => false,
+        | Effect::AppAction(_)
+        | Effect::ChangeDir(_)
+        | Effect::PrintWorkingDir => false,
     }
 }
 
@@ -31039,13 +31181,25 @@ pub fn flatten_workspace_edit(
 /// `lattice-ui-tui::app::normalize_user_path` so the host-side
 /// `do_edit` migration can reach it without dragging in the App.
 pub fn normalize_user_path(path: &std::path::Path) -> std::path::PathBuf {
+    normalize_user_path_with_cwd(path, None)
+}
+
+/// Like [`normalize_user_path`] but uses the provided `cwd` for
+/// relative path resolution instead of `std::env::current_dir()`.
+pub fn normalize_user_path_with_cwd(
+    path: &std::path::Path,
+    cwd: Option<&std::path::Path>,
+) -> std::path::PathBuf {
     let expanded = expand_tilde(path);
     if expanded.is_absolute() {
         return expanded;
     }
-    match std::env::current_dir() {
-        Ok(cwd) => cwd.join(expanded),
-        Err(_) => expanded,
+    match cwd {
+        Some(dir) => dir.join(expanded),
+        None => match std::env::current_dir() {
+            Ok(cwd) => cwd.join(expanded),
+            Err(_) => expanded,
+        },
     }
 }
 

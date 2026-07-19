@@ -101,16 +101,35 @@ pub fn compute_indent_folds(buffer: &Buffer) -> Vec<Fold> {
         })
         .collect();
 
+    // Precompute next_non_blank_idx[i] = the first j > i with a non-blank
+    // line, or line_count if none. Replaces the O(n) scan in the outer loop.
+    let mut next_non_blank_idx: Vec<usize> = vec![line_count; line_count];
+    {
+        let mut next = line_count;
+        for i in (0..line_count).rev() {
+            next_non_blank_idx[i] = next;
+            if indents[i].is_some() {
+                next = i;
+            }
+        }
+    }
+
     let mut folds: Vec<Fold> = Vec::new();
+    // Perf guard: cap the number of indent folds to prevent O(folds²) walk
+    // inside providers downstream (folded_line_span chains, etc.) on
+    // pathological files (e.g. monotonically increasing whitespace).
+    const MAX_FOLDS: usize = 5000;
     for i in 0..line_count {
+        if folds.len() >= MAX_FOLDS {
+            break;
+        }
         let Some(start_indent) = indents[i] else {
             continue;
         };
-        // Look for the next non-blank line.
-        let next_non_blank = ((i + 1)..line_count).find(|j| indents[*j].is_some());
-        let Some(j) = next_non_blank else {
+        let j = next_non_blank_idx[i];
+        if j >= line_count {
             continue;
-        };
+        }
         let Some(next_indent) = indents[j] else {
             continue;
         };
@@ -118,6 +137,11 @@ pub fn compute_indent_folds(buffer: &Buffer) -> Vec<Fold> {
             continue;
         }
         // Walk forward to find the last line with indent > start_indent.
+        // For pathological files with monotonically increasing indent the
+        // inner loop can walk to end-of-file for every line, yielding
+        // O(n²) behaviour. The MAX_FOLDS cap bounds this: once the cap is
+        // reached the outer loop breaks, so at most MAX_FOLDS × n inner
+        // iterations run.
         let mut end = j;
         for (k, ind) in indents.iter().enumerate().skip(j + 1) {
             match ind {
@@ -647,6 +671,88 @@ pub fn folded_line_span(folds: &[Fold], start_line: u32, end_line: u32, total_li
         }
     }
     end.saturating_sub(start_line).saturating_add(1)
+}
+
+/// Walk forward from `start_line` and return the buffer line at
+/// `offset` visible (non-fold-hidden) display rows below it.
+/// Closed fold bodies are skipped — only fold heads (start lines)
+/// and non-folded lines count as visible rows. When the walk
+/// reaches the last addressable line before consuming `offset`
+/// rows, that last line is returned (the caller's clamp).
+pub fn nth_visible_line_forward(
+    fold_idx: &FoldIndex,
+    start_line: u32,
+    offset: u32,
+    total_lines: u32,
+) -> u32 {
+    if offset == 0 || !fold_idx.foldenable {
+        return start_line.min(total_lines.saturating_sub(1));
+    }
+    let last = total_lines.saturating_sub(1);
+    let mut line = start_line;
+    let mut count = 0u32;
+    while count < offset && line < last {
+        line += 1;
+        while let Some((_, end)) = fold_idx.enclosing_closed_fold(line) {
+            line = end + 1;
+            if line > last {
+                return last;
+            }
+        }
+        count += 1;
+    }
+    line.min(last)
+}
+
+/// Walk backward from `start_line` and return the line at `offset`
+/// visible rows above it. Walking backward hops over closed fold
+/// bodies to their visible heads, then continues from the preceding
+/// line. Returns 0 when the walk hits BOF before consuming `offset`
+/// rows.
+pub fn nth_visible_line_backward(
+    fold_idx: &FoldIndex,
+    start_line: u32,
+    offset: u32,
+) -> u32 {
+    if offset == 0 || !fold_idx.foldenable {
+        return start_line;
+    }
+    let mut line = start_line;
+    let mut count = 0u32;
+    while count < offset && line > 0 {
+        line = line.saturating_sub(1);
+        while let Some((start, _)) = fold_idx.enclosing_closed_fold(line) {
+            line = start;
+        }
+        count += 1;
+    }
+    line
+}
+
+/// Count how many visible (non-fold-hidden) rows exist between
+/// `from_line` (inclusive) and `to_line` (exclusive). Closed fold
+/// bodies are skipped. Both lines must be *visible* (not inside a
+/// closed fold body) — callers ensure this before calling. Returns
+/// the number of display rows spanning the range.
+pub fn count_visible_rows_between(
+    fold_idx: &FoldIndex,
+    from_line: u32,
+    to_line: u32,
+) -> u32 {
+    if from_line >= to_line || !fold_idx.foldenable {
+        return to_line.saturating_sub(from_line);
+    }
+    let mut line = from_line;
+    let mut count = 0u32;
+    while line < to_line {
+        count += 1;
+        if let Some((_, end)) = fold_idx.closed_fold_at(line) {
+            line = end + 1;
+        } else {
+            line += 1;
+        }
+    }
+    count
 }
 
 // =========================================================

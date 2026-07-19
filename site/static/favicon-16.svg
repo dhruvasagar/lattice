@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" shape-rendering="crispEdges" role="img" aria-label="Lattice">
+  <title>Lattice</title>
+  <rect x="4" y="1" width="10" height="2" fill="#1f6feb"/>
+  <rect x="12" y="3" width="2" height="9" fill="#1f6feb"/>
+  <rect x="2" y="3" width="2" height="11" fill="#1f6feb"/>
+  <rect x="2" y="13" width="10" height="2" fill="#1f6feb"/>
+  <rect x="7" y="5" width="2" height="7" fill="#f59e0b"/>
+</svg>

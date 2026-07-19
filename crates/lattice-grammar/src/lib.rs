@@ -43,7 +43,7 @@ pub use crate::app_effect::{
 };
 pub use crate::args::{ArgDefault, ArgKind, ArgSpec, ArgValue, Args};
 pub use crate::cancel::{CancellationToken, CheckCancelled};
-pub use crate::command::{CommandInvocation, CommandKind, CommandSpec, Count, LatencyClass};
+pub use crate::command::{CommandInvocation, CommandKind, CommandSpec, Count, LatencyClass, kind_icon};
 pub use crate::dispatcher::{execute, execute_motion_only, execute_with_env};
 pub use crate::effect::{
     EchoLevel, Effect, LspRequest, QuitScope, SubstituteScope, Utf16Pos, YankKind,

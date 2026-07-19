@@ -137,6 +137,12 @@ pub enum SearchStatus {
     Failed { reason: String },
 }
 
+/// Service handle for the editor's current working directory.
+/// Registered at boot, updated by `:cd`. Mode-owned handlers
+/// (e.g. search `gr` refresh) look this up via `ActionContext`
+/// to re-resolve the scan root after `:cd`.
+pub type CurrentDirHandle = std::sync::Arc<std::sync::Mutex<Option<std::path::PathBuf>>>;
+
 /// Per-view state owned by `ProjectSearchService`.
 #[derive(Debug)]
 pub struct ProjectSearchState {
@@ -654,15 +660,27 @@ impl Mode for ProjectSearchMultibufferMode {
                     let bus_for_refresh = bus.clone();
                     let view_id_for_refresh = view_id;
                     let handler: lattice_mode::ActionHandler = Arc::new(
-                        move |_ctx: &ActionContext<'_>| -> Option<lattice_grammar::Effect> {
+                        move |ctx: &ActionContext<'_>| -> Option<lattice_grammar::Effect> {
                             // Tolerate missing service (test
                             // harness without boot wiring).
                             let search_svc = search_svc_for_refresh.as_ref()?;
                             let state = search_svc.state(view_id_for_refresh)?;
-                            let (query, options) = {
+                            let (query, mut options) = {
                                 let s = state.read().ok()?;
                                 (s.query.clone(), s.options.clone())
                             };
+                            // Re-resolve the scan root from the editor's
+                            // current working directory so `gr` picks up
+                            // `:cd` changes.
+                            if let Some(current_dir_handle) =
+                                ctx.services.get::<CurrentDirHandle>()
+                            {
+                                if let Ok(dir) = current_dir_handle.lock() {
+                                    if let Some(ref current_dir) = *dir {
+                                        options.root = current_dir.clone();
+                                    }
+                                }
+                            }
                             let view = mb_registry_for_refresh.handle(view_id_for_refresh)?;
                             // M.6.6: cancel the prior scan before replacing state.
                             if let Some(old) = search_svc.state(view_id_for_refresh) {

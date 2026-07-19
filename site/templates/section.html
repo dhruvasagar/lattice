@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+
+{% block title %}{{ section.title }} — Lattice{% endblock title %}
+{% block description %}{{ section.description | default(value=config.description) }}{% endblock description %}
+
+{% block content %}
+<div class="docs-layout">
+  {% if section.subsections %}
+  {# Overview page — show subsections as cards, no sidebar #}
+  <article class="docs-content docs-content-full">
+    <h1>{{ section.title }}</h1>
+    {{ section.content | safe }}
+    <div class="subsection-grid">
+      {% for s_path in section.subsections | sort %}
+      {% set sub = get_section(path=s_path) %}
+      <a href="{{ sub.permalink }}" class="subsection-card">
+        <h3>{{ sub.title }}</h3>
+        <p>{{ sub.description }}</p>
+      </a>
+      {% endfor %}
+    </div>
+  </article>
+  {% else %}
+  {# Leaf section — show sidebar with pages #}
+  <aside class="sidebar">
+    <nav>
+      {% if section.ancestors and section.ancestors | length > 1 %}
+      <div class="sidebar-back">
+        {% set grandparent = get_section(path=section.ancestors | last) %}
+        <a href="{{ grandparent.permalink }}">← {{ grandparent.title }}</a>
+      </div>
+      {% endif %}
+      <ul>
+        {% for p in section.pages %}
+        <li>
+          <a href="{{ p.permalink }}">
+            {{ p.title }}
+          </a>
+        </li>
+        {% endfor %}
+      </ul>
+    </nav>
+  </aside>
+  <article class="docs-content">
+    <h1>{{ section.title }}</h1>
+    {{ section.content | safe }}
+  </article>
+  {% endif %}
+</div>
+{% endblock content %}

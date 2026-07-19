@@ -1,0 +1,125 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="hero">
+  <div class="container hero-inner">
+    <div class="hero-mark">
+      <svg width="120" height="145" viewBox="0 0 100 120" fill="none" aria-hidden="true">
+        <path d="M0 20h20v80h60v20H0V20Z" fill="currentColor"/>
+        <path d="M20 0h80v100H80V20H20V0Z" fill="currentColor"/>
+        <rect x="40" y="36" width="20" height="48" fill="#f59e0b" rx="2"/>
+      </svg>
+    </div>
+    <h1 class="hero-title">Lattice <span class="version-hero">v{{ version.latest }}</span></h1>
+    <p class="hero-tagline">{{ config.description }}</p>
+    <p class="hero-subtitle">{{ config.extra.tagline }}</p>
+    <div class="hero-actions">
+      <a href="{{ get_url(path='/docs/getting-started/') }}" class="btn btn-primary">Get Started</a>
+      <a href="{{ get_url(path='/install/') }}" class="btn btn-secondary">Install <span class="arrow">→</span></a>
+    </div>
+  </div>
+</section>
+
+<section class="features">
+  <div class="container">
+    <h2 class="section-title">Four Paramount Goals</h2>
+    <div class="feature-grid">
+      <div class="feature-card">
+        <div class="feature-icon">⚡</div>
+        <h3>Performance</h3>
+        <p>Imperceptible keystroke→glyph latency — within one display frame under any load, ratcheted by CI.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">🧩</div>
+        <h3>Extensibility</h3>
+        <p>WebAssembly Component Model plugin host. Any language (Rust, Zig, Go, …). Capability-gated, crash-isolated.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">⌨️</div>
+        <h3>Vim Modal Editing</h3>
+        <p>Strict vim semantics. The grammar IS the public command API. Extensible motions, operators, and text objects.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">⚙️</div>
+        <h3>Asynchronicity</h3>
+        <p>Three-layer architecture via typed message passing. Multi-threaded by construction. Nothing blocks the UI.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="principles">
+  <div class="container">
+    <h2 class="section-title">Design Principles</h2>
+    <div class="principles-list">
+      <div class="principle">
+        <h3>Everything is a buffer</h3>
+        <p>File tree, diagnostics, terminal, REPL — all are buffers placed by the user into panes via splits. No fixed sidebar or bottom-panel concept. <code>:bn</code>, <code>:bp</code>, <code>:ls</code>, <code>:bd</code> work uniformly across all kinds.</p>
+      </div>
+      <div class="principle">
+        <h3>Modes own their surface</h3>
+        <p>A feature is a mode that owns its keymaps, action handlers, decorations, and subscriptions. The host is a thin substrate with no per-feature branch. A new provider crate adds zero <code>Editor::</code> methods.</p>
+      </div>
+      <div class="principle">
+        <h3>One extension substrate</h3>
+        <p>WASM Component Model is the single substrate for plugins AND user configuration. No Lua, no vimscript, no elisp. TOML for static data; <code>init.rs</code> (compiled to WASM) for programmable config.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="status">
+  <div class="container">
+    <h2 class="section-title">Current Status</h2>
+    <div class="status-grid">
+      <div class="status-card">
+        <span class="status-badge status-active">Phase 1+</span>
+        <p>Modal engine, ex-commands, async actor, snapshot model, completion, help, basic perf benches, CI — <strong>active development</strong>.</p>
+        <a href="https://github.com/dhruvasagar/lattice/blob/main/docs/dev/operations/implementation.md" class="status-link">View implementation ledger →</a>
+      </div>
+      <div class="status-card">
+        <span class="status-badge status-bench">~0.7ms p50</span>
+        <p>Keystroke→glyph latency (TUI, debug build, 2300-line file). Ratcheted — CI fails on regression. Target: within one display frame.</p>
+        <a href="https://github.com/dhruvasagar/lattice/blob/main/docs/dev/operations/benchmarks.md" class="status-link">View benchmarks →</a>
+      </div>
+      <div class="status-card">
+        <span class="status-badge status-milestone">v{{ version.latest }}</span>
+        <p>Pre-1.0 breaking changes expected. Pluggable WASM init, plugin lifecycle, keymap teardown, decoration rendering, and more in progress.</p>
+        <a href="{{ get_url(path='/docs/') }}" class="status-link">Read the docs →</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="quickstart">
+  <div class="container">
+    <h2 class="section-title">Quick Start</h2>
+    <div class="code-block">
+      <pre><code class="language-sh"># Clone and build
+git clone https://github.com/dhruvasagar/lattice
+cd lattice
+cargo build --release
+
+# Open a file
+cargo run --release -- README.md
+
+# Or with the GPU renderer
+cargo run --release --features gui -- --gui README.md
+
+# Run tests
+cargo test --workspace</code></pre>
+    </div>
+  </div>
+</section>
+
+<section class="cta-section">
+  <div class="container">
+    <h2>Ready to try Lattice?</h2>
+    <p>Open source. MIT licensed. Built with Rust.</p>
+    <div class="cta-actions">
+      <a href="{{ get_url(path='/docs/getting-started/') }}" class="btn btn-primary btn-lg">Read the Docs</a>
+      <a href="{{ get_url(path='/why-lattice/') }}" class="btn btn-outline btn-lg">Why Lattice?</a>
+    </div>
+  </div>
+</section>
+{% endblock content %}

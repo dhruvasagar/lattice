@@ -20,10 +20,12 @@
 use std::sync::Arc;
 
 use lattice_completion::{
-    Annotation, AnnotationSegment, CandidateKind, KeymapReverseLookup, RawCandidate,
+    Annotation, AnnotationSegment, CandidateKind, KeybindingSource, KeymapReverseLookup,
+    RawCandidate,
 };
 use lattice_config::ConfigRegistry;
 use lattice_grammar::CommandRegistryHandle;
+use lattice_protocol::KeyChord;
 use lattice_grammar::args::{ArgDefault, ArgSpec, Args};
 use lattice_grammar::command::{CommandKind, LatencyClass};
 
@@ -958,7 +960,7 @@ impl PickerSourceGenerator for CommandsSource {
         &self.spec
     }
 
-    fn init(&self, _ctx: &PickerContext<'_>, _args: &[String]) -> SourceResult<PickerInitResult> {
+    fn init(&self, ctx: &PickerContext<'_>, _args: &[String]) -> SourceResult<PickerInitResult> {
         // Walk registry names, keep ex-commands, project to a
         // row carrying every marginalia column. Emacs
         // `marginalia.el`-style: name | args-hint | doc |
@@ -1027,9 +1029,39 @@ impl PickerSourceGenerator for CommandsSource {
                 // no Normal-mode chord push nothing (blank cell, no
                 // zero-width span). Rendered leftmost regardless of
                 // push order (category rank 0).
-                let chords = self.reverse.chords_for(&row.canonical);
-                if !chords.is_empty() {
-                    annotations.push(Annotation::Keybinding(chords));
+                //
+                // MARG.3 (2026-07-15): use `chords_with_source` to
+                // get mode provenance. Chords whose source
+                // minor/major mode is not currently active are
+                // filtered out. When a chord comes from an active
+                // mode, a `Source` annotation carries the mode name.
+                let chords_with_source = self.reverse.chords_with_source(&row.canonical);
+                let visible_chords: Vec<KeyChord> = chords_with_source
+                    .iter()
+                    .filter(|(_, source)| match source {
+                        KeybindingSource::AlwaysOn => true,
+                        KeybindingSource::Mode(mode_name) => ctx.active_modes.contains(mode_name),
+                    })
+                    .map(|(chord, _)| *chord)
+                    .collect();
+                if !visible_chords.is_empty() {
+                    annotations.push(Annotation::Keybinding(visible_chords));
+                    // Show the source mode label for the first
+                    // active chord. Builtin/User/Buffer chords
+                    // omit the source column (it's implied).
+                    let source_label = chords_with_source
+                        .iter()
+                        .find(|(_, source)| match source {
+                            KeybindingSource::Mode(name) => ctx.active_modes.contains(name),
+                            _ => false,
+                        })
+                        .map(|(_, source)| match source {
+                            KeybindingSource::Mode(name) => name.clone(),
+                            _ => unreachable!(),
+                        });
+                    if let Some(label) = source_label {
+                        annotations.push(Annotation::Source(label));
+                    }
                 }
                 if !row.args_hint.is_empty() {
                     annotations.push(Annotation::Styled {

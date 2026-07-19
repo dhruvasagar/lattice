@@ -1002,6 +1002,11 @@ interface types {
         args: args,
         register: register,
         count: count,
+        /// Where the caret sits when the action fires (AP.0.1) — the action's
+        /// equivalent of `motion-context.from`. A plugin action pairs it with
+        /// the `borrow<document>` handle `apply-action` receives to read the
+        /// buffer around the cursor.
+        cursor: position,
     }
 
     /// Mirrors `lattice_grammar::registry::MotionSpec` (metadata; `apply` is a

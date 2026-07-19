@@ -326,6 +326,97 @@ fn grammar_round_trip_stays_within_ceiling() {
     );
 }
 
+// ── §7 row: grammar action + `document` handle round-trip (AP.0.1) ────────────
+// The SYNC path a plugin ACTION that reads buffer text pays on every dispatch:
+// `execute` → build the `ActionContext` (an O(1) rope clone) → project → mint a
+// `DocumentResource` from a snapshot → `ResourceTable::push` → the sync guest
+// `apply-action` call (which calls back into `HostDocument::get_text_range`) →
+// `table.delete` → `Effect::from_wit`. This pins that the AP.0.1 handle plumbing
+// (snapshot + table push/delete + the guest→host read-back) stays inside the
+// same Reflex budget the plain motion round-trip does — the added cost is O(1).
+
+#[test]
+fn grammar_action_with_document_handle_stays_within_ceiling() {
+    use lattice_core::Document;
+    use lattice_core::buffers::BufferId;
+    use lattice_grammar::CancellationToken;
+    use lattice_grammar::command::CommandInvocation;
+    use lattice_grammar::dispatcher::execute;
+    use lattice_grammar::registry::CommandRegistry;
+    use lattice_protocol::position::Position as GrammarPos;
+
+    let path = env!("GRAMMAR_GUEST_WASM");
+    if path.is_empty() {
+        eprintln!("SKIP: grammar action ratchet — grammar fixture not built");
+        return;
+    }
+
+    let dirs = tempfile::tempdir().unwrap();
+    let host = PluginHost::with_dirs(dirs.path().join("cache"), dirs.path().join("data")).unwrap();
+    let component = host.compile(&std::fs::read(path).unwrap()).unwrap();
+    let manifest = PluginManifest::new("grammar-fixture", Vec::new(), CapabilitySet::empty());
+    let set = host
+        .instantiate_grammar_plugin(
+            &component,
+            &manifest,
+            TrustTier::Bundled,
+            &std::sync::Arc::new(lattice_runtime::EventBus::new()),
+            None,
+        )
+        .unwrap();
+    Box::leak(Box::new(host));
+
+    let mut registry = CommandRegistry::new();
+    set.register_all(&mut registry);
+    let action_id = registry
+        .id_by_name("read-at-cursor")
+        .expect("fixture action registered");
+
+    let mut document = Document::from_text("hello\nworld\n");
+    let cancel = CancellationToken::never();
+    let cursor = GrammarPos { line: 1, byte: 0 };
+    let invocation = CommandInvocation::of(action_id);
+
+    for _ in 0..100 {
+        let _ = execute(
+            &registry,
+            &mut document,
+            BufferId(1),
+            cursor,
+            invocation.clone(),
+            &cancel,
+        )
+        .unwrap();
+    }
+    let iters = 2_000usize;
+    let mut samples = Vec::with_capacity(iters);
+    for _ in 0..iters {
+        let t = Instant::now();
+        let out = execute(
+            &registry,
+            &mut document,
+            BufferId(1),
+            cursor,
+            invocation.clone(),
+            &cancel,
+        )
+        .unwrap();
+        samples.push(t.elapsed());
+        std::hint::black_box(out);
+    }
+    let m = median(samples);
+    eprintln!("[ph7.5-ratchet] grammar_action_with_document median (debug): {m:?}");
+
+    // Same §7 grammar budget as the motion round-trip — the `document` handle adds
+    // only O(1) work (an Arc snapshot + a table push/delete + one bounded slice).
+    assert!(
+        m < Duration::from_micros(250),
+        "grammar action+document median was {m:?}; expected < 250µs \
+         (§7 release budget < 5µs p99). A regression in the AP.0.1 handle plumbing \
+         (snapshot mint / table push-delete / guest read-back)."
+    );
+}
+
 // ── §7 row: major-mode event handler (< 50µs p50 / < 250µs p99 release) ───────
 // The OFF-keystroke async delivery path a plugin hook pays per event (PH7.8):
 // bus sink → actor channel → guest `on-event` (project `Event` → WIT, async

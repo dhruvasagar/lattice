@@ -60,11 +60,19 @@ interface grammar-callbacks {
         motion-context, motion-result, operator-context, text-object-context,
         ex-command-context, action-context, range, effect, args,
     };
+    /// The host-owned `document` resource (AP.0.1). An action receives a
+    /// `borrow<document>` — a non-owning handle the host mints from a
+    /// point-in-time buffer snapshot and reclaims after the call — so the guest
+    /// can read the text around `action-context.cursor` without bulk rope text
+    /// ever crossing the boundary. This is the first world function to take the
+    /// resource (the picker `init(doc)` precedent, deferred since PH7.3c).
+    use buffer.{document};
 
     apply-motion: func(callback: u32, ctx: motion-context) -> result<motion-result, string>;
     apply-operator: func(callback: u32, ctx: operator-context) -> result<list<effect>, string>;
     apply-text-object: func(callback: u32, ctx: text-object-context) -> result<range, string>;
-    apply-action: func(callback: u32, ctx: action-context) -> result<list<effect>, string>;
+    apply-action: func(callback: u32, ctx: action-context, doc: borrow<document>)
+        -> result<list<effect>, string>;
     parse-ex-args: func(callback: u32, rest: string, bang: bool) -> result<args, string>;
     apply-ex-command: func(callback: u32, ctx: ex-command-context) -> result<list<effect>, string>;
 }
@@ -78,13 +86,15 @@ interface grammar-callbacks {
 ///
 /// A 4th `bindgen!` reuses the `plugin` world's generated `types` via `with:` so
 /// crossed values are the SAME Rust types `WitBoundary` round-trips
-/// (`boundary_grammar.rs`). The `buffer` `document` handle for text-reading
-/// motions (structural / word motions) is a deferred follow-on — the picker's
-/// `init(doc)` resource-wiring precedent — so a v1 motion computes from the
-/// projected context scalars (cursor / count / args); PH7.7d validates the
-/// trampoline with such a motion.
+/// (`boundary_grammar.rs`). `import buffer` brings the host-owned `document`
+/// resource so `apply-action` can take a `borrow<document>` (AP.0.1) — the host
+/// implements `HostDocument` (backed by `DocumentResource`) and adds it to the
+/// SYNC grammar linker. Text-reading *motions* (structural / word motions) can
+/// reuse the same handle when a motion signature needs it; AP.0.1 wires the
+/// action path only.
 world grammar-plugin {
     import grammar;
+    import buffer;
     export register-grammar: func();
     export grammar-callbacks;
 }

@@ -86,11 +86,15 @@ pub fn project_buffer_snapshot(snap: &ActiveBufferSnapshot) -> Result<WitBufferS
 }
 
 // NB: the generated `buffer::HostDocument` host trait (the guest's `document`
-// method calls) is wired to `PluginState` at PH7.3d, when the picker-source
-// `init(ctx)` signature first references a `document` handle — bindgen only
-// binds a `with`-mapped resource that a world function uses. The backing type
-// (`DocumentResource`) + its slice/metadata logic below are complete and
-// tested; PH7.3d adds the trait impl + `add_to_linker` + the `with`-mapping.
+// method calls) is wired to `PluginState` at **AP.0.1** — the grammar
+// `apply-action(…, doc: borrow<document>)` signature is the first world function
+// to reference the resource (bindgen only binds a `with`-mapped resource a world
+// function uses). The impl + `add_to_linker` (on the SYNC grammar linker) + the
+// `with`-mapping (`"lattice:plugin-host/buffer.document"`) live in `lib.rs` /
+// `grammar_host.rs`; the trampoline (`grammar_trampoline.rs`) mints + lends the
+// handle per dispatch. The backing type below stays the single source of the
+// slice/metadata logic both this and any future consumer (picker `init(doc)`)
+// forward to.
 
 #[cfg(test)]
 mod tests {

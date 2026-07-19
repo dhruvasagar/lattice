@@ -61,11 +61,12 @@ fn load(dir: &TempDir) -> (CommandRegistry, u32) {
         )
         .expect("instantiate + register-grammar");
     let plugin_id = set.plugin_id().0;
-    // 3 motions (down-n, fails, traps) + 1 text object (to-cursor).
+    // 3 motions (down-n, fails, traps) + 1 text object (to-cursor) + 1 action
+    // (read-at-cursor, AP.0.1).
     assert_eq!(
         set.len(),
-        4,
-        "guest contributed down-n + to-cursor + fails + traps"
+        5,
+        "guest contributed down-n + to-cursor + fails + traps + read-at-cursor"
     );
 
     let mut registry = CommandRegistry::new();
@@ -231,6 +232,74 @@ fn plugin_motion_dispatches_through_the_sync_trampoline() {
     )
     .expect("plugin motion dispatches through the sync trampoline");
     assert_eq!(target, Position { line: 4, byte: 0 });
+}
+
+#[test]
+fn plugin_action_reads_buffer_text_at_the_cursor_via_the_document_handle() {
+    if guest_wasm().is_none() {
+        eprintln!("SKIP: grammar fixture guest not built");
+        return;
+    }
+    let dir = TempDir::new().unwrap();
+    let (registry, _) = load(&dir);
+    let action_id = registry.id_by_name("read-at-cursor").unwrap();
+
+    // AP.0.1: the guest reads the byte at `ctx.cursor` through the borrowed
+    // `document` handle. Cursor at line 1, byte 0 → 'w' of "world".
+    let mut document = lattice_core::Document::from_text("hello\nworld\n");
+    let cancel = CancellationToken::never();
+    let effect = lattice_grammar::dispatcher::execute(
+        &registry,
+        &mut document,
+        BufferId(1),
+        Position { line: 1, byte: 0 },
+        CommandInvocation::of(action_id),
+        &cancel,
+    )
+    .expect("plugin action dispatches through the sync trampoline");
+
+    // The guest echoes "<char>@<line>:<byte>" — both the document read AND the
+    // cursor crossed the boundary. `Many([x])` normalises to `x`, so the single
+    // effect arrives as `Echo` directly.
+    match effect {
+        lattice_grammar::effect::Effect::Echo { text, .. } => {
+            assert_eq!(
+                text, "w@1:0",
+                "the guest sliced 'w' at the cursor and echoed the cursor coords"
+            );
+        }
+        other => panic!("expected an Echo effect from the plugin action, got {other:?}"),
+    }
+}
+
+#[test]
+fn plugin_action_out_of_range_read_degrades_to_a_graceful_no_op() {
+    if guest_wasm().is_none() {
+        eprintln!("SKIP: grammar fixture guest not built");
+        return;
+    }
+    let dir = TempDir::new().unwrap();
+    let (registry, _) = load(&dir);
+    let action_id = registry.id_by_name("read-at-cursor").unwrap();
+
+    // Cursor past EOF: the host `get-text-range` returns a typed `err`, which the
+    // guest propagates via `?` → the trampoline maps it to CommandError::Plugin
+    // (a graceful no-op), NOT a trap or a panic (§8).
+    let mut document = lattice_core::Document::from_text("hi\n");
+    let cancel = CancellationToken::never();
+    let err = lattice_grammar::dispatcher::execute(
+        &registry,
+        &mut document,
+        BufferId(1),
+        Position { line: 9, byte: 0 },
+        CommandInvocation::of(action_id),
+        &cancel,
+    )
+    .expect_err("an out-of-range read is a typed CommandError, not a success");
+    assert!(
+        matches!(err, CommandError::Plugin(_)),
+        "out-of-range read maps to CommandError::Plugin, got {err:?}"
+    );
 }
 
 #[test]

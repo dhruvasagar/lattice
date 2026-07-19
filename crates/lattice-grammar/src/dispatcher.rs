@@ -103,11 +103,13 @@ pub fn execute_with_env(
             env,
         ),
         CommandKind::ExCommand => execute_ex_command(&invocation, entry, cancel),
-        CommandKind::Action => execute_action(&invocation, entry, cancel),
+        CommandKind::Action => execute_action(document, cursor, &invocation, entry, cancel),
     }
 }
 
 fn execute_action(
+    document: &Document,
+    cursor: Position,
     invocation: &CommandInvocation,
     entry: &CommandEntry,
     cancel: &CancellationToken,
@@ -117,6 +119,10 @@ fn execute_action(
         args: invocation.args.clone(),
         register: invocation.register_or_default(),
         count: invocation.count_or_default(),
+        cursor,
+        // O(1) rope clone (Arc-shared nodes) — a point-in-time buffer view for
+        // a plugin action's `document` handle (AP.0.1). Native actions ignore it.
+        buffer: document.buffer().clone(),
         cancel: cancel.clone(),
     };
     (spec.apply)(&ctx)

@@ -21,10 +21,12 @@ wit_bindgen::generate!({
 });
 
 use exports::lattice::plugin_host::grammar_callbacks::Guest as Callbacks;
+use lattice::plugin_host::buffer::Document;
 use lattice::plugin_host::grammar;
 use lattice::plugin_host::types::{
-    ActionContext, Args, Effect, ExCommandContext, MotionContext, MotionResult, MotionSpec,
-    OperatorContext, Position, Range, TextObjectContext, TextObjectSpec,
+    ActionContext, ActionSpec, Args, Effect, EchoLevel, EchoPayload, ExCommandContext,
+    MotionContext, MotionResult, MotionSpec, OperatorContext, Position, Range, TextObjectContext,
+    TextObjectSpec,
 };
 
 struct Component;
@@ -77,6 +79,18 @@ impl Guest for Component {
             },
             3,
         );
+        // AP.0.1: an action that reads buffer text through the `borrow<document>`
+        // handle. `apply-action(5)` slices the byte at `ctx.cursor` and echoes it
+        // with the cursor coords — proving both the document borrow and the
+        // cursor cross the sync grammar boundary.
+        grammar::register_action(
+            "read-at-cursor",
+            "echo the char at the cursor (fixture)",
+            &ActionSpec {
+                args_schema: Vec::new(),
+            },
+            5,
+        );
     }
 }
 
@@ -114,8 +128,30 @@ impl Callbacks for Component {
         Err("fixture: no operators".to_string())
     }
 
-    fn apply_action(_callback: u32, _ctx: ActionContext) -> Result<Vec<Effect>, String> {
-        Err("fixture: no actions".to_string())
+    fn apply_action(
+        callback: u32,
+        ctx: ActionContext,
+        doc: &Document,
+    ) -> Result<Vec<Effect>, String> {
+        match callback {
+            // Read the single byte at the cursor via the borrowed document, then
+            // echo it back with the cursor coords — observable proof that the
+            // `document` handle AND `ctx.cursor` crossed correctly (AP.0.1). A
+            // range past EOF returns the host's typed `err` (graceful path).
+            5 => {
+                let start = ctx.cursor;
+                let end = Position {
+                    line: start.line,
+                    byte: start.byte + 1,
+                };
+                let text = doc.get_text_range(Range { start, end })?;
+                Ok(vec![Effect::Echo(EchoPayload {
+                    level: EchoLevel::Info,
+                    text: format!("{text}@{}:{}", start.line, start.byte),
+                })])
+            }
+            other => Err(format!("fixture: unknown action callback {other}")),
+        }
     }
 
     fn parse_ex_args(_callback: u32, _rest: String, _bang: bool) -> Result<Args, String> {

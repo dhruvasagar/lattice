@@ -42,6 +42,11 @@ pub(crate) mod bindings {
             // Reuse the `plugin` world's generated mirrors so a value crossing
             // here is the same Rust type `WitBoundary` round-trips.
             "lattice:plugin-host/types": crate::lattice::plugin_host::types,
+            // AP.0.1: `apply-action` takes a `borrow<document>`. Map the
+            // host-owned resource to `DocumentResource` (the backing built +
+            // unit-tested at PH7.3c) so bindgen emits the `HostDocument` trait
+            // the host implements + the sync-linker `add_to_linker`.
+            "lattice:plugin-host/buffer.document": crate::buffer::DocumentResource,
         },
     });
 }

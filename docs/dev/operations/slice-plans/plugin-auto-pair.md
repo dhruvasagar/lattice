@@ -10,7 +10,7 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned. Every non-trivial sl
 the four artefacts (doc + bench-where-perf-relevant + test incl. failure modes +
 graceful error handling).
 
-**Status: 📝 all planned.**
+**Status: 🚧 in progress — AP.0.1 ✅ (the `document`-handle prereq); AP.1+ planned.**
 
 ## Sequencing — two waves
 
@@ -31,14 +31,20 @@ Wave 2 (foundation + manual style):
 
 ## Wave 1
 
-### AP.0.1 — grammar-context `document` handle + cursor  📝
-General host prereq (design fragment §5.1). `action-context` today carries only
-`args`/`register`/`count`. Extend the grammar callback contexts (action first;
-motion/text-object as needed) with a `document` resource handle + the cursor,
-mirroring the picker seam (`init(ctx)` takes a `document`). The read machinery
-(`document.slice`) exists. **Exit:** a `grammar-guest` action reads a text slice +
-the cursor round-trips; bounded on the sync path. Test: slice read + cursor;
-graceful `err` on out-of-range.
+### AP.0.1 — grammar-context `document` handle + cursor  ✅
+General host prereq (design fragment §5.1). `action-context` carried only
+`args`/`register`/`count`. Extended `apply-action` with a `borrow<document>` +
+`action-context.cursor`, mirroring the picker seam (`init(ctx)` takes a
+`document`) — the **first host-owned resource to cross into a guest export**,
+resolving the deferred bindgen modeling subtlety (the `with:` resource key uses
+`buffer.document`, not `buffer/document` — recorded in §5.1). Native
+`ActionContext` carries an owned `Buffer` (O(1) rope clone; keeps
+`lattice-grammar` off `lattice-runtime`), the trampoline mints the snapshot +
+lends the borrow per dispatch. **Landed:** the `grammar-guest` `read-at-cursor`
+action reads a slice + the cursor round-trips (`grammar_source.rs`); out-of-range
+degrades to a typed `err` (no trap); a `perf_ratchet` case pins the added
+snapshot/table cost inside the grammar Reflex budget (10µs debug). All four
+artefacts shipped (doc §5.1 + ratchet + tests + graceful error).
 
 ### AP.1 — crate scaffold + registration  📝
 `plugins/auto-pair/` guest (`wasm32-wasip2`, `wit-bindgen`) + `manifest.toml`

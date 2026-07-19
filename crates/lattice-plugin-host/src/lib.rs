@@ -939,6 +939,65 @@ impl crate::grammar_host::bindings::lattice::plugin_host::grammar::Host for Plug
     }
 }
 
+/// Host impl of the `buffer` `document` resource (AP.0.1). A grammar action
+/// receives a `borrow<document>`; each method here resolves the borrowed handle
+/// out of the Store's `ResourceTable` to the [`DocumentResource`](crate::buffer::DocumentResource)
+/// the trampoline minted and forwards to its (already unit-tested) reader. Bulk
+/// rope text never crosses — `get-text-range` slices only the requested span.
+/// The interface-level `buffer` host trait — no free functions (the interface is
+/// only the `document` resource + the `buffer-snapshot` record), so it is a
+/// marker `add_to_linker` requires alongside [`HostDocument`].
+impl crate::grammar_host::bindings::lattice::plugin_host::buffer::Host for PluginState {}
+
+impl crate::grammar_host::bindings::lattice::plugin_host::buffer::HostDocument for PluginState {
+    fn get_text_range(
+        &mut self,
+        self_: wasmtime::component::Resource<crate::buffer::DocumentResource>,
+        r: crate::lattice::plugin_host::types::Range,
+    ) -> Result<String, String> {
+        let native = lattice_protocol::position::Range::from_wit(r)?;
+        let doc = self
+            .table
+            .get(&self_)
+            .map_err(|e| format!("document handle: {e}"))?;
+        doc.get_text_range(native)
+    }
+
+    fn line_count(
+        &mut self,
+        self_: wasmtime::component::Resource<crate::buffer::DocumentResource>,
+    ) -> u32 {
+        self.table.get(&self_).map(|d| d.line_count()).unwrap_or(0)
+    }
+
+    fn byte_len(
+        &mut self,
+        self_: wasmtime::component::Resource<crate::buffer::DocumentResource>,
+    ) -> u64 {
+        self.table.get(&self_).map(|d| d.byte_len()).unwrap_or(0)
+    }
+
+    fn line(
+        &mut self,
+        self_: wasmtime::component::Resource<crate::buffer::DocumentResource>,
+        n: u32,
+    ) -> Option<String> {
+        self.table.get(&self_).ok().and_then(|d| d.line_at(n))
+    }
+
+    fn drop(
+        &mut self,
+        rep: wasmtime::component::Resource<crate::buffer::DocumentResource>,
+    ) -> wasmtime::Result<()> {
+        // The host lends `borrow<document>` handles and reclaims the owned table
+        // entry itself in the trampoline, so a guest never owns one to drop; this
+        // fires only if that invariant changes. Delete defensively, ignore a
+        // missing entry (already reclaimed) — never a trap on teardown.
+        let _ = self.table.delete(rep);
+        Ok(())
+    }
+}
+
 /// Host impl of the `events` guest→host subscription API (PH7.8b, §5). The guest
 /// calls `subscribe` (from its `register-events` export) to observe editor
 /// events; each records the `(filter, handler)` pair into the Store's
@@ -1313,6 +1372,15 @@ impl PluginHost {
         wasmtime_wasi::p2::add_to_linker_sync(&mut grammar_linker)
             .map_err(|e| PluginHostError::Linker(e.into()))?;
         crate::grammar_host::bindings::lattice::plugin_host::grammar::add_to_linker::<_, HasSelf<_>>(
+            &mut grammar_linker,
+            |state: &mut PluginState| state,
+        )
+        .map_err(|e| PluginHostError::Linker(e.into()))?;
+        // AP.0.1: the `buffer` `document` resource, so a grammar action's
+        // `borrow<document>` param resolves. On the SYNC grammar linker only —
+        // the reads are synchronous host-table lookups (no I/O), correct for the
+        // dispatch-thread trampoline.
+        crate::grammar_host::bindings::lattice::plugin_host::buffer::add_to_linker::<_, HasSelf<_>>(
             &mut grammar_linker,
             |state: &mut PluginState| state,
         )

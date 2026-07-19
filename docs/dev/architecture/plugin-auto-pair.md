@@ -98,16 +98,45 @@ The plugin uses four **wired** seams — grammar `register-action`, keymap
 But the *actions* need to read buffer text, which the grammar seam cannot do today
 — so auto-pair forces three small, general host additions:
 
-### 5.1 Grammar-context `document` handle + cursor  (prerequisite AP.0.1)
+### 5.1 Grammar-context `document` handle + cursor  (prerequisite AP.0.1) — **done**
 
-`action-context` carries only `args`/`register`/`count` — no cursor, no buffer.
-The pairing actions need the cursor byte offset + backward text. **Extend the
-grammar callback contexts with a `document` resource handle + the cursor** — the
-exact pattern the **picker** seam already has (`init(ctx)` takes a `document`; the
-guest calls `document.slice(start, end)`, bulk rope never crosses). The read
-machinery exists; this wires it into the grammar action/motion/text-object
-contexts. General: every grammar plugin that reasons about surrounding text needs
-it.
+`action-context` carried only `args`/`register`/`count` — no cursor, no buffer.
+The pairing actions need the cursor byte offset + surrounding text. AP.0.1
+**extends the grammar `apply-action` callback with a `borrow<document>` handle +
+a `cursor` on `action-context`** — the pattern the **picker** seam was designed
+for (`init(ctx)` takes a `document`; the guest calls `document.get-text-range`,
+bulk rope never crosses). The read machinery (`DocumentResource`, PH7.3c) already
+existed; AP.0.1 is the **first place a host-owned resource crosses into a guest
+export**, resolving the modeling subtlety the picker/plugin worlds deferred.
+General: every grammar plugin that reasons about surrounding text needs it.
+
+**As built** (motion/text-object contexts unchanged — the action path is all
+`auto` needs; a text-reading motion reuses the same handle when one needs it):
+
+- **WIT** — `action-context` gains `cursor: position`; `apply-action(callback,
+  ctx, doc: borrow<document>)`; the `grammar-plugin` world `import buffer` +
+  `grammar-callbacks` `use buffer.{document}`.
+- **Native `ActionContext`** — gains `cursor: Position` + an **owned `Buffer`**
+  (not `Arc<DocumentSnapshot>`): `Buffer` is a `lattice-core` type (an O(1)
+  `ropey::Rope` clone), so `lattice-grammar` needs no `lattice-runtime`
+  dependency; the trampoline mints the snapshot host-side. Owned, so no context
+  lifetime and no blast radius beyond the two `ActionContext` construction sites.
+- **Lifecycle** — the handle is minted **per dispatch**, never at registration:
+  the dispatcher captures the current buffer + cursor, the trampoline pushes a
+  `DocumentResource` into the store's `ResourceTable`, lends a
+  `Resource::new_borrow` for the one synchronous `apply-action` call, then
+  `table.delete`s it. The guest never holds a document across calls, so "the
+  active buffer changed / differs" is a non-issue by construction. Synchronous
+  throughout (the PH7.7 fork) and Reflex-budget-bounded.
+
+> **bindgen gotcha (record for AP.0.3 + the picker's `init(doc)`):** the `with:`
+> key that substitutes a resource's host rep type uses a **`.` before the
+> resource name** — `"lattice:plugin-host/buffer.document": DocumentResource` —
+> **not** a `/` (`…/buffer/document`). The slash form fails with the misleading
+> `"interfaces … not referenced in the target world"`. `add_to_linker` also needs
+> the empty interface-level `buffer::Host` impl alongside `HostDocument`, and the
+> resource must be `borrow`-passed with `Resource::new_borrow(owned.rep())` +
+> host-side `table.delete` (the host owns it throughout).
 
 ### 5.2 Declining / fall-through bindings  (prerequisite AP.0.2)
 

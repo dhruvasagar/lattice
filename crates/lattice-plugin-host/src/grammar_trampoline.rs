@@ -29,6 +29,11 @@
 use std::sync::{Arc, Mutex};
 
 use wasmtime::Store;
+use wasmtime::component::Resource;
+
+use lattice_runtime::snapshot::DocumentSnapshot;
+
+use crate::buffer::DocumentResource;
 
 use lattice_grammar::args::{ArgSpec as NativeArgSpec, Args as NativeArgs};
 use lattice_grammar::command::LatencyClass;
@@ -301,9 +306,27 @@ fn build_action_spec(
         args_schema,
         apply: Arc::new(move |ctx: &ActionContext| -> GrammarResult<NativeEffect> {
             let wit_ctx = project_action_context(ctx).map_err(CommandError::Plugin)?;
+            // AP.0.1: mint a point-in-time `document` from the action's buffer
+            // (O(1) rope clone) so the guest can read text around the cursor.
+            // Only `snapshot.buffer` is read by `DocumentResource`; the other
+            // snapshot fields are irrelevant here, so a minimal snapshot is fine.
+            let snapshot = Arc::new(DocumentSnapshot {
+                buffer: ctx.buffer.clone(),
+                ..Default::default()
+            });
             let wit = run_callback(&guest, "apply-action", |b, s| {
-                b.lattice_plugin_host_grammar_callbacks()
-                    .call_apply_action(s, callback, &wit_ctx)
+                // Lend the resource as a `borrow<document>`: push an owned entry,
+                // pass a non-owning borrow handle to the guest, then reclaim the
+                // owned entry after the call (the host owns it throughout).
+                let owned = s.data_mut().table.push(DocumentResource::new(snapshot.clone()))?;
+                let borrow = Resource::new_borrow(owned.rep());
+                // Reborrow `s` for the call so the owned handle can be reclaimed
+                // after (the call takes the store by value via `AsContextMut`).
+                let result = b
+                    .lattice_plugin_host_grammar_callbacks()
+                    .call_apply_action(&mut *s, callback, &wit_ctx, borrow);
+                let _ = s.data_mut().table.delete(owned);
+                result
             })?;
             NativeEffect::from_wit(wit).map_err(CommandError::Plugin)
         }),

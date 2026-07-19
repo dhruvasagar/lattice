@@ -393,6 +393,20 @@ pub struct ActionContext {
     pub args: Args,
     pub register: Register,
     pub count: Count,
+    /// Where the caret sits when the action fires (AP.0.1) — the
+    /// action's equivalent of `MotionContext::from`. Native actions
+    /// ignore it; a plugin action pairs it with `buffer` (below) to
+    /// read the text around the cursor.
+    pub cursor: Position,
+    /// A point-in-time view of the buffer the action fired in
+    /// (AP.0.1). An owned `Buffer` — a `ropey::Rope` clone is O(1)
+    /// (Arc-shared nodes), so carrying it costs nothing on the
+    /// dispatch path and avoids a context lifetime. Native actions
+    /// ignore it; the plugin-host trampoline mints a `document`
+    /// resource from it so a grammar plugin can read buffer text.
+    /// Layering: a `lattice-core` type, so `lattice-grammar` needs no
+    /// `lattice-runtime` dependency (the snapshot is built host-side).
+    pub buffer: Buffer,
     /// Cooperative cancellation handle (DESIGN.md §5.2.5). Most
     /// actions are O(1) state mutations and ignore this; long-
     /// running ones (a hypothetical "rebuild fold tree" action)

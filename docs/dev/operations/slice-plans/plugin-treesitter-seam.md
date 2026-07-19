@@ -23,7 +23,12 @@ the same context as the `document` handle).
 
 ### TS.1 — the snapshot + node core  📝
 `wit/tree-sitter.wit` (the interface); the host `tree-snapshot` / `node` resources
-backed by `Arc<SyntaxSnapshot>` + `tree_sitter::Node`; `root` / `node-at`
+backed by `Arc<SyntaxSnapshot>` + `tree_sitter::Node`. **Reuse the AP.0.1
+resource-into-guest-export wiring** (auto-pair design fragment §5.1): the `with:`
+key is `pkg/interface.resource` (dot, not slash), each resource needs its empty
+interface-level `Host` impl beside the `HostXxx` trait, and host-owned handles are
+`borrow`-passed via `Resource::new_borrow(rep)` + host-side `table.delete`. `root`
+/ `node-at`
 (`descendant_for_byte_range`) / `enclosing(pos, kinds)` (the `scope_toward`
 precedent) / projection (`kind` / `is-named` / `byte-range` / `is-error`) /
 navigation (`parent` / `named-child` / `child-by-field` / siblings / `walk`); the

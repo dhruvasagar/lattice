@@ -153,12 +153,16 @@ pub fn project_ex_command_context(
     })
 }
 
-/// Project an [`ActionContext`](NativeActionContext) (host→guest).
+/// Project an [`ActionContext`](NativeActionContext) (host→guest). The `buffer`
+/// field is NOT projected here — it rides the `borrow<document>` handle the
+/// trampoline mints (AP.0.1), keeping bulk rope text off the boundary; only the
+/// `cursor` scalar crosses in the record.
 pub fn project_action_context(ctx: &NativeActionContext) -> Result<WitActionContext, String> {
     Ok(WitActionContext {
         args: ctx.args.to_wit()?,
         register: ctx.register.to_wit()?,
         count: ctx.count.get(),
+        cursor: ctx.cursor.to_wit()?,
     })
 }
 
@@ -298,15 +302,20 @@ mod tests {
     }
 
     #[test]
-    fn action_context_projects_register_and_count() {
+    fn action_context_projects_register_count_and_cursor() {
         let ctx = NativeActionContext {
             args: Args::None,
             register: Register::System,
             count: Count(3),
+            cursor: pos(4, 2),
+            buffer: Buffer::from_text("hello\nworld\n"),
             cancel: CancellationToken::never(),
         };
         let wit = project_action_context(&ctx).unwrap();
         assert_eq!(wit.count, 3);
         assert!(matches!(wit.register, WitRegister::System));
+        // The cursor scalar crosses in the record; bulk text does not.
+        assert_eq!(wit.cursor.line, 4);
+        assert_eq!(wit.cursor.byte, 2);
     }
 }

@@ -40,10 +40,12 @@ Your compiled config is a plugin directory at:
 `~/.config/lattice/` tree across Unix, not the macOS-native Application Support.
 Your on-disk plugins live alongside it at `~/.config/lattice/plugins/`.
 
-- **Loaded at boot**, *after* the built-in vim grammar and modes register — so
-  your keymaps, commands, and options **layer on top of** the defaults (your
-  `<leader>f` sits above the builtin grammar; your `:mycmd` joins the same
-  command registry as `:write`).
+- **Loaded at boot**, *after* the built-in vim grammar and modes register (so your
+  keymaps, commands, and options **layer on top of** the defaults — your
+  `<leader>f` sits above the builtin grammar; your `:mycmd` joins the same command
+  registry as `:write`) but *before* the plugins in `~/.config/lattice/plugins/`,
+  so your `PluginLoaded` handlers are subscribed and ready when those plugins load
+  (see [Configuring plugins that load after you](#configuring-plugins-that-load-after-you-pluginloaded)).
 - **Loaded with boot capabilities** — `init.rs` is your own trusted config, so
   it gets the pre-granted (`Bundled`) trust tier, not the consent-prompted tier
   a downloaded plugin gets.
@@ -100,13 +102,14 @@ sandbox grant — see [the safety model](#the-safety-model) and
 a major mode entered. This is the `:autocmd` / `add-hook` equivalent, unified
 into one typed event bus.
 
-> **v1 is observation-only.** A handler *sees* the transition. It can log it,
-> read files (with an `fs` capability), or emit its own plugin event that another
-> plugin observes. It **cannot** — yet — run a command, mutate a buffer, or veto
-> the transition from inside the handler; the acting-on-events (autocmd that
-> *does* something) and before-class veto seams are deferred. If you want a
-> keystroke to *do* something, that's a custom command or keybind (below), not an
-> event handler.
+> **Handlers act via APIs, not command strings.** A handler *sees* the transition
+> and reacts by calling the **imported host APIs** — `enable-mode`, `set-option`,
+> `register-binding`, an `fs` `walk`, emitting its own plugin event — never by
+> running a `:` command string or returning an effect. (This is the standing
+> `event-handlers-call-apis-not-commands` rule: `:` commands are user-facing
+> front-ends; a handler calls the underlying API directly.) Direct **buffer
+> mutation** and **before-class veto** (a handler that rewrites content or aborts
+> a save) are still deferred.
 
 You implement the `events-plugin` world: subscribe your handlers in
 `register_events`, then dispatch them in `on_event`.
@@ -129,6 +132,7 @@ Subscribe with an `EventFilter` — any combination of event **kinds**, path
 | `OptionChanged` | `{ name, old?, new_value }` | a `:set` landed |
 | `MajorEntered` / `MajorExiting` | `{ buffer, mode }` | major mode lifecycle |
 | `MinorActivated` / `MinorDeactivated` | `{ buffer, mode }` | minor mode lifecycle |
+| `PluginLoaded` / `PluginUnloaded` | `{ name, id }` | a plugin finished loading / was unloaded — the hook for **deferred plugin config** (see below) |
 | `Plugin` | `{ name, payload }` | a plugin-defined event (filter by `name` yourself) |
 
 ### A worked event-handler config
@@ -218,6 +222,47 @@ export!(Component);
 A handler that traps (panics, overruns its fuel budget) is **quarantined** — the
 host logs it, skips that one delivery, and every other subscriber is untouched.
 Return early on the arms you don't handle; never panic to signal "not for me."
+
+### Configuring plugins that load *after* you: `PluginLoaded`
+
+Your `init.rs` loads **first** — before the plugins in `~/.config/lattice/plugins/`.
+So config that targets a plugin (enable its mode, set its options, bind keys to
+its commands) can't run at the top level: the plugin isn't there yet. Instead,
+**subscribe to `PluginLoaded` and react when it arrives** — the
+`with-eval-after-load` / lazy-autocmd pattern:
+
+```rust
+fn on_event(_handler: u32, ev: Event) {
+    if let Event::PluginLoaded(p) = ev {
+        match p.name.as_str() {
+            // Enable a plugin's minor mode the moment it loads.
+            "auto-pair" => {
+                modes::enable_mode("auto-pairs-mode");
+                config::set_option("auto-pairs-style", "manual"); // optional
+            }
+            _ => {}
+        }
+    }
+}
+```
+
+Why this shape, not a top-level `enable_mode(...)`:
+
+- **Plugin minor modes are available-but-off.** A plugin *provides* a mode
+  (`auto-pairs-mode`); **you** enable it — the plugin author doesn't turn it on
+  for you (the emacs global-minor-mode model). `enable-mode` flips it on globally
+  and activates it on your open buffers immediately.
+- **The target must exist when you configure it.** `PluginLoaded` fires *after*
+  the plugin's seams all registered, so `enable-mode` / `set-option` always hit a
+  present target.
+- **Graceful by construction.** If a plugin never loads (not installed, failed to
+  compile), its `PluginLoaded` never fires and your handler never runs — no error,
+  no guard to write. Config for a plugin you removed simply goes dormant.
+
+Plugins still load asynchronously (they never block startup), so an enabled mode
+becomes active a frame or two after that plugin's cold-start finishes — the same
+"absent, then present" you feel on emacs/vim startup, never a flicker of wrong
+state.
 
 ---
 
@@ -452,6 +497,94 @@ impl Guest for Component {
 
 export!(Component);
 ```
+
+---
+
+## A complete annotated `init.rs`
+
+One realistic config, with each capability labeled. It `provides` the seams it
+uses (`plugin.toml`: `provides = ["events", "config", "keymap", "grammar"]`) and
+imports `modes` for `enable-mode`. Read it top to bottom: **immediate** config
+(options, keymaps, commands) runs when `init.rs` loads; **deferred** config (per
+plugin) runs from the `PluginLoaded` handler.
+
+```rust
+// init.rs — plugin.toml: id = "init", provides = ["events","config","keymap","grammar"]
+wit_bindgen::generate!({ world: "init-config-plugin", path: "../../wit" });
+
+use lattice::plugin_host::{config, events, keymap, modes};
+use lattice::plugin_host::types::{Event, EventFilter, EventKind};
+
+struct Component;
+
+impl Guest for Component {
+    // ── IMMEDIATE: option overrides (things lattice.toml could also do, but here
+    //    you might compute them) ───────────────────────────────────────────────
+    fn register_options() {
+        config::set_option("tabstop", "4");
+        config::set_option("ui.nerd-fonts", "on");
+        config::set_option("plugin.trace-level", "info");
+    }
+
+    // ── IMMEDIATE: keybindings above the builtin grammar ─────────────────────
+    fn register_keymap() {
+        // <leader>w → :write ; gd → the LSP definition command.
+        keymap::bind("normal", "<leader>w", "ex:write");
+        keymap::bind("normal", "gd", "lsp-definition");
+    }
+
+    // ── IMMEDIATE: a custom ex-command (see "Custom grammar" above) ───────────
+    fn register_grammar() {
+        // … register-ex-command("reload-theme", …) etc.
+    }
+
+    // ── Subscribe the DEFERRED config hooks ──────────────────────────────────
+    fn register_events() {
+        // React to plugins loading (deferred plugin config).
+        events::subscribe(&kind(EventKind::PluginLoaded), 1);
+        // Set options by filetype as buffers open.
+        events::subscribe(&kind(EventKind::DocumentOpened), 2);
+        // React to mode changes (e.g. toggle a UI element in Insert).
+        events::subscribe(&kind(EventKind::ModalModeChanged), 3);
+    }
+
+    fn on_event(handler: u32, ev: Event) {
+        match (handler, ev) {
+            // DEFERRED: configure each plugin the moment it loads.
+            (1, Event::PluginLoaded(p)) => match p.name.as_str() {
+                "auto-pair" => {
+                    modes::enable_mode("auto-pairs-mode");       // turn it on globally
+                    config::set_option("auto-pairs-style", "manual");
+                }
+                "git-gutter" => modes::enable_mode("git-gutter-mode"),
+                _ => {}
+            },
+            // EVENT FLOW: per-filetype options as buffers open.
+            (2, Event::DocumentOpened(d)) => {
+                if d.path.as_deref().is_some_and(|p| p.ends_with(".md")) {
+                    config::set_option("wrap", "on");
+                }
+            }
+            // EVENT FLOW: react to a modal transition.
+            (3, Event::ModalModeChanged(m)) => {
+                let _ = m; // e.g. config::set_option(...) on entering Insert
+            }
+            _ => {}
+        }
+    }
+}
+
+fn kind(k: EventKind) -> EventFilter {
+    EventFilter { kinds: Some(vec![k]), path_globs: None, major_modes: None }
+}
+
+export!(Component);
+```
+
+The pattern to internalize: **immediate config for what exists at load
+(native options, builtin keymaps); deferred `PluginLoaded` handlers for anything
+that belongs to a plugin.** Handlers call APIs (`enable-mode`, `set-option`),
+never `:` command strings.
 
 ---
 

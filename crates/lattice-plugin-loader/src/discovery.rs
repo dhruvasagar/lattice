@@ -1,8 +1,8 @@
 //! On-disk plugin discovery (PL8.B).
 //!
-//! A plugin lives in its own directory under `<data>/lattice/plugins/`, holding
-//! a `plugin.toml` manifest and a `.wasm` component. Discovery scans that tree,
-//! parses each manifest, and reads the component bytes — every failure is a
+//! A plugin lives in its own directory under `~/.config/lattice/plugins/`,
+//! holding a `plugin.toml` manifest and a `.wasm` component. Discovery scans that
+//! tree, parses each manifest, and reads the component bytes — every failure is a
 //! logged skip, never fatal: one malformed plugin dir must not stop the others
 //! or fail boot (the four-artefact graceful-degradation clause).
 
@@ -13,6 +13,16 @@ use lattice_plugin_host::PluginManifest;
 /// The manifest filename inside a plugin directory.
 const MANIFEST_FILE: &str = "plugin.toml";
 
+/// The lattice config home — `~/.config` on **both Linux and macOS** (honoring
+/// `$XDG_CONFIG_HOME`), `%APPDATA%` on Windows. Reuses the canonical
+/// [`lattice_config::config_home`] the TOML config root already uses, so plugins
+/// / `init.rs` live under the SAME `~/.config/lattice/` tree as `lattice.toml` —
+/// NOT the macOS-native `~/Library/Application Support` that `dirs::config_dir`
+/// returns (the convention Helix / Neovim / Zed / alacritty follow on macOS).
+fn config_root() -> Option<PathBuf> {
+    lattice_config::config_home()
+}
+
 /// A plugin found on disk, ready to load: its parsed manifest, the component
 /// bytes, and the directory it came from (for diagnostics).
 pub struct DiscoveredPlugin {
@@ -21,21 +31,22 @@ pub struct DiscoveredPlugin {
     pub dir: PathBuf,
 }
 
-/// The default plugins directory: `<data>/lattice/plugins/` (XDG data on Linux,
-/// Application Support on macOS, LocalAppData on Windows). `None` if the
-/// platform has no data dir (the editor then loads no on-disk plugins).
+/// The default plugins directory: `~/.config/lattice/plugins/` on Linux AND
+/// macOS (honoring `$XDG_CONFIG_HOME`), `%APPDATA%\lattice\plugins` on Windows.
+/// `None` if the platform has no config dir (the editor then loads no on-disk
+/// plugins).
 pub fn default_plugins_dir() -> Option<PathBuf> {
-    dirs::data_dir().map(|d| d.join("lattice").join("plugins"))
+    config_root().map(|d| d.join("lattice").join("plugins"))
 }
 
-/// The user's `init.rs` config plugin directory: `<config>/lattice/init/` (XDG
-/// config on Linux, Application Support on macOS, RoamingAppData on Windows).
-/// Holds the user's `init.rs`-compiled component + its `plugin.toml` (`id =
-/// "init"`, `provides = [...]` for the seams it uses). Loaded at boot with a
-/// boot-capability (`Bundled`) tier — it's the user's own trusted config, not an
-/// external install. `None` if the platform has no config dir.
+/// The user's `init.rs` config plugin directory: `~/.config/lattice/init/` on
+/// Linux AND macOS (honoring `$XDG_CONFIG_HOME`), `%APPDATA%\lattice\init` on
+/// Windows. Holds the user's `init.rs`-compiled component + its `plugin.toml`
+/// (`id = "init"`, `provides = [...]` for the seams it uses). Loaded at boot with
+/// a boot-capability (`Bundled`) tier — it's the user's own trusted config, not
+/// an external install. `None` if the platform has no config dir.
 pub fn default_init_dir() -> Option<PathBuf> {
-    dirs::config_dir().map(|d| d.join("lattice").join("init"))
+    config_root().map(|d| d.join("lattice").join("init"))
 }
 
 /// Scan `dir` for plugin subdirectories, returning every one that parses. A

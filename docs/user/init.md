@@ -35,8 +35,10 @@ Your compiled config is a plugin directory at:
 └── init.wasm        # your init.rs, compiled to a component
 ```
 
-`<config>` is the platform config dir — `~/.config` on Linux,
-`~/Library/Application Support` on macOS, `%APPDATA%` on Windows.
+`<config>` is `~/.config` on **both Linux and macOS** (honoring
+`$XDG_CONFIG_HOME`), and `%APPDATA%` on Windows — a consistent
+`~/.config/lattice/` tree across Unix, not the macOS-native Application Support.
+Your on-disk plugins live alongside it at `~/.config/lattice/plugins/`.
 
 - **Loaded at boot**, *after* the built-in vim grammar and modes register — so
   your keymaps, commands, and options **layer on top of** the defaults (your

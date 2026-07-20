@@ -30,6 +30,12 @@ interface config {
     /// `default` doesn't parse for `ty` OR `name` collides with an existing option
     /// — a plugin must not silently shadow another option. Idempotent to retry
     /// after a rejected default.
+    ///
+    /// **Auto-namespaced.** `name` is prefixed with the plugin's id — a plugin
+    /// with id `auto-pair` registering `style` contributes `auto-pair.style`. Use
+    /// SHORT names; the host owns the namespace so plugins can't collide (and a
+    /// user sets it as `:set auto-pair.style=…`). `get`/`set-option` resolve the
+    /// same way (short name → own namespace).
     register-option: func(name: string, ty: option-type, default: string, doc: string) -> bool;
 
     /// Set (override) an EXISTING option's value (CI.7) — the init.rs config
@@ -40,12 +46,16 @@ interface config {
     /// nothing) if the option is unregistered, the value is invalid for its type,
     /// or no registry is wired — never a trap. An `init.rs` `on-plugin-loaded`
     /// handler uses this to configure a plugin's options the moment it loads
-    /// (config-and-init.md §5).
+    /// (config-and-init.md §5). Like `get-option`, resolves the caller's OWN
+    /// namespace first (`style` → `<id>.style`), else the raw name — so a config
+    /// can set another plugin's option by its full `auto-pair.style` name.
     set-option: func(name: string, value: string) -> bool;
 
     /// Read an option's current value, formatted as a string (the `OptionType`
-    /// `format` contract). `none` if no option by that name is registered. Works
-    /// for ANY option (core or plugin) — a plugin can read a built-in option too.
+    /// `format` contract). `none` if no option by that name is registered.
+    /// Resolves the plugin's OWN namespace first (`style` → `<id>.style`), then
+    /// the raw name — so a plugin reads its own options with short names AND can
+    /// still read a core option (`tabstop`) that isn't in its namespace.
     get-option: func(name: string) -> option<string>;
 }
 

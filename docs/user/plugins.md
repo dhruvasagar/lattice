@@ -228,6 +228,12 @@ then copy the component in as `<name>.wasm`) and it's discovered at boot with it
 mode on by default. The command prints the exact steps; the name must be lowercase
 kebab-case.
 
+**Options are auto-namespaced.** A plugin registers config options with SHORT
+names (`register_option("style", …)`); the host prefixes them with the plugin id,
+so they land as `<id>.style` (`auto-pair.style`) and no two plugins can collide in
+the global option namespace. `get`/`set-option` resolve the same way — a plugin
+reads its own options by short name, and users set them by the full `auto-pair.style`.
+
 For the toolchain (`wasm32-wasip2`, `wit-bindgen`), a seam-by-seam walkthrough,
 the manifest format, fuel budgets, and a worked `fuzzy-finder` example, see the
 **[plugin authoring guide](../dev/guides/plugin-authoring.md)**.

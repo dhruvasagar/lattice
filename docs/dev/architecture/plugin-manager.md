@@ -267,7 +267,7 @@ toolchain, no network**. No `require` is involved — auto-pair is core.
 Exit (updated from the AP.4 sketch): a fresh editor auto-pairs out of the box;
 `:plugins` lists auto-pair with `source = bundled`, `build = cached`; `:set
 auto-pair.enabled=false` turns it off (its mode deactivates, the plugin stays
-loaded); `:set auto-pairs-style=manual` flips the style live. The `require`+build
+loaded); `:set auto-pair.style=manual` flips the style live. The `require`+build
 path (§2–§5) is proven separately by a *user* plugin from a `Local`/`Git` source.
 
 Because auto-pair is a discovered core plugin, the **default-init-delivery question

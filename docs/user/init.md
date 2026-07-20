@@ -240,8 +240,8 @@ fn setup() {
     config::set_option("auto-pair.enabled", "false");
 
     // …or keep it on and switch to the manual close-key style:
-    config::set_option("auto-pairs-style", "manual");
-    config::set_option("auto-pairs-close-key", "<C-l>");
+    config::set_option("auto-pair.style", "manual");
+    config::set_option("auto-pair.close-key", "<C-l>");
 }
 ```
 
@@ -579,7 +579,7 @@ impl Guest for Component {
         config::set_option("plugin.trace-level", "info");
         // CORE plugins (auto-pair) are on by default — configure them here at the
         // top level; their options exist as soon as the core plugin loads.
-        config::set_option("auto-pairs-style", "manual"); // manual close-key pairing
+        config::set_option("auto-pair.style", "manual"); // manual close-key pairing
         // config::set_option("auto-pair.enabled", "false"); // …or turn it off
         // set-option returns false (a logged no-op) for an unknown option or an
         // invalid value — it never mis-sets.

@@ -134,7 +134,7 @@ impl PluginHost {
                 "config plugin loaded with a withheld capability (reduced function)"
             );
         }
-        let mut store = self.new_store(wasi, outcome.grant, budget)?;
+        let mut store = self.new_store(wasi, outcome.grant, budget, Some(&manifest.id))?;
         let bindings =
             bindings::ConfigPlugin::instantiate_async(&mut store, component, &self.linker)
                 .await

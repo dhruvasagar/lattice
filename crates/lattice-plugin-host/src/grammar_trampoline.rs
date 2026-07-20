@@ -501,7 +501,7 @@ impl PluginHost {
         bus: &Arc<EventBus>,
         tracer: Option<&PluginTracerHandle>,
         // AP.3: the editor's `ConfigRegistry`, so a grammar action can READ an
-        // option via `config::get-option` (auto-pair reads `auto-pairs-style` to
+        // option via `config::get-option` (auto-pair reads `auto-pair.style` to
         // gate manual vs auto behavior). The SAME registry the async config seam
         // writes — one editor registry shared across a plugin's seam instances.
         // `None` leaves `get-option` returning `none` (the pre-AP.3 behavior).
@@ -523,7 +523,7 @@ impl PluginHost {
                 "grammar plugin loaded with a withheld capability (reduced function)"
             );
         }
-        let mut store = self.new_store(wasi, outcome.grant, PluginBudget::default())?;
+        let mut store = self.new_store(wasi, outcome.grant, PluginBudget::default(), Some(&manifest.id))?;
         // AP.3: wire the shared config registry so a grammar action's
         // `config::get-option` reads the live editor options.
         store.data_mut().config_registry = config_registry.cloned();

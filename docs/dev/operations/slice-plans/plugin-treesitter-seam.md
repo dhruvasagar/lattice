@@ -129,7 +129,7 @@ lexical scope (line-capped fallback where there's no parse). Proven end to end i
 the `tree-sitter` grant, closes the nearest unmatched opener through the seam. A
 general enabler landed with it: a grammar guest can now read a config option
 (`instantiate_grammar_plugin` wires the shared `ConfigRegistry` into the grammar
-store), so auto-pair reads `auto-pairs-style` live. See the auto-pair slice plan
+store), so auto-pair reads `auto-pair.style` live. See the auto-pair slice plan
 for the AP.3 detail.
 
 ## Deferred

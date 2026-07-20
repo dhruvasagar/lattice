@@ -938,7 +938,7 @@ it into the runtime root; PM.1 discovers it; PM.3's `auto-pair.enabled` (default
 true) enables the mode. **Exit:** a fresh editor (no user config) auto-pairs out of
 the box; `:plugins` lists auto-pair (`source = bundled`); `:set
 auto-pair.enabled=false` turns it off (plugin stays loaded, mode deactivates);
-`:set auto-pairs-style=manual` flips the style live. Closes the auto-pair epic.
+`:set auto-pair.style=manual` flips the style live. Closes the auto-pair epic.
 
 **Delivered (2026-07-20).** `plugins/auto-pair/plugin.toml` declares
 `default_mode = "auto-pairs-mode"` (the module doc updated: the mode enables via

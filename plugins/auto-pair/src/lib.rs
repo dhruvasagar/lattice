@@ -9,7 +9,7 @@
 //!     insert-mode keymap. Declared the plugin's `default_mode` (AP.4/PM.3), so the
 //!     loader's `auto-pair.enabled` gate (default true) enables it out of the box;
 //!     `:set auto-pair.enabled=false` turns it off. No init.rs needed.
-//!   - **config** — `auto-pairs-style` (`auto` | `manual`) + `auto-pairs-close-key`.
+//!   - **config** — `auto-pair.style` (`auto` | `manual`) + `auto-pair.close-key`.
 //!
 //! **The `auto` style** for the bracket pairs `() [] {}` and the quote pairs
 //! `"" '' `` `` (all share three primitives):
@@ -23,7 +23,7 @@
 //! (default `<C-j>`) closes the nearest unmatched opener, found by scanning the
 //! enclosing lexical scope backward (`find_pair`, §3), bounded via the
 //! tree-sitter seam's `enclosing` query (§7) with a line-capped fallback where
-//! there's no parse tree. The style is read live from `auto-pairs-style` (the
+//! there's no parse tree. The style is read live from `auto-pair.style` (the
 //! grammar guest reads the shared config registry), so `:set` flips it without
 //! re-registration. Backspace inside an empty pair deletes both chars, else
 //! declines to the builtin. This makes auto-pair the first end-to-end consumer of
@@ -220,12 +220,13 @@ fn find_pair(text: &str) -> Option<String> {
     stack.first().map(|c| c.to_string())
 }
 
-/// Read the live `auto-pairs-style` option (AP.3). `auto` (default) or `manual`.
-/// The grammar guest reads the SHARED editor config registry (wired at
-/// instantiate time), so a `:set auto-pairs-style=manual` flips behavior live —
-/// no keymap re-registration.
+/// Read the live style option (AP.3). `auto` (default) or `manual`. The plugin
+/// uses the SHORT name `style`; the host auto-namespaces it to `auto-pair.style`
+/// (the name a user sets). The grammar guest reads the SHARED editor config
+/// registry (wired at instantiate time), so `:set auto-pair.style=manual` flips
+/// behavior live — no keymap re-registration.
 fn is_manual() -> bool {
-    config::get_option("auto-pairs-style").as_deref() == Some("manual")
+    config::get_option("style").as_deref() == Some("manual")
 }
 
 fn one_left(pos: Position) -> Position {
@@ -392,14 +393,16 @@ impl Guest for Component {
     }
 
     fn register_options() {
+        // Short names — the host auto-namespaces them by plugin id, so these
+        // register as `auto-pair.style` / `auto-pair.close-key`.
         config::register_option(
-            "auto-pairs-style",
+            "style",
             OptionType::String,
             "auto",
             "auto = complete pairs on the opening key; manual = the close key emits the pair",
         );
         config::register_option(
-            "auto-pairs-close-key",
+            "close-key",
             OptionType::String,
             "<C-j>",
             "insert-mode key that closes the nearest unmatched pair (manual style)",

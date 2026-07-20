@@ -709,6 +709,13 @@ struct PluginState {
     /// `register-option` returns `false` and `get-option` returns `none` (the
     /// honest "no registry wired" degradation — the host isn't boot-wired yet).
     config_registry: Option<Arc<lattice_config::ConfigRegistry>>,
+    /// The plugin's manifest id (e.g. `"auto-pair"`). Set by every spawn/
+    /// instantiate path from the manifest. Used to **auto-namespace** the
+    /// plugin's config options — a `register-option("style")` registers
+    /// `auto-pair.style`, and `get`/`set-option` resolve the plugin's own
+    /// namespace first (falling back to the raw name so core options stay
+    /// readable). `None` in the minimal test constructor (no prefixing then).
+    plugin_name: Option<String>,
     /// Names of options this plugin registered via `register-option` (PH7.10),
     /// recorded so the host can report them after `register-options` returns (and
     /// as the teardown seam PH7.12 will unregister). Empty for a non-config plugin.
@@ -1355,30 +1362,45 @@ impl crate::config_host::bindings::lattice::plugin_host::config::Host for Plugin
             WitOptionType::Integer => PluginOptionKind::Integer,
             WitOptionType::String => PluginOptionKind::String,
         };
+        // Auto-namespace the plugin's OWN option by its manifest id: a plugin
+        // registering `style` contributes `auto-pair.style`, so plugins can't
+        // collide in the global option namespace. No prefix for an internal
+        // caller with no manifest id.
+        let full = match &self.plugin_name {
+            Some(id) => format!("{id}.{name}"),
+            None => name,
+        };
         // The `&self.config_registry` borrow ends with the match (the result is a
         // plain `bool`), so the `config_contributions` push below doesn't overlap.
         let registered = match &self.config_registry {
             Some(registry) => {
-                config_host::register_plugin_option(registry, &name, kind, &default, &doc)
+                config_host::register_plugin_option(registry, &full, kind, &default, &doc)
             }
             None => {
                 tracing::warn!(
-                    option = %name,
+                    option = %full,
                     "register-option ignored: plugin has no config registry wired"
                 );
                 false
             }
         };
         if registered {
-            self.config_contributions.push(name);
+            self.config_contributions.push(full);
         }
         registered
     }
 
     fn get_option(&mut self, name: String) -> Option<String> {
-        self.config_registry
-            .as_ref()
-            .and_then(|registry| registry.lookup(&name).map(|opt| opt.get_formatted()))
+        let registry = self.config_registry.as_ref()?;
+        // The plugin's OWN namespace first (`style` → `auto-pair.style`), then the
+        // raw name — so a plugin reads its options with short names AND can still
+        // read a core option (`tabstop`) that isn't in its namespace.
+        if let Some(id) = &self.plugin_name {
+            if let Some(opt) = registry.lookup(&format!("{id}.{name}")) {
+                return Some(opt.get_formatted());
+            }
+        }
+        registry.lookup(&name).map(|opt| opt.get_formatted())
     }
 
     /// `set-option` (CI.7): override an existing option's value via the SAME
@@ -1386,23 +1408,30 @@ impl crate::config_host::bindings::lattice::plugin_host::config::Host for Plugin
     /// publish `OptionChanged`). `false` on an unknown option / invalid value /
     /// no registry — a logged no-op, never a trap.
     fn set_option(&mut self, name: String, value: String) -> bool {
-        match &self.config_registry {
-            Some(registry) => match registry.parse_and_set_command(&format!("{name}={value}")) {
-                Ok(_) => true,
-                Err(err) => {
-                    tracing::warn!(
-                        option = %name,
-                        %value,
-                        %err,
-                        "set-option failed (unknown option or invalid value)"
-                    );
-                    false
-                }
-            },
-            None => {
+        let Some(registry) = self.config_registry.as_ref() else {
+            tracing::warn!(
+                option = %name,
+                "set-option ignored: plugin has no config registry wired"
+            );
+            return false;
+        };
+        // The plugin's OWN option if it exists in its namespace (`style` →
+        // `auto-pair.style`), else the raw name — so a plugin sets its own option
+        // with a short name AND can set a core option by its full name.
+        let target = self
+            .plugin_name
+            .as_ref()
+            .map(|id| format!("{id}.{name}"))
+            .filter(|full| registry.lookup(full).is_some())
+            .unwrap_or(name);
+        match registry.parse_and_set_command(&format!("{target}={value}")) {
+            Ok(_) => true,
+            Err(err) => {
                 tracing::warn!(
-                    option = %name,
-                    "set-option ignored: plugin has no config registry wired"
+                    option = %target,
+                    %value,
+                    %err,
+                    "set-option failed (unknown option or invalid value)"
                 );
                 false
             }
@@ -1904,7 +1933,7 @@ impl PluginHost {
         // host-services `walk` from such a plugin is denied (empty grant).
         let wasi = WasiCtxBuilder::new().build();
         let (mut store, bindings) = self
-            .instantiate_inner(component, wasi, CapabilityGrant::default(), budget)
+            .instantiate_inner(component, wasi, CapabilityGrant::default(), budget, None)
             .await?;
         // PO.5: stamp the logging route once the id is allocated, so a `plugin`-
         // world guest's `log` reaches the tracer.
@@ -1945,7 +1974,7 @@ impl PluginHost {
     ) -> Result<LoadedPlugin, PluginHostError> {
         let (wasi, outcome, data_dir) = self.build_plugin_wasi(manifest, tier);
         let (mut store, bindings) = self
-            .instantiate_inner(component, wasi, outcome.grant.clone(), budget)
+            .instantiate_inner(component, wasi, outcome.grant.clone(), budget, Some(&manifest.id))
             .await?;
         // PO.5: stamp the logging route once the id is allocated.
         let id = self.alloc_id();
@@ -1970,8 +1999,9 @@ impl PluginHost {
         wasi: WasiCtx,
         grant: CapabilityGrant,
         budget: PluginBudget,
+        name: Option<&str>,
     ) -> Result<(Store<PluginState>, Plugin), PluginHostError> {
-        let mut store = self.new_store(wasi, grant, budget)?;
+        let mut store = self.new_store(wasi, grant, budget, name)?;
         let bindings = Plugin::instantiate_async(&mut store, component, &self.linker)
             .await
             .map_err(|e| PluginHostError::Instantiate(e.into()))?;
@@ -1988,6 +2018,9 @@ impl PluginHost {
         wasi: WasiCtx,
         grant: CapabilityGrant,
         budget: PluginBudget,
+        // The plugin's manifest id — drives config-option auto-namespacing. `None`
+        // only for internal callers with no manifest (they register no options).
+        name: Option<&str>,
     ) -> Result<Store<PluginState>, PluginHostError> {
         let state = PluginState {
             wasi,
@@ -2001,6 +2034,8 @@ impl PluginHost {
             // Set by `spawn_config_plugin`; a plugin not spawned onto a registry
             // cannot register/read options (warn + false / none).
             config_registry: None,
+            // From the manifest id; drives config-option auto-namespacing.
+            plugin_name: name.map(str::to_string),
             config_contributions: Vec::new(),
             // Drained by `spawn_mode_plugin` into the `ModeRegistry` after
             // `register-modes` returns (PH7.11a).

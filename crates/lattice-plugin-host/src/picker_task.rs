@@ -345,7 +345,7 @@ impl PluginHost {
                 "picker plugin loaded with a withheld capability (reduced function)"
             );
         }
-        let mut store = self.new_store(wasi, outcome.grant, budget)?;
+        let mut store = self.new_store(wasi, outcome.grant, budget, Some(&manifest.id))?;
         let bindings = PickerSourcePlugin::instantiate_async(&mut store, component, &self.linker)
             .await
             .map_err(|e| PluginHostError::Instantiate(e.into()))?;

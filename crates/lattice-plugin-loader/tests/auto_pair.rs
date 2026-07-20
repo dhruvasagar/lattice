@@ -5,7 +5,7 @@
 //!     `SourceLayer::Plugin` provenance,
 //!   - `auto-pairs-mode` registers into the mode registry and OWNS its
 //!     insert-mode keymap (bindings resolve only when the mode is active),
-//!   - the `auto-pairs-style` / `auto-pairs-close-key` **options** register into
+//!   - the `auto-pair.style` / `auto-pair.close-key` **options** register into
 //!     the shared config registry.
 //!
 //! This is the AP.1.0 spike made real through the production loader path: the
@@ -175,7 +175,7 @@ async fn bundled_auto_pair_registers_grammar_modes_and_config_through_the_loader
     );
 
     // 3. CONFIG — the options registered (async drain).
-    for option in ["auto-pairs-style", "auto-pairs-close-key"] {
+    for option in ["auto-pair.style", "auto-pair.close-key"] {
         assert!(
             config_registry.lookup(option).is_some(),
             "the option `{option}` registered from the plugin"

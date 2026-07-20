@@ -6,9 +6,9 @@
 //! there's no parse tree. This makes auto-pair the first end-to-end consumer of
 //! the tree-sitter seam.
 //!
-//! The style is read live from `auto-pairs-style` — the grammar guest reads the
+//! The style is read live from `auto-pair.style` — the grammar guest reads the
 //! SHARED config registry (wired into the grammar store at instantiate time,
-//! AP.3), so `parse_and_set_command("auto-pairs-style=manual")` after load flips
+//! AP.3), so `parse_and_set_command("auto-pair.style=manual")` after load flips
 //! behavior with no re-registration. Skips when the plugin wasn't built.
 
 #![allow(clippy::unwrap_used, clippy::panic)]
@@ -105,7 +105,7 @@ async fn manual_close_key_closes_the_nearest_unmatched_opener_in_scope() {
         return;
     };
     config
-        .parse_and_set_command("auto-pairs-style=manual")
+        .parse_and_set_command("auto-pair.style=manual")
         .unwrap();
     let commands = commands.load();
     let close = commands.id_by_name("auto-pair-close-manual").unwrap();
@@ -150,7 +150,7 @@ async fn manual_close_key_falls_through_when_nothing_is_unmatched() {
         return;
     };
     config
-        .parse_and_set_command("auto-pairs-style=manual")
+        .parse_and_set_command("auto-pair.style=manual")
         .unwrap();
     let commands = commands.load();
     let close = commands.id_by_name("auto-pair-close-manual").unwrap();
@@ -180,7 +180,7 @@ async fn manual_style_pair_keys_self_insert() {
         return;
     };
     config
-        .parse_and_set_command("auto-pairs-style=manual")
+        .parse_and_set_command("auto-pair.style=manual")
         .unwrap();
     let commands = commands.load();
     let open = commands.id_by_name("auto-pair-open-round").unwrap();

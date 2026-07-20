@@ -82,7 +82,8 @@ impl Guest for Component {
     /// config seam — register a typed option.
     fn register_options() {
         config::register_option(
-            "multiseam.style",
+            // Short name — the host auto-namespaces to `multiseam.style`.
+            "style",
             OptionType::String,
             "auto",
             "spike option proving the config seam co-registers from one component",

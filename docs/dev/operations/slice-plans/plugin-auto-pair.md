@@ -80,8 +80,8 @@ its keymap per the mode-ownership rule; grammar BEFORE modes so the keymap
 resolves the plugin's own actions; **no capabilities**). Registers the pairing
 actions (one per opener/closer — a mode keymap binding carries no args, so the
 action can't otherwise know which pair fired), the `auto-pairs-mode` `global`
-minor mode owning the insert-mode keymap, and the `auto-pairs-style` /
-`auto-pairs-close-key` options (behavior is option-gated in the handlers — no
+minor mode owning the insert-mode keymap, and the `auto-pair.style` /
+`auto-pair.close-key` options (behavior is option-gated in the handlers — no
 `OptionChanged` re-binding; the keymap set stays stable across `:set`).
 **Landed:** `tests/auto_pair.rs` (in the loader crate) discovers + loads it
 through the real loader; all three seams' contributions register (actions with
@@ -157,7 +157,7 @@ required for the enclosing-scope bound.
 The `find_pair` port (design fragment §3) + the close key + the fall-through
 (AP.0.2), scanning **only the enclosing lexical scope** (AP.0.3 / §7), with the
 cursor-backward `document.slice` fallback where there's no parse tree. **Exit:**
-with `auto-pairs-style=manual`, the close key closes the nearest unmatched open in
+with `auto-pair.style=manual`, the close key closes the nearest unmatched open in
 the scope (inside-out on repeat; symmetric pairs + `<`/`>` handled), falls through
 when nothing is unmatched, and stays bounded on a large buffer.
 
@@ -167,7 +167,7 @@ heuristic), `manual_close` (scope text via the tree-sitter `enclosing` query wit
 a line-capped fallback), the `auto-pair-close-manual` action (bound `<C-j>`) and
 `auto-pair-backspace` action (bound `<BS>` — deletes an empty pair, else
 declines). Style read **live** at dispatch via `config::get-option
-("auto-pairs-style")` — in `manual` the pair keys (1..=9) decline (self-insert)
+("auto-pair.style")` — in `manual` the pair keys (1..=9) decline (self-insert)
 and the close key acts; in `auto` the close key declines. **Enabler (general):**
 `instantiate_grammar_plugin` now wires the SHARED editor `ConfigRegistry` into the
 grammar guest store, so a grammar action can READ an option — the loader passes
@@ -201,7 +201,7 @@ gate.
 **Exit (met):** a fresh editor — after `cargo xtask build-core-plugins` — discovers
 auto-pair from the runtime root and auto-pairs out of the box with no user config;
 `:set auto-pair.enabled=false` deactivates the mode (plugin stays loaded); `:set
-auto-pairs-style=manual` flips the style live. Proven by the shipped-manifest guard
+auto-pair.style=manual` flips the style live. Proven by the shipped-manifest guard
 + the `mode_gate.rs` composition test. **The auto-pair epic is complete.**
 
 ## Deferred to v2

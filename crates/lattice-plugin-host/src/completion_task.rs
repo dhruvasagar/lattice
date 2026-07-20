@@ -221,7 +221,7 @@ impl PluginHost {
                 "completion plugin loaded with a withheld capability (reduced function)"
             );
         }
-        let mut store = self.new_store(wasi, outcome.grant, budget)?;
+        let mut store = self.new_store(wasi, outcome.grant, budget, Some(&manifest.id))?;
         let bindings =
             CompletionSourcePlugin::instantiate_async(&mut store, component, &self.linker)
                 .await

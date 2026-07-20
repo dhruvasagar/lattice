@@ -1148,7 +1148,7 @@ impl PluginLoader {
             bus,
             self.env.tracer.as_ref(),
             // AP.3: the shared editor config registry, so a grammar action can
-            // read an option (auto-pair's `auto-pairs-style` gate).
+            // read an option (auto-pair's `auto-pair.style` gate).
             self.env.config_registry.as_ref(),
         )?;
         let id = set.plugin_id();

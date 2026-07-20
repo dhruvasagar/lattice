@@ -34,10 +34,10 @@ It ships **two styles**, gated by config:
 
 ## 2. The two styles + config gating
 
-A typed option `auto-pairs-style` = `auto` | `manual`, default `auto`, registered
+A typed option `auto-pair.style` = `auto` | `manual`, default `auto`, registered
 via the **config** seam. The plugin reads it and registers the matching insert-mode
 keymap; on an `OptionChanged` for it (via the **events** seam), it re-registers —
-so the style flips live. Two more options: `auto-pairs-close-key` (default
+so the style flips live. Two more options: `auto-pair.close-key` (default
 `<C-j>`, the manual close key) and the pairs table (§4), modifiable at runtime.
 
 | Style | Openers `( [ { < " ' \`` | Closers | Close key |
@@ -224,7 +224,7 @@ line-capped fallback scan (§7), never an error. Still the simplest trust surfac
 of the bundled set (contrast lighthouse's `net`+`proc`+`fs:write`).
 
 > **Style gating is read at dispatch, not registered per-style (as built,
-> AP.3).** §2 sketched "read `auto-pairs-style`, register the matching keymap,
+> AP.3).** §2 sketched "read `auto-pair.style`, register the matching keymap,
 > re-register on `OptionChanged`." As built, the mode registers ONE static keymap
 > (all pair keys + the close key + `<BS>`) and each action reads the live option
 > via `config::get-option` and DECLINES when it shouldn't act (pair keys in
@@ -253,7 +253,7 @@ of the bundled set (contrast lighthouse's `net`+`proc`+`fs:write`).
 ## 10. UX rationale
 
 - **Default `auto`.** Muscle memory across editors is auto; it must be the default
-  so nothing surprises a newcomer. `manual` is opt-in via `auto-pairs-style`.
+  so nothing surprises a newcomer. `manual` is opt-in via `auto-pair.style`.
 - **`manual` is the flagship.** It removes *every* auto-pairing failure mode:
   no spurious closers, no fighting an auto-inserted char, no orphaned closer after
   deleting an opener, no wrong-context insertions. You type exactly your

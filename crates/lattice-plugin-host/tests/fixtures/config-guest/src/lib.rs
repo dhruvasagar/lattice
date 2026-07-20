@@ -24,17 +24,17 @@ struct Component;
 
 /// Whether the fixture is enabled.
 #[derive(PluginOption)]
-#[option(name = "config-fixture.enabled", default = "true")]
+#[option(name = "enabled", default = "true")]
 struct Enabled(bool);
 
 /// How many things the fixture tracks.
 #[derive(PluginOption)]
-#[option(name = "config-fixture.count", default = "3")]
+#[option(name = "count", default = "3")]
 struct Count(i64);
 
 /// A display label.
 #[derive(PluginOption)]
-#[option(name = "config-fixture.label", default = "hello")]
+#[option(name = "label", default = "hello")]
 struct Label(String);
 
 /// Map the SDK's WIT-agnostic [`OptionKind`] to the generated `option-type` — the

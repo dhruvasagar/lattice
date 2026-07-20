@@ -94,10 +94,10 @@ deletes both. The full set is `() [] {}` and `"" '' \`\``.
 | Option | Values | Default | Meaning |
 |---|---|---|---|
 | `auto-pair.enabled` | bool | `true` | Enable/disable `auto-pairs-mode`. |
-| `auto-pairs-style` | `auto` \| `manual` | `auto` | `auto` completes pairs on the opening key; `manual` self-inserts and closes on the close key. |
-| `auto-pairs-close-key` | key | `<C-j>` | The manual-style close key. |
+| `auto-pair.style` | `auto` \| `manual` | `auto` | `auto` completes pairs on the opening key; `manual` self-inserts and closes on the close key. |
+| `auto-pair.close-key` | key | `<C-j>` | The manual-style close key. |
 
-**The `manual` style.** With `auto-pairs-style=manual`, the pair keys just insert
+**The `manual` style.** With `auto-pair.style=manual`, the pair keys just insert
 themselves; a single key (`<C-j>`) closes the nearest *unmatched* opener above the
 caret, scanning only the enclosing lexical scope (via the tree-sitter seam, so it
 stays fast on large files) and falling through to whatever else the key is bound to
@@ -106,14 +106,14 @@ model.
 
 ```toml
 # lattice.toml — manual pairing
-auto-pairs-style = "manual"
+auto-pair.style = "manual"
 ```
 
 **Testing it.** Open any file, enter insert mode, and:
 
 - `auto` (default): type `(` → `()`, caret between; type `"` → `""`; type `)` over
   an existing `)` → steps over; `<BS>` inside `()` → deletes both.
-- `manual` (`:set auto-pairs-style=manual`): type `(` → just `(`; move on, then
+- `manual` (`:set auto-pair.style=manual`): type `(` → just `(`; move on, then
   press `<C-j>` → the matching `)` is inserted at the nearest unmatched `(`.
 
 ## For contributors — building core plugins from source

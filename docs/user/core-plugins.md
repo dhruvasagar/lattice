@@ -32,6 +32,32 @@ with its mode, its `<id>.enabled` option, and its own options.
    (default `true`) that turns that mode on. So the plugin is active out of the
    box, and the mode never forces itself on — you own the switch.
 
+## Where core plugins live — and pointing lattice elsewhere
+
+The **runtime root** is resolved by a search path; the **first existing** location
+wins (except `$LATTICE_RUNTIME`, which always wins if set):
+
+| Priority | Location | For |
+|---|---|---|
+| 1 | **`$LATTICE_RUNTIME/plugins/`** | An explicit override — you set this. |
+| 2 | `<install-prefix>/share/lattice/plugins/` | Packaged installs (the prefix is baked in at build time via `LATTICE_INSTALL_PREFIX`). |
+| 3 | `<exe-dir>/../share/lattice/plugins/` | Relocatable tarballs / macOS `.app` bundles. |
+| 4 | `<workspace>/runtime/plugins/` | Running from a source checkout (`cargo run`). |
+
+**To point lattice at a different runtime root, set `$LATTICE_RUNTIME`:**
+
+```sh
+LATTICE_RUNTIME=/opt/my-lattice-runtime cargo run -p lattice-cli
+# core plugins are then discovered under /opt/my-lattice-runtime/plugins/
+```
+
+**Why an environment variable, not a config option?** Core plugins are discovered
+and loaded at boot **before** `lattice.toml` and `init.rs` are read — so the
+location has to be known without loading config first. `$LATTICE_RUNTIME` (and the
+build-time `LATTICE_INSTALL_PREFIX`) are available that early; a config option
+would be a chicken-and-egg. (The *user* plugins root is different — it's always
+`~/.config/lattice/plugins/`, honoring `$XDG_CONFIG_HOME`.)
+
 ## Turning a core plugin off
 
 Every core plugin has an `<id>.enabled` option. Turn it off any of three ways:

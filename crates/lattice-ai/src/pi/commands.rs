@@ -1,0 +1,83 @@
+//! The `:pi` ex-command — launch the pi agent's native TUI in a
+//! terminal buffer with `pi-mode` activated on it.
+//!
+//! Per `feedback_mode_owns_its_surface`, both the binding (the command name)
+//! and the body live here; the host action (spawning the terminal + activating
+//! the minor) is requested through the [`Effect`] vocabulary — the host
+//! boundary — not a bespoke channel, exactly like `:opencode`.
+
+use std::sync::Arc;
+use lattice_agent::parse_no_args;
+use lattice_grammar::command::LatencyClass;
+use lattice_grammar::effect::Effect;
+use lattice_grammar::registry::{CommandRegistry, ExCommandSpec, SurfaceForm};
+
+use crate::pi::modes::PiMode;
+
+/// Register `:pi` against `registry`. Called from [`super::install`].
+pub fn register_pi_ex_commands(registry: &mut CommandRegistry) {
+    registry.register_ex_command(
+        "pi",
+        "Launch the pi coding agent (pi.dev) in a terminal buffer, with \
+         pi-mode activated. Requires the `pi` CLI to be installed \
+         (curl -fsSL https://pi.dev/install.sh | sh).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_ctx| {
+                Ok(Effect::SpawnTerminal {
+                    cmd_line: Some("pi".to_string()),
+                    env: vec![],
+                    activate_minor: Some(PiMode::mode_id().as_str().to_string()),
+                })
+            }),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::panic)]
+    use super::*;
+    use lattice_grammar::args::Args;
+    use lattice_grammar::registry::ExCommandContext;
+    use lattice_grammar::{CancellationToken, Count, Register};
+
+    fn ctx() -> ExCommandContext {
+        ExCommandContext {
+            bang: false,
+            args: Args::None,
+            range: None,
+            register: Register::default(),
+            count: Count::default(),
+            cancel: CancellationToken::new(),
+        }
+    }
+
+    /// `:pi` spawns the `pi` TUI in a terminal and activates `pi-mode` on it
+    /// (the terminal topology, like `:opencode` and `:claude`).
+    #[test]
+    fn pi_spawns_terminal_and_activates_mode() {
+        let mut registry = CommandRegistry::new();
+        register_pi_ex_commands(&mut registry);
+        let id = registry
+            .id_by_name("pi")
+            .expect("`:pi` registered");
+        let spec = registry.ex_command_spec(id).expect("spec present");
+        match (spec.apply)(&ctx()).expect("apply ok") {
+            Effect::SpawnTerminal {
+                cmd_line,
+                activate_minor,
+                ..
+            } => {
+                assert_eq!(cmd_line.as_deref(), Some("pi"));
+                assert_eq!(activate_minor.as_deref(), Some("pi-mode"));
+            }
+            other => panic!("expected SpawnTerminal, got {other:?}"),
+        }
+    }
+}

@@ -29,6 +29,12 @@ pub mod acp;
 // so opencode is available regardless of the `acp` transport feature.
 pub mod opencode;
 
+// The v1 pi (pi.dev) integration: `:pi` runs the pi **TUI** in a terminal
+// buffer + `pi-mode` (the terminal topology, like opencode and claude).
+// Always compiled -- same policy as opencode: a terminal spawn + marker minor
+// mode, no heavy deps, no feature gate.
+pub mod pi;
+
 // Unified boot entry point; wires the port-neutral log substrate always and
 // each transport behind its own `#[cfg(feature = …)]`.
 pub mod install;

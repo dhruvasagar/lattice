@@ -34,6 +34,10 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     // buffer-conversation path (`:opencode-acp`).
     crate::opencode::install(boot);
 
+    // The v1 pi integration: `:pi` runs pi's TUI in a terminal buffer.
+    // Always wired (no transport feature) -- same policy as opencode.
+    crate::pi::install(boot);
+
     #[cfg(feature = "acp")]
     crate::acp::install::install(boot, &logger);
 

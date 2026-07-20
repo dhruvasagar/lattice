@@ -68,21 +68,24 @@ const LIB_RS: &str = r####"//! Your lattice config, compiled to a WASM component
 
 wit_bindgen::generate!({ world: "init", path: "wit" });
 
+// `Guest` is wit-bindgen's trait for THIS world's exports — the `register_*`
+// functions the host calls once at load, plus `on_event`. (The name `Guest` is
+// fixed by wit-bindgen.) `Config` is your config — the type that implements them.
 // `Event` is re-exported at the crate root by the world's `use types.{event}`
 // (refer to it unqualified); other types come from their interface module.
 use lattice::plugin_host::keymap::BindingMode;
 use lattice::plugin_host::types::{EventFilter, EventKind};
 use lattice::plugin_host::{config, events, keymap, modes};
 
-struct Component;
+struct Config;
 
-impl Guest for Component {
+impl Guest for Config {
     // IMMEDIATE — option overrides (also settable in lattice.toml or via `:set`).
     fn register_options() {
         config::set_option("tabstop", "4");
 
         // auto-pair is a CORE plugin, ON by default. Configure it here:
-        // config::set_option("auto-pairs-style", "manual"); // manual close-key pairing
+        // config::set_option("auto-pair.style", "manual"); // manual close-key pairing
         // config::set_option("auto-pair.enabled", "false"); // …or turn it off
     }
 
@@ -116,7 +119,7 @@ impl Guest for Component {
     }
 }
 
-export!(Component);
+export!(Config);
 "####;
 
 // ── plugin scaffold templates (`__NAME__` / `__MODE__` / `__ACTION__` tokens
@@ -185,11 +188,11 @@ use lattice::plugin_host::types::{
 };
 use lattice::plugin_host::{grammar, modes};
 
-struct Component;
+struct Plugin;
 
 const CB_HELLO: u32 = 1;
 
-impl Guest for Component {
+impl Guest for Plugin {
     // grammar seam — contribute one action (fired on the mode's chord).
     fn register_grammar() {
         grammar::register_action(
@@ -217,7 +220,7 @@ impl Guest for Component {
     }
 }
 
-impl GrammarCallbacks for Component {
+impl GrammarCallbacks for Plugin {
     fn apply_action(
         callback: u32,
         _ctx: ActionContext,
@@ -251,7 +254,7 @@ impl GrammarCallbacks for Component {
     }
 }
 
-export!(Component);
+export!(Plugin);
 "####;
 
 /// Scaffold `~/.config/lattice/init/` (the user config). Returns an error (never

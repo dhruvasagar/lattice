@@ -53,6 +53,14 @@ This is `with-eval-after-load` / vim's lazy autocmd, built on the event bus the
 design already unifies (§5.10, "hooks ≡ autocmds ≡ typed event subscriptions").
 The handler **calls APIs, never `:` command strings** (`event-handlers-call-apis-not-commands`).
 
+> **Diagram names are conceptual — the literal API is the seam modules.** Above,
+> `set-option` / `enable-mode` / `on-plugin-loaded` name the *operations*, not
+> function names. In real `init.rs`: immediate config is `config::set_option(…)`
+> in the `register_options` export; a deferred handler is a `PluginLoaded`
+> subscription in `register_events` + a `match` in `on_event` calling
+> `modes::enable_mode(…)` / `config::set_option(…)`. See §6's example and
+> [`../../user/init.md`](../../user/init.md).
+
 **Why this is the right shape:**
 - **Async plugin loading is preserved** — plugins still load off the boot thread;
   `init.rs` registered handlers and returned. The first frame is never blocked on
@@ -114,7 +122,7 @@ Without `set-option`, `init.rs` could only *declare* options, not override value
 **use time**, or **subscribes** to `OptionChanged` — it does NOT cache-at-load.
 Because config may be applied around or after a plugin loads (a `plugin-loaded`
 handler runs just after the plugin registered its options), a cache-at-load
-consumer would miss it. auto-pair already complies (it reads `auto-pairs-style`
+consumer would miss it. auto-pair already complies (it reads `auto-pair.style`
 per keystroke, not at load).
 
 ## 6. Minor-mode enablement — available vs enabled
@@ -146,24 +154,52 @@ document buffer with no consent — wrong for a third-party contribution.
 > config gate — its manifest declares `default_mode = "auto-pairs-mode"`, and the
 > loader auto-registers `auto-pair.enabled` (default `true`) that turns the mode
 > on out of the box. So auto-pair needs **no** `init.rs` to enable it; the user
-> *configures* it (`set_option("auto-pair.enabled", "false")` /
-> `"auto-pairs-style"`) at the top level, and `:set auto-pair.enabled=false`
+> *configures* it (`config::set_option("auto-pair.enabled", "false")` /
+> `"auto-pair.style"` in `register_options`) at the top level, and `:set
+> auto-pair.enabled=false`
 > toggles it live. See [`plugin-manager.md`](plugin-manager.md) §7. The
 > `on-plugin-loaded → enable-mode` pattern below remains the tool for **user**
 > plugins with off-by-default modes (and for any deferred config of a
 > not-yet-loaded plugin).
 
 A **user** plugin that declares no default mode is available-but-off; the user's
-`init.rs` turns it on when it loads:
+`init.rs` turns it on when it loads. There is **no `setup()` / `on_plugin_loaded()`
+/ `set_option()`** — those are the *model*; the real API is the wit-bindgen `Guest`
+trait (`register_events` / `on_event`) plus the seam modules (`modes::enable_mode`,
+`config::set_option`). You subscribe to `PluginLoaded` in `register_events` and
+react in `on_event`:
 
 ```rust
-fn setup() {
-    on_plugin_loaded("my-linter", || {
-        enable_mode("my-linter-mode");
-        set_option("my-linter.strict", "true"); // optional
-    });
+// init.rs — a combined world providing `events`, importing `modes` + `config`.
+use lattice::plugin_host::types::{Event, EventFilter, EventKind};
+use lattice::plugin_host::{config, events, modes};
+
+impl Guest for Component {
+    fn register_events() {
+        events::subscribe(
+            &EventFilter {
+                kinds: Some(vec![EventKind::PluginLoaded]),
+                path_globs: None,
+                major_modes: None,
+            },
+            1, // your handler id
+        );
+    }
+
+    fn on_event(handler: u32, ev: Event) {
+        if let (1, Event::PluginLoaded(p)) = (handler, ev) {
+            if p.name == "my-linter" {
+                modes::enable_mode("my-linter-mode");
+                config::set_option("my-linter.strict", "true"); // optional
+            }
+        }
+    }
 }
 ```
+
+The full annotated shape (imports, `plugin.toml`, the combined world) is in the
+user guide, [`../../user/init.md`](../../user/init.md); `lattice --scaffold-init`
+writes a compilable starter.
 
 ## 7. Paramount-goal alignment
 

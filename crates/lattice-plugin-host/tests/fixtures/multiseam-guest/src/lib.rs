@@ -48,6 +48,19 @@ impl Guest for Component {
             &spec(),
             3,
         );
+        // TS.2: run a query, and walk with a cursor.
+        grammar::register_action(
+            "multiseam-query",
+            "compile+run a query via the tree-sitter seam (TS.2)",
+            &spec(),
+            4,
+        );
+        grammar::register_action(
+            "multiseam-cursor",
+            "walk the tree with a cursor via the tree-sitter seam (TS.2)",
+            &spec(),
+            5,
+        );
     }
 
     /// modes seam — a minor mode binding `x` (Normal) to the declining action, so
@@ -117,6 +130,35 @@ impl GrammarCallbacks for Component {
                         node.kind(),
                         node.named_child_count()
                     ),
+                })])
+            }
+            // TS.2: compile + run a query through the seam; echo
+            // `<count>:<first-capture-name>:<first-node-kind>` — proof the
+            // compiled query crossed, ran host-side (predicates included), and the
+            // capture nodes came back.
+            4 => {
+                let tree = tree.ok_or("multiseam: no tree snapshot")?;
+                let query = tree.compile_query("(function_item name: (identifier) @fname)")?;
+                let caps = tree.run_query(&query, None);
+                let first = caps
+                    .first()
+                    .map(|c| format!("{}:{}", c.name, c.node.kind()))
+                    .unwrap_or_default();
+                Ok(vec![Effect::Echo(EchoPayload {
+                    level: EchoLevel::Info,
+                    text: format!("{}:{}", caps.len(), first),
+                })])
+            }
+            // TS.2: walk with a tree-cursor; echo `<moved>:<kind-after-descent>` —
+            // proof the cursor crossed and its `goto-*` mutated host-side state.
+            5 => {
+                let tree = tree.ok_or("multiseam: no tree snapshot")?;
+                let cursor = tree.root().walk();
+                let moved = cursor.goto_first_named_child();
+                let kind = cursor.current_node().kind();
+                Ok(vec![Effect::Echo(EchoPayload {
+                    level: EchoLevel::Info,
+                    text: format!("{moved}:{kind}"),
                 })])
             }
             other => Err(format!("multiseam: unknown action callback {other}")),

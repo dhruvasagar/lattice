@@ -54,6 +54,10 @@ pub(crate) mod bindings {
             "lattice:plugin-host/tree-sitter.tree-snapshot":
                 crate::tree_resource::TreeSnapshotResource,
             "lattice:plugin-host/tree-sitter.node": crate::tree_resource::NodeResource,
+            // TS.2: the compiled `query` + the `tree-cursor` walk.
+            "lattice:plugin-host/tree-sitter.query": crate::tree_resource::QueryResource,
+            "lattice:plugin-host/tree-sitter.tree-cursor":
+                crate::tree_resource::CursorResource,
         },
     });
 }

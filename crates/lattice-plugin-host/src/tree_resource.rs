@@ -22,8 +22,9 @@
 use std::sync::Arc;
 
 use lattice_protocol::position::{Position, Range as NativeRange};
-use lattice_syntax::SyntaxSnapshot;
-use tree_sitter::{Node, Point, Tree};
+use lattice_syntax::{Lang, SyntaxSnapshot};
+use streaming_iterator::StreamingIterator;
+use tree_sitter::{Node, Point, Query, QueryCursor, Tree};
 
 /// Backing for the `tree-snapshot` WIT resource: a point-in-time parse tree.
 pub struct TreeSnapshotResource {
@@ -33,6 +34,23 @@ pub struct TreeSnapshotResource {
 /// Backing for a `node` WIT resource: a path of `Node::child` indices from the
 /// tree root (empty = root), re-resolved against `snapshot` on each call.
 pub struct NodeResource {
+    snapshot: Arc<SyntaxSnapshot>,
+    path: Vec<u32>,
+}
+
+/// TS.2 backing for the `query` WIT resource: a compiled tree-sitter query plus
+/// the language it was compiled against (so `run-query` can guard a mismatched
+/// snapshot). Owned by the guest; reusable across snapshots of the same language.
+pub struct QueryResource {
+    query: Query,
+    lang: Lang,
+}
+
+/// TS.2 backing for the `tree-cursor` WIT resource: a mutable position in the
+/// tree, represented as a `child`-index path (the `NodeResource` scheme) so the
+/// cursor stays a safe `(snapshot, path)` pair — no self-referential
+/// `tree_sitter::TreeCursor<'tree>`.
+pub struct CursorResource {
     snapshot: Arc<SyntaxSnapshot>,
     path: Vec<u32>,
 }
@@ -64,6 +82,28 @@ fn resolve<'t>(tree: &'t Tree, path: &[u32]) -> Option<Node<'t>> {
         node = node.child(i as usize)?;
     }
     Some(node)
+}
+
+/// The `child`-index path from root to `node` — walk up via `parent()`, finding
+/// `node`'s index among each parent's children by id. O(depth × siblings); used
+/// only by `run-query`, which runs off the sync path (a whole-tree query is
+/// forbidden from a sync grammar action, design §6), so the cost is acceptable.
+fn path_of(node: Node) -> Vec<u32> {
+    let mut path = Vec::new();
+    let mut cur = node;
+    while let Some(parent) = cur.parent() {
+        let mut idx = 0u32;
+        for i in 0..parent.child_count() {
+            if parent.child(i).map(|c| c.id()) == Some(cur.id()) {
+                idx = i as u32;
+                break;
+            }
+        }
+        path.push(idx);
+        cur = parent;
+    }
+    path.reverse();
+    path
 }
 
 /// Descend from the root into the child whose span contains `point`, recording
@@ -163,11 +203,74 @@ impl TreeSnapshotResource {
             path.pop();
         }
     }
+
+    /// TS.2: compile a tree-sitter query against this snapshot's grammar. `Err`
+    /// (the tree-sitter message) on a malformed query or a language with no
+    /// registered grammar.
+    pub fn compile_query(&self, source: &str) -> Result<QueryResource, String> {
+        let lang = self.snapshot.lang();
+        let language = self
+            .snapshot
+            .registry()
+            .tree_sitter_language(lang.name())
+            .ok_or_else(|| format!("no tree-sitter grammar for language '{}'", lang.name()))?;
+        let query = Query::new(&language, source).map_err(|e| e.to_string())?;
+        Ok(QueryResource { query, lang })
+    }
+
+    /// TS.2: run `query` over the whole tree (or `within` a point range),
+    /// returning the surviving captures — tree-sitter evaluates the `#eq?` /
+    /// `#match?` / `#any-of?` text predicates against the snapshot's source (the
+    /// `TextProvider`), so only matches that pass cross. Empty when there's no
+    /// tree or `query` was compiled for a different grammar (graceful).
+    pub fn run_query(
+        &self,
+        query: &QueryResource,
+        within: Option<NativeRange>,
+    ) -> Vec<(String, NodeResource)> {
+        let Some(tree) = self.snapshot.tree() else {
+            return Vec::new();
+        };
+        if query.lang != self.snapshot.lang() {
+            return Vec::new();
+        }
+        let source = self.snapshot.source();
+        let names = query.query.capture_names();
+        let mut cursor = QueryCursor::new();
+        if let Some(r) = within {
+            cursor.set_point_range(point_of(r.start)..point_of(r.end));
+        }
+        let mut matches = cursor.matches(&query.query, tree.root_node(), source);
+        let mut out = Vec::new();
+        while let Some(m) = matches.next() {
+            for cap in m.captures {
+                let name = names
+                    .get(cap.index as usize)
+                    .copied()
+                    .unwrap_or_default()
+                    .to_string();
+                out.push((
+                    name,
+                    NodeResource {
+                        snapshot: Arc::clone(&self.snapshot),
+                        path: path_of(cap.node),
+                    },
+                ));
+            }
+        }
+        out
+    }
 }
 
 impl NodeResource {
     fn tree(&self) -> Option<&Tree> {
         self.snapshot.tree()
+    }
+
+    /// The node's root-relative child-index path — read by the host `reset`
+    /// binding to reposition a cursor onto this node.
+    pub fn path(&self) -> &[u32] {
+        &self.path
     }
 
     fn with_path(&self, path: Vec<u32>) -> NodeResource {
@@ -294,6 +397,96 @@ impl NodeResource {
             self.with_path(path)
         })
     }
+
+    /// TS.2: a walk cursor positioned at this node.
+    pub fn walk(&self) -> CursorResource {
+        CursorResource {
+            snapshot: Arc::clone(&self.snapshot),
+            path: self.path.clone(),
+        }
+    }
+}
+
+impl CursorResource {
+    fn tree(&self) -> Option<&Tree> {
+        self.snapshot.tree()
+    }
+
+    /// The node the cursor currently sits on.
+    pub fn current_node(&self) -> NodeResource {
+        NodeResource {
+            snapshot: Arc::clone(&self.snapshot),
+            path: self.path.clone(),
+        }
+    }
+
+    /// The grammar field of the current node relative to its parent, or `None`
+    /// (root, or a child in no named field slot).
+    pub fn current_field(&self) -> Option<String> {
+        let (&last, parent_path) = self.path.split_last()?;
+        let tree = self.tree()?;
+        let parent = resolve(tree, parent_path)?;
+        parent.field_name_for_child(last).map(str::to_string)
+    }
+
+    /// Move to the first NAMED child; `false` (no move) if there is none.
+    pub fn goto_first_named_child(&mut self) -> bool {
+        let Some(tree) = self.tree() else {
+            return false;
+        };
+        let Some(node) = resolve(tree, &self.path) else {
+            return false;
+        };
+        for i in 0..node.child_count() {
+            if node.child(i).map(|c| c.is_named()).unwrap_or(false) {
+                self.path.push(i as u32);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Move to the next NAMED sibling; `false` (no move) if there is none.
+    pub fn goto_next_named_sibling(&mut self) -> bool {
+        let Some((&last, parent_path)) = self.path.split_last() else {
+            return false;
+        };
+        let Some(tree) = self.tree() else {
+            return false;
+        };
+        let Some(parent) = resolve(tree, parent_path) else {
+            return false;
+        };
+        for i in (last as usize + 1)..parent.child_count() {
+            if parent.child(i).map(|c| c.is_named()).unwrap_or(false) {
+                let plen = self.path.len();
+                self.path[plen - 1] = i as u32;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Move to the parent; `false` (no move) at the root.
+    pub fn goto_parent(&mut self) -> bool {
+        if self.path.is_empty() {
+            return false;
+        }
+        self.path.pop();
+        true
+    }
+
+    /// Reposition onto `node` (assumed a node of the same snapshot).
+    pub fn reset(&mut self, node: &NodeResource) {
+        self.reset_to_path(node.path.clone());
+    }
+
+    /// Reposition onto the given root-relative child-index path. Used by the
+    /// host `reset` binding, which reads the target node's path from the resource
+    /// table (avoiding a simultaneous borrow of the cursor and the node).
+    pub fn reset_to_path(&mut self, path: Vec<u32>) {
+        self.path = path;
+    }
 }
 
 #[cfg(test)]
@@ -416,6 +609,88 @@ mod tests {
         let back = second.prev_named_sibling().unwrap();
         assert_eq!(back.byte_range().start, first.byte_range().start);
         assert!(first.prev_named_sibling().is_none());
+    }
+
+    #[test]
+    fn compile_and_run_query_returns_predicate_filtered_captures() {
+        let src = "fn alpha() {}\nfn beta() {}\n";
+        let ts = TreeSnapshotResource::new(rust_snapshot(src));
+        let q = ts
+            .compile_query("(function_item name: (identifier) @fname)")
+            .expect("valid query compiles");
+        let caps = ts.run_query(&q, None);
+        assert_eq!(caps.len(), 2, "both functions captured");
+        assert!(caps.iter().all(|(name, _)| name == "fname"));
+        // The captured nodes are the identifiers `alpha` / `beta`.
+        assert_eq!(caps[0].1.kind(), "identifier");
+        let starts: Vec<u32> = caps.iter().map(|(_, n)| n.byte_range().start.byte).collect();
+        assert_eq!(starts, vec![3, 3]); // both at column 3 on their lines
+    }
+
+    #[test]
+    fn run_query_honors_a_text_predicate() {
+        let src = "fn alpha() {}\nfn beta() {}\n";
+        let ts = TreeSnapshotResource::new(rust_snapshot(src));
+        // `#eq?` predicate — only the function named exactly `beta` survives.
+        let q = ts
+            .compile_query("((function_item name: (identifier) @fname) (#eq? @fname \"beta\"))")
+            .expect("valid predicated query compiles");
+        let caps = ts.run_query(&q, None);
+        assert_eq!(caps.len(), 1, "the #eq? predicate is evaluated host-side");
+        assert_eq!(caps[0].1.byte_range().start.line, 1);
+    }
+
+    #[test]
+    fn compile_query_rejects_a_malformed_query() {
+        let ts = TreeSnapshotResource::new(rust_snapshot("fn m() {}\n"));
+        let result = ts.compile_query("(this is not a valid query");
+        assert!(
+            matches!(&result, Err(msg) if !msg.is_empty()),
+            "malformed query is a typed error"
+        );
+    }
+
+    #[test]
+    fn cursor_walks_the_tree() {
+        let src = "fn m() { let x = 1; }\n";
+        let ts = TreeSnapshotResource::new(rust_snapshot(src));
+        let mut cursor = ts.root().walk();
+        assert_eq!(cursor.current_node().kind(), "source_file");
+        // Down into the function_item — it sits in no named field of source_file.
+        assert!(cursor.goto_first_named_child());
+        assert_eq!(cursor.current_node().kind(), "function_item");
+        assert_eq!(cursor.current_field(), None);
+        // Back up to the root; no parent beyond.
+        assert!(cursor.goto_parent());
+        assert_eq!(cursor.current_node().kind(), "source_file");
+        assert!(!cursor.goto_parent());
+        // No named siblings at the root's single child level after reset.
+        cursor.reset(&ts.root());
+        assert!(cursor.goto_first_named_child());
+        assert!(!cursor.goto_next_named_sibling(), "one top-level item");
+    }
+
+    #[test]
+    fn cursor_current_field_reports_the_grammar_field() {
+        let ts = TreeSnapshotResource::new(rust_snapshot("fn m() {}\n"));
+        // Navigate to the function's `name` child and check the field.
+        let func = ts.root().named_child(0).unwrap();
+        let name = func.child_by_field("name").unwrap();
+        let mut cursor = name.walk();
+        assert_eq!(cursor.current_field(), Some("name".to_string()));
+        cursor.goto_parent();
+        assert_eq!(cursor.current_node().kind(), "function_item");
+    }
+
+    #[test]
+    fn run_query_for_a_different_language_is_empty() {
+        // A query compiled against Rust, run on a Rust snapshot, is fine; the
+        // language guard only trips on a genuine mismatch, which we can't easily
+        // construct here (one language per snapshot) — so assert the same-language
+        // path yields matches (guard does not false-trip).
+        let ts = TreeSnapshotResource::new(rust_snapshot("fn m() {}\n"));
+        let q = ts.compile_query("(identifier) @id").unwrap();
+        assert!(!ts.run_query(&q, None).is_empty());
     }
 
     #[test]

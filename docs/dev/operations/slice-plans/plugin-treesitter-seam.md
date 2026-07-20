@@ -9,7 +9,7 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned. Every non-trivial sl
 the four artefacts (doc + bench-where-perf-relevant + test incl. failure modes +
 graceful error handling).
 
-**Status: 🚧 TS.1 ✅ · TS.2 / TS.3 📝.**
+**Status: 🚧 TS.1 ✅ · TS.2 ✅ · TS.3 📝.**
 
 ## Sequencing
 
@@ -84,7 +84,7 @@ claim true). Guest signature: `apply-action` gains `tree: option<borrow<
 tree-snapshot>>` across all three grammar guests (auto-pair / grammar-guest /
 multiseam-guest); auto-pair ignores it until AP.3.
 
-### TS.2 — queries + cursor  📝
+### TS.2 — queries + cursor  ✅
 `compile-query(source)` → `query` (per-language, `err` on malformed / grammar
 mismatch); `run-query(query, within)` → `list<capture>` with **host-side**
 predicate eval (`#eq?` / `#match?` / `#any-of?` — only surviving captures cross);
@@ -94,6 +94,25 @@ field-name access. **Exit:** a fixture runs a predicated query over a range and
 gets only surviving captures; a cursor walks the tree. No hot-path bench (queries
 run off-thread; a whole-tree `run-query` from a sync grammar action is forbidden
 by the design — off-thread only).
+
+**Delivered (2026-07-20).** `wit/tree-sitter.wit` grew `compile-query` /
+`run-query` on `tree-snapshot`, `walk` on `node`, and the `query` (opaque) +
+`tree-cursor` resources + `capture` record. Host backing (`tree_resource.rs`):
+`QueryResource { Query, Lang }` (the `Lang` guards a mismatched snapshot →
+empty), `CursorResource { snapshot, path }` (same safe path scheme as
+`NodeResource`, mutated by `goto-*`). `run-query` uses tree-sitter 0.24's
+`QueryCursor::matches` **streaming iterator** with the snapshot's source as the
+`TextProvider`, so `#eq?` / `#match?` / `#any-of?` are filtered host-side before
+any capture crosses; `within` maps to `set_point_range`; capture nodes get a
+`NodeResource` path via `path_of` (walk-up by id — O(depth×siblings), fine
+off-thread). Bindgen `with:`-maps both new resources; `HostQuery` (drop only) +
+`HostTreeCursor` impls + `compile-query`/`run-query`/`walk` added to the existing
+`HostTreeSnapshot`/`HostNode` impls (`lib.rs`). **Tests:** 6 new `tree_resource`
+unit tests (compile/run, `#eq?` predicate filtering host-side, malformed-query
+err, cursor walk, `current-field`); 2 new `tests/tree_seam.rs` end-to-end (query
+→ `1:fname:identifier`; cursor → `true:function_item`). No bench (off the sync
+path by design). Guest `apply-action` signature is unchanged — queries/cursors
+are called on the existing `tree-snapshot` handle inside the action.
 
 ### TS.3 — first structural consumer  📝
 Prove the seam end to end through a real plugin — either auto-pair's `manual`

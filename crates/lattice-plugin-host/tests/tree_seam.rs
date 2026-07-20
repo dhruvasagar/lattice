@@ -106,6 +106,80 @@ fn a_granted_plugin_queries_the_enclosing_scope_through_the_seam() {
 }
 
 #[test]
+fn a_granted_plugin_runs_a_query_through_the_seam() {
+    if guest_wasm().is_none() {
+        eprintln!("SKIP: multiseam fixture not built");
+        return;
+    }
+    // TS.2: the guest compiles `(function_item name: (identifier) @fname)` and
+    // runs it; `fn m() { … }` has one function named `m`, so the echo is
+    // `1:fname:identifier` — proof the compiled query crossed, ran host-side, and
+    // the capture node projection came back.
+    let (commands, _dirs) = register_grammar(CapabilitySet::TREE_SITTER);
+    let id = commands.id_by_name("multiseam-query").unwrap();
+
+    let snapshot = rust_snapshot(SRC);
+    let mut document = lattice_core::Document::from_text(SRC);
+    let cancel = CancellationToken::never();
+    let env = TextObjectEnv {
+        syntax: Some(&snapshot),
+        ..Default::default()
+    };
+    let effect = lattice_grammar::execute_with_env(
+        &commands,
+        &mut document,
+        BufferId(1),
+        cursor_on_x(),
+        CommandInvocation::of(id),
+        &cancel,
+        env,
+    )
+    .expect("the query action dispatches");
+    match effect {
+        lattice_grammar::effect::Effect::Echo { text, .. } => {
+            assert_eq!(text, "1:fname:identifier");
+        }
+        other => panic!("expected an Echo from the query, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_granted_plugin_walks_the_tree_with_a_cursor() {
+    if guest_wasm().is_none() {
+        eprintln!("SKIP: multiseam fixture not built");
+        return;
+    }
+    // TS.2: the guest walks `root().walk().goto_first_named_child()` and echoes
+    // `<moved>:<kind>` → `true:function_item`.
+    let (commands, _dirs) = register_grammar(CapabilitySet::TREE_SITTER);
+    let id = commands.id_by_name("multiseam-cursor").unwrap();
+
+    let snapshot = rust_snapshot(SRC);
+    let mut document = lattice_core::Document::from_text(SRC);
+    let cancel = CancellationToken::never();
+    let env = TextObjectEnv {
+        syntax: Some(&snapshot),
+        ..Default::default()
+    };
+    let effect = lattice_grammar::execute_with_env(
+        &commands,
+        &mut document,
+        BufferId(1),
+        cursor_on_x(),
+        CommandInvocation::of(id),
+        &cancel,
+        env,
+    )
+    .expect("the cursor action dispatches");
+    match effect {
+        lattice_grammar::effect::Effect::Echo { text, .. } => {
+            assert_eq!(text, "true:function_item");
+        }
+        other => panic!("expected an Echo from the cursor walk, got {other:?}"),
+    }
+}
+
+#[test]
 fn a_plugin_without_the_grant_gets_no_tree_handle() {
     if guest_wasm().is_none() {
         eprintln!("SKIP: multiseam fixture not built");

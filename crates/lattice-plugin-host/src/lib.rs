@@ -1049,6 +1049,51 @@ impl crate::grammar_host::bindings::lattice::plugin_host::tree_sitter::HostTreeS
             .unwrap_or_default()
     }
 
+    fn compile_query(
+        &mut self,
+        self_: wasmtime::component::Resource<crate::tree_resource::TreeSnapshotResource>,
+        source: String,
+    ) -> Result<wasmtime::component::Resource<crate::tree_resource::QueryResource>, String> {
+        let query = self
+            .table
+            .get(&self_)
+            .map_err(|e| format!("tree-snapshot handle: {e}"))?
+            .compile_query(&source)?;
+        self.table
+            .push(query)
+            .map_err(|e| format!("query resource push: {e}"))
+    }
+
+    fn run_query(
+        &mut self,
+        self_: wasmtime::component::Resource<crate::tree_resource::TreeSnapshotResource>,
+        q: wasmtime::component::Resource<crate::tree_resource::QueryResource>,
+        within: Option<crate::lattice::plugin_host::types::Range>,
+    ) -> Vec<crate::grammar_host::bindings::lattice::plugin_host::tree_sitter::Capture> {
+        let within = within.and_then(|r| lattice_protocol::position::Range::from_wit(r).ok());
+        // Collect the (owned) NodeResource captures while borrowing the table,
+        // then release the borrows and push each into the table (a mutable
+        // borrow) as an owned `node` handle the guest receives + drops.
+        let results = {
+            let (Ok(ts), Ok(qr)) = (self.table.get(&self_), self.table.get(&q)) else {
+                return Vec::new();
+            };
+            ts.run_query(qr, within)
+        };
+        results
+            .into_iter()
+            .filter_map(|(name, node)| {
+                let node = self.table.push(node).ok()?;
+                Some(
+                    crate::grammar_host::bindings::lattice::plugin_host::tree_sitter::Capture {
+                        name,
+                        node,
+                    },
+                )
+            })
+            .collect()
+    }
+
     fn drop(
         &mut self,
         rep: wasmtime::component::Resource<crate::tree_resource::TreeSnapshotResource>,
@@ -1159,6 +1204,18 @@ impl crate::grammar_host::bindings::lattice::plugin_host::tree_sitter::HostNode 
         self.table.push(node).ok()
     }
 
+    fn walk(
+        &mut self,
+        self_: wasmtime::component::Resource<crate::tree_resource::NodeResource>,
+    ) -> wasmtime::component::Resource<crate::tree_resource::CursorResource> {
+        let cursor = self
+            .table
+            .get(&self_)
+            .expect("node handle live for the call")
+            .walk();
+        self.table.push(cursor).expect("cursor resource table push")
+    }
+
     fn drop(
         &mut self,
         rep: wasmtime::component::Resource<crate::tree_resource::NodeResource>,
@@ -1166,6 +1223,95 @@ impl crate::grammar_host::bindings::lattice::plugin_host::tree_sitter::HostNode 
         // Nodes ARE owned by the guest (unlike the lent snapshot handle); the
         // guest's generated RAII wrapper drops them when they leave scope. Delete
         // the table entry, ignoring a missing one — never a trap.
+        let _ = self.table.delete(rep);
+        Ok(())
+    }
+}
+
+// TS.2: the `query` resource is opaque — no methods beyond the implicit drop.
+impl crate::grammar_host::bindings::lattice::plugin_host::tree_sitter::HostQuery for PluginState {
+    fn drop(
+        &mut self,
+        rep: wasmtime::component::Resource<crate::tree_resource::QueryResource>,
+    ) -> wasmtime::Result<()> {
+        // Guest-owned (returned by `compile-query`); dropped by the guest's RAII
+        // wrapper. Delete defensively, ignore a missing entry — never a trap.
+        let _ = self.table.delete(rep);
+        Ok(())
+    }
+}
+
+impl crate::grammar_host::bindings::lattice::plugin_host::tree_sitter::HostTreeCursor
+    for PluginState
+{
+    fn current_node(
+        &mut self,
+        self_: wasmtime::component::Resource<crate::tree_resource::CursorResource>,
+    ) -> wasmtime::component::Resource<crate::tree_resource::NodeResource> {
+        let node = self
+            .table
+            .get(&self_)
+            .expect("cursor handle live for the call")
+            .current_node();
+        self.table.push(node).expect("node resource table push")
+    }
+
+    fn current_field(
+        &mut self,
+        self_: wasmtime::component::Resource<crate::tree_resource::CursorResource>,
+    ) -> Option<String> {
+        self.table.get(&self_).ok().and_then(|c| c.current_field())
+    }
+
+    fn goto_first_named_child(
+        &mut self,
+        self_: wasmtime::component::Resource<crate::tree_resource::CursorResource>,
+    ) -> bool {
+        self.table
+            .get_mut(&self_)
+            .map(|c| c.goto_first_named_child())
+            .unwrap_or(false)
+    }
+
+    fn goto_next_named_sibling(
+        &mut self,
+        self_: wasmtime::component::Resource<crate::tree_resource::CursorResource>,
+    ) -> bool {
+        self.table
+            .get_mut(&self_)
+            .map(|c| c.goto_next_named_sibling())
+            .unwrap_or(false)
+    }
+
+    fn goto_parent(
+        &mut self,
+        self_: wasmtime::component::Resource<crate::tree_resource::CursorResource>,
+    ) -> bool {
+        self.table
+            .get_mut(&self_)
+            .map(|c| c.goto_parent())
+            .unwrap_or(false)
+    }
+
+    fn reset(
+        &mut self,
+        self_: wasmtime::component::Resource<crate::tree_resource::CursorResource>,
+        n: wasmtime::component::Resource<crate::tree_resource::NodeResource>,
+    ) {
+        // Read the target node's path (releasing that borrow) before mutating the
+        // cursor — the two live in the same table.
+        let Some(path) = self.table.get(&n).ok().map(|nr| nr.path().to_vec()) else {
+            return;
+        };
+        if let Ok(cursor) = self.table.get_mut(&self_) {
+            cursor.reset_to_path(path);
+        }
+    }
+
+    fn drop(
+        &mut self,
+        rep: wasmtime::component::Resource<crate::tree_resource::CursorResource>,
+    ) -> wasmtime::Result<()> {
         let _ = self.table.delete(rep);
         Ok(())
     }

@@ -41,6 +41,17 @@ interface tree-sitter {
         enclosing: func(pos: position, kinds: list<string>) -> option<node>;
         /// The grammar id (e.g. `"rust"`), so a plugin can pick the right query.
         language: func() -> string;
+        /// TS.2: compile a tree-sitter query (S-expression) against THIS
+        /// snapshot's grammar. `err` (with the tree-sitter message) on a
+        /// malformed query. The returned `query` is reusable across snapshots of
+        /// the same language — compile once, run many.
+        compile-query: func(source: string) -> result<query, string>;
+        /// TS.2: run `q` over the whole tree, or `within` a point range. Returns
+        /// the surviving captures — the `#eq?` / `#match?` / `#any-of?` predicates
+        /// are evaluated HOST-side (against the snapshot's source), so the guest
+        /// never re-filters. Empty when `q` was compiled for a different grammar
+        /// than this snapshot's (graceful — never a trap).
+        run-query: func(q: borrow<query>, within: option<range>) -> list<capture>;
     }
 
     /// An opaque, navigable handle into the snapshot's tree (design §3.2). Owned
@@ -70,5 +81,36 @@ interface tree-sitter {
         next-named-sibling: func() -> option<node>;
         /// The previous NAMED sibling, or `none`.
         prev-named-sibling: func() -> option<node>;
+        /// TS.2: a stateful cursor positioned at this node, for structural walks
+        /// without per-step parent/child handle churn.
+        walk: func() -> tree-cursor;
+    }
+
+    /// TS.2: a compiled tree-sitter query — opaque, owned by the guest (dropped
+    /// when it leaves scope), reusable across snapshots of the same language.
+    resource query;
+
+    /// TS.2: one query match capture — the `@name` and the node it bound.
+    record capture {
+        name: string,
+        node: node,
+    }
+
+    /// TS.2: a stateful walk cursor over the snapshot's tree (design §3.4).
+    /// Anchored to one snapshot; `goto-*` move it and report whether they could.
+    resource tree-cursor {
+        /// The node the cursor currently sits on.
+        current-node: func() -> node;
+        /// The grammar field of the current node relative to its parent (e.g.
+        /// `"body"`), or `none` (root, or an unnamed field slot).
+        current-field: func() -> option<string>;
+        /// Move to the first NAMED child; `false` (and no move) if there is none.
+        goto-first-named-child: func() -> bool;
+        /// Move to the next NAMED sibling; `false` (and no move) if there is none.
+        goto-next-named-sibling: func() -> bool;
+        /// Move to the parent; `false` (and no move) at the root.
+        goto-parent: func() -> bool;
+        /// Reposition the cursor onto `n` (must be a node of the same snapshot).
+        reset: func(n: borrow<node>);
     }
 }

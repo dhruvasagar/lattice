@@ -865,7 +865,11 @@ impl App {
         match effect {
             // Phase 5.5.E.1–E.4: migrated arms. Bodies live in
             // `lattice_host::dispatch::handle_effect`.
-            Effect::None
+            // AP.0.2: a declined grammar effect is consumed by the dispatcher
+            // (fall-through) and never reaches a renderer as a visible effect;
+            // classify it as a no-op like `Effect::None` for exhaustiveness.
+            Effect::Declined
+            | Effect::None
             | Effect::ClearSearchHighlight
             // I3/BC.8c follow-up: SaveBuffer host-applied (reuses do_write,
             // joins BufferDelete); peer no-ops it.
@@ -1213,7 +1217,9 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         Effect::ShowDiagnosticsPopup { .. } => false,
         // L7: an LSP nav request neither mutates nor yanks.
         Effect::Lsp(_) => false,
-        Effect::None
+        // AP.0.2: a declined effect did nothing — not a mutation/yank.
+        Effect::Declined
+        | Effect::None
         | Effect::SelectionChange(_)
         | Effect::EnterMode(_)
         | Effect::SaveBuffer { .. }
@@ -1342,7 +1348,9 @@ fn effect_mutates(effect: &Effect) -> bool {
         Effect::ShowDiagnosticsPopup { .. } => false,
         // L7: an LSP nav request is not a buffer mutation.
         Effect::Lsp(_) => false,
-        Effect::None
+        // AP.0.2: a declined effect did nothing — not a buffer mutation.
+        Effect::Declined
+        | Effect::None
         | Effect::SelectionChange(_)
         | Effect::Yank { .. }
         | Effect::EnterMode(_)

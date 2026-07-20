@@ -1115,7 +1115,11 @@ impl GpuiApp {
             // Document-only effects the host has already
             // applied via `editor.handle_effect`; nothing for the
             // renderer to do.
-            Effect::None
+            // AP.0.2: a declined effect is consumed by the dispatcher
+            // (fall-through) and never surfaces here; no-op for parity
+            // with the TUI peer ([[feedback_tui_gpui_parity]]).
+            Effect::Declined
+            | Effect::None
             | Effect::Edits(_)
             // CR.0: host's `handle_effect` translates `ApplyEdit` into
             // `Action::ApplyEdit`; the renderer has nothing to do (parity

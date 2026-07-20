@@ -120,7 +120,17 @@ async fn bundled_auto_pair_registers_grammar_modes_and_config_through_the_loader
 
     // 1. GRAMMAR — the pairing actions registered (sync drain).
     let commands = command_registry.load();
-    for action in ["auto-pair-open-round", "auto-pair-close-round"] {
+    for action in [
+        "auto-pair-open-round",
+        "auto-pair-open-square",
+        "auto-pair-open-curly",
+        "auto-pair-close-round",
+        "auto-pair-close-square",
+        "auto-pair-close-curly",
+        "auto-pair-quote-double",
+        "auto-pair-quote-single",
+        "auto-pair-quote-backtick",
+    ] {
         assert!(
             commands.id_by_name(action).is_some(),
             "the grammar action `{action}` registered from the plugin"
@@ -151,6 +161,15 @@ async fn bundled_auto_pair_registers_grammar_modes_and_config_through_the_loader
             LookupResult::Unbound
         ),
         "the gated binding does not fire when the mode is inactive"
+    );
+    // The full pair set is bound: a quote chord resolves in the mode's layer too.
+    let quote = lattice_protocol::parse_chord_sequence("\"").expect("quote chord parses");
+    assert!(
+        matches!(
+            keymap.lookup_with_context(BindingMode::Insert, &quote, &[mode.clone()]),
+            LookupResult::Bound { .. }
+        ),
+        "`\"` binds to the plugin's quote action when auto-pairs-mode is active"
     );
 
     // 3. CONFIG — the options registered (async drain).
@@ -243,5 +262,76 @@ async fn bundled_auto_pair_registers_grammar_modes_and_config_through_the_loader
             assert_eq!(cursor, Some(Position::new(0, 2)), "caret after the inserted )");
         }
         other => panic!("close-insert: expected ApplyEdit, got {other:?}"),
+    }
+
+    // A BRACKET pair behaves like round: `[` on an empty buffer → `[]` caret-between.
+    let open_sq = commands.id_by_name("auto-pair-open-square").unwrap();
+    let mut doc = Document::from_text("");
+    let effect = execute(
+        &commands,
+        &mut doc,
+        BufferId(1),
+        Position::new(0, 0),
+        CommandInvocation::of(open_sq),
+        &CancellationToken::never(),
+    )
+    .expect("open-square dispatches");
+    match effect {
+        Effect::ApplyEdit { edit, cursor, .. } => {
+            assert!(
+                matches!(&edit.kind, EditKind::Replace { text } if text == "[]"),
+                "inserts the bracket pair, got {:?}",
+                edit.kind
+            );
+            assert_eq!(cursor, Some(Position::new(0, 1)), "caret between the brackets");
+        }
+        other => panic!("open-square: expected ApplyEdit, got {other:?}"),
+    }
+
+    // A QUOTE (same-char pair) OPENS on an empty buffer → `""` caret-between.
+    let quote_dbl = commands.id_by_name("auto-pair-quote-double").unwrap();
+    let mut doc = Document::from_text("");
+    let effect = execute(
+        &commands,
+        &mut doc,
+        BufferId(1),
+        Position::new(0, 0),
+        CommandInvocation::of(quote_dbl),
+        &CancellationToken::never(),
+    )
+    .expect("quote (open) dispatches");
+    match effect {
+        Effect::ApplyEdit { edit, cursor, .. } => {
+            assert!(
+                matches!(&edit.kind, EditKind::Replace { text } if text == "\"\""),
+                "inserts the quote pair, got {:?}",
+                edit.kind
+            );
+            assert_eq!(cursor, Some(Position::new(0, 1)), "caret between the quotes");
+        }
+        other => panic!("quote-open: expected ApplyEdit, got {other:?}"),
+    }
+
+    // The SAME quote before a matching quote STEPS OVER (closing a just-opened
+    // pair). Buffer `""`, caret between at (0,1).
+    let mut doc = Document::from_text("\"\"");
+    let effect = execute(
+        &commands,
+        &mut doc,
+        BufferId(1),
+        Position::new(0, 1),
+        CommandInvocation::of(quote_dbl),
+        &CancellationToken::never(),
+    )
+    .expect("quote (skip) dispatches");
+    match effect {
+        Effect::SelectionChange(set) => {
+            assert_eq!(
+                set.primary().head,
+                Position::new(0, 2),
+                "caret stepped past the existing quote"
+            );
+        }
+        other => panic!("quote-skip: expected SelectionChange, got {other:?}"),
     }
 }

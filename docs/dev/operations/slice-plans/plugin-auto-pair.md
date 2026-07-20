@@ -88,8 +88,16 @@ through the real loader; all three seams' contributions register (actions with
 options in the config registry). Scaffold ships the round-bracket pair + backspace
 with **no-op action bodies**; AP.2 fills the `auto` behavior.
 
-### AP.2 — `auto` style (open + close-skip)  ✅
-The `auto` behavior for the round-bracket pair, reading the buffer via AP.0.1.
+### AP.2 — `auto` style (open + close-skip, full pair set)  ✅
+The `auto` behavior for **all pairs** — `() [] {}` + the same-char quotes
+`"" '' `` `` — reading the buffer via AP.0.1. Three table-driven primitives: open
+(insert pair caret-between), close (step over a matching closer via
+`selection-change`, else insert), quote (step over the same quote if next, else
+insert the pair). Nine actions, one per opener/closer/quote (a mode keymap binding
+carries no args). `tests/auto_pair.rs` asserts all nine register + the bracket +
+quote (open + skip) behaviors through the loaded guest.
+
+The round-bracket first cut (below) reading the buffer via AP.0.1.
 Required a small **edit-model extension** (general host API, not auto-pair-
 specific): `action-context` gains `buffer-id` (the `target` an action names in an
 `apply-edit`), and `apply-edit-payload.cursor` changed from `option<u32>` (a row)

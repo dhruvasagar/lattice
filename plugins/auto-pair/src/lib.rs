@@ -1,27 +1,25 @@
-//! `auto-pair` — the first bundled plugin (AP.2: the `auto` style).
+//! `auto-pair` — the first bundled plugin (AP.2 `auto` style, full pair set).
 //!
 //! ONE `wasm32-wasip2` component providing three seams (the multi-seam shape
 //! proven by AP.1.0):
 //!   - **grammar** — the pairing actions, fired on insert-mode chords. Each
-//!     opener/closer is its OWN action because a mode keymap binding carries no
-//!     args, so the action can't otherwise know which pair fired (`(` vs `[`).
-//!   - **modes** — `auto-pairs-mode`, a `global` minor mode (active on document
-//!     buffers) that OWNS the insert-mode keymap: chords bind at
-//!     `MinorMode(auto-pairs-mode)`, never the builtin layer (mode-ownership).
+//!     opener/closer/quote is its OWN action because a mode keymap binding carries
+//!     no args, so the action can't otherwise know which pair fired.
+//!   - **modes** — `auto-pairs-mode`, a `global`-scope minor mode that OWNS the
+//!     insert-mode keymap. **Off by default** (CI.3 available-but-off); the user
+//!     enables it from `init.rs` (`on_plugin_loaded("auto-pair") → enable_mode`).
 //!   - **config** — `auto-pairs-style` (`auto` | `manual`) + `auto-pairs-close-key`.
 //!
-//! **AP.2 — the `auto` style** (round-bracket pair; AP.3 adds `[] {} "" '' `` ``):
-//!   - **open** `(` → insert `()` with the caret BETWEEN (a precise-cursor
-//!     `apply-edit`, AP.2's edit-model extension),
-//!   - **close** `)` → if a `)` already sits after the caret, STEP OVER it (a
-//!     pure caret move via `selection-change`, no text change); otherwise insert
-//!     `)`.
+//! **The `auto` style** for the bracket pairs `() [] {}` and the quote pairs
+//! `"" '' `` `` (all share three primitives):
+//!   - **open** (`(` `[` `{`) → insert the pair, caret BETWEEN,
+//!   - **close** (`)` `]` `}`) → step over a matching closer if it sits after the
+//!     caret (a pure `selection-change`, no edit), else insert it,
+//!   - **quote** (`"` `'` `` ` ``, same-char pairs) → step over if the same quote
+//!     is next, else insert the pair caret-between.
 //!
-//! **Backspace is deferred to Wave 2.** Deleting the empty pair on `<BS>` needs
-//! the action to DECLINE to the builtin backspace when the caret is not inside a
-//! pair (AP.0.2 fall-through). Binding `<BS>` without that would force the plugin
-//! to reimplement normal backspace (grapheme deletion, line-joins) — reinventing
-//! the builtin, the wrong trade. It lands with AP.0.2.
+//! Word-boundary / string-comment suppression (don't pair a `'` inside `don't`)
+//! is deferred to v2; the `manual` style + backspace need AP.0.2 / AP.0.3.
 
 wit_bindgen::generate!({
     world: "auto-pair-plugin",
@@ -43,12 +41,19 @@ use lattice::plugin_host::{config, grammar, modes};
 
 struct Component;
 
-// ── callback ids (guest-local; the host passes them back to apply_action) ─────
-const CB_OPEN_ROUND: u32 = 1; // `(` → insert `()`, caret between
-const CB_CLOSE_ROUND: u32 = 2; // `)` → step over a matching `)`, else insert
+// ── callback ids (guest-local) ────────────────────────────────────────────────
+const CB_OPEN_ROUND: u32 = 1;
+const CB_OPEN_SQUARE: u32 = 2;
+const CB_OPEN_CURLY: u32 = 3;
+const CB_CLOSE_ROUND: u32 = 4;
+const CB_CLOSE_SQUARE: u32 = 5;
+const CB_CLOSE_CURLY: u32 = 6;
+const CB_QUOTE_DOUBLE: u32 = 7;
+const CB_QUOTE_SINGLE: u32 = 8;
+const CB_QUOTE_BACKTICK: u32 = 9;
 
-/// One byte to the right of `pos` on the same line — the "between the pair" caret
-/// after an open, and the "stepped over" caret after a close-skip.
+/// One byte to the right of `pos` on the same line — the caret "between the pair"
+/// after an open, and the "stepped over" caret after a close/quote-skip.
 fn one_right(pos: Position) -> Position {
     Position {
         line: pos.line,
@@ -64,31 +69,97 @@ fn at(pos: Position) -> Range {
     }
 }
 
+/// The single byte after the caret (empty string at EOL / on a read error —
+/// which just means "nothing to step over", so insert).
+fn char_after(ctx: &ActionContext, doc: &Document) -> String {
+    doc.get_text_range(Range {
+        start: ctx.cursor,
+        end: one_right(ctx.cursor),
+    })
+    .unwrap_or_default()
+}
+
+/// Insert `open`+`close` at the caret and park it BETWEEN them.
+fn insert_pair(ctx: &ActionContext, open: &str, close: &str) -> Vec<Effect> {
+    vec![Effect::ApplyEdit(ApplyEditPayload {
+        target: ctx.buffer_id,
+        edit: Edit {
+            range: at(ctx.cursor),
+            kind: EditKind::Replace(format!("{open}{close}")),
+        },
+        cursor: Some(one_right(ctx.cursor)),
+    })]
+}
+
+/// Insert a single char at the caret, caret after it.
+fn insert_one(ctx: &ActionContext, ch: &str) -> Vec<Effect> {
+    vec![Effect::ApplyEdit(ApplyEditPayload {
+        target: ctx.buffer_id,
+        edit: Edit {
+            range: at(ctx.cursor),
+            kind: EditKind::Replace(ch.to_string()),
+        },
+        cursor: Some(one_right(ctx.cursor)),
+    })]
+}
+
+/// Step the caret one right with no text change (a collapsed selection — no
+/// spurious `DocumentChanged`).
+fn step_over(ctx: &ActionContext) -> Vec<Effect> {
+    vec![Effect::SelectionChange(SelectionSet {
+        selections: vec![Selection {
+            anchor: one_right(ctx.cursor),
+            head: one_right(ctx.cursor),
+            visual: None,
+        }],
+        primary: 0,
+    })]
+}
+
+/// A closer (`)` `]` `}`): step over a matching closer already after the caret,
+/// else insert it.
+fn close(ctx: &ActionContext, doc: &Document, ch: &str) -> Vec<Effect> {
+    if char_after(ctx, doc) == ch {
+        step_over(ctx)
+    } else {
+        insert_one(ctx, ch)
+    }
+}
+
+/// A same-char quote (`"` `'` `` ` ``): step over if the same quote is next
+/// (closing a just-opened pair), else insert the pair caret-between.
+fn quote(ctx: &ActionContext, doc: &Document, q: &str) -> Vec<Effect> {
+    if char_after(ctx, doc) == q {
+        step_over(ctx)
+    } else {
+        insert_pair(ctx, q, q)
+    }
+}
+
 impl Guest for Component {
-    /// grammar seam — one action per opener/closer (the keymap binds each chord
-    /// to the matching action; the names are what the mode keymap resolves).
     fn register_grammar() {
         let spec = || ActionSpec {
             args_schema: Vec::new(),
         };
-        grammar::register_action(
-            "auto-pair-open-round",
-            "insert a matching )",
-            &spec(),
-            CB_OPEN_ROUND,
-        );
-        grammar::register_action(
-            "auto-pair-close-round",
-            "step over a matching )",
-            &spec(),
-            CB_CLOSE_ROUND,
-        );
+        for (name, doc, cb) in [
+            ("auto-pair-open-round", "insert ()", CB_OPEN_ROUND),
+            ("auto-pair-open-square", "insert []", CB_OPEN_SQUARE),
+            ("auto-pair-open-curly", "insert {}", CB_OPEN_CURLY),
+            ("auto-pair-close-round", "step over )", CB_CLOSE_ROUND),
+            ("auto-pair-close-square", "step over ]", CB_CLOSE_SQUARE),
+            ("auto-pair-close-curly", "step over }", CB_CLOSE_CURLY),
+            ("auto-pair-quote-double", "pair \"\"", CB_QUOTE_DOUBLE),
+            ("auto-pair-quote-single", "pair ''", CB_QUOTE_SINGLE),
+            ("auto-pair-quote-backtick", "pair ``", CB_QUOTE_BACKTICK),
+        ] {
+            grammar::register_action(name, doc, &spec(), cb);
+        }
     }
 
-    /// modes seam — `auto-pairs-mode` owns its insert-mode keymap. `global`:
-    /// active on document buffers (never in `*plugin-trace*`, help, the file
-    /// tree). Bindings target the plugin's OWN grammar actions by bare name —
-    /// resolvable because `provides` lists `grammar` before `modes`.
+    /// `auto-pairs-mode` owns its insert-mode keymap — bindings land at
+    /// `MinorMode(auto-pairs-mode)`, never the builtin layer. Bindings target the
+    /// plugin's OWN grammar actions by bare name (`provides` lists grammar before
+    /// modes, so they resolve at bind time).
     fn register_modes() {
         let bind = |chord: &str, command: &str| ModeKeymapBinding {
             binding_mode: BindingMode::Insert,
@@ -102,14 +173,18 @@ impl Guest for Component {
             capabilities: ModeCapabilities::empty(),
             keymap: vec![
                 bind("(", "auto-pair-open-round"),
+                bind("[", "auto-pair-open-square"),
+                bind("{", "auto-pair-open-curly"),
                 bind(")", "auto-pair-close-round"),
+                bind("]", "auto-pair-close-square"),
+                bind("}", "auto-pair-close-curly"),
+                bind("\"", "auto-pair-quote-double"),
+                bind("'", "auto-pair-quote-single"),
+                bind("`", "auto-pair-quote-backtick"),
             ],
         });
     }
 
-    /// config seam — the style switch (read by the handlers at AP.3 for `manual`)
-    /// + the manual close key. Behavior is option-gated inside the handlers, so
-    /// the keymap set stays stable across `:set auto-pairs-style=…` (no re-binding).
     fn register_options() {
         config::register_option(
             "auto-pairs-style",
@@ -132,51 +207,18 @@ impl GrammarCallbacks for Component {
         ctx: ActionContext,
         doc: &Document,
     ) -> Result<Vec<Effect>, String> {
-        match callback {
-            // `(` → insert `()` and park the caret BETWEEN the pair.
-            CB_OPEN_ROUND => Ok(vec![Effect::ApplyEdit(ApplyEditPayload {
-                target: ctx.buffer_id,
-                edit: Edit {
-                    range: at(ctx.cursor),
-                    kind: EditKind::Replace("()".to_string()),
-                },
-                cursor: Some(one_right(ctx.cursor)),
-            })]),
-
-            // `)` → if a `)` already sits after the caret, step over it (pure
-            // caret move, no text change); otherwise insert `)`.
-            CB_CLOSE_ROUND => {
-                let next = doc
-                    .get_text_range(Range {
-                        start: ctx.cursor,
-                        end: one_right(ctx.cursor),
-                    })
-                    .unwrap_or_default();
-                if next == ")" {
-                    // Step over — move the caret past the existing `)` via a
-                    // collapsed selection (no edit ⇒ no spurious change event).
-                    Ok(vec![Effect::SelectionChange(SelectionSet {
-                        selections: vec![Selection {
-                            anchor: one_right(ctx.cursor),
-                            head: one_right(ctx.cursor),
-                            visual: None,
-                        }],
-                        primary: 0,
-                    })])
-                } else {
-                    Ok(vec![Effect::ApplyEdit(ApplyEditPayload {
-                        target: ctx.buffer_id,
-                        edit: Edit {
-                            range: at(ctx.cursor),
-                            kind: EditKind::Replace(")".to_string()),
-                        },
-                        cursor: Some(one_right(ctx.cursor)),
-                    })])
-                }
-            }
-
-            other => Err(format!("auto-pair: unknown action callback {other}")),
-        }
+        Ok(match callback {
+            CB_OPEN_ROUND => insert_pair(&ctx, "(", ")"),
+            CB_OPEN_SQUARE => insert_pair(&ctx, "[", "]"),
+            CB_OPEN_CURLY => insert_pair(&ctx, "{", "}"),
+            CB_CLOSE_ROUND => close(&ctx, doc, ")"),
+            CB_CLOSE_SQUARE => close(&ctx, doc, "]"),
+            CB_CLOSE_CURLY => close(&ctx, doc, "}"),
+            CB_QUOTE_DOUBLE => quote(&ctx, doc, "\""),
+            CB_QUOTE_SINGLE => quote(&ctx, doc, "'"),
+            CB_QUOTE_BACKTICK => quote(&ctx, doc, "`"),
+            other => return Err(format!("auto-pair: unknown action callback {other}")),
+        })
     }
 
     fn apply_motion(_c: u32, _ctx: MotionContext) -> Result<MotionResult, String> {

@@ -135,15 +135,35 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     // plugins dir (the common case) is a benign skip.
     let init_dir = crate::default_init_dir();
     let plugins_dir = crate::default_plugins_dir();
+    // PM.1: the core-plugins root — prebuilt plugins that ship WITH lattice,
+    // discovered from a runtime search path (plugin-manager.md §7). `None` when no
+    // runtime root is present (a source checkout with no staged `runtime/`, etc.).
+    let core_plugins_dir = crate::default_core_plugins_dir();
     // PL8.D.4: watch the init dir so a rebuilt `init.wasm` auto-reloads without a
     // manual `:reload-config`. A no-op if the dir doesn't exist.
     if let Some(ref dir) = init_dir {
         crate::watch::spawn_init_watcher(loader.clone(), dir.clone(), boot.runtime_handle());
     }
-    if init_dir.is_some() || plugins_dir.is_some() {
+    if core_plugins_dir.is_some() || init_dir.is_some() || plugins_dir.is_some() {
         let loader = loader.clone();
         boot.runtime_handle().spawn(async move {
-            // 1. init.rs first — AWAITED, so its subscriptions are live before
+            // 0. CORE plugins first (prebuilt runtime root, `Bundled` tier) — PM.1.
+            //    They enable via a config gate (PM.3), NOT init.rs, so loading them
+            //    before init.rs is correct: a user init.rs `on-plugin-loaded`
+            //    handler targets USER plugins (step 2), which still load after it.
+            if let Some(core_dir) = core_plugins_dir {
+                let n = loader
+                    .discover_and_load(&core_dir, TrustTier::Bundled)
+                    .await;
+                if n > 0 {
+                    tracing::info!(
+                        count = n,
+                        dir = %core_dir.display(),
+                        "core plugins loaded from the runtime root"
+                    );
+                }
+            }
+            // 1. init.rs next — AWAITED, so its subscriptions are live before
             //    step 2 loads plugins that fire `plugin-loaded`.
             if let Some(init_dir) = init_dir {
                 match loader.load_path(&init_dir, TrustTier::Bundled).await {

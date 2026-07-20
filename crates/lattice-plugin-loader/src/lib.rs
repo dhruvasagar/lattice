@@ -70,7 +70,8 @@ pub mod install;
 pub mod watch;
 
 pub use discovery::{
-    DiscoveredPlugin, default_init_dir, default_plugins_dir, discover, discover_one,
+    DiscoveredPlugin, default_core_plugins_dir, default_init_dir, default_plugins_dir, discover,
+    discover_one,
 };
 pub use install::install;
 

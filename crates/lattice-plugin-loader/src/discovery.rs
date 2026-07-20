@@ -39,6 +39,58 @@ pub fn default_plugins_dir() -> Option<PathBuf> {
     config_root().map(|d| d.join("lattice").join("plugins"))
 }
 
+/// The **core-plugins root** — prebuilt plugins that ship WITH lattice
+/// (plugin-manager.md §7 / PM.1). Distinct from [`default_plugins_dir`] (the
+/// user's `require`+build cache): core plugins are the batteries-included set,
+/// discovered at boot at the `Bundled` tier. Resolved via a SEARCH PATH — the
+/// first *existing* candidate wins, except an explicit `$LATTICE_RUNTIME` override
+/// always wins (whether or not it exists yet):
+///
+/// 1. `$LATTICE_RUNTIME/plugins` — explicit override,
+/// 2. `<LATTICE_INSTALL_PREFIX>/share/lattice/plugins` — the prefix a packager
+///    bakes in at build time (`option_env!`),
+/// 3. `<exe-dir>/../share/lattice/plugins` — a relocatable install / `.app`,
+/// 4. `<exe-dir>/../../runtime/plugins` — dev, running from `target/<profile>/`.
+///
+/// `None` when no candidate exists — the editor then loads no core plugins (a
+/// benign skip, like an absent user plugins dir).
+pub fn default_core_plugins_dir() -> Option<PathBuf> {
+    core_plugins_dir_from(
+        std::env::var_os("LATTICE_RUNTIME"),
+        option_env!("LATTICE_INSTALL_PREFIX"),
+        std::env::current_exe().ok().as_deref(),
+    )
+}
+
+/// The pure search-path core of [`default_core_plugins_dir`] — takes the resolved
+/// inputs so it's testable without touching the process environment.
+fn core_plugins_dir_from(
+    runtime_env: Option<std::ffi::OsString>,
+    install_prefix: Option<&str>,
+    exe: Option<&Path>,
+) -> Option<PathBuf> {
+    // Explicit override wins unconditionally (existence is discovery's concern).
+    if let Some(root) = runtime_env {
+        return Some(PathBuf::from(root).join("plugins"));
+    }
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(prefix) = install_prefix {
+        candidates.push(
+            Path::new(prefix)
+                .join("share")
+                .join("lattice")
+                .join("plugins"),
+        );
+    }
+    if let Some(dir) = exe.and_then(Path::parent) {
+        // Installed: `<prefix>/bin/lattice` → `<prefix>/share/lattice/plugins`.
+        candidates.push(dir.join("..").join("share").join("lattice").join("plugins"));
+        // Dev: `<workspace>/target/<profile>/lattice` → `<workspace>/runtime/plugins`.
+        candidates.push(dir.join("..").join("..").join("runtime").join("plugins"));
+    }
+    candidates.into_iter().find(|p| p.exists())
+}
+
 /// The user's `init.rs` config plugin directory: `~/.config/lattice/init/` on
 /// Linux AND macOS (honoring `$XDG_CONFIG_HOME`), `%APPDATA%\lattice\init` on
 /// Windows. Holds the user's `init.rs`-compiled component + its `plugin.toml`
@@ -143,5 +195,73 @@ fn sole_wasm(plugin_dir: &Path) -> Result<PathBuf, String> {
         1 => Ok(wasm.into_iter().next().expect("len checked == 1")),
         0 => Err("no `.wasm` component found".to_string()),
         n => Err(format!("{n} `.wasm` files found; expected exactly one")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::core_plugins_dir_from;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn runtime_env_override_wins_unconditionally() {
+        // The override is used even when it doesn't exist (discovery skips a
+        // missing dir); no other candidate is consulted.
+        let got = core_plugins_dir_from(
+            Some("/opt/lattice-runtime".into()),
+            Some("/usr"),
+            Some(Path::new("/usr/bin/lattice")),
+        );
+        assert_eq!(got, Some(PathBuf::from("/opt/lattice-runtime/plugins")));
+    }
+
+    #[test]
+    fn install_prefix_beats_exe_relative_when_it_exists() {
+        // A real dir for the prefix candidate; exe-relative candidates don't
+        // exist, so the prefix wins.
+        let tmp = tempfile::tempdir().unwrap();
+        let prefix = tmp.path();
+        let plugins = prefix.join("share").join("lattice").join("plugins");
+        std::fs::create_dir_all(&plugins).unwrap();
+        let got = core_plugins_dir_from(
+            None,
+            Some(prefix.to_str().unwrap()),
+            Some(Path::new("/nowhere/bin/lattice")),
+        );
+        assert_eq!(got, Some(plugins));
+    }
+
+    #[test]
+    fn falls_through_to_the_dev_runtime_dir() {
+        // No override, no prefix; the exe-relative dev candidate
+        // (`<exe>/../../runtime/plugins`) exists.
+        let tmp = tempfile::tempdir().unwrap();
+        // Simulate `<workspace>/target/debug/lattice`.
+        let exe = tmp.path().join("target").join("debug").join("lattice");
+        std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+        let dev_plugins = tmp.path().join("runtime").join("plugins");
+        std::fs::create_dir_all(&dev_plugins).unwrap();
+        let got = core_plugins_dir_from(None, None, Some(&exe));
+        // `<exe>/../../runtime/plugins` normalises to the created dir.
+        assert_eq!(got.map(|p| p.exists()), Some(true));
+        assert!(got_matches(&exe, &dev_plugins));
+    }
+
+    #[test]
+    fn none_when_no_candidate_exists() {
+        assert_eq!(
+            core_plugins_dir_from(None, None, Some(Path::new("/nowhere/bin/lattice"))),
+            None
+        );
+        // No exe at all (current_exe failed) + no prefix → None.
+        assert_eq!(core_plugins_dir_from(None, None, None), None);
+    }
+
+    // The dev candidate path contains `..` segments; compare by canonicalized
+    // existence rather than literal equality.
+    fn got_matches(exe: &Path, expected_existing: &Path) -> bool {
+        let got = core_plugins_dir_from(None, None, Some(exe)).unwrap();
+        got.canonicalize().ok() == expected_existing.canonicalize().ok()
     }
 }

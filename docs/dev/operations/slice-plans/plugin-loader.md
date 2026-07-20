@@ -857,3 +857,101 @@ design fragment — see the settled-decisions note above).
   sketches) per the settled principle above.
 - A separate `:cd` / `:pwd` feature (11 files, Dhruva's parallel work) — leave
   untouched; stage commits **explicitly** (never `git add -A`) so it isn't swept in.
+
+---
+
+## Plugin manager redesign — sources, build-on-boot, core-plugin shipping (PM.x)
+
+> **Design contract:** [`../../architecture/plugin-manager.md`](../../architecture/plugin-manager.md)
+> (the two roots, the source/build/require model, the settled decisions). This
+> redesign extends the finished PL8 loader (+ the `:plugins` view) with the two
+> things it lacked: **where a plugin comes from** (a git/local source) and **how a
+> missing artifact is produced** (build-on-boot). The load / unload / reload /
+> discovery machinery is unchanged — PM adds a resolve→build→cache layer in front.
+
+**Status: 🚧 PM.1 in progress · rest 📝.**
+
+Two tracks. The **core track (PM.1–PM.4) ships auto-pair out of the box** — no
+build service, just a second (prebuilt, shipped) plugin root discovered at boot.
+The **user track (PM.5–PM.8)** is the use-package `require`+build layer on top.
+
+### Core track — auto-pair out of the box (reframes AP.4)
+
+#### PM.1 — the runtime root: search path + boot discovery  🚧
+A `runtime_root()` search path — `$LATTICE_RUNTIME` → compile-time install prefix
+(`LATTICE_INSTALL_PREFIX/share/lattice`, a packager build env) → `<exe-dir>/
+../share/lattice` (relocatable) → `<workspace>/runtime` (dev) — resolving the FIRST
+existing dir (design §7). Boot (`install.rs`) discovers `<runtime>/plugins/` at
+`TrustTier::Bundled` **in addition to** `~/.config/lattice/plugins/`
+(`UserInstalled`), reusing the existing `discover_and_load`. **Exit:** a plugin dir
+staged under a runtime-root candidate is discovered + loaded at Bundled tier at
+boot; an absent runtime root is a benign skip (like the user dir); the search-path
+resolution is unit-tested (env override wins; missing dirs fall through). No build,
+no network. Bench: n/a (discovery is off the boot thread, already async).
+
+#### PM.2 — `xtask build-core-plugins` staging  📝
+A workspace `xtask` (and the release CI step) that runs the `wasm32-wasip2`
+component build for each `plugins/<name>/` and stages `plugin.toml` + `<name>.wasm`
+into the dev runtime root (`<workspace>/runtime/plugins/<name>/`), so
+`cargo run` finds core plugins without a hand-copy. **Exit:** `cargo xtask
+build-core-plugins` produces `runtime/plugins/auto-pair/{plugin.toml, auto_pair.wasm}`;
+a dev editor discovers it via PM.1.
+
+#### PM.3 — manifest `default_mode` + the `<plugin>.enabled` gate  📝
+Manifest gains `default_mode: option<string>` (the mode a plugin enables by
+default). On load, the manager auto-registers a bool option `<plugin-id>.enabled`
+(default `true`) and, gated by it, enables the declared mode via the CI.4
+`ModeEnablementRequested` path; a `:set <id>.enabled=false` (an `OptionChanged`)
+disables it. Host learns the mode-id ONLY from the manifest (mode-ownership holds).
+**Exit:** a discovered plugin declaring `default_mode` has its mode active on load
+with no init.rs; toggling `<id>.enabled` activates/deactivates it live; the option
+is `:describe-option`-visible. General mechanism (core or user plugin).
+
+#### PM.4 — auto-pair as the first core plugin (AP.4)  📝
+auto-pair's `plugin.toml` declares `default_mode = "auto-pairs-mode"`; PM.2 stages
+it into the runtime root; PM.1 discovers it; PM.3's `auto-pair.enabled` (default
+true) enables the mode. **Exit:** a fresh editor (no user config) auto-pairs out of
+the box; `:plugins` lists auto-pair (`source = bundled`); `:set
+auto-pair.enabled=false` turns it off (plugin stays loaded, mode deactivates);
+`:set auto-pairs-style=manual` flips the style live. Closes the auto-pair epic.
+
+### User track — use-package (`require` + build)
+
+#### PM.5 — the build service (source dir → cached wasm)  📝
+`build(source_dir, name) → <user-root>/<name>/<name>.wasm`: invoke the
+`wasm32-wasip2` component build via `spawn_blocking` (never boot/actor thread);
+a `.build-stamp` records the source rev/mtime so an unchanged source is a pure
+load (build iff missing/stale, unless `pinned`). Graceful: a build failure is a
+logged skip surfaced in `:plugins`; a failed *stale* rebuild keeps the previous
+artifact loading. **Exit:** a local source dir builds once, caches, and a warm
+re-load does not rebuild; a broken source logs + skips, never fails boot.
+
+#### PM.6 — source resolver (`Local` → `Git` → `Prebuilt`)  📝
+`resolve(source) → source_dir`: `Local(path)` (in place); `Git{url, rev}` (clone/
+fetch into `~/.cache/lattice/sources/<name>/`, checkout `rev`); `Prebuilt{url}`
+(download the `.wasm` straight to the user root, no build). **Exit:** each source
+kind resolves to a loadable plugin; a re-resolve of an unchanged Git rev is a no-op.
+
+#### PM.7 — the `require` seam + init.rs bootstrapping  📝
+A `plugin-manager` WIT interface (`require(spec)`; `plugin-source` variant) the
+init world imports; the host records specs during init's register export, drains
+them after, and runs resolve→build→load off-thread. init.rs itself is built by the
+PM.5 service (its source dir `<config>/lattice/init/`) — one build primitive, init
++ plugins. Ordering per design §6. **Exit:** an init.rs `require`ing a `Local`/`Git`
+plugin gets it built + loaded a frame or two after boot; init.rs source rebuilds on
+change.
+
+#### PM.8 — `:plugins` source/build columns + rebuild chord  📝
+The `lattice-plugin-manager` view gains **source** (`bundled`/`local`/`git@rev`/
+`prebuilt`) + **build state** (`cached`/`building…`/`build-failed`/`stale`) columns
+and a **rebuild** chord (force-build the plugin under the cursor). Async-build
+progress surfaces via the buffer headerline (async-buffer-status-in-headerline
+rule). **Exit:** the view shows each plugin's source + build state; the rebuild
+chord forces a fresh build off-thread.
+
+### Sequencing
+
+**PM.1 → PM.2 → PM.3 → PM.4** (core track, delivers AP.4) first — it ships
+auto-pair out of the box with no build service. Then **PM.5 → PM.6 → PM.7 → PM.8**
+(user track) layers the use-package `require`+build surface on top. PM.3 is the one
+shared piece the user track also uses (a user plugin declaring `default_mode`).

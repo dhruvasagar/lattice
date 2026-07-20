@@ -270,6 +270,18 @@ Pass `--gui` to route to the GPUI peer. `--tui` explicitly forces the terminal
 renderer. The two flags are mutually exclusive; the default stays TUI for direct
 invocations.
 
+**Configure (`init.rs`)**
+
+```sh
+lattice --init   # scaffold a buildable starter config in ~/.config/lattice/init/
+```
+
+`init.rs` is your config *as code* — a WASM component (keymaps, options, event
+handlers, custom commands). `--init` writes a complete, buildable crate (with a
+`wit/` copy of the editor's API); edit it, build to `wasm32-wasip2`, and
+`:reload-config`. Static overrides can also go in `lattice.toml`. See
+[`docs/user/init.md`](docs/user/init.md).
+
 **macOS app bundle**
 
 ```sh

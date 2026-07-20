@@ -4071,10 +4071,12 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "lattice-config",
  "lattice-core",
  "lattice-runtime",
  "lattice-ui-gpui",
  "lattice-ui-tui",
+ "tempfile",
  "tokio",
  "tracing-subscriber",
 ]

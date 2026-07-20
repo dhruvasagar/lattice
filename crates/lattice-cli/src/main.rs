@@ -39,6 +39,8 @@ use clap::Parser;
 
 use lattice_core::Document;
 
+mod scaffold;
+
 #[derive(Debug, Parser)]
 #[command(version, about = "lattice editor", long_about = None)]
 struct Cli {
@@ -105,7 +107,18 @@ struct Cli {
         conflicts_with = "file"
     )]
     tutor: Option<u32>,
+
+    /// Scaffold a starter `init.rs` config into `~/.config/lattice/init/` and
+    /// exit (does not open the editor). Writes a buildable WASM-component config
+    /// crate — `Cargo.toml`, `plugin.toml`, `src/lib.rs`, and a `wit/` copy of
+    /// the editor's API. Refuses to overwrite an existing non-empty config.
+    #[arg(long = "init")]
+    init: bool,
 }
+
+// lattice's `wit/` API package, embedded at build time (build.rs) so `--init`
+// writes a self-contained, buildable scaffold. Defines `WIT_FILES`.
+include!(concat!(env!("OUT_DIR"), "/wit_assets.rs"));
 
 /// Resolve the final log-level directive from CLI flags +
 /// env override. Precedence (last wins):
@@ -139,6 +152,11 @@ fn compute_log_level(cli: &Cli) -> String {
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    // `--init`: scaffold a starter config and exit — never opens the editor.
+    if cli.init {
+        return scaffold::generate_init();
+    }
 
     // 2026-05-22 messages-overhaul: removed the prior
     // `tracing_subscriber::fmt().try_init()` install — it won the

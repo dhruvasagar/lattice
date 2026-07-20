@@ -640,6 +640,33 @@ strings. Add a custom command by also `provide`-ing `grammar` (see
 
 ## Building and installing
 
+### Scaffold it: `lattice --init`
+
+The fastest start — let lattice write a **buildable** starter config for you:
+
+```bash
+lattice --init
+```
+
+This creates `~/.config/lattice/init/` with a complete WASM-component config crate
+— `Cargo.toml`, `plugin.toml`, `src/lib.rs` (a minimal config: an option, a
+keybinding, an event handler), and a `wit/` copy of *this editor's* API (so it
+builds with no separate checkout, matched to your version). It refuses to
+overwrite an existing config. Then build + install as below (the command prints
+these steps too):
+
+```bash
+rustup target add wasm32-wasip2                      # once
+cd ~/.config/lattice/init
+cargo build --release --target wasm32-wasip2
+cp target/wasm32-wasip2/release/lattice_init.wasm init.wasm
+```
+
+Edit `src/lib.rs`, rebuild, and `:reload-config`. The rest of this section is the
+manual setup, if you'd rather assemble it yourself.
+
+### Manual setup
+
 `init.rs` is a standalone crate compiled to a component. A minimal setup:
 
 ```toml

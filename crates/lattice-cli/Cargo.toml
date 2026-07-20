@@ -17,6 +17,9 @@ lattice-ui-tui = { path = "../lattice-ui-tui" }
 # tracing subscriber. Avoids `std::env::set_var` (denied by
 # `#![deny(unsafe_code)]`).
 lattice-runtime = { path = "../lattice-runtime" }
+# `lattice --init` resolves the config home (`~/.config/lattice/init/`) via the
+# canonical `config_home()` — the same tree the loader discovers init.rs from.
+lattice-config = { path = "../lattice-config" }
 # 5.9 / 5.8.M: optional GPUI peer renderer. Off by default so
 # `cargo build -p lattice-cli` and `cargo test -p lattice-cli` stay
 # headless-friendly (no system-display-lib link required). Enable
@@ -103,3 +106,7 @@ assets = [
     ["../../assets/lattice.iconset/icon_256x256.png", "usr/share/icons/hicolor/256x256/apps/com.lattice-editor.lattice.png", "644"],
     ["../../assets/lattice.iconset/icon_512x512.png", "usr/share/icons/hicolor/512x512/apps/com.lattice-editor.lattice.png", "644"],
 ]
+
+[dev-dependencies]
+# `--init` scaffold test writes into a temp dir (no env-racy config-home).
+tempfile = { workspace = true }

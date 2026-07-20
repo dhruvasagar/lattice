@@ -23,10 +23,12 @@ feature uses — it is not a second-class bolt-on.
 > loader + manager** (Phase 8) both ship today: on-disk discovery, the
 > `:plugin-load` / `:plugin-unload` / `:plugin-reload` commands, the `:plugins`
 > manager view, the `init.rs` config path, and the full boundary-trace
-> observability stack (`:plugin-trace`, `plugin.trace-level`, guest logging). The
-> frontier is the **bundled reference plugins** (`git-gutter`, `auto-pair`,
-> rainbow-delimiters) and shipping the built-in major modes *as components* — the
-> mechanism is done; those payloads are the next slices.
+> observability stack (`:plugin-trace`, `plugin.trace-level`, guest logging).
+> **`auto-pair` now ships as the first *core plugin*** — prebuilt, discovered at
+> boot, on by default (see [core-plugins.md](core-plugins.md)). The frontier is
+> more core plugins (`git-gutter`, rainbow-delimiters) plus the **use-package
+> layer** — declaring *user* plugins from a git/local source and building them on
+> first boot (the plugin-manager PM.5–PM.8 slices).
 
 ---
 
@@ -48,6 +50,22 @@ In the `:plugins` view: `r` reload · `x` unload · `K` / `<CR>` describe · `gr
 refresh · `t` open that plugin's trace · `T` cycle its trace verbosity.
 
 ---
+
+## Core plugins vs. user plugins
+
+Lattice has **two plugin roots**:
+
+- **Core plugins** ship *with* lattice — prebuilt components in a runtime root
+  beside the binary, discovered at boot at the bundled tier, and enabled by
+  default via a `<id>.enabled` gate. `auto-pair` is the first. You configure or
+  disable them, you don't install them. See **[core-plugins.md](core-plugins.md)**.
+- **User plugins** live in `~/.config/lattice/plugins/` — you install them (drop a
+  built component there, or, with the use-package layer, declare a git/local
+  source that the editor builds on first boot). These load at the user-installed
+  tier under a capability grant.
+
+Everything below applies to both; the difference is only *where they come from* and
+*whether they're on by default*.
 
 ## Loading a plugin
 

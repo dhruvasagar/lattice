@@ -141,14 +141,26 @@ document buffer with no consent — wrong for a third-party contribution.
   major admits it). The one piece of real machinery here; legitimate anyway
   (`:reload-config`, `:mode-enable` need it too).
 
-auto-pair is **off by default** (available, declares `Global` scope). The user's
-`init.rs` turns it on:
+> **Superseded for core plugins (2026-07-20, PM.3/PM.4).** auto-pair is now a
+> **core plugin**: it ships prebuilt, is discovered at boot, and is enabled by a
+> config gate — its manifest declares `default_mode = "auto-pairs-mode"`, and the
+> loader auto-registers `auto-pair.enabled` (default `true`) that turns the mode
+> on out of the box. So auto-pair needs **no** `init.rs` to enable it; the user
+> *configures* it (`set_option("auto-pair.enabled", "false")` /
+> `"auto-pairs-style"`) at the top level, and `:set auto-pair.enabled=false`
+> toggles it live. See [`plugin-manager.md`](plugin-manager.md) §7. The
+> `on-plugin-loaded → enable-mode` pattern below remains the tool for **user**
+> plugins with off-by-default modes (and for any deferred config of a
+> not-yet-loaded plugin).
+
+A **user** plugin that declares no default mode is available-but-off; the user's
+`init.rs` turns it on when it loads:
 
 ```rust
 fn setup() {
-    on_plugin_loaded("auto-pair", || {
-        enable_mode("auto-pairs-mode");
-        set_option("auto-pairs-style", "manual"); // optional
+    on_plugin_loaded("my-linter", || {
+        enable_mode("my-linter-mode");
+        set_option("my-linter.strict", "true"); // optional
     });
 }
 ```

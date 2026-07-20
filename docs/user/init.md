@@ -226,22 +226,45 @@ A handler that traps (panics, overruns its fuel budget) is **quarantined** — t
 host logs it, skips that one delivery, and every other subscriber is untouched.
 Return early on the arms you don't handle; never panic to signal "not for me."
 
-### Configuring plugins that load *after* you: `PluginLoaded`
+### Core plugins: configure, don't enable
 
-Your `init.rs` loads **first** — before the plugins in `~/.config/lattice/plugins/`.
-So config that targets a plugin (enable its mode, set its options, bind keys to
-its commands) can't run at the top level: the plugin isn't there yet. Instead,
-**subscribe to `PluginLoaded` and react when it arrives** — the
-`with-eval-after-load` / lazy-autocmd pattern:
+**Core plugins ship with lattice and are on by default** — you don't enable them.
+`auto-pair` is a core plugin: `auto-pairs-mode` is active out of the box, gated by
+a bool option `auto-pair.enabled` (default `true`). To configure or disable it,
+set options at the **top level** of `init.rs` — the option exists as soon as the
+core plugin loads (before your other config runs):
+
+```rust
+fn setup() {
+    // auto-pair is ON by default. Turn it off:
+    config::set_option("auto-pair.enabled", "false");
+
+    // …or keep it on and switch to the manual close-key style:
+    config::set_option("auto-pairs-style", "manual");
+    config::set_option("auto-pairs-close-key", "<C-l>");
+}
+```
+
+You can equally set these in `lattice.toml` (`auto-pair.enabled = false`) or live
+with `:set`. See [core-plugins.md](core-plugins.md) for the full list and each
+plugin's options.
+
+### Configuring *user* plugins that load after you: `PluginLoaded`
+
+Your `init.rs` loads **first** — before the *user* plugins in
+`~/.config/lattice/plugins/`. So config that targets a user plugin (enable its
+mode, set its options, bind keys to its commands) can't run at the top level: the
+plugin isn't there yet. Instead, **subscribe to `PluginLoaded` and react when it
+arrives** — the `with-eval-after-load` / lazy-autocmd pattern:
 
 ```rust
 fn on_event(_handler: u32, ev: Event) {
     if let Event::PluginLoaded(p) = ev {
         match p.name.as_str() {
-            // Enable a plugin's minor mode the moment it loads.
-            "auto-pair" => {
-                modes::enable_mode("auto-pairs-mode");
-                config::set_option("auto-pairs-style", "manual"); // optional
+            // Enable a USER plugin's minor mode the moment it loads.
+            "my-plugin" => {
+                modes::enable_mode("my-plugin-mode");
+                config::set_option("my-plugin.option", "value");
             }
             _ => {}
         }
@@ -251,10 +274,11 @@ fn on_event(_handler: u32, ev: Event) {
 
 Why this shape, not a top-level `enable_mode(...)`:
 
-- **Plugin minor modes are available-but-off.** A plugin *provides* a mode
-  (`auto-pairs-mode`); **you** enable it — the plugin author doesn't turn it on
-  for you (the emacs global-minor-mode model). `enable-mode` flips it on globally
-  and activates it on your open buffers immediately.
+- **User-plugin minor modes are available-but-off.** A user plugin *provides* a
+  mode; **you** enable it — the plugin author doesn't turn it on for you (the emacs
+  global-minor-mode model). `enable-mode` flips it on globally and activates it on
+  your open buffers immediately. (Core plugins differ: their `<id>.enabled` gate
+  turns their default mode on for you — see above.)
 - **The target must exist when you configure it.** `PluginLoaded` fires *after*
   the plugin's seams all registered, so `enable-mode` / `set-option` always hit a
   present target.
@@ -553,6 +577,10 @@ impl Guest for Component {
     fn register_options() {
         config::set_option("tabstop", "4");
         config::set_option("plugin.trace-level", "info");
+        // CORE plugins (auto-pair) are on by default — configure them here at the
+        // top level; their options exist as soon as the core plugin loads.
+        config::set_option("auto-pairs-style", "manual"); // manual close-key pairing
+        // config::set_option("auto-pair.enabled", "false"); // …or turn it off
         // set-option returns false (a logged no-op) for an unknown option or an
         // invalid value — it never mis-sets.
     }
@@ -572,13 +600,15 @@ impl Guest for Component {
 
     fn on_event(handler: u32, ev: Event) {
         match (handler, ev) {
-            // DEFERRED: configure each plugin the moment it loads.
+            // DEFERRED: configure each USER plugin the moment it loads. (Core
+            // plugins like auto-pair are on by default — configure them in
+            // `register_options` above, not here.)
             (1, Event::PluginLoaded(p)) => match p.name.as_str() {
-                "auto-pair" => {
-                    modes::enable_mode("auto-pairs-mode");            // turn it on
-                    config::set_option("auto-pairs-style", "manual"); // and configure it
+                // A user plugin you installed that provides an off-by-default mode:
+                "my-linter" => {
+                    modes::enable_mode("my-linter-mode");             // turn it on
+                    config::set_option("my-linter.strict", "true");   // and configure it
                 }
-                "git-gutter" => modes::enable_mode("git-gutter-mode"),
                 _ => {}
             },
             // EVENT FLOW: set options as buffers open (e.g. wrap for markdown).

@@ -1078,13 +1078,35 @@ WASM call overhead is real but bounded. Ground rules:
 > `lattice-snippet`, outline = `:lsp-symbols`); the not-done work is repackaging
 > it as WASM components + the editor-side loader (§13, Phase 8).
 
-Lattice will ship with a curated set of **bundled plugins** -- WASM Component Model packages compiled into the editor binary (or shipped in a known directory next to it) so they're available without a separate install step. They are the same shape as user-installed plugins; they just have a higher trust default and zero install friction.
+> **Updated (2026-07-20): "bundled" = *core plugins*, and they are NOT compiled
+> into the binary.** The distribution model was settled in
+> [`plugin-manager.md`](plugin-manager.md): plugins ship **separately** (rejecting
+> `include_bytes!`), on **two roots** — a **runtime root** of prebuilt core-plugin
+> `.wasm` beside the binary (found via a search path, discovered at boot), and the
+> **user root** `~/.config/lattice/plugins/` fed by a use-package `require` +
+> build-on-boot layer. Core plugins are enabled by a `<id>.enabled` config gate.
+> **auto-pair is the first core plugin, shipped** (the whole stack proven end to
+> end). Read the paragraphs below with that model; the `include_bytes!` /
+> `core-plugins/<name>.wasm`-only phrasing is historical.
+
+Lattice ships with a curated set of **core plugins** -- WASM Component Model
+packages that ship *with* the editor (prebuilt, staged into a runtime root beside
+the binary; NOT compiled into it) so they're available without a separate install
+step. They are the same shape as user-installed plugins; they just have a higher
+trust default, zero install friction, and are enabled by a config gate.
 
 The strategy: features that *aren't architecturally core* but *are essential to ship feature-complete out of the box* live here. Core stays narrow (buffers, modal grammar, command registry, renderer trait, runtime, plugin host); editor-quality wins (LSP server management, project-wide search, version-control UIs, snippets, surround / comment / auto-pair editing helpers) ship as bundled plugins. This dogfoods the plugin host on real workloads, gives third-party plugin authors high-quality reference implementations to study, and keeps the plugin API surface honest.
 
 **Trust distinction.** Bundled plugins inherit the editor's trust level -- their capabilities are pre-granted at build time, no per-install consent prompt. User-installed plugins (via the bundled plugin manager) go through capability prompts on first install. Plugin manifests declare requested capabilities (`fs:write:install_dir`, `net:http`, `proc:spawn`, ...); the runtime gates accordingly.
 
-**Bootstrap.** The plugin manager itself is bundled; you can't install it via itself. Bundled plugins live in `core-plugins/<name>.wasm` next to the binary, or compiled-in via `include_bytes!` for single-binary distributions. On first launch the host instantiates them with their pre-granted capabilities; the plugin manager then handles user-installed plugins from `${XDG_DATA_HOME}/lattice/plugins/`.
+**Bootstrap (as built — [`plugin-manager.md`](plugin-manager.md)).** Core plugins
+live as prebuilt `.wasm` in the **runtime root** (`<runtime>/plugins/<name>/`,
+resolved via `$LATTICE_RUNTIME` → install prefix → exe-relative → dev workspace) —
+**not** `include_bytes!` (rejected: plugins ship separately, versioned
+independently of the binary). At boot the host discovers + instantiates them with
+pre-granted (bundled-tier) capabilities and a `<id>.enabled` gate; the loader then
+handles **user** plugins from `~/.config/lattice/plugins/`, declared via a
+use-package `require` (git/local source, built on first boot into that cache).
 
 **Bundled-plugin candidates** (Phase 8 -- post-Phase-7 plugin host; concrete inventory in `docs/../operations/implementation.md`):
 

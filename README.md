@@ -243,15 +243,26 @@ flowchart TD
 **Build & run (TUI — default)**
 
 ```sh
+# One-time (and after changing a core plugin): stage the bundled plugins.
+# This builds e.g. auto-pair to wasm and drops it in ./runtime/plugins/, where
+# the editor discovers it at boot. A released build ships these pre-staged.
+cargo xtask build-core-plugins
+
 cargo build --release
 cargo run --release -- README.md
 ```
 
-The CLI opens the file in the TUI. Editing is full vim modal.
+The CLI opens the file in the TUI. Editing is full vim modal, and **auto-pair is
+on out of the box** (a *core plugin* — type `(` and get `()`). See
+[`docs/user/core-plugins.md`](docs/user/core-plugins.md) to configure or disable
+it, and [`docs/user/plugins.md`](docs/user/plugins.md) for the plugin model.
+(`cargo xtask build-core-plugins` needs the `wasm32-wasip2` target:
+`rustup target add wasm32-wasip2`.)
 
 **Build & run (GPUI — GPU renderer)**
 
 ```sh
+cargo xtask build-core-plugins   # once, as above
 cargo run --release --features gui -- --gui README.md
 ```
 

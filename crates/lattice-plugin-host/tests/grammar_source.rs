@@ -58,6 +58,7 @@ fn load(dir: &TempDir) -> (CommandRegistry, u32) {
             TrustTier::Bundled,
             &std::sync::Arc::new(lattice_runtime::EventBus::new()),
             None,
+            None,
         )
         .expect("instantiate + register-grammar");
     let plugin_id = set.plugin_id().0;
@@ -93,6 +94,7 @@ fn load_traced(dir: &TempDir) -> (CommandRegistry, u32, PluginTracerHandle) {
             TrustTier::Bundled,
             &std::sync::Arc::new(lattice_runtime::EventBus::new()),
             Some(&tracer),
+            None,
         )
         .expect("instantiate + register-grammar");
     let plugin_id = set.plugin_id().0;

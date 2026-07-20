@@ -1,8 +1,15 @@
-# AP.1 — the auto-pair plugin manifest. Bundled (pre-granted), NO capabilities:
-# it reaches no filesystem, network, or subprocess — it only reads buffer text
-# through the grammar `borrow<document>` handle and contributes grammar / modes /
-# config registry entries. `grammar` MUST precede `modes` in `provides`: the
-# mode's keymap binds to the plugin's OWN grammar actions by name, resolved
-# against the command registry at bind time, so the grammar drain must run first.
+# AP.1/AP.3 — the auto-pair plugin manifest. Bundled (pre-granted). It reaches no
+# filesystem, network, or subprocess — it only reads buffer text through the
+# grammar `borrow<document>` handle and contributes grammar / modes / config
+# registry entries. `grammar` MUST precede `modes` in `provides`: the mode's
+# keymap binds to the plugin's OWN grammar actions by name, resolved against the
+# command registry at bind time, so the grammar drain must run first.
+#
+# AP.3: the `manual` style bounds its backward scan to the enclosing lexical
+# scope via the tree-sitter seam (plugin-treesitter-seam.md), which is gated on
+# the `tree-sitter` editor capability (TS.1 §5) — so the manifest declares it.
+# Bundled ⇒ pre-granted; a `manual`-style user with no grant degrades to the
+# line-capped fallback scan (design §7).
 id = "auto-pair"
 provides = ["grammar", "modes", "config"]
+editor_capabilities = ["tree-sitter"]

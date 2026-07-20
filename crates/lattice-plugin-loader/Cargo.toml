@@ -93,3 +93,7 @@ tempfile = { workspace = true }
 # proving the sync trampoline fires off the wait-free registry snapshot (B3b).
 lattice-core = { path = "../lattice-core" }
 lattice-protocol = { path = "../lattice-protocol" }
+# AP.3: the auto-pair manual-style e2e injects a pre-parsed tree snapshot on the
+# per-dispatch env (the tree-sitter seam's scope query), mirroring what the host's
+# Action gate does with the active buffer's `SyntaxHandle::snapshot()`.
+lattice-syntax = { path = "../lattice-syntax" }

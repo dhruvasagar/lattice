@@ -10,8 +10,8 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned. Every non-trivial sl
 the four artefacts (doc + bench-where-perf-relevant + test incl. failure modes +
 graceful error handling).
 
-**Status: 🚧 in progress — AP.0.1 ✅, AP.0.2 ✅, AP.1.0 ✅, AP.1 ✅, AP.2 ✅
-(open + close); AP.0.3 / AP.3 / AP.4 planned.**
+**Status: 🚧 in progress — AP.0.1 ✅, AP.0.2 ✅, AP.0.3 ✅ (TS.1+TS.2), AP.1.0 ✅,
+AP.1 ✅, AP.2 ✅ (auto), AP.3 ✅ (manual, = TS.3); AP.4 (bundle) planned.**
 
 > **Mode enablement moved out (2026-07-19).** `auto-pairs-mode` is now
 > **available-but-off**, not self-activating — the user enables it via `init.rs`.
@@ -152,13 +152,31 @@ exactly the primitive AP.3's `manual` style needs — auto-pair is the intended 
 consumer. AP.3 is unblocked on the scope query; TS.2 (queries/cursor) is not
 required for the enclosing-scope bound.
 
-### AP.3 — `manual` style  📝
+### AP.3 — `manual` style  ✅ (also TS.3)
 The `find_pair` port (design fragment §3) + the close key + the fall-through
 (AP.0.2), scanning **only the enclosing lexical scope** (AP.0.3 / §7), with the
 cursor-backward `document.slice` fallback where there's no parse tree. **Exit:**
 with `auto-pairs-style=manual`, the close key closes the nearest unmatched open in
 the scope (inside-out on repeat; symmetric pairs + `<`/`>` handled), falls through
 when nothing is unmatched, and stays bounded on a large buffer.
+
+**Delivered (2026-07-20).** `plugins/auto-pair/src/lib.rs`: `find_pair` (faithful
+`vim-pairify` port — backward stack scan, symmetric quotes, `<`/`>` space
+heuristic), `manual_close` (scope text via the tree-sitter `enclosing` query with
+a line-capped fallback), the `auto-pair-close-manual` action (bound `<C-j>`) and
+`auto-pair-backspace` action (bound `<BS>` — deletes an empty pair, else
+declines). Style read **live** at dispatch via `config::get-option
+("auto-pairs-style")` — in `manual` the pair keys (1..=9) decline (self-insert)
+and the close key acts; in `auto` the close key declines. **Enabler (general):**
+`instantiate_grammar_plugin` now wires the SHARED editor `ConfigRegistry` into the
+grammar guest store, so a grammar action can READ an option — the loader passes
+`env.config_registry`; the grammar seam previously had `config_registry: None`.
+Manifest gains `editor_capabilities = ["tree-sitter"]` (the `enclosing` scope
+query is capability-gated, TS.1 §5). **Tests:** `auto_pair_manual.rs` — 5 e2e
+through the real loaded plugin: tree-scoped close inserts the closer, fall-through
+declines, manual pair-keys decline, auto close-key declines, backspace
+deletes/declines. Style flips live via `parse_and_set_command`. auto-pair is the
+first end-to-end consumer of the tree-sitter seam (TS.3).
 
 ### AP.4 — bundling  📝
 Ship `auto-pair.wasm` compiled-in / in `core-plugins/`, pre-granted at boot (needs

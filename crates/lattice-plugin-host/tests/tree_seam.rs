@@ -42,7 +42,7 @@ fn register_grammar(editor: CapabilitySet) -> (CommandRegistry, tempfile::TempDi
     let manifest = PluginManifest::new("multiseam", Vec::new(), editor);
     let bus = Arc::new(lattice_runtime::EventBus::new());
     let grammar_set = host
-        .instantiate_grammar_plugin(&component, &manifest, TrustTier::Bundled, &bus, None)
+        .instantiate_grammar_plugin(&component, &manifest, TrustTier::Bundled, &bus, None, None)
         .expect("grammar drain instantiates");
     let mut commands = CommandRegistry::new();
     grammar_set.register_all(&mut commands);

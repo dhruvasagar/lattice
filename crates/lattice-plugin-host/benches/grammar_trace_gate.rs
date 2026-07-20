@@ -51,6 +51,7 @@ fn setup(path: &str, tracer: Option<&PluginTracerHandle>) -> (CommandRegistry, u
             TrustTier::Bundled,
             &Arc::new(lattice_runtime::EventBus::new()),
             tracer,
+            None,
         )
         .unwrap();
     let id = set.plugin_id().0;

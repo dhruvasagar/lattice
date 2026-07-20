@@ -49,7 +49,7 @@ async fn one_component_provides_grammar_modes_and_config() {
     //    ALSO imports modes/config; this succeeds only because the grammar linker
     //    is a superset carrying those (sync) register funcs.
     let grammar_set = host
-        .instantiate_grammar_plugin(&component, &manifest, TrustTier::Bundled, &bus, None)
+        .instantiate_grammar_plugin(&component, &manifest, TrustTier::Bundled, &bus, None, None)
         .expect("grammar drain instantiates the combined component (sync linker)");
     let mut commands = CommandRegistry::new();
     grammar_set.register_all(&mut commands);

@@ -65,7 +65,9 @@ fn write_plugin_dir(root: &std::path::Path, wasm: &[u8]) {
     // first (the real `plugin.toml` orders them the same way).
     std::fs::write(
         dir.join("plugin.toml"),
-        "id = \"auto-pair\"\nprovides = [\"grammar\", \"modes\", \"config\"]\n",
+        // AP.3: `editor_capabilities = ["tree-sitter"]` matches the real manifest
+        // so the manual style's `enclosing` scope query gets its tree handle.
+        "id = \"auto-pair\"\nprovides = [\"grammar\", \"modes\", \"config\"]\neditor_capabilities = [\"tree-sitter\"]\n",
     )
     .unwrap();
     std::fs::write(dir.join("component.wasm"), wasm).unwrap();

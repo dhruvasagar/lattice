@@ -9,7 +9,7 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned. Every non-trivial sl
 the four artefacts (doc + bench-where-perf-relevant + test incl. failure modes +
 graceful error handling).
 
-**Status: 🚧 TS.1 ✅ · TS.2 ✅ · TS.3 📝.**
+**Status: ✅ TS.1 ✅ · TS.2 ✅ · TS.3 ✅ (auto-pair manual style, AP.3).**
 
 ## Sequencing
 
@@ -114,12 +114,23 @@ err, cursor walk, `current-field`); 2 new `tests/tree_seam.rs` end-to-end (query
 path by design). Guest `apply-action` signature is unchanged — queries/cursors
 are called on the existing `tree-snapshot` handle inside the action.
 
-### TS.3 — first structural consumer  📝
+### TS.3 — first structural consumer  ✅
 Prove the seam end to end through a real plugin — either auto-pair's `manual`
 scope query (its AP.3) or a small structural-motion fixture. **Exit:** a plugin's
 structural behavior is driven entirely through the seam, coherent under an edit
 (eventual-consistency — the plugin's view catches up a reparse or two later, never
 a torn read).
+
+**Delivered (2026-07-20) via AP.3.** auto-pair's `manual` style is the first
+structural consumer: its `manual_close` action calls `tree-snapshot.enclosing
+(cursor, block-kinds)` to bound the backward `find_pair` scan to the enclosing
+lexical scope (line-capped fallback where there's no parse). Proven end to end in
+`lattice-plugin-loader/tests/auto_pair_manual.rs` — the real loaded plugin, with
+the `tree-sitter` grant, closes the nearest unmatched opener through the seam. A
+general enabler landed with it: a grammar guest can now read a config option
+(`instantiate_grammar_plugin` wires the shared `ConfigRegistry` into the grammar
+store), so auto-pair reads `auto-pairs-style` live. See the auto-pair slice plan
+for the AP.3 detail.
 
 ## Deferred
 

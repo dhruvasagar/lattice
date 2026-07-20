@@ -41,6 +41,7 @@ fn grammar_round_trip(c: &mut Criterion) {
             TrustTier::Bundled,
             &std::sync::Arc::new(lattice_runtime::EventBus::new()),
             None,
+            None,
         )
         .unwrap();
     // Leak the host so its engine + epoch ticker outlive the dispatched closures.

@@ -214,9 +214,28 @@ materialization.
 
 ## 8. Capabilities
 
-**None.** Pure editing — reads the buffer via the (host-owned, capability-free)
-`document` handle and returns edits. `manifest.toml` requests no `fs` / `net` /
-`proc`. The simplest trust surface (contrast lighthouse's `net`+`proc`+`fs:write`).
+**`tree-sitter` (editor capability), and nothing else** — no `fs` / `net` /
+`proc`. The `auto` style is capability-free (it reads only via the host-owned
+`document` handle), but the `manual` style's `enclosing` scope query rides the
+tree-sitter seam, which TS.1 §5 gates on the `tree-sitter` editor capability — so
+`plugin.toml` declares `editor_capabilities = ["tree-sitter"]`. Bundled ⇒
+pre-granted; a `manual`-style user whose grant is withheld degrades to the
+line-capped fallback scan (§7), never an error. Still the simplest trust surface
+of the bundled set (contrast lighthouse's `net`+`proc`+`fs:write`).
+
+> **Style gating is read at dispatch, not registered per-style (as built,
+> AP.3).** §2 sketched "read `auto-pairs-style`, register the matching keymap,
+> re-register on `OptionChanged`." As built, the mode registers ONE static keymap
+> (all pair keys + the close key + `<BS>`) and each action reads the live option
+> via `config::get-option` and DECLINES when it shouldn't act (pair keys in
+> `manual`; the close key in `auto`). This avoids dynamic keymap re-registration
+> and the events-seam subscription entirely; the per-keystroke cost is one
+> ConfigRegistry lookup, dwarfed by the WASM round-trip the bound key already
+> pays. It required a general enabler — **a grammar guest can now read a config
+> option**: `instantiate_grammar_plugin` wires the shared editor `ConfigRegistry`
+> into the grammar store (it was `None` before, only the async config seam had
+> it). Broadly useful (a comment plugin reading `commentstring`, etc.), not
+> auto-pair-specific.
 
 ## 9. Paramount-goal alignment
 

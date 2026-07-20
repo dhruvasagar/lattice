@@ -18,8 +18,18 @@
 //!   - **quote** (`"` `'` `` ` ``, same-char pairs) → step over if the same quote
 //!     is next, else insert the pair caret-between.
 //!
+//! **The `manual` style (AP.3)** — the pair keys self-insert; a single close key
+//! (default `<C-j>`) closes the nearest unmatched opener, found by scanning the
+//! enclosing lexical scope backward (`find_pair`, §3), bounded via the
+//! tree-sitter seam's `enclosing` query (§7) with a line-capped fallback where
+//! there's no parse tree. The style is read live from `auto-pairs-style` (the
+//! grammar guest reads the shared config registry), so `:set` flips it without
+//! re-registration. Backspace inside an empty pair deletes both chars, else
+//! declines to the builtin. This makes auto-pair the first end-to-end consumer of
+//! the tree-sitter seam (TS.3).
+//!
 //! Word-boundary / string-comment suppression (don't pair a `'` inside `don't`)
-//! is deferred to v2; the `manual` style + backspace need AP.0.2 / AP.0.3.
+//! + per-language pair tables are deferred to v2.
 
 wit_bindgen::generate!({
     world: "auto-pair-plugin",
@@ -54,6 +64,9 @@ const CB_CLOSE_CURLY: u32 = 6;
 const CB_QUOTE_DOUBLE: u32 = 7;
 const CB_QUOTE_SINGLE: u32 = 8;
 const CB_QUOTE_BACKTICK: u32 = 9;
+// AP.3 — the manual close key + backspace.
+const CB_CLOSE_MANUAL: u32 = 10;
+const CB_BACKSPACE: u32 = 11;
 
 /// One byte to the right of `pos` on the same line — the caret "between the pair"
 /// after an open, and the "stepped over" caret after a close/quote-skip.
@@ -139,6 +152,179 @@ fn quote(ctx: &ActionContext, doc: &Document, q: &str) -> Vec<Effect> {
     }
 }
 
+// ── the pairs table (§4) — the plugin's own data; the host never interprets it ──
+fn is_closer(c: char) -> bool {
+    matches!(c, ')' | ']' | '}' | '>' | '\'' | '"' | '`')
+}
+fn is_symmetric(c: char) -> bool {
+    matches!(c, '\'' | '"' | '`')
+}
+/// The closer for an opener (symmetric chars map to themselves), or `None` if `c`
+/// isn't an opener.
+fn closer_for_opener(c: char) -> Option<char> {
+    match c {
+        '(' => Some(')'),
+        '[' => Some(']'),
+        '{' => Some('}'),
+        '<' => Some('>'),
+        '\'' => Some('\''),
+        '"' => Some('"'),
+        '`' => Some('`'),
+        _ => None,
+    }
+}
+
+/// The manual-close algorithm (§3), a faithful port of `vim-pairify#find_pair`:
+/// scan `text` **backward** maintaining a stack of unmatched closers, and return
+/// the closer to insert at the nearest UNMATCHED opener — or `None` (fall
+/// through) when nothing above is open. `text` is the enclosing scope up to the
+/// caret (§7), so the scan is bounded regardless of file size, and `find_pair`'s
+/// early-exit trims it to the first unmatched opener.
+fn find_pair(text: &str) -> Option<String> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut stack: Vec<char> = Vec::new();
+    let mut i = chars.len();
+    while i > 0 {
+        i -= 1;
+        let c = chars[i];
+        if is_closer(c) {
+            // `>` preceded by a space is a comparison operator (`a -> b`), not a
+            // bracket — skip.
+            if c == '>' && i > 0 && chars[i - 1] == ' ' {
+                continue;
+            }
+            if stack.last() == Some(&c) && is_symmetric(c) {
+                stack.pop(); // a balanced symmetric (quote) pair
+            } else {
+                stack.push(c);
+            }
+        } else if let Some(close) = closer_for_opener(c) {
+            // `<` followed by a space is a comparison operator (`a < b`) — skip.
+            if c == '<' && i + 1 < chars.len() && chars[i + 1] == ' ' {
+                continue;
+            }
+            match stack.last() {
+                // A bracket that matches the pending closer on top → balanced.
+                Some(&top) if closer_for_opener(c) == Some(top) => {
+                    stack.pop();
+                }
+                // Nothing pending above → this opener is the nearest unmatched.
+                None => return Some(close.to_string()),
+                // An opener under a non-matching closer: keep scanning.
+                _ => {}
+            }
+        }
+    }
+    // A stray closer with no opener above: vim-pairify returns the stack bottom.
+    stack.first().map(|c| c.to_string())
+}
+
+/// Read the live `auto-pairs-style` option (AP.3). `auto` (default) or `manual`.
+/// The grammar guest reads the SHARED editor config registry (wired at
+/// instantiate time), so a `:set auto-pairs-style=manual` flips behavior live —
+/// no keymap re-registration.
+fn is_manual() -> bool {
+    config::get_option("auto-pairs-style").as_deref() == Some("manual")
+}
+
+fn one_left(pos: Position) -> Position {
+    Position {
+        line: pos.line,
+        byte: pos.byte.saturating_sub(1),
+    }
+}
+
+/// The single byte before the caret (empty at BOL / on a read error).
+fn char_before(ctx: &ActionContext, doc: &Document) -> String {
+    if ctx.cursor.byte == 0 {
+        return String::new();
+    }
+    doc.get_text_range(Range {
+        start: one_left(ctx.cursor),
+        end: ctx.cursor,
+    })
+    .unwrap_or_default()
+}
+
+/// The block/function kinds that bound the manual backward scan (§7). Root kinds
+/// (`source_file`/`module`) are deliberately omitted — matching them would scope
+/// to the whole file, defeating the bound; a cursor in none of these falls back
+/// to a line-capped slice.
+fn scope_kinds() -> Vec<String> {
+    [
+        "block",
+        "statement_block",
+        "function_item",
+        "function_definition",
+        "function_declaration",
+        "arrow_function",
+        "closure_expression",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
+/// The scope text from the enclosing lexical scope's start up to the caret (§7).
+/// Uses the tree-sitter seam's `enclosing` to bound the scan; with no parse tree
+/// (or no enclosing scope), degrades to a line-capped cursor-backward slice —
+/// never a whole-buffer materialization.
+fn scope_text_before_cursor(
+    ctx: &ActionContext,
+    doc: &Document,
+    tree: Option<&TreeSnapshot>,
+) -> String {
+    let scan_start = tree
+        .and_then(|t| t.enclosing(ctx.cursor, &scope_kinds()))
+        .map(|node| node.byte_range().start)
+        .unwrap_or_else(|| Position {
+            line: ctx.cursor.line.saturating_sub(200),
+            byte: 0,
+        });
+    doc.get_text_range(Range {
+        start: scan_start,
+        end: ctx.cursor,
+    })
+    .unwrap_or_default()
+}
+
+/// Manual close key: scan the enclosing scope backward and close the nearest
+/// unmatched opener, or DECLINE (fall through — §6) when nothing is open.
+fn manual_close(ctx: &ActionContext, doc: &Document, tree: Option<&TreeSnapshot>) -> Vec<Effect> {
+    let text = scope_text_before_cursor(ctx, doc, tree);
+    match find_pair(&text) {
+        Some(closer) => insert_one(ctx, &closer),
+        None => vec![Effect::Declined],
+    }
+}
+
+/// Backspace inside an empty pair (`()` / `""` with the caret between) deletes
+/// BOTH chars; otherwise DECLINES to the builtin backspace (never reimplements
+/// it). Active in both styles.
+fn backspace(ctx: &ActionContext, doc: &Document) -> Vec<Effect> {
+    let before = char_before(ctx, doc);
+    let after = char_after(ctx, doc);
+    let empty_pair = match (before.chars().next(), after.chars().next()) {
+        (Some(b), Some(a)) => closer_for_opener(b) == Some(a),
+        _ => false,
+    };
+    if empty_pair {
+        vec![Effect::ApplyEdit(ApplyEditPayload {
+            target: ctx.buffer_id,
+            edit: Edit {
+                range: Range {
+                    start: one_left(ctx.cursor),
+                    end: one_right(ctx.cursor),
+                },
+                kind: EditKind::Replace(String::new()),
+            },
+            cursor: Some(one_left(ctx.cursor)),
+        })]
+    } else {
+        vec![Effect::Declined]
+    }
+}
+
 impl Guest for Component {
     fn register_grammar() {
         let spec = || ActionSpec {
@@ -154,6 +340,16 @@ impl Guest for Component {
             ("auto-pair-quote-double", "pair \"\"", CB_QUOTE_DOUBLE),
             ("auto-pair-quote-single", "pair ''", CB_QUOTE_SINGLE),
             ("auto-pair-quote-backtick", "pair ``", CB_QUOTE_BACKTICK),
+            (
+                "auto-pair-close-manual",
+                "close the nearest unmatched opener in scope (manual style)",
+                CB_CLOSE_MANUAL,
+            ),
+            (
+                "auto-pair-backspace",
+                "delete an empty pair, else fall through to normal backspace",
+                CB_BACKSPACE,
+            ),
         ] {
             grammar::register_action(name, doc, &spec(), cb);
         }
@@ -184,6 +380,12 @@ impl Guest for Component {
                 bind("\"", "auto-pair-quote-double"),
                 bind("'", "auto-pair-quote-single"),
                 bind("`", "auto-pair-quote-backtick"),
+                // AP.3: the manual close key (default `<C-j>`) and backspace. Both
+                // read state at dispatch and DECLINE when they have nothing to do,
+                // so they compose with the rest of the keymap (the close key only
+                // acts in `manual` style; backspace only on an empty pair).
+                bind("<C-j>", "auto-pair-close-manual"),
+                bind("<BS>", "auto-pair-backspace"),
             ],
         });
     }
@@ -209,8 +411,15 @@ impl GrammarCallbacks for Component {
         callback: u32,
         ctx: ActionContext,
         doc: &Document,
-        _tree: Option<&TreeSnapshot>,
+        tree: Option<&TreeSnapshot>,
     ) -> Result<Vec<Effect>, String> {
+        // AP.3: in `manual` style the pair keys (1..=9) self-insert — the action
+        // DECLINES so the typed char lands via the builtin, and only the close key
+        // + backspace act. In `auto` style the close key declines instead.
+        let manual = is_manual();
+        if manual && (CB_OPEN_ROUND..=CB_QUOTE_BACKTICK).contains(&callback) {
+            return Ok(vec![Effect::Declined]);
+        }
         Ok(match callback {
             CB_OPEN_ROUND => insert_pair(&ctx, "(", ")"),
             CB_OPEN_SQUARE => insert_pair(&ctx, "[", "]"),
@@ -221,6 +430,11 @@ impl GrammarCallbacks for Component {
             CB_QUOTE_DOUBLE => quote(&ctx, doc, "\""),
             CB_QUOTE_SINGLE => quote(&ctx, doc, "'"),
             CB_QUOTE_BACKTICK => quote(&ctx, doc, "`"),
+            // The manual close key acts only in `manual` style; in `auto` it
+            // declines so `<C-j>` does whatever else it's bound to.
+            CB_CLOSE_MANUAL if manual => manual_close(&ctx, doc, tree),
+            CB_CLOSE_MANUAL => vec![Effect::Declined],
+            CB_BACKSPACE => backspace(&ctx, doc),
             other => return Err(format!("auto-pair: unknown action callback {other}")),
         })
     }

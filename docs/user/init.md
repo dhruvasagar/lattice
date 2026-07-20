@@ -640,12 +640,12 @@ strings. Add a custom command by also `provide`-ing `grammar` (see
 
 ## Building and installing
 
-### Scaffold it: `lattice --init`
+### Scaffold it: `lattice --scaffold-init`
 
 The fastest start — let lattice write a **buildable** starter config for you:
 
 ```bash
-lattice --init
+lattice --scaffold-init
 ```
 
 This creates `~/.config/lattice/init/` with a complete WASM-component config crate

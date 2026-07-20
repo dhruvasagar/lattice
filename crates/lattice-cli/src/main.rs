@@ -112,8 +112,16 @@ struct Cli {
     /// exit (does not open the editor). Writes a buildable WASM-component config
     /// crate — `Cargo.toml`, `plugin.toml`, `src/lib.rs`, and a `wit/` copy of
     /// the editor's API. Refuses to overwrite an existing non-empty config.
-    #[arg(long = "init")]
-    init: bool,
+    #[arg(long = "scaffold-init")]
+    scaffold_init: bool,
+
+    /// Scaffold a starter plugin project named NAME into
+    /// `~/.config/lattice/plugins/NAME/` and exit. Writes a buildable
+    /// WASM-component plugin (a grammar action + a minor mode that binds a key to
+    /// it + the `NAME.enabled` gate) with a `wit/` copy of the editor's API.
+    /// NAME must be lowercase kebab-case. Refuses to overwrite an existing dir.
+    #[arg(long = "scaffold-plugin", value_name = "NAME")]
+    scaffold_plugin: Option<String>,
 }
 
 // lattice's `wit/` API package, embedded at build time (build.rs) so `--init`
@@ -153,9 +161,12 @@ fn compute_log_level(cli: &Cli) -> String {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    // `--init`: scaffold a starter config and exit — never opens the editor.
-    if cli.init {
-        return scaffold::generate_init();
+    // `--scaffold-*`: write a starter project and exit — never opens the editor.
+    if cli.scaffold_init {
+        return scaffold::scaffold_init();
+    }
+    if let Some(name) = cli.scaffold_plugin.as_deref() {
+        return scaffold::scaffold_plugin(name);
     }
 
     // 2026-05-22 messages-overhaul: removed the prior

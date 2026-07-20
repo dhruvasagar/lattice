@@ -273,11 +273,11 @@ invocations.
 **Configure (`init.rs`)**
 
 ```sh
-lattice --init   # scaffold a buildable starter config in ~/.config/lattice/init/
+lattice --scaffold-init   # scaffold a buildable starter config in ~/.config/lattice/init/
 ```
 
 `init.rs` is your config *as code* — a WASM component (keymaps, options, event
-handlers, custom commands). `--init` writes a complete, buildable crate (with a
+handlers, custom commands). `--scaffold-init` writes a complete, buildable crate (with a
 `wit/` copy of the editor's API); edit it, build to `wasm32-wasip2`, and
 `:reload-config`. Static overrides can also go in `lattice.toml`. See
 [`docs/user/init.md`](docs/user/init.md).

@@ -220,6 +220,14 @@ Revive it with `:plugin-reload` (or `r` in the `:plugins` view).
 
 ## Writing a plugin
 
+**Scaffold one:** `lattice --scaffold-plugin <name>` writes a complete, buildable
+plugin project into `~/.config/lattice/plugins/<name>/` — a grammar action, a
+minor mode (`<name>-mode`) that binds a key to it, the `<name>.enabled` gate, and
+a `wit/` copy of the editor's API. Build it (`cargo build --target wasm32-wasip2`,
+then copy the component in as `<name>.wasm`) and it's discovered at boot with its
+mode on by default. The command prints the exact steps; the name must be lowercase
+kebab-case.
+
 For the toolchain (`wasm32-wasip2`, `wit-bindgen`), a seam-by-seam walkthrough,
 the manifest format, fuel budgets, and a worked `fuzzy-finder` example, see the
 **[plugin authoring guide](../dev/guides/plugin-authoring.md)**.

@@ -1,12 +1,13 @@
-//! `lattice --init` — scaffold a starter `init.rs` config into
-//! `~/.config/lattice/init/`.
+//! `lattice --scaffold-init` / `--scaffold-plugin NAME` — write a
+//! **self-contained, buildable** WASM-component starter (config or plugin) into
+//! the lattice config tree.
 //!
-//! Writes a **self-contained, buildable** WASM-component config crate: the
-//! `Cargo.toml`, the `plugin.toml` the editor discovers, a minimal `src/lib.rs`
-//! that sets an option + a keybinding + an event handler, and a `wit/` copy of
-//! the editor's own API package (embedded at build time — [`crate::WIT_FILES`]).
-//! The user edits `src/lib.rs`, builds to `wasm32-wasip2`, drops the artifact in
-//! as `init.wasm`, and reloads. Refuses to clobber an existing non-empty config.
+//! Each scaffold is a complete cargo crate: a `Cargo.toml`, the `plugin.toml` the
+//! editor discovers, a minimal `src/lib.rs`, and a `wit/` copy of the editor's
+//! own API package (embedded at build time — [`crate::WIT_FILES`]) so it builds
+//! with no separate checkout, matched to this editor's version. The user edits
+//! `src/lib.rs`, builds to `wasm32-wasip2`, drops the artifact in, and reloads.
+//! Refuses to clobber an existing non-empty directory.
 
 use std::path::Path;
 
@@ -118,14 +119,149 @@ impl Guest for Component {
 export!(Component);
 "####;
 
-/// Scaffold `~/.config/lattice/init/`. Returns an error (never a panic) on a
-/// missing config home or a non-empty existing config.
-pub fn generate_init() -> Result<()> {
+// ── plugin scaffold templates (`__NAME__` / `__MODE__` / `__ACTION__` tokens
+//    are substituted; the code's own `{}` stay literal) ──────────────────────
+
+const PLUGIN_CARGO_TOML: &str = r#"# A lattice plugin, compiled to a wasm32-wasip2 component.
+[package]
+name = "__NAME__"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.58"
+
+[profile.release]
+opt-level = "s"
+strip = true
+
+[workspace]
+"#;
+
+const PLUGIN_MANIFEST: &str = r#"# The plugin manifest the editor discovers. `grammar` MUST precede `modes` in
+# `provides`: the mode's keymap binds the plugin's OWN grammar action by name,
+# resolved at bind time. `default_mode` makes `__MODE__` on by default via the
+# auto-registered `__NAME__.enabled` option (`:set __NAME__.enabled=false` off).
+id = "__NAME__"
+provides = ["grammar", "modes"]
+default_mode = "__MODE__"
+"#;
+
+const PLUGIN_WORLD_WIT: &str = r#"package lattice:plugin-host@0.1.0;
+
+// Your plugin world — a grammar action + a minor mode that binds a key to it.
+// Add seams (config, events, decorations, …) + their exports as you grow it.
+world user-plugin {
+    import grammar;
+    import buffer;
+    import tree-sitter;
+    import modes;
+
+    export register-grammar: func();
+    export grammar-callbacks;
+    export register-modes: func();
+}
+"#;
+
+const PLUGIN_LIB_RS: &str = r####"//! The `__NAME__` lattice plugin. A grammar action (`__ACTION__`) that echoes,
+//! plus a minor mode (`__MODE__`) binding `gh` (Normal) to it. Edit freely;
+//! rebuild + reinstall (see this dir's build steps). Browse seam signatures with
+//! `:describe-plugin-api <seam>`.
+
+wit_bindgen::generate!({ world: "user-plugin", path: "wit" });
+
+use exports::lattice::plugin_host::grammar_callbacks::Guest as GrammarCallbacks;
+use lattice::plugin_host::buffer::Document;
+use lattice::plugin_host::modes::{
+    ActivationPolicy, BindingMode, ModeCapabilities, ModeDeclaration, ModeKeymapBinding, ModeKind,
+};
+use lattice::plugin_host::tree_sitter::TreeSnapshot;
+use lattice::plugin_host::types::{
+    ActionContext, ActionSpec, Args, EchoLevel, EchoPayload, Effect, ExCommandContext,
+    MotionContext, MotionResult, OperatorContext, Range, TextObjectContext,
+};
+use lattice::plugin_host::{grammar, modes};
+
+struct Component;
+
+const CB_HELLO: u32 = 1;
+
+impl Guest for Component {
+    // grammar seam — contribute one action (fired on the mode's chord).
+    fn register_grammar() {
+        grammar::register_action(
+            "__ACTION__",
+            "say hello (starter action)",
+            &ActionSpec { args_schema: Vec::new() },
+            CB_HELLO,
+        );
+    }
+
+    // modes seam — a minor mode owning an insert/normal keymap. Bindings live at
+    // MinorMode(__MODE__), never the builtin layer.
+    fn register_modes() {
+        modes::register_mode(&ModeDeclaration {
+            id: "__MODE__".to_string(),
+            kind: ModeKind::Minor,
+            activation_policy: ActivationPolicy::Global,
+            capabilities: ModeCapabilities::empty(),
+            keymap: vec![ModeKeymapBinding {
+                binding_mode: BindingMode::Normal,
+                chord: "gh".to_string(),
+                command: "__ACTION__".to_string(),
+            }],
+        });
+    }
+}
+
+impl GrammarCallbacks for Component {
+    fn apply_action(
+        callback: u32,
+        _ctx: ActionContext,
+        _doc: &Document,
+        _tree: Option<&TreeSnapshot>,
+    ) -> Result<Vec<Effect>, String> {
+        match callback {
+            CB_HELLO => Ok(vec![Effect::Echo(EchoPayload {
+                level: EchoLevel::Info,
+                text: "hello from __NAME__".to_string(),
+            })]),
+            other => Err(format!("__NAME__: unknown action callback {other}")),
+        }
+    }
+
+    // Unused grammar callbacks — return an err (logged, no-op). Fill in as needed.
+    fn apply_motion(_c: u32, _ctx: MotionContext) -> Result<MotionResult, String> {
+        Err("__NAME__: no motions".into())
+    }
+    fn apply_operator(_c: u32, _ctx: OperatorContext) -> Result<Vec<Effect>, String> {
+        Err("__NAME__: no operators".into())
+    }
+    fn apply_text_object(_c: u32, _ctx: TextObjectContext) -> Result<Range, String> {
+        Err("__NAME__: no text objects".into())
+    }
+    fn parse_ex_args(_c: u32, _rest: String, _bang: bool) -> Result<Args, String> {
+        Err("__NAME__: no ex-commands".into())
+    }
+    fn apply_ex_command(_c: u32, _ctx: ExCommandContext) -> Result<Vec<Effect>, String> {
+        Err("__NAME__: no ex-commands".into())
+    }
+}
+
+export!(Component);
+"####;
+
+/// Scaffold `~/.config/lattice/init/` (the user config). Returns an error (never
+/// a panic) on a missing config home or a non-empty existing config.
+pub fn scaffold_init() -> Result<()> {
     let dir = lattice_config::config_home()
         .context("no config home directory on this platform (set $XDG_CONFIG_HOME)")?
         .join("lattice")
         .join("init");
-    write_scaffold(&dir)?;
+    write_scaffold_init(&dir)?;
 
     let d = dir.display();
     println!("Created a starter lattice config at {d}\n");
@@ -139,9 +275,80 @@ pub fn generate_init() -> Result<()> {
     Ok(())
 }
 
-/// Write the scaffold into `dir` (never clobbering a non-empty existing one) —
-/// the pure filesystem half of [`generate_init`], testable against any dir.
-fn write_scaffold(dir: &Path) -> Result<()> {
+/// Scaffold a starter plugin project `~/.config/lattice/plugins/<name>/`. The
+/// name must be lowercase kebab-case (a valid cargo crate + plugin id).
+pub fn scaffold_plugin(name: &str) -> Result<()> {
+    validate_plugin_name(name)?;
+    let dir = lattice_config::config_home()
+        .context("no config home directory on this platform (set $XDG_CONFIG_HOME)")?
+        .join("lattice")
+        .join("plugins")
+        .join(name);
+    write_scaffold_plugin(&dir, name)?;
+
+    let d = dir.display();
+    let wasm = format!("{}.wasm", name.replace('-', "_"));
+    println!("Created a starter plugin `{name}` at {d}\n");
+    println!("Next — build it and drop the component in place:\n");
+    println!("  rustup target add wasm32-wasip2   # once");
+    println!("  cd {d}");
+    println!("  cargo build --release --target wasm32-wasip2");
+    println!("  cp target/wasm32-wasip2/release/{wasm} {name}.wasm\n");
+    println!("Then start lattice — the plugin is discovered from the plugins dir,");
+    println!("and `{name}.enabled` (default true) turns its `{name}-mode` on. It");
+    println!("binds `gh` (Normal) to a starter action. Edit src/lib.rs to grow it;");
+    println!("see docs/user/plugins.md + `:describe-plugin-api <seam>`.");
+    Ok(())
+}
+
+/// A plugin name must be a valid cargo crate name + WIT-friendly id: lowercase,
+/// starting with a letter, only `a-z0-9-`.
+fn validate_plugin_name(name: &str) -> Result<()> {
+    let ok = name
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_lowercase())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        && !name.ends_with('-');
+    if !ok {
+        bail!("plugin name `{name}` must be lowercase kebab-case (e.g. `my-plugin`)");
+    }
+    Ok(())
+}
+
+/// Write the init config scaffold into `dir` — the pure filesystem half of
+/// [`scaffold_init`], testable against any dir.
+fn write_scaffold_init(dir: &Path) -> Result<()> {
+    prepare_dir(dir)?;
+    write_wit_package(dir)?;
+    write(&dir.join("wit").join("init.wit"), INIT_WIT)?;
+    write(&dir.join("Cargo.toml"), CARGO_TOML)?;
+    write(&dir.join("plugin.toml"), PLUGIN_TOML)?;
+    write(&dir.join("src").join("lib.rs"), LIB_RS)?;
+    Ok(())
+}
+
+/// Write the plugin scaffold for `name` into `dir` — the pure filesystem half of
+/// [`scaffold_plugin`], testable against any dir.
+fn write_scaffold_plugin(dir: &Path, name: &str) -> Result<()> {
+    prepare_dir(dir)?;
+    write_wit_package(dir)?;
+    let sub = |t: &str| {
+        t.replace("__NAME__", name)
+            .replace("__MODE__", &format!("{name}-mode"))
+            .replace("__ACTION__", &format!("{name}-hello"))
+    };
+    write(&dir.join("wit").join("plugin.wit"), PLUGIN_WORLD_WIT)?;
+    write(&dir.join("Cargo.toml"), &sub(PLUGIN_CARGO_TOML))?;
+    write(&dir.join("plugin.toml"), &sub(PLUGIN_MANIFEST))?;
+    write(&dir.join("src").join("lib.rs"), &sub(PLUGIN_LIB_RS))?;
+    Ok(())
+}
+
+/// Create `dir/src` + `dir/wit`, refusing a non-empty existing `dir`.
+fn prepare_dir(dir: &Path) -> Result<()> {
     if dir.exists() && std::fs::read_dir(dir)?.next().is_some() {
         bail!(
             "{} already exists and is not empty — edit it in place, or remove it first",
@@ -150,15 +357,15 @@ fn write_scaffold(dir: &Path) -> Result<()> {
     }
     std::fs::create_dir_all(dir.join("src")).with_context(|| format!("creating {}", dir.display()))?;
     std::fs::create_dir_all(dir.join("wit"))?;
-    // The editor's own API package + the user's init world.
+    Ok(())
+}
+
+/// Write the editor's embedded `wit/` API package into `dir/wit/`.
+fn write_wit_package(dir: &Path) -> Result<()> {
     for (name, content) in crate::WIT_FILES {
         std::fs::write(dir.join("wit").join(name), content)
             .with_context(|| format!("writing wit/{name}"))?;
     }
-    write(&dir.join("wit").join("init.wit"), INIT_WIT)?;
-    write(&dir.join("Cargo.toml"), CARGO_TOML)?;
-    write(&dir.join("plugin.toml"), PLUGIN_TOML)?;
-    write(&dir.join("src").join("lib.rs"), LIB_RS)?;
     Ok(())
 }
 
@@ -174,7 +381,7 @@ mod tests {
     fn scaffolds_a_complete_buildable_layout() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("init");
-        write_scaffold(&dir).unwrap();
+        write_scaffold_init(&dir).unwrap();
 
         // The four hand-written files + a non-empty embedded wit package.
         assert!(dir.join("Cargo.toml").exists());
@@ -203,6 +410,36 @@ mod tests {
         let dir = tmp.path().join("init");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("keep.me"), "existing config").unwrap();
-        assert!(write_scaffold(&dir).is_err(), "won't overwrite existing config");
+        assert!(write_scaffold_init(&dir).is_err(), "won't overwrite existing config");
+    }
+
+    #[test]
+    fn scaffolds_a_plugin_with_name_substituted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("my-plugin");
+        write_scaffold_plugin(&dir, "my-plugin").unwrap();
+
+        assert!(dir.join("wit/plugin.wit").exists());
+        assert!(dir.join("wit/types.wit").exists(), "the API package is copied");
+
+        let manifest = std::fs::read_to_string(dir.join("plugin.toml")).unwrap();
+        assert!(manifest.contains("id = \"my-plugin\""));
+        assert!(manifest.contains("default_mode = \"my-plugin-mode\""));
+
+        let cargo = std::fs::read_to_string(dir.join("Cargo.toml")).unwrap();
+        assert!(cargo.contains("name = \"my-plugin\""));
+
+        let lib = std::fs::read_to_string(dir.join("src/lib.rs")).unwrap();
+        assert!(lib.contains("\"my-plugin-mode\"") && lib.contains("\"my-plugin-hello\""));
+        assert!(!lib.contains("__NAME__"), "all tokens substituted");
+    }
+
+    #[test]
+    fn rejects_bad_plugin_names() {
+        assert!(validate_plugin_name("my-plugin").is_ok());
+        assert!(validate_plugin_name("foo2").is_ok());
+        for bad in ["My-Plugin", "1foo", "foo_bar", "foo bar", "foo-", ""] {
+            assert!(validate_plugin_name(bad).is_err(), "{bad} should be rejected");
+        }
     }
 }

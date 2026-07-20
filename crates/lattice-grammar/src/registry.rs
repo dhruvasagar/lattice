@@ -242,13 +242,23 @@ pub struct CommentSyntax {
 /// tree-sitter `scope_resolver` (`af`/`ac`, N.1.4) and the
 /// `comment_syntax` (`aC`/`iC`) — into ONE value so the dispatch seam
 /// carries a single env rather than a widening parameter list (the
-/// long-term-fit choice over parallel params). `Copy` (both fields are
+/// long-term-fit choice over parallel params). `Copy` (all fields are
 /// borrows); `default()` is the no-input case — the classic objects
 /// (`iw`/`ap`/`i{`) ignore the env entirely.
+///
+/// TS.1 widened this from a text-object-only env to the general per-dispatch
+/// env: it now also carries the tree-sitter `syntax` snapshot for **actions**
+/// (borrowed `Arc<dyn Any>` so `execute_action` can `Arc::clone` it into the
+/// owned `ActionContext::syntax` — a `&dyn Any` alone can't recover the `Arc`).
 #[derive(Clone, Copy, Default)]
 pub struct TextObjectEnv<'a> {
     pub scope_resolver: Option<&'a dyn ScopeResolver>,
     pub comment_syntax: Option<&'a CommentSyntax>,
+    /// TS.1: the per-dispatch tree-sitter snapshot, type-erased and borrowed so
+    /// it stays `Copy`. `execute_action` clones it into `ActionContext::syntax`;
+    /// motions / text-objects / operators ignore it (they read
+    /// `scope_resolver`). `None` = no parse.
+    pub syntax: Option<&'a Arc<dyn std::any::Any + Send + Sync>>,
 }
 
 /// Context passed to a text-object's evaluator.
@@ -410,6 +420,17 @@ pub struct ActionContext {
     /// Layering: a `lattice-core` type, so `lattice-grammar` needs no
     /// `lattice-runtime` dependency (the snapshot is built host-side).
     pub buffer: Buffer,
+    /// TS.1: a point-in-time tree-sitter snapshot for the buffer the action
+    /// fired in, **type-erased** as `Arc<dyn Any>` so `lattice-grammar` keeps
+    /// its `protocol`+`core`-only dep set (the same reason `buffer` is a
+    /// `lattice-core` type — a concrete `SyntaxSnapshot` would drag the whole
+    /// syntax stack under the lean grammar crate). The host upcasts the
+    /// buffer's `Arc<SyntaxSnapshot>` here **at the same instant** it clones
+    /// `buffer` (so tree + text versions agree); native actions ignore it; the
+    /// plugin-host trampoline downcasts it to mint a `tree-snapshot` resource
+    /// so a grammar plugin can query structure (auto-pair's `enclosing` scope).
+    /// `None` when the buffer has no parse (plain text / parse pending).
+    pub syntax: Option<Arc<dyn std::any::Any + Send + Sync>>,
     /// Cooperative cancellation handle (DESIGN.md §5.2.5). Most
     /// actions are O(1) state mutations and ignore this; long-
     /// running ones (a hypothetical "rebuild fold tree" action)

@@ -29,6 +29,9 @@ wit_bindgen::generate!({
 use exports::lattice::plugin_host::grammar_callbacks::Guest as GrammarCallbacks;
 use lattice::plugin_host::buffer::Document;
 use lattice::plugin_host::config::OptionType;
+// TS.1: the tree-snapshot handle rides `apply-action` (unused until AP.3's
+// manual style queries `enclosing`; the `auto` style reads only raw text).
+use lattice::plugin_host::tree_sitter::TreeSnapshot;
 use lattice::plugin_host::modes::{
     ActivationPolicy, BindingMode, ModeCapabilities, ModeDeclaration, ModeKeymapBinding, ModeKind,
 };
@@ -206,6 +209,7 @@ impl GrammarCallbacks for Component {
         callback: u32,
         ctx: ActionContext,
         doc: &Document,
+        _tree: Option<&TreeSnapshot>,
     ) -> Result<Vec<Effect>, String> {
         Ok(match callback {
             CB_OPEN_ROUND => insert_pair(&ctx, "(", ")"),

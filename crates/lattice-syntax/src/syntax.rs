@@ -1770,6 +1770,7 @@ const MAX: i32 = 10;\n\
                 // `&s.inner` is the SyntaxSnapshot; coerces to &dyn ScopeResolver.
                 scope_resolver: Some(&s.inner),
                 comment_syntax: None,
+                syntax: None,
             },
         )
         .expect("daf dispatch ok");

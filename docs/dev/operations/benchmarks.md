@@ -129,6 +129,36 @@ this bench caught). Built-in motions stay native and pay none of this.
 
 ---
 
+## TS.1 — the sync tree-sitter query (`enclosing`, 2026-07-20)
+
+The ONE tree-sitter-seam operation on the synchronous grammar path
+(plugin-treesitter-seam.md §6): auto-pair's manual close key / backspace (AP.3)
+calls `tree-snapshot.enclosing(cursor, kinds)` from a grammar action, on the
+dispatch thread, inside the grammar Reflex budget. The design claim is that it
+does **no parsing** (the tree is already there) and is a single bounded
+walk — descend to the cursor's smallest node, then up the ancestor chain. This
+bench isolates the native host-side walk the trampoline runs before any result
+crosses (the WASM round-trip is bounded separately by `grammar_roundtrip`).
+
+Bench: `crates/lattice-plugin-host/benches/tree_enclosing.rs`. Corpus: a 2000
+top-level-function Rust file (~4k lines), queried from the file midpoint.
+
+| Measure | Value | Notes |
+|---|---|---|
+| `enclosing` (block, midpoint) | **~1.12 µs** | Descend + ancestor walk, no parse. ≫ inside the ~2 ms Reflex budget. |
+| `node_at` (midpoint) | **~763 ns** | The descent alone. |
+
+**Read + the bug this bench caught:** the first cut descended with a **linear**
+sibling scan (`0..child_count`, checking each child's span), which at the root of
+a 2000-item file is O(n) — it measured **175 µs**, ~150× slower and a real
+paramount-#1 violation on the sync path. The fix routes the descent through a
+`TreeCursor::goto_first_child_for_point` (tree-sitter's internal binary search
+over the child list), collapsing each level to O(log fanout) → the 1.12 µs above.
+The prose claim ("bounded walk, no parse") is only true with the cursor; the
+bench is what made the O(n) cut visible instead of shipping it.
+
+---
+
 ## PO.3 — the hot-path grammar-trace gate (design §4, 2026-07-18)
 
 The load-bearing artefact of PO.3: does instrumenting the sync grammar seam cost

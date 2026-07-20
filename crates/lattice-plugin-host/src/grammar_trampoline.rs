@@ -32,8 +32,10 @@ use wasmtime::Store;
 use wasmtime::component::Resource;
 
 use lattice_runtime::snapshot::DocumentSnapshot;
+use lattice_syntax::SyntaxSnapshot;
 
 use crate::buffer::DocumentResource;
+use crate::tree_resource::TreeSnapshotResource;
 
 use lattice_grammar::args::{ArgSpec as NativeArgSpec, Args as NativeArgs};
 use lattice_grammar::command::LatencyClass;
@@ -299,6 +301,10 @@ fn build_action_spec(
     guest: &Arc<Mutex<GrammarGuest>>,
     spec: WitActionSpec,
     callback: u32,
+    // TS.1: whether this plugin was granted the `tree-sitter` editor-capability.
+    // When false the guest gets `none` for the tree even on a parsed buffer —
+    // the read-only structural seam is capability-gated (design §5).
+    tree_sitter_granted: bool,
 ) -> Result<ActionSpec, PluginHostError> {
     let args_schema = convert_args_schema(spec.args_schema)?;
     let guest = guest.clone();
@@ -314,18 +320,48 @@ fn build_action_spec(
                 buffer: ctx.buffer.clone(),
                 ..Default::default()
             });
+            // TS.1: downcast the type-erased tree snapshot the `ActionContext`
+            // carries (`Arc<dyn Any>` → `Arc<SyntaxSnapshot>`) and mint a
+            // `tree-snapshot` handle ONLY when the buffer actually has a parse
+            // tree — else the guest gets `none` (plain text / parse pending). The
+            // snapshot was acquired the same instant as `buffer` above, so the
+            // tree + text handles agree on version (§7).
+            let tree_snapshot: Option<Arc<SyntaxSnapshot>> = tree_sitter_granted
+                .then(|| ctx.syntax.as_ref())
+                .flatten()
+                .and_then(|any| any.clone().downcast::<SyntaxSnapshot>().ok())
+                .filter(|snap| snap.tree().is_some());
             let wit = run_callback(&guest, "apply-action", |b, s| {
-                // Lend the resource as a `borrow<document>`: push an owned entry,
-                // pass a non-owning borrow handle to the guest, then reclaim the
-                // owned entry after the call (the host owns it throughout).
-                let owned = s.data_mut().table.push(DocumentResource::new(snapshot.clone()))?;
-                let borrow = Resource::new_borrow(owned.rep());
-                // Reborrow `s` for the call so the owned handle can be reclaimed
+                // Lend the resources as borrows: push owned entries, pass
+                // non-owning borrow handles to the guest, then reclaim the owned
+                // entries after the call (the host owns them throughout). Any
+                // `node` the guest derives from the tree borrow is guest-owned and
+                // dropped by the guest before it returns.
+                let owned_doc =
+                    s.data_mut().table.push(DocumentResource::new(snapshot.clone()))?;
+                let doc_borrow = Resource::new_borrow(owned_doc.rep());
+                let owned_tree = match &tree_snapshot {
+                    Some(snap) => Some(
+                        s.data_mut()
+                            .table
+                            .push(TreeSnapshotResource::new(snap.clone()))?,
+                    ),
+                    None => None,
+                };
+                let tree_borrow = owned_tree.as_ref().map(|o| Resource::new_borrow(o.rep()));
+                // Reborrow `s` for the call so the owned handles can be reclaimed
                 // after (the call takes the store by value via `AsContextMut`).
-                let result = b
-                    .lattice_plugin_host_grammar_callbacks()
-                    .call_apply_action(&mut *s, callback, &wit_ctx, borrow);
-                let _ = s.data_mut().table.delete(owned);
+                let result = b.lattice_plugin_host_grammar_callbacks().call_apply_action(
+                    &mut *s,
+                    callback,
+                    &wit_ctx,
+                    doc_borrow,
+                    tree_borrow,
+                );
+                let _ = s.data_mut().table.delete(owned_doc);
+                if let Some(owned_tree) = owned_tree {
+                    let _ = s.data_mut().table.delete(owned_tree);
+                }
                 result
             })?;
             NativeEffect::from_wit(wit).map_err(CommandError::Plugin)
@@ -466,6 +502,14 @@ impl PluginHost {
         tracer: Option<&PluginTracerHandle>,
     ) -> Result<GrammarContributionSet, PluginHostError> {
         let (wasi, outcome, _data_dir) = self.build_plugin_wasi(manifest, tier);
+        // TS.1: the tree-sitter seam is gated on the `tree-sitter` editor
+        // capability — a grammar action of a plugin without the grant gets `none`
+        // for its tree handle (design §5). Captured once here; every action spec's
+        // trampoline reads it.
+        let tree_sitter_granted = outcome
+            .grant
+            .editor
+            .contains(lattice_mode::CapabilitySet::TREE_SITTER);
         for denied in &outcome.denied {
             tracing::warn!(
                 plugin = %manifest.id,
@@ -544,9 +588,11 @@ impl PluginHost {
                     doc,
                     spec,
                     callback,
-                } => set
-                    .actions
-                    .push((name, doc, build_action_spec(&guest, spec, callback)?)),
+                } => set.actions.push((
+                    name,
+                    doc,
+                    build_action_spec(&guest, spec, callback, tree_sitter_granted)?,
+                )),
                 RecordedContribution::ExCommand {
                     name,
                     doc,

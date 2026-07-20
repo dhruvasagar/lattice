@@ -67,12 +67,22 @@ interface grammar-callbacks {
     /// ever crossing the boundary. This is the first world function to take the
     /// resource (the picker `init(doc)` precedent, deferred since PH7.3c).
     use buffer.{document};
+    /// TS.1: an action ALSO receives `option<borrow<tree-snapshot>>` — the same
+    /// buffer's point-in-time parse tree, acquired the same instant as `doc` so
+    /// their versions agree (plugin-treesitter-seam.md §7). `none` when the
+    /// buffer has no parse (plain text / parse pending). A structural plugin
+    /// (auto-pair's manual style) queries `enclosing` to bound its scan.
+    use tree-sitter.{tree-snapshot};
 
     apply-motion: func(callback: u32, ctx: motion-context) -> result<motion-result, string>;
     apply-operator: func(callback: u32, ctx: operator-context) -> result<list<effect>, string>;
     apply-text-object: func(callback: u32, ctx: text-object-context) -> result<range, string>;
-    apply-action: func(callback: u32, ctx: action-context, doc: borrow<document>)
-        -> result<list<effect>, string>;
+    apply-action: func(
+        callback: u32,
+        ctx: action-context,
+        doc: borrow<document>,
+        tree: option<borrow<tree-snapshot>>,
+    ) -> result<list<effect>, string>;
     parse-ex-args: func(callback: u32, rest: string, bang: bool) -> result<args, string>;
     apply-ex-command: func(callback: u32, ctx: ex-command-context) -> result<list<effect>, string>;
 }
@@ -95,6 +105,11 @@ interface grammar-callbacks {
 world grammar-plugin {
     import grammar;
     import buffer;
+    // TS.1: brings the host-owned `tree-snapshot` / `node` resources so
+    // `apply-action` can take `option<borrow<tree-snapshot>>` — the host
+    // implements `HostTreeSnapshot` / `HostNode` (backed by `Arc<SyntaxSnapshot>`)
+    // and adds them to the SYNC grammar linker alongside `buffer`.
+    import tree-sitter;
     export register-grammar: func();
     export grammar-callbacks;
 }

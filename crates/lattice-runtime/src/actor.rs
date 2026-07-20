@@ -251,6 +251,14 @@ impl DocumentActor {
                 let to_env = lattice_grammar::TextObjectEnv {
                     scope_resolver,
                     comment_syntax: env.comment_syntax.as_deref(),
+                    // TS.1: the actor path carries no raw tree snapshot — its
+                    // `DispatchEnv` only holds the resolver-erased
+                    // `Arc<dyn ScopeResolver>` (motions/text-objects need nothing
+                    // more), from which the concrete `SyntaxSnapshot` can't be
+                    // recovered for a `tree-snapshot` resource. Grammar *actions*
+                    // (the only tree-snapshot consumer) dispatch through the
+                    // host's Action gate, which carries the concrete snapshot.
+                    syntax: None,
                 };
                 // B3b: snapshot the registry wait-free for this dispatch. A
                 // plugin registered at runtime (loader RCU-store into the

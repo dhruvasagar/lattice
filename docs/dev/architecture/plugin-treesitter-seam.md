@@ -9,11 +9,16 @@
 > [`plugin-auto-pair.md`](plugin-auto-pair.md) (its first consumer — the
 > enclosing-scope query that bounds the manual-pair scan).
 >
-> **Status: 📝 designed, not built.** A **v1** foundational seam (promoted from a
-> later refinement, 2026-07-19, Dhruva): a truly customizable, tree-sitter-driven
-> editor needs plugins to query the parse tree early. This is the seam that makes
-> paramount goal #3 real — structural motions / text objects / folds / refactors /
-> rainbow-delimiters as plugins.
+> **Status: 🚧 TS.1 built (2026-07-20) · TS.2 / TS.3 designed.** A **v1**
+> foundational seam (promoted from a later refinement, 2026-07-19, Dhruva): a
+> truly customizable, tree-sitter-driven editor needs plugins to query the parse
+> tree early. This is the seam that makes paramount goal #3 real — structural
+> motions / text objects / folds / refactors / rainbow-delimiters as plugins.
+> TS.1 landed the snapshot + node core (`root` / `node-at` / `enclosing` +
+> projection/navigation), the `tree-sitter` capability gate, and the sync-path
+> `enclosing` query wired onto the grammar action context; queries (`compile-query`
+> / `run-query` §3.3) and the `tree-cursor` walk (§3.4) are TS.2. See the slice
+> plan for what shipped.
 
 ## 1. Why
 

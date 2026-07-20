@@ -17,6 +17,7 @@ package lattice:plugin-host@0.1.0;
 world auto-pair-plugin {
     import grammar;
     import buffer;
+    import tree-sitter;
     import modes;
     import config;
 

@@ -31766,13 +31766,30 @@ impl Editor {
             // `active_text()` is a wait-free ropey clone, and `execute` only reads
             // it here (the action's edits target the real buffer via `ApplyEdit`).
             let mut doc = lattice_core::Document::from_buffer(self.active_text());
-            match lattice_grammar::execute(
+            // TS.1: acquire the active buffer's tree-sitter snapshot AT THE SAME
+            // INSTANT as the buffer above (both from the active pane) so the
+            // plugin's `tree-snapshot` handle and its `document` handle read the
+            // same point-in-time versions (§7). `self.syntax` is the active
+            // pane's `SyntaxHandle`; `snapshot()` is an O(1) `ArcSwap::load_full`
+            // bump (no parse on the dispatch thread — paramount #1). Type-erased
+            // to `Arc<dyn Any>` so `lattice-grammar` stays syntax-free; the
+            // trampoline downcasts it. `None` when the buffer has no parse.
+            let syntax_any: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> = self
+                .syntax
+                .as_ref()
+                .map(|h| h.snapshot() as std::sync::Arc<dyn std::any::Any + Send + Sync>);
+            let env = lattice_grammar::TextObjectEnv {
+                syntax: syntax_any.as_ref(),
+                ..Default::default()
+            };
+            match lattice_grammar::execute_with_env(
                 &reg,
                 &mut doc,
                 self.document_buffer_id,
                 pos,
                 inv,
                 &cancel,
+                env,
             ) {
                 // AP.0.2: a declined action did nothing — flag it so
                 // `dispatch_chord` re-resolves the chord at the next keymap layer

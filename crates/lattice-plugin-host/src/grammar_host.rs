@@ -47,6 +47,13 @@ pub(crate) mod bindings {
             // unit-tested at PH7.3c) so bindgen emits the `HostDocument` trait
             // the host implements + the sync-linker `add_to_linker`.
             "lattice:plugin-host/buffer.document": crate::buffer::DocumentResource,
+            // TS.1: `apply-action` also takes `option<borrow<tree-snapshot>>`.
+            // Map both tree-sitter resources to their backings (dot-separated
+            // `interface.resource` key) so bindgen emits `HostTreeSnapshot` /
+            // `HostNode` + the sync-linker `add_to_linker`.
+            "lattice:plugin-host/tree-sitter.tree-snapshot":
+                crate::tree_resource::TreeSnapshotResource,
+            "lattice:plugin-host/tree-sitter.node": crate::tree_resource::NodeResource,
         },
     });
 }

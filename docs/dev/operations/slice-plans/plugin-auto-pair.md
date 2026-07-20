@@ -142,11 +142,15 @@ mode; with the mode active, `x` on `"abc\n"` falls through to the builtin `x` an
 deletes the first char → `"bc\n"`). The `<BS>` → `auto-pair-backspace` binding
 itself lands with AP.3 (needs the empty-pair scan).
 
-### AP.0.3 — tree-sitter query seam  📝
+### AP.0.3 — tree-sitter query seam  🚧 (TS.1 ✅)
 The enclosing-scope query that bounds the manual scan (design fragment §5.3, §7).
 Its own design + slice plan: [`plugin-treesitter-seam.md`](plugin-treesitter-seam.md)
-(TS.1 core → TS.2 queries+cursor → TS.3 first consumer). Auto-pair's `manual`
-style is a candidate TS.3 consumer.
+(TS.1 core ✅ → TS.2 queries+cursor 📝 → TS.3 first consumer 📝). **TS.1 landed
+(2026-07-20):** `apply-action` now receives `option<borrow<tree-snapshot>>`, and
+`enclosing(pos, kinds)` resolves the enclosing scope host-side (~1.12 µs). That is
+exactly the primitive AP.3's `manual` style needs — auto-pair is the intended TS.3
+consumer. AP.3 is unblocked on the scope query; TS.2 (queries/cursor) is not
+required for the enclosing-scope bound.
 
 ### AP.3 — `manual` style  📝
 The `find_pair` port (design fragment §3) + the close key + the fall-through

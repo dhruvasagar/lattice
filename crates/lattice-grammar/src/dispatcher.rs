@@ -104,7 +104,7 @@ pub fn execute_with_env(
         ),
         CommandKind::ExCommand => execute_ex_command(&invocation, entry, cancel),
         CommandKind::Action => {
-            execute_action(document, buffer_id, cursor, &invocation, entry, cancel)
+            execute_action(document, buffer_id, cursor, &invocation, entry, cancel, env)
         }
     }
 }
@@ -116,6 +116,7 @@ fn execute_action(
     invocation: &CommandInvocation,
     entry: &CommandEntry,
     cancel: &CancellationToken,
+    env: crate::registry::TextObjectEnv<'_>,
 ) -> GrammarResult<Effect> {
     let spec = require_action(entry)?;
     let ctx = ActionContext {
@@ -127,6 +128,12 @@ fn execute_action(
         // O(1) rope clone (Arc-shared nodes) — a point-in-time buffer view for
         // a plugin action's `document` handle (AP.0.1). Native actions ignore it.
         buffer: document.buffer().clone(),
+        // TS.1: clone the per-dispatch tree snapshot (an `Arc` bump) into the
+        // owned context so a plugin action's `tree-snapshot` handle reads the
+        // SAME point-in-time tree the buffer above was cloned from (§7 version
+        // agreement). Native actions ignore it; `None` when the buffer has no
+        // parse.
+        syntax: env.syntax.map(std::sync::Arc::clone),
         cancel: cancel.clone(),
     };
     (spec.apply)(&ctx)
@@ -988,6 +995,7 @@ mod tests {
         let env = crate::registry::TextObjectEnv {
             scope_resolver: Some(&resolver),
             comment_syntax: None,
+            syntax: None,
         };
         let eff = execute_with_env(
             &registry,

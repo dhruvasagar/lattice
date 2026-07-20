@@ -72,6 +72,14 @@ linkme = { workspace = true }
 # A -- a point-in-time immutable view; `get-text-range` slices this snapshot's
 # rope). `DocumentSnapshot` lives in lattice-runtime.
 lattice-runtime = { path = "../lattice-runtime" }
+# TS.1: the tree-sitter seam. The host publishes each buffer's immutable
+# `SyntaxSnapshot` to a plugin (read-only) as a `tree-snapshot` resource; the
+# trampoline downcasts the type-erased snapshot the grammar `ActionContext`
+# carries and mints navigable `node` handles backed by `tree_sitter::Node`
+# (consumer side — `lattice-host` is the builder). `tree-sitter` is named
+# directly to operate on the snapshot's `Tree` / `Node` / `Point`.
+lattice-syntax = { path = "../lattice-syntax" }
+tree-sitter = { workspace = true }
 # PH7.10: the config/options seam. Plugin options register into the SAME
 # `ConfigRegistry` core options use, built as `Option<bool|i64|String>` via the
 # public `OptionType` parse/format contract (no new registry variant).
@@ -160,6 +168,12 @@ harness = false
 # the keystroke path when off (design §4). Skips without the wasm target.
 [[bench]]
 name = "grammar_trace_gate"
+harness = false
+
+# TS.1: the sync on-keystroke tree query (`enclosing`) — pins that it does no
+# parsing and is a bounded ancestor walk, inside the grammar Reflex budget.
+[[bench]]
+name = "tree_enclosing"
 harness = false
 
 [lints]

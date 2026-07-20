@@ -1,0 +1,74 @@
+package lattice:plugin-host@0.1.0;
+
+/// Structural queries for plugins (plugin-treesitter-seam.md). The host already
+/// parses every buffer with tree-sitter (`lattice-syntax`) and publishes an
+/// immutable `SyntaxSnapshot` per buffer; this seam **publishes that snapshot to
+/// a plugin, read-only**, so a WASM plugin can navigate the parse tree exactly
+/// as native structural code does. First consumer: `auto-pair`'s manual style
+/// queries the enclosing lexical scope to bound its backward scan (design §7).
+///
+/// The tree NEVER crosses the boundary — walks execute host-side against the
+/// snapshot's `tree_sitter::Tree`; only *results* (a node projection, a kind
+/// string) cross. A plugin reads a POINT-IN-TIME snapshot: it acquires the
+/// handle alongside the `document` handle from the same dispatch context (same
+/// instant → tree + text versions agree, §7); an edit landing after swaps a
+/// newer snapshot without disturbing the read (the `document`-handle
+/// mutation-under-read discipline, applied to structure). Gated on the
+/// `tree-sitter` editor-capability — no grant, no handle (design §5).
+///
+/// **TS.1 scope:** the snapshot + node core (enough for auto-pair's `enclosing`).
+/// Queries (`compile-query` / `run-query` with host-side predicates) and the
+/// `tree-cursor` walk land at TS.2; see the design fragment §3.3–§3.4 / §10.
+interface tree-sitter {
+    use types.{position, range};
+
+    /// A host-owned, point-in-time view of a buffer's parse tree — backed by an
+    /// `Arc<SyntaxSnapshot>` (an O(1) `ArcSwap` bump, no parse, no copy). An
+    /// `apply-action` receives it as `option<borrow<tree-snapshot>>` (absent
+    /// when the buffer has no parse: plain text / parse pending). Every `node`
+    /// it hands out is anchored to THIS snapshot.
+    resource tree-snapshot {
+        /// The tree root.
+        root: func() -> node;
+        /// The smallest NAMED node spanning `pos`
+        /// (`Tree::named-descendant-for-point-range`), or `none` when the buffer
+        /// is empty / `pos` is out of range.
+        node-at: func(pos: position) -> option<node>;
+        /// The nearest ancestor of `pos` whose `kind` is in `kinds` (the
+        /// auto-pair scope query; the native `scope_toward` precedent). `kinds`
+        /// empty → the nearest named ancestor. `none` when there's no match / no
+        /// parse.
+        enclosing: func(pos: position, kinds: list<string>) -> option<node>;
+        /// The grammar id (e.g. `"rust"`), so a plugin can pick the right query.
+        language: func() -> string;
+    }
+
+    /// An opaque, navigable handle into the snapshot's tree (design §3.2). Owned
+    /// by the guest and dropped when it goes out of scope; each holds its own
+    /// snapshot bump so it stays coherent for the call. Projection is cheap and
+    /// value-returning; navigation returns a FRESH `node` (or `none`). The tree
+    /// itself never crosses — a handle is a host-side `(snapshot, path)` pair.
+    resource node {
+        /// The node's grammar kind (e.g. `"function_item"`).
+        kind: func() -> string;
+        /// Whether the node is *named* (a grammar rule) vs an anonymous token.
+        is-named: func() -> bool;
+        /// Whether the node is a tree-sitter ERROR node (a parse error).
+        is-error: func() -> bool;
+        /// The node's `[start, end)` span as byte-columns per line (matching the
+        /// native structural objects' `ProtoRange`, N.1.4c).
+        byte-range: func() -> range;
+        /// The parent node, or `none` at the root.
+        parent: func() -> option<node>;
+        /// Count of NAMED children.
+        named-child-count: func() -> u32;
+        /// The `index`-th NAMED child (0-based), or `none` past the end.
+        named-child: func(index: u32) -> option<node>;
+        /// The child under the grammar field `name` (e.g. `"body"`), or `none`.
+        child-by-field: func(name: string) -> option<node>;
+        /// The next NAMED sibling, or `none`.
+        next-named-sibling: func() -> option<node>;
+        /// The previous NAMED sibling, or `none`.
+        prev-named-sibling: func() -> option<node>;
+    }
+}

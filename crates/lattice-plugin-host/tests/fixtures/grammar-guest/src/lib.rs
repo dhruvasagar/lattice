@@ -23,6 +23,7 @@ wit_bindgen::generate!({
 use exports::lattice::plugin_host::grammar_callbacks::Guest as Callbacks;
 use lattice::plugin_host::buffer::Document;
 use lattice::plugin_host::grammar;
+use lattice::plugin_host::tree_sitter::TreeSnapshot;
 use lattice::plugin_host::types::{
     ActionContext, ActionSpec, Args, Effect, EchoLevel, EchoPayload, ExCommandContext,
     MotionContext, MotionResult, MotionSpec, OperatorContext, Position, Range, TextObjectContext,
@@ -132,6 +133,7 @@ impl Callbacks for Component {
         callback: u32,
         ctx: ActionContext,
         doc: &Document,
+        _tree: Option<&TreeSnapshot>,
     ) -> Result<Vec<Effect>, String> {
         match callback {
             // Read the single byte at the cursor via the borrowed document, then

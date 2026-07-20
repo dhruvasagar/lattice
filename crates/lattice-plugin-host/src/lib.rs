@@ -81,6 +81,7 @@ pub mod picker_task;
 pub mod teardown;
 pub mod trace;
 pub mod trampoline;
+pub mod tree_resource;
 
 pub use boundary::WitBoundary;
 pub use capability::{
@@ -998,6 +999,178 @@ impl crate::grammar_host::bindings::lattice::plugin_host::buffer::HostDocument f
     }
 }
 
+// TS.1: the `tree-sitter` interface `Host` marker (empty — bindgen requires it
+// alongside `HostTreeSnapshot` / `HostNode`, the `buffer::Host` shape).
+impl crate::grammar_host::bindings::lattice::plugin_host::tree_sitter::Host for PluginState {}
+
+impl crate::grammar_host::bindings::lattice::plugin_host::tree_sitter::HostTreeSnapshot
+    for PluginState
+{
+    fn root(
+        &mut self,
+        self_: wasmtime::component::Resource<crate::tree_resource::TreeSnapshotResource>,
+    ) -> wasmtime::component::Resource<crate::tree_resource::NodeResource> {
+        let node = self
+            .table
+            .get(&self_)
+            .expect("tree-snapshot handle live for the call")
+            .root();
+        self.table.push(node).expect("node resource table push")
+    }
+
+    fn node_at(
+        &mut self,
+        self_: wasmtime::component::Resource<crate::tree_resource::TreeSnapshotResource>,
+        pos: crate::lattice::plugin_host::types::Position,
+    ) -> Option<wasmtime::component::Resource<crate::tree_resource::NodeResource>> {
+        let pos = lattice_protocol::position::Position::from_wit(pos).ok()?;
+        let node = self.table.get(&self_).ok()?.node_at(pos)?;
+        self.table.push(node).ok()
+    }
+
+    fn enclosing(
+        &mut self,
+        self_: wasmtime::component::Resource<crate::tree_resource::TreeSnapshotResource>,
+        pos: crate::lattice::plugin_host::types::Position,
+        kinds: Vec<String>,
+    ) -> Option<wasmtime::component::Resource<crate::tree_resource::NodeResource>> {
+        let pos = lattice_protocol::position::Position::from_wit(pos).ok()?;
+        let node = self.table.get(&self_).ok()?.enclosing(pos, &kinds)?;
+        self.table.push(node).ok()
+    }
+
+    fn language(
+        &mut self,
+        self_: wasmtime::component::Resource<crate::tree_resource::TreeSnapshotResource>,
+    ) -> String {
+        self.table
+            .get(&self_)
+            .map(|ts| ts.language())
+            .unwrap_or_default()
+    }
+
+    fn drop(
+        &mut self,
+        rep: wasmtime::component::Resource<crate::tree_resource::TreeSnapshotResource>,
+    ) -> wasmtime::Result<()> {
+        // The trampoline lends `borrow<tree-snapshot>` and reclaims the owned
+        // entry itself (the `document` discipline); a guest never owns one. Delete
+        // defensively, ignore a missing entry — never a trap on teardown.
+        let _ = self.table.delete(rep);
+        Ok(())
+    }
+}
+
+impl crate::grammar_host::bindings::lattice::plugin_host::tree_sitter::HostNode for PluginState {
+    fn kind(
+        &mut self,
+        self_: wasmtime::component::Resource<crate::tree_resource::NodeResource>,
+    ) -> String {
+        self.table.get(&self_).map(|n| n.kind()).unwrap_or_default()
+    }
+
+    fn is_named(
+        &mut self,
+        self_: wasmtime::component::Resource<crate::tree_resource::NodeResource>,
+    ) -> bool {
+        self.table.get(&self_).map(|n| n.is_named()).unwrap_or(false)
+    }
+
+    fn is_error(
+        &mut self,
+        self_: wasmtime::component::Resource<crate::tree_resource::NodeResource>,
+    ) -> bool {
+        self.table.get(&self_).map(|n| n.is_error()).unwrap_or(false)
+    }
+
+    fn byte_range(
+        &mut self,
+        self_: wasmtime::component::Resource<crate::tree_resource::NodeResource>,
+    ) -> crate::lattice::plugin_host::types::Range {
+        let r = self
+            .table
+            .get(&self_)
+            .map(|n| n.byte_range())
+            .unwrap_or(lattice_protocol::position::Range {
+                start: lattice_protocol::position::Position { line: 0, byte: 0 },
+                end: lattice_protocol::position::Position { line: 0, byte: 0 },
+            });
+        crate::lattice::plugin_host::types::Range {
+            start: crate::lattice::plugin_host::types::Position {
+                line: r.start.line,
+                byte: r.start.byte,
+            },
+            end: crate::lattice::plugin_host::types::Position {
+                line: r.end.line,
+                byte: r.end.byte,
+            },
+        }
+    }
+
+    fn parent(
+        &mut self,
+        self_: wasmtime::component::Resource<crate::tree_resource::NodeResource>,
+    ) -> Option<wasmtime::component::Resource<crate::tree_resource::NodeResource>> {
+        let node = self.table.get(&self_).ok()?.parent()?;
+        self.table.push(node).ok()
+    }
+
+    fn named_child_count(
+        &mut self,
+        self_: wasmtime::component::Resource<crate::tree_resource::NodeResource>,
+    ) -> u32 {
+        self.table
+            .get(&self_)
+            .map(|n| n.named_child_count())
+            .unwrap_or(0)
+    }
+
+    fn named_child(
+        &mut self,
+        self_: wasmtime::component::Resource<crate::tree_resource::NodeResource>,
+        index: u32,
+    ) -> Option<wasmtime::component::Resource<crate::tree_resource::NodeResource>> {
+        let node = self.table.get(&self_).ok()?.named_child(index)?;
+        self.table.push(node).ok()
+    }
+
+    fn child_by_field(
+        &mut self,
+        self_: wasmtime::component::Resource<crate::tree_resource::NodeResource>,
+        name: String,
+    ) -> Option<wasmtime::component::Resource<crate::tree_resource::NodeResource>> {
+        let node = self.table.get(&self_).ok()?.child_by_field(&name)?;
+        self.table.push(node).ok()
+    }
+
+    fn next_named_sibling(
+        &mut self,
+        self_: wasmtime::component::Resource<crate::tree_resource::NodeResource>,
+    ) -> Option<wasmtime::component::Resource<crate::tree_resource::NodeResource>> {
+        let node = self.table.get(&self_).ok()?.next_named_sibling()?;
+        self.table.push(node).ok()
+    }
+
+    fn prev_named_sibling(
+        &mut self,
+        self_: wasmtime::component::Resource<crate::tree_resource::NodeResource>,
+    ) -> Option<wasmtime::component::Resource<crate::tree_resource::NodeResource>> {
+        let node = self.table.get(&self_).ok()?.prev_named_sibling()?;
+        self.table.push(node).ok()
+    }
+
+    fn drop(
+        &mut self,
+        rep: wasmtime::component::Resource<crate::tree_resource::NodeResource>,
+    ) -> wasmtime::Result<()> {
+        // Nodes ARE owned by the guest (unlike the lent snapshot handle); the
+        // guest's generated RAII wrapper drops them when they leave scope. Delete
+        // the table entry, ignoring a missing one — never a trap.
+        let _ = self.table.delete(rep);
+        Ok(())
+    }
+}
+
 /// Host impl of the `events` guest→host subscription API (PH7.8b, §5). The guest
 /// calls `subscribe` (from its `register-events` export) to observe editor
 /// events; each records the `(filter, handler)` pair into the Store's
@@ -1439,6 +1612,16 @@ impl PluginHost {
             |state: &mut PluginState| state,
         )
         .map_err(|e| PluginHostError::Linker(e.into()))?;
+        // TS.1: the `tree-sitter` `tree-snapshot` / `node` resources, on the
+        // async linker too (superset symmetry with `buffer`) — a combined plugin
+        // instantiated here for its async drains still imports `tree-sitter` via
+        // `apply-action`. The reads are sync host-table lookups; inert for worlds
+        // that don't import it.
+        crate::grammar_host::bindings::lattice::plugin_host::tree_sitter::add_to_linker::<
+            _,
+            HasSelf<_>,
+        >(&mut linker, |state: &mut PluginState| state)
+        .map_err(|e| PluginHostError::Linker(e.into()))?;
         // The grammar seam's SYNC linker (PH7.7b/c). The `grammar` register API
         // (`register-*`) is guest→host sync host funcs (they only record into
         // `PluginState`). It is wired into a SECOND linker whose WASI is `sync`
@@ -1462,6 +1645,16 @@ impl PluginHost {
             &mut grammar_linker,
             |state: &mut PluginState| state,
         )
+        .map_err(|e| PluginHostError::Linker(e.into()))?;
+        // TS.1: the `tree-sitter` resources on the SYNC grammar linker, so a
+        // grammar action's `option<borrow<tree-snapshot>>` param resolves. Reads
+        // are synchronous host-table lookups + parse-free tree walks (no I/O, no
+        // parse — the tree is already there), correct for the dispatch-thread
+        // trampoline.
+        crate::grammar_host::bindings::lattice::plugin_host::tree_sitter::add_to_linker::<
+            _,
+            HasSelf<_>,
+        >(&mut grammar_linker, |state: &mut PluginState| state)
         .map_err(|e| PluginHostError::Linker(e.into()))?;
         // Multi-seam support (AP.1 spike): a combined plugin instantiated here for
         // its GRAMMAR drain still imports its `modes` / `config` seams, so the sync

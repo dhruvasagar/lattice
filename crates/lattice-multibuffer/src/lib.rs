@@ -1691,6 +1691,9 @@ impl Document for MultibufferDocumentHandle {
                 // the per-excerpt source's comment leader -- deferred (a
                 // follow-up, like N.1.5's scope resolver was). v1: None.
                 comment_syntax: None,
+                // TS.1: multibuffer dispatch resolves motions/text-objects, not
+                // grammar actions; no tree-snapshot handle needed.
+                syntax: None,
             },
         )
         .map_err(RuntimeError::Grammar);

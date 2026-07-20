@@ -311,6 +311,7 @@ mod tests {
             cursor: pos(4, 2),
             buffer_id: BufferId(7),
             buffer: Buffer::from_text("hello\nworld\n"),
+            syntax: None,
             cancel: CancellationToken::never(),
         };
         let wit = project_action_context(&ctx).unwrap();

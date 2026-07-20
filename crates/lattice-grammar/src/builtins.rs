@@ -2401,6 +2401,7 @@ mod tests {
             TextObjectEnv {
                 scope_resolver: None,
                 comment_syntax: Some(&cs),
+                syntax: None,
             },
         )
         .unwrap();
@@ -2423,6 +2424,7 @@ mod tests {
             TextObjectEnv {
                 scope_resolver: None,
                 comment_syntax: Some(&cs),
+                syntax: None,
             },
         )
         .unwrap();

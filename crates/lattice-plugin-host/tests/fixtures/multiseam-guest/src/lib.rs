@@ -19,6 +19,7 @@ wit_bindgen::generate!({
 use exports::lattice::plugin_host::grammar_callbacks::Guest as GrammarCallbacks;
 use lattice::plugin_host::buffer::Document;
 use lattice::plugin_host::config::OptionType;
+use lattice::plugin_host::tree_sitter::TreeSnapshot;
 use lattice::plugin_host::modes::{
     ActivationPolicy, BindingMode, ModeCapabilities, ModeDeclaration, ModeKeymapBinding, ModeKind,
 };
@@ -40,6 +41,13 @@ impl Guest for Component {
         };
         grammar::register_action("multiseam-read", "echo the char at the cursor", &spec(), 1);
         grammar::register_action("multiseam-declines", "always declines (AP.0.2)", &spec(), 2);
+        // TS.1: echo the enclosing `block` scope through the tree-snapshot handle.
+        grammar::register_action(
+            "multiseam-enclosing",
+            "echo the enclosing block via the tree-sitter seam (TS.1)",
+            &spec(),
+            3,
+        );
     }
 
     /// modes seam — a minor mode binding `x` (Normal) to the declining action, so
@@ -74,6 +82,7 @@ impl GrammarCallbacks for Component {
         callback: u32,
         ctx: ActionContext,
         doc: &Document,
+        tree: Option<&TreeSnapshot>,
     ) -> Result<Vec<Effect>, String> {
         match callback {
             1 => {
@@ -90,6 +99,26 @@ impl GrammarCallbacks for Component {
             }
             // AP.0.2: decline the chord — the dispatcher falls through.
             2 => Ok(vec![Effect::Declined]),
+            // TS.1: resolve the enclosing `block` scope through the tree-snapshot
+            // handle and echo `<language>:<kind>:<named-child-count>` — proof the
+            // seam crossed (handle received, `enclosing` walked host-side, node
+            // projection returned). `err` when there's no tree (no grant / no
+            // parse) or no enclosing block (graceful degradation).
+            3 => {
+                let tree = tree.ok_or("multiseam: no tree snapshot")?;
+                let node = tree
+                    .enclosing(ctx.cursor, &["block".to_string()])
+                    .ok_or("multiseam: no enclosing block")?;
+                Ok(vec![Effect::Echo(EchoPayload {
+                    level: EchoLevel::Info,
+                    text: format!(
+                        "{}:{}:{}",
+                        tree.language(),
+                        node.kind(),
+                        node.named_child_count()
+                    ),
+                })])
+            }
             other => Err(format!("multiseam: unknown action callback {other}")),
         }
     }

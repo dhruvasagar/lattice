@@ -10,8 +10,9 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned. Every non-trivial sl
 the four artefacts (doc + bench-where-perf-relevant + test incl. failure modes +
 graceful error handling).
 
-**Status: 🚧 in progress — AP.0.1 ✅, AP.0.2 ✅, AP.0.3 ✅ (TS.1+TS.2), AP.1.0 ✅,
-AP.1 ✅, AP.2 ✅ (auto), AP.3 ✅ (manual, = TS.3); AP.4 (bundle) planned.**
+**Status: ✅ COMPLETE — AP.0.1 ✅, AP.0.2 ✅, AP.0.3 ✅ (TS.1+TS.2), AP.1.0 ✅,
+AP.1 ✅, AP.2 ✅ (auto), AP.3 ✅ (manual, = TS.3), AP.4 ✅ (first core plugin, via
+the plugin-manager PM track — NOT compiled-in).**
 
 > **Mode enablement moved out (2026-07-19).** `auto-pairs-mode` is now
 > **available-but-off**, not self-activating — the user enables it via `init.rs`.
@@ -178,14 +179,30 @@ declines, manual pair-keys decline, auto close-key declines, backspace
 deletes/declines. Style flips live via `parse_and_set_command`. auto-pair is the
 first end-to-end consumer of the tree-sitter seam (TS.3).
 
-### AP.4 — bundling  📝
-Ship `auto-pair.wasm` compiled-in / in `core-plugins/`, pre-granted at boot (needs
-no grant). Mode ships **off by default** (available-but-off, per
-[`config-and-init.md`](config-and-init.md) CI.3/CI.5) — the shipped default
-`init.rs` enables it with `on_plugin_loaded("auto-pair") → enable_mode(…)`, which
-the user can remove. **Exit:** a fresh editor with the default init.rs auto-pairs
-out of the box; `:plugins` lists auto-pair; removing the `enable_mode` line leaves
-it loaded but inert; `:set auto-pairs-style=manual` flips the style live.
+### AP.4 — bundling as the first core plugin  ✅
+**Reframed (2026-07-20):** auto-pair is NOT compiled into the binary and NOT
+enabled by a shipped init.rs. It is the **first core plugin** of the plugin-manager
+redesign ([`plugin-manager.md`](../../architecture/plugin-manager.md)) — shipped as
+a prebuilt `.wasm` in the runtime root, discovered at boot, and enabled by a config
+gate. The original sketch (compiled-in / `core-plugins/` dir / shipped init.rs) is
+**superseded**: `include_bytes!` was rejected (plugins ship separately), and the
+init.rs-enable model gave way to decision (i) — discovery + a `<plugin>.enabled`
+gate.
+
+**Delivered via the PM core track** (slice plan:
+[`plugin-loader.md`](plugin-loader.md) PM.1–PM.4):
+- **PM.1** — the runtime-root search path + boot discovery (`Bundled` tier).
+- **PM.2** — `cargo xtask build-core-plugins` builds + stages `auto-pair.wasm` +
+  `plugin.toml` into `runtime/plugins/auto-pair/` (prebuilt, not embedded).
+- **PM.3** — the manifest `default_mode` + auto-registered `<id>.enabled` gate.
+- **PM.4** — `plugin.toml` declares `default_mode = "auto-pairs-mode"`; the gate
+  (`auto-pair.enabled`, default true) enables it out of the box.
+
+**Exit (met):** a fresh editor — after `cargo xtask build-core-plugins` — discovers
+auto-pair from the runtime root and auto-pairs out of the box with no user config;
+`:set auto-pair.enabled=false` deactivates the mode (plugin stays loaded); `:set
+auto-pairs-style=manual` flips the style live. Proven by the shipped-manifest guard
++ the `mode_gate.rs` composition test. **The auto-pair epic is complete.**
 
 ## Deferred to v2
 

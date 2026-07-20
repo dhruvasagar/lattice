@@ -6,8 +6,9 @@
 //!     opener/closer/quote is its OWN action because a mode keymap binding carries
 //!     no args, so the action can't otherwise know which pair fired.
 //!   - **modes** — `auto-pairs-mode`, a `global`-scope minor mode that OWNS the
-//!     insert-mode keymap. **Off by default** (CI.3 available-but-off); the user
-//!     enables it from `init.rs` (`on_plugin_loaded("auto-pair") → enable_mode`).
+//!     insert-mode keymap. Declared the plugin's `default_mode` (AP.4/PM.3), so the
+//!     loader's `auto-pair.enabled` gate (default true) enables it out of the box;
+//!     `:set auto-pair.enabled=false` turns it off. No init.rs needed.
 //!   - **config** — `auto-pairs-style` (`auto` | `manual`) + `auto-pairs-close-key`.
 //!
 //! **The `auto` style** for the bracket pairs `() [] {}` and the quote pairs

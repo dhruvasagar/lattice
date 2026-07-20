@@ -84,6 +84,7 @@ async fn default_mode_gate_enables_on_load_and_toggles_with_the_option() {
     );
 
     let config = Arc::new(ConfigRegistry::default());
+    let mode_registry = empty_mode_registry();
     let host =
         Arc::new(PluginHost::with_dirs(base.path().join("cache"), base.path().join("data")).unwrap());
     let loader = Arc::new(PluginLoader::with_services(
@@ -92,7 +93,7 @@ async fn default_mode_gate_enables_on_load_and_toggles_with_the_option() {
             runtime: Some(tokio::runtime::Handle::current()),
             bus: Some(bus.clone()),
             command_registry: Some(empty_command_registry()),
-            mode_registry: Some(empty_mode_registry()),
+            mode_registry: Some(mode_registry.clone()),
             config_registry: Some(config.clone()),
             keymap: Some(KeymapHandle::new()),
             ..Default::default()
@@ -105,6 +106,15 @@ async fn default_mode_gate_enables_on_load_and_toggles_with_the_option() {
         .discover_and_load(&plugins_dir, TrustTier::Bundled)
         .await;
     assert_eq!(n, 1, "auto-pair loads");
+
+    // The modes seam registered the declared mode (available for the gate to
+    // enable) — the full composition: discovery → modes drain → gate.
+    assert!(
+        mode_registry
+            .load()
+            .is_registered(lattice_mode::ModeId::new("auto-pairs-mode")),
+        "auto-pairs-mode registered from the modes seam"
+    );
 
     // The gate auto-registered `auto-pair.enabled` (default true).
     assert!(

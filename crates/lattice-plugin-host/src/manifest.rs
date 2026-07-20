@@ -376,6 +376,54 @@ mod tests {
         assert!(blank.doc.is_none(), "blank doc is normalised to None");
     }
 
+    /// PM.3: `default_mode` parses (the `<id>.enabled` gate trigger); absent or
+    /// blank → `None`.
+    #[test]
+    fn parses_optional_default_mode() {
+        let m = PluginManifest::from_toml_str(
+            "id = \"auto-pair\"\ndefault_mode = \"auto-pairs-mode\"\n",
+        )
+        .unwrap();
+        assert_eq!(m.default_mode.as_deref(), Some("auto-pairs-mode"));
+        assert!(
+            PluginManifest::from_toml_str("id = \"x\"\n")
+                .unwrap()
+                .default_mode
+                .is_none()
+        );
+        assert!(
+            PluginManifest::from_toml_str("id = \"x\"\ndefault_mode = \" \"\n")
+                .unwrap()
+                .default_mode
+                .is_none(),
+            "blank default_mode normalises to None"
+        );
+    }
+
+    /// PM.4: the SHIPPED `auto-pair` manifest declares its `default_mode` (+ the
+    /// `tree-sitter` capability), so it enables out of the box via the gate. Reads
+    /// the real manifest from the repo — a regression guard on the shipped file.
+    #[test]
+    fn shipped_auto_pair_manifest_declares_the_gate() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../plugins/auto-pair/plugin.toml"
+        );
+        let text = std::fs::read_to_string(path).expect("the auto-pair manifest exists");
+        let m = PluginManifest::from_toml_str(&text).expect("it parses");
+        assert_eq!(m.id, "auto-pair");
+        assert_eq!(
+            m.default_mode.as_deref(),
+            Some("auto-pairs-mode"),
+            "the shipped manifest enables auto-pairs-mode by default"
+        );
+        assert!(
+            m.editor_capabilities
+                .contains(lattice_mode::CapabilitySet::TREE_SITTER),
+            "the shipped manifest declares the tree-sitter capability (manual style)"
+        );
+    }
+
     #[test]
     fn parses_each_capability_form() {
         assert_eq!(

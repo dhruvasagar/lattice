@@ -869,7 +869,7 @@ design fragment — see the settled-decisions note above).
 > missing artifact is produced** (build-on-boot). The load / unload / reload /
 > discovery machinery is unchanged — PM adds a resolve→build→cache layer in front.
 
-**Status: 🚧 PM.1 ✅ · PM.2 ✅ · PM.3 ✅ · PM.4 + user track 📝.**
+**Status: 🚧 core track ✅ (PM.1 · PM.2 · PM.3 · PM.4) · user track (PM.5–PM.8) 📝.**
 
 Two tracks. The **core track (PM.1–PM.4) ships auto-pair out of the box** — no
 build service, just a second (prebuilt, shipped) plugin root discovered at boot.
@@ -932,13 +932,28 @@ mode-id — the manifest does (mode-ownership). **Tests:**
 default true + `ModeEnablementRequested{enabled:true}`), live toggle off→on via
 `OptionChanged`, and no-`default_mode`⇒no-gate. General for core or user plugins.
 
-#### PM.4 — auto-pair as the first core plugin (AP.4)  📝
+#### PM.4 — auto-pair as the first core plugin (AP.4)  ✅
 auto-pair's `plugin.toml` declares `default_mode = "auto-pairs-mode"`; PM.2 stages
 it into the runtime root; PM.1 discovers it; PM.3's `auto-pair.enabled` (default
 true) enables the mode. **Exit:** a fresh editor (no user config) auto-pairs out of
 the box; `:plugins` lists auto-pair (`source = bundled`); `:set
 auto-pair.enabled=false` turns it off (plugin stays loaded, mode deactivates);
 `:set auto-pairs-style=manual` flips the style live. Closes the auto-pair epic.
+
+**Delivered (2026-07-20).** `plugins/auto-pair/plugin.toml` declares
+`default_mode = "auto-pairs-mode"` (the module doc updated: the mode enables via
+the gate, not init.rs). `cargo xtask build-core-plugins` re-stages it into
+`runtime/plugins/auto-pair/`. The composition is proven by: the shipped-manifest
+regression guard (`manifest.rs::shipped_auto_pair_manifest_declares_the_gate` —
+the real file declares `default_mode` + `tree-sitter`) and `mode_gate.rs` (the
+modes seam registers `auto-pairs-mode`, the gate registers `auto-pair.enabled`
+default-true + requests enablement, and the toggle deactivates/reactivates live).
+So a `cargo run` editor — after one `cargo xtask build-core-plugins` — discovers
+auto-pair from the runtime root (PM.1) at `Bundled` tier and auto-pairs out of the
+box with no user config, `:set auto-pair.enabled=false` turning it off. **The
+auto-pair epic (AP.0.1 → AP.4) is complete**, and it is the first plugin to ride
+the whole stack: the grammar `document`/tree-sitter seams, the multi-seam host,
+the mode-ownership + config gate, and now the core-plugin shipping path.
 
 ### User track — use-package (`require` + build)
 

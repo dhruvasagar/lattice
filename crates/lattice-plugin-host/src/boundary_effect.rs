@@ -501,6 +501,7 @@ fn flatten_effect(e: &NativeEffect, out: &mut Vec<WitEffect>) -> Result<(), Stri
 fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
     Ok(match e {
         NativeEffect::None => WitEffect::None,
+        NativeEffect::Declined => WitEffect::Declined,
         NativeEffect::Edits(edits) => WitEffect::Edits(
             edits
                 .iter()
@@ -760,6 +761,7 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
 fn effect_from_wit(w: WitEffect) -> Result<NativeEffect, String> {
     Ok(match w {
         WitEffect::None => NativeEffect::None,
+        WitEffect::Declined => NativeEffect::Declined,
         WitEffect::Edits(edits) => NativeEffect::Edits(
             edits
                 .into_iter()

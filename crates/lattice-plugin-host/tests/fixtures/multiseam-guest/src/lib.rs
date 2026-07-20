@@ -20,7 +20,7 @@ use exports::lattice::plugin_host::grammar_callbacks::Guest as GrammarCallbacks;
 use lattice::plugin_host::buffer::Document;
 use lattice::plugin_host::config::OptionType;
 use lattice::plugin_host::modes::{
-    ActivationPolicy, ModeCapabilities, ModeDeclaration, ModeKind,
+    ActivationPolicy, BindingMode, ModeCapabilities, ModeDeclaration, ModeKeymapBinding, ModeKind,
 };
 use lattice::plugin_host::types::{
     ActionContext, ActionSpec, Args, EchoLevel, EchoPayload, Effect, ExCommandContext,
@@ -31,30 +31,30 @@ use lattice::plugin_host::{config, grammar, modes};
 struct Component;
 
 impl Guest for Component {
-    /// grammar seam — contribute the action the mode's keymap binds to.
+    /// grammar seam — the action the mode's keymap binds to, plus (AP.0.2) a
+    /// `multiseam-declines` action that returns `Effect::Declined` to exercise
+    /// fall-through.
     fn register_grammar() {
-        grammar::register_action(
-            "multiseam-read",
-            "echo the char at the cursor (multiseam fixture)",
-            &ActionSpec {
-                args_schema: Vec::new(),
-            },
-            1,
-        );
+        let spec = || ActionSpec {
+            args_schema: Vec::new(),
+        };
+        grammar::register_action("multiseam-read", "echo the char at the cursor", &spec(), 1);
+        grammar::register_action("multiseam-declines", "always declines (AP.0.2)", &spec(), 2);
     }
 
-    /// modes seam — declare a minor mode. Empty keymap: the spike proves the
-    /// mode *registers* from the combined component; keymap-binding-to-own-action
-    /// (with the `provides` grammar-before-modes ordering + action naming) is
-    /// AP.1 proper, and the bind mechanism itself is already covered by the
-    /// single-seam `emacs-keys-guest` test.
+    /// modes seam — a minor mode binding `x` (Normal) to the declining action, so
+    /// a test can prove the chord falls through to the builtin `x` (delete char).
     fn register_modes() {
         modes::register_mode(&ModeDeclaration {
             id: "multiseam-mode".to_string(),
             kind: ModeKind::Minor,
             activation_policy: ActivationPolicy::Global,
             capabilities: ModeCapabilities::empty(),
-            keymap: Vec::new(),
+            keymap: vec![ModeKeymapBinding {
+                binding_mode: BindingMode::Normal,
+                chord: "x".to_string(),
+                command: "multiseam-declines".to_string(),
+            }],
         });
     }
 
@@ -88,6 +88,8 @@ impl GrammarCallbacks for Component {
                     text,
                 })])
             }
+            // AP.0.2: decline the chord — the dispatcher falls through.
+            2 => Ok(vec![Effect::Declined]),
             other => Err(format!("multiseam: unknown action callback {other}")),
         }
     }

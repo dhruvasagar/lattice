@@ -442,6 +442,11 @@ interface types {
     /// `Many`/`Global`/`AppAction` are absent by design (see the note above).
     variant effect {
         none,
+        /// AP.0.2: the action DECLINES the chord (it did nothing) — the
+        /// dispatcher re-resolves as if this action's keymap layer weren't there,
+        /// falling through to the next binding. Distinct from `none` (a no-op
+        /// that consumes the chord). A guest returns `[declined]` to fall through.
+        declined,
         edits(list<applied-edit>),
         apply-edit(apply-edit-payload),
         selection-change(selection-set),

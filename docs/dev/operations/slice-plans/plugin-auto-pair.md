@@ -10,8 +10,8 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned. Every non-trivial sl
 the four artefacts (doc + bench-where-perf-relevant + test incl. failure modes +
 graceful error handling).
 
-**Status: 🚧 in progress — AP.0.1 ✅, AP.1.0 ✅, AP.1 ✅, AP.2 ✅ (open + close);
-AP.3 / AP.4 planned.**
+**Status: 🚧 in progress — AP.0.1 ✅, AP.0.2 ✅, AP.1.0 ✅, AP.1 ✅, AP.2 ✅
+(open + close); AP.0.3 / AP.3 / AP.4 planned.**
 
 > **Mode enablement moved out (2026-07-19).** `auto-pairs-mode` is now
 > **available-but-off**, not self-activating — the user enables it via `init.rs`.
@@ -119,7 +119,7 @@ a shippable, default-on auto-pair (open + close) without the tree-sitter seam.**
 
 ## Wave 2
 
-### AP.0.2 — declining / fall-through bindings  📝
+### AP.0.2 — declining / fall-through bindings  ✅
 General host prereq (design fragment §5.2). A "declined" action outcome that
 resumes keymap resolution at the next lower layer — so the manual close key falls
 through when nothing is unmatched (requirement #4: completion nav / newline / a
@@ -129,6 +129,18 @@ pair, instead of reimplementing normal backspace. **Exit:** a plugin action
 declines → a lower-layer / builtin binding for the same chord runs; accepts → it
 doesn't. Then bind `<BS>` → `auto-pair-backspace` (delete the empty pair, else
 decline).
+
+**Delivered:** `Effect::Declined` (native `lattice-grammar` + WIT `effect`
+variant + `boundary_effect` round-trip), distinct from `Effect::None` (which
+*consumes* the chord). `dispatch_invocation`'s Action gate maps `Ok(Declined)` →
+`DispatchOutcome.declined`; `dispatch_chord` then re-translates the SAME chord
+with `active_minor_modes = []` (empty) and a fresh partial-chord, firing the
+next-layer binding — one fall-through only (the builtin/user layer won't itself
+decline; a guard resets the flag). Regression: `lattice-host/tests/fall_through.rs`
+(the `multiseam-guest` fixture binds `x`→a declining action in a Global minor
+mode; with the mode active, `x` on `"abc\n"` falls through to the builtin `x` and
+deletes the first char → `"bc\n"`). The `<BS>` → `auto-pair-backspace` binding
+itself lands with AP.3 (needs the empty-pair scan).
 
 ### AP.0.3 — tree-sitter query seam  📝
 The enclosing-scope query that bounds the manual scan (design fragment §5.3, §7).

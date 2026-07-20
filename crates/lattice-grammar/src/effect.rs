@@ -150,6 +150,15 @@ pub enum LspRequest {
 #[derive(Debug, Clone)]
 pub enum Effect {
     None,
+    /// AP.0.2: the action DECLINES this chord — it did nothing, and the
+    /// dispatcher should re-resolve the chord as if this action's keymap layer
+    /// weren't present, falling through to the next binding (a lower-priority
+    /// minor, the builtin/user layer, or Insert-mode self-insert). The
+    /// `with-eval-after-load` of keymaps: a plugin action (auto-pair's manual
+    /// close key / backspace) declines when it has nothing to do, so the key
+    /// still does whatever else is bound (completion nav, a normal backspace, a
+    /// user remap). Distinct from `None` (a no-op that CONSUMES the chord).
+    Declined,
     Edits(Vec<AppliedEdit>),
     /// CR.0: a generic "apply this edit to this buffer" primitive.
     ///

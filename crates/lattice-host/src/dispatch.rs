@@ -133,6 +133,11 @@ pub struct DispatchOutcome {
     /// follow-up. The `Vec` shape lets host helpers append without
     /// threading the outcome up the call stack.
     pub next_actions: Vec<crate::action::Action>,
+    /// AP.0.2: set when a grammar action returned `Effect::Declined` — the
+    /// chord's resolved binding did nothing and the dispatcher should re-resolve
+    /// the chord without that action's keymap layer (fall through). Read + reset
+    /// by `dispatch_chord`.
+    pub declined: bool,
 }
 
 impl DispatchOutcome {
@@ -7777,6 +7782,55 @@ impl Editor {
             for next in pending {
                 handle_action(self, next, &mut out);
             }
+        }
+
+        // AP.0.2: a grammar action can DECLINE the chord (return
+        // `Effect::Declined`) — it did nothing, so re-resolve the chord as if the
+        // declining action's mode layers weren't present (`active_minor_modes =
+        // []`, falling to the always-on builtin/user layer + Insert self-insert).
+        // The manual close key / backspace decline when there's nothing to do, so
+        // the key still does whatever else is bound. One fall-through only: the
+        // builtin/user binding won't itself decline.
+        if std::mem::take(&mut out.declined) {
+            let no_minors: Vec<lattice_mode::ModeId> = Vec::new();
+            let mut fresh_partial: Vec<crate::chord::KeyChord> = Vec::new();
+            let fallthrough = crate::input::translate(
+                crate::input::TranslateContext {
+                    modal: self.modal,
+                    builtins: &self.builtins,
+                    pending_count: 0,
+                    op_count: 0,
+                    recording_macro: self.macro_recording.is_some(),
+                    active_buffer: self.active_buffer,
+                    completion_open: false,
+                    chord_capture: self.auto_submit_after_chord,
+                    picker_open: false,
+                    insert_completion_open: false,
+                    snippet_active: self.snippet_session.is_active(self.document_buffer_id),
+                    terminal_insert_active: false,
+                    terminal_esc_exits: false,
+                    terminal_app_cursor_keys: false,
+                    terminal_insert_exit_pending: false,
+                    terminal_visual_active: false,
+                    keymap: &self.keymap,
+                    partial_chord: &mut fresh_partial,
+                    active_minor_modes: &no_minors,
+                },
+                chord,
+            );
+            handle_action(self, fallthrough.clone(), &mut out);
+            loop {
+                let pending: Vec<Action> = std::mem::take(&mut out.next_actions);
+                if pending.is_empty() {
+                    break;
+                }
+                for next in pending {
+                    handle_action(self, next, &mut out);
+                }
+            }
+            // Guard: don't recurse if the fall-through also declined.
+            out.declined = false;
+            return fallthrough;
         }
 
         action
@@ -30422,7 +30476,9 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         Effect::ShowDiagnosticsPopup { .. } => false,
         // L7: firing an LSP nav request neither mutates nor yanks the buffer.
         Effect::Lsp(_) => false,
-        Effect::None
+        // AP.0.2: a declined chord did nothing — not a mutation/yank.
+        Effect::Declined
+        | Effect::None
         | Effect::SelectionChange(_)
         | Effect::EnterMode(_)
         | Effect::SaveBuffer { .. }
@@ -30553,7 +30609,9 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         Effect::ShowDiagnosticsPopup { .. } => false,
         // L7: an LSP nav request is not a buffer mutation.
         Effect::Lsp(_) => false,
-        Effect::None
+        // AP.0.2: a declined chord did nothing — not a mutation/yank.
+        Effect::Declined
+        | Effect::None
         | Effect::SelectionChange(_)
         | Effect::Yank { .. }
         | Effect::EnterMode(_)
@@ -31716,6 +31774,10 @@ impl Editor {
                 inv,
                 &cancel,
             ) {
+                // AP.0.2: a declined action did nothing — flag it so
+                // `dispatch_chord` re-resolves the chord at the next keymap layer
+                // (fall through), rather than applying an effect.
+                Ok(lattice_grammar::Effect::Declined) => out.declined = true,
                 Ok(effect) => apply_effect_host(self, effect, out),
                 Err(e) => {
                     self.set_message(EchoLevel::Error, format!("action dispatch failed: {e:?}"));

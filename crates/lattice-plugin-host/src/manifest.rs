@@ -201,6 +201,14 @@ pub struct PluginManifest {
     /// preferred doc source is the plugin's embedded WIT world doc-comment;
     /// this manifest field is the fallback when a component ships no WIT docs.
     pub doc: Option<String>,
+    /// PM.3: the minor mode this plugin enables by DEFAULT. When set, the loader
+    /// auto-registers a `<id>.enabled` bool option (default true) that gates it —
+    /// on load (and on any change to the option) the manager enables / disables
+    /// this mode via the `ModeEnablementRequested` path. `None` ⇒ the plugin
+    /// contributes a mode the user must enable explicitly (the CI.3
+    /// available-but-off default). The host learns the mode-id ONLY from here —
+    /// the plugin owns it (mode-ownership).
+    pub default_mode: Option<String>,
 }
 
 /// The on-disk manifest shape. Deserialised first, then validated into
@@ -219,6 +227,10 @@ struct RawManifest {
     /// PI.4: the plugin's documentation (`:describe-plugin`).
     #[serde(default)]
     doc: Option<String>,
+    /// PM.3: the minor mode this plugin enables by default (gated by
+    /// `<id>.enabled`). Absent ⇒ no default mode.
+    #[serde(default)]
+    default_mode: Option<String>,
 }
 
 /// Why a manifest failed to parse. Every failure is a value — the host logs +
@@ -295,6 +307,7 @@ impl PluginManifest {
             editor_capabilities,
             provides: Vec::new(),
             doc: None,
+            default_mode: None,
         }
     }
 
@@ -332,6 +345,7 @@ impl PluginManifest {
             editor_capabilities: editor,
             provides,
             doc: raw.doc.filter(|d| !d.trim().is_empty()),
+            default_mode: raw.default_mode.filter(|m| !m.trim().is_empty()),
         })
     }
 }

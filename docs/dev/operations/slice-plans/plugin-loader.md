@@ -869,7 +869,7 @@ design fragment — see the settled-decisions note above).
 > missing artifact is produced** (build-on-boot). The load / unload / reload /
 > discovery machinery is unchanged — PM adds a resolve→build→cache layer in front.
 
-**Status: 🚧 PM.1 ✅ · PM.2 ✅ · rest 📝.**
+**Status: 🚧 PM.1 ✅ · PM.2 ✅ · PM.3 ✅ · PM.4 + user track 📝.**
 
 Two tracks. The **core track (PM.1–PM.4) ships auto-pair out of the box** — no
 build service, just a second (prebuilt, shipped) plugin root discovered at boot.
@@ -909,7 +909,7 @@ editor_capabilities)}`; the dev-fallback search path (`<exe>/../../runtime/plugi
 for `target/<profile>/lattice`) resolves that dir, so a `cargo run` editor
 discovers it via PM.1.
 
-#### PM.3 — manifest `default_mode` + the `<plugin>.enabled` gate  📝
+#### PM.3 — manifest `default_mode` + the `<plugin>.enabled` gate  ✅
 Manifest gains `default_mode: option<string>` (the mode a plugin enables by
 default). On load, the manager auto-registers a bool option `<plugin-id>.enabled`
 (default `true`) and, gated by it, enables the declared mode via the CI.4
@@ -918,6 +918,19 @@ disables it. Host learns the mode-id ONLY from the manifest (mode-ownership hold
 **Exit:** a discovered plugin declaring `default_mode` has its mode active on load
 with no init.rs; toggling `<id>.enabled` activates/deactivates it live; the option
 is `:describe-option`-visible. General mechanism (core or user plugin).
+
+**Delivered (2026-07-20).** `PluginManifest.default_mode: Option<String>` (+ raw
+manifest `#[serde(default)]`). The loader's `apply_default_mode_gate` (in
+`load_discovered`, after `PluginLoaded`) registers `<id>.enabled` via the now-`pub`
+`config_host::register_plugin_option` (Boolean, default `"true"` — idempotent,
+reuses the tested collision/parse logic), reads it, and publishes
+`ModeEnablementRequested { mode, enabled }`. `LoadedRecord` carries `default_mode`
+so `subscribe_mode_gates` (mirrors `subscribe_health`, wired in `install`) maps a
+`<id>.enabled` `OptionChanged` back to the mode and re-requests. Host never names a
+mode-id — the manifest does (mode-ownership). **Tests:**
+`lattice-plugin-loader/tests/mode_gate.rs` — load-time enable (option registered
+default true + `ModeEnablementRequested{enabled:true}`), live toggle off→on via
+`OptionChanged`, and no-`default_mode`⇒no-gate. General for core or user plugins.
 
 #### PM.4 — auto-pair as the first core plugin (AP.4)  📝
 auto-pair's `plugin.toml` declares `default_mode = "auto-pairs-mode"`; PM.2 stages

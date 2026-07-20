@@ -88,6 +88,9 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     // PL8.H.1: track plugin health for the manager view — a `PluginCrashed`
     // subscription drained on the runtime flips a trapped plugin to quarantined.
     loader.subscribe_health();
+    // PM.3: react to `<id>.enabled` toggles — activate/deactivate a core plugin's
+    // default mode live (`:set auto-pair.enabled=false`).
+    loader.subscribe_mode_gates();
     boot.register_service::<PluginLoaderHandle>(loader.clone());
 
     // PO.4.3: observe `:set plugin.trace-level=…` and push the new default into

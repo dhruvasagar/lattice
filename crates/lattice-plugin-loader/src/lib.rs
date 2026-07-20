@@ -143,6 +143,11 @@ struct LoadedRecord {
     /// PL8.H.1: live health — `Healthy` at load, flipped to `Quarantined` by the
     /// `Event::PluginCrashed` subscription ([`PluginLoader::subscribe_health`]).
     health: PluginHealth,
+    /// PM.3: the mode this plugin enables by default (from its manifest), gated by
+    /// `<id>.enabled`. Kept so the `OptionChanged` subscription
+    /// ([`PluginLoader::subscribe_mode_gates`]) can map a changed `<id>.enabled`
+    /// back to the mode to (de)activate. `None` ⇒ no default mode.
+    default_mode: Option<String>,
 }
 
 /// The editor-side runtime environment the loader drives seams against —
@@ -447,6 +452,7 @@ impl PluginLoader {
             granted,
             denied,
             health: PluginHealth::Healthy,
+            default_mode: manifest.default_mode.clone(),
         };
         let mut loaded_id: Option<PluginId> = None;
 
@@ -552,9 +558,51 @@ impl PluginLoader {
                 id: id.0,
             });
         }
+        // PM.3: a plugin declaring a `default_mode` gets a `<id>.enabled` bool
+        // gate (default true). Register it, read its current value, and enable /
+        // disable the declared mode accordingly — the batteries-included path
+        // (auto-pair on out of the box), user-overridable via `:set
+        // <id>.enabled=false`. Subsequent changes are handled by
+        // `subscribe_mode_gates`.
+        self.apply_default_mode_gate(&manifest.id, manifest.default_mode.as_deref());
         // One-shot, user-actionable event (the "LSP server attached" class).
         tracing::info!(plugin = %manifest.id, id = id.0, "plugin loaded");
         Ok(id)
+    }
+
+    /// The name of a plugin's enable-gate option — `<id>.enabled` (PM.3).
+    fn enabled_option_name(plugin_id: &str) -> String {
+        format!("{plugin_id}.enabled")
+    }
+
+    /// PM.3: register (if new) the `<id>.enabled` gate for a plugin declaring a
+    /// `default_mode`, then request the mode's enablement to match the option's
+    /// current value. A no-op when the plugin declares no default mode, or when no
+    /// config registry / bus is wired.
+    fn apply_default_mode_gate(&self, plugin_id: &str, default_mode: Option<&str>) {
+        let Some(mode) = default_mode else { return };
+        let (Some(registry), Some(bus)) = (self.env.config_registry.as_ref(), self.env.bus.as_ref())
+        else {
+            return;
+        };
+        let option = Self::enabled_option_name(plugin_id);
+        // Idempotent: a re-load (or a plugin that declared the option itself)
+        // leaves the existing value untouched; only the first load registers it.
+        lattice_plugin_host::config_host::register_plugin_option(
+            registry,
+            &option,
+            lattice_plugin_host::config_host::PluginOptionKind::Boolean,
+            "true",
+            "Enable this plugin's default mode.",
+        );
+        let enabled = registry
+            .lookup(&option)
+            .map(|opt| opt.get_formatted() == "true")
+            .unwrap_or(true);
+        bus.publish(lattice_protocol::Event::ModeEnablementRequested {
+            mode: mode.to_string(),
+            enabled,
+        });
     }
 
     /// PL8.H.1: a read-only snapshot of every loaded plugin — identity, trust
@@ -625,6 +673,52 @@ impl PluginLoader {
                 if let Event::PluginCrashed { plugin, func, kind } = event {
                     let Some(loader) = weak.upgrade() else { break };
                     loader.mark_quarantined(plugin, func, kind);
+                }
+            }
+        });
+    }
+
+    /// PM.3: react to `<id>.enabled` changes — the config gate for a plugin's
+    /// default mode. On a `:set <id>.enabled=<bool>` (an `OptionChanged`), map the
+    /// option back to the loaded plugin's `default_mode` and request the mode's
+    /// enablement to match, so the toggle activates / deactivates it live. Mirrors
+    /// [`Self::subscribe_health`]; a no-op when no bus/runtime was wired.
+    pub fn subscribe_mode_gates(self: &Arc<Self>) {
+        let (Some(bus), Some(runtime)) = (self.env.bus.as_ref(), self.env.runtime.as_ref()) else {
+            return;
+        };
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
+        bus.subscribe(
+            EventFilter::kind(EventKind::OptionChanged),
+            SubscriptionTarget::Channel(tx),
+        );
+        let bus = bus.clone();
+        let weak = Arc::downgrade(self);
+        runtime.spawn(async move {
+            while let Some(event) = rx.recv().await {
+                let Event::OptionChanged { name, new, .. } = event else {
+                    continue;
+                };
+                let Some(plugin_id) = name.strip_suffix(".enabled") else {
+                    continue;
+                };
+                let Some(loader) = weak.upgrade() else { break };
+                // Map `<id>.enabled` → the loaded plugin's default mode.
+                let mode = {
+                    let loaded = loader
+                        .loaded
+                        .lock()
+                        .expect("plugin-loader loaded-set mutex poisoned");
+                    loaded
+                        .iter()
+                        .find(|r| r.name == plugin_id)
+                        .and_then(|r| r.default_mode.clone())
+                };
+                if let Some(mode) = mode {
+                    bus.publish(lattice_protocol::Event::ModeEnablementRequested {
+                        mode,
+                        enabled: new == "true",
+                    });
                 }
             }
         });

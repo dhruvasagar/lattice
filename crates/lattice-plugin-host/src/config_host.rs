@@ -47,7 +47,7 @@ pub(crate) mod bindings {
 /// WIT `option-type` enum, kept as a plain enum (no bindgen type) so the
 /// registration logic is unit-testable without the generated bindings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PluginOptionKind {
+pub enum PluginOptionKind {
     Boolean,
     Integer,
     String,
@@ -61,7 +61,7 @@ pub(crate) enum PluginOptionKind {
 ///
 /// The name-collision check runs BEFORE any string leak (below), so a rejected
 /// registration allocates nothing.
-pub(crate) fn register_plugin_option(
+pub fn register_plugin_option(
     registry: &ConfigRegistry,
     name: &str,
     kind: PluginOptionKind,

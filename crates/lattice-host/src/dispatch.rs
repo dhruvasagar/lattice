@@ -31699,16 +31699,18 @@ impl Editor {
         {
             let cancel = lattice_protocol::CancellationToken::never();
             let pos = self.cursor;
-            // `CommandKind::Action` evaluators don't touch the
-            // document (DESIGN.md §5.2.1 — Action specs return
-            // an `Effect::AppAction(_)` payload without reading
-            // or mutating the buffer). The dispatcher's signature
-            // still wants a `&mut Document`, so we feed it a
-            // throwaway empty one.
-            let mut scratch = lattice_core::Document::empty();
+            // Native `CommandKind::Action` evaluators don't MUTATE the document
+            // (they return `Effect::AppAction(_)` / `ApplyEdit`, applied
+            // separately), but a PLUGIN grammar action may READ it via the AP.0.1
+            // `document` handle (auto-pair's close-skip peeks the char after the
+            // caret). So feed the REAL active buffer, not an empty scratch — else
+            // the read sees an empty document and close-skip always inserts. O(1):
+            // `active_text()` is a wait-free ropey clone, and `execute` only reads
+            // it here (the action's edits target the real buffer via `ApplyEdit`).
+            let mut doc = lattice_core::Document::from_buffer(self.active_text());
             match lattice_grammar::execute(
                 &reg,
-                &mut scratch,
+                &mut doc,
                 self.document_buffer_id,
                 pos,
                 inv,

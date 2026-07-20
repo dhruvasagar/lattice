@@ -40,3 +40,6 @@ assets/tmp/
 
 # Zola build output
 site/public/
+
+# PM.2: dev runtime root — core-plugin wasm staged by `cargo xtask build-core-plugins`.
+/runtime

@@ -869,7 +869,7 @@ design fragment — see the settled-decisions note above).
 > missing artifact is produced** (build-on-boot). The load / unload / reload /
 > discovery machinery is unchanged — PM adds a resolve→build→cache layer in front.
 
-**Status: 🚧 PM.1 in progress · rest 📝.**
+**Status: 🚧 PM.1 ✅ · PM.2 ✅ · rest 📝.**
 
 Two tracks. The **core track (PM.1–PM.4) ships auto-pair out of the box** — no
 build service, just a second (prebuilt, shipped) plugin root discovered at boot.
@@ -877,7 +877,7 @@ The **user track (PM.5–PM.8)** is the use-package `require`+build layer on top
 
 ### Core track — auto-pair out of the box (reframes AP.4)
 
-#### PM.1 — the runtime root: search path + boot discovery  🚧
+#### PM.1 — the runtime root: search path + boot discovery  ✅
 A `runtime_root()` search path — `$LATTICE_RUNTIME` → compile-time install prefix
 (`LATTICE_INSTALL_PREFIX/share/lattice`, a packager build env) → `<exe-dir>/
 ../share/lattice` (relocatable) → `<workspace>/runtime` (dev) — resolving the FIRST
@@ -889,13 +889,25 @@ boot; an absent runtime root is a benign skip (like the user dir); the search-pa
 resolution is unit-tested (env override wins; missing dirs fall through). No build,
 no network. Bench: n/a (discovery is off the boot thread, already async).
 
-#### PM.2 — `xtask build-core-plugins` staging  📝
+#### PM.2 — `xtask build-core-plugins` staging  ✅
 A workspace `xtask` (and the release CI step) that runs the `wasm32-wasip2`
 component build for each `plugins/<name>/` and stages `plugin.toml` + `<name>.wasm`
 into the dev runtime root (`<workspace>/runtime/plugins/<name>/`), so
 `cargo run` finds core plugins without a hand-copy. **Exit:** `cargo xtask
-build-core-plugins` produces `runtime/plugins/auto-pair/{plugin.toml, auto_pair.wasm}`;
+build-core-plugins` produces `runtime/plugins/auto-pair/{plugin.toml, auto-pair.wasm}`;
 a dev editor discovers it via PM.1.
+
+**Delivered (2026-07-20).** New `xtask` crate (workspace member, std-only) +
+`cargo xtask` alias (`.cargo/config.toml`). `build-core-plugins` builds each
+`CORE_PLUGINS` entry (`auto-pair`) to a `wasm32-wasip2` component in a **clean
+env** (the `build.rs` `build_guest` precedent — inherited workspace `RUSTFLAGS`/
+target/wrappers removed) and stages `<name>.wasm` + `plugin.toml` into
+`runtime/plugins/<name>/`. `/runtime` is gitignored (regenerated build output).
+Verified: `cargo xtask build-core-plugins` stages
+`runtime/plugins/auto-pair/{auto-pair.wasm (138K component), plugin.toml (id +
+editor_capabilities)}`; the dev-fallback search path (`<exe>/../../runtime/plugins`
+for `target/<profile>/lattice`) resolves that dir, so a `cargo run` editor
+discovers it via PM.1.
 
 #### PM.3 — manifest `default_mode` + the `<plugin>.enabled` gate  📝
 Manifest gains `default_mode: option<string>` (the mode a plugin enables by

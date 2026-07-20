@@ -24,3 +24,8 @@
 [target.x86_64-unknown-linux-gnu]
 linker = "clang"
 rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+
+# PM.2: `cargo xtask <cmd>` → the workspace automation crate. `build-core-plugins`
+# builds the bundled plugins to wasm and stages them into the dev runtime root.
+[alias]
+xtask = "run --package xtask --release --"

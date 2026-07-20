@@ -36,6 +36,7 @@ members = [
 	"crates/lattice-plugin-api",
 	"crates/lattice-plugin-sdk",
 	"crates/lattice-plugin-sdk-derive",
+	"xtask",
 ]
 
 [workspace.package]

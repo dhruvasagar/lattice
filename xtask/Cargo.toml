@@ -1,0 +1,12 @@
+[package]
+name = "xtask"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+
+# Workspace automation (the cargo-xtask pattern). Std-only, no dependencies — it
+# shells out to `cargo` to build the standalone plugin crates.
+[dependencies]
+
+[lints]
+workspace = true

@@ -482,6 +482,16 @@ pub fn register_normal_bindings(
         CommandInvocation::of(actions.absorb_operator_toggle_case),
         source(),
     );
+    // `g/` (Lattice extension): the project-search operator -- the global
+    // counterpart of buffer search `/`. Armed like the case operators; the
+    // following motion / text object supplies the query span.
+    handle.bind(
+        layer,
+        mode,
+        &[g.clone(), lit_char('/')],
+        CommandInvocation::of(actions.absorb_operator_search),
+        source(),
+    );
     handle.bind(
         layer,
         mode,
@@ -2028,6 +2038,36 @@ mod syntax_motion_tests {
                 }
                 other => panic!("{chords:?} must be BOUND in Normal, got {other:?}"),
             }
+        }
+    }
+
+    #[test]
+    fn g_slash_resolves_to_search_operator_prefix_in_normal() {
+        // `g/` is armed via the absorb-action mechanism (like gU/gu/g~),
+        // so the trie resolves the two-key chord to the search-operator
+        // prefix action; the operator-pending + motion is a runtime step.
+        let mut registry = CommandRegistry::new();
+        let builtins = grammar_builtins_populate(&mut registry);
+        let action_ids = crate::actions::populate(&mut registry, &builtins);
+        let syntax_textobjects = lattice_syntax::register_syntax_text_objects(&mut registry);
+        let syntax_motions = lattice_syntax::register_syntax_motions(&mut registry);
+        let h = KeymapHandle::new();
+        register_normal_bindings(
+            &h,
+            &builtins,
+            &action_ids,
+            &syntax_textobjects,
+            &syntax_motions,
+        );
+        let chords = [KeyChord::char('g'), KeyChord::char('/')];
+        match h.lookup(BindingMode::Normal, &chords) {
+            LookupResult::Bound { command, .. } => {
+                assert_eq!(
+                    command.command.command, action_ids.absorb_operator_search,
+                    "g/ must resolve to the search-operator prefix action"
+                );
+            }
+            other => panic!("g/ must be BOUND in Normal, got {other:?}"),
         }
     }
 

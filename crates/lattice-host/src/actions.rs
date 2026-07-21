@@ -173,6 +173,7 @@ pub struct ActionIds {
     pub absorb_operator_upper: CommandId,
     pub absorb_operator_lower: CommandId,
     pub absorb_operator_toggle_case: CommandId,
+    pub absorb_operator_search: CommandId,
     pub split_pane_horizontal: CommandId,
     pub split_pane_vertical: CommandId,
     pub close_pane: CommandId,
@@ -1030,6 +1031,12 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
             "action:absorb-operator-toggle-case",
             "Vim's `g~`: arm operator-pending for toggle-case.",
             builtins.toggle_case,
+        ),
+        absorb_operator_search: register_operator_prefix(
+            registry,
+            "action:absorb-operator-search",
+            "Lattice's `g/`: arm operator-pending for project-search.",
+            builtins.search,
         ),
         split_pane_horizontal: register_simple(
             registry,

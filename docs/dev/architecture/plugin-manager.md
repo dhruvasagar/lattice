@@ -96,7 +96,7 @@ init.rs body (the shipped default, §9):
 require(PluginSpec {
     name: "auto-pair".into(),
     source: Source::Local(bundled_plugin_dir("auto-pair")), // → Git/Prebuilt when shipped
-    enable_mode: Some("auto-pairs-mode".into()),
+    enable_mode: Some("auto-pair-mode".into()),
     pinned: false,
 });
 ```
@@ -226,7 +226,7 @@ user's first boot.
 **Enablement — a per-plugin config gate (decision (i), 2026-07-20).** A discovered
 core plugin's minor mode does not self-activate (the CI.3 available-but-off rule
 stands — a mode never forces itself on). Instead the plugin **declares its
-default mode in its manifest** (`default_mode = "auto-pairs-mode"`), and the
+default mode in its manifest** (`default_mode = "auto-pair-mode"`), and the
 manager auto-registers a bool option **`<plugin-id>.enabled`** (default `true`)
 that gates it: on load (and on any change to the option) the manager enables /
 disables the declared mode via the CI.4 `ModeEnablementRequested` path. So a fresh
@@ -260,7 +260,7 @@ AP.4 stops being "compile auto-pair into the binary" and becomes "**auto-pair is
 the first *core plugin*** (§7)." It ships as a **prebuilt** `.wasm` in the runtime
 root (staged there by the `xtask`/release plugin build), is **discovered** at boot
 at the `Bundled` tier, and its `plugin.toml` declares `default_mode =
-"auto-pairs-mode"`. The manager auto-registers `auto-pair.enabled` (default
+"auto-pair-mode"`. The manager auto-registers `auto-pair.enabled` (default
 `true`), so a fresh editor auto-pairs out of the box with **no user init.rs, no
 toolchain, no network**. No `require` is involved — auto-pair is core.
 
@@ -323,7 +323,7 @@ enablement.
    enabled by a manifest `default_mode` + auto-registered `<plugin>.enabled`
    option (default true). (§7, §9)
 4. **auto-pair** — the first core plugin: `Local` in-repo build for dev → the
-   runtime root for shipping; `auto-pair.enabled` gates `auto-pairs-mode`. (§9)
+   runtime root for shipping; `auto-pair.enabled` gates `auto-pair-mode`. (§9)
 
 ## 13. Slices
 

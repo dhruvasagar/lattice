@@ -2,7 +2,7 @@ package lattice:plugin-host@0.1.0;
 
 /// AP.1 spike world: proves ONE component can `provide` the SYNC grammar seam
 /// AND the async `modes` + `config` seams simultaneously — the `auto-pair` shape
-/// (grammar actions + an `auto-pairs-mode` minor mode + the `auto-pairs-style`
+/// (grammar actions + an `auto-pair-mode` minor mode + the `auto-pair.style`
 /// option). The host instantiates the SAME `.wasm` once per seam through each
 /// per-seam world's bindings (`GrammarPlugin` sync against the grammar linker;
 /// `ModesPlugin` / `ConfigPlugin` async against the async linker); both linkers

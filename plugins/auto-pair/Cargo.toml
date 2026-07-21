@@ -1,6 +1,6 @@
 # AP.1 — the `auto-pair` bundled plugin. A real `wasm32-wasip2` guest providing
 # THREE seams from one component (grammar + modes + config): the pairing actions,
-# the `auto-pairs-mode` minor mode that owns their insert-mode keymap, and the
+# the `auto-pair-mode` minor mode that owns their insert-mode keymap, and the
 # `auto-pair.style` / `auto-pair.close-key` options. The first BUNDLED plugin —
 # it de-risks the multi-seam packaging/load pipeline (AP.1.0 proved instantiation)
 # before the heavier `lighthouse`.

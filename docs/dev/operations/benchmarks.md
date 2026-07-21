@@ -648,7 +648,7 @@ separately (`editor_element_frame*` above).
 
 Tree-sitter structural motions, slice TSM.5 (design:
 `../architecture/treesitter-motions.md`; slice plan:
-`slice-plans/treesitter-motions.md`, TSM.0–TSM.5). `scope_toward` backs the
+`slice-plans/archive/treesitter-motions.md`, TSM.0–TSM.5). `scope_toward` backs the
 16 `]f [f ]F [F ]c [c ]C [C ]a [a ]A [A ]l [l ]L [L`-style motions and runs
 on the core/actor thread on a deliberate keypress — never in
 `Render::render`, never per-frame (paramount #1).

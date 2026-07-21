@@ -2809,7 +2809,9 @@ mod tests {
             app.editor.lsp_inlay_hints_cache.insert_for(
                 app.editor.document_buffer_id,
                 crate::app::LspInlayHintCache {
-                    document_version: app.editor.document.snapshot().version,
+                    // AW.6: pumps now gate on `text_version` (caret moves bump
+                    // `version` but not text_version); seed to match.
+                    document_version: app.editor.document.snapshot().text_version,
                     hints: Vec::new(),
                     requested_first_line: 0,
                     requested_last_line: 1000,
@@ -2852,7 +2854,9 @@ mod tests {
             app.editor.lsp_inlay_hints_cache.insert_for(
                 app.editor.document_buffer_id,
                 crate::app::LspInlayHintCache {
-                    document_version: app.editor.document.snapshot().version,
+                    // AW.6: pumps now gate on `text_version` (caret moves bump
+                    // `version` but not text_version); seed to match.
+                    document_version: app.editor.document.snapshot().text_version,
                     hints: Vec::new(),
                     requested_first_line: 0,
                     requested_last_line: 200,
@@ -2896,7 +2900,9 @@ mod tests {
             app.editor.lsp_inlay_hints_cache.insert_for(
                 app.editor.document_buffer_id,
                 crate::app::LspInlayHintCache {
-                    document_version: app.editor.document.snapshot().version,
+                    // AW.6: pumps now gate on `text_version` (caret moves bump
+                    // `version` but not text_version); seed to match.
+                    document_version: app.editor.document.snapshot().text_version,
                     hints: Vec::new(),
                     requested_first_line: 100,
                     requested_last_line: 400,
@@ -2997,7 +3003,9 @@ mod tests {
             app.editor.lsp_folds_cache.insert_for(
                 app.editor.document_buffer_id,
                 crate::app::LspFoldsCache {
-                    document_version: app.editor.document.snapshot().version,
+                    // AW.6: pumps now gate on `text_version` (caret moves bump
+                    // `version` but not text_version); seed to match.
+                    document_version: app.editor.document.snapshot().text_version,
                     folds: vec![fold],
                 },
             );

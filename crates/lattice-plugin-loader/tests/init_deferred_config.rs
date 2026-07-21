@@ -2,8 +2,8 @@
 //!
 //! An `init.rs`-shape plugin (init-guest) loads FIRST and subscribes to
 //! `plugin-loaded`. Then the real `auto-pair` plugin loads — registering
-//! `auto-pairs-mode` **available-but-off** (CI.3) — and fires `PluginLoaded`.
-//! init-guest's handler reacts by calling `enable-mode("auto-pairs-mode")`, which
+//! `auto-pair-mode` **available-but-off** (CI.3) — and fires `PluginLoaded`.
+//! init-guest's handler reacts by calling `enable-mode("auto-pair-mode")`, which
 //! publishes `Event::ModeEnablementRequested`. This test observes that request on
 //! the bus, proving the guest chain (subscribe-first → react-on-load →
 //! enable-mode). CI.4 separately proves the request drives activation, and the
@@ -113,7 +113,7 @@ async fn init_rs_enables_auto_pairs_mode_when_auto_pair_loads() {
         .await
         .expect("init.rs loads");
 
-    // 2. Then auto-pair — registers auto-pairs-mode available-but-off + fires
+    // 2. Then auto-pair — registers auto-pair-mode available-but-off + fires
     //    PluginLoaded("auto-pair"), which the init handler reacts to.
     let n = loader
         .discover_and_load(&plugins_dir, TrustTier::UserInstalled)
@@ -124,12 +124,12 @@ async fn init_rs_enables_auto_pairs_mode_when_auto_pair_loads() {
     // handler enables it — via the request below, which the Editor would drain).
     let modes = mode_registry.load();
     assert!(
-        modes.is_registered(ModeId::new("auto-pairs-mode")),
-        "auto-pairs-mode is registered (available)"
+        modes.is_registered(ModeId::new("auto-pair-mode")),
+        "auto-pair-mode is registered (available)"
     );
     assert!(
-        !modes.is_minor_enabled(&ModeId::new("auto-pairs-mode")),
-        "auto-pairs-mode is OFF by default (the loader does not enable it)"
+        !modes.is_minor_enabled(&ModeId::new("auto-pair-mode")),
+        "auto-pair-mode is OFF by default (the loader does not enable it)"
     );
 
     // 3. The init handler ran on `plugin-loaded` and called enable-mode — assert
@@ -140,7 +140,7 @@ async fn init_rs_enables_auto_pairs_mode_when_auto_pair_loads() {
         .expect("channel delivered");
     match ev {
         Event::ModeEnablementRequested { mode, enabled } => {
-            assert_eq!(mode, "auto-pairs-mode", "init enabled auto-pairs-mode");
+            assert_eq!(mode, "auto-pair-mode", "init enabled auto-pair-mode");
             assert!(enabled, "it enabled (not disabled) the mode");
         }
         other => panic!("expected ModeEnablementRequested, got {other:?}"),

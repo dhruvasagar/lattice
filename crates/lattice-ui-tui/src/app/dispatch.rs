@@ -94,7 +94,14 @@ impl App {
         self.read_editor(move |e| e.dispatch_blocking(invocation))
     }
 
-    pub fn apply(&mut self, action: Action) {
+    /// Returns `true` when the resolved binding was a grammar action that
+    /// **declined** (`Effect::Declined`) — it did nothing, and the caller
+    /// holding the originating `KeyChord` (the TUI live loop) should re-resolve
+    /// the chord at the next keymap layer (AP.0.2 fall-through). The host
+    /// `dispatch_chord` path (GPUI / tests) does this itself; the TUI's
+    /// translate→apply path lost the chord by the time the decline is known, so
+    /// `apply` surfaces the flag and `runtime.rs` performs the re-resolve.
+    pub fn apply(&mut self, action: Action) -> bool {
         // Phase 5.5.B–D: macro-recording capture, partial-chord
         // lifecycle, and the read-only-help guard live in
         // `Editor::dispatch`'s preamble. When `outcome.consumed` is
@@ -173,6 +180,10 @@ impl App {
             e.dispatch_fused(action_for_dispatch, pre_active_for_closure, popup_up)
         });
         let mut outcome = fused.outcome;
+        // AP.0.2: a declining plugin grammar action sets `outcome.declined`
+        // (empty effects, so it always fuses). Surface it to the caller — the
+        // TUI live loop re-resolves the same chord with no minor-mode layers.
+        let declined = outcome.declined;
         if let Some(tail_signals) = fused.tail_signals {
             // FUSED FAST PATH: the deterministic tail already ran in-actor
             // (ensure_cursor_visible / maybe_reparse_syntax /
@@ -184,7 +195,7 @@ impl App {
             for signal in tail_signals {
                 self.handle_renderer_signal(signal);
             }
-            return;
+            return declined;
         }
         // LEGACY MULTI-RPC PATH: the dispatch carried renderer-coupled
         // effects / signals / next_actions, or `consumed` the action, or a
@@ -225,7 +236,8 @@ impl App {
             }
         }
         if outcome.consumed {
-            return;
+            // A consumed action was handled host-side — never a fall-through.
+            return false;
         }
         // M.4 hover-popup unification: gate the auto-dismiss-on-
         // doc-cursor-motion behaviour on `hover-mode` being active
@@ -697,6 +709,10 @@ impl App {
         for signal in tick_signals {
             self.handle_renderer_signal(signal);
         }
+        // Reached only on the non-fused path (e.g. a popup was up). `declined`
+        // is false here for any buffer-mutating action; it can be true when a
+        // declining action didn't fuse (popup open), so carry it out.
+        declined
     }
 
     /// Drain pending async results (hover, signature-help, etc.) without a

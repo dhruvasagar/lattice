@@ -45,12 +45,12 @@ use crate::PluginId;
 /// `Vec<String>` option names, …).
 #[derive(Debug, Clone)]
 pub struct PluginTeardown {
-    /// The host-issued identity — drives `CommandRegistry::unregister_plugin`.
+    /// The host-issued identity — drives `CommandRegistry::unregister_plugin`,
+    /// which unconditionally removes every `SourceLayer::Plugin(plugin_id)`
+    /// command (grammar contributions + the modes seam's `:<mode>` toggles) by
+    /// provenance. No per-command token or "did I register grammar?" flag: the
+    /// provenance IS the token.
     pub plugin_id: PluginId,
-    /// The plugin registered grammar (motions / operators / … under
-    /// `SourceLayer::Plugin(plugin_id)`). Reversed by provenance, so no per-command
-    /// token is needed — just whether to run it.
-    pub has_grammar: bool,
     /// Picker source ids the plugin registered (`PickerRegistry::unregister`).
     pub picker_sources: Vec<String>,
     /// Modes the plugin registered — each reversed via `ModeRegistry::unregister`
@@ -80,7 +80,6 @@ impl PluginTeardown {
     pub fn new(plugin_id: PluginId) -> Self {
         Self {
             plugin_id,
-            has_grammar: false,
             picker_sources: Vec::new(),
             modes: Vec::new(),
             config_options: Vec::new(),
@@ -101,9 +100,13 @@ impl PluginTeardown {
     pub fn unload(&self, reg: &mut TeardownRegistries<'_>) -> TeardownReport {
         let mut report = TeardownReport::default();
 
-        if self.has_grammar {
-            report.commands = reg.commands.unregister_plugin(self.plugin_id.0);
-        }
+        // Reversed by provenance: remove every `SourceLayer::Plugin(plugin_id)`
+        // command — grammar contributions AND the `:<mode>` toggle ex-commands
+        // the modes seam registers (`drain_mode`). Unconditional + idempotent
+        // (returns 0 if the plugin contributed none), so no per-seam "did I
+        // register commands?" flag exists to forget; the `run_teardown`
+        // clone/store around this happens regardless of the count.
+        report.commands = reg.commands.unregister_plugin(self.plugin_id.0);
         for id in &self.picker_sources {
             if reg.pickers.unregister(id) {
                 report.pickers += 1;
@@ -279,7 +282,6 @@ mod tests {
 
         // Build the bundle the way a spawning caller would from returned tokens.
         let mut teardown = PluginTeardown::new(plugin);
-        teardown.has_grammar = true;
         teardown.picker_sources = vec!["p7:things".to_string()];
         teardown.modes = vec![mode_id];
         teardown.config_options = vec!["p7.opt".to_string()];

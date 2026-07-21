@@ -151,9 +151,6 @@ fn built_in_picker_registry(
 /// renderer's effect dispatcher routes that to the App-level
 /// `toggle_mode_by_name`.
 fn register_mode_toggle_commands(cmd_registry: &mut CommandRegistry, mode_registry: &ModeRegistry) {
-    use lattice_grammar::args::ArgSpec;
-    use lattice_grammar::registry::{ExCommandSpec, SurfaceForm};
-    use lattice_grammar::{Args, CommandError, Effect};
     let mut names: Vec<String> = mode_registry
         .iter_meta()
         .map(|(id, _kind)| id.to_string())
@@ -163,33 +160,14 @@ fn register_mode_toggle_commands(cmd_registry: &mut CommandRegistry, mode_regist
     // and tests stable).
     names.sort();
     for name in names {
-        let mode_name = name.clone();
-        let cmd_name = name.clone();
+        // The toggle spec is shared with the plugin modes-seam drain (loader
+        // `drain_mode`) so native + plugin modes get an IDENTICAL `:<mode>`
+        // toggle command. Native modes register under Builtin provenance here;
+        // plugin modes register under `Plugin(id)` so unload reverses them.
         cmd_registry.register_ex_command(
-            &cmd_name,
-            "Toggle the mode on the active buffer (auto-generated; \
-             see `:help modes` for the full mode-system overview).",
-            ExCommandSpec {
-                latency_class: lattice_grammar::command::LatencyClass::Reflex,
-                accepts_bang: false,
-                accepts_range: false,
-                parse_args: Arc::new(|s: &str, _bang: bool| {
-                    if s.trim().is_empty() {
-                        Ok(Args::None)
-                    } else {
-                        Err(CommandError::BadArgs(
-                            "mode toggle takes no arguments".into(),
-                        ))
-                    }
-                }),
-                apply: Arc::new(move |_ctx| {
-                    Ok(Effect::ToggleMode {
-                        mode_name: mode_name.clone(),
-                    })
-                }),
-                args_schema: Vec::<ArgSpec>::new(),
-                surface_form: SurfaceForm::Keyword,
-            },
+            &name,
+            lattice_grammar::registry::MODE_TOGGLE_COMMAND_DOC,
+            lattice_grammar::registry::mode_toggle_ex_command_spec(&name),
         );
     }
 }

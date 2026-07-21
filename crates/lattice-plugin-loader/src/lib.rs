@@ -487,7 +487,7 @@ impl PluginLoader {
                         loaded_id.get_or_insert(id);
                     }
                     PluginSeam::Grammar => {
-                        let id = self.drain_grammar(&component, manifest, tier, &mut record)?;
+                        let id = self.drain_grammar(&component, manifest, tier)?;
                         loaded_id.get_or_insert(id);
                     }
                     PluginSeam::Modes => {
@@ -1122,7 +1122,6 @@ impl PluginLoader {
         component: &lattice_plugin_host::Component,
         manifest: &PluginManifest,
         tier: TrustTier,
-        record: &mut LoadedRecord,
     ) -> Result<PluginId, PluginLoaderError> {
         let bus = self
             .env
@@ -1166,9 +1165,9 @@ impl PluginLoader {
             contributions = count,
             "grammar plugin registered its motions / operators / text-objects / ex-commands"
         );
-        // Teardown token: grammar reverses by provenance (all
-        // `SourceLayer::Plugin(id)` entries), so just record that it ran.
-        record.teardown.has_grammar = true;
+        // No teardown token needed: `PluginTeardown::unload` unconditionally
+        // removes every `SourceLayer::Plugin(id)` command by provenance (grammar
+        // here + the modes seam's `:<mode>` toggles).
         Ok(id)
     }
 
@@ -1236,13 +1235,38 @@ impl PluginLoader {
             .await?;
         mode_registry.store(Arc::new(next));
 
+        // Give each plugin-registered mode the SAME `:<mode-name>` toggle
+        // ex-command native modes get at boot (`register_mode_toggle_commands`)
+        // — so plugin modes are togglable by name uniformly and the
+        // `:describe-mode` / `:list-modes` "Toggle with `:<mode-id>`" hint is
+        // honest. Registered under `SourceLayer::Plugin(id)` so unload's
+        // `unregister_plugin` reverses them; the registry `generation` bump the
+        // registration triggers refreshes `:`-command completion. RCU the
+        // command registry (load → clone → register → store), mirroring
+        // `drain_grammar` above.
+        if !mode_ids.is_empty() {
+            let mut next_cmds = (**commands.load()).clone();
+            for mode in &mode_ids {
+                let name = mode.to_string();
+                next_cmds.register_plugin_ex_command(
+                    id.0,
+                    &name,
+                    lattice_grammar::registry::MODE_TOGGLE_COMMAND_DOC,
+                    lattice_grammar::registry::mode_toggle_ex_command_spec(&name),
+                );
+            }
+            commands.store(Arc::new(next_cmds));
+        }
+
         tracing::debug!(
             plugin = %manifest.id,
             modes = ?mode_ids,
             "mode plugin registered its minor modes"
         );
         // Teardown tokens: each mode reverses via `ModeRegistry::unregister` +
-        // `KeymapHandle::remove_layer(MinorMode(id))`.
+        // `KeymapHandle::remove_layer(MinorMode(id))`; the `:<mode>` toggle
+        // ex-commands registered above reverse via `unregister_plugin(id)` in
+        // `PluginTeardown::unload` (provenance-driven, no per-command token).
         record.teardown.modes.extend(mode_ids);
         Ok(id)
     }

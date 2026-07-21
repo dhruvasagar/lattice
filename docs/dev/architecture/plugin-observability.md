@@ -2,7 +2,7 @@
 
 > **Design fragment.** Contracts, data model, rationale, rejected alternatives,
 > paramount-goal alignment. Sequencing lives in the slice plan
-> ([`../operations/slice-plans/plugin-observability.md`](../operations/slice-plans/plugin-observability.md)).
+> ([`../operations/slice-plans/archive/plugin-observability.md`](../operations/slice-plans/archive/plugin-observability.md)).
 > Sibling fragments: [`plugin-host.md`](plugin-host.md) (the seam spine +
 > capability/fuel/crash model), [`boot-composition.md`](boot-composition.md)
 > (the `install(boot)` contract).
@@ -220,7 +220,7 @@ hot-path involvement (logging is an async-linker import).
 ## 11. Slices
 
 See the slice plan
-([`../operations/slice-plans/plugin-observability.md`](../operations/slice-plans/plugin-observability.md)):
+([`../operations/slice-plans/archive/plugin-observability.md`](../operations/slice-plans/archive/plugin-observability.md)):
 PO.1 trace record + event + tracer sink · PO.2 instrument the async seams · PO.3
 the hot-path grammar seam (gated + benched) · PO.4 the trace-buffer views
 (shared + per-plugin, manager drill-in) · PO.5 `wasi:logging` guest import.

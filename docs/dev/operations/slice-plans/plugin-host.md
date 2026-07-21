@@ -1422,10 +1422,13 @@ Landed as the three reframed `intern` / `build_and_register` doc comments pointi
 #### PH7.12b.3 — `PluginTeardown` bundle + unload driver ✅ (2026-07-14)
 The capstone: aggregate every teardown token and reverse each against the host registries,
 composing the reload cycle. New `crates/lattice-plugin-host/src/teardown.rs`:
-- **`PluginTeardown`** — the union of teardown tokens (`plugin_id`, `has_grammar`,
+- **`PluginTeardown`** — the union of teardown tokens (`plugin_id`,
   `picker_sources`, `modes`, `config_options`, `events_defined`, `subscriptions`), filled by the
   spawning caller from the tokens the `spawn_*` fns already return. A plugin populates only the
-  surfaces it used.
+  surfaces it used. (Commands need no token: unload calls
+  `CommandRegistry::unregister_plugin(plugin_id)` unconditionally, removing every
+  `SourceLayer::Plugin(id)` command — grammar contributions + the `:<mode>` toggles — by
+  provenance. The earlier `has_grammar` gate was removed as a single point of failure.)
 - **`TeardownRegistries<'a>`** — a borrow struct grouping the six host registries
   (`&mut CommandRegistry/PickerRegistry/ModeRegistry`, `&KeymapHandle/ConfigRegistry/EventBus`),
   so `unload` takes one arg, not six, and the caller passes exactly what a `&mut Editor` holds.

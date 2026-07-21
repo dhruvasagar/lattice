@@ -96,12 +96,19 @@ impl CandidateGenerator for CommandsGenerator {
         out
     }
 
-    fn cache_key(&self, _ctx: &GenerateContext<'_>) -> Option<CacheKey> {
-        // Commands don't change at runtime in v1, so a single
-        // fixed key is correct. When dynamic registration lands
-        // (post-WASM) the registry exposes a version counter and
-        // we key on that.
-        Some(CacheKey::new("gen:commands:v1"))
+    fn cache_key(&self, ctx: &GenerateContext<'_>) -> Option<CacheKey> {
+        // Dynamic registration (WASM plugins) mutates the command set at
+        // runtime, so a fixed key would serve a stale candidate list forever
+        // (the cache lives on the CompletionRegistry, which a command-registry
+        // RCU never touches). The registry bumps `generation()` on every
+        // register / unregister — including a plugin's RCU'd drain and its
+        // unload — so keying on it makes a plugin's freshly-registered commands
+        // (and its auto `:<mode>` toggles) appear in `<Tab>` completion
+        // immediately, and unloaded ones vanish, with no manual cache flush.
+        Some(CacheKey::new(format!(
+            "gen:commands:v1:{}",
+            ctx.registry.generation()
+        )))
     }
 }
 
@@ -331,13 +338,23 @@ mod tests {
     }
 
     #[test]
-    fn commands_generator_caches_with_fixed_key() {
+    fn commands_generator_cache_key_embeds_registry_generation() {
+        // The key embeds the registry generation so a runtime command
+        // registration / unload (a plugin drain, which RCUs a registry with a
+        // bumped `generation()`) invalidates the cached candidate list —
+        // plugin commands then appear in `<Tab>` completion without a flush.
         let registry = CommandRegistry::new();
         let document = Document::empty();
         let buffer = document.buffer().clone();
         let g = CommandsGenerator;
         let key = g.cache_key(&ctx_for("anything", &buffer, &registry));
-        assert_eq!(key, Some(CacheKey::new("gen:commands:v1")));
+        assert_eq!(
+            key,
+            Some(CacheKey::new(format!(
+                "gen:commands:v1:{}",
+                registry.generation()
+            )))
+        );
     }
 
     #[test]

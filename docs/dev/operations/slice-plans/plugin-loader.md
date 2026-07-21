@@ -317,9 +317,12 @@ plugins yet.
 > host `Effect` variant, no `Editor::` method, no `expand_alias` entry.
 >
 > **C.1 (teardown foundation).** Every drain now accumulates a `PluginTeardown`
-> bundle on its `LoadedRecord` (grammar→`has_grammar`; modes + completion carrier
+> bundle on its `LoadedRecord` (modes + completion carrier
 > mode→`modes`; picker→`picker_sources`; config→`config_options`;
-> events→`subscriptions`). `LoadedRecord` gains `source_dir` (reload) + `teardown`;
+> events→`subscriptions`; commands need no token — unload runs
+> `CommandRegistry::unregister_plugin(id)` unconditionally, reversing grammar
+> contributions + `:<mode>` toggle ex-commands by `SourceLayer::Plugin(id)`
+> provenance). `LoadedRecord` gains `source_dir` (reload) + `teardown`;
 > the old `picker_sources` field folds in. `PluginLoader::unload(target)` (sync —
 > resolves by manifest id or numeric id, aborts actor tasks, RCU-reverses the
 > ArcSwap registries + refs the Arc-shared ones through `run_teardown`), `reload`
@@ -933,7 +936,7 @@ default true + `ModeEnablementRequested{enabled:true}`), live toggle off→on vi
 `OptionChanged`, and no-`default_mode`⇒no-gate. General for core or user plugins.
 
 #### PM.4 — auto-pair as the first core plugin (AP.4)  ✅
-auto-pair's `plugin.toml` declares `default_mode = "auto-pairs-mode"`; PM.2 stages
+auto-pair's `plugin.toml` declares `default_mode = "auto-pair-mode"`; PM.2 stages
 it into the runtime root; PM.1 discovers it; PM.3's `auto-pair.enabled` (default
 true) enables the mode. **Exit:** a fresh editor (no user config) auto-pairs out of
 the box; `:plugins` lists auto-pair (`source = bundled`); `:set
@@ -941,12 +944,12 @@ auto-pair.enabled=false` turns it off (plugin stays loaded, mode deactivates);
 `:set auto-pair.style=manual` flips the style live. Closes the auto-pair epic.
 
 **Delivered (2026-07-20).** `plugins/auto-pair/plugin.toml` declares
-`default_mode = "auto-pairs-mode"` (the module doc updated: the mode enables via
+`default_mode = "auto-pair-mode"` (the module doc updated: the mode enables via
 the gate, not init.rs). `cargo xtask build-core-plugins` re-stages it into
 `runtime/plugins/auto-pair/`. The composition is proven by: the shipped-manifest
 regression guard (`manifest.rs::shipped_auto_pair_manifest_declares_the_gate` —
 the real file declares `default_mode` + `tree-sitter`) and `mode_gate.rs` (the
-modes seam registers `auto-pairs-mode`, the gate registers `auto-pair.enabled`
+modes seam registers `auto-pair-mode`, the gate registers `auto-pair.enabled`
 default-true + requests enablement, and the toggle deactivates/reactivates live).
 So a `cargo run` editor — after one `cargo xtask build-core-plugins` — discovers
 auto-pair from the runtime root (PM.1) at `Bundled` tier and auto-pairs out of the

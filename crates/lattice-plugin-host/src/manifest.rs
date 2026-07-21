@@ -381,10 +381,10 @@ mod tests {
     #[test]
     fn parses_optional_default_mode() {
         let m = PluginManifest::from_toml_str(
-            "id = \"auto-pair\"\ndefault_mode = \"auto-pairs-mode\"\n",
+            "id = \"auto-pair\"\ndefault_mode = \"auto-pair-mode\"\n",
         )
         .unwrap();
-        assert_eq!(m.default_mode.as_deref(), Some("auto-pairs-mode"));
+        assert_eq!(m.default_mode.as_deref(), Some("auto-pair-mode"));
         assert!(
             PluginManifest::from_toml_str("id = \"x\"\n")
                 .unwrap()
@@ -414,8 +414,8 @@ mod tests {
         assert_eq!(m.id, "auto-pair");
         assert_eq!(
             m.default_mode.as_deref(),
-            Some("auto-pairs-mode"),
-            "the shipped manifest enables auto-pairs-mode by default"
+            Some("auto-pair-mode"),
+            "the shipped manifest enables auto-pair-mode by default"
         );
         assert!(
             m.editor_capabilities

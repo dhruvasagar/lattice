@@ -5,10 +5,10 @@ package lattice:plugin-host@0.1.0;
 ///   - **grammar** — the pairing actions (`auto-pair-open-*` / `auto-pair-close-*`
 ///     / `auto-pair-backspace`), fired on insert-mode chords; `apply-action` reads
 ///     the buffer around the cursor via the AP.0.1 `borrow<document>` handle,
-///   - **modes** — the `auto-pairs-mode` minor mode owning the insert-mode keymap
-///     (the mode-ownership rule: bindings live at `MinorMode(auto-pairs-mode)`,
+///   - **modes** — the `auto-pair-mode` minor mode owning the insert-mode keymap
+///     (the mode-ownership rule: bindings live at `MinorMode(auto-pair-mode)`,
 ///     never the builtin layer),
-///   - **config** — the `auto-pairs-style` / `auto-pairs-close-key` options.
+///   - **config** — the `auto-pair.style` / `auto-pair.close-key` options.
 ///
 /// `logging` is intentionally NOT imported: keeping it out of the combined world
 /// keeps `log` off the sync grammar linker (the "no logging on the grammar hot

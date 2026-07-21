@@ -30,7 +30,7 @@ fn auto_pair_wasm() -> Option<Vec<u8>> {
 }
 
 /// Stage an auto-pair plugin dir whose manifest declares `default_mode` — the
-/// PM.3 gate trigger (auto-pair provides `auto-pairs-mode`).
+/// PM.3 gate trigger (auto-pair provides `auto-pair-mode`).
 fn write_plugin_dir(root: &std::path::Path, wasm: &[u8]) {
     let dir = root.join("auto-pair");
     std::fs::create_dir_all(&dir).unwrap();
@@ -39,7 +39,7 @@ fn write_plugin_dir(root: &std::path::Path, wasm: &[u8]) {
         "id = \"auto-pair\"\n\
          provides = [\"grammar\", \"modes\", \"config\"]\n\
          editor_capabilities = [\"tree-sitter\"]\n\
-         default_mode = \"auto-pairs-mode\"\n",
+         default_mode = \"auto-pair-mode\"\n",
     )
     .unwrap();
     std::fs::write(dir.join("component.wasm"), wasm).unwrap();
@@ -112,8 +112,8 @@ async fn default_mode_gate_enables_on_load_and_toggles_with_the_option() {
     assert!(
         mode_registry
             .load()
-            .is_registered(lattice_mode::ModeId::new("auto-pairs-mode")),
-        "auto-pairs-mode registered from the modes seam"
+            .is_registered(lattice_mode::ModeId::new("auto-pair-mode")),
+        "auto-pair-mode registered from the modes seam"
     );
 
     // The gate auto-registered `auto-pair.enabled` (default true).
@@ -130,7 +130,7 @@ async fn default_mode_gate_enables_on_load_and_toggles_with_the_option() {
     let (mode, enabled) = next_enablement(&mut rx)
         .await
         .expect("a ModeEnablementRequested on load");
-    assert_eq!(mode, "auto-pairs-mode");
+    assert_eq!(mode, "auto-pair-mode");
     assert!(enabled, "default-true gate enables the mode on load");
 
     // Toggle the gate off — a `:set auto-pair.enabled=false` publishes
@@ -144,7 +144,7 @@ async fn default_mode_gate_enables_on_load_and_toggles_with_the_option() {
     let (mode, enabled) = next_enablement(&mut rx)
         .await
         .expect("a ModeEnablementRequested on toggle");
-    assert_eq!(mode, "auto-pairs-mode");
+    assert_eq!(mode, "auto-pair-mode");
     assert!(!enabled, "toggling the gate off disables the mode");
 
     // And back on.

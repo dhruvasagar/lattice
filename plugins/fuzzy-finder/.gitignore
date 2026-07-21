@@ -1,3 +1,0 @@
-# Build artifacts of the standalone plugin (its own workspace target/).
-# The .wasm is rebuilt by lattice-plugin-host's build.rs; never commit it.
-/target

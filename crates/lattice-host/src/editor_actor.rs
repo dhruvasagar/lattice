@@ -620,6 +620,21 @@ async fn run_actor(
             },
             _ = async_landed.notified() => {
                 let signals = editor.run_tick_pending();
+                // AW.4 (hover-popup fix): an async drain — hover (`K`),
+                // signature-help, an async picker — can emit a `DisplayBuffer`
+                // signal, a request to open a popup. The popup is HOST state
+                // (`Editor::popup_buffer`); both peers' own `DisplayBuffer`
+                // handlers just call `editor.display_buffer` then render
+                // `popup_buffer` from RenderState. But the TUI peer has NO
+                // `signal_rx` consumer (it drives entirely off `paint_request` +
+                // RenderState), so a `DisplayBuffer` forwarded on `signal_tx` from
+                // *this* arm is silently dropped and the popup never shows — the
+                // server-responds-but-no-popup bug. Apply it host-side HERE,
+                // before `publish_render_state`, so opening `popup_buffer` moves
+                // `paint_revision` → `paint_request` fires → both peers repaint and
+                // render the popup off the wake. Consuming (not forwarding) it is
+                // parity with the GPUI peer's handler, not a divergence.
+                let forward = editor.absorb_async_display_signals(signals);
                 // §12 paint gate: an async arrival that moved a non-cell
                 // render-visible surface (LSP readiness badge, diagnostics
                 // overlay, popup, …) must reach a frame WITHOUT a keystroke
@@ -639,7 +654,7 @@ async fn run_actor(
                 editor.event_bus.publish_typed(
                     crate::events::AsyncRenderStatePublished,
                 );
-                for sig in signals {
+                for sig in forward {
                     let _ = signal_tx.send(sig);
                 }
                 continue;

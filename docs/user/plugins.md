@@ -159,11 +159,11 @@ path are the same code shape.
 |---|---|
 | **picker-source** | Contribute a fuzzy-picker source (like the file picker) — produce candidates, handle accept, route to an editor action. |
 | **completion-source** | Contribute an Insert-mode completion source that generates candidates off-keystroke (the same async pattern LSP completion uses). |
-| **grammar** | Register new vim motions, operators, text objects, actions, and ex-commands — extending the modal grammar itself. This is the one seam that runs *synchronously* on a keystroke (so an operator can compose with a plugin motion), under a strict sub-frame budget. |
+| **grammar** | Register new vim motions, operators, text objects, actions, and ex-commands — extending the modal grammar itself. This is the one seam that runs *synchronously* on a keystroke (so an operator can compose with a plugin motion), under a strict sub-frame budget. A plugin's ex-commands become first-class the moment it loads: they appear in `:`-line `<Tab>` completion, `:describe-command`, `:apropos`, and `:list-commands` (and disappear when it unloads). |
 | **events / hooks** | Subscribe to typed editor events (the unified autocmd/hook bus) and react off the hot path. |
 | **decorations** | Produce gutter/line decorations as an off-render producer (the `git-gutter`-style seam). |
 | **config** | Register typed options into the same registry `:set` reads. |
-| **modes** | Declare a major/minor mode (kind, keymap, capabilities) that registers into the mode registry. |
+| **modes** | Declare a major/minor mode (kind, keymap, capabilities) that registers into the mode registry. The editor auto-generates a `:<mode-name>` toggle command for it (exactly like a built-in mode), and it shows in `:list-modes` / `:describe-mode`. |
 | **keymap** | Bind user keys above the built-in grammar (the `init.rs` keybinding path). |
 | **host-services** | Call back into the editor for capability-gated services (e.g. filesystem enumeration). |
 | **logging** | Emit the plugin's own log narrative into the boundary trace (Layer 2). |
@@ -225,8 +225,8 @@ plugin project into `~/.config/lattice/plugins/<name>/` — a grammar action, a
 minor mode (`<name>-mode`) that binds a key to it, the `<name>.enabled` gate, and
 a `wit/` copy of the editor's API. Build it (`cargo build --target wasm32-wasip2`,
 then copy the component in as `<name>.wasm`) and it's discovered at boot with its
-mode on by default. The command prints the exact steps; the name must be lowercase
-kebab-case.
+mode on by default — toggle it any time with `:<name>-mode`. The command prints the
+exact steps; the name must be lowercase kebab-case.
 
 **Options are auto-namespaced.** A plugin registers config options with SHORT
 names (`register_option("style", …)`); the host prefixes them with the plugin id,

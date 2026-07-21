@@ -2389,7 +2389,7 @@ pub struct CompletionPipeline {
 
 | Generator | `cache_key` | `cache_ttl` |
 |---|---|---|
-| `gen:commands` | `"gen:commands:v1"` (fixed -- v1 commands don't change post-startup) | `MAX` |
+| `gen:commands` | `"gen:commands:v1:{generation}"` (the `CommandRegistry::generation()` counter, bumped on every register/unregister, so a plugin load/unload invalidates the cache) | `MAX` |
 | `gen:files` | `"gen:files:{dir}"` | 1 second (filesystem mutates) |
 | `gen:options` (post-§5.12) | `"gen:options:v{N}"` | `MAX` until version bumps |
 

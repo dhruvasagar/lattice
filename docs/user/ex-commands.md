@@ -138,6 +138,9 @@ See [`lsp`](help:lsp) for the full inventory. Most-used:
 |-------------------------------|------------------------------------------------------------|
 | `:help [TOPIC]`               | Open help for TOPIC; no arg → topic index                  |
 | `:describe-command NAME`      | Show one command's metadata                                |
+| `:list-commands`              | List every registered command, grouped by source (built-in / plugin / user) |
+| `:describe-mode [NAME]`       | Show a mode's metadata (keymap, options, source)           |
+| `:list-modes`                 | List every registered mode + its `:<mode-name>` toggle     |
 | `:describe-buffer`            | Show active buffer's state summary                         |
 | `:describe-key CHORD`         | Show what CHORD does (in every mode it's bound)            |
 | `:describe-events`            | List every typed event                                     |

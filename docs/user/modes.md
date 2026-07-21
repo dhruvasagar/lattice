@@ -111,6 +111,7 @@ rewrite a global default). See
 | Mode                  | Owns                                                                                       |
 |-----------------------|--------------------------------------------------------------------------------------------|
 | `hover-mode`          | The hover popup buffer (composed with `markdown-mode`).                                    |
+| `auto-pair-mode`      | Auto-close brackets / quotes — the `auto-pair` core plugin (WASM), on by default; toggle with `:auto-pair-mode`. |
 
 ---
 
@@ -128,9 +129,10 @@ keyword is the mode's id. **No** `:enable` / `:disable` /
 :lsp-hover-mode          " toggle just the hover sub-mode
 ```
 
-The toggle command is auto-generated per mode at boot. Adding a
-mode (built-in or future plugin) gives you `:<that-name>` for
-free, without manual registration.
+The toggle command is auto-generated per mode. Every registered
+mode — built-in **or** plugin-contributed — gives you `:<that-name>`
+for free, without manual registration. (Built-in modes get theirs at
+boot; a plugin's modes get theirs the moment the plugin loads.)
 
 ### Toggle semantics
 
@@ -358,13 +360,15 @@ view. Use it to answer "what does activating
 
 ### Why this matters
 
-The same model covers the future. When a plugin (Phase 7+,
-WASM Component Model) registers a mode, its keybindings land
-through the same path; the plugin's WIT-declared source
-shows in `:describe-key` and `:keymap`, so you can answer
-"who bound this key" without grep-spelunking. Today modes
-ship in Rust crates; tomorrow they ship from `.wasm` files.
-The discovery story is identical.
+The same model already covers plugins. When a plugin (WASM
+Component Model) registers a mode — as the `auto-pair` core
+plugin does today — its keybindings land through the same
+path; the plugin's WIT-declared source shows in `:describe-key`
+and `:keymap`, so you can answer "who bound this key" without
+grep-spelunking. It also gets its `:<mode-name>` toggle command
+and appears in `:list-modes` / `:describe-mode`, exactly like a
+built-in mode. Modes ship from Rust crates and from `.wasm`
+files through one identical discovery story.
 
 For mode authors curious about the Rust API — `Mode::keymap()`
 + `Keymap::new().bind_chord(...)` (chain form) +

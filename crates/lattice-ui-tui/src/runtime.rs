@@ -236,7 +236,43 @@ fn apply_event(app: &mut App, ev: Event, perf_input: bool, last_input_at: &mut O
                 active_minor_modes: &translator.active_minor_modes,
             };
             let action = translate(ctx, k);
-            app.apply(action);
+            if app.apply(action) {
+                // AP.0.2 fall-through (TUI live path): the resolved binding was
+                // a plugin grammar action that DECLINED (`Effect::Declined`) —
+                // it did nothing, so re-resolve the SAME chord with no
+                // minor-mode layers, landing the key on the always-on
+                // builtin/user layer (self-insert `(`, a normal `<BS>`, a user
+                // remap). One fall-through only: the builtin/user layer can't
+                // itself decline. Mirrors the host `dispatch_chord` fall-through
+                // the GPUI peer already gets; the TUI's translate→apply path
+                // lost the chord by dispatch time, so we re-translate here where
+                // `k` is still in hand. See slice-plans/plugin-auto-pair.md.
+                let ad = app.ad();
+                let translator = app.render_state.load().translator.clone();
+                let ctx = TranslateContext {
+                    modal: ad.modal,
+                    builtins: &translator.builtins,
+                    pending_count: ad.pending_count,
+                    op_count: ad.op_count,
+                    recording_macro: ad.macro_recording,
+                    active_buffer: ad.buffer_kind,
+                    completion_open: ad.completion_open,
+                    chord_capture: app.chord_capture_active(),
+                    picker_open: ad.picker_open,
+                    insert_completion_open: app.completion_popup_active(),
+                    snippet_active: ad.snippet_active,
+                    terminal_insert_active: ad.terminal_insert_active,
+                    terminal_esc_exits: ad.terminal_esc_exits,
+                    terminal_app_cursor_keys: ad.terminal_app_cursor_keys,
+                    terminal_insert_exit_pending: ad.terminal_insert_exit_pending,
+                    terminal_visual_active: ad.terminal_visual_active,
+                    keymap: &translator.keymap,
+                    partial_chord: &[],
+                    active_minor_modes: &[],
+                };
+                let fallthrough = translate(ctx, k);
+                app.apply(fallthrough);
+            }
             if perf_input {
                 *last_input_at = Some(Instant::now());
             }

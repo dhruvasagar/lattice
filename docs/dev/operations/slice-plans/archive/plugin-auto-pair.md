@@ -14,7 +14,7 @@ graceful error handling).
 AP.1 ✅, AP.2 ✅ (auto), AP.3 ✅ (manual, = TS.3), AP.4 ✅ (first core plugin, via
 the plugin-manager PM track — NOT compiled-in).**
 
-> **Mode enablement moved out (2026-07-19).** `auto-pairs-mode` is now
+> **Mode enablement moved out (2026-07-19).** `auto-pair-mode` is now
 > **available-but-off**, not self-activating — the user enables it via `init.rs`.
 > That model (available-vs-enabled, `enable-mode`, the `plugin-loaded` event,
 > init-first ordering) lives in its own fragment:
@@ -79,7 +79,7 @@ inert unless imported) accepted for single-artifact multi-seam plugins.
 its keymap per the mode-ownership rule; grammar BEFORE modes so the keymap
 resolves the plugin's own actions; **no capabilities**). Registers the pairing
 actions (one per opener/closer — a mode keymap binding carries no args, so the
-action can't otherwise know which pair fired), the `auto-pairs-mode` `global`
+action can't otherwise know which pair fired), the `auto-pair-mode` `global`
 minor mode owning the insert-mode keymap, and the `auto-pair.style` /
 `auto-pair.close-key` options (behavior is option-gated in the handlers — no
 `OptionChanged` re-binding; the keymap set stays stable across `:set`).
@@ -143,15 +143,30 @@ mode; with the mode active, `x` on `"abc\n"` falls through to the builtin `x` an
 deletes the first char → `"bc\n"`). The `<BS>` → `auto-pair-backspace` binding
 itself lands with AP.3 (needs the empty-pair scan).
 
-### AP.0.3 — tree-sitter query seam  🚧 (TS.1 ✅)
+**AP.0.2b (2026-07-20) — TUI live-loop fall-through.** The AP.0.2 fall-through
+lived ONLY in `Editor::dispatch_chord`, which the GPUI peer + `fall_through.rs`
+use — but the **TUI live keystroke path** is `runtime.rs`'s `translate →
+App::apply`, which drained effects/signals but never read `DispatchOutcome.declined`.
+Net: in the actual TUI editor a declined chord was silently eaten — `(` and `<BS>`
+did nothing in `auto-pair.style=manual`. Fix: `App::apply` now returns the
+`declined` flag (surfaced from `outcome.declined`), and `runtime.rs`'s
+`apply_event` re-resolves the SAME `KeyChord` with `active_minor_modes = []` +
+an empty partial-chord when it comes back true — mirroring the host
+`dispatch_chord` fall-through the GPUI peer already got. One fall-through only.
+TUI-only change; GPUI unaffected (it routes through `dispatch_chord`). The
+`fall_through.rs` guard covers the host logic; the TUI live-loop wiring is a
+mirror of it (a full `apply_event` fixture needs a native declining action + the
+App harness, deferred).
+
+### AP.0.3 — tree-sitter query seam  ✅ (TS.1 ✅ · TS.2 ✅ · TS.3 ✅)
 The enclosing-scope query that bounds the manual scan (design fragment §5.3, §7).
 Its own design + slice plan: [`plugin-treesitter-seam.md`](plugin-treesitter-seam.md)
-(TS.1 core ✅ → TS.2 queries+cursor 📝 → TS.3 first consumer 📝). **TS.1 landed
-(2026-07-20):** `apply-action` now receives `option<borrow<tree-snapshot>>`, and
-`enclosing(pos, kinds)` resolves the enclosing scope host-side (~1.12 µs). That is
-exactly the primitive AP.3's `manual` style needs — auto-pair is the intended TS.3
-consumer. AP.3 is unblocked on the scope query; TS.2 (queries/cursor) is not
-required for the enclosing-scope bound.
+(TS.1 core ✅ → TS.2 queries+cursor ✅ → TS.3 first consumer ✅). `apply-action`
+receives `option<borrow<tree-snapshot>>`, and `enclosing(pos, kinds)` resolves the
+enclosing scope host-side (~1.12 µs) — exactly the primitive AP.3's `manual` style
+needs. auto-pair is the TS.3 consumer (the seam's end-to-end proof); the
+enclosing-scope bound needs only the snapshot core, not the full query/cursor
+surface, but TS.2 landed alongside.
 
 ### AP.3 — `manual` style  ✅ (also TS.3)
 The `find_pair` port (design fragment §3) + the close key + the fall-through
@@ -195,7 +210,7 @@ gate.
 - **PM.2** — `cargo xtask build-core-plugins` builds + stages `auto-pair.wasm` +
   `plugin.toml` into `runtime/plugins/auto-pair/` (prebuilt, not embedded).
 - **PM.3** — the manifest `default_mode` + auto-registered `<id>.enabled` gate.
-- **PM.4** — `plugin.toml` declares `default_mode = "auto-pairs-mode"`; the gate
+- **PM.4** — `plugin.toml` declares `default_mode = "auto-pair-mode"`; the gate
   (`auto-pair.enabled`, default true) enables it out of the box.
 
 **Exit (met):** a fresh editor — after `cargo xtask build-core-plugins` — discovers

@@ -974,6 +974,71 @@ arrival shapes and both renderers. Sequenced in
 > flight) drains via the actor arm. If you add a new async result whose only
 > drain is the `App::apply` tail, you have re-introduced the AW.1 bug.
 
+### The popup gap: a `DisplayBuffer` must be host-applied, not forwarded (slice AW.4)
+
+AW.1 fixed the *wake*: `hover` (and every channel-delivered result) now fires
+`async_landed`, so the actor arm runs `run_tick_pending` off-keystroke. But
+`run_tick_pending`'s hover drain (`drain_pending_hover`) does not open the popup
+— it emits a `RendererSignal::DisplayBuffer` (a *request* to open one). The
+actor arm forwarded that signal on its `signal_tx` channel. Only the **GPUI**
+peer polls `signal_rx` (`poll_signal`); the **TUI** peer has no consumer — it
+drives entirely off `paint_request` + published `RenderState`. So a hover result
+arriving off-keystroke was drained, its `DisplayBuffer` dropped on the floor, and
+`publish_render_state` saw no popup (`popup_buffer` still `None`) → `paint_revision`
+never moved → no repaint. The symptom: the server returns hover docs (visible in
+`:lsp-log`), but the popup never shows. The `paint_request`-re-fires-when-the-
+popup-moves claim above was therefore vacuous for the TUI — the popup never
+entered `RenderState` to move it.
+
+The popup is **host state** (`Editor::popup_buffer`); both peers' own
+`DisplayBuffer` handlers already just call `Editor::display_buffer` and then
+render `popup_buffer`. So the fix is to host-apply the `DisplayBuffer` **in the
+actor's `async_landed` arm**, before `publish_render_state`, via
+`Editor::absorb_async_display_signals`: open the popup into `Editor` state so
+`paint_revision` moves, `paint_request` fires, and BOTH peers render it off the
+wake. Consuming (not forwarding) the signal is parity with the GPUI handler, not
+a divergence — GPUI makes the identical `display_buffer` call and still renders
+`popup_buffer` from the published `RenderState`. This uniformly covers every
+async popup emitter drained inside `run_tick_pending` (hover, signature-help,
+async pickers). Guard: `lsp_async_wake.rs::hover_result_opens_popup_host_side`.
+
+> **Rule:** an async drain that produces a `DisplayBuffer` (or any signal that is
+> really a *host-state mutation*) must be applied host-side in the actor arm, not
+> forwarded on `signal_tx`. `signal_tx` is a GPUI-only channel; the TUI peer
+> observes only published `RenderState`. A "renderer signal" that the TUI must
+> act on to change host state is a design smell — fold it into `RenderState`.
+
+### The staleness gap: text-derived pumps gated on `version`, not `text_version` (slice AW.6)
+
+The `maybe_request_*` pumps in `run_tick_pending` are cache-key-gated: they skip
+the request when `cache.document_version == snapshot.<v>`. Seven of them —
+`semanticTokens`, `inlayHint`, `foldingRange`, `codeLens`, `pull diagnostics`,
+`documentLink`, `documentColor` — gated on the document's general `version`. But
+`Document::set_selections` bumps `version` on **every caret / selection change**
+without bumping `text_version` (`lattice-core/src/document.rs`) — `version` is the
+"anything changed" counter; `text_version` is "text changed". These seven
+features depend **only on text**. Gating them on `version` meant every cursor move
+invalidated all seven caches → the whole battery re-requested off-keystroke; each
+response fired `async_landed` → `run_tick_pending` → the pumps re-checked, and
+`semanticTokens` (a `full/delta` chain) sub-flooded — dozens of delta round-trips
+per second while the user was idle. The tell: `foldingRange` / `codeLens` have no
+`refresh_pending` path, so their appearing in the burst could *only* be a `version`
+bump.
+
+Fix: these seven pumps gate on `text_version`. A caret move no longer touches
+`text_version`, so the caches stay valid and the pumps stay quiet; a real edit
+bumps both counters, so they still refetch. `documentHighlight` is deliberately
+NOT in the set — it highlights the symbol under the caret, so it *is* cursor-
+dependent and gates on `self.cursor`. Nothing reads `cache.document_version` for
+*display* (decorations render straight from the cache), so storing `text_version`
+there has no render-staleness effect.
+
+> **Rule:** a text-derived LSP request (semantic tokens, inlay hints, folding,
+> lenses, diagnostics, links, colours) gates on `text_version`. Only genuinely
+> caret-dependent requests (documentHighlight, hover, signatureHelp, nav) key on
+> the cursor / `version`. Gating a text feature on `version` turns every arrow-key
+> press into a full LSP re-request storm.
+
 ### The second gap: a publish must REQUEST a frame (slice L6)
 
 Firing `async_landed` only gets the arriving data *into* `RenderState`

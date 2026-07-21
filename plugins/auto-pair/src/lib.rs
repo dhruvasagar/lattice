@@ -5,7 +5,7 @@
 //!   - **grammar** — the pairing actions, fired on insert-mode chords. Each
 //!     opener/closer/quote is its OWN action because a mode keymap binding carries
 //!     no args, so the action can't otherwise know which pair fired.
-//!   - **modes** — `auto-pairs-mode`, a `global`-scope minor mode that OWNS the
+//!   - **modes** — `auto-pair-mode`, a `global`-scope minor mode that OWNS the
 //!     insert-mode keymap. Declared the plugin's `default_mode` (AP.4/PM.3), so the
 //!     loader's `auto-pair.enabled` gate (default true) enables it out of the box;
 //!     `:set auto-pair.enabled=false` turns it off. No init.rs needed.
@@ -357,8 +357,8 @@ impl Guest for Component {
         }
     }
 
-    /// `auto-pairs-mode` owns its insert-mode keymap — bindings land at
-    /// `MinorMode(auto-pairs-mode)`, never the builtin layer. Bindings target the
+    /// `auto-pair-mode` owns its insert-mode keymap — bindings land at
+    /// `MinorMode(auto-pair-mode)`, never the builtin layer. Bindings target the
     /// plugin's OWN grammar actions by bare name (`provides` lists grammar before
     /// modes, so they resolve at bind time).
     fn register_modes() {
@@ -368,7 +368,7 @@ impl Guest for Component {
             command: command.to_string(),
         };
         modes::register_mode(&ModeDeclaration {
-            id: "auto-pairs-mode".to_string(),
+            id: "auto-pair-mode".to_string(),
             kind: ModeKind::Minor,
             activation_policy: ActivationPolicy::Global,
             capabilities: ModeCapabilities::empty(),

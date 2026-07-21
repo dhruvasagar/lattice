@@ -14,7 +14,7 @@ local directory and which the editor builds on first boot — see
 
 | Plugin | Default mode | Enable option | What it does |
 |---|---|---|---|
-| **auto-pair** | `auto-pairs-mode` | `auto-pair.enabled` (default `true`) | Auto-closes brackets/quotes; a `manual` style closes the nearest unmatched opener on one key. See [below](#auto-pair). |
+| **auto-pair** | `auto-pair-mode` | `auto-pair.enabled` (default `true`) | Auto-closes brackets/quotes; a `manual` style closes the nearest unmatched opener on one key. See [below](#auto-pair). |
 
 More core plugins land over time (a git-gutter, a file-tree, …); each appears here
 with its mode, its `<id>.enabled` option, and its own options.
@@ -80,6 +80,12 @@ Disabling the mode leaves the plugin **loaded** — it just deactivates its mode
 re-enabling is instant. (You cannot un-*ship* a core plugin from config; if you
 truly never want it, a future `core-plugins.exclude` list will cover that.)
 
+**Per-buffer toggle.** Independently of the `enabled` gate, the plugin's mode has an
+auto-generated `:auto-pair-mode` command — every registered mode gets a
+`:<mode-name>` toggle — that flips it on the **active buffer** only. Use
+`auto-pair.enabled` for the editor-wide default; `:auto-pair-mode` for a one-off
+buffer.
+
 ## auto-pair
 
 Auto-closes brackets and quotes as you type; a `manual` style instead closes the
@@ -93,7 +99,7 @@ deletes both. The full set is `() [] {}` and `"" '' \`\``.
 
 | Option | Values | Default | Meaning |
 |---|---|---|---|
-| `auto-pair.enabled` | bool | `true` | Enable/disable `auto-pairs-mode`. |
+| `auto-pair.enabled` | bool | `true` | Enable/disable `auto-pair-mode`. |
 | `auto-pair.style` | `auto` \| `manual` | `auto` | `auto` completes pairs on the opening key; `manual` self-inserts and closes on the close key. |
 | `auto-pair.close-key` | key | `<C-j>` | The manual-style close key. |
 

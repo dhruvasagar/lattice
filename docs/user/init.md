@@ -229,10 +229,12 @@ Return early on the arms you don't handle; never panic to signal "not for me."
 ### Core plugins: configure, don't enable
 
 **Core plugins ship with lattice and are on by default** — you don't enable them.
-`auto-pair` is a core plugin: `auto-pairs-mode` is active out of the box, gated by
+`auto-pair` is a core plugin: `auto-pair-mode` is active out of the box, gated by
 a bool option `auto-pair.enabled` (default `true`). To configure or disable it,
 set options at the **top level** of `init.rs` — the option exists as soon as the
-core plugin loads (before your other config runs):
+core plugin loads (before your other config runs). (You can also flip the mode live
+on a single buffer with `:auto-pair-mode` — the toggle command every registered
+mode gets; `auto-pair.enabled` is the editor-wide default.)
 
 ```rust
 fn setup() {

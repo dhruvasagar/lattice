@@ -108,6 +108,46 @@ async fn hover_request_fires_async_landed_off_keystroke() {
     );
 }
 
+// ── AW.4 — async popup results open HOST-SIDE so the TUI peer renders them ──
+
+/// Regression guard for "server responds with hover docs but no popup shows".
+///
+/// `run_tick_pending` drains the hover `Body` into a `DisplayBuffer` signal; the
+/// editor actor's `async_landed` arm then host-applies it via
+/// [`Editor::absorb_async_display_signals`] so `popup_buffer` becomes host state
+/// — moving `paint_revision`, firing `paint_request`, and letting BOTH peers
+/// render the popup off the wake. Before AW.4 the arm forwarded the signal on
+/// its `signal_tx` channel, which the TUI peer never drains (it runs entirely
+/// off `paint_request` + RenderState), so the popup was silently dropped even
+/// though the request + response both succeeded.
+#[tokio::test]
+async fn hover_result_opens_popup_host_side() {
+    let mut editor = boot_lsp_editor();
+    settle(&editor).await;
+    assert!(
+        editor.popup_buffer.is_none(),
+        "no popup before the hover result lands"
+    );
+    // Seed a hover Body as if a server replied, short-circuiting the round-trip
+    // (the real request path sets `pending_hover_rx` + anchor identically).
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<lattice_lsp::cache::HoverOutcome>();
+    tx.send(lattice_lsp::cache::HoverOutcome::Body(
+        "```rust\nOption<T>\n```".to_string(),
+    ))
+    .unwrap();
+    editor.pending_hover_rx = Some(rx);
+    editor.pending_hover_anchor = Some((editor.cursor, 0));
+    // Drive exactly the editor actor's `async_landed` arm: drain, then
+    // host-apply the resulting `DisplayBuffer`.
+    let signals = editor.run_tick_pending();
+    let _forward = editor.absorb_async_display_signals(signals);
+    assert!(
+        editor.popup_buffer.is_some(),
+        "AW.4: an async hover Body must open the popup HOST-SIDE (popup_buffer set) \
+         so the TUI peer — which has no signal_rx consumer — still renders it"
+    );
+}
+
 // ── AW.2 — cancel position-anchored lookups on cursor move ──────────────────
 
 #[tokio::test]

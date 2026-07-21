@@ -8,11 +8,15 @@
 > insert-mode bindings + the *declining-binding* fall-through land in),
 > [`lighthouse.md`](lighthouse.md) (the next 8b plugin, sequenced after this).
 >
-> **Status: 📝 designed, not built.** The **first bundled 8b plugin.** It is *not*
-> host-free (an earlier draft assumed so) — porting the manual style forces three
-> small, **general** host prerequisites (§5). Those are the real cost and the real
-> value: they are reusable capabilities many future plugins need, validated here on
-> a concrete UX.
+> **Status: ✅ built — ships as a core plugin.** The **first bundled 8b plugin**;
+> both the `auto` and `manual` styles work end-to-end (incl. the TUI), and it
+> ships prebuilt + enabled-by-default via the config gate (see
+> [`plugin-manager.md`](plugin-manager.md) §7, [`config-and-init.md`](config-and-init.md)
+> §6). It is *not* host-free (an earlier draft assumed so) — porting the manual
+> style forced three small, **general** host prerequisites (§5). Those were the real
+> cost and the real value: reusable capabilities many future plugins need,
+> validated here on a concrete UX. Slice status/sequencing lives in the slice plan
+> (`operations/slice-plans/archive/plugin-auto-pair.md`).
 
 ## 1. Why
 
@@ -138,7 +142,7 @@ General: every grammar plugin that reasons about surrounding text needs it.
 > resource must be `borrow`-passed with `Resource::new_borrow(owned.rep())` +
 > host-side `table.delete` (the host owns it throughout).
 
-### 5.2 Declining / fall-through bindings  (prerequisite AP.0.2)
+### 5.2 Declining / fall-through bindings  (prerequisite AP.0.2)  — **as built**
 
 The manual close key must **fall through** when `find_pair` returns `''` — so
 `<C-j>` still does whatever else is bound (completion nav, newline, a user remap;
@@ -148,6 +152,14 @@ next keymap layer** (the built-in / user binding for that chord). General +
 reusable (any conditional plugin binding wants it), and — unlike a per-keystroke
 guest *predicate* — the guest runs only when the key is actually pressed, never on
 the hot path.
+
+**As built:** a grammar action returns `Effect::Declined`, which sets
+`DispatchOutcome.declined`; the dispatcher then re-resolves the same chord with the
+declining action's mode layers excluded. This works in BOTH renderers — the host
+`dispatch_chord` path (GPUI + tests) *and* the TUI live keystroke path
+(`runtime.rs`, which carries the flag out of `App::apply` and re-translates the
+`KeyChord`). So `manual`-style close-key + `<BS>` fall-through land end-to-end in
+the TUI, not just under programmatic dispatch.
 
 ### 5.3 tree-sitter query seam  (prerequisite AP.0.3) — **v1**
 
@@ -288,7 +300,7 @@ of the bundled set (contrast lighthouse's `net`+`proc`+`fs:write`).
 ## 12. Slices
 
 Sequencing, exit criteria, and status live in the slice plan
-([`../operations/slice-plans/plugin-auto-pair.md`](../operations/slice-plans/plugin-auto-pair.md)),
+([`../operations/slice-plans/archive/plugin-auto-pair.md`](../operations/slice-plans/archive/plugin-auto-pair.md)),
 built in two waves:
 
 - **Wave 1 (pipeline proof + `auto` style, shippable):** AP.0.1 grammar-context

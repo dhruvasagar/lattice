@@ -76,12 +76,12 @@ enable → assert the mode active + its gated keymap resolves on the open buffer
 disable → gone. Graceful: enabling an unknown/duplicate id logs + no-ops.
 
 ### CI.5 — auto-pair off-by-default, enabled from init.rs  ✅
-Flip auto-pair's `auto-pairs-mode` to **available-but-off** (it already declares
+Flip auto-pair's `auto-pair-mode` to **available-but-off** (it already declares
 `Global` scope; CI.3 makes that inert until enabled — the plugin needs no change
 beyond confirming it doesn't self-enable). Author the reference/example init.rs
-that `on_plugin_loaded("auto-pair")` → `enable_mode("auto-pairs-mode")`. **Exit:**
+that `on_plugin_loaded("auto-pair")` → `enable_mode("auto-pair-mode")`. **Exit:**
 end-to-end through the real loader (the CI.2 ordering + CI.1 event + CI.4 seam): a
-booted editor with that init.rs has auto-pairs-mode active on a document buffer
+booted editor with that init.rs has auto-pair-mode active on a document buffer
 *after* auto-pair loads; without the init.rs line, auto-pair is loaded but inert.
 Test: the loader harness (auto_pair.rs precedent) with an init.rs fixture wired
 ahead of the auto-pair plugin. **Milestone: user-controlled, event-deferred plugin

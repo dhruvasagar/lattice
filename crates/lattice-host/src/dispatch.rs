@@ -11186,7 +11186,15 @@ impl Editor {
             return;
         }
         let snapshot = self.document.snapshot();
-        let version = snapshot.version;
+        // Gate on `text_version`, NOT the general `version`. `set_selections`
+        // bumps `version` on every caret / selection change (never `text_version`
+        // — see `lattice-core/src/document.rs`), and these LSP features depend
+        // ONLY on the text. Gating on `version` re-fired the WHOLE request battery
+        // on every cursor move off-keystroke — the idle `semanticTokens/full/delta`
+        // flood, each response re-waking `run_tick_pending` via `async_landed`.
+        // Cursor-dependent requests (`documentHighlight`) gate on `self.cursor`
+        // separately and are unaffected. See lsp-architecture.md §12 (AW.6).
+        let version = snapshot.text_version;
         let prior = self
             .lsp_pull_diagnostics_cache
             .get_for(self.document_buffer_id);
@@ -11295,7 +11303,15 @@ impl Editor {
             return;
         }
         let snapshot = self.document.snapshot();
-        let version = snapshot.version;
+        // Gate on `text_version`, NOT the general `version`. `set_selections`
+        // bumps `version` on every caret / selection change (never `text_version`
+        // — see `lattice-core/src/document.rs`), and these LSP features depend
+        // ONLY on the text. Gating on `version` re-fired the WHOLE request battery
+        // on every cursor move off-keystroke — the idle `semanticTokens/full/delta`
+        // flood, each response re-waking `run_tick_pending` via `async_landed`.
+        // Cursor-dependent requests (`documentHighlight`) gate on `self.cursor`
+        // separately and are unaffected. See lsp-architecture.md §12 (AW.6).
+        let version = snapshot.text_version;
         if let Some(cache) = self.lsp_folds_cache.get_for(self.document_buffer_id)
             && cache.document_version == version
         {
@@ -11381,7 +11397,15 @@ impl Editor {
             return;
         };
         let snapshot = self.document.snapshot();
-        let version = snapshot.version;
+        // Gate on `text_version`, NOT the general `version`. `set_selections`
+        // bumps `version` on every caret / selection change (never `text_version`
+        // — see `lattice-core/src/document.rs`), and these LSP features depend
+        // ONLY on the text. Gating on `version` re-fired the WHOLE request battery
+        // on every cursor move off-keystroke — the idle `semanticTokens/full/delta`
+        // flood, each response re-waking `run_tick_pending` via `async_landed`.
+        // Cursor-dependent requests (`documentHighlight`) gate on `self.cursor`
+        // separately and are unaffected. See lsp-architecture.md §12 (AW.6).
+        let version = snapshot.text_version;
         if let Some(cache) = self
             .lsp_document_links_cache
             .get_for(self.document_buffer_id)
@@ -11452,7 +11476,15 @@ impl Editor {
             return;
         };
         let snapshot = self.document.snapshot();
-        let version = snapshot.version;
+        // Gate on `text_version`, NOT the general `version`. `set_selections`
+        // bumps `version` on every caret / selection change (never `text_version`
+        // — see `lattice-core/src/document.rs`), and these LSP features depend
+        // ONLY on the text. Gating on `version` re-fired the WHOLE request battery
+        // on every cursor move off-keystroke — the idle `semanticTokens/full/delta`
+        // flood, each response re-waking `run_tick_pending` via `async_landed`.
+        // Cursor-dependent requests (`documentHighlight`) gate on `self.cursor`
+        // separately and are unaffected. See lsp-architecture.md §12 (AW.6).
+        let version = snapshot.text_version;
         if let Some(cache) = self.lsp_code_lens_cache.get_for(self.document_buffer_id)
             && cache.document_version == version
         {
@@ -11525,7 +11557,15 @@ impl Editor {
             return;
         };
         let snapshot = self.document.snapshot();
-        let version = snapshot.version;
+        // Gate on `text_version`, NOT the general `version`. `set_selections`
+        // bumps `version` on every caret / selection change (never `text_version`
+        // — see `lattice-core/src/document.rs`), and these LSP features depend
+        // ONLY on the text. Gating on `version` re-fired the WHOLE request battery
+        // on every cursor move off-keystroke — the idle `semanticTokens/full/delta`
+        // flood, each response re-waking `run_tick_pending` via `async_landed`.
+        // Cursor-dependent requests (`documentHighlight`) gate on `self.cursor`
+        // separately and are unaffected. See lsp-architecture.md §12 (AW.6).
+        let version = snapshot.text_version;
         if let Some(cache) = self
             .lsp_document_color_cache
             .get_for(self.document_buffer_id)
@@ -11601,7 +11641,15 @@ impl Editor {
             return;
         }
         let snapshot = self.document.snapshot();
-        let version = snapshot.version;
+        // Gate on `text_version`, NOT the general `version`. `set_selections`
+        // bumps `version` on every caret / selection change (never `text_version`
+        // — see `lattice-core/src/document.rs`), and these LSP features depend
+        // ONLY on the text. Gating on `version` re-fired the WHOLE request battery
+        // on every cursor move off-keystroke — the idle `semanticTokens/full/delta`
+        // flood, each response re-waking `run_tick_pending` via `async_landed`.
+        // Cursor-dependent requests (`documentHighlight`) gate on `self.cursor`
+        // separately and are unaffected. See lsp-architecture.md §12 (AW.6).
+        let version = snapshot.text_version;
         let prior = self
             .lsp_semantic_tokens_cache
             .get_for(self.document_buffer_id);
@@ -12462,7 +12510,15 @@ impl Editor {
             return;
         }
         let snapshot = self.document.snapshot();
-        let version = snapshot.version;
+        // Gate on `text_version`, NOT the general `version`. `set_selections`
+        // bumps `version` on every caret / selection change (never `text_version`
+        // — see `lattice-core/src/document.rs`), and these LSP features depend
+        // ONLY on the text. Gating on `version` re-fired the WHOLE request battery
+        // on every cursor move off-keystroke — the idle `semanticTokens/full/delta`
+        // flood, each response re-waking `run_tick_pending` via `async_landed`.
+        // Cursor-dependent requests (`documentHighlight`) gate on `self.cursor`
+        // separately and are unaffected. See lsp-architecture.md §12 (AW.6).
+        let version = snapshot.text_version;
         const OVERSCAN_LINES: u32 = 100;
         let last_buffer_line = last_addressable_line(&snapshot.buffer);
         let viewport_first = self.scroll;
@@ -22411,6 +22467,35 @@ impl Editor {
 
     /// Route a `HelpContent` to the resolved [`BufferDisplay`]
     /// surface for `category`. Phase 5.8.AE: hoisted from TUI App.
+    /// AW.4: host-apply the popup-opening (`DisplayBuffer`) signals produced by
+    /// an async drain (hover / signature-help / async picker) so `popup_buffer`
+    /// (and the pane tree, for pane/split displays) becomes host state — both
+    /// peers then render the popup from the published `RenderState`. Returns the
+    /// remaining renderer-coupled signals to forward on the actor's signal
+    /// channel. Called from the editor actor's `async_landed` arm, whose signals
+    /// the TUI peer never consumes; leaving a `DisplayBuffer` there drops the
+    /// popup (`docs/dev/architecture/lsp-architecture.md` §12, AW.4). Idempotent
+    /// with the renderer-side handler: `display_buffer` returns only
+    /// mode-activation / theme cascade signals, never a further `DisplayBuffer`,
+    /// so there is no recursion.
+    pub fn absorb_async_display_signals(
+        &mut self,
+        signals: Vec<RendererSignal>,
+    ) -> Vec<RendererSignal> {
+        let mut forward = Vec::with_capacity(signals.len());
+        for sig in signals {
+            match sig {
+                RendererSignal::DisplayBuffer(req) => {
+                    let DisplayBufferRequest { content, category } = *req;
+                    let (_id, cascade) = self.display_buffer(content, category);
+                    forward.extend(cascade);
+                }
+                other => forward.push(other),
+            }
+        }
+        forward
+    }
+
     pub fn display_buffer(
         &mut self,
         content: lattice_help::HelpContent,

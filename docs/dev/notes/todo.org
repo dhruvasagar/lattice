@@ -19,7 +19,7 @@
 - [ ] surround operator
 - [ ] argument operator
 - [ ] Search operators
-- [ ] borderless gui windows
+- [X] borderless gui windows
 - [ ] DAP
 - [X] Picker to add <C-s>, <C-v>, <C-t> to open file under cursor in a
   split, vertical split or tab. This will override
@@ -199,8 +199,8 @@
 - [X] `zz` does not work in terminal & `:claude`
 - [X] `de` does not include the last character
 - [X] `dw` on the last word in a line deletes the whole line (probably something to do with consuming the new line)
-- [ ] cursor movements within popup are off, cursor not in sync with cursorline and jumps lines
-- [ ] folding still gets messed up when opening a file in vertical split.
+- [X] cursor movements within popup are off, cursor not in sync with cursorline and jumps lines
+- [X] folding still gets messed up when opening a file in vertical split.
 
 * Documentation
 - [X] lattice-tutor

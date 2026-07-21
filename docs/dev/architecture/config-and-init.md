@@ -12,7 +12,7 @@ the available-vs-enabled minor-mode model as one coherent story.
 
 > **Status:** design settled (2026-07-19, with Dhruva). Supersedes the current
 > implementation, where `init.rs` loads *async, after* other plugins like any
-> discovered plugin. Slice plan: [`../operations/slice-plans/config-and-init.md`](../operations/slice-plans/config-and-init.md).
+> discovered plugin. Slice plan: [`../operations/slice-plans/archive/config-and-init.md`](../operations/slice-plans/archive/config-and-init.md).
 
 ## 1. Why — two problems
 
@@ -24,7 +24,7 @@ re-activation complexity this forces is a *symptom*.
 
 **P2 — Config precedes the plugin it configures.** The vim/emacs muscle memory is
 to configure a plugin *before* it loads — `let g:plugin_x = 1` / `(setq …)` /
-`(with-eval-after-load 'pkg …)`. An **imperative** call (`enable-mode("auto-pairs-mode")`)
+`(with-eval-after-load 'pkg …)`. An **imperative** call (`enable-mode("auto-pair-mode")`)
 has nowhere to land if auto-pair isn't loaded yet. This is the crux; it defeats a
 "init.rs pokes live state" model.
 
@@ -151,13 +151,18 @@ document buffer with no consent — wrong for a third-party contribution.
 
 > **Superseded for core plugins (2026-07-20, PM.3/PM.4).** auto-pair is now a
 > **core plugin**: it ships prebuilt, is discovered at boot, and is enabled by a
-> config gate — its manifest declares `default_mode = "auto-pairs-mode"`, and the
+> config gate — its manifest declares `default_mode = "auto-pair-mode"`, and the
 > loader auto-registers `auto-pair.enabled` (default `true`) that turns the mode
 > on out of the box. So auto-pair needs **no** `init.rs` to enable it; the user
 > *configures* it (`config::set_option("auto-pair.enabled", "false")` /
 > `"auto-pair.style"` in `register_options`) at the top level, and `:set
 > auto-pair.enabled=false`
-> toggles it live. See [`plugin-manager.md`](plugin-manager.md) §7. The
+> toggles it live. Beyond the config gate, every registered plugin mode also gets
+> the auto-generated `:<mode-name>` toggle ex-command (built by the shared
+> `mode_toggle_ex_command_spec`, registered under `SourceLayer::Plugin(id)` by
+> `drain_mode`), so `:auto-pair-mode` toggles it on the active buffer and it
+> resolves in `:describe-command` / `:apropos` / `:`-completion exactly like a
+> native mode. See [`plugin-manager.md`](plugin-manager.md) §7. The
 > `on-plugin-loaded → enable-mode` pattern below remains the tool for **user**
 > plugins with off-by-default modes (and for any deferred config of a
 > not-yet-loaded plugin).

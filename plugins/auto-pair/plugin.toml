@@ -11,11 +11,11 @@
 # Bundled ⇒ pre-granted; a `manual`-style user with no grant degrades to the
 # line-capped fallback scan (design §7).
 #
-# AP.4/PM.3: `default_mode` makes `auto-pairs-mode` the mode this plugin enables
+# AP.4/PM.3: `default_mode` makes `auto-pair-mode` the mode this plugin enables
 # by default. The loader auto-registers `auto-pair.enabled` (default true) that
 # gates it — so a fresh editor auto-pairs out of the box, and `:set
 # auto-pair.enabled=false` turns it off. No init.rs needed to enable it.
 id = "auto-pair"
 provides = ["grammar", "modes", "config"]
 editor_capabilities = ["tree-sitter"]
-default_mode = "auto-pairs-mode"
+default_mode = "auto-pair-mode"

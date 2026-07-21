@@ -3,7 +3,7 @@
 //! through the real loader, and ALL THREE seams' contributions register:
 //!   - the pairing **actions** land in the command registry under
 //!     `SourceLayer::Plugin` provenance,
-//!   - `auto-pairs-mode` registers into the mode registry and OWNS its
+//!   - `auto-pair-mode` registers into the mode registry and OWNS its
 //!     insert-mode keymap (bindings resolve only when the mode is active),
 //!   - the `auto-pair.style` / `auto-pair.close-key` **options** register into
 //!     the shared config registry.
@@ -142,20 +142,29 @@ async fn bundled_auto_pair_registers_grammar_modes_and_config_through_the_loader
     // 2. MODES — the minor mode registered (async drain).
     let modes = mode_registry.load();
     assert!(
-        modes.is_registered(ModeId::new("auto-pairs-mode")),
-        "auto-pairs-mode registered into the published mode registry"
+        modes.is_registered(ModeId::new("auto-pair-mode")),
+        "auto-pair-mode registered into the published mode registry"
+    );
+
+    // 2b. The auto-generated `:<mode-name>` toggle ex-command: plugin modes get
+    // the SAME command native modes get at boot (drain_mode → the shared
+    // `mode_toggle_ex_command_spec`), so `:auto-pair-mode` toggles it and it
+    // surfaces in `:`-completion + `:describe-command` uniformly.
+    assert!(
+        commands.id_by_name("auto-pair-mode").is_some(),
+        "the `:auto-pair-mode` toggle ex-command is registered for the plugin mode"
     );
 
     // The mode OWNS its insert-mode keymap: `(` resolves only when the mode is
     // active, never globally (mode-ownership — a gated MinorMode layer).
     let open = lattice_protocol::parse_chord_sequence("(").expect("chord parses");
-    let mode = ModeId::new("auto-pairs-mode");
+    let mode = ModeId::new("auto-pair-mode");
     assert!(
         matches!(
             keymap.lookup_with_context(BindingMode::Insert, &open, &[mode.clone()]),
             LookupResult::Bound { .. }
         ),
-        "`(` binds to the plugin's open action when auto-pairs-mode is active"
+        "`(` binds to the plugin's open action when auto-pair-mode is active"
     );
     assert!(
         matches!(
@@ -171,7 +180,7 @@ async fn bundled_auto_pair_registers_grammar_modes_and_config_through_the_loader
             keymap.lookup_with_context(BindingMode::Insert, &quote, &[mode.clone()]),
             LookupResult::Bound { .. }
         ),
-        "`\"` binds to the plugin's quote action when auto-pairs-mode is active"
+        "`\"` binds to the plugin's quote action when auto-pair-mode is active"
     );
 
     // 3. CONFIG — the options registered (async drain).

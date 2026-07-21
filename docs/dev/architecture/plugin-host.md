@@ -324,7 +324,13 @@ exactly the surface `lattice_lsp` and friends already reach. (Watch the document
   filter crosses (a custom `predicate` is the guest filtering inside `on-event`). §5.10.4. *(A
   component trap taints its instance, so a trapping plugin's later deliveries also fail —
   dead-until-reinstantiation, PH7.12; the guarantee is cross-plugin/host isolation.)*
-- Modes: `ModeRegistry::register(Arc<dyn DynMode>)`.
+- Modes: `ModeRegistry::register(Arc<dyn DynMode>)`. Each plugin mode also gets an
+  auto-generated `:<mode-name>` toggle ex-command, built by the shared helper
+  `lattice_grammar::registry::mode_toggle_ex_command_spec` — the *same* helper boot's
+  `register_mode_toggle_commands` uses for native modes — registered under
+  `SourceLayer::Plugin(id)` by the loader's `drain_mode` so unload reverses it. A plugin
+  mode is therefore togglable by `:<mode-name>` and shows in completion / `:describe-*` /
+  `:list-*` exactly like a native mode.
 - Config: `ConfigRegistry::register_with_typeid::<T>` — the plugin declares
   name/type-label/default/doc; option **values round-trip as strings** (the `OptionType`
   `parse`/`format` contract, `option_type.rs:37`), so the config WIT carries only
@@ -332,6 +338,18 @@ exactly the surface `lattice_lsp` and friends already reach. (Watch the document
   `OptionType`. Registered into the same store core options live in, so `:set`,
   `:describe-option`, and `:customize` treat plugin options uniformly. Change events flow via
   the existing `EventPublisher` sink (`registry.rs:141`).
+
+**The command and mode registries are runtime-mutable and read *live*.** Both are
+`arc_swap::ArcSwap` handles: a plugin's grammar/command + mode contributions RCU-drain into
+them at load (and reverse on unload). Every consumer reads the live handle, so a plugin's
+contributions are visible everywhere native ones are — the dispatcher, `:`-command-name
+completion, and every introspection command (`:describe-command`, `:apropos`,
+`:list-commands`, `:describe-key`, `:describe-mode`, `:list-modes`). Completion is the one
+surface that needs a nudge: it caches its candidate list, so `CommandRegistry` carries a
+`generation()` counter bumped on every register/unregister, and the `:`-command generator
+keys its cache on it — a plugin load/unload changes the key and the fresh command set
+regenerates, with no manual flush. Net: a plugin-contributed command or mode is
+indistinguishable from a native one at every user surface.
 
 > **Standing-rule check (mode ownership):** every seam keeps *both* the contribution (spec/
 > keymap) *and* the handler body with the plugin that owns it — the host stays a thin bridge
@@ -365,8 +383,10 @@ The WIT package above *is* the plugin API. Rather than re-document it by hand, a
   introspection ex-commands **without** pulling the WASM runtime into the host — the
   no-per-frame-WASM invariant (§7) is preserved structurally, and the heavy `lattice-plugin-host`
   stays out of the host until Phase-8 boot-wiring. The test-only `trampoline-fixture` world is
-  excluded from the catalog (it is not an API). Slice: PI.1 (see the slice plan). Facet B (human
-  `Plugin(id)→name` provenance, `:list-commands`) is PI.3+.
+  excluded from the catalog (it is not an API). Slice: PI.1 (see the slice plan). Facet B — the
+  human-readable `Plugin(id)→name` provenance *label* shown in `:list-commands` — is PI.3+;
+  the listing itself already includes plugin commands live (only the friendly plugin-name
+  column is deferred, not the entries).
 
 ---
 
@@ -443,6 +463,14 @@ path and the renderer reads per-line values).
   no-op, logged; event handler fuel-exhaust → skipped, save/quit proceeds; capability denied
   → plugin loads with reduced function + a notification. Never a panic on the hot path, never
   a silent swallow.
+- **Teardown reverses every contribution by provenance.** On unload the host RCU-snapshots
+  the command / mode / picker / decoration registries and reverses this plugin's entries.
+  `CommandRegistry::unregister_plugin(id)` runs **unconditionally** — it removes every
+  `SourceLayer::Plugin(id)` command in one pass (grammar contributions AND the `:<mode>`
+  mode-toggle ex-commands), with no per-seam "did I register a command?" gate: the provenance
+  *is* the token. Modes reverse via `ModeRegistry::unregister` + their gated keymap layer;
+  options / subscriptions / picker + decoration sources by their returned tokens. Every
+  reversal is idempotent, so a double-unload (or unload after a partial crash) is safe.
 - **Reload seam.** The host supports instance teardown + re-instantiate (Guard-`Drop`
   semantics already model mode teardown; §5.10.5). This is the hook the deferred config-as-
   WASM (`init.rs` hot-swap, §5.12.4) and the plugin manager will consume.

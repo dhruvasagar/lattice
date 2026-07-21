@@ -392,6 +392,45 @@ impl std::fmt::Debug for ExCommandSpec {
     }
 }
 
+/// Doc string for an auto-generated `:<mode-name>` mode-toggle ex-command —
+/// shared so native and plugin modes read identically in `:describe-command`.
+pub const MODE_TOGGLE_COMMAND_DOC: &str =
+    "Toggle the mode on the active buffer (auto-generated; see `:help modes` for \
+     the full mode-system overview).";
+
+/// Build the auto-generated `:<mode-name>` mode-toggle ex-command spec. The
+/// `apply` returns [`crate::effect::Effect::ToggleMode`]; the host routes that
+/// to `toggle_mode_by_name`, flipping the mode on the active buffer. Shared by
+/// boot (native modes, `register_mode_toggle_commands`) AND the plugin
+/// modes-seam drain, so a plugin-registered mode gets an IDENTICAL `:<mode>`
+/// toggle surface. The caller registers it under the right provenance: `Builtin`
+/// for native modes; `SourceLayer::Plugin(id)` for plugin modes, so unload
+/// reverses it. Takes no arguments.
+pub fn mode_toggle_ex_command_spec(mode_name: &str) -> ExCommandSpec {
+    let mode = mode_name.to_string();
+    ExCommandSpec {
+        latency_class: crate::command::LatencyClass::Reflex,
+        accepts_bang: false,
+        accepts_range: false,
+        parse_args: std::sync::Arc::new(|s: &str, _bang: bool| {
+            if s.trim().is_empty() {
+                Ok(crate::args::Args::None)
+            } else {
+                Err(crate::error::CommandError::BadArgs(
+                    "mode toggle takes no arguments".into(),
+                ))
+            }
+        }),
+        apply: std::sync::Arc::new(move |_ctx| {
+            Ok(crate::effect::Effect::ToggleMode {
+                mode_name: mode.clone(),
+            })
+        }),
+        args_schema: Vec::new(),
+        surface_form: SurfaceForm::Keyword,
+    }
+}
+
 /// Context passed to a free-form action's evaluator. Mirrors
 /// [`ExCommandContext`]'s shape (no document mutation; the App
 /// applies the returned [`crate::effect::Effect`]) but omits the
@@ -503,6 +542,15 @@ pub struct CommandRegistry {
     /// [`Self::tag_word_forward_motion`]; read by the operator range
     /// resolver.
     word_forward_motions: std::collections::HashSet<CommandId>,
+    /// Monotonic mutation counter, bumped on every `insert` and every
+    /// non-empty `unregister_plugin`. A cheap version stamp for cache
+    /// invalidation: the `:`-command-name completion generator keys its cache on
+    /// this (via [`Self::generation`]) so a plugin's *runtime* command
+    /// registration or unload — which RCUs a fresh registry with a bumped
+    /// counter — shows up in `<Tab>` completion without any manual cache flush.
+    /// Clones with the registry (RCU snapshot), so the stored copy carries the
+    /// post-mutation value the dispatcher + completion then read.
+    generation: u64,
 }
 
 #[derive(Clone)]
@@ -807,6 +855,9 @@ impl CommandRegistry {
             }
             self.word_forward_motions.remove(id);
         }
+        if !doomed.is_empty() {
+            self.generation = self.generation.wrapping_add(1);
+        }
         doomed.len()
     }
 
@@ -855,6 +906,15 @@ impl CommandRegistry {
         let name = entry.spec.name.clone();
         self.by_id.insert(id, entry);
         self.by_name.insert(name, id);
+        self.generation = self.generation.wrapping_add(1);
+    }
+
+    /// Monotonic mutation counter (see the `generation` field). Read by the
+    /// completion layer's command-name generator to key its cache: a change
+    /// means the command set moved (a plugin loaded or unloaded), so the cached
+    /// candidate list must be regenerated rather than served stale.
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 }
 
@@ -1002,6 +1062,57 @@ mod tests {
 
         // Idempotent: a second unload of the same plugin removes nothing.
         assert_eq!(r.unregister_plugin(7), 0);
+    }
+
+    #[test]
+    fn generation_bumps_on_register_and_nonempty_unregister() {
+        // The completion layer keys its `:`-command cache on this counter, so it
+        // MUST move whenever the command set changes (a plugin drain / unload) —
+        // otherwise plugin commands never appear in `<Tab>` completion.
+        let mut r = CommandRegistry::new();
+        let g0 = r.generation();
+        r.register_motion("builtin:w", "builtin", dummy_motion());
+        let g1 = r.generation();
+        assert!(g1 > g0, "registering a command must bump generation");
+        r.register_plugin_motion(7, "p7:down", "", dummy_motion());
+        let g2 = r.generation();
+        assert!(g2 > g1, "a plugin registration must bump generation");
+        assert_eq!(r.unregister_plugin(7), 1);
+        let g3 = r.generation();
+        assert!(g3 > g2, "unregistering a plugin's commands must bump generation");
+        // A no-op unregister (nothing removed) must NOT bump — no cache churn.
+        assert_eq!(r.unregister_plugin(7), 0);
+        assert_eq!(
+            r.generation(),
+            g3,
+            "an empty unregister must not bump generation"
+        );
+    }
+
+    #[test]
+    fn mode_toggle_spec_toggles_named_mode_and_rejects_args() {
+        let spec = mode_toggle_ex_command_spec("auto-pair-mode");
+        // No args → Ok(None); any args → BadArgs.
+        assert!(matches!(
+            (spec.parse_args)("", false),
+            Ok(crate::args::Args::None)
+        ));
+        assert!((spec.parse_args)("nope", false).is_err());
+        // apply → ToggleMode for the named mode (the spec ignores ctx).
+        let ctx = ExCommandContext {
+            bang: false,
+            args: crate::args::Args::None,
+            range: None,
+            register: Register::default(),
+            count: Count::default(),
+            cancel: crate::CancellationToken::new(),
+        };
+        match (spec.apply)(&ctx) {
+            Ok(crate::effect::Effect::ToggleMode { mode_name }) => {
+                assert_eq!(mode_name, "auto-pair-mode");
+            }
+            other => panic!("expected ToggleMode, got {other:?}"),
+        }
     }
 
     #[test]

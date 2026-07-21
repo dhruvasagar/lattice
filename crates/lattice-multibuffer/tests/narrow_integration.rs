@@ -175,7 +175,7 @@ fn narrow_headerline_shows_the_range() {
 
     let handle = activator.mb_registry.handle(view_id).unwrap();
     match &*handle.headerline() {
-        HeaderlineStatus::Complete { summary } => {
+        HeaderlineStatus::Complete { summary, .. } => {
             // 1-indexed range in the headerline: lines 2..=5 -> "L3–6".
             assert!(
                 summary.contains("src.rs") && summary.contains("L3") && summary.contains('6'),
@@ -204,7 +204,7 @@ fn empty_label_headerline_omits_label() {
 
     let handle = activator.mb_registry.handle(view_id).unwrap();
     match &*handle.headerline() {
-        HeaderlineStatus::Complete { summary } => {
+        HeaderlineStatus::Complete { summary, .. } => {
             assert_eq!(summary, "[narrow] L1–1");
         }
         other => panic!("expected Complete headerline, got {other:?}"),

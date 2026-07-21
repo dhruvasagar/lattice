@@ -691,8 +691,9 @@ impl Mode for ProjectSearchMultibufferMode {
                             // Clear + reset.
                             view.replace_excerpts(std::collections::HashMap::new(), Vec::new());
                             view.set_headerline(HeaderlineStatus::InProgress {
-                                label: "Refreshing search".into(),
+                                label: format!("Refreshing search \"{query}\""),
                                 count: Some(0),
+                                emphasis: Some(query.clone()),
                             });
                             search_svc.set_state(
                                 view_id_for_refresh,
@@ -732,6 +733,15 @@ impl Mode for ProjectSearchMultibufferMode {
             let search_svc_for_task: Option<ProjectSearchServiceHandle> =
                 search_svc_arc.as_ref().map(|s| (**s).clone());
             let bus_for_task = bus.clone();
+            // The query, so the streamed headerline labels can name +
+            // accent the term being searched (`multibuffer.status.query`).
+            // Read from the seeded scan state (set before activation);
+            // empty if unavailable → the label degrades to no accent.
+            let query_for_task = search_svc_for_task
+                .as_ref()
+                .and_then(|svc| svc.state(view_id_for_task))
+                .and_then(|st| st.read().ok().map(|s| s.query.clone()))
+                .unwrap_or_default();
             let forwarder = tokio::spawn(async move {
                 loop {
                     tokio::select! {
@@ -884,8 +894,9 @@ impl Mode for ProjectSearchMultibufferMode {
                             });
 
                             view.set_headerline(HeaderlineStatus::InProgress {
-                                label: "Searching".into(),
+                                label: format!("Searching \"{query_for_task}\""),
                                 count: Some(view.excerpt_count()),
+                                emphasis: Some(query_for_task.clone()),
                             });
                             let _ = hit_count_in_batch;
                         }
@@ -893,8 +904,12 @@ impl Mode for ProjectSearchMultibufferMode {
                             if prog.view != view_id_for_task { continue; }
                             let Some(view) = mb_for_task.handle(view_id_for_task) else { break; };
                             view.set_headerline(HeaderlineStatus::InProgress {
-                                label: format!("Searching ({} files)", prog.files_scanned),
+                                label: format!(
+                                    "Searching \"{}\" ({} files)",
+                                    query_for_task, prog.files_scanned
+                                ),
                                 count: Some(view.excerpt_count()),
+                                emphasis: Some(query_for_task.clone()),
                             });
                         }
                         Some(done) = done_rx.recv() => {
@@ -902,10 +917,10 @@ impl Mode for ProjectSearchMultibufferMode {
                             let Some(view) = mb_for_task.handle(view_id_for_task) else { break; };
                             view.set_headerline(HeaderlineStatus::Complete {
                                 summary: format!(
-                                    "{} hit(s) in {} files",
-                                    done.total_hits,
-                                    done.files_scanned,
+                                    "\"{}\" — {} hit(s) in {} files",
+                                    query_for_task, done.total_hits, done.files_scanned,
                                 ),
+                                emphasis: Some(query_for_task.clone()),
                             });
                             // M.10.5 bug fix (2026-06-03): do NOT
                             // break here. Pre-fix the forwarder
@@ -995,8 +1010,9 @@ pub fn project_search(
     if let Some(mb_reg) = services.get::<MultibufferRegistryHandle>() {
         if let Some(view) = mb_reg.handle(view_id) {
             view.set_headerline(HeaderlineStatus::InProgress {
-                label: "Searching".into(),
+                label: format!("Searching \"{query}\""),
                 count: Some(0),
+                emphasis: Some(query.clone()),
             });
         }
     }

@@ -423,11 +423,24 @@ pub enum HeaderlineStatus {
     Idle,
     /// A scan / fetch / computation is running. `label` describes
     /// it; `count` is an optional running tally (hits found so
-    /// far, files scanned, etc.).
-    InProgress { label: String, count: Option<usize> },
+    /// far, files scanned, etc.). `emphasis` is an optional
+    /// substring of `label` (e.g. the search query) that the
+    /// renderer paints with the `multibuffer.status.query` accent
+    /// role so it stands out; providers with nothing to emphasise
+    /// pass `None`.
+    InProgress {
+        label: String,
+        count: Option<usize>,
+        emphasis: Option<String>,
+    },
     /// The operation completed successfully. `summary` is the
-    /// terminal label rendered to the user.
-    Complete { summary: String },
+    /// terminal label rendered to the user. `emphasis` is an
+    /// optional substring of `summary` painted with the accent
+    /// role (see [`HeaderlineStatus::InProgress`]).
+    Complete {
+        summary: String,
+        emphasis: Option<String>,
+    },
     /// The operation failed. `reason` is the terminal label
     /// rendered to the user.
     Failed { reason: String },
@@ -2003,6 +2016,9 @@ pub const ELEM_STATUS_IN_PROGRESS: &str = "multibuffer.status.in_progress";
 pub const ELEM_STATUS_COMPLETE: &str = "multibuffer.status.complete";
 /// Element name: the failed status row foreground (red).
 pub const ELEM_STATUS_FAILED: &str = "multibuffer.status.failed";
+/// Element name: the emphasised-term foreground (accent) — e.g. the
+/// project-search query woven into the status label.
+pub const ELEM_STATUS_QUERY: &str = "multibuffer.status.query";
 
 /// Register the multibuffer mode's theme elements against `reg`.
 /// Idempotent by name (safe to call on every mode activation /
@@ -2055,9 +2071,18 @@ pub fn register_multibuffer_theme_elements(
     );
     let status_failed = reg.register(
         ElementName::from(ELEM_STATUS_FAILED.to_string()),
-        owner,
+        owner.clone(),
         StyleSpec::new().fg(ColorRef::Palette("red".into())),
         "Multibuffer failed status foreground.",
+    );
+    // The emphasised-term accent (e.g. the search query) maps to the
+    // palette `yellow` — the conventional search-highlight hue,
+    // distinct from the green/red/blue state colors above.
+    let status_query = reg.register(
+        ElementName::from(ELEM_STATUS_QUERY.to_string()),
+        owner,
+        StyleSpec::new().fg(ColorRef::Palette("yellow".into())),
+        "Multibuffer emphasised-term (query) status foreground.",
     );
     MultibufferHeaderElementIds {
         backdrop,
@@ -2066,6 +2091,7 @@ pub fn register_multibuffer_theme_elements(
         status_in_progress,
         status_complete,
         status_failed,
+        status_query,
     }
 }
 
@@ -2084,6 +2110,9 @@ pub struct MultibufferHeaderElementIds {
     pub status_in_progress: ElementId,
     pub status_complete: ElementId,
     pub status_failed: ElementId,
+    /// The accent foreground for an emphasised term (e.g. the search
+    /// query) woven into the status label.
+    pub status_query: ElementId,
 }
 
 impl Default for MultibufferHeaderElementIds {
@@ -2098,6 +2127,7 @@ impl Default for MultibufferHeaderElementIds {
             status_in_progress: ElementId::INVALID,
             status_complete: ElementId::INVALID,
             status_failed: ElementId::INVALID,
+            status_query: ElementId::INVALID,
         }
     }
 }
@@ -2401,6 +2431,10 @@ pub fn multibuffer_status_provider_id(buffer_id: BufferId) -> ProviderId {
 const STATUS_IN_PROGRESS_FALLBACK_FG: u32 = 0x999999;
 const STATUS_COMPLETE_FALLBACK_FG: u32 = 0x44cc88;
 const STATUS_FAILED_FALLBACK_FG: u32 = 0xff4444;
+/// Fallback accent for the emphasised term when the theme (or the
+/// `multibuffer.status.query` element) is unresolved — a warm yellow,
+/// the conventional search-highlight hue.
+const STATUS_QUERY_FALLBACK_FG: u32 = 0xf9e2af;
 
 /// Pure function: `HeaderlineStatus` → display row (or `None` when idle).
 ///
@@ -2416,24 +2450,24 @@ fn render_multibuffer_status(
     in_progress_fg: u32,
     complete_fg: u32,
     failed_fg: u32,
+    query_fg: u32,
 ) -> Option<HeaderlineRow> {
-    let text: String = match status {
+    let (text, emphasis): (String, Option<&str>) = match status {
         HeaderlineStatus::Idle => return None,
-        HeaderlineStatus::InProgress { label, count: None } => {
-            format!(" ⟳ {label} … ")
-        }
+        HeaderlineStatus::InProgress {
+            label,
+            count: None,
+            emphasis,
+        } => (format!(" ⟳ {label} … "), emphasis.as_deref()),
         HeaderlineStatus::InProgress {
             label,
             count: Some(n),
-        } => {
-            format!(" ⟳ {label} ({n}) … ")
+            emphasis,
+        } => (format!(" ⟳ {label} ({n}) … "), emphasis.as_deref()),
+        HeaderlineStatus::Complete { summary, emphasis } => {
+            (format!(" ◆ {summary} "), emphasis.as_deref())
         }
-        HeaderlineStatus::Complete { summary } => {
-            format!(" ◆ {summary} ")
-        }
-        HeaderlineStatus::Failed { reason } => {
-            format!(" ■ {reason} ")
-        }
+        HeaderlineStatus::Failed { reason } => (format!(" ■ {reason} "), None),
     };
     let fg: u32 = match status {
         HeaderlineStatus::InProgress { .. } => in_progress_fg,
@@ -2441,9 +2475,27 @@ fn render_multibuffer_status(
         HeaderlineStatus::Failed { .. } => failed_fg,
         HeaderlineStatus::Idle => unreachable!(),
     };
+    // Char-index range of the emphasised term within `text` (first
+    // occurrence). Only the query cells get `query_fg`; everything else
+    // keeps the state fg. Non-empty emphasis that isn't found → no accent.
+    let emphasis_range: Option<(usize, usize)> = emphasis
+        .filter(|e| !e.is_empty())
+        .and_then(|e| {
+            text.find(e).map(|byte_start| {
+                let char_start = text[..byte_start].chars().count();
+                (char_start, char_start + e.chars().count())
+            })
+        });
     let cells: Arc<[Cell]> = text
         .chars()
-        .map(|c| Cell::new(c as u32, fg, 0, 0))
+        .enumerate()
+        .map(|(i, c)| {
+            let cell_fg = match emphasis_range {
+                Some((start, end)) if i >= start && i < end => query_fg,
+                _ => fg,
+            };
+            Cell::new(c as u32, cell_fg, 0, 0)
+        })
         .collect::<Vec<_>>()
         .into();
     Some(HeaderlineRow { cells, bg: None })
@@ -2511,7 +2563,7 @@ impl MultibufferStatusProvider {
     /// Resolve the three status foregrounds from the wired theme,
     /// falling back to the pre-MH.A4 hex per-state when the theme or an
     /// element is unresolved (test paths).
-    fn status_fgs(&self) -> (u32, u32, u32) {
+    fn status_fgs(&self) -> (u32, u32, u32, u32) {
         let resolved = self.theme.as_ref().map(|t| t.resolved());
         let resolve = |id: ElementId, fallback: u32| -> u32 {
             resolved
@@ -2527,6 +2579,7 @@ impl MultibufferStatusProvider {
             ),
             resolve(self.elements.status_complete, STATUS_COMPLETE_FALLBACK_FG),
             resolve(self.elements.status_failed, STATUS_FAILED_FALLBACK_FG),
+            resolve(self.elements.status_query, STATUS_QUERY_FALLBACK_FG),
         )
     }
 }
@@ -2551,12 +2604,13 @@ impl Headerline for MultibufferStatusProvider {
     }
 
     fn render(&self) -> Option<HeaderlineRow> {
-        let (in_progress_fg, complete_fg, failed_fg) = self.status_fgs();
+        let (in_progress_fg, complete_fg, failed_fg, query_fg) = self.status_fgs();
         render_multibuffer_status(
             &self.multibuffer.inner.headerline.load(),
             in_progress_fg,
             complete_fg,
             failed_fg,
+            query_fg,
         )
     }
 }
@@ -3406,9 +3460,10 @@ mod tests {
         mb.set_headerline(HeaderlineStatus::InProgress {
             label: "Searching".into(),
             count: Some(42),
+            emphasis: None,
         });
         match &*mb.headerline() {
-            HeaderlineStatus::InProgress { label, count } => {
+            HeaderlineStatus::InProgress { label, count, .. } => {
                 assert_eq!(label, "Searching");
                 assert_eq!(*count, Some(42));
             }
@@ -3417,9 +3472,10 @@ mod tests {
 
         mb.set_headerline(HeaderlineStatus::Complete {
             summary: "87 hits".into(),
+            emphasis: None,
         });
         match &*mb.headerline() {
-            HeaderlineStatus::Complete { summary } => assert_eq!(summary, "87 hits"),
+            HeaderlineStatus::Complete { summary, .. } => assert_eq!(summary, "87 hits"),
             other => panic!("expected Complete, got {other:?}"),
         }
     }
@@ -3438,6 +3494,7 @@ mod tests {
 
         mb.set_headerline(HeaderlineStatus::Complete {
             summary: "done".into(),
+            emphasis: None,
         });
 
         let evt = tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv())
@@ -3849,6 +3906,7 @@ mod tests {
         mb.attach_event_subscriptions(&bus);
         mb.set_headerline(HeaderlineStatus::Complete {
             summary: "x".into(),
+            emphasis: None,
         });
     }
 
@@ -4565,6 +4623,7 @@ mod tests {
         mb.set_headerline(HeaderlineStatus::InProgress {
             label: "searching".into(),
             count: Some(3),
+            emphasis: None,
         });
         let provider = MultibufferStatusProvider::new(mb.clone()).into_provider(mb.buffer_id());
         let rows = provider.collect();
@@ -4582,6 +4641,7 @@ mod tests {
         let v0 = provider.version();
         mb.set_headerline(HeaderlineStatus::Complete {
             summary: "done".into(),
+            emphasis: None,
         });
         assert!(
             provider.version() > v0,
@@ -4610,12 +4670,14 @@ mod tests {
                 HeaderlineStatus::InProgress {
                     label: "x".into(),
                     count: None,
+                    emphasis: None,
                 },
                 STATUS_IN_PROGRESS_FALLBACK_FG,
             ),
             (
                 HeaderlineStatus::Complete {
                     summary: "done".into(),
+                    emphasis: None,
                 },
                 STATUS_COMPLETE_FALLBACK_FG,
             ),
@@ -4715,12 +4777,14 @@ mod tests {
             HeaderlineStatus::InProgress {
                 label: "s".into(),
                 count: Some(2),
+                emphasis: None,
             },
             "subtext",
         );
         expect_fg(
             HeaderlineStatus::Complete {
                 summary: "done".into(),
+                emphasis: None,
             },
             "green",
         );
@@ -4730,6 +4794,73 @@ mod tests {
             },
             "red",
         );
+    }
+
+    #[test]
+    fn status_emphasis_term_gets_query_accent_fg() {
+        // The emphasised substring (e.g. the search query woven into the
+        // status label) is painted with the resolved
+        // `multibuffer.status.query` accent (yellow); the rest of the row
+        // keeps the state fg. Only the term cells get the accent.
+        use lattice_theme::{
+            ElementName, ElementOwner, InMemoryThemeRegistry, ThemeRegistry, ThemeRegistryHandle,
+            default_palette,
+        };
+        let registry = Arc::new(InMemoryThemeRegistry::new(default_palette()));
+        let owner = ElementOwner::Mode(
+            crate::MultibufferMode::mode_id()
+                .as_str()
+                .to_string()
+                .into(),
+        );
+        let ids = crate::register_multibuffer_theme_elements(registry.as_ref(), owner);
+
+        // The query element resolves to the `yellow` role-key.
+        let resolved = registry.resolved();
+        let palette = default_palette();
+        let role = |key: &str| palette.get(&key.to_string().into()).unwrap();
+        assert_eq!(
+            resolved
+                .get(
+                    registry
+                        .id(&ElementName::from(ELEM_STATUS_QUERY.to_string()))
+                        .unwrap()
+                )
+                .fg,
+            Some(role("yellow")),
+            "query accent maps to the `yellow` role-key"
+        );
+
+        // Render a Complete status carrying an emphasised term.
+        let theme: ThemeRegistryHandle = registry.clone();
+        let mb = MultibufferDocumentHandle::empty(empty_registry());
+        mb.set_headerline(HeaderlineStatus::Complete {
+            summary: "\"needle\" — 3 hits in 2 files".into(),
+            emphasis: Some("needle".into()),
+        });
+        let provider = MultibufferStatusProvider::with_theme(mb, theme, ids);
+        let row = provider.render().expect("non-idle status renders a row");
+
+        let query_fg = role("yellow").to_rgb_u32(0);
+        let complete_fg = role("green").to_rgb_u32(0);
+        let text: String = row
+            .cells
+            .iter()
+            .map(|c| char::from_u32(c.codepoint).unwrap_or(' '))
+            .collect();
+        let byte_start = text.find("needle").expect("term present in row");
+        let char_start = text[..byte_start].chars().count();
+        let char_end = char_start + "needle".chars().count();
+        for (i, cell) in row.cells.iter().enumerate() {
+            if i >= char_start && i < char_end {
+                assert_eq!(cell.fg, query_fg, "emphasis cell {i} uses the query accent");
+            } else {
+                assert_eq!(
+                    cell.fg, complete_fg,
+                    "non-emphasis cell {i} keeps the state (complete) fg"
+                );
+            }
+        }
     }
 
     #[test]
@@ -4753,6 +4884,7 @@ mod tests {
         let mb = MultibufferDocumentHandle::empty(empty_registry());
         mb.set_headerline(HeaderlineStatus::Complete {
             summary: "done".into(),
+            emphasis: None,
         });
         let provider = MultibufferStatusProvider::with_theme(mb, theme, ids);
 

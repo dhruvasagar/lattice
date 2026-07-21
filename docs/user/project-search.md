@@ -47,8 +47,11 @@ regex.
 Results open in a new multibuffer named for the search. Each matched
 line is a one-row excerpt under its file's header; a file with
 several hits lists them all under one header. The view's
-**headerline** shows progress while the scan runs (`Scanning… N
-files`) and a summary when it finishes (`Done — N hits in M files`).
+**headerline** shows progress while the scan runs
+(`⟳ Searching "query" (N files) …`) and a summary when it finishes
+(`◆ "query" — N hit(s) in M files`). The **search term is highlighted**
+in an accent colour (the themeable `multibuffer.status.query` role) so
+it stands out from the surrounding status text.
 
 ## The `g/` search operator
 

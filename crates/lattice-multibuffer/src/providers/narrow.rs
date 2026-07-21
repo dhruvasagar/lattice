@@ -147,7 +147,10 @@ pub fn create_narrow_view(
             } else {
                 format!("[narrow] {label} L{}–{}", start_line + 1, end_line + 1)
             };
-            view.set_headerline(HeaderlineStatus::Complete { summary });
+            view.set_headerline(HeaderlineStatus::Complete {
+                summary,
+                emphasis: None,
+            });
         }
     }
 

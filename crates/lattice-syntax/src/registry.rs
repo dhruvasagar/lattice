@@ -59,6 +59,63 @@ const RUST_TEXTOBJECTS_QUERY: &str = include_str!("../queries/rust/textobjects.s
 const PYTHON_TEXTOBJECTS_QUERY: &str = include_str!("../queries/python/textobjects.scm");
 const JAVASCRIPT_TEXTOBJECTS_QUERY: &str = include_str!("../queries/javascript/textobjects.scm");
 
+// ── 15 additional Tier-1 language queries ───────────────────────
+const BASH_FOLDS_QUERY: &str = include_str!("../queries/bash/folds.scm");
+const BASH_SYMBOLS_QUERY: &str = include_str!("../queries/bash/symbols.scm");
+const BASH_TEXTOBJECTS_QUERY: &str = include_str!("../queries/bash/textobjects.scm");
+
+const C_FOLDS_QUERY: &str = include_str!("../queries/c/folds.scm");
+const C_SYMBOLS_QUERY: &str = include_str!("../queries/c/symbols.scm");
+const C_TEXTOBJECTS_QUERY: &str = include_str!("../queries/c/textobjects.scm");
+
+const CPP_FOLDS_QUERY: &str = include_str!("../queries/cpp/folds.scm");
+const CPP_SYMBOLS_QUERY: &str = include_str!("../queries/cpp/symbols.scm");
+const CPP_TEXTOBJECTS_QUERY: &str = include_str!("../queries/cpp/textobjects.scm");
+
+const CSS_FOLDS_QUERY: &str = include_str!("../queries/css/folds.scm");
+const CSS_SYMBOLS_QUERY: &str = include_str!("../queries/css/symbols.scm");
+const CSS_TEXTOBJECTS_QUERY: &str = include_str!("../queries/css/textobjects.scm");
+
+const GO_FOLDS_QUERY: &str = include_str!("../queries/go/folds.scm");
+const GO_SYMBOLS_QUERY: &str = include_str!("../queries/go/symbols.scm");
+const GO_TEXTOBJECTS_QUERY: &str = include_str!("../queries/go/textobjects.scm");
+
+const HTML_FOLDS_QUERY: &str = include_str!("../queries/html/folds.scm");
+const HTML_SYMBOLS_QUERY: &str = include_str!("../queries/html/symbols.scm");
+const HTML_TEXTOBJECTS_QUERY: &str = include_str!("../queries/html/textobjects.scm");
+
+const JAVA_FOLDS_QUERY: &str = include_str!("../queries/java/folds.scm");
+const JAVA_SYMBOLS_QUERY: &str = include_str!("../queries/java/symbols.scm");
+const JAVA_TEXTOBJECTS_QUERY: &str = include_str!("../queries/java/textobjects.scm");
+
+const JSON_FOLDS_QUERY: &str = include_str!("../queries/json/folds.scm");
+const JSON_SYMBOLS_QUERY: &str = include_str!("../queries/json/symbols.scm");
+const JSON_TEXTOBJECTS_QUERY: &str = include_str!("../queries/json/textobjects.scm");
+
+const LUA_FOLDS_QUERY: &str = include_str!("../queries/lua/folds.scm");
+const LUA_SYMBOLS_QUERY: &str = include_str!("../queries/lua/symbols.scm");
+const LUA_TEXTOBJECTS_QUERY: &str = include_str!("../queries/lua/textobjects.scm");
+
+const RUBY_FOLDS_QUERY: &str = include_str!("../queries/ruby/folds.scm");
+const RUBY_SYMBOLS_QUERY: &str = include_str!("../queries/ruby/symbols.scm");
+const RUBY_TEXTOBJECTS_QUERY: &str = include_str!("../queries/ruby/textobjects.scm");
+
+const SQL_FOLDS_QUERY: &str = include_str!("../queries/sql/folds.scm");
+const SQL_SYMBOLS_QUERY: &str = include_str!("../queries/sql/symbols.scm");
+const SQL_TEXTOBJECTS_QUERY: &str = include_str!("../queries/sql/textobjects.scm");
+
+const TOML_FOLDS_QUERY: &str = include_str!("../queries/toml/folds.scm");
+const TOML_SYMBOLS_QUERY: &str = include_str!("../queries/toml/symbols.scm");
+const TOML_TEXTOBJECTS_QUERY: &str = include_str!("../queries/toml/textobjects.scm");
+
+const TYPESCRIPT_FOLDS_QUERY: &str = include_str!("../queries/typescript/folds.scm");
+const TYPESCRIPT_SYMBOLS_QUERY: &str = include_str!("../queries/typescript/symbols.scm");
+const TYPESCRIPT_TEXTOBJECTS_QUERY: &str = include_str!("../queries/typescript/textobjects.scm");
+
+const YAML_FOLDS_QUERY: &str = include_str!("../queries/yaml/folds.scm");
+const YAML_SYMBOLS_QUERY: &str = include_str!("../queries/yaml/symbols.scm");
+const YAML_TEXTOBJECTS_QUERY: &str = include_str!("../queries/yaml/textobjects.scm");
+
 /// Per-language compiled state held by the shared registry.
 ///
 /// Phase note: `highlight` is the legacy `tree_sitter_highlight`
@@ -214,6 +271,216 @@ impl LangRegistry {
             )?,
         );
 
+        // ── 15 additional Tier-1 languages ───────────────────────
+        configs.insert(
+            "bash",
+            build_config(
+                tree_sitter_bash::LANGUAGE.into(),
+                "bash",
+                tree_sitter_bash::HIGHLIGHT_QUERY,
+                "",
+                "",
+                Some(BASH_FOLDS_QUERY),
+                Some(BASH_SYMBOLS_QUERY),
+                Some(BASH_TEXTOBJECTS_QUERY),
+            )?,
+        );
+        configs.insert(
+            "c",
+            build_config(
+                tree_sitter_c::LANGUAGE.into(),
+                "c",
+                tree_sitter_c::HIGHLIGHT_QUERY,
+                "",
+                "",
+                Some(C_FOLDS_QUERY),
+                Some(C_SYMBOLS_QUERY),
+                Some(C_TEXTOBJECTS_QUERY),
+            )?,
+        );
+        configs.insert(
+            "cpp",
+            build_config(
+                tree_sitter_cpp::LANGUAGE.into(),
+                "cpp",
+                tree_sitter_cpp::HIGHLIGHT_QUERY,
+                "",
+                "",
+                Some(CPP_FOLDS_QUERY),
+                Some(CPP_SYMBOLS_QUERY),
+                Some(CPP_TEXTOBJECTS_QUERY),
+            )?,
+        );
+        configs.insert(
+            "css",
+            build_config(
+                tree_sitter_css::LANGUAGE.into(),
+                "css",
+                tree_sitter_css::HIGHLIGHTS_QUERY,
+                "",
+                "",
+                Some(CSS_FOLDS_QUERY),
+                Some(CSS_SYMBOLS_QUERY),
+                Some(CSS_TEXTOBJECTS_QUERY),
+            )?,
+        );
+        // NOTE: Dockerfile's tree-sitter grammar (0.2.0) depends on
+        // tree-sitter 0.20 — a different type than our 0.26 core.
+        // Skipped; Dockerfile buffers use Plain fallback.
+        configs.insert(
+            "go",
+            build_config(
+                tree_sitter_go::LANGUAGE.into(),
+                "go",
+                tree_sitter_go::HIGHLIGHTS_QUERY,
+                "",
+                "",
+                Some(GO_FOLDS_QUERY),
+                Some(GO_SYMBOLS_QUERY),
+                Some(GO_TEXTOBJECTS_QUERY),
+            )?,
+        );
+        configs.insert(
+            "html",
+            build_config(
+                tree_sitter_html::LANGUAGE.into(),
+                "html",
+                tree_sitter_html::HIGHLIGHTS_QUERY,
+                tree_sitter_html::INJECTIONS_QUERY,
+                "",
+                Some(HTML_FOLDS_QUERY),
+                Some(HTML_SYMBOLS_QUERY),
+                Some(HTML_TEXTOBJECTS_QUERY),
+            )?,
+        );
+        configs.insert(
+            "java",
+            build_config(
+                tree_sitter_java::LANGUAGE.into(),
+                "java",
+                tree_sitter_java::HIGHLIGHTS_QUERY,
+                "",
+                "",
+                Some(JAVA_FOLDS_QUERY),
+                Some(JAVA_SYMBOLS_QUERY),
+                Some(JAVA_TEXTOBJECTS_QUERY),
+            )?,
+        );
+        configs.insert(
+            "json",
+            build_config(
+                tree_sitter_json::LANGUAGE.into(),
+                "json",
+                tree_sitter_json::HIGHLIGHTS_QUERY,
+                "",
+                "",
+                Some(JSON_FOLDS_QUERY),
+                Some(JSON_SYMBOLS_QUERY),
+                Some(JSON_TEXTOBJECTS_QUERY),
+            )?,
+        );
+        configs.insert(
+            "lua",
+            build_config(
+                tree_sitter_lua::LANGUAGE.into(),
+                "lua",
+                tree_sitter_lua::HIGHLIGHTS_QUERY,
+                "",
+                "",
+                Some(LUA_FOLDS_QUERY),
+                Some(LUA_SYMBOLS_QUERY),
+                Some(LUA_TEXTOBJECTS_QUERY),
+            )?,
+        );
+        configs.insert(
+            "ruby",
+            build_config(
+                tree_sitter_ruby::LANGUAGE.into(),
+                "ruby",
+                tree_sitter_ruby::HIGHLIGHTS_QUERY,
+                "",
+                "",
+                Some(RUBY_FOLDS_QUERY),
+                Some(RUBY_SYMBOLS_QUERY),
+                Some(RUBY_TEXTOBJECTS_QUERY),
+            )?,
+        );
+        configs.insert(
+            "sql",
+            build_config(
+                tree_sitter_sequel::LANGUAGE.into(),
+                "sql",
+                tree_sitter_sequel::HIGHLIGHTS_QUERY,
+                "",
+                "",
+                Some(SQL_FOLDS_QUERY),
+                Some(SQL_SYMBOLS_QUERY),
+                Some(SQL_TEXTOBJECTS_QUERY),
+            )?,
+        );
+        configs.insert(
+            "toml",
+            build_config(
+                tree_sitter_toml_ng::LANGUAGE.into(),
+                "toml",
+                tree_sitter_toml_ng::HIGHLIGHTS_QUERY,
+                "",
+                "",
+                Some(TOML_FOLDS_QUERY),
+                Some(TOML_SYMBOLS_QUERY),
+                Some(TOML_TEXTOBJECTS_QUERY),
+            )?,
+        );
+        // NOTE: tree-sitter-typescript exposes two grammars:
+        // LANGUAGE_TYPESCRIPT (strict TS) and LANGUAGE_TSX (TS+JSX).
+        // We register "typescript" with the TS grammar; see "tsx"
+        // for the TSX variant.
+        configs.insert(
+            "typescript",
+            build_config(
+                tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+                "typescript",
+                tree_sitter_typescript::HIGHLIGHTS_QUERY,
+                "",
+                tree_sitter_typescript::LOCALS_QUERY,
+                Some(TYPESCRIPT_FOLDS_QUERY),
+                Some(TYPESCRIPT_SYMBOLS_QUERY),
+                Some(TYPESCRIPT_TEXTOBJECTS_QUERY),
+            )?,
+        );
+        // TSX grammar (TypeScript + JSX) — separate language object
+        // but shares the same query files (the TSX grammar is a
+        // superset of the TypeScript grammar so all node type names
+        // valid in TS are valid in TSX, and TSX-only constructs will
+        // simply produce no captures if the query doesn't reference
+        // them).
+        configs.insert(
+            "tsx",
+            build_config(
+                tree_sitter_typescript::LANGUAGE_TSX.into(),
+                "tsx",
+                tree_sitter_typescript::HIGHLIGHTS_QUERY,
+                "",
+                tree_sitter_typescript::LOCALS_QUERY,
+                Some(TYPESCRIPT_FOLDS_QUERY),
+                Some(TYPESCRIPT_SYMBOLS_QUERY),
+                Some(TYPESCRIPT_TEXTOBJECTS_QUERY),
+            )?,
+        );
+        configs.insert(
+            "yaml",
+            build_config(
+                tree_sitter_yaml::LANGUAGE.into(),
+                "yaml",
+                tree_sitter_yaml::HIGHLIGHTS_QUERY,
+                "",
+                "",
+                Some(YAML_FOLDS_QUERY),
+                Some(YAML_SYMBOLS_QUERY),
+                Some(YAML_TEXTOBJECTS_QUERY),
+            )?,
+        );
+
         Ok(Arc::new(Self { configs }))
     }
 
@@ -281,6 +548,13 @@ impl LangRegistry {
             "rs" => "rust",
             "py" => "python",
             "js" | "mjs" | "cjs" => "javascript",
+            "sh" => "bash",
+            "h" => "c",
+            "cc" | "cxx" | "hpp" | "hh" | "hxx" => "cpp",
+            "htm" | "xhtml" => "html",
+            "rb" => "ruby",
+            "ts" | "mts" | "cts" => "typescript",
+            "yml" => "yaml",
             "md" => "markdown",
             other => other,
         };

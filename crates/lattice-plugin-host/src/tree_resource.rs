@@ -79,7 +79,7 @@ fn point_le(a: Point, b: Point) -> bool {
 fn resolve<'t>(tree: &'t Tree, path: &[u32]) -> Option<Node<'t>> {
     let mut node = tree.root_node();
     for &i in path {
-        node = node.child(i as usize)?;
+        node = node.child(i)?;
     }
     Some(node)
 }
@@ -94,7 +94,7 @@ fn path_of(node: Node) -> Vec<u32> {
     while let Some(parent) = cur.parent() {
         let mut idx = 0u32;
         for i in 0..parent.child_count() {
-            if parent.child(i).map(|c| c.id()) == Some(cur.id()) {
+            if parent.child(i as u32).map(|c| c.id()) == Some(cur.id()) {
                 idx = i as u32;
                 break;
             }
@@ -340,7 +340,7 @@ impl NodeResource {
         let node = resolve(tree, &self.path)?;
         let mut seen = 0u32;
         for i in 0..node.child_count() {
-            let child = node.child(i)?;
+            let child = node.child(i as u32)?;
             if child.is_named() {
                 if seen == index {
                     let mut path = self.path.clone();
@@ -384,11 +384,11 @@ impl NodeResource {
         let cur = last as usize;
         let candidate = if forward {
             (cur + 1..parent.child_count()).find(|&i| {
-                parent.child(i).map(|c| c.is_named()).unwrap_or(false)
+                parent.child(i as u32).map(|c| c.is_named()).unwrap_or(false)
             })
         } else {
             (0..cur).rev().find(|&i| {
-                parent.child(i).map(|c| c.is_named()).unwrap_or(false)
+                parent.child(i as u32).map(|c| c.is_named()).unwrap_or(false)
             })
         };
         candidate.map(|i| {
@@ -438,7 +438,7 @@ impl CursorResource {
             return false;
         };
         for i in 0..node.child_count() {
-            if node.child(i).map(|c| c.is_named()).unwrap_or(false) {
+            if node.child(i as u32).map(|c| c.is_named()).unwrap_or(false) {
                 self.path.push(i as u32);
                 return true;
             }
@@ -458,7 +458,7 @@ impl CursorResource {
             return false;
         };
         for i in (last as usize + 1)..parent.child_count() {
-            if parent.child(i).map(|c| c.is_named()).unwrap_or(false) {
+            if parent.child(i as u32).map(|c| c.is_named()).unwrap_or(false) {
                 let plen = self.path.len();
                 self.path[plen - 1] = i as u32;
                 return true;

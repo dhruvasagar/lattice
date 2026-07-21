@@ -11074,6 +11074,47 @@ impl Editor {
         (handle, parsed_sync)
     }
 
+    /// N.1.11: when a major mode with a language binding is
+    /// activated, rebuild the syntax handle so tree-sitter
+    /// highlighting reflects the new language. Skips when the
+    /// mode has no language mapping (e.g. TextMode) or when
+    /// the language is already correct.
+    fn rebuild_syntax_for_mode(
+        &mut self,
+        buffer_id: lattice_core::BufferId,
+        mode_id: lattice_mode::ModeId,
+    ) -> Vec<RendererSignal> {
+        let Some(new_lang) = lattice_syntax::lang_for_mode_id(mode_id) else {
+            return Vec::new();
+        };
+        // Short-circuit: if the syntax handle already uses this
+        // language, there's nothing to rebuild.
+        if self
+            .syntax
+            .as_ref()
+            .is_some_and(|s| s.lang() == new_lang)
+        {
+            return Vec::new();
+        }
+        let text = self.document.text();
+        let version = self.document.text_version();
+        let (syntax, parsed_sync) = self.build_open_syntax(new_lang, &text, version);
+        self.syntax = syntax;
+        self.last_parsed_text_version = if parsed_sync {
+            version
+        } else {
+            version.wrapping_sub(1)
+        };
+        self.last_synced_syntax_version = version.wrapping_sub(1);
+        // Stash into buffer-locals so the handle survives buffer
+        // switches.
+        let locals = self.buffer_locals.entry(buffer_id).or_default();
+        locals.insert(crate::modes::DocumentSyntax(self.syntax.clone()));
+        locals.insert(crate::modes::DocumentLastParsedTextVersion(self.last_parsed_text_version));
+        locals.insert(crate::modes::DocumentLastSyncedSyntaxVersion(self.last_synced_syntax_version));
+        Vec::new()
+    }
+
     /// M.0 (2026-05-31): the shared body of `:edit foo.rs`'s
     /// "open fresh + slot-replace" path. Both the brand-new-file
     /// case and the reload-current-buffer case route through
@@ -14263,6 +14304,19 @@ impl Editor {
         } else {
             Vec::new()
         };
+        // N.1.11: when a major mode with a language binding activates,
+        // rebuild the tree-sitter syntax handle so syntax highlighting
+        // matches the new language. Without this, manually toggling a
+        // language mode (e.g. `:bash-mode` on a `.zshrc` buffer) would
+        // change the mode identity but leave syntax highlighting on the
+        // previously-detected language (or Plain).
+        let syntax_signals = if matches!(kind, lattice_mode::ModeKind::Major)
+            && buffer_id == self.document_buffer_id
+        {
+            self.rebuild_syntax_for_mode(buffer_id, mode_id)
+        } else {
+            Vec::new()
+        };
         // Drain any option mutations the mode emitted in its
         // `on_activate` so the side-effect cascade (option cache
         // recompute, `recompute_folds` for foldmethod, theme refresh
@@ -14270,6 +14324,7 @@ impl Editor {
         // observes the post-activation state.
         let mut signals = self.drain_option_changes();
         signals.extend(auto_lsp_signals);
+        signals.extend(syntax_signals);
         signals
     }
 

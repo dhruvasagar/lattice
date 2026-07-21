@@ -233,21 +233,37 @@ arboard = "3.6"
 base64 = "0.22"
 
 # Syntax (tree-sitter)
-tree-sitter = "0.24"
+tree-sitter = "0.26.11"
 # Re-exported by tree-sitter for `QueryCursor::matches`. Direct dep
 # so consumers (lattice-ui-tui's fold provider, future textobjects)
 # can `use streaming_iterator::StreamingIterator` without going
 # through tree-sitter's private re-export path.
 streaming-iterator = "0.1"
-tree-sitter-rust = "0.23"
-tree-sitter-python = "0.23"
-tree-sitter-javascript = "0.23"
+tree-sitter-rust = "0.24"
+tree-sitter-python = "0.25"
+tree-sitter-javascript = "0.25"
 # Markdown's grammar is intentionally split into a block parser and an
 # inline parser -- one pass each, the block parser injects the inline
 # parser into paragraph content. tree-sitter-md exposes both behind one
 # crate; we register them as separate `HighlightConfiguration`s and the
 # block grammar's injections.scm wires them together.
-tree-sitter-md = "0.3"
+tree-sitter-md = "0.5"
+
+# 15 additional Tier-1 language grammars
+tree-sitter-typescript = "0.23"
+tree-sitter-go = "0.23"
+tree-sitter-c = "0.23"
+tree-sitter-cpp = "0.23"
+tree-sitter-java = "0.23"
+tree-sitter-ruby = "0.23"
+tree-sitter-html = "0.23"
+tree-sitter-css = "0.23"
+tree-sitter-json = "0.23"
+tree-sitter-yaml = "0.7"
+tree-sitter-toml-ng = "0.7"
+tree-sitter-bash = "0.23"
+tree-sitter-sequel = "0.3"
+tree-sitter-lua = "0.5"
 
 # Diff engine (lattice-diff -- D.1). `imara-diff` is the
 # pure-Rust diff library shipped by gitoxide: Histogram by

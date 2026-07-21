@@ -24,9 +24,6 @@
 - [X] Picker to add <C-s>, <C-v>, <C-t> to open file under cursor in a
   split, vertical split or tab. This will override
 - [X] {count}G, :{count} should jump to that line (preserve <C-o>)
-- [ ] Create an api similar to `:jump` from vim that allows easy
-  handling of any future jumps to automatically record jump history
-  without requiring manual work arounds
 - [ ] <C-g>, (:abort-all !?) to abort any running tasks
 - [X] M-x as a command picker
   - [X] It should resolve to `:<command> |` for the user to enter

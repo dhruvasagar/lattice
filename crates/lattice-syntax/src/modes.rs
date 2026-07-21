@@ -78,6 +78,21 @@ macro_rules! lang_mode {
 lang_mode!(RustMode, "rust-mode");
 lang_mode!(PythonMode, "python-mode");
 lang_mode!(JavascriptMode, "javascript-mode");
+lang_mode!(BashMode, "bash-mode");
+lang_mode!(CMode, "c-mode");
+lang_mode!(CppMode, "cpp-mode");
+lang_mode!(CssMode, "css-mode");
+lang_mode!(GoMode, "go-mode");
+lang_mode!(HtmlMode, "html-mode");
+lang_mode!(JavaMode, "java-mode");
+lang_mode!(JsonMode, "json-mode");
+lang_mode!(LuaMode, "lua-mode");
+lang_mode!(RubyMode, "ruby-mode");
+lang_mode!(SqlMode, "sql-mode");
+lang_mode!(TomlMode, "toml-mode");
+lang_mode!(TypeScriptMode, "typescript-mode");
+lang_mode!(TsxMode, "tsx-mode");
+lang_mode!(YamlMode, "yaml-mode");
 // H.2 (2026-05-31): `markdown-mode` is the default major for two
 // dispatch paths — `Document + Lang::Markdown` (via language
 // detection) and `BufferKind::Help` (via the registry's kind
@@ -99,7 +114,50 @@ pub fn major_mode_id_for_lang(lang: Lang) -> Option<ModeId> {
         Lang::Rust => Some(RustMode::mode_id()),
         Lang::Python => Some(PythonMode::mode_id()),
         Lang::JavaScript => Some(JavascriptMode::mode_id()),
+        Lang::Bash => Some(BashMode::mode_id()),
+        Lang::C => Some(CMode::mode_id()),
+        Lang::Cpp => Some(CppMode::mode_id()),
+        Lang::Css => Some(CssMode::mode_id()),
+        Lang::Go => Some(GoMode::mode_id()),
+        Lang::Html => Some(HtmlMode::mode_id()),
+        Lang::Java => Some(JavaMode::mode_id()),
+        Lang::Json => Some(JsonMode::mode_id()),
+        Lang::Lua => Some(LuaMode::mode_id()),
+        Lang::Ruby => Some(RubyMode::mode_id()),
+        Lang::Sql => Some(SqlMode::mode_id()),
+        Lang::Toml => Some(TomlMode::mode_id()),
+        Lang::TypeScript => Some(TypeScriptMode::mode_id()),
+        Lang::Tsx => Some(TsxMode::mode_id()),
+        Lang::Yaml => Some(YamlMode::mode_id()),
         Lang::Markdown => Some(MarkdownMode::mode_id()),
+    }
+}
+
+/// Resolve a major-mode id back to its corresponding [`Lang`].
+/// Returns `None` when the mode has no language binding (e.g.
+/// `TextMode`, minor modes).
+pub fn lang_for_mode_id(id: ModeId) -> Option<Lang> {
+    match id.as_str() {
+        "rust-mode" => Some(Lang::Rust),
+        "python-mode" => Some(Lang::Python),
+        "javascript-mode" => Some(Lang::JavaScript),
+        "bash-mode" => Some(Lang::Bash),
+        "c-mode" => Some(Lang::C),
+        "cpp-mode" => Some(Lang::Cpp),
+        "css-mode" => Some(Lang::Css),
+        "go-mode" => Some(Lang::Go),
+        "html-mode" => Some(Lang::Html),
+        "java-mode" => Some(Lang::Java),
+        "json-mode" => Some(Lang::Json),
+        "lua-mode" => Some(Lang::Lua),
+        "ruby-mode" => Some(Lang::Ruby),
+        "sql-mode" => Some(Lang::Sql),
+        "toml-mode" => Some(Lang::Toml),
+        "typescript-mode" => Some(Lang::TypeScript),
+        "tsx-mode" => Some(Lang::Tsx),
+        "yaml-mode" => Some(Lang::Yaml),
+        "markdown-mode" => Some(Lang::Markdown),
+        _ => None,
     }
 }
 
@@ -120,6 +178,51 @@ pub fn register_language_modes(registry: &mut ModeRegistry) {
     registry
         .register(JavascriptMode)
         .expect("javascript-mode register without conflict");
+    registry
+        .register(BashMode)
+        .expect("bash-mode register without conflict");
+    registry
+        .register(CMode)
+        .expect("c-mode register without conflict");
+    registry
+        .register(CppMode)
+        .expect("cpp-mode register without conflict");
+    registry
+        .register(CssMode)
+        .expect("css-mode register without conflict");
+    registry
+        .register(GoMode)
+        .expect("go-mode register without conflict");
+    registry
+        .register(HtmlMode)
+        .expect("html-mode register without conflict");
+    registry
+        .register(JavaMode)
+        .expect("java-mode register without conflict");
+    registry
+        .register(JsonMode)
+        .expect("json-mode register without conflict");
+    registry
+        .register(LuaMode)
+        .expect("lua-mode register without conflict");
+    registry
+        .register(RubyMode)
+        .expect("ruby-mode register without conflict");
+    registry
+        .register(SqlMode)
+        .expect("sql-mode register without conflict");
+    registry
+        .register(TomlMode)
+        .expect("toml-mode register without conflict");
+    registry
+        .register(TypeScriptMode)
+        .expect("typescript-mode register without conflict");
+    registry
+        .register(TsxMode)
+        .expect("tsx-mode register without conflict");
+    registry
+        .register(YamlMode)
+        .expect("yaml-mode register without conflict");
     registry
         .register(MarkdownMode)
         .expect("markdown-mode register without conflict");

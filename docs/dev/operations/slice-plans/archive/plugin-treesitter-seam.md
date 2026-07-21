@@ -21,7 +21,7 @@ the same context as the `document` handle).
 
 ## Slices
 
-### TS.1 — the snapshot + node core  🚧
+### TS.1 — the snapshot + node core  ✅
 `wit/tree-sitter.wit` (the interface); the host `tree-snapshot` / `node` resources
 backed by `Arc<SyntaxSnapshot>` + `tree_sitter::Node`. **Reuse the AP.0.1
 resource-into-guest-export wiring** (auto-pair design fragment §5.1): the `with:`

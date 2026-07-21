@@ -83,7 +83,7 @@ deferred, DB.8).
   resolved colour; default resolves to the brand colours.
 - *doc:* design §4.
 
-### DB.4 — branding block (terminal art + symmetry + centring)  🚧
+### DB.4 — branding block (terminal art + symmetry + centring)  ✅
 `DashboardBrandingProvider` (a per-buffer `VirtualRowProvider` in
 `lattice-dashboard`) emits the mark (`assets/lattice-mark.svg`) as a BMP-block
 terminal-art grid — 7-col × 5-row (wide-and-short so it reads ~square given the
@@ -118,7 +118,7 @@ interim divergence, since GPUI's branding is being reworked there anyway.
   padding to 0, never
   underflow.
 
-### DB.5 — startup gating + mode-owned trigger  📝
+### DB.5 — startup gating + mode-owned trigger  ✅
 Publish a generic `Startup { opened_file: Option<PathBuf> }` typed event at
 boot, declared in `lattice-mode` alongside the existing `ModeEvent` precedent
 (confirmed: no such event, and no `opened_file`/boot-signal type, exists
@@ -174,7 +174,7 @@ once, inside `lattice_dashboard::install`, shared by both renderers.
 - *error handling:* compose failure at startup ⇒ log + fall back to the empty
   scratch buffer, never a blank/broken initial frame.
 
-### DB.6 — full override + recompose triggers  📝
+### DB.6 — full override + recompose triggers  ✅
 Implement `dashboard.source` (design §8): when set, the file content replaces
 section composition; missing/unreadable ⇒ warn + fall back to sections. Wire the
 recompose subscriptions (design §7): pane resize (re-centre), theme change
@@ -189,7 +189,7 @@ zero dashboard work.
 - *doc:* design §7, §8.
 - *error handling:* override file read error ⇒ warn + section fallback.
 
-### DB.7 — benches + ledger  📝
+### DB.7 — benches + ledger  ✅
 Add the two assertions (design §13): creation-time compose+seed under a recorded
 threshold; idle-frame zero-recompose / zero-I/O. Record in `BENCHMARKS.md` with
 the note that a keystroke bench does not apply. Update `implementation.md` with

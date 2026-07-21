@@ -308,7 +308,7 @@ built in two waves:
   (open-insert + close-skip + backspace-delete-empty-pair).
 - **Wave 2 (foundation + `manual` style):** AP.0.2 declining/fall-through bindings
   (§5.2) + AP.0.3 the tree-sitter query seam (§5.3, its own fragment +
-  [slice plan](../operations/slice-plans/plugin-treesitter-seam.md)) → AP.3
+  [slice plan](../operations/slice-plans/archive/plugin-treesitter-seam.md)) → AP.3
   `manual` style (`find_pair`, scope-bounded) → AP.4 bundling.
 
 **Deferred to v2:** wrap-selection (opener with a Visual selection surrounds it),

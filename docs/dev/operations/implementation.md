@@ -204,7 +204,7 @@ The modeline redesign (configurable element system — Left/Center/Right
 zones, per-span theme roles, event-bus content updates, mode/plugin-
 registered + interactive elements) is specified in
 [`../architecture/modeline.md`](../architecture/modeline.md), with
-sequencing in [`slice-plans/archive/modeline.md`](slice-plans/archive/modeline.md)
+sequencing in [`slice-plans/modeline.md`](slice-plans/modeline.md)
 (ML.0–ML.6; interaction ML.4 + plugin WIT ML.6 deferred).
 
 Picker preview isolation (in-pane live preview renders the previewed

@@ -231,7 +231,7 @@ interface tree-sitter {
 ## 11. Slices
 
 Sequencing, exit criteria, and status live in the slice plan
-([`../operations/slice-plans/plugin-treesitter-seam.md`](../operations/slice-plans/plugin-treesitter-seam.md)):
+([`../operations/slice-plans/archive/plugin-treesitter-seam.md`](../operations/slice-plans/archive/plugin-treesitter-seam.md)):
 **TS.1** the snapshot + node core (enough for auto-pair's `enclosing`) → **TS.2**
 queries + the cursor walk (the structural-plugin class) → **TS.3** a first
 structural consumer end to end.

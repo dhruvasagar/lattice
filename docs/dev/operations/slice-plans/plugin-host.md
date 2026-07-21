@@ -325,7 +325,7 @@ async result-carrier adapter (guest returns batches; host owns `Future`/stream).
 	handle, which first appears in the picker-source `init(ctx)` seam (PH7.4). `DocumentResource` is the
 	ready backing.
 
-### PH7.4 — Picker-source WIT seam + `fuzzy-finder` (⭐ the exit) 🚧
+### PH7.4 — Picker-source WIT seam + `fuzzy-finder` (⭐ the exit) ✅
 The `picker-source` WIT interface mirroring `PickerSourceGenerator`; host adapter wrapping a
 WASM component as `Arc<dyn PickerSourceGenerator>` and registering via the `SubsystemBoot`
 `install(boot)` seam → `PickerRegistry::register_generator`; the `fuzzy-finder` plugin
@@ -418,7 +418,7 @@ result; `OpenFile` outcome). Unregister the native `files` source; register the 
 	PH7.3c "prove host-layer, defer the guest call to the real consumer" precedent).
   - **Tests (5, 65 lib green) + 16 integration green.**
 
-#### PH7.4c — Host adapter (create path) 🚧
+#### PH7.4c — Host adapter (create path) ✅
   Wrap a component's `picker-source` exports as `Arc<dyn PickerSourceGenerator>` and register
   via `install(boot)` → `register_generator` with a host-stamped `SourceLayer::Plugin(id)`.
   **Depends:** PH7.4a, PH7.4b. **Acid test:** ZERO `Editor::` methods, ZERO new `Action`
@@ -633,7 +633,7 @@ reviewed + locked with Dhruva.
   a real plugin needs a custom matcher (and even then a batch-reframe, not per-candidate).
   **Depends:** PH7.3.
 
-### PH7.7 — Grammar-extension WIT seam (paramount #3) 🚧
+### PH7.7 — Grammar-extension WIT seam (paramount #3) ✅
 The plugin-facing **extension API**: the guest→host surface a plugin calls to *contribute*
 new grammar (`register_{motion,operator,text_object,ex_command,action}`). The grammar
 *handling* — the dispatcher, the `:`-line + chord parser, operator∘motion composition,
@@ -882,7 +882,7 @@ builds the decoration snapshot off the render path. **Depends:** PH7.3. **Gate:*
   native `mode.gutter_decorations` read). Until then plugin decorations produce + cache but do not
   visibly render. This is the phase's standing boot-wiring milestone; no plugin-author work.
 
-### PI — Plugin-API Introspection (PRIORITIZED, before PH7.10) 🚧 (PI.1–PI.4 ✅; PI.4 = scaffold, loader Phase-8)
+### PI — Plugin-API Introspection (PRIORITIZED, before PH7.10) ✅ (PI.1–PI.4 ✅; PI.4 = scaffold, loader Phase-8)
 A baked-in, discoverable introspection layer for APIs — **especially plugin APIs** (Dhruva,
 2026-07-13). Extends the existing self-documenting-help spine (design §5.11) — `:describe-*` /
 `:apropos` / `render_introspection()` already surface `SourceLayer::Plugin(id)` provenance — to

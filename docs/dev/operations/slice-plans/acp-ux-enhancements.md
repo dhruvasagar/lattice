@@ -314,7 +314,7 @@ and keystroke-no-double-move regressions are the ones that catch a wrong design.
 **Risk:** touches `lattice-core`'s edit path, which everything sits on. Mitigated
 by the transform being pure and the host adopting only for edits it did not issue.
 
-### Slice PU-A — Generic popup primitive 🚧
+### Slice PU-A — Generic popup primitive ✅
 
 **Design ref:** popup-api.md. **Depends on:** nothing. **Ships no user feature.**
 **Sub-sliced in:** [pu-a-generic-popup.md](archive/pu-a-generic-popup.md) (PU-A.1a ✅;
@@ -388,7 +388,7 @@ The cleanly-separable, fully-invisible half of B.2 (no menu yet):
 
 Green: `lattice-ai` 156 passed. `resolve_permission` now awaits its consumer (the mode).
 
-#### PU-B.2b — `ai-permission-mode` menu 📝 (blocked on render decision)
+#### PU-B.2b — `ai-permission-mode` menu ✅ (digit accelerators → PU-B.2b-iv, deferred)
 | File | Change |
 |---|---|
 | `crates/lattice-ai/src/acp/permission_mode.rs` (new) | `ai-permission-mode`: `on_activate` projects the oldest pending request into `*ai-permission*`; binds `1`–`9` + `<CR>`-by-cursor + `Esc`/`q` dismiss; handler resolves via `store.resolve_permission(id, option_id)`. |

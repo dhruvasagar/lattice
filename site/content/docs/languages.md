@@ -30,12 +30,27 @@ source and the outline picker; *text objects* feed narrow-mode and
 the structural text objects (see
 [modal-editing.md](modal-editing#tree-sitter-text-objects)):
 
-| Language   | Extensions       | Highlights | Injections                     | Folds | Symbols | Text obj |
-|------------|------------------|------------|--------------------------------|-------|---------|----------|
-| Rust       | `rs`             | ✅         | ✅                             | ✅    | ✅      | ✅       |
-| Python     | `py`             | ✅         | —                              | ✅    | ✅      | ✅       |
-| JavaScript | `js`/`mjs`/`cjs` | ✅         | ✅                             | ✅    | ✅      | ✅       |
-| Markdown   | `md`             | ✅         | ✅ (block→inline, fenced code) | ✅    | —       | —        |
+| Language   | Extensions              | Highlights | Injections                     | Locals | Folds | Symbols | Text obj |
+|------------|-------------------------|------------|--------------------------------|--------|-------|---------|----------|
+| Rust       | `rs`                    | ✅         | ✅                             | —      | ✅    | ✅      | ✅       |
+| Python     | `py`/`pyw`              | ✅         | —                              | —      | ✅    | ✅      | ✅       |
+| JavaScript | `js`/`mjs`/`cjs`        | ✅         | ✅                             | ✅     | ✅    | ✅      | ✅       |
+| TypeScript | `ts`/`mts`/`cts`        | ✅         | —                              | ✅     | ✅    | ✅      | ✅       |
+| TSX        | `tsx`                   | ✅         | —                              | ✅     | ✅    | ✅      | ✅       |
+| Go         | `go`                    | ✅         | —                              | —      | ✅    | ✅      | ✅       |
+| C          | `c`/`h`                 | ✅         | —                              | —      | ✅    | ✅      | ✅       |
+| C++        | `cpp`/`cc`/`cxx`/`hpp`/`hh`/`hxx` | ✅ | —                    | —      | ✅    | ✅      | ✅       |
+| Java       | `java`                  | ✅         | —                              | —      | ✅    | ✅      | ✅       |
+| Ruby       | `rb`/`ruby`             | ✅         | —                              | —      | ✅    | ✅      | ✅       |
+| HTML       | `html`/`htm`/`xhtml`    | ✅         | ✅                             | —      | ✅    | ✅      | ✅       |
+| CSS        | `css`                   | ✅         | —                              | —      | ✅    | ✅      | ✅       |
+| JSON       | `json`                  | ✅         | —                              | —      | ✅    | ✅      | ✅       |
+| YAML       | `yaml`/`yml`            | ✅         | —                              | —      | ✅    | ✅      | ✅       |
+| TOML       | `toml`                  | ✅         | —                              | —      | ✅    | ✅      | ✅       |
+| Bash       | `sh`/`bash`/`zsh`/`fish` | ✅        | —                              | —      | ✅    | ✅      | ✅       |
+| SQL        | `sql`                   | ✅         | —                              | —      | ✅    | ✅      | ✅       |
+| Lua        | `lua`                   | ✅         | —                              | —      | ✅    | ✅      | ✅       |
+| Markdown   | `md`/`markdown`/`mdown`/`mkd` | ✅  | ✅ (block→inline, fenced code) | —      | ✅    | —       | —        |
 
 Plain text and any unrecognised extension fall through to the
 `Plain` language: no parse, no styled spans. The renderer treats
@@ -45,9 +60,9 @@ that as untyped buffer content.
 
 The plan is a tiered rollout, not "Helix parity in one PR":
 
-- **Tier 1 (in core, target by v1.0)**: ~25 mainstream languages
-  -- TypeScript, Go, C, C++, Java, Ruby, HTML, CSS, JSON, YAML,
-  TOML, Bash, SQL, Lua, Dockerfile, plus the four already shipped.
+- **Tier 1 (in core, target by v1.0)**: 19 mainstream languages
+  — Rust, Python, JavaScript, TypeScript, TSX, Go, C, C++, Java,
+  Ruby, HTML, CSS, JSON, YAML, TOML, Bash, SQL, Lua, Markdown.
 - **Tier 2+ (plugin-host era, post Phase 7)**: anything beyond
   tier 1 ships as a `lattice-language-<name>` WASM plugin that
   contributes the grammar + queries through the `lattice:syntax`

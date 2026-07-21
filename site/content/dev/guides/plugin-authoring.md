@@ -21,17 +21,19 @@ at a glance), see [`../../user/plugins.md`](../../user/plugins).
 > **Status — read this first.** Phase 7 shipped the plugin **host runtime**
 > (`lattice-plugin-host`): the WIT package, the capability/fuel/crash-isolation
 > model, and every extension seam, each exercised end-to-end by a real guest
-> fixture. **What does not exist yet is the editor-side loader** — `lattice-host`
-> has no dependency on `lattice-plugin-host` (a guard test enforces this), there
-> is no `:load-plugin` command, no on-disk plugin discovery, and no `init.rs`
-> path. Those are **Phase 8** (the plugin *manager*).
+> fixture. **Phase 8 shipped the editor-side loader** (`lattice-plugin-loader`):
+> `lattice-host` now depends on the host transitively, and a running editor loads
+> plugins from `${XDG_DATA_HOME}/lattice/plugins/` (on-disk discovery) or on demand
+> via `:plugin-load <path>` / `:plugin-unload <name>` / `:plugin-reload <name>`,
+> manages them in the `:plugins` view, and loads your `init.rs` as a
+> boot-capability config plugin. Plugin **observability** (`:plugin-trace`, the
+> `plugin.trace-level` option, and the `wasi:logging` guest import) ships too.
 >
-> Concretely: you can write a Component Model guest against the WIT package today
-> and drive it through the `lattice-plugin-host` API in a test or bench — that is
-> exactly how the `fuzzy-finder` plugin and the eight `tests/fixtures/*-guest`
-> fixtures work. You **cannot** yet drop a `.wasm` into a config directory and
-> have a running editor pick it up. This guide covers the reachable part and
-> flags every Phase-8 gap inline.
+> So you can now **both** drive a guest through the `lattice-plugin-host` API in a
+> test/bench (how the `fuzzy-finder` plugin and the `tests/fixtures/*-guest`
+> fixtures work) **and** drop a built `.wasm` + `manifest.toml` into the plugins
+> directory and have a running editor pick it up. The frontier is the bundled
+> first-party reference plugins + shipping the built-in modes as components (8b).
 
 ---
 
@@ -213,18 +215,41 @@ Per-seam entry points: `spawn_picker_source`, `spawn_completion_source`,
 **and** failure-mode tests (trap isolation, denied capabilities, malformed
 manifest) — mirror that when adding a plugin.
 
-## What's deferred to Phase 8
+## Shipped in Phase 8 (and what's still ahead)
 
-The runtime is done; making it reachable from a running editor is Phase 8:
+The runtime is reachable from a running editor now:
 
-- **The plugin manager / loader** — on-disk discovery + `manifest.toml` parsing
-  off disk + the load path into `lattice-host`.
+- **The plugin loader** — on-disk discovery + `manifest.toml` parsing +
+  `:plugin-load` / `:plugin-unload` / `:plugin-reload`, the `:plugins` manager
+  view. ✅
 - **`init.rs` as configuration** — user config compiled to WASM, loaded with a
-  boot-capability set.
-- **Decoration rendering** — the renderer reading plugin-produced decorations.
+  boot-capability set, auto-reloaded on rebuild. ✅
+- **Observability** — the boundary trace (`:plugin-trace`), the live
+  `plugin.trace-level` option, and the `wasi:logging` guest import so a plugin
+  narrates its own work into the trace buffer. ✅ (see
+  [`../architecture/plugin-observability.md`](../architecture/plugin-observability))
+
+Still ahead (8b):
+
+- **Decoration rendering** — the renderer reading plugin-produced decorations
+  (the producer half works).
 - **Full modes-as-components** — bundled major/minor modes shipping as plugins.
 - **User-installed trust flow** — the consent prompt that narrows a
   user-installed plugin's grant (bundled plugins are pre-granted today).
+- **Bundled first-party reference plugins** — git-gutter, auto-pair, etc.
 
-Until then, author and test guests against the host library — the seam surface
-you write to now is the surface the loader will feed.
+### The `logging` seam
+
+Any async-world guest can emit its own log lines into the boundary trace via the
+`wasi:logging`-shaped import:
+
+```rust
+use lattice::plugin_host::logging::{self, Level};
+logging::log(Level::Info, "parser", "reindexed 40 files");
+```
+
+The host tags each line with the plugin id + level and routes it into the same
+`*plugin-trace*` buffer as the boundary trace, gated by the plugin's
+`plugin.trace-level`. `context` is a free-form category; `critical` folds into the
+host's `error` level. It's an async-linker import (never the sync grammar seam),
+so it can't touch the keystroke path.

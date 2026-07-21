@@ -45,7 +45,7 @@ Your on-disk plugins live alongside it at `~/.config/lattice/plugins/`.
   `<leader>f` sits above the builtin grammar; your `:mycmd` joins the same command
   registry as `:write`) but *before* the plugins in `~/.config/lattice/plugins/`,
   so your `PluginLoaded` handlers are subscribed and ready when those plugins load
-  (see [Configuring plugins that load after you](#configuring-plugins-that-load-after-you-pluginloaded)).
+  (see [Configuring plugins that load after you](#configuring-user-plugins-that-load-after-you-pluginloaded)).
 - **Loaded with boot capabilities** — `init.rs` is your own trusted config, so
   it gets the pre-granted (`Bundled`) trust tier, not the consent-prompted tier
   a downloaded plugin gets.
@@ -107,7 +107,7 @@ into one typed event bus.
 > + `logging`, so its handler can `walk` the fs, emit its own plugin event, or log
 > — nothing more. To call `enable-mode` / `set-option` / `register-binding` from a
 > handler, your world must *also* import `modes` / `config` / `keymap` — a
-> **combined world** (see the [complete annotated example](#a-complete-annotated-initrs)).
+> **combined world** (see the [complete annotated example](#a-complete-annotated-init-rs)).
 > A handler never runs a `:` command string or returns an effect (the standing
 > `event-handlers-call-apis-not-commands` rule: `:` commands are user-facing
 > front-ends; a handler calls the underlying API). Direct **buffer mutation** and

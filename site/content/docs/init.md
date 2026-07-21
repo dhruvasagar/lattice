@@ -34,13 +34,17 @@ Your compiled config is a plugin directory at:
 └── init.wasm        # your init.rs, compiled to a component
 ```
 
-`<config>` is the platform config dir — `~/.config` on Linux,
-`~/Library/Application Support` on macOS, `%APPDATA%` on Windows.
+`<config>` is `~/.config` on **both Linux and macOS** (honoring
+`$XDG_CONFIG_HOME`), and `%APPDATA%` on Windows — a consistent
+`~/.config/lattice/` tree across Unix, not the macOS-native Application Support.
+Your on-disk plugins live alongside it at `~/.config/lattice/plugins/`.
 
-- **Loaded at boot**, *after* the built-in vim grammar and modes register — so
-  your keymaps, commands, and options **layer on top of** the defaults (your
-  `<leader>f` sits above the builtin grammar; your `:mycmd` joins the same
-  command registry as `:write`).
+- **Loaded at boot**, *after* the built-in vim grammar and modes register (so your
+  keymaps, commands, and options **layer on top of** the defaults — your
+  `<leader>f` sits above the builtin grammar; your `:mycmd` joins the same command
+  registry as `:write`) but *before* the plugins in `~/.config/lattice/plugins/`,
+  so your `PluginLoaded` handlers are subscribed and ready when those plugins load
+  (see [Configuring plugins that load after you](#configuring-user-plugins-that-load-after-you-pluginloaded)).
 - **Loaded with boot capabilities** — `init.rs` is your own trusted config, so
   it gets the pre-granted (`Bundled`) trust tier, not the consent-prompted tier
   a downloaded plugin gets.
@@ -97,13 +101,17 @@ sandbox grant — see [the safety model](#the-safety-model) and
 a major mode entered. This is the `:autocmd` / `add-hook` equivalent, unified
 into one typed event bus.
 
-> **v1 is observation-only.** A handler *sees* the transition. It can log it,
-> read files (with an `fs` capability), or emit its own plugin event that another
-> plugin observes. It **cannot** — yet — run a command, mutate a buffer, or veto
-> the transition from inside the handler; the acting-on-events (autocmd that
-> *does* something) and before-class veto seams are deferred. If you want a
-> keystroke to *do* something, that's a custom command or keybind (below), not an
-> event handler.
+> **Handlers act via APIs, not command strings** — but only the APIs their
+> **world imports**. A standalone `events-plugin` imports `events` + `host-services`
+> + `logging`, so its handler can `walk` the fs, emit its own plugin event, or log
+> — nothing more. To call `enable-mode` / `set-option` / `register-binding` from a
+> handler, your world must *also* import `modes` / `config` / `keymap` — a
+> **combined world** (see the [complete annotated example](#a-complete-annotated-init-rs)).
+> A handler never runs a `:` command string or returns an effect (the standing
+> `event-handlers-call-apis-not-commands` rule: `:` commands are user-facing
+> front-ends; a handler calls the underlying API). Direct **buffer mutation** and
+> **before-class veto** (a handler that rewrites content or aborts a save) are
+> still deferred.
 
 You implement the `events-plugin` world: subscribe your handlers in
 `register_events`, then dispatch them in `on_event`.
@@ -126,6 +134,7 @@ Subscribe with an `EventFilter` — any combination of event **kinds**, path
 | `OptionChanged` | `{ name, old?, new_value }` | a `:set` landed |
 | `MajorEntered` / `MajorExiting` | `{ buffer, mode }` | major mode lifecycle |
 | `MinorActivated` / `MinorDeactivated` | `{ buffer, mode }` | minor mode lifecycle |
+| `PluginLoaded` / `PluginUnloaded` | `{ name, id }` | a plugin finished loading / was unloaded — the hook for **deferred plugin config** (see below) |
 | `Plugin` | `{ name, payload }` | a plugin-defined event (filter by `name` yourself) |
 
 ### A worked event-handler config
@@ -215,6 +224,73 @@ export!(Component);
 A handler that traps (panics, overruns its fuel budget) is **quarantined** — the
 host logs it, skips that one delivery, and every other subscriber is untouched.
 Return early on the arms you don't handle; never panic to signal "not for me."
+
+### Core plugins: configure, don't enable
+
+**Core plugins ship with lattice and are on by default** — you don't enable them.
+`auto-pair` is a core plugin: `auto-pair-mode` is active out of the box, gated by
+a bool option `auto-pair.enabled` (default `true`). To configure or disable it,
+set options at the **top level** of `init.rs` — the option exists as soon as the
+core plugin loads (before your other config runs). (You can also flip the mode live
+on a single buffer with `:auto-pair-mode` — the toggle command every registered
+mode gets; `auto-pair.enabled` is the editor-wide default.)
+
+```rust
+fn setup() {
+    // auto-pair is ON by default. Turn it off:
+    config::set_option("auto-pair.enabled", "false");
+
+    // …or keep it on and switch to the manual close-key style:
+    config::set_option("auto-pair.style", "manual");
+    config::set_option("auto-pair.close-key", "<C-l>");
+}
+```
+
+You can equally set these in `lattice.toml` (`auto-pair.enabled = false`) or live
+with `:set`. See [core-plugins.md](core-plugins) for the full list and each
+plugin's options.
+
+### Configuring *user* plugins that load after you: `PluginLoaded`
+
+Your `init.rs` loads **first** — before the *user* plugins in
+`~/.config/lattice/plugins/`. So config that targets a user plugin (enable its
+mode, set its options, bind keys to its commands) can't run at the top level: the
+plugin isn't there yet. Instead, **subscribe to `PluginLoaded` and react when it
+arrives** — the `with-eval-after-load` / lazy-autocmd pattern:
+
+```rust
+fn on_event(_handler: u32, ev: Event) {
+    if let Event::PluginLoaded(p) = ev {
+        match p.name.as_str() {
+            // Enable a USER plugin's minor mode the moment it loads.
+            "my-plugin" => {
+                modes::enable_mode("my-plugin-mode");
+                config::set_option("my-plugin.option", "value");
+            }
+            _ => {}
+        }
+    }
+}
+```
+
+Why this shape, not a top-level `enable_mode(...)`:
+
+- **User-plugin minor modes are available-but-off.** A user plugin *provides* a
+  mode; **you** enable it — the plugin author doesn't turn it on for you (the emacs
+  global-minor-mode model). `enable-mode` flips it on globally and activates it on
+  your open buffers immediately. (Core plugins differ: their `<id>.enabled` gate
+  turns their default mode on for you — see above.)
+- **The target must exist when you configure it.** `PluginLoaded` fires *after*
+  the plugin's seams all registered, so `enable-mode` / `set-option` always hit a
+  present target.
+- **Graceful by construction.** If a plugin never loads (not installed, failed to
+  compile), its `PluginLoaded` never fires and your handler never runs — no error,
+  no guard to write. Config for a plugin you removed simply goes dormant.
+
+Plugins still load asynchronously (they never block startup), so an enabled mode
+becomes active a frame or two after that plugin's cold-start finishes — the same
+"absent, then present" you feel on emacs/vim startup, never a flicker of wrong
+state.
 
 ---
 
@@ -427,8 +503,15 @@ A binding to an unregistered command, or an unparseable chord, is skipped
 
 ## Options
 
-The `config` seam declares a typed option into the *same* registry `:set`,
-`:describe-option`, and `:customize` read — no special-casing.
+The `config` seam does two things: **`register-option`** declares a *new* typed
+option into the *same* registry `:set`, `:describe-option`, and `:customize` read
+(no special-casing), and **`set-option(name, value)`** overrides an *existing*
+option's value — exactly what `:set name=value` does (the value is type-coerced +
+validated, and `OptionChanged` fires). So `init.rs` is a value-setting config
+front-end alongside `lattice.toml`: `lattice.toml` for static values, `init.rs`
+for values you compute or set conditionally (per filetype, on a plugin loading).
+`set-option` returns `false` (a logged no-op) for an unknown option or an invalid
+value — it never mis-sets.
 
 ```rust
 // init.rs — a config-plugin. plugin.toml: provides = ["config"]
@@ -452,7 +535,138 @@ export!(Component);
 
 ---
 
+## A complete annotated `init.rs`
+
+A realistic config that uses several seams at once. Because it's multi-seam, you
+declare **one combined world** with the seams you use (the same pattern a bundled
+plugin like `auto-pair` uses) — put this in your own `wit/init.wit`:
+
+```wit
+// wit/init.wit
+package my:init;
+world init {
+    // Seams you contribute into (you implement their register-* export):
+    export register-options: func();   // config
+    export register-keymap: func();    // keymap
+    export register-events: func();    // events
+    export on-event: func(handler: u32, ev: event);
+    // Host functions you call — `config`/`keymap`/`events` you both provide AND
+    // call; `modes` you only CALL (`enable-mode`), so it's imported, not provided:
+    import config; import keymap; import events; import modes;
+    use lattice:plugin-host/types.{event};
+}
+```
+
+`plugin.toml`: `provides = ["config", "keymap", "events"]` — the seams you
+register into. (`modes` is *not* listed: you don't declare a mode, you only call
+`enable-mode` on one another plugin declared.) Read the guest top to bottom —
+**immediate** config runs when `init.rs` loads; **deferred** config runs from the
+`PluginLoaded` handler.
+
+```rust
+wit_bindgen::generate!({ world: "init", path: "wit" });
+
+use lattice::plugin_host::keymap::BindingMode;
+use lattice::plugin_host::types::{Event, EventFilter, EventKind};
+use lattice::plugin_host::{config, events, keymap, modes};
+
+struct Component;
+
+impl Guest for Component {
+    // ── IMMEDIATE: override option values (the config front-end; also settable
+    //    in lattice.toml, but here you might compute them) ──────────────────────
+    fn register_options() {
+        config::set_option("tabstop", "4");
+        config::set_option("plugin.trace-level", "info");
+        // CORE plugins (auto-pair) are on by default — configure them here at the
+        // top level; their options exist as soon as the core plugin loads.
+        config::set_option("auto-pair.style", "manual"); // manual close-key pairing
+        // config::set_option("auto-pair.enabled", "false"); // …or turn it off
+        // set-option returns false (a logged no-op) for an unknown option or an
+        // invalid value — it never mis-sets.
+    }
+
+    // ── IMMEDIATE: keybindings above the builtin grammar ─────────────────────
+    fn register_keymap() {
+        // <C-s> in Normal → :write ; gd → an LSP command (if lsp is loaded).
+        keymap::register_binding(BindingMode::Normal, "<C-s>", "ex:write");
+        keymap::register_binding(BindingMode::Normal, "gd", "lsp-definition");
+    }
+
+    // ── Subscribe the DEFERRED + event-flow hooks ────────────────────────────
+    fn register_events() {
+        events::subscribe(&kind(EventKind::PluginLoaded), 1); // deferred plugin config
+        events::subscribe(&kind(EventKind::DocumentOpened), 2); // options by filetype
+    }
+
+    fn on_event(handler: u32, ev: Event) {
+        match (handler, ev) {
+            // DEFERRED: configure each USER plugin the moment it loads. (Core
+            // plugins like auto-pair are on by default — configure them in
+            // `register_options` above, not here.)
+            (1, Event::PluginLoaded(p)) => match p.name.as_str() {
+                // A user plugin you installed that provides an off-by-default mode:
+                "my-linter" => {
+                    modes::enable_mode("my-linter-mode");             // turn it on
+                    config::set_option("my-linter.strict", "true");   // and configure it
+                }
+                _ => {}
+            },
+            // EVENT FLOW: set options as buffers open (e.g. wrap for markdown).
+            (2, Event::DocumentOpened(d)) => {
+                if d.path.as_deref().is_some_and(|p| p.ends_with(".md")) {
+                    config::set_option("wrap", "on");
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn kind(k: EventKind) -> EventFilter {
+    EventFilter { kinds: Some(vec![k]), path_globs: None, major_modes: None }
+}
+
+export!(Component);
+```
+
+The pattern to internalize: **immediate config for what exists at load (option
+values via `set-option`, builtin/LSP keymaps via `register-binding`); deferred
+`PluginLoaded` handlers for anything that belongs to a plugin** (`enable-mode`,
+its options). Handlers call APIs (`enable-mode`, `set-option`), never `:` command
+strings. Add a custom command by also `provide`-ing `grammar` (see
+[Custom grammar](#custom-grammar-commands-motions-text-objects-operators-ex-commands)).
+
+---
+
 ## Building and installing
+
+### Scaffold it: `lattice --scaffold-init`
+
+The fastest start — let lattice write a **buildable** starter config for you:
+
+```bash
+lattice --scaffold-init
+```
+
+This creates `~/.config/lattice/init/` with a complete WASM-component config crate
+— `Cargo.toml`, `plugin.toml`, `src/lib.rs` (a minimal config: an option, a
+keybinding, an event handler), and a `wit/` copy of *this editor's* API (so it
+builds with no separate checkout, matched to your version). It refuses to
+overwrite an existing config. Then build + install as below (the command prints
+these steps too):
+
+```bash
+rustup target add wasm32-wasip2                      # once
+cd ~/.config/lattice/init
+cargo build --release --target wasm32-wasip2
+cp target/wasm32-wasip2/release/lattice_init.wasm init.wasm
+```
+
+Edit `src/lib.rs`, rebuild, and `:reload-config`. The rest of this section is the
+manual setup, if you'd rather assemble it yourself.
+
+### Manual setup
 
 `init.rs` is a standalone crate compiled to a component. A minimal setup:
 

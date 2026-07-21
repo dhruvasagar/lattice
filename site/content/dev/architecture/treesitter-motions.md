@@ -16,7 +16,7 @@ They are first-class citizens of the vim grammar — registered through the same
 `register_motion` API as `w`, `}`, `G` — so they compose with **every** operator,
 count, and Visual selection for free (`d]f`, `y]F`, `c2]a`, `v]c`, `zn]f`). Slice
 sequencing lives in
-[`../operations/slice-plans/treesitter-motions.md`](../operations/slice-plans/treesitter-motions).
+[`../operations/slice-plans/archive/treesitter-motions.md`](../operations/slice-plans/archive/treesitter-motions).
 
 ---
 

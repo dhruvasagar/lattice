@@ -195,6 +195,25 @@ deactivation is *complete* by construction -- every option
 override, keymap entry, event subscription, and decoration
 provider the mode contributed is removed (§9.6).
 
+**Plugin modes get the identical surface.** The `:<mode-name>`
+toggle ex-command is built by one shared
+`lattice_grammar::registry::mode_toggle_ex_command_spec`, used by
+BOTH boot (native modes, `register_mode_toggle_commands`) and the
+plugin modes-seam drain (`lattice-plugin-loader::drain_mode`). A
+plugin-registered mode is therefore togglable by `:<mode-name>`,
+resolves in `:describe-command`/`:apropos`/`:list-commands`, and
+appears in `:`-completion, exactly like a native mode. Two seams
+make that hold at runtime: (a) plugin commands drain into the
+runtime-mutable command `ArcSwap` the dispatcher + introspection
+read, and its `generation()` counter (bumped on every register /
+unregister) keys the `:`-completion cache so a load/unload
+invalidates it without a manual flush; (b) the plugin drain
+registers the toggle under `SourceLayer::Plugin(id)`, so unload's
+provenance-driven `CommandRegistry::unregister_plugin` reverses it
+(unconditionally — no per-seam "did I register a command?" flag to
+forget). `:list-modes`/`:describe-mode` read the live mode
+`ArcSwap`, so plugin modes list there too.
+
 ## 4. Inventory: current lattice features → mode mapping
 
 Maps the surface implemented today onto the proposed model. Used
@@ -263,7 +282,7 @@ on this buffer"* becomes `:disable lsp-completion-mode`.
 | `read-only-mode`             | Forbids edits. Orthogonal to major mode -- any buffer can be read-only.     |
 | `wrap-mode`                  | Universal wrap toggle. Applies to every buffer kind. Replaces ad-hoc        |
 |                              | `Wrap { trim: false }` calls in the renderer.                               |
-| `auto-pair-mode`             | (future) Bracket pairing.                                                   |
+| `auto-pair-mode`             | Bracket / quote pairing — the `auto-pair` core plugin (WASM), ships on by default. |
 | `git-blame-mode`             | (future) Inline blame author per line.                                      |
 | `git-gutter-mode`            | (future) Gutter symbols for added / modified / deleted lines.               |
 | `flymake-mode`               | (future) On-the-fly diagnostics not via LSP.                                |

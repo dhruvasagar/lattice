@@ -7,7 +7,7 @@ title = "System clipboard integration (CB)"
 shared native `arboard` backend + OSC52 fallback, the `clipboard` bool option with
 yank-only sync, terminal PTY paste, and both renderer peers wired. Yank/paste use the
 OS clipboard as the default target across all buffer kinds incl. terminal. Slice plan:
-`docs/dev/operations/slice-plans/clipboard.md` (CB series). The yank-ring / kill-ring
+`docs/dev/operations/slice-plans/archive/clipboard.md` (CB series). The yank-ring / kill-ring
 picker (`yank-ring.md`, to be written) builds on the register layer this defines.
 
 ## 1. Current state (verified 2026-07-03)

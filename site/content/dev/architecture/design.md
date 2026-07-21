@@ -583,6 +583,8 @@ pub enum Range {
 	Selection,                                     // current Visual / active region
 	Custom(RangeId),                               // plugin-registered range
 }
+// As-built: `Custom` carries no `Args` (just the RangeId), and `RangeBound::Pattern`
+// holds the pattern as a `String` (compiled at use), not a pre-built `Regex`.
 
 pub enum RangeBound {
 	Line(u32), Mark(char), CurrentLine, LastLine,
@@ -1079,13 +1081,35 @@ WASM call overhead is real but bounded. Ground rules:
 > `lattice-snippet`, outline = `:lsp-symbols`); the not-done work is repackaging
 > it as WASM components + the editor-side loader (§13, Phase 8).
 
-Lattice will ship with a curated set of **bundled plugins** -- WASM Component Model packages compiled into the editor binary (or shipped in a known directory next to it) so they're available without a separate install step. They are the same shape as user-installed plugins; they just have a higher trust default and zero install friction.
+> **Updated (2026-07-20): "bundled" = *core plugins*, and they are NOT compiled
+> into the binary.** The distribution model was settled in
+> [`plugin-manager.md`](plugin-manager): plugins ship **separately** (rejecting
+> `include_bytes!`), on **two roots** — a **runtime root** of prebuilt core-plugin
+> `.wasm` beside the binary (found via a search path, discovered at boot), and the
+> **user root** `~/.config/lattice/plugins/` fed by a use-package `require` +
+> build-on-boot layer. Core plugins are enabled by a `<id>.enabled` config gate.
+> **auto-pair is the first core plugin, shipped** (the whole stack proven end to
+> end). Read the paragraphs below with that model; the `include_bytes!` /
+> `core-plugins/<name>.wasm`-only phrasing is historical.
+
+Lattice ships with a curated set of **core plugins** -- WASM Component Model
+packages that ship *with* the editor (prebuilt, staged into a runtime root beside
+the binary; NOT compiled into it) so they're available without a separate install
+step. They are the same shape as user-installed plugins; they just have a higher
+trust default, zero install friction, and are enabled by a config gate.
 
 The strategy: features that *aren't architecturally core* but *are essential to ship feature-complete out of the box* live here. Core stays narrow (buffers, modal grammar, command registry, renderer trait, runtime, plugin host); editor-quality wins (LSP server management, project-wide search, version-control UIs, snippets, surround / comment / auto-pair editing helpers) ship as bundled plugins. This dogfoods the plugin host on real workloads, gives third-party plugin authors high-quality reference implementations to study, and keeps the plugin API surface honest.
 
 **Trust distinction.** Bundled plugins inherit the editor's trust level -- their capabilities are pre-granted at build time, no per-install consent prompt. User-installed plugins (via the bundled plugin manager) go through capability prompts on first install. Plugin manifests declare requested capabilities (`fs:write:install_dir`, `net:http`, `proc:spawn`, ...); the runtime gates accordingly.
 
-**Bootstrap.** The plugin manager itself is bundled; you can't install it via itself. Bundled plugins live in `core-plugins/<name>.wasm` next to the binary, or compiled-in via `include_bytes!` for single-binary distributions. On first launch the host instantiates them with their pre-granted capabilities; the plugin manager then handles user-installed plugins from `${XDG_DATA_HOME}/lattice/plugins/`.
+**Bootstrap (as built — [`plugin-manager.md`](plugin-manager)).** Core plugins
+live as prebuilt `.wasm` in the **runtime root** (`<runtime>/plugins/<name>/`,
+resolved via `$LATTICE_RUNTIME` → install prefix → exe-relative → dev workspace) —
+**not** `include_bytes!` (rejected: plugins ship separately, versioned
+independently of the binary). At boot the host discovers + instantiates them with
+pre-granted (bundled-tier) capabilities and a `<id>.enabled` gate; the loader then
+handles **user** plugins from `~/.config/lattice/plugins/`, declared via a
+use-package `require` (git/local source, built on first boot into that cache).
 
 **Bundled-plugin candidates** (Phase 8 -- post-Phase-7 plugin host; concrete inventory in `docs/../operations/implementation.md`):
 
@@ -1111,6 +1135,57 @@ The strategy: features that *aren't architecturally core* but *are essential to 
 5. **Long-running task surface** -- `start_task → push_output → finalize` so plugin-driven installs / scans stream stdout into a buffer-backed view without blocking the renderer.
 6. **Ex-command registration** through WIT (already in §5.2.1's plan; called out here as a load-bearing dependency).
 7. **§5.12 typed-options registration** through WIT -- plugins register `lsp-manager.install_root`, `lsp-manager.github_token`, etc. into the same `ConfigRegistry` core options live in.
+
+> **8b design (in progress, 2026-07):** the first-wave bundled plugins now have
+> design fragments. **[`plugin-auto-pair.md`](plugin-auto-pair)** — the
+> trivial-first plugin (`auto` + `manual` pairing) — forces two more general host
+> seams beyond the above (a **grammar-context `document` handle** so a grammar
+> action can read buffer text, and **declining / fall-through bindings**), plus
+> the **[`plugin-treesitter-seam.md`](plugin-treesitter-seam)** query seam
+> (**promoted to v1** — foundational to the tree-sitter-driven grammar of
+> paramount #3; it publishes the host's parse tree to plugins so structural
+> motions / text objects / folds can be plugins). **[`lighthouse.md`](lighthouse)**
+> (the LSP server manager) is where prerequisites 1–5 above land as an implemented
+> host-services extension. Slice plans:
+> [`../operations/slice-plans/`](../operations/slice-plans/)
+> (`plugin-auto-pair` / `plugin-treesitter-seam` / `lighthouse`).
+
+#### 5.5.7 Editor-side loading, the manager view, and observability
+
+> **Built (Phase 8).** The runtime (§5.5.1–5.5.2) is Phase 7; this subsection is
+> the editor-side surface that makes it reachable. Detail lives in the fragments
+> [`plugin-host.md`](plugin-host) (the seam spine + capability model) and
+> [`plugin-observability.md`](plugin-observability) (the trace stack); slice
+> sequencing in `../operations/slice-plans/plugin-loader.md` +
+> `plugin-observability.md`.
+
+**Loading.** The `lattice-plugin-loader` crate stands the host up at boot as a
+`PluginLoaderHandle` service and drives `compile → instantiate → activate` off the
+boot thread. On-disk discovery loads plugins from
+`${XDG_DATA_HOME}/lattice/plugins/`; `:plugin-load <path>` / `:plugin-unload
+<name>` / `:plugin-reload <name>` load / reverse / re-instantiate on demand. The
+user's `init.rs` is itself a boot-capability plugin (keymaps / autocmds / custom
+commands as code), auto-reloaded on rebuild. Unload reverses every registry
+contribution by provenance; reload mints a fresh, untripped quarantine.
+
+**The `:plugins` manager view.** A read-only buffer (everything-is-a-buffer)
+listing every loaded plugin's health / tier / capabilities, live-updating on
+`PluginCrashed`, with in-view chords (`r` reload, `x` unload, `K` describe, `gr`
+refresh, `t` open trace, `T` cycle trace verbosity). The mode owns both its chord
+bindings and their handler bodies (the mode-ownership rule) — zero host `Editor::`
+methods.
+
+**Observability (the boundary is the seam).** Because every plugin interaction is
+host-mediated, the host records **every** host↔guest call — name, timing, fuel,
+result-or-trap, capability denials — *independent of the guest's source language*.
+This boundary trace is lattice's plugin debugger. It is **never on the editor hot
+path**: records stream via the event bus (the LSP-log precedent), formatted +
+appended off-thread; the one synchronous seam (grammar) gates on a per-plugin
+relaxed-atomic `HotGate` that costs ≈0 when off (benched). Surfaces: the
+`*plugin-trace*` firehose + per-plugin `*plugin-trace:<name>*` buffers
+(`:plugin-trace` / the manager `t` drill-in), a live typed `plugin.trace-level`
+option (global + per-plugin), and a `wasi:logging`-shaped guest import so a plugin
+emits its own narrative into the same buffer (Layer 2).
 
 ### 5.6 Rendering -- The Layered Architecture
 
@@ -1350,6 +1425,12 @@ At end-of-frame the `Arc` drops; if the actor has since published newer snapshot
 Two panes rendering the same document at the same vsync may capture *different* snapshots if their frame work straddles a publish. This is intentional. Forcing same-version across panes would require a global frame fence that holds back the leading pane's render until the trailing one is ready -- the wrong tradeoff against latency. Visually, pane B may render one snapshot behind pane A; this is below human perception at >= 60Hz.
 
 ##### Multi-pane selection transformation under remote edits
+
+> **As-built:** the snapshot / `ArcSwap`-published coherence core is built; the
+> *multi-pane* selection-transformation described here (cross-pane divergent
+> snapshots, transforming selections owned by other panes) is the design contract
+> but is **n/a in the single-pane-per-document v1** — it activates when the same
+> document is edited-and-rendered concurrently across panes.
 
 When the actor commits an edit, the resulting `AppliedEdit` is **applied to all open selections on that document** (including selections owned by panes other than the one that issued the edit) before the next snapshot is published. The transformed selections become part of the new snapshot's `Arc<SelectionSet>`. Panes whose next frame uses that snapshot see selections at correct positions; panes using an older snapshot continue to see selections at the older positions -- which are still internally coherent with that older snapshot's text. There is no "selection points at byte 100 but the text shifted" torn state, ever.
 
@@ -2311,7 +2392,7 @@ pub struct CompletionPipeline {
 
 | Generator | `cache_key` | `cache_ttl` |
 |---|---|---|
-| `gen:commands` | `"gen:commands:v1"` (fixed -- v1 commands don't change post-startup) | `MAX` |
+| `gen:commands` | `"gen:commands:v1:{generation}"` (the `CommandRegistry::generation()` counter, bumped on every register/unregister, so a plugin load/unload invalidates the cache) | `MAX` |
 | `gen:files` | `"gen:files:{dir}"` | 1 second (filesystem mutates) |
 | `gen:options` (post-§5.12) | `"gen:options:v{N}"` | `MAX` until version bumps |
 
@@ -2536,6 +2617,17 @@ Lattice integrates two coding agents — Claude Code and opencode. The seam is t
 
 ## 6. The Core Protocol
 
+> **As-built note.** The `Command` and `Event` enums in §6.1/§6.2 are an
+> *illustrative sketch* of the client↔core protocol, not the built types. As
+> shipped: clients drive the core through **typed `EditorHandle` methods** (not a
+> single `Command` enum with reply channels); the document actor's internal
+> mailbox carries an `ActorMsg`; and editing commands flow as **`CommandInvocation`**
+> through the unified dispatcher (§5.2.1). The outbound event type is
+> `lattice_protocol::Event` — richer than the §6.2 sketch (it carries UI events,
+> `BeforeSave` / `BeforeQuit` / `OptionChanged`, and the LSP/plugin events, with
+> different mode-event names). Read §6.1/§6.2 as the shape of the contract, not
+> the enum definitions to code against.
+
 ### 6.1 Commands (clients to core)
 
 > **Reconciliation note (v0.6).** The monolithic client→core `Command` enum
@@ -2680,8 +2772,14 @@ we don't settle for µs targets just because incumbent editors do.
 - **Target (v1).** What every implementation MUST hit by v1.0.
   Tighter than the Today column on rows where we know the
   engineering path; relaxed where the Today column reflects a
-  legitimate trade we're keeping. CI fails on >10% regression
-  vs. main on any benchmark.
+  legitimate trade we're keeping. *CI enforcement (as-built):* CI
+  **records** the benchmark medians as baselines (`benchmarks.md`) and
+  fails only on a handful of **absolute-ceiling ratchet tests** on
+  specific hot-path rows (e.g. `perf_ratchet.rs`: the grammar
+  round-trip ceiling, the typed-call / grammar p99 budgets) — not a
+  blanket ">10% vs. main on any benchmark" gate. The ratchet bar only
+  moves down; the ceilings are generous enough to catch a gross
+  regression without tripping on runner variance.
 - **Today.** The current `docs/../operations/benchmarks.md` median. "—" / "n/a"
   means unmeasured. **These cells are a point-in-time snapshot and drift** — the
   live [`../operations/benchmarks.md`](../operations/benchmarks) is the
@@ -2840,8 +2938,13 @@ isolation -- specific architecture decisions enable each one:
   any code claiming the keystroke path declares which class it
   belongs to so the arithmetic doesn't drift.
 
-CI fails on >10% regression vs. main on any benchmark, regardless
-of whether the row is "today" or "target."
+CI **records** every benchmark median as a baseline (`benchmarks.md`)
+and hard-fails on the **absolute-ceiling ratchet tests** for the
+load-bearing hot-path rows (`perf_ratchet.rs`); the ratchet bar only
+moves down. A blanket ">10% vs. main on every benchmark" gate is *not*
+in place today — the ceilings are deliberately generous (≥100× headroom
+on some rows) to catch a gross regression without tripping on runner
+variance.
 
 ### 8.3 Memory
 
@@ -2932,6 +3035,17 @@ The package is **`lattice:plugin-host@0.1.0`** (14 `wit/` files:
 plugin *exports* its source world; the host instantiates it and drives it
 (`init` / `accept` / `gutter-decorations` / …). The guest doesn't call
 `register-picker(...)` and get an id back; the host owns the registry and pulls.
+
+> **Illustrative sketch, not the canonical package.** The built WIT is
+> `wit/*.wit` (`lattice:plugin-host@0.1.0`) — the exercised seams
+> (picker-source / completion-source / grammar / events / decorations / config /
+> modes / keymap / host-services / logging), see
+> [`plugin-host.md`](plugin-host) + [`plugin-observability.md`](plugin-observability).
+> **Designed-but-not-yet-built seams:** the **tree-sitter query seam**
+> ([`plugin-treesitter-seam.md`](plugin-treesitter-seam), v1), and the
+> lighthouse host-services extensions (`http-fetch` / `spawn-process` + task
+> surface / `register-server`, [`lighthouse.md`](lighthouse)). The block below
+> is kept for the shape of the contract.
 
 ```wit
 package lattice:plugin-host@0.1.0;
@@ -3199,18 +3313,23 @@ lattice/
 ## 13. Roadmap
 
 > **Progress (see `../operations/implementation.md` for the live ledger):**
-> Phases 0–7 shipped. Phase 7 (the plugin **host runtime**) is complete —
+> Phases 0–8 shipped. Phase 7 (the plugin **host runtime**) is complete —
 > `lattice-plugin-host`, the `wit/` API package, the capability/fuel/
 > crash-isolation model, and every extension seam, exercised end-to-end by
 > guest fixtures, with the `fuzzy-finder` validation plugin and CI overhead
-> gates. **Editor-side loading of plugins** (the plugin manager, on-disk
-> discovery, `init.rs`-as-WASM config, modes/reference-plugins as components)
-> is **Phase 8** — the runtime exists; wiring it into the editor is next. The
-> week numbers + crate names below are the **original plan, retained as the
-> historical spec** — several crate names never existed (`lattice-render*`,
-> `lattice-modes`; see §11) and the mode/view *system* was built **natively**
-> ahead of the plugin host, so Phase 8's remaining work is the *loader* +
-> repackaging modes as components, not building the mode system.
+> gates. **Phase 8 (editor-side plugin loading) landed** (branch
+> `phase-8-plugin-loader`): the `lattice-plugin-loader` crate (on-disk discovery
+> + `:plugin-load`/`unload`/`reload` + `init.rs`-as-WASM config), the buffer-backed
+> `:plugins` **manager view**, and the full **plugin-observability** stack
+> (`lattice-plugin-trace`: the boundary tracer, the gated hot-path grammar seam,
+> the `*plugin-trace*` buffer views, the live `plugin.trace-level` option, and the
+> `wasi:logging` guest import — see [`plugin-observability.md`](plugin-observability)).
+> The mode/view *system* was built **natively** ahead of the plugin host, so
+> Phase 8's remaining work (8b) is the bundled first-party reference plugins +
+> repackaging the built-in modes as WASM components, not building the mode system.
+> The week numbers + crate names below are the original plan, retained as the
+> historical spec — several crate names never existed (`lattice-render*`,
+> `lattice-modes`; see §11 + the Phase-5/6 superseded notes below).
 
 ### Phase 0: Foundation (weeks 1-2)
 Workspace, `lattice-core`, document/buffer/undo, file I/O, protocol enums, snapshot tests. **Exit:** programmatic edit roundtrip.
@@ -3229,6 +3348,14 @@ Diagnostics, completion, hover, definition, references; cancellation; version tr
 
 ### Phase 5: GPU Rendering Foundation (weeks 12-14)
 `lattice-render`, `lattice-render-editor` monospace path, `lattice-ui-gpui` compositor with splits and tabs, theme system. **Exit:** GPU code editor with terminal feature parity, smooth scrolling.
+
+> **Superseded (as-built):** the `lattice-render` / `lattice-render-editor` /
+> `lattice-render-document` crates below were dropped. The App→`Editor`
+> composition (Phase 5.B) put the renderer-neutral core in `lattice-host` and
+> ships one `Renderer` marker per frontend (`lattice-ui-tui` built,
+> `lattice-ui-gpui` peer); the shared paint substrate is the **cell-grid**
+> (`lattice-cells` `CellMatrix`, see `cell-grid-renderer.md`), not a taffy+
+> cosmic-text document renderer. See §5.6 (which carries the same correction).
 
 ### Phase 6: Document Renderer + UI Components (weeks 15-18)
 - `lattice-render-document` (taffy + cosmic-text).
@@ -3272,7 +3399,7 @@ Path 4 (inline blocks). `org-mode`. `WebRenderer` (decision time). Remote / SSH.
 | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|
 | GPUI API churns | Medium | Medium | UI crate isolated; protocol-only dependency; wgpu + parley fallback. |
-| Plugin API (WIT) design proves wrong | High | High | Built-in modes / views / grammar extensions all built against the WIT before 1.0; `tree-sitter-motions` plugin built early to validate the grammar extension API. SemVer only after 1.0. WIT changes ARE breaking; design carefully upfront. |
+| Plugin API (WIT) design proves wrong | High | High | The WIT is validated before 1.0 by the `fuzzy-finder` plugin (⭐ Phase-7 exit) + a per-seam guest fixture for every interface (grammar / picker / completion / events / decorations / config / modes / keymap / logging), exercised end-to-end in CI. (`tree-sitter-motions` as a *plugin* is deferred post-1.0 — it is not the validator.) SemVer only after 1.0. WIT changes ARE breaking; design carefully upfront. |
 | ✅ WASM host-call overhead exceeds budget | ~~Medium~~ **mitigated** | High | **Empirically bounded + CI-gated (Phase 7): grammar round-trip ~340ns release, typed-call <500ns p99, both green in CI.** AOT + module cache; built-in grammar stays native. Risk largely retired. |
 | ✅ Plugin cold-start tax at editor launch | ~~Medium~~ **mitigated** | Medium | Lazy instantiation + AOT module cache landed in the Phase-7 host; cold-start budget stands. Re-measure once the loader (Phase 8) instantiates real plugins. |
 | Per-line layout cache invalidation bugs | Medium | High | Property tests for cache coherence; content + style hashes. |
@@ -3280,7 +3407,7 @@ Path 4 (inline blocks). `org-mode`. `WebRenderer` (decision time). Remote / SSH.
 | LSP server quirks | High | Low | Per-server compatibility shims. |
 | Async cancellation correctness | Medium | High | Property tests; `tracing` spans on every async op. |
 | **Vim grammar edge cases** (revised in v0.4) | **High** | **Medium** | **Vim semantics are committed -- the grammar is not modified. Specific edge cases (rare register quirks, obscure block-visual behaviors) may be deferred for v1 with explicit tests documenting the gaps. The default keymap is a config file so users can patch differences locally.** |
-| **Grammar extension API churn** (new in v0.4) | **High** | **High** | **API is exercised end-to-end in v1 by the `tree-sitter-motions` plugin (built but possibly not shipped) plus internal test plugins. SemVer freeze on the grammar WIT only after the extension API has supported at least three real plugins.** |
+| **Grammar extension API churn** (new in v0.4) | **High** | **High** | **The grammar-extension API is exercised end-to-end in CI by the `grammar-guest` fixture (motions / text-objects / ex-commands, incl. the guest-err + trap/quarantine paths) through the sync trampoline. SemVer freeze on the grammar WIT only after the extension API has supported at least three real plugins. (`tree-sitter-motions` as a plugin is deferred post-1.0.)** |
 | Major mode plugin churn breaks buffers | Medium | High | Version pinning per plugin manifest; WIT protocol version declared per binding. |
 | Rich buffer scroll on huge documents | Medium | Medium | Eager layout < 50K lines; lazy with overscan above. |
 | Status segment thrash | Medium | Medium | Pull-not-push update model; per-segment update triggers; fail-isolated rendering. |

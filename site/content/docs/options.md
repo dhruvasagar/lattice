@@ -170,9 +170,12 @@ capability set. Static settings stay declarative (TOML); logic
 stays code (Rust → WASM). This is the *one* extension substrate;
 there is no Lua / vimscript / elisp.
 
-> **Status:** the plugin host and `init.rs` loader are the
-> Phase 4+ surface. Today, all configuration runs through TOML
-> + `:set`. Track progress in
+> **Status:** static settings run through TOML + `:set`, and the
+> programmable surface now ships too — the WASM plugin host and the
+> `init.rs` (Rust→WASM) config loader are live (`:reload-config`),
+> and core plugins (e.g. `auto-pair`) load at boot. See
+> [`init.md`](init) and [`core-plugins.md`](core-plugins).
+> Track progress in
 > [`../dev/operations/implementation.md`](../dev/operations/implementation).
 
 ---

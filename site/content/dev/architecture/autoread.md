@@ -10,7 +10,7 @@ title = "Autoread — design fragment (external-change detection + refresh)"
 > policy* is kept vim-faithful. Conflict resolution reuses the diff subsystem.
 >
 > Slice sequencing + per-slice landing notes:
-> [`../operations/slice-plans/autoread.md`](../operations/slice-plans/autoread).
+> [`../operations/slice-plans/archive/autoread.md`](../operations/slice-plans/archive/autoread).
 > Deferred enhancements: auto-reload on conflict-verdict, 3-way auto-merge,
 > network-FS mtime-poll fallback (§6), option-flip immediate re-sync.
 
@@ -252,4 +252,4 @@ path (same as LRU eviction). Diagnostic/probe spans are `debug!`, not `info!`
   `lattice_diff::programmatic` module.
 - Reload primitive: `Editor::do_edit(_, force)` → `open_fresh_into_active_slot(_,
   Reload)` in `lattice-host::dispatch`.
-- Slice sequencing + status: [`../operations/slice-plans/autoread.md`](../operations/slice-plans/autoread).
+- Slice sequencing + status: [`../operations/slice-plans/archive/autoread.md`](../operations/slice-plans/archive/autoread).

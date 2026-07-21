@@ -116,7 +116,7 @@ Examples:
 | `"ayy`       | Yank current line into register `a`                  |
 | `"ap`        | Paste from register `a`                              |
 | `daw`        | Delete a word (with surrounding whitespace)          |
-| `diw`        | Delete inner word (just the word chars)              |
+| `diw`        | Delete inner word (the word / punctuation / whitespace run at the cursor) |
 | `>>`         | Indent current line                                  |
 | `2>>`        | Indent 2 lines (current + 1 below)                   |
 | `c$`         | Change to end-of-line                                |

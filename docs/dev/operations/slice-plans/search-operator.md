@@ -7,19 +7,19 @@
 Status icons: ✅ done · 🚧 in progress · 📝 planned. Every non-trivial slice
 ships the four artefacts (doc / test / bench-or-note / graceful error handling).
 
-**Status: 📝 all planned.** A native `g/` operator that extracts a motion /
-text-object span and fires project search for it, reusing the existing
+**Status: ✅ COMPLETE (SO.1–SO.3).** A native `g/` operator that extracts a
+motion / text-object span and fires project search for it, reusing the existing
 `AppEffect::SearchTrigger` seam.
 
 | Slice | Status | Summary |
 |---|---|---|
-| SO.1 | 📝 | Grammar: `operator_search` (read-only) + `register_operator` + `Builtins.search` field; emits `Effect::AppAction(AppEffect::SearchTrigger { query })`. Grammar unit tests (`iw` / `i"` / visual → correct query; empty range → `Effect::None`). |
-| SO.2 | 📝 | Host wiring: 9th `absorb_operator_search` operator-prefix action + `[g, /]` Builtin binding. Host test: chord arms operator-pending and the following motion routes to `SearchTrigger`. |
-| SO.3 | 📝 | User docs: `docs/user/project-search.md` gains a `g/` section + use-case table, cross-ref `modal-editing.md`; flip design fragment + this plan to ✅. |
+| SO.1 | ✅ | Grammar: `operator_search` (read-only) + `register_operator` + `Builtins.search` field; emits `Effect::AppAction(AppEffect::SearchTrigger { query })`. Grammar unit tests (`iw` / `i"` → correct query; empty range → `Effect::None`). |
+| SO.2 | ✅ | Host wiring: 9th `absorb_operator_search` operator-prefix action + `[g, /]` Builtin binding. Host test: `[g, /]` resolves to `absorb_operator_search` in Normal. |
+| SO.3 | ✅ | User docs: `docs/user/project-search.md` gained a `g/` section + use-case table, cross-ref `modal-editing.md`. |
 
 ---
 
-## SO.1 — grammar operator  📝
+## SO.1 — grammar operator  ✅
 
 **Design:** fragment §1–§2. **Change:** `crates/lattice-grammar/src/builtins.rs`
 — add `operator_search(ctx: &mut OperatorContext) -> Result<Effect, CommandError>`
@@ -41,7 +41,7 @@ none (O(range) slice; covered by the existing operator bench — noted, not adde
 *error handling* — empty-range no-op; `slice` error propagates as
 `CommandError` (no panic). **Deps:** none.
 
-## SO.2 — host wiring (action + binding)  📝
+## SO.2 — host wiring (action + binding)  ✅
 
 **Design:** fragment §3. **Change (two files):**
 - `crates/lattice-host/src/actions.rs` — add `pub absorb_operator_search:
@@ -61,7 +61,7 @@ and arms operator-pending). *bench* — none. *error handling* — inherits SO.1
 no-op; a motion that resolves no range is the existing operator-pending no-op.
 **Deps:** SO.1.
 
-## SO.3 — user docs  📝
+## SO.3 — user docs  ✅
 
 **Change:** `docs/user/project-search.md` — add a "Search operator (`g/`)"
 section with the use-case table from the design fragment §1, noting literal /

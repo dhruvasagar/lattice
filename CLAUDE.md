@@ -180,3 +180,11 @@ Keep **design fragments** and **slice plans** in separate files. Don't co-locate
 - When carving a slice mid-build, update the slice plan, not the design fragment, unless the design itself changed (e.g., a rejected alternative became the chosen path).
 
 2026-05-29 cleanup migrated all existing per-subsystem slice plans into `docs/dev/operations/slice-plans/` — design fragments now own *what* and *why*, slice plans own *when* and *in what order*. New design fragments must follow the same pattern from day one.
+
+### Archiving slice plans — completed plans ONLY
+
+A slice plan moves to `docs/dev/operations/slice-plans/archive/` **only when every one of its slices is genuinely complete (✅)**. A plan with even one slice that is in-progress (🚧), planned (📝), or **deferred (⛔)** stays active — it is NOT archived. **Deferred is not complete:** a deferred slice is open work (postponed to a later phase, blocked, or accepted-later polish), and keeping its plan active is what keeps that work visible. Archiving a plan because "only the deferred bits are left" is the specific mistake this rule prevents (it buried modeline's `ML.4`/`ML.6` and would have buried dashboard `DB.8`, plugin-host `PH7.4e`, acp-ux `PU-B.2b-iv`).
+
+- **Verify against source, not the status icons.** Icons drift stale (a landed slice left marked 🚧, a heading out of sync with the plan's own status table). Before archiving, confirm each slice is actually implemented in code + tests — fan out review agents for large plans. Fix stale icons as you go, whether or not the plan ends up archived.
+- **Only the slice plan moves.** The design fragment (`docs/dev/architecture/<feature>.md`) stays put — it is the stable *what/why*. `git mv` the slice plan into `archive/`, then repoint inbound references (typically `implementation.md` and the design fragment) to the `slice-plans/archive/<feature>.md` path; leave references to the *design fragment* untouched. Same-directory relative links between two archived plans self-resolve once both are in `archive/`.
+- **Un-archiving is legitimate.** If a plan was archived while a slice was still deferred/open, move it back to active and revert its inbound refs — the archive is for finished work, and a wrongly-filed plan is corrected, not grandfathered.

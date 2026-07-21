@@ -115,8 +115,11 @@ pub const CAPABILITY_ANNOTATIONS: &[(&str, Capability)] = &[
     ("grammar", Capability::None),
     ("grammar-callbacks", Capability::None),
     ("host-services", Capability::Fs),
+    ("keymap", Capability::None),
+    ("logging", Capability::None),
     ("modes", Capability::None),
     ("picker-source", Capability::None),
+    ("tree-sitter", Capability::None),
     ("types", Capability::None),
     ("ui", Capability::None),
 ];

@@ -896,6 +896,19 @@ pub fn register_normal_bindings(
         syntax_textobjects,
         syntax_motions,
     );
+    // `g/` search operator (Lattice extension) -- same operator-pending
+    // cross-product as the case operators, so `g/{motion}` / `g/i{obj}`
+    // resolve. The doubled form `g//` runs it linewise on the current
+    // line (like `gUU`).
+    register_operator_bindings(
+        handle,
+        &[lit_char('g'), lit_char('/')],
+        builtins.search,
+        ChordPattern::Literal(KeyChord::char('/')),
+        builtins,
+        syntax_textobjects,
+        syntax_motions,
+    );
 
     // ---- Slice 8.g.v: mark / register / find-char / macro
     // ---- wildcards. Each prefix chord is a partial trie node
@@ -1870,6 +1883,8 @@ pub fn operator_prefix(
         vec![KeyChord::char('g'), KeyChord::char('u')]
     } else if op == builtins.toggle_case {
         vec![KeyChord::char('g'), KeyChord::char('~')]
+    } else if op == builtins.search {
+        vec![KeyChord::char('g'), KeyChord::char('/')]
     } else {
         Vec::new()
     }
@@ -2068,6 +2083,64 @@ mod syntax_motion_tests {
                 );
             }
             other => panic!("g/ must be BOUND in Normal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn g_slash_iw_resolves_to_search_operator_over_inner_word() {
+        // Regression: arming `g/` is not enough. The runtime maps the
+        // operator id back to its chord prefix (`operator_prefix`) and the
+        // trie must carry the `[g, /, i, w]` cross-product
+        // (`register_operator_bindings`). Missing either → `g/{motion}`
+        // arms with an empty prefix and does nothing.
+        let mut registry = CommandRegistry::new();
+        let builtins = grammar_builtins_populate(&mut registry);
+        let action_ids = crate::actions::populate(&mut registry, &builtins);
+        let syntax_textobjects = lattice_syntax::register_syntax_text_objects(&mut registry);
+        let syntax_motions = lattice_syntax::register_syntax_motions(&mut registry);
+        let h = KeymapHandle::new();
+        register_normal_bindings(
+            &h,
+            &builtins,
+            &action_ids,
+            &syntax_textobjects,
+            &syntax_motions,
+        );
+
+        // 1. operator_prefix knows the search operator's chord prefix.
+        assert_eq!(
+            operator_prefix(builtins.search, &builtins),
+            vec![KeyChord::char('g'), KeyChord::char('/')],
+            "operator_prefix must map the search operator back to [g, /]"
+        );
+
+        // 2. With the operator armed (partial = [g, /]), `i` is a partial
+        //    continuation and `w` completes to Invoke(search, iw).
+        let prefix = [KeyChord::char('g'), KeyChord::char('/')];
+        match lookup_normal_with_prefix(&h, &prefix, &KeyChord::char('i'), &[]) {
+            Action::AbsorbPartialChord(c) => assert_eq!(c, KeyChord::char('i')),
+            other => panic!("g/ + i must be a partial chord, got {other:?}"),
+        }
+        let prefix_i = [
+            KeyChord::char('g'),
+            KeyChord::char('/'),
+            KeyChord::char('i'),
+        ];
+        match lookup_normal_with_prefix(&h, &prefix_i, &KeyChord::char('w'), &[]) {
+            Action::Invoke(inv) => {
+                assert_eq!(
+                    inv.command, builtins.search.0,
+                    "g/iw must invoke the search operator"
+                );
+                match inv.target {
+                    Some(Target::TextObject(to, _)) => assert_eq!(
+                        to, builtins.inner_word,
+                        "g/iw must target the inner-word text object"
+                    ),
+                    other => panic!("g/iw target must be a TextObject, got {other:?}"),
+                }
+            }
+            other => panic!("g/iw must Invoke the search operator, got {other:?}"),
         }
     }
 

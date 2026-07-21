@@ -6948,6 +6948,28 @@ impl Editor {
                 arg_spec,
                 ..
             } => {
+                if arg_spec.completion.as_deref() == Some("gen:options")
+                    && !word.is_empty()
+                {
+                    let base = word.split(&['=', '?', '&', '!'][..]).next().unwrap_or(word);
+                    let opt_name = base
+                        .strip_prefix("no")
+                        .or_else(|| base.strip_prefix("inv"))
+                        .unwrap_or(base);
+                    if self.config.lookup(opt_name).is_some() {
+                        if let Some(content) = self.build_describe_option_content(opt_name) {
+                            out.renderer_signals
+                                .push(RendererSignal::DisplayBuffer(Box::new(
+                                    DisplayBufferRequest {
+                                        content,
+                                        category:
+                                            lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
+                                    },
+                                )));
+                            return;
+                        }
+                    }
+                }
                 let anchor = format!("arg:{}", arg_spec.name);
                 if let Some(content) =
                     self.build_describe_command_content(command_name, Some(&anchor))

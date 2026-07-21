@@ -805,6 +805,18 @@ fn word_class(b: u8) -> WordClass {
     }
 }
 
+/// The 2-way "WORD" classification for `W` / `B` / `E` and `iW` / `aW`: a
+/// maximal non-whitespace run is one WORD (punctuation folds in), whitespace
+/// separates them. Reuses [`WordClass`] with every non-blank byte as `Word`
+/// so punctuation never splits a WORD.
+fn big_word_class(b: u8) -> WordClass {
+    if b.is_ascii_whitespace() {
+        WordClass::Blank
+    } else {
+        WordClass::Word
+    }
+}
+
 // ---- Motion: word-backward (vim's `b`) ----
 
 fn motion_word_backward(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
@@ -1667,13 +1679,16 @@ fn text_object_inner_comment(ctx: &TextObjectContext) -> Result<ProtoRange, Comm
 // dispatcher's [start, end) range is constructed to match by extending
 // `end` past the last byte we want included.
 
-/// Inner-word run shared between `iw` and `iW`. The only difference
-/// between the two is the byte classifier: `is_word_byte` for `iw`
-/// (alphanum + underscore), `is_big_word_byte` for `iW` (any
-/// non-whitespace run).
+/// Inner-word run shared between `iw` and `iW`. The classifier decides the
+/// run: `word_class` for `iw` (vim's 3-way Word / Punct / Blank, so `iw` on
+/// a `.` selects the punctuation run and `iw` on a space selects the
+/// whitespace run), `big_word_class` for `iW` (2-way NonBlank / Blank, so a
+/// whole `foo.bar` is one WORD). The object is the maximal run of the
+/// cursor's class -- every non-EOF byte belongs to some class, so (unlike the
+/// old 2-way predicate) landing on punctuation or whitespace is never a no-op.
 fn text_object_inner_word_class(
     ctx: &TextObjectContext,
-    is_class: fn(u8) -> bool,
+    classify: fn(u8) -> WordClass,
 ) -> Result<ProtoRange, CommandError> {
     let text = ctx.buffer.as_string();
     let bytes = text.as_bytes();
@@ -1681,16 +1696,17 @@ fn text_object_inner_word_class(
         .buffer
         .position_to_byte(ctx.at)
         .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
-    if cursor >= bytes.len() || !is_class(bytes[cursor]) {
-        // Not on a word -- range is the cursor position alone.
+    if cursor >= bytes.len() {
+        // Past EOF -- range is the cursor position alone.
         return Ok(ProtoRange::new(ctx.at, ctx.at));
     }
+    let class = classify(bytes[cursor]);
     let mut start = cursor;
-    while start > 0 && is_class(bytes[start - 1]) {
+    while start > 0 && classify(bytes[start - 1]) == class {
         start -= 1;
     }
     let mut end = cursor;
-    while end + 1 < bytes.len() && is_class(bytes[end + 1]) {
+    while end + 1 < bytes.len() && classify(bytes[end + 1]) == class {
         end += 1;
     }
     // [start, end] inclusive of word -> half-open is end + 1.
@@ -1711,9 +1727,9 @@ fn text_object_inner_word_class(
 /// the whitespace to absorb.
 fn text_object_around_word_class(
     ctx: &TextObjectContext,
-    is_class: fn(u8) -> bool,
+    classify: fn(u8) -> WordClass,
 ) -> Result<ProtoRange, CommandError> {
-    let inner = text_object_inner_word_class(ctx, is_class)?;
+    let inner = text_object_inner_word_class(ctx, classify)?;
     let text = ctx.buffer.as_string();
     let bytes = text.as_bytes();
     let inner_end_byte = ctx
@@ -1749,19 +1765,19 @@ fn text_object_around_word_class(
 }
 
 fn text_object_inner_word(ctx: &TextObjectContext) -> Result<ProtoRange, CommandError> {
-    text_object_inner_word_class(ctx, is_word_byte)
+    text_object_inner_word_class(ctx, word_class)
 }
 
 fn text_object_around_word(ctx: &TextObjectContext) -> Result<ProtoRange, CommandError> {
-    text_object_around_word_class(ctx, is_word_byte)
+    text_object_around_word_class(ctx, word_class)
 }
 
 fn text_object_inner_big_word(ctx: &TextObjectContext) -> Result<ProtoRange, CommandError> {
-    text_object_inner_word_class(ctx, is_big_word_byte)
+    text_object_inner_word_class(ctx, big_word_class)
 }
 
 fn text_object_around_big_word(ctx: &TextObjectContext) -> Result<ProtoRange, CommandError> {
-    text_object_around_word_class(ctx, is_big_word_byte)
+    text_object_around_word_class(ctx, big_word_class)
 }
 
 fn find_quote_pair(bytes: &[u8], cursor: usize, q: u8) -> Option<(usize, usize)> {
@@ -3713,10 +3729,48 @@ mod tests {
     }
 
     #[test]
-    fn iw_on_whitespace_is_no_op() {
+    fn iw_on_single_punctuation_deletes_it() {
+        // vim `diw` on a punctuation char deletes that punctuation word.
+        let (registry, b, mut doc) = fixture("foo.bar");
+        let inv = invoke_textobj(b.delete, b.inner_word);
+        // Cursor on the `.` (byte 3).
+        execute(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0),
+            Position::new(0, 3),
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
+        assert_eq!(doc.text(), "foobar");
+    }
+
+    #[test]
+    fn iw_on_punctuation_covers_the_whole_run() {
+        // vim `diw` on any `.` of a punctuation run deletes the whole run.
+        let (registry, b, mut doc) = fixture("foo...bar");
+        let inv = invoke_textobj(b.delete, b.inner_word);
+        // Cursor on the middle `.` (byte 4).
+        execute(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0),
+            Position::new(0, 4),
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
+        assert_eq!(doc.text(), "foobar");
+    }
+
+    #[test]
+    fn iw_on_whitespace_deletes_the_whitespace_run() {
+        // vim `diw` on whitespace deletes the whitespace run (blanks are a
+        // word class too) -- NOT a no-op.
         let (registry, b, mut doc) = fixture("hello world");
         let inv = invoke_textobj(b.delete, b.inner_word);
-        // Cursor on space at byte 5 -- not on a word.
+        // Cursor on the space (byte 5).
         execute(
             &registry,
             &mut doc,
@@ -3726,7 +3780,7 @@ mod tests {
             &CancellationToken::never(),
         )
         .unwrap();
-        assert_eq!(doc.text(), "hello world");
+        assert_eq!(doc.text(), "helloworld");
     }
 
     #[test]
@@ -3784,10 +3838,12 @@ mod tests {
 
     #[test]
     #[allow(non_snake_case)]
-    fn iW_on_whitespace_is_no_op() {
+    fn iW_on_whitespace_deletes_the_whitespace_run() {
+        // vim `diW` on whitespace deletes the whitespace run (blanks separate
+        // WORDs but are themselves a selectable run) -- NOT a no-op.
         let (registry, b, mut doc) = fixture("hello world");
         let inv = invoke_textobj(b.delete, b.inner_big_word);
-        // Cursor on space at byte 5 -- not on a WORD.
+        // Cursor on the space (byte 5).
         execute(
             &registry,
             &mut doc,
@@ -3797,7 +3853,7 @@ mod tests {
             &CancellationToken::never(),
         )
         .unwrap();
-        assert_eq!(doc.text(), "hello world");
+        assert_eq!(doc.text(), "helloworld");
     }
 
     #[test]

@@ -84,6 +84,13 @@ fresh load from the same on-disk source — the way to pick up a rebuilt `.wasm`
 and the way to revive a plugin that crashed (a reloaded instance gets a fresh,
 untripped quarantine).
 
+> **Headless / CI boots.** Set `LATTICE_DISABLE_PLUGIN_AUTOLOAD=1` to skip the
+> boot-time filesystem discovery (core plugins, `init.rs`, and the on-disk
+> plugins directory). The loader and its `:plugin-load` / `:plugin-unload` /
+> `:plugin-reload` commands stay available — only automatic startup discovery is
+> suppressed — so a scripted or test run boots deterministically without picking
+> up whatever is installed under `~/.config/lattice`.
+
 ### `init.rs` — configuration as a plugin
 
 Your user configuration is itself a plugin: `init.rs` compiled to WASM, loaded

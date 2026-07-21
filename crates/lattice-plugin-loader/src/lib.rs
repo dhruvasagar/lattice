@@ -73,7 +73,7 @@ pub use discovery::{
     DiscoveredPlugin, default_core_plugins_dir, default_init_dir, default_plugins_dir, discover,
     discover_one,
 };
-pub use install::install;
+pub use install::{disable_autoload, install};
 
 use std::sync::{Arc, Mutex};
 

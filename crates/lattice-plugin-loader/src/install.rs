@@ -20,7 +20,29 @@ use lattice_plugin_host::{
 use lattice_protocol::{Event, EventKind};
 use lattice_runtime::{EventFilter, SubscriptionTarget};
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use crate::{LoaderServices, PluginLoader, PluginLoaderHandle};
+
+/// Process-global opt-out of boot-time plugin auto-discovery, set by
+/// [`disable_autoload`]. Checked (together with the
+/// `LATTICE_DISABLE_PLUGIN_AUTOLOAD` env var) in [`install`].
+static AUTOLOAD_DISABLED: AtomicBool = AtomicBool::new(false);
+
+/// Suppress boot-time plugin auto-discovery for this process — the loader
+/// service and its ex-commands are still installed, so manual `:plugin-load`
+/// works, but [`install`] does not scan the core-plugins / `init.rs` / on-disk
+/// plugin directories. For tests and embedders that must not pick up a
+/// developer's real `~/.config/lattice`. Idempotent; equivalent to setting the
+/// `LATTICE_DISABLE_PLUGIN_AUTOLOAD` env var. Safe (no `unsafe` env mutation).
+pub fn disable_autoload() {
+    AUTOLOAD_DISABLED.store(true, Ordering::Relaxed);
+}
+
+fn autoload_disabled() -> bool {
+    AUTOLOAD_DISABLED.load(Ordering::Relaxed)
+        || std::env::var_os("LATTICE_DISABLE_PLUGIN_AUTOLOAD").is_some()
+}
 
 pub fn install(boot: &mut impl SubsystemBoot) {
     let host = match PluginHost::new() {
@@ -126,6 +148,18 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     // trace-buffer views (PO.4) resolve it; the seams already hold it via
     // `LoaderServices.tracer`.
     boot.register_service::<PluginTracerHandle>(tracer);
+
+    // Headless / CI / test opt-out: `LATTICE_DISABLE_PLUGIN_AUTOLOAD` skips the
+    // boot-time filesystem discovery below (core plugins + init.rs + on-disk
+    // plugins), so a developer's real `~/.config/lattice` never leaks into a
+    // test editor and CI can boot deterministically. The loader service and its
+    // `:plugin-load` / `:plugin-unload` / `:plugin-reload` ex-commands are
+    // already wired above, so manual loading still works — only auto-discovery
+    // is suppressed.
+    if autoload_disabled() {
+        tracing::debug!("plugin auto-load disabled; skipping boot-time plugin discovery");
+        return;
+    }
 
     // CI.2: `init.rs` loads FIRST, then on-disk plugins — in ONE task, off the
     // boot thread. init.rs is config authority (`<config>/lattice/init/`, loaded

@@ -199,3 +199,9 @@ pub use renderer::{MinimalRenderer, Renderer};
 // `lattice_mode::keymap_entry!`; this re-export retires once
 // downstream call sites flip to the canonical path.
 pub use lattice_mode::keymap_entry;
+
+// Re-exported so downstream crates (and their tests) can suppress boot-time
+// plugin auto-discovery without depending on `lattice-plugin-loader` directly —
+// e.g. a ui-tui test that must not async-load the developer's real
+// `~/.config/lattice`. See `lattice_plugin_loader::disable_autoload`.
+pub use lattice_plugin_loader::disable_autoload;

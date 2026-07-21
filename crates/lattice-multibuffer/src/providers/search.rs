@@ -1517,13 +1517,22 @@ mod tests {
     }
 
     fn tempfile_path() -> PathBuf {
+        // Unique per call even under parallel test load: a process-wide atomic
+        // counter guarantees distinct paths where a bare timestamp could collide
+        // (coarse clock granularity across concurrent threads), which corrupted
+        // one test's fixture with another's content.
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
         let mut p = std::env::temp_dir();
         p.push(format!(
-            "lattice-search-test-{}",
+            "lattice-search-test-{}-{}-{}",
+            std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            n
         ));
         p
     }

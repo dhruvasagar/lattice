@@ -11,6 +11,11 @@ use lattice_core::Document as CoreDocument;
 use lattice_host::editor::Editor;
 
 fn editor() -> Editor {
+    // Hermetic boot: these tests assert on the loaded-plugin set, so they must
+    // NOT pick up a developer's real `~/.config/lattice` (init.rs / on-disk
+    // plugins). Disable boot-time auto-discovery process-wide before the first
+    // boot spawns it (safe process-global flag — no env/unsafe).
+    lattice_plugin_loader::disable_autoload();
     Editor::boot(CoreDocument::from_text("fn main() {}\n"))
 }
 

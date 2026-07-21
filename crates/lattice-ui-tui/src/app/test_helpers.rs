@@ -20,6 +20,12 @@ use super::{Action, App};
 /// requested visible viewport height. The 95%-case factory
 /// for App-level tests.
 pub(crate) fn app_with(text: &str, viewport: u32) -> App {
+    // Hermetic boot: `App::new` → `Editor::boot` async-loads the real
+    // `~/.config/lattice` (init.rs / on-disk plugins). On a developer box that
+    // can enable modes (e.g. auto-pair) on the test buffer mid-run, flaking any
+    // behavior assertion under load. Suppress auto-discovery process-wide before
+    // the first boot spawns it (synchronous gate → set before App::new).
+    lattice_host::disable_autoload();
     let mut a = App::new(Document::from_text(text));
     a.set_viewport_height(viewport);
     a

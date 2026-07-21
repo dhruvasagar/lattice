@@ -353,6 +353,16 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             blockwise_per_row: false,
         },
     );
+    let search = registry.register_operator(
+        "operator:search",
+        "Project-search for the text spanned by the motion / text object (Lattice's `g/`).",
+        OperatorSpec {
+            repeatable: false,
+            apply: Arc::new(operator_search),
+            args_schema: vec![],
+            blockwise_per_row: false,
+        },
+    );
     let replace_char = registry.register_operator(
         "operator:replace-char",
         "Overwrite each non-newline char in the range with the captured char (vim's `r{char}` and Visual `r`).",
@@ -616,6 +626,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         upper,
         lower,
         toggle_case,
+        search,
         replace_char,
         inner_paragraph,
         around_paragraph,
@@ -679,6 +690,7 @@ pub struct Builtins {
     pub upper: OperatorId,
     pub lower: OperatorId,
     pub toggle_case: OperatorId,
+    pub search: OperatorId,
     pub replace_char: OperatorId,
     pub inner_paragraph: TextObjectId,
     pub around_paragraph: TextObjectId,
@@ -2339,6 +2351,26 @@ fn operator_toggle_case(ctx: &mut OperatorContext) -> Result<Effect, CommandErro
     })
 }
 
+/// `g/` (a Lattice extension, not vim-canonical): the project-search
+/// operator. Read-only -- mirrors yank's no-edit shape. It slices the text
+/// the motion / text object spans and emits the SAME `SearchTrigger` effect
+/// the `:search` ex-command uses, so `g/{motion}` and `:search {text}` are
+/// identical by construction. The query is used verbatim (literal,
+/// case-insensitive -- project search's defaults); no regex escaping. An
+/// empty or whitespace-only range is a no-op -- no empty search is launched.
+fn operator_search(ctx: &mut OperatorContext) -> Result<Effect, CommandError> {
+    if ctx.range.is_empty() {
+        return Ok(Effect::None);
+    }
+    let query = ctx.document.buffer().slice(ctx.range)?;
+    if query.trim().is_empty() {
+        return Ok(Effect::None);
+    }
+    Ok(Effect::AppAction(
+        crate::app_effect::AppEffect::SearchTrigger { query },
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
@@ -2355,6 +2387,54 @@ mod tests {
         let b = populate(&mut r);
         let d = Document::from_text(text);
         (r, b, d)
+    }
+
+    // Pull the query out of the `g/` operator's effect (a project-search
+    // trigger), panicking on any other shape.
+    fn search_query(eff: Effect) -> String {
+        match eff {
+            Effect::AppAction(crate::app_effect::AppEffect::SearchTrigger { query }) => query,
+            other => panic!("expected SearchTrigger, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn search_operator_greps_word_under_cursor() {
+        // g/iw -> project-search for the word under the cursor.
+        let (registry, b, mut doc) = fixture("let needle = 1;\n");
+        let cancel = CancellationToken::never();
+        let cursor = Position::new(0, 4); // on `needle`
+        let inv = CommandInvocation::of(b.search.0)
+            .with_target(Target::TextObject(b.inner_word, crate::args::Args::None));
+        let eff = execute(&registry, &mut doc, lattice_core::BufferId(0), cursor, inv, &cancel)
+            .unwrap();
+        assert_eq!(search_query(eff), "needle");
+    }
+
+    #[test]
+    fn search_operator_greps_quoted_string() {
+        // g/i" -> project-search for the quoted-string contents.
+        let (registry, b, mut doc) = fixture("let s = \"find me\";\n");
+        let cancel = CancellationToken::never();
+        let cursor = Position::new(0, 10); // inside the quotes
+        let inv = CommandInvocation::of(b.search.0)
+            .with_target(Target::TextObject(b.inner_quote_double, crate::args::Args::None));
+        let eff = execute(&registry, &mut doc, lattice_core::BufferId(0), cursor, inv, &cancel)
+            .unwrap();
+        assert_eq!(search_query(eff), "find me");
+    }
+
+    #[test]
+    fn search_operator_empty_range_is_noop() {
+        // A motion that spans nothing produces no search.
+        let (registry, b, mut doc) = fixture("\n");
+        let cancel = CancellationToken::never();
+        let cursor = Position::new(0, 0);
+        let inv = CommandInvocation::of(b.search.0)
+            .with_target(Target::TextObject(b.inner_word, crate::args::Args::None));
+        let eff = execute(&registry, &mut doc, lattice_core::BufferId(0), cursor, inv, &cancel)
+            .unwrap();
+        assert!(matches!(eff, Effect::None), "empty range must be a no-op, got {eff:?}");
     }
 
     #[test]

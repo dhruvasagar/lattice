@@ -311,15 +311,33 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
 
-    #[test]
-    fn each_lang_mode_has_distinct_id() {
-        let ids = [
+    fn all_lang_mode_ids() -> Vec<ModeId> {
+        vec![
             RustMode::mode_id(),
             PythonMode::mode_id(),
             JavascriptMode::mode_id(),
+            BashMode::mode_id(),
+            CMode::mode_id(),
+            CppMode::mode_id(),
+            CssMode::mode_id(),
+            GoMode::mode_id(),
+            HtmlMode::mode_id(),
+            JavaMode::mode_id(),
+            JsonMode::mode_id(),
+            LuaMode::mode_id(),
+            RubyMode::mode_id(),
+            SqlMode::mode_id(),
+            TomlMode::mode_id(),
+            TypeScriptMode::mode_id(),
+            TsxMode::mode_id(),
+            YamlMode::mode_id(),
             MarkdownMode::mode_id(),
-        ];
-        // Any pair differs.
+        ]
+    }
+
+    #[test]
+    fn each_lang_mode_has_distinct_id() {
+        let ids = all_lang_mode_ids();
         for (i, a) in ids.iter().enumerate() {
             for b in &ids[i + 1..] {
                 assert_ne!(a, b);
@@ -329,40 +347,106 @@ mod tests {
 
     #[test]
     fn major_mode_id_for_lang_round_trips() {
-        assert_eq!(major_mode_id_for_lang(Lang::Plain), None);
-        assert_eq!(
-            major_mode_id_for_lang(Lang::Rust),
-            Some(RustMode::mode_id())
-        );
-        assert_eq!(
-            major_mode_id_for_lang(Lang::Python),
-            Some(PythonMode::mode_id())
-        );
-        assert_eq!(
-            major_mode_id_for_lang(Lang::JavaScript),
-            Some(JavascriptMode::mode_id())
-        );
-        assert_eq!(
-            major_mode_id_for_lang(Lang::Markdown),
-            Some(MarkdownMode::mode_id())
-        );
+        let cases: Vec<(Lang, Option<ModeId>)> = vec![
+            (Lang::Plain, None),
+            (Lang::Rust, Some(RustMode::mode_id())),
+            (Lang::Python, Some(PythonMode::mode_id())),
+            (Lang::JavaScript, Some(JavascriptMode::mode_id())),
+            (Lang::Bash, Some(BashMode::mode_id())),
+            (Lang::C, Some(CMode::mode_id())),
+            (Lang::Cpp, Some(CppMode::mode_id())),
+            (Lang::Css, Some(CssMode::mode_id())),
+            (Lang::Go, Some(GoMode::mode_id())),
+            (Lang::Html, Some(HtmlMode::mode_id())),
+            (Lang::Java, Some(JavaMode::mode_id())),
+            (Lang::Json, Some(JsonMode::mode_id())),
+            (Lang::Lua, Some(LuaMode::mode_id())),
+            (Lang::Ruby, Some(RubyMode::mode_id())),
+            (Lang::Sql, Some(SqlMode::mode_id())),
+            (Lang::Toml, Some(TomlMode::mode_id())),
+            (Lang::TypeScript, Some(TypeScriptMode::mode_id())),
+            (Lang::Tsx, Some(TsxMode::mode_id())),
+            (Lang::Yaml, Some(YamlMode::mode_id())),
+            (Lang::Markdown, Some(MarkdownMode::mode_id())),
+        ];
+        for (lang, expected) in cases {
+            assert_eq!(major_mode_id_for_lang(lang), expected, "{lang:?}");
+        }
     }
 
     #[test]
     fn register_language_modes_populates_registry() {
         let mut registry = ModeRegistry::new();
         register_language_modes(&mut registry);
-        assert!(registry.is_registered(RustMode::mode_id()));
-        assert!(registry.is_registered(PythonMode::mode_id()));
-        assert!(registry.is_registered(JavascriptMode::mode_id()));
-        assert!(registry.is_registered(MarkdownMode::mode_id()));
+        for id in all_lang_mode_ids() {
+            assert!(registry.is_registered(id), "mode not registered: {id:?}");
+        }
+    }
+
+    #[test]
+    fn lang_for_mode_id_round_trips() {
+        for (lang, mode_id) in [
+            (Lang::Rust, RustMode::mode_id()),
+            (Lang::Python, PythonMode::mode_id()),
+            (Lang::JavaScript, JavascriptMode::mode_id()),
+            (Lang::Bash, BashMode::mode_id()),
+            (Lang::C, CMode::mode_id()),
+            (Lang::Cpp, CppMode::mode_id()),
+            (Lang::Css, CssMode::mode_id()),
+            (Lang::Go, GoMode::mode_id()),
+            (Lang::Html, HtmlMode::mode_id()),
+            (Lang::Java, JavaMode::mode_id()),
+            (Lang::Json, JsonMode::mode_id()),
+            (Lang::Lua, LuaMode::mode_id()),
+            (Lang::Ruby, RubyMode::mode_id()),
+            (Lang::Sql, SqlMode::mode_id()),
+            (Lang::Toml, TomlMode::mode_id()),
+            (Lang::TypeScript, TypeScriptMode::mode_id()),
+            (Lang::Tsx, TsxMode::mode_id()),
+            (Lang::Yaml, YamlMode::mode_id()),
+            (Lang::Markdown, MarkdownMode::mode_id()),
+        ] {
+            assert_eq!(
+                lang_for_mode_id(mode_id),
+                Some(lang),
+                "{}",
+                mode_id.as_str()
+            );
+        }
+        assert_eq!(lang_for_mode_id(ModeId::new("text-mode")), None);
     }
 
     #[test]
     fn each_lang_mode_is_major() {
-        assert_eq!(RustMode.kind(), ModeKind::Major);
-        assert_eq!(PythonMode.kind(), ModeKind::Major);
-        assert_eq!(JavascriptMode.kind(), ModeKind::Major);
-        assert_eq!(MarkdownMode.kind(), ModeKind::Major);
+        for id in all_lang_mode_ids() {
+            let mode: Box<dyn Mode<Guard = ()>> = match id.as_str() {
+                "rust-mode" => Box::new(RustMode),
+                "python-mode" => Box::new(PythonMode),
+                "javascript-mode" => Box::new(JavascriptMode),
+                "bash-mode" => Box::new(BashMode),
+                "c-mode" => Box::new(CMode),
+                "cpp-mode" => Box::new(CppMode),
+                "css-mode" => Box::new(CssMode),
+                "go-mode" => Box::new(GoMode),
+                "html-mode" => Box::new(HtmlMode),
+                "java-mode" => Box::new(JavaMode),
+                "json-mode" => Box::new(JsonMode),
+                "lua-mode" => Box::new(LuaMode),
+                "ruby-mode" => Box::new(RubyMode),
+                "sql-mode" => Box::new(SqlMode),
+                "toml-mode" => Box::new(TomlMode),
+                "typescript-mode" => Box::new(TypeScriptMode),
+                "tsx-mode" => Box::new(TsxMode),
+                "yaml-mode" => Box::new(YamlMode),
+                "markdown-mode" => Box::new(MarkdownMode),
+                other => panic!("unexpected mode id: {other}"),
+            };
+            assert_eq!(
+                mode.kind(),
+                ModeKind::Major,
+                "{} is not Major",
+                id.as_str()
+            );
+        }
     }
 }

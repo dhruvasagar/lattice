@@ -723,65 +723,44 @@ pub struct Builtins {
 // ---- Motion: word-forward ----
 
 fn motion_word_forward(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
-    // Advance `count` words. A word boundary here is the conventional vim
-    // "word" (alphanumeric + underscore) -- not "WORD" (whitespace-delimited).
-    // Phase 1 keeps the implementation simple: walk byte-wise over UTF-8
-    // characters in the current line and the next ones until we've crossed
-    // `count` word boundaries forward.
+    // Advance `count` words using vim's 3-way class model ([`word_class`]):
+    // skip the rest of the cursor's current word (its non-blank class run),
+    // then skip blanks to the next word/punct start. So `foo.bar` from `f`
+    // stops on `.` (a punctuation word), not `bar`. Newlines are blanks, so
+    // this crosses lines onto the first word of the next line.
     let text = ctx.buffer.as_string();
-    let lines: Vec<&str> = text.split_inclusive('\n').collect();
-
-    let mut line = ctx.from.line as usize;
-    let mut byte = ctx.from.byte as usize;
+    let bytes = text.as_bytes();
+    let total = bytes.len();
     let count = ctx.count.get().max(1);
+    let mut idx = ctx
+        .buffer
+        .position_to_byte(ctx.from)
+        .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
 
     for _ in 0..count {
-        // Skip the current word's remaining word chars.
-        while line < lines.len() {
-            let l = lines[line];
-            let bytes = l.as_bytes();
-            if byte < bytes.len() && is_word_byte(bytes[byte]) {
-                byte += 1;
-            } else {
-                break;
-            }
-            if byte >= bytes.len() {
-                line += 1;
-                byte = 0;
-                break;
+        if idx >= total {
+            break;
+        }
+        // Skip the rest of the current word: the run of the cursor's class,
+        // unless the cursor already sits on a blank (nothing to skip here).
+        let start_class = word_class(bytes[idx]);
+        if start_class != WordClass::Blank {
+            while idx < total && word_class(bytes[idx]) == start_class {
+                idx += 1;
             }
         }
-        // Skip non-word characters (whitespace, punctuation) until we hit the
-        // next word start, or run out of buffer.
-        loop {
-            if line >= lines.len() {
-                break;
-            }
-            let l = lines[line];
-            let bytes = l.as_bytes();
-            if byte >= bytes.len() {
-                line += 1;
-                byte = 0;
-                continue;
-            }
-            if is_word_byte(bytes[byte]) {
-                break;
-            }
-            byte += 1;
+        // Skip blanks (whitespace / newlines) to the next word start.
+        while idx < total && word_class(bytes[idx]) == WordClass::Blank {
+            idx += 1;
         }
     }
 
-    // Clamp to last position if we walked off the end.
-    let target = if line >= lines.len() {
-        let last_line = lines.len().saturating_sub(1);
-        let last_len = lines
-            .get(last_line)
-            .map(|l| l.trim_end_matches('\n').len())
-            .unwrap_or(0);
-        Position::new(last_line as u32, last_len as u32)
-    } else {
-        Position::new(line as u32, byte as u32)
-    };
+    // At/after EOF, clamp to the end-of-buffer position (vim `w` at the last
+    // word lands past the final char; `dw` then deletes through the end).
+    let target = ctx
+        .buffer
+        .byte_to_position(idx.min(total))
+        .map_err(|_| CommandError::InvalidArgs("position out of bounds"))?;
 
     Ok(MotionResult {
         target,
@@ -803,6 +782,29 @@ fn is_big_word_byte(b: u8) -> bool {
     !b.is_ascii_whitespace()
 }
 
+/// Vim's **3-way** word classification, the boundary model for `w` / `b` /
+/// `e`. A "word" is a maximal run of ONE non-blank class, so `foo.bar` is
+/// three words — `foo` (Word), `.` (Punct), `bar` (Word) — and a bare `w`
+/// stops on the `.` rather than skipping it. Blanks (whitespace incl.
+/// newline) separate words. This is distinct from the 2-way "WORD" model
+/// (`is_big_word_byte`) that `W` / `B` / `E` use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WordClass {
+    Blank,
+    Word,
+    Punct,
+}
+
+fn word_class(b: u8) -> WordClass {
+    if is_word_byte(b) {
+        WordClass::Word
+    } else if b.is_ascii_whitespace() {
+        WordClass::Blank
+    } else {
+        WordClass::Punct
+    }
+}
+
 // ---- Motion: word-backward (vim's `b`) ----
 
 fn motion_word_backward(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
@@ -818,13 +820,16 @@ fn motion_word_backward(ctx: &MotionContext) -> Result<MotionResult, CommandErro
         if idx == 0 {
             break;
         }
-        // Step one byte back, then skip non-word bytes (whitespace, newlines,
-        // punctuation), then walk back through the word's body to its start.
+        // Step one byte back, skip blanks (whitespace / newlines), then walk
+        // back to the start of that word — the run of ONE non-blank class
+        // ([`word_class`]), so `b` lands on a punctuation run rather than
+        // skipping it.
         idx -= 1;
-        while idx > 0 && !is_word_byte(bytes[idx]) {
+        while idx > 0 && word_class(bytes[idx]) == WordClass::Blank {
             idx -= 1;
         }
-        while idx > 0 && is_word_byte(bytes[idx - 1]) {
+        let c = word_class(bytes[idx]);
+        while idx > 0 && word_class(bytes[idx - 1]) == c {
             idx -= 1;
         }
     }
@@ -855,18 +860,19 @@ fn motion_word_end(ctx: &MotionContext) -> Result<MotionResult, CommandError> {
         if idx >= total.saturating_sub(1) {
             break;
         }
-        // Step one byte forward, skip non-word bytes, then advance to the
-        // last byte of the current word (the position where the next byte
-        // would be non-word or past EOF).
+        // Step one byte forward, skip blanks, then advance to the last byte
+        // of that word — the run of ONE non-blank class ([`word_class`]), so
+        // `e` stops at the end of a punctuation run rather than skipping it.
         idx += 1;
-        while idx < total && !is_word_byte(bytes[idx]) {
+        while idx < total && word_class(bytes[idx]) == WordClass::Blank {
             idx += 1;
         }
         if idx >= total {
             idx = total.saturating_sub(1);
             break;
         }
-        while idx + 1 < total && is_word_byte(bytes[idx + 1]) {
+        let c = word_class(bytes[idx]);
+        while idx + 1 < total && word_class(bytes[idx + 1]) == c {
             idx += 1;
         }
     }
@@ -2592,6 +2598,60 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    fn repro_word_motion_punct(
+        select: impl Fn(&Builtins) -> MotionId,
+        text: &str,
+        from: Position,
+    ) -> Position {
+        let (registry, b, mut doc) = fixture(text);
+        let inv = CommandInvocation::of(select(&b).0);
+        let effect = execute(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0),
+            from,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
+        match effect {
+            Effect::SelectionChange(s) => s.primary().head,
+            other => panic!("expected SelectionChange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn word_forward_stops_at_punctuation() {
+        // vim `w`: punctuation is its own word. `foo.bar` from `f` -> `.` (byte 3).
+        assert_eq!(
+            repro_word_motion_punct(|b| b.word_forward, "foo.bar", Position::ZERO),
+            Position::new(0, 3),
+        );
+    }
+
+    #[test]
+    fn word_backward_stops_at_punctuation() {
+        // vim `b`: from `bar` start (byte 4) -> `.` start (byte 3).
+        assert_eq!(
+            repro_word_motion_punct(|b| b.word_backward, "foo.bar", Position::new(0, 4)),
+            Position::new(0, 3),
+        );
+    }
+
+    #[test]
+    fn word_end_stops_at_punctuation() {
+        // vim `e`: from `f` (byte 0) lands at the end of `foo` (byte 2); a
+        // second `e` (from byte 2) lands on the one-char `.` word (byte 3).
+        assert_eq!(
+            repro_word_motion_punct(|b| b.word_end, "foo.bar", Position::ZERO),
+            Position::new(0, 2),
+        );
+        assert_eq!(
+            repro_word_motion_punct(|b| b.word_end, "foo.bar", Position::new(0, 2)),
+            Position::new(0, 3),
+        );
+    }
+
     #[test]
     fn word_forward_advances_to_next_word_start() {
         let (registry, b, mut doc) = fixture("hello world");
@@ -3158,9 +3218,11 @@ mod tests {
     }
 
     #[test]
-    fn word_backward_skips_punctuation_as_non_word() {
+    fn word_backward_lands_on_punctuation_word() {
         let (registry, b, mut doc) = fixture("alpha, beta");
-        // Cursor on 'b' of "beta" (byte 7). `b` -> 'a' of "alpha" (byte 0).
+        // Cursor on 'b' of "beta" (byte 7). vim `b` -> the `,` (byte 5): the
+        // comma is its own word, so `b` lands on it rather than skipping to
+        // "alpha". (Pre-3-class this wrongly returned byte 0.)
         let inv = CommandInvocation::of(b.word_backward.0);
         let effect = execute(
             &registry,
@@ -3172,7 +3234,7 @@ mod tests {
         )
         .unwrap();
         match effect {
-            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::ZERO),
+            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 5)),
             other => panic!("expected SelectionChange, got {other:?}"),
         }
     }

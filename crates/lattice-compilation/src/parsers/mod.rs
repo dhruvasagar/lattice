@@ -4,12 +4,18 @@
 //!   (`error[E0308]: …` header + `--> path:line:col` location).
 //! - [`GnuStyleParser`] — single-line gcc/clang/eslint diagnostics
 //!   (`path:line:col: severity: message` and `path:line: message`).
+//! - [`GeneralParser`] — catch-all that finds `file:line:col` anywhere
+//!   in the output line (no anchor), validated against file-like paths.
 
 mod cargo_rustc;
+mod general;
 mod gnu;
+mod panicked;
 
 pub use cargo_rustc::CargoRustcParser;
+pub use general::GeneralParser;
 pub use gnu::GnuStyleParser;
+pub use panicked::TestPanicParser;
 
 use std::sync::OnceLock;
 
@@ -47,7 +53,10 @@ pub(crate) fn compiled<'a>(cell: &'a OnceLock<Option<Regex>>, pattern: &str) -> 
 /// directly is interleaving-proof and covers both the gnu lines and
 /// the cargo `-->` location line.
 pub(crate) fn match_location_line(line: &str) -> Option<(std::path::PathBuf, u32, u32)> {
-    cargo_rustc::match_location(line).or_else(|| gnu::match_location(line))
+    cargo_rustc::match_location(line)
+        .or_else(|| gnu::match_location(line))
+        .or_else(|| panicked::match_location(line))
+        .or_else(|| general::match_location(line))
 }
 
 /// CM.3c: severity of ONE `*compilation*` line, or `None` when the line
@@ -59,7 +68,10 @@ pub(crate) fn match_location_line(line: &str) -> Option<(std::path::PathBuf, u32
 /// use — no duplication. Backs [`crate::parser::scan_severities`], the
 /// in-buffer severity-gutter producer.
 pub(crate) fn match_severity(line: &str) -> Option<ErrorSeverity> {
-    cargo_rustc::match_header_severity(line).or_else(|| gnu::match_full_severity(line))
+    cargo_rustc::match_header_severity(line)
+        .or_else(|| gnu::match_full_severity(line))
+        .or_else(|| panicked::match_severity(line))
+        .or_else(|| general::match_severity(line))
 }
 
 /// Convert a 1-based line/column string (rustc + gnu tools are both

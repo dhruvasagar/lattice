@@ -5761,7 +5761,21 @@ impl Editor {
     /// the active viewport_height here without re-deriving a
     /// popup-specific cap.
     pub fn ensure_cursor_visible(&mut self) {
-        if self.viewport_height == 0 {
+        // PU refactor: when a Steal popup has focus, clamp cursor to the
+        // popup's viewport (popup_viewport_height), not the pane's
+        // (viewport_height). Without this, the cursor can scroll outside
+        // the popup's visible area even though it's within the pane.
+        // Fall back to viewport_height when popup_viewport_height is 0
+        // (not yet set by the renderer's first draw of this popup).
+        let height = if self.popup_buffer.is_some()
+            && matches!(self.active_buffer, BufferKind::Help)
+            && self.popup_viewport_height > 0
+        {
+            self.popup_viewport_height
+        } else {
+            self.viewport_height
+        };
+        if height == 0 {
             return;
         }
         // Sticky virtual rows (tutor HUD, diff-mode header, …) occupy
@@ -5775,7 +5789,7 @@ impl Editor {
         let buffer_id = self.active_buffer_id();
         let vrows = self.virtual_rows_matrix_for(buffer_id).load_full();
         let sticky_count = vrows.sticky_rows().count() as u32;
-        let effective_height = self.viewport_height.saturating_sub(sticky_count).max(1);
+        let effective_height = height.saturating_sub(sticky_count).max(1);
 
         // `scrolloff`: keep this many DOCUMENT lines of context
         // above and below the cursor. Clamped to half the effective
@@ -6096,6 +6110,11 @@ impl Editor {
     /// overlay).
     pub fn active_buffer_id(&self) -> BufferId {
         match self.active_buffer {
+            // PU refactor: Help still has a separate arm because
+            // self.document is not switched (renderer reads from it).
+            // The popup buffer's ID comes from self.popup_buffer.
+            // Once popup routing is fully unified, this arm merges
+            // into Document below.
             BufferKind::Help => self.popup_buffer.unwrap_or(self.document_buffer_id),
             BufferKind::Document
             | BufferKind::FileTree
@@ -6103,8 +6122,7 @@ impl Editor {
             | BufferKind::Terminal
             | BufferKind::Messages
             | BufferKind::Multibuffer
-            // Dashboard is an in-pane rope-backed buffer (like Messages).
-            | BufferKind::Dashboard => self.pane_tree.active().buffer_id,
+            | BufferKind::Dashboard => self.document_buffer_id,
         }
     }
 
@@ -6133,24 +6151,35 @@ impl Editor {
     /// / scroll / search code can read text without branching on
     /// [`BufferKind`]. `self.cursor` / `self.scroll` are the live
     /// position into this buffer.
+    ///
+    /// PU refactor: when a popup has focus (State B, Steal), dispatch
+    /// reads from the popup buffer via [`Self::popup_help`] instead of
+    /// `self.document`. In State A (passive hover) the popup check is
+    /// skipped — the document keeps focus and `active_text` returns the
+    /// underlying buffer's content. The match below treats Help and
+    /// Document identically, and the popup check above acts as the
+    /// focus-routing layer. Renderer-side code continues to use
+    /// `self.document.snapshot()` directly (published as `ad().snapshot`)
+    /// and is unaffected.
     pub fn active_text(&self) -> lattice_core::Buffer {
+        // PU: only return popup content when the popup HAS FOCUS
+        // (State B, Steal). State A (passive hover) must dispatch
+        // against the underlying document so cursor motion works
+        // correctly.
+        if self.active_buffer == BufferKind::Help {
+            if let Some(help) = self.popup_help() {
+                return help.content;
+            }
+        }
         match self.active_buffer {
-            BufferKind::Help => self
-                .popup_help()
-                .map(|h| h.content.clone())
-                .unwrap_or_else(|| self.document.snapshot().buffer.clone()),
+            BufferKind::Document
+            | BufferKind::Messages
+            | BufferKind::Multibuffer
+            | BufferKind::Dashboard => self.document.snapshot().buffer.clone(),
             BufferKind::FileTree => self
                 .buffers
                 .with_file_tree(self.active_pane_buffer_id(), |t| t.content.clone())
                 .unwrap_or_else(|| self.document.snapshot().buffer.clone()),
-            // `*messages*` shares Document storage; `self.document`
-            // points at it when activated through `activate_document`.
-            BufferKind::Document
-            | BufferKind::Messages
-            | BufferKind::Multibuffer
-            // Dashboard shares Document storage; activate_document points
-            // self.document at it.
-            | BufferKind::Dashboard => self.document.snapshot().buffer.clone(),
             BufferKind::Oil => self
                 .buffers
                 .with_oil(self.active_pane_buffer_id(), |o| o.content.clone())
@@ -6173,21 +6202,39 @@ impl Editor {
                 })
                 .flatten()
                 .unwrap_or_default(),
+            // PU refactor: `BufferKind::Help` is kept here as a
+            // fallback during the transition; the `popup_help()`
+            // check above handles the popup-focus case, so this
+            // arm is only reached when no popup is active.
+            BufferKind::Help => self.document.snapshot().buffer.clone(),
         }
     }
 
     /// Cursor of the currently active buffer. Reads
     /// [`Self::cursor`] when the document holds focus, the popup
-    /// help buffer's cursor (via [`Self::popup_help`]) when a help
+    /// buffer's cursor (via [`Self::popup_help`]) when a popup
     /// overlay holds focus, and the kind-specific cursor stash for
     /// file-tree / oil.
+    ///
+    /// PU refactor: when a popup has focus (State B), dispatch reads
+    /// the popup's cursor via [`Self::popup_help`] instead of
+    /// `self.cursor`. State A (passive hover) skips the popup check.
+    /// The match below treats Help and Document identically, and the
+    /// popup check above acts as the focus-routing layer.
     pub fn active_cursor(&self) -> lattice_protocol::position::Position {
+        // PU: only return popup cursor when the popup HAS FOCUS
+        // (State B, Steal). State A (passive hover) must return
+        // the document cursor.
+        if self.active_buffer == BufferKind::Help {
+            if let Some(help) = self.popup_help() {
+                return help.cursor;
+            }
+        }
         match self.active_buffer {
             BufferKind::Document
             | BufferKind::Messages
             | BufferKind::Multibuffer
             | BufferKind::Dashboard => self.cursor,
-            BufferKind::Help => self.popup_help().map(|h| h.cursor).unwrap_or(self.cursor),
             BufferKind::FileTree => self
                 .buffers
                 .with_file_tree(self.active_pane_buffer_id(), |t| t.cursor)
@@ -6200,6 +6247,8 @@ impl Editor {
             // introduce scrollback-view position; until then,
             // return self.cursor so motion code has a sane value.
             BufferKind::Terminal => self.cursor,
+            // PU refactor: fallback during transition (see active_text).
+            BufferKind::Help => self.cursor,
         }
     }
 

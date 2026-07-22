@@ -445,6 +445,12 @@ pub struct Editor {
             std::sync::Arc<Vec<(u32, u32, u32)>>,
         >,
     >,
+    /// CM.3d (2026-07-22): resolved `compilation.location` theme
+    /// colours — published by the mode during activation so the TUI
+    /// and GPUI renderers read from the theme rather than hardcoding
+    /// RGB. `bg` is the location-line background tint; `fg` is the
+    /// link-like file-path foreground. Defaults: surface2 bg, blue fg.
+    pub compilation_theme_colors: std::sync::Arc<(u32, u32)>,
     /// MRU list of canonical paths the user has opened via
     /// `:edit` (or any path flowing through `do_edit`). Newest
     /// first; deduplicated; capped at `MAX_RECENT_FILES`. Source

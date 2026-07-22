@@ -225,6 +225,8 @@ pub struct RenderState {
             std::sync::Arc<Vec<(u32, u32, u32)>>,
         >,
     >,
+    /// CM.3d (2026-07-22): snapshot of `Editor::compilation_theme_colors`.
+    pub compilation_theme_colors: std::sync::Arc<(u32, u32)>,
 }
 
 impl Default for RenderState {
@@ -261,6 +263,7 @@ impl Default for RenderState {
             wasm_gutter_decorations: crate::per_buffer_cache::empty(),
             compilation_severity: std::sync::Arc::new(std::collections::HashMap::new()),
             compilation_location_lines: std::sync::Arc::new(std::collections::HashMap::new()),
+            compilation_theme_colors: std::sync::Arc::new((0x45475a, 0x89b4fa)),
         }
     }
 }

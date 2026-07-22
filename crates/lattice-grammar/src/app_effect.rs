@@ -777,6 +777,14 @@ pub enum AppEffect {
         /// within the line text, for link-like fg highlighting.
         lines: Vec<(u32, u32, u32)>,
     },
+    /// CM.3d (2026-07-22): resolved compilation location theme colours
+    /// — published by the mode during activation so the renderer
+    /// reads `compilation.location` bg/fg from the theme rather than
+    /// hardcoding RGB values.
+    CompilationThemeColors {
+        bg: u32,
+        fg: u32,
+    },
     /// CM.4 (2026-07-22): `:copen`. The host arm reads the core
     /// error list and calls
     /// `lattice_multibuffer::providers::problems::create_problems_view`,

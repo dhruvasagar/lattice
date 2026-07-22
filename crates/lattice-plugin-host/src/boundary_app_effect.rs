@@ -362,6 +362,16 @@ impl WitBoundary for NativeAppEffect {
                         .to_string(),
                 );
             }
+            // CM.3d: resolved theme colours for compilation
+            // location lines — same as above, native built-in.
+            NativeAppEffect::CompilationThemeColors { .. } => {
+                return Err(
+                    "AppEffect::CompilationThemeColors feeds theme-resolved compilation location \
+                     colours to the renderer; its plugin (WIT) surface is deferred with the \
+                     plugin host"
+                        .to_string(),
+                );
+            }
             // CM.4: `:copen` / `:cclose` open/close the `*problems*`
             // multibuffer over core error state; like CompileRun /
             // ErrorNav a native built-in, WIT surface deferred with

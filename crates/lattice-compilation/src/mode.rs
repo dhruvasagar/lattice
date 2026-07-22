@@ -33,7 +33,7 @@ use lattice_theme::{Color, ColorRef, ElementId, ElementName, ElementOwner, Style
 
 use crate::events::{CompilationOutputPushed, OutputChunk};
 use crate::headerline::{CompilationHeadlineState, CompilationHeaderline, COMPILATION_HEADERLINE_PROVIDER_ID};
-use crate::{CompilationGutterBusHandle, CompilationLocationBusHandle, scan_location_lines, scan_severities};
+use crate::{CompilationGutterBusHandle, CompilationLocationBusHandle, CompilationThemeColorsBusHandle, scan_location_lines, scan_severities};
 
 /// Count the `\n`s in `text` — how many buffer lines it advances the
 /// running line counter (CM.3c drain line-tracking).
@@ -215,48 +215,66 @@ impl Mode for CompilationMode {
                 return Ok(CompilationModeGuard::default());
             };
 
-            // T.7 (2026-07-22): the mode OWNS its `compilation.location`
-            // theme element — register it here so the mode is the single
-            // source of the element vocabulary. Idempotent by name, so
-            // re-activation is safe. Missing service (test harness) just
-            // skips: location lines then render with no baked bg.
+            // T.7 (2026-07-22): the mode OWNS its compilation theme
+            // elements. Register them here (idempotent by name) AND
+            // resolve the actual colours from the theme so the
+            // headerline doesn't use hardcoded RGB.
+            let mut hl_colors: Option<(u32, u32, u32, u32)> = None; // cmd, in_progress, success, failure
             if let Some(theme) = ctx.service::<ThemeRegistryHandle>().map(|outer| (*outer).clone()) {
                 let owner = ElementOwner::Mode(Self::mode_id().as_str().to_string().into());
-                let _: ElementId = theme.register(
+                let loc_id = theme.register(
                     ElementName::from_static("compilation.location"),
                     owner.clone(),
                     StyleSpec::new().bg(ColorRef::Palette("surface2".into())),
                     "Navigable file-location line in the *compilation* buffer (background tint).",
                 );
-                // T.7 (2026-07-22): headerline theme elements — the
-                // compilation headerline mirrors the search headerline
-                // colour vocabulary. `command` is the emphasised
-                // compile-command portion; `in_progress`/`success`/
-                // `failure` are the status-dependent foregrounds.
-                let _: ElementId = theme.register(
+
+                let cmd_id = theme.register(
                     ElementName::from_static("compilation.headerline.command"),
                     owner.clone(),
                     StyleSpec::new().fg(ColorRef::Literal(Color::Rgb(0xf9, 0xe2, 0xaf))),
                     "Compilation headerline: compile-command emphasis (warm yellow).",
                 );
-                let _: ElementId = theme.register(
+                let in_progress_id = theme.register(
                     ElementName::from_static("compilation.headerline.in_progress"),
                     owner.clone(),
                     StyleSpec::new().fg(ColorRef::Palette("subtext".into())),
                     "Compilation headerline: running (grey).",
                 );
-                let _: ElementId = theme.register(
+                let success_id = theme.register(
                     ElementName::from_static("compilation.headerline.success"),
                     owner.clone(),
                     StyleSpec::new().fg(ColorRef::Palette("green".into())),
                     "Compilation headerline: no errors (green).",
                 );
-                let _: ElementId = theme.register(
+                let failure_id = theme.register(
                     ElementName::from_static("compilation.headerline.failure"),
                     owner,
                     StyleSpec::new().fg(ColorRef::Palette("red".into())),
                     "Compilation headerline: errors present (red).",
                 );
+
+                let resolved = theme.resolved();
+                let resolve_fg = |id: ElementId, fallback: u32| -> u32 {
+                    resolved.get(id).fg.map(|c| c.to_rgb_u32(0)).unwrap_or(fallback)
+                };
+                hl_colors = Some((
+                    resolve_fg(cmd_id, 0xf9e2af),
+                    resolve_fg(in_progress_id, 0x999999),
+                    resolve_fg(success_id, 0x44cc88),
+                    resolve_fg(failure_id, 0xff4444),
+                ));
+                // Ship resolved compilation.location colours to the
+                // renderer so TUI/GPUI read from the theme instead of
+                // hardcoding RGB.
+                if let Some(bus) = ctx
+                    .service::<CompilationThemeColorsBusHandle>()
+                    .map(|h| (**h).clone())
+                {
+                    let loc_bg = resolved.get(loc_id).bg.map(|c| c.to_rgb_u32(0)).unwrap_or(0x45475a);
+                    let loc_fg = resolved.get(loc_id).fg.map(|c| c.to_rgb_u32(0)).unwrap_or(0x89b4fa);
+                    let _ = bus.send((loc_bg, loc_fg));
+                }
             }
 
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<CompilationOutputPushed>();
@@ -289,13 +307,15 @@ impl Mode for CompilationMode {
                 .service::<Arc<dyn VirtualRowRegistrar>>()
                 .map(|registrar| {
                     let registrar: Arc<dyn VirtualRowRegistrar> = (*registrar).clone();
+                    let (cmd_fg, in_progress_fg, success_fg, failure_fg) =
+                        hl_colors.unwrap_or((0xf9e2af, 0x999999, 0x44cc88, 0xff4444));
                     let headerline = CompilationHeaderline::new(
                         hl_state.clone(),
                         hl_version.clone(),
-                        0xf9e2af, // command_fg (warm yellow)
-                        0x999999, // in_progress_fg (grey)
-                        0x44cc88, // success_fg (green)
-                        0xff4444, // failure_fg (red)
+                        cmd_fg,
+                        in_progress_fg,
+                        success_fg,
+                        failure_fg,
                     );
                     let provider = Arc::new(HeaderlineProvider::new(
                         COMPILATION_HEADERLINE_PROVIDER_ID,

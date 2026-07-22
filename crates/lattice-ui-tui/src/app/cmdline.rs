@@ -409,6 +409,44 @@ mod tests {
     }
 
     #[test]
+    fn prefer_aliases_keeps_canonical_when_alias_does_not_match_query() {
+        use lattice_completion::{
+            CandidateData, CandidateKind, MatchScore, RawCandidate, RenderedCandidate,
+        };
+        use lattice_grammar::source::SourceLocation;
+        // "next-error" → alias "cnext". Query "next-" matches the
+        // canonical name but NOT the alias (no '-' in "cnext").
+        // The canonical name must be preserved.
+        let mut candidates = vec![RenderedCandidate {
+            raw: RawCandidate {
+                text: "next-error".into(),
+                display: "next-error".into(),
+                kind: CandidateKind::Command,
+                data: CandidateData::Command {
+                    name: "next-error".into(),
+                    doc: "jump to next error".into(),
+                    kind_label: "ex-command".into(),
+                    source: SourceLocation::synthetic("test"),
+                },
+                source: None,
+                accept_action: None,
+                annotations: Vec::new(),
+                display_spans: Vec::new(),
+            },
+            score: MatchScore::PREFIX,
+            match_ranges: vec![0..5],
+            annotations: vec![],
+        }];
+        prefer_aliases_for_command_candidates(&mut candidates, "next-");
+        // Must keep the canonical name since alias "cnext" doesn't
+        // contain '-' and thus doesn't match the query.
+        assert_eq!(candidates[0].raw.text, "next-error");
+        assert_eq!(candidates[0].raw.display, "next-error");
+        // Original pipeline match ranges preserved.
+        assert_eq!(candidates[0].match_ranges, vec![0..5]);
+    }
+
+    #[test]
     fn enter_command_line_clears_buffer_and_sets_modal() {
         let mut a = app_with("abc", 10);
         a.editor.command_line = "stale".into();

@@ -73,6 +73,11 @@ pub type CompilationGutterBusHandle = Arc<InboundBus<(BufferId, Vec<(u32, ErrorS
 /// drain looks it up via `ctx.service::<CompilationLocationBusHandle>()`.
 pub type CompilationLocationBusHandle = Arc<InboundBus<(BufferId, Vec<(u32, u32, u32)>)>>;
 
+/// CM.3d (2026-07-22): the theme colours bus — the mode sends
+/// resolved `(bg, fg)` once during activation; the handler maps to
+/// [`AppEffect::CompilationThemeColors`].
+pub type CompilationThemeColorsBusHandle = Arc<InboundBus<(u32, u32)>>;
+
 /// CM.3c: map the parser-native [`ErrorSeverity`] onto the renderer-
 /// facing [`GutterSeverityLevel`] (`Error→Error`, `Warning→Warning`,
 /// `Info→Info`, `Note→Info`). The single conversion in the whole
@@ -184,6 +189,14 @@ pub fn install(boot: &mut impl SubsystemBoot) {
         })]
     });
     boot.register_service::<CompilationLocationBusHandle>(Arc::new(location_bus));
+
+    // CM.3d (2026-07-22): theme colours bus — the mode sends resolved
+    // `compilation.location` bg/fg once during activation so the
+    // renderers read from the theme rather than hardcoding RGB.
+    let theme_colors_bus = boot.inbound::<(u32, u32), _>(|(bg, fg)| {
+        vec![Effect::AppAction(AppEffect::CompilationThemeColors { bg, fg })]
+    });
+    boot.register_service::<CompilationThemeColorsBusHandle>(Arc::new(theme_colors_bus));
 
     let svc: CompilationServiceHandle = Arc::new(DefaultCompilationService::new(
         boot.event_bus().clone(),

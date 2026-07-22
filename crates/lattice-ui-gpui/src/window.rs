@@ -2041,7 +2041,10 @@ impl EditorView {
                                 .iter()
                                 .find(|(l, _, _)| *l == line_idx as u32)
                         })
-                        .map(|_| 0x45475au32)
+                        .map(|_| {
+                            let (bg, _fg) = *rs_guard.compilation_theme_colors;
+                            bg
+                        })
                 })
                 .collect();
 

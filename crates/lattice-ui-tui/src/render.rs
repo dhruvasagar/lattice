@@ -5463,8 +5463,9 @@ fn compilation_location_tint(
     let rs = view.app.render_state.load();
     let entries = rs.compilation_location_lines.get(&buffer_id)?;
     let entry = entries.iter().find(|(l, _, _)| *l == line_idx)?;
-    let bg = view.app.theme.compilation_location_bg;
-    let fg = view.app.theme.compilation_location_fg;
+    let (bg, fg) = *rs.compilation_theme_colors;
+    let bg = Color::Rgb((bg >> 16) as u8, ((bg >> 8) & 0xff) as u8, (bg & 0xff) as u8);
+    let fg = Color::Rgb((fg >> 16) as u8, ((fg >> 8) & 0xff) as u8, (fg & 0xff) as u8);
     Some((entry.1, entry.2, bg, fg))
 }
 

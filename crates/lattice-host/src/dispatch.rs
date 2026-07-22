@@ -1440,6 +1440,7 @@ impl Editor {
             // `CompilationSeverityData`.
             compilation_severity: self.compilation_severity.clone(),
             compilation_location_lines: self.compilation_location_lines.clone(),
+            compilation_theme_colors: self.compilation_theme_colors.clone(),
             ..RenderState::default()
         }
     }
@@ -7450,6 +7451,12 @@ impl Editor {
                     map.insert(bid, std::sync::Arc::new(lines));
                 }
                 self.compilation_location_lines = std::sync::Arc::new(map);
+            }
+            // CM.3d (2026-07-22): resolved compilation theme colours
+            // — published once by the mode during activation. Store
+            // for the renderers to read.
+            AppEffect::CompilationThemeColors { bg, fg } => {
+                self.compilation_theme_colors = std::sync::Arc::new((bg, fg));
             }
             // CM.3b (2026-07-22): `<CR>` on a `*compilation*` location
             // line. The `compilation-mode` handler already parsed the
@@ -31549,9 +31556,18 @@ pub fn prefer_aliases_for_command_candidates(
                 .unwrap_or(&canonical)
                 .to_string()
         });
+        // Only rewrite to the alias if it matches the query.
+        // If the user typed a prefix that matches the canonical
+        // name but not the alias (e.g. "next-" matches
+        // "next-error" but not "cnext"), keep the canonical name
+        // so the candidate is visible and correctly highlighted.
+        let new_ranges = subsequence_match_ranges(&needle, &new_text);
+        if new_ranges.is_empty() && !needle.is_empty() && new_text != canonical {
+            return true;
+        }
         c.raw.text = new_text.clone();
         c.raw.display = new_text.clone();
-        c.match_ranges = subsequence_match_ranges(&needle, &new_text);
+        c.match_ranges = new_ranges;
         true
     });
 }

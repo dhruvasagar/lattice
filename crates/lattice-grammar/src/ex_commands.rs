@@ -23,7 +23,6 @@
 //! resolution is the parser front-end's job (`expand_alias` in
 //! `lattice-ui-tui::excommand`).
 
-use std::sync::Arc;
 use crate::AppEffect;
 use crate::args::{ArgDefault, ArgKind, ArgSpec, ArgValue, Args};
 use crate::command::LatencyClass;
@@ -31,6 +30,7 @@ use crate::effect::{Effect, QuitScope, SubstituteScope};
 use crate::error::{CommandError, GrammarResult};
 use crate::range::Range;
 use crate::registry::{CommandRegistry, ExCommandContext, ExCommandId, ExCommandSpec, SurfaceForm};
+use std::sync::Arc;
 
 /// Set of registered ex-command ids; mirrors the `Builtins` shape for
 /// motions / operators / text objects.
@@ -420,7 +420,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             args_schema: vec![ArgSpec {
                 name: "option".into(),
                 kind: ArgKind::String,
-                doc: "Option name, `name=value`, `noname`, or `name?` to query global value.".into(),
+                doc: "Option name, `name=value`, `noname`, or `name?` to query global value."
+                    .into(),
                 prompt: "option:".into(),
                 default: ArgDefault::Required,
                 completion: Some("gen:options".into()),
@@ -1074,7 +1075,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                 // `gen:elements` is a host generator (the theme registry is a
                 // host-side ServiceRegistry service); it's registered in
                 // `editor_boot.rs` and walks `ThemeRegistry::element_names`.
-                doc: "Registered theme-element name (e.g. `syntax.keyword`, `diff.add.sign`).".into(),
+                doc: "Registered theme-element name (e.g. `syntax.keyword`, `diff.add.sign`)."
+                    .into(),
                 prompt: "element:".into(),
                 default: ArgDefault::Required,
                 completion: Some("gen:elements".into()),
@@ -1969,6 +1971,19 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             surface_form: SurfaceForm::Keyword,
         },
     );
+    let _list_errors = registry.register_ex_command(
+        "error-list",
+        "Open the error list in a fuzzy picker (`:error`; vim `:clist`/`:cl`). The flat browse-and-jump surface — complements `:next-error` (step) and `:problems` (the *problems* multibuffer).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| Ok(Effect::ListErrors)),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
     let next_diagnostic = registry.register_ex_command(
         "ex:diag-next",
         "Move the cursor to the next diagnostic in the active buffer (wraps; `]d` / `:diag-next` / `:cnext`).",
@@ -1991,6 +2006,143 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             accepts_range: false,
             parse_args: Arc::new(parse_no_args),
             apply: Arc::new(|_| Ok(Effect::PrevDiagnostic)),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    // CM.2 / CM.7 / naming-2026-07-22: the error navigation family.
+    // Readable canonical names (`next-error`, emacs vocabulary) lead;
+    // the vim `:c*` spellings are aliases in `lattice-host::excommand`.
+    // Each returns `Effect::AppAction(AppEffect::ErrorNav { target })`;
+    // the host's `do_error_nav` walks the core error list (echoes
+    // `no error list` when empty — no diagnostic fallback). IDs are
+    // not stored (resolved by name), mirroring `_tab_move`.
+    let _error_next = registry.register_ex_command(
+        "next-error",
+        "Jump to the next error / location in the error list (wraps; `:next-error`; vim `:cnext`/`:cn`/`]qq`). Echoes `no error list` when empty (diagnostics live on `]d`/`[d` / `:diag-*`).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| {
+                Ok(Effect::AppAction(AppEffect::ErrorNav {
+                    target: crate::app_effect::ErrorTarget::Next,
+                }))
+            }),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    let _error_prev = registry.register_ex_command(
+        "previous-error",
+        "Jump to the previous error / location in the error list (wraps; `:previous-error`; vim `:cprev`/`:cp`/`[qq`). Echoes `no error list` when empty (diagnostics live on `]d`/`[d` / `:diag-*`).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| {
+                Ok(Effect::AppAction(AppEffect::ErrorNav {
+                    target: crate::app_effect::ErrorTarget::Prev,
+                }))
+            }),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    let _error_cc = registry.register_ex_command(
+        "error",
+        "Jump to error / location N in the error list (1-based; `:error [N]`; vim `:cc [N]`). Bare `:error` re-visits the current entry.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Arc::new(parse_cc_arg),
+            apply: Arc::new(|ctx| {
+                let n: Option<usize> = match &ctx.args {
+                    Args::String(s) => s.parse::<usize>().ok(),
+                    _ => None,
+                };
+                Ok(Effect::AppAction(AppEffect::ErrorNav {
+                    target: crate::app_effect::ErrorTarget::Jump(n),
+                }))
+            }),
+            args_schema: vec![ArgSpec::optional(
+                "n",
+                ArgKind::Int,
+                "Target error entry (1-indexed; default current)",
+            )],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    let _error_first = registry.register_ex_command(
+        "first-error",
+        "Jump to the first error / location in the error list (`:first-error`; vim `:cfirst`/`:cr`/`[Q`).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| {
+                Ok(Effect::AppAction(AppEffect::ErrorNav {
+                    target: crate::app_effect::ErrorTarget::First,
+                }))
+            }),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    let _error_last = registry.register_ex_command(
+        "last-error",
+        "Jump to the last error / location in the error list (`:last-error`; vim `:clast`/`]Q`).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| {
+                Ok(Effect::AppAction(AppEffect::ErrorNav {
+                    target: crate::app_effect::ErrorTarget::Last,
+                }))
+            }),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    // CM.7 (2026-07-22): file-level error traversal — jump to the
+    // first entry of the next / previous file. `:next-error-file`/`]qf`
+    // (vim `:cnextfile`/`:cnf`) and `:previous-error-file`/`[qf`.
+    let _error_next_file = registry.register_ex_command(
+        "next-error-file",
+        "Jump to the first error / location in the next file (wraps; `:next-error-file`; vim `:cnextfile`/`:cnf`/`]qf`).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| {
+                Ok(Effect::AppAction(AppEffect::ErrorNav {
+                    target: crate::app_effect::ErrorTarget::NextFile,
+                }))
+            }),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    let _error_prev_file = registry.register_ex_command(
+        "previous-error-file",
+        "Jump to the first error / location in the previous file (wraps; `:previous-error-file`; vim `:cprevfile`/`:cpf`/`[qf`).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| {
+                Ok(Effect::AppAction(AppEffect::ErrorNav {
+                    target: crate::app_effect::ErrorTarget::PrevFile,
+                }))
+            }),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },
@@ -2197,6 +2349,22 @@ fn parse_tabmove_arg(rest: &str, _bang: bool) -> GrammarResult<Args> {
     trimmed.parse::<u32>().map_err(|e| {
         CommandError::BadArgs(format!(":tabmove arg must be a non-negative integer: {e}"))
     })?;
+    Ok(Args::String(trimmed.to_string()))
+}
+
+/// CM.2 (2026-07-22): `:cc [N]` parser. Optional positional
+/// 1-based integer; missing → `Args::None` (bare `:cc` re-visits
+/// the current entry). Stored as `Args::String` because `Args` has
+/// no Int variant; the apply closure re-parses.
+fn parse_cc_arg(rest: &str, _bang: bool) -> GrammarResult<Args> {
+    let trimmed = rest.trim();
+    if trimmed.is_empty() {
+        return Ok(Args::None);
+    }
+    // Validate it's a positive integer before passing on.
+    trimmed
+        .parse::<usize>()
+        .map_err(|e| CommandError::BadArgs(format!(":cc arg must be a positive integer: {e}")))?;
     Ok(Args::String(trimmed.to_string()))
 }
 
@@ -3148,7 +3316,10 @@ mod tests {
         for id in [ex.describe_option, ex.describe_option_resolution] {
             let spec = registry.ex_command_spec(id.0).unwrap();
             assert_eq!(spec.args_schema.len(), 1);
-            assert_eq!(spec.args_schema[0].completion.as_deref(), Some("gen:options"));
+            assert_eq!(
+                spec.args_schema[0].completion.as_deref(),
+                Some("gen:options")
+            );
         }
     }
 

@@ -1432,6 +1432,11 @@ impl Editor {
             // clone shares the `ArcSwap`, so producer-task writes after this
             // publish are observed by the renderer without republishing.
             wasm_gutter_decorations: self.wasm_decorations.cache.clone(),
+            // CM.3c: snapshot the per-buffer compilation-severity index
+            // (O(1) Arc clone; the host arm rebuilt the map on the last
+            // change). Renderers inject it into `gutter_decorations` via
+            // `CompilationSeverityData`.
+            compilation_severity: self.compilation_severity.clone(),
             ..RenderState::default()
         }
     }
@@ -2810,10 +2815,7 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
                 None => match std::env::var_os("HOME") {
                     Some(h) => std::path::PathBuf::from(h),
                     None => {
-                        editor.set_message(
-                            EchoLevel::Error,
-                            "cd: HOME is not set".to_string(),
-                        );
+                        editor.set_message(EchoLevel::Error, "cd: HOME is not set".to_string());
                         return;
                     }
                 },
@@ -2825,18 +2827,15 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
             // handlers (e.g. search `gr` refresh) pick up the new pwd.
             #[cfg(feature = "search")]
             if let Some(current_dir_handle) =
-                editor.services.get::<
-                    lattice_multibuffer::providers::search::CurrentDirHandle,
-                >()
+                editor
+                    .services
+                    .get::<lattice_multibuffer::providers::search::CurrentDirHandle>()
             {
                 if let Ok(mut dir) = current_dir_handle.lock() {
                     *dir = Some(canonical.clone());
                 }
             }
-            editor.set_message(
-                EchoLevel::Info,
-                canonical.display().to_string(),
-            );
+            editor.set_message(EchoLevel::Info, canonical.display().to_string());
         }
         Effect::PrintWorkingDir => {
             let cwd = editor
@@ -3479,6 +3478,11 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
             // `RendererSignal` is required.
             editor.do_list_diagnostics();
         }
+        Effect::ListErrors => {
+            // CM.8: `:clist` / `:cl` -- open the error list in a
+            // picker (renderer-neutral, like `:diagnostics`).
+            editor.do_list_errors();
+        }
         Effect::DeleteCurrentLine => {
             // 5.5.E.7.4: `:d` (or `:g/.../d`) -- delete the cursor's
             // whole line including its trailing newline. Pure
@@ -3991,16 +3995,18 @@ impl Editor {
             };
             let mut active = self.active_modes.remove(&buffer_id).unwrap_or_default();
             let res = match change.action {
-                crate::diff::mode::DiffModeAction::Activate => self.mode_registry.load_full().activate_minor(
-                    &mut active,
-                    &self.mode_guards,
-                    &self.config,
-                    &self.event_bus,
-                    &self.services,
-                    proto_id,
-                    mode_id,
-                    lattice_mode::CapabilitySet::empty(),
-                ),
+                crate::diff::mode::DiffModeAction::Activate => {
+                    self.mode_registry.load_full().activate_minor(
+                        &mut active,
+                        &self.mode_guards,
+                        &self.config,
+                        &self.event_bus,
+                        &self.services,
+                        proto_id,
+                        mode_id,
+                        lattice_mode::CapabilitySet::empty(),
+                    )
+                }
                 crate::diff::mode::DiffModeAction::Deactivate => {
                     self.mode_registry.load_full().deactivate_minor(
                         &mut active,
@@ -5787,8 +5793,7 @@ impl Editor {
         // `scrolloff == 0` this is the classic
         // `cursor.line < scroll` top clamp.
         let top_limit = {
-            let fold_idx =
-                crate::folds::FoldIndex::from_folds(&self.folds, self.foldenable());
+            let fold_idx = crate::folds::FoldIndex::from_folds(&self.folds, self.foldenable());
             crate::folds::nth_visible_line_backward(&fold_idx, self.cursor.line, scrolloff)
         };
         if top_limit < self.scroll {
@@ -6948,9 +6953,7 @@ impl Editor {
                 arg_spec,
                 ..
             } => {
-                if arg_spec.completion.as_deref() == Some("gen:options")
-                    && !word.is_empty()
-                {
+                if arg_spec.completion.as_deref() == Some("gen:options") && !word.is_empty() {
                     let base = word.split(&['=', '?', '&', '!'][..]).next().unwrap_or(word);
                     let opt_name = base
                         .strip_prefix("no")
@@ -7320,6 +7323,82 @@ impl Editor {
                     );
                 }
             }
+            // CM.1 (2026-07-21): `:compile` / `:recompile` / `:make`.
+            // Mirrors the SearchTrigger entry shape: the substrate
+            // crate (`lattice-compilation`) owns the streaming buffer
+            // + process lifecycle; the host arm is generic glue
+            // (ensure buffer → activate → repaint → echo).
+            AppEffect::CompileRun { cmdline } => {
+                let cwd = self.current_dir.clone();
+                match lattice_compilation::start_compilation(self, cmdline, cwd) {
+                    Some(id) => {
+                        if self.activate_buffer(id) {
+                            let signals = self.activate_buffer_state();
+                            self.enqueue_renderer_signals(signals);
+                        }
+                        self.set_message(EchoLevel::Info, "compilation started".to_string());
+                    }
+                    None => {
+                        self.set_message(
+                            EchoLevel::Warn,
+                            "compilation: service not registered".to_string(),
+                        );
+                    }
+                }
+            }
+            // CM.2 (2026-07-22): `:cnext`/`:cprev`/`:cc`/`:cfirst`/
+            // `:clast` and Builtin `]q`/`[q`. Generic error walk
+            // over core state; empty-list fallback to diagnostic
+            // hopping lives inside `do_error_nav`.
+            AppEffect::ErrorNav { target } => self.do_error_nav(target),
+            // CM.3a (2026-07-22): parsed error entries from the
+            // compilation stderr reader (off-thread → host-state seam
+            // via the compilation inbound bus). Replace the core list;
+            // echo the count only when non-empty (the empty vec sent on
+            // a new run clears the stale list silently).
+            AppEffect::SetErrorList { entries } => {
+                let n = entries.len();
+                self.set_error_list(entries);
+                if n > 0 {
+                    self.set_message(EchoLevel::Info, format!("error list: {n} items"));
+                }
+            }
+            // CM.3c (2026-07-22): the per-buffer severity gutter index for
+            // the `*compilation*` buffer (off-thread compilation drain →
+            // host-state seam, twin of SetErrorList). Convert the parser-
+            // native `ErrorSeverity` to the renderer-facing
+            // `GutterSeverityLevel` once here, then store the buffer's marks
+            // in the compilation-severity slot snapshotted into RenderState.
+            // An empty vec (sent on `Reset` / a new run) drops the buffer's
+            // entry so its marks clear.
+            AppEffect::CompilationGutterSet { buffer, entries } => {
+                let bid = lattice_core::BufferId(buffer);
+                let mut map = (*self.compilation_severity).clone();
+                if entries.is_empty() {
+                    map.remove(&bid);
+                } else {
+                    let levels: Vec<(u32, lattice_mode::GutterSeverityLevel)> = entries
+                        .iter()
+                        .map(|(line, sev)| (*line, lattice_compilation::gutter_level(*sev)))
+                        .collect();
+                    map.insert(bid, std::sync::Arc::new(levels));
+                }
+                self.compilation_severity = std::sync::Arc::new(map);
+            }
+            // CM.3b (2026-07-22): `<CR>` on a `*compilation*` location
+            // line. The `compilation-mode` handler already parsed the
+            // cursor line into `(path, line, col)`; jump there (records
+            // position history) and route the fan-out through the same
+            // signal path `:cnext` uses. Then sync the error list index to
+            // the matching entry so `:cnext`/`]q` continue from the
+            // jumped-to location — a best-effort sync (no-op when the
+            // line has no parsed error entry, e.g. a gnu short-form
+            // note that wasn't in the list).
+            AppEffect::CompileJumpToLocation { path, line, col } => {
+                let signals = self.jump_to_file_line_col(&path, line, col);
+                self.enqueue_renderer_signals(signals);
+                self.error_list.set_index_to_matching(&path, line);
+            }
             // N.1.1 (2026-06-10): `:narrow [{range}]`. Resolve the
             // range against the active document, fetch its handle,
             // and open a one-excerpt multibuffer focused on the
@@ -7458,6 +7537,64 @@ impl Editor {
             // in the registry handler.
             AppEffect::SearchJumpToSource => {}
             AppEffect::SearchRefresh => {}
+            // CM.4 (2026-07-22): `:copen` — open the `*problems*`
+            // multibuffer over the core error list. Mirrors the
+            // SearchTrigger / NarrowTrigger entry shape: the substrate
+            // crate (`lattice-multibuffer::providers::problems`) owns
+            // source-loading + view-creation; the host arm is generic
+            // glue (read error → create → activate → echo). Empty
+            // list echoes "no error list".
+            AppEffect::ProblemsOpen => {
+                if self.error_list().is_empty() {
+                    self.set_message(EchoLevel::Warn, "no error list".to_string());
+                } else {
+                    let entries = self.error_list().entries().to_vec();
+                    let registry = self.registry.clone();
+                    let lr = Some(self.lang_registry.clone());
+                    match lattice_multibuffer::providers::problems::create_problems_view(
+                        self, &entries, registry, lr,
+                    ) {
+                        Some(view_id) => {
+                            if self.activate_buffer(view_id) {
+                                let signals = self.activate_buffer_state();
+                                self.enqueue_renderer_signals(signals);
+                            }
+                            self.set_message(
+                                EchoLevel::Info,
+                                format!("[problems] {} items", entries.len()),
+                            );
+                        }
+                        None => {
+                            self.set_message(
+                                EchoLevel::Warn,
+                                ":copen: no readable source files in the error list".to_string(),
+                            );
+                        }
+                    }
+                }
+            }
+            // CM.4 (2026-07-22): `:cclose` — close the active
+            // `*problems*` view, leaving the source buffers open.
+            // Guarded to problems views (ProblemsMinorMode active) so
+            // it never deletes an arbitrary buffer or a non-problems
+            // multibuffer — the `:widen` close shape.
+            AppEffect::ProblemsClose => {
+                let active = self.active_pane_buffer_id();
+                let problems_id =
+                    lattice_multibuffer::providers::problems::ProblemsMinorMode::mode_id();
+                if self.minor_mode_enabled_for(active, problems_id) {
+                    if self.do_buffer_delete(true) {
+                        let signals = self.activate_buffer_state();
+                        self.enqueue_renderer_signals(signals);
+                    }
+                    self.set_message(EchoLevel::Info, "[problems] closed".to_string());
+                } else {
+                    self.set_message(
+                        EchoLevel::Warn,
+                        ":cclose: not in a problems view".to_string(),
+                    );
+                }
+            }
         }
     }
 
@@ -11089,11 +11226,7 @@ impl Editor {
         };
         // Short-circuit: if the syntax handle already uses this
         // language, there's nothing to rebuild.
-        if self
-            .syntax
-            .as_ref()
-            .is_some_and(|s| s.lang() == new_lang)
-        {
+        if self.syntax.as_ref().is_some_and(|s| s.lang() == new_lang) {
             return Vec::new();
         }
         let text = self.document.text();
@@ -11110,8 +11243,12 @@ impl Editor {
         // switches.
         let locals = self.buffer_locals.entry(buffer_id).or_default();
         locals.insert(crate::modes::DocumentSyntax(self.syntax.clone()));
-        locals.insert(crate::modes::DocumentLastParsedTextVersion(self.last_parsed_text_version));
-        locals.insert(crate::modes::DocumentLastSyncedSyntaxVersion(self.last_synced_syntax_version));
+        locals.insert(crate::modes::DocumentLastParsedTextVersion(
+            self.last_parsed_text_version,
+        ));
+        locals.insert(crate::modes::DocumentLastSyncedSyntaxVersion(
+            self.last_synced_syntax_version,
+        ));
         Vec::new()
     }
 
@@ -14721,7 +14858,11 @@ impl Editor {
                 let Some(kind) = self.buffers.kind_of(buffer_id) else {
                     continue;
                 };
-                for minor_id in self.mode_registry.load().auto_activatable_minors(&major, kind) {
+                for minor_id in self
+                    .mode_registry
+                    .load()
+                    .auto_activatable_minors(&major, kind)
+                {
                     to_activate.push((buffer_id, minor_id));
                 }
             }
@@ -17380,14 +17521,12 @@ impl Editor {
             lattice_grammar::ViewportPos::Middle => {
                 crate::folds::nth_visible_line_forward(&fold_idx, self.scroll, height / 2, total)
             }
-            lattice_grammar::ViewportPos::Bottom => {
-                crate::folds::nth_visible_line_forward(
-                    &fold_idx,
-                    self.scroll,
-                    height.saturating_sub(1),
-                    total,
-                )
-            }
+            lattice_grammar::ViewportPos::Bottom => crate::folds::nth_visible_line_forward(
+                &fold_idx,
+                self.scroll,
+                height.saturating_sub(1),
+                total,
+            ),
         }
         .min(last);
         let len = buffer.line_byte_len(line);
@@ -17426,8 +17565,7 @@ impl Editor {
             // position too low. When there aren't enough visible
             // rows above the cursor, scroll clamps to 0.
             lattice_grammar::ScrollPos::Center => {
-                let fold_idx =
-                    crate::folds::FoldIndex::from_folds(&self.folds, self.foldenable());
+                let fold_idx = crate::folds::FoldIndex::from_folds(&self.folds, self.foldenable());
                 crate::folds::nth_visible_line_backward(&fold_idx, self.cursor.line, height / 2)
             }
             // `zb`: cursor at the bottom row — the same display-row
@@ -17479,12 +17617,10 @@ impl Editor {
         let last = last_addressable_line(&buffer);
         let total = buffer.line_count();
         let new_line = if down {
-            let fold_idx =
-                crate::folds::FoldIndex::from_folds(&self.folds, self.foldenable());
+            let fold_idx = crate::folds::FoldIndex::from_folds(&self.folds, self.foldenable());
             crate::folds::nth_visible_line_forward(&fold_idx, self.cursor.line, step, total)
         } else {
-            let fold_idx =
-                crate::folds::FoldIndex::from_folds(&self.folds, self.foldenable());
+            let fold_idx = crate::folds::FoldIndex::from_folds(&self.folds, self.foldenable());
             crate::folds::nth_visible_line_backward(&fold_idx, self.cursor.line, step)
         }
         .min(last);
@@ -17513,16 +17649,14 @@ impl Editor {
         let total = buffer.line_count();
         let last = last_addressable_line(&buffer);
         if down {
-            let fold_idx =
-                crate::folds::FoldIndex::from_folds(&self.folds, self.foldenable());
+            let fold_idx = crate::folds::FoldIndex::from_folds(&self.folds, self.foldenable());
             self.scroll =
                 crate::folds::nth_visible_line_forward(&fold_idx, self.scroll, 1, total).min(last);
             if self.cursor.line < self.scroll {
                 self.cursor.line = self.scroll;
             }
         } else {
-            let fold_idx =
-                crate::folds::FoldIndex::from_folds(&self.folds, self.foldenable());
+            let fold_idx = crate::folds::FoldIndex::from_folds(&self.folds, self.foldenable());
             self.scroll = crate::folds::nth_visible_line_backward(&fold_idx, self.scroll, 1);
             let bottom = self.scroll + height.saturating_sub(1);
             if self.cursor.line > bottom {
@@ -25062,6 +25196,81 @@ impl Editor {
         );
     }
 
+    /// CM.2 (2026-07-22): replace the error list. The producer
+    /// entry point — CM.3's parser event-drain (and, later,
+    /// diagnostics / search) calls this with freshly parsed entries.
+    /// Resets the index to the first entry.
+    pub fn set_error_list(&mut self, entries: Vec<crate::error_list::ErrorEntry>) {
+        self.error_list.set(entries);
+    }
+
+    /// CM.2 (2026-07-22): read-only accessor for the error list.
+    pub fn error_list(&self) -> &crate::error_list::ErrorList {
+        &self.error_list
+    }
+
+    /// CM.2 (2026-07-22): generic error navigation — the single
+    /// host method behind `:cnext`/`:cprev`/`:cc`/`:cfirst`/`:clast`
+    /// and the Builtin `]q`/`[q` chords.
+    ///
+    /// Resolves `target` against the core error list. When the
+    /// list is **empty**, `Next`/`Prev` fall back to today's
+    /// active-buffer diagnostic hopping (`]d`/`[d` semantics), so the
+    /// repointed `:cnext`/`:cn`/`:cprev`/`:cp` aliases preserve their
+    /// old behaviour until a producer populates the list; `Jump`/
+    /// `First`/`Last` echo "no error list". On a resolved entry it
+    /// calls [`Self::jump_to_file_line_col`] (which records the hop in
+    /// position history) and echoes `"(i/n) message"` like
+    /// [`Self::do_next_diagnostic`].
+    pub fn do_error_nav(&mut self, target: lattice_grammar::ErrorTarget) {
+        use lattice_grammar::ErrorTarget;
+        if self.error_list.is_empty() {
+            // Error-list commands touch ONLY the error list — no fallback
+            // to diagnostic navigation. Dedicated `]d`/`[d` + `:diag-*`
+            // (mode-owned by lsp-diagnostics-mode) own diagnostics. This
+            // matches vim, where `:cnext` on an empty list is
+            // `E42: No Errors` and never touches anything else.
+            let _ = &target;
+            self.set_message(EchoLevel::Info, "no error list".to_string());
+            return;
+        }
+        let resolved = match target {
+            ErrorTarget::Next => self.error_list.step(1),
+            ErrorTarget::Prev => self.error_list.step(-1),
+            ErrorTarget::Jump(n) => self.error_list.jump_to(n),
+            ErrorTarget::First => self.error_list.first(),
+            ErrorTarget::Last => self.error_list.last(),
+            ErrorTarget::NextFile => self.error_list.step_file(1),
+            ErrorTarget::PrevFile => self.error_list.step_file(-1),
+        };
+        // Clone what we need before releasing the list borrow.
+        let Some(entry) = resolved else {
+            // Only reachable via `Jump(N)` with an out-of-range N on
+            // a non-empty list; the walk / first / last variants
+            // always resolve when non-empty.
+            self.set_message(
+                EchoLevel::Error,
+                "error list index out of range".to_string(),
+            );
+            return;
+        };
+        let path = entry.path.clone();
+        let line = entry.line;
+        let col = entry.col;
+        let message = entry.message.clone();
+        // `entry` no longer used past here — the list borrow ends,
+        // so `index()` / `len()` can re-borrow.
+        let human_idx = self.error_list.index() + 1;
+        let total = self.error_list.len();
+        let signals = self.jump_to_file_line_col(&path, line, col);
+        self.enqueue_renderer_signals(signals);
+        let first_line = message.lines().next().unwrap_or("").trim();
+        self.set_message(
+            EchoLevel::Info,
+            format!("({human_idx}/{total}) {first_line}"),
+        );
+    }
+
     /// `:lsp-log [server]` -- open the `*lsp*` subsystem buffer
     /// (no arg) or a per-server picker. Phase 5.8.AD.2.
     pub fn do_open_lsp_log(&mut self, server_id: Option<&str>) {
@@ -27361,7 +27570,11 @@ impl Editor {
                         lattice_mode::EmacsKeysMode::mode_id(),
                     ),
                     "emacs-keys-mode",
-                    lattice_mode::emacs_keys_layer_bindings(enabled, &prefix, &self.registry.load()),
+                    lattice_mode::emacs_keys_layer_bindings(
+                        enabled,
+                        &prefix,
+                        &self.registry.load(),
+                    ),
                 );
             }
             n if n.starts_with("ui.") => {
@@ -27762,7 +27975,11 @@ impl Editor {
             let doc_match = spec.doc.to_ascii_lowercase().contains(&needle);
             if name_match || doc_match {
                 let first = spec.doc.lines().next().unwrap_or("").to_string();
-                hits.push((spec.name.clone(), lattice_grammar::kind_icon(spec.kind.label()), first));
+                hits.push((
+                    spec.name.clone(),
+                    lattice_grammar::kind_icon(spec.kind.label()),
+                    first,
+                ));
             }
         }
         // PI.2: also search the plugin-API catalog (interface names + docs),
@@ -27782,7 +27999,11 @@ impl Editor {
                     .and_then(|d| d.lines().next())
                     .unwrap_or("")
                     .to_string();
-                hits.push((iface.name.clone(), lattice_grammar::kind_icon("plugin-api"), first));
+                hits.push((
+                    iface.name.clone(),
+                    lattice_grammar::kind_icon("plugin-api"),
+                    first,
+                ));
             }
         }
         hits.sort_by(|a, b| a.0.cmp(&b.0));
@@ -28044,7 +28265,13 @@ impl Editor {
                 ),
             };
             let first = spec.doc.lines().next().unwrap_or("").to_string();
-            rows.push((order, group, spec.name.clone(), lattice_grammar::kind_icon(spec.kind.label()), first));
+            rows.push((
+                order,
+                group,
+                spec.name.clone(),
+                lattice_grammar::kind_icon(spec.kind.label()),
+                first,
+            ));
         }
         rows.sort_by(|a, b| (a.0, &a.1, &a.2).cmp(&(b.0, &b.1, &b.2)));
 
@@ -29951,6 +30178,53 @@ impl Editor {
         self.set_active_picker(p);
     }
 
+    /// CM.8 (2026-07-22): `:clist` / `:cl` — open the error list in a
+    /// fuzzy picker, the flat browse-and-jump surface parallel to
+    /// `:diagnostics`. Complements `:cnext` (step through) and `:copen`
+    /// (the `*problems*` multibuffer). Reuses the shared `LspLocations`
+    /// picker source + `JumpToLspLocation` accept path, exactly like
+    /// `do_list_diagnostics` — the rows come from the core error list.
+    pub fn do_list_errors(&mut self) {
+        // Browse-style picker, not a tag-intent drill-down — clear any
+        // stale nav origin (mirrors `do_list_diagnostics`).
+        self.pending_tag_origin = None;
+        if self.error_list.is_empty() {
+            self.set_message(EchoLevel::Info, "no error list".to_string());
+            return;
+        }
+        let rows: Vec<lattice_picker::LspLocationRow> = self
+            .error_list
+            .entries()
+            .iter()
+            .map(|e| {
+                let sev = match e.severity {
+                    lattice_protocol::error_list::ErrorSeverity::Error => "[E]",
+                    lattice_protocol::error_list::ErrorSeverity::Warning => "[W]",
+                    lattice_protocol::error_list::ErrorSeverity::Info => "[I]",
+                    lattice_protocol::error_list::ErrorSeverity::Note => "[N]",
+                };
+                lattice_picker::LspLocationRow {
+                    path: e.path.clone(),
+                    line: e.line,
+                    col: e.col,
+                    preview: lattice_help::one_line(&e.message),
+                    // The preview is the entry MESSAGE (prose), not a
+                    // source line — no source-grammar highlighting.
+                    marginalia: sev.to_string(),
+                    display_spans: Vec::new(),
+                }
+            })
+            .collect();
+        let total = rows.len();
+        let mut p = lattice_picker::Picker::new(
+            format!("error list ({total})"),
+            lattice_picker::PickerSource::LspLocations,
+            lattice_picker::PickerAction::JumpToLspLocation,
+        );
+        p.set_lsp_locations(rows);
+        self.set_active_picker(p);
+    }
+
     /// 5.5.F.6: shared row formatter for the customize views.
     /// Renders one option's metadata in the `:options`-listing-
     /// compatible shape. Wraps the option name in a
@@ -30682,6 +30956,7 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         | Effect::OpenPopup { .. }
         | Effect::OpenHelpTopic { .. }
         | Effect::ListDiagnostics
+        | Effect::ListErrors
         | Effect::NextDiagnostic
         | Effect::PrevDiagnostic
         | Effect::OpenLspLog { .. }
@@ -30816,6 +31091,7 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         | Effect::OpenPopup { .. }
         | Effect::OpenHelpTopic { .. }
         | Effect::ListDiagnostics
+        | Effect::ListErrors
         | Effect::NextDiagnostic
         | Effect::PrevDiagnostic
         | Effect::OpenLspLog { .. }
@@ -37094,7 +37370,7 @@ mod tests {
     /// bypassing the editable-tail gate (which only guarded the char path).
     #[tokio::test]
     async fn editable_tail_runner_gates_operators_above_the_prompt() {
-        use lattice_grammar::{args::Args, CommandInvocation, Target};
+        use lattice_grammar::{CommandInvocation, Target, args::Args};
         use lattice_mode::{
             EditableTail, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, ModeRegistry,
         };

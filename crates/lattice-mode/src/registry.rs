@@ -1051,10 +1051,15 @@ mod tests {
             .unwrap();
         // Plugin (register_available): a Global minor is registered but INERT.
         let plugin = r
-            .register_available(MockMode::minor("plugin-mode").with_policy(ActivationPolicy::Global))
+            .register_available(
+                MockMode::minor("plugin-mode").with_policy(ActivationPolicy::Global),
+            )
             .unwrap();
 
-        assert!(r.is_registered(plugin), "plugin mode is available (registered)");
+        assert!(
+            r.is_registered(plugin),
+            "plugin mode is available (registered)"
+        );
         assert!(
             !r.is_minor_enabled(&plugin),
             "plugin mode is NOT enabled at registration"

@@ -1183,6 +1183,7 @@ impl GpuiApp {
             | Effect::DescribeMode { .. }
             | Effect::Customize { .. }
             | Effect::ListDiagnostics
+            | Effect::ListErrors
             | Effect::DeleteCurrentLine
             | Effect::Substitute { .. }
             | Effect::DescribeCommand { .. }

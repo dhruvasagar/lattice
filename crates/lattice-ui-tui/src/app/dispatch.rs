@@ -946,6 +946,7 @@ impl App {
             | Effect::DescribeMode { .. }
             | Effect::Customize { .. }
             | Effect::ListDiagnostics
+            | Effect::ListErrors
             | Effect::DeleteCurrentLine
             | Effect::Substitute { .. }
             | Effect::RecordJump
@@ -1286,6 +1287,7 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::OpenPopup { .. }
         | Effect::OpenHelpTopic { .. }
         | Effect::ListDiagnostics
+        | Effect::ListErrors
         | Effect::NextDiagnostic
         | Effect::PrevDiagnostic
         | Effect::OpenLspLog { .. }
@@ -1418,6 +1420,7 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::OpenPopup { .. }
         | Effect::OpenHelpTopic { .. }
         | Effect::ListDiagnostics
+        | Effect::ListErrors
         | Effect::NextDiagnostic
         | Effect::PrevDiagnostic
         | Effect::OpenLspLog { .. }

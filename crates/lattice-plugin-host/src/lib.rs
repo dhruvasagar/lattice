@@ -91,14 +91,12 @@ pub use completion_source::WasmCompletionSource;
 pub use completion_task::{CompletionActor, CompletionClient};
 pub use decoration_source::WasmDecorationSource;
 pub use decoration_task::{DecorationActor, DecorationClient};
-pub use manifest::{
-    Capability, CapabilityParseError, ManifestError, PluginManifest, PluginSeam,
-};
+pub use manifest::{Capability, CapabilityParseError, ManifestError, PluginManifest, PluginSeam};
 pub use picker_source::WasmPickerSource;
 pub use picker_task::{PickerActor, PickerClient};
 pub use teardown::{PluginTeardown, TeardownRegistries, TeardownReport};
 pub use trace::{
-    Direction, HotGate, PluginTraceRecord, PluginTracePushed, PluginTracer, PluginTracerHandle,
+    Direction, HotGate, PluginTracePushed, PluginTraceRecord, PluginTracer, PluginTracerHandle,
     TraceLevel, TraceOutcome,
 };
 /// The compiled component — the return type of [`PluginHost::compile`],
@@ -584,7 +582,10 @@ mod trip_and_map_traced_tests {
         assert_eq!(recs[0].call, "apply-motion");
         assert_eq!(recs[0].level, TraceLevel::Debug);
         assert!(matches!(recs[0].outcome, TraceOutcome::Ok { .. }));
-        assert!(matches!(recs[0].direction, crate::trace::Direction::GuestExport));
+        assert!(matches!(
+            recs[0].direction,
+            crate::trace::Direction::GuestExport
+        ));
     }
 
     #[test]
@@ -1125,28 +1126,32 @@ impl crate::grammar_host::bindings::lattice::plugin_host::tree_sitter::HostNode 
         &mut self,
         self_: wasmtime::component::Resource<crate::tree_resource::NodeResource>,
     ) -> bool {
-        self.table.get(&self_).map(|n| n.is_named()).unwrap_or(false)
+        self.table
+            .get(&self_)
+            .map(|n| n.is_named())
+            .unwrap_or(false)
     }
 
     fn is_error(
         &mut self,
         self_: wasmtime::component::Resource<crate::tree_resource::NodeResource>,
     ) -> bool {
-        self.table.get(&self_).map(|n| n.is_error()).unwrap_or(false)
+        self.table
+            .get(&self_)
+            .map(|n| n.is_error())
+            .unwrap_or(false)
     }
 
     fn byte_range(
         &mut self,
         self_: wasmtime::component::Resource<crate::tree_resource::NodeResource>,
     ) -> crate::lattice::plugin_host::types::Range {
-        let r = self
-            .table
-            .get(&self_)
-            .map(|n| n.byte_range())
-            .unwrap_or(lattice_protocol::position::Range {
+        let r = self.table.get(&self_).map(|n| n.byte_range()).unwrap_or(
+            lattice_protocol::position::Range {
                 start: lattice_protocol::position::Position { line: 0, byte: 0 },
                 end: lattice_protocol::position::Position { line: 0, byte: 0 },
-            });
+            },
+        );
         crate::lattice::plugin_host::types::Range {
             start: crate::lattice::plugin_host::types::Position {
                 line: r.start.line,
@@ -1471,8 +1476,9 @@ impl crate::keymap_host::bindings::lattice::plugin_host::keymap::Host for Plugin
         let plugin_id = ctx.plugin_id.0;
         let mode = crate::keymap_host::project_binding_mode(binding_mode);
 
-        let bound =
-            crate::keymap_host::bind_user_keybinding(&keymap, &commands, plugin_id, mode, &chord, &command);
+        let bound = crate::keymap_host::bind_user_keybinding(
+            &keymap, &commands, plugin_id, mode, &chord, &command,
+        );
         if bound {
             self.keymap_contributions
                 .push(crate::keymap_host::KeymapBindingToken { mode, chord });
@@ -1582,10 +1588,9 @@ impl PluginState {
     /// `event_emit` handle `emit-event` uses).
     fn request_mode_enablement(&mut self, mode: String, enabled: bool) {
         match &self.event_emit {
-            Some(ctx) => ctx.bus.publish(lattice_protocol::Event::ModeEnablementRequested {
-                mode,
-                enabled,
-            }),
+            Some(ctx) => ctx
+                .bus
+                .publish(lattice_protocol::Event::ModeEnablementRequested { mode, enabled }),
             None => tracing::warn!(
                 %mode,
                 enabled,
@@ -1974,7 +1979,13 @@ impl PluginHost {
     ) -> Result<LoadedPlugin, PluginHostError> {
         let (wasi, outcome, data_dir) = self.build_plugin_wasi(manifest, tier);
         let (mut store, bindings) = self
-            .instantiate_inner(component, wasi, outcome.grant.clone(), budget, Some(&manifest.id))
+            .instantiate_inner(
+                component,
+                wasi,
+                outcome.grant.clone(),
+                budget,
+                Some(&manifest.id),
+            )
             .await?;
         // PO.5: stamp the logging route once the id is allocated.
         let id = self.alloc_id();

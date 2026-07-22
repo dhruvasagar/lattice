@@ -83,6 +83,23 @@ pub enum GutterDecoration {
     },
 }
 
+/// CM.3c: render-time carrier for `compilation-mode`'s severity gutter
+/// marks. The off-thread compilation drain builds a per-buffer severity
+/// index and ships it to the host (`AppEffect::CompilationGutterSet`),
+/// which stores it in `render_state`; the renderer reads that slot for the
+/// pane's buffer and registers this into the [`DecorationCtx`]'s
+/// `ServiceRegistry`. `CompilationMode::gutter_decorations` then pulls it
+/// and maps each `(line, level)` to [`GutterDecoration::Severity`].
+///
+/// Deliberately lives here (in `lattice-mode`), NOT in `lattice-compilation`,
+/// so neither renderer needs a `lattice-compilation` dependency to inject it
+/// — the same dependency-inversion the `Mode::gutter_decorations` seam uses
+/// for `LspDiagnosticsData` / `DiffDecorationData`. `entries` is shared
+/// (`Arc`) so the render-path read is an O(1) pointer clone.
+pub struct CompilationSeverityData {
+    pub entries: std::sync::Arc<Vec<(u32, GutterSeverityLevel)>>,
+}
+
 /// Read-only context passed to [`crate::Mode::gutter_decorations`].
 /// Same dep-inversion pattern as [`StatusLineCtx`]: the App populates
 /// a `ServiceRegistry` with typed render-state snapshots; modes pull

@@ -1,0 +1,455 @@
+//! CM.1: `compilation-mode` — major mode for the read-only
+//! synthetic `*compilation*` buffer.
+//!
+//! Mirrors `lattice_agent::log::modes::AiLogMode` /
+//! `lattice_mode::modes::MessagesMode`: a `ReadOnly + NoFile`
+//! major activated on the buffer *by id* (via
+//! `BufferStore::ensure_named_document`), whose `on_activate`
+//! subscribes to [`CompilationOutputPushed`] and spawns a drain
+//! task that applies each streamed chunk to the buffer through
+//! the actor handle. The returned `Subscription` guard
+//! unsubscribes on drop.
+
+use std::sync::{Arc, OnceLock};
+
+use lattice_grammar::{AppEffect, CommandRegistryHandle, Effect};
+use lattice_mode::inbound::InboundBus;
+use lattice_mode::{
+    ActionContext, ActionHandler, ActionHandlerRegistration, ActionHandlerRegistryHandle,
+    BufferStoreHandle, CapabilitySet, CompilationSeverityData, DecorationCtx, GutterDecoration,
+    Keymap, KeymapEntry, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, OptionOverrideSet,
+    Subscription, keymap_entry,
+};
+use lattice_protocol::edit::Edit;
+use lattice_protocol::error_list::ErrorSeverity;
+use lattice_protocol::position::{Position, Range};
+use lattice_runtime::Document;
+
+use crate::events::{CompilationOutputPushed, OutputChunk};
+use crate::{CompilationGutterBusHandle, scan_severities};
+
+/// Count the `\n`s in `text` — how many buffer lines it advances the
+/// running line counter (CM.3c drain line-tracking).
+fn count_newlines(text: &str) -> u32 {
+    text.matches('\n').count() as u32
+}
+
+/// Major mode for the `*compilation*` buffer.
+pub struct CompilationMode;
+
+impl CompilationMode {
+    pub fn mode_id() -> ModeId {
+        ModeId::new("compilation-mode")
+    }
+}
+
+/// CM.3a/CM.3b: static keymap catalog for `compilation-mode`.
+///
+/// - `gr` recompiles (reuses the last command), mirroring
+///   project-search's `gr` refresh. `action:compilation-recompile`
+///   (registered by `lattice-host::actions::populate`) emits
+///   `AppEffect::CompileRun { cmdline: None }`.
+/// - `<CR>` jumps to the source location on the cursor line
+///   (CM.3b). `action:compilation-jump` is registered as a dead
+///   marker; the mode's per-buffer `ActionHandlerRegistry` closure
+///   (see `on_activate`) intercepts, parses the line, and emits
+///   `AppEffect::CompileJumpToLocation`.
+///
+/// The host's `translate_mode_keymaps` pass auto-pushes these as a
+/// `MajorMode(compilation-mode)` layer; K.1.c scopes them to
+/// `*compilation*` buffers.
+fn compilation_keymap_entries() -> &'static [KeymapEntry] {
+    static ENTRIES: OnceLock<Vec<KeymapEntry>> = OnceLock::new();
+    ENTRIES.get_or_init(|| {
+        vec![
+            keymap_entry! {
+                mode: Normal, chord: "gr",
+                doc: "Recompile — re-run the last compilation command",
+                cmd: "action:compilation-recompile"
+            },
+            keymap_entry! {
+                mode: Normal, chord: "<CR>",
+                doc: "Jump to the source location on the cursor line (syncs the error list index)",
+                cmd: "action:compilation-jump"
+            },
+        ]
+    })
+}
+
+/// Pure model of applying one chunk to the current buffer text.
+///
+/// The live drain produces the equivalent `Edit`s against the
+/// actor handle; this function is the host-free unit-test seam for
+/// the chunk semantics (`Reset` replaces everything; `Append` /
+/// `Finished` concatenate at the end).
+pub fn apply_chunk(current: &str, chunk: &OutputChunk) -> String {
+    match chunk {
+        OutputChunk::Reset { header } => header.clone(),
+        OutputChunk::Append { text } => {
+            let mut s = String::with_capacity(current.len() + text.len());
+            s.push_str(current);
+            s.push_str(text);
+            s
+        }
+        OutputChunk::Finished { summary } => {
+            let mut s = String::with_capacity(current.len() + summary.len());
+            s.push_str(current);
+            s.push_str(summary);
+            s
+        }
+    }
+}
+
+/// Append `text` at the very end of the buffer as one edit.
+async fn append_at_end(handle: &Arc<dyn Document>, text: String) {
+    if text.is_empty() {
+        return;
+    }
+    let snap = handle.snapshot();
+    let last = snap.buffer.line_count().saturating_sub(1);
+    let last_line = snap.buffer.line(last).unwrap_or_default();
+    let pos = Position::new(last, last_line.len() as u32);
+    let _ = handle.apply_edit_batch(vec![Edit::insert(pos, text)]).await;
+}
+
+/// Replace the whole buffer with `header` as one edit.
+async fn reset_to(handle: &Arc<dyn Document>, header: &str) {
+    let snap = handle.snapshot();
+    let last = snap.buffer.line_count().saturating_sub(1);
+    let last_line = snap.buffer.line(last).unwrap_or_default();
+    let end = Position::new(last, last_line.len() as u32);
+    let edit = Edit::replace(Range::new(Position::ZERO, end), header.to_string());
+    let _ = handle.apply_edit_batch(vec![edit]).await;
+}
+
+/// CM.3b: RAII guard returned by [`CompilationMode::on_activate`].
+///
+/// Holds BOTH the streaming-output subscription (whose `Drop`
+/// unsubscribes the drain) AND the per-buffer action-handler
+/// registrations (whose `Drop` unregisters the `<CR>` jump handler
+/// from the `ActionHandlerRegistry`). Fields drop in declaration
+/// order; no custom `Drop` is needed — each field cleans up itself.
+/// Mirrors `ProjectSearchMultibufferModeGuard`. Both fields default
+/// to empty so the early-return (missing service / runtime) paths
+/// hand back an inert guard.
+#[derive(Default)]
+pub struct CompilationModeGuard {
+    _output_sub: Option<Subscription>,
+    _action_handler_registrations: Vec<ActionHandlerRegistration>,
+}
+
+impl Mode for CompilationMode {
+    type Guard = CompilationModeGuard;
+
+    fn id(&self) -> ModeId {
+        Self::mode_id()
+    }
+
+    fn kind(&self) -> ModeKind {
+        ModeKind::Major
+    }
+
+    fn options(&self) -> OptionOverrideSet {
+        // User keystrokes can't mutate `*compilation*` — the
+        // compilation service owns the content; owner writes route
+        // through `apply_edit_batch` which bypasses the
+        // dispatcher's read-only gate. `NoFile = true`: it is a
+        // transcript, not an on-disk file (`:q` never warns; `:w`
+        // is a no-op).
+        lattice_config::overrides! {
+            lattice_config::ReadOnly = true,
+            lattice_config::NoFile = true,
+        }
+    }
+
+    fn required_capabilities(&self) -> CapabilitySet {
+        CapabilitySet::empty()
+    }
+
+    /// CM.3a: `gr` → recompile. Resolved at host translation time via
+    /// `CommandRegistry` against the `action:compilation-recompile`
+    /// name registered by `lattice-host::actions::populate`.
+    fn keymap(&self) -> Keymap {
+        Keymap::from_entries(compilation_keymap_entries())
+    }
+
+    /// CM.3c: severity gutter marks for the `*compilation*` buffer. Reads
+    /// the per-buffer severity index the renderer injected as
+    /// [`CompilationSeverityData`] — produced off-thread by the drain,
+    /// delivered through `render_state` (never scanned at paint time) —
+    /// and maps each `(line, level)` to a leftmost-gutter
+    /// [`GutterDecoration::Severity`], the SAME column LSP diagnostics
+    /// paint (so no renderer edit is needed). Graceful empty when the
+    /// service is absent (no marks produced yet, or a stripped render
+    /// path). O(entries), no allocation proportional to buffer size.
+    fn gutter_decorations(&self, ctx: &DecorationCtx<'_>) -> Vec<GutterDecoration> {
+        let Some(data) = ctx.service::<CompilationSeverityData>() else {
+            return Vec::new();
+        };
+        data.entries
+            .iter()
+            .map(|(line, level)| GutterDecoration::Severity {
+                line: *line,
+                level: *level,
+            })
+            .collect()
+    }
+
+    fn on_activate(&self, ctx: ModeContext) -> LifecycleFuture<'_, Self::Guard> {
+        Box::pin(async move {
+            let buffer_id = lattice_core::BufferId(ctx.buffer_id().0 as u32);
+            let Some(store) = ctx.service::<BufferStoreHandle>() else {
+                return Ok(CompilationModeGuard::default());
+            };
+            let Some(handle) = store.handle_for(buffer_id) else {
+                return Ok(CompilationModeGuard::default());
+            };
+            let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+                return Ok(CompilationModeGuard::default());
+            };
+
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<CompilationOutputPushed>();
+            let sub_id = ctx.events().subscribe_typed::<CompilationOutputPushed>(tx);
+            let bus_handle = ctx.events_handle();
+
+            // CM.3c: the off-thread severity-gutter producer. Optional —
+            // absent in a stripped test harness without full boot wiring; the
+            // drain then just streams text and never publishes marks.
+            let gutter_bus: Option<
+                InboundBus<(lattice_core::BufferId, Vec<(u32, ErrorSeverity)>)>,
+            > = ctx
+                .service::<CompilationGutterBusHandle>()
+                .map(|h| (**h).clone());
+
+            // Drain: coalesce every chunk available this wake into
+            // as few actor round-trips as the ordering allows —
+            // consecutive `Append`/`Finished` collapse into one
+            // insert; a `Reset` flushes the pending append then
+            // replaces the buffer.
+            //
+            // CM.3c: alongside the text writes the drain maintains the
+            // buffer's severity index. `next_line` is the 0-based buffer line
+            // the next appended char lands on and `severities` is the buffer's
+            // full `(line, severity)` list; both persist across batches and
+            // mirror the writes (a `Reset` clears + rebases, an
+            // `Append`/`Finished` scans at `next_line` then advances by its
+            // newline count). The FULL index is shipped through `gutter_bus`
+            // whenever it changes (the send bakes in the editor wake).
+            runtime.spawn(async move {
+                let mut next_line: u32 = 0;
+                let mut severities: Vec<(u32, ErrorSeverity)> = Vec::new();
+                while let Some(first) = rx.recv().await {
+                    let mut batch = vec![first];
+                    while let Ok(more) = rx.try_recv() {
+                        batch.push(more);
+                    }
+                    let mut pending = String::new();
+                    let mut dirty = false;
+                    for event in batch {
+                        match event.chunk {
+                            OutputChunk::Reset { header } => {
+                                let flush = std::mem::take(&mut pending);
+                                append_at_end(&handle, flush).await;
+                                reset_to(&handle, &header).await;
+                                // The reset replaces the whole buffer: drop the
+                                // prior index, rebase the counter to the header,
+                                // and scan the header itself (rare, but keeps the
+                                // index consistent with the buffer content).
+                                severities.clear();
+                                severities.extend(scan_severities(0, &header));
+                                next_line = count_newlines(&header);
+                                dirty = true;
+                            }
+                            OutputChunk::Append { text } => {
+                                severities.extend(scan_severities(next_line, &text));
+                                next_line = next_line.saturating_add(count_newlines(&text));
+                                pending.push_str(&text);
+                                dirty = true;
+                            }
+                            OutputChunk::Finished { summary } => {
+                                severities.extend(scan_severities(next_line, &summary));
+                                next_line = next_line.saturating_add(count_newlines(&summary));
+                                pending.push_str(&summary);
+                                dirty = true;
+                            }
+                        }
+                    }
+                    append_at_end(&handle, pending).await;
+                    // Ship the full per-buffer index off-keystroke. Best-effort:
+                    // a stopped subsystem (dropped drain) just drops the send.
+                    if dirty {
+                        if let Some(bus) = &gutter_bus {
+                            let _ = bus.send((buffer_id, severities.clone()));
+                        }
+                    }
+                }
+            });
+
+            // CM.3b: register the `<CR>` jump-to-source handler on the
+            // per-buffer `ActionHandlerRegistry`. The closure reads the
+            // cursor line's text off the `*compilation*` buffer and
+            // parses a source location out of it (interleaving-proof:
+            // stdout/stderr mingle in the buffer, so a line→entry map
+            // isn't reliable — the parser is the single source of
+            // truth). On a hit it emits
+            // `AppEffect::CompileJumpToLocation`, whose host arm jumps
+            // + syncs the error list index; on a miss it returns `None`
+            // so `<CR>` is a harmless no-op (the dispatcher treats a
+            // registered-handler `None` as consumed, per M.10.1.b).
+            //
+            // Per `feedback_mode_owns_its_surface`: the mode owns the
+            // chord choice (`keymap()`) AND the handler body (this
+            // registration). Tolerates missing services (test harness
+            // without full boot wiring) via `?`.
+            let mut action_registrations: Vec<ActionHandlerRegistration> = Vec::new();
+            if let (Some(cmd_registry_arc), Some(action_handlers_arc)) = (
+                ctx.service::<CommandRegistryHandle>(),
+                ctx.service::<ActionHandlerRegistryHandle>(),
+            ) {
+                let cmd_registry_snapshot = cmd_registry_arc.load();
+                if let Some(jump_command_id) =
+                    cmd_registry_snapshot.id_by_name("action:compilation-jump")
+                {
+                    let action_handlers: ActionHandlerRegistryHandle =
+                        (*action_handlers_arc).clone();
+                    let store_for_handler: BufferStoreHandle = (*store).clone();
+                    let buffer_id_for_handler = buffer_id;
+                    let handler: ActionHandler =
+                        Arc::new(move |ctx: &ActionContext<'_>| -> Option<Effect> {
+                            let handle = store_for_handler.handle_for(buffer_id_for_handler)?;
+                            let snap = handle.snapshot();
+                            let text = snap.buffer.line(ctx.cursor.line)?;
+                            let loc = crate::parser::parse_location_line(&text)?;
+                            Some(Effect::AppAction(AppEffect::CompileJumpToLocation {
+                                path: loc.path,
+                                line: loc.line,
+                                col: loc.col,
+                            }))
+                        });
+                    action_registrations.push(action_handlers.register(jump_command_id, handler));
+                }
+            }
+
+            Ok(CompilationModeGuard {
+                _output_sub: Some(Subscription::new(bus_handle, sub_id)),
+                _action_handler_registrations: action_registrations,
+            })
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mode_id_is_compilation_mode() {
+        assert_eq!(CompilationMode::mode_id(), ModeId::new("compilation-mode"));
+        assert_eq!(CompilationMode::mode_id().as_str(), "compilation-mode");
+    }
+
+    #[test]
+    fn kind_is_major_with_no_capability_requirements() {
+        assert_eq!(CompilationMode.kind(), ModeKind::Major);
+        assert_eq!(
+            CompilationMode.required_capabilities(),
+            CapabilitySet::empty()
+        );
+    }
+
+    #[test]
+    fn options_are_read_only_and_no_file() {
+        let overrides = CompilationMode.options();
+        let has_true = |type_id: std::any::TypeId| {
+            overrides.iter().any(|ov| {
+                ov.option_type_id == type_id && ov.downcast_value::<bool>() == Some(&true)
+            })
+        };
+        assert!(
+            has_true(std::any::TypeId::of::<lattice_config::ReadOnly>()),
+            "expected ReadOnly = true override"
+        );
+        assert!(
+            has_true(std::any::TypeId::of::<lattice_config::NoFile>()),
+            "expected NoFile = true override"
+        );
+        assert_eq!(overrides.iter().count(), 2, "exactly ReadOnly + NoFile");
+    }
+
+    #[test]
+    fn count_newlines_counts_line_advances() {
+        assert_eq!(count_newlines(""), 0);
+        assert_eq!(count_newlines("no newline"), 0);
+        assert_eq!(count_newlines("a\n"), 1);
+        assert_eq!(count_newlines("a\nb\n"), 2);
+        assert_eq!(count_newlines("a\nb"), 1);
+    }
+
+    #[test]
+    fn gutter_decorations_maps_severity_index_to_decorations() {
+        use lattice_mode::{
+            CompilationSeverityData, DecorationCtx, GutterSeverityLevel, ServiceRegistry,
+        };
+        let mut services = ServiceRegistry::new();
+        services.register(CompilationSeverityData {
+            entries: std::sync::Arc::new(vec![
+                (2, GutterSeverityLevel::Error),
+                (5, GutterSeverityLevel::Warning),
+            ]),
+        });
+        let ctx = DecorationCtx::new(lattice_core::BufferId(7), &services);
+        let decos = CompilationMode.gutter_decorations(&ctx);
+        assert_eq!(
+            decos,
+            vec![
+                GutterDecoration::Severity {
+                    line: 2,
+                    level: GutterSeverityLevel::Error
+                },
+                GutterDecoration::Severity {
+                    line: 5,
+                    level: GutterSeverityLevel::Warning
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn gutter_decorations_empty_without_service() {
+        // No `CompilationSeverityData` registered (stripped render path) →
+        // graceful empty, never a panic.
+        use lattice_mode::{DecorationCtx, ServiceRegistry};
+        let services = ServiceRegistry::new();
+        let ctx = DecorationCtx::new(lattice_core::BufferId(1), &services);
+        assert!(CompilationMode.gutter_decorations(&ctx).is_empty());
+    }
+
+    #[test]
+    fn apply_chunk_reset_replaces_all() {
+        let out = apply_chunk(
+            "stale content\n",
+            &OutputChunk::Reset {
+                header: "hdr\n".into(),
+            },
+        );
+        assert_eq!(out, "hdr\n");
+    }
+
+    #[test]
+    fn apply_chunk_append_and_finished_concatenate() {
+        let a = apply_chunk(
+            "hdr\n",
+            &OutputChunk::Append {
+                text: "line1\n".into(),
+            },
+        );
+        assert_eq!(a, "hdr\nline1\n");
+        let b = apply_chunk(
+            &a,
+            &OutputChunk::Finished {
+                summary: "done\n".into(),
+            },
+        );
+        assert_eq!(b, "hdr\nline1\ndone\n");
+    }
+}

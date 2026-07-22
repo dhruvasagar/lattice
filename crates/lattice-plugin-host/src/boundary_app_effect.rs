@@ -292,6 +292,77 @@ impl WitBoundary for NativeAppEffect {
                 );
             }
             NativeAppEffect::InsertLineEdit(edit) => WitAppEffect::InsertLineEdit(edit.to_wit()?),
+            // CM.1: `:compile`/`:recompile`/`:make` are a native
+            // built-in; the compilation WIT surface is deferred with
+            // the plugin host (compilation-mode.md §8 #2). No WIT
+            // variant yet — typed error, never lossy (NarrowTrigger
+            // precedent).
+            NativeAppEffect::CompileRun { .. } => {
+                return Err(
+                    "AppEffect::CompileRun is a native built-in; its plugin (WIT) surface is \
+                     deferred with the plugin host (compilation-mode.md §8)"
+                        .to_string(),
+                );
+            }
+            // CM.3b: the `<CR>`-jump from a `*compilation*` location line
+            // jumps + syncs core error list index; like CompileRun /
+            // ErrorNav a native built-in, WIT surface deferred with
+            // the plugin host. Typed error, never lossy.
+            NativeAppEffect::CompileJumpToLocation { .. } => {
+                return Err(
+                    "AppEffect::CompileJumpToLocation jumps to a source location + syncs core \
+                     error state; its plugin (WIT) surface is deferred with the plugin host \
+                     (compilation-mode.md §5)"
+                        .to_string(),
+                );
+            }
+            // CM.2: error navigation walks core/host state; like
+            // CompileRun, its plugin (WIT) surface is deferred with
+            // the plugin host. Typed error, never lossy.
+            NativeAppEffect::ErrorNav { .. } => {
+                return Err(
+                    "AppEffect::ErrorNav walks core error state; its plugin (WIT) surface \
+                     is deferred with the plugin host (compilation-mode.md §3)"
+                        .to_string(),
+                );
+            }
+            // CM.3a: parsed error entries feed core error state
+            // from the native compilation parser; like CompileRun /
+            // ErrorNav a native built-in, WIT surface deferred with
+            // the plugin host. Typed error, never lossy.
+            NativeAppEffect::SetErrorList { .. } => {
+                return Err(
+                    "AppEffect::SetErrorList feeds core error state from the native compilation \
+                     parser; its plugin (WIT) surface is deferred with the plugin host \
+                     (compilation-mode.md §5)"
+                        .to_string(),
+                );
+            }
+            // CM.3c: the per-buffer severity gutter index feeds the
+            // `*compilation*` buffer's in-buffer severity marks from the
+            // native compilation parser; like SetErrorList a native built-in,
+            // WIT surface deferred with the plugin host. Typed error, never
+            // lossy.
+            NativeAppEffect::CompilationGutterSet { .. } => {
+                return Err(
+                    "AppEffect::CompilationGutterSet feeds the *compilation* buffer's severity \
+                     gutter marks from the native compilation parser; its plugin (WIT) surface is \
+                     deferred with the plugin host (compilation-mode.md §5)"
+                        .to_string(),
+                );
+            }
+            // CM.4: `:copen` / `:cclose` open/close the `*problems*`
+            // multibuffer over core error state; like CompileRun /
+            // ErrorNav a native built-in, WIT surface deferred with
+            // the plugin host. Typed error, never lossy.
+            NativeAppEffect::ProblemsOpen | NativeAppEffect::ProblemsClose => {
+                return Err(
+                    "AppEffect::Problems{Open,Close} open/close the *problems* view over core \
+                     error state; their plugin (WIT) surface is deferred with the plugin host \
+                     (compilation-mode.md §4)"
+                        .to_string(),
+                );
+            }
         })
     }
 

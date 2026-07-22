@@ -98,6 +98,10 @@ pub mod highlights;
 // reflect that it no longer produces highlights.
 pub mod overlay_worker;
 pub mod pane_group;
+// CM.2 (2026-07-22): the error list — core/host navigation
+// substrate shaped like `position_history`. See
+// `docs/dev/architecture/compilation-mode.md` §3.
+pub mod error_list;
 // S2.2 (2026-05-26): cell-grid renderer's cell-builder worker.
 // Sibling of `overlay_worker`; consumes `RenderState.cells`
 // inputs, builds a whole-doc `CellMatrix`, publishes via
@@ -169,9 +173,9 @@ pub mod editor_actor;
 // Phase 5.8.AF.5 / Slice 3a: renderer's wait-free read contract
 // with the host. See `render_state` module docs.
 pub mod render_state;
-pub mod wasm_decorations;
 pub mod renderer;
 pub mod state;
+pub mod wasm_decorations;
 // Phase 5.7.B.9: synthetic-buffer + messages helpers migrate
 // from `impl App` (TUI) to `impl Editor` (host) so both
 // renderer peers seed `*lsp*` + `*messages*` eagerly.

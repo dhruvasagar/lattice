@@ -2478,14 +2478,12 @@ fn render_multibuffer_status(
     // Char-index range of the emphasised term within `text` (first
     // occurrence). Only the query cells get `query_fg`; everything else
     // keeps the state fg. Non-empty emphasis that isn't found → no accent.
-    let emphasis_range: Option<(usize, usize)> = emphasis
-        .filter(|e| !e.is_empty())
-        .and_then(|e| {
-            text.find(e).map(|byte_start| {
-                let char_start = text[..byte_start].chars().count();
-                (char_start, char_start + e.chars().count())
-            })
-        });
+    let emphasis_range: Option<(usize, usize)> = emphasis.filter(|e| !e.is_empty()).and_then(|e| {
+        text.find(e).map(|byte_start| {
+            let char_start = text[..byte_start].chars().count();
+            (char_start, char_start + e.chars().count())
+        })
+    });
     let cells: Arc<[Cell]> = text
         .chars()
         .enumerate()

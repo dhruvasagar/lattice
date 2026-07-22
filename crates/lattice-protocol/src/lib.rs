@@ -28,6 +28,7 @@ pub mod cancel;
 pub mod chord;
 pub mod edit;
 pub mod error;
+pub mod error_list;
 pub mod event;
 pub mod event_registry;
 pub mod ids;

@@ -224,9 +224,13 @@ four places:
 | `]d`                | Jump to the next diagnostic in the active buffer (wraps), echoing its message. |
 | `[d`                | Jump to the previous diagnostic (wraps), echoing its message.                            |
 | `gl`                | Open a cursor-anchored popup listing every diagnostic on the cursor line (severity glyph, message, `source`/`code`, related-info count). |
-| `:diagnostics`      | Open the workspace diagnostics buffer.                                                   |
-| `:cnext` / `:cprev` | Walk the diagnostic list (alias of `]d` / `[d` for users coming from vim quickfix).      |
+| `:diagnostics`      | Open the workspace diagnostics picker.                                                   |
 | `:diag-clear`       | Drop the renderer's overlay for the active buffer (server may republish).                |
+
+> Diagnostics are **separate** from the [error list](error-list.md).
+> `:next-error` / `:cnext` walk the *error list* (compiler / tool
+> output), **not** diagnostics — use `]d` / `[d` / `:diagnostics` for
+> LSP diagnostics.
 
 `]d` / `[d` / `gl` are owned by `lsp-diagnostics-mode` — they fire only
 in buffers with LSP diagnostics active.
@@ -481,23 +485,24 @@ you expect is the one actually attached.
 
 ## Power-user flows
 
-### Per-buffer navigation vs workspace quickfix
+### Diagnostic navigation vs. the error list
 
-Three navigation surfaces, each with a clear scope:
+Two **separate** systems — don't conflate them:
 
-- **`]d` / `[d`** -- walk diagnostics in the **active buffer
-  only**. Wraps top/bottom. Same diagnostic list two panes can
-  share; the cursor "where am I in the walk" lives on the
-  pane, so two panes on the same file walk independently.
-- **`:diagnostics`** -- opens the **workspace-wide** list as a
-  buffer (every URI with diagnostics, sorted alphabetically;
-  diagnostics within each URI sorted by line then column).
-- **`:cnext` / `:cprev`** -- walk **the `:diagnostics`
-  buffer's list**, vim-quickfix-style. Hits the bottom →
-  wraps to top. Jumps across files. The cursor on the
-  `:diagnostics` buffer is the iteration state, so opening
-  it explicitly and using `]d` over there does the same
-  thing.
+- **Diagnostics** (this doc) — LSP-reported problems in your open
+  buffers. **`]d` / `[d`** walk diagnostics in the **active buffer
+  only** (wraps); **`:diagnostics`** opens the **workspace-wide**
+  diagnostics in a fuzzy picker. The per-pane cursor is the walk state,
+  so two panes on the same file walk independently.
+- **The [error list](error-list.md)** — a separate, cross-file list
+  populated by *tool output* (`:compile`, grep, …), walked with
+  **`:next-error` / `:previous-error`** (vim `:cnext` / `:cprev`). It is
+  **not** diagnostics: `:next-error` never touches the LSP diagnostic
+  list, and an empty error list echoes `no error list` rather than
+  falling through to diagnostics.
+
+(Earlier builds aliased `:cnext` onto diagnostics; that fallback was
+removed — the two lists are now cleanly separate.)
 - **`:diagnostics buffer`** -- a filtered view: only the
   active buffer's diagnostics. Useful when you want
   `:cnext`-style navigation but limited to one file.

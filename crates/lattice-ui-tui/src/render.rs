@@ -3414,7 +3414,12 @@ fn draw_buffer(frame: &mut Frame, area: Rect, app: &App, snap: &DocumentSnapshot
     if !prompt_owns_cursor {
         let view = FrameView::from_app(app);
         if let Some((screen_x, screen_y)) = cursor_screen_position_at(
-            &view, snap, area, ad.cursor, ad.scroll, app.panes().tree.active().id,
+            &view,
+            snap,
+            area,
+            ad.cursor,
+            ad.scroll,
+            app.panes().tree.active().id,
         ) {
             frame.set_cursor_position((screen_x, screen_y));
         }
@@ -3843,6 +3848,18 @@ pub(crate) fn compose_pane_lines(
                 .buffer_uri(ctx.buffer_id)
                 .and_then(|u| rs_deco.diagnostics.layer.diagnostics_arc(&u));
             services.register(lattice_lsp::modes::LspDiagnosticsData { diagnostics });
+        }
+        // CM.3c: inject the `*compilation*` buffer's severity index. The
+        // producer scans off-thread (in the compilation drain) and the host
+        // snapshots the per-buffer index into `render_state.compilation_severity`;
+        // here the renderer only reads the slot for this pane's buffer and
+        // registers the carrier — no `lattice-compilation` dependency, no
+        // paint-time scan. `CompilationMode::gutter_decorations` reads it and
+        // emits `Severity` marks through the SAME gutter column as LSP.
+        if let Some(entries) = rs_deco.compilation_severity.get(&ctx.buffer_id) {
+            services.register(lattice_mode::CompilationSeverityData {
+                entries: entries.clone(),
+            });
         }
         let deco_ctx = DecorationCtx::new(ctx.buffer_id, &services);
         let modes_rs = rs_deco.modes.clone();
@@ -6162,12 +6179,8 @@ fn cursor_screen_position_at(
     let inlay_hints = &rs_st.syntax.inlay_hints;
     // Display column of the cursor within its (unwrapped) line —
     // tab-expanded + inlay-shifted.
-    let display_col = display_col_for_byte(
-        &snap.buffer,
-        cursor,
-        inlay_hints,
-        ad.option_cache.tabstop,
-    );
+    let display_col =
+        display_col_for_byte(&snap.buffer, cursor, inlay_hints, ad.option_cache.tabstop);
     // W.4.t: split that column across wrap segments. The cursor's
     // own segment index (`display_col / wrap_width`) adds to the
     // row; the remainder (`display_col % wrap_width`) is the column

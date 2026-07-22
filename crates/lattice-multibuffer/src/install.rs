@@ -72,6 +72,8 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     crate::mode::register_multibuffer_modes(boot.modes_mut(), &event_bus, registry_handle.clone());
     // N.1.1: narrow provider-minor mode (marker for narrow views). First-class.
     crate::providers::narrow::register_narrow_mode(boot.modes_mut());
+    // CM.4: problems provider-minor mode (marker for `*problems*` views). First-class.
+    crate::providers::problems::register_problems_mode(boot.modes_mut());
     // M.6: project-search provider-minor mode (feature-gated with its provider).
     #[cfg(feature = "search")]
     crate::providers::search::register_project_search_mode(boot.modes_mut());
@@ -87,6 +89,8 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     crate::mode::register_multibuffer_ex_commands(boot.commands_mut());
     // N.1.1: `:narrow` + `:widen`. First-class — no feature gate.
     crate::providers::narrow::register_narrow_ex_commands(boot.commands_mut());
+    // CM.4: `:copen` + `:cclose`. First-class — no feature gate.
+    crate::providers::problems::register_problems_ex_commands(boot.commands_mut());
     // N.1.3 / BC.7 (A): register the `zn` narrow operator SPEC. The returned
     // `OperatorId` is discarded — the host's universal operator-pending binding
     // resolves it by name (`operator:narrow`), the motion name-resolution

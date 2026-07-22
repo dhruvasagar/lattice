@@ -23,6 +23,7 @@ members = [
 	"crates/lattice-dashboard",
 	"crates/lattice-cells",
 	"crates/lattice-multibuffer",
+	"crates/lattice-compilation",
 	"crates/lattice-host",
 	"crates/lattice-ui-tui",
 	"crates/lattice-ui-gpui",

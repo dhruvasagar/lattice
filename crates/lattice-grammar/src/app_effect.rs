@@ -89,6 +89,32 @@ pub enum HScroll {
     CursorToEdge { end: bool },
 }
 
+/// CM.2 (2026-07-22): which error entry a [`AppEffect::ErrorNav`]
+/// should resolve to. Carried in the AppEffect so the whole
+/// `:cnext` / `:cprev` / `:cc` / `:cfirst` / `:clast` / `]q` / `[q`
+/// family shares a single host handler (`Editor::do_error_nav`).
+/// The error list is core substrate (like the jump ring), so a
+/// host AppEffect variant is the right carrier — not a
+/// provider-specific one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ErrorTarget {
+    /// `:cnext` / `]q` — next entry (wraps to first past the end).
+    Next,
+    /// `:cprev` / `[q` — previous entry (wraps to last past the start).
+    Prev,
+    /// `:cc [N]` — jump to the Nth entry (1-based). `None` (bare
+    /// `:cc`) re-visits the current entry.
+    Jump(Option<usize>),
+    /// `:cfirst` / `[Q` — jump to the first entry.
+    First,
+    /// `:clast` / `]Q` — jump to the last entry.
+    Last,
+    /// `:cnextfile` / `]qf` — first entry of the next file (wraps).
+    NextFile,
+    /// `:cprevfile` / `[qf` — first entry of the previous file (wraps).
+    PrevFile,
+}
+
 /// App-side typed effect produced by a `CommandKind::Action`
 /// dispatch (DESIGN.md §5.2.1, see also `docs/dev/notes/8i-approach.md`).
 ///
@@ -673,6 +699,90 @@ pub enum AppEffect {
     /// mode's closure (reading state, clearing excerpts,
     /// spawning a fresh scan task).
     SearchRefresh,
+    /// CM.1 (2026-07-21): `:compile <cmd>` / `:recompile` / `:make`.
+    /// The host arm calls `lattice_compilation::start_compilation`,
+    /// which ensures the read-only synthetic `*compilation*` buffer
+    /// (activating `compilation-mode`) and kicks off the pipe-captured
+    /// off-thread run whose output streams into that buffer. Same
+    /// shape as `SearchTrigger`: the substrate crate owns the work;
+    /// the host arm is generic apply-effect routing. `cmdline`:
+    /// `Some(cmd)` for `:compile`; `None` for `:recompile` / bare
+    /// `:make` (reuse the last command).
+    CompileRun { cmdline: Option<String> },
+    /// CM.3b (2026-07-22): `<CR>` on a location line in the
+    /// `*compilation*` buffer. The `compilation-mode` action handler
+    /// parses the cursor line's text (`parse_location_line`) into a
+    /// source location and emits this; the host arm calls
+    /// `Editor::jump_to_file_line_col(&path, line, col)` (records the
+    /// hop in position history) and syncs the error list index to the
+    /// matching entry. `line` / `col` are 0-based. The location rides
+    /// in the AppEffect because the jump target is computed off the
+    /// buffer text in the mode's closure, but the error list index is
+    /// core/host state — so the host owns the apply.
+    CompileJumpToLocation {
+        path: std::path::PathBuf,
+        line: u32,
+        col: u32,
+    },
+    /// CM.2 (2026-07-22): `:cnext`/`:cprev`/`:cc [N]`/`:cfirst`/
+    /// `:clast` and the Builtin `]q`/`[q` chords. The host arm calls
+    /// `Editor::do_error_nav`, which walks the core error list
+    /// (recording each hop in position history via
+    /// `jump_to_file_line_col`). On an empty list `Next`/`Prev` fall
+    /// back to today's active-buffer diagnostic hopping; `Jump`/
+    /// `First`/`Last` echo "no error list".
+    ErrorNav { target: ErrorTarget },
+    /// CM.3a (2026-07-22): parsed error entries from the compilation
+    /// stderr reader — the off-thread → host-state seam. The reader
+    /// accumulates entries and sends the FULL list through the
+    /// compilation inbound bus; this handler maps each send here, and
+    /// the host arm calls `Editor::set_error_list(entries)`
+    /// (replace-semantics — the growing list stays visible). An empty
+    /// vec (sent on a new run / `:recompile`) clears the stale list.
+    /// The parser (below-host `lattice-compilation`) and this payload
+    /// share the `lattice_protocol::error_list::ErrorEntry` type.
+    SetErrorList {
+        entries: Vec<lattice_protocol::error_list::ErrorEntry>,
+    },
+    /// CM.3c (2026-07-22): the per-buffer severity gutter index for the
+    /// `*compilation*` buffer — the off-thread → host-state seam for
+    /// in-buffer severity marks (twin of `SetErrorList`, which feeds the
+    /// cross-file error list). The compilation drain scans each
+    /// streamed line for a severity keyword, accumulates the FULL
+    /// per-buffer index of `(line, severity)`, and sends it through the
+    /// compilation inbound bus; this handler maps each send here, and the
+    /// host arm converts the severities to `GutterSeverityLevel` and writes
+    /// the `render_state` compilation-severity slot for `buffer`. The
+    /// renderer reads that slot and injects it into the mode's
+    /// `gutter_decorations` via `CompilationSeverityData`. An empty vec
+    /// (sent on `Reset` / a new run) clears the buffer's marks.
+    ///
+    /// `buffer` is the raw `BufferId.0` (`BufferId` is process-local and
+    /// not `Serialize`, so the wire form is the `u32`; the host arm
+    /// reconstructs `BufferId`). Severity rides as the parser-native
+    /// `ErrorSeverity` (already shared with `SetErrorList`) — the single
+    /// map to the renderer-facing `GutterSeverityLevel` happens host-side,
+    /// avoiding a lossy `GutterSeverityLevel`↔`ErrorSeverity` round-trip
+    /// and keeping `lattice-grammar` free of a `lattice-mode` dependency.
+    CompilationGutterSet {
+        buffer: u32,
+        entries: Vec<(u32, lattice_protocol::error_list::ErrorSeverity)>,
+    },
+    /// CM.4 (2026-07-22): `:copen`. The host arm reads the core
+    /// error list and calls
+    /// `lattice_multibuffer::providers::problems::create_problems_view`,
+    /// opening the `*problems*` multibuffer — the error entries
+    /// grouped as editable source excerpts by file. Same shape as
+    /// `SearchTrigger`: the substrate crate owns view-creation; the
+    /// host arm is generic apply-effect routing. Echoes "no error
+    /// list" when the list is empty.
+    ProblemsOpen,
+    /// CM.4 (2026-07-22): `:cclose`. The host arm closes the active
+    /// `*problems*` view (an editable multibuffer with
+    /// `ProblemsMinorMode`), leaving the source buffers open — the
+    /// `NarrowWiden` close shape, guarded to problems views. No-op +
+    /// echo when the active buffer isn't a problems view.
+    ProblemsClose,
 }
 
 #[cfg(test)]

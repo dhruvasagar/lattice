@@ -565,6 +565,59 @@ pub fn register_normal_bindings(
         CommandInvocation::of(actions.walk_mark_history_forward),
         source(),
     );
+    // CM.2 / CM.7 (2026-07-22): the error navigation chord set.
+    // Builtin grammar (universal navigation over a core substrate, like
+    // `<C-o>`/`<C-i>` over the jump ring), NOT a mode keymap. On an empty
+    // list they echo `no error list` (no diagnostic fallback —
+    // diagnostics are owned by `]d`/`[d`). `]q` / `[q` are PREFIXES here (`]qq`/`]qf`,
+    // `[qq`/`[qf`), so neither is bound directly; the capital `]Q`/`[Q`
+    // are the list extremes.
+    //
+    //   [Q first    ]Q last
+    //   [qq prev     ]qq next
+    //   [qf prevfile ]qf nextfile
+    handle.bind(
+        layer,
+        mode,
+        &[lit_char('['), lit_char('Q')],
+        CommandInvocation::of(actions.error_first),
+        source(),
+    );
+    handle.bind(
+        layer,
+        mode,
+        &[lit_char(']'), lit_char('Q')],
+        CommandInvocation::of(actions.error_last),
+        source(),
+    );
+    handle.bind(
+        layer,
+        mode,
+        &[lit_char('['), lit_char('q'), lit_char('q')],
+        CommandInvocation::of(actions.error_prev),
+        source(),
+    );
+    handle.bind(
+        layer,
+        mode,
+        &[lit_char(']'), lit_char('q'), lit_char('q')],
+        CommandInvocation::of(actions.error_next),
+        source(),
+    );
+    handle.bind(
+        layer,
+        mode,
+        &[lit_char('['), lit_char('q'), lit_char('f')],
+        CommandInvocation::of(actions.error_prev_file),
+        source(),
+    );
+    handle.bind(
+        layer,
+        mode,
+        &[lit_char(']'), lit_char('q'), lit_char('f')],
+        CommandInvocation::of(actions.error_next_file),
+        source(),
+    );
     // W.6: display-line motions (soft-wrap aware).
     handle.bind(
         layer,

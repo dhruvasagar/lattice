@@ -536,6 +536,15 @@ impl Editor {
         // dispatch arms (Effect-vocabulary-is-the-host-boundary) — see
         // `lattice_multibuffer::install` for the full rationale.
         lattice_multibuffer::install(&mut boot);
+        // CM.1: native compilation subsystem — registers
+        // `compilation-mode` (major, ReadOnly + NoFile), the
+        // `:compile`/`:recompile`/`:make` ex-commands (return
+        // `Effect::AppAction(AppEffect::CompileRun)`, applied by the
+        // host arm calling `lattice_compilation::start_compilation`),
+        // the `CompilationServiceHandle` process-lifecycle service,
+        // and the `CompilationOutputPushed` off-keystroke wake so the
+        // streaming `*compilation*` buffer repaints without a keypress.
+        lattice_compilation::install(&mut boot);
         // DB.2: dashboard subsystem — registers `dashboard-mode` (major), the
         // `:dashboard` ex-command (returns `Effect::OpenDashboard`, applied by
         // `Editor::do_open_dashboard`), and the built-in `DashboardRegistry`
@@ -896,10 +905,9 @@ impl Editor {
         // Registered as a service so `lattice-plugin-loader` reaches it without
         // a host dep, and cloned onto the `Editor` below so the refresh drives
         // it. Starts empty — no producer until a decoration plugin loads.
-        let decoration_registry: lattice_mode::GutterDecorationSourceRegistryHandle =
-            Arc::new(arc_swap::ArcSwap::from_pointee(
-                lattice_mode::GutterDecorationSourceRegistry::new(),
-            ));
+        let decoration_registry: lattice_mode::GutterDecorationSourceRegistryHandle = Arc::new(
+            arc_swap::ArcSwap::from_pointee(lattice_mode::GutterDecorationSourceRegistry::new()),
+        );
         boot.register_service::<lattice_mode::GutterDecorationSourceRegistryHandle>(
             decoration_registry.clone(),
         );

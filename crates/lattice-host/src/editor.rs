@@ -55,8 +55,7 @@ use lattice_lsp::cache::{
 // via `PerBufferCache::insert_for` / `ArcSwapOption::store`).
 use lattice_lsp::{DiagnosticsLayer, LspLogger, LspSupervisorHandle};
 use lattice_mode::{
-    ActiveModes, BufferLocals, GuardStoreHandle, ServiceRegistry,
-    TickCallbackRegistration,
+    ActiveModes, BufferLocals, GuardStoreHandle, ServiceRegistry, TickCallbackRegistration,
 };
 use lattice_picker::{Picker, PickerMruIndex};
 use lattice_protocol::CancellationToken;
@@ -410,6 +409,28 @@ pub struct Editor {
     /// Cursor into [`Self::position_history`] -- the next entry
     /// the navigation action would visit.
     pub position_history_cursor: usize,
+    /// CM.2 (2026-07-22): the error list — a persistent,
+    /// cross-file list of navigable locations walked by generic
+    /// `:cnext` / `]q` dispatch. Core/host state shaped like
+    /// [`Self::position_history`], NOT owned by any mode:
+    /// compilation (CM.3), diagnostics, and search are *producers*
+    /// that populate it via [`Self::set_error_list`]. See
+    /// `docs/dev/architecture/compilation-mode.md` §3.
+    pub error_list: crate::error_list::ErrorList,
+    /// CM.3c (2026-07-22): per-buffer severity gutter index for the
+    /// `*compilation*` buffer, keyed by [`lattice_core::BufferId`].
+    /// Written by the `AppEffect::CompilationGutterSet` arm (the
+    /// off-thread compilation drain's host-state seam) and snapshotted
+    /// into `RenderState::compilation_severity` at publish. Shaped like a
+    /// producer-fed cache (compilation is the only producer today); the
+    /// outer `Arc` lets the publish clone be O(1) and the inner
+    /// per-buffer `Arc<Vec<..>>` lets the renderer read wait-free.
+    pub compilation_severity: std::sync::Arc<
+        std::collections::HashMap<
+            lattice_core::BufferId,
+            std::sync::Arc<Vec<(u32, lattice_mode::GutterSeverityLevel)>>,
+        >,
+    >,
     /// MRU list of canonical paths the user has opened via
     /// `:edit` (or any path flowing through `do_edit`). Newest
     /// first; deduplicated; capped at `MAX_RECENT_FILES`. Source

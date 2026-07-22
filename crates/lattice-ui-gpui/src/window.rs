@@ -1802,6 +1802,17 @@ impl EditorView {
                     uri.and_then(|u| render_state.diagnostics.layer.diagnostics_arc(u));
                 services.register(lattice_lsp::modes::LspDiagnosticsData { diagnostics });
             }
+            // CM.3c: inject the `*compilation*` buffer's severity index (the
+            // off-thread compilation drain → `render_state.compilation_severity`
+            // slot → here). Lockstep with the TUI peer: the renderer only reads
+            // the slot and registers the carrier — no `lattice-compilation`
+            // dependency, no paint-time scan. `CompilationMode::gutter_decorations`
+            // maps it to `Severity` marks in the same gutter column as LSP.
+            if let Some(entries) = rs_guard.compilation_severity.get(&pane.buffer_id) {
+                services.register(lattice_mode::CompilationSeverityData {
+                    entries: entries.clone(),
+                });
+            }
             let deco_ctx = DecorationCtx::new(pane.buffer_id, &services);
             let mut diff_map: std::collections::HashMap<u32, GutterDiffKind> = Default::default();
             let mut sev_map: std::collections::HashMap<u32, GutterSeverityLevel> =

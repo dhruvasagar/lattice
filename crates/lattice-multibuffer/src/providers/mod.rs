@@ -26,3 +26,9 @@ pub mod search;
 /// first-class built-in (no cargo feature gate): no async scan, no
 /// service, no per-view state beyond the excerpt.
 pub mod narrow;
+
+/// CM.4 (2026-07-22): the `*problems*` view — the current error
+/// list grouped as editable source excerpts by file. Like `narrow`,
+/// a first-class built-in (no cargo feature gate): the entry list is
+/// static, so no async scan / service / per-view state.
+pub mod problems;

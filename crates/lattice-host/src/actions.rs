@@ -17,7 +17,6 @@
 //! sibling per-mode modules) and consume [`ActionIds`] alongside
 //! `Builtins`.
 
-use std::sync::Arc;
 use lattice_grammar::AppEffect;
 use lattice_grammar::CommandRegistry;
 use lattice_grammar::HScroll;
@@ -34,6 +33,7 @@ use lattice_grammar::effect::Effect;
 use lattice_grammar::registry::ActionSpec;
 use lattice_grammar::registry::OperatorId;
 use lattice_protocol::ids::CommandId;
+use std::sync::Arc;
 
 /// Strongly-typed handles to every App-side action registered
 /// in the global [`CommandRegistry`]. Mirrors the shape of
@@ -51,6 +51,18 @@ pub struct ActionIds {
     pub lsp_hover_request: CommandId,
     pub search_next: CommandId,
     pub search_previous: CommandId,
+    /// CM.2 (2026-07-22): Builtin `]qq` — next error entry.
+    pub error_next: CommandId,
+    /// CM.2 (2026-07-22): Builtin `[qq` — previous error entry.
+    pub error_prev: CommandId,
+    /// CM.7 (2026-07-22): Builtin `[Q` — first error entry.
+    pub error_first: CommandId,
+    /// CM.7 (2026-07-22): Builtin `]Q` — last error entry.
+    pub error_last: CommandId,
+    /// CM.7 (2026-07-22): Builtin `]qf` — first entry of the next file.
+    pub error_next_file: CommandId,
+    /// CM.7 (2026-07-22): Builtin `[qf` — first entry of the previous file.
+    pub error_prev_file: CommandId,
     pub jump_history_back: CommandId,
     pub jump_history_forward: CommandId,
     pub walk_mark_history_back: CommandId,
@@ -251,6 +263,17 @@ pub struct ActionIds {
     /// `MinorMode(project-search-multibuffer-mode)`. Re-run the
     /// scan with the view's current query.
     pub search_refresh: CommandId,
+    /// CM.3a (2026-07-22): `gr` chord under
+    /// `MajorMode(compilation-mode)`. Recompile — re-run the last
+    /// compilation command (`AppEffect::CompileRun { cmdline: None }`).
+    pub compilation_recompile: CommandId,
+    /// CM.3b (2026-07-22): `<CR>` chord under
+    /// `MajorMode(compilation-mode)`. Jump to the source location on
+    /// the cursor line. Mode-owned: `compilation-mode`'s per-buffer
+    /// `ActionHandlerRegistry` closure parses the line + emits
+    /// `AppEffect::CompileJumpToLocation`; the registered `ActionSpec`
+    /// body is a dead `Effect::None` (the handler always intercepts).
+    pub compilation_jump: CommandId,
 }
 
 /// Register every App-side action into `registry` and return
@@ -312,6 +335,54 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
             "action:search-previous",
             "Vim's `N`: re-run the last search in the reverse direction.",
             AppEffect::SearchPrevious,
+        ),
+        error_next: register_simple(
+            registry,
+            "action:error-next",
+            "`]qq`: jump to the next error entry (wraps; echoes `no error list` when empty).",
+            AppEffect::ErrorNav {
+                target: lattice_grammar::ErrorTarget::Next,
+            },
+        ),
+        error_prev: register_simple(
+            registry,
+            "action:error-prev",
+            "`[qq`: jump to the previous error entry (wraps; echoes `no error list` when empty).",
+            AppEffect::ErrorNav {
+                target: lattice_grammar::ErrorTarget::Prev,
+            },
+        ),
+        error_first: register_simple(
+            registry,
+            "action:error-first",
+            "`[Q`: jump to the first error entry (`:cfirst`).",
+            AppEffect::ErrorNav {
+                target: lattice_grammar::ErrorTarget::First,
+            },
+        ),
+        error_last: register_simple(
+            registry,
+            "action:error-last",
+            "`]Q`: jump to the last error entry (`:clast`).",
+            AppEffect::ErrorNav {
+                target: lattice_grammar::ErrorTarget::Last,
+            },
+        ),
+        error_next_file: register_simple(
+            registry,
+            "action:error-next-file",
+            "`]qf`: jump to the first entry of the next file (`:cnextfile`; wraps).",
+            AppEffect::ErrorNav {
+                target: lattice_grammar::ErrorTarget::NextFile,
+            },
+        ),
+        error_prev_file: register_simple(
+            registry,
+            "action:error-prev-file",
+            "`[qf`: jump to the first entry of the previous file (`:cprevfile`; wraps).",
+            AppEffect::ErrorNav {
+                target: lattice_grammar::ErrorTarget::PrevFile,
+            },
         ),
         jump_history_back: register_simple(
             registry,
@@ -1317,6 +1388,28 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
             "project-search-multibuffer-mode `gr`: re-run the scan with the view's current query.",
             AppEffect::SearchRefresh,
         ),
+        compilation_recompile: register_simple(
+            registry,
+            "action:compilation-recompile",
+            "compilation-mode `gr`: recompile — re-run the last compilation command.",
+            AppEffect::CompileRun { cmdline: None },
+        ),
+        // CM.3b: `<CR>` jump-to-source. The CommandSpec stays (the
+        // `compilation-mode` chord binds it + the mode's per-buffer
+        // `ActionHandlerRegistry` handler keys on it), but its `apply`
+        // is a dead `Effect::None`: the handler always intercepts in
+        // `dispatch` before the grammar Action gate, parsing the cursor
+        // line and emitting `AppEffect::CompileJumpToLocation`. Same
+        // shape as `snippet_leave` / `search_jump_to_source`.
+        compilation_jump: registry.register_action(
+            "action:compilation-jump",
+            "compilation-mode `<CR>`: jump to the source location under the cursor \
+             (mode-owned; the handler parses the line + syncs the error list index).",
+            ActionSpec {
+                apply: Arc::new(|_ctx| Ok(lattice_grammar::Effect::None)),
+                args_schema: vec![],
+            },
+        ),
     }
 }
 
@@ -1455,6 +1548,12 @@ mod tests {
             (ids.lsp_hover_request, "action:lsp-hover"),
             (ids.search_next, "action:search-next"),
             (ids.search_previous, "action:search-previous"),
+            (ids.error_next, "action:error-next"),
+            (ids.error_prev, "action:error-prev"),
+            (ids.error_first, "action:error-first"),
+            (ids.error_last, "action:error-last"),
+            (ids.error_next_file, "action:error-next-file"),
+            (ids.error_prev_file, "action:error-prev-file"),
             (ids.jump_history_back, "action:jump-history-back"),
             (ids.jump_history_forward, "action:jump-history-forward"),
             (ids.walk_mark_history_back, "action:walk-mark-history-back"),

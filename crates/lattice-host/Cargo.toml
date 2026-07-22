@@ -127,6 +127,12 @@ lattice-runtime = { path = "../lattice-runtime" }
 # boot-wiring registration only (every multibuffer-specific
 # concern lives in that crate).
 lattice-multibuffer = { path = "../lattice-multibuffer" }
+# CM.1: native compilation subsystem — the streaming `*compilation*`
+# buffer + `:compile`/`:recompile`/`:make`. Wired via the generic
+# `SubsystemBoot` install seam (one Phase-B line); the host's
+# `AppEffect::CompileRun` arm calls `start_compilation`. Native
+# built-in, always compiled (not feature-gated).
+lattice-compilation = { path = "../lattice-compilation" }
 # Phase 5.B.11: `Editor` holds typed `tokio::sync::mpsc`
 # receivers (message events; later: LSP request channels).
 # Naming those receiver types requires tokio as a direct dep.

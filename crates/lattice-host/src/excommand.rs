@@ -511,12 +511,35 @@ static ALIAS_TABLE: &[(&str, &str)] = &[
     ("diag", "ex:diagnostics"),
     ("diag-next", "ex:diag-next"),
     ("dnext", "ex:diag-next"),
-    ("cnext", "ex:diag-next"),
-    ("cn", "ex:diag-next"),
     ("diag-prev", "ex:diag-prev"),
     ("dprev", "ex:diag-prev"),
-    ("cprev", "ex:diag-prev"),
-    ("cp", "ex:diag-prev"),
+    // CM.2 / CM.7 (2026-07-22): `:cnext`/`:cn`/`:cprev`/`:cp` repointed
+    // from `ex:diag-*` to the error-list family. Error-list commands touch
+    // ONLY the error list (no diagnostic fallback — dedicated
+    // `]d`/`[d` + `:diag-*` own diagnostics); an empty list echoes
+    // `no error list`, matching vim's `E42: No Errors`.
+    // naming-2026-07-22: readable canonical names (`next-error`, emacs
+    // vocabulary) lead; the vim `:c*` spellings are aliases onto them.
+    ("cnext", "next-error"),
+    ("cn", "next-error"),
+    ("cprev", "previous-error"),
+    ("cp", "previous-error"),
+    ("cc", "error"),
+    // The error picker (`:error`; parallel to `:diagnostics`).
+    ("clist", "error-list"),
+    ("cl", "error-list"),
+    ("cfirst", "first-error"),
+    ("crewind", "first-error"),
+    ("cr", "first-error"),
+    ("clast", "last-error"),
+    // File-level traversal.
+    ("cnextfile", "next-error-file"),
+    ("cnf", "next-error-file"),
+    ("cprevfile", "previous-error-file"),
+    ("cpf", "previous-error-file"),
+    // The grouped *problems* multibuffer (`:problems`; vim `:copen`/`:cclose`).
+    ("copen", "problems"),
+    ("cclose", "problems-close"),
     // LSP commands. Naming convention:
     //
     // 1. Dashed canonical only. Every LSP-coupled command has

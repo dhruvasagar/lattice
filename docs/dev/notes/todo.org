@@ -18,7 +18,7 @@
 - [ ] compilation-mode
 - [ ] surround operator
 - [ ] argument operator
-- [ ] Search operators
+- [X] Search operators
 - [X] borderless gui windows
 - [ ] DAP
 - [X] Picker to add <C-s>, <C-v>, <C-t> to open file under cursor in a
@@ -33,7 +33,7 @@
   dispatch is unified (`Editor::dispatch_invocation`; `:`, keymap, plugins
   all route through it), and `gen:commands` now completes `motion:*`. See
   docs/dev/architecture/typed-motion-dispatch.md (UD.1 + UD.2).
-- [ ] (low value) operator COMPLETION via `:`. Operators WITH a target
+- [X] (low value) operator COMPLETION via `:`. Operators WITH a target
   already dispatch (`:operator delete word-forward` works via the unified
   path); only completing the two-part `:operator <op> <target>` form is
   missing, and it's low value vs the `dw` / `ci"` keystroke grammar.

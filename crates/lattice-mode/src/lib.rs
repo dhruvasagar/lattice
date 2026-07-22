@@ -125,6 +125,7 @@ pub use crate::buffer_store::{BufferStore, BufferStoreHandle};
 pub use crate::capability::CapabilitySet;
 pub use crate::context::ModeContext;
 pub use crate::contributions::{
+    CompilationSeverityData,
     DecorationCtx,
     DecorationProvider,
     GutterDecoration,
@@ -142,7 +143,6 @@ pub use crate::error::ModeActivationError;
 pub use crate::event::ModeEvent;
 pub use crate::guards::{GuardStore, GuardStoreHandle};
 pub use crate::locals::{BufferLocal, BufferLocals, LocalDescriptor};
-pub use crate::plugin_meta_sink::{PluginMetaSink, PluginMetaSinkHandle};
 pub use crate::mode::{
     ActivationPolicy, DynMode, EditableTail, LifecycleFuture, Mode, ModeId, ModeKind,
 };
@@ -150,6 +150,7 @@ pub use crate::modes::{
     ActiveCompletionSources, BufferWordsMode, CompletionMode, CompletionPopupMode, HelpMode,
     HoverMode, MessagesMode, PathCompletionMode, TextMode, register_foundation_modes,
 };
+pub use crate::plugin_meta_sink::{PluginMetaSink, PluginMetaSinkHandle};
 pub use crate::services::ServiceRegistry;
 pub use crate::startup::Startup;
 pub use crate::subsystem_boot::SubsystemBoot;

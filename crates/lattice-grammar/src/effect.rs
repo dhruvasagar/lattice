@@ -578,7 +578,12 @@ pub enum Effect {
     /// (Phase 4.1.d.iv). The host queries its
     /// `LspSupervisor::diagnostics()` layer and formats.
     ListDiagnostics,
-    /// `]d` / `:diag-next` / `:cnext` -- move the cursor to the
+    /// CM.8: `:clist` / `:cl` — open the error list in a fuzzy
+    /// picker (the flat browse-and-jump surface, parallel to
+    /// `:diagnostics`). Complements `:cnext` (step) and `:copen` (the
+    /// `*problems*` multibuffer). Host builds it from `Editor::error_list`.
+    ListErrors,
+    /// `]d` / `:diag-next` -- move the cursor to the
     /// next diagnostic in the active buffer. Wraps to top.
     NextDiagnostic,
     /// `[d` / `:diag-prev` / `:cprev` -- move the cursor to the

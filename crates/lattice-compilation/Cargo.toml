@@ -1,0 +1,51 @@
+[package]
+name = "lattice-compilation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+tokio = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+# CM.3a: the compilation error-format parsers. `fancy-regex` is the
+# workspace's regex engine (routes backref-free patterns like ours
+# through the fast RE2 engine); used to match rustc/cargo + gnu-style
+# diagnostic lines. Regexes are compiled once via `OnceLock`.
+fancy-regex = { workspace = true }
+# `lattice_protocol::register_event!` expands to a
+# `#[linkme::distributed_slice(...)]` static, so this crate needs
+# `linkme` as a direct dependency (the macro can't route the path
+# through a re-export).
+linkme = { workspace = true }
+lattice-core = { path = "../lattice-core" }
+lattice-grammar = { path = "../lattice-grammar" }
+lattice-runtime = { path = "../lattice-runtime" }
+lattice-protocol = { path = "../lattice-protocol" }
+# `CompilationMode` contributes typed options (ReadOnly + NoFile
+# via OptionOverrideSet), so the crate names `lattice-config` for
+# the option types and `lattice-mode` for the Mode trait + boot seam.
+lattice-config = { path = "../lattice-config" }
+lattice-mode = { path = "../lattice-mode" }
+
+[dev-dependencies]
+criterion = { workspace = true }
+arc-swap = { workspace = true }
+
+# CM.1: streaming-append cost as the `*compilation*` log grows — the
+# drain's per-batch actor round-trip must not degrade with buffer size.
+[[bench]]
+name = "compilation_append"
+harness = false
+
+# CM.3a: combined parser throughput over a large synthetic error
+# fixture (cargo blocks + gnu lines + noise) — parsing runs in the
+# stderr reader thread, off the UI/actor thread, so it must keep up
+# with a noisy build.
+[[bench]]
+name = "compilation_parse"
+harness = false
+
+[lints]
+workspace = true

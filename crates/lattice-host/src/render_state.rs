@@ -191,6 +191,23 @@ pub struct RenderState {
     /// (paramount #1). Empty when no decoration plugin is loaded.
     pub wasm_gutter_decorations:
         crate::per_buffer_cache::PerBufferCache<crate::wasm_decorations::WasmGutterDecorationCache>,
+    /// CM.3c: per-buffer severity gutter index for the `*compilation*`
+    /// buffer, keyed by [`BufferId`] (mirrors `diff.sign_maps`). Written
+    /// by the `AppEffect::CompilationGutterSet` host arm from the
+    /// off-thread compilation drain; each entry is the buffer's full
+    /// `(line, level)` list. Renderers look up `compilation_severity
+    /// .get(buffer_id)` per pane and inject it into the mode's
+    /// `gutter_decorations` via
+    /// [`lattice_mode::CompilationSeverityData`] — the renderer never
+    /// depends on `lattice-compilation`. Empty when no compilation has
+    /// produced marks. The value `Arc` makes both the publish clone and
+    /// the render-path read O(1).
+    pub compilation_severity: std::sync::Arc<
+        std::collections::HashMap<
+            lattice_core::BufferId,
+            std::sync::Arc<Vec<(u32, lattice_mode::GutterSeverityLevel)>>,
+        >,
+    >,
 }
 
 impl Default for RenderState {
@@ -225,6 +242,7 @@ impl Default for RenderState {
             virtual_rows: Arc::new(VirtualRowsRenderState::default()),
             paint_revision: 0,
             wasm_gutter_decorations: crate::per_buffer_cache::empty(),
+            compilation_severity: std::sync::Arc::new(std::collections::HashMap::new()),
         }
     }
 }

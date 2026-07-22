@@ -280,7 +280,6 @@ impl WitBoundary for NativeAppEffect {
                 end_line: *end_line,
             }),
             NativeAppEffect::SearchTrigger { query } => WitAppEffect::SearchTrigger(query.clone()),
-            NativeAppEffect::SearchJumpToSource => WitAppEffect::SearchJumpToSource,
             NativeAppEffect::SearchRefresh => WitAppEffect::SearchRefresh,
             // Carries the recursive ex-command `Range` (§4.4); crosses with the
             // range mirror. Typed error until then, never lossy.
@@ -348,6 +347,18 @@ impl WitBoundary for NativeAppEffect {
                     "AppEffect::CompilationGutterSet feeds the *compilation* buffer's severity \
                      gutter marks from the native compilation parser; its plugin (WIT) surface is \
                      deferred with the plugin host (compilation-mode.md §5)"
+                        .to_string(),
+                );
+            }
+            // CM.3c: location-line index for theme-based highlighting of
+            // navigable file-location lines in the *compilation* buffer.
+            // Same reasoning as CompilationGutterSet — native built-in,
+            // WIT surface deferred.
+            NativeAppEffect::CompilationLocationLines { .. } => {
+                return Err(
+                    "AppEffect::CompilationLocationLines marks navigable file-location lines in the \
+                     *compilation* buffer for theme-based highlighting; its plugin (WIT) surface is \
+                     deferred with the plugin host"
                         .to_string(),
                 );
             }
@@ -518,7 +529,6 @@ impl WitBoundary for NativeAppEffect {
                 end_line: p.end_line,
             },
             WitAppEffect::SearchTrigger(query) => NativeAppEffect::SearchTrigger { query },
-            WitAppEffect::SearchJumpToSource => NativeAppEffect::SearchJumpToSource,
             WitAppEffect::SearchRefresh => NativeAppEffect::SearchRefresh,
             WitAppEffect::InsertLineEdit(edit) => {
                 NativeAppEffect::InsertLineEdit(NativeInsertLineEdit::from_wit(edit)?)

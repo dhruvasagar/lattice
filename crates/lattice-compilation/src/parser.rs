@@ -92,6 +92,42 @@ pub fn match_severity(line: &str) -> Option<ErrorSeverity> {
 /// may not be re-attributed (erring toward not-decorating a partial line,
 /// which is acceptable and does not occur with the newline-terminated
 /// reader output).
+/// CM.3c: scan a block of streamed text for location-bearing
+/// lines (lines whose text contains a file path + line:col that
+/// `parse_location_line` can navigate to). Returns
+/// `(absolute_line, path_byte_start, path_byte_end)` for each match.
+///
+/// Mirrors [`scan_severities`]: `base_line` is the 0-based buffer
+/// line number the block's FIRST line lands on; line `i` of the
+/// block maps to absolute line `base_line + i`. The compilation
+/// drain calls this per chunk to grow the buffer's location-line
+/// index. The byte range is the span of the file-path portion
+/// within the line text (for link-like fg highlighting).
+pub fn scan_location_lines(base_line: u32, text: &str) -> Vec<(u32, u32, u32)> {
+    text.lines()
+        .enumerate()
+        .filter_map(|(i, line)| {
+            let (start, end) = location_path_byte_range(line)?;
+            Some((base_line + i as u32, start as u32, end as u32))
+        })
+        .collect()
+}
+
+/// Return the byte range of the file-path portion of a location
+/// line. Uses [`parse_location_line`] to locate the path, then
+/// searches for its string representation in the line text.
+fn location_path_byte_range(line: &str) -> Option<(usize, usize)> {
+    let loc = parse_location_line(line)?;
+    let path_str = loc.path.to_str()?;
+    let byte_start = line.find(path_str)?;
+    let byte_end = byte_start + path_str.len();
+    Some((byte_start, byte_end))
+}
+
+/// CM.3c: scan a block of streamed text for severity lines, returning
+/// `(absolute_line, severity)` for each match. `base_line` is the 0-based
+/// buffer line number the block's FIRST line lands on; line `i` of the
+/// block (via [`str::lines`]) maps to absolute line `base_line + i`.
 pub fn scan_severities(base_line: u32, text: &str) -> Vec<(u32, ErrorSeverity)> {
     text.lines()
         .enumerate()
@@ -139,6 +175,8 @@ impl ParserRegistry {
         let mut registry = Self::new();
         registry.register(Box::new(crate::parsers::CargoRustcParser::new()));
         registry.register(Box::new(crate::parsers::GnuStyleParser::new()));
+        registry.register(Box::new(crate::parsers::TestPanicParser::new()));
+        registry.register(Box::new(crate::parsers::GeneralParser::new()));
         registry
     }
 
@@ -149,11 +187,24 @@ impl ParserRegistry {
     }
 
     /// Feed one line to every registered parser and concatenate the
-    /// entries they complete.
+    /// entries they complete. Deduplicates by `(path, line, col)` —
+    /// the FIRST entry for each location wins. Format-specific parsers
+    /// register first and produce richer metadata (severity, message);
+    /// the catch-all [`crate::parsers::GeneralParser`] registers last
+    /// and its `Info`/empty duplicates are silently dropped.
     pub fn feed(&mut self, line: &str) -> Vec<ErrorEntry> {
-        let mut out = Vec::new();
+        let mut out: Vec<ErrorEntry> = Vec::new();
         for parser in &mut self.parsers {
-            out.extend(parser.feed(line));
+            for entry in parser.feed(line) {
+                let dup = out.iter().any(|existing| {
+                    existing.path == entry.path
+                        && existing.line == entry.line
+                        && existing.col == entry.col
+                });
+                if !dup {
+                    out.push(entry);
+                }
+            }
         }
         out
     }
@@ -403,7 +454,57 @@ warning: unused
         // Prime a pending header, then reset before its location line.
         assert!(registry.feed("error[E0001]: boom").is_empty());
         registry.reset();
-        // The location line now has no pending header → no entry.
-        assert!(registry.feed("  --> src/x.rs:1:1").is_empty());
+        // The location line has no pending cargo header → the
+        // CargoRustcParser skips it. But the GeneralParser catches
+        // `src/x.rs:1:1` anywhere in the line as a valid file
+        // reference (which is correct — users can <CR> on any
+        // `file:line:col` in output). Exactly one entry from the
+        // GeneralParser, severity Info (no message metadata).
+        let entries = registry.feed("  --> src/x.rs:1:1");
+        assert_eq!(
+            entries.len(),
+            1,
+            "GeneralParser matches the embedded path; got {entries:?}"
+        );
+        assert_eq!(entries[0].path, PathBuf::from("src/x.rs"));
+        assert_eq!(entries[0].line, 0, "1-based 1 → 0-based 0");
+        assert_eq!(entries[0].col, 0, "1-based 1 → 0-based 0");
+        assert_eq!(entries[0].severity, ErrorSeverity::Info);
+    }
+
+    // ── CM.3c: scan_location_lines ─────────────────────────────
+
+    #[test]
+    fn scan_location_lines_matches_cargo_arrow_and_gnu() {
+        let block = "\
+Compiling foo v0.1.0
+  --> src/foo.rs:12:9
+warning: unused
+main.c:10:5: error: x
+plain prose
+";
+        let locs = scan_location_lines(0, block);
+        assert_eq!(locs.len(), 2, "two location lines expected");
+        assert_eq!(locs[0].0, 1, "line 1 = cargo `-->`");
+        assert_eq!(locs[1].0, 3, "line 3 = gnu full-form location");
+    }
+
+    #[test]
+    fn scan_location_lines_respects_base_line_offset() {
+        assert_eq!(
+            scan_location_lines(10, "  --> src/a.rs:1:1\n"),
+            vec![(10, 6, 14)]
+        );
+        assert_eq!(
+            scan_location_lines(5, "x\nmain.c:3:3: error: e\n"),
+            vec![(6, 0, 6)]
+        );
+    }
+
+    #[test]
+    fn scan_location_lines_empty_and_plain() {
+        assert!(scan_location_lines(0, "").is_empty());
+        assert!(scan_location_lines(0, "Compiling\nFinished\n").is_empty());
+        assert!(scan_location_lines(0, "just some prose\n").is_empty());
     }
 }

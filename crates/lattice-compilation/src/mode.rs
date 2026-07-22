@@ -12,22 +12,28 @@
 //! guard unsubscribes on drop.
 
 use std::sync::{Arc, OnceLock};
+use std::sync::atomic::{AtomicU64, Ordering};
 
+use lattice_cells::{HeaderlineProvider, VirtualRowProvider};
 use lattice_grammar::{AppEffect, CommandRegistryHandle, Effect};
 use lattice_mode::inbound::InboundBus;
 use lattice_mode::{
     ActionContext, ActionHandler, ActionHandlerRegistration, ActionHandlerRegistryHandle,
     BufferStoreHandle, CapabilitySet, CompilationSeverityData, DecorationCtx, GutterDecoration,
     Keymap, KeymapEntry, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, OptionOverrideSet,
-    Subscription, keymap_entry,
+    Subscription, VirtualRowRegistrar, keymap_entry,
 };
 use lattice_protocol::edit::Edit;
 use lattice_protocol::error_list::ErrorSeverity;
 use lattice_protocol::position::{Position, Range};
 use lattice_runtime::Document;
+// T.7 (2026-06-18): mode-owned theme elements for the
+// compilation-mode highlighting.
+use lattice_theme::{Color, ColorRef, ElementId, ElementName, ElementOwner, StyleSpec, ThemeRegistryHandle};
 
 use crate::events::{CompilationOutputPushed, OutputChunk};
-use crate::{CompilationGutterBusHandle, scan_severities};
+use crate::headerline::{CompilationHeadlineState, CompilationHeaderline, COMPILATION_HEADERLINE_PROVIDER_ID};
+use crate::{CompilationGutterBusHandle, CompilationLocationBusHandle, scan_location_lines, scan_severities};
 
 /// Count the `\n`s in `text` — how many buffer lines it advances the
 /// running line counter (CM.3c drain line-tracking).
@@ -209,6 +215,50 @@ impl Mode for CompilationMode {
                 return Ok(CompilationModeGuard::default());
             };
 
+            // T.7 (2026-07-22): the mode OWNS its `compilation.location`
+            // theme element — register it here so the mode is the single
+            // source of the element vocabulary. Idempotent by name, so
+            // re-activation is safe. Missing service (test harness) just
+            // skips: location lines then render with no baked bg.
+            if let Some(theme) = ctx.service::<ThemeRegistryHandle>().map(|outer| (*outer).clone()) {
+                let owner = ElementOwner::Mode(Self::mode_id().as_str().to_string().into());
+                let _: ElementId = theme.register(
+                    ElementName::from_static("compilation.location"),
+                    owner.clone(),
+                    StyleSpec::new().bg(ColorRef::Palette("surface2".into())),
+                    "Navigable file-location line in the *compilation* buffer (background tint).",
+                );
+                // T.7 (2026-07-22): headerline theme elements — the
+                // compilation headerline mirrors the search headerline
+                // colour vocabulary. `command` is the emphasised
+                // compile-command portion; `in_progress`/`success`/
+                // `failure` are the status-dependent foregrounds.
+                let _: ElementId = theme.register(
+                    ElementName::from_static("compilation.headerline.command"),
+                    owner.clone(),
+                    StyleSpec::new().fg(ColorRef::Literal(Color::Rgb(0xf9, 0xe2, 0xaf))),
+                    "Compilation headerline: compile-command emphasis (warm yellow).",
+                );
+                let _: ElementId = theme.register(
+                    ElementName::from_static("compilation.headerline.in_progress"),
+                    owner.clone(),
+                    StyleSpec::new().fg(ColorRef::Palette("subtext".into())),
+                    "Compilation headerline: running (grey).",
+                );
+                let _: ElementId = theme.register(
+                    ElementName::from_static("compilation.headerline.success"),
+                    owner.clone(),
+                    StyleSpec::new().fg(ColorRef::Palette("green".into())),
+                    "Compilation headerline: no errors (green).",
+                );
+                let _: ElementId = theme.register(
+                    ElementName::from_static("compilation.headerline.failure"),
+                    owner,
+                    StyleSpec::new().fg(ColorRef::Palette("red".into())),
+                    "Compilation headerline: errors present (red).",
+                );
+            }
+
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<CompilationOutputPushed>();
             let sub_id = ctx.events().subscribe_typed::<CompilationOutputPushed>(tx);
             let bus_handle = ctx.events_handle();
@@ -222,6 +272,40 @@ impl Mode for CompilationMode {
                 .service::<CompilationGutterBusHandle>()
                 .map(|h| (**h).clone());
 
+            // CM.3c (2026-07-22): the off-thread location-line index
+            // producer for theme-based highlighting. Twin of gutter_bus.
+            let location_bus: Option<InboundBus<(lattice_core::BufferId, Vec<(u32, u32, u32)>)>> = ctx
+                .service::<CompilationLocationBusHandle>()
+                .map(|h| (**h).clone());
+
+            // CM.3d (2026-07-22): create + register the
+            // compilation headerline — a sticky virtual row the
+            // drain updates live. Mirrors the project-search
+            // pattern: the drain sets running/command on Reset and
+            // finished counts on Finished.
+            let hl_state = Arc::new(std::sync::RwLock::new(CompilationHeadlineState::default()));
+            let hl_version = Arc::new(AtomicU64::new(1));
+            let _hl_registration = ctx
+                .service::<Arc<dyn VirtualRowRegistrar>>()
+                .map(|registrar| {
+                    let registrar: Arc<dyn VirtualRowRegistrar> = (*registrar).clone();
+                    let headerline = CompilationHeaderline::new(
+                        hl_state.clone(),
+                        hl_version.clone(),
+                        0xf9e2af, // command_fg (warm yellow)
+                        0x999999, // in_progress_fg (grey)
+                        0x44cc88, // success_fg (green)
+                        0xff4444, // failure_fg (red)
+                    );
+                    let provider = Arc::new(HeaderlineProvider::new(
+                        COMPILATION_HEADERLINE_PROVIDER_ID,
+                        Arc::new(headerline),
+                    ));
+                    registrar.unregister(buffer_id, COMPILATION_HEADERLINE_PROVIDER_ID);
+                    registrar.register(buffer_id, provider as Arc<dyn VirtualRowProvider>);
+                    (registrar, buffer_id)
+                });
+
             // Drain: coalesce every chunk available this wake into
             // as few actor round-trips as the ordering allows —
             // consecutive `Append`/`Finished` collapse into one
@@ -229,16 +313,22 @@ impl Mode for CompilationMode {
             // replaces the buffer.
             //
             // CM.3c: alongside the text writes the drain maintains the
-            // buffer's severity index. `next_line` is the 0-based buffer line
-            // the next appended char lands on and `severities` is the buffer's
-            // full `(line, severity)` list; both persist across batches and
-            // mirror the writes (a `Reset` clears + rebases, an
-            // `Append`/`Finished` scans at `next_line` then advances by its
-            // newline count). The FULL index is shipped through `gutter_bus`
+            // buffer's severity index AND location-line index.
+            // `next_line` is the 0-based buffer line the next appended
+            // char lands on, `severities` is the buffer's full `(line,
+            // severity)` list, and `location_lines` is the set of
+            // absolute line numbers carrying a file path + line:col.
+            // All three persist across batches and mirror the writes
+            // (a `Reset` clears + rebases, an `Append`/`Finished` scans
+            // at `next_line` then advances by its newline count). The
+            // FULL index is shipped through `gutter_bus` / `location_bus`
             // whenever it changes (the send bakes in the editor wake).
+            let drain_state = hl_state.clone();
+            let drain_version = hl_version.clone();
             runtime.spawn(async move {
                 let mut next_line: u32 = 0;
                 let mut severities: Vec<(u32, ErrorSeverity)> = Vec::new();
+                let mut location_lines: Vec<(u32, u32, u32)> = Vec::new();
                 while let Some(first) = rx.recv().await {
                     let mut batch = vec![first];
                     while let Ok(more) = rx.try_recv() {
@@ -248,29 +338,54 @@ impl Mode for CompilationMode {
                     let mut dirty = false;
                     for event in batch {
                         match event.chunk {
-                            OutputChunk::Reset { header } => {
+                            OutputChunk::Reset { ref header } => {
                                 let flush = std::mem::take(&mut pending);
                                 append_at_end(&handle, flush).await;
                                 reset_to(&handle, &header).await;
+                                // CM.3d: update headerline state — extract
+                                // the command from the first line of the
+                                // header ("$ cargo build" → "cargo build").
+                                if let Some(cmd_line) = header.lines().next() {
+                                    let cmd = cmd_line.strip_prefix("$ ").unwrap_or(cmd_line);
+                                    if let Ok(mut s) = drain_state.write() {
+                                        s.command = cmd.to_string();
+                                        s.running = true;
+                                        s.last_counts = None;
+                                    }
+                                }
+                                drain_version.fetch_add(1, Ordering::Release);
                                 // The reset replaces the whole buffer: drop the
                                 // prior index, rebase the counter to the header,
                                 // and scan the header itself (rare, but keeps the
                                 // index consistent with the buffer content).
                                 severities.clear();
                                 severities.extend(scan_severities(0, &header));
+                                location_lines.clear();
+                                location_lines.extend(scan_location_lines(0, &header));
                                 next_line = count_newlines(&header);
                                 dirty = true;
                             }
                             OutputChunk::Append { text } => {
                                 severities.extend(scan_severities(next_line, &text));
+                                location_lines.extend(scan_location_lines(next_line, &text));
                                 next_line = next_line.saturating_add(count_newlines(&text));
                                 pending.push_str(&text);
                                 dirty = true;
                             }
                             OutputChunk::Finished { summary } => {
                                 severities.extend(scan_severities(next_line, &summary));
+                                location_lines.extend(scan_location_lines(next_line, &summary));
                                 next_line = next_line.saturating_add(count_newlines(&summary));
                                 pending.push_str(&summary);
+                                // CM.3d: update headerline with final counts.
+                                // errors = count of Error severity; warnings = count of Warning.
+                                let errors = severities.iter().filter(|(_, s)| *s == ErrorSeverity::Error).count();
+                                let warnings = severities.iter().filter(|(_, s)| *s == ErrorSeverity::Warning).count();
+                                if let Ok(mut s) = drain_state.write() {
+                                    s.running = false;
+                                    s.last_counts = Some((errors, warnings));
+                                }
+                                drain_version.fetch_add(1, Ordering::Release);
                                 dirty = true;
                             }
                         }
@@ -281,6 +396,9 @@ impl Mode for CompilationMode {
                     if dirty {
                         if let Some(bus) = &gutter_bus {
                             let _ = bus.send((buffer_id, severities.clone()));
+                        }
+                        if let Some(bus) = &location_bus {
+                            let _ = bus.send((buffer_id, location_lines.clone()));
                         }
                     }
                 }

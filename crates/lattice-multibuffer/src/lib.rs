@@ -60,6 +60,7 @@ pub use crate::registry::{
 pub use crate::view::create_multibuffer_view;
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -642,6 +643,19 @@ impl MultibufferDocumentHandle {
 
     pub fn source_buffer_ids(&self) -> Vec<BufferId> {
         self.lock_state().sources.keys().copied().collect()
+    }
+
+    /// Generic multibuffer jump-to-source: resolve a source buffer
+    /// id to its on-disk path by reading the source document's path
+    /// directly. Unlike the per-provider `source_path` mapping
+    /// (e.g. `ProjectSearchService::source_path`), this works for
+    /// ANY multibuffer view without provider-specific state — every
+    /// source document carries its path through the `Document` trait.
+    /// Consumed by the generic `action:multibuffer-jump-to-source`
+    /// handler registered by `MultibufferMode::on_activate`. Returns
+    /// `None` when the source buffer id is unknown or has no path.
+    pub fn source_path(&self, source_buffer_id: BufferId) -> Option<PathBuf> {
+        self.lock_state().sources.get(&source_buffer_id)?.path()
     }
 
     /// M.10.2 (2026-06-03): translate a composed-coordinate

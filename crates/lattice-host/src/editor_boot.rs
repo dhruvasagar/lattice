@@ -1519,7 +1519,7 @@ impl Editor {
         // M.10.3 (2026-06-03): expose the CommandRegistry as a service so mode
         // handlers (registered via M.10.1.b ActionHandlerRegistry) can look up
         // CommandIds by action name at `on_activate` time — e.g.
-        // `cmd_registry.id_by_name("action:search-jump-to-source")` — without
+        // `cmd_registry.id_by_name("action:search-refresh")` — without
         // depending on host-internal types. Same `Arc<X>` alias pattern.
         boot.register_service::<lattice_grammar::CommandRegistryHandle>(registry.clone());
         // PL8.B (drain_mode): expose the keymap handle so `lattice-plugin-loader`

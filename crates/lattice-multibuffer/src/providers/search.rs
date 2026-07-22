@@ -403,11 +403,13 @@ impl ProjectSearchMultibufferMode {
 /// K.2.5 (2026-06-02): static keymap catalog for
 /// `ProjectSearchMultibufferMode`.
 ///
-/// Two action chords:
-/// - `<CR>` → `action:search-jump-to-source` (jump to the file/row
-///   of the excerpt under the cursor)
+/// One action chord:
 /// - `g` `r` → `action:search-refresh` (re-run scan with the
 ///   view's current query)
+///
+/// `<CR>` navigation is handled by `MultibufferMode`'s generic
+/// `action:multibuffer-jump-to-source` handler (minor-mode
+/// keymap does not shadow it).
 ///
 /// Action names registered by
 /// `crates/lattice-host/src/actions.rs:populate` against the
@@ -422,11 +424,6 @@ fn project_search_keymap_entries() -> &'static [KeymapEntry] {
     static ENTRIES: OnceLock<Vec<KeymapEntry>> = OnceLock::new();
     ENTRIES.get_or_init(|| {
         vec![
-            keymap_entry! {
-                mode: Normal, chord: "<CR>",
-                doc: "Jump to source file/row of the excerpt under cursor",
-                cmd: "action:search-jump-to-source"
-            },
             keymap_entry! {
                 mode: Normal, chord: "gr",
                 doc: "Re-run the project-search scan with the view's current query",
@@ -533,112 +530,18 @@ impl Mode for ProjectSearchMultibufferMode {
             // paths) by skipping the record.
             let search_svc_arc = ctx.service::<ProjectSearchServiceHandle>();
 
-            // M.10.3 (2026-06-03): register `<CR>` jump-to-source
-            // handler on the ActionHandlerRegistry. The handler
-            // closure captures the mb_registry + search_svc +
-            // view_id, computes the source target on every fire
-            // via `translate_composed_to_source` (M.10.2), and
-            // returns an `Effect::Many([OpenBuffer,
-            // SelectionChange])` that the host applies through
-            // the existing apply-effect pipeline. Replaces the
-            // pre-M.10.3 `Editor::do_search_jump_to_source` path
-            // that lived in `lattice-host::dispatch`.
-            //
-            // The chord `<CR>` is already bound to the action
-            // name `action:search-jump-to-source` via
-            // `project_search_keymap_entries()`. Here we resolve
-            // that name to its CommandId and register the
-            // handler under that key.
-            //
-            // Per `feedback_mode_owns_its_surface` +
-            // `mode-architecture.md` §5.3: mode owns chord
-            // choice (already done) AND handler body (this
-            // registration). The host owns the generic
-            // chord-dispatch + effect-apply machinery and
-            // nothing provider-specific.
+            // M.10.5 (2026-06-03): register `gr` refresh handler.
+            // `<CR>` jump-to-source is handled by MultibufferMode's
+            // generic action:multibuffer-jump-to-source handler;
+            // no project-search-specific handler needed.
             let mut action_registrations: Vec<ActionHandlerRegistration> = Vec::new();
             if let (Some(cmd_registry_arc), Some(action_handlers_arc)) = (
                 ctx.service::<CommandRegistryHandle>(),
                 ctx.service::<ActionHandlerRegistryHandle>(),
             ) {
-                // B3b: the service holds the `ArcSwap` handle; snapshot it
-                // wait-free for the `action:` id lookup below.
                 let cmd_registry_snapshot = cmd_registry_arc.load();
                 let cmd_registry: &CommandRegistry = &cmd_registry_snapshot;
                 let action_handlers: ActionHandlerRegistryHandle = (*action_handlers_arc).clone();
-                if let Some(jump_command_id) =
-                    cmd_registry.id_by_name("action:search-jump-to-source")
-                {
-                    let mb_registry_for_handler = mb_registry.clone();
-                    let search_svc_for_handler: Option<ProjectSearchServiceHandle> =
-                        search_svc_arc.as_ref().map(|s| (**s).clone());
-                    let view_id_for_handler = view_id;
-                    let handler: lattice_mode::ActionHandler = Arc::new(
-                        move |ctx: &ActionContext<'_>| -> Option<lattice_grammar::Effect> {
-                            // Look up the view from the registry.
-                            let view = mb_registry_for_handler.handle(view_id_for_handler)?;
-                            // Translate composed cursor → source.
-                            let (source_buffer_id, source_position) =
-                                view.translate_composed_to_source(ctx.cursor)?;
-                            // Resolve source path. v1 uses the
-                            // search service's per-view map; if
-                            // the service isn't registered (test
-                            // harness without boot wiring), the
-                            // handler no-ops.
-                            let search_svc = search_svc_for_handler.as_ref()?;
-                            let path =
-                                search_svc.source_path(view_id_for_handler, source_buffer_id)?;
-                            // Return the three-step Effect:
-                            // (1) record the current
-                            //     multibuffer-view cursor +
-                            //     buffer-id onto the jump-list
-                            //     so `<C-o>` walks the user
-                            //     back to where they were before
-                            //     they hit `<CR>` (matches
-                            //     vim's "big motion" jump-list
-                            //     semantics for `gd` / `*` /
-                            //     `<C-]>` / etc.);
-                            // (2) open the source file;
-                            // (3) position the cursor in the
-                            //     newly-active source doc.
-                            //
-                            // `Effect::Many` applies sub-effects
-                            // in order. `RecordJump` MUST come
-                            // first because it captures the
-                            // editor's CURRENT cursor +
-                            // active-buffer-id; after
-                            // `OpenBuffer` the cursor lives in
-                            // the new doc and recording would
-                            // capture the wrong location.
-                            // M.10.3 bug fix (2026-06-03): use the
-                            // atomic `OpenBufferAt` instead of
-                            // splitting `OpenBuffer` +
-                            // `SelectionChange`. The host's
-                            // SelectionChange arm runs synchronously
-                            // against the still-active multibuffer,
-                            // BEFORE the TUI processes the
-                            // OpenBuffer (which switches the active
-                            // doc to the source file). Splitting
-                            // landed cursor at (0, 0) of the
-                            // freshly-opened buffer on first visit;
-                            // subsequent visits hit the cached
-                            // active-doc cursor preserved from the
-                            // earlier (broken) write. `OpenBufferAt`
-                            // performs do_edit + set_selections
-                            // atomically against the post-do_edit
-                            // active doc.
-                            Some(lattice_grammar::Effect::Many(vec![
-                                lattice_grammar::Effect::RecordJump,
-                                lattice_grammar::Effect::OpenBufferAt {
-                                    path: Some(path),
-                                    position: source_position,
-                                    force: false,
-                                },
-                            ]))
-                        },
-                    );
-                    action_registrations.push(action_handlers.register(jump_command_id, handler));
-                }
 
                 // M.10.5 (2026-06-03): register `gr` refresh handler.
                 // Pre-M.10.5 the chord routed through

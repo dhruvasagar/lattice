@@ -208,6 +208,23 @@ pub struct RenderState {
             std::sync::Arc<Vec<(u32, lattice_mode::GutterSeverityLevel)>>,
         >,
     >,
+    /// CM.3c (2026-07-22): per-buffer compilation location-line index
+    /// for theme-based highlighting of navigable lines in the
+    /// `*compilation*` buffer. Written by the
+    /// `AppEffect::CompilationLocationLines` host arm from the
+    /// off-thread compilation drain; renderers check
+    /// `compilation_location_lines.get(buffer_id)` when painting each
+    /// line and apply the `compilation.location` theme element bg to
+    /// any row whose index appears in the set. Empty when no
+    /// compilation is active or no location lines have been produced.
+    /// The value `Arc` makes both the publish clone and the render-path
+    /// read O(1).
+    pub compilation_location_lines: std::sync::Arc<
+        std::collections::HashMap<
+            lattice_core::BufferId,
+            std::sync::Arc<Vec<(u32, u32, u32)>>,
+        >,
+    >,
 }
 
 impl Default for RenderState {
@@ -243,6 +260,7 @@ impl Default for RenderState {
             paint_revision: 0,
             wasm_gutter_decorations: crate::per_buffer_cache::empty(),
             compilation_severity: std::sync::Arc::new(std::collections::HashMap::new()),
+            compilation_location_lines: std::sync::Arc::new(std::collections::HashMap::new()),
         }
     }
 }

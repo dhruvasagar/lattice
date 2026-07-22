@@ -21,7 +21,9 @@ use std::sync::{Arc, OnceLock};
 
 use lattice_config::{OptionOverrideSet, overrides};
 use lattice_core::{BufferKind, FoldOverlayServiceHandle, ProviderId};
+use lattice_grammar::{CommandRegistryHandle, Effect};
 use lattice_mode::{
+    ActionContext, ActionHandler, ActionHandlerRegistration, ActionHandlerRegistryHandle,
     CapabilitySet, Keymap, KeymapEntry, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind,
     ModeRegistry, keymap_entry,
 };
@@ -35,8 +37,15 @@ use crate::registry::MultibufferRegistryHandle;
 /// deactivated. Holds one entry per registered provider
 /// (`ExcerptFoldProvider` + `FileBoundaryFoldProvider`). `Drop` fires
 /// when the buffer's major mode is swapped out or the buffer closes.
+/// Also drops the generic `<CR>` jump-to-source action handler
+/// registration on deactivation.
 pub struct MultibufferModeGuard {
     pub(crate) fold_registrations: Vec<(FoldOverlayServiceHandle, ProviderId)>,
+    /// RAII tokens for action-handler registrations made in
+    /// `on_activate`. Dropping the Guard drops these, which in
+    /// turn unregisters the closures from `ActionHandlerRegistry`.
+    /// Currently: `<CR>` jump-to-source.
+    _action_handler_registrations: Vec<ActionHandlerRegistration>,
 }
 
 impl Drop for MultibufferModeGuard {
@@ -67,6 +76,11 @@ fn multibuffer_keymap_entries() -> &'static [KeymapEntry] {
     static ENTRIES: OnceLock<Vec<KeymapEntry>> = OnceLock::new();
     ENTRIES.get_or_init(|| {
         vec![
+            keymap_entry! {
+                mode: Normal, chord: "<CR>",
+                doc: "Jump to source file/row of the excerpt under cursor",
+                cmd: "action:multibuffer-jump-to-source"
+            },
             keymap_entry! {
                 mode: Normal, chord: "]e",
                 doc: "Jump to next excerpt",
@@ -184,6 +198,9 @@ impl Mode for MultibufferMode {
                 .map(|outer| (*outer).clone());
 
             let mut fold_registrations = Vec::new();
+            // Clone before consuming in the match — also used by
+            // the generic `<CR>` handler registration below.
+            let mb_registry_for_handler = mb_registry.clone();
 
             match (fold_service, mb_registry) {
                 (Some(svc), Some(reg)) => {
@@ -222,7 +239,51 @@ impl Mode for MultibufferMode {
                 }
             }
 
-            Ok(MultibufferModeGuard { fold_registrations })
+            // Register the generic `<CR>` jump-to-source handler
+            // on `action:multibuffer-jump-to-source`. Makes EVERY
+            // multibuffer view support `<CR>` navigation regardless
+            // of provider (search, problems, narrow, etc.). Provider-
+            // specific minor modes that bind their own `<CR>`
+            // (e.g. `ProjectSearchMultibufferMode`) shadow this via
+            // the minor-mode keymap priority — their handler fires
+            // instead.
+            let mut action_registrations: Vec<ActionHandlerRegistration> = Vec::new();
+            if let (Some(mb_reg), Some(cmd_registry_arc), Some(action_handlers_arc)) = (
+                mb_registry_for_handler,
+                ctx.service::<CommandRegistryHandle>(),
+                ctx.service::<ActionHandlerRegistryHandle>(),
+            ) {
+                let cmd_registry_snapshot = cmd_registry_arc.load();
+                if let Some(jump_command_id) =
+                    cmd_registry_snapshot.id_by_name("action:multibuffer-jump-to-source")
+                {
+                    let action_handlers: ActionHandlerRegistryHandle =
+                        (*action_handlers_arc).clone();
+                    let view_id_for_handler = core_buffer_id;
+                    let handler: ActionHandler = Arc::new(
+                        move |ctx: &ActionContext<'_>| -> Option<Effect> {
+                            let view = mb_reg.handle(view_id_for_handler)?;
+                            let (source_buffer_id, source_position) =
+                                view.translate_composed_to_source(ctx.cursor)?;
+                            let path = view.source_path(source_buffer_id)?;
+                            Some(Effect::Many(vec![
+                                Effect::RecordJump,
+                                Effect::OpenBufferAt {
+                                    path: Some(path),
+                                    position: source_position,
+                                    force: false,
+                                },
+                            ]))
+                        },
+                    );
+                    action_registrations.push(action_handlers.register(jump_command_id, handler));
+                }
+            }
+
+            Ok(MultibufferModeGuard {
+                fold_registrations,
+                _action_handler_registrations: action_registrations,
+            })
         })
     }
 }

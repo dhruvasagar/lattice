@@ -2026,6 +2026,24 @@ impl EditorView {
                     })
             })
             .collect();
+        // CM.3d (2026-07-22): compilation location-line bg tint,
+        // computed from the render-state location-line index.
+        // Same shape as diff tint above.
+        let compilation_location_tint_per_row: Vec<Option<u32>> =
+            (visible_start..visible_end)
+                .filter(|line_idx| !fold_index.line_inside_closed_fold(*line_idx as u32))
+                .map(|line_idx| {
+                    rs_guard
+                        .compilation_location_lines
+                        .get(&pane.buffer_id)
+                        .and_then(|entries| {
+                            entries
+                                .iter()
+                                .find(|(l, _, _)| *l == line_idx as u32)
+                        })
+                        .map(|_| 0x45475au32)
+                })
+                .collect();
 
         // Active-pane cursor state. `None` on inactive panes so the
         // element doesn't paint a cursor marker there.
@@ -2371,6 +2389,7 @@ impl EditorView {
                 None
             },
             diff_tint_per_row,
+            compilation_location_tint_per_row,
             // D.3.b.1.gpui (2026-05-29): snapshot the virtual-
             // row matrix from RenderState — the prepaint walk
             // interleaves Above- and Below-anchored virtual
@@ -3799,6 +3818,7 @@ impl Render for EditorView {
                         worker_static_overlay_quads: None,
                         virtual_rows: std::sync::Arc::new(lattice_cells::VirtualRowMatrix::empty()),
                         diff_tint_per_row: Vec::new(),
+                        compilation_location_tint_per_row: Vec::new(),
                         cursorline_bg: 0,
                         cursorline_enabled: false,
                         diff_deletion_block_bg: 0,
@@ -4329,6 +4349,7 @@ impl Render for EditorView {
                 worker_static_overlay_quads: None,
                 virtual_rows: std::sync::Arc::new(lattice_cells::VirtualRowMatrix::empty()),
                 diff_tint_per_row: Vec::new(),
+                compilation_location_tint_per_row: Vec::new(),
                 cursorline_bg: 0,
                 cursorline_enabled: false,
                 diff_deletion_block_bg: 0,

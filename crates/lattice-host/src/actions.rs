@@ -255,10 +255,6 @@ pub struct ActionIds {
     pub snippet_next_placeholder: CommandId,
     pub snippet_prev_placeholder: CommandId,
     pub snippet_leave: CommandId,
-    /// M.6.1 (2026-06-01): `<CR>` chord under
-    /// `MinorMode(project-search-multibuffer-mode)`. Jump to
-    /// source file/row of the excerpt under cursor.
-    pub search_jump_to_source: CommandId,
     /// M.6.1 (2026-06-01): `gr` chord under
     /// `MinorMode(project-search-multibuffer-mode)`. Re-run the
     /// scan with the view's current query.
@@ -274,6 +270,14 @@ pub struct ActionIds {
     /// `AppEffect::CompileJumpToLocation`; the registered `ActionSpec`
     /// body is a dead `Effect::None` (the handler always intercepts).
     pub compilation_jump: CommandId,
+    /// Multibuffer-mode (2026-07-22): `<CR>` chord under
+    /// `MajorMode(multibuffer-mode)`. Jump to the source file/row
+    /// of the excerpt under cursor. Generic — works for ANY
+    /// multibuffer view regardless of provider (search, problems,
+    /// narrow, etc.). Mode-owned: `multibuffer-mode`'s per-buffer
+    /// `ActionHandlerRegistry` closure resolves the source + path;
+    /// the registered `ActionSpec` body is a dead `Effect::None`.
+    pub multibuffer_jump_to_source: CommandId,
 }
 
 /// Register every App-side action into `registry` and return
@@ -1376,12 +1380,7 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
                 args_schema: vec![],
             },
         ),
-        search_jump_to_source: register_simple(
-            registry,
-            "action:search-jump-to-source",
-            "project-search-multibuffer-mode `<CR>`: jump to source file/row of the excerpt under cursor.",
-            AppEffect::SearchJumpToSource,
-        ),
+
         search_refresh: register_simple(
             registry,
             "action:search-refresh",
@@ -1405,6 +1404,15 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
             "action:compilation-jump",
             "compilation-mode `<CR>`: jump to the source location under the cursor \
              (mode-owned; the handler parses the line + syncs the error list index).",
+            ActionSpec {
+                apply: Arc::new(|_ctx| Ok(lattice_grammar::Effect::None)),
+                args_schema: vec![],
+            },
+        ),
+        multibuffer_jump_to_source: registry.register_action(
+            "action:multibuffer-jump-to-source",
+            "multibuffer-mode `<CR>`: jump to the source file/row of the excerpt under cursor \
+             (generic; the handler resolves source + path through the multibuffer view).",
             ActionSpec {
                 apply: Arc::new(|_ctx| Ok(lattice_grammar::Effect::None)),
                 args_schema: vec![],

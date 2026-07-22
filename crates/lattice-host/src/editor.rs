@@ -431,6 +431,20 @@ pub struct Editor {
             std::sync::Arc<Vec<(u32, lattice_mode::GutterSeverityLevel)>>,
         >,
     >,
+    /// CM.3c (2026-07-22): per-buffer compilation location-line
+    /// index for theme-based highlighting. Twin of
+    /// `compilation_severity` above. Written by the
+    /// `AppEffect::CompilationLocationLines` arm and snapshotted
+    /// into `RenderState::compilation_location_lines` at publish.
+    /// The outer `Arc` lets the publish clone be O(1) and the
+    /// inner per-buffer `Arc<Vec<(u32,u32,u32)>>` lets the renderer read
+    /// wait-free.
+    pub compilation_location_lines: std::sync::Arc<
+        std::collections::HashMap<
+            lattice_core::BufferId,
+            std::sync::Arc<Vec<(u32, u32, u32)>>,
+        >,
+    >,
     /// MRU list of canonical paths the user has opened via
     /// `:edit` (or any path flowing through `do_edit`). Newest
     /// first; deduplicated; capped at `MAX_RECENT_FILES`. Source

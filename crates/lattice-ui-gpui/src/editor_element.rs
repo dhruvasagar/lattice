@@ -327,6 +327,11 @@ pub(crate) struct EditorElement {
     /// over them, so they read as a backdrop rather than
     /// competing with foreground emphasis.
     pub(crate) diff_tint_per_row: Vec<Option<u32>>,
+    /// CM.3d (2026-07-22): compilation location-line background
+    /// tint, pre-computed once per prepaint. Parallel to
+    /// `diff_tint_per_row`: `Some(color)` per visible row that
+    /// carries a file-location path.
+    pub(crate) compilation_location_tint_per_row: Vec<Option<u32>>,
     /// Background colour for the cursor line
     /// (`host_theme.cursor_line_bg` resolved by the caller, fallback
     /// Catppuccin surface0).
@@ -1095,6 +1100,16 @@ impl Element for EditorElement {
             // (empty lines) get a 1-column tint so the
             // backdrop is still visible.
             if let Some(&Some(tint_color)) = diff_tint_per_row.get(rel_row) {
+                let source_cols = line_text.chars().count() as u32;
+                let inlay_cols: u32 = inlay_offsets.iter().map(|(_, w)| *w).sum();
+                let total_cols = source_cols + inlay_cols;
+                let width = total_cols.max(1);
+                quads.push((0, width, tint_color));
+            }
+            // CM.3d (2026-07-22): compilation location-line
+            // bg tint. Same shape as diff tint above.
+            let compilation_tint_per_row = &self.compilation_location_tint_per_row;
+            if let Some(&Some(tint_color)) = compilation_tint_per_row.get(rel_row) {
                 let source_cols = line_text.chars().count() as u32;
                 let inlay_cols: u32 = inlay_offsets.iter().map(|(_, w)| *w).sum();
                 let total_cols = source_cols + inlay_cols;

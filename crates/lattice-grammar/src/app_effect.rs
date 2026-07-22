@@ -682,17 +682,9 @@ pub enum AppEffect {
     /// Resolves the excerpt under cursor → source path → opens
     /// the file at the matched row. M.10.3 (2026-06-03) made
     /// this mode-owned: the search mode's `on_activate`
-    /// registers a closure via `ActionHandlerRegistry` that
-    /// intercepts in `run_invocation` before the
-    /// `CommandKind::Action` evaluator emits this AppEffect.
-    /// The AppEffect arm is now a no-op marker — kept because
-    /// `actions::populate::register_simple` references it as
-    /// the registered ActionSpec payload.
-    SearchJumpToSource,
     /// M.6.1 (2026-06-01): `gr` chord in project-search-multibuffer-mode.
     /// Re-runs the scan with the view's current query. M.10.5
-    /// (2026-06-03) made this mode-owned (same shape as
-    /// SearchJumpToSource above): the search mode's
+    /// (2026-06-03) made this mode-owned: the search mode's
     /// `on_activate` registers a closure that intercepts via
     /// `ActionHandlerRegistry` before this AppEffect arm runs.
     /// The arm is a no-op marker; the work happens in the
@@ -768,6 +760,22 @@ pub enum AppEffect {
     CompilationGutterSet {
         buffer: u32,
         entries: Vec<(u32, lattice_protocol::error_list::ErrorSeverity)>,
+    },
+    /// CM.3c (2026-07-22): per-buffer compilation location-line
+    /// index for theme-based highlighting of navigable lines in
+    /// the `*compilation*` buffer. Twin of `CompilationGutterSet`:
+    /// the off-thread compilation drain scans each chunk for
+    /// location-bearing lines (via `parse_location_line`) and
+    /// ships the full list through an inbound bus; this effect
+    /// writes the `render_state` compilation-location slot for
+    /// `buffer`. An empty vec (sent on `Reset` / a new run)
+    /// clears the buffer's location-line set.
+    CompilationLocationLines {
+        buffer: u32,
+        /// (line, path_byte_start, path_byte_end) for each location line.
+        /// byte_start/end are the byte offsets of the file-path portion
+        /// within the line text, for link-like fg highlighting.
+        lines: Vec<(u32, u32, u32)>,
     },
     /// CM.4 (2026-07-22): `:copen`. The host arm reads the core
     /// error list and calls

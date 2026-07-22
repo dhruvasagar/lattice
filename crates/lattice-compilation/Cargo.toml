@@ -19,6 +19,7 @@ fancy-regex = { workspace = true }
 # `linkme` as a direct dependency (the macro can't route the path
 # through a re-export).
 linkme = { workspace = true }
+lattice-cells = { path = "../lattice-cells" }
 lattice-core = { path = "../lattice-core" }
 lattice-grammar = { path = "../lattice-grammar" }
 lattice-runtime = { path = "../lattice-runtime" }
@@ -28,6 +29,7 @@ lattice-protocol = { path = "../lattice-protocol" }
 # the option types and `lattice-mode` for the Mode trait + boot seam.
 lattice-config = { path = "../lattice-config" }
 lattice-mode = { path = "../lattice-mode" }
+lattice-theme = { path = "../lattice-theme" }
 
 [dev-dependencies]
 criterion = { workspace = true }

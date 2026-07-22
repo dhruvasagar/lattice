@@ -9,6 +9,13 @@
 //! threads (mirroring the terminal reader task). Nothing here
 //! touches the UI/actor thread — paramount goal #1.
 //!
+//! Both stdout and stderr pipes are parsed for error locations —
+//! compile diagnostics (rustc/cargo) go to stderr while test failure
+//! output (thread panics) goes to stdout. A shared
+//! `Arc<Mutex<Vec<ErrorEntry>>>` accumulator merges entries from both
+//! streams into a single error list. Single-byte encoding errors in a
+//! pipe are logged and skipped (the reader does not stop).
+//!
 //! Lifecycle: `:recompile` reuses the last cmdline and kills the
 //! prior child before relaunching; the buffer is cleared via the
 //! `Reset` chunk and re-streamed. On exit a one-shot `info!`
@@ -126,9 +133,7 @@ impl CompilationService for DefaultCompilationService {
                     None => {
                         drop(st);
                         self.publish(OutputChunk::Reset {
-                            header:
-                                "-*- mode: compilation -*-\nno previous compilation command\n\n"
-                                    .to_string(),
+                            header: "no previous compilation command\n\n".to_string(),
                         });
                         return;
                     }
@@ -145,64 +150,87 @@ impl CompilationService for DefaultCompilationService {
         // `Reset` path). Published before the spawn so it always
         // precedes the streamed `Append`s.
         self.publish(OutputChunk::Reset {
-            header: format!("-*- mode: compilation -*-\n$ {cmd}\n\n"),
+            header: format!("$ {cmd}\n\n"),
         });
 
-        // CM.3a: a new run clears the stale error list. Send an
-        // empty vec through the inbound seam so the host's
-        // replace-semantics `set_error_list` drops the prior run's
-        // entries before fresh ones stream in.
-        let _ = self.qf_bus.send(Vec::new());
+            // CM.3a: a new run clears the stale error list. Send an
+            // empty vec through the inbound seam so the host's
+            // replace-semantics `set_error_list` drops the prior run's
+            // entries before fresh ones stream in.
+            let _ = self.qf_bus.send(Vec::new());
 
-        let events = self.events.clone();
-        let state = self.state.clone();
-        let qf_bus = self.qf_bus.clone();
-        self.runtime.spawn_blocking(move || {
-            let mut command = Command::new("sh");
-            command
-                .arg("-c")
-                .arg(&cmd)
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped());
-            if let Some(dir) = cwd {
-                command.current_dir(dir);
-            }
-
-            let mut child = match command.spawn() {
-                Ok(child) => child,
-                Err(e) => {
-                    publish(
-                        &events,
-                        OutputChunk::Finished {
-                            summary: format!("\nCompilation failed to launch — {e}\n"),
-                        },
-                    );
-                    return;
+            let events = self.events.clone();
+            let state = self.state.clone();
+            let qf_bus = self.qf_bus.clone();
+            self.runtime.spawn_blocking(move || {
+                let mut command = Command::new("sh");
+                command
+                    .arg("-c")
+                    .arg(&cmd)
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped());
+                if let Some(dir) = cwd {
+                    command.current_dir(dir);
                 }
-            };
 
-            // Take the pipes out before parking the child in shared
-            // state, so kill-on-recompile and this task's reap never
-            // contend over the pipe fds.
-            let stdout = child.stdout.take();
-            let stderr = child.stderr.take();
-            if let Ok(mut st) = state.lock() {
-                st.child = Some(child);
-            }
+                let mut child = match command.spawn() {
+                    Ok(child) => child,
+                    Err(e) => {
+                        publish(
+                            &events,
+                            OutputChunk::Finished {
+                                summary: format!("\nCompilation failed to launch — {e}\n"),
+                            },
+                        );
+                        return;
+                    }
+                };
 
-            // Two dedicated reader threads so a large stderr can't
-            // deadlock a full stdout pipe (or vice versa). Only the
-            // stderr reader parses (compilers emit diagnostics to
-            // stderr — cargo, gcc, clang all do — and a stream's lines
-            // stay contiguous, so multi-line cargo blocks parse
-            // correctly); stdout stays parse-free.
-            let out_events = events.clone();
-            let out_reader = std::thread::spawn(move || read_pipe(stdout, &out_events));
-            let err_events = events.clone();
-            let err_reader =
-                std::thread::spawn(move || read_stderr_pipe(stderr, &err_events, &qf_bus));
-            let _ = out_reader.join();
-            let _ = err_reader.join();
+                // Take the pipes out before parking the child in shared
+                // state, so kill-on-recompile and this task's reap never
+                // contend over the pipe fds.
+                let stdout = child.stdout.take();
+                let stderr = child.stderr.take();
+                if let Ok(mut st) = state.lock() {
+                    st.child = Some(child);
+                }
+
+                // CM.3a+. Shared
+                // `Arc<Mutex<Vec<ErrorEntry>>>` so both stdout and
+                // stderr readers contribute to the same growing error
+                // list. Each reader locks, extends, clones, and sends the
+                // full state through the inbound seam — the host's
+                // replace-semantics `set_error_list` then grows the
+                // visible list regardless of which pipe delivered the
+                // entry. Each reader has its own `ParserRegistry` (the
+                // multi-line cargo parser is safe on both streams since
+                // cargo only emits diagnostics on stderr and the
+                // non-matching lines are no-ops).
+                //
+                // A shared list means the qf_bus always carries the
+                // complete state: stdout entries can't overwrite stderr
+                // entries (or vice versa) when the readers race.
+                let shared: Arc<Mutex<Vec<ErrorEntry>>> =
+                    Arc::new(Mutex::new(Vec::new()));
+
+                // Two dedicated reader threads so a large pipe can't
+                // deadlock the other. Both parse for error locations:
+                // compile diagnostics (rustc/cargo) go to stderr; test
+                // failure output (thread panics) goes to stdout.
+                let out_events = events.clone();
+                let out_qf = qf_bus.clone();
+                let out_shared = shared.clone();
+                let out_reader = std::thread::spawn(move || {
+                    read_parsed_pipe(stdout, &out_events, &out_qf, &out_shared)
+                });
+                let err_events = events.clone();
+                let err_qf = qf_bus.clone();
+                let err_shared = shared.clone();
+                let err_reader = std::thread::spawn(move || {
+                    read_parsed_pipe(stderr, &err_events, &err_qf, &err_shared)
+                });
+                let _ = out_reader.join();
+                let _ = err_reader.join();
 
             // Reap the child — unless a concurrent recompile already
             // took + killed it (then `child` is gone and the readers
@@ -234,57 +262,25 @@ fn publish(events: &Arc<EventBus>, chunk: OutputChunk) {
     events.publish_typed(CompilationOutputPushed { chunk });
 }
 
-/// Blocking line-reader for one captured pipe. Coalesces up to
-/// [`READER_BATCH_LINES`] lines per published `Append`; flushes a
-/// partial batch on EOF. A read error stops the reader (logged at
-/// `debug!` — never panics on the process path).
-fn read_pipe<R: std::io::Read>(pipe: Option<R>, events: &Arc<EventBus>) {
-    let Some(pipe) = pipe else {
-        return;
-    };
-    let reader = std::io::BufReader::new(pipe);
-    let mut batch = String::new();
-    let mut lines_in_batch = 0usize;
-    for line in reader.lines() {
-        match line {
-            Ok(l) => {
-                batch.push_str(&l);
-                batch.push('\n');
-                lines_in_batch += 1;
-                if lines_in_batch >= READER_BATCH_LINES {
-                    publish(
-                        events,
-                        OutputChunk::Append {
-                            text: std::mem::take(&mut batch),
-                        },
-                    );
-                    lines_in_batch = 0;
-                }
-            }
-            Err(e) => {
-                tracing::debug!(error = %e, "compilation: pipe read error; stopping reader");
-                break;
-            }
-        }
-    }
-    if !batch.is_empty() {
-        publish(events, OutputChunk::Append { text: batch });
-    }
-}
-
-/// CM.3a: stderr line-reader. Identical streaming behaviour to
-/// [`read_pipe`] (coalesced `Append` chunks into the `*compilation*`
-/// buffer) PLUS per-line parsing: each line is fed to a
-/// [`ParserRegistry`] in arrival order, and whenever new
-/// [`ErrorEntry`]s are produced the FULL accumulated list is sent
-/// through the error inbound seam (the host's replace-semantics
-/// `set_error_list` then grows the visible list). The reader is
-/// spawned fresh per run, so the accumulator starts empty; the
-/// run-start empty-vec send (in `run`) clears the prior run's list.
-fn read_stderr_pipe<R: std::io::Read>(
+/// CM.3a+. Blocking line-reader for one captured pipe.
+///
+/// Streams text into the `*compilation*` buffer (coalescing up to
+/// [`READER_BATCH_LINES`] lines per published `Append`) AND parses
+/// every line through a [`ParserRegistry`] for error locations. New
+/// [`ErrorEntry`]s are merged into the shared
+/// `Arc<Mutex<Vec<ErrorEntry>>>` accumulator and the full accumulated
+/// list is sent through the error inbound seam (replace-semantics
+/// `set_error_list`).
+///
+/// A per-line encoding error is logged at `debug!` and skipped — the
+/// reader does NOT stop on a single bad byte (prior behaviour lost the
+/// rest of the pipe). Flushes a partial batch on EOF.
+///
+fn read_parsed_pipe<R: std::io::Read>(
     pipe: Option<R>,
     events: &Arc<EventBus>,
     qf_bus: &InboundBus<Vec<ErrorEntry>>,
+    shared: &Mutex<Vec<ErrorEntry>>,
 ) {
     let Some(pipe) = pipe else {
         return;
@@ -293,37 +289,31 @@ fn read_stderr_pipe<R: std::io::Read>(
     let mut batch = String::new();
     let mut lines_in_batch = 0usize;
     let mut registry = ParserRegistry::with_builtins();
-    let mut accumulated: Vec<ErrorEntry> = Vec::new();
     for line in reader.lines() {
-        match line {
-            Ok(l) => {
-                // Parse in arrival order (stderr keeps multi-line cargo
-                // blocks contiguous). Send the full accumulated list on
-                // each new entry so the visible error list grows.
-                let new_entries = registry.feed(&l);
-                if !new_entries.is_empty() {
-                    accumulated.extend(new_entries);
-                    let _ = qf_bus.send(accumulated.clone());
-                }
-                // Stream the stderr text into the buffer, same coalescing
-                // as `read_pipe`.
-                batch.push_str(&l);
-                batch.push('\n');
-                lines_in_batch += 1;
-                if lines_in_batch >= READER_BATCH_LINES {
-                    publish(
-                        events,
-                        OutputChunk::Append {
-                            text: std::mem::take(&mut batch),
-                        },
-                    );
-                    lines_in_batch = 0;
-                }
-            }
+        let l = match line {
+            Ok(l) => l,
             Err(e) => {
-                tracing::debug!(error = %e, "compilation: stderr read error; stopping reader");
-                break;
+                tracing::debug!(error = %e, "compilation: pipe read error; skipping line");
+                continue;
             }
+        };
+        let new_entries = registry.feed(&l);
+        if !new_entries.is_empty() {
+            let mut guard = shared.lock().unwrap();
+            guard.extend(new_entries);
+            let _ = qf_bus.send(guard.clone());
+        }
+        batch.push_str(&l);
+        batch.push('\n');
+        lines_in_batch += 1;
+        if lines_in_batch >= READER_BATCH_LINES {
+            publish(
+                events,
+                OutputChunk::Append {
+                    text: std::mem::take(&mut batch),
+                },
+            );
+            lines_in_batch = 0;
         }
     }
     if !batch.is_empty() {

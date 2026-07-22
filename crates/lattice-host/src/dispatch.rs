@@ -1439,6 +1439,7 @@ impl Editor {
             // change). Renderers inject it into `gutter_decorations` via
             // `CompilationSeverityData`.
             compilation_severity: self.compilation_severity.clone(),
+            compilation_location_lines: self.compilation_location_lines.clone(),
             ..RenderState::default()
         }
     }
@@ -7435,6 +7436,21 @@ impl Editor {
                 }
                 self.compilation_severity = std::sync::Arc::new(map);
             }
+            // CM.3c (2026-07-22): per-buffer compilation location-line
+            // index for theme-based highlighting. Twin of
+            // CompilationGutterSet: stores the set of absolute buffer
+            // line numbers that carry a navigable file location. An
+            // empty vec (sent on Reset / a new run) clears the entry.
+            AppEffect::CompilationLocationLines { buffer, lines } => {
+                let bid = lattice_core::BufferId(buffer);
+                let mut map = (*self.compilation_location_lines).clone();
+                if lines.is_empty() {
+                    map.remove(&bid);
+                } else {
+                    map.insert(bid, std::sync::Arc::new(lines));
+                }
+                self.compilation_location_lines = std::sync::Arc::new(map);
+            }
             // CM.3b (2026-07-22): `<CR>` on a `*compilation*` location
             // line. The `compilation-mode` handler already parsed the
             // cursor line into `(path, line, col)`; jump there (records
@@ -7585,7 +7601,6 @@ impl Editor {
             // them as the registered ActionSpec payload; the
             // arms are no-ops because the work happens upstream
             // in the registry handler.
-            AppEffect::SearchJumpToSource => {}
             AppEffect::SearchRefresh => {}
             // CM.4 (2026-07-22): `:copen` — open the `*problems*`
             // multibuffer over the core error list. Mirrors the

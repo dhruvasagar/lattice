@@ -4588,6 +4588,15 @@ pub(crate) fn compose_pane_lines(
             Some(bg) => apply_diff_tint(body, bg),
             None => body,
         };
+        // CM.3d (2026-07-22): compilation location line tint —
+        // background tint on the whole line + link foreground on
+        // the file-path portion.
+        let body = match compilation_location_tint(view, ctx.buffer_id, line_idx) {
+            Some((start, end, bg, fg)) => {
+                apply_compilation_location_tint(body, start, end, bg, fg)
+            }
+            None => body,
+        };
         // DR.3: inactive panes are a paint-time opacity (the design's
         // §Render contract). Dim the fully-decorated body (syntax +
         // semantic + diagnostics + inlays + diff tint) uniformly AFTER
@@ -5438,6 +5447,49 @@ fn apply_diff_tint(spans: Vec<Span<'static>>, bg: Color) -> Vec<Span<'static>> {
         .map(|s| {
             let new_style = s.style.bg(bg);
             Span::styled(s.content.into_owned(), new_style)
+        })
+        .collect()
+}
+
+/// T.7 (2026-07-22): compilation location tint. Reads the
+/// per-buffer location-line index from the render-state snapshot and
+/// returns `(path_byte_start, path_byte_end, bg, fg)` for `line_idx`
+/// if it carries a file-location link.
+fn compilation_location_tint(
+    view: &FrameView<'_>,
+    buffer_id: crate::buffers::BufferId,
+    line_idx: u32,
+) -> Option<(u32, u32, Color, Color)> {
+    let rs = view.app.render_state.load();
+    let entries = rs.compilation_location_lines.get(&buffer_id)?;
+    let entry = entries.iter().find(|(l, _, _)| *l == line_idx)?;
+    let bg = view.app.theme.compilation_location_bg;
+    let fg = view.app.theme.compilation_location_fg;
+    Some((entry.1, entry.2, bg, fg))
+}
+
+/// Apply compilation location link tint: set the background tint on
+/// every span, and set the link foreground on spans whose byte range
+/// overlaps `[path_byte_start, path_byte_end)`.
+fn apply_compilation_location_tint(
+    spans: Vec<Span<'static>>,
+    path_byte_start: u32,
+    path_byte_end: u32,
+    bg: Color,
+    fg: Color,
+) -> Vec<Span<'static>> {
+    let mut byte_pos: usize = 0;
+    spans
+        .into_iter()
+        .map(|s| {
+            let span_len = s.content.len();
+            let span_end = byte_pos + span_len;
+            let inside_link = byte_pos < path_byte_end as usize
+                && span_end > path_byte_start as usize;
+            let style = s.style.bg(bg);
+            let style = if inside_link { style.fg(fg) } else { style };
+            byte_pos = span_end;
+            Span::styled(s.content.into_owned(), style)
         })
         .collect()
 }

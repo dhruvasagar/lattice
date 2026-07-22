@@ -26,6 +26,7 @@
 
 mod events;
 mod ex_commands;
+mod headerline;
 mod mode;
 mod parser;
 mod parsers;
@@ -33,10 +34,11 @@ mod service;
 
 pub use events::{CompilationOutputPushed, OutputChunk};
 pub use ex_commands::register_compilation_ex_commands;
+pub use headerline::{CompilationHeadlineState, CompilationHeaderline, COMPILATION_HEADERLINE_PROVIDER_ID};
 pub use mode::{CompilationMode, apply_chunk};
 pub use parser::{
     CompilationLocation, CompilationParser, ParserRegistry, match_severity, parse_location_line,
-    scan_severities,
+    scan_location_lines, scan_severities,
 };
 pub use service::{CompilationService, CompilationServiceHandle, DefaultCompilationService};
 
@@ -60,6 +62,16 @@ use lattice_protocol::error_list::{ErrorEntry, ErrorSeverity};
 /// `ctx.service::<CompilationGutterBusHandle>()`. `send` bakes in the editor
 /// wake, so marks reach the screen off-keystroke.
 pub type CompilationGutterBusHandle = Arc<InboundBus<(BufferId, Vec<(u32, ErrorSeverity)>)>>;
+
+/// CM.3c (2026-07-22): the off-thread → host-state seam for the
+/// `*compilation*` buffer's location-line index (theme-based
+/// highlighting). Twin of [`CompilationGutterBusHandle`]: the
+/// compilation drain sends `(buffer_id, full_location_lines)` through
+/// this bus whenever the index changes; the `install`-registered handler
+/// maps each send to [`AppEffect::CompilationLocationLines`].
+/// Registered as a ServiceRegistry handle under this exact alias; the
+/// drain looks it up via `ctx.service::<CompilationLocationBusHandle>()`.
+pub type CompilationLocationBusHandle = Arc<InboundBus<(BufferId, Vec<(u32, u32, u32)>)>>;
 
 /// CM.3c: map the parser-native [`ErrorSeverity`] onto the renderer-
 /// facing [`GutterSeverityLevel`] (`Error→Error`, `Warning→Warning`,
@@ -159,6 +171,19 @@ pub fn install(boot: &mut impl SubsystemBoot) {
             })]
         });
     boot.register_service::<CompilationGutterBusHandle>(Arc::new(gutter_bus));
+
+    // CM.3c (2026-07-22): the location-line index bus — twin of the
+    // gutter-severity bus above. The drain sends `(buffer_id, lines)`
+    // through this whenever the index changes; the handler maps each
+    // send to `AppEffect::CompilationLocationLines`, which the host
+    // stores in the render-state slot the renderers read.
+    let location_bus = boot.inbound::<(BufferId, Vec<(u32, u32, u32)>), _>(|(buffer, lines)| {
+        vec![Effect::AppAction(AppEffect::CompilationLocationLines {
+            buffer: buffer.0,
+            lines,
+        })]
+    });
+    boot.register_service::<CompilationLocationBusHandle>(Arc::new(location_bus));
 
     let svc: CompilationServiceHandle = Arc::new(DefaultCompilationService::new(
         boot.event_bus().clone(),

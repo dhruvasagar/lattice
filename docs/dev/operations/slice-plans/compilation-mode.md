@@ -18,8 +18,10 @@ green; ship doc + bench + test + graceful-error together.
 
 - **CM.1 — crate + streaming run.** ✅ (2026-07-22)
   - `lattice-compilation` crate; `CompilationMode` (major, `ReadOnly +
-    NoFile`); `*compilation*` synthetic Document via
-    `ensure_named_synthetic_document(name, mode_id, SYNTHETIC_BUFFER_FLAGS)`.
+    NoFile`); `*compilation*` synthetic Document created through the
+    **mode-owned creation seam** `ModeActivator::ensure_named_document`
+    (see below) — `start_compilation` provisions + activates it, then
+    runs the service.
   - `:compile <cmd>` / `:recompile` / `:make` ex-commands.
   - Off-thread process: `spawn_blocking` child + blocking stdout/stderr
     reader → `CompilationOutput` typed event (`register_event!`) → boot
@@ -34,6 +36,21 @@ green; ship doc + bench + test + graceful-error together.
     cmd. **Bench:** ✅ `compilation_append` — append cost stays flat
     (~8.8µs p50) across logs of 0/250/2000/10000 batches (no degradation
     as the log grows).
+  - **CM.1-fix (2026-07-22): mode-owned buffer-creation seam.** First
+    `:compile` crashed — creation was routed through the `&self`
+    `BufferStore::ensure_named_document`, a find-only stub that panicked
+    on a miss (activating a mode needs `&mut Editor`). Fixed by adding
+    the real create seam **`ModeActivator::ensure_named_document`**
+    (`&mut`-backed; `Editor` impl → `ensure_named_synthetic_document`)
+    and **removing** the lying `BufferStore::ensure_named_document` stub
+    (trait method + handle + registry impl + 6 mock stubs). Design docs
+    updated (`design.md` §5.10.5, `multibuffer-views.md` §3.7,
+    `kind-agnostic-buffers.md` H.1, `error-list.md`/`compilation-mode.md`).
+    Regression: `crates/lattice-host/tests/compile_run.rs` (2) drives the
+    real `apply_app_effect(CompileRun)` path. This is the reliable API
+    all extension-crate mode-owned buffers use (imperative front-end;
+    the declarative peer is `Effect::OpenSyntheticBuffer` for pure
+    ex-commands, e.g. AI-log).
 
 ## Phase 2 — quickfix substrate + navigation
 

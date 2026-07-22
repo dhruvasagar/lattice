@@ -7374,6 +7374,12 @@ impl Editor {
             // (ensure buffer → activate → repaint → echo).
             AppEffect::CompileRun { cmdline } => {
                 let cwd = self.current_dir.clone();
+                // Compilation owns provisioning its buffer: `start_compilation`
+                // creates + activates `*compilation*` through the `&mut`-backed
+                // `ModeActivator::ensure_named_document` seam (establishing the
+                // drain) and runs the service. `self` coerces to
+                // `&mut dyn ModeActivator`. The host's only role is generic:
+                // activate the returned buffer + repaint.
                 match lattice_compilation::start_compilation(self, cmdline, cwd) {
                     Some(id) => {
                         if self.activate_buffer(id) {

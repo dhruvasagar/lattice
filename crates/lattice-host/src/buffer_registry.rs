@@ -913,37 +913,16 @@ impl BufferRegistry {
 // Registered into the App's `ServiceRegistry` at boot; modes pull
 // it via `ctx.service::<lattice_mode::BufferStoreHandle>()`.
 //
-// `ensure_named_document` is partially implemented: it returns
-// the existing id when the name is registered. Creation +
-// major-mode activation is App-driven (B'.3 keeps that path on
-// the App side); a future slice can wire the create path back
-// through here when modes need to provision their own buffers.
+// This handle is read/find + generic document insertion only — buffer
+// *creation* (find-or-create + activate a major) is NOT here, because
+// activating a mode needs `&mut Editor`. Modes provision their own
+// buffers through `ModeActivator::ensure_named_document` (the
+// `&mut`-backed create seam), whose `Editor` impl calls
+// `ensure_named_synthetic_document`.
 
 impl lattice_mode::BufferStore for BufferRegistry {
     fn find_by_name(&self, name: &str) -> Option<lattice_core::BufferId> {
         self.by_name(name)
-    }
-
-    fn ensure_named_document(
-        &self,
-        name: &str,
-        _major: lattice_mode::ModeId,
-        _flags: lattice_core::BufferFlags,
-    ) -> lattice_core::BufferId {
-        // Return the existing id when registered (B'.3: every
-        // synthetic LSP / messages buffer is created App-side
-        // before its mode activates, so callers only need the
-        // find half of "find-or-create" today). When `name` is
-        // unknown the panic surfaces a programmer error in CI
-        // rather than silently routing writes to a fresh-but-
-        // un-activated buffer.
-        match self.by_name(name) {
-            Some(id) => id,
-            None => panic!(
-                "BufferStore::ensure_named_document: no buffer named {name:?}; \
-                 App-side creation path not yet routed through BufferStore"
-            ),
-        }
     }
 
     fn handle_for(

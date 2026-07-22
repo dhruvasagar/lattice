@@ -3,12 +3,13 @@
 //!
 //! Mirrors `lattice_agent::log::modes::AiLogMode` /
 //! `lattice_mode::modes::MessagesMode`: a `ReadOnly + NoFile`
-//! major activated on the buffer *by id* (via
-//! `BufferStore::ensure_named_document`), whose `on_activate`
-//! subscribes to [`CompilationOutputPushed`] and spawns a drain
-//! task that applies each streamed chunk to the buffer through
-//! the actor handle. The returned `Subscription` guard
-//! unsubscribes on drop.
+//! major activated on the buffer *by id* — `start_compilation`
+//! provisions the buffer through the mode-owned creation seam
+//! `ModeActivator::ensure_named_document`, which activates this
+//! mode. `on_activate` then subscribes to [`CompilationOutputPushed`]
+//! and spawns a drain task that applies each streamed chunk to the
+//! buffer through the actor handle. The returned `Subscription`
+//! guard unsubscribes on drop.
 
 use std::sync::{Arc, OnceLock};
 

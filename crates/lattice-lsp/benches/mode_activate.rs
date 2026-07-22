@@ -32,8 +32,8 @@ use lattice_lsp::completion::register_lsp_completion_mode;
 use lattice_lsp::modes::{LspMode, register_lsp_log_modes};
 use lattice_lsp::{LspLogger, LspSupervisor, LspSupervisorHandle};
 use lattice_mode::{
-    ActiveModes, BufferStore, BufferStoreHandle, CapabilitySet, GuardStoreHandle, ModeId,
-    ModeRegistry, ServiceRegistry,
+    ActiveModes, BufferStore, BufferStoreHandle, CapabilitySet, GuardStoreHandle, ModeRegistry,
+    ServiceRegistry,
 };
 use lattice_protocol::ids::BufferId;
 use lattice_runtime::EventBus;
@@ -49,16 +49,6 @@ struct NullBufferStore;
 impl BufferStore for NullBufferStore {
     fn find_by_name(&self, _name: &str) -> Option<lattice_core::BufferId> {
         None
-    }
-    fn ensure_named_document(
-        &self,
-        _name: &str,
-        _major: ModeId,
-        _flags: BufferFlags,
-    ) -> lattice_core::BufferId {
-        // Unreachable for the bench's lsp-mode path; satisfy the
-        // trait contract with a placeholder.
-        lattice_core::BufferId(0)
     }
     fn name_for(&self, _id: lattice_core::BufferId) -> Option<String> {
         None

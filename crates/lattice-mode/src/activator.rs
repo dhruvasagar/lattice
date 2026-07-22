@@ -17,7 +17,7 @@
 
 use std::sync::Arc;
 
-use lattice_core::{BufferId, BufferKind};
+use lattice_core::{BufferFlags, BufferId, BufferKind};
 
 use crate::mode::ModeId;
 use crate::services::ServiceRegistry;
@@ -49,6 +49,30 @@ pub trait ModeActivator {
     /// be registered. Idempotent: re-activating an already-active
     /// minor is a no-op.
     fn activate_minor_by_id(&mut self, buffer: BufferId, mode: ModeId);
+
+    /// Find-or-create a synthetic **named `Document`** buffer and
+    /// activate `major` on it *by id* (no on-disk language detection),
+    /// returning its [`BufferId`]. This is the reliable, `&mut`-backed
+    /// creation seam a mode / provider uses to **provision its own
+    /// buffer** — the creation of a mode-owned buffer is the mode's
+    /// responsibility, triggered through here.
+    ///
+    /// Unlike [`crate::BufferStore`] (whose `&self` handle can only
+    /// *find* an existing buffer — activating a mode mutates the mode
+    /// registry / active-modes / options cache and needs `&mut`), this
+    /// method actually creates: the host impl mints the `BufferId`,
+    /// spawns an empty `Document`, registers it with `flags`, seeds
+    /// mode-locals, and runs `major`'s `on_activate` — so any drain /
+    /// subscription the mode establishes there is live by the time this
+    /// returns. Idempotent: a second call with the same `name` returns
+    /// the existing id without re-activating (the drain from the first
+    /// activation stays put).
+    fn ensure_named_document(
+        &mut self,
+        name: &str,
+        major: ModeId,
+        flags: BufferFlags,
+    ) -> BufferId;
 
     /// Cheap-clone handle to the App's [`ServiceRegistry`]. Used
     /// by extension-crate trigger functions that need to look up

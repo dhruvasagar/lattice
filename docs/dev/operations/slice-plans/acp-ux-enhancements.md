@@ -358,12 +358,15 @@ clean bisection.
   available (the file-tree/oil `entry_at_line` model) for completeness and >9
   options. No dynamic per-request rebinding — no such template exists
   (`completion_popup_layer_bindings` binds a *fixed* set, not `1..=N`).
-- **Opening mechanism:** the drain calls `BufferStoreHandle::ensure_named_document`
-  (idempotent, returns the `BufferId`), projects the request, stashes id + a
-  needs-open flag; a **tick callback** (PU-B's is the first `lattice-ai`
-  tick-callback consumer) reads the flag and returns
-  `Effect::OpenPopup { buffer, Centered, Steal }`. `OpenPopup` keeps its
-  `{ buffer: BufferId, .. }` shape.
+- **Opening mechanism:** buffer creation goes through the **declarative**
+  creation seam — a drain / **tick callback** (PU-B's is the first `lattice-ai`
+  tick-callback consumer) returns `Effect::OpenSyntheticBuffer { name, mode_id }`
+  (the host applies it via the mode-owned create path), then projects the
+  request and returns `Effect::OpenPopup { buffer, Centered, Steal }`.
+  (A tick callback returns `Vec<Effect>` and has no `&mut Editor`, so it uses
+  the effect front-end, not the imperative `ModeActivator::ensure_named_document`
+  seam — see `design.md` §5.10.5.) `OpenPopup` keeps its `{ buffer: BufferId, .. }`
+  shape.
 
 #### PU-B.1 — `Effect::OpenPopup` plumbing ✅
 The deferred PU-A.3b, landed now that PU-B.2/.3 are its consumers (no longer dead

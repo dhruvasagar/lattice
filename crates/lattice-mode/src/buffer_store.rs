@@ -27,18 +27,20 @@
 //! thread inside `on_activate`, a tokio task draining an event
 //! subscription, etc.
 //!
-//! ## Mutation surface
-//!
-//! Only three operations:
+//! ## Read / write surface
 //!
 //! - [`BufferStore::find_by_name`] — read-only registry probe.
-//! - [`BufferStore::ensure_named_document`] — find-or-create. If
-//!   creating, allocates a fresh `RopeDocumentHandle`, registers the
-//!   buffer with `name = Some(name.into())`, activates `major` as
-//!   the buffer's major mode (which transitively runs the major's
-//!   `on_activate`), and returns the id.
 //! - [`BufferStore::handle_for`] — clone of the actor handle so a
 //!   mode can write to the buffer from outside the App's borrow.
+//! - [`BufferStore::insert_document_buffer`] — generic Document-shaped
+//!   insertion (multibuffer kinds).
+//!
+//! **Buffer *creation* (find-or-create + activate a major) is NOT on
+//! this trait.** Activating a mode mutates the mode registry /
+//! active-modes / options cache, which needs `&mut Editor`;
+//! `BufferStore` is `&self` (thread-safe). The reliable, mode-owned
+//! creation seam is [`crate::ModeActivator::ensure_named_document`]
+//! (`&mut`-backed) — a mode / provider provisions its own buffer there.
 //!
 //! Mode authors call these from their lifecycle hooks. The
 //! mode-ownership contract: a mode that creates a synthetic
@@ -48,8 +50,6 @@
 use std::sync::Arc;
 
 use lattice_core::{BufferFlags, BufferId, BufferKind};
-
-use crate::ModeId;
 
 /// Host-implemented trait. The renderer crate provides an impl
 /// that wraps the App's buffer registry + mode-activation state.
@@ -62,22 +62,12 @@ pub trait BufferStore: Send + Sync {
     /// registered yet.
     fn find_by_name(&self, name: &str) -> Option<BufferId>;
 
-    /// Find-or-create a Document buffer with the given synthetic
-    /// `name` and `major` mode. Idempotent: a second call with
-    /// the same name returns the existing id, regardless of
-    /// whether `major` matches (the existing buffer's major is
-    /// not overwritten).
-    ///
-    /// On first creation:
-    /// 1. Allocate a `BufferId::next()`.
-    /// 2. Spawn an empty `Document` and register a
-    ///    `BufferEntry { id, flags, data: Document, name: Some(name) }`
-    ///    in the buffer registry.
-    /// 3. Activate `major` on the new buffer (runs the major's
-    ///    `on_activate` via the mode registry; recomputes the
-    ///    buffer's resolved-options cache).
-    /// 4. Return the id.
-    fn ensure_named_document(&self, name: &str, major: ModeId, flags: BufferFlags) -> BufferId;
+    // NOTE: buffer *creation* (find-or-create + activate a major) is
+    // deliberately NOT on this trait. Activating a mode mutates the mode
+    // registry / active-modes / options cache, which needs `&mut Editor`;
+    // `BufferStore` methods are `&self` (callable from any thread). The
+    // create seam is `ModeActivator::ensure_named_document`
+    // (`&mut`-backed) — the mode owns the creation of its buffers there.
 
     /// Get a clone of the `Arc<dyn Document>` for `id`,
     /// suitable for holding across thread boundaries. M.0: the
@@ -114,9 +104,9 @@ pub trait BufferStore: Send + Sync {
     /// §8 Q2).
     ///
     /// Idempotent: if `id` is already registered the call is a
-    /// no-op (consistent with `ensure_named_document` for the
-    /// named-singleton case). The caller is responsible for
-    /// allocating `id` via `BufferId::next()` before calling.
+    /// no-op (consistent with the named-singleton create seam,
+    /// [`crate::ModeActivator::ensure_named_document`]). The caller is
+    /// responsible for allocating `id` via `BufferId::next()` first.
     ///
     /// Errors fold into the impl's logging path (e.g. the
     /// `lattice-host` impl logs through `tracing` and emits a
@@ -155,9 +145,10 @@ impl BufferStoreHandle {
         self.inner.find_by_name(name)
     }
 
-    pub fn ensure_named_document(&self, name: &str, major: ModeId, flags: BufferFlags) -> BufferId {
-        self.inner.ensure_named_document(name, major, flags)
-    }
+    // Buffer *creation* is not on this `&self` handle — it must activate
+    // a mode, which needs `&mut Editor`. Use
+    // `ModeActivator::ensure_named_document` (the mode-owned creation
+    // seam). `BufferStore` is read/find + generic document insertion only.
 
     pub fn handle_for(&self, id: BufferId) -> Option<Arc<dyn lattice_runtime::Document>> {
         self.inner.handle_for(id)

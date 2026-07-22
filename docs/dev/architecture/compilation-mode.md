@@ -63,6 +63,18 @@ name — the codified `*messages*` / ai-log pattern, not a new
 the keymap, the streaming drain producer, the parser wiring, and the
 action-handler bodies. There is no `Editor::do_compile_*` on the host.
 
+**The mode provisions its own buffer.** `start_compilation` (called by
+the `AppEffect::CompileRun` arm, which passes the `Editor` as
+`&mut dyn ModeActivator`) calls `ModeActivator::ensure_named_document(
+COMPILATION_BUFFER_NAME, compilation-mode, …)` — the `&mut`-backed
+creation seam whose `Editor` impl mints the buffer *and* runs
+`on_activate` (establishing the streaming drain), then runs the service.
+Creation lives on `ModeActivator` (not the `&self` `BufferStore` handle,
+which is find-only) because activating a mode needs `&mut Editor`. The
+host's only role is generic: activate the returned buffer + repaint.
+Idempotent on `:recompile` (reuses the buffer; the first drain stays
+live). See `error-list.md` and the `ModeActivator` trait for the seam.
+
 ### Process execution — off the UI/actor thread (paramount #1)
 
 The compiler runs **pipe-captured** (not PTY): stdout+stderr captured

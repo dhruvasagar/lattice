@@ -33,8 +33,10 @@ The H-series removes that coupling for the **insertion** and **mode-resolution**
 
 ```rust
 pub trait BufferStore: Send + Sync {
-    // existing methods stay (find_by_name, ensure_named_document,
-    // handle_for, name_for)…
+    // existing methods stay (find_by_name, handle_for, name_for)…
+    // NOTE: creation is NOT here — `BufferStore` is `&self` and can't
+    // activate a mode. The create seam is
+    // `ModeActivator::ensure_named_document` (`&mut Editor`-backed).
 
     /// Insert a fully-constructed `BufferEntry` into the
     /// registry. Returns the assigned `BufferId`. Extension

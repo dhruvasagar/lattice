@@ -1017,14 +1017,6 @@ mod tests {
         fn find_by_name(&self, _name: &str) -> Option<lattice_core::BufferId> {
             None
         }
-        fn ensure_named_document(
-            &self,
-            _name: &str,
-            _major: ModeId,
-            _flags: lattice_core::BufferFlags,
-        ) -> lattice_core::BufferId {
-            lattice_core::BufferId(0)
-        }
         fn name_for(&self, _id: lattice_core::BufferId) -> Option<String> {
             None
         }

@@ -27,8 +27,9 @@ use crate::events::{CompilationOutputPushed, OutputChunk};
 use crate::parser::ParserRegistry;
 
 /// Process-lifecycle surface. Registered in the `ServiceRegistry`
-/// at boot (as [`CompilationServiceHandle`]); the `start_compilation`
-/// host seam looks it up and calls [`CompilationService::run`].
+/// at boot (as [`CompilationServiceHandle`]); the `AppEffect::CompileRun`
+/// host arm looks it up and calls [`CompilationService::run`] (after
+/// creating the `*compilation*` buffer host-side).
 pub trait CompilationService: Send + Sync + std::fmt::Debug {
     /// Launch (or relaunch) a compilation.
     ///

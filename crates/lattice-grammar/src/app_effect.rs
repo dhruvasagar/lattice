@@ -700,10 +700,11 @@ pub enum AppEffect {
     /// spawning a fresh scan task).
     SearchRefresh,
     /// CM.1 (2026-07-21): `:compile <cmd>` / `:recompile` / `:make`.
-    /// The host arm calls `lattice_compilation::start_compilation`,
-    /// which ensures the read-only synthetic `*compilation*` buffer
-    /// (activating `compilation-mode`) and kicks off the pipe-captured
-    /// off-thread run whose output streams into that buffer. Same
+    /// The host arm creates the read-only synthetic `*compilation*`
+    /// buffer host-side (`Editor::ensure_named_synthetic_document`,
+    /// activating `compilation-mode`) and kicks off the pipe-captured
+    /// off-thread run via the `CompilationServiceHandle`, whose output
+    /// streams into that buffer. Same
     /// shape as `SearchTrigger`: the substrate crate owns the work;
     /// the host arm is generic apply-effect routing. `cmdline`:
     /// `Some(cmd)` for `:compile`; `None` for `:recompile` / bare

@@ -655,17 +655,24 @@ pub trait ModeActivator {
     fn activate_major_for_kind(&mut self, id: BufferId, kind: BufferKind);
     fn activate_minor_by_id(&mut self, id: BufferId, mode: ModeId);
     fn services(&self) -> Arc<ServiceRegistry>;
+    /// Create-or-find a synthetic named `Document` + activate `major`
+    /// by id (runs `on_activate`). The `&mut`-backed, mode-owned buffer
+    /// **creation** seam — a provider provisions its own synthetic
+    /// buffer here (creation can't live on the `&self` `BufferStore`,
+    /// which cannot activate a mode). Idempotent.
+    fn ensure_named_document(&mut self, name: &str, major: ModeId, flags: BufferFlags) -> BufferId;
 }
 ```
 
-`impl ModeActivator for Editor` is three thin wrappers — the
-existing `Editor::activate_major_for_buffer_kind` /
+`impl ModeActivator for Editor` is thin wrappers — the existing
+`Editor::activate_major_for_buffer_kind` /
 `Editor::activate_minor_by_id` already run the full cascade
 (major → default minor → auto minors → recompute options +
-completion → maybe-auto-LSP). `services()` returns a cloned
-`Arc<ServiceRegistry>` so extension-crate code can pull
-service handles without fighting the borrow checker against the
-`&mut` activator borrow.
+completion → maybe-auto-LSP), and `ensure_named_document`
+forwards to `Editor::ensure_named_synthetic_document`.
+`services()` returns a cloned `Arc<ServiceRegistry>` so
+extension-crate code can pull service handles without fighting the
+borrow checker against the `&mut` activator borrow.
 
 **Why a trait, not `&mut Editor`:** `lattice-multibuffer` can't
 depend on `lattice-host` (host already depends on

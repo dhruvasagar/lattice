@@ -47,7 +47,7 @@ use lattice_core::{BufferFlags, BufferId};
 use lattice_grammar::AppEffect;
 use lattice_grammar::effect::Effect;
 use lattice_mode::inbound::InboundBus;
-use lattice_mode::{BufferStoreHandle, GutterSeverityLevel, ModeActivator, SubsystemBoot};
+use lattice_mode::{GutterSeverityLevel, ModeActivator, SubsystemBoot};
 use lattice_protocol::error_list::{ErrorEntry, ErrorSeverity};
 
 /// CM.3c: the off-thread → host-state seam for the `*compilation*` buffer's
@@ -83,34 +83,43 @@ pub fn gutter_level(severity: ErrorSeverity) -> GutterSeverityLevel {
 /// (`listed = false`).
 pub const COMPILATION_BUFFER_NAME: &str = "*compilation*";
 
-/// Host seam (called from the `AppEffect::CompileRun` dispatch
-/// arm): ensure the `*compilation*` buffer exists — creating it and
-/// activating [`CompilationMode`] on first use — then kick off the
-/// run via the registered [`CompilationServiceHandle`].
+/// Compilation-mode's synthetic-buffer flags: unlisted (skipped by
+/// `:bn` / `:bp`), non-hidden, non-ephemeral — the canonical shape for
+/// a mode-owned subsystem buffer.
+const COMPILATION_BUFFER_FLAGS: BufferFlags = BufferFlags {
+    listed: false,
+    hidden: false,
+    ephemeral: false,
+};
+
+/// Provision the `*compilation*` buffer and kick off a run — the
+/// compilation mode's own responsibility, driven through the
+/// `&mut`-backed [`ModeActivator::ensure_named_document`] creation seam.
 ///
-/// Returns the buffer id on success (so the host can activate the
-/// buffer + repaint), or `None` when the buffer store or the
-/// compilation service is not registered.
+/// Called from the `AppEffect::CompileRun` dispatch arm (which passes
+/// the `Editor` as `&mut dyn ModeActivator`). Creates + activates the
+/// `*compilation*` buffer on first use — activation runs
+/// [`CompilationMode`]'s `on_activate`, establishing the streaming drain
+/// **before** the service publishes its first `Reset` — then runs the
+/// registered [`CompilationServiceHandle`]. Idempotent on `:recompile`
+/// (reuses the buffer; the drain from the first activation stays live).
+///
+/// Returns the buffer id (so the host can activate the buffer + repaint),
+/// or `None` when the compilation service is not registered.
 pub fn start_compilation(
     activator: &mut dyn ModeActivator,
     cmdline: Option<String>,
     cwd: Option<PathBuf>,
 ) -> Option<BufferId> {
-    let services = activator.services();
-    let store = services.get::<BufferStoreHandle>()?;
-    let id = store.ensure_named_document(
+    let id = activator.ensure_named_document(
         COMPILATION_BUFFER_NAME,
         CompilationMode::mode_id(),
-        BufferFlags {
-            listed: false,
-            hidden: false,
-            ephemeral: false,
-        },
+        COMPILATION_BUFFER_FLAGS,
     );
     // `services.get::<CompilationServiceHandle>()` returns
     // `Arc<Arc<dyn CompilationService>>` per the ServiceRegistry
     // Arc/TypeId convention — unwrap one layer before `run`.
-    let svc = services.get::<CompilationServiceHandle>()?;
+    let svc = activator.services().get::<CompilationServiceHandle>()?;
     (*svc).clone().run(cmdline, cwd);
     Some(id)
 }

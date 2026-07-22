@@ -18,7 +18,7 @@
 
 use std::sync::Arc;
 
-use lattice_core::{BufferId, BufferKind};
+use lattice_core::{BufferFlags, BufferId, BufferKind};
 use lattice_mode::{ModeActivator, ModeId, ServiceRegistry};
 
 use crate::editor::Editor;
@@ -32,6 +32,19 @@ impl ModeActivator for Editor {
     fn activate_minor_by_id(&mut self, buffer: BufferId, mode: ModeId) {
         let signals = self.activate_mode_by_id(buffer, mode);
         self.enqueue_renderer_signals(signals);
+    }
+
+    /// The real create-and-activate seam (`ensure_named_synthetic_document`
+    /// inserts the buffer + runs the major's `on_activate` by id). This
+    /// is why buffer creation lives here on the `&mut`-backed
+    /// `ModeActivator` and not on the `&self` `BufferStore`.
+    fn ensure_named_document(
+        &mut self,
+        name: &str,
+        major: ModeId,
+        flags: BufferFlags,
+    ) -> BufferId {
+        self.ensure_named_synthetic_document(name, major, flags)
     }
 
     fn services(&self) -> Arc<ServiceRegistry> {

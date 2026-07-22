@@ -540,7 +540,8 @@ impl Editor {
         // `compilation-mode` (major, ReadOnly + NoFile), the
         // `:compile`/`:recompile`/`:make` ex-commands (return
         // `Effect::AppAction(AppEffect::CompileRun)`, applied by the
-        // host arm calling `lattice_compilation::start_compilation`),
+        // host arm — creates the `*compilation*` buffer host-side +
+        // runs the `CompilationServiceHandle`),
         // the `CompilationServiceHandle` process-lifecycle service,
         // and the `CompilationOutputPushed` off-keystroke wake so the
         // streaming `*compilation*` buffer repaints without a keypress.

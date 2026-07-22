@@ -36,9 +36,6 @@ impl BufferStore for StubBufferStore {
     fn find_by_name(&self, _name: &str) -> Option<BufferId> {
         None
     }
-    fn ensure_named_document(&self, _name: &str, _major: ModeId, _flags: BufferFlags) -> BufferId {
-        BufferId(0)
-    }
     fn name_for(&self, _id: BufferId) -> Option<String> {
         None
     }
@@ -81,6 +78,14 @@ impl ModeActivator for BenchActivator {
     fn activate_minor_by_id(&mut self, _: BufferId, _: ModeId) {}
     fn services(&self) -> Arc<ServiceRegistry> {
         Arc::clone(&self.services)
+    }
+    fn ensure_named_document(
+        &mut self,
+        _: &str,
+        _: ModeId,
+        _: lattice_core::BufferFlags,
+    ) -> BufferId {
+        unimplemented!("BenchActivator: ensure_named_document is unused in this bench")
     }
 }
 

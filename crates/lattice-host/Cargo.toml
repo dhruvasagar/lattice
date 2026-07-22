@@ -130,7 +130,7 @@ lattice-multibuffer = { path = "../lattice-multibuffer" }
 # CM.1: native compilation subsystem — the streaming `*compilation*`
 # buffer + `:compile`/`:recompile`/`:make`. Wired via the generic
 # `SubsystemBoot` install seam (one Phase-B line); the host's
-# `AppEffect::CompileRun` arm calls `start_compilation`. Native
+# `AppEffect::CompileRun` arm creates the buffer + runs the service. Native
 # built-in, always compiled (not feature-gated).
 lattice-compilation = { path = "../lattice-compilation" }
 # Phase 5.B.11: `Editor` holds typed `tokio::sync::mpsc`

@@ -3,8 +3,10 @@
 //! Each parses its (optional) argument into an
 //! `Option<String>` cmdline and returns
 //! `Effect::AppAction(AppEffect::CompileRun { cmdline })`; the
-//! host's apply-effect arm routes that to
-//! [`crate::start_compilation`]. `:compile` and `:recompile` are
+//! host's apply-effect arm creates the `*compilation*` buffer
+//! (`Editor::ensure_named_synthetic_document`, host-side) and runs the
+//! registered [`crate::CompilationServiceHandle`]. `:compile` and
+//! `:recompile` are
 //! the emacs-canonical names for this feature (not an LSP-coupled
 //! subsystem, so the dashed-namespaced rule does not apply);
 //! `:make` is the vim-canonical alias.

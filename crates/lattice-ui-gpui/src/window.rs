@@ -1611,7 +1611,7 @@ impl EditorView {
         // below): when popup owns active_buffer, ad.cursor
         // describes the popup buffer's cursor — the document
         // pane's cursor must come from its stashed snapshot.
-        let popup_owns_active = ad.buffer_kind == lattice_core::BufferKind::Help;
+        let popup_owns_active = ad.popup_focused;
         // When the popup has focus the document pane should look
         // inactive — no cursorline, no selection, no active status
         // bar — the same appearance it has when a different pane has
@@ -3360,10 +3360,7 @@ impl Render for EditorView {
         // `App::active_pane_content_height` -> `set_viewport_height`
         // per-frame update; diff-then-send keeps churn down.
         let rs_for_popup = self.app.render_state.load();
-        let popup_focused = matches!(
-            rs_for_popup.active_document.load().buffer_kind,
-            lattice_core::BufferKind::Help
-        );
+        let popup_focused = rs_for_popup.active_document.load().popup_focused;
         let target_height = if popup_focused {
             popup_inner_rows
         } else {
@@ -4230,7 +4227,7 @@ impl Render for EditorView {
             // scroll from the published `popup_substate.scroll`. No
             // popup-side `HelpBuffer` snapshot.
             let ad = self.app.ad();
-            let popup_focused = ad.buffer_kind == lattice_core::BufferKind::Help;
+            let popup_focused = ad.popup_focused;
             let rs = self.app.render_state.load();
             // Title = the popup buffer's registry name.
             let title = rs.buffers.registry.name_of(popup_id).unwrap_or_default();

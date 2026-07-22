@@ -200,7 +200,7 @@ fn apply_event(app: &mut App, ev: Event, perf_input: bool, last_input_at: &mut O
             // cancel first before the popup closes.
             if matches!(k.code, crossterm::event::KeyCode::Esc)
                 && app.popup().is_open()
-                && app.ad().buffer_kind != crate::buffers::BufferKind::Help
+                && !app.ad().popup_focused
             {
                 app.dismiss_popup();
                 if perf_input {

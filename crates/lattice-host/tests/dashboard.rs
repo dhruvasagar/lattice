@@ -847,7 +847,7 @@ mod owc_adopt {
         // `dispatch_fused` is the real per-keystroke entry; it runs the OWC
         // adopt. `Action::None` is an inert keystroke.
         let pre = editor.active_buffer;
-        let _ = editor.dispatch_fused(Action::None, pre, false);
+        let _ = editor.dispatch_fused(Action::None, pre, false, false);
         assert_eq!(
             editor.cursor.line, 0,
             "first keystroke after dashboard open must not adopt an owner-write \

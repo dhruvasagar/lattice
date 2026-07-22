@@ -156,6 +156,7 @@ impl App {
         // capturing after dispatch would compare the cursor to itself
         // and never trigger the dismiss.
         let pre_active = self.ad().buffer_kind;
+        let pre_popup_focused = self.ad().popup_focused;
         let pre_cursor = self.cursor();
         // Slice 3c.final.E.5d: pre-clone `action` so the closure
         // can own its copy (needed for `Send + 'static`) while
@@ -175,9 +176,15 @@ impl App {
         // machine below runs unchanged. See
         // docs/dev/operations/slice-plans/input-latency.md § I.7.
         let popup_up = self.popup().buffer_id.is_some();
+        let pre_popup_focused_for_closure = pre_popup_focused;
         let pre_active_for_closure = pre_active;
         let fused = self.mutate_editor_with(move |e| {
-            e.dispatch_fused(action_for_dispatch, pre_active_for_closure, popup_up)
+            e.dispatch_fused(
+                action_for_dispatch,
+                pre_active_for_closure,
+                pre_popup_focused_for_closure,
+                popup_up,
+            )
         });
         let mut outcome = fused.outcome;
         // AP.0.2: a declining plugin grammar action sets `outcome.declined`

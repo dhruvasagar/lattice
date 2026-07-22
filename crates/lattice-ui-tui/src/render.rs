@@ -1969,7 +1969,7 @@ fn draw_help_overlay(frame: &mut Frame, buffer_area: Rect, app: &App, snap: &Doc
     // `app.ad()`. State A (popup shown, doc focused): the popup's
     // persisted scroll is `popup_help().scroll` (the `popup_scroll`
     // stash), no cursor inside the popup, leftcol pinned (help wraps).
-    let popup_focused = matches!(app.ad().buffer_kind, crate::buffers::BufferKind::Help);
+    let popup_focused = app.ad().popup_focused;
     let (scroll, cursor_line, leftcol) = if popup_focused {
         (app.ad().scroll, app.ad().cursor.line, app.ad().leftcol)
     } else {

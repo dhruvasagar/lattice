@@ -171,6 +171,38 @@ window-management surface. Each slice is a single commit:
 - **Font config** (`a224e52`) — `ui.font_family` /
   `ui.font_size` options; GPUI cursor alignment fix.
 
+Popup generalization — `popup_focused` field (2026-07-22)
+---------------------------------------------------------
+
+Decoupled State-B detection (does the popup overlay have keyboard
+focus?) from content identity (is the buffer kind Help?). The old
+pattern `active_buffer == BufferKind::Help` served both roles; the
+new `Editor::popup_focused` bool (published in
+`ActiveDocumentRenderState::popup_focused`) is the dedicated
+focus-state signal.
+
+- **New field** (`editor.rs`, `render_state.rs`): `pub popup_focused: bool`
+  on both `Editor` and `ActiveDocumentRenderState`, populated in
+  `build_render_state`.
+- **Mutation sites:** `focus_help_popup`, `open_popup_buffer(Steal)`,
+  `dismiss_popup` (set/clear).
+- **20 State-B detection sites** migrated across `dispatch.rs`, TUI
+  (`render.rs`, `runtime.rs`), GPUI (`window.rs`): `active_buffer ==
+  Help` → `popup_focused`.
+- **`dispatch_fused`**: added `pre_popup_focused` param for the
+  popup-dismissed `ensure_cursor_visible` skip.
+- **`active_text()` / `active_cursor()` generalization:**
+  `popup_buffer_content()` replaces `popup_help()` for reading the
+  popup buffer's text content — works for any document-shaped buffer
+  (Help, Document, Messages, Multibuffer, Dashboard). `active_cursor()`
+  returns `self.cursor` directly in State B (fixes a pre-existing
+  staleness bug where the initial open-time stash was returned instead
+  of the live cursor after motions).
+- **17 content-identity sites** (`pane_tree.active().buffer == Help`)
+  left untouched — they are genuine kind checks, not focus-state leaks.
+- **Build:** `lattice-host`, `lattice-ui-tui`, `lattice-ui-gpui` all
+  clean. **697/698 tests pass** (1 pre-existing `copen` alias failure).
+
 Plugin-facing API surface preserved at four layers across all
 slices: Editor methods (`do_*_tab`, `do_split_pane`, etc.);
 typed `Action` variants; `AppEffect` variants; named

@@ -477,13 +477,17 @@ impl Editor {
     /// passed in so the in-actor tail can replicate App::apply's
     /// `popup_dismissed` skip (don't `ensure_cursor_visible` on a
     /// Help→Document dismiss, whose viewport height is still the popup's
-    /// stale inner height). `popup_up` is whether a popup buffer is
+    /// stale inner height). `pre_popup_focused` is the pre-dispatch
+    /// `popup_focused` value, captured alongside `pre_active` so the
+    /// same skip works after the PU migration.
+    /// `popup_up` is whether a popup buffer is
     /// shown; when true the fuse is declined so the App-side popup logic
     /// runs unchanged.
     pub fn dispatch_fused(
         &mut self,
         action: Action,
-        pre_active: BufferKind,
+        _pre_active: BufferKind,
+        pre_popup_focused: bool,
         popup_up: bool,
     ) -> FusedDispatch {
         // Open an outer publish batch so `dispatch`'s tail flush and the
@@ -509,11 +513,11 @@ impl Editor {
             && !popup_up;
         let tail_signals = if can_fuse {
             // Replicates App::apply's tail exactly. `popup_dismissed`
-            // can only be true when a Help buffer was active and is now
-            // Document; with `popup_up == false` an *overlay* popup can't
-            // be involved, but an in-pane Help→Document transition still
-            // could, so keep the skip rather than assuming it away.
-            let popup_dismissed = matches!(pre_active, BufferKind::Help)
+            // can only be true when a popup was focused pre-dispatch and
+            // is now Document; with `popup_up == false` an *overlay* popup
+            // can't be involved, but an in-pane Help→Document transition
+            // still could (now captured via pre_popup_focused).
+            let popup_dismissed = pre_popup_focused
                 && matches!(self.active_buffer, BufferKind::Document);
             if !popup_dismissed {
                 self.ensure_cursor_visible();
@@ -890,9 +894,7 @@ impl Editor {
                     picker_open: self.picker.is_some(),
                     chord_capture: self.chord_capture_active(),
                     snippet_active: self.snippet_session.is_active(self.document_buffer_id),
-                    // Terminal-mode T2.a: published so the translate
-                    // layer can build TranslateContext from the
-                    // snapshot without reaching into active_modes.
+                    popup_focused: self.popup_focused,
                     terminal_insert_active: matches!(self.active_buffer, BufferKind::Terminal)
                         && self
                             .active_modes
@@ -2097,7 +2099,7 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
     // Dashboard — which are real panes you legitimately navigate away
     // from — keep normal tab/pane navigation. Silent consume: `gt` in a
     // popup has no sensible meaning, so it just no-ops.
-    if matches!(editor.active_buffer, BufferKind::Help)
+    if editor.popup_focused
         && editor.popup_buffer.is_some()
         && action_escapes_focused_popup(&action)
     {
@@ -2506,20 +2508,13 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         Action::CloseHover => editor.dismiss_popup(),
         // 5.5.G.12: HelpDismiss dispatches on active_buffer to
         // pop the help popup or dismiss the file-tree pane.
-        Action::HelpDismiss => match editor.active_buffer {
-            BufferKind::Help => editor.dismiss_popup(),
-            BufferKind::FileTree => {
+        Action::HelpDismiss => {
+            if editor.popup_focused {
+                editor.dismiss_popup();
+            } else if matches!(editor.active_buffer, BufferKind::FileTree) {
                 _out.renderer_signals.extend(editor.dismiss_file_tree());
             }
-            BufferKind::Document
-            | BufferKind::Oil
-            | BufferKind::Terminal
-            | BufferKind::Messages
-            | BufferKind::Multibuffer
-            // Dashboard is a persistent pane buffer, not a popup — Esc is
-            // inert here (like `*messages*`); there is no overlay to pop.
-            | BufferKind::Dashboard => {}
-        },
+        }
         // Open the command picker (`:` / M-x). Editor::open_picker
         // handles source lookup + async init; renderer signals flow
         // through _out.renderer_signals as with other picker actions.
@@ -5767,8 +5762,7 @@ impl Editor {
         // the popup's visible area even though it's within the pane.
         // Fall back to viewport_height when popup_viewport_height is 0
         // (not yet set by the renderer's first draw of this popup).
-        let height = if self.popup_buffer.is_some()
-            && matches!(self.active_buffer, BufferKind::Help)
+        let height = if self.popup_focused
             && self.popup_viewport_height > 0
         {
             self.popup_viewport_height
@@ -6126,6 +6120,18 @@ impl Editor {
         }
     }
 
+    /// PU generalization: the popup buffer's text content, regardless
+    /// of buffer kind. Tries `document_handle()` first (covers all
+    /// document-shaped kinds: Document, Help, Messages, Multibuffer,
+    /// Dashboard). Returns `None` when no popup is open or the buffer
+    /// is a non-document kind not yet handled (FileTree, Oil, Terminal
+    /// are not used in popups today).
+    pub fn popup_buffer_content(&self) -> Option<lattice_core::Buffer> {
+        let id = self.popup_buffer?;
+        let handle = self.buffers.document_handle(id)?;
+        Some(handle.snapshot().buffer.clone())
+    }
+
     /// Snapshot the active popup's `HelpBuffer`. The popup buffer
     /// stores `BufferId` only; the actual content lives in
     /// `self.buffers` with `BufferFlags { listed: false, hidden:
@@ -6152,23 +6158,16 @@ impl Editor {
     /// [`BufferKind`]. `self.cursor` / `self.scroll` are the live
     /// position into this buffer.
     ///
-    /// PU refactor: when a popup has focus (State B, Steal), dispatch
-    /// reads from the popup buffer via [`Self::popup_help`] instead of
-    /// `self.document`. In State A (passive hover) the popup check is
-    /// skipped — the document keeps focus and `active_text` returns the
-    /// underlying buffer's content. The match below treats Help and
-    /// Document identically, and the popup check above acts as the
-    /// focus-routing layer. Renderer-side code continues to use
-    /// `self.document.snapshot()` directly (published as `ad().snapshot`)
-    /// and is unaffected.
+    /// PU generalization: when a popup has focus (State B), dispatch
+    /// reads from the popup buffer via [`Self::popup_buffer_content`]
+    /// instead of `self.document`. Works for any document-shaped popup
+    /// buffer kind (Help, Document, Messages, Multibuffer, Dashboard).
+    /// In State A (passive hover) the popup check is skipped — document
+    /// keeps focus.
     pub fn active_text(&self) -> lattice_core::Buffer {
-        // PU: only return popup content when the popup HAS FOCUS
-        // (State B, Steal). State A (passive hover) must dispatch
-        // against the underlying document so cursor motion works
-        // correctly.
-        if self.active_buffer == BufferKind::Help {
-            if let Some(help) = self.popup_help() {
-                return help.content;
+        if self.popup_focused {
+            if let Some(content) = self.popup_buffer_content() {
+                return content;
             }
         }
         match self.active_buffer {
@@ -6216,19 +6215,13 @@ impl Editor {
     /// overlay holds focus, and the kind-specific cursor stash for
     /// file-tree / oil.
     ///
-    /// PU refactor: when a popup has focus (State B), dispatch reads
-    /// the popup's cursor via [`Self::popup_help`] instead of
-    /// `self.cursor`. State A (passive hover) skips the popup check.
-    /// The match below treats Help and Document identically, and the
-    /// popup check above acts as the focus-routing layer.
+    /// PU generalization: when a popup has focus (State B), dispatch
+    /// reads `self.cursor` directly (it IS the live popup cursor in
+    /// State B — `open_popup_buffer(Steal)` copies `popup_cursor` into
+    /// `self.cursor`, then motions update it). State A skips this.
     pub fn active_cursor(&self) -> lattice_protocol::position::Position {
-        // PU: only return popup cursor when the popup HAS FOCUS
-        // (State B, Steal). State A (passive hover) must return
-        // the document cursor.
-        if self.active_buffer == BufferKind::Help {
-            if let Some(help) = self.popup_help() {
-                return help.cursor;
-            }
+        if self.popup_focused {
+            return self.cursor;
         }
         match self.active_buffer {
             BufferKind::Document
@@ -6360,6 +6353,7 @@ impl Editor {
         // re-open captures a fresh cursor position.
         self.popup_anchor = None;
         self.popup_doc_scroll_at_anchor = 0;
+        self.popup_focused = false;
         // Restore pre-popup state if focus had moved into it
         // (State B for hover; in-pane mode for `:lsp-log` etc.).
         if let Some(prev) = self.prev_pane_for_popup.take() {
@@ -6801,6 +6795,7 @@ impl Editor {
         self.cursor = stash_cursor;
         self.scroll = stash_scroll;
         self.active_buffer = BufferKind::Help;
+        self.popup_focused = true;
         // PU-A.1b: promoting a passive float to focus (State A→B) is a
         // focus-steal — Normal-mode surface; dismiss restores prev.modal.
         self.modal = ModalState::Normal;
@@ -12154,7 +12149,7 @@ impl Editor {
         if let Some(popup_id) = self.popup_buffer {
             let in_pane_help = self.pane_tree.active().buffer == lattice_core::BufferKind::Help;
             if !in_pane_help && self.popup_viewport_width > 0 {
-                let popup_is_focused = matches!(self.active_buffer, lattice_core::BufferKind::Help);
+                let popup_is_focused = self.popup_focused;
                 let scroll = if popup_is_focused {
                     self.scroll
                 } else {
@@ -14078,7 +14073,7 @@ impl Editor {
         // Already focused into the popup (State B) -- K is a no-op.
         // To get a fresh hover the user dismisses with Esc / q,
         // repositions in the doc, then presses K.
-        if matches!(self.active_buffer, BufferKind::Help) {
+        if self.popup_focused {
             return;
         }
         // Popup shown but focus still on main buffer (State A) --
@@ -20512,8 +20507,7 @@ impl Editor {
     /// it fall through to the position-history walk.
     pub fn do_jump_history(&mut self, delta: i32) {
         if delta < 0
-            && matches!(self.active_buffer, BufferKind::Help)
-            && self.popup_buffer.is_some()
+            && self.popup_focused
             && !self.popup_back_stack.is_empty()
             && self.pop_popup_back()
         {
@@ -22503,7 +22497,7 @@ impl Editor {
         use crate::buffers::BufferFlags;
         // From within Help: reuse the same popup buffer by
         // swapping content; snapshot prior state for `<C-o>`.
-        if matches!(self.active_buffer, BufferKind::Help) && self.popup_buffer.is_some() {
+        if self.popup_focused {
             if let Some(snap) = self.snapshot_current_popup() {
                 self.popup_back_stack.push(snap);
             }
@@ -22569,9 +22563,9 @@ impl Editor {
                 }
                 self.snapshot_active_pane();
                 // Snapshot the pane + modal for dismiss to restore. Skip
-                // when already Help — a help→help open keeps the original
-                // origin (the reuse branch handles same-buffer swaps).
-                if !matches!(self.active_buffer, BufferKind::Help) {
+                // when popup already focused — a help→help open keeps the
+                // original origin (the reuse branch handles swaps).
+                if !self.popup_focused {
                     let active = self.pane_tree.active();
                     self.prev_pane_for_popup = Some(crate::state::PrevPaneState {
                         buffer: active.buffer,
@@ -22592,6 +22586,7 @@ impl Editor {
                 self.cursor = self.popup_cursor;
                 self.scroll = self.popup_scroll;
                 self.active_buffer = self.buffers.kind_of(buffer).unwrap_or(BufferKind::Help);
+                self.popup_focused = true;
                 self.modal = ModalState::Normal;
             }
             PopupFocus::Passive => {

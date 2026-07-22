@@ -537,6 +537,15 @@ pub struct Editor {
     /// property of the popup, not of whatever buffer happens
     /// to be its content.
     pub popup_placement: PopupPlacement,
+    /// PU refactor (2026-07-22): decoupled focus-state bool,
+    /// extracted from `active_buffer == BufferKind::Help` which
+    /// was an architectural leak — a focus flag smuggled inside
+    /// a content-identity field. `true` when a Steal popup has
+    /// keyboard focus (State B). Set in `focus_help_popup`,
+    /// `activate_help_in_pane`, `open_popup_buffer` (Steal);
+    /// cleared in `dismiss_popup`. Published in render state so
+    /// both TUI and GPUI renderers read it directly.
+    pub popup_focused: bool,
     /// Cursor position snapshot at popup-open time, used as
     /// the anchor for `CursorAnchored` popups. Captured in
     /// `open_floating_popup` / `open_popup` BEFORE any cursor

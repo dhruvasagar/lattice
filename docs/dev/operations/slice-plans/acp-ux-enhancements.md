@@ -397,15 +397,20 @@ Green: `lattice-ai` 156 passed. `resolve_permission` now awaits its consumer (th
 
 Sequenced into steps (all decisions confirmed 2026-07-12):
 
-**PU-B.2b-i — content-agnostic popup render — CANCELLED.** Investigation revealed
+**PU-B.2b-i — content-agnostic popup render — PARTIALLY SUPERSEDED by
+`popup_focused` migration (2026-07-22).** Investigation at the time revealed
 `BufferKind::Help` is not just a *render* gate but the whole popup *focus + input*
-model: `active_buffer_id()` (`dispatch.rs:5948`) special-cases `Help → popup_buffer`,
-keymap selection reads `active_buffer_id()` (`:27151`), so a `Document`-kind popup
-would never receive its mode's keys — the coupling spans ~12 `dispatch.rs` sites +
-both renderers. *Decision (confirmed): ride `BufferKind::Help` with a distinct major
-mode, NOT generalise the model now.* `BufferKind::Help` is de-facto "the popup-surface
-kind" (help + hover + menus); the KIND names the surface, the MAJOR MODE names
-behaviour. A future slice may rename `Help → Popup`.
+model: `active_buffer_id()` special-cased `Help → popup_buffer`,
+keymap selection reads `active_buffer_id()`, so a `Document`-kind popup
+would never receive its mode's keys — the coupling spanned ~12 `dispatch.rs` sites +
+both renderers. The `popup_focused` field decouples the focus-detection axis:
+State-B now reads `editor.popup_focused` / `ad().popup_focused` instead of
+`active_buffer == Help`. `active_text()` / `active_cursor()` use the generic
+`popup_buffer_content()` instead of the kind-gated `popup_help()`. Content identity
+(`pane_tree.active().buffer == Help`) remains untouched — those are genuine kind
+checks, not focus-state leaks. `BufferKind::Help` remains "the popup-surface kind"
+for content identity; the `popup_focused` migration removed the conflation without
+generalising the buffer kind itself. A future slice may still rename `Help → Popup`.
 
 **PU-B.2b-ii — name-based `Effect::OpenPopup` + popup-buffer primitive ✅.** Reshaped
 `Effect::OpenPopup { buffer: BufferId }` → `{ name, mode_id, placement, focus }`

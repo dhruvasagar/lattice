@@ -554,6 +554,14 @@ pub struct ActiveDocumentRenderState {
     /// Gates Tab / S-Tab to drive `next_tabstop` / `prev_tabstop`
     /// instead of falling back to insert-completion / outdent.
     pub snippet_active: bool,
+    /// PU refactor (2026-07-22): `true` when a Steal popup has
+    /// keyboard focus (State B). Replaces the architectural leak
+    /// where `active_buffer == BufferKind::Help` doubled as a
+    /// focus-state canary. Set/cleared in `Editor`'s popup-
+    /// mutation methods; published here so TUI and GPUI renderers
+    /// read `popup_focused` directly instead of re-deriving it
+    /// from `buffer_kind`.
+    pub popup_focused: bool,
     /// Terminal-mode T2.a (2026-05-25): `true` when
     /// `terminal-insert-mode` is active on the active Terminal
     /// buffer. Drives the translate-layer branch that encodes
@@ -701,6 +709,7 @@ impl Default for ActiveDocumentRenderState {
             picker_open: false,
             chord_capture: false,
             snippet_active: false,
+            popup_focused: false,
             terminal_insert_active: false,
             terminal_esc_exits: true,
             terminal_visual_active: false,

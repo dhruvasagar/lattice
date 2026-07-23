@@ -177,6 +177,24 @@ impl WitBoundary for NativeAppEffect {
             NativeAppEffect::RedrawScreen => WitAppEffect::RedrawScreen,
             NativeAppEffect::OpenCommandPicker => WitAppEffect::OpenCommandPicker,
             NativeAppEffect::EnterCommandLine => WitAppEffect::EnterCommandLine,
+            // MB.1: the `command-line-mode` chord effects (submit / cancel
+            // / history / completion / describe) are host-internal — the
+            // `:` line's readline machinery lives entirely host-side and
+            // plugins never bind these. No WIT variant; typed error, never
+            // lossy (NarrowTrigger / CompileRun precedent).
+            NativeAppEffect::CommandLineSubmit
+            | NativeAppEffect::CommandLineCancel
+            | NativeAppEffect::CommandLineHistoryPrev
+            | NativeAppEffect::CommandLineHistoryNext
+            | NativeAppEffect::CommandLineComplete
+            | NativeAppEffect::CommandLineCompletePrev
+            | NativeAppEffect::CommandLineDescribeUnderCursor => {
+                return Err(
+                    "AppEffect::CommandLine* are host-internal command-line-mode effects \
+                     (rich-minibuffer MB.1); no plugin (WIT) surface"
+                        .to_string(),
+                );
+            }
             NativeAppEffect::OilNavigateUp => WitAppEffect::OilNavigateUp,
             NativeAppEffect::ReselectLastVisual => WitAppEffect::ReselectLastVisual,
             NativeAppEffect::SwapVisualEnds => WitAppEffect::SwapVisualEnds,

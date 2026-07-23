@@ -304,7 +304,7 @@ mod tests {
     fn describe_command_opens_help_buffer_with_metadata() {
         let mut a = app_with("xx", 10);
         // `:describe-command ex:write` -- the registry knows about this.
-        a.editor.command_line = "describe-command ex:write".into();
+        a.editor.set_command_line_text("describe-command ex:write");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let h = a.popup_help().expect("help view should open");
@@ -327,7 +327,7 @@ mod tests {
             None,
             "no dims when no popup is open"
         );
-        a.editor.command_line = "describe-command ex:write".into();
+        a.editor.set_command_line_text("describe-command ex:write");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert!(a.popup().is_open(), "floating popup open");
@@ -347,7 +347,7 @@ mod tests {
         // parsed HelpLink target. Built-in commands record their
         // source via #[track_caller] when populate() runs.
         let mut a = app_with("xx", 10);
-        a.editor.command_line = "describe-command ex:write".into();
+        a.editor.set_command_line_text("describe-command ex:write");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let h = a.popup_help().unwrap();
@@ -380,7 +380,7 @@ mod tests {
         // HelpLink with a Source target -- ready for the styled-link
         // renderer + follow-link motion (post-1.0).
         let mut a = app_with("xx", 10);
-        a.editor.command_line = "describe-command ex:quit".into();
+        a.editor.set_command_line_text("describe-command ex:quit");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let _ = a.popup_help().unwrap();
@@ -400,7 +400,7 @@ mod tests {
         // §5.11 anchor system: every arg produces an `arg:<name>`
         // anchor, plus a parent `args` anchor for the section.
         let mut a = app_with("xx", 10);
-        a.editor.command_line = "describe-command ex:apropos".into();
+        a.editor.set_command_line_text("describe-command ex:apropos");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let _ = a.popup_help().unwrap();
@@ -422,7 +422,7 @@ mod tests {
         // `latency` anchor is always present (latency-class
         // declaration is mandatory metadata, DESIGN.md §5.2.5).
         let mut a = app_with("xx", 10);
-        a.editor.command_line = "describe-command ex:quit".into();
+        a.editor.set_command_line_text("describe-command ex:quit");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let _ = a.popup_help().unwrap();
@@ -438,7 +438,7 @@ mod tests {
         // Verify the recorded line index actually points at the
         // section's heading row in the rendered content.
         let mut a = app_with("xx", 10);
-        a.editor.command_line = "describe-command ex:apropos".into();
+        a.editor.set_command_line_text("describe-command ex:apropos");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let lines = a.popup_help().unwrap().lines();
@@ -453,7 +453,7 @@ mod tests {
     fn describe_command_arguments_section_renders_args_schema() {
         // ex:apropos has a schema with one required arg "pattern".
         let mut a = app_with("xx", 10);
-        a.editor.command_line = "describe-command ex:apropos".into();
+        a.editor.set_command_line_text("describe-command ex:apropos");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let body = a.popup_help().unwrap().content.as_string();
@@ -470,7 +470,7 @@ mod tests {
     #[test]
     fn describe_key_shows_source_link_to_keymap_row() {
         let mut a = app_with("xx", 10);
-        a.editor.command_line = "describe-key j".into();
+        a.editor.set_command_line_text("describe-key j");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let h = a.popup_help().unwrap();
@@ -504,7 +504,7 @@ mod tests {
         // two have a `command`. The buffer text shows the LABEL
         // (`motion:line-down`); the URL is on the HelpLink target.
         let mut a = app_with("xx", 10);
-        a.editor.command_line = "describe-key j".into();
+        a.editor.set_command_line_text("describe-key j");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let h = a.popup_help().unwrap();
@@ -541,7 +541,7 @@ mod tests {
         // filter to keymap_entry.rs links and dedup the line
         // numbers.
         let mut a = app_with("xx", 10);
-        a.editor.command_line = "describe-key j".into();
+        a.editor.set_command_line_text("describe-key j");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let _ = a.popup_help().unwrap();
@@ -571,7 +571,7 @@ mod tests {
     #[test]
     fn describe_key_unknown_chord_renders_not_bound_message() {
         let mut a = app_with("xx", 10);
-        a.editor.command_line = "describe-key xyzzy".into();
+        a.editor.set_command_line_text("describe-key xyzzy");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let body = a.popup_help().unwrap().content.as_string();
@@ -587,7 +587,7 @@ mod tests {
         // (Builtin Normal + Visual + Replace), the trace surfaces
         // all three mode sections.
         let mut a = app_with("xx", 10);
-        a.editor.command_line = "describe-key j".into();
+        a.editor.set_command_line_text("describe-key j");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let body = a.popup_help().unwrap().content.as_string();
@@ -613,7 +613,7 @@ mod tests {
         // separate "Resolved binding" vs "Runtime registry" split —
         // the whole output is the trace.
         let mut a = app_with("xx", 10);
-        a.editor.command_line = "describe-key j".into();
+        a.editor.set_command_line_text("describe-key j");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let body = a.popup_help().unwrap().content.as_string();
@@ -645,7 +645,7 @@ mod tests {
         // entries that the help follow-handler can route on
         // `<CR>`.
         let mut a = app_with("xx", 10);
-        a.editor.command_line = "describe-key j".into();
+        a.editor.set_command_line_text("describe-key j");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let body = a.popup_help().unwrap().content.as_string();
@@ -684,7 +684,7 @@ mod tests {
         // resolve_trace API). Check that the trace renders canonical
         // names and doesn't leak CommandId debug format anywhere.
         let mut a = app_with("xx", 10);
-        a.editor.command_line = "describe-key j".into();
+        a.editor.set_command_line_text("describe-key j");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let body = a.popup_help().unwrap().content.as_string();
@@ -707,7 +707,7 @@ mod tests {
         // labels, so this assertion holds against the whole
         // body.
         let mut a = app_with("xx", 10);
-        a.editor.command_line = "describe-key j".into();
+        a.editor.set_command_line_text("describe-key j");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let body = a.popup_help().unwrap().content.as_string();
@@ -729,7 +729,7 @@ mod tests {
         // Chord parses fine but doesn't bind in any mode.
         // T12: the fallback is "X is not bound in any mode."
         let mut a = app_with("xx", 10);
-        a.editor.command_line = "describe-key <C-S-q>".into();
+        a.editor.set_command_line_text("describe-key <C-S-q>");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let body = a.popup_help().unwrap().content.as_string();
@@ -795,7 +795,7 @@ mod tests {
     fn describe_command_with_no_args_omits_arguments_section() {
         // ex:quit has args_schema: vec![] -- no Arguments section.
         let mut a = app_with("xx", 10);
-        a.editor.command_line = "describe-command ex:quit".into();
+        a.editor.set_command_line_text("describe-command ex:quit");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let body = a.popup_help().unwrap().content.as_string();
@@ -808,7 +808,7 @@ mod tests {
     #[test]
     fn describe_command_unknown_emits_error_no_overlay() {
         let mut a = app_with("xx", 10);
-        a.editor.command_line = "describe-command ex:nope".into();
+        a.editor.set_command_line_text("describe-command ex:nope");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert!(a.editor.popup_buffer.is_none());
@@ -819,7 +819,7 @@ mod tests {
     #[test]
     fn describe_buffer_renders_state_summary() {
         let mut a = app_with("hello\nworld", 10);
-        a.editor.command_line = "describe-buffer".into();
+        a.editor.set_command_line_text("describe-buffer");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let h = a.popup_help().expect("help view should open");
@@ -837,7 +837,7 @@ mod tests {
         // every minor; each name renders as a `(mode:NAME)` link so
         // `<CR>` routes to `:describe-mode NAME`.
         let mut a = app_with("hello", 10);
-        a.editor.command_line = "describe-buffer".into();
+        a.editor.set_command_line_text("describe-buffer");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let _ = a.popup_help().expect("help view should open");
@@ -866,7 +866,7 @@ mod tests {
         // jump-list / marks / search state keyed on the popup
         // stay coherent across in-popup navigation.
         let mut a = app_with("hello", 10);
-        a.editor.command_line = "describe-buffer".into();
+        a.editor.set_command_line_text("describe-buffer");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let initial_id = a.editor.popup_buffer.expect("describe-buffer should open");
@@ -904,7 +904,7 @@ mod tests {
         // the previous popup buffer reachable for the jump-history
         // walker.
         let mut a = app_with("hello", 10);
-        a.editor.command_line = "describe-buffer".into();
+        a.editor.set_command_line_text("describe-buffer");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let _ = a.popup_help().expect("describe-buffer should open");
@@ -945,7 +945,7 @@ mod tests {
     #[test]
     fn apropos_lists_matching_commands() {
         let mut a = app_with("xx", 10);
-        a.editor.command_line = "apropos write".into();
+        a.editor.set_command_line_text("apropos write");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let h = a.popup_help().expect("help view should open");
@@ -958,7 +958,7 @@ mod tests {
     #[test]
     fn apropos_no_matches_renders_empty_view() {
         let mut a = app_with("xx", 10);
-        a.editor.command_line = "apropos zxqzxqzxq".into();
+        a.editor.set_command_line_text("apropos zxqzxqzxq");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let h = a.popup_help().unwrap();
@@ -969,7 +969,7 @@ mod tests {
     #[test]
     fn help_with_no_arg_opens_index() {
         let mut a = app_with("xx", 10);
-        a.editor.command_line = "help".into();
+        a.editor.set_command_line_text("help");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let h = a.popup_help().expect("help open");
@@ -982,7 +982,7 @@ mod tests {
     #[test]
     fn help_with_topic_opens_that_topic() {
         let mut a = app_with("xx", 10);
-        a.editor.command_line = "help folding".into();
+        a.editor.set_command_line_text("help folding");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let h = a.popup_help().expect("help open");
@@ -997,7 +997,7 @@ mod tests {
     #[test]
     fn help_unknown_topic_errors() {
         let mut a = app_with("xx", 10);
-        a.editor.command_line = "help nonexistent".into();
+        a.editor.set_command_line_text("help nonexistent");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert!(a.editor.popup_buffer.is_none());
@@ -1011,7 +1011,7 @@ mod tests {
         // buffers topic's `buffer` pattern, so the describe view
         // should append a `[buffers](help:buffers)` cross-link.
         let mut a = app_with("xx", 10);
-        a.editor.command_line = "describe-command ex:buffers".into();
+        a.editor.set_command_line_text("describe-command ex:buffers");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let _ = a.popup_help().expect("describe-command open");
@@ -1029,7 +1029,7 @@ mod tests {
         // Open describe-command for a buffers cmd (which appends a
         // topic link), then follow that link via FollowLink.
         let mut a = app_with("xx", 10);
-        a.editor.command_line = "describe-command ex:buffers".into();
+        a.editor.set_command_line_text("describe-command ex:buffers");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let _ = a.popup_help().expect("describe open");
@@ -1054,7 +1054,7 @@ mod tests {
         // scroll the *current* help buffer to the matching heading,
         // not raise "no handler" / not switch topics.
         let mut a = app_with("xx", 10);
-        a.editor.command_line = "help languages".into();
+        a.editor.set_command_line_text("help languages");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let _ = a.popup_help().expect("languages help open");
@@ -1403,7 +1403,7 @@ mod tests {
         // Activate `lsp-mode` so the active marker appears on a
         // minor too.
         a.toggle_mode_by_name("lsp-mode");
-        a.editor.command_line = "list-modes".into();
+        a.editor.set_command_line_text("list-modes");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let h = a.popup_help().expect("list-modes opens help");
@@ -1435,7 +1435,7 @@ mod tests {
         // M.8: `:describe-mode line-numbers-mode` shows kind +
         // contributed options + capabilities.
         let mut a = app_with("xx", 10);
-        a.editor.command_line = "describe-mode line-numbers-mode".into();
+        a.editor.set_command_line_text("describe-mode line-numbers-mode");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let h = a.popup_help().expect("describe-mode help");
@@ -1455,7 +1455,7 @@ mod tests {
     #[test]
     fn describe_mode_unknown_emits_error_no_overlay() {
         let mut a = app_with("xx", 10);
-        a.editor.command_line = "describe-mode definitely-not-a-mode".into();
+        a.editor.set_command_line_text("describe-mode definitely-not-a-mode");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert!(a.editor.popup_buffer.is_none());
@@ -1470,7 +1470,7 @@ mod tests {
         // view marks that minor as a contributor for `number`.
         let mut a = app_with("xx", 10);
         a.toggle_mode_by_name("line-numbers-mode");
-        a.editor.command_line = "describe-option-resolution number".into();
+        a.editor.set_command_line_text("describe-option-resolution number");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let body = a.popup_help().unwrap().content.as_string();
@@ -1487,7 +1487,7 @@ mod tests {
         // No display mode active ⇒ minor section says none
         // contribute.
         let mut a = app_with("xx", 10);
-        a.editor.command_line = "describe-option-resolution wrap".into();
+        a.editor.set_command_line_text("describe-option-resolution wrap");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let body = a.popup_help().unwrap().content.as_string();
@@ -1504,7 +1504,7 @@ mod tests {
     #[test]
     fn customize_no_args_renders_picker_with_groups_and_modes() {
         let mut a = app_with("xx", 10);
-        a.editor.command_line = "customize".into();
+        a.editor.set_command_line_text("customize");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let h = a.popup_help().expect("customize picker");
@@ -1530,7 +1530,7 @@ mod tests {
     #[test]
     fn customize_group_renders_options_with_metadata() {
         let mut a = app_with("xx", 10);
-        a.editor.command_line = "customize editor".into();
+        a.editor.set_command_line_text("customize editor");
         a.editor.modal = ModalState::Command;
         a.editor.publish_render_state();
         a.apply(Action::CommandLineSubmit);
@@ -1552,7 +1552,7 @@ mod tests {
         // line-numbers-mode contributes Number=true. The
         // mode view should show that option.
         let mut a = app_with("xx", 10);
-        a.editor.command_line = "customize line-numbers-mode".into();
+        a.editor.set_command_line_text("customize line-numbers-mode");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let h = a.popup_help().expect("customize line-numbers-mode");
@@ -1573,7 +1573,7 @@ mod tests {
         // write would be overridden.
         let mut a = app_with("xx", 10);
         a.toggle_mode_by_name("line-numbers-mode");
-        a.editor.command_line = "customize line-numbers-mode".into();
+        a.editor.set_command_line_text("customize line-numbers-mode");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let body = a.popup_help().unwrap().content.as_string();
@@ -1593,7 +1593,7 @@ mod tests {
         // go through there exclusively) keyed on the popup's
         // construction id.
         let mut a = app_with("xx", 10);
-        a.editor.command_line = "customize".into();
+        a.editor.set_command_line_text("customize");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let popup_id = a.editor.popup_buffer.expect("picker open");
@@ -1634,7 +1634,7 @@ mod tests {
         // prefills the cmdline with `:set NAME=current_value`
         // and switches to Command mode for inline editing.
         let mut a = app_with("xx", 10);
-        a.editor.command_line = "customize editor".into();
+        a.editor.set_command_line_text("customize editor");
         a.editor.modal = ModalState::Command;
         a.editor.publish_render_state();
         a.apply(Action::CommandLineSubmit);
@@ -1662,7 +1662,7 @@ mod tests {
         a.do_help_follow_link();
         // Cmdline should be prefilled with `set tabstop=4`
         // (default value).
-        assert_eq!(a.editor.command_line, "set tabstop=4");
+        assert_eq!(a.editor.command_line(), "set tabstop=4");
         assert_eq!(a.editor.modal, ModalState::Command);
     }
 
@@ -1672,7 +1672,7 @@ mod tests {
         // overwrites the value and submits; `:set` machinery
         // applies the write through the normal cascade.
         let mut a = app_with("xx", 10);
-        a.editor.command_line = "customize editor".into();
+        a.editor.set_command_line_text("customize editor");
         a.editor.modal = ModalState::Command;
         a.editor.publish_render_state();
         a.apply(Action::CommandLineSubmit);
@@ -1697,7 +1697,7 @@ mod tests {
         a.editor.cursor.byte = link.range.start.byte;
         a.do_help_follow_link();
         // User edits the value: `set tabstop=4`.
-        a.editor.command_line = "set tabstop=4".into();
+        a.editor.set_command_line_text("set tabstop=4");
         a.apply(Action::CommandLineSubmit);
         // Drain the OptionChanged event so the cache rebuilds.
         a.drain_option_changes();
@@ -1741,7 +1741,7 @@ mod tests {
     #[test]
     fn customize_unknown_group_emits_error_no_overlay() {
         let mut a = app_with("xx", 10);
-        a.editor.command_line = "customize definitely-not-a-group".into();
+        a.editor.set_command_line_text("customize definitely-not-a-group");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert!(a.editor.popup_buffer.is_none());
@@ -1753,7 +1753,7 @@ mod tests {
     #[test]
     fn customize_unknown_mode_emits_error_no_overlay() {
         let mut a = app_with("xx", 10);
-        a.editor.command_line = "customize definitely-not-a-mode".into();
+        a.editor.set_command_line_text("customize definitely-not-a-mode");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert!(a.editor.popup_buffer.is_none());
@@ -1765,7 +1765,7 @@ mod tests {
     #[test]
     fn describe_option_resolution_unknown_emits_error() {
         let mut a = app_with("xx", 10);
-        a.editor.command_line = "describe-option-resolution definitely-not-an-option".into();
+        a.editor.set_command_line_text("describe-option-resolution definitely-not-an-option");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let msg = a.editor.last_message.as_ref().expect("error echo");
@@ -1777,7 +1777,7 @@ mod tests {
     fn describe_mode_shows_active_state_for_current_buffer() {
         let mut a = app_with("xx", 10);
         a.toggle_mode_by_name("lsp-mode");
-        a.editor.command_line = "describe-mode lsp-mode".into();
+        a.editor.set_command_line_text("describe-mode lsp-mode");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let body = a.popup_help().unwrap().content.as_string();

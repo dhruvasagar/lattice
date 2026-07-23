@@ -2334,7 +2334,14 @@ fn draw_panes(frame: &mut Frame, area: Rect, app: &App, snap: &DocumentSnapshot)
             .get(idx)
             .map(|p| p.is_previewing())
             .unwrap_or(false);
-        let is_active = idx == active && pane_buffer_matches_active(app, idx) && !previewing;
+        // MB.1: while the `:` line is open, `self.document` is the
+        // synthetic `*command-line*` buffer. The active pane must keep
+        // rendering ITS OWN buffer (via the registry-keyed inactive
+        // path), not the command-line text — the Help-popup pattern.
+        let is_active = idx == active
+            && pane_buffer_matches_active(app, idx)
+            && !previewing
+            && !app.ad().command_line_active;
         // Every pane reserves its bottom row for the per-pane status
         // line (Option A: global modeline removed).
         let (content_rect, status_rect) = if rect.height >= 2 {
@@ -3428,11 +3435,15 @@ fn draw_buffer(frame: &mut Frame, area: Rect, app: &App, snap: &DocumentSnapshot
 
 fn draw_command_or_echo(frame: &mut Frame, area: Rect, app: &App) {
     if matches!(app.ad().modal, ModalState::Command) {
-        // ":<typed>" with the cursor sitting at the end of the typed text.
-        let prompt = format!(":{}", app.command_line());
+        // MB.1: ":<typed>" with the caret at the `*command-line*` buffer's
+        // cursor (byte offset into the single line) so mid-line editing
+        // shows where the user is typing — not pinned to the end.
+        let line = app.command_line();
+        let prompt = format!(":{line}");
+        let caret_byte = (app.ad().cursor.byte as usize).min(line.len());
         let cursor_col = area
             .x
-            .saturating_add(prompt.len().min(area.width as usize) as u16);
+            .saturating_add((1 + caret_byte).min(area.width as usize) as u16);
 
         // Visual hints. Two non-mutually-exclusive layers show
         // after the cursor in a dim style:
@@ -6365,7 +6376,7 @@ mod tests {
         use lattice_core::ui::pane::PaneId;
         let mut a = App::new(Document::from_text("xx\n"));
         a.set_viewport_height(20);
-        a.editor.command_line = "describe-command ex:write".into();
+        a.editor.set_command_line_text("describe-command ex:write");
         a.editor.modal = ModalState::Command;
         a.apply(crate::app::Action::CommandLineSubmit);
         let popup_id = a.editor.popup_buffer.expect("floating popup open");

@@ -1938,7 +1938,7 @@ mod tests {
     fn hover_open_populates_help_buffer() {
         let mut a = app_with("alpha\nbeta\ngamma", 10);
         a.editor.cursor = Position::new(1, 2);
-        a.editor.command_line = "hover documentation".into();
+        a.editor.set_command_line_text("hover documentation");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let h = a.popup_help().expect("hover open");
@@ -1952,11 +1952,11 @@ mod tests {
     #[test]
     fn hover_close_dismisses_popup() {
         let mut a = app_with("xx", 10);
-        a.editor.command_line = "hover x".into();
+        a.editor.set_command_line_text("hover x");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert!(a.editor.popup_buffer.is_some());
-        a.editor.command_line = "HoverClose".into();
+        a.editor.set_command_line_text("HoverClose");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert!(a.editor.popup_buffer.is_none());
@@ -1965,7 +1965,7 @@ mod tests {
     #[test]
     fn hover_with_no_arg_uses_placeholder() {
         let mut a = app_with("xx", 10);
-        a.editor.command_line = "hover".into();
+        a.editor.set_command_line_text("hover");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let h = a.popup_help().expect("hover open");

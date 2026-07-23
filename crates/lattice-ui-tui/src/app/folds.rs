@@ -908,7 +908,7 @@ mod tests {
     #[test]
     fn foldmethod_indent_populates_folds_from_indentation() {
         let mut a = app_with("def f():\n    pass\n    pass\n", 10);
-        a.editor.command_line = "set foldmethod=indent".into();
+        a.editor.set_command_line_text("set foldmethod=indent");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert_eq!(a.foldmethod(), FoldMethod::Indent);
@@ -945,7 +945,7 @@ mod tests {
     #[test]
     fn foldmethod_markdown_populates_folds_from_atx_headings() {
         let mut a = app_with("# H1\nbody\nmore body\n", 10);
-        a.editor.command_line = "set foldmethod=markdown".into();
+        a.editor.set_command_line_text("set foldmethod=markdown");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert_eq!(a.foldmethod(), FoldMethod::Markdown);
@@ -964,7 +964,7 @@ mod tests {
         // Plain-text buffer (no `Syntax`): syntax provider returns
         // None and we cascade to indent.
         let mut a = app_with("def f():\n    pass\n    pass\n", 10);
-        a.editor.command_line = "set foldmethod=syntax".into();
+        a.editor.set_command_line_text("set foldmethod=syntax");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert_eq!(a.foldmethod(), FoldMethod::Syntax);
@@ -988,7 +988,7 @@ mod tests {
         // Wire up Rust syntax + parse the document so the fold
         // provider has a tree to query.
         attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
-        a.editor.command_line = "set foldmethod=syntax".into();
+        a.editor.set_command_line_text("set foldmethod=syntax");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert_eq!(a.foldmethod(), FoldMethod::Syntax);
@@ -1049,7 +1049,7 @@ mod tests {
     #[test]
     fn foldmethod_rejects_unknown_value() {
         let mut a = app_with("a\n", 10);
-        a.editor.command_line = "set foldmethod=bogus".into();
+        a.editor.set_command_line_text("set foldmethod=bogus");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert_eq!(a.foldmethod(), FoldMethod::Manual);

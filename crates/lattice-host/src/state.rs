@@ -63,6 +63,33 @@ pub struct PrevPaneState {
     pub modal: ModalState,
 }
 
+/// MB.1 (rich minibuffer): the editing state suspended while the
+/// `:` command line owns `self.document`. When the `:` line is
+/// opened, [`Editor::focus_editing_buffer`] swaps `self.document` /
+/// `document_buffer_id` / `active_buffer` to the synthetic
+/// `*command-line*` buffer and stashes the prior *editing* focus here
+/// **without** touching the pane tree (the active pane keeps rendering
+/// its own buffer). [`Editor::restore_editing_buffer`] pops it back on
+/// submit / cancel. `Some(_)` is the "command line is focused" flag
+/// (`Editor::command_line_active`).
+#[derive(Debug, Clone)]
+pub struct CommandLineFocus {
+    /// The document buffer that was focused for editing before the
+    /// `:` line took over. Restored (re-fetched from the registry by
+    /// id) when the command line closes.
+    pub prior_buffer_id: BufferId,
+    /// Kind of the prior active buffer (`Document` / `Messages` / …).
+    pub prior_active_buffer: BufferKind,
+    /// Cursor in the prior buffer at focus time.
+    pub prior_cursor: Position,
+    /// Scroll (first visible line) of the prior buffer at focus time.
+    pub prior_scroll: u32,
+    /// Horizontal scroll of the prior buffer at focus time.
+    pub prior_leftcol: u32,
+    /// Modal state at focus time, restored on close.
+    pub prior_modal: ModalState,
+}
+
 /// Hot-path option cache. Mirrors the typed-options registry's
 /// resolved values for the active buffer; reads on this struct
 /// fire on every render tick, so the cache exists to skip a

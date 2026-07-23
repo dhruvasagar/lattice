@@ -920,10 +920,12 @@ mod tests {
     fn paste_text_in_command_appends_to_command_line() {
         let mut a = app_with("xx", 10);
         a.apply(Action::EnterMode(ModalState::Command));
-        a.editor.command_line = "w ".into();
+        a.editor.set_command_line_text("w ");
         a.apply(Action::PasteText("foo.rs".into()));
-        assert_eq!(a.editor.command_line, "w foo.rs");
-        // Document untouched.
+        assert_eq!(a.editor.command_line(), "w foo.rs");
+        // Paste stayed in the `:` line; cancelling restores the underlying
+        // document, which was never touched.
+        a.apply(Action::CommandLineCancel);
         assert_eq!(a.editor.document.text(), "xx");
     }
 
@@ -1244,11 +1246,11 @@ mod tests {
         // "describe-"; every `describe-*` command shares that
         // prefix). Backspace removes one byte off the EXTENDED
         // cmdline -> "describe", not the pre-LCP "descri".
-        assert_eq!(a.editor.command_line, "describe-");
+        assert_eq!(a.editor.command_line(), "describe-");
         let narrow_count = a.editor.completion_state.as_ref().unwrap().candidates.len();
         a.apply(Action::CommandLineBackspace);
         assert!(a.editor.completion_state.is_some());
-        assert_eq!(a.editor.command_line, "describe");
+        assert_eq!(a.editor.command_line(), "describe");
         // Shorter prefix -> at least as many candidates.
         let widened = a.editor.completion_state.as_ref().unwrap().candidates.len();
         assert!(widened >= narrow_count);
@@ -1262,7 +1264,7 @@ mod tests {
         // Word-delete leaves us with an empty cmdline -> Empty slot
         // -> all commands; popup stays open.
         assert!(a.editor.completion_state.is_some());
-        assert_eq!(a.editor.command_line, "");
+        assert_eq!(a.editor.command_line(), "");
     }
 
     #[test]
@@ -1271,21 +1273,21 @@ mod tests {
         a.apply(Action::CommandLineDeleteChord);
         // The whole `<C-c>` token (5 bytes) gets removed in one
         // delete -- not a single byte.
-        assert_eq!(a.editor.command_line, "describe-key ");
+        assert_eq!(a.editor.command_line(), "describe-key ");
     }
 
     #[test]
     fn delete_chord_on_plain_char_pops_one_char() {
         let mut a = app_in_command_mode("describe-key gg");
         a.apply(Action::CommandLineDeleteChord);
-        assert_eq!(a.editor.command_line, "describe-key g");
+        assert_eq!(a.editor.command_line(), "describe-key g");
     }
 
     #[test]
     fn delete_chord_on_empty_cmdline_exits_command_mode() {
         let mut a = app_with("xx", 10);
         a.editor.modal = ModalState::Command;
-        a.editor.command_line = String::new();
+        a.editor.set_command_line_text("");
         a.apply(Action::CommandLineDeleteChord);
         assert!(matches!(a.editor.modal, ModalState::Normal));
     }

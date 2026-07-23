@@ -888,6 +888,13 @@ mod tests {
         let mut registry = CommandRegistry::new();
         let _ = lattice_grammar::builtins::populate(&mut registry);
         let _ = lattice_grammar::ex_commands::populate(&mut registry);
+        // `:problems` / `:problems-close` (aliased from vim `:copen` /
+        // `:cclose` in the table below) are registered by the multibuffer
+        // install path at boot, not by the grammar populate. Mirror that
+        // here so `aliases_table_is_self_consistent` sees their targets.
+        lattice_multibuffer::providers::problems::register_problems_ex_commands(
+            &mut registry,
+        );
         registry
     }
 

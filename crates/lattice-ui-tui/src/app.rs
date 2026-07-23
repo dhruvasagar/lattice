@@ -1299,11 +1299,11 @@ impl App {
         // Slice 3c.final.X.cleanup: read from the published
         // `ModelineRenderState.cmdline_text` (slice B.7). The Arc<str>
         // → String conversion is one heap copy, matching the prior
-        // `e.command_line.clone()` cost without the mailbox RPC.
+        // `e.command_line().clone()` cost without the mailbox RPC.
         // cfg(test) escape hatch as per `cursor()` — see its docstring.
         #[cfg(test)]
         {
-            self.editor.command_line.clone()
+            self.editor.command_line().clone()
         }
         #[cfg(not(test))]
         {
@@ -2436,9 +2436,9 @@ mod tests {
         // ranking) is one of the describe-* family.
         a.apply(Action::CommandLineAcceptCompletion);
         assert!(
-            a.editor.command_line.starts_with("describe-") || a.editor.command_line == "apropos",
+            a.editor.command_line().starts_with("describe-") || a.editor.command_line() == "apropos",
             "expected user-facing alias, got `{}`",
-            a.editor.command_line
+            a.editor.command_line()
         );
         assert!(a.editor.completion_state.is_none());
     }
@@ -2489,10 +2489,10 @@ mod tests {
         // word + space preserved; only the `moti` arg prefix replaced.
         assert!(
             a.editor
-                .command_line
+                .command_line()
                 .starts_with("describe-command motion:"),
             "got: {:?}",
-            a.editor.command_line
+            a.editor.command_line()
         );
     }
 
@@ -2593,16 +2593,16 @@ mod tests {
         let path = write_temp_file("b", "one\n");
         let mut a = app_with("xx", 10);
         let first_id = a.editor.document_buffer_id;
-        a.editor.command_line = format!("e {}", path.display());
+        a.editor.set_command_line_text(&format!("e {}", path.display()));
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let second_id = a.editor.document_buffer_id;
         assert_ne!(first_id, second_id);
-        a.editor.command_line = "bn".into();
+        a.editor.set_command_line_text("bn");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert_eq!(a.editor.document_buffer_id, first_id);
-        a.editor.command_line = "bn".into();
+        a.editor.set_command_line_text("bn");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert_eq!(a.editor.document_buffer_id, second_id);
@@ -2614,18 +2614,18 @@ mod tests {
         let path = write_temp_file("d", "alpha\n");
         let mut a = app_with("xx", 10);
         let initial_id = a.editor.document_buffer_id;
-        a.editor.command_line = format!("e {}", path.display());
+        a.editor.set_command_line_text(&format!("e {}", path.display()));
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let new_id = a.editor.document_buffer_id;
         // Cycle back to first buffer.
-        a.editor.command_line = "bn".into();
+        a.editor.set_command_line_text("bn");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert_eq!(a.editor.document_buffer_id, initial_id);
         // Re-editing the new file's path should switch to its
         // existing buffer rather than spawning a third.
-        a.editor.command_line = format!("e {}", path.display());
+        a.editor.set_command_line_text(&format!("e {}", path.display()));
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert_eq!(a.editor.document_buffer_id, new_id);
@@ -2652,7 +2652,7 @@ mod tests {
         let path = write_temp_file("activate-manual", "a:\n    x\n    y\nb:\n    p\n    q\n");
         let mut a = app_with("xx", 10);
         a.set_foldmethod_for_test(FoldMethod::Manual);
-        a.editor.command_line = format!("e {}", path.display());
+        a.editor.set_command_line_text(&format!("e {}", path.display()));
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert!(
@@ -2857,7 +2857,7 @@ mod tests {
     #[test]
     fn h_alias_resolves_to_help() {
         let mut a = app_with("xx", 10);
-        a.editor.command_line = "h folding".into();
+        a.editor.set_command_line_text("h folding");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let h = a.popup_help().expect("help open");
@@ -3496,7 +3496,7 @@ mod tests {
     fn app_in_command_mode(line: &str) -> App {
         let mut a = app_with("xx", 10);
         a.editor.modal = ModalState::Command;
-        a.editor.command_line = line.into();
+        a.editor.set_command_line_text(&line);
         a
     }
 
@@ -3505,7 +3505,7 @@ mod tests {
         let mut a = app_in_command_mode("descri");
         a.apply(Action::CommandLineCompleteOrAdvance);
         a.apply(Action::CommandLineDismissCompletion);
-        assert_eq!(a.editor.command_line, "descri");
+        assert_eq!(a.editor.command_line(), "descri");
         assert!(a.editor.completion_state.is_none());
     }
 
@@ -3516,7 +3516,7 @@ mod tests {
         let narrow_count = a.editor.completion_state.as_ref().unwrap().candidates.len();
         a.apply(Action::CommandLineClear);
         assert!(a.editor.completion_state.is_some());
-        assert_eq!(a.editor.command_line, "");
+        assert_eq!(a.editor.command_line(), "");
         let widened = a.editor.completion_state.as_ref().unwrap().candidates.len();
         assert!(widened >= narrow_count);
     }
@@ -3525,7 +3525,7 @@ mod tests {
     fn append_chord_concatenates_token() {
         let mut a = app_in_command_mode("describe-key ");
         a.apply(Action::CommandLineAppendChord("<C-c>".into()));
-        assert_eq!(a.editor.command_line, "describe-key <C-c>");
+        assert_eq!(a.editor.command_line(), "describe-key <C-c>");
     }
 
     #[test]
@@ -3535,7 +3535,7 @@ mod tests {
         let mut a = app_in_command_mode("describe-key ");
         a.apply(Action::CommandLineAppendChord("g".into()));
         a.apply(Action::CommandLineAppendChord("g".into()));
-        assert_eq!(a.editor.command_line, "describe-key gg");
+        assert_eq!(a.editor.command_line(), "describe-key gg");
     }
 
     #[test]
@@ -3630,7 +3630,7 @@ mod tests {
         // Wire up a Rust syntax instance so there's something to lose.
         attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
         // Open the tree, then dismiss.
-        a.editor.command_line = format!("Filetree {}", dir.display());
+        a.editor.set_command_line_text(&format!("Filetree {}", dir.display()));
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert!(matches!(
@@ -3638,7 +3638,7 @@ mod tests {
             crate::buffers::BufferKind::FileTree
         ));
         // `:TreeClose` (the path `q` takes in the tree).
-        a.editor.command_line = "FiletreeClose".into();
+        a.editor.set_command_line_text("FiletreeClose");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert!(matches!(
@@ -3664,7 +3664,7 @@ mod tests {
         a.editor.terminal_width = Some(80);
         a.apply(Action::SplitPaneVertical);
         a.apply(Action::NavigatePane(PaneDirection::Right));
-        a.editor.command_line = format!("Filetree {}", dir.display());
+        a.editor.set_command_line_text(&format!("Filetree {}", dir.display()));
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert_eq!(a.editor.buffers.file_tree_ids_sorted().len(), 1);
@@ -3679,12 +3679,12 @@ mod tests {
         let path = write_temp_file("e", "alpha\n");
         let mut a = app_with("xx", 10);
         let initial_id = a.editor.document_buffer_id;
-        a.editor.command_line = format!("e {}", path.display());
+        a.editor.set_command_line_text(&format!("e {}", path.display()));
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         // Now active = new buffer; delete it. Successor should
         // be initial_id.
-        a.editor.command_line = "bd".into();
+        a.editor.set_command_line_text("bd");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert_eq!(a.editor.document_buffer_id, initial_id);
@@ -3697,7 +3697,7 @@ mod tests {
     #[test]
     fn bdelete_only_buffer_is_rejected() {
         let mut a = app_with("xx", 10);
-        a.editor.command_line = "bd".into();
+        a.editor.set_command_line_text("bd");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         // The listed count gates the "only buffer" check.
@@ -3720,7 +3720,7 @@ mod tests {
         );
         let mut a = app_with("xx", 10);
         a.set_foldmethod_for_test(FoldMethod::Indent);
-        a.editor.command_line = format!("e {}", path.display());
+        a.editor.set_command_line_text(&format!("e {}", path.display()));
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         // The new buffer should have folds without `<C-l>`.
@@ -3904,7 +3904,7 @@ mod tests {
         let mut a = app_with("xx", 10);
         // Open a help buffer so the active modal/buffer state
         // matches what `FollowLink` expects.
-        a.editor.command_line = "help".into();
+        a.editor.set_command_line_text("help");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         // Build a synthetic source link inside the help buffer.
@@ -3970,7 +3970,7 @@ mod tests {
             std::env::temp_dir().join(format!("lattice-srclink-clamp-{}.rs", std::process::id()));
         std::fs::write(&path, "only-line\n").unwrap();
         let mut a = app_with("xx", 10);
-        a.editor.command_line = "help".into();
+        a.editor.set_command_line_text("help");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let link = crate::help::HelpLink {

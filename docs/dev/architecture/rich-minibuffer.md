@@ -81,34 +81,41 @@ rather than a bespoke typing mode; keys route through the normal Insert
 dispatcher. The `command_line: String` field and `translate_command`
 retire.
 
-## 3. Tier 2 — `<C-x><C-e>` expand into a full mini-buffer
+## 3. Tier 2 — `<C-x><C-e>` expand the command line *in place*
 
-Only in `command-line-mode`, **`<C-x><C-e>`** takes the current command
-text and opens it as a **full editing mini-buffer** — a regular buffer
-with `command-line-edit-mode` — modelled on bash/zsh's
-`edit-and-execute-command`:
+Tier 2 is **not a separate buffer or a new pane** — it is the **same
+`*command-line*` surface expanding in place**. Only in
+`command-line-mode`, **`<C-x><C-e>`** grows the one-row command line
+**upward, pushing the mode-line (and the buffer content) above it**,
+into a full-width multi-row **mini-buffer band** at the bottom of the
+frame, and **enables full modal editing** on it. Modelled on bash/zsh's
+`edit-and-execute-command`, but the "editor" is the command line itself
+grown large:
 
-- **It is a regular buffer:** the *complete* vim grammar (Normal / Insert
-  / Visual, motions, operators, `.`-repeat, registers, undo, multi-line)
-  applies. This is where power-editing a gnarly command lives.
+- **Same buffer, now full-modal.** `<C-x><C-e>` toggles the buffer's
+  `expanded` state: the presentation grows (echo row → band) and the
+  *complete* vim grammar (Normal / Insert / Visual, motions, operators,
+  `.`-repeat, registers, undo, multi-line) turns on. There is **one
+  command being edited** the whole time — tier 1 and tier 2 are two
+  sizes of one surface, not two buffers with copy-back.
+- **`:` is a no-op inside the mini-buffer.** Because you are *already in*
+  the command line, the `:` "enter-command-line" chord does nothing
+  here (it must not open a nested command line). In tier 1 (insert-only)
+  this is automatic — `:` just inserts a literal colon while typing a
+  command; in tier 2's Normal mode it is an **explicit no-op guard** the
+  mode contributes. This is the one place the command line behaves
+  *unlike* an ordinary buffer, and it is deliberate.
 - **Rich tooling:** `command-line` grammar **syntax highlighting**, live
   **error highlighting** (unknown command / bad args, from the same
   parser that runs on submit), **parameter hints** (from `ArgSpec`
-  metadata), and **completion** (the same completion source as the `:`
-  line). §5.
-- **Presentation is a display option** (§9), defaulting to a **full-width
-  horizontal split** (a bottom split, `$EDITOR`-like); `popup` / `vsplit`
-  are alternatives.
-- **Quit returns to the `:` line for review, not auto-execute.** The
-  accept path (`<C-x><C-e>` toggle, or a mode chord) writes the edited
-  text back into the tier-1 `:` line and closes the split; the user then
-  presses `<CR>` to execute. `<C-c>` cancels the expansion (discards the
-  edit, keeps the pre-expand `:` text). *(Bash executes on save-quit; we
-  deliberately return-for-review — safer, and it keeps a single execution
-  point: `<CR>` in the `:` line.)*
-
-The same underlying command text flows tier-1 → tier-2 → tier-1; there is
-one command being edited, shown two ways.
+  metadata), and **completion** (the same completion source as the
+  one-row line). §5.
+- **Collapse returns to the one-row line for review, not auto-execute.**
+  `<C-x><C-e>` again (or a mode chord) collapses the band back to the
+  one-row readline `:` line with the edited text; the user presses
+  `<CR>` to execute. `<C-c>` cancels (discards the expanded edits, keeps
+  the pre-expand text). *(Bash executes on save-quit; we deliberately
+  collapse-for-review — one execution point, `<CR>` in the `:` line.)*
 
 ## 4. History — walk + fuzzy picker
 
@@ -171,10 +178,16 @@ input path and gaining rich editing + history for free.
   (heuristic #1 + the universal-grammar directive): re-implements the
   readline chords as cmdline-exclusive code, never gets completion /
   decorations / registers, and would be replaced by the buffer substrate.
-- **Full modal editing *in* the `:` line.** Rejected: collides with
-  vim's `<Esc>`-cancels-`:` muscle memory and taxes the common (short)
-  command with modal complexity. The two-tier model gives full modal
-  where it belongs — the opt-in `<C-x><C-e>` mini-buffer.
+- **Full modal editing *in* the one-row `:` line.** Rejected: collides
+  with vim's `<Esc>`-cancels-`:` muscle memory and taxes the common
+  (short) command with modal complexity. The two-tier model gives full
+  modal where it belongs — the opt-in `<C-x><C-e>` *expanded* line.
+- **Tier 2 as a separate split pane / new buffer.** Rejected: it is the
+  **same** command-line surface grown in place (pushing the mode-line
+  up), not a distinct buffer/pane you navigate to — so there is no
+  copy-back, and the `:`-no-op / command-line semantics hold across both
+  sizes. A separate pane would be "just another buffer" and would
+  wrongly let `:` open a nested command line.
 - **Execute-on-quit for `<C-x><C-e>` (bash-faithful).** Rejected in favour
   of return-to-`:`-line-for-review — one execution point (`<CR>`), and a
   final look before running a command you just heavily edited.
@@ -183,17 +196,16 @@ input path and gaining rich editing + history for free.
   with every other Lattice list surface — and `<C-x><C-e>` already
   provides the full-buffer edit.
 
-## 9. The expand-layout option
+## 9. The expand size option
 
-`<C-x><C-e>`'s presentation is a typed option (§5.12), e.g.
-`command-line.expand-layout`:
-
-- **`hsplit`** (default) — full-width horizontal split (bottom), `$EDITOR`-like.
-- **`vsplit`** — vertical split.
-- **`popup`** — centered floating buffer (picker/hover geometry).
-
-Typed + `:set`-able + `:customize`-able like every option; the mode reads
-it when expanding.
+The expansion is **in place** by default — the command line grows into a
+full-width bottom band, pushing the mode-line up (§3). A typed option
+(§5.12), e.g. `command-line.expand-height`, controls how tall it grows
+(`half` the frame default, or a fixed row count, or `full`). A `popup`
+alternative (centered floating band) may be offered later, but the
+default is the in-place upward expansion — *not* a separate split/pane
+the user navigates to. Typed + `:set`/`:customize`-able like every
+option; the mode reads it when expanding.
 
 ## 10. Impact surface (for the slice plan)
 

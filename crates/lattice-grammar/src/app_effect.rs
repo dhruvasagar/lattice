@@ -277,6 +277,28 @@ pub enum AppEffect {
     /// Vim's `:`. Enter the command-line minibuffer. Promoted
     /// from `Action::EnterCommandLine` in slice 8.i.1.e.
     EnterCommandLine,
+    /// MB.1: `<CR>` in `command-line-mode` — submit (or accept the
+    /// open completion candidate). Drives the rewired
+    /// `Editor::do_command_line_submit`.
+    CommandLineSubmit,
+    /// MB.1: `<Esc>` / `<C-c>` in `command-line-mode` — cancel (or
+    /// dismiss the open completion popup first).
+    CommandLineCancel,
+    /// MB.1: `<C-p>` / `<Up>` in `command-line-mode` — walk history
+    /// backward (or previous completion candidate when the popup is open).
+    CommandLineHistoryPrev,
+    /// MB.1: `<C-n>` / `<Down>` in `command-line-mode` — walk history
+    /// forward (or next completion candidate when the popup is open).
+    CommandLineHistoryNext,
+    /// MB.1: `<Tab>` in `command-line-mode` — open the completion popup
+    /// or advance the selection.
+    CommandLineComplete,
+    /// MB.1: `<S-Tab>` in `command-line-mode` — previous completion
+    /// candidate.
+    CommandLineCompletePrev,
+    /// MB.1: `<C-h>` in `command-line-mode` — describe the command / arg
+    /// under the cursor.
+    CommandLineDescribeUnderCursor,
     /// Lattice's `-`. Open / step up in the oil-style directory
     /// view (DESIGN.md §5.9.4). Promoted from
     /// `Action::OilNavigateUp` in slice 8.i.1.e.

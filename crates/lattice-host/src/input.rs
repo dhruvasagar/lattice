@@ -391,7 +391,15 @@ pub fn translate(ctx: TranslateContext<'_>, chord: KeyChord) -> Action {
             ctx.partial_chord,
             ctx.active_minor_modes,
         ),
-        ModalState::Command => translate_command(chord, ctx.completion_open, ctx.chord_capture),
+        // MB.1: the `:` line is a buffer-backed readline surface. Keys
+        // route through the universal Insert dispatcher onto the focused
+        // `*command-line*` buffer; `command-line-mode`'s Insert-layer
+        // keymap supplies submit / cancel / history / completion. The
+        // chord-capture overlay (missing-arg `Chord` slot) is handled
+        // earlier at the top of `translate`.
+        ModalState::Command => {
+            dispatch_insert(ctx.keymap, &chord, ctx.partial_chord, ctx.active_minor_modes)
+        }
         ModalState::Search(_) => translate_search(chord),
         // Slice 8.e: Visual mode dispatches through the layered
         // registry. The hand-rolled match table moved to
@@ -436,69 +444,6 @@ fn translate_search(chord: KeyChord) -> Action {
         KeyKind::Special(SpecialKey::Enter) => Action::SearchSubmit,
         KeyKind::Special(SpecialKey::Backspace) => Action::SearchBackspace,
         KeyKind::Char(c) if !chord.mods.ctrl() => Action::SearchAppend(c),
-        _ => Action::None,
-    }
-}
-
-fn translate_command(chord: KeyChord, completion_open: bool, _chord_capture: bool) -> Action {
-    // Note: chord-capture is dispatched at the top-level
-    // `translate()` (so it precedes the universal Ctrl-C quit).
-    // This signature still takes the bit so call sites stay
-    // explicit, but if we reach here the overlay is off.
-
-    // The completion popup claims a small set of keys first
-    // (Tab / S-Tab / Enter / Esc / C-n / C-p) -- two-stage Esc
-    // per DESIGN.md §5.11.3 Q6: first Esc dismisses the popup,
-    // second cancels the command line. Other keys fall through;
-    // appending text implicitly dismisses the popup (the App
-    // handler clears `completion_state` on every typed char).
-    //
-    // Issue #22 (2026-05-22): `<C-n>` / `<C-p>` symmetrical with
-    // picker's `translate_picker` (`Action::PickerSelectNext` /
-    // `PickerSelectPrev` for the same chords). User reported
-    // these were unbound in cmdline completion; only Tab / S-Tab
-    // worked. Now both pairs navigate identically.
-    if completion_open {
-        match chord.key {
-            KeyKind::Special(SpecialKey::Tab) => {
-                return if chord.mods.shift() {
-                    Action::CommandLineCompletePrev
-                } else {
-                    Action::CommandLineCompleteOrAdvance
-                };
-            }
-            KeyKind::Char('n') if chord.mods.ctrl() => {
-                return Action::CommandLineCompleteOrAdvance;
-            }
-            KeyKind::Char('p') if chord.mods.ctrl() => {
-                return Action::CommandLineCompletePrev;
-            }
-            KeyKind::Special(SpecialKey::Enter) => return Action::CommandLineAcceptCompletion,
-            KeyKind::Special(SpecialKey::Esc) => return Action::CommandLineDismissCompletion,
-            _ => {}
-        }
-    }
-
-    if chord.mods.ctrl() {
-        return match chord.key {
-            KeyKind::Char('h') => Action::CommandLineDescribeUnderCursor,
-            KeyKind::Char('u') => Action::CommandLineClear,
-            KeyKind::Char('w') => Action::CommandLineDeleteWordBackward,
-            _ => Action::None,
-        };
-    }
-
-    match chord.key {
-        KeyKind::Special(SpecialKey::Esc) => Action::CommandLineCancel,
-        KeyKind::Special(SpecialKey::Enter) => Action::CommandLineSubmit,
-        KeyKind::Special(SpecialKey::Backspace) => Action::CommandLineBackspace,
-        KeyKind::Special(SpecialKey::Tab) if !chord.mods.shift() => {
-            Action::CommandLineCompleteOrAdvance
-        }
-        KeyKind::Special(SpecialKey::Tab) if chord.mods.shift() => Action::CommandLineCompletePrev,
-        KeyKind::Special(SpecialKey::Up) => Action::CommandLineHistoryPrev,
-        KeyKind::Special(SpecialKey::Down) => Action::CommandLineHistoryNext,
-        KeyKind::Char(c) if !chord.mods.ctrl() => Action::CommandLineAppend(c),
         _ => Action::None,
     }
 }

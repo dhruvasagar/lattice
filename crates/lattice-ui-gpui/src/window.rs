@@ -1611,7 +1611,12 @@ impl EditorView {
         // below): when popup owns active_buffer, ad.cursor
         // describes the popup buffer's cursor — the document
         // pane's cursor must come from its stashed snapshot.
-        let popup_owns_active = ad.popup_focused;
+        // MB.1 (rich minibuffer): while the `:` line is open, `self.document`
+        // is the synthetic `*command-line*` buffer. The active pane must keep
+        // its own buffer's cursor / scroll (the pane body is already
+        // registry-keyed) rather than adopting the command-line cursor — the
+        // same treatment as a focus-stealing popup.
+        let popup_owns_active = ad.popup_focused || ad.command_line_active;
         // When the popup has focus the document pane should look
         // inactive — no cursorline, no selection, no active status
         // bar — the same appearance it has when a different pane has

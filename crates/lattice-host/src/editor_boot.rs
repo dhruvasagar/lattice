@@ -454,6 +454,13 @@ impl Editor {
         boot.modes_mut()
             .register(crate::preview::PreviewMode)
             .expect("preview-mode must register without conflict");
+        // MB.1 (rich minibuffer): `command-line-mode` — the major mode on
+        // the synthetic `*command-line*` buffer. Host-owned; its Insert-
+        // layer keymap (submit / cancel / history / completion chords)
+        // resolves through `translate_mode_keymaps` at boot.
+        boot.modes_mut()
+            .register(crate::command_line_mode::CommandLineMode)
+            .expect("command-line-mode must register without conflict");
         // BC.7 (2026-06-24): `multibuffer-mode` (+ its `DocumentClosed`
         // cleanup subscriber), `narrow-minor-mode`, and the project-search
         // provider mode moved into `lattice_multibuffer::install(boot)`

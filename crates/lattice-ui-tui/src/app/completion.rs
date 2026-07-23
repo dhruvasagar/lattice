@@ -320,7 +320,7 @@ mod tests {
             a.editor.completion_state.is_none(),
             "popup must not open when the only candidate auto-inserts"
         );
-        assert_eq!(a.editor.command_line, "set foldmethod=indent");
+        assert_eq!(a.editor.command_line(), "set foldmethod=indent");
     }
 
     #[test]
@@ -336,7 +336,7 @@ mod tests {
             .expect("popup should open when option is off");
         assert_eq!(state.candidates.len(), 1);
         assert_eq!(
-            a.editor.command_line, "set foldmethod=ind",
+            a.editor.command_line(), "set foldmethod=ind",
             "cmdline must not change until user confirms"
         );
     }
@@ -388,7 +388,7 @@ mod tests {
             a.editor.completion_state.is_some(),
             "popup must stay open when narrowed mid-typing"
         );
-        assert_eq!(a.editor.command_line, "set foldmethod=ind");
+        assert_eq!(a.editor.command_line(), "set foldmethod=ind");
     }
 
     #[test]
@@ -396,11 +396,11 @@ mod tests {
         // `:set nocompletion.auto_insert_single` flips the bool;
         // `:set completion.auto_insert_single` flips it back.
         let mut a = app_with("xx", 10);
-        a.editor.command_line = "set nocompletion.auto_insert_single".into();
+        a.editor.set_command_line_text("set nocompletion.auto_insert_single");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert!(!a.completion_auto_insert_single());
-        a.editor.command_line = "set completion.auto_insert_single".into();
+        a.editor.set_command_line_text("set completion.auto_insert_single");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert!(a.completion_auto_insert_single());

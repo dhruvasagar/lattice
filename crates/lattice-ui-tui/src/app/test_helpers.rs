@@ -8,7 +8,7 @@
 
 use lattice_core::Document;
 use lattice_grammar::registry::MotionId;
-use lattice_grammar::{CommandInvocation, ModalState};
+use lattice_grammar::CommandInvocation;
 use lattice_protocol::Event;
 
 use crate::buffers::BufferKind;
@@ -217,9 +217,13 @@ pub(super) fn app_with_path(text: &str, viewport: u32, path: std::path::PathBuf)
 /// `:`-line completion / dispatch test that needs the
 /// cmdline pre-populated.
 pub(super) fn app_in_command_mode(line: &str) -> App {
+    // MB.1: the `:` line is a buffer-backed surface. Open it through the
+    // real path (focus-swap to the `*command-line*` buffer) and seed the
+    // text through the buffer so `command_line_active()` holds and the
+    // rewired submit/completion/history handlers operate correctly.
     let mut a = app_with("xx", 10);
-    a.editor.modal = ModalState::Command;
-    a.editor.command_line = line.into();
+    a.apply(Action::EnterCommandLine);
+    a.editor.set_command_line_text(line);
     a
 }
 

@@ -583,6 +583,13 @@ pub struct ActiveDocumentRenderState {
     /// read `popup_focused` directly instead of re-deriving it
     /// from `buffer_kind`.
     pub popup_focused: bool,
+    /// MB.1 (rich minibuffer): `true` while the `*command-line*` buffer
+    /// is focused for editing (the `:` line is open). Swapping
+    /// `self.document` to that buffer would otherwise make the active
+    /// pane render the command-line text; renderers read this flag to
+    /// route the active pane to its own (registry-keyed) buffer instead —
+    /// the Help-popup pattern. See `docs/dev/architecture/rich-minibuffer.md`.
+    pub command_line_active: bool,
     /// Terminal-mode T2.a (2026-05-25): `true` when
     /// `terminal-insert-mode` is active on the active Terminal
     /// buffer. Drives the translate-layer branch that encodes
@@ -731,6 +738,7 @@ impl Default for ActiveDocumentRenderState {
             chord_capture: false,
             snippet_active: false,
             popup_focused: false,
+            command_line_active: false,
             terminal_insert_active: false,
             terminal_esc_exits: true,
             terminal_visual_active: false,
@@ -3237,7 +3245,10 @@ mod tests {
         use crate::state::SearchLine;
         use lattice_grammar::SearchDirection;
         use lattice_protocol::position::Position;
-        let mut editor = Editor::default();
+        // MB.1: the `:` line is a real buffer, so `set_command_line_text`
+        // needs a booted editor (mode registry + option defaults) to open
+        // the synthetic `*command-line*` buffer.
+        let mut editor = Editor::boot(lattice_core::Document::empty());
 
         // Default: empty cmdline, no message, no search.
         editor.publish_render_state();
@@ -3253,7 +3264,7 @@ mod tests {
             text: "hello".to_string(),
             level: EchoLevel::Info,
         });
-        editor.command_line = "describe-key ".to_string();
+        editor.set_command_line_text("describe-key ");
         editor.auto_submit_after_chord = true;
         editor.search_line = Some(SearchLine {
             direction: SearchDirection::Backward,

@@ -341,9 +341,80 @@ use lattice_host::dispatch::prefer_aliases_for_command_candidates;
 mod tests {
     use super::*;
     use crate::app::test_helpers::{
-        app_in_command_mode, app_with, invoke_motion, submit_ex, unique_tempdir,
+        app_in_command_mode, app_with, invoke_motion, press, press_chars, submit_ex,
+        unique_tempdir,
     };
     use crate::app::*;
+
+    // ── MB.1 (rich minibuffer, tier 1): the `:` line is a real
+    //    buffer edited through the universal Insert dispatcher ──
+
+    /// The `:` line is buffer-backed: `:` focuses the synthetic
+    /// `*command-line*` buffer, typing flows through the universal Insert
+    /// dispatcher, and — the whole point of MB.1 — the cursor moves so
+    /// edits land mid-line, not only appended at the end.
+    #[test]
+    fn mb1_command_line_supports_midline_editing() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut a = app_with("hello\n", 10);
+        a.apply(Action::EnterCommandLine);
+        assert!(
+            a.editor.command_line_active(),
+            "`:` must focus the *command-line* buffer"
+        );
+        press_chars(&mut a, "eabc");
+        assert_eq!(a.editor.command_line(), "eabc");
+        // Walk the cursor back two with the `<Left>` arrow and insert —
+        // impossible with the old `String` + append path.
+        press(&mut a, KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        press(&mut a, KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        press_chars(&mut a, "X");
+        assert_eq!(
+            a.editor.command_line(),
+            "eaXbc",
+            "insert must land at the cursor, not the end of the line"
+        );
+        // `<C-b>` (readline) moves the caret the same way the arrow does:
+        // from after `X` to before it, so `Y` lands between `a` and `X`.
+        press(&mut a, KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
+        press_chars(&mut a, "Y");
+        assert_eq!(a.editor.command_line(), "eaYXbc");
+    }
+
+    /// `<Esc>` / `CommandLineCancel` closes the `:` line and restores the
+    /// prior editing buffer (focus-swap unwind), with no command run.
+    #[test]
+    fn mb1_command_line_cancel_restores_prior_buffer() {
+        let mut a = app_with("hello\n", 10);
+        let before = a.editor.document_buffer_id;
+        a.apply(Action::EnterCommandLine);
+        press_chars(&mut a, "e foo");
+        assert!(a.editor.command_line_active());
+        a.apply(Action::CommandLineCancel);
+        assert!(
+            !a.editor.command_line_active(),
+            "cancel must close the `:` line"
+        );
+        assert_eq!(
+            a.editor.document_buffer_id, before,
+            "cancel must restore the prior editing buffer"
+        );
+    }
+
+    /// History walk seeds the `:` line from `command_history` and the
+    /// seeded text is itself buffer-backed (editable + submittable).
+    #[test]
+    fn mb1_command_line_history_walk_seeds_the_buffer() {
+        let mut a = app_with("hello\n", 10);
+        a.editor.command_history.push("edit foo".to_string());
+        a.apply(Action::EnterCommandLine);
+        a.apply(Action::CommandLineHistoryPrev);
+        assert_eq!(
+            a.editor.command_line(),
+            "edit foo",
+            "`<C-p>` seeds the `:` buffer from history"
+        );
+    }
 
     #[test]
     fn prefer_aliases_rewrites_canonical_to_alias() {
@@ -449,7 +520,7 @@ mod tests {
     #[test]
     fn enter_command_line_clears_buffer_and_sets_modal() {
         let mut a = app_with("abc", 10);
-        a.editor.command_line = "stale".into();
+        a.editor.set_command_line_text("stale");
         a.editor.publish_render_state();
         a.editor.last_message = Some(EchoMessage {
             text: "stale".into(),
@@ -457,7 +528,7 @@ mod tests {
         });
         a.apply(Action::EnterCommandLine);
         assert_eq!(a.editor.modal, ModalState::Command);
-        assert_eq!(a.editor.command_line, "");
+        assert_eq!(a.editor.command_line(), "");
         assert!(a.editor.last_message.is_none());
     }
 
@@ -467,7 +538,7 @@ mod tests {
         a.apply(Action::EnterCommandLine);
         a.apply(Action::CommandLineAppend('w'));
         a.apply(Action::CommandLineAppend('q'));
-        assert_eq!(a.editor.command_line, "wq");
+        assert_eq!(a.editor.command_line(), "wq");
     }
 
     #[test]
@@ -477,7 +548,7 @@ mod tests {
         a.apply(Action::CommandLineAppend('w'));
         a.apply(Action::CommandLineAppend('q'));
         a.apply(Action::CommandLineBackspace);
-        assert_eq!(a.editor.command_line, "w");
+        assert_eq!(a.editor.command_line(), "w");
     }
 
     #[test]
@@ -495,7 +566,7 @@ mod tests {
         a.apply(Action::CommandLineAppend('w'));
         a.apply(Action::CommandLineCancel);
         assert_eq!(a.editor.modal, ModalState::Normal);
-        assert_eq!(a.editor.command_line, "");
+        assert_eq!(a.editor.command_line(), "");
     }
 
     #[test]
@@ -646,7 +717,7 @@ mod tests {
         submit_ex(&mut a, "set nonumber");
         a.apply(Action::EnterCommandLine);
         a.apply(Action::CommandLineHistoryPrev);
-        assert_eq!(a.editor.command_line, "set nonumber");
+        assert_eq!(a.editor.command_line(), "set nonumber");
     }
 
     #[test]
@@ -657,7 +728,7 @@ mod tests {
         a.apply(Action::EnterCommandLine);
         a.apply(Action::CommandLineHistoryPrev);
         a.apply(Action::CommandLineHistoryPrev);
-        assert_eq!(a.editor.command_line, "set number");
+        assert_eq!(a.editor.command_line(), "set number");
     }
 
     #[test]
@@ -670,10 +741,10 @@ mod tests {
         }
         // User starts typing "se", presses Up -> walks to "set number".
         a.apply(Action::CommandLineHistoryPrev);
-        assert_eq!(a.editor.command_line, "set number");
+        assert_eq!(a.editor.command_line(), "set number");
         // Down returns to "se".
         a.apply(Action::CommandLineHistoryNext);
-        assert_eq!(a.editor.command_line, "se");
+        assert_eq!(a.editor.command_line(), "se");
     }
 
     #[test]
@@ -682,7 +753,7 @@ mod tests {
         a.apply(Action::EnterCommandLine);
         a.apply(Action::CommandLineAppend('w'));
         a.apply(Action::CommandLineHistoryPrev);
-        assert_eq!(a.editor.command_line, "w");
+        assert_eq!(a.editor.command_line(), "w");
     }
 
     #[test]
@@ -692,7 +763,7 @@ mod tests {
         // Reopen command line; Up should still recall.
         a.apply(Action::EnterCommandLine);
         a.apply(Action::CommandLineHistoryPrev);
-        assert_eq!(a.editor.command_line, "set number");
+        assert_eq!(a.editor.command_line(), "set number");
     }
 
     /// Regression scaffold for the user-reported "completion is
@@ -712,7 +783,7 @@ mod tests {
         for c in "desc".chars() {
             a.apply(Action::CommandLineAppend(c));
         }
-        assert_eq!(a.editor.command_line, "desc");
+        assert_eq!(a.editor.command_line(), "desc");
         // Tab — should open the completion popup with command-name
         // candidates like `describe-command`, `describe-key`.
         a.apply(Action::CommandLineCompleteOrAdvance);
@@ -784,27 +855,27 @@ mod tests {
         a.editor.modal = ModalState::Command;
         a.editor.publish_render_state();
         // Empty cmdline -> CommandName slot, not chord-capture.
-        a.editor.command_line = String::new();
+        a.editor.set_command_line_text("");
         a.editor.publish_render_state();
         assert!(!a.chord_capture_active());
         // Mid command-name slot.
-        a.editor.command_line = "describe-key".into();
+        a.editor.set_command_line_text("describe-key");
         a.editor.publish_render_state();
         assert!(!a.chord_capture_active());
         // Now the cursor is past the space; arg slot is `chord`
         // with kind=Chord -> capture is active.
-        a.editor.command_line = "describe-key ".into();
+        a.editor.set_command_line_text("describe-key ");
         a.editor.publish_render_state();
         assert!(a.chord_capture_active());
         // describe-command's first arg is String, NOT Chord ->
         // no capture even though we're in an arg slot.
-        a.editor.command_line = "describe-command ".into();
+        a.editor.set_command_line_text("describe-command ");
         a.editor.publish_render_state();
         assert!(!a.chord_capture_active());
         // Outside Command modal, never active.
         a.editor.modal = ModalState::Normal;
         a.editor.publish_render_state();
-        a.editor.command_line = "describe-key ".into();
+        a.editor.set_command_line_text("describe-key ");
         a.editor.publish_render_state();
         assert!(!a.chord_capture_active());
     }
@@ -817,7 +888,7 @@ mod tests {
         let mut a = app_with("xx", 10);
         a.editor.modal = ModalState::Command;
         a.editor.publish_render_state();
-        a.editor.command_line = "ex:describe-key ".into();
+        a.editor.set_command_line_text("ex:describe-key ");
         a.editor.publish_render_state();
         assert!(a.chord_capture_active());
     }
@@ -829,7 +900,7 @@ mod tests {
         // prefill the cmdline and arm auto-submit.
         let mut a = app_in_command_mode("describe-key");
         a.apply(Action::CommandLineSubmit);
-        assert_eq!(a.editor.command_line, "describe-key ");
+        assert_eq!(a.editor.command_line(), "describe-key ");
         assert!(a.editor.auto_submit_after_chord);
         assert!(matches!(a.editor.modal, ModalState::Command));
     }
@@ -840,7 +911,7 @@ mod tests {
         // the alias.
         let mut a = app_in_command_mode("ex:describe-key");
         a.apply(Action::CommandLineSubmit);
-        assert_eq!(a.editor.command_line, "ex:describe-key ");
+        assert_eq!(a.editor.command_line(), "ex:describe-key ");
         assert!(a.editor.auto_submit_after_chord);
     }
 
@@ -856,7 +927,7 @@ mod tests {
         assert!(matches!(a.editor.modal, ModalState::Command));
         assert!(!a.editor.auto_submit_after_chord);
         // Prefilled with the command word + space; cursor in arg slot.
-        assert_eq!(a.editor.command_line, "describe-command ");
+        assert_eq!(a.editor.command_line(), "describe-command ");
         // Echo area carries the arg's prompt.
         assert!(a.editor.last_message.is_some());
     }
@@ -881,7 +952,7 @@ mod tests {
         // `ex:apropos`. (Apropos's `pattern` arg is Required.)
         let mut a = app_in_command_mode("apropos");
         a.apply(Action::CommandLineSubmit);
-        assert_eq!(a.editor.command_line, "apropos ");
+        assert_eq!(a.editor.command_line(), "apropos ");
         assert!(matches!(a.editor.modal, ModalState::Command));
     }
 

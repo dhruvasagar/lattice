@@ -2326,17 +2326,17 @@ mod tests {
         // Prompt armed: chord-capture overlay active, cmdline
         // pre-filled, but no auto-submit on next chord.
         assert!(a.editor.auto_submit_after_chord);
-        assert_eq!(a.editor.command_line, "describe-key ");
+        assert_eq!(a.editor.command_line(), "describe-key ");
         // Single chord token gets appended; we stay in Command
         // mode awaiting more chord tokens or `<CR>`.
         a.apply(Action::CommandLineAppendChord("g".into()));
         assert!(matches!(a.editor.modal, ModalState::Command));
-        assert_eq!(a.editor.command_line, "describe-key g");
+        assert_eq!(a.editor.command_line(), "describe-key g");
         // Multi-key chord: second token appends, still in
         // Command mode, no submit fired.
         a.apply(Action::CommandLineAppendChord("g".into()));
         assert!(matches!(a.editor.modal, ModalState::Command));
-        assert_eq!(a.editor.command_line, "describe-key gg");
+        assert_eq!(a.editor.command_line(), "describe-key gg");
         // Explicit `<CR>` submits.
         a.apply(Action::CommandLineSubmit);
         assert!(matches!(a.editor.modal, ModalState::Normal));
@@ -2350,7 +2350,7 @@ mod tests {
         let mut a = app_in_command_mode("foo bar baz");
         a.apply(Action::CommandLineCompleteOrAdvance);
         a.apply(Action::CommandLineClear);
-        assert_eq!(a.editor.command_line, "");
+        assert_eq!(a.editor.command_line(), "");
         assert!(a.editor.completion_state.is_none());
     }
 
@@ -2358,21 +2358,21 @@ mod tests {
     fn ctrl_w_deletes_trailing_word() {
         let mut a = app_in_command_mode("foo bar baz");
         a.apply(Action::CommandLineDeleteWordBackward);
-        assert_eq!(a.editor.command_line, "foo bar ");
+        assert_eq!(a.editor.command_line(), "foo bar ");
     }
 
     #[test]
     fn ctrl_w_with_trailing_whitespace_strips_word() {
         let mut a = app_in_command_mode("foo bar  ");
         a.apply(Action::CommandLineDeleteWordBackward);
-        assert_eq!(a.editor.command_line, "foo ");
+        assert_eq!(a.editor.command_line(), "foo ");
     }
 
     #[test]
     fn ctrl_w_on_single_word_clears() {
         let mut a = app_in_command_mode("foo");
         a.apply(Action::CommandLineDeleteWordBackward);
-        assert_eq!(a.editor.command_line, "");
+        assert_eq!(a.editor.command_line(), "");
     }
 
     #[test]
@@ -2496,11 +2496,11 @@ mod tests {
             .expect("fold");
         a.editor.folds[first_idx].closed = true;
         // Open + activate the new buffer.
-        a.editor.command_line = format!("e {}", path.display());
+        a.editor.set_command_line_text(&format!("e {}", path.display()));
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         // Switch back via :bn.
-        a.editor.command_line = "bn".into();
+        a.editor.set_command_line_text("bn");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert_eq!(a.editor.document_buffer_id, initial_id);
@@ -2524,7 +2524,7 @@ mod tests {
         // Open the second file under foldmethod=manual so no folds
         // get seeded into its entry.
         a.set_foldmethod_for_test(FoldMethod::Manual);
-        a.editor.command_line = format!("e {}", path.display());
+        a.editor.set_command_line_text(&format!("e {}", path.display()));
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let id_target = a.editor.document_buffer_id;

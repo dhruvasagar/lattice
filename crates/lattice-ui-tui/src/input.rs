@@ -160,6 +160,37 @@ mod tests {
         })
     }
 
+    /// Base keymap + `command-line-mode`'s Insert-layer keymap (submit /
+    /// cancel / history / completion chords). MB.1: the `:` line is a
+    /// buffer whose major mode contributes those chords, so Command-mode
+    /// descriptors resolve only with this layer present — mirroring boot's
+    /// `translate_mode_keymaps` pass over the focused `*command-line*`
+    /// buffer.
+    fn shared_keymap_with_command_line_mode() -> &'static KeymapHandle {
+        use std::sync::OnceLock;
+        static H: OnceLock<KeymapHandle> = OnceLock::new();
+        H.get_or_init(|| {
+            let h = build_base_keymap();
+            let mut mr = lattice_mode::ModeRegistry::new();
+            mr.register(lattice_host::command_line_mode::CommandLineMode)
+                .expect("register command-line-mode");
+            lattice_host::keymap_mode_contributions::translate_mode_keymaps(
+                &h,
+                &mr,
+                shared_registry(),
+            );
+            h
+        })
+    }
+    /// `command-line-mode` active — paired with
+    /// [`shared_keymap_with_command_line_mode`] so the K.1.c gate lets its
+    /// chords through in the drift check.
+    fn command_line_mode_active() -> &'static [lattice_mode::ModeId] {
+        use std::sync::OnceLock;
+        static M: OnceLock<Vec<lattice_mode::ModeId>> = OnceLock::new();
+        M.get_or_init(|| vec![lattice_host::command_line_mode::CommandLineMode::mode_id()])
+    }
+
     // SN.3c.2a: per-fixture active-minor-mode sets, paired with the
     // `shared_keymap_*` handles above. Insert dispatch is now K.1.c-gated
     // (`dispatch_insert` threads `active_minor_modes`), so a test that
@@ -825,60 +856,27 @@ mod tests {
     }
 
     #[test]
-    fn printable_char_in_command_appends() {
+    fn printable_char_in_command_routes_through_insert_dispatcher() {
+        // MB.1: the `:` line is a buffer-backed readline surface — a
+        // printable key in Command modal routes through the universal
+        // Insert dispatcher (editing the focused `*command-line*` buffer),
+        // not the retired `translate_command` `CommandLineAppend` path.
         let (_, b) = fixture();
         match translate(ctx(ModalState::Command, &b), key(KeyCode::Char('w'))) {
-            Action::CommandLineAppend(c) => assert_eq!(c, 'w'),
-            other => panic!("expected CommandLineAppend, got {other:?}"),
+            Action::Insert(s) => assert_eq!(s, "w"),
+            other => panic!("expected Insert(\"w\"), got {other:?}"),
         }
     }
 
-    #[test]
-    fn enter_in_command_submits() {
-        let (_, b) = fixture();
-        assert!(matches!(
-            translate(ctx(ModalState::Command, &b), key(KeyCode::Enter)),
-            Action::CommandLineSubmit
-        ));
-    }
+    // MB.1: `<CR>` submit / `<Esc>` + `<C-c>` cancel / `<C-p>` / `<C-n>` /
+    // `<Up>` / `<Down>` history are now owned by `command-line-mode`'s
+    // Insert-layer keymap (they need the `*command-line*` buffer's
+    // active-mode set, absent in this pure-translate fixture). Their
+    // end-to-end behavior is covered by the host-level MB.1 tests
+    // (`command_line_cr_submits_and_pushes_history`,
+    // `command_line_esc_cancels_and_restores_document_cursor_modal`,
+    // `command_line_history_walk_restores_pending_text`).
 
-    #[test]
-    fn esc_in_command_cancels() {
-        let (_, b) = fixture();
-        assert!(matches!(
-            translate(ctx(ModalState::Command, &b), key(KeyCode::Esc)),
-            Action::CommandLineCancel
-        ));
-    }
-
-    #[test]
-    fn backspace_in_command_pops() {
-        let (_, b) = fixture();
-        assert!(matches!(
-            translate(ctx(ModalState::Command, &b), key(KeyCode::Backspace)),
-            Action::CommandLineBackspace
-        ));
-    }
-
-    #[test]
-    fn up_in_command_emits_history_prev() {
-        let (_, b) = fixture();
-        assert!(matches!(
-            translate(ctx(ModalState::Command, &b), key(KeyCode::Up)),
-            Action::CommandLineHistoryPrev
-        ));
-    }
-
-    #[test]
-    fn down_in_command_emits_history_next() {
-        let (_, b) = fixture();
-        assert!(matches!(
-            translate(ctx(ModalState::Command, &b), key(KeyCode::Down)),
-            Action::CommandLineHistoryNext
-        ));
-    }
-
-    #[test]
     #[test]
     fn ctrl_c_in_command_mode_is_regular_key() {
         // <C-c> is no longer a universal quit hatch in command mode.
@@ -1782,6 +1780,11 @@ mod tests {
             (shared_keymap_with_popup(), popup_minor_modes())
         } else if snippet_active {
             (shared_keymap_with_snippet(), snippet_minor_modes())
+        } else if matches!(mode, BindingMode::Command) {
+            (
+                shared_keymap_with_command_line_mode(),
+                command_line_mode_active(),
+            )
         } else {
             // SN.3c.1: snippet-mode is Global, so a document buffer's
             // base Insert keymap carries its `<C-x><C-s>` expand prefix.

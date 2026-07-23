@@ -14,7 +14,15 @@ every slice re-verifies keystroke→glyph.
 
 ## Phase 1 — the readline `:` line (tier 1)
 
-- **MB.1 — `command-line-mode` + buffer-backed readline `:` line.** 📝
+- **MB.1 — `command-line-mode` + buffer-backed readline `:` line.** ✅
+  (2026-07-23) The `:` line is a focused synthetic `*command-line*`
+  `Document`; typing routes through the universal Insert dispatcher onto
+  it (real mid-line editing). `command_line: String` + the projection are
+  **fully retired** — `Editor::command_line()` computes the text from the
+  buffer (single source of truth), `set_command_line_text` owner-writes
+  it, and all ~160 read/write sites were migrated. Acceptance tests in
+  `app/cmdline.rs` (`mb1_*`) cover mid-line insert, cancel/restore, and
+  history-seed.
   - `*command-line*` one-line synthetic `Document` (unlisted, `NoFile`),
     created via `ModeActivator::ensure_named_document` on `:`;
     `command-line-mode` major, **insert-only** (no Normal entry).
@@ -34,21 +42,28 @@ every slice re-verifies keystroke→glyph.
     buffer/cursor; typo fixed by `<C-b>`-walk submits correctly; history
     `<C-p>`/`<C-n>` walk restores pending text; latency probe unmoved.
 
-## Phase 2 — the expand mini-buffer (tier 2)
+## Phase 2 — expand the command line in place (tier 2)
 
-- **MB.2 — `<C-x><C-e>` expand + `command-line-edit-mode`.** 📝
-  - Only in `command-line-mode`: `<C-x><C-e>` opens the current command
-    text as a **full editing buffer** (`command-line-edit-mode`, regular
-    buffer — full vim grammar, registers, undo, multi-line) in a split.
-  - **`command-line.expand-layout` typed option** (§5.12): `hsplit`
-    (default, full-width bottom split) / `vsplit` / `popup`. Mode reads it.
-  - Accept (`<C-x><C-e>` toggle / mode chord) writes edited text back to
-    the tier-1 `:` line + closes the split → user `<CR>`s to execute
-    (**no auto-execute**). `<C-c>` cancels the expansion (keeps pre-expand
-    `:` text).
-  - **Test:** expand→multi-word edit with motions/registers→accept lands
-    edited text in `:` line, then `<CR>` runs it; cancel keeps the
-    original; `expand-layout` option switches presentation; TUI+GPUI.
+- **MB.2 — `<C-x><C-e>` in-place expand + full modal.** 📝
+  - Only in `command-line-mode`: `<C-x><C-e>` toggles the `*command-line*`
+    buffer's **expanded** state — the **same surface grows in place**,
+    upward, **pushing the mode-line (and content) above it** into a
+    full-width bottom mini-buffer band, and **enables full modal editing**
+    (Normal/Insert/Visual, registers, undo, multi-line). NOT a separate
+    split/pane/buffer — same buffer, taller, no copy-back.
+  - **`:` no-op guard:** in the expanded band's Normal mode, the `:`
+    enter-command-line chord is a **no-op** (already in the command line).
+    (Automatic in tier 1 / insert-only.)
+  - **`command-line.expand-height` option** (§5.12): how tall (`half`
+    default / fixed rows / `full`). Render pushes the mode-line up (both
+    peers).
+  - Collapse (`<C-x><C-e>` again / mode chord) shrinks back to the one-row
+    readline `:` line with the edited text → user `<CR>`s to execute
+    (**no auto-execute**). `<C-c>` cancels (discards expanded edits).
+  - **Test:** expand→multi-word edit with motions/registers→collapse lands
+    edited text in the one-row line, then `<CR>` runs it; `:` in the
+    expanded Normal mode is a no-op; cancel keeps the original;
+    `expand-height` changes the band size; mode-line pushed up; TUI+GPUI.
 
 ## Phase 3 — history picker
 

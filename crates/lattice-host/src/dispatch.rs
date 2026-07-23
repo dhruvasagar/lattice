@@ -895,6 +895,7 @@ impl Editor {
                     chord_capture: self.chord_capture_active(),
                     snippet_active: self.snippet_session.is_active(self.document_buffer_id),
                     popup_focused: self.popup_focused,
+                    command_line_active: self.command_line_active(),
                     terminal_insert_active: matches!(self.active_buffer, BufferKind::Terminal)
                         && self
                             .active_modes
@@ -1068,7 +1069,7 @@ impl Editor {
                 last: self.last_message.clone().map(std::sync::Arc::new),
             }),
             modeline: std::sync::Arc::new(crate::render_state::ModelineRenderState {
-                cmdline_text: std::sync::Arc::from(self.command_line.as_str()),
+                cmdline_text: std::sync::Arc::from(self.command_line()),
                 auto_submit_hint: self.auto_submit_after_chord,
                 search_pattern: self
                     .search_line
@@ -1515,7 +1516,7 @@ impl Editor {
             .map(|r| (r.start, r.end))
             .hash(&mut h);
         // Minibuffer: command line + search line.
-        self.command_line.hash(&mut h);
+        self.command_line().hash(&mut h);
         self.search_line
             .as_ref()
             .map(|s| (s.pattern.clone(), s.direction))
@@ -2191,29 +2192,42 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         // `GpuiApp::dispatch_action` for actions the host's
         // `handle_action` returns to without consuming.
         Action::CommandLineCancel => {
-            if matches!(editor.modal, ModalState::Command) {
-                editor.command_line.clear();
-                editor.command_history_cursor = None;
-                editor.command_history_pending = None;
-                editor.modal = ModalState::Normal;
-                editor.auto_submit_after_chord = false;
-                editor.substitute_preview = None;
+            if editor.ensure_command_line_focus() {
+                // MB.1: two-stage Esc — first dismiss the open completion
+                // popup (restoring the user's typed prefix); a second Esc
+                // cancels the line.
+                if let Some(state) = editor.completion_state.take() {
+                    if state.original_line != editor.command_line() {
+                        editor.set_command_line_text(&state.original_line);
+                    }
+                    editor.substitute_preview = None;
+                } else {
+                    editor.command_history_cursor = None;
+                    editor.command_history_pending = None;
+                    editor.auto_submit_after_chord = false;
+                    editor.substitute_preview = None;
+                    // Restore the prior editing buffer + cursor + modal;
+                    // no command dispatched, no history push.
+                    editor.restore_editing_buffer();
+                }
             }
         }
         Action::SelectRegister(reg) => {
             editor.pending_register = Some(reg);
         }
         Action::CommandLineDeleteChord => {
-            if matches!(editor.modal, ModalState::Command) {
-                let n = crate::chord::last_chord_token_byte_len(&editor.command_line);
+            if editor.ensure_command_line_focus() {
+                let line = editor.command_line();
+                let n = crate::chord::last_chord_token_byte_len(&line);
                 if n == 0 {
-                    // Empty buffer + delete -> exit Command modal,
-                    // matching plain `<BS>` semantics.
-                    editor.modal = ModalState::Normal;
+                    // Empty buffer + delete -> cancel the chord-capture
+                    // prompt (matching plain `<BS>`-on-empty).
                     editor.completion_state = None;
+                    editor.restore_editing_buffer();
                 } else {
-                    let new_len = editor.command_line.len() - n;
-                    editor.command_line.truncate(new_len);
+                    let new_len = line.len() - n;
+                    let truncated = line[..new_len].to_string();
+                    editor.set_command_line_text(&truncated);
                 }
             }
         }
@@ -2228,9 +2242,9 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
             // the current cmdline (the auto-insert-single path or
             // no-match-found path).
             if let Some(state) = editor.completion_state.take()
-                && state.original_line != editor.command_line
+                && state.original_line != editor.command_line()
             {
-                editor.command_line = state.original_line;
+                editor.set_command_line_text(&state.original_line);
             }
         }
         Action::EnterSearch(direction) => {
@@ -2537,7 +2551,11 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
             // from — see `resolve_grammar_range` + the narrow handler) and
             // prefill the cmdline with the range, so `:s`, `:narrow`, etc.
             // operate on the selection. From Normal the line starts blank.
-            if let ModalState::Visual(kind) | ModalState::Select(kind) = editor.modal {
+            // MB.1: capture the Visual selection into `last_visual` (the
+            // `'<` / `'>` source) BEFORE the focus swap moves
+            // `self.document` off the edited buffer, then prefill the `:`
+            // line so `:s`, `:narrow`, etc. operate on the selection.
+            let prefill = if let ModalState::Visual(kind) | ModalState::Select(kind) = editor.modal {
                 let sel = *editor.document.selections().primary();
                 editor.last_visual = Some(crate::state::LastVisual {
                     anchor: sel.anchor,
@@ -2545,25 +2563,21 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
                     kind,
                 });
                 editor.visual_anchor = None;
-                editor.command_line = "'<,'>".to_string();
+                "'<,'>"
             } else {
-                editor.command_line.clear();
-            }
-            editor.modal = ModalState::Command;
+                ""
+            };
             editor.last_message = None;
             // Q16: opening the cmdline dismisses STATE A help
             // popups (hover overlay still anchored to doc cursor).
-            // State B help buffers (`:lsp-log`, `:lsp-trace-log`,
-            // `:describe-*` opened in a pane) are first-class
-            // buffers per the everything-is-a-buffer model -- the
-            // user expects to run `:bd`, `:diagnostics`, etc.
-            // without losing their log view. Only auto-dismiss when
-            // active_buffer is Document, which is the State A
-            // shape.
+            // Only auto-dismiss when active_buffer is Document (State A).
             if matches!(editor.active_buffer, BufferKind::Document) {
                 editor.dismiss_popup();
             }
-            editor.completion_state = None;
+            // MB.1: create/focus the `*command-line*` buffer and seed it.
+            // The focus swap must run AFTER the Visual capture + popup
+            // dismiss (both read `self.document` / `active_buffer`).
+            editor.open_command_line(prefill);
         }
         Action::CommandLineHistoryPrev => editor.do_command_history_step(true),
         Action::CommandLineHistoryNext => editor.do_command_history_step(false),
@@ -6803,17 +6817,192 @@ impl Editor {
         self.modal = ModalState::Normal;
     }
 
-    /// 5.5.LSP.4: signature help (Insert-mode auto-trigger).
-    /// Sends `textDocument/signatureHelp` to every attached server
+    /// MB.1: `true` while the `*command-line*` buffer is focused for
+    /// editing (the `:` line is open). See [`Self::focus_editing_buffer`].
+    pub fn command_line_active(&self) -> bool {
+        self.command_line_focus.is_some()
+    }
+
+    /// MB.1: ensure a focused `*command-line*` buffer exists so the
+    /// buffer-backed setter/handlers can operate. Production opens the `:`
+    /// line through [`Self::open_command_line`] first (so this is a no-op
+    /// at the top); this covers programmatic / test callers that set the
+    /// text without an explicit open. Always leaves a command line active.
+    fn ensure_command_line_focus(&mut self) -> bool {
+        if self.command_line_active() {
+            return true;
+        }
+        self.modal = ModalState::Normal;
+        self.open_command_line("");
+        true
+    }
+
+    /// MB.1: the `:` line's editable text — the first line of the focused
+    /// `*command-line*` buffer, which is the **single source of truth**.
+    /// Computed on read (there is no projection field); empty when no
+    /// command line is open.
+    pub fn command_line(&self) -> String {
+        if !self.command_line_active() {
+            return String::new();
+        }
+        self.document
+            .snapshot()
+            .text()
+            .lines()
+            .next()
+            .unwrap_or("")
+            .to_string()
+    }
+
+    /// MB.1: owner-write the `:` line's text — open the command line if
+    /// needed, then replace the whole `*command-line*` buffer content with
+    /// `s` and place the cursor at the end. Used by history walk,
+    /// completion accept, the missing-arg prefill, and programmatic / test
+    /// callers. Interactive typing edits the buffer at the cursor through
+    /// the Insert dispatcher, never through here.
+    pub fn set_command_line_text(&mut self, s: &str) {
+        if !self.ensure_command_line_focus() {
+            return;
+        }
+        let cur_len = self.command_line().len();
+        let full = lattice_protocol::position::Range {
+            start: lattice_protocol::position::Position::ZERO,
+            end: lattice_protocol::position::Position {
+                line: 0,
+                byte: cur_len as u32,
+            },
+        };
+        let _ = self.apply_edit_blocking(lattice_protocol::edit::Edit::replace(full, s));
+        self.cursor = lattice_protocol::position::Position {
+            line: 0,
+            byte: s.len() as u32,
+        };
+    }
+
+    /// MB.1 (the "audit finding to solve first"): swap the editing focus
+    /// to `id` (the `*command-line*` buffer) WITHOUT touching the pane
+    /// tree — the active pane keeps rendering its own buffer (the renderer
+    /// routes it to the registry-keyed path via the published
+    /// `command_line_active` flag). Stashes the prior editing focus in
+    /// [`Self::command_line_focus`]; restored by
+    /// [`Self::restore_editing_buffer`]. No position-history push, no echo.
+    pub fn focus_editing_buffer(&mut self, id: BufferId) {
+        if self.command_line_focus.is_none() {
+            // Stash the prior document's hot-path mode-state
+            // (syntax/folds); guarded to Document inside.
+            self.snapshot_active_document();
+            self.command_line_focus = Some(crate::state::CommandLineFocus {
+                prior_buffer_id: self.document_buffer_id,
+                prior_active_buffer: self.active_buffer,
+                prior_cursor: self.cursor,
+                prior_scroll: self.scroll,
+                prior_leftcol: self.leftcol,
+                prior_modal: self.modal,
+            });
+        }
+        if let Some(handle) = self.buffers.document_handle(id) {
+            self.document = lattice_runtime::ActiveDocument::from_arc(handle);
+            self.snapshot_cache = self.document.snapshot_cache();
+        }
+        self.document_buffer_id = id;
+        self.active_buffer = self.buffers.kind_of(id).unwrap_or(BufferKind::Document);
+        self.syntax = None;
+        self.last_parsed_text_version = 0;
+        self.last_synced_syntax_version = 0;
+        self.folds = Default::default();
+        self.cursor = lattice_protocol::position::Position::ZERO;
+        self.scroll = 0;
+        self.leftcol = 0;
+    }
+
+    /// MB.1: pop the editing focus stashed by
+    /// [`Self::focus_editing_buffer`] — re-fetch the prior document from
+    /// the registry, restore its syntax/folds/cursor/scroll/modal, and
+    /// clear the projection. No-op when no command line is open.
+    pub fn restore_editing_buffer(&mut self) {
+        let Some(focus) = self.command_line_focus.take() else {
+            return;
+        };
+        let id = focus.prior_buffer_id;
+        if let Some(handle) = self.buffers.document_handle(id) {
+            self.document = lattice_runtime::ActiveDocument::from_arc(handle);
+            self.snapshot_cache = self.document.snapshot_cache();
+        }
+        self.document_buffer_id = id;
+        self.active_buffer = focus.prior_active_buffer;
+        self.syntax = self
+            .buffer_locals
+            .get(&id)
+            .and_then(|l| l.get::<crate::modes::DocumentSyntax>())
+            .and_then(|s| s.0.clone());
+        self.last_parsed_text_version = self
+            .buffer_locals
+            .get(&id)
+            .and_then(|l| l.get::<crate::modes::DocumentLastParsedTextVersion>())
+            .map(|v| v.0)
+            .unwrap_or(0);
+        self.last_synced_syntax_version = self
+            .buffer_locals
+            .get(&id)
+            .and_then(|l| l.get::<crate::modes::DocumentLastSyncedSyntaxVersion>())
+            .map(|v| v.0)
+            .unwrap_or(0);
+        self.folds = self
+            .buffer_locals
+            .get(&id)
+            .and_then(|l| l.get::<crate::modes::DocumentFolds>())
+            .map(|f| f.0.clone())
+            .unwrap_or_default();
+        self.cursor = focus.prior_cursor;
+        self.scroll = focus.prior_scroll;
+        self.leftcol = focus.prior_leftcol;
+        self.modal = focus.prior_modal;
+    }
+
+    /// MB.1: open the `:` command line — ensure/focus the synthetic
+    /// `*command-line*` buffer (its major mode's Insert keymap supplies
+    /// submit/cancel/history/completion), seed it with `prefill`, and set
+    /// `ModalState::Command`. Keys route through the Insert dispatcher
+    /// because the buffer is the focused Insert-editable surface.
+    pub fn open_command_line(&mut self, prefill: &str) {
+        let id = self.ensure_named_synthetic_document(
+            crate::command_line_mode::COMMAND_LINE_BUFFER_NAME,
+            crate::command_line_mode::CommandLineMode::mode_id(),
+            lattice_core::BufferFlags {
+                listed: false,
+                hidden: false,
+                ephemeral: false,
+            },
+        );
+        self.focus_editing_buffer(id);
+        self.modal = ModalState::Command;
+        self.command_history_cursor = None;
+        self.command_history_pending = None;
+        self.completion_state = None;
+        self.substitute_preview = None;
+        self.set_command_line_text(prefill);
+    }
+
     /// 5.5.G.23.cmdline: handle a `:`-line submit. Resolves the
     /// missing-arg prompt (DESIGN.md §B.1) — if the user submitted a
     /// bare command with a required first arg empty, prefill the
     /// cmdline + return without executing. Otherwise consume the
-    /// line, push to history, exit Command modal, and dispatch
-    /// through `execute_ex_line` (which feeds effects into
+    /// line, push to history, restore the prior editing buffer, and
+    /// dispatch through `execute_ex_line` (which feeds effects into
     /// `out.effects` for the App-side renderer-coupled tail).
     pub fn do_command_line_submit(&mut self, out: &mut DispatchOutcome) {
-        if !matches!(self.modal, ModalState::Command) {
+        if !self.ensure_command_line_focus() {
+            return;
+        }
+        // MB.1: `<CR>` while the completion popup is open ACCEPTS the
+        // focused candidate (two-stage: accept first, submit on the next
+        // `<CR>`) — matching the pre-MB.1 `completion_open` gate.
+        if self
+            .completion_state
+            .as_ref()
+            .is_some_and(|s| !s.candidates.is_empty())
+        {
+            self.do_command_line_accept_completion();
             return;
         }
         if let Some(info) = self.try_resolve_missing_arg_prompt() {
@@ -6830,8 +7019,12 @@ impl Editor {
             self.apply_missing_arg_prompt(info);
             return;
         }
-        let line = std::mem::take(&mut self.command_line);
-        self.modal = ModalState::Normal;
+        // MB.1: the buffer is the source of truth; read the projection,
+        // then restore the prior editing buffer (this pops the focus,
+        // restores `self.document` / cursor / modal, and clears the
+        // projection) BEFORE dispatching, so `execute_ex_line` operates on
+        // the real document (`:w` saves the right buffer, `:s` edits it).
+        let line = self.command_line();
         self.command_history_cursor = None;
         self.command_history_pending = None;
         // Reset chord auto-submit flag on every submit so a prior
@@ -6839,6 +7032,7 @@ impl Editor {
         self.auto_submit_after_chord = false;
         self.substitute_preview = None;
         self.completion_state = None;
+        self.restore_editing_buffer();
         if !line.trim().is_empty() {
             if self.command_history.last() != Some(&line) {
                 self.command_history.push(line.clone());
@@ -6850,31 +7044,36 @@ impl Editor {
         self.execute_ex_line(&line, out);
     }
 
-    /// 5.5.G.23.cmdline: append a character to the command line; if
-    /// a completion popup is open it refilters; live substitute
-    /// preview always refreshes.
+    /// MB.1: append a character to the `:` line. The readline path
+    /// (Insert dispatcher) is the production route; this method remains a
+    /// buffer-backed typing primitive (programmatic / test callers), so
+    /// it writes the `*command-line*` buffer rather than the projection.
     pub fn do_command_line_append(&mut self, c: char) {
-        if !matches!(self.modal, ModalState::Command) {
+        if !self.ensure_command_line_focus() {
             return;
         }
-        self.command_line.push(c);
+        let mut line = self.command_line();
+        line.push(c);
+        self.set_command_line_text(&line);
         if self.completion_state.is_some() {
             self.refresh_completion_popup();
         }
         self.refresh_substitute_preview();
     }
 
-    /// 5.5.G.23.cmdline: pop a character from the command line; on
-    /// empty buffer + backspace, exit Command modal (vim parity).
+    /// MB.1: pop a character from the `:` line; on empty + backspace,
+    /// cancel the line (restore the prior editing buffer). Buffer-backed.
     pub fn do_command_line_backspace(&mut self) {
-        if !matches!(self.modal, ModalState::Command) {
+        if !self.ensure_command_line_focus() {
             return;
         }
-        if self.command_line.pop().is_none() {
-            self.modal = ModalState::Normal;
+        let mut line = self.command_line();
+        if line.pop().is_none() {
             self.completion_state = None;
             self.substitute_preview = None;
+            self.restore_editing_buffer();
         } else {
+            self.set_command_line_text(&line);
             if self.completion_state.is_some() {
                 self.refresh_completion_popup();
             }
@@ -6882,29 +7081,27 @@ impl Editor {
         }
     }
 
-    /// 5.5.G.23.cmdline: `<C-u>` — clear the command line. Keeps the
-    /// popup alive (refilters against an empty prefix, which lists
-    /// every command). The substitute preview drops because an empty
-    /// line doesn't parse as `:s/.../.../`.
+    /// MB.1: `<C-u>` — clear the `:` line. Buffer-backed.
     pub fn do_command_line_clear(&mut self) {
-        if !matches!(self.modal, ModalState::Command) {
+        if !self.ensure_command_line_focus() {
             return;
         }
-        self.command_line.clear();
+        self.set_command_line_text("");
         if self.completion_state.is_some() {
             self.refresh_completion_popup();
         }
         self.refresh_substitute_preview();
     }
 
-    /// 5.5.G.23.cmdline: `<C-w>` — delete the word before the cursor.
-    /// v1 cursor is always at end-of-line; strip trailing whitespace
-    /// + the trailing word.
+    /// MB.1: `<C-w>` — delete the word before the cursor on the `:` line.
+    /// Buffer-backed (v1 cursor is at end-of-line).
     pub fn do_command_line_delete_word_backward(&mut self) {
-        if !matches!(self.modal, ModalState::Command) {
+        if !self.ensure_command_line_focus() {
             return;
         }
-        delete_trailing_word(&mut self.command_line);
+        let mut line = self.command_line();
+        delete_trailing_word(&mut line);
+        self.set_command_line_text(&line);
         if self.completion_state.is_some() {
             self.refresh_completion_popup();
         }
@@ -6917,10 +7114,13 @@ impl Editor {
     /// missing-arg prompt, the very next chord token also fires
     /// submit (one-shot auto-submit).
     pub fn do_command_line_append_chord(&mut self, token: String, _out: &mut DispatchOutcome) {
-        if !matches!(self.modal, ModalState::Command) {
+        if !self.ensure_command_line_focus() {
             return;
         }
-        self.command_line.push_str(&token);
+        // MB.1: append the captured chord token through the buffer.
+        let mut line = self.command_line();
+        line.push_str(&token);
+        self.set_command_line_text(&line);
         self.completion_state = None;
         // K.3.5.fix (2026-06-03): auto-submit-after-chord dropped.
         // The original K.3.5 design auto-submitted on the first
@@ -6942,7 +7142,7 @@ impl Editor {
     /// 5.5.G.23.cmdline: `<Tab>` — open the popup if closed, advance
     /// the selection if open.
     pub fn do_command_line_complete_or_advance(&mut self) {
-        if !matches!(self.modal, ModalState::Command) {
+        if !self.ensure_command_line_focus() {
             return;
         }
         if let Some(state) = self.completion_state.as_mut() {
@@ -6960,10 +7160,10 @@ impl Editor {
     /// (2) slot is an arg of a known command — describe the parent
     /// scrolled to `arg:<name>`; (3) otherwise echo a status hint.
     pub fn do_command_line_describe_under_cursor(&mut self, out: &mut DispatchOutcome) {
-        if !matches!(self.modal, ModalState::Command) {
+        if !self.ensure_command_line_focus() {
             return;
         }
-        let line = self.command_line.clone();
+        let line = self.command_line();
         let cursor = line.len();
         let alias_resolver = |short: &str| {
             crate::excommand::aliases()
@@ -7102,6 +7302,23 @@ impl Editor {
             AppEffect::RedrawScreen => out.next_actions.push(Action::RedrawScreen),
             AppEffect::OpenCommandPicker => out.next_actions.push(Action::OpenCommandPicker),
             AppEffect::EnterCommandLine => out.next_actions.push(Action::EnterCommandLine),
+            AppEffect::CommandLineSubmit => out.next_actions.push(Action::CommandLineSubmit),
+            AppEffect::CommandLineCancel => out.next_actions.push(Action::CommandLineCancel),
+            AppEffect::CommandLineHistoryPrev => {
+                out.next_actions.push(Action::CommandLineHistoryPrev)
+            }
+            AppEffect::CommandLineHistoryNext => {
+                out.next_actions.push(Action::CommandLineHistoryNext)
+            }
+            AppEffect::CommandLineComplete => {
+                out.next_actions.push(Action::CommandLineCompleteOrAdvance)
+            }
+            AppEffect::CommandLineCompletePrev => {
+                out.next_actions.push(Action::CommandLineCompletePrev)
+            }
+            AppEffect::CommandLineDescribeUnderCursor => {
+                out.next_actions.push(Action::CommandLineDescribeUnderCursor)
+            }
             AppEffect::OilNavigateUp => out.next_actions.push(Action::OilNavigateUp),
             AppEffect::ReselectLastVisual => out.next_actions.push(Action::ReselectLastVisual),
             AppEffect::SwapVisualEnds => out.next_actions.push(Action::SwapVisualEnds),
@@ -7684,7 +7901,8 @@ impl Editor {
     /// empty, returns the prefill string + arg kind + prompt so the
     /// caller can transition into a chord-capture or arg-input mode.
     pub fn try_resolve_missing_arg_prompt(&self) -> Option<crate::state::MissingArgPrompt> {
-        let line = self.command_line.trim();
+        let line = self.command_line();
+        let line = line.trim();
         if line.is_empty() {
             return None;
         }
@@ -7877,8 +8095,15 @@ impl Editor {
     ///   `"command:"`, etc.).
     fn apply_missing_arg_prompt(&mut self, info: crate::state::MissingArgPrompt) {
         let is_chord = info.kind == lattice_grammar::ArgKind::Chord;
-        self.command_line = info.prefill;
-        self.modal = ModalState::Command;
+        // MB.1: the prompt is the buffer-backed `:` line. When invoked
+        // from an already-open cmdline (the `:describe-key<CR>` submit
+        // path) just re-seed the text; when invoked cold (the `<C-h>k`
+        // public-API path) open the command line first.
+        if self.command_line_active() {
+            self.set_command_line_text(&info.prefill);
+        } else {
+            self.open_command_line(&info.prefill);
+        }
         self.auto_submit_after_chord = is_chord;
         self.set_message(EchoLevel::Info, info.prompt);
     }
@@ -8083,14 +8308,14 @@ impl Editor {
         if !matches!(self.modal, ModalState::Command) {
             return false;
         }
-        let line = &self.command_line;
+        let line = self.command_line();
         let alias_resolver = |short: &str| {
             crate::excommand::aliases()
                 .get(short)
                 .map(|s| (*s).to_string())
         };
         let slot = lattice_completion::current_slot(
-            line,
+            &line,
             line.len(),
             &self.registry.load(),
             &alias_resolver,
@@ -8134,7 +8359,7 @@ impl Editor {
     /// generator, runs the pipeline, and post-processes command
     /// candidates to prefer alias names.
     pub fn compute_completion_state(&self) -> Result<CompletionState, CompletionComputeError> {
-        let line = self.command_line.clone();
+        let line = self.command_line();
         let cursor = line.len();
         let alias_resolver = |short: &str| {
             crate::excommand::aliases()
@@ -8205,7 +8430,7 @@ impl Editor {
     /// Mid-typing patterns that don't compile yet preserve the last
     /// preview rather than flickering.
     pub fn refresh_substitute_preview(&mut self) {
-        let parsed = match crate::excommand::try_parse_substitute_partial(&self.command_line) {
+        let parsed = match crate::excommand::try_parse_substitute_partial(&self.command_line()) {
             Some(p) => p,
             None => {
                 self.substitute_preview = None;
@@ -8231,14 +8456,28 @@ impl Editor {
             .map(|f| f.contains('g'))
             .unwrap_or(false);
 
-        let buffer = self.document.snapshot().buffer.clone();
+        // MB.1: `:s///` previews the TARGET document. While the `:` line
+        // is open, `self.document` is the `*command-line*` buffer, so read
+        // the target (the buffer being edited, stashed at focus time) and
+        // its cursor line for the `CurrentLine` scope.
+        let (buffer, current_line) = match self.command_line_focus.as_ref() {
+            Some(focus) => {
+                let snap = self
+                    .buffers
+                    .document_handle(focus.prior_buffer_id)
+                    .map(|h| h.snapshot().buffer.clone())
+                    .unwrap_or_else(|| self.document.snapshot().buffer.clone());
+                (snap, focus.prior_cursor.line)
+            }
+            None => (self.document.snapshot().buffer.clone(), self.cursor.line),
+        };
         let mut matches: Vec<lattice_protocol::position::Range> = Vec::new();
         match parsed.scope {
             crate::excommand::SubstitutePartialScope::CurrentLine => {
                 collect_substitute_matches_for_line(
                     &buffer,
                     &regex,
-                    self.cursor.line,
+                    current_line,
                     global,
                     &mut matches,
                 );
@@ -8282,8 +8521,9 @@ impl Editor {
             Ok(state) => {
                 if self.completion_auto_insert_single() && state.candidates.len() == 1 {
                     let chosen_text = state.candidates[0].raw.text.clone();
-                    self.command_line
-                        .replace_range(state.replace_start..self.command_line.len(), &chosen_text);
+                    let mut line = self.command_line();
+                    line.replace_range(state.replace_start..line.len(), &chosen_text);
+                    self.set_command_line_text(&line);
                     return;
                 }
                 // LCP insertion: extend the cmdline to the longest
@@ -8304,13 +8544,14 @@ impl Editor {
                 // exactly the auto-insert behavior the user just
                 // opted out of.
                 if state.candidates.len() >= 2 {
-                    let slot_prefix_len =
-                        self.command_line.len().saturating_sub(state.replace_start);
-                    let slot_prefix = self.command_line[state.replace_start..].to_string();
+                    let line = self.command_line();
+                    let slot_prefix_len = line.len().saturating_sub(state.replace_start);
+                    let slot_prefix = line[state.replace_start..].to_string();
                     let lcp = longest_common_text_prefix(&state.candidates);
                     if lcp.len() > slot_prefix_len && lcp.starts_with(&slot_prefix) {
-                        self.command_line
-                            .replace_range(state.replace_start..self.command_line.len(), &lcp);
+                        let mut line = line;
+                        line.replace_range(state.replace_start..line.len(), &lcp);
+                        self.set_command_line_text(&line);
                         // KEEP `state.original_line` as the user's
                         // typed prefix so `CommandLineDismissCompletion`
                         // restores to it rather than to the LCP rewrite.
@@ -8340,10 +8581,11 @@ impl Editor {
                 self.completion_state = Some(state);
             }
             Err(CompletionComputeError::NoMatches { .. }) => {
+                let line = self.command_line();
                 if let Some(state) = self.completion_state.as_mut() {
                     state.candidates.clear();
                     state.selected = 0;
-                    state.original_line = self.command_line.clone();
+                    state.original_line = line;
                 }
             }
             Err(_) => {
@@ -15591,6 +15833,20 @@ impl Editor {
             self.last_seen_text_version
                 .insert(self.document_buffer_id, snap.text_version);
             self.publish_document_changed(std::slice::from_ref(applied));
+            // MB.1: `self.document` is the `*command-line*` buffer while
+            // the `:` line is open. This is the ONE place a `:` line edit
+            // actually changes text (the buffer is the single source of
+            // truth — `command_line()` reads it directly), so refresh the
+            // completion popup + live substitute preview here — fired only
+            // on real edits, never on completion / history navigation
+            // (which don't touch the buffer), so a navigating `selected`
+            // index is not clobbered.
+            if self.command_line_active() {
+                if self.completion_state.is_some() {
+                    self.refresh_completion_popup();
+                }
+                self.refresh_substitute_preview();
+            }
         }
         result
     }
@@ -18597,10 +18853,11 @@ impl Editor {
             return;
         }
         let chosen = &state.candidates[state.selected];
-        self.command_line.replace_range(
-            state.replace_start..self.command_line.len(),
-            &chosen.raw.text,
-        );
+        // MB.1: write the spliced text through the `*command-line*`
+        // buffer (source of truth), not the projection String.
+        let mut line = self.command_line();
+        line.replace_range(state.replace_start..line.len(), &chosen.raw.text);
+        self.set_command_line_text(&line);
     }
 }
 
@@ -18648,7 +18905,22 @@ impl Editor {
     /// line into `command_history_pending` so the bottom-of-history
     /// Down can restore it.
     pub fn do_command_history_step(&mut self, back: bool) {
-        if !matches!(self.modal, ModalState::Command) {
+        if !self.ensure_command_line_focus() {
+            return;
+        }
+        // MB.1: when the completion popup is open, `<C-p>` / `<C-n>` (and
+        // `<Up>` / `<Down>`) navigate candidates instead of history —
+        // matching the pre-MB.1 `completion_open` gate.
+        if self
+            .completion_state
+            .as_ref()
+            .is_some_and(|s| !s.candidates.is_empty())
+        {
+            if back {
+                self.do_command_line_complete_prev();
+            } else {
+                self.do_command_line_complete_or_advance();
+            }
             return;
         }
         if self.command_history.is_empty() {
@@ -18656,7 +18928,7 @@ impl Editor {
         }
         let new_cursor = match (self.command_history_cursor, back) {
             (None, true) => {
-                self.command_history_pending = Some(self.command_line.clone());
+                self.command_history_pending = Some(self.command_line());
                 Some(self.command_history.len() - 1)
             }
             (None, false) => return,
@@ -18664,7 +18936,7 @@ impl Editor {
             (Some(i), true) => Some(i - 1),
             (Some(i), false) if i + 1 >= self.command_history.len() => {
                 if let Some(pending) = self.command_history_pending.take() {
-                    self.command_line = pending;
+                    self.set_command_line_text(&pending);
                 }
                 self.command_history_cursor = None;
                 return;
@@ -18672,7 +18944,8 @@ impl Editor {
             (Some(i), false) => Some(i + 1),
         };
         if let Some(idx) = new_cursor {
-            self.command_line = self.command_history[idx].clone();
+            let entry = self.command_history[idx].clone();
+            self.set_command_line_text(&entry);
             self.command_history_cursor = Some(idx);
         }
     }
@@ -19956,7 +20229,15 @@ impl Editor {
         }
         match self.modal {
             ModalState::Command => {
-                self.command_line.push_str(text);
+                // MB.1: paste into the `:` line inserts at the cursor in
+                // the `*command-line*` buffer (the source of truth), not a
+                // projection append.
+                if self.command_line_active()
+                    && let Ok(applied) = self
+                        .apply_edit_blocking(lattice_protocol::edit::Edit::insert(self.cursor, text))
+                {
+                    self.cursor = applied.inserted_range.end;
+                }
                 self.command_history_cursor = None;
             }
             ModalState::Search(_) => {
@@ -23268,8 +23549,9 @@ impl Editor {
         };
         let current = spec.get_formatted();
         let prefill = format!("set {name}={current}");
-        self.command_line = prefill;
-        self.modal = lattice_grammar::ModalState::Command;
+        // MB.1: `:customize`-edit opens the buffer-backed `:` line seeded
+        // with the `set` command, not a bare `command_line` String.
+        self.open_command_line(&prefill);
     }
 
     /// `<CR>` on a help-buffer link. Reads the `HelpLinks` table from
@@ -34059,10 +34341,14 @@ mod tests {
             !editor.publish_render_state(),
             "a no-op publish must not request a paint (loop-safety)"
         );
-        // A minibuffer edit is a non-cell surface (RenderState.modeline
-        // .cmdline_text), invisible to the cells MatrixVersion — it MUST
-        // flip the gate.
-        editor.command_line.push('x');
+        // A minibuffer edit is a non-cell surface (RenderState.modeline —
+        // here the search line), invisible to the cells MatrixVersion — it
+        // MUST flip the gate.
+        editor.search_line = Some(crate::state::SearchLine {
+            direction: lattice_grammar::SearchDirection::Forward,
+            pattern: "x".to_string(),
+            origin: lattice_protocol::position::Position::ZERO,
+        });
         assert!(
             editor.publish_render_state(),
             "a non-cell (minibuffer) change must request a paint"
@@ -34098,7 +34384,7 @@ mod tests {
             .lock()
             .expect("publish_cache mutex poisoned")
             .publish_batch_depth = 1;
-        editor.command_line.push('z');
+        editor.auto_submit_after_chord = true;
         assert!(
             !editor.publish_render_state(),
             "a publish suppressed inside a batch must return false even when state changed"
@@ -39367,7 +39653,7 @@ mod tests {
         let mut editor = Editor::boot(document);
         let armed = editor.arm_missing_arg_prompt("describe-key");
         assert!(armed, "arm_missing_arg_prompt must return true");
-        assert_eq!(editor.command_line, "describe-key ");
+        assert_eq!(editor.command_line(), "describe-key ");
         assert!(matches!(editor.modal, lattice_grammar::ModalState::Command));
         assert!(
             editor.auto_submit_after_chord,
@@ -39387,7 +39673,7 @@ mod tests {
         let mut editor = Editor::boot(document);
         let armed = editor.arm_missing_arg_prompt("ex:describe-key");
         assert!(armed);
-        assert_eq!(editor.command_line, "describe-key ");
+        assert_eq!(editor.command_line(), "describe-key ");
     }
 
     #[test]
@@ -39459,7 +39745,7 @@ mod tests {
             editor.modal
         );
         assert_eq!(
-            editor.command_line, "'<,'>",
+            editor.command_line(), "'<,'>",
             "Visual `:` prefills the visual range (vim's `:'<,'>`)"
         );
         let lv = editor.last_visual.as_ref().expect("last_visual captured");
@@ -39666,13 +39952,13 @@ mod tests {
         let mut editor = crate::editor::Editor::boot(lattice_core::Document::empty());
         editor.active_buffer = BufferKind::Terminal;
         editor.modal = ModalState::Command;
-        editor.command_line = ":e ".to_string();
+        editor.set_command_line_text(":e ");
 
         editor.do_paste_text("some/path");
 
         // The bracketed paste edits the `:` command line, it must not be
         // routed to the PTY just because a terminal buffer is focused.
-        assert_eq!(editor.command_line, ":e some/path");
+        assert_eq!(editor.command_line(), ":e some/path");
     }
 
     #[test]
@@ -39687,7 +39973,7 @@ mod tests {
         // registered `do_terminal_input` no-ops, so the document must be
         // untouched (proving it did NOT hit the document-insert arm).
         assert_eq!(editor.document.text(), "abc\n");
-        assert!(editor.command_line.is_empty());
+        assert!(editor.command_line().is_empty());
     }
 
     #[test]
@@ -39708,17 +39994,222 @@ mod tests {
             visual: Some(VisualMode::Linewise),
         }));
         // `:` (prefills `'<,'>` + captures the selection) then `narrow`.
+        // MB.1: the `:` line is a buffer-backed surface — append through
+        // the buffer and submit through the real path (which restores the
+        // prior document before dispatching, so narrow runs on the doc).
         let _ = editor.dispatch(Action::EnterCommandLine);
-        editor.command_line.push_str("narrow");
-        let mut out = DispatchOutcome::default();
-        let line = editor.command_line.clone();
-        editor.execute_ex_line(&line, &mut out);
+        assert!(editor.command_line_active(), "`:` opens the command line");
+        assert_eq!(editor.command_line(), "'<,'>", "Visual `:` prefills the range");
+        editor.set_command_line_text("'<,'>narrow");
+        let _ = editor.dispatch(Action::CommandLineSubmit);
+        assert!(
+            !editor.command_line_active(),
+            "submit restores the prior editing buffer"
+        );
         let msg = editor.last_message.as_ref().expect("narrow echo present");
         assert!(
             msg.text.contains("narrowed to L2"),
             "`:'<,'>narrow` should narrow the selected lines (L2–3), got: {:?}",
             msg.text
         );
+    }
+
+    // ---- MB.1 (rich minibuffer, tier 1): buffer-backed `:` line ----
+
+    /// Type `s` into the focused `*command-line*` buffer through the real
+    /// Insert dispatcher (proving the universal readline grammar edits it).
+    fn cl_type(editor: &mut Editor, s: &str) {
+        let mut p = Vec::new();
+        for c in s.chars() {
+            editor.dispatch_chord(crate::chord::KeyChord::char(c), &mut p);
+        }
+    }
+
+    fn cl_chord(editor: &mut Editor, chord: crate::chord::KeyChord) {
+        let mut p = Vec::new();
+        editor.dispatch_chord(chord, &mut p);
+    }
+
+    #[test]
+    fn command_line_opens_as_focused_buffer_and_pane_keeps_its_buffer() {
+        // The audit invariant: while `:` is open `self.document` is the
+        // synthetic cmdline buffer, but the active pane still reports the
+        // prior buffer (it renders its own, not `self.document`).
+        let mut editor = Editor::boot(lattice_core::Document::from_text("hello\nworld\n"));
+        let prior_doc = editor.document_buffer_id;
+        let prior_pane = editor.active_pane_buffer_id();
+        assert_eq!(prior_doc, prior_pane, "precondition: document == active pane");
+        editor.dispatch(Action::EnterCommandLine);
+        assert!(editor.command_line_active(), "`:` opens the command line");
+        assert_ne!(
+            editor.document_buffer_id, prior_doc,
+            "self.document swapped to the *command-line* buffer"
+        );
+        assert_eq!(
+            editor.active_pane_buffer_id(),
+            prior_pane,
+            "the active pane keeps its own buffer while `:` is open"
+        );
+    }
+
+    #[test]
+    fn command_line_readline_cursor_move_and_mid_line_insert() {
+        let mut editor = Editor::boot(lattice_core::Document::from_text("x\n"));
+        editor.dispatch(Action::EnterCommandLine);
+        cl_type(&mut editor, "dit foo");
+        assert_eq!(editor.command_line(), "dit foo");
+        assert_eq!(editor.cursor.byte, 7, "cursor at end after typing");
+        // <C-a> to line start, then insert 'e' -> "edit foo".
+        cl_chord(&mut editor, crate::chord::KeyChord::ctrl('a'));
+        assert_eq!(editor.cursor.byte, 0, "<C-a> moves to line start");
+        cl_type(&mut editor, "e");
+        assert_eq!(editor.command_line(), "edit foo", "mid-line insert lands at cursor");
+        // <C-a> then <C-f> moves one byte right.
+        cl_chord(&mut editor, crate::chord::KeyChord::ctrl('a'));
+        cl_chord(&mut editor, crate::chord::KeyChord::ctrl('f'));
+        assert_eq!(editor.cursor.byte, 1, "<C-f> moves one right");
+    }
+
+    #[test]
+    fn command_line_ctrl_w_deletes_word_and_ctrl_u_kills_to_start() {
+        let mut editor = Editor::boot(lattice_core::Document::from_text("x\n"));
+        editor.dispatch(Action::EnterCommandLine);
+        cl_type(&mut editor, "edit foo bar");
+        cl_chord(&mut editor, crate::chord::KeyChord::ctrl('w'));
+        assert_eq!(editor.command_line(), "edit foo ", "<C-w> deletes a word backward");
+        cl_chord(&mut editor, crate::chord::KeyChord::ctrl('u'));
+        assert_eq!(editor.command_line(), "", "<C-u> kills to line start");
+    }
+
+    #[test]
+    fn command_line_esc_cancels_and_restores_document_cursor_modal() {
+        let mut editor = Editor::boot(lattice_core::Document::from_text("hello\nworld\n"));
+        editor.cursor = lattice_protocol::position::Position::new(1, 2);
+        let prior_doc = editor.document_buffer_id;
+        let prior_cursor = editor.cursor;
+        editor.dispatch(Action::EnterCommandLine);
+        cl_type(&mut editor, "edit foo");
+        cl_chord(
+            &mut editor,
+            crate::chord::KeyChord::special(crate::chord::SpecialKey::Esc),
+        );
+        assert!(!editor.command_line_active(), "<Esc> cancels the command line");
+        assert_eq!(editor.document_buffer_id, prior_doc, "document restored");
+        assert_eq!(editor.cursor, prior_cursor, "cursor restored");
+        assert!(matches!(editor.modal, ModalState::Normal), "modal restored");
+        assert!(
+            editor.command_history.is_empty(),
+            "cancel dispatches nothing and pushes no history"
+        );
+    }
+
+    #[test]
+    fn command_line_ctrl_c_cancels_and_restores() {
+        let mut editor = Editor::boot(lattice_core::Document::from_text("hello\n"));
+        let prior_doc = editor.document_buffer_id;
+        editor.dispatch(Action::EnterCommandLine);
+        cl_type(&mut editor, "edit foo");
+        cl_chord(&mut editor, crate::chord::KeyChord::ctrl('c'));
+        assert!(!editor.command_line_active(), "<C-c> cancels");
+        assert_eq!(editor.document_buffer_id, prior_doc, "document restored");
+        assert!(editor.command_history.is_empty(), "no history push on cancel");
+    }
+
+    #[test]
+    fn command_line_cr_submits_and_pushes_history() {
+        let mut editor = Editor::boot(lattice_core::Document::from_text("hello\n"));
+        let prior_doc = editor.document_buffer_id;
+        editor.dispatch(Action::EnterCommandLine);
+        cl_type(&mut editor, "set number");
+        cl_chord(
+            &mut editor,
+            crate::chord::KeyChord::special(crate::chord::SpecialKey::Enter),
+        );
+        assert!(!editor.command_line_active(), "<CR> submits + closes the line");
+        assert_eq!(editor.document_buffer_id, prior_doc, "document restored on submit");
+        assert_eq!(
+            editor.command_history.last().map(String::as_str),
+            Some("set number"),
+            "submit pushes the line to history"
+        );
+    }
+
+    #[test]
+    fn command_line_history_walk_restores_pending_text() {
+        let mut editor = Editor::boot(lattice_core::Document::from_text("hello\n"));
+        for cmd in ["set number", "set wrap"] {
+            editor.dispatch(Action::EnterCommandLine);
+            cl_type(&mut editor, cmd);
+            cl_chord(
+                &mut editor,
+                crate::chord::KeyChord::special(crate::chord::SpecialKey::Enter),
+            );
+        }
+        editor.dispatch(Action::EnterCommandLine);
+        cl_type(&mut editor, "xy");
+        // <C-p> walks back to the newest, then older; <C-n> walks forward.
+        cl_chord(&mut editor, crate::chord::KeyChord::ctrl('p'));
+        assert_eq!(editor.command_line(), "set wrap");
+        cl_chord(&mut editor, crate::chord::KeyChord::ctrl('p'));
+        assert_eq!(editor.command_line(), "set number");
+        cl_chord(&mut editor, crate::chord::KeyChord::ctrl('n'));
+        assert_eq!(editor.command_line(), "set wrap");
+        // Past the newest, the in-progress typed text returns.
+        cl_chord(&mut editor, crate::chord::KeyChord::ctrl('n'));
+        assert_eq!(editor.command_line(), "xy", "history walk restores pending text");
+    }
+
+    #[test]
+    fn command_line_completion_opens_and_accepts_on_the_buffer() {
+        let mut editor = Editor::boot(lattice_core::Document::from_text("hello\n"));
+        editor.dispatch(Action::EnterCommandLine);
+        cl_type(&mut editor, "ed");
+        // <Tab> opens the completion popup (mode-owned chord).
+        cl_chord(
+            &mut editor,
+            crate::chord::KeyChord::special(crate::chord::SpecialKey::Tab),
+        );
+        let opened = editor.completion_state.is_some();
+        assert!(opened, "<Tab> opens the cmdline completion popup");
+        // <CR> while the popup is open accepts the candidate into the
+        // buffer (does NOT submit) — two-stage accept.
+        cl_chord(
+            &mut editor,
+            crate::chord::KeyChord::special(crate::chord::SpecialKey::Enter),
+        );
+        assert!(
+            editor.command_line_active(),
+            "accept keeps the command line open (submit is the next <CR>)"
+        );
+        assert!(
+            editor.command_line().starts_with("ed"),
+            "the accepted candidate is spliced into the buffer, got {:?}",
+            editor.command_line()
+        );
+    }
+
+    #[test]
+    fn command_line_substitute_preview_updates_from_the_buffer() {
+        let mut editor = Editor::boot(lattice_core::Document::from_text("foo\nfoo\n"));
+        editor.dispatch(Action::EnterCommandLine);
+        cl_type(&mut editor, "%s/foo/bar/");
+        assert!(
+            editor.substitute_preview.is_some(),
+            "typing a :s pattern refreshes the live substitute preview from the buffer"
+        );
+    }
+
+    #[test]
+    fn missing_arg_prompt_opens_the_buffer_backed_command_line() {
+        // The `<C-h>k`-style public API path: arming a Chord-arg prompt
+        // opens the buffer-backed `:` line, prefills it, and arms
+        // chord-capture.
+        let mut editor = Editor::boot(lattice_core::Document::from_text("hello\n"));
+        let armed = editor.arm_missing_arg_prompt("describe-key");
+        assert!(armed, "describe-key has a required Chord first arg");
+        assert!(editor.command_line_active(), "missing-arg prompt opens the `:` line");
+        assert_eq!(editor.command_line(), "describe-key ", "prefilled through the buffer");
+        assert!(editor.auto_submit_after_chord, "chord-capture armed");
     }
 
     #[test]
@@ -39762,7 +40253,7 @@ mod tests {
         let mut out = DispatchOutcome::default();
         editor.dispatch_invocation(inv, &mut out);
         assert_eq!(
-            editor.command_line, "describe-key ",
+            editor.command_line(), "describe-key ",
             "run_invocation must arm the prompt with the alias form"
         );
         assert!(matches!(editor.modal, lattice_grammar::ModalState::Command));
@@ -39785,7 +40276,7 @@ mod tests {
         let inv = lattice_grammar::CommandInvocation::of(id);
         let mut out = DispatchOutcome::default();
         editor.dispatch_invocation(inv, &mut out);
-        assert_eq!(editor.command_line, "describe-command ");
+        assert_eq!(editor.command_line(), "describe-command ");
         assert!(matches!(editor.modal, lattice_grammar::ModalState::Command));
         assert!(
             !editor.auto_submit_after_chord,
@@ -40016,7 +40507,7 @@ mod tests {
         );
         // Arm the describe-key prompt: Command mode at the Chord arg slot.
         e.modal = lattice_grammar::ModalState::Command;
-        e.command_line = "describe-key ".to_string();
+        e.set_command_line_text("describe-key ");
         assert!(
             e.chord_capture_active(),
             "predicate true at the describe-key Chord arg slot"

@@ -631,9 +631,10 @@ pub struct Editor {
     /// `completion_docs_viewport_width > 0`.
     pub completion_docs_viewport_height: u32,
     pub completion_docs_viewport_width: u32,
-    /// In-progress text in the `:` minibuffer. Populated
-    /// only while `modal == ModalState::Command`.
-    pub command_line: String,
+    /// MB.1: `Some(_)` while the `*command-line*` buffer is focused for
+    /// editing (the `:` line is open). Holds the prior editing focus to
+    /// restore on submit / cancel. See [`crate::state::CommandLineFocus`].
+    pub command_line_focus: Option<crate::state::CommandLineFocus>,
     /// Most recent transient status / error message,
     /// displayed in the echo area until replaced.
     pub last_message: Option<EchoMessage>,

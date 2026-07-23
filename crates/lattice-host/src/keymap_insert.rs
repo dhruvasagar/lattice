@@ -200,6 +200,26 @@ pub fn register_insert_bindings(handle: &KeymapHandle, actions: &ActionIds) {
             source(),
         );
     }
+    // Arrow / Home / End cursor navigation in Insert mode — the same
+    // char/line motions as the `<C-b>`/`<C-f>`/`<C-a>`/`<C-e>` readline
+    // chords, on the keys most users reach for first. Vim-faithful (arrows
+    // move the caret in Insert) and general across every Insert buffer, so
+    // the buffer-backed `:` line (MB.1) gets mid-line editing by arrow key
+    // for free.
+    for (key, id) in [
+        (SpecialKey::Left, actions.insert_cursor_char_left),
+        (SpecialKey::Right, actions.insert_cursor_char_right),
+        (SpecialKey::Home, actions.insert_cursor_line_start),
+        (SpecialKey::End, actions.insert_cursor_line_end),
+    ] {
+        handle.bind(
+            layer,
+            mode,
+            &[lit_special(key)],
+            CommandInvocation::of(id),
+            source(),
+        );
+    }
     // CSM.K1: `<C-x><C-o>` (vim omni-completion) retired.
     // `<C-Space>` is the sole popup-open trigger; per-source
     // filter chords live inside `completion-popup-mode` (CSM.K2).

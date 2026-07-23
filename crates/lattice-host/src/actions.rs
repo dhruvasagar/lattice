@@ -90,6 +90,16 @@ pub struct ActionIds {
     pub redraw_screen: CommandId,
     pub open_command_picker: CommandId,
     pub enter_command_line: CommandId,
+    /// MB.1: `command-line-mode` chords (submit / cancel / history /
+    /// completion / describe). Registered so the mode's table-form
+    /// keymap resolves them; each maps to an `AppEffect`.
+    pub command_line_submit: CommandId,
+    pub command_line_cancel: CommandId,
+    pub command_line_history_prev: CommandId,
+    pub command_line_history_next: CommandId,
+    pub command_line_complete: CommandId,
+    pub command_line_complete_prev: CommandId,
+    pub command_line_describe_under_cursor: CommandId,
     pub oil_navigate_up: CommandId,
     pub reselect_last_visual: CommandId,
     pub paste_after: CommandId,
@@ -555,6 +565,48 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
             "action:enter-command-line",
             "Vim's `:`: enter the command-line minibuffer.",
             AppEffect::EnterCommandLine,
+        ),
+        command_line_submit: register_simple(
+            registry,
+            "action:command-line-submit",
+            "MB.1: submit the `:` command line (or accept the open completion candidate).",
+            AppEffect::CommandLineSubmit,
+        ),
+        command_line_cancel: register_simple(
+            registry,
+            "action:command-line-cancel",
+            "MB.1: cancel the `:` command line (or dismiss the completion popup first).",
+            AppEffect::CommandLineCancel,
+        ),
+        command_line_history_prev: register_simple(
+            registry,
+            "action:command-line-history-prev",
+            "MB.1: previous `:` history entry (or previous completion candidate).",
+            AppEffect::CommandLineHistoryPrev,
+        ),
+        command_line_history_next: register_simple(
+            registry,
+            "action:command-line-history-next",
+            "MB.1: next `:` history entry (or next completion candidate).",
+            AppEffect::CommandLineHistoryNext,
+        ),
+        command_line_complete: register_simple(
+            registry,
+            "action:command-line-complete",
+            "MB.1: open the `:` completion popup or advance the selection.",
+            AppEffect::CommandLineComplete,
+        ),
+        command_line_complete_prev: register_simple(
+            registry,
+            "action:command-line-complete-prev",
+            "MB.1: previous `:` completion candidate.",
+            AppEffect::CommandLineCompletePrev,
+        ),
+        command_line_describe_under_cursor: register_simple(
+            registry,
+            "action:command-line-describe-under-cursor",
+            "MB.1: describe the command / arg under the `:` cursor.",
+            AppEffect::CommandLineDescribeUnderCursor,
         ),
         oil_navigate_up: register_simple(
             registry,
@@ -1601,6 +1653,25 @@ mod tests {
             (ids.redraw_screen, "action:redraw-screen"),
             (ids.open_command_picker, "action:open-command-picker"),
             (ids.enter_command_line, "action:enter-command-line"),
+            (ids.command_line_submit, "action:command-line-submit"),
+            (ids.command_line_cancel, "action:command-line-cancel"),
+            (
+                ids.command_line_history_prev,
+                "action:command-line-history-prev",
+            ),
+            (
+                ids.command_line_history_next,
+                "action:command-line-history-next",
+            ),
+            (ids.command_line_complete, "action:command-line-complete"),
+            (
+                ids.command_line_complete_prev,
+                "action:command-line-complete-prev",
+            ),
+            (
+                ids.command_line_describe_under_cursor,
+                "action:command-line-describe-under-cursor",
+            ),
             (ids.oil_navigate_up, "action:oil-navigate-up"),
             (ids.reselect_last_visual, "action:reselect-last-visual"),
             (ids.paste_after, "action:paste-after"),

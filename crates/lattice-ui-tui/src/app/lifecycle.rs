@@ -1036,7 +1036,7 @@ mod tests {
         let path = write_temp_file("a", "alpha\n");
         let mut a = app_with("xx", 10);
         let initial_id = a.editor.document_buffer_id;
-        a.editor.command_line = format!("e {}", path.display());
+        a.editor.set_command_line_text(&format!("e {}", path.display()));
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         // Two listed buffers (initial + opened); the synthetic
@@ -1051,10 +1051,10 @@ mod tests {
     fn ls_renders_help_with_every_open_buffer() {
         let path = write_temp_file("c", "x\n");
         let mut a = app_with("xx", 10);
-        a.editor.command_line = format!("e {}", path.display());
+        a.editor.set_command_line_text(&format!("e {}", path.display()));
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
-        a.editor.command_line = "ls".into();
+        a.editor.set_command_line_text("ls");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let h = a.popup_help().expect("buffers help");
@@ -1080,7 +1080,7 @@ mod tests {
         std::fs::create_dir_all(&dir).ok();
         std::fs::write(dir.join("a.txt"), "alpha").ok();
         let mut a = app_with("xx", 10);
-        a.editor.command_line = format!("Filetree {}", dir.display());
+        a.editor.set_command_line_text(&format!("Filetree {}", dir.display()));
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert_eq!(a.editor.active_buffer, BufferKind::FileTree);
@@ -1093,7 +1093,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("lattice-tree-close-{}", std::process::id()));
         std::fs::create_dir_all(&dir).ok();
         let mut a = app_with("xx", 10);
-        a.editor.command_line = format!("Filetree {}", dir.display());
+        a.editor.set_command_line_text(&format!("Filetree {}", dir.display()));
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         a.apply(Action::HelpDismiss);
@@ -1109,7 +1109,7 @@ mod tests {
         std::fs::write(dir.join("a.txt"), "x").ok();
         std::fs::write(dir.join("b.txt"), "y").ok();
         let mut a = app_with("xx", 10);
-        a.editor.command_line = format!("Filetree {}", dir.display());
+        a.editor.set_command_line_text(&format!("Filetree {}", dir.display()));
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let line_down = a.editor.builtins.line_down;
@@ -1127,7 +1127,7 @@ mod tests {
         std::fs::create_dir_all(&dir).ok();
         std::fs::write(dir.join("alpha.txt"), "hello").ok();
         let mut a = app_with("xx", 10);
-        a.editor.command_line = format!("Filetree {}", dir.display());
+        a.editor.set_command_line_text(&format!("Filetree {}", dir.display()));
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         // Move cursor to the alpha.txt entry (row 1).

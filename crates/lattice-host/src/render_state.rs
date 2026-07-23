@@ -2088,6 +2088,11 @@ pub struct ModelineRenderState {
     /// expanded band. Empty / unused in tier 1 (the one-row `cmdline_text`
     /// carries the single line there).
     pub cmdline_full_text: std::sync::Arc<str>,
+    /// MB.2e: the resolved `command-line.expand-height` policy. The
+    /// renderer applies it to the live frame height (`ExpandHeight::rows`)
+    /// to size the expanded band. Published (not read at draw time) so the
+    /// draw path stays free of config reads.
+    pub cmdline_expand_height: lattice_config::ExpandHeight,
 }
 
 impl Default for ModelineRenderState {
@@ -2099,6 +2104,7 @@ impl Default for ModelineRenderState {
             search_direction: None,
             cmdline_expanded: false,
             cmdline_full_text: std::sync::Arc::from(""),
+            cmdline_expand_height: lattice_config::ExpandHeight::default(),
         }
     }
 }

@@ -26,6 +26,7 @@
 //! continue to work unchanged. M.2.0c migrates the callers to
 //! `config.get_typed::<Tabstop>()` and retires `CoreOptions`.
 
+use crate::expand_height::ExpandHeight;
 use crate::signcolumn::SignColumn;
 use lattice_core::FoldMethod;
 
@@ -191,6 +192,15 @@ crate::options! {
     #[aliases("scl")]
     #[name("signcolumn")]
     pub SignColumnOption: SignColumn = SignColumn::Yes;
+
+    /// MB.2e: how tall the `:` command line grows when expanded into
+    /// its full-modal mini-buffer band (`<C-x><C-e>`). `half` (default)
+    /// claims half the frame; `full` grows as tall as the frame allows
+    /// (one pane row kept); a bare integer pins a fixed row count. Pure
+    /// render policy — both peers resolve it against the live frame
+    /// height via `ExpandHeight::rows`.
+    #[name("command-line.expand-height")]
+    pub CommandLineExpandHeight: ExpandHeight = ExpandHeight::Half;
 
     /// When `true` (default), an explicit **yank** (`y`, `yy`, Visual
     /// `y`) also copies to the system clipboard, and paste of the

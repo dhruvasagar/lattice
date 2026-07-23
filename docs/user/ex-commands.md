@@ -195,6 +195,20 @@ Specific behaviours:
 - `<Up>` / `<Down>` walk command history.
 - `<C-n>` / `<C-p>` same as `<Down>` / `<Up>`.
 
+### Expanding the command line
+
+`<C-x><C-e>` expands the one-row `:` line into a full-modal
+**mini-buffer band** that grows upward, pushing the panes above it
+up. In the band you get the whole vim grammar — Normal/Insert/Visual,
+motions, registers, undo, multi-line editing. `<C-x><C-e>` again (or
+`<Esc>` then the chord) collapses back to the one-row line with your
+edits intact; `<CR>` from the collapsed line runs it (the band never
+auto-executes). `<C-c>` cancels and discards the expanded edits.
+
+- **`command-line.expand-height`** sizes the band: `half` (default,
+  half the frame), `full` (as tall as the frame allows), or a bare
+  integer for a fixed row count. E.g. `:set command-line.expand-height=full`.
+
 ### Command-line history picker
 
 Beyond the in-line `<Up>`/`<Down>` walk, past commands are

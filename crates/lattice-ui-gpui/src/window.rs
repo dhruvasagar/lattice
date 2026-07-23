@@ -4569,7 +4569,7 @@ impl Render for EditorView {
                     }
                     _ => {}
                 }
-                let row = div()
+                let mut row = div()
                     .bg(rgb(theme.status_background))
                     .text_color(rgb(theme.status_foreground))
                     .px_2()
@@ -4577,6 +4577,20 @@ impl Render for EditorView {
                     .flex()
                     .flex_row()
                     .child(msg);
+                // MB.2e: honor `command-line.expand-height` — reserve at
+                // least that many rows for the expanded band (peer of the
+                // TUI's fixed band), so a short command still opens the
+                // configured height and the panes above flex-shrink up. A
+                // longer command grows past it (content-driven), matching
+                // the TUI band scrolling within its reserved region.
+                if modeline.cmdline_expanded {
+                    let band_rows = modeline
+                        .cmdline_expand_height
+                        .rows(total_rows.max(1) as u16);
+                    row = row
+                        .min_h(px(band_rows as f32 * estimated_row_px))
+                        .flex_shrink_0();
+                }
                 if bottom_is_minibuffer {
                     row.child(
                         div()

@@ -355,12 +355,12 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) -> Opti
     // own 1-row status footer (drawn by draw_panes / draw_pane_status_line).
     // MB.2: the `:` line grows into a multi-row mini-buffer band when
     // expanded (`<C-x><C-e>`), pushing the panes (and their mode-lines) up.
-    // Default height is half the frame; the `command-line.expand-height`
-    // option will size it (MB.2 follow-up). The band claims rows from the
-    // `Min(1)` pane area above it.
+    // MB.2e: the `command-line.expand-height` option sizes it (`half`
+    // default / `full` / fixed rows), resolved against the live frame
+    // height. The band claims rows from the `Min(1)` pane area above it.
     let cmdline_rows: u16 = if app.command_line_expanded() {
-        let h = frame.area().height;
-        (h / 2).clamp(3, h.saturating_sub(2).max(1))
+        app.command_line_expand_height()
+            .rows(frame.area().height)
     } else {
         1
     };

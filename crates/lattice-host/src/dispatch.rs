@@ -1082,6 +1082,7 @@ impl Editor {
                 } else {
                     std::sync::Arc::from("")
                 },
+                cmdline_expand_height: self.command_line_expand_height(),
             }),
             // ML.0b-2: wait-free snapshot of the configurable-modeline
             // element system (two Arc clones). Built-in element content
@@ -6898,6 +6899,19 @@ impl Editor {
         self.command_line_focus
             .as_ref()
             .is_some_and(|f| f.expanded)
+    }
+
+    /// MB.2e: the resolved `command-line.expand-height` policy driving
+    /// how tall the expanded band grows. Read by both renderers (they
+    /// apply it to the live frame height via [`ExpandHeight::rows`]).
+    /// Falls back to the default (`half`) when the option isn't
+    /// registered — the boot-before-linkme + test-fixture path, mirroring
+    /// `build_tabs_render_state`'s `tabline.show` read.
+    pub fn command_line_expand_height(&self) -> lattice_config::ExpandHeight {
+        self.config
+            .get_typed::<lattice_config::CommandLineExpandHeight>()
+            .map(|arc| *arc)
+            .unwrap_or_default()
     }
 
     /// MB.2: the full (possibly multi-line) text of the `:` line — the

@@ -1325,6 +1325,20 @@ impl App {
         }
     }
 
+    /// MB.2e: the resolved `command-line.expand-height` policy sizing the
+    /// expanded band. Read from the published modeline state (wait-free);
+    /// test escape hatch reads the editor directly, as [`Self::command_line_expanded`].
+    pub(crate) fn command_line_expand_height(&self) -> lattice_config::ExpandHeight {
+        #[cfg(test)]
+        {
+            self.editor.command_line_expand_height()
+        }
+        #[cfg(not(test))]
+        {
+            self.modeline().cmdline_expand_height
+        }
+    }
+
     /// MB.2: the full (possibly multi-line) `:` line text for the expanded
     /// band renderer. Empty in tier 1.
     pub(crate) fn command_line_full_text(&self) -> String {

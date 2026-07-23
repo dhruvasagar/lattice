@@ -73,6 +73,7 @@ mod domain;
 mod erased;
 pub mod group;
 pub mod loader;
+mod expand_height;
 mod modeline_zone;
 mod signcolumn;
 mod plugin_options;
@@ -122,7 +123,8 @@ pub use completion::OptionsGenerator;
 // instead of the longer `lattice_config::core_options::Tabstop`.
 pub use core_options::COMPLETION_SOURCE_SNIPPET_DEFAULT_PRIORITY;
 pub use core_options::{
-    ClipboardEnabled, CompletionAutoInsertSingle, CompletionExtraCommitChars, CompletionGhostText,
+    ClipboardEnabled, CommandLineExpandHeight, CompletionAutoInsertSingle,
+    CompletionExtraCommitChars, CompletionGhostText,
     CompletionSourceBufferWordsPriority, CompletionSourceLspPriority, CompletionSourcePathPriority,
     CompletionSourceSnippetPriority, CompletionSourceTreeSitterPriority, CursorLine,
     DiagnosticsInlineOption, DiagnosticsMinSeverityOption, FoldEnable, FoldMethodOption,
@@ -156,6 +158,9 @@ pub use plugin_options::{PluginTraceLevel, PluginTraceLevelOption};
 // columns (diagnostics severity + diff sign) so help / synthetic
 // buffers render gutterless without the renderer knowing it's help.
 pub use signcolumn::SignColumn;
+// MB.2e: the `command-line.expand-height` option value type — how tall
+// the expanded `:` mini-buffer band grows (`half` / `full` / fixed rows).
+pub use expand_height::ExpandHeight;
 // W.1: the `decorations` option value type — controls OS window chrome
 // (titlebar + controls) on the GPUI peer (full vs. borderless).
 pub use decorations::Decorations;

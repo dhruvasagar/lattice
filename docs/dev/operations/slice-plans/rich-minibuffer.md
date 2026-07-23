@@ -1,6 +1,6 @@
 # Rich minibuffer — slice plan
 
-> **Status: 🚧 IN PROGRESS (MB.1–MB.3 ✅ 2026-07-24; MB.2e/MB.4/MB.5 📝).**
+> **Status: 🚧 IN PROGRESS (MB.1–MB.3 + MB.2e ✅ 2026-07-24; MB.4/MB.5 📝).**
 > Sequencing companion to the design
 > fragment [`../../architecture/rich-minibuffer.md`](../../architecture/rich-minibuffer.md)
 > (the *what + why*). This file owns *when + in what order + status*.
@@ -55,10 +55,21 @@ every slice re-verifies keystroke→glyph.
   `command-line.expand-height` typed option (band is half-frame for now)
   and a `--features gui` runtime check of the GPUI band geometry — see
   MB.2e below.
-- **MB.2e — `command-line.expand-height` option + GPUI runtime check.** 📝
-  Typed `command-line.expand-height` (`half` default / fixed rows /
-  `full`) driving the band height; verify the GPUI band pushes panes up
-  correctly under `cargo run --features gui`.
+- **MB.2e — `command-line.expand-height` option.** ✅ (2026-07-24)
+  Typed `command-line.expand-height` value type (`ExpandHeight`:
+  `half` default / `full` / `Fixed(rows)`) in `lattice-config`,
+  registered as `CommandLineExpandHeight` (`#[name("command-line.expand-height")]`,
+  Editor group). `ExpandHeight::rows(frame_height)` resolves the policy
+  against the live frame (host publishes the policy in
+  `ModelineRenderState.cmdline_expand_height`; both renderers apply it —
+  the draw path never reads config). TUI reserves the band rows; GPUI
+  floors the band with a `min_h` so a short command still opens the
+  configured height and the panes flex-shrink up. Tests: `ExpandHeight`
+  parse/rows unit tests (`lattice-config`); `mb2e_*` accessor+rows test
+  (`app/cmdline.rs`). GPUI wired + type-checked (`-p lattice-ui-gpui`
+  default **and** `--features window`); the interactive
+  `cargo run --features gui` visual confirmation is a manual step (a
+  windowed GUI can't run headless in CI).
   - Only in `command-line-mode`: `<C-x><C-e>` toggles the `*command-line*`
     buffer's **expanded** state — the **same surface grows in place**,
     upward, **pushing the mode-line (and content) above it** into a

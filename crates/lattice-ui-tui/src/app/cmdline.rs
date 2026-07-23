@@ -532,6 +532,34 @@ mod tests {
         );
     }
 
+    /// MB.2e: the `command-line.expand-height` option drives the
+    /// expanded band's height. The renderer reads it via
+    /// `command_line_expand_height()` and resolves it against the live
+    /// frame height (`ExpandHeight::rows`).
+    #[test]
+    fn mb2e_expand_height_option_drives_band_rows() {
+        use lattice_config::{CommandLineExpandHeight, ExpandHeight};
+        let a = app_with("hello\n", 40);
+        // Default is `half`: half of a 40-row frame, clamped.
+        assert_eq!(a.command_line_expand_height(), ExpandHeight::Half);
+        assert_eq!(a.command_line_expand_height().rows(40), 20);
+
+        // `full` grows as tall as the frame allows (one pane row kept).
+        let _ = a
+            .editor
+            .config
+            .set_typed::<CommandLineExpandHeight>(ExpandHeight::Full);
+        assert_eq!(a.command_line_expand_height(), ExpandHeight::Full);
+        assert_eq!(a.command_line_expand_height().rows(40), 38);
+
+        // A fixed row count pins the band, clamped to the frame.
+        let _ = a
+            .editor
+            .config
+            .set_typed::<CommandLineExpandHeight>(ExpandHeight::Fixed(7));
+        assert_eq!(a.command_line_expand_height().rows(40), 7);
+    }
+
     // ── MB.3 (rich minibuffer, phase 3): the `q:` / `:history`
     //    fuzzy history picker. Accept LOADS the picked command into
     //    the editable `:` line — it does NOT execute. ──

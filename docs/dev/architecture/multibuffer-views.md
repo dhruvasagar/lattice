@@ -562,10 +562,31 @@ The mode owns:
 - The typed per-buffer context (`MultibufferModeContext`
   carrying `Arc<MultibufferDocumentHandle>`).
 - The keymap that binds excerpt motions (`]e` / `[e` / `]E` /
-  `[E`) to grammar motion ids.
+  `[E`) to grammar motion ids **and `<CR>`
+  jump-to-source** (see below).
 - The lifecycle wiring for header / fold providers.
 - Future kind-specific behaviour (M.5 expand-context,
   M.7 / M.8 fold providers).
+
+**`<CR>` jump-to-source is generic multibuffer, not per-provider.**
+`<CR>` binds to `action:multibuffer-jump-to-source`, and
+`MultibufferMode::on_activate` registers the handler on the per-buffer
+`ActionHandlerRegistry`: it translates the composed cursor position to
+its source `(BufferId, Position)` via the view handle
+(`translate_composed_to_source` + `source_path`) and emits
+`RecordJump` + `OpenBufferAt`. Because this lives in the shared major
+mode, **every** multibuffer kind — project search, `*problems*`,
+narrow, future references / diff / diagnostics views — gets `<CR>`
+jump plus the excerpt-jump motions (`]e` / `[e` next/prev excerpt,
+`]E` / `[E` next/prev file boundary) for free, with no per-provider
+wiring. The handler was originally implemented inside the search
+provider (`providers/search.rs`) and was hoisted out into the mode
+(the provider shrank ~115 lines); a provider-minor may still bind its
+own `<CR>` to shadow the generic handler via minor-mode keymap
+priority, but none needs to for basic jump-to-source. This is the
+mode-owns-its-surface rule applied to a capability shared across all
+providers: the binding *and* the body belong to the mode that owns the
+buffer kind.
 
 **Motions as grammar operations.** `]e` / `[e` / `]E` / `[E`
 register as `lattice-grammar` motions. Operators (`d` / `c`

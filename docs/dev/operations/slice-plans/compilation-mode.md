@@ -1,6 +1,11 @@
 # Compilation mode — slice plan
 
-> **Status: 🚧 IN PROGRESS (2026-07-21).** Sequencing companion to the
+> **Status: 🚧 ACTIVE (2026-07-23).** All core slices are ✅ (CM.1–CM.8
+> plus the CM.3d headerline / kill / location-highlighting and CM.3e
+> catch-all + test-panic + stdout follow-ups below). The plan stays
+> **active** (not archived) because CM.5 (ANSI) and CM.6 (WASM parsers)
+> are genuinely ⛔ deferred — per the archiving rule, a plan with any
+> open slice is not archived. Sequencing companion to the
 > design fragments
 > [`../../architecture/compilation-mode.md`](../../architecture/compilation-mode.md)
 > (the runner + `*compilation*`/`*problems*`) and
@@ -109,6 +114,65 @@ green; ship doc + bench + test + graceful-error together.
     `gutter_decorations` consumption) rather than one integration test — the
     same seam-by-seam strategy as CM.2/CM.3a. Link styling on matched lines
     (design §5 "and a link") is a separate visual concern, out of this slice.
+- **CM.3d — headerline + location-line highlighting + `<C-c>` kill.** ✅ (2026-07-22)
+  - **Headerline:** `CompilationHeaderline` (`headerline.rs`) — a
+    compilation-mode-owned sticky **view-header virtual row** above
+    `*compilation*`, the twin of the project-search headerline. Shows the
+    command (emphasis-highlighted like search emphasises its query), a
+    spinner while running, and a success/failure icon + error/warning counts
+    when finished, from `CompilationHeadlineState { command, last_counts:
+    Option<(errors, warnings)>, running }`. The drain owns the state (Reset →
+    `running=true` + command; Finished → counts from the off-thread severity
+    index); registered via the `VirtualRowRegistrar` service in `on_activate`.
+    This is the deferred CM.3c-decoration follow-through and more.
+  - **Location-line highlighting:** matched `file:line:col` lines get a
+    background tint (new theme element `compilation.location`) so navigable
+    lines stand out. The location-line index is produced off-thread in the
+    drain (`scan_location_lines`), shipped over a native `InboundBus`
+    (`CompilationLocationBusHandle`) twin of the severity-gutter seam; colours
+    resolve from the theme (no hardcoded RGB). New headerline theme elements
+    (`compilation.headerline.command` + `in_progress`/`success`/`failure`)
+    are mode-owned and resolved at activation.
+  - **`<C-c>` kill:** `:compilation-kill` ex-command → `AppEffect::CompilationKill`
+    → `CompilationService::kill()` (SIGKILL the child; readers EOF; drain
+    publishes a Finished "terminated" summary). `<C-c>` is bound in
+    `compilation-mode`'s keymap — it was made a **mode-dispatchable** chord
+    (commit `37457a40`; no longer a universal Quit hatch) so the mode can
+    claim it. Binding + handler both mode-owned.
+  - Keymap is now `gr` (recompile) / `<CR>` (jump + sync index) / `<C-c>` (kill).
+- **CM.3e — catch-all + test-panic parsers + stdout parsing.** ✅ (2026-07-23)
+  - `GeneralParser` (`parsers/general.rs`) — catch-all that finds
+    `file:line:col` (or `file:line`) **anywhere** in a line (unanchored,
+    `Regex::find_iter`), gated on `is_file_like` (path contains `/` or `.`)
+    to reject timestamps / version-strings / `word:digits` noise. Emits `Info`
+    + empty message. Makes any tool's embedded location navigable.
+  - `TestPanicParser` (`parsers/panicked.rs`) — matches Rust test / `panic!`
+    output (`thread '<name>' panicked at path:line:col[: message]`) as `Error`.
+  - `ParserRegistry::with_builtins` now registers **four** parsers
+    (CargoRustc, GnuStyle, TestPanic, General — the catch-all last),
+    de-duped by `(path, line, col)` so the richest match wins;
+    `match_location_line` / `match_severity` chain all four for
+    `<CR>`-jump + gutter.
+  - **stdout AND stderr both parsed** (`service.rs`): compile diagnostics go to
+    stderr, but test-failure output / thread panics go to stdout. Two dedicated
+    reader threads share an `Arc<Mutex<Vec<ErrorEntry>>>` accumulator; each
+    sends the full list through the `InboundBus`, so neither stream clobbers the
+    other. So `:compile cargo test` populates the error list with panicking
+    `file:line`.
+  - **Test:** general-parser + panic-parser unit tests (anywhere-in-line,
+    timestamp/version rejection, absolute paths, non-file rejection);
+    `service.rs::stderr_diagnostics_populate_the_error_list`; the four-parser
+    dedup path in `parser.rs`.
+- **CM.3f — generic multibuffer `<CR>` jump-to-source.** ✅ (2026-07-23)
+  - `<CR>` → `action:multibuffer-jump-to-source` moved OUT of the search
+    provider (`providers/search.rs` shrank ~115 lines) into the shared
+    `MultibufferMode` (`lattice-multibuffer/src/mode.rs`): `on_activate`
+    registers the handler on the per-buffer `ActionHandlerRegistry`, so search,
+    `*problems*`, and narrow all get `<CR>`-jump + the excerpt-jump motions
+    (`]e`/`[e`/`]E`/`[E`) for free. Documented in
+    [`../../architecture/multibuffer-views.md`](../../architecture/multibuffer-views.md)
+    §3.6. (This slice belongs to the multibuffer substrate but is recorded
+    here because it completes compilation's `*problems*` navigation.)
 
 ## Phase 3 — the problems view (secondary; the multibuffer instinct)
 

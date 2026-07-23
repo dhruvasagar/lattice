@@ -73,10 +73,17 @@ point it at whatever prints locations and the list fills.
 
 ```
 :compile cargo build         " rustc errors + warnings
+:compile cargo test          " test panics: thread '…' panicked at file:line:col
 :compile npx eslint .        " path:line:col: message
 :compile grep -Hn TODO -r .  " path:line: text
 :compile ctest --output-on-failure
 ```
+
+Both the tool's stderr **and** its stdout are parsed, so **test
+failures land in the list too**: `:compile cargo test` captures each
+`thread '…' panicked at file:line:col` (printed on stdout) as an
+entry, and `:next-error` walks you to the failing assertions just like
+compiler errors.
 
 A new run **replaces** the list (its first action clears the previous
 entries). Entries stream in as the tool runs, so `:next-error` works

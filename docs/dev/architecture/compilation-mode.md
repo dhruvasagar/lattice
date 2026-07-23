@@ -95,9 +95,35 @@ bounded ring on the producer side.
 
 Lifecycle: `:recompile` kills the prior child (SIGTERM→SIGKILL
 fallback, as terminal does) before relaunching; the buffer is cleared
-and re-streamed. On exit a summary line is appended ("Compilation
-finished" / "exited abnormally with code N"). Exit is an `info!`
-one-shot (user-actionable); per-line streaming is never logged.
+and re-streamed. **`<C-c>` in `*compilation*`** kills a still-running
+build on demand (via `:compilation-kill` → `CompilationService::kill()`
+— SIGKILL the child; the reader pipes EOF; the drain publishes a
+`Finished` "terminated" summary; §7). On exit a summary line is
+appended ("Compilation finished" / "exited abnormally with code N").
+Exit is an `info!` one-shot (user-actionable); per-line streaming is
+never logged.
+
+### The compilation headerline (sticky status bar)
+
+`compilation-mode` renders a **view-header virtual row** above
+`*compilation*` — a mode-owned sticky status bar, the direct twin of
+the project-search headerline (§`multibuffer-views.md` status surface).
+It shows, from a `CompilationHeadlineState { command, last_counts:
+Option<(errors, warnings)>, running }`:
+
+- the **command** being run (`cargo build --release`),
+  emphasis-highlighted the way search emphasises its query;
+- a **spinner** (`⟳ … `) while the run is in progress;
+- a **success / failure icon + counts** for the finished state
+  (`◆ … ✔ ok` clean, `◆ … ✗ 3e 2w` with errors/warnings).
+
+The drain owns the state: a `Reset` chunk sets `command` + `running =
+true`; a `Finished` chunk clears `running` and writes the error/warning
+counts tallied from the off-thread severity index. Production is
+entirely off the UI thread; the renderer only reads the published row.
+Colours resolve from the theme (`compilation.headerline.command` +
+sibling `in_progress` / `success` / `failure` elements), never
+hardcoded RGB.
 
 ## 3. The error list (concern #2)
 
@@ -135,21 +161,60 @@ rule.
 Compiler error formats differ per tool. A `CompilationParser` — a named
 matcher over streamed lines producing `ErrorEntry`s — is the
 extensibility seam, mirroring emacs `compilation-error-regexp-alist`.
-Built-in: a **cargo/rustc** parser (`error[E0308]: …` +
-`--> path:line:col`) and a **gnu-style** parser (`path:line:col:
-message`). Parsing runs **in the reader's `spawn_blocking` task**, off
-the UI thread, over the same streamed lines; matched entries flow to
-the error list via a typed event. A parser that fails to match a
-line simply skips it (warn on a malformed-but-claimed match, never
-panic, never swallow silently). Phase 7 opens parser contribution to
-WASM plugins.
+The built-in set is **four** parsers, fed each line in registration
+order (`ParserRegistry::with_builtins`), the results de-duplicated by
+`(path, line, col)` so the first (richest) match for a location wins:
+
+1. **`CargoRustcParser`** — multi-line rustc/cargo diagnostics: an
+   `error[E0308]: …` / `warning: …` header primes severity + message,
+   emitted when the following `--> path:line:col` location line
+   arrives.
+2. **`GnuStyleParser`** — single-line gcc/clang/eslint form
+   (`path:line:col: severity: message`, and the short `path:line:
+   message`).
+3. **`TestPanicParser`** — Rust test / `panic!` output: `thread
+   '<name>' panicked at path:line:col[: message]`, emitted as an
+   `Error`.
+4. **`GeneralParser`** — a **catch-all** that finds `file:line:col`
+   (or `file:line`) **anywhere** in a line (unanchored,
+   `Regex::find_iter`), gated on an `is_file_like` check (the path must
+   contain `/` or `.`) so timestamps, version strings, and other
+   `word:digits` noise are rejected. This is what makes compilation
+   tool-agnostic: any log line, script output, printf-debug print, or
+   bespoke linter that embeds a location becomes navigable, with no
+   per-tool parser. Registered **last** and emits `Info` severity +
+   empty message, so the format-specific parsers above win the
+   `(path, line, col)` de-dup and supply richer severity/message when
+   they match.
+
+**Both stdout and stderr are parsed.** Compile diagnostics
+(rustc/cargo) print on stderr, but **test-failure output / thread
+panics print on stdout** — so parsing only one stream would miss test
+failures. Two dedicated reader threads (one per pipe, so a large pipe
+can't deadlock the other) each run their own `ParserRegistry` and merge
+into a **shared `Arc<Mutex<Vec<ErrorEntry>>>` accumulator**; each reader
+sends the full accumulated list through the `InboundBus` seam, so
+whichever pipe delivers an entry, the visible list grows without one
+stream clobbering the other. Parsing runs **in the readers'
+`spawn_blocking`-spawned OS threads**, off the UI thread. A parser that
+fails to match a line simply skips it (log at `debug!` on a
+malformed-but-claimed match, never panic, never swallow silently).
+Phase 7 opens parser contribution to WASM plugins via this same
+`Vec<Box<dyn CompilationParser>>` seam.
 
 Matched lines in `*compilation*` gain a severity gutter decoration and
-a link; `<CR>` on a matched line jumps to that source location (via
-`jump_to_file_line_col`) and syncs the error-list index. `<CR>` reads the
-cursor line and parses a location out of it directly (no precomputed
-buffer-line→entry map — stdout/stderr interleave in the log, so a
-positional map is unreliable; per-line parse is interleaving-proof).
+a **location-line background tint** (theme element
+`compilation.location`) so navigable `file:line:col` lines stand out
+from surrounding prose; the tint colour resolves from the theme (no
+hardcoded RGB) and is produced off-thread in the drain
+(`scan_location_lines`), shipped to the renderer over a native
+`InboundBus` twin of the severity-gutter seam. `<CR>` on a matched line
+jumps to that source location (via `jump_to_file_line_col`) and syncs
+the error-list index. `<CR>` reads the cursor line and parses a location
+out of it directly (no precomputed buffer-line→entry map — stdout/stderr
+interleave in the log, so a positional map is unreliable; per-line parse
+is interleaving-proof, and reuses the same four location patterns via
+`match_location_line`).
 
 ### Gutter decoration is delivered the *native* way (not the plugin seam)
 
@@ -174,9 +239,14 @@ wait-free; production is entirely off-thread — paramount #1 intact.
 
 | Chord      | Action                                              |
 |------------|-----------------------------------------------------|
-| `<CR>`     | jump to error under cursor (syncs error-list index) |
 | `gr`       | recompile (mirrors project-search's `gr` refresh)   |
+| `<CR>`     | jump to location on the cursor line (syncs error-list index) |
+| `<C-c>`    | kill the running compilation (→ `:compilation-kill`) |
 | `]qq`/`[qq`| next/prev error entry (Builtin; global, any buffer) |
+
+`<C-c>` is a **mode-dispatchable** chord: it is no longer a universal
+Quit hatch, so `compilation-mode` claims it (the binding + the handler
+both live with the mode, per `feedback_mode_owns_its_surface`).
 
 Read-only, `NoFile`; `:q` never warns unsaved, `:w` is a no-op (mode
 `options()`), consistent with `*messages*`/terminal.
@@ -189,6 +259,10 @@ Read-only, `NoFile`; `:q` never warns unsaved, `:w` is a no-op (mode
   canonical names).
 - `:make` — vim-canonical alias (runs the configured build command,
   populates the error list).
+- `:compilation-kill` — kill the running compilation child
+  (`CompilationService::kill()`), bound to `<C-c>` in `compilation-mode`
+  (§6). Subsystem-coupled but not LSP; the dashed name is the single
+  alias (no collapsed / generic-name forms).
 - The **error-list** navigation commands (`:next-error` family +
   `:error-list` / `:problems`) and their vim `:c*` aliases live with the
   error-list substrate — see [`error-list.md`](error-list.md) §2.

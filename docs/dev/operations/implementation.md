@@ -5512,6 +5512,61 @@ conversation UI). Slice plans archived under
 
 ---
 
+## compilation-mode + error-list (✅ core complete, 2026-07-23)
+
+Design fragments:
+[`../architecture/compilation-mode.md`](../architecture/compilation-mode.md)
+(the runner + `*compilation*` / `*problems*`) and
+[`../architecture/error-list.md`](../architecture/error-list.md) (the
+core error-list / quickfix substrate). Slice plan + status:
+[`slice-plans/compilation-mode.md`](slice-plans/compilation-mode.md).
+Native built-in (`lattice-compilation` crate + `SubsystemBoot` install
+seam); Option C — streaming buffer primary, error-list navigation,
+`*problems*` multibuffer secondary.
+
+What's done:
+
+- **Streaming `*compilation*` buffer** — `:compile <cmd>` / `:recompile`
+  / `:make` run a shell command **off the UI thread** (`spawn_blocking`
+  child + two dedicated pipe-reader threads); output streams into a
+  read-only synthetic `Document` created through the mode-owned
+  `ModeActivator::ensure_named_document` seam. `compilation-mode` (major,
+  ReadOnly + NoFile) owns the keymap, drain, parser wiring, and handler
+  bodies. Kill-prior-on-`:recompile`; exit summary line.
+- **Compilation headerline** — mode-owned sticky view-header virtual row
+  (twin of project-search's): command (emphasis) + spinner while running
+  + success/failure icon and error/warning counts when finished. Drain
+  owns the state; theme-resolved colours (`compilation.headerline.*`).
+- **4-parser tool-agnostic error list** — `ParserRegistry::with_builtins`
+  registers CargoRustc (multi-line) + GnuStyle + TestPanic (Rust
+  `thread '…' panicked at …`) + General (catch-all `file:line:col`
+  anywhere, `is_file_like`-gated, registered last), de-duped by
+  `(path, line, col)`. **Both
+  stdout and stderr are parsed** (test panics print on stdout), merged
+  through a shared `Arc<Mutex<Vec<ErrorEntry>>>` → `InboundBus` →
+  `AppEffect::SetErrorList`. Phase 7 opens WASM parser contribution.
+- **Navigation** — the error list is core `Editor` state (like the jump
+  ring), walked by generic `:next-error` family + vim `:c*` aliases +
+  Builtin `]qq`/`[qq`/`]qf`/`[qf`/`]Q`/`[Q` from any buffer; survives
+  closing `*compilation*`; no diagnostic fallback. `<CR>` in
+  `*compilation*` parses the cursor line (interleaving-proof) and jumps +
+  syncs the index. `<C-c>` (mode-dispatchable chord) → `:compilation-kill`
+  → `CompilationService::kill()`.
+- **Decorations** — severity gutter marks (native `render_state` →
+  `DecorationCtx` → `Mode::gutter_decorations` path, shared with LSP/diff)
+  + location-line background tint (`compilation.location` theme element);
+  both produced off-thread in the drain.
+- **`*problems*` view** — `:problems` / `:copen` groups error-list entries
+  as anchored, editable source excerpts (multibuffer search-provider
+  template); `:error-list` / `:cl` is the fuzzy picker. Third view of the
+  one list (step / pick / group). Generic multibuffer `<CR>` jump-to-source
+  + excerpt motions apply.
+
+Deferred (⛔): CM.5 ANSI-SGR → decorations; CM.6 WASM-contributable
+parsers (Phase 7 plugin host).
+
+---
+
 ## Conventions for updating this doc
 
 - Update the **Phase status** table whenever a phase advances.

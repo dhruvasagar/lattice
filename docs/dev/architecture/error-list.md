@@ -109,11 +109,17 @@ transport pattern LSP uses for its own async host-state updates,
 **not** any plugin path.
 
 Today the sole producer is [compilation mode](compilation-mode.md),
-whose tool-agnostic parser turns any CLI tool's `file:line:col` output
-into entries. The list is producer-agnostic by construction: project
-search (and other tools) can feed the identical list later with zero
-change to the navigation above. LSP diagnostics are deliberately **not**
-a producer — they keep their own navigation surfaces (§2).
+whose four built-in parsers (cargo/rustc, gnu-style, a `file:line:col`
+catch-all, and a Rust test/`panic!` matcher) turn any CLI tool's
+`file:line:col` output into entries — see
+[`compilation-mode.md`](compilation-mode.md) §5 for the parser detail.
+Note that **both** the compiler's stderr *and* the process's stdout are
+parsed, so `cargo test` panics (which print `thread '…' panicked at
+path:line:col` on stdout) populate the list alongside compiler and
+linter diagnostics. The list is producer-agnostic by construction:
+project search (and other tools) can feed the identical list later with
+zero change to the navigation above. LSP diagnostics are deliberately
+**not** a producer — they keep their own navigation surfaces (§2).
 
 ## 4. Three views of one list
 

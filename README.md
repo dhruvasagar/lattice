@@ -218,7 +218,8 @@ flowchart TD
 | `lattice-oil`          | Oil-style directory buffer kind + state types.                                                           | ✅ stable   |
 | `lattice-lsp`          | LSP client: actor pool, capability fingerprinting, diagnostics layer, supervisor, watcher subscriptions. | ✅ stable   |
 | `lattice-cells`        | Pure data substrate for the cell-grid renderer: `CellMatrix`, `DisplayMatrix`, `VirtualRow`, display-slice iteration. No I/O, no rendering. | ✅ stable   |
-| `lattice-multibuffer`  | Multibuffer data model, excerpt layout, major mode, motions, header/fold virtual-row providers.          | 🚧 active   |
+| `lattice-multibuffer`  | Multibuffer data model, excerpt layout, major mode, motions, `<CR>` jump-to-source, header/fold virtual-row providers.          | 🚧 active   |
+| `lattice-compilation`  | `:compile`/`:recompile`/`:make` runner, streaming `*compilation*` buffer + headerline, 4-parser tool-agnostic error list (stdout+stderr), `<CR>` jump / `<C-c>` kill, `*problems*` view. | 🚧 active   |
 | `lattice-diff`         | Two-way and three-way hunk computation over `ropey::Rope` inputs (Histogram algorithm via `imara-diff`). Pure data; no I/O. | 🚧 active   |
 | `lattice-terminal`     | Terminal emulator state machine + cell grid (`alacritty_terminal`). Backs the terminal buffer kind.     | 🚧 active   |
 | `lattice-agent`        | The direction-independent agent capability surface: the `EditorAccess` port, the shared `review_diff` seam, per-process trace-log rings. Backs both agent integrations. | 🚧 active   |
@@ -522,7 +523,8 @@ The granular pre-Phase-4 polish plan, plus the upcoming Phase 4 work:
 - [x] Unified `BufferRegistry`: documents and trees in one keyspace; `BufferFlags { listed, hidden }`
 - [x] Vim-style pane visuals: per-pane status line, `│` separator, inactive dim — all `:set ui.*`
 - [x] Hover popup (LSP `K`); inline completion popup (vertico-style)
-- [x] Multibuffer / excerpt display: `lattice-multibuffer` crate, excerpt layout, virtual-row header providers, composed→source row map, scrolling
+- [x] Multibuffer / excerpt display: `lattice-multibuffer` crate, excerpt layout, virtual-row header providers, composed→source row map, scrolling, generic `<CR>` jump-to-source
+- [x] Compilation mode: `:compile`/`:recompile`/`:make` any CLI tool, streaming `*compilation*` + headerline, 4-parser tool-agnostic error list (stdout+stderr; cargo test panics), `:next-error`/`]qq`, `:error-list` picker, `*problems*` view, `<C-c>` kill
 - [x] `*messages*` buffer (synthetic Document, subsystem-owned streaming content)
 - [x] Pane groups (D.4) — foundation for diff side-by-side, `:set scrollbind`, `:windo`
 - [x] Virtual rows + `DisplayMatrix` — above/below-anchored inlays, fold summaries, header rows

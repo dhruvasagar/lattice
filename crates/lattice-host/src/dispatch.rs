@@ -6154,10 +6154,18 @@ impl Editor {
             // Once popup routing is fully unified, this arm merges
             // into Document below.
             BufferKind::Help => self.popup_buffer.unwrap_or(self.document_buffer_id),
+            // Pane-scoped kinds whose content lives in the active pane's
+            // own buffer, NOT `self.document` (which stays the underlying
+            // Document — `activate_file_tree` / `activate_oil` set
+            // `pane.buffer_id` but deliberately never touch
+            // `document_buffer_id`). Their id must come from the pane, or
+            // mode-lookup / motion routing resolves against the stale
+            // document buffer and misroutes (same reason Help is
+            // special-cased above — `self.document` is not switched).
+            BufferKind::FileTree | BufferKind::Oil | BufferKind::Terminal => {
+                self.active_pane_buffer_id()
+            }
             BufferKind::Document
-            | BufferKind::FileTree
-            | BufferKind::Oil
-            | BufferKind::Terminal
             | BufferKind::Messages
             | BufferKind::Multibuffer
             | BufferKind::Dashboard => self.document_buffer_id,
@@ -7042,10 +7050,13 @@ impl Editor {
         let id = self.ensure_named_synthetic_document(
             crate::command_line_mode::COMMAND_LINE_BUFFER_NAME,
             crate::command_line_mode::CommandLineMode::mode_id(),
+            // MB.1: the `*command-line*` buffer is an internal editing
+            // surface, not a user buffer — `ephemeral` keeps it out of
+            // `:ls` and the `:bn`/`:bp` cycle (it is already `unlisted`).
             lattice_core::BufferFlags {
                 listed: false,
                 hidden: false,
-                ephemeral: false,
+                ephemeral: true,
             },
         );
         self.focus_editing_buffer(id);
@@ -21016,6 +21027,15 @@ impl Editor {
         };
         self.position_history_cursor = idx;
         let entry = self.position_history[idx];
+        // Walking to a real (non-popup) buffer while a popup is focused
+        // must LEAVE the popup first. Otherwise `popup_focused` stays set
+        // and `active_text()` (hence `clamp_cursor_to_active_buffer`) reads
+        // the stale popup buffer, clamping the restored cursor against the
+        // wrong content — e.g. `<C-o>` back to the doc lands on line 0
+        // because it clamped against the one-line help popup.
+        if self.popup_focused && !matches!(entry.buffer, BufferKind::Help) {
+            self.dismiss_popup();
+        }
         match entry.buffer {
             // Messages + Dashboard buffers share the activate_document
             // path (rope-backed); the kind tag is preserved via
@@ -28086,19 +28106,39 @@ impl Editor {
     pub fn build_list_buffers_content(&self) -> lattice_help::HelpContent {
         use crate::buffer_registry::BufferData;
         use lattice_core::BufferKind;
-        let ids = self.buffers.sorted_ids();
+        // PU.5 / MB.1: ephemeral buffers (completion docs, previews, the
+        // internal `*command-line*` editing surface) are invisible to
+        // `:ls` — the row loop below skips them, so the summary counts
+        // must too or the total won't match the rows shown.
+        let ids: Vec<BufferId> = self
+            .buffers
+            .sorted_ids()
+            .into_iter()
+            .filter(|id| {
+                !self
+                    .buffers
+                    .flags_of(*id)
+                    .map(|f| f.ephemeral)
+                    .unwrap_or(false)
+            })
+            .collect();
         let active_id = self.active_pane_buffer_id();
-        let doc_count = self.buffers.document_ids_sorted().len();
-        let tree_count = self.buffers.file_tree_ids_sorted().len();
-        let help_count = self.buffers.help_ids_sorted().len();
-        let msg_count = self.buffers.messages_ids_sorted().len();
+        let count_kind = |k: BufferKind| {
+            ids.iter()
+                .filter(|id| self.buffers.kind_of(**id) == Some(k))
+                .count()
+        };
+        let doc_count = count_kind(BufferKind::Document);
+        let tree_count = count_kind(BufferKind::FileTree);
+        let help_count = count_kind(BufferKind::Help);
+        let msg_count = count_kind(BufferKind::Messages);
         // K.4.8 (2026-06-02): Multibuffer counted separately from
         // Messages now that the per-kind listing row distinguishes
         // `msg` from `mb`. The summary line reflects this so users
         // see at a glance how many multibuffer views are open
         // (project-search results, LSP-references views, future
         // diff multibuffers per multibuffer-views.md §A).
-        let mb_count = self.buffers.multibuffer_ids_sorted().len();
+        let mb_count = count_kind(BufferKind::Multibuffer);
         let mut lines: Vec<String> = Vec::new();
         lines.push(format!(
             "{} open buffer(s) ({} document, {} tree, {} help, {} message, {} multibuffer):",

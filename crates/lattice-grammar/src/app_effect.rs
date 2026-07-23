@@ -785,6 +785,9 @@ pub enum AppEffect {
         bg: u32,
         fg: u32,
     },
+    /// CM.3d (2026-07-22): kill the running compilation child
+    /// process. The host arm calls `CompilationService::kill()`.
+    CompilationKill,
     /// CM.4 (2026-07-22): `:copen`. The host arm reads the core
     /// error list and calls
     /// `lattice_multibuffer::providers::problems::create_problems_view`,

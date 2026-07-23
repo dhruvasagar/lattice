@@ -220,6 +220,9 @@ pub struct ActionIds {
     /// `Action::MoveTab(u32)` payload; the CommandId here just
     /// names the action for keymap binding + plugin lookup.
     pub only_tab: CommandId,
+    /// CM.3d (2026-07-22): `<C-c>` chord in Normal mode.
+    /// Graceful editor shutdown via `AppEffect::Quit`.
+    pub quit: CommandId,
     pub move_tab: CommandId,
     /// T4 (2026-05-25): `<C-w>T` — move the active pane to a
     /// fresh tab. Dispatched as `Action::MovePaneToNewTab`
@@ -1253,6 +1256,12 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
             "action:only-tab",
             "`:tabonly`: close every tab except the active one.",
             AppEffect::OnlyTab,
+        ),
+        quit: register_simple(
+            registry,
+            "action:quit",
+            "`<C-c>` in Normal mode: graceful editor shutdown.",
+            AppEffect::Quit,
         ),
         // move-tab carries no fixed target; the dispatch path
         // surfaces it via the count-aware `Action::MoveTab(n)`

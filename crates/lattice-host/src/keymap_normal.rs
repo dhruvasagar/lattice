@@ -1111,10 +1111,13 @@ pub fn register_normal_bindings(
     // land; every CTRL-bearing chord now flows through the
     // registry like every other binding.
     //
-    // `<C-c>` (the universal quit hatch) is intercepted by
-    // `input::translate` *before* mode dispatch and so never
-    // reaches this trie -- skipping the registration is
-    // intentional.
+    // CM.3d (2026-07-22): `<C-c>` is deliberately NOT bound at the
+    // Builtin layer — it belongs to modes. Compilation-mode binds
+    // it to `:compilation-kill`; ACP conversation-mode binds it to
+    // interrupt; claude-code-mode binds it for terminal signals.
+    // Users who want `<C-c>` → quit can `:map <C-c> :qa<CR>` or
+    // bind it in their init.rs. The universal quit hatch in
+    // `input::translate` was removed.
 
     // `<C-d>` / `<C-u>` -- half-page scroll. Bake `Count(10)`
     // into the invocation so 8.g.iv's `attach_count` honours it

@@ -115,6 +115,22 @@ pub fn register_compilation_ex_commands(registry: &mut CommandRegistry) {
             surface_form: SurfaceForm::Keyword,
         },
     );
+
+    // CM.3d (2026-07-22): kill the running compilation via `<C-c>`.
+    // No args; the host arm calls CompilationService::kill().
+    registry.register_ex_command(
+        "compilation-kill",
+        "Kill the running compilation child process.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Arc::new(|_s: &str, _bang: bool| Ok(Args::None)),
+            apply: Arc::new(|_| Ok(Effect::AppAction(AppEffect::CompilationKill))),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
 }
 
 #[cfg(test)]

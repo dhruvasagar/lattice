@@ -7458,6 +7458,15 @@ impl Editor {
             AppEffect::CompilationThemeColors { bg, fg } => {
                 self.compilation_theme_colors = std::sync::Arc::new((bg, fg));
             }
+            // CM.3d (2026-07-22): kill the running compilation.
+            AppEffect::CompilationKill => {
+                // Look up the registered compilation service and
+                // call its kill method. No-op if unregistered.
+                if let Some(svc) = self.services.get::<lattice_compilation::CompilationServiceHandle>() {
+                    (**svc).kill();
+                    self.set_message(EchoLevel::Info, "compilation killed".to_string());
+                }
+            }
             // CM.3b (2026-07-22): `<CR>` on a `*compilation*` location
             // line. The `compilation-mode` handler already parsed the
             // cursor line into `(path, line, col)`; jump there (records

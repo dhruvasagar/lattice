@@ -497,14 +497,37 @@ mod tests {
     // ---- Universal ----
 
     #[test]
-    fn ctrl_c_quits_in_any_mode() {
+    fn ctrl_c_in_normal_mode_is_unbound() {
+        // <C-c> has no Builtin-layer binding — it's left for modes
+        // (compilation-mode, ACP conversation-mode, etc.) to bind.
         let (_, b) = fixture();
-        for modal in [ModalState::Normal, ModalState::Insert] {
-            assert!(matches!(
-                translate(ctx(modal, &b), ctrl(KeyCode::Char('c'))),
-                Action::Quit
-            ));
-        }
+        let action = translate(ctx(ModalState::Normal, &b), ctrl(KeyCode::Char('c')));
+        assert!(
+            matches!(action, Action::None),
+            "Normal-mode <C-c> must be unbound at Builtin layer; got {action:?}"
+        );
+    }
+
+    #[test]
+    fn ctrl_c_in_insert_mode_does_not_quit() {
+        let (_, b) = fixture();
+        let action = translate(ctx(ModalState::Insert, &b), ctrl(KeyCode::Char('c')));
+        assert!(
+            !matches!(action, Action::Quit),
+            "Insert-mode <C-c> must not quit — no universal hatch"
+        );
+    }
+
+    #[test]
+    fn ctrl_c_in_command_mode_does_not_quit() {
+        // <C-c> is no longer a universal quit hatch; it flows
+        // through the command-line input as a regular key.
+        let (_, b) = fixture();
+        let action = translate(ctx(ModalState::Command, &b), ctrl(KeyCode::Char('c')));
+        assert!(
+            !matches!(action, Action::Quit),
+            "Command-mode <C-c> must not quit — no universal hatch"
+        );
     }
 
     // ---- Normal mode motions ----
@@ -856,14 +879,12 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_c_in_command_quits_immediately() {
-        // Universal ctrl+c quits regardless of mode -- the user shouldn't
-        // need to cancel the command line first.
+    #[test]
+    fn ctrl_c_in_command_mode_is_regular_key() {
+        // <C-c> is no longer a universal quit hatch in command mode.
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(ctx(ModalState::Command, &b), ctrl(KeyCode::Char('c'))),
-            Action::Quit
-        ));
+        let action = translate(ctx(ModalState::Command, &b), ctrl(KeyCode::Char('c')));
+        assert!(!matches!(action, Action::Quit));
     }
 
     // ---- Search modal ----
@@ -949,13 +970,13 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_c_in_search_quits_immediately() {
+    #[test]
+    fn ctrl_c_in_search_does_not_quit() {
+        // <C-c> is no longer a universal quit hatch in search mode.
         let (_, b) = fixture();
         let modal = ModalState::Search(SearchDirection::Forward);
-        assert!(matches!(
-            translate(ctx(modal, &b), ctrl(KeyCode::Char('c'))),
-            Action::Quit
-        ));
+        let action = translate(ctx(modal, &b), ctrl(KeyCode::Char('c')));
+        assert!(!matches!(action, Action::Quit));
     }
 
     // ---- WORD motions / D/C/S / J / ;/, ----
@@ -1602,16 +1623,14 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_c_still_quits_when_help_is_active() {
-        // The universal escape hatch sits above the help intercept.
+    fn ctrl_c_in_normal_mode_under_help_is_unbound() {
+        // <C-c> has no Builtin-layer binding regardless of buffer.
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(
-                ctx_help_active(ModalState::Normal, &b),
-                ctrl(KeyCode::Char('c'))
-            ),
-            Action::Quit
-        ));
+        let action = translate(
+            ctx_help_active(ModalState::Normal, &b),
+            ctrl(KeyCode::Char('c')),
+        );
+        assert!(matches!(action, Action::None));
     }
 
     // ---- Keymap drift detection (DESIGN.md §5.2.3, §5.11) ----

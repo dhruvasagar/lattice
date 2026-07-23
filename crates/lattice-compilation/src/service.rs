@@ -48,6 +48,11 @@ pub trait CompilationService: Send + Sync + std::fmt::Debug {
     ///
     /// `cwd`: working directory for the child process.
     fn run(&self, cmdline: Option<String>, cwd: Option<PathBuf>);
+    /// Kill the currently running compilation child process, if any.
+    /// No-op when no child is running. The reader pipes will EOF on
+    /// the closed child, and the drain will publish a Finished chunk
+    /// with the termination summary.
+    fn kill(&self);
 }
 
 /// Per the `ServiceRegistry` Arc/TypeId convention: register and
@@ -253,6 +258,15 @@ impl CompilationService for DefaultCompilationService {
             };
             publish(&events, OutputChunk::Finished { summary });
         });
+    }
+
+    fn kill(&self) {
+        if let Ok(mut st) = self.state.lock() {
+            if let Some(mut prior) = st.child.take() {
+                let _ = prior.kill();
+                let _ = prior.wait();
+            }
+        }
     }
 }
 

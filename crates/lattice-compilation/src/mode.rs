@@ -75,6 +75,11 @@ fn compilation_keymap_entries() -> &'static [KeymapEntry] {
                 cmd: "action:compilation-recompile"
             },
             keymap_entry! {
+                mode: Normal, chord: "<C-c>",
+                doc: "Kill the running compilation",
+                cmd: "ex:compilation-kill"
+            },
+            keymap_entry! {
                 mode: Normal, chord: "<CR>",
                 doc: "Jump to the source location on the cursor line (syncs the error list index)",
                 cmd: "action:compilation-jump"

@@ -372,6 +372,13 @@ impl WitBoundary for NativeAppEffect {
                         .to_string(),
                 );
             }
+            NativeAppEffect::CompilationKill => {
+                return Err(
+                    "AppEffect::CompilationKill kills the running compilation child process; \
+                     its plugin (WIT) surface is deferred with the plugin host"
+                        .to_string(),
+                );
+            }
             // CM.4: `:copen` / `:cclose` open/close the `*problems*`
             // multibuffer over core error state; like CompileRun /
             // ErrorNav a native built-in, WIT surface deferred with

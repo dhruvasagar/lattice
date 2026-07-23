@@ -420,6 +420,10 @@ pub enum Action {
     /// Walk to a newer entry, eventually returning to the user's
     /// in-progress line.
     CommandLineHistoryNext,
+    /// MB.2: toggle the `:` line's expanded tier-2 mini-buffer band
+    /// (`<C-x><C-e>`); collapse returns the edited text to the one-row
+    /// line for review.
+    CommandLineToggleExpand,
     /// Replace the echo area with a typed message.
     Echo(EchoMessage),
 

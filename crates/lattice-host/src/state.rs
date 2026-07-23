@@ -88,6 +88,13 @@ pub struct CommandLineFocus {
     pub prior_leftcol: u32,
     /// Modal state at focus time, restored on close.
     pub prior_modal: ModalState,
+    /// MB.2: whether the `:` line is **expanded** into the full-modal
+    /// mini-buffer band (`<C-x><C-e>`). Tier 1 (`false`): the one-row
+    /// readline `:` line under `ModalState::Command`. Tier 2 (`true`):
+    /// the same `*command-line*` surface grown in place with the full vim
+    /// grammar (real Normal / Insert / Visual). Collapsing returns the
+    /// edited text to the one-row line for review.
+    pub expanded: bool,
 }
 
 /// Hot-path option cache. Mirrors the typed-options registry's

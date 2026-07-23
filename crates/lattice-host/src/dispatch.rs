@@ -2545,6 +2545,13 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         // history-step arms walk `command_history` cursor and
         // restore the pending unfinished line on the lower bound.
         Action::EnterCommandLine => {
+            // MB.2: `:` is a no-op while the command line is already open
+            // (the expanded tier-2 band edits under real Normal mode, where
+            // `:` would otherwise try to open a nested command line). You
+            // are already *in* the command line — there is nothing to open.
+            if editor.command_line_active() {
+                return;
+            }
             // Vim's Visual `:` → `:'<,'>`. When entering the command line
             // from Visual, capture the selection into `last_visual` (the
             // single source `'<` / `'>` and `Range::Selection` resolve
@@ -2665,6 +2672,7 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         Action::CommandLineAppend(c) => editor.do_command_line_append(c),
         Action::CommandLineBackspace => editor.do_command_line_backspace(),
         Action::CommandLineSubmit => editor.do_command_line_submit(_out),
+        Action::CommandLineToggleExpand => editor.do_command_line_toggle_expand(),
         Action::CommandLineClear => editor.do_command_line_clear(),
         Action::CommandLineDeleteWordBackward => editor.do_command_line_delete_word_backward(),
         Action::CommandLineDescribeUnderCursor => {
@@ -6823,6 +6831,40 @@ impl Editor {
         self.command_line_focus.is_some()
     }
 
+    /// MB.2: `true` while the `:` line is **expanded** into the tier-2
+    /// full-modal mini-buffer band (`<C-x><C-e>`). `false` in the one-row
+    /// readline line (tier 1) and when the command line is closed. The
+    /// renderer reads this to grow the echo-area row into a band (pushing
+    /// the mode-line up); the dispatcher reads it to allow real modal
+    /// editing on the `*command-line*` buffer.
+    pub fn command_line_expanded(&self) -> bool {
+        self.command_line_focus
+            .as_ref()
+            .is_some_and(|f| f.expanded)
+    }
+
+    /// MB.2: `<C-x><C-e>` — toggle the `:` line between the one-row
+    /// readline line (tier 1, `ModalState::Command`, insert-only) and the
+    /// expanded full-modal band (tier 2). Expanding drops into `Insert` on
+    /// the `*command-line*` buffer so the whole vim grammar is live
+    /// (Normal / Insert / Visual, motions, operators, registers, undo);
+    /// collapsing returns to `ModalState::Command` with the edited text
+    /// for review — no auto-execute. No-op when the `:` line is closed.
+    pub fn do_command_line_toggle_expand(&mut self) {
+        if !self.command_line_active() {
+            return;
+        }
+        let expanding = !self.command_line_expanded();
+        if let Some(f) = self.command_line_focus.as_mut() {
+            f.expanded = expanding;
+        }
+        self.modal = if expanding {
+            ModalState::Insert
+        } else {
+            ModalState::Command
+        };
+    }
+
     /// MB.1: ensure a focused `*command-line*` buffer exists so the
     /// buffer-backed setter/handlers can operate. Production opens the `:`
     /// line through [`Self::open_command_line`] first (so this is a no-op
@@ -6898,6 +6940,7 @@ impl Editor {
                 prior_scroll: self.scroll,
                 prior_leftcol: self.leftcol,
                 prior_modal: self.modal,
+                expanded: false,
             });
         }
         if let Some(handle) = self.buffers.document_handle(id) {
@@ -7304,6 +7347,9 @@ impl Editor {
             AppEffect::EnterCommandLine => out.next_actions.push(Action::EnterCommandLine),
             AppEffect::CommandLineSubmit => out.next_actions.push(Action::CommandLineSubmit),
             AppEffect::CommandLineCancel => out.next_actions.push(Action::CommandLineCancel),
+            AppEffect::CommandLineToggleExpand => {
+                out.next_actions.push(Action::CommandLineToggleExpand)
+            }
             AppEffect::CommandLineHistoryPrev => {
                 out.next_actions.push(Action::CommandLineHistoryPrev)
             }

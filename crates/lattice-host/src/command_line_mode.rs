@@ -45,6 +45,7 @@ pub const CMDLINE_HISTORY_NEXT: &str = "action:command-line-history-next";
 pub const CMDLINE_COMPLETE: &str = "action:command-line-complete";
 pub const CMDLINE_COMPLETE_PREV: &str = "action:command-line-complete-prev";
 pub const CMDLINE_DESCRIBE: &str = "action:command-line-describe-under-cursor";
+pub const CMDLINE_TOGGLE_EXPAND: &str = "action:command-line-toggle-expand";
 
 /// `command-line-mode`: the major mode of the `*command-line*` buffer.
 pub struct CommandLineMode;
@@ -119,6 +120,7 @@ fn command_line_entries() -> &'static [KeymapEntry] {
             keymap_entry! { mode: Insert, chord: "<Tab>", doc: "Complete / next candidate", cmd: "action:command-line-complete" },
             keymap_entry! { mode: Insert, chord: "<S-Tab>", doc: "Previous candidate", cmd: "action:command-line-complete-prev" },
             keymap_entry! { mode: Insert, chord: "<C-h>", doc: "Describe command / arg under cursor", cmd: "action:command-line-describe-under-cursor" },
+            keymap_entry! { mode: Insert, chord: "<C-x><C-e>", doc: "Expand the `:` line into the full-modal mini-buffer band (or collapse it)", cmd: "action:command-line-toggle-expand" },
         ]
     })
 }

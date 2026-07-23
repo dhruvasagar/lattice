@@ -188,7 +188,8 @@ impl WitBoundary for NativeAppEffect {
             | NativeAppEffect::CommandLineHistoryNext
             | NativeAppEffect::CommandLineComplete
             | NativeAppEffect::CommandLineCompletePrev
-            | NativeAppEffect::CommandLineDescribeUnderCursor => {
+            | NativeAppEffect::CommandLineDescribeUnderCursor
+            | NativeAppEffect::CommandLineToggleExpand => {
                 return Err(
                     "AppEffect::CommandLine* are host-internal command-line-mode effects \
                      (rich-minibuffer MB.1); no plugin (WIT) surface"

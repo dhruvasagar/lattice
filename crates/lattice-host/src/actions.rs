@@ -100,6 +100,7 @@ pub struct ActionIds {
     pub command_line_complete: CommandId,
     pub command_line_complete_prev: CommandId,
     pub command_line_describe_under_cursor: CommandId,
+    pub command_line_toggle_expand: CommandId,
     pub oil_navigate_up: CommandId,
     pub reselect_last_visual: CommandId,
     pub paste_after: CommandId,
@@ -607,6 +608,13 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
             "action:command-line-describe-under-cursor",
             "MB.1: describe the command / arg under the `:` cursor.",
             AppEffect::CommandLineDescribeUnderCursor,
+        ),
+        command_line_toggle_expand: register_simple(
+            registry,
+            "action:command-line-toggle-expand",
+            "MB.2: `<C-x><C-e>`: expand the `:` line into the full-modal \
+             mini-buffer band, or collapse it back to the one-row line.",
+            AppEffect::CommandLineToggleExpand,
         ),
         oil_navigate_up: register_simple(
             registry,
@@ -1671,6 +1679,10 @@ mod tests {
             (
                 ids.command_line_describe_under_cursor,
                 "action:command-line-describe-under-cursor",
+            ),
+            (
+                ids.command_line_toggle_expand,
+                "action:command-line-toggle-expand",
             ),
             (ids.oil_navigate_up, "action:oil-navigate-up"),
             (ids.reselect_last_visual, "action:reselect-last-visual"),

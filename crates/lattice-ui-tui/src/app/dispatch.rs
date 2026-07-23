@@ -295,6 +295,7 @@ impl App {
             | Action::PushDigit(_)
             | Action::Echo(_)
             | Action::CommandLineCancel
+            | Action::CommandLineToggleExpand
             | Action::SelectRegister(_)
             | Action::CommandLineDeleteChord
             | Action::CommandLineDismissCompletion

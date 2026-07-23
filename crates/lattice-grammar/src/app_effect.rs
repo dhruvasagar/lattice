@@ -299,6 +299,10 @@ pub enum AppEffect {
     /// MB.1: `<C-h>` in `command-line-mode` — describe the command / arg
     /// under the cursor.
     CommandLineDescribeUnderCursor,
+    /// MB.2: `<C-x><C-e>` in `command-line-mode` — toggle the `:` line's
+    /// **expanded** tier-2 mini-buffer band (full modal editing in place),
+    /// or collapse it back to the one-row readline line for review.
+    CommandLineToggleExpand,
     /// Lattice's `-`. Open / step up in the oil-style directory
     /// view (DESIGN.md §5.9.4). Promoted from
     /// `Action::OilNavigateUp` in slice 8.i.1.e.

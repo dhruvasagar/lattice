@@ -416,6 +416,55 @@ mod tests {
         );
     }
 
+    // ── MB.2 (rich minibuffer, tier 2): `<C-x><C-e>` in-place expand ──
+
+    /// `<C-x><C-e>` toggles the `:` line between the one-row readline line
+    /// (`ModalState::Command`) and the expanded full-modal band
+    /// (`ModalState::Insert`, full grammar). Collapse returns to the
+    /// one-row line for review; the edited text survives both ways.
+    #[test]
+    fn mb2_toggle_expand_flips_state_and_modal_preserving_text() {
+        let mut a = app_with("hello\n", 10);
+        a.apply(Action::EnterCommandLine);
+        press_chars(&mut a, "e foo");
+        assert!(!a.editor.command_line_expanded());
+        assert!(matches!(a.editor.modal, ModalState::Command));
+
+        a.apply(Action::CommandLineToggleExpand);
+        assert!(a.editor.command_line_expanded(), "expand sets tier-2");
+        assert!(
+            matches!(a.editor.modal, ModalState::Insert),
+            "expand drops into full-modal Insert on the band"
+        );
+        assert_eq!(a.editor.command_line(), "e foo", "text survives expand");
+
+        a.apply(Action::CommandLineToggleExpand);
+        assert!(!a.editor.command_line_expanded(), "collapse clears tier-2");
+        assert!(
+            matches!(a.editor.modal, ModalState::Command),
+            "collapse returns to the readline line for review"
+        );
+        assert_eq!(a.editor.command_line(), "e foo", "text survives collapse");
+    }
+
+    /// `:` is a no-op while the command line is already open — it must not
+    /// open a nested command line (the guard the expanded tier-2 band's
+    /// Normal mode relies on).
+    #[test]
+    fn mb2_colon_is_noop_while_command_line_open() {
+        let mut a = app_with("hello\n", 10);
+        a.apply(Action::EnterCommandLine);
+        press_chars(&mut a, "abc");
+        let buf = a.editor.document_buffer_id;
+        a.apply(Action::EnterCommandLine);
+        assert!(a.editor.command_line_active());
+        assert_eq!(a.editor.command_line(), "abc", "text preserved, not reset");
+        assert_eq!(
+            a.editor.document_buffer_id, buf,
+            "same `*command-line*` buffer, not a nested one"
+        );
+    }
+
     #[test]
     fn prefer_aliases_rewrites_canonical_to_alias() {
         use lattice_completion::{
@@ -520,8 +569,10 @@ mod tests {
     #[test]
     fn enter_command_line_clears_buffer_and_sets_modal() {
         let mut a = app_with("abc", 10);
-        a.editor.set_command_line_text("stale");
-        a.editor.publish_render_state();
+        // A stale echo message must be cleared when the `:` line opens.
+        // (The buffer starts empty on a fresh open; MB.2's `:`-no-op guard
+        // means we can't seed a "stale" buffer without opening the line,
+        // which is itself the no-op path — covered separately.)
         a.editor.last_message = Some(EchoMessage {
             text: "stale".into(),
             level: EchoLevel::Info,

@@ -1,0 +1,94 @@
+# Rich minibuffer — slice plan
+
+> **Status: 📝 PLANNED (2026-07-23).** Sequencing companion to the design
+> fragment [`../../architecture/rich-minibuffer.md`](../../architecture/rich-minibuffer.md)
+> (the *what + why*). This file owns *when + in what order + status*.
+> User docs land per slice (`docs/user/modal-editing.md` / `ex-commands.md`
+> command-line section).
+
+Two-tier model: the `:` line is a readline-grade buffer (insert-only);
+`<C-x><C-e>` expands the command into a full editing mini-buffer;
+history is walkable + picker-browsable. Land each slice green; ship
+doc + test + graceful-error together. The `:` line is latency-critical —
+every slice re-verifies keystroke→glyph.
+
+## Phase 1 — the readline `:` line (tier 1)
+
+- **MB.1 — `command-line-mode` + buffer-backed readline `:` line.** 📝
+  - `*command-line*` one-line synthetic `Document` (unlisted, `NoFile`),
+    created via `ModeActivator::ensure_named_document` on `:`;
+    `command-line-mode` major, **insert-only** (no Normal entry).
+  - Keys route through the normal Insert dispatcher — the universal
+    insert-mode readline chords (`<C-w>`/`<C-u>`/`<C-a>`/`<C-e>`/`<C-b>`/
+    `<C-f>`, `<Left>`/`<Right>`, `<Del>`) edit it directly; **retire
+    `translate_command` + the `command_line: String` field**.
+  - Mode owns submit/cancel: `<CR>` submit (buffer text → existing
+    `:`-parser → `CommandInvocation` → history push → close → restore
+    prior buffer → dispatch); `<Esc>`/`<C-c>` cancel + restore.
+  - History walk: `<C-p>`/`<C-n>` + `<Up>`/`<Down>` seed from
+    `command_history`, preserving `command_history_pending`.
+  - Render: echo-area row draws the tier-1 buffer's line + cursor —
+    **TUI + GPUI same slice**. Keep the existing completion popup working.
+  - **Test:** open→edit-mid-line (`<Left>`/`<C-w>`/`<C-a>`)→`<CR>` runs
+    the right command; `<Esc>`/`<C-c>` cancels + restores prior
+    buffer/cursor; typo fixed by `<C-b>`-walk submits correctly; history
+    `<C-p>`/`<C-n>` walk restores pending text; latency probe unmoved.
+
+## Phase 2 — the expand mini-buffer (tier 2)
+
+- **MB.2 — `<C-x><C-e>` expand + `command-line-edit-mode`.** 📝
+  - Only in `command-line-mode`: `<C-x><C-e>` opens the current command
+    text as a **full editing buffer** (`command-line-edit-mode`, regular
+    buffer — full vim grammar, registers, undo, multi-line) in a split.
+  - **`command-line.expand-layout` typed option** (§5.12): `hsplit`
+    (default, full-width bottom split) / `vsplit` / `popup`. Mode reads it.
+  - Accept (`<C-x><C-e>` toggle / mode chord) writes edited text back to
+    the tier-1 `:` line + closes the split → user `<CR>`s to execute
+    (**no auto-execute**). `<C-c>` cancels the expansion (keeps pre-expand
+    `:` text).
+  - **Test:** expand→multi-word edit with motions/registers→accept lands
+    edited text in `:` line, then `<CR>` runs it; cancel keeps the
+    original; `expand-layout` option switches presentation; TUI+GPUI.
+
+## Phase 3 — history picker
+
+- **MB.3 — `q:` / `:history` fuzzy history picker.** 📝
+  - `q:` (Normal chord) + `:history` ex-command open a fuzzy picker over
+    `command_history` (reuse the `picker.md` primitive). **Accept loads
+    into the editable `:` line, does NOT execute.** `q:`-from-cmdline
+    seeds the filter with the current text.
+  - **Test:** picker accept lands an editable command that `<CR>` then
+    runs; empty history graceful; prefix-seeded filter from cmdline.
+
+## Phase 4 — richness
+
+- **MB.4 — highlighting + live decorations.** 📝
+  - `command-line` grammar / tokenizer highlights command word / range /
+    flags / args (tier 2, optional tier 1); live **error indicator**
+    (unknown cmd / bad args from the same parser), **parameter hints**
+    (`ArgSpec` metadata), **`:s///` substitution preview** — decoration
+    providers on the two command-line modes, off the UI thread.
+  - **Test:** decorations produced off-thread; error indicator on a bad
+    command; param hint from `ArgSpec`; no paint-time parse.
+
+## Phase 5 — unification
+
+- **MB.5 — unify the `/` search line + other prompts.** 📝
+  - `/` `?` migrate onto the substrate as `search-line-mode` (readline +
+    search history + its own `<C-x><C-e>` expand); delete the parallel
+    search `String`. Substrate ready for `git-commit-line` / `repl-input`.
+  - **Test:** `/` edits mid-pattern + walks search history; incremental-
+    search preview intact.
+
+## Cross-cutting notes
+
+- **Latency guard.** `:`/`/` are on the keystroke→glyph path; MB.1/MB.5
+  must show the ratchet distribution unmoved (the edit is the benched
+  one-line buffer path).
+- **Cross-renderer.** Every render touch (MB.1 echo-area buffer row, MB.2
+  split, MB.4 decorations) lands TUI **and** GPUI in the same slice.
+- **Mode-ownership.** `command-line-mode` / `command-line-edit-mode` /
+  `search-line-mode` own their chords + handler bodies + decoration
+  providers + the `command-line` grammar; zero minibuffer-specific
+  `Editor::do_*`. Acid test: `command_line: String` + `translate_command`
+  are deleted, replaced by a focused buffer.

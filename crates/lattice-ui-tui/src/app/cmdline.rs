@@ -465,6 +465,51 @@ mod tests {
         );
     }
 
+    /// In the expanded band, `<CR>` inserts a newline (multi-line editing)
+    /// and does NOT submit — submit happens only from the collapsed line.
+    #[test]
+    fn mb2_expanded_cr_inserts_newline_not_submit() {
+        let mut a = app_with("hello\n", 10);
+        a.apply(Action::EnterCommandLine);
+        press_chars(&mut a, "e foo");
+        a.apply(Action::CommandLineToggleExpand); // expand → Insert
+        a.apply(Action::CommandLineSubmit); // `<CR>` in the band
+        press_chars(&mut a, "bar");
+        assert!(
+            a.editor.command_line_active(),
+            "expanded `<CR>` must not submit / close the command line"
+        );
+        assert!(
+            a.editor.document.text().starts_with("e foo\nbar"),
+            "expanded `<CR>` inserts a newline (multi-line): {:?}",
+            a.editor.document.text()
+        );
+        assert_eq!(
+            a.editor.command_line(),
+            "e foo",
+            "`command_line()` reads the first line"
+        );
+    }
+
+    /// In the expanded band, `<Esc>` from Insert drops to Normal (full
+    /// modal) rather than cancelling the command line.
+    #[test]
+    fn mb2_expanded_esc_from_insert_goes_to_normal() {
+        let mut a = app_with("hello\n", 10);
+        a.apply(Action::EnterCommandLine);
+        a.apply(Action::CommandLineToggleExpand);
+        assert!(matches!(a.editor.modal, ModalState::Insert));
+        a.apply(Action::CommandLineCancel); // `<Esc>` in the band
+        assert!(
+            a.editor.command_line_active(),
+            "`<Esc>` in the band must not cancel the command line"
+        );
+        assert!(
+            matches!(a.editor.modal, ModalState::Normal),
+            "`<Esc>` in the expanded band drops to Normal for full modal"
+        );
+    }
+
     #[test]
     fn prefer_aliases_rewrites_canonical_to_alias() {
         use lattice_completion::{

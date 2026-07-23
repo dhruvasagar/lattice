@@ -2201,6 +2201,14 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
                         editor.set_command_line_text(&state.original_line);
                     }
                     editor.substitute_preview = None;
+                } else if editor.command_line_expanded()
+                    && matches!(editor.modal, ModalState::Insert)
+                {
+                    // MB.2: in the expanded tier-2 band, `<Esc>` from Insert
+                    // drops to Normal (full modal) — it does NOT cancel the
+                    // command line. `<C-c>` (or `<Esc>` again from Normal,
+                    // handled by the normal dispatcher) closes it.
+                    editor.modal = ModalState::Normal;
                 } else {
                     editor.command_history_cursor = None;
                     editor.command_history_pending = None;
@@ -7046,6 +7054,17 @@ impl Editor {
             .is_some_and(|s| !s.candidates.is_empty())
         {
             self.do_command_line_accept_completion();
+            return;
+        }
+        // MB.2: in the expanded tier-2 band `<CR>` inserts a newline
+        // (multi-line editing). Submit happens only from the collapsed
+        // one-row line — the user `<C-x><C-e>`s back, then `<CR>`s.
+        if self.command_line_expanded() {
+            if let Ok(applied) = self
+                .apply_edit_blocking(lattice_protocol::edit::Edit::insert(self.cursor, "\n"))
+            {
+                self.cursor = applied.inserted_range.end;
+            }
             return;
         }
         if let Some(info) = self.try_resolve_missing_arg_prompt() {
@@ -18957,6 +18976,19 @@ impl Editor {
         // MB.1: when the completion popup is open, `<C-p>` / `<C-n>` (and
         // `<Up>` / `<Down>`) navigate candidates instead of history —
         // matching the pre-MB.1 `completion_open` gate.
+        // MB.2: in the expanded tier-2 band `<Up>` / `<Down>` navigate the
+        // multi-line buffer (history walk would clobber the whole band).
+        // `<C-p>` / `<C-n>` route here too; vertical nav is the right
+        // multi-line behavior. Real history walk stays on the one-row line.
+        if self.command_line_expanded() {
+            if back {
+                self.cursor.line = self.cursor.line.saturating_sub(1);
+            } else {
+                self.cursor.line += 1;
+            }
+            self.clamp_cursor_to_buffer();
+            return;
+        }
         if self
             .completion_state
             .as_ref()

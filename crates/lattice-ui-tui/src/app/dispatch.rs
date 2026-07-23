@@ -158,6 +158,13 @@ impl App {
         let pre_active = self.ad().buffer_kind;
         let pre_popup_focused = self.ad().popup_focused;
         let pre_cursor = self.cursor();
+        // State-A hover-auto-dismiss guard: whether a popup was ALREADY
+        // showing before this action. A popup opened *by* this action
+        // (e.g. `:hover` submitted from the command line, whose submit
+        // legitimately moves the cursor off the `*command-line*` buffer)
+        // must not be dismissed by its own opening cycle — only a
+        // pre-existing hover is stale when the doc cursor then moves.
+        let pre_popup = self.popup().buffer_id;
         // Slice 3c.final.E.5d: pre-clone `action` so the closure
         // can own its copy (needed for `Send + 'static`) while
         // the outer `match action {}` at the tail still has access.
@@ -680,6 +687,7 @@ impl App {
         // and the doc cursor moved. Drop the popup -- it's
         // anchored to the prior symbol and is now stale.
         if popup_in_state_a
+            && pre_popup.is_some()
             && self.ad().buffer_kind == BufferKind::Document
             && self.cursor() != pre_cursor
         {

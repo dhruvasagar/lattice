@@ -155,6 +155,12 @@ pub(super) fn install_help(a: &mut App, h: HelpContent) {
     a.editor.cursor = lattice_protocol::position::Position::ZERO;
     a.editor.scroll = 0;
     a.editor.active_buffer = BufferKind::Help;
+    // 2026-07-22 (`9183b8d7`): `active_text()` / popup content routing is
+    // now gated on `popup_focused`. Production's popup-open path sets it
+    // when the popup takes focus (State B, dispatch.rs); this helper mocks
+    // a focused help popup, so mirror that — without it motions read the
+    // underlying document instead of the popup buffer and clamp to line 0.
+    a.editor.popup_focused = true;
     // 2026-05-26: mirror production's `open_popup` mode activation.
     // Without this, `Editor::run_invocation`'s active-mode runner
     // lookup finds no `help-mode` minor on the popup buffer and

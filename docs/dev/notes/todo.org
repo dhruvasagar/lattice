@@ -15,9 +15,9 @@
 - [X] enhanced, configurable mode-line
 - [ ] language support
 - [ ] transient like menu
-- [ ] compilation-mode
+- [X] compilation-mode
 - [ ] surround operator
-- [ ] argument operator
+- [X] argument operator
 - [X] Search operators
 - [X] borderless gui windows
 - [ ] DAP

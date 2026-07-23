@@ -145,12 +145,13 @@ mod tests {
     }
 
     #[test]
-    fn registers_all_three_commands() {
+    fn registers_all_four_commands() {
         let mut registry = CommandRegistry::new();
         register_compilation_ex_commands(&mut registry);
         assert!(ex_spec(&registry, "compile").is_some());
         assert!(ex_spec(&registry, "recompile").is_some());
         assert!(ex_spec(&registry, "make").is_some());
+        assert!(ex_spec(&registry, "compilation-kill").is_some());
     }
 
     #[test]

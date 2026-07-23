@@ -77,7 +77,7 @@ fn compilation_keymap_entries() -> &'static [KeymapEntry] {
             keymap_entry! {
                 mode: Normal, chord: "<C-c>",
                 doc: "Kill the running compilation",
-                cmd: "ex:compilation-kill"
+                cmd: "compilation-kill"
             },
             keymap_entry! {
                 mode: Normal, chord: "<CR>",
@@ -595,5 +595,44 @@ mod tests {
             },
         );
         assert_eq!(b, "hdr\nline1\ndone\n");
+    }
+
+    #[test]
+    fn keymap_entries_resolve_against_command_registry() {
+        use lattice_grammar::CommandRegistry;
+        let mut registry = CommandRegistry::new();
+        crate::register_compilation_ex_commands(&mut registry);
+        // Also register the action commands the keymap references
+        registry.register_action(
+            "action:compilation-recompile",
+            "doc",
+            lattice_grammar::ActionSpec {
+                args_schema: vec![],
+                apply: std::sync::Arc::new(|_| {
+                    Ok(lattice_grammar::Effect::None)
+                }),
+            },
+        );
+        registry.register_action(
+            "action:compilation-jump",
+            "doc",
+            lattice_grammar::ActionSpec {
+                args_schema: vec![],
+                apply: std::sync::Arc::new(|_| {
+                    Ok(lattice_grammar::Effect::None)
+                }),
+            },
+        );
+
+        let km = CompilationMode.keymap();
+        for entry in &km.entries {
+            if let Some(cmd_name) = entry.command {
+                assert!(
+                    registry.id_by_name(cmd_name).is_some(),
+                    "keymap entry `{}` references command `{cmd_name}` which is not registered",
+                    entry.chord,
+                );
+            }
+        }
     }
 }

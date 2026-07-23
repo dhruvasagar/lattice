@@ -274,6 +274,14 @@ pub enum AppEffect {
     /// required first argument the picker arms the cmdline so
     /// the user can supply it; otherwise executes immediately.
     OpenCommandPicker,
+    /// MB.3: Vim's `q:`. Open the command-line *history* picker
+    /// over `command_history`. `<CR>` loads the chosen command
+    /// into the `:` line WITHOUT executing (the user tweaks /
+    /// `<C-x><C-e>` expands, then `<CR>`s). Fired from an ordinary
+    /// buffer's Normal mode or the expanded tier-2 band's Normal
+    /// mode (where it seeds the picker filter with the in-progress
+    /// command-line text).
+    OpenHistoryPicker,
     /// Vim's `:`. Enter the command-line minibuffer. Promoted
     /// from `Action::EnterCommandLine` in slice 8.i.1.e.
     EnterCommandLine,

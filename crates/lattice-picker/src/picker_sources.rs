@@ -1110,6 +1110,84 @@ impl PickerSourceGenerator for CommandsSource {
     }
 }
 
+/// `:picker history` — also reached via the `q:` Normal chord and
+/// the `:history` ex-command (MB.3). Walks `ctx.command_history`
+/// (the App's command-line history ring, stored oldest-first) and
+/// emits one row per past command, **newest first**. `<CR>` loads
+/// the chosen command into the editable `:` line via
+/// [`RoutingPayload::LoadCommandLine`] — it does **not** execute;
+/// the user tweaks (or `<C-x><C-e>` expands) then `<CR>`s. The
+/// modern replacement for vim's command-line *window*: fuzzy-filter
+/// past commands instead of scrolling a scratch buffer
+/// (`docs/dev/architecture/rich-minibuffer.md` §4).
+///
+/// The history ring already collapses *consecutive* duplicates at
+/// push time, so no dedup here; non-adjacent repeats (`:w` … `:w`)
+/// stay as distinct rows, matching vim's `:history`.
+pub struct HistorySource {
+    pub spec: PickerSourceSpec,
+}
+
+impl HistorySource {
+    pub fn new() -> Self {
+        Self {
+            spec: PickerSourceSpec::no_args(
+                "history",
+                "Command-line history. `<CR>` loads the chosen command into the `:` line (does not execute).",
+            ),
+        }
+    }
+}
+
+impl Default for HistorySource {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PickerSourceGenerator for HistorySource {
+    fn spec(&self) -> &PickerSourceSpec {
+        &self.spec
+    }
+
+    fn init(&self, ctx: &PickerContext<'_>, _args: &[String]) -> SourceResult<PickerInitResult> {
+        if ctx.command_history.is_empty() {
+            return Err("history: no command-line history yet".into());
+        }
+        // Newest-first: the ring is stored oldest-first, so walk it
+        // reversed. Empty-query order is insertion order, which after
+        // the reverse floats the most-recent command to the top.
+        let pairs = ctx
+            .command_history
+            .iter()
+            .rev()
+            .map(|entry| {
+                let cand = RawCandidate::plain(entry.clone(), CandidateKind::Plain);
+                (
+                    cand,
+                    RoutingPayload::LoadCommandLine {
+                        text: entry.clone(),
+                    },
+                )
+            })
+            .collect();
+        Ok(PickerInitResult::Inline(pairs))
+    }
+
+    fn accept(
+        &self,
+        _ctx: &PickerContext<'_>,
+        routing: &RoutingPayload,
+    ) -> SourceResult<PickerAcceptOutcome> {
+        match routing {
+            RoutingPayload::LoadCommandLine { text } => Ok(PickerAcceptOutcome::LoadCommandLine {
+                text: text.clone(),
+            }),
+            other => Err(format!("history: unexpected routing payload {other:?}")),
+        }
+    }
+}
+
 /// `:picker registers`. Walks `ctx.registers` (`(name,
 /// preview)` pairs already prepared by the host's
 /// `build_picker_context`) and emits one row per register.
@@ -1873,6 +1951,7 @@ pub fn first_party_generators(
         Arc::new(LinesSource::new()),
         Arc::new(JumpsSource::new()),
         Arc::new(CommandsSource::new(command_registry, keybinding_reverse)),
+        Arc::new(HistorySource::new()),
         Arc::new(RegistersSource::new()),
         Arc::new(MarksSource::new()),
         Arc::new(GrepSource::new(config, grep_highlighter)),

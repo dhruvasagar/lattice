@@ -532,6 +532,110 @@ mod tests {
         );
     }
 
+    // ── MB.3 (rich minibuffer, phase 3): the `q:` / `:history`
+    //    fuzzy history picker. Accept LOADS the picked command into
+    //    the editable `:` line — it does NOT execute. ──
+
+    /// `q:` (Normal chord) opens the history picker; accepting a row
+    /// loads that command into the `:` line WITHOUT running it, and a
+    /// subsequent `<CR>` executes it. The whole MB.3 contract in one
+    /// flow.
+    #[test]
+    fn mb3_q_colon_picker_loads_editable_line_then_cr_runs() {
+        let mut a = app_with("hello\n", 10);
+        // Build history through the real submit path.
+        submit_ex(&mut a, "set number");
+        submit_ex(&mut a, "set wrap");
+        assert!(!a.editor.command_line_active());
+
+        // `q:` in Normal opens the history picker (chord routes through
+        // the trie: `q` arms partial, `:` resolves the exact path).
+        press_chars(&mut a, "q:");
+        let p = a
+            .editor
+            .picker
+            .as_ref()
+            .expect("`q:` must open the history picker");
+        assert_eq!(p.source_id.as_deref(), Some("history"));
+        // Newest-first: `set wrap` is the top row.
+        assert!(p.candidates[0].raw.display.contains("set wrap"));
+
+        // Narrow to `set number` and accept.
+        for c in "number".chars() {
+            a.apply(Action::PickerAppend(c));
+        }
+        a.apply(Action::PickerAccept);
+
+        // Picker closed; the `:` line is open, seeded, NOT executed.
+        assert!(a.editor.picker.is_none());
+        assert!(
+            a.editor.command_line_active(),
+            "accept must open the `:` line"
+        );
+        assert_eq!(a.editor.command_line(), "set number");
+        // Nothing ran yet: history is unchanged (no dup pushed).
+        assert_eq!(
+            a.editor.command_history,
+            vec!["set number".to_string(), "set wrap".to_string()]
+        );
+
+        // `<CR>` now runs the loaded command.
+        a.apply(Action::CommandLineSubmit);
+        assert!(!a.editor.command_line_active());
+    }
+
+    /// `:history` ex-command opens the same picker as `q:`.
+    #[test]
+    fn mb3_history_ex_command_opens_picker() {
+        let mut a = app_with("hello\n", 10);
+        submit_ex(&mut a, "write");
+        submit_ex(&mut a, "history");
+        assert_eq!(a.editor.picker.as_ref().unwrap().source_id.as_deref(), Some("history"));
+    }
+
+    /// `q:` with no history is graceful: no picker opens, no panic —
+    /// the source returns an error the host echoes.
+    #[test]
+    fn mb3_q_colon_empty_history_is_graceful() {
+        let mut a = app_with("hello\n", 10);
+        assert!(a.editor.command_history.is_empty());
+        press_chars(&mut a, "q:");
+        assert!(
+            a.editor.picker.is_none(),
+            "empty history must not open a picker"
+        );
+        assert!(!a.editor.command_line_active());
+    }
+
+    /// `q:` from the expanded tier-2 band's Normal mode seeds the
+    /// picker filter with the in-progress `:` text (vim's
+    /// command-window muscle memory).
+    #[test]
+    fn mb3_q_colon_from_expanded_band_seeds_filter() {
+        let mut a = app_with("hello\n", 10);
+        submit_ex(&mut a, "set number");
+        submit_ex(&mut a, "write");
+        // Open the `:` line, expand to tier-2, drop to Normal in the band.
+        a.apply(Action::EnterCommandLine);
+        press_chars(&mut a, "set");
+        a.apply(Action::CommandLineToggleExpand);
+        a.apply(Action::CommandLineCancel); // `<Esc>` in the band → Normal
+        assert!(a.editor.command_line_expanded());
+        assert!(matches!(a.editor.modal, ModalState::Normal));
+
+        // `q:` in the band's Normal mode opens the picker pre-filtered
+        // to `set`, so only `set number` survives.
+        press_chars(&mut a, "q:");
+        let p = a
+            .editor
+            .picker
+            .as_ref()
+            .expect("`q:` in the band must open the history picker");
+        assert_eq!(p.query, "set", "filter seeded from the in-progress `:` text");
+        assert_eq!(p.candidates.len(), 1);
+        assert!(p.candidates[0].raw.display.contains("set number"));
+    }
+
     #[test]
     fn prefer_aliases_rewrites_canonical_to_alias() {
         use lattice_completion::{

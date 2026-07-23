@@ -59,6 +59,13 @@ pub struct PickerContext<'a> {
     /// filter out keybindings whose source minor/major mode is not
     /// currently active (see [`KeybindingSource::Mode`]).
     pub active_modes: Vec<Arc<str>>,
+    /// MB.3: the App's command-line history ring (`command_history`),
+    /// oldest-first as stored host-side. The `history` picker source
+    /// (`q:` / `:history`) walks this reversed (newest first) and
+    /// `<CR>` loads the chosen entry into the `:` line without
+    /// executing. Owned vec, rebuilt per picker-open like the other
+    /// snapshot fields.
+    pub command_history: Vec<String>,
 }
 
 /// Snapshot of the active document buffer at the moment the

@@ -96,6 +96,12 @@ pub enum PickerAcceptOutcome {
     /// host calls apply_theme + signals ThemeChanged. Emitted by the
     /// colorscheme picker on both accept and live preview.
     ApplyColorscheme { name: String },
+    /// MB.3: load `text` into the editable `:` command line WITHOUT
+    /// executing it. Host routes through `Editor::open_command_line`,
+    /// exactly as if the user had typed `:` and the text by hand —
+    /// they then tweak (or `<C-x><C-e>` expand) and `<CR>` to run.
+    /// Emitted by the `history` picker source (`q:` / `:history`).
+    LoadCommandLine { text: String },
     /// Picker dismissed without action -- source-side
     /// abort, accept-on-empty filter, etc. Host applies no
     /// mutation. Distinct from `Err` returned from `accept`

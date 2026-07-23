@@ -46,6 +46,7 @@ shows full metadata.
 | `:b N`                 | Switch to buffer #N                                          |
 | `:b PATTERN`           | Switch to buffer matching PATTERN                            |
 | `:buffers` / `:b`      | Open the fuzzy buffer switcher (picker)                     |
+| `:history`             | Fuzzy picker over command history (also `q:`); `<CR>` loads into the `:` line, does not run |
 | `:bd` / `:bdelete`     | Close active buffer                                          |
 | `:bd!`                 | Close even if dirty                                          |
 | `:ls`                  | List every open buffer as static text                       |
@@ -193,6 +194,22 @@ Specific behaviours:
   command (when implemented).
 - `<Up>` / `<Down>` walk command history.
 - `<C-n>` / `<C-p>` same as `<Down>` / `<Up>`.
+
+### Command-line history picker
+
+Beyond the in-line `<Up>`/`<Down>` walk, past commands are
+browsable through a **fuzzy picker** — the modern replacement for
+vim's command-line window:
+
+- **`q:`** (Normal-mode chord) or **`:history`** opens a fuzzy
+  picker over your command history, newest first. Type to filter;
+  `<CR>` **loads** the chosen command into the `:` line — it does
+  **not** run it. Tweak it (or `<C-x><C-e>` to expand into the
+  full-modal band), then `<CR>` to execute.
+- `q:` from inside the expanded command-line band seeds the
+  picker filter with whatever you have typed so far.
+- `q:` steals nothing from macro recording: `qa`…`qz` still record
+  into their registers (`:` is not a valid register name).
 
 ---
 

@@ -1,6 +1,7 @@
 # Rich minibuffer — slice plan
 
-> **Status: 📝 PLANNED (2026-07-23).** Sequencing companion to the design
+> **Status: 🚧 IN PROGRESS (MB.1–MB.3 ✅ 2026-07-24; MB.2e/MB.4/MB.5 📝).**
+> Sequencing companion to the design
 > fragment [`../../architecture/rich-minibuffer.md`](../../architecture/rich-minibuffer.md)
 > (the *what + why*). This file owns *when + in what order + status*.
 > User docs land per slice (`docs/user/modal-editing.md` / `ex-commands.md`
@@ -80,13 +81,27 @@ every slice re-verifies keystroke→glyph.
 
 ## Phase 3 — history picker
 
-- **MB.3 — `q:` / `:history` fuzzy history picker.** 📝
-  - `q:` (Normal chord) + `:history` ex-command open a fuzzy picker over
-    `command_history` (reuse the `picker.md` primitive). **Accept loads
-    into the editable `:` line, does NOT execute.** `q:`-from-cmdline
-    seeds the filter with the current text.
-  - **Test:** picker accept lands an editable command that `<CR>` then
-    runs; empty history graceful; prefix-seeded filter from cmdline.
+- **MB.3 — `q:` / `:history` fuzzy history picker.** ✅ (2026-07-24)
+  - `q:` (Normal-mode Builtin entry chord, sibling to `:`/`/`) + the
+    `:history` ex-command open a fuzzy picker over `command_history`
+    via the trait-driven `HistorySource` generator (id `history`,
+    registered in `first_party_generators`; `:picker history` works
+    for free). **Accept loads into the editable `:` line, does NOT
+    execute** — new `PickerAcceptOutcome::LoadCommandLine` /
+    `RoutingPayload::LoadCommandLine` → host `open_command_line(&text)`.
+    Host-internal (rejected at the plugin WIT boundary with a typed
+    error; no plugin surface). `q:`-from-the-expanded-band seeds the
+    filter with the in-progress `:` text (`command_line_active()`
+    gate; tier-1 is insert-only so `q:` can't fire there). Trie
+    exact-match precedence keeps `qa`…`qz` macro recording intact.
+  - **Test:** `HistorySource` unit tests (`lattice-picker` /
+    `lattice-ui-tui::picker_sources`: newest-first, empty-history
+    error, accept-translates); `mb3_*` acceptance in `app/cmdline.rs`
+    (`q:` loads an editable command that `<CR>` then runs; `:history`
+    opens the same picker; empty-history graceful; band-seeded filter).
+  - **No new bench:** `q:` opens a picker (off the keystroke→glyph
+    path); the picker infra is already benched, and MB.3 adds no work
+    to the `:`/`/` latency-critical lines.
 
 ## Phase 4 — richness
 

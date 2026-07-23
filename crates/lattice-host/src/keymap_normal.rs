@@ -1015,6 +1015,21 @@ pub fn register_normal_bindings(
         source(),
     );
 
+    // MB.3: `q:` -- open the command-line history picker (vim's
+    // command-line window, modernised as a fuzzy picker). Registered
+    // as an EXACT `[q, ':']` path so it wins over the `[q, <reg>]`
+    // macro wildcard below (trie precedence: exact children beat the
+    // char wildcard). `:` is not a valid macro register, so this
+    // steals nothing from `qa`..`qz` recording. `q/` `q?` (search
+    // history) land with MB.5's search-line unification.
+    handle.bind(
+        layer,
+        mode,
+        &[lit_char('q'), lit_char(':')],
+        CommandInvocation::of(actions.open_history_picker),
+        source(),
+    );
+
     // `q<X>` -- start macro recording into register X.
     // `q` while recording stops; that case is handled before
     // the trie lookup in `compute_normal_action` because it

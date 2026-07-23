@@ -308,6 +308,7 @@ mod tests {
                 "lines",
                 "jumps",
                 "commands",
+                "history",
                 "registers",
                 "marks",
                 "grep",
@@ -590,6 +591,68 @@ mod tests {
         match source.accept(&ctx, &routing).expect("ok") {
             PickerAcceptOutcome::PasteRegister { name } => assert_eq!(name, 'a'),
             other => panic!("expected PasteRegister outcome, got {other:?}"),
+        }
+        let bad = RoutingPayload::OpenFile {
+            path: "/tmp/x".into(),
+        };
+        assert!(source.accept(&ctx, &bad).is_err());
+    }
+
+    /// MB.3: `history` source errors when the command-line
+    /// history ring is empty (nothing to pick).
+    #[test]
+    fn history_source_empty_errors() {
+        let app = app_with("hi\n", 5);
+        let snap = app.ad().snapshot.clone();
+        let ctx = app.build_picker_context(&snap);
+        let source = HistorySource::new();
+        let err = source.init(&ctx, &[]).unwrap_err();
+        assert!(err.contains("no command-line history"), "got {err}");
+    }
+
+    /// MB.3: the `history` source walks `command_history`
+    /// **newest-first** and emits one `LoadCommandLine` row per
+    /// entry (the display is the raw command text).
+    #[test]
+    fn history_source_emits_load_command_line_newest_first() {
+        let app = app_with("hi\n", 5);
+        let snap = app.ad().snapshot.clone();
+        let mut ctx = app.build_picker_context(&snap);
+        // Stored oldest-first, exactly as the App's ring holds it.
+        ctx.command_history = vec![
+            "set number".into(),
+            "write".into(),
+            "edit src/main.rs".into(),
+        ];
+        let source = HistorySource::new();
+        let PickerInitResult::Inline(pairs) = source.init(&ctx, &[]).expect("inline") else {
+            panic!("expected Inline");
+        };
+        assert_eq!(pairs.len(), 3);
+        // Newest (last-pushed) floats to the top.
+        assert_eq!(pairs[0].0.display, "edit src/main.rs");
+        assert_eq!(pairs[2].0.display, "set number");
+        match &pairs[0].1 {
+            RoutingPayload::LoadCommandLine { text } => assert_eq!(text, "edit src/main.rs"),
+            other => panic!("expected LoadCommandLine, got {other:?}"),
+        }
+    }
+
+    /// MB.3: accept on a `LoadCommandLine` routing returns the
+    /// matching load-into-`:`-line outcome (no execution);
+    /// a mismatched routing errors.
+    #[test]
+    fn history_source_accept_translates_load_command_line() {
+        let app = app_with("hi\n", 5);
+        let snap = app.ad().snapshot.clone();
+        let ctx = app.build_picker_context(&snap);
+        let source = HistorySource::new();
+        let routing = RoutingPayload::LoadCommandLine {
+            text: "write".into(),
+        };
+        match source.accept(&ctx, &routing).expect("ok") {
+            PickerAcceptOutcome::LoadCommandLine { text } => assert_eq!(text, "write"),
+            other => panic!("expected LoadCommandLine outcome, got {other:?}"),
         }
         let bad = RoutingPayload::OpenFile {
             path: "/tmp/x".into(),

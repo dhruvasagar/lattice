@@ -407,6 +407,9 @@ pub fn routing_identity(payload: &RoutingPayload) -> Option<String> {
         | RoutingPayload::AiSession { .. }
         // Pending diffs are ephemeral (resolved + gone), so no MRU identity.
         | RoutingPayload::ResolveDiff { .. }
+        // MB.3: the history ring is already recency-ordered, so a
+        // second MRU layer would double-rank; no stable identity.
+        | RoutingPayload::LoadCommandLine { .. }
         | RoutingPayload::AcceptShowMessageAction { .. } => None,
     }
 }

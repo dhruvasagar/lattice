@@ -404,6 +404,10 @@ pub enum Action {
     /// chosen command needs a required arg, arm the cmdline;
     /// otherwise execute immediately.
     OpenCommandPicker,
+    /// MB.3: `q:` -- open the command-line *history* picker over
+    /// `command_history`; accept loads the picked command into the
+    /// `:` line without executing.
+    OpenHistoryPicker,
     /// Pressed `:` in Normal mode -- enter command modal with empty buffer.
     EnterCommandLine,
     /// Append a character to the in-progress command line.

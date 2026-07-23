@@ -443,6 +443,8 @@ impl App {
             | Action::HelpDismiss
             // 5.5.G.13: pure-editor cmdline arms.
             | Action::OpenCommandPicker
+            // MB.3: `q:` history picker — routed to the host dispatcher.
+            | Action::OpenHistoryPicker
             | Action::EnterCommandLine
             | Action::CommandLineHistoryPrev
             | Action::CommandLineHistoryNext

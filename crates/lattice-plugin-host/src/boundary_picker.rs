@@ -441,6 +441,16 @@ impl WitBoundary for NativeRoutingPayload {
                     index: *index,
                 })
             }
+            // MB.3: `LoadCommandLine` is the native `history` picker's
+            // per-candidate token — host-internal, not part of the plugin
+            // WIT surface (a plugin picker source cannot seed the `:` line).
+            // It never crosses the boundary.
+            NativeRoutingPayload::LoadCommandLine { .. } => {
+                return Err(
+                    "load-command-line is a host-internal picker routing payload, not representable over WIT"
+                        .into(),
+                );
+            }
         })
     }
 

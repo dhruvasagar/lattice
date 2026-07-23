@@ -2558,6 +2558,35 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
             let sigs = editor.open_picker("commands".to_string(), Vec::new());
             _out.renderer_signals.extend(sigs);
         }
+        // MB.3: `q:` opens the command-line history picker. When fired
+        // from the expanded tier-2 band's Normal mode (the command line
+        // is open), seed the picker filter with the in-progress `:` text
+        // so `q:` narrows to matching history — vim's command-window
+        // muscle memory. From an ordinary buffer the seed is empty.
+        Action::OpenHistoryPicker => {
+            // `q:` fires either from an ordinary buffer's Normal mode
+            // (command line closed → no seed) or from the expanded
+            // tier-2 band's Normal mode (command line active → seed the
+            // filter with the in-progress `:` text). Tier-1 is
+            // insert-only, so `q:` can never fire there.
+            let seed: String = if editor.command_line_active() {
+                editor.command_line().trim().to_string()
+            } else {
+                String::new()
+            };
+            let sigs = editor.open_picker("history".to_string(), Vec::new());
+            _out.renderer_signals.extend(sigs);
+            // `history` is a non-live source, so `open_picker` seats it
+            // with an empty query; pre-fill the visible query directly
+            // (the user still edits it) and refilter once.
+            if !seed.is_empty()
+                && let Some(picker) = editor.picker.as_mut()
+            {
+                picker.query_cursor = seed.len();
+                picker.query = seed;
+                picker.refilter();
+            }
+        }
         // 5.5.G.13: pure-editor command-line arms. `EnterCommandLine`
         // opens the `:` line, clears any in-flight completion popup,
         // and auto-dismisses a State-A help popup (so the user's
@@ -7397,6 +7426,7 @@ impl Editor {
             AppEffect::ScrollLineDown => out.next_actions.push(Action::ScrollLineDown),
             AppEffect::RedrawScreen => out.next_actions.push(Action::RedrawScreen),
             AppEffect::OpenCommandPicker => out.next_actions.push(Action::OpenCommandPicker),
+            AppEffect::OpenHistoryPicker => out.next_actions.push(Action::OpenHistoryPicker),
             AppEffect::EnterCommandLine => out.next_actions.push(Action::EnterCommandLine),
             AppEffect::CommandLineSubmit => out.next_actions.push(Action::CommandLineSubmit),
             AppEffect::CommandLineCancel => out.next_actions.push(Action::CommandLineCancel),
@@ -10883,6 +10913,9 @@ impl Editor {
             marks,
             registers,
             active_modes,
+            // MB.3: snapshot the command-line history ring so the
+            // `history` picker source can walk it (newest-first).
+            command_history: self.command_history.clone(),
         }
     }
 
@@ -23499,6 +23532,13 @@ impl Editor {
                     out.merge(inner);
                 }
             }
+            LoadCommandLine { text } => {
+                // MB.3: load the picked history entry into the `:` line
+                // WITHOUT executing — the user tweaks (or `<C-x><C-e>`
+                // expands) it, then `<CR>`s to run. Same seam as typing
+                // `:` and the text by hand.
+                self.open_command_line(&text);
+            }
             PasteRegister { name } => {
                 if let Some(reg) = lattice_grammar::register::Register::from_input_char(name) {
                     self.pending_register = Some(reg);
@@ -26729,6 +26769,15 @@ impl Editor {
                 // This keeps the legacy match exhaustive.
                 out.merge(self.apply_picker_outcome(
                     lattice_picker::PickerAcceptOutcome::ApplyColorscheme { name },
+                ));
+            }
+            lattice_picker::RoutingPayload::LoadCommandLine { text } => {
+                // MB.3: defensive arm — the `history` picker is trait-driven
+                // (source_id = "history"), so accept normally routes through
+                // the generator path above. This keeps the legacy match
+                // exhaustive.
+                out.merge(self.apply_picker_outcome(
+                    lattice_picker::PickerAcceptOutcome::LoadCommandLine { text },
                 ));
             }
             lattice_picker::RoutingPayload::ResolveDiff { primary, accept } => {

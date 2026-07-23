@@ -828,6 +828,7 @@ mod tests {
                 "commands",
                 "files",
                 "grep",
+                "history",
                 "jumps",
                 "lines",
                 "marks",

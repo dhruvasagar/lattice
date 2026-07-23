@@ -460,6 +460,7 @@ static ALIAS_TABLE: &[(&str, &str)] = &[
     ("picker", "ex:picker"),
     ("files", "ex:files"),
     ("recent", "ex:recent"),
+    ("history", "ex:history"),
     ("Tree", "ex:filetree"),
     ("tree", "ex:filetree"),
     ("Filetree", "ex:filetree"),

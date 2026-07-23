@@ -176,6 +176,19 @@ impl WitBoundary for NativeAppEffect {
             NativeAppEffect::ScrollLineDown => WitAppEffect::ScrollLineDown,
             NativeAppEffect::RedrawScreen => WitAppEffect::RedrawScreen,
             NativeAppEffect::OpenCommandPicker => WitAppEffect::OpenCommandPicker,
+            // MB.3: `q:` opens the command-line *history* picker — a
+            // host-internal command-line affordance (its accept seeds the
+            // `:` line). No plugin surface; plugins reach the same picker
+            // via the `:history` ex-command. Typed error, never lossy
+            // (mirrors the `CommandLine*` host-internal group below).
+            NativeAppEffect::OpenHistoryPicker => {
+                return Err(
+                    "AppEffect::OpenHistoryPicker is a host-internal command-line-history \
+                     affordance (rich-minibuffer MB.3); no plugin (WIT) surface — use the \
+                     `:history` ex-command"
+                        .to_string(),
+                );
+            }
             NativeAppEffect::EnterCommandLine => WitAppEffect::EnterCommandLine,
             // MB.1: the `command-line-mode` chord effects (submit / cancel
             // / history / completion / describe) are host-internal — the

@@ -916,6 +916,31 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             surface_form: SurfaceForm::Keyword,
         },
     );
+    // MB.3: `:history` opens the command-line history picker. Also
+    // reachable via the `q:` Normal chord. Emits the canonical
+    // `Effect::OpenPicker` so it shares the trait-driven `history`
+    // source + accept-into-`:`-line path; the separate ex-command
+    // surface exists for discoverability + vim muscle memory.
+    let _history_picker = registry.register_ex_command(
+        "ex:history",
+        "Open the command-line history picker (`:history`). Alias for \
+         `:picker history`; `<CR>` loads the chosen command into the `:` \
+         line (does not execute). Also bound to the `q:` Normal chord.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| {
+                Ok(Effect::OpenPicker {
+                    source: "history".into(),
+                    args: Vec::new(),
+                })
+            }),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
     let _picker = registry.register_ex_command(
         "ex:picker",
         "Open a picker over the named source (`:picker <source> [args...]`). \

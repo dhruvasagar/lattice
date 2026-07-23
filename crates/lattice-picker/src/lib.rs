@@ -209,6 +209,14 @@ pub enum RoutingPayload {
     /// Both accept and live-preview resolve the name against the
     /// `ThemeRegistry` catalog and swap the active theme.
     Colorscheme { name: String },
+    /// MB.3: the past command a history-picker candidate carries.
+    /// Accept loads `text` into the editable `:` line via the
+    /// host's `open_command_line` seam — it does **not** execute
+    /// (the user tweaks / `<C-x><C-e>`s it, then `<CR>`s). Emitted
+    /// by the `history` picker source (`q:` / `:history`).
+    /// Ephemeral by nature — `routing_identity` returns `None`, so
+    /// no MRU recency (the history ring is already recency-ordered).
+    LoadCommandLine { text: String },
 }
 
 /// Where a picker pulls its raw candidates from. The App resolves

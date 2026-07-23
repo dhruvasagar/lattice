@@ -391,6 +391,16 @@ impl WitBoundary for NativePickerAcceptOutcome {
             NativePickerAcceptOutcome::ApplyColorscheme { name } => {
                 WitPickerAcceptOutcome::ApplyColorscheme(name.clone())
             }
+            // MB.3: `LoadCommandLine` seeds the `:` line — a host-internal
+            // outcome for the native `history` picker. It is not part of the
+            // plugin WIT surface (a plugin picker source has no business
+            // driving the command line), so it never crosses the boundary.
+            NativePickerAcceptOutcome::LoadCommandLine { .. } => {
+                return Err(
+                    "load-command-line is a host-internal picker outcome, not representable over WIT"
+                        .into(),
+                );
+            }
             NativePickerAcceptOutcome::NoOp => WitPickerAcceptOutcome::NoOp,
         })
     }

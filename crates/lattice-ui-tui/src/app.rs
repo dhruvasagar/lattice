@@ -1311,6 +1311,33 @@ impl App {
         }
     }
 
+    /// MB.2: whether the `:` line is expanded into the tier-2 band. Read
+    /// from the published modeline state (wait-free), test escape hatch as
+    /// per [`Self::command_line`].
+    pub(crate) fn command_line_expanded(&self) -> bool {
+        #[cfg(test)]
+        {
+            self.editor.command_line_expanded()
+        }
+        #[cfg(not(test))]
+        {
+            self.modeline().cmdline_expanded
+        }
+    }
+
+    /// MB.2: the full (possibly multi-line) `:` line text for the expanded
+    /// band renderer. Empty in tier 1.
+    pub(crate) fn command_line_full_text(&self) -> String {
+        #[cfg(test)]
+        {
+            self.editor.command_line_full_text()
+        }
+        #[cfg(not(test))]
+        {
+            self.modeline().cmdline_full_text.to_string()
+        }
+    }
+
     /// Slice 3c.final.E.5e: ExCommandRegistry accessor. Backed by
     /// `Arc<CommandRegistry>` on the host so the clone is one Arc
     /// bump, not a deep copy. 6+ sites across `cmdline` and

@@ -1076,6 +1076,12 @@ impl Editor {
                     .as_ref()
                     .map(|s| std::sync::Arc::from(s.pattern.as_str())),
                 search_direction: self.search_line.as_ref().map(|s| s.direction),
+                cmdline_expanded: self.command_line_expanded(),
+                cmdline_full_text: if self.command_line_expanded() {
+                    std::sync::Arc::from(self.command_line_full_text())
+                } else {
+                    std::sync::Arc::from("")
+                },
             }),
             // ML.0b-2: wait-free snapshot of the configurable-modeline
             // element system (two Arc clones). Built-in element content
@@ -1517,6 +1523,12 @@ impl Editor {
             .hash(&mut h);
         // Minibuffer: command line + search line.
         self.command_line().hash(&mut h);
+        // MB.2: the expanded band's height + multi-line content are
+        // non-cell surfaces; hash them so a toggle / band edit repaints.
+        self.command_line_expanded().hash(&mut h);
+        if self.command_line_expanded() {
+            self.command_line_full_text().hash(&mut h);
+        }
         self.search_line
             .as_ref()
             .map(|s| (s.pattern.clone(), s.direction))
@@ -6849,6 +6861,17 @@ impl Editor {
         self.command_line_focus
             .as_ref()
             .is_some_and(|f| f.expanded)
+    }
+
+    /// MB.2: the full (possibly multi-line) text of the `:` line — the
+    /// expanded band renderer draws every line, unlike [`Self::command_line`]
+    /// which returns only the first line (the tier-1 one-row view). Empty
+    /// when the command line is closed.
+    pub fn command_line_full_text(&self) -> String {
+        if !self.command_line_active() {
+            return String::new();
+        }
+        self.document.snapshot().text().to_string()
     }
 
     /// MB.2: `<C-x><C-e>` — toggle the `:` line between the one-row

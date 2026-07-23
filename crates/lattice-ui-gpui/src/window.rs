@@ -329,6 +329,12 @@ fn bottom_row_content(
     messages: &lattice_host::render_state::MessagesRenderState,
 ) -> (String, Option<lattice_host::action::EchoLevel>) {
     use lattice_grammar::ModalState;
+    // MB.2: the expanded tier-2 band shows the full (multi-line) `:` line;
+    // the modal is real Insert / Normal here, not Command, so this gate
+    // comes first. The `:` prompt leads line 0.
+    if modeline.cmdline_expanded {
+        return (format!(":{}", modeline.cmdline_full_text), None);
+    }
     match modal {
         ModalState::Command => (format!(":{}", modeline.cmdline_text), None),
         ModalState::Search(dir) => {
@@ -4528,10 +4534,22 @@ impl Render for EditorView {
         root = root.child(document_area);
         if render_global_bottom_row {
             root = root.child({
+                // MB.2: the expanded tier-2 band draws each line of the
+                // multi-line command line as its own row (flex-col), so the
+                // bottom row grows in place and pushes the panes + their
+                // mode-lines up (GPUI peer of the TUI band).
                 // Level-coloured echo (errors red + bold, warnings
                 // yellow) to match the TUI echo line; cmdline / search /
                 // Info fall through to the default status foreground.
-                let mut msg = div().child(bottom_row);
+                let mut msg = if modeline.cmdline_expanded {
+                    let mut col = div().flex().flex_col();
+                    for line in bottom_row.split('\n') {
+                        col = col.child(div().child(line.to_string()));
+                    }
+                    col
+                } else {
+                    div().child(bottom_row)
+                };
                 match bottom_echo_level {
                     Some(lattice_host::action::EchoLevel::Error) => {
                         let fg = resolved_theme
@@ -5355,6 +5373,17 @@ mod modeline_tests {
         let empty = MessagesRenderState { last: None };
         let (row, _) = super::bottom_row_content(ModalState::Normal, &modeline, &empty);
         assert!(row.is_empty());
+
+        // MB.2: the expanded band wins over the (real Insert / Normal)
+        // modal and shows the full multi-line command line, `:`-prefixed.
+        let expanded = ModelineRenderState {
+            cmdline_expanded: true,
+            cmdline_full_text: Arc::from("e foo\nbar baz"),
+            ..Default::default()
+        };
+        let (row, level) = super::bottom_row_content(ModalState::Insert, &expanded, &echo);
+        assert_eq!(row, ":e foo\nbar baz");
+        assert!(level.is_none());
     }
 
     /// The global cmdline/echo row is painted in every state EXCEPT a

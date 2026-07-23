@@ -510,6 +510,28 @@ mod tests {
         );
     }
 
+    /// The renderer's band data path: `command_line_full_text()` carries
+    /// every line (what the band draws) while `command_line()` stays the
+    /// first-line one-row view.
+    #[test]
+    fn mb2_expanded_full_text_exposes_multiline_for_the_band() {
+        let mut a = app_with("hello\n", 10);
+        a.apply(Action::EnterCommandLine);
+        press_chars(&mut a, "e foo");
+        a.apply(Action::CommandLineToggleExpand);
+        a.apply(Action::CommandLineSubmit); // newline in the band
+        press_chars(&mut a, "bar");
+        assert!(a.editor.command_line_expanded());
+        assert_eq!(a.editor.command_line(), "e foo");
+        assert!(
+            a.editor
+                .command_line_full_text()
+                .starts_with("e foo\nbar"),
+            "band reads the full multi-line text: {:?}",
+            a.editor.command_line_full_text()
+        );
+    }
+
     #[test]
     fn prefer_aliases_rewrites_canonical_to_alias() {
         use lattice_completion::{

@@ -2080,6 +2080,14 @@ pub struct ModelineRenderState {
     /// `/` (forward) or `?` (backward); accompanies
     /// `search_pattern` and is `None` whenever `search_pattern` is.
     pub search_direction: Option<lattice_grammar::SearchDirection>,
+    /// MB.2: `true` while the `:` line is expanded into the tier-2
+    /// mini-buffer band; the renderer grows the echo row into a band and
+    /// draws [`Self::cmdline_full_text`] instead of the one-row line.
+    pub cmdline_expanded: bool,
+    /// MB.2: the full (possibly multi-line) `:` line text, for the
+    /// expanded band. Empty / unused in tier 1 (the one-row `cmdline_text`
+    /// carries the single line there).
+    pub cmdline_full_text: std::sync::Arc<str>,
 }
 
 impl Default for ModelineRenderState {
@@ -2089,6 +2097,8 @@ impl Default for ModelineRenderState {
             auto_submit_hint: false,
             search_pattern: None,
             search_direction: None,
+            cmdline_expanded: false,
+            cmdline_full_text: std::sync::Arc::from(""),
         }
     }
 }

@@ -353,19 +353,30 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) -> Opti
 
     // MO.4.b / Option-A: global modeline removed. Each pane owns its
     // own 1-row status footer (drawn by draw_panes / draw_pane_status_line).
-    // Layout: tabline (0/1) | panes (Min) | cmdline (1) | candidates (opt).
+    // MB.2: the `:` line grows into a multi-row mini-buffer band when
+    // expanded (`<C-x><C-e>`), pushing the panes (and their mode-lines) up.
+    // Default height is half the frame; the `command-line.expand-height`
+    // option will size it (MB.2 follow-up). The band claims rows from the
+    // `Min(1)` pane area above it.
+    let cmdline_rows: u16 = if app.command_line_expanded() {
+        let h = frame.area().height;
+        (h / 2).clamp(3, h.saturating_sub(2).max(1))
+    } else {
+        1
+    };
+    // Layout: tabline (0/1) | panes (Min) | cmdline (1..=band) | candidates (opt).
     let constraints: Vec<Constraint> = if extra_rows > 0 {
         vec![
             Constraint::Length(tabline_rows),      // tabline (0 or 1)
             Constraint::Min(1),                    // panes (each carries its own status row)
-            Constraint::Length(1),                 // cmdline / picker query
+            Constraint::Length(cmdline_rows),      // cmdline / picker query / expanded band
             Constraint::Length(extra_rows as u16), // candidate list (bottom)
         ]
     } else {
         vec![
             Constraint::Length(tabline_rows),
             Constraint::Min(1),
-            Constraint::Length(1),
+            Constraint::Length(cmdline_rows),
         ]
     };
     let chunks = Layout::default()
@@ -3434,6 +3445,38 @@ fn draw_buffer(frame: &mut Frame, area: Rect, app: &App, snap: &DocumentSnapshot
 }
 
 fn draw_command_or_echo(frame: &mut Frame, area: Rect, app: &App) {
+    // MB.2: the expanded tier-2 mini-buffer band — draw the multi-line
+    // `*command-line*` buffer across the grown area (`:` prompt on line 0),
+    // with the caret at the buffer's cursor. Full modal editing (the edit
+    // path) is unchanged; this is the presentation grown in place.
+    if app.command_line_expanded() {
+        let full = app.command_line_full_text();
+        let lines: Vec<Line<'static>> = full
+            .split('\n')
+            .enumerate()
+            .map(|(i, l)| {
+                if i == 0 {
+                    Line::from(format!(":{l}"))
+                } else {
+                    Line::from(l.to_string())
+                }
+            })
+            .collect();
+        frame.render_widget(Paragraph::new(lines), area);
+        // Caret: buffer (line, byte) → band cell; the `:` prompt adds one
+        // column on line 0. Clamp inside the band.
+        let cur = app.ad().cursor;
+        let lead: u16 = if cur.line == 0 { 1 } else { 0 };
+        let cy = area.y.saturating_add(cur.line as u16);
+        if cy < area.y.saturating_add(area.height) {
+            let cx = area
+                .x
+                .saturating_add((cur.byte as u16).saturating_add(lead))
+                .min(area.x.saturating_add(area.width.saturating_sub(1)));
+            frame.set_cursor_position((cx, cy));
+        }
+        return;
+    }
     if matches!(app.ad().modal, ModalState::Command) {
         // MB.1: ":<typed>" with the caret at the `*command-line*` buffer's
         // cursor (byte offset into the single line) so mid-line editing

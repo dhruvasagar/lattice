@@ -44,7 +44,20 @@ every slice re-verifies keystroke→glyph.
 
 ## Phase 2 — expand the command line in place (tier 2)
 
-- **MB.2 — `<C-x><C-e>` in-place expand + full modal.** 📝
+- **MB.2 — `<C-x><C-e>` in-place expand + full modal.** ✅ (2026-07-23)
+  Landed as four slices: **MB.2a** state machine (`expanded` flag,
+  `command_line_expanded()`, `<C-x><C-e>` toggle, modal Command⇄Insert,
+  `:`-no-op guard); **MB.2d** tier-2 editing semantics (`<CR>` = newline,
+  `<Esc>` = to Normal, arrows = multi-line nav, all gated on
+  `expanded`); **MB.2b/c** the render band in TUI + GPUI (grows in place,
+  pushes panes/mode-lines up, half-frame default). **Deferred:** the
+  `command-line.expand-height` typed option (band is half-frame for now)
+  and a `--features gui` runtime check of the GPUI band geometry — see
+  MB.2e below.
+- **MB.2e — `command-line.expand-height` option + GPUI runtime check.** 📝
+  Typed `command-line.expand-height` (`half` default / fixed rows /
+  `full`) driving the band height; verify the GPUI band pushes panes up
+  correctly under `cargo run --features gui`.
   - Only in `command-line-mode`: `<C-x><C-e>` toggles the `*command-line*`
     buffer's **expanded** state — the **same surface grows in place**,
     upward, **pushing the mode-line (and content) above it** into a

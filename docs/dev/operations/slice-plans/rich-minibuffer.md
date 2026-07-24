@@ -1,6 +1,6 @@
 # Rich minibuffer — slice plan
 
-> **Status: 🚧 IN PROGRESS (MB.1–MB.4 + MB.2e ✅ 2026-07-24; MB.5 📝).**
+> **Status: 🚧 IN PROGRESS (MB.1–MB.5 ✅ 2026-07-24).**
 > Sequencing companion to the design
 > fragment [`../../architecture/rich-minibuffer.md`](../../architecture/rich-minibuffer.md)
 > (the *what + why*). This file owns *when + in what order + status*.
@@ -138,7 +138,8 @@ every slice re-verifies keystroke→glyph.
 
 ## Phase 5 — unification
 
-- **MB.5 — unify the `/` search line + other prompts.** 📝
+- **MB.5 — unify the `/` search line + other prompts.** ✅
+  (2026-07-24)
   - `/` `?` migrate onto the substrate as `search-line-mode` (readline +
     search history + its own `<C-x><C-e>` expand); delete the parallel
     search `String`. Substrate ready for `git-commit-line` / `repl-input`.

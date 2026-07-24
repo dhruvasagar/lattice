@@ -202,10 +202,15 @@ impl WitBoundary for NativeAppEffect {
             | NativeAppEffect::CommandLineComplete
             | NativeAppEffect::CommandLineCompletePrev
             | NativeAppEffect::CommandLineDescribeUnderCursor
-            | NativeAppEffect::CommandLineToggleExpand => {
+            | NativeAppEffect::CommandLineToggleExpand
+            | NativeAppEffect::SearchLineSubmit
+            | NativeAppEffect::SearchLineCancel
+            | NativeAppEffect::SearchLineHistoryPrev
+            | NativeAppEffect::SearchLineHistoryNext
+            | NativeAppEffect::SearchLineToggleExpand => {
                 return Err(
-                    "AppEffect::CommandLine* are host-internal command-line-mode effects \
-                     (rich-minibuffer MB.1); no plugin (WIT) surface"
+                    "AppEffect::*Line* are host-internal minibuffer-prompt effects \
+                     (rich-minibuffer MB.1–MB.5); no plugin (WIT) surface"
                         .to_string(),
                 );
             }

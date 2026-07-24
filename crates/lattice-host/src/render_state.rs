@@ -3263,13 +3263,9 @@ mod tests {
     /// through the published snapshot.
     #[test]
     fn messages_and_modeline_reflect_editor_state() {
-        use crate::action::{EchoLevel, EchoMessage};
-        use crate::state::SearchLine;
+        use crate::action::{Action, EchoLevel, EchoMessage};
         use lattice_grammar::SearchDirection;
-        use lattice_protocol::position::Position;
-        // MB.1: the `:` line is a real buffer, so `set_command_line_text`
-        // needs a booted editor (mode registry + option defaults) to open
-        // the synthetic `*command-line*` buffer.
+
         let mut editor = Editor::boot(lattice_core::Document::empty());
 
         // Default: empty cmdline, no message, no search.
@@ -3281,18 +3277,13 @@ mod tests {
         assert!(rs.modeline.search_pattern.is_none());
         assert!(rs.modeline.search_direction.is_none());
 
-        // Populated.
+        // Populated messages + cmdline.
         editor.last_message = Some(EchoMessage {
             text: "hello".to_string(),
             level: EchoLevel::Info,
         });
         editor.set_command_line_text("describe-key ");
         editor.auto_submit_after_chord = true;
-        editor.search_line = Some(SearchLine {
-            direction: SearchDirection::Backward,
-            pattern: "needle".to_string(),
-            origin: Position::ZERO,
-        });
         editor.publish_render_state();
         let rs = editor.render_state.load_full();
 
@@ -3301,11 +3292,25 @@ mod tests {
         assert_eq!(last.level, EchoLevel::Info);
         assert_eq!(rs.modeline.cmdline_text.as_ref(), "describe-key ");
         assert!(rs.modeline.auto_submit_hint);
+        // At this point only the cmdline is active, so search fields are
+        // empty.
+        assert!(rs.modeline.search_pattern.is_none());
+        assert!(rs.modeline.search_direction.is_none());
+
+        // Close the cmdline and open the search line instead — they
+        // share a single `minibuffer_focus` slot (MB.5a).
+        _ = editor.dispatch(Action::CommandLineCancel);
+        editor.open_search_line(SearchDirection::Backward);
+        editor.set_search_line_text("needle");
+        editor.publish_render_state();
+        let rs = editor.render_state.load_full();
+
         assert_eq!(rs.modeline.search_pattern.as_deref(), Some("needle"),);
         assert_eq!(
             rs.modeline.search_direction,
             Some(SearchDirection::Backward),
         );
+        assert_eq!(rs.modeline.cmdline_text.as_ref(), "");
     }
 
     /// Slice 3c.final.B (group 6): lifecycle flags round-trip

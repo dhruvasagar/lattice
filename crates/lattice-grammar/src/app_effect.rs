@@ -311,6 +311,21 @@ pub enum AppEffect {
     /// **expanded** tier-2 mini-buffer band (full modal editing in place),
     /// or collapse it back to the one-row readline line for review.
     CommandLineToggleExpand,
+    /// MB.5a: `<CR>` on the `/`·`?` search line — submit the search
+    /// pattern. Resolved from `search-line-mode`'s Insert keymap.
+    SearchLineSubmit,
+    /// MB.5a: `<Esc>` / `<C-c>` on the `/`·`?` search line — cancel
+    /// the search and restore the prior editing buffer.
+    SearchLineCancel,
+    /// MB.5b: `<C-p>` / `<Up>` on the `/`·`?` search line — walk to an
+    /// older entry in `search_history`.
+    SearchLineHistoryPrev,
+    /// MB.5b: `<C-n>` / `<Down>` on the `/`·`?` search line — walk to a
+    /// newer entry in `search_history`.
+    SearchLineHistoryNext,
+    /// MB.5c: `<C-x><C-e>` on the `/`·`?` search line — toggle the
+    /// expanded tier-2 mini-buffer band.
+    SearchLineToggleExpand,
     /// Lattice's `-`. Open / step up in the oil-style directory
     /// view (DESIGN.md §5.9.4). Promoted from
     /// `Action::OilNavigateUp` in slice 8.i.1.e.

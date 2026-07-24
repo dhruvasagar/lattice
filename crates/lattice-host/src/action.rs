@@ -428,6 +428,18 @@ pub enum Action {
     /// (`<C-x><C-e>`); collapse returns the edited text to the one-row
     /// line for review.
     CommandLineToggleExpand,
+    /// MB.5a: `<CR>` on the `/`·`?` search line — submit the search
+    /// pattern. Resolved from `search-line-mode`'s Insert keymap.
+    SearchLineSubmit,
+    /// MB.5a: `<Esc>` / `<C-c>` on the `/`·`?` search line — cancel
+    /// the search and restore the prior editing buffer.
+    SearchLineCancel,
+    /// MB.5b: `<C-p>` / `<Up>` on the `/`·`?` search line — walk to an
+    /// older entry in `search_history`.
+    SearchLineHistoryPrev,
+    /// MB.5b: `<C-n>` / `<Down>` on the `/`·`?` search line — walk to a
+    /// newer entry in `search_history`.
+    SearchLineHistoryNext,
     /// Replace the echo area with a typed message.
     Echo(EchoMessage),
 
@@ -651,6 +663,9 @@ pub enum Action {
     SearchSubmit,
     /// Drop the in-progress pattern, restore cursor, leave Search.
     SearchCancel,
+    /// MB.5c: toggle the `/`·`?` search line's expanded tier-2
+    /// mini-buffer band (`<C-x><C-e>`).
+    SearchLineToggleExpand,
     /// Repeat the last search in its original direction.
     SearchNext,
     /// Repeat the last search in the opposite direction.

@@ -103,6 +103,16 @@ pub struct ActionIds {
     pub command_line_complete_prev: CommandId,
     pub command_line_describe_under_cursor: CommandId,
     pub command_line_toggle_expand: CommandId,
+    /// MB.5a: `action:search-line-submit` — `<CR>` on the `/`·`?` line.
+    pub search_line_submit: CommandId,
+    /// MB.5a: `action:search-line-cancel` — `<Esc>` / `<C-c>` on the `/`·`?` line.
+    pub search_line_cancel: CommandId,
+    /// MB.5b: `action:search-line-history-prev` — `<C-p>` / `<Up>` on the `/`·`?` line.
+    pub search_line_history_prev: CommandId,
+    /// MB.5b: `action:search-line-history-next` — `<C-n>` / `<Down>` on the `/`·`?` line.
+    pub search_line_history_next: CommandId,
+    /// MB.5c: `action:search-line-toggle-expand` — `<C-x><C-e>` on the `/`·`?` line.
+    pub search_line_toggle_expand: CommandId,
     pub oil_navigate_up: CommandId,
     pub reselect_last_visual: CommandId,
     pub paste_after: CommandId,
@@ -623,6 +633,41 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
             "MB.2: `<C-x><C-e>`: expand the `:` line into the full-modal \
              mini-buffer band, or collapse it back to the one-row line.",
             AppEffect::CommandLineToggleExpand,
+        ),
+        search_line_submit: register_simple(
+            registry,
+            "action:search-line-submit",
+            "MB.5a: `<CR>` on the `/`·`?` search line — submit the search \
+             pattern.",
+            AppEffect::SearchLineSubmit,
+        ),
+        search_line_cancel: register_simple(
+            registry,
+            "action:search-line-cancel",
+            "MB.5a: `<Esc>` / `<C-c>` on the `/`·`?` search line — cancel \
+             the search and restore the prior editing buffer.",
+            AppEffect::SearchLineCancel,
+        ),
+        search_line_history_prev: register_simple(
+            registry,
+            "action:search-line-history-prev",
+            "MB.5b: `<C-p>` / `<Up>` on the `/`·`?` search line — previous \
+             search history entry.",
+            AppEffect::SearchLineHistoryPrev,
+        ),
+        search_line_history_next: register_simple(
+            registry,
+            "action:search-line-history-next",
+            "MB.5b: `<C-n>` / `<Down>` on the `/`·`?` search line — next \
+             search history entry.",
+            AppEffect::SearchLineHistoryNext,
+        ),
+        search_line_toggle_expand: register_simple(
+            registry,
+            "action:search-line-toggle-expand",
+            "MB.5c: `<C-x><C-e>` on the `/`·`?` search line — toggle the \
+             expanded tier-2 mini-buffer band.",
+            AppEffect::SearchLineToggleExpand,
         ),
         oil_navigate_up: register_simple(
             registry,
@@ -1692,6 +1737,20 @@ mod tests {
             (
                 ids.command_line_toggle_expand,
                 "action:command-line-toggle-expand",
+            ),
+            (ids.search_line_submit, "action:search-line-submit"),
+            (ids.search_line_cancel, "action:search-line-cancel"),
+            (
+                ids.search_line_history_prev,
+                "action:search-line-history-prev",
+            ),
+            (
+                ids.search_line_history_next,
+                "action:search-line-history-next",
+            ),
+            (
+                ids.search_line_toggle_expand,
+                "action:search-line-toggle-expand",
             ),
             (ids.oil_navigate_up, "action:oil-navigate-up"),
             (ids.reselect_last_visual, "action:reselect-last-visual"),

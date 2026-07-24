@@ -433,6 +433,11 @@ impl App {
             | Action::SearchNext
             | Action::SearchPrevious
             | Action::SearchWordUnderCursor(_)
+            | Action::SearchLineSubmit
+            | Action::SearchLineCancel
+            | Action::SearchLineHistoryPrev
+            | Action::SearchLineHistoryNext
+            | Action::SearchLineToggleExpand
             // 5.5.G.11: picker append/backspace/select + close-hover.
             | Action::PickerAppend(_)
             | Action::PickerBackspace

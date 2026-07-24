@@ -1071,14 +1071,17 @@ impl Editor {
             modeline: std::sync::Arc::new(crate::render_state::ModelineRenderState {
                 cmdline_text: std::sync::Arc::from(self.command_line()),
                 auto_submit_hint: self.auto_submit_after_chord,
-                search_pattern: self
-                    .search_line
-                    .as_ref()
-                    .map(|s| std::sync::Arc::from(s.pattern.as_str())),
+                search_pattern: if self.search_line_active() {
+                    Some(std::sync::Arc::from(self.search_pattern()))
+                } else {
+                    None
+                },
                 search_direction: self.search_line.as_ref().map(|s| s.direction),
-                cmdline_expanded: self.command_line_expanded(),
+                cmdline_expanded: self.command_line_expanded() || self.search_line_expanded(),
                 cmdline_full_text: if self.command_line_expanded() {
                     std::sync::Arc::from(self.command_line_full_text())
+                } else if self.search_line_expanded() {
+                    std::sync::Arc::from(self.search_pattern())
                 } else {
                     std::sync::Arc::from("")
                 },
@@ -1538,10 +1541,10 @@ impl Editor {
         if self.command_line_expanded() {
             self.command_line_full_text().hash(&mut h);
         }
-        self.search_line
-            .as_ref()
-            .map(|s| (s.pattern.clone(), s.direction))
-            .hash(&mut h);
+        if self.search_line_active() {
+            self.search_pattern().hash(&mut h);
+            self.search_line.as_ref().map(|s| s.direction).hash(&mut h);
+        }
         // Popups / floats (presence + placement + anchor). Async result
         // GROWTH inside an open picker/completion still rides a keystroke
         // today; if that changes, fold a content count here.
@@ -2278,14 +2281,7 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
             }
         }
         Action::EnterSearch(direction) => {
-            editor.search_line = Some(SearchLine {
-                direction,
-                pattern: String::new(),
-                origin: editor.cursor,
-            });
-            editor.modal = ModalState::Search(direction);
-            editor.last_message = None;
-            editor.current_match = None;
+            editor.open_search_line(direction);
         }
         // 5.5.G.1: pure-editor fold / macro / snippet arms. Bodies
         // mutate only `editor.*` state; helpers (`do_set_fold_*`,
@@ -2490,30 +2486,30 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         Action::PasteBefore => editor.do_paste(true),
         Action::PasteText(text) => editor.do_paste_text(&text),
         // 5.5.G.10: search-state cluster.
-        Action::SearchAppend(c) => {
-            if let Some(line) = editor.search_line.as_mut() {
-                line.pattern.push(c);
-                editor.preview_search();
-            }
+        // MB.5a: `SearchAppend` and `SearchBackspace` are retired — typing
+        // in the search line now routes through the universal Insert
+        // dispatcher (the `*search-line*` buffer receives `Action::Insert(_)`,
+        // base Insert provides `<BS>` / readline chords, and
+        // `search-line-mode`'s keymap supplies submit / cancel).
+        // These variants are kept in the `Action` enum for backward
+        // compatibility but their handlers are no-ops.
+        Action::SearchAppend(_) => {}
+        Action::SearchBackspace => {}
+        Action::SearchSubmit => editor.do_search_line_submit(),
+        Action::SearchCancel => editor.do_search_line_cancel(),
+        // MB.5a: new AppEffect-backed search-line actions (resolved from
+        // `search-line-mode`'s keymap). Identical semantics to SearchSubmit/
+        // SearchCancel above but live on separate Action variants so the
+        // grammar executor can resolve `action:search-line-submit` directly.
+        Action::SearchLineSubmit => editor.do_search_line_submit(),
+        Action::SearchLineCancel => editor.do_search_line_cancel(),
+        Action::SearchLineHistoryPrev => editor.do_search_history_step(true),
+        Action::SearchLineHistoryNext => editor.do_search_history_step(false),
+        Action::SearchLineToggleExpand => {
+            // MB.5c stub: expanded-band toggle for the `/`·`?` line.
+            // Filled in when the tier-2 expand (MB.5c) lands.
+            editor.do_search_line_toggle_expand();
         }
-        Action::SearchBackspace => {
-            let leave = match editor.search_line.as_mut() {
-                Some(line) => {
-                    if line.pattern.pop().is_none() {
-                        true
-                    } else {
-                        editor.preview_search();
-                        false
-                    }
-                }
-                None => false,
-            };
-            if leave {
-                editor.cancel_search();
-            }
-        }
-        Action::SearchSubmit => editor.submit_search(),
-        Action::SearchCancel => editor.cancel_search(),
         Action::SearchNext => editor.repeat_search(false),
         Action::SearchPrevious => editor.repeat_search(true),
         Action::SearchWordUnderCursor(direction) => {
@@ -6893,9 +6889,36 @@ impl Editor {
     }
 
     /// MB.1: `true` while the `*command-line*` buffer is focused for
-    /// editing (the `:` line is open). See [`Self::focus_editing_buffer`].
+    /// editing (the `:` line is open). The shared `minibuffer_focus` is
+    /// `Some` for BOTH prompts, so a prompt is the command line only when
+    /// the search line is not active (MB.5a). See
+    /// [`Self::focus_editing_buffer`].
     pub fn command_line_active(&self) -> bool {
-        self.command_line_focus.is_some()
+        self.minibuffer_focus.is_some() && self.search_line.is_none()
+    }
+
+    /// MB.5a: `true` while the `*search-line*` buffer is focused for
+    /// editing (a `/` or `?` search is being typed). `search_line` carries
+    /// the direction + origin; the pattern text lives in the focused
+    /// buffer (`Self::search_pattern`).
+    pub fn search_line_active(&self) -> bool {
+        self.search_line.is_some()
+    }
+
+    /// MB.5a: the `/`·`?` pattern text — the first line of the focused
+    /// `*search-line*` buffer, the single source of truth (peer of
+    /// [`Self::command_line`]). Empty when no search line is open.
+    pub fn search_pattern(&self) -> String {
+        if !self.search_line_active() {
+            return String::new();
+        }
+        self.document
+            .snapshot()
+            .text()
+            .lines()
+            .next()
+            .unwrap_or("")
+            .to_string()
     }
 
     /// MB.2: `true` while the `:` line is **expanded** into the tier-2
@@ -6905,9 +6928,22 @@ impl Editor {
     /// the mode-line up); the dispatcher reads it to allow real modal
     /// editing on the `*command-line*` buffer.
     pub fn command_line_expanded(&self) -> bool {
-        self.command_line_focus
-            .as_ref()
-            .is_some_and(|f| f.expanded)
+        self.command_line_active()
+            && self
+                .minibuffer_focus
+                .as_ref()
+                .is_some_and(|f| f.expanded)
+    }
+
+    /// MB.5c: `true` while the `/`·`?` search line is expanded into the
+    /// tier-2 band (its own `<C-x><C-e>`). Same shared `expanded` flag as
+    /// the command line, scoped to the search prompt.
+    pub fn search_line_expanded(&self) -> bool {
+        self.search_line_active()
+            && self
+                .minibuffer_focus
+                .as_ref()
+                .is_some_and(|f| f.expanded)
     }
 
     /// MB.2e: the resolved `command-line.expand-height` policy driving
@@ -6946,13 +6982,38 @@ impl Editor {
             return;
         }
         let expanding = !self.command_line_expanded();
-        if let Some(f) = self.command_line_focus.as_mut() {
+        if let Some(f) = self.minibuffer_focus.as_mut() {
             f.expanded = expanding;
         }
         self.modal = if expanding {
             ModalState::Insert
         } else {
             ModalState::Command
+        };
+    }
+
+    /// MB.5c: `<C-x><C-e>` — toggle the `/`·`?` search line between the
+    /// one-row readline line (tier 1, `ModalState::Search`, insert-only)
+    /// and the expanded full-modal band (tier 2). Shares the
+    /// `MinibufferFocus.expanded` flag with the command line. No-op when
+    /// the search line is closed.
+    pub fn do_search_line_toggle_expand(&mut self) {
+        if !self.search_line_active() {
+            return;
+        }
+        let expanding = !self.search_line_expanded();
+        if let Some(f) = self.minibuffer_focus.as_mut() {
+            f.expanded = expanding;
+        }
+        self.modal = if expanding {
+            ModalState::Insert
+        } else {
+            ModalState::Search(
+                self.search_line
+                    .as_ref()
+                    .map(|s| s.direction)
+                    .unwrap_or(lattice_grammar::SearchDirection::Forward),
+            )
         };
     }
 
@@ -6987,6 +7048,30 @@ impl Editor {
             .to_string()
     }
 
+    /// MB.5b: owner-write the `/`·`?` search line's text — replace the
+    /// whole `*search-line*` buffer content with `s` and place the cursor
+    /// at the end. Used by history walk (peer of
+    /// [`Self::set_command_line_text`]). No-op when the search line is not
+    /// active.
+    pub fn set_search_line_text(&mut self, s: &str) {
+        if !self.search_line_active() {
+            return;
+        }
+        let cur_len = self.search_pattern().len();
+        let full = lattice_protocol::position::Range {
+            start: lattice_protocol::position::Position::ZERO,
+            end: lattice_protocol::position::Position {
+                line: 0,
+                byte: cur_len as u32,
+            },
+        };
+        let _ = self.apply_edit_blocking(lattice_protocol::edit::Edit::replace(full, s));
+        self.cursor = lattice_protocol::position::Position {
+            line: 0,
+            byte: s.len() as u32,
+        };
+    }
+
     /// MB.1: owner-write the `:` line's text — open the command line if
     /// needed, then replace the whole `*command-line*` buffer content with
     /// `s` and place the cursor at the end. Used by history walk,
@@ -7017,14 +7102,14 @@ impl Editor {
     /// tree — the active pane keeps rendering its own buffer (the renderer
     /// routes it to the registry-keyed path via the published
     /// `command_line_active` flag). Stashes the prior editing focus in
-    /// [`Self::command_line_focus`]; restored by
+    /// [`Self::minibuffer_focus`]; restored by
     /// [`Self::restore_editing_buffer`]. No position-history push, no echo.
     pub fn focus_editing_buffer(&mut self, id: BufferId) {
-        if self.command_line_focus.is_none() {
+        if self.minibuffer_focus.is_none() {
             // Stash the prior document's hot-path mode-state
             // (syntax/folds); guarded to Document inside.
             self.snapshot_active_document();
-            self.command_line_focus = Some(crate::state::CommandLineFocus {
+            self.minibuffer_focus = Some(crate::state::MinibufferFocus {
                 prior_buffer_id: self.document_buffer_id,
                 prior_active_buffer: self.active_buffer,
                 prior_cursor: self.cursor,
@@ -7054,7 +7139,7 @@ impl Editor {
     /// the registry, restore its syntax/folds/cursor/scroll/modal, and
     /// clear the projection. No-op when no command line is open.
     pub fn restore_editing_buffer(&mut self) {
-        let Some(focus) = self.command_line_focus.take() else {
+        let Some(focus) = self.minibuffer_focus.take() else {
             return;
         };
         let id = focus.prior_buffer_id;
@@ -7122,6 +7207,31 @@ impl Editor {
         // Visual-range `'<,'>`, missing-arg re-prompt) — not just after
         // the first keystroke.
         self.refresh_command_line_decorations();
+    }
+
+    /// MB.5a: open the `/`·`?` search line — ensure/focus the synthetic
+    /// `*search-line*` buffer (its major mode's Insert keymap supplies
+    /// submit/cancel), and set `ModalState::Search(direction)`. Keys route
+    /// through the Insert dispatcher because the buffer is the focused
+    /// Insert-editable surface (mirrors [`Self::open_command_line`]).
+    pub fn open_search_line(&mut self, direction: lattice_grammar::SearchDirection) {
+        let id = self.ensure_named_synthetic_document(
+            crate::search_line_mode::SEARCH_LINE_BUFFER_NAME,
+            crate::search_line_mode::SearchLineMode::mode_id(),
+            lattice_core::BufferFlags {
+                listed: false,
+                hidden: false,
+                ephemeral: true,
+            },
+        );
+        self.focus_editing_buffer(id);
+        self.search_line = Some(SearchLine {
+            direction,
+            origin: self.cursor,
+        });
+        self.modal = ModalState::Search(direction);
+        self.last_message = None;
+        self.current_match = None;
     }
 
     /// 5.5.G.23.cmdline: handle a `:`-line submit. Resolves the
@@ -7465,6 +7575,17 @@ impl Editor {
             AppEffect::CommandLineCancel => out.next_actions.push(Action::CommandLineCancel),
             AppEffect::CommandLineToggleExpand => {
                 out.next_actions.push(Action::CommandLineToggleExpand)
+            }
+            AppEffect::SearchLineSubmit => out.next_actions.push(Action::SearchLineSubmit),
+            AppEffect::SearchLineCancel => out.next_actions.push(Action::SearchLineCancel),
+            AppEffect::SearchLineHistoryPrev => {
+                out.next_actions.push(Action::SearchLineHistoryPrev)
+            }
+            AppEffect::SearchLineHistoryNext => {
+                out.next_actions.push(Action::SearchLineHistoryNext)
+            }
+            AppEffect::SearchLineToggleExpand => {
+                out.next_actions.push(Action::SearchLineToggleExpand)
             }
             AppEffect::CommandLineHistoryPrev => {
                 out.next_actions.push(Action::CommandLineHistoryPrev)
@@ -8622,7 +8743,7 @@ impl Editor {
         // is open, `self.document` is the `*command-line*` buffer, so read
         // the target (the buffer being edited, stashed at focus time) and
         // its cursor line for the `CurrentLine` scope.
-        let (buffer, current_line) = match self.command_line_focus.as_ref() {
+        let (buffer, current_line) = match self.minibuffer_focus.as_ref() {
             Some(focus) => {
                 let snap = self
                     .buffers
@@ -16029,6 +16150,12 @@ impl Editor {
                 self.refresh_substitute_preview();
                 self.refresh_command_line_decorations();
             }
+            // MB.5a: while the `/`·`?` search line is open, refresh the
+            // live match preview on every edit (mirrors the command-line
+            // decoration refresh above — same chokepoint, same semantics).
+            if self.search_line_active() {
+                self.preview_search();
+            }
         }
         result
     }
@@ -19144,6 +19271,42 @@ impl Editor {
             self.command_history_cursor = Some(idx);
         }
     }
+
+    /// MB.5b: walk `search_history` (peer of
+    /// [`Self::do_command_history_step`]). `<C-p>` / `<Up>` walks
+    /// backward (older); `<C-n>` / `<Down>` walks forward (newer).
+    /// Saves the in-progress pattern on first step so `<C-n>` can
+    /// return to it.
+    pub fn do_search_history_step(&mut self, back: bool) {
+        if !self.search_line_active() {
+            return;
+        }
+        if self.search_history.is_empty() {
+            return;
+        }
+        let new_cursor = match (self.search_history_cursor, back) {
+            (None, true) => {
+                self.search_history_pending = Some(self.search_pattern());
+                Some(self.search_history.len() - 1)
+            }
+            (None, false) => return,
+            (Some(0), true) => return,
+            (Some(i), true) => Some(i - 1),
+            (Some(i), false) if i + 1 >= self.search_history.len() => {
+                if let Some(pending) = self.search_history_pending.take() {
+                    self.set_search_line_text(&pending);
+                }
+                self.search_history_cursor = None;
+                return;
+            }
+            (Some(i), false) => Some(i + 1),
+        };
+        if let Some(idx) = new_cursor {
+            let entry = self.search_history[idx].clone();
+            self.set_search_line_text(&entry);
+            self.search_history_cursor = Some(idx);
+        }
+    }
 }
 
 /// 5.5.G.11: simple picker-state helpers + close-hover.
@@ -19884,12 +20047,13 @@ impl Editor {
         let Some(line) = self.search_line.as_ref() else {
             return;
         };
-        if line.pattern.is_empty() {
+        let pattern = self.search_pattern();
+        if pattern.is_empty() {
             self.current_match = None;
             self.all_matches.clear();
             return;
         }
-        let Ok(regex) = compile_search_pattern(&line.pattern) else {
+        let Ok(regex) = compile_search_pattern(&pattern) else {
             self.current_match = None;
             self.all_matches.clear();
             return;
@@ -19898,7 +20062,19 @@ impl Editor {
             lattice_grammar::SearchDirection::Forward => lattice_core::search::Direction::Forward,
             lattice_grammar::SearchDirection::Backward => lattice_core::search::Direction::Backward,
         };
-        let buffer = self.active_text();
+        // MB.5a: while the `/`·`?` search line is open, `self.document` is
+        // the `*search-line*` buffer. Read the TARGET (the buffer being
+        // searched, stashed at focus time via `minibuffer_focus`) —
+        // mirroring `refresh_substitute_preview`.
+        let buffer = match self.minibuffer_focus.as_ref() {
+            Some(focus) => {
+                self.buffers
+                    .document_handle(focus.prior_buffer_id)
+                    .map(|h| h.snapshot().buffer.clone())
+                    .unwrap_or_else(|| self.document.snapshot().buffer.clone())
+            }
+            None => self.document.snapshot().buffer.clone(),
+        };
         match lattice_core::search::find(
             &buffer,
             &regex,
@@ -19983,20 +20159,28 @@ impl Editor {
     /// match, record `last_search`, populate `all_matches` for
     /// hlsearch. On empty submit, replay `last_search` (vim `<CR>`
     /// behaviour).
-    pub fn submit_search(&mut self) {
-        let Some(line) = self.search_line.take() else {
-            return;
-        };
-        self.modal = ModalState::Normal;
-        if line.pattern.is_empty() {
+    /// MB.5a: run a submitted search on the ACTIVE document. Called by
+    /// [`Self::do_search_line_submit`] AFTER the `*search-line*` buffer
+    /// has been unfocused (so `active_text()` is the real target). Takes
+    /// the pattern (read from the search buffer), direction, and origin
+    /// (the cursor when the search started) as params — the old
+    /// `submit_search` read these from `search_line.pattern`/`origin`,
+    /// which no longer carries the pattern.
+    pub fn execute_search(
+        &mut self,
+        pattern: &str,
+        direction: lattice_grammar::SearchDirection,
+        origin: lattice_protocol::position::Position,
+    ) {
+        if pattern.is_empty() {
             if self.last_search.is_some() {
                 self.repeat_search(false);
             }
             return;
         }
-        let cur = line.origin;
+        let cur = origin;
         self.push_position_history(cur, PositionSource::AutoJump);
-        let regex = match compile_search_pattern(&line.pattern) {
+        let regex = match compile_search_pattern(pattern) {
             Ok(r) => r,
             Err(msg) => {
                 self.set_message(EchoLevel::Error, format!("regex: {msg}"));
@@ -20011,7 +20195,7 @@ impl Editor {
         // machinery as document buffers; grid mirror happens
         // post-hit via `terminal_mirror_search_hits` so the
         // renderer's cell-grid paint stays unchanged.
-        let dir = match line.direction {
+        let dir = match direction {
             lattice_grammar::SearchDirection::Forward => lattice_core::search::Direction::Forward,
             lattice_grammar::SearchDirection::Backward => lattice_core::search::Direction::Backward,
         };
@@ -20019,7 +20203,7 @@ impl Editor {
         match lattice_core::search::find(
             &buffer,
             &regex,
-            line.origin,
+            origin,
             dir,
             &lattice_runtime::CancellationToken::never(),
         ) {
@@ -20034,7 +20218,7 @@ impl Editor {
                 .unwrap_or_default();
                 if hit.wrapped {
                     let level = EchoLevel::Warn;
-                    let text = match line.direction {
+                    let text = match direction {
                         lattice_grammar::SearchDirection::Forward => {
                             "search hit BOTTOM, continuing at TOP"
                         }
@@ -20045,8 +20229,8 @@ impl Editor {
                     self.set_message(level, text.to_string());
                 }
                 self.last_search = Some(crate::state::LastSearch {
-                    pattern: line.pattern,
-                    direction: line.direction,
+                    pattern: pattern.to_string(),
+                    direction,
                 });
                 if matches!(
                     self.active_buffer,
@@ -20069,11 +20253,11 @@ impl Editor {
                 }
                 self.set_message(
                     EchoLevel::Error,
-                    format!("E486: Pattern not found: {}", line.pattern),
+                    format!("E486: Pattern not found: {pattern}"),
                 );
                 self.last_search = Some(crate::state::LastSearch {
-                    pattern: line.pattern,
-                    direction: line.direction,
+                    pattern: pattern.to_string(),
+                    direction,
                 });
             }
             Err(_) => {
@@ -20087,14 +20271,48 @@ impl Editor {
         }
     }
 
-    /// `<Esc>` from the search line -- restore the pre-search
-    /// cursor and clear match decorations.
-    pub fn cancel_search(&mut self) {
-        if let Some(line) = self.search_line.take() {
-            self.cursor = line.origin;
+    /// MB.5a: `<CR>` on the `/`·`?` line — submit the search. Reads the
+    /// pattern from the focused `*search-line*` buffer, unfocuses it
+    /// (restoring the prior document + cursor + Normal modal, like the
+    /// `:` line's submit), then runs the search on that real document.
+    /// The buffer is unfocused BEFORE the search so `active_text()` is
+    /// the target, mirroring `do_command_line_submit`.
+    pub fn do_search_line_submit(&mut self) {
+        if !self.search_line_active() {
+            return;
         }
+        let pattern = self.search_pattern();
+        let Some(line) = self.search_line.clone() else {
+            return;
+        };
+        // MB.5b: push onto search_history (dedup consecutive identical).
+        if !pattern.trim().is_empty()
+            && self.search_history.last() != Some(&pattern)
+        {
+            self.search_history.push(pattern.clone());
+            if self.search_history.len() > COMMAND_HISTORY_CAP {
+                self.search_history.remove(0);
+            }
+        }
+        self.restore_editing_buffer();
+        self.search_line = None;
+        self.execute_search(&pattern, line.direction, line.origin);
+    }
+
+    /// MB.5a: `<Esc>` / `<C-c>` on the `/`·`?` line — cancel the search.
+    /// Unfocus the `*search-line*` buffer (which restores the pre-search
+    /// cursor = `prior_cursor` = origin + Normal modal) and clear the
+    /// match decorations. No search runs.
+    pub fn do_search_line_cancel(&mut self) {
+        if !self.search_line_active() {
+            return;
+        }
+        self.search_line = None;
         self.current_match = None;
         self.all_matches.clear();
+        // Restore FIRST so `active_buffer` is the searched buffer again
+        // (during search it was the `*search-line*` synthetic doc).
+        self.restore_editing_buffer();
         // T-search-1 (2026-05-28): the terminal grid mirror lives
         // on the buffer; clear it too. (Vim's `<Esc>` out of `/`
         // leaves no decoration.)
@@ -20102,7 +20320,6 @@ impl Editor {
             let buf_id = self.active_pane_buffer_id();
             self.terminal_clear_search_mirror(buf_id);
         }
-        self.modal = ModalState::Normal;
     }
 
     /// `n` / `N` -- replay `last_search`. `reverse = false` keeps
@@ -20436,8 +20653,15 @@ impl Editor {
                 self.command_history_cursor = None;
             }
             ModalState::Search(_) => {
-                if let Some(line) = self.search_line.as_mut() {
-                    line.pattern.push_str(text);
+                // MB.5a: paste into the `/`·`?` search line inserts at
+                // the cursor in the `*search-line*` buffer (mirrors the
+                // `:` line's paste path directly above).
+                if self.search_line_active()
+                    && let Ok(applied) = self
+                        .apply_edit_blocking(lattice_protocol::edit::Edit::insert(self.cursor, text))
+                {
+                    self.cursor = applied.inserted_range.end;
+                    self.preview_search();
                 }
             }
             _ => {
@@ -34573,7 +34797,7 @@ mod tests {
     // run_tick_pending → re-publish from spinning).
     #[test]
     fn publish_render_state_paint_gate_tracks_non_cell_changes() {
-        let mut editor = Editor::default();
+        let mut editor = Editor::boot(lattice_core::Document::empty());
         // Baseline publish seeds `last_paint_revision`.
         let _ = editor.publish_render_state();
         // Nothing changed since: must NOT request a paint.
@@ -34584,11 +34808,8 @@ mod tests {
         // A minibuffer edit is a non-cell surface (RenderState.modeline —
         // here the search line), invisible to the cells MatrixVersion — it
         // MUST flip the gate.
-        editor.search_line = Some(crate::state::SearchLine {
-            direction: lattice_grammar::SearchDirection::Forward,
-            pattern: "x".to_string(),
-            origin: lattice_protocol::position::Position::ZERO,
-        });
+        editor.open_search_line(lattice_grammar::SearchDirection::Forward);
+        editor.set_search_line_text("x");
         assert!(
             editor.publish_render_state(),
             "a non-cell (minibuffer) change must request a paint"
@@ -34601,7 +34822,9 @@ mod tests {
         // The cursor is an OVERLAY (deliberately absent from the cells
         // MatrixVersion — lattice-cells/src/version.rs), so a cursor-only
         // move is exactly the class that used to need a keypress.
-        editor.cursor = lattice_protocol::Position::new(0, 1);
+        // Move the cursor to a position it's not already at (the search
+        // line set above left it at (0, byte=1)).
+        editor.cursor = lattice_protocol::Position::new(0, 2);
         assert!(
             editor.publish_render_state(),
             "a cursor-only move (overlay) must request a paint"

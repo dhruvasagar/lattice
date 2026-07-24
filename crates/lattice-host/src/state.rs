@@ -17,12 +17,16 @@ use lattice_protocol::position::{Position, Range as ProtoRange};
 
 use crate::action::{Action, FindKind};
 
-/// In-progress `/` or `?` state. The cursor at entry is preserved
-/// so Esc can restore it.
+/// In-progress `/` or `?` search state (MB.5a). The pattern text is
+/// NOT stored here — it lives in the focused `*search-line*` buffer
+/// (single source of truth, read via `Editor::search_pattern`), the
+/// same way the `:` line reads `*command-line*`. This struct is the
+/// "search is active" marker + the metadata the buffer can't carry:
+/// the direction (`/` vs `?`) and the `origin` cursor preserved so
+/// `<Esc>` restores it and incremental preview anchors its search.
 #[derive(Debug, Clone)]
 pub struct SearchLine {
     pub direction: SearchDirection,
-    pub pattern: String,
     pub origin: Position,
 }
 
@@ -63,17 +67,21 @@ pub struct PrevPaneState {
     pub modal: ModalState,
 }
 
-/// MB.1 (rich minibuffer): the editing state suspended while the
-/// `:` command line owns `self.document`. When the `:` line is
-/// opened, [`Editor::focus_editing_buffer`] swaps `self.document` /
+/// MB.1 / MB.5a (rich minibuffer): the editing state suspended while a
+/// **minibuffer prompt** (`:` command line or `/`·`?` search line) owns
+/// `self.document`. When a prompt opens,
+/// [`Editor::focus_editing_buffer`] swaps `self.document` /
 /// `document_buffer_id` / `active_buffer` to the synthetic
-/// `*command-line*` buffer and stashes the prior *editing* focus here
-/// **without** touching the pane tree (the active pane keeps rendering
-/// its own buffer). [`Editor::restore_editing_buffer`] pops it back on
-/// submit / cancel. `Some(_)` is the "command line is focused" flag
-/// (`Editor::command_line_active`).
+/// `*command-line*` / `*search-line*` buffer and stashes the prior
+/// *editing* focus here **without** touching the pane tree (the active
+/// pane keeps rendering its own buffer). [`Editor::restore_editing_buffer`]
+/// pops it back on submit / cancel. `Some(_)` is the "a prompt is
+/// focused" flag; whether it's the command line vs the search line is
+/// decided by `Editor::search_line` (`command_line_active` /
+/// `search_line_active`). Prompt-agnostic by design so `git-commit-line`
+/// / `repl-input` reuse it unchanged (design §6).
 #[derive(Debug, Clone)]
-pub struct CommandLineFocus {
+pub struct MinibufferFocus {
     /// The document buffer that was focused for editing before the
     /// `:` line took over. Restored (re-fetched from the registry by
     /// id) when the command line closes.

@@ -639,8 +639,8 @@ pub struct Editor {
     pub completion_docs_viewport_width: u32,
     /// MB.1: `Some(_)` while the `*command-line*` buffer is focused for
     /// editing (the `:` line is open). Holds the prior editing focus to
-    /// restore on submit / cancel. See [`crate::state::CommandLineFocus`].
-    pub command_line_focus: Option<crate::state::CommandLineFocus>,
+    /// restore on submit / cancel. See [`crate::state::MinibufferFocus`].
+    pub minibuffer_focus: Option<crate::state::MinibufferFocus>,
     /// Most recent transient status / error message,
     /// displayed in the echo area until replaced.
     pub last_message: Option<EchoMessage>,
@@ -675,6 +675,15 @@ pub struct Editor {
     /// first Up so Down can return to it after walking
     /// through history.
     pub command_history_pending: Option<String>,
+    /// MB.5b: search-line history (peer of `command_history`).
+    /// Each submitted `/` or `?` pattern is pushed here;
+    /// `<C-p>`/`<C-n>` walk this in the search line.
+    pub search_history: Vec<String>,
+    /// MB.5b: index into `search_history` during history walk.
+    pub search_history_cursor: Option<usize>,
+    /// MB.5b: user's typed pattern saved on first `<C-p>` so
+    /// `<C-n>` can return to it.
+    pub search_history_pending: Option<String>,
     /// Chord-capture overlay flag. Set when the user submitted
     /// a Chord-arg-required command with no value
     /// (`:describe-key<CR>` or the K.3.2 `<C-h>k` binding); the

@@ -3453,15 +3453,69 @@ fn draw_command_or_echo(frame: &mut Frame, area: Rect, app: &App) {
     // path) is unchanged; this is the presentation grown in place.
     if app.command_line_expanded() {
         let full = app.command_line_full_text();
+        let modeline = app.modeline();
+        let deco = modeline.cmdline_decorations.as_ref();
+        let cells = app.render_state.load().cells.load_full();
+        let resolved = &cells.resolved_theme;
+        let ids = &cells.theme_ids;
+        let base = TuiStyle::default();
         let lines: Vec<Line<'static>> = full
             .split('\n')
             .enumerate()
             .map(|(i, l)| {
+                let prefix = if i == 0 { ":" } else { "" };
+                let line_str = format!("{prefix}{l}");
+                // MB.4: apply decorations to the first line only
+                // (continuation lines are plain). The decoration
+                // spans are byte ranges into the first line text.
                 if i == 0 {
-                    Line::from(format!(":{l}"))
-                } else {
-                    Line::from(l.to_string())
+                    if let Some(d) = deco
+                        && !d.spans.is_empty()
+                    {
+                        let mut spans: Vec<Span<'_>> =
+                            Vec::with_capacity(d.spans.len() + 1);
+                        let full_first = format!(":{l}");
+                        let first_line = l; // without prefix
+                        let prefix_len = 1; // ":"
+                        let mut pos = 0usize;
+                        for sp in &d.spans {
+                            let s = sp.range.start.min(first_line.len());
+                            let e = sp.range.end.min(first_line.len());
+                            if s < pos || e < s {
+                                continue;
+                            }
+                            if s > pos {
+                                spans.push(Span::styled(
+                                    full_first[pos + prefix_len..s + prefix_len]
+                                        .to_string(),
+                                    base,
+                                ));
+                            }
+                            let styled = match lattice_host::ui::theme::resolve_syntax_style(
+                                resolved, ids, sp.style,
+                            )
+                            .fg
+                            .map(crate::theme::host_color_to_ratatui)
+                            {
+                                Some(c) => base.fg(c),
+                                None => base,
+                            };
+                            spans.push(Span::styled(
+                                full_first[s + prefix_len..e + prefix_len].to_string(),
+                                styled,
+                            ));
+                            pos = e;
+                        }
+                        if pos < first_line.len() {
+                            spans.push(Span::styled(
+                                full_first[pos + prefix_len..].to_string(),
+                                base,
+                            ));
+                        }
+                        return Line::from(spans);
+                    }
                 }
+                Line::from(line_str)
             })
             .collect();
         frame.render_widget(Paragraph::new(lines), area);

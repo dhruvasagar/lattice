@@ -331,9 +331,23 @@ fn bottom_row_content(
     use lattice_grammar::ModalState;
     // MB.2: the expanded tier-2 band shows the full (multi-line) `:` line;
     // the modal is real Insert / Normal here, not Command, so this gate
-    // comes first. The `:` prompt leads line 0.
+    // comes first. The `:` prompt leads line 0, continuation lines get a
+    // plain newline (the `:` prompt only on the first line).
+    // NB: GPUI expanded band rendering is plain text; syntax highlighting
+    // via cmdline_decorations is TUI-only for now.
     if modeline.cmdline_expanded {
-        return (format!(":{}", modeline.cmdline_full_text), None);
+        let full: &str = &modeline.cmdline_full_text;
+        let mut result = String::with_capacity(full.len() + full.matches('\n').count());
+        for (i, l) in full.split('\n').enumerate() {
+            if i > 0 {
+                result.push('\n');
+            }
+            if i == 0 {
+                result.push(':');
+            }
+            result.push_str(l);
+        }
+        return (result, None);
     }
     match modal {
         ModalState::Command => (format!(":{}", modeline.cmdline_text), None),

@@ -16222,6 +16222,17 @@ impl Editor {
             if self.search_line_active() {
                 self.preview_search();
             }
+            // Refresh hlsearch after any document edit so that deleting or
+            // retyping a match-range word clears/updates the highlight.
+            // Only runs when `last_search` is populated (a search was
+            // performed) and the active buffer is the edited document (not a
+            // minibuffer prompt).
+            if !self.command_line_active()
+                && !self.search_line_active()
+                && self.last_search.is_some()
+            {
+                self.refresh_hlsearch_from_last();
+            }
         }
         result
     }
@@ -20488,6 +20499,28 @@ impl Editor {
                 }
             }
         }
+    }
+
+    /// Recompute `all_matches` from the last search pattern without
+    /// moving the cursor. Called after every document edit while
+    /// `last_search` is populated, so hlsearch overlays stay in sync
+    /// with the edited text (deleting a word that contains a match
+    /// clears its highlight; retyping restores it if the pattern
+    /// still matches).
+    pub fn refresh_hlsearch_from_last(&mut self) {
+        let Some(last) = self.last_search.as_ref() else {
+            return;
+        };
+        let Ok(regex) = compile_search_pattern(&last.pattern) else {
+            return;
+        };
+        let buffer = self.active_text();
+        self.all_matches = lattice_core::search::find_all(
+            &buffer,
+            &regex,
+            &lattice_runtime::CancellationToken::never(),
+        )
+        .unwrap_or_default();
     }
 
     /// `*` / `#` -- extract the word at the cursor, store as
@@ -28187,8 +28220,9 @@ impl Editor {
                                 Err(e) => {
                                     self.set_message(EchoLevel::Error, e.to_string());
                                     return Vec::new();
-                                }
-                            }
+        }
+    }
+
                         }
                     };
                     // Remove the override for this TypeId.

@@ -376,6 +376,7 @@ impl Mode for CompilationMode {
                                         s.command = cmd.to_string();
                                         s.running = true;
                                         s.last_counts = None;
+                                        s.killed = false;
                                     }
                                 }
                                 drain_version.fetch_add(1, Ordering::Release);
@@ -409,6 +410,7 @@ impl Mode for CompilationMode {
                                 if let Ok(mut s) = drain_state.write() {
                                     s.running = false;
                                     s.last_counts = Some((errors, warnings));
+                                    s.killed = summary.contains("Compilation terminated");
                                 }
                                 drain_version.fetch_add(1, Ordering::Release);
                                 dirty = true;

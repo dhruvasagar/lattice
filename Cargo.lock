@@ -4096,6 +4096,7 @@ dependencies = [
  "lattice-protocol",
  "lattice-runtime",
  "lattice-theme",
+ "libc",
  "linkme",
  "thiserror 2.0.18",
  "tokio",

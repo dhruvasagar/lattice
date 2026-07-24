@@ -31,6 +31,9 @@ lattice-config = { path = "../lattice-config" }
 lattice-mode = { path = "../lattice-mode" }
 lattice-theme = { path = "../lattice-theme" }
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 criterion = { workspace = true }
 arc-swap = { workspace = true }

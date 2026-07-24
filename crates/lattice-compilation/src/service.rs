@@ -20,11 +20,25 @@
 //! prior child before relaunching; the buffer is cleared via the
 //! `Reset` chunk and re-streamed. On exit a one-shot `info!`
 //! fires and a summary line is appended.
+//!
+//! # Safety
+//!
+//! The two `unsafe` blocks below (`libc::setpgid` in the spawn path
+//! and `libc::kill` in the kill path) are Unix-only and guarded by
+//! `#[cfg(unix)]`. Both are the only way to atomically terminate an
+//! entire process group (shell + all pipeline grandchildren). Without
+//! process-group kill, pipe grandchildren outlive the parent and keep
+//! the pipe readers blocking indefinitely.
+
+#![allow(unsafe_code)]
 
 use std::io::BufRead;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
+
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 
 use lattice_mode::inbound::InboundBus;
 use lattice_protocol::error_list::ErrorEntry;
@@ -63,7 +77,7 @@ pub type CompilationServiceHandle = Arc<dyn CompilationService>;
 /// `Append` chunk. Keeps a noisy build from publishing one event
 /// per line while staying responsive on a slow trickle (a partial
 /// batch flushes on EOF).
-const READER_BATCH_LINES: usize = 8;
+const READER_BATCH_LINES: usize = 1;
 
 /// Mutable run state shared between `run` (which resolves the
 /// cmdline + kills the prior child) and the coordinator task
@@ -174,6 +188,18 @@ impl CompilationService for DefaultCompilationService {
                     .arg(&cmd)
                     .stdout(Stdio::piped())
                     .stderr(Stdio::piped());
+                // Unix: put the shell (and all its pipeline children) in
+                // their own process group so kill() terminates the entire
+                // tree, not just the shell PID. Without this, pipe
+                // grandchildren outlive the parent and keep the pipe
+                // readers blocking indefinitely.
+                #[cfg(unix)]
+                unsafe {
+                    command.pre_exec(|| {
+                        unsafe { libc::setpgid(0, 0) };
+                        Ok(())
+                    });
+                }
                 if let Some(dir) = cwd {
                     command.current_dir(dir);
                 }
@@ -262,9 +288,23 @@ impl CompilationService for DefaultCompilationService {
 
     fn kill(&self) {
         if let Ok(mut st) = self.state.lock() {
-            if let Some(mut prior) = st.child.take() {
-                let _ = prior.kill();
-                let _ = prior.wait();
+            if let Some(mut child) = st.child.take() {
+                // Unix: kill the entire process group, not just the
+                // shell PID. The shell was put in its own process
+                // group via pre_exec(setpgid(0,0)), so killpg()
+                // terminates the shell AND every pipeline grandchild.
+                // Without this, pipe grandchildren (seq, while, ...)
+                // survive the shell kill and keep stdout/stderr open.
+                #[cfg(unix)]
+                {
+                    let pgid = child.id();
+                    unsafe { libc::kill(-(pgid as i32), libc::SIGKILL) };
+                }
+                #[cfg(not(unix))]
+                {
+                    let _ = child.kill();
+                }
+                let _ = child.wait();
             }
         }
     }

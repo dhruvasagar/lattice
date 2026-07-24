@@ -23,6 +23,10 @@ pub struct CompilationHeadlineState {
     /// `true` while a compile run is in progress (Reset published but
     /// no Finished yet).
     pub running: bool,
+    /// `true` when the compilation was explicitly killed (via
+    /// `:compilation-kill` or `<C-c>`). The headerline shows a
+    /// distinct killed icon instead of success/failure.
+    pub killed: bool,
 }
 
 impl Default for CompilationHeadlineState {
@@ -31,6 +35,7 @@ impl Default for CompilationHeadlineState {
             command: String::new(),
             last_counts: None,
             running: false,
+            killed: false,
         }
     }
 }
@@ -41,6 +46,7 @@ impl Default for CompilationHeadlineState {
 ///   ` ⟳ cargo build --release … `          (running, command emphasised)
 ///   ` ◆ cargo build --release ✗ 3e 2w `    (finished with errors)
 ///   ` ◆ cargo build --release ✔ ok `       (finished clean)
+///   ` ■ cargo build --release killed `     (explicitly killed / cancelled)
 pub struct CompilationHeaderline {
     state: Arc<std::sync::RwLock<CompilationHeadlineState>>,
     version: Arc<AtomicU64>,
@@ -74,11 +80,14 @@ impl Headerline for CompilationHeaderline {
             return None;
         }
         let running = state.running;
+        let killed = state.killed;
         let (errors, warnings) = state.last_counts.unwrap_or((0, 0));
         let has_errors = errors > 0;
 
         let (prefix, fg) = if running {
             ("\u{27f3} ", self.in_progress_fg)
+        } else if killed {
+            ("\u{25a0} ", self.failure_fg)
         } else if has_errors {
             ("\u{25c6} ", self.failure_fg)
         } else {
@@ -87,6 +96,8 @@ impl Headerline for CompilationHeaderline {
 
         let status_text = if running {
             " \u{2026}".to_string()
+        } else if killed {
+            " killed".to_string()
         } else if has_errors {
             format!(" \u{2717} {errors}e {warnings}w")
         } else {

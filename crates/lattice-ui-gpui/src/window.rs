@@ -329,13 +329,21 @@ fn bottom_row_content(
     messages: &lattice_host::render_state::MessagesRenderState,
 ) -> (String, Option<lattice_host::action::EchoLevel>) {
     use lattice_grammar::ModalState;
-    // MB.2: the expanded tier-2 band shows the full (multi-line) `:` line;
-    // the modal is real Insert / Normal here, not Command, so this gate
-    // comes first. The `:` prompt leads line 0, continuation lines get a
-    // plain newline (the `:` prompt only on the first line).
+    // MB.2: the expanded tier-2 band grows the one-row prompt into a
+    // full-modal mini-buffer. The prompt prefix depends on which minibuffer
+    // is expanded: `:` for the command line, `/` or `?` for the search line.
     // NB: GPUI expanded band rendering is plain text; syntax highlighting
     // via cmdline_decorations is TUI-only for now.
     if modeline.cmdline_expanded {
+        let prefix: char = if modeline.search_direction.is_some() {
+            match modeline.search_direction {
+                Some(lattice_grammar::SearchDirection::Forward) => '/',
+                Some(lattice_grammar::SearchDirection::Backward) => '?',
+                _ => '/',
+            }
+        } else {
+            ':'
+        };
         let full: &str = &modeline.cmdline_full_text;
         let mut result = String::with_capacity(full.len() + full.matches('\n').count());
         for (i, l) in full.split('\n').enumerate() {
@@ -343,7 +351,7 @@ fn bottom_row_content(
                 result.push('\n');
             }
             if i == 0 {
-                result.push(':');
+                result.push(prefix);
             }
             result.push_str(l);
         }

@@ -3452,7 +3452,16 @@ fn draw_command_or_echo(frame: &mut Frame, area: Rect, app: &App) {
     // with the caret at the buffer's cursor. Full modal editing (the edit
     // path) is unchanged; this is the presentation grown in place.
     if app.command_line_expanded() {
-        let full = app.command_line_full_text();
+        let (full, prompt) = if app.modeline().search_direction.is_some() {
+            let dir_prefix = match app.modeline().search_direction {
+                Some(lattice_grammar::SearchDirection::Forward) => '/',
+                Some(lattice_grammar::SearchDirection::Backward) => '?',
+                _ => '/',
+            };
+            (app.modeline().cmdline_full_text.to_string(), dir_prefix)
+        } else {
+            (app.command_line_full_text(), ':')
+        };
         let modeline = app.modeline();
         let deco = modeline.cmdline_decorations.as_ref();
         let cells = app.render_state.load().cells.load_full();
@@ -3463,20 +3472,17 @@ fn draw_command_or_echo(frame: &mut Frame, area: Rect, app: &App) {
             .split('\n')
             .enumerate()
             .map(|(i, l)| {
-                let prefix = if i == 0 { ":" } else { "" };
+                let prefix = if i == 0 { prompt.to_string() } else { String::new() };
                 let line_str = format!("{prefix}{l}");
-                // MB.4: apply decorations to the first line only
-                // (continuation lines are plain). The decoration
-                // spans are byte ranges into the first line text.
                 if i == 0 {
                     if let Some(d) = deco
                         && !d.spans.is_empty()
                     {
                         let mut spans: Vec<Span<'_>> =
                             Vec::with_capacity(d.spans.len() + 1);
-                        let full_first = format!(":{l}");
-                        let first_line = l; // without prefix
-                        let prefix_len = 1; // ":"
+                        let full_first = line_str.clone();
+                        let first_line = l;
+                        let prefix_len = prefix.len();
                         let mut pos = 0usize;
                         for sp in &d.spans {
                             let s = sp.range.start.min(first_line.len());

@@ -1082,7 +1082,7 @@ impl Editor {
                 cmdline_full_text: if self.command_line_expanded() {
                     std::sync::Arc::from(self.command_line_full_text())
                 } else if self.search_line_expanded() {
-                    std::sync::Arc::from(self.search_pattern())
+                    std::sync::Arc::from(self.search_line_full_text())
                 } else {
                     std::sync::Arc::from("")
                 },
@@ -6989,6 +6989,19 @@ impl Editor {
             return String::new();
         }
         self.document.snapshot().text().to_string()
+            .trim_end_matches('\n').to_string()
+    }
+
+    /// MB.5c: the full (possibly multi-line) text of the `/`·`?` search
+    /// line — the expanded band renderer draws every line, unlike
+    /// [`Self::search_pattern`] which returns only the first line. Empty
+    /// when the search line is closed. (Peer of [`Self::command_line_full_text`].)
+    pub fn search_line_full_text(&self) -> String {
+        if !self.search_line_active() {
+            return String::new();
+        }
+        self.document.snapshot().text().to_string()
+            .trim_end_matches('\n').to_string()
     }
 
     /// MB.2: `<C-x><C-e>` — toggle the `:` line between the one-row

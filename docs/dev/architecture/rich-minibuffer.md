@@ -119,18 +119,48 @@ grown large:
 
 ## 4. History — walk + fuzzy picker
 
-`command_history` stays the model (per prompt-kind: command vs search).
-Two surfaces:
+The history model is two independent rings, one per prompt kind:
 
-- **Walk** (tier 1) — `<C-p>`/`<C-n>` + `<Up>`/`<Down>`, seeding the `:`
-  line from history, pending text preserved.
-- **Picker** — **`q:`** (Normal-mode chord, vim muscle memory) and the
-  **`:history`** ex-command open a **fuzzy picker** over history (the
-  `picker.md` primitive `:error-list` / `:diagnostics` use). The modern
-  replacement for vim's command-line *window*: fuzzy-filter past commands
-  instead of scrolling a scratch buffer. **Accept loads the picked
-  command into the editable `:` line — it does NOT execute** — so you
-  tweak (or `<C-x><C-e>` it) and `<CR>`.
+- **`command_history`** — every `:` submit pushes here (oldest-first,
+  dedup on consecutive identical, cap 100). Walked by `<C-p>`/`<C-n>` /
+  `<Up>`/`<Down>` in the `:` line; browsed via `q:` / `:history` /
+  `:history commands` / `:picker history`.
+- **`search_history`** — every `/` / `?` submit pushes here (same dedup
+  and cap). Walked by the same chords in the search line; browsed via
+  `q/` / `q?` / `:history searches` / `:picker search-history`.
+
+Two surfaces per ring:
+
+- **Walk** (tier 1) — `<C-p>`/`<C-n>` + `<Up>`/`<Down>`, seeding the
+  prompt line from history, pending text preserved. The first `<C-p>`
+  saves the in-progress text; `<C-n>` walks back to it at the bottom of
+  the ring.
+- **Picker** — **`q:`**, **`q/`**, **`q?`** (Normal-mode chords, vim
+  muscle memory) and the **`:history [commands|searches]`** ex-command
+  open a **fuzzy picker** over the corresponding ring (newest-first,
+  trait-driven via `CommandHistorySource` / `SearchHistorySource` in
+  `lattice-picker`). The modern replacement for vim's command-line
+  *window*: fuzzy-filter past entries instead of scrolling a scratch
+  buffer. **Accept loads the picked entry into the editable prompt
+  line — it does NOT execute** — so you tweak (or `<C-x><C-e>` expand)
+  and `<CR>`.
+
+The `q:` / `q/` / `q?` chords are exact-path bindings in the Normal
+keymap, registered as literal `[q, ':']`, `[q, '/']`, `[q, '?']` so
+they win over the `[q, <reg>]` macro wildcard. `:`, `/`, `?` are not
+valid macro registers, so nothing is stolen from `qa`–`qz` recording.
+
+`:history` accepts an optional kind argument for consistency with
+`:picker` surface (`:picker buffers`, `:picker files`, etc.):
+
+| Form | Source id | Picker |
+|---|---|---|
+| `:history` (no arg) | `history` | command-line |
+| `:history commands` | `history` | command-line (explicit) |
+| `:history searches` | `search-history` | search-line |
+| `q:` | `history` | command-line |
+| `q/` | `search-history` | search-line (forward direction) |
+| `q?` | `search-history` | search-line (backward direction) |
 
 ## 5. Tooling / decorations
 
@@ -149,13 +179,21 @@ rows:
 
 All are decoration providers contributed by the two command-line modes.
 
-## 6. Unification
+## 6. Unification (✅ shipped)
 
 The substrate is prompt-agnostic. `/` `?` search (`search-line-mode`),
 future `git-commit-line`, `repl-input`, and interactive `input()` prompts
 become the same one-line-buffer + mode pattern, each with its own tier-2
-expand. `/` migrates off its parallel `String`, deleting the duplicate
-input path and gaining rich editing + history for free.
+expand and history ring.
+
+Search-line unification (MB.5, shipped 2026-07-24):
+- `/` `?` migrate to `*search-line*` buffer with `search-line-mode`
+  major mode (insert-only readline, same shape as `command-line-mode`).
+- `search_history` ring + `<C-p>`/`<C-n>` walk + `q/`/`q?` picker.
+- `<C-x><C-e>` expand shares `MinibufferFocus.expanded` with `:` line.
+- `preview_search()` reads pattern from buffer, runs against the target
+  document (via `minibuffer_focus.prior_buffer_id`).
+- The parallel search `String` is deleted; the input path is unified.
 
 ## 7. Paramount-goal alignment
 

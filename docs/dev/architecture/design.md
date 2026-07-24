@@ -1995,7 +1995,7 @@ struct NotificationAction {
 
 #### 5.9.10 Minibuffer and echo area
 
-> **🟡 Status.** The command line is a **single-line widget today** (`Editor.command_line: String`), not yet a full buffer-with-a-major-mode. What *is* built: the `:` / `/` / `?` cmdline with completion popups, command history, and — notably — **live substitute preview** (`:s///` decorates the target buffer as you type). The "every prompt is a real buffer with `command-line` / `search-line` / `git-commit-line` / `repl-input` major modes, full vim grammar, tree-sitter highlighting, live error indicators" vision below is 📝 the forward design (see `mode-architecture.md`); the rich-minibuffer-as-buffer work is deferred.
+> **✅ Shipped (2026-07-24, rich-minibuffer MB.1–MB.5).** The `:` command line is a **buffer-backed, readline-grade editing surface** (`*command-line*` synthetic `Document` with `command-line-mode` major mode). The `/`·`?` search line is the same substrate (`*search-line*` buffer, `search-line-mode`). Both are insert-only (tier 1) with `<C-x><C-e>` expanding in place into a full-modal mini-buffer band (tier 2). Built: `<C-p>`/`<C-n>` history walk, `q:` / `q/` / `q?` fuzzy history pickers, `command-line` grammar syntax highlighting, live error indication, parameter hints, `:s///` substitution preview, `command-line.expand-height` typed option, and an independent `search_history` ring. The substrate is ready for `git-commit-line` / `repl-input` / interactive `input()` prompts — each is a new major mode on the same one-line-buffer pattern. See `rich-minibuffer.md` for the full design, `slice-plans/rich-minibuffer.md` for sequencing.
 
 The design intent: the "command line" surface is a **rich editing space, not a single-line widget** — a real buffer with a major mode, opened transiently, painted through the cell-grid pipeline. Every interactive prompt would reuse the buffer, command-dispatch, decoration, popup, and renderer machinery -- nothing minibuffer-specific outside of "this buffer is currently the input focus."
 
@@ -2013,15 +2013,14 @@ struct Minibuffer {
 
 Built-in minibuffer major modes:
 
-| Major mode | Triggered by | Purpose |
-|---|---|---|
-| `command-line` | `:` | ex-command parsing and dispatch |
-| `search-line-forward` | `/` | incremental search forward |
-| `search-line-backward` | `?` | incremental search backward |
-| `git-commit-line` | git plugin | one-line commit messages |
-| `repl-input` | REPL plugins | interactive evaluation |
-| `picker-query` | pickers | fuzzy-match query input |
-| `prompt` | interactive arg specs (§B.1) | typed argument prompts |
+| Major mode | Triggered by | Purpose | Status |
+|---|---|---|---|
+| `command-line` | `:` | ex-command parsing and dispatch | ✅ shipped |
+| `search-line` | `/` / `?` | incremental search (forward/backward) | ✅ shipped |
+| `git-commit-line` | git plugin | one-line commit messages | 📝 |
+| `repl-input` | REPL plugins | interactive evaluation | 📝 |
+| `picker-query` | pickers | fuzzy-match query input | 📝 |
+| `prompt` | interactive arg specs (§B.1) | typed argument prompts | 📝 |
 
 Each major mode brings its own keymap, parser, syntax highlighting, completion source, validator, and live-preview decorator.
 

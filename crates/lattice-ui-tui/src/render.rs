@@ -359,8 +359,18 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) -> Opti
     // default / `full` / fixed rows), resolved against the live frame
     // height. The band claims rows from the `Min(1)` pane area above it.
     let cmdline_rows: u16 = if app.command_line_expanded() {
-        app.command_line_expand_height()
-            .rows(frame.area().height)
+        let base = app.command_line_expand_height()
+            .rows(frame.area().height);
+        // When the completion popup is open inside the expanded band,
+        // deduct its rows from the band height so candidates sit flush
+        // against the cursor instead of at the very bottom of the frame.
+        let completion_rows = app
+            .completion()
+            .state
+            .as_deref()
+            .map(|s| popup_height(s.candidates.len()))
+            .unwrap_or(0) as u16;
+        base.saturating_sub(completion_rows).max(1)
     } else {
         1
     };

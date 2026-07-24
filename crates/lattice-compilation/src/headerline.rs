@@ -43,10 +43,15 @@ impl Default for CompilationHeadlineState {
 /// A `Headerline` impl backed by `CompilationHeadlineState`.
 ///
 /// Renders:
-///   ` ⟳ cargo build --release … `          (running, command emphasised)
-///   ` ◆ cargo build --release ✗ 3e 2w `    (finished with errors)
-///   ` ◆ cargo build --release ✔ ok `       (finished clean)
-///   ` ■ cargo build --release killed `     (explicitly killed / cancelled)
+///   ` Compiling ⟳ "cargo build --release" … `
+///   ` Compiled ✔ "cargo build --release" ok `
+///   ` Compiled ✗ "cargo build --release" 3e 2w `
+///   ` Killed ■ "cargo build --release" `
+///
+/// The command is quoted for readability; the label prefix
+/// ("Compiling", "Compiled", "Killed") gives the user an at-a-glance
+/// summary of the build state. The command body uses `command_fg`
+/// (warm yellow) for emphasis.
 pub struct CompilationHeaderline {
     state: Arc<std::sync::RwLock<CompilationHeadlineState>>,
     version: Arc<AtomicU64>,
@@ -54,6 +59,7 @@ pub struct CompilationHeaderline {
     in_progress_fg: u32,
     success_fg: u32,
     failure_fg: u32,
+    dim_fg: u32,
 }
 
 impl CompilationHeaderline {
@@ -64,8 +70,9 @@ impl CompilationHeaderline {
         in_progress_fg: u32,
         success_fg: u32,
         failure_fg: u32,
+        dim_fg: u32,
     ) -> Self {
-        Self { state, version, command_fg, in_progress_fg, success_fg, failure_fg }
+        Self { state, version, command_fg, in_progress_fg, success_fg, failure_fg, dim_fg }
     }
 }
 
@@ -84,51 +91,105 @@ impl Headerline for CompilationHeaderline {
         let (errors, warnings) = state.last_counts.unwrap_or((0, 0));
         let has_errors = errors > 0;
 
-        let (prefix, fg) = if running {
-            ("\u{27f3} ", self.in_progress_fg)
+        // Label + icon + colon separator: the user-facing prefix that
+        // tells them what state the build is in before they even read
+        // the command.
+        let (label, icon, label_fg) = if running {
+            ("Compiling", "\u{27f3}", self.in_progress_fg)
         } else if killed {
-            ("\u{25a0} ", self.failure_fg)
+            ("Killed", "\u{25a0}", self.failure_fg)
         } else if has_errors {
-            ("\u{25c6} ", self.failure_fg)
+            ("Compiled", "\u{2717}", self.failure_fg)
         } else {
-            ("\u{25c6} ", self.success_fg)
+            ("Compiled", "\u{2714}", self.success_fg)
         };
 
-        let status_text = if running {
-            " \u{2026}".to_string()
+        // Status badge on the right: count of errors/warnings, "ok",
+        // "killed", or spinner dots.
+        let status = if running {
+            " \u{2026}"
         } else if killed {
-            " killed".to_string()
+            ""
         } else if has_errors {
-            format!(" \u{2717} {errors}e {warnings}w")
+            return Some(self.render_counts(label, icon, &label_fg, &state.command, errors, warnings));
         } else {
-            " \u{2714} ok".to_string()
+            " ok"
         };
 
-        let text = format!("{prefix}{}{status_text}", state.command);
-
-        let emphasis = if state.command.is_empty() {
-            None
-        } else {
-            let prefix_len = prefix.chars().count();
-            let cmd_len = state.command.chars().count();
-            Some((prefix_len, prefix_len + cmd_len))
-        };
-
-        let cells: Arc<[Cell]> = text
-            .chars()
-            .enumerate()
-            .map(|(i, c)| {
-                let cell_fg = match emphasis {
-                    Some((start, end)) if i >= start && i < end => self.command_fg,
-                    _ => fg,
-                };
-                Cell::new(c as u32, cell_fg, 0, 0)
-            })
-            .collect::<Vec<_>>()
-            .into();
-
+        let quoted_cmd = format!("\"{}\"", state.command);
+        let text = format!(" {label} {icon} {quoted_cmd}{status}");
+        let cells = build_cells(&text, label_fg, &state.command, self.command_fg, self.dim_fg, icon);
         Some(HeaderlineRow { cells, bg: None })
     }
+}
+
+impl CompilationHeaderline {
+    /// Render the counts variant (errors + warnings) with per-count
+    /// colouring. Errors use failure_fg, warnings use dim_fg.
+    fn render_counts(
+        &self,
+        label: &str,
+        icon: &str,
+        label_fg: &u32,
+        command: &str,
+        errors: usize,
+        warnings: usize,
+    ) -> HeaderlineRow {
+        let label_prefix = format!(" {label} {icon} ");
+        let quoted_cmd = format!("\"{}\"", command);
+        let mut spans: Vec<(String, u32)> = Vec::new();
+        spans.push((label_prefix, *label_fg));
+        spans.push((quoted_cmd, self.command_fg));
+        if errors > 0 {
+            spans.push((format!(" {errors}e"), self.failure_fg));
+        }
+        if warnings > 0 {
+            spans.push((format!(" {warnings}w"), self.dim_fg));
+        }
+
+        let cells: Arc<[Cell]> = spans
+            .iter()
+            .flat_map(|(s, fg)| s.chars().map(move |c| Cell::new(c as u32, *fg, 0, 0)))
+            .collect::<Vec<_>>()
+            .into();
+        HeaderlineRow { cells, bg: None }
+    }
+}
+
+/// Build cells for the non-counts variants. `label_fg` colours the
+/// named prefix, `command_fg` colours the quoted command body, `dim_fg`
+/// colours the status token ("ok" / "…"), and `icon` (already
+/// coloured by `label_fg`) sits between label and command.
+fn build_cells(
+    text: &str,
+    label_fg: u32,
+    command: &str,
+    command_fg: u32,
+    dim_fg: u32,
+    icon: &str,
+) -> Arc<[Cell]> {
+    let quoted_cmd = format!("\"{}\"", command);
+    let icon_start = text.find(icon).unwrap_or(0);
+    let icon_end = icon_start + icon.chars().count();
+    let quote_start = text.find('"').unwrap_or(0);
+    let quote_end = quote_start + quoted_cmd.len();
+
+    text.chars()
+        .enumerate()
+        .map(|(i, c)| {
+            let fg = if i >= icon_start && i < icon_end {
+                label_fg
+            } else if i >= quote_start && i < quote_end {
+                command_fg
+            } else if i > quote_end {
+                dim_fg
+            } else {
+                label_fg
+            };
+            Cell::new(c as u32, fg, 0, 0)
+        })
+        .collect::<Vec<_>>()
+        .into()
 }
 
 /// Provider id tag for the compilation headerline so re-activations

@@ -224,7 +224,7 @@ impl Mode for CompilationMode {
             // elements. Register them here (idempotent by name) AND
             // resolve the actual colours from the theme so the
             // headerline doesn't use hardcoded RGB.
-            let mut hl_colors: Option<(u32, u32, u32, u32)> = None; // cmd, in_progress, success, failure
+            let mut hl_colors: Option<(u32, u32, u32, u32, u32)> = None; // cmd, in_progress, success, failure, dim
             if let Some(theme) = ctx.service::<ThemeRegistryHandle>().map(|outer| (*outer).clone()) {
                 let owner = ElementOwner::Mode(Self::mode_id().as_str().to_string().into());
                 let loc_id = theme.register(
@@ -254,9 +254,15 @@ impl Mode for CompilationMode {
                 );
                 let failure_id = theme.register(
                     ElementName::from_static("compilation.headerline.failure"),
-                    owner,
+                    owner.clone(),
                     StyleSpec::new().fg(ColorRef::Palette("red".into())),
                     "Compilation headerline: errors present (red).",
+                );
+                let dim_id = theme.register(
+                    ElementName::from_static("compilation.headerline.dim"),
+                    owner,
+                    StyleSpec::new().fg(ColorRef::Palette("muted".into())),
+                    "Compilation headerline: warning counts / status text (muted).",
                 );
 
                 let resolved = theme.resolved();
@@ -268,6 +274,7 @@ impl Mode for CompilationMode {
                     resolve_fg(in_progress_id, 0x999999),
                     resolve_fg(success_id, 0x44cc88),
                     resolve_fg(failure_id, 0xff4444),
+                    resolve_fg(dim_id, 0x888888),
                 ));
                 // Ship resolved compilation.location colours to the
                 // renderer so TUI/GPUI read from the theme instead of
@@ -312,8 +319,8 @@ impl Mode for CompilationMode {
                 .service::<Arc<dyn VirtualRowRegistrar>>()
                 .map(|registrar| {
                     let registrar: Arc<dyn VirtualRowRegistrar> = (*registrar).clone();
-                    let (cmd_fg, in_progress_fg, success_fg, failure_fg) =
-                        hl_colors.unwrap_or((0xf9e2af, 0x999999, 0x44cc88, 0xff4444));
+                    let (cmd_fg, in_progress_fg, success_fg, failure_fg, dim_fg) =
+                        hl_colors.unwrap_or((0xf9e2af, 0x999999, 0x44cc88, 0xff4444, 0x888888));
                     let headerline = CompilationHeaderline::new(
                         hl_state.clone(),
                         hl_version.clone(),
@@ -321,6 +328,7 @@ impl Mode for CompilationMode {
                         in_progress_fg,
                         success_fg,
                         failure_fg,
+                        dim_fg,
                     );
                     let provider = Arc::new(HeaderlineProvider::new(
                         COMPILATION_HEADERLINE_PROVIDER_ID,

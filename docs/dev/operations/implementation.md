@@ -5512,7 +5512,7 @@ conversation UI). Slice plans archived under
 
 ---
 
-## compilation-mode + error-list (✅ core complete, 2026-07-23)
+## compilation-mode + error-list (✅ core complete, 2026-07-24)
 
 Design fragments:
 [`../architecture/compilation-mode.md`](../architecture/compilation-mode.md)
@@ -5528,15 +5528,24 @@ What's done:
 
 - **Streaming `*compilation*` buffer** — `:compile <cmd>` / `:recompile`
   / `:make` run a shell command **off the UI thread** (`spawn_blocking`
-  child + two dedicated pipe-reader threads); output streams into a
-  read-only synthetic `Document` created through the mode-owned
+  child + two dedicated pipe-reader threads); output streams line-by-line
+  into a read-only synthetic `Document` created through the mode-owned
   `ModeActivator::ensure_named_document` seam. `compilation-mode` (major,
   ReadOnly + NoFile) owns the keymap, drain, parser wiring, and handler
-  bodies. Kill-prior-on-`:recompile`; exit summary line.
+  bodies. Kill-prior-on-`:recompile`. On Unix the child runs in its own
+  process group (`pre_exec` + `setpgid(0,0)`; `libc` FFI gated behind
+  `#[cfg(unix)]`, `#![allow(unsafe_code)]` scoped to this crate) so
+  `:compilation-kill` terminates the shell AND all pipeline grandchildren
+  atomically via `killpg(-pgid, SIGKILL)`. On Windows `TerminateProcess`
+  handles the single child. Exit summary line appended.
 - **Compilation headerline** — mode-owned sticky view-header virtual row
-  (twin of project-search's): command (emphasis) + spinner while running
-  + success/failure icon and error/warning counts when finished. Drain
-  owns the state; theme-resolved colours (`compilation.headerline.*`).
+  (twin of project-search's): icon-led format — `⟳ "cargo build" …`
+  (running), `✔ "cargo build" ok` (clean), `✗ "cargo build" 3e 2w`
+  (errors), `■ "cargo build" killed` (killed). Killed state is detected
+  from `"Compilation terminated"` in the Finished summary. Five
+  theme-resolved colours (`compilation.headerline.command` /
+  `in_progress` / `success` / `failure` / `dim`). Drain owns the state;
+  Reset clears killed on new runs.
 - **4-parser tool-agnostic error list** — `ParserRegistry::with_builtins`
   registers CargoRustc (multi-line) + GnuStyle + TestPanic (Rust
   `thread '…' panicked at …`) + General (catch-all `file:line:col`

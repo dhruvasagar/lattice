@@ -40,6 +40,8 @@ same surface).
 | Getting started (the ten-minute orientation: the modal loop, open/save, the command line, splits, next steps) | [getting-started.md](getting-started.md) | ✅ |
 | Modal editing (Normal / Insert / Visual / Op-pending / Command / Search / Replace + the vim grammar)        | [modal-editing.md](modal-editing.md)| ✅     |
 | Modes (major + minor; `:<mode-name>` toggle; LSP umbrella + sub-modes; display modes; convergence with `:set`) | [modes.md](modes.md)             | ✅     |
+| The command line (`:`, `/`, `?` — the rich minibuffer: buffer-backed readline editing, `<C-x><C-e>` expand, history picker, live decorations, incsearch) | [command-line.md](command-line.md) | ✅ |
+| Search and substitute (`/` / `?` / `:s` / live preview / regex syntax / backrefs)                           | _covered in command-line + ex-commands_ | 🟡 |
 | Ex-commands (`:w`, `:e`, `:s`, `:g`, `:d`, arg schemas, completion, ranges, aliases)                        | [ex-commands.md](ex-commands.md)    | ✅     |
 | Buffers and panes (registry, splits, file tree, navigation, theme)                                          | [buffers.md](buffers.md)            | ✅     |
 | File tree & Oil (browse / edit the filesystem; oil-style writable directory listing; icons + colors)        | [filetree-oil.md](filetree-oil.md)  | ✅     |
@@ -62,7 +64,7 @@ same surface).
 | Claude Code (the `:claude` agent IDE peer: `claude` CLI attaches over WebSocket/MCP, runs in a terminal buffer, edits via reviewable side-by-side diffs; wire shapes provisional) | [claude-code.md](claude-code.md) | ✅ |
 | opencode (the `:opencode` agent: runs opencode's native TUI in a terminal buffer with `opencode-mode`; `:opencode-acp` is the buffer-native alternative with lattice-owned diff review) | [opencode.md](opencode.md) | ✅ |
 | Languages (bundled set, coverage roadmap, add new language tree-sitter or otherwise)                        | [languages.md](languages.md)        | ✅     |
-| Search and substitute (`/` / `?` / `:s` / live preview / regex syntax / backrefs)                           | _covered in modal-editing + ex-commands_ | 🟡 |
+| Search and substitute (`/` / `?` / `:s` / live preview / regex syntax / backrefs)                           | _covered in command-line + ex-commands_ | 🟡     |
 | Registers, marks, macros                                                                                    | _covered in modal-editing_          | 🟡     |
 | Help system (`:describe-*`, `:apropos`, `:keymap`, `<C-h>` map, mode-prefix syntax for `:describe-key`)    | [help.md](help.md)                  | ✅     |
 | Plugins (WASM Component Model, capabilities, fuel, crash isolation, API introspection)                      | [plugins.md](plugins.md)            | ✅     |

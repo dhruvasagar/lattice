@@ -130,8 +130,6 @@ impl CompilationParser for GeneralParser {
         }
         Vec::new()
     }
-
-    fn reset(&mut self) {}
 }
 
 #[cfg(test)]

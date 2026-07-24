@@ -149,8 +149,6 @@ pub fn scan_severities(base_line: u32, text: &str) -> Vec<(u32, ErrorSeverity)> 
 pub trait CompilationParser: Send {
     /// Feed one line; return entries completed by it.
     fn feed(&mut self, line: &str) -> Vec<ErrorEntry>;
-    /// Drop any pending multi-line state (new run / `:recompile`).
-    fn reset(&mut self);
 }
 
 /// The active set of parsers. Feeds each line to every parser and
@@ -207,13 +205,6 @@ impl ParserRegistry {
             }
         }
         out
-    }
-
-    /// Reset every parser's pending multi-line state.
-    pub fn reset(&mut self) {
-        for parser in &mut self.parsers {
-            parser.reset();
-        }
     }
 }
 
@@ -446,30 +437,6 @@ warning: unused
     fn scan_severities_empty_and_plain() {
         assert!(scan_severities(0, "").is_empty());
         assert!(scan_severities(0, "Compiling\nFinished\n").is_empty());
-    }
-
-    #[test]
-    fn reset_drops_pending_cargo_header() {
-        let mut registry = ParserRegistry::with_builtins();
-        // Prime a pending header, then reset before its location line.
-        assert!(registry.feed("error[E0001]: boom").is_empty());
-        registry.reset();
-        // The location line has no pending cargo header → the
-        // CargoRustcParser skips it. But the GeneralParser catches
-        // `src/x.rs:1:1` anywhere in the line as a valid file
-        // reference (which is correct — users can <CR> on any
-        // `file:line:col` in output). Exactly one entry from the
-        // GeneralParser, severity Info (no message metadata).
-        let entries = registry.feed("  --> src/x.rs:1:1");
-        assert_eq!(
-            entries.len(),
-            1,
-            "GeneralParser matches the embedded path; got {entries:?}"
-        );
-        assert_eq!(entries[0].path, PathBuf::from("src/x.rs"));
-        assert_eq!(entries[0].line, 0, "1-based 1 → 0-based 0");
-        assert_eq!(entries[0].col, 0, "1-based 1 → 0-based 0");
-        assert_eq!(entries[0].severity, ErrorSeverity::Info);
     }
 
     // ── CM.3c: scan_location_lines ─────────────────────────────

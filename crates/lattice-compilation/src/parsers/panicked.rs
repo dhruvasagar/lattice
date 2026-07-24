@@ -90,8 +90,6 @@ impl CompilationParser for TestPanicParser {
             }
         }
     }
-
-    fn reset(&mut self) {}
 }
 
 #[cfg(test)]

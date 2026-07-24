@@ -73,10 +73,12 @@ pub trait CompilationService: Send + Sync + std::fmt::Debug {
 /// look up under this exact alias.
 pub type CompilationServiceHandle = Arc<dyn CompilationService>;
 
-/// Coalesce this many captured lines before publishing an
-/// `Append` chunk. Keeps a noisy build from publishing one event
-/// per line while staying responsive on a slow trickle (a partial
-/// batch flushes on EOF).
+/// Publish one `Append` chunk per line for real-time streaming.
+/// The drain in `mode.rs` coalesces all events available per tick
+/// into a single `apply_edit_batch` — batching is its concern, not
+/// the pipe reader's. Publishing line-by-line gives the user
+/// immediate feedback without measurable overhead (event bus push is
+/// one `ArcSwap` store).
 const READER_BATCH_LINES: usize = 1;
 
 /// Mutable run state shared between `run` (which resolves the
@@ -196,7 +198,7 @@ impl CompilationService for DefaultCompilationService {
                 #[cfg(unix)]
                 unsafe {
                     command.pre_exec(|| {
-                        unsafe { libc::setpgid(0, 0) };
+                        libc::setpgid(0, 0);
                         Ok(())
                     });
                 }
@@ -353,7 +355,10 @@ fn read_parsed_pipe<R: std::io::Read>(
         };
         let new_entries = registry.feed(&l);
         if !new_entries.is_empty() {
-            let mut guard = shared.lock().unwrap();
+            let mut guard = match shared.lock() {
+                Ok(g) => g,
+                Err(_) => return,
+            };
             guard.extend(new_entries);
             let _ = qf_bus.send(guard.clone());
         }

@@ -247,8 +247,4 @@ impl CompilationParser for GnuStyleParser {
 
         Vec::new()
     }
-
-    fn reset(&mut self) {
-        // Stateless — nothing to reset.
-    }
 }

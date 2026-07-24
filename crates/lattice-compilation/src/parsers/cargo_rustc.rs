@@ -149,8 +149,4 @@ impl CompilationParser for CargoRustcParser {
 
         Vec::new()
     }
-
-    fn reset(&mut self) {
-        self.pending = None;
-    }
 }

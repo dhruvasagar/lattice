@@ -113,7 +113,7 @@ impl Headerline for CompilationHeaderline {
 
         let text = format!(" {icon} {quoted}{status}");
         let icon_len = icon.chars().count() + 2; // leading space + icon + trailing space
-        let cmd_end = icon_len + quoted.len();
+        let cmd_end = icon_len + quoted.chars().count();
         let cells = text
             .chars()
             .enumerate()
@@ -137,3 +137,91 @@ impl Headerline for CompilationHeaderline {
 /// can `unregister` / `register` idempotently.
 pub const COMPILATION_HEADERLINE_PROVIDER_ID: u64 =
     0x636f_6d70_686c_0300; // "comp-hl"
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::RwLock;
+
+    fn state(cmd: &str, running: bool, killed: bool, counts: Option<(usize, usize)>) -> Arc<RwLock<CompilationHeadlineState>> {
+        Arc::new(RwLock::new(CompilationHeadlineState {
+            command: cmd.to_string(),
+            last_counts: counts,
+            running,
+            killed,
+        }))
+    }
+
+    fn hl() -> CompilationHeaderline {
+        CompilationHeaderline::new(
+            Arc::new(RwLock::new(CompilationHeadlineState::default())),
+            Arc::new(AtomicU64::new(1)),
+            0xf9e2af, // command_fg (warm yellow)
+            0x999999, // in_progress_fg (grey)
+            0x44cc88, // success_fg (green)
+            0xff4444, // failure_fg (red)
+            0x888888, // dim_fg (muted)
+        )
+    }
+
+    #[test]
+    fn empty_command_returns_none() {
+        let h = hl();
+        assert!(h.render().is_none(), "no headerline when command is empty");
+    }
+
+    #[test]
+    fn running_shows_spinner_and_ellipsis() {
+        let h = CompilationHeaderline::new(
+            state("cargo build", true, false, None),
+            Arc::new(AtomicU64::new(1)),
+            0xf9e2af, 0x999999, 0x44cc88, 0xff4444, 0x888888,
+        );
+        let row = h.render().expect("headerline must render");
+        let text: String = row.cells.iter().map(|c| char::from_u32(c.codepoint).unwrap()).collect();
+        assert!(text.contains('\u{27f3}'), "spinner icon \u{27f3} present");
+        assert!(text.contains('"'), "command is quoted");
+        assert!(text.contains("cargo build"), "command text present");
+        assert!(text.contains('\u{2026}'), "ellipsis present");
+    }
+
+    #[test]
+    fn finished_clean_shows_checkmark_and_ok() {
+        let h = CompilationHeaderline::new(
+            state("cargo build", false, false, Some((0, 0))),
+            Arc::new(AtomicU64::new(1)),
+            0xf9e2af, 0x999999, 0x44cc88, 0xff4444, 0x888888,
+        );
+        let row = h.render().expect("headerline must render");
+        let text: String = row.cells.iter().map(|c| char::from_u32(c.codepoint).unwrap()).collect();
+        assert!(text.contains('\u{2714}'), "checkmark icon present");
+        assert!(text.contains("ok"), "ok status present");
+    }
+
+    #[test]
+    fn finished_errors_shows_counts() {
+        let h = CompilationHeaderline::new(
+            state("cargo build", false, false, Some((3, 2))),
+            Arc::new(AtomicU64::new(1)),
+            0xf9e2af, 0x999999, 0x44cc88, 0xff4444, 0x888888,
+        );
+        let row = h.render().expect("headerline must render");
+        let text: String = row.cells.iter().map(|c| char::from_u32(c.codepoint).unwrap()).collect();
+        assert!(text.contains('\u{2717}'), "cross icon present");
+        assert!(text.contains("3e"), "error count present");
+        assert!(text.contains("2w"), "warning count present");
+    }
+
+    #[test]
+    fn killed_shows_square_and_killed_text() {
+        let h = CompilationHeaderline::new(
+            state("cargo build", false, true, Some((0, 0))),
+            Arc::new(AtomicU64::new(1)),
+            0xf9e2af, 0x999999, 0x44cc88, 0xff4444, 0x888888,
+        );
+        let row = h.render().expect("headerline must render");
+        let text: String = row.cells.iter().map(|c| char::from_u32(c.codepoint).unwrap()).collect();
+        assert!(text.contains('\u{25a0}'), "square icon present");
+        assert!(text.contains("killed"), "killed text present");
+    }
+}

@@ -7001,7 +7001,7 @@ impl Editor {
             return String::new();
         }
         self.document.snapshot().text().to_string()
-            .trim_end_matches('\n').to_string()
+            .trim_end().to_string()
     }
 
     /// MB.2: `<C-x><C-e>` — toggle the `:` line between the one-row
@@ -7018,6 +7018,26 @@ impl Editor {
         let expanding = !self.command_line_expanded();
         if let Some(f) = self.minibuffer_focus.as_mut() {
             f.expanded = expanding;
+        }
+        // MB.2: switch the buffer's major mode so the expanded band
+        // gets its own isolated option overrides (Number=false,
+        // SignColumn=No, etc.) scoped to the *command-line* buffer
+        // only. Collapsing reactivates the tier-1 mode.
+        if let Some(id) = self
+            .buffers
+            .by_name(crate::command_line_mode::COMMAND_LINE_BUFFER_NAME)
+        {
+            if expanding {
+                self.activate_major_by_id(
+                    id,
+                    crate::command_line_expand_mode::CommandLineExpandMode::mode_id(),
+                );
+            } else {
+                self.activate_major_by_id(
+                    id,
+                    crate::command_line_mode::CommandLineMode::mode_id(),
+                );
+            }
         }
         self.modal = if expanding {
             ModalState::Insert

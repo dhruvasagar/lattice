@@ -461,6 +461,13 @@ impl Editor {
         boot.modes_mut()
             .register(crate::command_line_mode::CommandLineMode)
             .expect("command-line-mode must register without conflict");
+        // MB.2: `command-line-expand-mode` — the tier-2 expanded band
+        // major mode (same buffer, full-modal). Activated on expand,
+        // deactivated on collapse. Owns the expanded band's option
+        // overrides and keymap surface independently of tier 1.
+        boot.modes_mut()
+            .register(crate::command_line_expand_mode::CommandLineExpandMode)
+            .expect("command-line-expand-mode must register without conflict");
         // MB.5a (rich minibuffer): `search-line-mode` — the major mode on
         // the synthetic `*search-line*` buffer. Host-owned; its Insert-
         // layer keymap (submit / cancel chords) resolves through

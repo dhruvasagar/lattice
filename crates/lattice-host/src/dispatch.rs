@@ -6988,8 +6988,12 @@ impl Editor {
         if !self.command_line_active() {
             return String::new();
         }
-        self.document.snapshot().text().to_string()
-            .trim_end().to_string()
+        let text = self.document.snapshot().text().to_string()
+            .trim_end().to_string();
+        if text.is_empty() {
+            return text;
+        }
+        format!(":{text}")
     }
 
     /// MB.5c: the full (possibly multi-line) text of the `/`·`?` search
@@ -7230,6 +7234,12 @@ impl Editor {
         self.scroll = focus.prior_scroll;
         self.leftcol = focus.prior_leftcol;
         self.modal = focus.prior_modal;
+        // MB.1: `self.document_buffer_id` just changed back to the prior
+        // document. Rebuild the hot-path option cache so the published
+        // `ActiveDocumentRenderState.option_cache` reflects the document's
+        // resolved options (Number, SignColumn, etc.) rather than carrying
+        // stale values from whenever the cache was last rebuilt.
+        self.rebuild_option_cache();
     }
 
     /// MB.1: open the `:` command line — ensure/focus the synthetic

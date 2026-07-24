@@ -1,13 +1,20 @@
 # Rich minibuffer
 
+> **✅ Shipped (2026-07-24, MB.1–MB.5).** The `:` command line and `/`·`?`
+> search line are **buffer-backed, readline-grade editing surfaces** with
+> two independent history rings, `<C-x><C-e>` expand, live decorations, and
+> fuzzy pickers. The substrate is ready for future prompt kinds
+> (`git-commit-line`, `repl-input`). See the
+> [slice plan](../operations/slice-plans/rich-minibuffer.md) for the
+> delivered slice catalogue.
+
 Authoritative design for Lattice's **rich minibuffer**: the `:` command
-line becomes a **readline-grade editing surface** backed by a real
-buffer, and `<C-x><C-e>` **expands** the command into a full editing
-mini-buffer (the bash/zsh `edit-and-execute-command` affordance) with the
-complete vim grammar, syntax highlighting, error highlighting, and
-completion. Command history is walkable in-line and browsable through a
-fuzzy **picker**. This builds out `design.md` §5.9.10 (committed, unbuilt)
-around a two-tier model.
+line and `/`·`?` search line are **readline-grade editing surfaces**
+backed by real buffers, and `<C-x><C-e>` **expands** the prompt into a
+full editing mini-buffer (the bash/zsh `edit-and-execute-command`
+affordance) with the complete vim grammar. Command and search history
+are walkable in-line and browsable through fuzzy **pickers**. This
+builds out `design.md` §5.9.10.
 
 The guiding principle stays the project's own — **everything is a
 buffer** — but applied with progressive disclosure:
@@ -164,20 +171,38 @@ valid macro registers, so nothing is stolen from `qa`–`qz` recording.
 
 ## 5. Tooling / decorations
 
-Because both tiers are buffers, the §5.9.10 richness is decoration work,
-off the UI thread (paramount #1) — the renderer only reads published
-rows:
+Because both tiers are buffers, decoration and highlighting runs off
+the render thread (paramount #1) — the renderer reads published state.
+Shipped status:
 
-| Affordance | `:` line (tier 1) | expanded (tier 2) |
-|------------|-------------------|-------------------|
-| Completion popup | ✅ (exists) | ✅ (same source) |
-| Live error indicator | ✅ compact (echo) | ✅ inline squiggle |
-| Parameter hints (`ArgSpec`) | optional virtual hint | ✅ |
-| Syntax highlighting | optional | ✅ (`command-line` grammar) |
-| Registers / undo / Visual | — (insert-only) | ✅ (regular buffer) |
-| `:s///` substitution preview | ✅ | ✅ |
+| Affordance | `:` line (tier 1) | Expanded band (tier 2) |
+|---|---|---|
+| Completion popup | ✅ `<Tab>` / `<S-Tab>` | ✅ same source (via `command-line-mode` keymap) |
+| Live error indicator | ✅ trailing echo row text | 📝 (only echo row today) |
+| Parameter hints (`ArgSpec`) | ✅ dim trailing text | 📝 (only echo row today) |
+| Syntax highlighting | ✅ full `command-line` grammar | ✅ first line (via `cmdline_decorations`) |
+| Registers / undo / Visual | — (insert-only) | ✅ full modal grammar |
+| `:s///` substitution preview | ✅ live on target buffer | 📝 (only tier 1 today) |
+| `/`·`?` incsearch | ✅ live `all_matches` on doc | ✅ same search engine |
+| Incsearch cursor jump | ❌ (submit-only) | ❌ (submit-only) |
 
-All are decoration providers contributed by the two command-line modes.
+Tier 1 decorations are produced by `refresh_command_line_decorations()`
+on the actor thread (tokenize the first line into typed spans). The
+expanded band applies the same first-line spans via the published
+`cmdline_decorations`. Full per-line decorations for multi-line
+expanded commands are deferred.
+
+Completions in the expanded band work via the same `command-line-mode`
+Insert-layer keymap that drives tier 1 — `<Tab>` triggers
+`action:command-line-complete` which opens the completion popup. No
+special casing; the expanded buffer has `command-line-mode` as its
+major, so the keymap layer is active.
+
+The `/`·`?` search line also has live match highlighting:
+`preview_search()` runs against the target document (via
+`minibuffer_focus.prior_buffer_id`) on every edit; both renderers paint
+`all_matches` overlays when `search_line_active` is true, regardless
+of the pane's active/inactive status.
 
 ## 6. Unification (✅ shipped)
 
@@ -245,22 +270,34 @@ default is the in-place upward expansion — *not* a separate split/pane
 the user navigates to. Typed + `:set`/`:customize`-able like every
 option; the mode reads it when expanding.
 
-## 10. Impact surface (for the slice plan)
+## 10. Impact surface (delivered)
 
-- **Modal / input** (`lattice-grammar::modal`, host dispatch, `input.rs`):
-  `Command` becomes a focus state over a real buffer; retire
-  `translate_command`; route `:` keys through the Insert dispatcher.
-- **Buffer / focus / lifecycle** (`lattice-host`): open/close, focus-swap
-  + suspend/restore prior buffer, submit → parser → history → dispatch;
-  tier-2 expand = open a split with `command-line-edit-mode` seeded from
-  the `:` text, accept writes back.
-- **Modes** (`lattice-mode` / a minibuffer crate): `command-line-mode`
-  (insert-only, submit/cancel/history/expand chords + handlers) and
-  `command-line-edit-mode` (full-buffer + accept/cancel), decoration
-  providers, the `command-line` grammar.
-- **Render** (`lattice-ui-tui`, `lattice-ui-gpui`, lockstep): echo-area
-  row draws the tier-1 buffer's line + cursor; tier-2 is a normal
-  split/popup buffer render.
-- **Config**: the `command-line.expand-layout` option.
-- **History picker**: reuse the picker primitive; `q:` + `:history`;
-  accept-into-editable-line.
+- **Modes** (`lattice-host`): `command-line-mode` (`*command-line*` buffer,
+  `command_line_mode.rs`) and `search-line-mode` (`*search-line*` buffer,
+  `search_line_mode.rs`). Both are insert-only (tier 1) with Insert-layer
+  keymaps for submit / cancel / history walk / expand. Tier 2 reuses the
+  same buffer (no separate `command-line-edit-mode`). The `MinibufferFocus`
+  struct (shared by both prompts) stashes the prior editing buffer + cursor
+  + modal; `Editor::open_command_line` / `open_search_line` create/focus
+  the synthetic buffer through `ensure_named_synthetic_document`.
+- **Modal / input** (`input.rs`): `ModalState::Command` and
+  `ModalState::Search` both route through `dispatch_insert`. The old
+  `translate_command` / `translate_search` / `command_line: String` /
+  pattern-on-`SearchLine` are retired.
+- **Render** (`lattice-ui-tui`, `lattice-ui-gpui`): echo-area row draws the
+  tier-1 buffer's line + cursor with syntax-highlighted spans from
+  `cmdline_decorations`. Expanded band draws `cmdline_full_text` as a
+  multi-row `Paragraph` with the first line decorated. Both renderers gate
+  active-pane rendering on `search_line_active` (same as
+  `command_line_active` since MB.1) so the document stays visible during `/`
+  typing. Incsearch overlays (`all_matches`) paint when `search_line_active`
+  is true regardless of pane active/inactive status.
+  `command-line.expand-height` sizes the band (`half` / `full` / fixed rows).
+- **History** (`lattice-picker`): two picker sources —
+  `CommandHistorySource` (`history`), `SearchHistorySource`
+  (`search-history`). `PickerAcceptOutcome::LoadCommandLine` /
+  `LoadSearchLine` → host `open_command_line` / `open_search_line +
+  set_search_line_text`. `:history [commands|searches]` ex-command with
+  optional kind arg. `q:` / `q/` / `q?` Normal-mode chords.
+- **Completion**: `gen:history-kinds` generator wired for `:history <Tab>`
+  (`[commands, searches]`).

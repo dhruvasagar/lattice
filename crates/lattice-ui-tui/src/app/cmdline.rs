@@ -664,6 +664,61 @@ mod tests {
         assert!(p.candidates[0].raw.display.contains("set number"));
     }
 
+    // ── MB.4 (rich minibuffer, phase 4): live `:` line decorations
+    //    — syntax highlighting, error indicator, parameter hint. ──
+
+    /// Typing a known command populates the published decorations:
+    /// the command word is a keyword span and a param hint appears;
+    /// no error. (Not submitted — `:write` would touch the fs; the
+    /// submit-clears path is exercised via cancel below and the
+    /// host-side submit handler.)
+    #[test]
+    fn mb4_typing_known_command_populates_decorations() {
+        use lattice_cells::style::Style;
+        let mut a = app_with("hello\n", 10);
+        a.apply(Action::EnterCommandLine);
+        press_chars(&mut a, "write foo");
+        let d = a
+            .editor
+            .command_line_decorations
+            .as_ref()
+            .expect("decorations produced on edit");
+        assert_eq!(d.spans[0].style, Style::Keyword, "command word is a keyword");
+        assert!(d.error.is_none(), "known command has no error");
+        assert!(d.param_hint.is_some(), "`:write <file>` offers a hint");
+    }
+
+    /// An unknown command, once committed with a trailing space, sets
+    /// the live error indicator as the user types.
+    #[test]
+    fn mb4_unknown_command_sets_live_error() {
+        let mut a = app_with("hello\n", 10);
+        a.apply(Action::EnterCommandLine);
+        press_chars(&mut a, "frobnicate ");
+        let d = a
+            .editor
+            .command_line_decorations
+            .as_ref()
+            .expect("decorations");
+        assert_eq!(
+            d.error.as_deref(),
+            Some("unknown command: frobnicate"),
+            "committed unknown command flags an error"
+        );
+    }
+
+    /// Cancelling the `:` line clears the decorations (no stale
+    /// highlight lingers after close).
+    #[test]
+    fn mb4_cancel_clears_decorations() {
+        let mut a = app_with("hello\n", 10);
+        a.apply(Action::EnterCommandLine);
+        press_chars(&mut a, "write");
+        assert!(a.editor.command_line_decorations.is_some());
+        a.apply(Action::CommandLineCancel);
+        assert!(a.editor.command_line_decorations.is_none());
+    }
+
     #[test]
     fn prefer_aliases_rewrites_canonical_to_alias() {
         use lattice_completion::{

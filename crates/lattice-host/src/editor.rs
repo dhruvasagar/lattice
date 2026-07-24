@@ -491,6 +491,12 @@ pub struct Editor {
     /// input no longer parses as a substitute (DESIGN.md
     /// §5.9.10).
     pub substitute_preview: Option<SubstitutePreview>,
+    /// MB.4: live `:` command-line decorations — syntax spans, a
+    /// validation error, and a parameter hint. Recomputed on every
+    /// command-line edit (`refresh_command_line_decorations`, on the
+    /// actor thread) and published into the modeline render state.
+    /// `None` when the command line is closed / empty.
+    pub command_line_decorations: Option<crate::excommand::CommandLineDecorations>,
     /// In-progress count prefix being typed (`3` of `3w`,
     /// `12` of `12dd`). 0 means "no count typed". The next
     /// `Action::Invoke` consumes this and resets it to 0.

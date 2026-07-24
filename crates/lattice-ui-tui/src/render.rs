@@ -3482,7 +3482,6 @@ fn draw_command_or_echo(frame: &mut Frame, area: Rect, app: &App) {
         // cursor (byte offset into the single line) so mid-line editing
         // shows where the user is typing — not pinned to the end.
         let line = app.command_line();
-        let prompt = format!(":{line}");
         let caret_byte = (app.ad().cursor.byte as usize).min(line.len());
         let cursor_col = area
             .x
@@ -3509,7 +3508,51 @@ fn draw_command_or_echo(frame: &mut Frame, area: Rect, app: &App) {
             None
         };
 
-        let mut spans: Vec<Span<'_>> = vec![Span::raw(prompt)];
+        // MB.4: draw the `:` prompt then the line, coloured per the
+        // published decoration spans (syntax highlight). The spans are
+        // produced off the render thread; here we only map each token's
+        // `Style` to its themed colour and slice the line.
+        let cells = app.render_state.load().cells.load_full();
+        let resolved = &cells.resolved_theme;
+        let ids = &cells.theme_ids;
+        let modeline = app.modeline();
+        let deco = modeline.cmdline_decorations.as_ref();
+        let base = TuiStyle::default();
+        let mut spans: Vec<Span<'_>> = vec![Span::raw(":".to_string())];
+        match deco {
+            Some(d) if !d.spans.is_empty() => {
+                let mut pos = 0usize;
+                for sp in &d.spans {
+                    let s = sp.range.start.min(line.len());
+                    let e = sp.range.end.min(line.len());
+                    if s < pos
+                        || e < s
+                        || !line.is_char_boundary(s)
+                        || !line.is_char_boundary(e)
+                    {
+                        continue;
+                    }
+                    if s > pos {
+                        spans.push(Span::styled(line[pos..s].to_string(), base));
+                    }
+                    let styled = match lattice_host::ui::theme::resolve_syntax_style(
+                        resolved, ids, sp.style,
+                    )
+                    .fg
+                    .map(crate::theme::host_color_to_ratatui)
+                    {
+                        Some(c) => base.fg(c),
+                        None => base,
+                    };
+                    spans.push(Span::styled(line[s..e].to_string(), styled));
+                    pos = e;
+                }
+                if pos < line.len() {
+                    spans.push(Span::styled(line[pos..].to_string(), base));
+                }
+            }
+            _ => spans.push(Span::raw(line.clone())),
+        }
         if let Some(text) = hint {
             spans.push(Span::styled(
                 text,
@@ -3529,6 +3572,42 @@ fn draw_command_or_echo(frame: &mut Frame, area: Rect, app: &App) {
                 format!("  ({}/{})", state.selected + 1, state.candidates.len()),
                 TuiStyle::default().fg(Color::DarkGray),
             ));
+        }
+        // MB.4: a live error indicator (unknown command / bad args) wins
+        // the trailing slot; otherwise a dim parameter hint from the
+        // command's ArgSpec — suppressed while the completion popup is up
+        // to avoid clutter.
+        if let Some(d) = deco {
+            if let Some(err) = &d.error {
+                let err_color = lattice_host::ui::theme::resolve_syntax_style(
+                    resolved,
+                    ids,
+                    lattice_cells::style::Style::DiagnosticError,
+                )
+                .fg
+                .map(crate::theme::host_color_to_ratatui)
+                .unwrap_or(Color::Red);
+                spans.push(Span::styled(
+                    format!("  {err}"),
+                    TuiStyle::default()
+                        .fg(err_color)
+                        .add_modifier(Modifier::ITALIC),
+                ));
+            } else if let Some(ph) = &d.param_hint {
+                let popup_open = app
+                    .completion()
+                    .state
+                    .as_deref()
+                    .is_some_and(|s| !s.candidates.is_empty());
+                if !popup_open {
+                    spans.push(Span::styled(
+                        format!("  {ph}"),
+                        TuiStyle::default()
+                            .fg(Color::DarkGray)
+                            .add_modifier(Modifier::ITALIC),
+                    ));
+                }
+            }
         }
         let para = Paragraph::new(Line::from(spans));
         frame.render_widget(para, area);

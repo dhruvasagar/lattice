@@ -879,6 +879,248 @@ fn try_parse_substitute(
     )))
 }
 
+// ─────────────────────────────────────────────────────────────────
+// MB.4 (rich minibuffer): live `:` line decorations.
+//
+// A lightweight tokenizer + validator that turns the in-progress
+// command line into (1) syntax-highlight spans, (2) a live error
+// indicator, and (3) a parameter hint — all produced off the render
+// thread (computed on the actor thread, like
+// `refresh_substitute_preview`, then published into the modeline
+// render state). The ex-parser IS the grammar front-end (paramount
+// #3), so this reuses its resolution + validation rather than
+// re-implementing it.
+// ─────────────────────────────────────────────────────────────────
+
+use lattice_cells::style::Style;
+
+/// One highlighted span of the `:` command line. `range` is a byte
+/// range into the line text (the `:` prompt is NOT included — spans
+/// are relative to `command_line()`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandLineSpan {
+    pub range: std::ops::Range<usize>,
+    pub style: Style,
+}
+
+/// Live decorations for the `:` line (MB.4): syntax spans, an
+/// optional validation error, and an optional parameter hint.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CommandLineDecorations {
+    /// Per-token highlight spans over the line text.
+    pub spans: Vec<CommandLineSpan>,
+    /// A live error message (unknown command / bad args), surfaced
+    /// only once the command word is "committed" (a trailing space or
+    /// `!`) so a valid-command *prefix* mid-typing doesn't flash red.
+    pub error: Option<String>,
+    /// A parameter hint (`<pat>/<rep>/[flags]`, `<file>`, …) derived
+    /// from the resolved command's `ArgSpec`s. Shown dim after the line.
+    pub param_hint: Option<String>,
+}
+
+impl CommandLineDecorations {
+    /// True when there is nothing to draw (empty / all-default line).
+    pub fn is_empty(&self) -> bool {
+        self.spans.is_empty() && self.error.is_none() && self.param_hint.is_none()
+    }
+}
+
+/// Byte length of a leading range prefix (`%` whole-file, `'<,'>`
+/// visual range) at the start of `line`, or `None` when the line has
+/// no range prefix. Only the prefixes the ex-parser actually honors
+/// are recognised; anything else falls through to the command word.
+fn leading_range_len(line: &str) -> Option<usize> {
+    if line.starts_with("'<,'>") {
+        Some("'<,'>".len())
+    } else if line.starts_with('%') {
+        Some(1)
+    } else {
+        None
+    }
+}
+
+/// Format a command's `ArgSpec`s as a parameter hint — `<name>` for a
+/// required arg, `[<name>]` for an optional one (emacs / `marginalia`
+/// convention, matching the command-palette args column).
+fn format_arg_hint(schema: &[lattice_grammar::args::ArgSpec]) -> String {
+    use lattice_grammar::args::ArgDefault;
+    schema
+        .iter()
+        .map(|a| match a.default {
+            ArgDefault::Required => format!("<{}>", a.name),
+            _ => format!("[<{}>]", a.name),
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Tokenize a substitute body (`s/pat/rep/flags`) starting at byte
+/// `start` (the `s`), pushing spans for the `s`, each `/` delimiter,
+/// the pattern, replacement, and flags. Honors `\`-escapes so an
+/// escaped `\/` doesn't split a field. Byte offsets stay absolute.
+fn tokenize_substitute(line: &str, start: usize, spans: &mut Vec<CommandLineSpan>) {
+    // The command letter `s`.
+    spans.push(CommandLineSpan {
+        range: start..start + 1,
+        style: Style::Keyword,
+    });
+    // 0 = pattern, 1 = replacement, 2 = flags.
+    let mut state = 0u8;
+    let mut field_start: Option<usize> = None;
+    let mut chars = line[start + 1..].char_indices().peekable();
+    while let Some((rel, c)) = chars.next() {
+        let at = start + 1 + rel;
+        if c == '\\' {
+            // Escape: absorb the next char into the current field.
+            field_start.get_or_insert(at);
+            let _ = chars.next();
+            continue;
+        }
+        if c == '/' {
+            // Close the field before this delimiter.
+            if let Some(fs) = field_start.take() {
+                spans.push(CommandLineSpan {
+                    range: fs..at,
+                    style: field_style(state),
+                });
+            }
+            spans.push(CommandLineSpan {
+                range: at..at + c.len_utf8(),
+                style: Style::Punctuation,
+            });
+            state = state.saturating_add(1).min(2);
+            continue;
+        }
+        field_start.get_or_insert(at);
+    }
+    if let Some(fs) = field_start {
+        spans.push(CommandLineSpan {
+            range: fs..line.len(),
+            style: field_style(state),
+        });
+    }
+}
+
+fn field_style(state: u8) -> Style {
+    match state {
+        0 | 1 => Style::String, // pattern / replacement
+        _ => Style::Attribute,  // flags
+    }
+}
+
+/// Compute the live decorations for a `:` command line (MB.4). `line`
+/// is the text without the leading `:` (i.e. `command_line()`). Pure +
+/// cheap (one line, no I/O) so it runs on the actor thread each edit.
+pub fn command_line_decorations(
+    line: &str,
+    registry: &CommandRegistry,
+) -> CommandLineDecorations {
+    let mut deco = CommandLineDecorations::default();
+    if line.trim().is_empty() {
+        return deco;
+    }
+    let end = line.trim_end().len();
+
+    // Bare line number (`:42`) — a goto-line range.
+    if line.trim().chars().all(|c| c.is_ascii_digit()) {
+        deco.spans.push(CommandLineSpan {
+            range: 0..end,
+            style: Style::Number,
+        });
+        return deco;
+    }
+
+    // Optional leading range prefix (`%`, `'<,'>`).
+    let mut cursor = 0usize;
+    if let Some(rng) = leading_range_len(line) {
+        deco.spans.push(CommandLineSpan {
+            range: 0..rng,
+            style: Style::Number,
+        });
+        cursor = rng;
+    }
+    let rest = &line[cursor..];
+
+    // Substitute delimiter form (`s/…/…/…`).
+    if rest.starts_with("s/") {
+        tokenize_substitute(line, cursor, &mut deco.spans);
+        deco.param_hint = Some("<pattern>/<replacement>/[flags]".to_string());
+        return deco;
+    }
+    // Global form (`g/pattern/cmd`, `v/pattern/cmd`).
+    if rest.starts_with("g/") || rest.starts_with("v/") {
+        deco.spans.push(CommandLineSpan {
+            range: cursor..cursor + 1,
+            style: Style::Keyword,
+        });
+        if end > cursor + 1 {
+            deco.spans.push(CommandLineSpan {
+                range: cursor + 1..end,
+                style: Style::Default,
+            });
+        }
+        deco.param_hint = Some("/<pattern>/<command>".to_string());
+        return deco;
+    }
+
+    // Keyword form: command word (+ optional `!`) then args.
+    let word_rel = rest.find(char::is_whitespace).unwrap_or(rest.len());
+    let raw_word = &rest[..word_rel];
+    let (word, has_bang) = raw_word
+        .strip_suffix('!')
+        .map(|w| (w, true))
+        .unwrap_or((raw_word, false));
+    let word_end = cursor + word.len();
+
+    let resolved = if word.is_empty() {
+        None
+    } else {
+        resolve_command_name_or_alias(registry, word)
+    };
+    let known = resolved.is_some();
+    // A word is "committed" once it is followed by whitespace or a
+    // bang — before that, a valid-command prefix shouldn't flash red.
+    let committed = word_rel < rest.len() || has_bang;
+    let flag_error = !word.is_empty() && !known && committed;
+
+    deco.spans.push(CommandLineSpan {
+        range: cursor..word_end,
+        style: if flag_error {
+            Style::DiagnosticError
+        } else {
+            Style::Keyword
+        },
+    });
+    if has_bang {
+        deco.spans.push(CommandLineSpan {
+            range: word_end..word_end + 1,
+            style: Style::Operator,
+        });
+    }
+    let args_start = cursor + raw_word.len();
+    if args_start < end {
+        deco.spans.push(CommandLineSpan {
+            range: args_start..end,
+            style: Style::Default,
+        });
+    }
+
+    if flag_error {
+        deco.error = Some(format!("unknown command: {raw_word}"));
+    }
+
+    // Parameter hint from the resolved command's ArgSpec (only when the
+    // command is known and takes args).
+    if let Some(id) = resolved
+        && let Some(spec) = registry.lookup(id)
+        && !spec.args_schema.is_empty()
+    {
+        deco.param_hint = Some(format_arg_hint(&spec.args_schema));
+    }
+
+    deco
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
@@ -904,6 +1146,77 @@ mod tests {
             .lookup(inv.command)
             .map(|s| s.name.as_str())
             .unwrap_or("?")
+    }
+
+    // ---- MB.4: live command-line decorations ----
+
+    /// The command word of a known command highlights as a keyword;
+    /// no error, and a known command with args offers a param hint.
+    #[test]
+    fn mb4_known_command_highlights_keyword_with_hint() {
+        let reg = fixture();
+        let d = command_line_decorations("write foo.txt", &reg);
+        // First span covers the command word `write` as a keyword.
+        assert_eq!(d.spans[0].range, 0..5);
+        assert_eq!(d.spans[0].style, Style::Keyword);
+        assert!(d.error.is_none(), "known command has no error");
+        assert!(
+            d.param_hint.is_some(),
+            "`:write` takes a path arg → a hint"
+        );
+    }
+
+    /// An unknown command, once committed (a trailing space), flags an
+    /// error and paints the word with the diagnostic-error style.
+    #[test]
+    fn mb4_unknown_committed_command_flags_error() {
+        let reg = fixture();
+        let d = command_line_decorations("frobnicate x", &reg);
+        assert_eq!(d.spans[0].style, Style::DiagnosticError);
+        assert_eq!(d.error.as_deref(), Some("unknown command: frobnicate"));
+    }
+
+    /// A *prefix* of a valid command, still being typed (no trailing
+    /// space), must NOT flash red — reduces mid-typing flicker.
+    #[test]
+    fn mb4_uncommitted_prefix_does_not_error() {
+        let reg = fixture();
+        let d = command_line_decorations("writ", &reg);
+        assert_eq!(d.spans[0].style, Style::Keyword);
+        assert!(d.error.is_none());
+    }
+
+    /// A substitute line tokenizes into `s`, `/` delimiters, the
+    /// pattern, and the replacement, and offers the s/// hint.
+    #[test]
+    fn mb4_substitute_tokenizes_fields() {
+        let reg = fixture();
+        let d = command_line_decorations("s/foo/bar/g", &reg);
+        // `s` keyword.
+        assert_eq!(d.spans[0].range, 0..1);
+        assert_eq!(d.spans[0].style, Style::Keyword);
+        // Somewhere a `/` delimiter (punctuation) and a String field.
+        assert!(d.spans.iter().any(|s| s.style == Style::Punctuation));
+        assert!(d.spans.iter().any(|s| s.style == Style::String));
+        // Flags field styled as an attribute.
+        assert!(d.spans.iter().any(|s| s.style == Style::Attribute));
+        assert!(d.param_hint.is_some());
+    }
+
+    /// A `%`-scoped substitute paints the leading `%` as a range.
+    #[test]
+    fn mb4_range_prefix_is_highlighted() {
+        let reg = fixture();
+        let d = command_line_decorations("%s/a/b/", &reg);
+        assert_eq!(d.spans[0].range, 0..1);
+        assert_eq!(d.spans[0].style, Style::Number);
+    }
+
+    /// An empty line produces no decorations.
+    #[test]
+    fn mb4_empty_line_is_bare() {
+        let reg = fixture();
+        assert!(command_line_decorations("   ", &reg).is_empty());
     }
 
     // ---- Substitute live-preview parser ----

@@ -1,6 +1,6 @@
 # Rich minibuffer — slice plan
 
-> **Status: 🚧 IN PROGRESS (MB.1–MB.3 + MB.2e ✅ 2026-07-24; MB.4/MB.5 📝).**
+> **Status: 🚧 IN PROGRESS (MB.1–MB.4 + MB.2e ✅ 2026-07-24; MB.5 📝).**
 > Sequencing companion to the design
 > fragment [`../../architecture/rich-minibuffer.md`](../../architecture/rich-minibuffer.md)
 > (the *what + why*). This file owns *when + in what order + status*.
@@ -116,14 +116,25 @@ every slice re-verifies keystroke→glyph.
 
 ## Phase 4 — richness
 
-- **MB.4 — highlighting + live decorations.** 📝
-  - `command-line` grammar / tokenizer highlights command word / range /
-    flags / args (tier 2, optional tier 1); live **error indicator**
-    (unknown cmd / bad args from the same parser), **parameter hints**
-    (`ArgSpec` metadata), **`:s///` substitution preview** — decoration
-    providers on the two command-line modes, off the UI thread.
-  - **Test:** decorations produced off-thread; error indicator on a bad
-    command; param hint from `ArgSpec`; no paint-time parse.
+- **MB.4 — highlighting + live decorations.** ✅ (2026-07-24)
+  - `command_line_decorations(line, registry)` in `lattice-host::excommand`
+    tokenizes the `:` line into typed spans (command word / range prefix /
+    bang / `s///` pattern·replacement·flags), maps each to a
+    `lattice_cells::style::Style`, validates via the same ex-parser (live
+    **error indicator** — unknown command, surfaced once the word is
+    "committed" to avoid mid-typing flicker), and builds a **parameter
+    hint** from the resolved command's `ArgSpec`. `:s///` **substitution
+    preview** already lands live (`refresh_substitute_preview`).
+  - Mode-owned: `Editor::refresh_command_line_decorations()` (peer of
+    `refresh_substitute_preview`) recomputes on every command-line edit
+    on the **actor thread** (one-line tokenize, never the render thread)
+    and publishes `ModelineRenderState.cmdline_decorations`; both peers
+    read the published data and only map `Style`→colour + slice the line.
+  - **Test:** `mb4_*` model tests (`excommand.rs`: keyword/error/prefix/
+    substitute tokenization, committed-vs-prefix error gate); `mb4_*`
+    wiring tests (`app/cmdline.rs`: typing populates decorations, live
+    unknown-command error, submit/cancel clear). TUI + GPUI (`--features
+    window`) render wired in lockstep; no paint-time parse.
 
 ## Phase 5 — unification
 

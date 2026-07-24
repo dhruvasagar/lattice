@@ -195,6 +195,19 @@ Specific behaviours:
 - `<Up>` / `<Down>` walk command history.
 - `<C-n>` / `<C-p>` same as `<Down>` / `<Up>`.
 
+As you type, the `:` line is **live-decorated**:
+
+- **Syntax highlighting** — the command word, range prefix (`%`,
+  `'<,'>`), `!` bang, and `:s/pattern/replacement/flags` fields each
+  colour by their role.
+- **Error indicator** — an unknown command (once you type a space
+  after it) is flagged inline, and its word turns the diagnostic-error
+  colour.
+- **Parameter hint** — a dim hint of the command's expected arguments
+  (`<file>`, `<pattern>/<replacement>/[flags]`, …) trails the line.
+- **`:s///` preview** — matches of the in-progress substitution are
+  highlighted in the buffer before you press `<CR>`.
+
 ### Expanding the command line
 
 `<C-x><C-e>` expands the one-row `:` line into a full-modal

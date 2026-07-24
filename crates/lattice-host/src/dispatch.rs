@@ -1083,6 +1083,14 @@ impl Editor {
                     std::sync::Arc::from("")
                 },
                 cmdline_expand_height: self.command_line_expand_height(),
+                // MB.4: publish live decorations only while the command
+                // line is actually open (a stale set never lingers after
+                // close / cancel).
+                cmdline_decorations: if self.command_line_active() {
+                    self.command_line_decorations.clone()
+                } else {
+                    None
+                },
             }),
             // ML.0b-2: wait-free snapshot of the configurable-modeline
             // element system (two Arc clones). Built-in element content
@@ -2227,6 +2235,7 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
                     editor.command_history_pending = None;
                     editor.auto_submit_after_chord = false;
                     editor.substitute_preview = None;
+                    editor.command_line_decorations = None;
                     // Restore the prior editing buffer + cursor + modal;
                     // no command dispatched, no history push.
                     editor.restore_editing_buffer();
@@ -7109,6 +7118,10 @@ impl Editor {
         self.completion_state = None;
         self.substitute_preview = None;
         self.set_command_line_text(prefill);
+        // MB.4: highlight a prefilled line immediately (history load,
+        // Visual-range `'<,'>`, missing-arg re-prompt) — not just after
+        // the first keystroke.
+        self.refresh_command_line_decorations();
     }
 
     /// 5.5.G.23.cmdline: handle a `:`-line submit. Resolves the
@@ -7170,6 +7183,7 @@ impl Editor {
         // arming (from an earlier missing-arg prompt) doesn't leak.
         self.auto_submit_after_chord = false;
         self.substitute_preview = None;
+        self.command_line_decorations = None;
         self.completion_state = None;
         self.restore_editing_buffer();
         if !line.trim().is_empty() {
@@ -7198,6 +7212,7 @@ impl Editor {
             self.refresh_completion_popup();
         }
         self.refresh_substitute_preview();
+        self.refresh_command_line_decorations();
     }
 
     /// MB.1: pop a character from the `:` line; on empty + backspace,
@@ -7210,6 +7225,7 @@ impl Editor {
         if line.pop().is_none() {
             self.completion_state = None;
             self.substitute_preview = None;
+            self.command_line_decorations = None;
             self.restore_editing_buffer();
         } else {
             self.set_command_line_text(&line);
@@ -7217,6 +7233,7 @@ impl Editor {
                 self.refresh_completion_popup();
             }
             self.refresh_substitute_preview();
+            self.refresh_command_line_decorations();
         }
     }
 
@@ -7230,6 +7247,7 @@ impl Editor {
             self.refresh_completion_popup();
         }
         self.refresh_substitute_preview();
+        self.refresh_command_line_decorations();
     }
 
     /// MB.1: `<C-w>` — delete the word before the cursor on the `:` line.
@@ -7245,6 +7263,7 @@ impl Editor {
             self.refresh_completion_popup();
         }
         self.refresh_substitute_preview();
+        self.refresh_command_line_decorations();
     }
 
     /// 5.5.G.23.cmdline: append a chord token to the command line.
@@ -8644,6 +8663,22 @@ impl Editor {
             replacement: parsed.replacement,
             global,
         });
+    }
+
+    /// MB.4: recompute the live `:` line decorations (syntax spans +
+    /// validation error + parameter hint) from the command-line buffer.
+    /// Runs on the actor thread (never the render thread), like
+    /// [`Self::refresh_substitute_preview`] — the tokenize+validate pass
+    /// is cheap (one line). Clears to `None` when the command line is
+    /// closed or empty so the renderer draws a bare line.
+    pub fn refresh_command_line_decorations(&mut self) {
+        if !self.command_line_active() {
+            self.command_line_decorations = None;
+            return;
+        }
+        let line = self.command_line();
+        let deco = crate::excommand::command_line_decorations(&line, &self.registry.load_full());
+        self.command_line_decorations = if deco.is_empty() { None } else { Some(deco) };
     }
 
     /// 5.5.G.23.cmdline: open the `:` completion popup, or inline a
@@ -15992,6 +16027,7 @@ impl Editor {
                     self.refresh_completion_popup();
                 }
                 self.refresh_substitute_preview();
+                self.refresh_command_line_decorations();
             }
         }
         result

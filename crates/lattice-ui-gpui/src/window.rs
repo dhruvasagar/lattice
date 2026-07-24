@@ -4547,6 +4547,63 @@ impl Render for EditorView {
                         col = col.child(div().child(line.to_string()));
                     }
                     col
+                } else if matches!(modal, lattice_grammar::ModalState::Command)
+                    && modeline
+                        .cmdline_decorations
+                        .as_ref()
+                        .is_some_and(|d| !d.spans.is_empty())
+                {
+                    // MB.4: colour the `:` line per the published decoration
+                    // spans, then the live error / parameter hint (peer of
+                    // the TUI `draw_command_or_echo` path). Spans are byte
+                    // ranges into `cmdline_text` (the `:` prompt is separate).
+                    let d = modeline.cmdline_decorations.as_ref().unwrap();
+                    let line = modeline.cmdline_text.as_ref();
+                    let default_fg = theme.status_foreground;
+                    let mut row = div().flex().flex_row().child(":".to_string());
+                    let mut pos = 0usize;
+                    for sp in &d.spans {
+                        let s = sp.range.start.min(line.len());
+                        let e = sp.range.end.min(line.len());
+                        if s < pos
+                            || e < s
+                            || !line.is_char_boundary(s)
+                            || !line.is_char_boundary(e)
+                        {
+                            continue;
+                        }
+                        if s > pos {
+                            row = row.child(line[pos..s].to_string());
+                        }
+                        let fg = lattice_host::ui::theme::resolve_syntax_style(
+                            &resolved_theme,
+                            &theme_ids,
+                            sp.style,
+                        )
+                        .fg
+                        .map(|c| c.to_rgb_u32(default_fg))
+                        .unwrap_or(default_fg);
+                        row = row.child(div().text_color(rgb(fg)).child(line[s..e].to_string()));
+                        pos = e;
+                    }
+                    if pos < line.len() {
+                        row = row.child(line[pos..].to_string());
+                    }
+                    if let Some(err) = &d.error {
+                        let ec = lattice_host::ui::theme::resolve_syntax_style(
+                            &resolved_theme,
+                            &theme_ids,
+                            lattice_cells::style::Style::DiagnosticError,
+                        )
+                        .fg
+                        .map(|c| c.to_rgb_u32(0x00f3_8ba8))
+                        .unwrap_or(0x00f3_8ba8);
+                        row = row.child(div().text_color(rgb(ec)).child(format!("  {err}")));
+                    } else if let Some(ph) = &d.param_hint {
+                        row =
+                            row.child(div().text_color(rgb(0x006c_7086)).child(format!("  {ph}")));
+                    }
+                    row
                 } else {
                     div().child(bottom_row)
                 };

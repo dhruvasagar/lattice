@@ -2093,6 +2093,11 @@ pub struct ModelineRenderState {
     /// to size the expanded band. Published (not read at draw time) so the
     /// draw path stays free of config reads.
     pub cmdline_expand_height: lattice_config::ExpandHeight,
+    /// MB.4: live `:` line decorations — syntax spans, a validation
+    /// error, and a parameter hint. Produced off the render thread
+    /// (`refresh_command_line_decorations`) and read here at draw time.
+    /// `None` when the command line is closed / bare.
+    pub cmdline_decorations: Option<crate::excommand::CommandLineDecorations>,
 }
 
 impl Default for ModelineRenderState {
@@ -2105,6 +2110,7 @@ impl Default for ModelineRenderState {
             cmdline_expanded: false,
             cmdline_full_text: std::sync::Arc::from(""),
             cmdline_expand_height: lattice_config::ExpandHeight::default(),
+            cmdline_decorations: None,
         }
     }
 }

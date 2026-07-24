@@ -2349,10 +2349,12 @@ fn draw_panes(frame: &mut Frame, area: Rect, app: &App, snap: &DocumentSnapshot)
         // synthetic `*command-line*` buffer. The active pane must keep
         // rendering ITS OWN buffer (via the registry-keyed inactive
         // path), not the command-line text — the Help-popup pattern.
+        // MB.5: same for the `/`·`?` search line.
         let is_active = idx == active
             && pane_buffer_matches_active(app, idx)
             && !previewing
-            && !app.ad().command_line_active;
+            && !app.ad().command_line_active
+            && !app.ad().search_line_active;
         // Every pane reserves its bottom row for the per-pane status
         // line (Option A: global modeline removed).
         let (content_rect, status_rect) = if rect.height >= 2 {

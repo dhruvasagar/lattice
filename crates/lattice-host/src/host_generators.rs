@@ -344,6 +344,28 @@ impl PickerSourceGenerator for ThemePickerSource {
     }
 }
 
+/// MB.5: `gen:history-kinds` — completion source for `:history <Tab>`.
+/// Returns the two valid kind arguments: `commands` and `searches`.
+pub struct HistoryKindsGenerator;
+
+impl CandidateGenerator for HistoryKindsGenerator {
+    fn generate(&self, _ctx: &GenerateContext<'_>) -> Vec<RawCandidate> {
+        vec!["commands", "searches"]
+            .into_iter()
+            .map(|s| RawCandidate {
+                text: s.to_string(),
+                display: s.to_string(),
+                kind: CandidateKind::Plain,
+                data: CandidateData::Plain,
+                source: None,
+                accept_action: None,
+                annotations: Vec::new(),
+                display_spans: Vec::new(),
+            })
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

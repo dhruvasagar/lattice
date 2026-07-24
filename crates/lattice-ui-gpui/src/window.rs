@@ -1622,7 +1622,9 @@ impl EditorView {
         // its own buffer's cursor / scroll (the pane body is already
         // registry-keyed) rather than adopting the command-line cursor — the
         // same treatment as a focus-stealing popup.
-        let popup_owns_active = ad.popup_focused || ad.command_line_active;
+        // MB.5: same for the `/`·`?` search line.
+        let popup_owns_active =
+            ad.popup_focused || ad.command_line_active || ad.search_line_active;
         // When the popup has focus the document pane should look
         // inactive — no cursorline, no selection, no active status
         // bar — the same appearance it has when a different pane has

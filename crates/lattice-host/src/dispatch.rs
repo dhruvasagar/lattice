@@ -896,6 +896,7 @@ impl Editor {
                     snippet_active: self.snippet_session.is_active(self.document_buffer_id),
                     popup_focused: self.popup_focused,
                     command_line_active: self.command_line_active(),
+                    search_line_active: self.search_line_active(),
                     terminal_insert_active: matches!(self.active_buffer, BufferKind::Terminal)
                         && self
                             .active_modes

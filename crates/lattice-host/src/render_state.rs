@@ -590,6 +590,11 @@ pub struct ActiveDocumentRenderState {
     /// route the active pane to its own (registry-keyed) buffer instead —
     /// the Help-popup pattern. See `docs/dev/architecture/rich-minibuffer.md`.
     pub command_line_active: bool,
+    /// MB.5: `true` while the `*search-line*` buffer is focused for
+    /// editing (a `/` or `?` search is being typed). Same semantics as
+    /// `command_line_active` — renderers read this flag to route the
+    /// active pane to its own (registry-keyed) buffer.
+    pub search_line_active: bool,
     /// Terminal-mode T2.a (2026-05-25): `true` when
     /// `terminal-insert-mode` is active on the active Terminal
     /// buffer. Drives the translate-layer branch that encodes
@@ -739,6 +744,7 @@ impl Default for ActiveDocumentRenderState {
             snippet_active: false,
             popup_focused: false,
             command_line_active: false,
+            search_line_active: false,
             terminal_insert_active: false,
             terminal_esc_exits: true,
             terminal_visual_active: false,

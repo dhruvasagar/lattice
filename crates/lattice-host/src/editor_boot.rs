@@ -824,13 +824,6 @@ impl Editor {
         // stable so `ArgSpec::completion` references stay in
         // sync.
         completion_registry.register_generator(
-            "gen:modes",
-            "Every registered mode (major + minor); used by `:describe-mode <Tab>`.",
-            crate::host_generators::ModesGenerator {
-                registry: Arc::downgrade(&mode_registry),
-            },
-        );
-        completion_registry.register_generator(
             "gen:events",
             "Every typed event registered via `register_event!`; used by `:describe-event <Tab>`.",
             crate::host_generators::EventsGenerator,
@@ -976,6 +969,12 @@ impl Editor {
             crate::host_generators::ElementsGenerator {
                 registry: theme_registry.clone(),
             },
+        );
+        // MB.5: `gen:history-kinds` — valid args for `:history <Tab>`.
+        completion_registry.register_generator(
+            "gen:history-kinds",
+            "Valid history kind arguments (`commands`, `searches`); used by `:history <Tab>`.",
+            crate::host_generators::HistoryKindsGenerator,
         );
 
         // `lang_registry` (one per Editor, shared between the document

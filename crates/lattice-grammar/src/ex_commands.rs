@@ -952,7 +952,7 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                 prompt: "history kind (`commands` or `searches`)".into(),
                 default: ArgDefault::None,
                 doc: "`commands` (default) or `searches`.".into(),
-                completion: None,
+                completion: Some("gen:history-kinds".into()),
             }],
             surface_form: SurfaceForm::Keyword,
         },

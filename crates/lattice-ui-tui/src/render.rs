@@ -3452,17 +3452,17 @@ fn draw_command_or_echo(frame: &mut Frame, area: Rect, app: &App) {
     // with the caret at the buffer's cursor. Full modal editing (the edit
     // path) is unchanged; this is the presentation grown in place.
     if app.command_line_expanded() {
-        let (full, prompt) = if app.modeline().search_direction.is_some() {
-            let dir_prefix = match app.modeline().search_direction {
+        let modeline = app.modeline();
+        let (full, prompt) = if modeline.search_direction.is_some() {
+            let dir_prefix = match modeline.search_direction {
                 Some(lattice_grammar::SearchDirection::Forward) => '/',
                 Some(lattice_grammar::SearchDirection::Backward) => '?',
                 _ => '/',
             };
-            (app.modeline().cmdline_full_text.to_string(), dir_prefix)
+            (modeline.cmdline_full_text.to_string(), dir_prefix)
         } else {
-            (app.command_line_full_text(), ':')
+            (modeline.cmdline_full_text.to_string(), ':')
         };
-        let modeline = app.modeline();
         let deco = modeline.cmdline_decorations.as_ref();
         let cells = app.render_state.load().cells.load_full();
         let resolved = &cells.resolved_theme;

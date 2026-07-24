@@ -3462,25 +3462,21 @@ fn draw_command_or_echo(frame: &mut Frame, area: Rect, app: &App) {
         } else {
             ':'
         };
-        // command_line_full_text() already prepends `:`; strip it so we
-        // can reconstruct with a consistent prefix below.
         let raw = modeline.cmdline_full_text.to_string();
-        let full = if prompt == ':' {
-            raw.strip_prefix(':').unwrap_or(&raw).to_string()
-        } else {
-            raw
-        };
         let deco = modeline.cmdline_decorations.as_ref();
         let cells = app.render_state.load().cells.load_full();
         let resolved = &cells.resolved_theme;
         let ids = &cells.theme_ids;
         let base = TuiStyle::default();
-        let lines: Vec<Line<'static>> = full
+        let lines: Vec<Line<'static>> = raw
             .split('\n')
             .enumerate()
             .map(|(i, l)| {
-                let prefix = if i == 0 { prompt.to_string() } else { String::new() };
-                let line_str = format!("{prefix}{l}");
+                let line_str = if i == 0 {
+                    format!("{prompt}{l}")
+                } else {
+                    l.to_string()
+                };
                 if i == 0 {
                     if let Some(d) = deco
                         && !d.spans.is_empty()

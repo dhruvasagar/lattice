@@ -445,16 +445,6 @@ pub fn translate(ctx: TranslateContext<'_>, chord: KeyChord) -> Action {
     }
 }
 
-fn translate_search(chord: KeyChord) -> Action {
-    match chord.key {
-        KeyKind::Special(SpecialKey::Esc) => Action::SearchCancel,
-        KeyKind::Special(SpecialKey::Enter) => Action::SearchSubmit,
-        KeyKind::Special(SpecialKey::Backspace) => Action::SearchBackspace,
-        KeyKind::Char(c) if !chord.mods.ctrl() => Action::SearchAppend(c),
-        _ => Action::None,
-    }
-}
-
 /// Cmdline chord-capture overlay. Reserves the three minimal
 /// edits (Esc/CR/BS); everything else stringifies through
 /// `KeyChord::Display` and becomes one chord token in the cmdline.

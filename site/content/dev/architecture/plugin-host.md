@@ -12,7 +12,7 @@ seam** (PH7.8), the **decoration seam** (PH7.9), config/modes/keymap seams, host
 top** (branch `phase-8-plugin-loader`): the `lattice-plugin-loader` (discovery + `:plugin-load`/
 `unload`/`reload` + `init.rs`), the `:plugins` manager view (PL8.H), and the **plugin
 observability** stack (PO.1–PO.5 — see the sibling fragment
-[`plugin-observability.md`](plugin-observability): the boundary tracer, the gated hot-path
+[`plugin-observability.md`](../plugin-observability/): the boundary tracer, the gated hot-path
 grammar seam, the `*plugin-trace*` buffer views, the live `plugin.trace-level` option, and the
 `wasi:logging` guest import). This fragment is the detailed "what/why" that expands
 `design.md` §5.5 (Plugin Subsystem), §9 (Plugin API), §10 (extension tiers), §3.1

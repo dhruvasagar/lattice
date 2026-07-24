@@ -660,7 +660,7 @@ post-v1 follow the same pattern: new crate + new major mode
 
 ### 3.7 M.2.b.2 — the in-tree extension-crate seam (2026-06-01)
 
-The H-series ([`kind-agnostic-buffers.md`](kind-agnostic-buffers))
+The H-series ([`kind-agnostic-buffers.md`](../kind-agnostic-buffers/))
 opened H.3 as a planned event-driven activation path. The
 2026-06-01 design pass for M.2.b.2 worked through a concrete
 end-to-end `SearchProvider` example and chose a different shape:
@@ -1107,7 +1107,7 @@ arms.
 
 ### Rejected during the 2026-06-01 pass
 
-- **H.3 event-driven activation pre-v1.** See [`kind-agnostic-buffers.md`](kind-agnostic-buffers) §10. Reintroduced when the WASM plugin host slice begins.
+- **H.3 event-driven activation pre-v1.** See [`kind-agnostic-buffers.md`](../kind-agnostic-buffers/) §10. Reintroduced when the WASM plugin host slice begins.
 - **Buffer-locals access on `ModeContext`.** ModeContext's design rationale (App-managed buffer-locals, App-side writes) stays. Per-provider state lives in per-provider services keyed by `BufferId`. Buffer-locals stay reserved for cross-cutting App-owned state (syntax handles, fold lists, icons).
 - **Sync initial scan + async continuation.** Even a "fast first batch" sync scan on the dispatch thread violates paramount goal #1. Trigger returns immediately; everything happens via events.
 - **`Document: Any` + downcast for typed handle access.** Contaminates the universal trait; opens the escape-hatch pattern for every future kind. Typed registry (`MultibufferRegistry`) keeps the downcast confined to multibuffer's own crate.

@@ -232,7 +232,7 @@ every LSP 3.17 capability with status), slice plans
 ([`slice-plans/archive/lsp.md`](slice-plans/archive/lsp) -- L1–L7
 sequencing for the async-wake / lifecycle / status / diagnostics-
 presentation / nav-mode-ownership polish; **complete — archived**), and
-a manual verification checklist ([`verify.md`](verify) §17–18
+a manual verification checklist ([`verify.md`](../verify/) §17–18
 covering all 15 sub-modes + 4.4/4.5 features).
 
 The modeline redesign (configurable element system — Left/Center/Right

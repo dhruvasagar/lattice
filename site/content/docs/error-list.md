@@ -14,7 +14,7 @@ alias (`:cnext`, `:copen`, …).
 
 The list is **core editor state, not tied to any buffer**. Once it is
 populated you can walk it from anywhere — you do **not** need the
-[`*compilation*`](compilation) buffer (or any particular buffer)
+[`*compilation*`](../compilation/) buffer (or any particular buffer)
 focused or even open. Closing the buffer that produced the list does
 not clear it. (This matches vim; it deliberately differs from emacs,
 where next-error navigation lives on the compilation buffer.)
@@ -33,7 +33,7 @@ where next-error navigation lives on the compilation buffer.)
 | `:last-error` | `:clast` | `]Q` | Jump to the last entry |
 | `:error [N]` | `:cc [N]` | | Jump to entry `N` (1-based); no arg = current |
 | `:error-list` | `:clist` `:cl` | | Open the **picker** (fuzzy list; `<CR>` jumps) |
-| `:problems` | `:copen` | | Open the [`*problems*`](compilation#the-problems-view) grouped view |
+| `:problems` | `:copen` | | Open the [`*problems*`](../compilation/#the-problems-view) grouped view |
 | `:problems-close` | `:cclose` | | Close the `*problems*` view |
 
 The command names lead with the readable, emacs-style vocabulary
@@ -43,19 +43,19 @@ backward / **`]`** = forward; doubled **`qq`** steps one entry, **`qf`**
 a whole file, the capital **`Q`** jumps to the extremes. (The chords
 keep vim-unimpaired's `q` — the universally-known quickfix chord.) They
 are normal-mode Builtin grammar and work from **any buffer**. Each jump
-records a position in the [jump list](modal-editing), so `<C-o>`
+records a position in the [jump list](../modal-editing/), so `<C-o>`
 returns you.
 
 > These chords are **not** `[d` / `]d`, which hop between LSP
 > diagnostics **in the current file** — a separate feature (see
-> [LSP](lsp)). Error-list navigation is cross-file and list-based.
+> [LSP](../lsp/)). Error-list navigation is cross-file and list-based.
 
 ---
 
 ## Populating the list
 
 The error list is filled by a **producer**. Today the producer is
-[compilation mode](compilation): running
+[compilation mode](../compilation/): running
 
 ```
 :compile <any command>
@@ -117,7 +117,7 @@ ordered as first seen in the tool's output).
 error list — on an empty list they echo `no error list` and do nothing
 else (matching vim's `E42: No Errors`). They do **not** fall back to
 diagnostics: LSP diagnostics have their own dedicated navigation, `[d` /
-`]d` (current-file) and the `:diagnostics` picker (see [LSP](lsp)).
+`]d` (current-file) and the `:diagnostics` picker (see [LSP](../lsp/)).
 
 ---
 
@@ -129,7 +129,7 @@ The entries can be worked three ways — pick whichever fits:
 |---------|---------|--------------|
 | **Step** | `:next-error` / `]qq` … | Jump through entries one at a time |
 | **Pick** | `:error-list` (`:cl`) | A fuzzy-filterable picker of the flat list; `<CR>` jumps |
-| **Group** | `:problems` (`:copen`) | The `*problems*` [multibuffer](multibuffer): excerpts grouped per file, **editable in place** |
+| **Group** | `:problems` (`:copen`) | The `*problems*` [multibuffer](../multibuffer/): excerpts grouped per file, **editable in place** |
 
 `:error-list` opens the **picker** — the same fuzzy surface as
 `:diagnostics`, good for filtering a large list by filename or message
@@ -146,9 +146,9 @@ to show.
 
 ## See also
 
-- [Compilation mode](compilation) — running commands and the
+- [Compilation mode](../compilation/) — running commands and the
   `*compilation*` / `*problems*` buffers.
-- [Project search](project-search) — `:search` / `g/`, the
+- [Project search](../project-search/) — `:search` / `g/`, the
   interactive multibuffer grep (distinct from the error list).
-- [Multibuffer](multibuffer) — the excerpt-composition surface
+- [Multibuffer](../multibuffer/) — the excerpt-composition surface
   `*problems*` is built on.

@@ -84,12 +84,12 @@ On top of whatever `foldmethod` is active, some features contribute
 their own **overlay** folds — they're added to the fold set rather than
 replacing the primary provider, and they come and go with the feature:
 
-- A [diff](diff) session adds **hunk folds** (collapse a change, open
+- A [diff](../diff/) session adds **hunk folds** (collapse a change, open
   by default) and **unchanged-region folds** (collapse the code between
   changes, closed by default — so a diff opens showing only the
   changes). See [Folding the unchanged
-  code](diff#folding-the-unchanged-code).
-- A [multibuffer](multibuffer) view adds excerpt and file-boundary
+  code](../diff/#folding-the-unchanged-code).
+- A [multibuffer](../multibuffer/) view adds excerpt and file-boundary
   folds.
 
 Overlay folds use the same `z*` vocabulary as everything else — `za` on
@@ -374,7 +374,7 @@ Categories vim has but lattice does not auto-open:
   opens; we don't, since `j`/`k` step visible lines and never
   cross into a fold body).
 - `quickfix` — auto-opening a fold when `:next-error` lands inside it;
-  the [error list](error-list) itself exists, but this fold trigger
+  the [error list](../error-list/) itself exists, but this fold trigger
   isn't wired yet. `tag` — no tag stack yet.
 - `undo` — auto-open after an undo that crosses a fold (vim
   opens; we don't, since the cursor lands on the heading).

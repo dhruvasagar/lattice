@@ -7,8 +7,8 @@ title = "Lighthouse — the LSP server manager (bundled plugin)"
 > paramount-goal alignment. Slice sequencing lives in
 > [`../operations/slice-plans/lighthouse.md`](../operations/slice-plans/lighthouse)
 > (LH.0 host seams → LH.1 plugin → LH.2 bundling). Sibling fragments:
-> [`plugin-host.md`](plugin-host) (the seam spine + capability model),
-> [`lsp-architecture.md`](lsp-architecture) (the supervisor/actor/client the
+> [`plugin-host.md`](../plugin-host/) (the seam spine + capability model),
+> [`lsp-architecture.md`](../lsp-architecture/) (the supervisor/actor/client the
 > installed servers plug into).
 >
 > **Status: 📝 designed, not built.** Captured for future reference. The first
@@ -60,7 +60,7 @@ Lighthouse is small; the **four host seams it needs are not built** (only the
 `fs:walk` host-service is wired today). These are **general** plugin-host
 capabilities — every future plugin that touches the network / a subprocess / a
 long task uses them — so they land as a host-services extension
-([`plugin-host.md`](plugin-host)), and lighthouse *consumes* them. They map
+([`plugin-host.md`](../plugin-host/)), and lighthouse *consumes* them. They map
 directly to design.md §5.5.6's first five WIT prerequisites.
 
 Each runs **host-side with full host authority** (the host process is not

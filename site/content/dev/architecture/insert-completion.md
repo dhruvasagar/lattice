@@ -15,7 +15,7 @@ Phase 4.2.g with an inline-as-you-type popup.
 It is also the canonical place to point at when the question
 "how does completion work in lattice?" comes up. Implementer
 references live in
-[`lsp-architecture.md`](lsp-architecture) (LSP wire
+[`lsp-architecture.md`](../lsp-architecture/) (LSP wire
 detail) and [`crates/lattice-completion/`](../crates/lattice-completion/)
 (pipeline traits + cmdline path); this document is the
 behavioural spec they hang off.
@@ -1736,7 +1736,7 @@ ceiling (one frame: 8.3 ms at 120 Hz / 16 ms at 60 Hz, CLAUDE.md goal #1).
   doc's popup descends from).
 - design.md §5.2.1 — unified command/grammar dispatch (why
   every binding here is also a registered command).
-- [`lsp-architecture.md`](lsp-architecture) §10 — LSP
+- [`lsp-architecture.md`](../lsp-architecture/) §10 — LSP
   request fan-out, cancellation tokens.
 - [`crates/lattice-completion/`](../crates/lattice-completion/)
   — current pipeline traits; `insert.rs` is the new module
@@ -1748,7 +1748,7 @@ ceiling (one frame: 8.3 ms at 120 Hz / 16 ms at 60 Hz, CLAUDE.md goal #1).
 - `friendly-snippets` upstream:
   https://github.com/rafamadriz/friendly-snippets — the
   default snippet corpus we target compatibility with.
-- [`mode-architecture.md`](mode-architecture) — `Mode`
+- [`mode-architecture.md`](../mode-architecture/) — `Mode`
   trait surface; §12 of this doc adds
   `Mode::completion_sources()` as a new declarative
   contribution.

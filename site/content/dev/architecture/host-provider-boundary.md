@@ -12,7 +12,7 @@ title = "Host ↔ provider boundary"
 > flexibility, performance, or UX.
 
 Sequencing + status: [`../operations/slice-plans/host-provider-inversion.md`](../operations/slice-plans/host-provider-inversion).
-Motivation: the recurring-drift cost analysed in [`comparison-zed.md`](comparison-zed) §5.
+Motivation: the recurring-drift cost analysed in [`comparison-zed.md`](../comparison-zed/) §5.
 
 ## 1. The boundary
 

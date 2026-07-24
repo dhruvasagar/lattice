@@ -4,7 +4,7 @@ title = "Picker Architecture (developer reference)"
 
 
 This document is the implementer-side companion to
-[design.md §5.9.7](design) and [design.md §5.9.10](design)
+[design.md §5.9.7](../design/) and [design.md §5.9.10](../design/)
 (rich minibuffer). design.md is the terse, principle-led
 canonical text; this is the longer-form "how it actually
 works", with concrete pointers into the `lattice-picker`

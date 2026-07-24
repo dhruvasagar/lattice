@@ -46,7 +46,7 @@ share one list and one set of motions.
 ## 2. Navigation is buffer-independent (the vim model)
 
 Once populated, the list is walked from **anywhere** — the producing
-buffer (e.g. [`*compilation*`](compilation-mode)) need not be
+buffer (e.g. [`*compilation*`](../compilation-mode/)) need not be
 focused or even open, and closing it does **not** clear the list (only
 a new run's replace does). This deliberately follows vim, not emacs
 (where next-error lives on the compilation buffer). It falls out of §1
@@ -111,11 +111,11 @@ off-thread via the native `InboundBus → AppEffect::SetErrorList
 transport pattern LSP uses for its own async host-state updates,
 **not** any plugin path.
 
-Today the sole producer is [compilation mode](compilation-mode),
+Today the sole producer is [compilation mode](../compilation-mode/),
 whose four built-in parsers (cargo/rustc, gnu-style, a `file:line:col`
 catch-all, and a Rust test/`panic!` matcher) turn any CLI tool's
 `file:line:col` output into entries — see
-[`compilation-mode.md`](compilation-mode) §5 for the parser detail.
+[`compilation-mode.md`](../compilation-mode/) §5 for the parser detail.
 Note that **both** the compiler's stderr *and* the process's stdout are
 parsed, so `cargo test` panics (which print `thread '…' panicked at
 path:line:col` on stdout) populate the list alongside compiler and
@@ -135,7 +135,7 @@ The entries are worked three ways, all reading the same `ErrorList`:
   exact mechanism `:diagnostics` (`do_list_diagnostics`) uses, rows
   sourced from `error_list().entries()` instead of the diagnostics layer.
 - **Group** — `:problems` (`*problems*`) renders the entries as a
-  grouped, editable [multibuffer](multibuffer-views) — one excerpt
+  grouped, editable [multibuffer](../multibuffer-views/) — one excerpt
   per entry under each file's header, edits propagating to source. See
   `compilation-mode.md` §4 for the provider.
 

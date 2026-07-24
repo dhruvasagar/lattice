@@ -90,6 +90,27 @@ def rewrite_root_links(content):
         content,
     )
 
+def prefix_sibling_links(content):
+    """Prefix bare and ./ sibling links with ../ for Zola directory-style URLs.
+
+    Zola serves pages as directories: content/docs/foo.md -> /docs/foo/.
+    A bare link [text](bar) from /docs/foo/ resolves to /docs/foo/bar,
+    but should resolve to /docs/bar/.  Using ../bar/ fixes this.
+
+    Must run AFTER strip_md_from_links (names have already lost .md).
+    """
+    def _prefix(m):
+        name = m.group(1)
+        anchor = m.group(2) or ''
+        return f'](../{name}/{anchor})'
+
+    # Match ](name) or ](./name) or ](name#anchor) — no slashes, no http
+    return re.sub(
+        r'\]\((?:\.\/)?([a-zA-Z0-9_-]+)(#[^)]*)?\)',
+        _prefix,
+        content,
+    )
+
 def write_doc(dst_path, title, body):
     os.makedirs(os.path.dirname(dst_path), exist_ok=True)
     with open(dst_path, 'w', encoding='utf-8') as fh:
@@ -118,6 +139,8 @@ def sync_dir(src_dir, dst_dir, link_mods=None):
             body = rewrite_root_links(body)
         if link_mods and 'strip_md' in link_mods:
             body = strip_md_from_links(body)
+        if link_mods and 'prefix_sibling' in link_mods:
+            body = prefix_sibling_links(body)
         if link_mods and 'help_topic' in link_mods:
             # Zola pages are emitted as directories:
             #   content/docs/themes.md -> /docs/themes/
@@ -143,7 +166,7 @@ print('Syncing user docs...')
 sync_dir(
     os.path.join(repo_root, 'docs', 'user'),
     os.path.join(site_dir, 'content', 'docs'),
-    link_mods={'rewrite_root', 'help_topic', 'strip_md'}
+    link_mods={'rewrite_root', 'prefix_sibling', 'help_topic', 'strip_md'}
 )
 
 # Fix specific anchor: Zola slugifies "3. Non-tree-sitter" as "3-non-tree-sitter-languages"
@@ -162,7 +185,7 @@ for subdir in ['guides', 'architecture', 'operations', 'audit', 'notes']:
     sync_dir(
         os.path.join(repo_root, 'docs', 'dev', subdir),
         os.path.join(site_dir, 'content', 'dev', subdir),
-        link_mods={'rewrite_root', 'strip_md'}
+        link_mods={'rewrite_root', 'prefix_sibling', 'strip_md'}
     )
 
 print('\nDone.')

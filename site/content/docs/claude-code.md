@@ -19,7 +19,7 @@ executes in lattice's address space.
 
 > **Two agents, opposite topologies.** Claude Code is the *server* side —
 > the `claude` CLI dials into lattice and runs its own TUI in a terminal
-> buffer. Lattice's other agent, [opencode](opencode), is the reverse:
+> buffer. Lattice's other agent, [opencode](../opencode/), is the reverse:
 > lattice *drives* `opencode acp` as a child and owns the conversation as a
 > buffer. The edit-via-reviewable-diff workflow is the same in both; pick by
 > which agent you want. See
@@ -56,7 +56,7 @@ executes in lattice's address space.
 
 1. Starts the IDE server (a loopback WebSocket the agent connects
    back to), binding a fresh port on `127.0.0.1`.
-2. Spawns the `claude` CLI in a [terminal buffer](terminal), with
+2. Spawns the `claude` CLI in a [terminal buffer](../terminal/), with
    `CLAUDE_CODE_SSE_PORT` and `ENABLE_IDE_INTEGRATION` injected into
    its environment so the agent discovers and attaches to *this*
    editor.
@@ -64,13 +64,13 @@ executes in lattice's address space.
    mode that carries the protocol status and diff affordances.
 
 The agent runs inside a normal terminal buffer, so everything from
-[Terminal Mode](terminal) applies: type your prompt to the agent
+[Terminal Mode](../terminal/) applies: type your prompt to the agent
 in Terminal-Insert (`i` / `a`), scroll its output with vim motions in
 Normal-in-terminal, exit Insert with `<C-\><C-n>` or `<Esc>`.
 
 For a **multi-line prompt**, press `<C-j>` to insert a newline without
 submitting — `<Enter>` submits the turn, `<C-j>` (line feed) breaks the
-line. See [Terminal Mode](terminal) for the full input model.
+line. See [Terminal Mode](../terminal/) for the full input model.
 
 If you only want the server running (for example, to attach a `claude`
 process you started yourself), use `:claude-code-start` and
@@ -124,13 +124,13 @@ When the agent proposes a change, lattice opens it as a **side-by-side
 two-pane diff** — the original file on the **left** and the agent's
 proposed change on the **right** — in fresh splits to the right of the
 `:claude` terminal, which stays put. This is the same diff engine
-described in [Diff & merge](diff), so the sign column, both-pane
+described in [Diff & merge](../diff/), so the sign column, both-pane
 hunk tints, and `]c` / `[c` hunk navigation all work as usual.
 
 To keep review fast, the diff opens **folded to just the changes**
 (unchanged code collapsed, both panes in lockstep) with the cursor
 already on the **first change** — see
-[Folding the unchanged code](diff#folding-the-unchanged-code). `zR`
+[Folding the unchanged code](../diff/#folding-the-unchanged-code). `zR`
 shows the whole file; `ui.diff.fold-unchanged` / `ui.diff.context` tune
 or disable it.
 
@@ -174,7 +174,7 @@ Both forward an interrupt (`<Esc>`, `0x1b`) to the running `claude`
 CLI — the signal Claude Code uses to cancel the current turn.
 
 Why not just press `<Esc>`? The agent runs in a [terminal
-buffer](terminal), and there `<Esc>` is **modal** — it leaves
+buffer](../terminal/), and there `<Esc>` is **modal** — it leaves
 Terminal-Insert and drops you into Normal-in-terminal (so you can
 scroll the agent's output with vim motions). That first `<Esc>` never
 reaches the agent, so it can't interrupt on its own. `<C-c>` (in
@@ -205,7 +205,7 @@ Security is enforced at two layers:
 ## The status segment
 
 While the server is running, `claude-code-mode` shows a status segment
-on the agent terminal's [modeline](modeline). It reads at a glance
+on the agent terminal's [modeline](../modeline/). It reads at a glance
 and is hidden entirely when the server is stopped:
 
 ```
@@ -242,10 +242,10 @@ accept or reject) is stable; only the wire details may still shift.
 
 ## Related
 
-- [`opencode.md`](opencode) — the other agent integration (lattice drives
+- [`opencode.md`](../opencode/) — the other agent integration (lattice drives
   `opencode acp` and owns the conversation as a buffer).
-- [`terminal.md`](terminal) — the terminal buffer the agent runs in.
-- [`diff.md`](diff) — the side-by-side diff UI used to review edits.
+- [`terminal.md`](../terminal/) — the terminal buffer the agent runs in.
+- [`diff.md`](../diff/) — the side-by-side diff UI used to review edits.
 - [`docs/dev/architecture/ide-protocol.md`](../dev/architecture/ide-protocol)
   — developer reference (protocol, mode ownership, data paths).
 - [`docs/dev/architecture/agent-integration.md`](../dev/architecture/agent-integration)

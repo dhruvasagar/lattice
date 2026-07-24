@@ -850,7 +850,7 @@ Open a large file (`crates/lattice-ui-tui/src/render.rs` is 3k+ lines):
 - [ ] LSP request (`K`) returns quickly; no UI freeze
 
 Latest measured numbers:
-[`benchmarks.md`](benchmarks).
+[`benchmarks.md`](../benchmarks/).
 
 ---
 
@@ -938,7 +938,7 @@ Open a `.rs` file with a few functions.
 - User-facing reference: [`../../user/`](../../../docs/) — every
   feature has a deep-dive doc.
 - Implementation status:
-  [`implementation.md`](implementation) — what ships today
+  [`implementation.md`](../implementation/) — what ships today
   vs. what's spec'd.
 - Architecture diagrams:
   [`../architecture/diagrams.md`](../architecture/diagrams)

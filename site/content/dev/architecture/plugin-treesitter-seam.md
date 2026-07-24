@@ -5,11 +5,11 @@ title = "Plugin tree-sitter seam — structural queries for plugins"
 
 > **Design fragment.** Contracts, data model, rationale, rejected alternatives,
 > paramount-goal alignment. Slice sequencing is §11 (splits to a slice-plan file
-> if it grows). Sibling fragments: [`plugin-host.md`](plugin-host) (the seam
-> spine + capability model), [`treesitter-motions.md`](treesitter-motions) +
-> [`tree-sitter-text-objects.md`](tree-sitter-text-objects) (the *native*
+> if it grows). Sibling fragments: [`plugin-host.md`](../plugin-host/) (the seam
+> spine + capability model), [`treesitter-motions.md`](../treesitter-motions/) +
+> [`tree-sitter-text-objects.md`](../tree-sitter-text-objects/) (the *native*
 > structural surface this publishes to WASM),
-> [`plugin-auto-pair.md`](plugin-auto-pair) (its first consumer — the
+> [`plugin-auto-pair.md`](../plugin-auto-pair/) (its first consumer — the
 > enclosing-scope query that bounds the manual-pair scan).
 >
 > **Status: ✅ built (2026-07-20) — TS.1 + TS.2 + TS.3.** A **v1**
@@ -74,7 +74,7 @@ including query predicates, field names, and a cursor walk.
 
 A plugin with the `tree-sitter` capability (§5) gets a `tree-snapshot` resource
 off its seam context (the grammar action/motion context — the `document`-handle
-extension, [`plugin-auto-pair.md`](plugin-auto-pair) §5.1 — carries the tree
+extension, [`plugin-auto-pair.md`](../plugin-auto-pair/) §5.1 — carries the tree
 snapshot alongside the document). From it:
 
 - `root() -> node` — the tree root.

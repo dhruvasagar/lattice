@@ -28,7 +28,7 @@ plus their `highlights.scm` / `injections.scm` / `folds.scm` /
 JavaScript). *Symbols* feed the `gen:tree-sitter-symbol` completion
 source and the outline picker; *text objects* feed narrow-mode and
 the structural text objects (see
-[modal-editing.md](modal-editing#tree-sitter-text-objects)):
+[modal-editing.md](../modal-editing/#tree-sitter-text-objects)):
 
 | Language   | Extensions              | Highlights | Injections                     | Locals | Folds | Symbols | Text obj |
 |------------|-------------------------|------------|--------------------------------|--------|-------|---------|----------|
@@ -314,7 +314,7 @@ output, identify which node names changed.
 
 ## See also
 
-- [`folding.md`](folding) -- how `folds.scm` captures map to
+- [`folding.md`](../folding/) -- how `folds.scm` captures map to
   the user-facing fold model (`zc` / `zo` / `zi` / etc.).
 - `docs/dev/architecture/design.md` §5.3 -- the syntax subsystem design.
 - `docs/dev/architecture/design.md` §5.5 -- plugin host architecture (Phase 7).

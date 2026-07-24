@@ -161,7 +161,7 @@ document buffer with no consent — wrong for a third-party contribution.
 > `mode_toggle_ex_command_spec`, registered under `SourceLayer::Plugin(id)` by
 > `drain_mode`), so `:auto-pair-mode` toggles it on the active buffer and it
 > resolves in `:describe-command` / `:apropos` / `:`-completion exactly like a
-> native mode. See [`plugin-manager.md`](plugin-manager) §7. The
+> native mode. See [`plugin-manager.md`](../plugin-manager/) §7. The
 > `on-plugin-loaded → enable-mode` pattern below remains the tool for **user**
 > plugins with off-by-default modes (and for any deferred config of a
 > not-yet-loaded plugin).

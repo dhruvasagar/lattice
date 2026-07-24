@@ -22,20 +22,20 @@ that's the signal to re-read the audit before "just patching it."
 
 ## Index
 
-- [`effect-dispatch.md`](effect-dispatch) — how an `Effect` reaches its host
+- [`effect-dispatch.md`](../effect-dispatch/) — how an `Effect` reaches its host
   and renderer appliers; the "everything in `out.effects` was already
   host-applied" invariant.
-- [`terminal-wide-char-ghosting.md`](terminal-wide-char-ghosting) — why
+- [`terminal-wide-char-ghosting.md`](../terminal-wide-char-ghosting/) — why
   terminal panes ghosted under auto-scroll; the "one grid column in → one
   display column out; never emit a `WIDE_CHAR_SPACER` cell as a character"
   invariant.
-- [`plugin-host-architecture.md`](plugin-host-architecture) — conformance
+- [`plugin-host-architecture.md`](../plugin-host-architecture/) — conformance
   review of the WASM plugin host (PH7.x) against the paramount goals + the three
   extension goals (grammar, modes, rich UI); the three invariants (same
   registries; WASM off the keystroke path with grammar the one bounded sync
   exception; guest emits data, host owns draw/dispatch) + 8 findings across the
   pending seams.
-- [`plugin-observability-review.md`](plugin-observability-review) — adversarial
+- [`plugin-observability-review.md`](../plugin-observability-review/) — adversarial
   code review of the plugin observability stack (PO.1–5) + the `:plugins` manager
   (PL8.H); the invariants (tracing off the hot path; sandbox-tight capability
   model; observability never crashes the editor; modes own their surface) + the

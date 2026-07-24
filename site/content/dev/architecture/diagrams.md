@@ -53,7 +53,7 @@ and communicate by typed messages.
         └─────────────────────────────────────────────────┘
 ```
 
-**Read:** [`design.md`](design) §3 (architectural overview),
+**Read:** [`design.md`](../design/) §3 (architectural overview),
 §5.5 (plugin subsystem), §5.7 (async runtime).
 
 ---
@@ -98,8 +98,8 @@ expensive runs on the LSP runtime (`spawn_on_lsp_runtime`) or
 the dedicated tokio thread pool. Results return via typed
 channels; the UI thread drains on the next frame.
 
-**Read:** [`design.md`](design) §5.7 (async runtime),
-[`lsp-architecture.md`](lsp-architecture) §2 (supervisor /
+**Read:** [`design.md`](../design/) §5.7 (async runtime),
+[`lsp-architecture.md`](../lsp-architecture/) §2 (supervisor /
 actor split).
 
 ---
@@ -155,9 +155,9 @@ appear in multiple panes; their cursors are independent.
 uniformly; panes are the rendering surface, buffers are the
 content.
 
-**Read:** [`design.md`](design) §5.1 (buffer / document
+**Read:** [`design.md`](../design/) §5.1 (buffer / document
 model), §5.9 (UI components),
-[`mode-architecture.md`](mode-architecture) §6.1 (option
+[`mode-architecture.md`](../mode-architecture/) §6.1 (option
 resolution layer stack).
 
 ---
@@ -202,7 +202,7 @@ layers highest-priority-first. The first non-empty layer wins.
 and shows which layer "won" — useful when a mode contribution
 shadows a `:set` write.
 
-**Read:** [`mode-architecture.md`](mode-architecture) §6.1 +
+**Read:** [`mode-architecture.md`](../mode-architecture/) §6.1 +
 §6.3 (resolution mechanism + caching).
 
 ---
@@ -247,7 +247,7 @@ Source crates own their events:
   lattice-mode       → MajorEntered, MinorActivated, ...
 ```
 
-**Read:** [`design.md`](design) §5.10 (event system + hooks).
+**Read:** [`design.md`](../design/) §5.10 (event system + hooks).
 
 ---
 
@@ -297,9 +297,9 @@ flips also flip the relay. Token is checked at every async
 boundary; a stale popup never lands over the new cursor.
 
 **Read:**
-[`lsp-architecture.md`](lsp-architecture) §7 (request
+[`lsp-architecture.md`](../lsp-architecture/) §7 (request
 lifecycle),
-[`mode-architecture.md`](mode-architecture) §M.6 (sub-mode
+[`mode-architecture.md`](../mode-architecture/) §M.6 (sub-mode
 gating).
 
 ---
@@ -351,7 +351,7 @@ Selection in popup → accept (Tab / Enter) → insert candidate
 ```
 
 **Read:**
-[`insert-completion.md`](insert-completion) (the canonical
+[`insert-completion.md`](../insert-completion/) (the canonical
 spec; sources, ranking, popup, ghost text, all here).
 
 ---
@@ -359,9 +359,9 @@ spec; sources, ranking, popup, ghost text, all here).
 ## See also
 
 - The four paramount goals are stated in
-  [`design.md`](design) §1.
+  [`design.md`](../design/) §1.
 - The mode-architecture migration plan +
-  ledger of completed slices: [`mode-architecture.md`](mode-architecture) §10.
+  ledger of completed slices: [`mode-architecture.md`](../mode-architecture/) §10.
 - LSP feature inventory + per-feature status:
   [`../notes/lsp-features.md`](../notes/lsp-features).
 - Implementation status (what ships today):

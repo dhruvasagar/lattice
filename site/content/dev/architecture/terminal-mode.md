@@ -135,7 +135,7 @@ Terminal buffers do NOT participate in:
 A pane whose active buffer is `BufferKind::Terminal` has two
 sub-states. Mode-line shows the current one explicitly. As of
 2026-05-27 the mechanics of the Normal sub-state are specified
-in [`terminal-as-document.md`](terminal-as-document) — the
+in [`terminal-as-document.md`](../terminal-as-document/) — the
 scrollback view is a synthetic, read-only Document owned by a
 `TerminalNormalMode` minor mode; the central vim grammar
 operates on it. The summary below is the user-visible behaviour;
@@ -147,7 +147,7 @@ slice plan.
 - Mode-line: `-- TERMINAL --`
 - Vim grammar applies to a **synthetic Document built from the
   scrollback view** (NOT the PTY). See
-  [`terminal-as-document.md`](terminal-as-document) §3 for
+  [`terminal-as-document.md`](../terminal-as-document/) §3 for
   the build-on-entry / drop-on-exit mechanism.
 - **A freshly spawned terminal starts in Terminal-Insert, not
   here** (2026-07-03; vim `:terminal` / tmux / kitty convention —

@@ -6,8 +6,8 @@ title = "Plugin observability"
 > **Design fragment.** Contracts, data model, rationale, rejected alternatives,
 > paramount-goal alignment. Sequencing lives in the slice plan
 > ([`../operations/slice-plans/archive/plugin-observability.md`](../operations/slice-plans/archive/plugin-observability)).
-> Sibling fragments: [`plugin-host.md`](plugin-host) (the seam spine +
-> capability/fuel/crash model), [`boot-composition.md`](boot-composition)
+> Sibling fragments: [`plugin-host.md`](../plugin-host/) (the seam spine +
+> capability/fuel/crash model), [`boot-composition.md`](../boot-composition/)
 > (the `install(boot)` contract).
 
 ## 1. Why

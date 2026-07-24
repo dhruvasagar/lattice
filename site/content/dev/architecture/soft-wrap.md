@@ -28,7 +28,7 @@ doc lines, and both renderers walk rows 1:1. Wrapping breaks that
 invariant everywhere a display row is produced or counted.
 
 This is the **same class of divergence** as excerpt-header virtual
-rows (see [`multibuffer-views.md`](multibuffer-views) §M.V): a
+rows (see [`multibuffer-views.md`](../multibuffer-views/) §M.V): a
 display row that is not a document line. The scroll model already
 isolated the seam — `Editor::bottom_anchored_scroll` sums
 `Σ_line (1 + virtual_rows_at(line))`, and the `1`-per-line term is

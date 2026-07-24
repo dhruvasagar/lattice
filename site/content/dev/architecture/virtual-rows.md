@@ -4,7 +4,7 @@ title = "Virtual Rows"
 
 
 Authoritative design for Lattice's displacing virtual-row
-primitive: a sibling lane to [`CellMatrix`](cell-grid-renderer)
+primitive: a sibling lane to [`CellMatrix`](../cell-grid-renderer/)
 that lets the renderer interleave non-rope rows (diff deletion
 blocks, multibuffer excerpt headers, code-lens summaries,
 multi-line inlay hints, signature-help previews) into the
@@ -13,10 +13,10 @@ or breaking the vim grammar's source-line semantics.
 
 This document is a *companion* to `design.md` (§5.6 rendering,
 §5.6.8 render-snapshot coherence) and to
-[`cell-grid-renderer.md`](cell-grid-renderer) (the matrix
+[`cell-grid-renderer.md`](../cell-grid-renderer/) (the matrix
 contract). It specifies the §5.15 subsystem that
-[`diff-system.md`](diff-system) and
-[`multibuffer-views.md`](multibuffer-views) reference as
+[`diff-system.md`](../diff-system/) and
+[`multibuffer-views.md`](../multibuffer-views/) reference as
 their shared "displacing virtual row" primitive.
 
 ## 1. The design goal

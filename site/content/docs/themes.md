@@ -119,7 +119,7 @@ editing view that writes back to your TOML config:
   `set NAME=VALUE`, where you finish the value and accept.
 
 For the concepts behind options (`:set`, layered resolution, where a
-value comes from) see [Options](options). `:colorscheme` itself is
+value comes from) see [Options](../options/). `:colorscheme` itself is
 not persisted across restarts yet — set it from your `init` to make it
 stick.
 
@@ -157,7 +157,7 @@ you can override a builtin in place by registering under its name.
 
 ## See also
 
-- [Options](options) — `:set`, `:customize`, the typed-option model.
-- [Modeline](modeline) — the status row whose colours follow the
+- [Options](../options/) — `:set`, `:customize`, the typed-option model.
+- [Modeline](../modeline/) — the status row whose colours follow the
   active theme.
-- [Display & layout](display) — gutter, whitespace, soft-wrap.
+- [Display & layout](../display/) — gutter, whitespace, soft-wrap.

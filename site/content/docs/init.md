@@ -18,7 +18,7 @@ toolchain.
 
 > **Prerequisite:** this is the how-to for *users*. The full plugin substrate
 > (the capability/fuel/crash-isolation model, every seam, the introspection
-> commands) is documented in [plugins.md](plugins) and the
+> commands) is documented in [plugins.md](../plugins/) and the
 > [authoring guide](../dev/guides/plugin-authoring). If you've written a
 > plugin, `init.rs` is the same thing pointed at your config directory.
 
@@ -91,7 +91,7 @@ doc = "My lattice config."
 
 Everything else in the manifest (`capabilities`, `editor_capabilities`) is the
 sandbox grant — see [the safety model](#the-safety-model) and
-[plugins.md](plugins#the-security-model).
+[plugins.md](../plugins/#the-security-model).
 
 ---
 
@@ -247,7 +247,7 @@ fn setup() {
 ```
 
 You can equally set these in `lattice.toml` (`auto-pair.enabled = false`) or live
-with `:set`. See [core-plugins.md](core-plugins) for the full list and each
+with `:set`. See [core-plugins.md](../core-plugins/) for the full list and each
 plugin's options.
 
 ### Configuring *user* plugins that load after you: `PluginLoaded`
@@ -721,11 +721,11 @@ tier (it's your own config):
   event; the editor never stalls or crashes. **Return errors as values** (`Err(..)`),
   don't panic.
 
-See [plugins.md](plugins#the-security-model) for the full model.
+See [plugins.md](../plugins/#the-security-model) for the full model.
 
 ## Reference
 
-- [plugins.md](plugins) — the plugin substrate, security model, introspection
+- [plugins.md](../plugins/) — the plugin substrate, security model, introspection
   commands.
 - [authoring guide](../dev/guides/plugin-authoring) — the per-seam surface in
   depth, building/testing guests.

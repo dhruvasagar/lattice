@@ -13,7 +13,7 @@ counted. This document records the confirmed findings, what was fixed, and what
 was deliberately deferred, so the deferred items aren't lost and the invariants
 the review leaned on stay visible.
 
-Companion: [`plugin-host-architecture.md`](plugin-host-architecture) — the
+Companion: [`plugin-host-architecture.md`](../plugin-host-architecture/) — the
 PH7.x conformance review this extends into the Phase-8 loader/observability
 surface.
 

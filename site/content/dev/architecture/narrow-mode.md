@@ -435,7 +435,7 @@ the existing `register_text_object` API plus one new `ScopeResolver` seam in
 Full design — the locked keybinding catalog (`af`/`if`, `ac`/`ic`, `aa`/`ia`,
 `al`/`il`, `aC`/`iC`), the `ScopeResolver` trait, and the three-crate ownership
 split — lives in
-[`tree-sitter-text-objects.md`](tree-sitter-text-objects). The split is the
+[`tree-sitter-text-objects.md`](../tree-sitter-text-objects/). The split is the
 natural slice boundary:
 
 - The `zn` operator (§6.1–6.2) composes with **existing** vim motions/objects

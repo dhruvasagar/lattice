@@ -51,7 +51,7 @@ Center is sacrificed first, then Right, then Left.
 Modes contribute their own ids — `lsp` (server / progress badge),
 `diff` (`+N ~M` hunk counts), `claude-code` (the IDE server status on
 the agent terminal: `claude :PORT` + connection count, see
-[claude-code.md](claude-code)) — and plugins will register more. Any
+[claude-code.md](../claude-code/)) — and plugins will register more. Any
 registered id can be placed in any zone.
 
 ## The modal tag and the echo
@@ -120,7 +120,7 @@ Two knobs control breathing room:
 
 ## See also
 
-- [Options and configuration](options) — `:set`, `:customize`, the
+- [Options and configuration](../options/) — `:set`, `:customize`, the
   typed-option system these keys live in.
-- [Display & layout](display) — soft-wrap, gutter, whitespace.
-- [Modal editing](modal-editing) — the modes the tag reflects.
+- [Display & layout](../display/) — soft-wrap, gutter, whitespace.
+- [Modal editing](../modal-editing/) — the modes the tag reflects.

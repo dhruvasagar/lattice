@@ -4,7 +4,7 @@ title = "LSP Architecture (developer reference)"
 
 
 This document is the implementer-side companion to
-[design.md §5.4](design). design.md is the terse,
+[design.md §5.4](../design/). design.md is the terse,
 principle-led canonical text; this is the longer-form "how it
 actually works", with concrete pointers into the
 `lattice-lsp` crate.
@@ -1330,7 +1330,7 @@ See the slice plan (L7) for sequencing.
 
 ## See also
 
-- [design.md §5.4](design) -- canonical design.
+- [design.md §5.4](../design/) -- canonical design.
 - [`../operations/slice-plans/archive/lsp.md`](../operations/slice-plans/archive/lsp) -- slice plan (sequencing + status for §12-§15 work).
 - [`../notes/lsp-features.md`](../notes/lsp-features) -- per-method feature matrix.
 - [`../../user/lsp.md`](../../../docs/lsp) -- user help.

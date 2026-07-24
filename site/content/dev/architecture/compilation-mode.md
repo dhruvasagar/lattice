@@ -147,7 +147,7 @@ hardcoded RGB.
 Compilation navigation needs a **persistent, cross-file list with an
 index** — vim's quickfix list, surfaced as the "error list." This is a
 **core substrate**, not compilation-specific, so its design lives in its
-own fragment: **[`error-list.md`](error-list)**. Compilation is its
+own fragment: **[`error-list.md`](../error-list/)**. Compilation is its
 first *producer*.
 
 The essentials as they bear on compilation: the list is core `Editor`
@@ -282,7 +282,7 @@ Read-only, `NoFile`; `:q` never warns unsaved, `:w` is a no-op (mode
   alias (no collapsed / generic-name forms).
 - The **error-list** navigation commands (`:next-error` family +
   `:error-list` / `:problems`) and their vim `:c*` aliases live with the
-  error-list substrate — see [`error-list.md`](error-list) §2.
+  error-list substrate — see [`error-list.md`](../error-list/) §2.
 
 ## 8. Paramount-goal alignment
 

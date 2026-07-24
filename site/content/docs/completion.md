@@ -513,6 +513,6 @@ typing-flow completion.
   default + example.
 - [`completion-popup`](#) — multi-column layout details.
 - [`completion-snippets`](#) — TextMate snippet syntax (4.2.g.4).
-- [`lsp`](lsp) — LSP integration overall.
+- [`lsp`](../lsp/) — LSP integration overall.
 - [`docs/insert-completion.md`](../dev/architecture/insert-completion) —
   full behavioural spec.

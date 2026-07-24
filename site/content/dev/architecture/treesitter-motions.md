@@ -7,7 +7,7 @@ Design fragment for Lattice's **structural motions** — `]f` (next function),
 `[c` (previous class), `]F` (next function end), `[a` (previous argument), etc.
 — that jump the cursor between tree-sitter constructs. They are the **motion**
 counterpart to the tree-sitter *text objects* (`af`/`ic`/`aa`/`al`, see
-[`tree-sitter-text-objects.md`](./tree-sitter-text-objects)): the objects
+[`tree-sitter-text-objects.md`](../tree-sitter-text-objects/)): the objects
 answer "operate on the construct I'm *in*"; the motions answer "go to the
 next/previous construct." Both read the same `textobjects.scm` captures against
 the same parse tree.

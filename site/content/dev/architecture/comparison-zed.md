@@ -173,6 +173,6 @@ cost of Zed's collaboration and maturity.
 
 ---
 
-*See also: [`design.md`](design) (the full design), [`input-pipeline.md`](input-pipeline)
-(the keystroke→glyph latency contract), [`keymap-architecture.md`](keymap-architecture)
+*See also: [`design.md`](../design/) (the full design), [`input-pipeline.md`](../input-pipeline/)
+(the keystroke→glyph latency contract), [`keymap-architecture.md`](../keymap-architecture/)
 (the modal/keymap layering).*

@@ -82,7 +82,7 @@ deleting it. Headline changes:
 
 This revision narrows the §5.8 mode design to a high-level
 anchor and moves the load-bearing detail to the new companion
-doc [`docs/mode-architecture.md`](mode-architecture), in
+doc [`docs/mode-architecture.md`](../mode-architecture/), in
 the same shape as `keymap-architecture.md` for §5.2.
 
 - **§5.8.3 corrected.** The "Major and minor modes are
@@ -411,7 +411,7 @@ breaks the `lattice-core → lattice-mode` dependency (see `mode-architecture.md
 - Selections support a primary cursor with charwise / linewise / blockwise visual extents (vim model). The type is a set so multi-cursor is a clean post-1.0 extension; v1 invariants assume one selection.
 - Modal state (Normal / Insert / Visual / Op-pending / Command / Search) is its own axis, orthogonal to major mode; see §5.2.
 
-**Synthetic Documents.** Help / log / scratch / messages / terminal-scrollback views are all `Document` instances on the same rope-backed abstraction. They differ from on-disk Documents along two orthogonal axes: `BufferMutability` (`ReadOnly` / `Interactive` / `Editable`, §5.9.8) and the absence of a file path. The grammar and rendering layers do not branch on "synthetic vs. file-backed"; mutability gates only operator-level edits via the read-only echo path. Terminal scrollback is the most recent addition — see [`terminal-as-document.md`](terminal-as-document) — but the model also covers help (§5.11), `*messages*`, LSP logs, and `:scratch`.
+**Synthetic Documents.** Help / log / scratch / messages / terminal-scrollback views are all `Document` instances on the same rope-backed abstraction. They differ from on-disk Documents along two orthogonal axes: `BufferMutability` (`ReadOnly` / `Interactive` / `Editable`, §5.9.8) and the absence of a file path. The grammar and rendering layers do not branch on "synthetic vs. file-backed"; mutability gates only operator-level edits via the read-only echo path. Terminal scrollback is the most recent addition — see [`terminal-as-document.md`](../terminal-as-document/) — but the model also covers help (§5.11), `*messages*`, LSP logs, and `:scratch`.
 
 #### 5.1.1 Position history (jump list + mark ring unified)
 
@@ -451,7 +451,7 @@ A buffer-level state machine in front of the buffer. **Vim semantics, with one d
   `<C-g>`, or programmatically (`Effect::EnterMode(Select(_))` + a selection).
   A reusable primitive for select-and-overtype (snippet placeholders,
   rename, template fields) — built decoupled from any consumer. See
-  [select-mode.md](select-mode).
+  [select-mode.md](../select-mode/).
 - **Operator-Pending** -- entered automatically after an operator; awaits a motion or text object.
 - **Command** -- `:` ex-command line.
 - **Search** -- `/` and `?` incremental search.
@@ -654,7 +654,7 @@ Each keymap entry is `(chord_sequence) -> CommandInvocation`.
 Resolution runs against the layered trie in the dedicated **`lattice-keymap`**
 crate; feature keymaps register at `KeymapLayer::MinorMode(mode_id)` /
 `MajorMode(mode_id)` (never `Builtin`). Authoritative reference:
-[`docs/keymap-architecture.md`](keymap-architecture) — the trie data structure,
+[`docs/keymap-architecture.md`](../keymap-architecture/) — the trie data structure,
 layer merging, performance commitments, and plugin / user-config registration paths.
 
 #### 5.2.4 Extensibility -- first-class
@@ -688,7 +688,7 @@ them (`]f`/`[f`/`]c`/`[c`/`]a`/`[a`/`]l`/`[l` + the `af`/`ac`/`aa`/`al`/`aC`
 objects) live in `lattice-syntax`, registered through exactly this extension
 point with no host changes.
 
-The keymap-side companion of this extension point -- how plugins and user config bind chords to the ids returned here, layer priority across builtin / major-mode / minor-mode / user / per-buffer, and the trie merge cost on overlay push / pop -- is documented in [`docs/keymap-architecture.md`](keymap-architecture) §5 (extensibility) and §6 (layered registry).
+The keymap-side companion of this extension point -- how plugins and user config bind chords to the ids returned here, layer priority across builtin / major-mode / minor-mode / user / per-buffer, and the trie merge cost on overlay push / pop -- is documented in [`docs/keymap-architecture.md`](../keymap-architecture/) §5 (extensibility) and §6 (layered registry).
 
 **Macros, marks, registers, and dot-repeat** are mechanical because every change flows through `execute(invocation)`. The `last change` for `.` is the most recent recorded `CommandInvocation`. **Macros record resolved grammar `Action` sequences -- not raw keystrokes** (`MacroRecording { register, actions: Vec<Action> }`). Replay survives keymap changes, plays back faster (no parse pass), and is editable as data. (📝 The buffer-backed `*macro:q*` editing view is design intent, not yet built.)
 
@@ -804,7 +804,7 @@ the byte-shift logic and `didChange` fire-out apply uniformly.
 
 ### 5.4 LSP Subsystem
 
-We write our own client. `tower-lsp` is server-side; `async-lsp` brings tower middleware that doesn't fit our actor model. `lsp-types` (LSP 3.17) provides the wire types; the rest is hand-rolled. The companion docs ([`lsp-architecture.md`](lsp-architecture) for module-level commentary, [`../../user/lsp.md`](../../../docs/lsp) for the user surface, [`../notes/lsp-features.md`](../notes/lsp-features) for per-method tracking) elaborate beyond the design-relevant detail captured here.
+We write our own client. `tower-lsp` is server-side; `async-lsp` brings tower middleware that doesn't fit our actor model. `lsp-types` (LSP 3.17) provides the wire types; the rest is hand-rolled. The companion docs ([`lsp-architecture.md`](../lsp-architecture/) for module-level commentary, [`../../user/lsp.md`](../../../docs/lsp) for the user surface, [`../notes/lsp-features.md`](../notes/lsp-features) for per-method tracking) elaborate beyond the design-relevant detail captured here.
 
 #### 5.4.1 Crate layout
 
@@ -1083,7 +1083,7 @@ WASM call overhead is real but bounded. Ground rules:
 
 > **Updated (2026-07-20): "bundled" = *core plugins*, and they are NOT compiled
 > into the binary.** The distribution model was settled in
-> [`plugin-manager.md`](plugin-manager): plugins ship **separately** (rejecting
+> [`plugin-manager.md`](../plugin-manager/): plugins ship **separately** (rejecting
 > `include_bytes!`), on **two roots** — a **runtime root** of prebuilt core-plugin
 > `.wasm` beside the binary (found via a search path, discovered at boot), and the
 > **user root** `~/.config/lattice/plugins/` fed by a use-package `require` +
@@ -1102,7 +1102,7 @@ The strategy: features that *aren't architecturally core* but *are essential to 
 
 **Trust distinction.** Bundled plugins inherit the editor's trust level -- their capabilities are pre-granted at build time, no per-install consent prompt. User-installed plugins (via the bundled plugin manager) go through capability prompts on first install. Plugin manifests declare requested capabilities (`fs:write:install_dir`, `net:http`, `proc:spawn`, ...); the runtime gates accordingly.
 
-**Bootstrap (as built — [`plugin-manager.md`](plugin-manager)).** Core plugins
+**Bootstrap (as built — [`plugin-manager.md`](../plugin-manager/)).** Core plugins
 live as prebuilt `.wasm` in the **runtime root** (`<runtime>/plugins/<name>/`,
 resolved via `$LATTICE_RUNTIME` → install prefix → exe-relative → dev workspace) —
 **not** `include_bytes!` (rejected: plugins ship separately, versioned
@@ -1137,14 +1137,14 @@ use-package `require` (git/local source, built on first boot into that cache).
 7. **§5.12 typed-options registration** through WIT -- plugins register `lsp-manager.install_root`, `lsp-manager.github_token`, etc. into the same `ConfigRegistry` core options live in.
 
 > **8b design (in progress, 2026-07):** the first-wave bundled plugins now have
-> design fragments. **[`plugin-auto-pair.md`](plugin-auto-pair)** — the
+> design fragments. **[`plugin-auto-pair.md`](../plugin-auto-pair/)** — the
 > trivial-first plugin (`auto` + `manual` pairing) — forces two more general host
 > seams beyond the above (a **grammar-context `document` handle** so a grammar
 > action can read buffer text, and **declining / fall-through bindings**), plus
-> the **[`plugin-treesitter-seam.md`](plugin-treesitter-seam)** query seam
+> the **[`plugin-treesitter-seam.md`](../plugin-treesitter-seam/)** query seam
 > (**promoted to v1** — foundational to the tree-sitter-driven grammar of
 > paramount #3; it publishes the host's parse tree to plugins so structural
-> motions / text objects / folds can be plugins). **[`lighthouse.md`](lighthouse)**
+> motions / text objects / folds can be plugins). **[`lighthouse.md`](../lighthouse/)**
 > (the LSP server manager) is where prerequisites 1–5 above land as an implemented
 > host-services extension. Slice plans:
 > [`../operations/slice-plans/`](../operations/slice-plans/)
@@ -1154,8 +1154,8 @@ use-package `require` (git/local source, built on first boot into that cache).
 
 > **Built (Phase 8).** The runtime (§5.5.1–5.5.2) is Phase 7; this subsection is
 > the editor-side surface that makes it reachable. Detail lives in the fragments
-> [`plugin-host.md`](plugin-host) (the seam spine + capability model) and
-> [`plugin-observability.md`](plugin-observability) (the trace stack); slice
+> [`plugin-host.md`](../plugin-host/) (the seam spine + capability model) and
+> [`plugin-observability.md`](../plugin-observability/) (the trace stack); slice
 > sequencing in `../operations/slice-plans/plugin-loader.md` +
 > `plugin-observability.md`.
 
@@ -1231,7 +1231,7 @@ Both peers are held to the same latency invariant: the paint body reads a
 published snapshot and does zero I/O / parsing / shaping-of-unchanged-content per
 frame (§5.7). Element fan-out is O(viewport rows), never O(chars).
 
-The renderer reads **mode-resolved options** for every per-frame decision (wrap, line numbers, gutter width, foldcolumn, decoration providers). There is no `BufferKind` branch in the render path: every buffer flows through the one cell-grid pipeline, parameterised by its `ResolvedOptions` snapshot. The hover popup is a floating-geometry view of a `markdown-mode` buffer with a `hover-mode` minor contributing `wrap=true, line-numbers=false, anchor=cursor` -- not a separate render code path. See [`docs/mode-architecture.md`](mode-architecture) §6.1 (resolution layers), §6.3 (caching), and §9.5 (renderer integration).
+The renderer reads **mode-resolved options** for every per-frame decision (wrap, line numbers, gutter width, foldcolumn, decoration providers). There is no `BufferKind` branch in the render path: every buffer flows through the one cell-grid pipeline, parameterised by its `ResolvedOptions` snapshot. The hover popup is a floating-geometry view of a `markdown-mode` buffer with a `hover-mode` minor contributing `wrap=true, line-numbers=false, anchor=cursor` -- not a separate render code path. See [`docs/mode-architecture.md`](../mode-architecture/) §6.1 (resolution layers), §6.3 (caching), and §9.5 (renderer integration).
 
 <details><summary><b>Superseded approach (original v0.x design — not built)</b></summary>
 
@@ -1247,7 +1247,7 @@ was likewise dropped.
 
 </details>
 
-The renderer reads **mode-resolved options** for every per-frame decision (wrap, line numbers, gutter width, foldcolumn, statusline contributors, decoration providers). There is no `BufferKind` branch in the render path: every buffer flows through one pipeline, parameterised by its `ResolvedOptions` snapshot. The hover popup is a floating-geometry view of a `markdown-mode` buffer with a `hover-mode` minor contributing `wrap=true, line-numbers=false, anchor=cursor` -- not a separate render code path. See [`docs/mode-architecture.md`](mode-architecture) §6.1 (resolution layers), §6.3 (caching, with O(1) hot-path reads), and §9.5 (renderer integration).
+The renderer reads **mode-resolved options** for every per-frame decision (wrap, line numbers, gutter width, foldcolumn, statusline contributors, decoration providers). There is no `BufferKind` branch in the render path: every buffer flows through one pipeline, parameterised by its `ResolvedOptions` snapshot. The hover popup is a floating-geometry view of a `markdown-mode` buffer with a `hover-mode` minor contributing `wrap=true, line-numbers=false, anchor=cursor` -- not a separate render code path. See [`docs/mode-architecture.md`](../mode-architecture/) §6.1 (resolution layers), §6.3 (caching, with O(1) hot-path reads), and §9.5 (renderer integration).
 
 #### 5.6.2 Building the cell grid (the content path)
 
@@ -1577,7 +1577,7 @@ This is heuristic #2 in action: evaluate against the paramount goals, not agains
 
 ### 5.8 Major Modes and Minor Modes
 
-The major / minor mode system is the primary customization mechanism. The full design -- trait surface, lifecycle events, typed option registry, `OptionGroup` registry, customize surface, plugin path, migration plan -- is documented in [`docs/mode-architecture.md`](mode-architecture). This section anchors the high-level commitments design.md depends on; consult the companion doc for the load-bearing detail.
+The major / minor mode system is the primary customization mechanism. The full design -- trait surface, lifecycle events, typed option registry, `OptionGroup` registry, customize surface, plugin path, migration plan -- is documented in [`docs/mode-architecture.md`](../mode-architecture/). This section anchors the high-level commitments design.md depends on; consult the companion doc for the load-bearing detail.
 
 #### 5.8.1 Commitments
 
@@ -1629,7 +1629,7 @@ The UI layer's structure determines how the user actually experiences the editor
 
 **Foundational principle: everything is a buffer.** File tree, outline, symbol list, diagnostics list, search results, terminal, REPL -- all are buffers, distinguished only by mutability flags, content provider, and major mode. Users place them in panes via the same split / window operations as code buffers. The editor enforces no fixed sidebar or bottom-panel layout; the user composes their workspace from panes containing buffers of their choice.
 
-**Popups carry buffer content with a popup-shape view.** Hover, signature help, and `:describe-*` content is real buffer content (typically `markdown-mode`) rendered in a floating-anchored geometry rather than a pane-shaped one. The same `compose_visible_lines` pipeline paints both -- a hover popup gets tree-sitter syntax highlighting, link nav, position history, and every other buffer affordance "for free", because it *is* a buffer. The popup-shape view contributes its own minor mode (`hover-mode`) that overrides options like `wrap`, `line-numbers`, and `anchor=cursor`. See [`docs/mode-architecture.md`](mode-architecture) §6.7 / §9.5.
+**Popups carry buffer content with a popup-shape view.** Hover, signature help, and `:describe-*` content is real buffer content (typically `markdown-mode`) rendered in a floating-anchored geometry rather than a pane-shaped one. The same `compose_visible_lines` pipeline paints both -- a hover popup gets tree-sitter syntax highlighting, link nav, position history, and every other buffer affordance "for free", because it *is* a buffer. The popup-shape view contributes its own minor mode (`hover-mode`) that overrides options like `wrap`, `line-numbers`, and `anchor=cursor`. See [`docs/mode-architecture.md`](../mode-architecture/) §6.7 / §9.5.
 
 What is *not* a buffer:
 
@@ -1958,7 +1958,7 @@ The user opens any of these like opening a file: a command (`:open file-tree`, k
 
 **Performance:** content providers are lazy. They populate on first display; they refresh on declared triggers (event, periodic, manual), all off the UI thread on the blocking pool (`spawn_blocking`). A buffer that is open but whose pane is not visible can be configured to suspend updates entirely.
 
-**Terminal buffers — Document-on-Normal.** The `terminal` buffer has two sub-states (`TerminalInsertMode` PTY-bound, `TerminalNormalMode` Document-bound). Insert mode encodes keystrokes to ANSI and the renderer paints the alacritty cell grid directly. Normal / Visual operates on a **synthetic, read-only Document** built from the scrollback at Insert→Normal transition; the central vim grammar (motions, text objects, marks, search, registers, visual modes) runs against that Document with no kind-specific branching. The renderer still paints the cell grid; a coord adapter remaps document-space selection ranges to cell coordinates at publish time. See [`terminal-as-document.md`](terminal-as-document) for the lifecycle, coord adapter, and slice plan.
+**Terminal buffers — Document-on-Normal.** The `terminal` buffer has two sub-states (`TerminalInsertMode` PTY-bound, `TerminalNormalMode` Document-bound). Insert mode encodes keystrokes to ANSI and the renderer paints the alacritty cell grid directly. Normal / Visual operates on a **synthetic, read-only Document** built from the scrollback at Insert→Normal transition; the central vim grammar (motions, text objects, marks, search, registers, visual modes) runs against that Document with no kind-specific branching. The renderer still paints the cell grid; a coord adapter remaps document-space selection ranges to cell coordinates at publish time. See [`terminal-as-document.md`](../terminal-as-document/) for the lifecycle, coord adapter, and slice plan.
 
 #### 5.9.9 Notifications (📝 planned)
 
@@ -2136,7 +2136,7 @@ editor state transitions. The real v1 variants:
 
 - **Document lifecycle:** `DocumentOpened` (carries `{ id, path, version, text }`; §5.4.3 describes the mode-owned LSP attach that subscribes to it), `BeforeSave`, `DocumentSaved`, `DocumentClosed`, `DocumentChanged`.
 - **Modal state:** `ModalModeChanged { from, to }`.
-- **Mode lifecycle:** `MajorEntered { buffer, major }`, `MajorExiting { buffer, major }`, `MinorActivated { buffer, minor }`, `MinorDeactivated { buffer, minor }`. `MajorEntered` fires *after* `on_activate`; `MajorExiting` *before* `on_deactivate`. See [`docs/mode-architecture.md`](mode-architecture) §7.
+- **Mode lifecycle:** `MajorEntered { buffer, major }`, `MajorExiting { buffer, major }`, `MinorActivated { buffer, minor }`, `MinorDeactivated { buffer, minor }`. `MajorEntered` fires *after* `on_activate`; `MajorExiting` *before* `on_deactivate`. See [`docs/mode-architecture.md`](../mode-architecture/) §7.
 - **Selection:** `SelectionsChanged`.
 - **Options:** `OptionChanged`.
 - **Plugin:** `Plugin(payload)`, `PluginCrashed`.
@@ -2311,7 +2311,7 @@ Each opens a buffer-backed help view (`HelpContent` / `HelpBuffer` in `lattice-h
 
 **Cost model.** Metadata lives next to registrations and is only materialized when an introspection command runs. The catalog is queryable in O(1) by id and O(log N) by name; `:apropos` is a streaming picker (§5.9.7) over all metadata.
 
-The keymap descriptor metadata that backs `:describe-key` -- the typed `KeymapEntry` rows, their forgery-prevented `SourceLocation` capture, and the catalog/registry consistency invariants -- is specified in [`docs/keymap-architecture.md`](keymap-architecture) §3.5 and §6.
+The keymap descriptor metadata that backs `:describe-key` -- the typed `KeymapEntry` rows, their forgery-prevented `SourceLocation` capture, and the catalog/registry consistency invariants -- is specified in [`docs/keymap-architecture.md`](../keymap-architecture/) §3.5 and §6.
 
 #### 5.11.1 Provenance: source-of-truth for every binding
 
@@ -2429,7 +2429,7 @@ Host-state generators (`gen:chords`, `gen:registers`, `gen:marks`, `gen:buffers`
 
 **Vertico-style rendering** (post-popup work): a vertical list of candidates, one per row, with the matched byte ranges from `ScoredCandidate.match_ranges` painted with a distinct style. Annotations rendered right-aligned. Selected row marked. Renderer is replaceable -- when the rich minibuffer (§5.9.10) lands, the popup graduates to a tree-sitter-styled buffer view; the underlying `RenderedCandidate` shape doesn't change.
 
-**Insert-mode completion** (Phase 4.2.g) is the editor surface that turns this pipeline into a buffer-level input flow: trigger evaluation per-keystroke, async sources (LSP / snippets / buffer-words / path / tree-sitter / plugin), multi-column popup display, side documentation popup with lazy `completionItem/resolve`, snippet engine with placeholder navigation, frequency-aware ranking. Spec lives in [`insert-completion.md`](insert-completion); behavioural choices are explained alongside surveyed precedents (VS Code / Neovim `blink.cmp` / Helix / JetBrains / Sublime / Emacs `corfu`).
+**Insert-mode completion** (Phase 4.2.g) is the editor surface that turns this pipeline into a buffer-level input flow: trigger evaluation per-keystroke, async sources (LSP / snippets / buffer-words / path / tree-sitter / plugin), multi-column popup display, side documentation popup with lazy `completionItem/resolve`, snippet engine with placeholder navigation, frequency-aware ranking. Spec lives in [`insert-completion.md`](../insert-completion/); behavioural choices are explained alongside surveyed precedents (VS Code / Neovim `blink.cmp` / Helix / JetBrains / Sublime / Emacs `corfu`).
 
 ### 5.12 Configuration System (typed options + code-as-config)
 
@@ -2466,7 +2466,7 @@ The registry is the single source of truth. `:set`, `:describe-option`, the
 and write the same store. Cross-crate uniqueness is enforced by the type system;
 display-name uniqueness by `linkme` aggregation; naming rules by `const fn`
 assertions in the declaration macros (`lattice-config-macros`). The same model is
-mirrored for `OptionGroup`. See [`docs/mode-architecture.md`](mode-architecture)
+mirrored for `OptionGroup`. See [`docs/mode-architecture.md`](../mode-architecture/)
 §6.4 (option identity), §6.7.1.1 (groups), §6.8 (constraints).
 >
 > Layered resolution: modal-state override → buffer-local explicit `setlocal` → active minor modes (in activation order, with explicit priority for tie-breaks) → major mode → global `:set` → built-in default. Cached per buffer as `ResolvedOptions`, invalidated on mode toggle / option write. O(1) hot-path reads. (`mode-architecture.md` §6.1 / §6.3.)
@@ -2608,19 +2608,19 @@ All six entry points produce or consume the same typed `Value` against the same 
 
 ### 5.13 Diff System
 
-Lattice ships a diff subsystem covering the four flows users expect from a modern editor: inline overlay against a baseline (file vs. disk, file vs. git HEAD, file vs. AI-proposed content), side-by-side two-way diff, three-pane three-way merge, and hunk motions / transfer operators (`]c` / `[c` / `do` / `dp`) registered through the central `CommandRegistry` (§5.2.1). The deep-dive design lives in [`diff-system.md`](diff-system); the headline architectural decisions are: hunks are **data on the Core thread** owned by a `DiffSubsystem` and RCU-published via arc-swap, not a window-local UI flag (vim's mistake); two-way and three-way share **one** data model with `1..=3` participating documents (ediff's correct structural choice); inline overlay and side-by-side are **presentation transforms** over that shared data, not separate subsystems (Zed's structural insight) — realized as a `DiffSignMap` plus overlay / fold / filler modules rather than one `DiffMap` type; the engine is `imara-diff` (Histogram default, what gitoxide ships) running on `spawn_blocking`. Two foundational primitives ship with the first slice: **displacing virtual rows** (deletion blocks, also consumed by multibuffer §5.14 and post-v1 inlay hints) and **scroll-binding pane groups** (used by side-by-side diff, vim's `:set scrollbind`, future `:windo`). Slice ledger is D.0–D.7 in [`../operations/implementation.md`](../operations/implementation).
+Lattice ships a diff subsystem covering the four flows users expect from a modern editor: inline overlay against a baseline (file vs. disk, file vs. git HEAD, file vs. AI-proposed content), side-by-side two-way diff, three-pane three-way merge, and hunk motions / transfer operators (`]c` / `[c` / `do` / `dp`) registered through the central `CommandRegistry` (§5.2.1). The deep-dive design lives in [`diff-system.md`](../diff-system/); the headline architectural decisions are: hunks are **data on the Core thread** owned by a `DiffSubsystem` and RCU-published via arc-swap, not a window-local UI flag (vim's mistake); two-way and three-way share **one** data model with `1..=3` participating documents (ediff's correct structural choice); inline overlay and side-by-side are **presentation transforms** over that shared data, not separate subsystems (Zed's structural insight) — realized as a `DiffSignMap` plus overlay / fold / filler modules rather than one `DiffMap` type; the engine is `imara-diff` (Histogram default, what gitoxide ships) running on `spawn_blocking`. Two foundational primitives ship with the first slice: **displacing virtual rows** (deletion blocks, also consumed by multibuffer §5.14 and post-v1 inlay hints) and **scroll-binding pane groups** (used by side-by-side diff, vim's `:set scrollbind`, future `:windo`). Slice ledger is D.0–D.7 in [`../operations/implementation.md`](../operations/implementation).
 
 ### 5.14 Multibuffer Views
 
-A `MultibufferDocument` is a `Document` whose content is composed of N **anchored excerpts** spliced from other Documents, where edits at the surface propagate back through the standard edit pipeline to the source buffers. This is the primitive that lights up project-wide diff, AI multi-file `openDiff`, search-as-buffer (`wgrep`-style), LSP references-as-buffer, and diagnostics-as-buffer with one implementation rather than five. The deep-dive design lives in [`multibuffer-views.md`](multibuffer-views); the headline architectural decisions are: **`Document` becomes a trait** with `RopeDocument` and `MultibufferDocument` implementations (the load-bearing refactor); excerpts hold the existing **anchor type** (§5.1.1) and track source-buffer edits automatically; edit propagation is a translation-table lookup → dispatch through the standard pipeline — undo / macros / autocmds / LSP `didChange` observe one consistent edit stream regardless of pane; **cross-pane coherence falls out of arc-swap** (§5.6.8) because there is only one underlying buffer; providers populate excerpts by emitting mutations from a single task — **built today as concrete `search` + `narrow` providers** (📝 references / diagnostics / diff-as-multibuffer providers, and a generalized `MultibufferProvider` trait, are not yet built). Multibuffer and diff are independent designs that meet at their consumers (project-wide diff, AI multi-file edits), not at their implementations. Slice ledger is M.0–M.6 in [`../operations/implementation.md`](../operations/implementation).
+A `MultibufferDocument` is a `Document` whose content is composed of N **anchored excerpts** spliced from other Documents, where edits at the surface propagate back through the standard edit pipeline to the source buffers. This is the primitive that lights up project-wide diff, AI multi-file `openDiff`, search-as-buffer (`wgrep`-style), LSP references-as-buffer, and diagnostics-as-buffer with one implementation rather than five. The deep-dive design lives in [`multibuffer-views.md`](../multibuffer-views/); the headline architectural decisions are: **`Document` becomes a trait** with `RopeDocument` and `MultibufferDocument` implementations (the load-bearing refactor); excerpts hold the existing **anchor type** (§5.1.1) and track source-buffer edits automatically; edit propagation is a translation-table lookup → dispatch through the standard pipeline — undo / macros / autocmds / LSP `didChange` observe one consistent edit stream regardless of pane; **cross-pane coherence falls out of arc-swap** (§5.6.8) because there is only one underlying buffer; providers populate excerpts by emitting mutations from a single task — **built today as concrete `search` + `narrow` providers** (📝 references / diagnostics / diff-as-multibuffer providers, and a generalized `MultibufferProvider` trait, are not yet built). Multibuffer and diff are independent designs that meet at their consumers (project-wide diff, AI multi-file edits), not at their implementations. Slice ledger is M.0–M.6 in [`../operations/implementation.md`](../operations/implementation).
 
 ### 5.15 Virtual Rows
 
-A **displacing virtual-row** primitive sits as a sibling lane to `CellMatrix` (§5.6, [`cell-grid-renderer.md`](cell-grid-renderer)) and is shared by diff inline-overlay deletion blocks (§5.13), multibuffer excerpt headers and separators (§5.14), and future inlay-hint / code-lens / signature-preview consumers. The deep-dive design lives in [`virtual-rows.md`](virtual-rows); the headline architectural decisions are: virtual rows ride in **their own `VirtualRowMatrix`** RCU-published via `ArcSwap`, independent of `CellMatrix` so that diff/multibuffer churn does not invalidate the cell-builder's multi-axis cache; the renderer reads both lanes per frame and **interleaves at `slice()` time** via the additive `CellMatrix::display_slice(scroll, height, virtual_rows) -> DisplaySlice<'_>` method — existing `slice()` callers are unchanged, virtual-row consumers opt in; **motions stay source-line-based** (vim's `j` / `k` step document rows only — virtual rows are visual chrome, not navigation targets); the `VirtualRowProvider` trait gives diff, multibuffer, and post-v1 inlay/codelens emitters one shared registration surface. D.0a (the pure data + interleaver layer) landed 2026-05-28; the production virtual-rows worker (D.0a.1) and the first renderer consumer (D.3 inline diff) follow when their respective design fragments call for them.
+A **displacing virtual-row** primitive sits as a sibling lane to `CellMatrix` (§5.6, [`cell-grid-renderer.md`](../cell-grid-renderer/)) and is shared by diff inline-overlay deletion blocks (§5.13), multibuffer excerpt headers and separators (§5.14), and future inlay-hint / code-lens / signature-preview consumers. The deep-dive design lives in [`virtual-rows.md`](../virtual-rows/); the headline architectural decisions are: virtual rows ride in **their own `VirtualRowMatrix`** RCU-published via `ArcSwap`, independent of `CellMatrix` so that diff/multibuffer churn does not invalidate the cell-builder's multi-axis cache; the renderer reads both lanes per frame and **interleaves at `slice()` time** via the additive `CellMatrix::display_slice(scroll, height, virtual_rows) -> DisplaySlice<'_>` method — existing `slice()` callers are unchanged, virtual-row consumers opt in; **motions stay source-line-based** (vim's `j` / `k` step document rows only — virtual rows are visual chrome, not navigation targets); the `VirtualRowProvider` trait gives diff, multibuffer, and post-v1 inlay/codelens emitters one shared registration surface. D.0a (the pure data + interleaver layer) landed 2026-05-28; the production virtual-rows worker (D.0a.1) and the first renderer consumer (D.3 inline diff) follow when their respective design fragments call for them.
 
 ### 5.16 Agent Integration
 
-Lattice integrates two coding agents — Claude Code and opencode. The seam is the **capability surface**, not the transport: one `EditorAccess` port in `lattice-agent` serves every adapter, because "give me the selection", "write this file", "ask the user to approve this diff" mean one thing regardless of who opened the socket. The deep-dive designs live in [`agent-integration.md`](agent-integration), [`ai-agent-protocol.md`](ai-agent-protocol), and [`agent-ui.md`](agent-ui).
+Lattice integrates two coding agents — Claude Code and opencode. The seam is the **capability surface**, not the transport: one `EditorAccess` port in `lattice-agent` serves every adapter, because "give me the selection", "write this file", "ask the user to approve this diff" mean one thing regardless of who opened the socket. The deep-dive designs live in [`agent-integration.md`](../agent-integration/), [`ai-agent-protocol.md`](../ai-agent-protocol/), and [`agent-ui.md`](../agent-ui/).
 
 **Primary topology — the agent's TUI in a terminal buffer.** Both agents are terminal-native (their own TUIs give prompt/readline, slash commands, model switching, and edit review), so `v1` runs each in a lattice terminal buffer with a thin minor mode layered on: Claude Code dials *into* lattice over a loopback WebSocket / MCP for `openDiff` edit review (`claude-code-mode`); opencode's `:opencode` spawns its native TUI (`Effect::SpawnTerminal` + `opencode-mode`). This keeps everything-is-a-buffer (a terminal *is* a buffer), gives each agent's full UX for free, and avoids reimplementing a REPL lattice would always lose to the agent's own.
 
@@ -3053,11 +3053,11 @@ plugin *exports* its source world; the host instantiates it and drives it
 > `wit/*.wit` (`lattice:plugin-host@0.1.0`) — the exercised seams
 > (picker-source / completion-source / grammar / events / decorations / config /
 > modes / keymap / host-services / logging), see
-> [`plugin-host.md`](plugin-host) + [`plugin-observability.md`](plugin-observability).
+> [`plugin-host.md`](../plugin-host/) + [`plugin-observability.md`](../plugin-observability/).
 > **Designed-but-not-yet-built seams:** the **tree-sitter query seam**
-> ([`plugin-treesitter-seam.md`](plugin-treesitter-seam), v1), and the
+> ([`plugin-treesitter-seam.md`](../plugin-treesitter-seam/), v1), and the
 > lighthouse host-services extensions (`http-fetch` / `spawn-process` + task
-> surface / `register-server`, [`lighthouse.md`](lighthouse)). The block below
+> surface / `register-server`, [`lighthouse.md`](../lighthouse/)). The block below
 > is kept for the shape of the contract.
 
 ```wit
@@ -3336,7 +3336,7 @@ lattice/
 > `:plugins` **manager view**, and the full **plugin-observability** stack
 > (`lattice-plugin-trace`: the boundary tracer, the gated hot-path grammar seam,
 > the `*plugin-trace*` buffer views, the live `plugin.trace-level` option, and the
-> `wasi:logging` guest import — see [`plugin-observability.md`](plugin-observability)).
+> `wasi:logging` guest import — see [`plugin-observability.md`](../plugin-observability/)).
 > The mode/view *system* was built **natively** ahead of the plugin host, so
 > Phase 8's remaining work (8b) is the bundled first-party reference plugins +
 > repackaging the built-in modes as WASM components, not building the mode system.

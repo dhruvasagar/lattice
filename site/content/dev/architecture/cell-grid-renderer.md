@@ -3,7 +3,7 @@ title = "Cell-grid renderer architecture"
 +++
 
 
-Anchor: [design.md §5.6](design) (rendering layered architecture) and paramount goal #1 (sub-frame keystroke→glyph at 120 Hz, within the one-frame ceiling ≤ 8.3 ms).
+Anchor: [design.md §5.6](../design/) (rendering layered architecture) and paramount goal #1 (sub-frame keystroke→glyph at 120 Hz, within the one-frame ceiling ≤ 8.3 ms).
 
 This document specifies the renderer substrate that replaces the per-frame `WindowTextSystem::shape_line` path for code/terminal/file-tree/synthetic buffers. The Shaped path (markdown previews, help with rich text, future prose mode) is preserved as a sibling and is out of scope for this work.
 

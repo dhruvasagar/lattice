@@ -6,10 +6,10 @@ title = "Plugin manager — declarative sources, build-on-boot, use-package for 
 > **Design fragment.** Contracts, data model, rationale, rejected alternatives,
 > paramount-goal alignment. Slice sequencing lives in the slice plan
 > ([`../operations/slice-plans/plugin-loader.md`](../operations/slice-plans/plugin-loader)).
-> Sibling fragments: [`plugin-host.md`](plugin-host) (the seam host + capability
-> model), [`config-and-init.md`](config-and-init) (init.rs lifecycle + the
+> Sibling fragments: [`plugin-host.md`](../plugin-host/) (the seam host + capability
+> model), [`config-and-init.md`](../config-and-init/) (init.rs lifecycle + the
 > `on-plugin-loaded` deferred-config pattern the enablement reuses),
-> [`plugin-auto-pair.md`](plugin-auto-pair) (the first consumer).
+> [`plugin-auto-pair.md`](../plugin-auto-pair/) (the first consumer).
 >
 > **Status: 📝 designed, not built.** A redesign of the existing loader
 > (`lattice-plugin-loader`) + `:plugins` view (`lattice-plugin-manager`) to add

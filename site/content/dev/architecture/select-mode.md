@@ -307,8 +307,8 @@ session, then `ExitSelect` → Normal.
 
 ## See also
 
-- [keymap-architecture.md](keymap-architecture) — layer model + dispatch
+- [keymap-architecture.md](../keymap-architecture/) — layer model + dispatch
   the Select `BindingMode` plugs into.
-- [design.md §5.2](design) — modal-state catalog (Select added there).
+- [design.md §5.2](../design/) — modal-state catalog (Select added there).
 - [mode-activation slice plan](../operations/slice-plans/archive/mode-activation)
   — SN.3d sequencing; SN.3e (buffer-keyed snippet session) lands first.

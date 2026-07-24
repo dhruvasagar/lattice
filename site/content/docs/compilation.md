@@ -7,7 +7,7 @@ title = "Compilation mode"
 `:compile <command>` runs an external command, streams its output live
 into a read-only `*compilation*` buffer, and parses every
 `file:line:col` reference in that output into the
-[error list](error-list). It is Lattice's equivalent of emacs
+[error list](../error-list/). It is Lattice's equivalent of emacs
 `M-x compile` and vim `:make` — a **tool-agnostic** command runner:
 point it at a compiler, a linter, a test runner, `grep`, or any CLI
 tool that prints locations, and you can jump straight to each one.
@@ -34,7 +34,7 @@ tool that prints locations, and you can jump straight to each one.
 | `:compilation-kill` | Kill the running command (what `<C-c>` runs) |
 | `:error-list` / `:cl` | Open the parsed locations in a fuzzy **picker** |
 | `:problems` / `:problems-close` | Open / close the [`*problems*`](#the-problems-view) grouped view |
-| `:next-error` / `:previous-error` / … | Walk the parsed locations — see [error list](error-list) |
+| `:next-error` / `:previous-error` / … | Walk the parsed locations — see [error list](../error-list/) |
 
 ---
 
@@ -116,7 +116,7 @@ Four ways, all views of the same parsed locations:
 
 1. **`:next-error` / `:previous-error` / `]qq` / `[qq` from anywhere** —
    you don't need the `*compilation*` buffer focused or open. See
-   [the error list](error-list) for the full command + chord set.
+   [the error list](../error-list/) for the full command + chord set.
 2. **`<CR>` in `*compilation*`** — with the cursor on a line that
    contains a location, jumps to that source file, and syncs the
    error-list position so `:next-error` continues from there.
@@ -132,7 +132,7 @@ jump targets stand out from surrounding prose as you scroll the log.
 
 ## The `*problems*` view
 
-`:problems` opens `*problems*`, a [multibuffer](multibuffer) that
+`:problems` opens `*problems*`, a [multibuffer](../multibuffer/) that
 groups the error-list entries as editable source excerpts under each
 file's header — fix an error right there and it propagates to the
 source. `:problems-close` closes it. This is the "see everything at
@@ -142,9 +142,9 @@ once" counterpart to stepping through with `:next-error`.
 
 ## See also
 
-- [The error list](error-list) — the navigation substrate and its
+- [The error list](../error-list/) — the navigation substrate and its
   full command set (`:next-error`, `:next-error-file`, `:error`,
   `]qq`/`[qq`, …).
-- [Project search](project-search) — `:search` / `g/`, the
+- [Project search](../project-search/) — `:search` / `g/`, the
   interactive grep-into-a-multibuffer (a separate feature from
   `:compile` + the error list).

@@ -11,10 +11,10 @@ optionally-interactive elements, updated over the event bus.
 
 Sequencing + status live in the slice plan
 [`../operations/slice-plans/modeline.md`](../operations/slice-plans/modeline);
-canonical design context is [design.md §5.9](design). The wake
-mechanism reused here is [lsp-architecture.md §12](lsp-architecture).
+canonical design context is [design.md §5.9](../design/). The wake
+mechanism reused here is [lsp-architecture.md §12](../lsp-architecture/).
 
-> **Not the headerline.** [`headerline.md`](headerline) documents the
+> **Not the headerline.** [`headerline.md`](../headerline/) documents the
 > *view-header virtual row* at the **top** of a buffer (async-buffer /
 > multibuffer progress, per `async_buffer_status_in_headerline`). The
 > modeline is the **bottom** per-pane status row. Different surfaces.
@@ -414,7 +414,7 @@ echo untouched, so a real message (`:w` → "written") is never clobbered.
 ## See also
 
 - [`../operations/slice-plans/modeline.md`](../operations/slice-plans/modeline) — slice plan (ML-series sequencing + status).
-- [`headerline.md`](headerline) — the *other* status surface (top view-header virtual row).
-- [`theme-system.md`](theme-system) — element+style+palette registry the spans resolve through.
-- [`lsp-architecture.md`](lsp-architecture) §12 — the async render-wake reused for content updates.
-- [design.md §5.9](design) — UI components / everything-is-a-buffer context.
+- [`headerline.md`](../headerline/) — the *other* status surface (top view-header virtual row).
+- [`theme-system.md`](../theme-system/) — element+style+palette registry the spans resolve through.
+- [`lsp-architecture.md`](../lsp-architecture/) §12 — the async render-wake reused for content updates.
+- [design.md §5.9](../design/) — UI components / everything-is-a-buffer context.

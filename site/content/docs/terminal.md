@@ -367,11 +367,11 @@ gt / gT / 2gt            " switch tabs
 
 ## Related
 
-- [`modal-editing.md`](modal-editing) — the vim grammar that
+- [`modal-editing.md`](../modal-editing/) — the vim grammar that
   drives Normal-in-terminal.
-- [`buffers.md`](buffers) — buffer concepts that terminals
+- [`buffers.md`](../buffers/) — buffer concepts that terminals
   participate in.
-- [`options.md`](options) — full `:set` reference, including
+- [`options.md`](../options/) — full `:set` reference, including
   the `terminal.*` group.
 - [`docs/dev/architecture/terminal-mode.md`](../dev/architecture/terminal-mode)
   — developer reference (implementation details).

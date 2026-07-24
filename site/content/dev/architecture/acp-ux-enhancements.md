@@ -7,13 +7,13 @@ title = "ACP UX enhancements — permission surface, usage metadata, status, and
 > `docs/dev/operations/slice-plans/acp-ux-enhancements.md`.
 >
 > **Builds on:**
-> - [`ai-agent-protocol.md`](ai-agent-protocol) — ACP wire contract, session lifecycle,
+> - [`ai-agent-protocol.md`](../ai-agent-protocol/) — ACP wire contract, session lifecycle,
 >   supervisor architecture.
-> - [`agent-ui.md`](agent-ui) — conversation buffer, `Conversation` store,
+> - [`agent-ui.md`](../agent-ui/) — conversation buffer, `Conversation` store,
 >   `ai-conversation` major mode, editable tail.
-> - [`agent-integration.md`](agent-integration) — `EditorAccess` port, topology decision.
-> - [`headerline.md`](headerline) — generic sticky header row trait.
-> - [`modeline.md`](modeline) — modeline element system.
+> - [`agent-integration.md`](../agent-integration/) — `EditorAccess` port, topology decision.
+> - [`headerline.md`](../headerline/) — generic sticky header row trait.
+> - [`modeline.md`](../modeline/) — modeline element system.
 >
 > **Audits:**
 > - `crates/lattice-ai/src/acp/conversation.rs` — `Block` enum, `Conversation::apply`.
@@ -464,7 +464,7 @@ consume the same projection. The TUI and GPUI peers move in lockstep.
 
 A permission request is a momentary interaction over a dynamic option list. It
 gets a momentary surface: a popup whose buffer *is* the menu. See
-[popup-api.md](./popup-api) for the surface; this section covers only what
+[popup-api.md](../popup-api/) for the surface; this section covers only what
 `lattice-ai` contributes.
 
 **The buffer.** On the first `Block::Permission { status: Pending }`, the mode

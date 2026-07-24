@@ -248,7 +248,7 @@ path (same as LRU eviction). Diagnostic/probe spans are `debug!`, not `info!`
 - Reuses the `LspFileWatcherHandle` runtime-task pattern (`design.md` §15 LSP
   file watcher; `implementation.md` Phase 4.4.l / the "LSP file watcher off the UI
   thread" slice).
-- Conflict resolver: [`diff-system.md`](./diff-system) §3 (type model), the
+- Conflict resolver: [`diff-system.md`](../diff-system/) §3 (type model), the
   `lattice_diff::programmatic` module.
 - Reload primitive: `Editor::do_edit(_, force)` → `open_fresh_into_active_slot(_,
   Reload)` in `lattice-host::dispatch`.

@@ -140,7 +140,7 @@ buffer — vim's `autoread`, **on by default**:
   reloaded` message.
 - **Unsaved edits that conflict** → Lattice never clobbers your work.
   It opens a **diff resolver** and you reconcile hunk by hunk — see
-  [Autoread conflicts](diff#autoread-conflicts) in the diff guide for
+  [Autoread conflicts](../diff/#autoread-conflicts) in the diff guide for
   the full walkthrough. In short: transfer the hunks you want with `do`
   (`:diffget`), finalize with `:diff-accept`, then `:e!` your buffer to
   load the resolved file. While the resolver is open the buffer is left

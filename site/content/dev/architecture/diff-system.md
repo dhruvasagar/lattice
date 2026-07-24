@@ -224,7 +224,7 @@ prose stays load-bearing without going stale.
 > documents the D.2-era shape (`BaselineSource` +
 > `CurrentSource` traits, fixed-arity descriptor with
 > `baseline + current + Option<remote>` slots). D.8 (see
-> [`n-way-diff-membership.md`](n-way-diff-membership))
+> [`n-way-diff-membership.md`](../n-way-diff-membership/))
 > is mid-flight refactoring it to a single
 > `DiffParticipantSource` trait + arity-agnostic
 > `sources: Vec<Arc<dyn DiffParticipantSource>>`. D.8.a +
@@ -548,7 +548,7 @@ renderer's row vector becomes "document rows interleaved with
 virtual rows," and motions / scroll / cursor positioning all
 have to honour the interleaving.
 
-**Full design in [`virtual-rows.md`](virtual-rows).** The
+**Full design in [`virtual-rows.md`](../virtual-rows/).** The
 pure data + interleaver layer (`VirtualRow`,
 `VirtualRowMatrix`, `VirtualRowProvider`, `DisplayRowEntry`,
 `CellMatrix::display_slice`) shipped in D.0a (2026-05-28).
@@ -709,7 +709,7 @@ provider and treats it identically.
 D.3.f lands a `HunkFoldProvider` that registers one fold
 range per hunk's current-side range (`ranges[1]`) as an
 **overlay** in the fold-engine substrate
-([`fold-architecture.md`](fold-architecture)). The fold
+([`fold-architecture.md`](../fold-architecture/)). The fold
 engine then takes over: `za` on a row inside a hunk toggles
 the hunk's fold; `zR` opens every hunk along with every
 other fold source; `:set foldlevel=0` collapses all hunks to

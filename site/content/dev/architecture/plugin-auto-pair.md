@@ -6,15 +6,15 @@ title = "auto-pair — the first bundled plugin (auto + manual pairing)"
 > **Design fragment.** Contracts, data model, rationale, rejected alternatives,
 > paramount-goal alignment. Slice sequencing is §12 (inline while small; splits to
 > a slice-plan file if it grows). Sibling fragments:
-> [`plugin-host.md`](plugin-host) (the seam spine),
-> [`keymap-architecture.md`](keymap-architecture) (the layered keymap the
+> [`plugin-host.md`](../plugin-host/) (the seam spine),
+> [`keymap-architecture.md`](../keymap-architecture/) (the layered keymap the
 > insert-mode bindings + the *declining-binding* fall-through land in),
-> [`lighthouse.md`](lighthouse) (the next 8b plugin, sequenced after this).
+> [`lighthouse.md`](../lighthouse/) (the next 8b plugin, sequenced after this).
 >
 > **Status: ✅ built — ships as a core plugin.** The **first bundled 8b plugin**;
 > both the `auto` and `manual` styles work end-to-end (incl. the TUI), and it
 > ships prebuilt + enabled-by-default via the config gate (see
-> [`plugin-manager.md`](plugin-manager) §7, [`config-and-init.md`](config-and-init)
+> [`plugin-manager.md`](../plugin-manager/) §7, [`config-and-init.md`](../config-and-init/)
 > §6). It is *not* host-free (an earlier draft assumed so) — porting the manual
 > style forced three small, **general** host prerequisites (§5). Those were the real
 > cost and the real value: reusable capabilities many future plugins need,
@@ -176,7 +176,7 @@ motions / text objects) and unlocks a whole class of structural plugins (motions
 text objects, folds, refactors, rainbow-delimiters, …). **Promoted to v1
 (2026-07-19, Dhruva):** a truly customizable, tree-sitter-driven editor needs this
 seam early, not as a late refinement. It gets its **own design fragment**
-([`plugin-treesitter-seam.md`](plugin-treesitter-seam), in design); auto-pair
+([`plugin-treesitter-seam.md`](../plugin-treesitter-seam/), in design); auto-pair
 is its first consumer (the enclosing-scope query bounds the scan). Complex, but
 core — see that fragment for the query/node/cursor API, the capability model, and
 the tree-mutation-under-read hazard.

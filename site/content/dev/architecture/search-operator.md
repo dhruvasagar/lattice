@@ -11,8 +11,8 @@ string; a Visual selection then `g/` searches the selection.
 Sequencing + status live in the slice plan
 [`../operations/slice-plans/search-operator.md`](../operations/slice-plans/search-operator).
 Project-search internals it drives are in
-[`multibuffer-views.md`](multibuffer-views) §3.7 (the `SearchProvider`); the
-grammar/operator machinery is [design.md §5.2](design).
+[`multibuffer-views.md`](../multibuffer-views/) §3.7 (the `SearchProvider`); the
+grammar/operator machinery is [design.md §5.2](../design/).
 
 > **Mnemonic.** `/` is buffer search; `g` is vim's "global / extended variant"
 > prefix (`gg`, `g;`, `gU`). `g/` therefore reads as *"the global (project)
@@ -114,9 +114,9 @@ remain the province of `:search` and are out of scope for the operator.
 
 ## See also
 
-- [`multibuffer-views.md`](multibuffer-views) §3.7 — the `SearchProvider` /
+- [`multibuffer-views.md`](../multibuffer-views/) §3.7 — the `SearchProvider` /
   `project_search` path `g/` drives.
-- [`design.md §5.2`](design) — the modal-editing engine / unified grammar +
+- [`design.md §5.2`](../design/) — the modal-editing engine / unified grammar +
   command dispatch the operator plugs into.
 - [`../operations/slice-plans/search-operator.md`](../operations/slice-plans/search-operator)
   — slice plan (SO-series sequencing + status).

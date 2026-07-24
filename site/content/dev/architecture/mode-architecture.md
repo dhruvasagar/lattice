@@ -2286,7 +2286,7 @@ graceful error handling per CLAUDE.md.
   - **HelpBuffer**: struct fields `links`/`anchors`/`highlights`
     retired. `HelpContent` bundles a slim `HelpBuffer` (id, title,
     rope, cursor, scroll) with a sibling `HelpMetadata` carrying
-    the parsed `[label](url)` links, named anchors, and per-line
+    the parsed `[label](../url/)` links, named anchors, and per-line
     markdown highlight spans. `App::open_popup` seeds the metadata
     into `buffer_locals[help.id]` via `seed_help_metadata_locals`.
     Vestigial `HelpBuffer::link_at` / `scroll_to_anchor` /
@@ -3537,7 +3537,7 @@ Concretely, for keymaps:
   [`lattice_mode::Keymap`] populated through the chain form
   (`Keymap::new().bind_chord(...)`) or the table form
   (`Keymap::from_entries(&[keymap_entry!{...}])`); see
-  [`keymap-architecture.md` §11.2](keymap-architecture#112-the-real-keymap-contribution-type)
+  [`keymap-architecture.md` §11.2](../keymap-architecture/#112-the-real-keymap-contribution-type)
   for the API surface and
   [`../notes/mode-keymap-authoring.md`](../notes/mode-keymap-authoring)
   for the recipe. The K.2.4 host translation pass walks the

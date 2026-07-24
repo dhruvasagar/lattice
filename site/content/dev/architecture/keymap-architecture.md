@@ -1960,10 +1960,10 @@ for sequencing and the landed commit.
 - [slice plan: keymap-substrate](../archive/keymap-substrate) -- K.2 sequencing.
 - [slice plan: help-prefix](../archive/help-prefix) -- K.3 sequencing.
 - [slice plan: mode-ownership-cleanup](../operations/slice-plans/mode-ownership-cleanup) -- MO.1--MO.4, gated on K.2 landing.
-- [design.md §5.2.3](design) -- canonical spec.
-- [design.md §5.2.4](design) -- extensibility (matches §5.5
+- [design.md §5.2.3](../design/) -- canonical spec.
+- [design.md §5.2.4](../design/) -- extensibility (matches §5.5
   here).
-- [design.md §9](design) -- plugin WIT interfaces.
+- [design.md §9](../design/) -- plugin WIT interfaces.
 - `crates/lattice-ui-tui/src/keymap.rs` -- the catalog (to be
   promoted to source-of-truth in slice 8.c).
 - `crates/lattice-ui-tui/src/input.rs` -- the legacy

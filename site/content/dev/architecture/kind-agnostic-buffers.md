@@ -128,7 +128,7 @@ event_bus.subscribe(EventFilter::kind(EventKind::BufferOpened),
 
 ## 4. Migration shape (existing producers) **(deferred with H.3)**
 
-The original H.3 carve migrated five existing producers off direct `activate_major` calls onto event publication. Per §10's deferral, all five **stay on the direct-call path**. The `lattice-multibuffer` slice plan introduces a `ModeActivator` trait (see [`multibuffer-views.md`](multibuffer-views) §3.6) that gives extension crates the same synchronous activation surface without requiring `&lattice_host::Editor`. That seam is what H.3 would have eventually generalised; pre-v1 the in-tree shape is enough.
+The original H.3 carve migrated five existing producers off direct `activate_major` calls onto event publication. Per §10's deferral, all five **stay on the direct-call path**. The `lattice-multibuffer` slice plan introduces a `ModeActivator` trait (see [`multibuffer-views.md`](../multibuffer-views/) §3.6) that gives extension crates the same synchronous activation surface without requiring `&lattice_host::Editor`. That seam is what H.3 would have eventually generalised; pre-v1 the in-tree shape is enough.
 
 ## 5. Rejected alternatives
 

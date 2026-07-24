@@ -91,6 +91,6 @@ lesson to try again, or `<CR>` skips the exercise (no points) and moves on.
 
 ## See also
 
-- [Modal editing](modal-editing) — the grammar lessons 1–2 drill.
-- [Modes](modes) and [Help](help) — what lesson 4 covers.
-- [Themes](themes) / [Options](options) — what lesson 7 covers.
+- [Modal editing](../modal-editing/) — the grammar lessons 1–2 drill.
+- [Modes](../modes/) and [Help](../help/) — what lesson 4 covers.
+- [Themes](../themes/) / [Options](../options/) — what lesson 7 covers.

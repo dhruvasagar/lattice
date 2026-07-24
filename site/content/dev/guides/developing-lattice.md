@@ -513,7 +513,7 @@ Beyond that:
 | [`operations/benchmarks.md`](../operations/benchmarks) | Latest measured latency/throughput numbers. | The perf bar the CI ratchet enforces. |
 | [`../../../CLAUDE.md`](https://github.com/dhruvasagar/lattice/blob/main/CLAUDE.md) | Standing rules + conventions (distilled real corrections). | The *how we work* rules — mode-ownership, logging, naming, UX-over-goals. |
 | [`architecture/comparison-zed.md`](../architecture/comparison-zed) | The architectural deep-dive vs. the closest peer. | Why the actor/mode/everything-is-a-buffer bets are what they are. |
-| [`./plugin-authoring.md`](./plugin-authoring) | Writing WASM plugins against the WIT API. | The extension (plugin) path, as opposed to core contribution. |
+| [`./plugin-authoring.md`](../plugin-authoring/) | Writing WASM plugins against the WIT API. | The extension (plugin) path, as opposed to core contribution. |
 
 **Two rules for reading:**
 

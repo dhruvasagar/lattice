@@ -7,7 +7,7 @@ title = "Display & layout"
 How buffer content is laid out on screen: wrapping long lines, how
 wide a tab is, how close the cursor gets to the viewport edge, and
 whether whitespace is shown. All of these are typed options set with
-`:set` (see [options.md](options) for the `:set` mechanism and
+`:set` (see [options.md](../options/) for the `:set` mechanism and
 layered resolution); this page is the deep-dive on each.
 
 > **Status:** all features on this page ship in both the terminal and

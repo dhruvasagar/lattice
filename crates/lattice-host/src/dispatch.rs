@@ -6988,12 +6988,8 @@ impl Editor {
         if !self.command_line_active() {
             return String::new();
         }
-        let text = self.document.snapshot().text().to_string()
-            .trim_end().to_string();
-        if text.is_empty() {
-            return text;
-        }
-        format!(":{text}")
+        self.document.snapshot().text().to_string()
+            .trim_end().to_string()
     }
 
     /// MB.5c: the full (possibly multi-line) text of the `/`·`?` search

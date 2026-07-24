@@ -3453,21 +3453,22 @@ fn draw_command_or_echo(frame: &mut Frame, area: Rect, app: &App) {
     // path) is unchanged; this is the presentation grown in place.
     if app.command_line_expanded() {
         let modeline = app.modeline();
-        let (full, prompt) = if modeline.search_direction.is_some() {
-            let dir_prefix = match modeline.search_direction {
+        let prompt: char = if modeline.search_direction.is_some() {
+            match modeline.search_direction {
                 Some(lattice_grammar::SearchDirection::Forward) => '/',
                 Some(lattice_grammar::SearchDirection::Backward) => '?',
                 _ => '/',
-            };
-            // Search line: the published text doesn't include a prefix,
-            // so the renderer adds it.
-            (modeline.cmdline_full_text.to_string(), dir_prefix)
+            }
         } else {
-            // Command line: command_line_full_text() already includes
-            // the `:` prefix, so the renderer just lays out the lines
-            // as-is.
-            let text = modeline.cmdline_full_text.to_string();
-            (text, '\0')
+            ':'
+        };
+        // command_line_full_text() already prepends `:`; strip it so we
+        // can reconstruct with a consistent prefix below.
+        let raw = modeline.cmdline_full_text.to_string();
+        let full = if prompt == ':' {
+            raw.strip_prefix(':').unwrap_or(&raw).to_string()
+        } else {
+            raw
         };
         let deco = modeline.cmdline_decorations.as_ref();
         let cells = app.render_state.load().cells.load_full();
@@ -3478,59 +3479,6 @@ fn draw_command_or_echo(frame: &mut Frame, area: Rect, app: &App) {
             .split('\n')
             .enumerate()
             .map(|(i, l)| {
-                // When `prompt` is '\0', the text already includes
-                // the prefix (command line: command_line_full_text
-                // prepends `:`). Otherwise the renderer adds the
-                // prompt character (search line: `/` or `?`).
-                if prompt == '\0' {
-                    let line_str = if i == 0 { l.to_string() } else { l.to_string() };
-                    if i == 0 {
-                        if let Some(d) = deco
-                            && !d.spans.is_empty()
-                        {
-                            let mut spans: Vec<Span<'_>> = Vec::with_capacity(d.spans.len() + 1);
-                            let full_first = l.to_string();
-                            let first_line = &l[1..]; // skip the `:` prefix
-                            let prefix_len = 1;
-                            let mut pos = 0usize;
-                            for sp in &d.spans {
-                                let s = sp.range.start.min(first_line.len());
-                                let e = sp.range.end.min(first_line.len());
-                                if s < pos || e < s {
-                                    continue;
-                                }
-                                if s > pos {
-                                    spans.push(Span::styled(
-                                        full_first[pos + prefix_len..s + prefix_len].to_string(),
-                                        base,
-                                    ));
-                                }
-                                let styled = match lattice_host::ui::theme::resolve_syntax_style(
-                                    resolved, ids, sp.style,
-                                )
-                                .fg
-                                .map(crate::theme::host_color_to_ratatui)
-                                {
-                                    Some(c) => base.fg(c),
-                                    None => base,
-                                };
-                                spans.push(Span::styled(
-                                    full_first[s + prefix_len..e + prefix_len].to_string(),
-                                    styled,
-                                ));
-                                pos = e;
-                            }
-                            if pos < first_line.len() {
-                                spans.push(Span::styled(
-                                    full_first[pos + prefix_len..].to_string(),
-                                    base,
-                                ));
-                            }
-                            return Line::from(spans);
-                        }
-                    }
-                    return Line::from(l.to_string());
-                }
                 let prefix = if i == 0 { prompt.to_string() } else { String::new() };
                 let line_str = format!("{prefix}{l}");
                 if i == 0 {
@@ -3541,7 +3489,7 @@ fn draw_command_or_echo(frame: &mut Frame, area: Rect, app: &App) {
                             Vec::with_capacity(d.spans.len() + 1);
                         let full_first = line_str.clone();
                         let first_line = l;
-                        let prefix_len = prefix.len();
+                        let prefix_len = prompt.len_utf8();
                         let mut pos = 0usize;
                         for sp in &d.spans {
                             let s = sp.range.start.min(first_line.len());
@@ -3551,8 +3499,7 @@ fn draw_command_or_echo(frame: &mut Frame, area: Rect, app: &App) {
                             }
                             if s > pos {
                                 spans.push(Span::styled(
-                                    full_first[pos + prefix_len..s + prefix_len]
-                                        .to_string(),
+                                    full_first[pos + prefix_len..s + prefix_len].to_string(),
                                     base,
                                 ));
                             }

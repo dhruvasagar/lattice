@@ -330,29 +330,30 @@ fn bottom_row_content(
 ) -> (String, Option<lattice_host::action::EchoLevel>) {
     use lattice_grammar::ModalState;
     // MB.2: the expanded tier-2 band grows the one-row prompt into a
-    // full-modal mini-buffer. The `:` prefix is already included in
-    // the published cmdline_full_text (command_line_full_text prepends
-    // it); the renderer only adds a prefix for the search line (`/` or
-    // `?`). Continuation lines (typed <CR> in the band) are plain.
+    // full-modal mini-buffer. The prompt prefix depends on which minibuffer
+    // is expanded: `:` for the command line, `/` or `?` for the search line.
     if modeline.cmdline_expanded {
-        // Search line: the published text needs a prefix.
-        if modeline.search_direction.is_some() {
-            let prefix: char = match modeline.search_direction {
+        let prefix: char = if modeline.search_direction.is_some() {
+            match modeline.search_direction {
                 Some(lattice_grammar::SearchDirection::Forward) => '/',
                 Some(lattice_grammar::SearchDirection::Backward) => '?',
                 _ => '/',
-            };
-            let full: &str = &modeline.cmdline_full_text;
-            let mut result = String::with_capacity(full.len() + full.matches('\n').count());
-            for (i, l) in full.split('\n').enumerate() {
-                if i > 0 { result.push('\n'); }
-                if i == 0 { result.push(prefix); }
-                result.push_str(l);
             }
-            return (result, None);
+        } else {
+            ':'
+        };
+        let full: &str = &modeline.cmdline_full_text;
+        let mut result = String::with_capacity(full.len() + full.matches('\n').count());
+        for (i, l) in full.split('\n').enumerate() {
+            if i > 0 {
+                result.push('\n');
+            }
+            if i == 0 {
+                result.push(prefix);
+            }
+            result.push_str(l);
         }
-        // Command line: the `:` is already in the published text.
-        return (modeline.cmdline_full_text.to_string(), None);
+        return (result, None);
     }
     match modal {
         ModalState::Command => (format!(":{}", modeline.cmdline_text), None),

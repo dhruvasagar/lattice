@@ -13,7 +13,7 @@ the system, the authoritative sources are the design spec and the status
 ledger — see [Navigating the docs](#9-navigating-the-docs) at the end. When this
 guide and those disagree, **they win** and this guide is the bug.
 
-> New to the project as a *user*? Read the [README](../../../README) first
+> New to the project as a *user*? Read the [README](https://github.com/dhruvasagar/lattice/blob/main/README.md) first
 > (what Lattice is, the quick start, the editor sanity tour), then come back
 > here to start contributing.
 
@@ -24,7 +24,7 @@ guide and those disagree, **they win** and this guide is the bug.
 ### Toolchain
 
 - **Rust 1.94+ (edition 2024).** The exact compiler is pinned in
-  [`rust-toolchain.toml`](../../../rust-toolchain.toml); `rustup` picks it up
+  [`rust-toolchain.toml`](https://github.com/dhruvasagar/lattice/blob/main/rust-toolchain.toml); `rustup` picks it up
   automatically inside the repo, so you test with the same compiler CI does. No
   extra setup — `cargo` just works.
 - A POSIX terminal with 256-color + bracketed-paste support for the TUI.
@@ -224,7 +224,7 @@ top = renderers.
                   lattice-plugin-sdk   wit/                  host + WIT API + guest SDK)
 ```
 
-The README's [crate map table](../../../README) has a one-line purpose +
+The README's [crate map table](https://github.com/dhruvasagar/lattice/blob/main/README.md) has a one-line purpose +
 status for every crate — keep it open while you find your footing.
 
 **Where do I start reading?** For a grammar change: `lattice-grammar`
@@ -289,7 +289,7 @@ consumes it**:
 Rule of thumb: *uniform-host consumer ⇒ trait method; mode consumer ⇒ helper.*
 
 The full rationale, plus the "everything is a buffer" enforcement details, are
-in [`CLAUDE.md`](../../../CLAUDE) under "Standing rules" — that file is a
+in [`CLAUDE.md`](https://github.com/dhruvasagar/lattice/blob/main/CLAUDE.md) under "Standing rules" — that file is a
 distilled record of real corrections and is worth reading in full before a
 non-trivial change.
 
@@ -511,7 +511,7 @@ Beyond that:
 | [`operations/implementation.md`](../operations/implementation) | Per-feature status ledger, updated per session. | **What currently exists.** Check here before assuming a symbol is implemented. |
 | [`operations/slice-plans/`](../operations/) | Per-feature sequencing: slice IDs, dependencies, status icons. | The *when and in what order* of in-flight work. |
 | [`operations/benchmarks.md`](../operations/benchmarks) | Latest measured latency/throughput numbers. | The perf bar the CI ratchet enforces. |
-| [`../../../CLAUDE.md`](../../../CLAUDE) | Standing rules + conventions (distilled real corrections). | The *how we work* rules — mode-ownership, logging, naming, UX-over-goals. |
+| [`../../../CLAUDE.md`](https://github.com/dhruvasagar/lattice/blob/main/CLAUDE.md) | Standing rules + conventions (distilled real corrections). | The *how we work* rules — mode-ownership, logging, naming, UX-over-goals. |
 | [`architecture/comparison-zed.md`](../architecture/comparison-zed) | The architectural deep-dive vs. the closest peer. | Why the actor/mode/everything-is-a-buffer bets are what they are. |
 | [`./plugin-authoring.md`](./plugin-authoring) | Writing WASM plugins against the WIT API. | The extension (plugin) path, as opposed to core contribution. |
 

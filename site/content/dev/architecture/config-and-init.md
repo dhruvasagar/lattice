@@ -58,7 +58,7 @@ The handler **calls APIs, never `:` command strings** (`event-handlers-call-apis
 > in the `register_options` export; a deferred handler is a `PluginLoaded`
 > subscription in `register_events` + a `match` in `on_event` calling
 > `modes::enable_mode(…)` / `config::set_option(…)`. See §6's example and
-> [`../../user/init.md`](../../user/init).
+> [`../../user/init.md`](../../../docs/init).
 
 **Why this is the right shape:**
 - **Async plugin loading is preserved** — plugins still load off the boot thread;
@@ -202,7 +202,7 @@ impl Guest for Component {
 ```
 
 The full annotated shape (imports, `plugin.toml`, the combined world) is in the
-user guide, [`../../user/init.md`](../../user/init); `lattice --scaffold-init`
+user guide, [`../../user/init.md`](../../../docs/init); `lattice --scaffold-init`
 writes a compilable starter.
 
 ## 7. Paramount-goal alignment

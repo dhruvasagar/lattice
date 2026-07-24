@@ -120,5 +120,5 @@ remain the province of `:search` and are out of scope for the operator.
   command dispatch the operator plugs into.
 - [`../operations/slice-plans/search-operator.md`](../operations/slice-plans/search-operator)
   — slice plan (SO-series sequencing + status).
-- [`../../user/project-search.md`](../../user/project-search) — user-facing
+- [`../../user/project-search.md`](../../../docs/project-search) — user-facing
   docs (extended with the `g/` use-case table).

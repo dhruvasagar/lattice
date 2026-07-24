@@ -225,8 +225,8 @@ editor (`lattice-host` does not yet depend on `lattice-plugin-host`).
 LSP docs are comprehensive across audiences: design-doc readers
 (`../architecture/design.md` §5.4), implementers
 ([`../architecture/lsp-architecture.md`](../architecture/lsp-architecture)),
-users ([`../../user/lsp.md`](../../user/lsp) +
-[`../../user/lsp-mode.md`](../../user/lsp-mode)), per-feature
+users ([`../../user/lsp.md`](../../../docs/lsp) +
+[`../../user/lsp-mode.md`](../../../docs/lsp-mode)), per-feature
 trackers ([`../notes/lsp-features.md`](../notes/lsp-features) --
 every LSP 3.17 capability with status), slice plans
 ([`slice-plans/archive/lsp.md`](slice-plans/archive/lsp) -- L1–L7

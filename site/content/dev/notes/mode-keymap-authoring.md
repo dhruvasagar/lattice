@@ -217,7 +217,7 @@ only when the mode is active on the active buffer).
 
 End users discover your bindings through `:describe-key`,
 `:keymap`, and `:describe-mode <your-mode-name>` — see
-[`../../user/modes.md`](../../user/modes#how-modes-interact-with-keybindings)
+[`../../user/modes.md`](../../../docs/modes#how-modes-interact-with-keybindings)
 for the user-facing flow. Every binding's declaration site
 flows through as a clickable `(file:...)` link, so users can
 jump from `:describe-key ]e` to the `keymap_entry!` row in
@@ -229,6 +229,6 @@ your crate.
   — design rationale.
 - [`../archive/keymap-substrate.md`](../archive/keymap-substrate)
   — K.2 sub-arc sequencing.
-- [`../../user/modes.md`](../../user/modes#how-modes-interact-with-keybindings)
+- [`../../user/modes.md`](../../../docs/modes#how-modes-interact-with-keybindings)
   — user-facing description of how mode-contributed bindings
   surface.

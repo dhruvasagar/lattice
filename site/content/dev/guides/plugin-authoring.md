@@ -16,7 +16,7 @@ This is the **how-to** companion to two other docs:
   — the slice plan: what landed, in what order.
 
 For the end-user view (the `:*-plugin-api` introspection commands and the model
-at a glance), see [`../../user/plugins.md`](../../user/plugins).
+at a glance), see [`../../user/plugins.md`](../../../docs/plugins).
 
 > **Status — read this first.** Phase 7 shipped the plugin **host runtime**
 > (`lattice-plugin-host`): the WIT package, the capability/fuel/crash-isolation
@@ -55,7 +55,7 @@ the bindings, fixtures, and this guide use Rust.
 
 ## The WIT package
 
-The canonical API is the WIT package under [`wit/`](../../../wit) — the plugin
+The canonical API is the WIT package under [`wit/`](https://github.com/dhruvasagar/lattice/tree/main/wit) — the plugin
 API *is* WIT, not a Rust crate you link. Each `.wit` file is one seam; `types.wit`
 holds the shared record/enum vocabulary; `plugin.wit` defines the lifecycle world
 and composes the seam interfaces into per-seam **worlds** (`picker-source-plugin`,
@@ -146,13 +146,13 @@ The renderer itself never calls WASM — that invariant is absolute.
   call short-circuits. Fail gracefully; return errors as values (the WIT
   functions return `result<_, string>`), don't trap.
 
-See [`../../user/plugins.md`](../../user/plugins#the-security-model) for the
+See [`../../user/plugins.md`](../../../docs/plugins#the-security-model) for the
 model at a glance and [`../architecture/plugin-host.md`](../architecture/plugin-host)
 for the full rationale (the audit doc covers the load-bearing invariants).
 
 ## Worked example: `fuzzy-finder`
 
-The reference plugin lives at [`plugins/fuzzy-finder/`](../../../plugins/fuzzy-finder)
+The reference plugin lives at [`plugins/fuzzy-finder/`](https://github.com/dhruvasagar/lattice/tree/main/plugins/fuzzy-finder)
 — a `wasm32-wasip2` guest implementing the `picker-source-plugin` world. It
 replicates the native `files` picker to prove the substrate end-to-end (parity +
 overhead), and is a **validation artifact, not a shipped plugin**: it uses a
@@ -191,7 +191,7 @@ source uses, the candidate set matches native by construction — the parity tes
 
 ## Building + testing a guest
 
-The host crate's [`build.rs`](../../../crates/lattice-plugin-host/build.rs) builds
+The host crate's [`build.rs`](https://github.com/dhruvasagar/lattice/blob/main/crates/lattice-plugin-host/build.rs) builds
 each guest to a component (stripping inherited target/RUSTFLAGS so the standalone
 guest workspace compiles cleanly for `wasm32-wasip2`) and exposes the bytes as a
 `const` (e.g. `FUZZY_FINDER_WASM`). The eight fixtures under

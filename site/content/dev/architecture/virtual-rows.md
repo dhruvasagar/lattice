@@ -40,7 +40,7 @@ document rows:
 Both consumers, plus the post-v1 inlay-hint / code-lens /
 signature-preview flows, share the same shape:
 
-- A row of [`Cell`](../../../crates/lattice-cells/src/cell.rs)s
+- A row of [`Cell`](https://github.com/dhruvasagar/lattice/blob/main/crates/lattice-cells/src/cell.rs)s
   to paint.
 - An anchor to a source line.
 - A position (above or below the anchor) defining the paint

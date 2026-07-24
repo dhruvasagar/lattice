@@ -703,7 +703,7 @@ Then in a running editor, `:reload-config` — no restart. (Or start the editor;
 it loads `init/` at boot.)
 
 Point `wit_bindgen::generate!(path: …)` at wherever you keep the
-[`wit/`](../../wit) package (a copy in your config repo, or a checkout path).
+[`wit/`](https://github.com/dhruvasagar/lattice/tree/main/wit) package (a copy in your config repo, or a checkout path).
 Browse the exact signatures for any seam with `:describe-plugin-api <seam>`, or
 dump scaffolding with `:export-plugin-api markdown`.
 

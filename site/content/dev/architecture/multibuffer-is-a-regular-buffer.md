@@ -222,4 +222,4 @@ practice" section:
 
 - [`kind-agnostic-buffers.md`](kind-agnostic-buffers) — H-series, upstream of K.4 (generic kind infrastructure).
 - [`multibuffer-views.md`](multibuffer-views) — M-series, what K.4 verifies.
-- [`feedback_buffers_no_special_case`](../../../.claude/projects/-home-h4x0rdud3-src-dhruvasagar-lattice/memory/feedback_buffers_no_special_case).
+- [`feedback_buffers_no_special_case`](https://github.com/dhruvasagar/lattice/blob/main/.claude/projects/-home-h4x0rdud3-src-dhruvasagar-lattice/memory/feedback_buffers_no_special_case.md).

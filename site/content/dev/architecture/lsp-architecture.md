@@ -10,7 +10,7 @@ actually works", with concrete pointers into the
 `lattice-lsp` crate.
 
 User-facing help lives in
-[`../../user/lsp.md`](../../user/lsp). The feature
+[`../../user/lsp.md`](../../../docs/lsp). The feature
 tracking matrix lives in
 [`../notes/lsp-features.md`](../notes/lsp-features).
 
@@ -494,7 +494,7 @@ Trace records (level == `trace` OR source == `trace`) refresh `*lsp:<server>:tra
 
 ### Configuration surface
 
-Documented in [`../../user/lsp.md`](../../user/lsp). Wire-level keys:
+Documented in [`../../user/lsp.md`](../../../docs/lsp). Wire-level keys:
 
 ```toml
 [lsp]
@@ -1333,6 +1333,6 @@ See the slice plan (L7) for sequencing.
 - [design.md §5.4](design) -- canonical design.
 - [`../operations/slice-plans/archive/lsp.md`](../operations/slice-plans/archive/lsp) -- slice plan (sequencing + status for §12-§15 work).
 - [`../notes/lsp-features.md`](../notes/lsp-features) -- per-method feature matrix.
-- [`../../user/lsp.md`](../../user/lsp) -- user help.
+- [`../../user/lsp.md`](../../../docs/lsp) -- user help.
 - [`../operations/benchmarks.md`](../operations/benchmarks) -- bench numbers (LSP rows
   added when feature benches land).

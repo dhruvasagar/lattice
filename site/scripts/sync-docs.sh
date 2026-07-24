@@ -49,6 +49,47 @@ def strip_md_from_links(content):
         content
     )
 
+def rewrite_root_links(content):
+    """Rewrite ../../<path> and ../../../<path> links that leave the Zola
+    content tree (i.e., resolve to files outside content/{docs,dev}/).
+    Must run BEFORE strip_md_from_links so .md extensions are visible.
+
+    Any link whose target doesn't start with docs/ or dev/ after removing
+    the ../ prefix is out-of-tree — rewrite to an absolute GitHub URL.
+    Also rewrites ../../user/ -> ../../../docs/ for dev docs (user docs synced to content/docs/).
+    """
+
+    def _resolve(m):
+        prefix = m.group(1)
+        path = m.group(2)
+        has_anchor = ''
+        if '#' in path:
+            path, anchor = path.split('#', 1)
+            has_anchor = f'#{anchor}'
+
+        # ../../user/ -> ../../../docs/ (user docs synced to content/docs/)
+        if prefix == '../../' and path.startswith('user/'):
+            return f'](../../../docs/{path[5:]}{has_anchor})'
+        if prefix == '../../../' and path.startswith('user/'):
+            return f'](../../../docs/{path[5:]}{has_anchor})'
+
+        # Links staying within the Zola content tree (docs/ or dev/)
+        if path.startswith('docs/') or path.startswith('dev/'):
+            return m.group(0)
+
+        # Out-of-tree link -> rewrite to GitHub absolute URL
+        if path.endswith('/') or not re.search(r'\.\w{1,10}$', path):
+            base = 'https://github.com/dhruvasagar/lattice/tree/main'
+        else:
+            base = 'https://github.com/dhruvasagar/lattice/blob/main'
+        return f']({base}/{path}{has_anchor})'
+
+    return re.sub(
+        r'\]\((\.\./\.\./(?:\.\./)?)([^)]+)\)',
+        _resolve,
+        content,
+    )
+
 def write_doc(dst_path, title, body):
     os.makedirs(os.path.dirname(dst_path), exist_ok=True)
     with open(dst_path, 'w', encoding='utf-8') as fh:
@@ -73,6 +114,8 @@ def sync_dir(src_dir, dst_dir, link_mods=None):
         body = re.sub(rf'^# {re.escape(title)}\n?', '', body, count=1, flags=re.MULTILINE)
 
         # Apply link modifications
+        if link_mods and 'rewrite_root' in link_mods:
+            body = rewrite_root_links(body)
         if link_mods and 'strip_md' in link_mods:
             body = strip_md_from_links(body)
         if link_mods and 'help_topic' in link_mods:
@@ -80,7 +123,11 @@ def sync_dir(src_dir, dst_dir, link_mods=None):
             #   content/docs/themes.md -> /docs/themes/
             # Inside a page like /docs/modal-editing/, `./themes/` would incorrectly
             # resolve to /docs/modal-editing/themes/. Use `../` to anchor at /docs/.
-            body = re.sub(r'\(help:([a-zA-Z0-9_-]+)\)', r'(../\1/)', body)
+            body = re.sub(
+                r'\(help:([a-zA-Z0-9_-]+)(#[^)]*)?\)',
+                lambda m: f'(../{m.group(1)}/{m.group(2) or ""})',
+                body,
+            )
             body = re.sub(r'\[([^\]]*)\]\((?:mode|event):[^)]+\)', r'`\1`', body)
 
         dst_file = os.path.join(dst_dir, b)
@@ -96,7 +143,7 @@ print('Syncing user docs...')
 sync_dir(
     os.path.join(repo_root, 'docs', 'user'),
     os.path.join(site_dir, 'content', 'docs'),
-    link_mods={'help_topic', 'strip_md'}
+    link_mods={'rewrite_root', 'help_topic', 'strip_md'}
 )
 
 # Fix specific anchor: Zola slugifies "3. Non-tree-sitter" as "3-non-tree-sitter-languages"
@@ -115,7 +162,7 @@ for subdir in ['guides', 'architecture', 'operations', 'audit', 'notes']:
     sync_dir(
         os.path.join(repo_root, 'docs', 'dev', subdir),
         os.path.join(site_dir, 'content', 'dev', subdir),
-        link_mods={'strip_md'}
+        link_mods={'rewrite_root', 'strip_md'}
     )
 
 print('\nDone.')

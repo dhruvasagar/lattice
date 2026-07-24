@@ -16,7 +16,7 @@ are checkboxes you tick as you go.
 cargo run --release -- README.md
 ```
 
-The user docs in [`../../user/`](../../user/) are the canonical
+The user docs in [`../../user/`](../../../docs/) are the canonical
 reference for each feature; this file is the runtime
 counterpart.
 
@@ -39,7 +39,7 @@ counterpart.
 
 ## 2. Modal editing
 
-User doc: [`user/modes.md`](../../user/modes).
+User doc: [`user/modes.md`](../../../docs/modes).
 
 ### Mode transitions
 
@@ -72,7 +72,7 @@ User doc: [`user/modes.md`](../../user/modes).
 
 ## 3. Motions
 
-User doc: [`user/folding.md`](../../user/folding) covers
+User doc: [`user/folding.md`](../../../docs/folding) covers
 fold-aware variants. Core motion list:
 
 ### Cursor / character
@@ -221,7 +221,7 @@ operator and with `zn`. Innermost-wins on nesting.
 
 ## 6. Search & Substitute
 
-User doc: section in [`user/buffers.md`](../../user/buffers).
+User doc: section in [`user/buffers.md`](../../../docs/buffers).
 
 ### Search
 
@@ -315,7 +315,7 @@ User doc: section in [`user/buffers.md`](../../user/buffers).
 
 ## 10. Buffers & Panes
 
-User doc: [`user/buffers.md`](../../user/buffers).
+User doc: [`user/buffers.md`](../../../docs/buffers).
 
 ### Buffers
 
@@ -344,7 +344,7 @@ User doc: [`user/buffers.md`](../../user/buffers).
 
 ## 11. File tree
 
-User doc: [`user/buffers.md`](../../user/buffers) (file-tree
+User doc: [`user/buffers.md`](../../../docs/buffers) (file-tree
 section).
 
 - [ ] `:Tree<CR>` opens the file tree in a new pane
@@ -360,7 +360,7 @@ section).
 
 ## 12. Oil buffer
 
-User doc: [`user/buffers.md`](../../user/buffers) (oil
+User doc: [`user/buffers.md`](../../../docs/buffers) (oil
 section).
 
 - [ ] `:Oil<CR>` opens the current document's parent dir as an oil buffer
@@ -384,7 +384,7 @@ section).
 
 ## 13. Folding
 
-User doc: [`user/folding.md`](../../user/folding).
+User doc: [`user/folding.md`](../../../docs/folding).
 
 ### Manual folds
 
@@ -422,7 +422,7 @@ User doc: [`user/folding.md`](../../user/folding).
 
 ## 14. Help system
 
-User docs: every file under [`../../user/`](../../user/).
+User docs: every file under [`../../user/`](../../../docs/).
 
 ### `:help`
 
@@ -459,7 +459,7 @@ User docs: every file under [`../../user/`](../../user/).
 
 ## 15. Modes (major + minor)
 
-User doc: [`user/modes.md`](../../user/modes).
+User doc: [`user/modes.md`](../../../docs/modes).
 
 ### Toggle
 
@@ -490,7 +490,7 @@ User doc: [`user/modes.md`](../../user/modes).
 
 ## 16. Options & customize
 
-User doc: [`user/options.md`](../../user/options).
+User doc: [`user/options.md`](../../../docs/options).
 
 ### `:set` & `:options`
 
@@ -520,8 +520,8 @@ User doc: [`user/options.md`](../../user/options).
 
 ## 17. LSP basics
 
-User doc: [`user/lsp.md`](../../user/lsp) +
-[`user/lsp-mode.md`](../../user/lsp-mode).
+User doc: [`user/lsp.md`](../../../docs/lsp) +
+[`user/lsp-mode.md`](../../../docs/lsp-mode).
 
 Open a `.rs` file (or any language with a configured server).
 
@@ -547,7 +547,7 @@ Open a `.rs` file (or any language with a configured server).
 
 ## 18. LSP sub-modes (M.6)
 
-User doc: [`user/lsp-mode.md`](../../user/lsp-mode) §
+User doc: [`user/lsp-mode.md`](../../../docs/lsp-mode) §
 "Sub-modes".
 
 With `lsp-mode` ON (cascade activates all 15 sub-modes):
@@ -709,7 +709,7 @@ With `lsp-mode` ON (cascade activates all 15 sub-modes):
 
 ## 19. Insert completion
 
-User doc: [`user/completion.md`](../../user/completion).
+User doc: [`user/completion.md`](../../../docs/completion).
 
 In Insert mode in a `.rs` file:
 
@@ -755,7 +755,7 @@ In Insert mode in a `.rs` file:
 
 ## 21. Display options
 
-User doc: [`user/options.md`](../../user/options).
+User doc: [`user/options.md`](../../../docs/options).
 
 ### Line numbers
 
@@ -935,7 +935,7 @@ Open a `.rs` file with a few functions.
 
 ## See also
 
-- User-facing reference: [`../../user/`](../../user/) — every
+- User-facing reference: [`../../user/`](../../../docs/) — every
   feature has a deep-dive doc.
 - Implementation status:
   [`implementation.md`](implementation) — what ships today

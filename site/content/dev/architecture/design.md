@@ -804,7 +804,7 @@ the byte-shift logic and `didChange` fire-out apply uniformly.
 
 ### 5.4 LSP Subsystem
 
-We write our own client. `tower-lsp` is server-side; `async-lsp` brings tower middleware that doesn't fit our actor model. `lsp-types` (LSP 3.17) provides the wire types; the rest is hand-rolled. The companion docs ([`lsp-architecture.md`](lsp-architecture) for module-level commentary, [`../../user/lsp.md`](../../user/lsp) for the user surface, [`../notes/lsp-features.md`](../notes/lsp-features) for per-method tracking) elaborate beyond the design-relevant detail captured here.
+We write our own client. `tower-lsp` is server-side; `async-lsp` brings tower middleware that doesn't fit our actor model. `lsp-types` (LSP 3.17) provides the wire types; the rest is hand-rolled. The companion docs ([`lsp-architecture.md`](lsp-architecture) for module-level commentary, [`../../user/lsp.md`](../../../docs/lsp) for the user surface, [`../notes/lsp-features.md`](../notes/lsp-features) for per-method tracking) elaborate beyond the design-relevant detail captured here.
 
 #### 5.4.1 Crate layout
 

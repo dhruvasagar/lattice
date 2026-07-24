@@ -451,6 +451,14 @@ impl WitBoundary for NativeRoutingPayload {
                         .into(),
                 );
             }
+            // MB.5: `LoadSearchLine` — same as LoadCommandLine above,
+            // host-internal search-history picker routing.
+            NativeRoutingPayload::LoadSearchLine { .. } => {
+                return Err(
+                    "load-search-line is a host-internal picker routing payload, not representable over WIT"
+                        .into(),
+                );
+            }
         })
     }
 

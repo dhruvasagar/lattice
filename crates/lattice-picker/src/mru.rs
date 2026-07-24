@@ -410,6 +410,8 @@ pub fn routing_identity(payload: &RoutingPayload) -> Option<String> {
         // MB.3: the history ring is already recency-ordered, so a
         // second MRU layer would double-rank; no stable identity.
         | RoutingPayload::LoadCommandLine { .. }
+        // MB.5: search history ring, same as command history above.
+        | RoutingPayload::LoadSearchLine { .. }
         | RoutingPayload::AcceptShowMessageAction { .. } => None,
     }
 }

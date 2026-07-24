@@ -450,6 +450,8 @@ impl App {
             | Action::OpenCommandPicker
             // MB.3: `q:` history picker — routed to the host dispatcher.
             | Action::OpenHistoryPicker
+            // MB.5: `q/` / `q?` search-history picker — routed to the host dispatcher.
+            | Action::OpenSearchHistoryPicker
             | Action::EnterCommandLine
             | Action::CommandLineHistoryPrev
             | Action::CommandLineHistoryNext

@@ -282,6 +282,9 @@ pub enum AppEffect {
     /// mode (where it seeds the picker filter with the in-progress
     /// command-line text).
     OpenHistoryPicker,
+    /// MB.5: `q/` / `q?` — open the search-line history picker.
+    /// Accept loads the chosen term into the `/` search line.
+    OpenSearchHistoryPicker,
     /// Vim's `:`. Enter the command-line minibuffer. Promoted
     /// from `Action::EnterCommandLine` in slice 8.i.1.e.
     EnterCommandLine,

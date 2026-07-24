@@ -66,6 +66,12 @@ pub struct PickerContext<'a> {
     /// executing. Owned vec, rebuilt per picker-open like the other
     /// snapshot fields.
     pub command_history: Vec<String>,
+    /// MB.5: the App's search-line history ring (`search_history`),
+    /// oldest-first as stored host-side. The `search-history` picker
+    /// source (`q/` / `q?` / `:history search`) walks this reversed
+    /// (newest first) and `<CR>` loads the chosen entry into the `/`
+    /// search line without executing.
+    pub search_history: Vec<String>,
 }
 
 /// Snapshot of the active document buffer at the moment the

@@ -395,9 +395,10 @@ impl WitBoundary for NativePickerAcceptOutcome {
             // outcome for the native `history` picker. It is not part of the
             // plugin WIT surface (a plugin picker source has no business
             // driving the command line), so it never crosses the boundary.
-            NativePickerAcceptOutcome::LoadCommandLine { .. } => {
+            NativePickerAcceptOutcome::LoadCommandLine { .. }
+            | NativePickerAcceptOutcome::LoadSearchLine { .. } => {
                 return Err(
-                    "load-command-line is a host-internal picker outcome, not representable over WIT"
+                    "load-command/load-search are host-internal picker outcomes, not representable over WIT"
                         .into(),
                 );
             }

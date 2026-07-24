@@ -408,6 +408,10 @@ pub enum Action {
     /// `command_history`; accept loads the picked command into the
     /// `:` line without executing.
     OpenHistoryPicker,
+    /// MB.5: `q/` / `q?` — open the search-line *history* picker
+    /// over `search_history`; accept loads the picked term into the
+    /// `/` search line without executing.
+    OpenSearchHistoryPicker,
     /// Pressed `:` in Normal mode -- enter command modal with empty buffer.
     EnterCommandLine,
     /// Append a character to the in-progress command line.

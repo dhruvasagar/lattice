@@ -102,6 +102,12 @@ pub enum PickerAcceptOutcome {
     /// they then tweak (or `<C-x><C-e>` expand) and `<CR>` to run.
     /// Emitted by the `history` picker source (`q:` / `:history`).
     LoadCommandLine { text: String },
+    /// MB.5: load `text` into the editable `/` search line WITHOUT
+    /// executing it. Host routes through `Editor::open_search_line`
+    /// (Forward direction) + `set_search_line_text` — the user tweaks
+    /// and `<CR>` to execute. Emitted by the `search-history` picker
+    /// source (`q/` / `q?` / `:history search`).
+    LoadSearchLine { text: String },
     /// Picker dismissed without action -- source-side
     /// abort, accept-on-empty filter, etc. Host applies no
     /// mutation. Distinct from `Err` returned from `accept`

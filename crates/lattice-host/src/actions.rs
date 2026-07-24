@@ -91,6 +91,8 @@ pub struct ActionIds {
     pub open_command_picker: CommandId,
     /// MB.3: `q:` — open the command-line history picker.
     pub open_history_picker: CommandId,
+    /// MB.5: `q/` / `q?` — open the search-line history picker.
+    pub open_search_history_picker: CommandId,
     pub enter_command_line: CommandId,
     /// MB.1: `command-line-mode` chords (submit / cancel / history /
     /// completion / describe). Registered so the mode's table-form
@@ -578,6 +580,12 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
             "action:open-history-picker",
             "Vim's `q:`: open the command-line history picker (accept loads into the `:` line, does not execute).",
             AppEffect::OpenHistoryPicker,
+        ),
+        open_search_history_picker: register_simple(
+            registry,
+            "action:open-search-history-picker",
+            "Vim's `q/` / `q?`: open the search-line history picker (accept loads into the `/` line, does not execute).",
+            AppEffect::OpenSearchHistoryPicker,
         ),
         enter_command_line: register_simple(
             registry,
@@ -1714,6 +1722,7 @@ mod tests {
             (ids.redraw_screen, "action:redraw-screen"),
             (ids.open_command_picker, "action:open-command-picker"),
             (ids.open_history_picker, "action:open-history-picker"),
+            (ids.open_search_history_picker, "action:open-search-history-picker"),
             (ids.enter_command_line, "action:enter-command-line"),
             (ids.command_line_submit, "action:command-line-submit"),
             (ids.command_line_cancel, "action:command-line-cancel"),

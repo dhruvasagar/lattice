@@ -1020,13 +1020,30 @@ pub fn register_normal_bindings(
     // as an EXACT `[q, ':']` path so it wins over the `[q, <reg>]`
     // macro wildcard below (trie precedence: exact children beat the
     // char wildcard). `:` is not a valid macro register, so this
-    // steals nothing from `qa`..`qz` recording. `q/` `q?` (search
-    // history) land with MB.5's search-line unification.
+    // steals nothing from `qa`..`qz` recording.
     handle.bind(
         layer,
         mode,
         &[lit_char('q'), lit_char(':')],
         CommandInvocation::of(actions.open_history_picker),
+        source(),
+    );
+    // MB.5: `q/` / `q?` — open the search-line history picker.
+    // Same exact-path trick as `q:` above so they don't steal
+    // from `qa`..`qz` macro recording (`/` and `?` aren't valid
+    // macro registers).
+    handle.bind(
+        layer,
+        mode,
+        &[lit_char('q'), lit_char('/')],
+        CommandInvocation::of(actions.open_search_history_picker),
+        source(),
+    );
+    handle.bind(
+        layer,
+        mode,
+        &[lit_char('q'), lit_char('?')],
+        CommandInvocation::of(actions.open_search_history_picker),
         source(),
     );
 

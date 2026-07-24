@@ -1124,11 +1124,11 @@ impl PickerSourceGenerator for CommandsSource {
 /// The history ring already collapses *consecutive* duplicates at
 /// push time, so no dedup here; non-adjacent repeats (`:w` … `:w`)
 /// stay as distinct rows, matching vim's `:history`.
-pub struct HistorySource {
+pub struct CommandHistorySource {
     pub spec: PickerSourceSpec,
 }
 
-impl HistorySource {
+impl CommandHistorySource {
     pub fn new() -> Self {
         Self {
             spec: PickerSourceSpec::no_args(
@@ -1139,13 +1139,13 @@ impl HistorySource {
     }
 }
 
-impl Default for HistorySource {
+impl Default for CommandHistorySource {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl PickerSourceGenerator for HistorySource {
+impl PickerSourceGenerator for CommandHistorySource {
     fn spec(&self) -> &PickerSourceSpec {
         &self.spec
     }
@@ -1184,6 +1184,75 @@ impl PickerSourceGenerator for HistorySource {
                 text: text.clone(),
             }),
             other => Err(format!("history: unexpected routing payload {other:?}")),
+        }
+    }
+}
+
+/// MB.5: `:picker search-history` — also reached via the `q/` / `q?`
+/// Normal chords and `:history search`. Walks `ctx.search_history`
+/// (the App's search-line history ring, stored oldest-first) and
+/// emits one row per past search term, **newest first**. `<CR>` loads
+/// the chosen term into the editable `/` line via
+/// [`RoutingPayload::LoadSearchLine`] — it does **not** execute.
+pub struct SearchHistorySource {
+    pub spec: PickerSourceSpec,
+}
+
+impl SearchHistorySource {
+    pub fn new() -> Self {
+        Self {
+            spec: PickerSourceSpec::no_args(
+                "search-history",
+                "Search-line history. `<CR>` loads the chosen term into the `/` search line (does not execute).",
+            ),
+        }
+    }
+}
+
+impl Default for SearchHistorySource {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PickerSourceGenerator for SearchHistorySource {
+    fn spec(&self) -> &PickerSourceSpec {
+        &self.spec
+    }
+
+    fn init(&self, ctx: &PickerContext<'_>, _args: &[String]) -> SourceResult<PickerInitResult> {
+        if ctx.search_history.is_empty() {
+            return Err("history: no search-line history yet".into());
+        }
+        let pairs = ctx
+            .search_history
+            .iter()
+            .rev()
+            .map(|entry| {
+                let cand = RawCandidate::plain((*entry).clone(), CandidateKind::Plain);
+                (
+                    cand,
+                    RoutingPayload::LoadSearchLine {
+                        text: (*entry).clone(),
+                    },
+                )
+            })
+            .collect();
+        Ok(PickerInitResult::Inline(pairs))
+    }
+
+    fn accept(
+        &self,
+        _ctx: &PickerContext<'_>,
+        routing: &RoutingPayload,
+    ) -> SourceResult<PickerAcceptOutcome> {
+        match routing {
+            RoutingPayload::LoadSearchLine { text } => Ok(PickerAcceptOutcome::LoadSearchLine {
+                text: text.clone(),
+            }),
+            other => Err(format!(
+                "search-history: unexpected routing payload {other:?}"
+            )),
         }
     }
 }
@@ -1951,7 +2020,8 @@ pub fn first_party_generators(
         Arc::new(LinesSource::new()),
         Arc::new(JumpsSource::new()),
         Arc::new(CommandsSource::new(command_registry, keybinding_reverse)),
-        Arc::new(HistorySource::new()),
+        Arc::new(CommandHistorySource::new()),
+        Arc::new(SearchHistorySource::new()),
         Arc::new(RegistersSource::new()),
         Arc::new(MarksSource::new()),
         Arc::new(GrepSource::new(config, grep_highlighter)),

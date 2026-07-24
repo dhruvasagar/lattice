@@ -217,6 +217,12 @@ pub enum RoutingPayload {
     /// Ephemeral by nature — `routing_identity` returns `None`, so
     /// no MRU recency (the history ring is already recency-ordered).
     LoadCommandLine { text: String },
+    /// MB.5: load `text` into the editable `/` search line. Emitted
+    /// by the `search-history` picker source (`q/` / `q?` /
+    /// `:history search`). The host opens the `*search-line*` buffer
+    /// with Forward direction and seeds the pattern; the user tweaks
+    /// it, then `<CR>` to execute. Ephemeral — no MRU recency.
+    LoadSearchLine { text: String },
 }
 
 /// Where a picker pulls its raw candidates from. The App resolves

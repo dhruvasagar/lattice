@@ -189,6 +189,14 @@ impl WitBoundary for NativeAppEffect {
                         .to_string(),
                 );
             }
+            NativeAppEffect::OpenSearchHistoryPicker => {
+                return Err(
+                    "AppEffect::OpenSearchHistoryPicker is a host-internal search-line-history \
+                     affordance (rich-minibuffer MB.5); no plugin (WIT) surface — use the \
+                     `:history search` ex-command"
+                        .to_string(),
+                );
+            }
             NativeAppEffect::EnterCommandLine => WitAppEffect::EnterCommandLine,
             // MB.1: the `command-line-mode` chord effects (submit / cancel
             // / history / completion / describe) are host-internal — the

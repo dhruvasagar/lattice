@@ -2593,6 +2593,26 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
                 picker.refilter();
             }
         }
+        // MB.5: `q/` / `q?` opens the search-line history picker.
+        Action::OpenSearchHistoryPicker => {
+            // Seed the filter with the in-progress `/` text when the
+            // search line is already open (expanded band's Normal mode).
+            let seed: String = if editor.search_line_active() {
+                editor.search_pattern().trim().to_string()
+            } else {
+                String::new()
+            };
+            let sigs =
+                editor.open_picker("search-history".to_string(), Vec::new());
+            _out.renderer_signals.extend(sigs);
+            if !seed.is_empty()
+                && let Some(picker) = editor.picker.as_mut()
+            {
+                picker.query_cursor = seed.len();
+                picker.query = seed;
+                picker.refilter();
+            }
+        }
         // 5.5.G.13: pure-editor command-line arms. `EnterCommandLine`
         // opens the `:` line, clears any in-flight completion popup,
         // and auto-dismisses a State-A help popup (so the user's
@@ -7576,6 +7596,9 @@ impl Editor {
             AppEffect::RedrawScreen => out.next_actions.push(Action::RedrawScreen),
             AppEffect::OpenCommandPicker => out.next_actions.push(Action::OpenCommandPicker),
             AppEffect::OpenHistoryPicker => out.next_actions.push(Action::OpenHistoryPicker),
+            AppEffect::OpenSearchHistoryPicker => {
+                out.next_actions.push(Action::OpenSearchHistoryPicker)
+            }
             AppEffect::EnterCommandLine => out.next_actions.push(Action::EnterCommandLine),
             AppEffect::CommandLineSubmit => out.next_actions.push(Action::CommandLineSubmit),
             AppEffect::CommandLineCancel => out.next_actions.push(Action::CommandLineCancel),
@@ -11092,6 +11115,9 @@ impl Editor {
             // MB.3: snapshot the command-line history ring so the
             // `history` picker source can walk it (newest-first).
             command_history: self.command_history.clone(),
+            // MB.5: snapshot the search-line history ring so the
+            // `search-history` picker source can walk it (newest-first).
+            search_history: self.search_history.clone(),
         }
     }
 
@@ -23819,6 +23845,13 @@ impl Editor {
                 // `:` and the text by hand.
                 self.open_command_line(&text);
             }
+            LoadSearchLine { text } => {
+                // MB.5: load the picked search-history entry into the `/`
+                // line WITHOUT executing. Opens the `*search-line*` buffer
+                // with Forward direction and seeds the pattern.
+                self.open_search_line(lattice_grammar::SearchDirection::Forward);
+                self.set_search_line_text(&text);
+            }
             PasteRegister { name } => {
                 if let Some(reg) = lattice_grammar::register::Register::from_input_char(name) {
                     self.pending_register = Some(reg);
@@ -27058,6 +27091,12 @@ impl Editor {
                 // exhaustive.
                 out.merge(self.apply_picker_outcome(
                     lattice_picker::PickerAcceptOutcome::LoadCommandLine { text },
+                ));
+            }
+            lattice_picker::RoutingPayload::LoadSearchLine { text } => {
+                // MB.5: defensive arm for the `search-history` picker.
+                out.merge(self.apply_picker_outcome(
+                    lattice_picker::PickerAcceptOutcome::LoadSearchLine { text },
                 ));
             }
             lattice_picker::RoutingPayload::ResolveDiff { primary, accept } => {

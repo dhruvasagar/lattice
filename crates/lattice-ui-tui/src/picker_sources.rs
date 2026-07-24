@@ -605,7 +605,7 @@ mod tests {
         let app = app_with("hi\n", 5);
         let snap = app.ad().snapshot.clone();
         let ctx = app.build_picker_context(&snap);
-        let source = HistorySource::new();
+        let source = CommandHistorySource::new();
         let err = source.init(&ctx, &[]).unwrap_err();
         assert!(err.contains("no command-line history"), "got {err}");
     }
@@ -624,7 +624,7 @@ mod tests {
             "write".into(),
             "edit src/main.rs".into(),
         ];
-        let source = HistorySource::new();
+        let source = CommandHistorySource::new();
         let PickerInitResult::Inline(pairs) = source.init(&ctx, &[]).expect("inline") else {
             panic!("expected Inline");
         };
@@ -646,7 +646,7 @@ mod tests {
         let app = app_with("hi\n", 5);
         let snap = app.ad().snapshot.clone();
         let ctx = app.build_picker_context(&snap);
-        let source = HistorySource::new();
+        let source = CommandHistorySource::new();
         let routing = RoutingPayload::LoadCommandLine {
             text: "write".into(),
         };

@@ -916,28 +916,44 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             surface_form: SurfaceForm::Keyword,
         },
     );
-    // MB.3: `:history` opens the command-line history picker. Also
-    // reachable via the `q:` Normal chord. Emits the canonical
-    // `Effect::OpenPicker` so it shares the trait-driven `history`
-    // source + accept-into-`:`-line path; the separate ex-command
-    // surface exists for discoverability + vim muscle memory.
+    // MB.5: `:history searches` opens the search-line history picker
+    // (also reachable via `q/` / `q?`). `:history commands` (the
+    // default when no arg is given) opens the command-line history.
     let _history_picker = registry.register_ex_command(
         "ex:history",
-        "Open the command-line history picker (`:history`). Alias for \
-         `:picker history`; `<CR>` loads the chosen command into the `:` \
-         line (does not execute). Also bound to the `q:` Normal chord.",
+        "Open a history picker (`:history [commands|searches]`). \
+         `commands`: command-line history picker (default, also `q:`). \
+         `searches`: search-line history picker (`q/` / `q?`). \
+         `<CR>` loads the chosen entry into the `:` / `/` line (does not execute).",
         ExCommandSpec {
             latency_class: LatencyClass::Display,
             accepts_bang: false,
             accepts_range: false,
-            parse_args: Arc::new(parse_no_args),
-            apply: Arc::new(|_| {
+            parse_args: Arc::new(parse_history_args),
+            apply: Arc::new(|ctx| {
+                let source = if let Args::List(ref values) = ctx.args
+                    && !values.is_empty()
+                {
+                    match values[0].as_str() {
+                        Some("searches") => "search-history",
+                        _ => "history",
+                    }
+                } else {
+                    "history"
+                };
                 Ok(Effect::OpenPicker {
-                    source: "history".into(),
+                    source: source.into(),
                     args: Vec::new(),
                 })
             }),
-            args_schema: vec![],
+            args_schema: vec![ArgSpec {
+                name: "kind".into(),
+                kind: ArgKind::String,
+                prompt: "history kind (`commands` or `searches`)".into(),
+                default: ArgDefault::None,
+                doc: "`commands` (default) or `searches`.".into(),
+                completion: None,
+            }],
             surface_form: SurfaceForm::Keyword,
         },
     );
@@ -2349,6 +2365,23 @@ fn parse_no_args(rest: &str, _bang: bool) -> GrammarResult<Args> {
         Err(CommandError::BadArgs(
             "trailing characters after command".into(),
         ))
+    }
+}
+
+/// MB.5: parse `:history [commands|search]`. When no arg is given,
+/// defaults to `commands` (command-line history). `search` opens the
+/// search-line history picker (`q/` / `q?`).
+fn parse_history_args(rest: &str, _bang: bool) -> GrammarResult<Args> {
+    let trimmed = rest.trim();
+    if trimmed.is_empty() {
+        return Ok(Args::None);
+    }
+    let lower = trimmed.to_lowercase();
+    match lower.as_str() {
+        "commands" | "searches" => Ok(Args::List(vec![ArgValue::String(lower)])),
+        other => Err(CommandError::BadArgs(format!(
+            "unknown history kind `{other}`; expected `commands` or `searches`"
+        ))),
     }
 }
 

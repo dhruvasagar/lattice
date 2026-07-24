@@ -2109,12 +2109,16 @@ impl EditorView {
         } else {
             None
         };
-        let current_match = if render_active {
+        // MB.5: while the `/`·`?` search line is open, the document pane
+        // renders via the inactive path, but hlsearch / current-match
+        // overlays must still paint so the user sees live matches.
+        let render_overlays = render_active || ad.search_line_active;
+        let current_match = if render_overlays {
             rs_guard.active_document.load().current_match
         } else {
             None
         };
-        let all_matches: Vec<lattice_core::protocol::position::Range> = if render_active {
+        let all_matches: Vec<lattice_core::protocol::position::Range> = if render_overlays {
             rs_guard.active_document.load().all_matches.to_vec()
         } else {
             Vec::new()

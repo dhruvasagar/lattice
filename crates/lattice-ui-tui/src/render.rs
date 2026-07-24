@@ -4366,7 +4366,11 @@ pub(crate) fn compose_pane_lines(
             >= frame_scroll)
             .then(|| (line_idx - frame_scroll) as usize)
             .and_then(|idx| active_overlay_quads_for_frame.quads.get(idx));
-        if ctx.is_active {
+        // MB.5: while the `/`·`?` search line is open, the document
+        // pane renders via the inactive path (registry-keyed buffer),
+        // but hlsearch / current-match overlays must still paint — the
+        // user sees live match highlighting as they type.
+        if ctx.is_active || app.ad().search_line_active {
             if let Some(row_quads) = bucket_row {
                 for q in row_quads {
                     if matches!(

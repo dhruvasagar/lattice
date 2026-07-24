@@ -7257,6 +7257,13 @@ impl Editor {
             },
         );
         self.focus_editing_buffer(id);
+        // MB.5a: `command_line_active()` gates on `search_line.is_none()`.
+        // If a stale `search_line` survives from a previous incomplete
+        // operation, the active flag would be wrong and the modeline would
+        // publish `search_direction = Some(...)` instead of `None`, routing
+        // the expanded band to the search prefix path (`/` instead of `:`).
+        // Clear it explicitly so the command line always owns the prompt.
+        self.search_line = None;
         self.modal = ModalState::Command;
         self.command_history_cursor = None;
         self.command_history_pending = None;

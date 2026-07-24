@@ -3482,7 +3482,8 @@ fn draw_command_or_echo(frame: &mut Frame, area: Rect, app: &App) {
                         && !d.spans.is_empty()
                     {
                         let mut spans: Vec<Span<'_>> =
-                            Vec::with_capacity(d.spans.len() + 1);
+                            Vec::with_capacity(d.spans.len() + 2);
+                        let prompt_span = Span::raw(prompt.to_string());
                         let full_first = line_str.clone();
                         let first_line = l;
                         let prefix_len = prompt.len_utf8();
@@ -3520,6 +3521,13 @@ fn draw_command_or_echo(frame: &mut Frame, area: Rect, app: &App) {
                                 base,
                             ));
                         }
+                        // Prepend the prompt character (":" / "/" / "?") as
+                        // the first span, BEFORE the decorated content. The
+                        // decoration spans are byte ranges into the raw line
+                        // text and start at prefix_len, so they never include
+                        // the prompt. Without this, the command line ":comp"
+                        // renders as "comp" when decorations are present.
+                        spans.insert(0, prompt_span);
                         return Line::from(spans);
                     }
                 }

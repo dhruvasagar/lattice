@@ -7232,6 +7232,12 @@ impl Editor {
         self.modal = ModalState::Search(direction);
         self.last_message = None;
         self.current_match = None;
+        // MB.5a: always start with an empty line — the `*search-line*`
+        // buffer persists across invocations (idempotent
+        // `ensure_named_synthetic_document`), so clear any stale text
+        // from the previous search. `<C-p>` loads the last entry from
+        // `search_history`.
+        self.set_search_line_text("");
     }
 
     /// 5.5.G.23.cmdline: handle a `:`-line submit. Resolves the

@@ -13,6 +13,7 @@ use std::sync::Arc;
 use lattice_grammar::CommandError;
 
 use lattice_core::buffer::Buffer;
+use lattice_core::Document;
 use lattice_grammar::args::{ArgSpec, Args, ArgKind, ArgValue};
 use lattice_grammar::effect::{Effect, YankKind};
 use lattice_grammar::registry::{CommandRegistry, OperatorId, OperatorSpec};
@@ -207,7 +208,7 @@ fn operator_surround_delete(
     // before we apply mutable edits.
     let (open_pos, close_pos, open_text, close_text) = {
         let buffer = ctx.document.buffer();
-        let cursor = get_cursor_from_range(&ctx.range);
+        let cursor = get_cursor_from_document(ctx.document);
         let (open_byte, close_byte) = match find_surround_pair(buffer, cursor, target) {
             Some(pair) => pair,
             None => return Ok(Effect::None),
@@ -291,7 +292,7 @@ fn operator_surround_change(
 
     let (open_pos, close_pos, open_text, close_text) = {
         let buffer = ctx.document.buffer();
-        let cursor = get_cursor_from_range(&ctx.range);
+        let cursor = get_cursor_from_document(ctx.document);
         let (open_byte, close_byte) = match find_surround_pair(buffer, cursor, target) {
             Some(pair) => pair,
             None => return Ok(Effect::None),
@@ -416,8 +417,8 @@ fn operator_surround_add(
 
 // ── Helpers ───────────────────────────────────────────────────
 
-fn get_cursor_from_range(range: &lattice_protocol::position::Range) -> Position {
-    range.start
+fn get_cursor_from_document(doc: &Document) -> Position {
+    doc.selections().primary().head
 }
 
 // ── Operator registration ─────────────────────────────────────
@@ -525,13 +526,15 @@ impl Mode for SurroundMode {
             .bind(KeymapBinding::new(
                 BindingMode::Normal,
                 vec![lit_ch('d'), lit_ch('s'), ChordPattern::CharLiteral],
-                CommandInvocation::of(self.operators.delete.0),
+                CommandInvocation::of(self.operators.delete.0)
+                    .with_range(lattice_grammar::range::Range::CurrentLine),
                 SourceLocation::builtin_file(file!(), line!()),
             ).with_doc("Delete the nearest surrounding pair (vim's `ds{char}`)."))
             .bind(KeymapBinding::new(
                 BindingMode::Normal,
                 vec![lit_ch('c'), lit_ch('s'), ChordPattern::CharLiteral, ChordPattern::CharLiteral],
-                CommandInvocation::of(self.operators.change.0),
+                CommandInvocation::of(self.operators.change.0)
+                    .with_range(lattice_grammar::range::Range::CurrentLine),
                 SourceLocation::builtin_file(file!(), line!()),
             ).with_doc("Change the nearest surrounding pair (vim's `cs{old}{new}`)."))
             .bind(KeymapBinding::new(
@@ -616,7 +619,7 @@ pub fn register_surround_modes(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lattice_core::buffer::Buffer;
+use lattice_core::buffer::Buffer;
     use lattice_protocol::position::Position;
 
     #[test]
@@ -704,5 +707,275 @@ mod tests {
         let close_pos = buf.byte_to_position(pair.1).unwrap();
         assert_eq!(open_pos, Position::new(0, 0)); // '('
         assert_eq!(close_pos, Position::new(0, 6)); // ')'
+    }
+}
+
+#[cfg(test)]
+mod operator_tests {
+    use super::*;
+    use lattice_core::BufferId;
+    use lattice_grammar::CancellationToken;
+    use lattice_grammar::args::{Args, ArgValue};
+    use lattice_grammar::builtins::populate as grammar_builtins_populate;
+    use lattice_grammar::command::CommandInvocation;
+    use lattice_grammar::dispatcher::execute as grammar_execute;
+
+    fn fixture(text: &str) -> (CommandRegistry, SurroundOperators, Document) {
+        let mut r = CommandRegistry::new();
+        let _builtins = grammar_builtins_populate(&mut r);
+        let ops = register_surround_operators(&mut r);
+        let d = Document::from_text(text);
+        (r, ops, d)
+    }
+
+    fn doc_text(doc: &Document) -> String {
+        doc.buffer().as_string()
+    }
+
+    fn set_cursor(doc: &mut Document, pos: Position) {
+        use lattice_protocol::selection::{Selection, SelectionSet};
+        doc.set_selections(SelectionSet::single(Selection::cursor(pos)));
+    }
+
+    #[test]
+    fn surround_delete_removes_double_quotes() {
+        let (registry, ops, mut doc) = fixture("hello \"world\" foo");
+        let cursor = Position::new(0, 8); // on 'o' in "world"
+        set_cursor(&mut doc, cursor);
+        let inv = CommandInvocation::of(ops.delete.0)
+            .with_range(lattice_grammar::range::Range::CurrentLine)
+            .with_args(Args::Char('"'));
+        grammar_execute(
+            &registry,
+            &mut doc,
+            BufferId(0),
+            cursor,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
+        assert_eq!(doc_text(&doc), "hello world foo");
+    }
+
+    #[test]
+    fn surround_delete_no_match_is_noop() {
+        let (registry, ops, mut doc) = fixture("hello world");
+        let cursor = Position::ZERO;
+        set_cursor(&mut doc, cursor);
+        let inv = CommandInvocation::of(ops.delete.0)
+            .with_range(lattice_grammar::range::Range::CurrentLine)
+            .with_args(Args::Char('"'));
+        let eff = grammar_execute(
+            &registry,
+            &mut doc,
+            BufferId(0),
+            cursor,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
+        // Effect::None is produced for no-op.
+        assert!(matches!(eff, lattice_grammar::effect::Effect::None));
+        assert_eq!(doc_text(&doc), "hello world");
+    }
+
+    #[test]
+    fn surround_delete_removes_parens() {
+        let (registry, ops, mut doc) = fixture("fn foo(x: i32) {}");
+        let cursor = Position::new(0, 10); // on 'i' in i32
+        set_cursor(&mut doc, cursor);
+        let inv = CommandInvocation::of(ops.delete.0)
+            .with_range(lattice_grammar::range::Range::CurrentLine)
+            .with_args(Args::Char('('));
+        grammar_execute(
+            &registry,
+            &mut doc,
+            BufferId(0),
+            cursor,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
+        assert_eq!(doc_text(&doc), "fn foox: i32 {}");
+    }
+
+    #[test]
+    fn surround_delete_with_close_char_target() {
+        let (registry, ops, mut doc) = fixture("(hello world)");
+        let cursor = Position::new(0, 3); // on 'l'
+        set_cursor(&mut doc, cursor);
+        let inv = CommandInvocation::of(ops.delete.0)
+            .with_range(lattice_grammar::range::Range::CurrentLine)
+            .with_args(Args::Char(')'));
+        grammar_execute(
+            &registry,
+            &mut doc,
+            BufferId(0),
+            cursor,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
+        assert_eq!(doc_text(&doc), "hello world");
+    }
+
+    #[test]
+    fn surround_change_double_to_single_quotes() {
+        let (registry, ops, mut doc) = fixture("hello \"world\" foo");
+        let cursor = Position::new(0, 8); // on 'o' in "world"
+        set_cursor(&mut doc, cursor);
+        let inv = CommandInvocation::of(ops.change.0)
+            .with_range(lattice_grammar::range::Range::CurrentLine)
+            .with_args(Args::List(vec![
+                ArgValue::Char('"'),
+                ArgValue::Char('\''),
+            ]));
+        grammar_execute(
+            &registry,
+            &mut doc,
+            BufferId(0),
+            cursor,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
+        assert_eq!(doc_text(&doc), "hello 'world' foo");
+    }
+
+    #[test]
+    fn surround_change_parens_to_brackets() {
+        let (registry, ops, mut doc) = fixture("(hello)");
+        let cursor = Position::new(0, 2); // on 'e'
+        set_cursor(&mut doc, cursor);
+        let inv = CommandInvocation::of(ops.change.0)
+            .with_range(lattice_grammar::range::Range::CurrentLine)
+            .with_args(Args::List(vec![
+                ArgValue::Char('('),
+                ArgValue::Char('['),
+            ]));
+        grammar_execute(
+            &registry,
+            &mut doc,
+            BufferId(0),
+            cursor,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
+        assert_eq!(doc_text(&doc), "[hello]");
+    }
+
+    #[test]
+    fn surround_add_linewise_wraps_line() {
+        let (registry, ops, mut doc) = fixture("hello world\n");
+        let cursor = Position::new(0, 0);
+        let inv = CommandInvocation::of(ops.add.0)
+            .with_range(lattice_grammar::range::Range::CurrentLine)
+            .with_args(Args::Char('"'));
+        grammar_execute(
+            &registry,
+            &mut doc,
+            BufferId(0),
+            cursor,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
+        assert_eq!(doc_text(&doc), "\"hello world\"\n");
+    }
+
+    #[test]
+    fn surround_add_linewise_wraps_line_with_brackets() {
+        let (registry, ops, mut doc) = fixture("hello\n");
+        let cursor = Position::new(0, 0);
+        let inv = CommandInvocation::of(ops.add.0)
+            .with_range(lattice_grammar::range::Range::CurrentLine)
+            .with_args(Args::Char('('));
+        grammar_execute(
+            &registry,
+            &mut doc,
+            BufferId(0),
+            cursor,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
+        assert_eq!(doc_text(&doc), "(hello)\n");
+    }
+
+    #[test]
+    fn surround_add_on_selection_wraps_text() {
+        let (registry, ops, mut doc) = fixture("hello world");
+        let cursor = Position::new(0, 0);
+        // Set the document's selection to cover "hello" (bytes 0-5, half-open).
+        use lattice_protocol::selection::{Selection, SelectionSet};
+        doc.set_selections(SelectionSet::from_parts(
+            vec![Selection {
+                anchor: Position::ZERO,
+                head: Position::new(0, 5),
+                visual: None,
+            }],
+            0,
+        ));
+        let inv = CommandInvocation::of(ops.add.0)
+            .with_range(lattice_grammar::range::Range::Selection)
+            .with_args(Args::Char('"'));
+        let _eff = grammar_execute(
+            &registry,
+            &mut doc,
+            BufferId(0),
+            cursor,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
+        let text = doc_text(&doc);
+        // The text should be wrapped. The exact cursor position after wrap
+        // varies; assert that the wrapping occurred.
+        assert!(text.starts_with("\"hello"));
+        assert!(text.ends_with("\" world") || text.ends_with("\"world"));
+    }
+
+    #[test]
+    fn surround_change_no_match_is_noop() {
+        let (registry, ops, mut doc) = fixture("hello world");
+        let cursor = Position::ZERO;
+        set_cursor(&mut doc, cursor);
+        let inv = CommandInvocation::of(ops.change.0)
+            .with_range(lattice_grammar::range::Range::CurrentLine)
+            .with_args(Args::List(vec![
+                ArgValue::Char('"'),
+                ArgValue::Char('\''),
+            ]));
+        let eff = grammar_execute(
+            &registry,
+            &mut doc,
+            BufferId(0),
+            cursor,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
+        assert!(matches!(eff, lattice_grammar::effect::Effect::None));
+        assert_eq!(doc_text(&doc), "hello world");
+    }
+
+    #[test]
+    fn surround_add_with_unknown_wrapper_is_noop() {
+        let (registry, ops, mut doc) = fixture("hello\n");
+        let cursor = Position::ZERO;
+        let inv = CommandInvocation::of(ops.add.0)
+            .with_range(lattice_grammar::range::Range::CurrentLine)
+            .with_args(Args::Char('x')); // 'x' is not a known pair
+        let eff = grammar_execute(
+            &registry,
+            &mut doc,
+            BufferId(0),
+            cursor,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
+        assert!(matches!(eff, lattice_grammar::effect::Effect::None));
     }
 }

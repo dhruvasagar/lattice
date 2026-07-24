@@ -13,11 +13,12 @@ into a read-only `*compilation*` buffer, and parses every
 point it at a compiler, a linter, a test runner, `grep`, or any CLI
 tool that prints locations, and you can jump straight to each one.
 
-> **Status:** `:compile` / `:recompile` / `:make`, live streaming, the
-> status headerline, `gr` recompile, `<CR>` jump-to-location, `<C-c>`
-> kill, severity gutter marks, location-line highlighting, and the
-> `*problems*` multibuffer view are shipped. Custom per-tool parsers
-> (beyond the four built-in matchers) are a plugin-era extension.
+> **Status:** `:compile` / `:recompile` / `:make`, live line-by-line streaming,
+> the status headerline, `gr` recompile, `<CR>` jump-to-location, `<C-c>`
+> kill (process-group, kills entire pipeline), severity gutter marks,
+> location-line highlighting, and the `*problems*` multibuffer view are
+> shipped. Custom per-tool parsers (beyond the four built-in matchers)
+> are a plugin-era extension.
 
 ---
 
@@ -57,9 +58,18 @@ build without starting a new one, press **`<C-c>`** in `*compilation*`
 and a "terminated" line is appended.
 
 A **status headerline** sits at the top of `*compilation*` — a sticky
-bar showing the command being run, a spinner while it's running, and
-a success/failure icon with error and warning counts when it finishes
-(e.g. `◆ cargo build ✗ 3e 2w`, or `◆ cargo build ✔ ok`).
+bar showing a state icon, the quoted command, and a status badge:
+
+| State | Headerline |
+|---|---|
+| Running | `⟳ "cargo build --release" …` |
+| Finished clean | `✔ "cargo build --release" ok` |
+| Finished with errors | `✗ "cargo build --release" 3e 2w` |
+| Killed (`<C-c>`) | `■ "cargo build --release" killed` |
+
+The spinner turns grey, the checkmark green, and the cross/square red.
+The command is double-quoted and highlighted in warm yellow. Error
+counts show per-severity (errors first, then warnings).
 
 ### Any tool, not just cargo
 

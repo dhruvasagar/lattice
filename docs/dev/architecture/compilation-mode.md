@@ -89,19 +89,22 @@ The reader emits captured lines to the tick drain via a typed event
 (`CompilationOutput`), boot subscribes an mpsc, and `run_tick_pending`
 coalesces all lines available that tick into **one** `apply_edit_batch`
 via `append_to_owned_buffer` — one actor round-trip, one undo unit,
-one repaint. The per-tick cadence is the debounce window; a noisy build
-(30 Hz of lines) collapses into per-frame batches. Backpressure is a
-bounded ring on the producer side.
+one repaint. Lines are published individually (one line per event) so
+output appears in real time; the per-tick cadence is the natural
+debounce window.
 
-Lifecycle: `:recompile` kills the prior child (SIGTERM→SIGKILL
-fallback, as terminal does) before relaunching; the buffer is cleared
-and re-streamed. **`<C-c>` in `*compilation*`** kills a still-running
-build on demand (via `:compilation-kill` → `CompilationService::kill()`
-— SIGKILL the child; the reader pipes EOF; the drain publishes a
-`Finished` "terminated" summary; §7). On exit a summary line is
-appended ("Compilation finished" / "exited abnormally with code N").
-Exit is an `info!` one-shot (user-actionable); per-line streaming is
-never logged.
+Lifecycle: `:recompile` kills the prior child before relaunching; the
+buffer is cleared and re-streamed. **`<C-c>` in `*compilation*`** kills
+a still-running build on demand (`:compilation-kill` →
+`CompilationService::kill()`). On Unix the child is launched in its own
+process group (`pre_exec` + `setpgid(0,0)`) so `killpg(-pgid, SIGKILL)`
+terminates the shell AND every pipeline grandchild (`seq | while …`
+doesn't leave orphans keeping pipes open). On Windows `TerminateProcess`
+handles the single child. The pipe readers EOF on the closed pipes; the
+coordinator publishes a `Finished` summary with `"\nCompilation
+terminated\n"`. On normal exit a summary line is appended
+("Compilation finished" / "exited abnormally with code N"). Exit is an
+`info!` one-shot (user-actionable); per-line streaming is never logged.
 
 ### The compilation headerline (sticky status bar)
 
@@ -109,20 +112,31 @@ never logged.
 `*compilation*` — a mode-owned sticky status bar, the direct twin of
 the project-search headerline (§`multibuffer-views.md` status surface).
 It shows, from a `CompilationHeadlineState { command, last_counts:
-Option<(errors, warnings)>, running }`:
+Option<(errors, warnings)>, running, killed }`:
 
-- the **command** being run (`cargo build --release`),
-  emphasis-highlighted the way search emphasises its query;
-- a **spinner** (`⟳ … `) while the run is in progress;
-- a **success / failure icon + counts** for the finished state
-  (`◆ … ✔ ok` clean, `◆ … ✗ 3e 2w` with errors/warnings).
+- a **state icon** leading: `⟳` (grey) running, `✔` (green) success,
+  `✗` (red) failure, `■` (red) killed;
+- the **quoted command** (`"cargo build --release"`),
+  emphasis-highlighted in warm yellow;
+- a **status badge** trailing: `…` while running, `ok` on success,
+  `3e 2w` error/warning counts on failure, `killed` on cancellation.
+
+Rendered forms:
+
+```
+  ⟳ "cargo build --release" …            (running)
+  ✔ "cargo build --release" ok           (finished clean)
+  ✗ "cargo build --release" 3e 2w        (finished with errors)
+  ■ "cargo build --release" killed       (explicitly killed / <C-c>)
+```
 
 The drain owns the state: a `Reset` chunk sets `command` + `running =
-true`; a `Finished` chunk clears `running` and writes the error/warning
-counts tallied from the off-thread severity index. Production is
-entirely off the UI thread; the renderer only reads the published row.
-Colours resolve from the theme (`compilation.headerline.command` +
-sibling `in_progress` / `success` / `failure` elements), never
+true` + clears `killed`; a `Finished` chunk clears `running`, writes
+the error/warning counts, and detects `"Compilation terminated"` in
+the summary to set `killed = true`. Production is entirely off the UI
+thread; the renderer only reads the published row. Colours resolve
+from the theme (`compilation.headerline.command` + sibling
+`in_progress` / `success` / `failure` / `dim` elements), never
 hardcoded RGB.
 
 ## 3. The error list (concern #2)

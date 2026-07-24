@@ -114,31 +114,33 @@ green; ship doc + bench + test + graceful-error together.
     `gutter_decorations` consumption) rather than one integration test — the
     same seam-by-seam strategy as CM.2/CM.3a. Link styling on matched lines
     (design §5 "and a link") is a separate visual concern, out of this slice.
-- **CM.3d — headerline + location-line highlighting + `<C-c>` kill.** ✅ (2026-07-22)
+- **CM.3d — headerline + location-line highlighting + `<C-c>` kill.** ✅ (2026-07-22; refreshed 2026-07-24)
   - **Headerline:** `CompilationHeaderline` (`headerline.rs`) — a
     compilation-mode-owned sticky **view-header virtual row** above
-    `*compilation*`, the twin of the project-search headerline. Shows the
-    command (emphasis-highlighted like search emphasises its query), a
-    spinner while running, and a success/failure icon + error/warning counts
-    when finished, from `CompilationHeadlineState { command, last_counts:
-    Option<(errors, warnings)>, running }`. The drain owns the state (Reset →
-    `running=true` + command; Finished → counts from the off-thread severity
-    index); registered via the `VirtualRowRegistrar` service in `on_activate`.
-    This is the deferred CM.3c-decoration follow-through and more.
+    `*compilation*`, the twin of the project-search headerline. Icon-led
+    format: `⟳ "cargo build" …` (running), `✔ "cargo build" ok` (clean),
+    `✗ "cargo build" 3e 2w` (errors), `■ "cargo build" killed` (killed).
+    Killed state is detected from `"Compilation terminated"` in the Finished
+    summary. Five theme elements resolve colours: `compilation.headerline.command`
+    (warm yellow), `in_progress` (grey), `success` (green), `failure` (red),
+    `dim` (muted, for warning counts and status text). The drain owns the
+    state (Reset→`running=true, killed=false`+command; Finished→counts+killed
+    detection); registered via the `VirtualRowRegistrar` service in `on_activate`.
   - **Location-line highlighting:** matched `file:line:col` lines get a
     background tint (new theme element `compilation.location`) so navigable
     lines stand out. The location-line index is produced off-thread in the
     drain (`scan_location_lines`), shipped over a native `InboundBus`
     (`CompilationLocationBusHandle`) twin of the severity-gutter seam; colours
-    resolve from the theme (no hardcoded RGB). New headerline theme elements
-    (`compilation.headerline.command` + `in_progress`/`success`/`failure`)
-    are mode-owned and resolved at activation.
+    resolve from the theme (no hardcoded RGB).
   - **`<C-c>` kill:** `:compilation-kill` ex-command → `AppEffect::CompilationKill`
-    → `CompilationService::kill()` (SIGKILL the child; readers EOF; drain
-    publishes a Finished "terminated" summary). `<C-c>` is bound in
-    `compilation-mode`'s keymap — it was made a **mode-dispatchable** chord
-    (commit `37457a40`; no longer a universal Quit hatch) so the mode can
-    claim it. Binding + handler both mode-owned.
+    → `CompilationService::kill()`. On Unix the child runs in its own process
+    group (`pre_exec`+`setpgid(0,0)`) so `killpg(-pgid, SIGKILL)` terminates
+    the shell and all pipeline grandchildren — no orphaned `seq | while`
+    processes keeping pipes open. On Windows `TerminateProcess` handles the
+    single child. Readers EOF on closed pipes; coordinator publishes Finished
+    with `"\nCompilation terminated\n"`. Output streams line-by-line (no
+    batching — each line is a single event). `<C-c>` is a mode-dispatchable
+    chord bound in `compilation-mode`'s keymap.
   - Keymap is now `gr` (recompile) / `<CR>` (jump + sync index) / `<C-c>` (kill).
 - **CM.3e — catch-all + test-panic parsers + stdout parsing.** ✅ (2026-07-23)
   - `GeneralParser` (`parsers/general.rs`) — catch-all that finds

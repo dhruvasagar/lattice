@@ -401,6 +401,11 @@ impl Editor {
         // them.
         let _ex_builtins = lattice_grammar::ex_commands::populate(boot.commands_mut());
 
+        // SU.3a: register surround operators in the shared CommandRegistry
+        // so the surround-mode keymap can resolve its chain-form bindings.
+        let surround_operators =
+            lattice_mode::modes::surround::register_surround_operators(boot.commands_mut());
+
         // CSM.5: shared snippet-registry handle. Built before the
         // mode registry so `register_snippet_modes` can capture a
         // clone of the outer Arc -- the same outer Arc the Editor
@@ -432,6 +437,11 @@ impl Editor {
         // registration seam). Order preserved verbatim from the prior
         // `let mr = { … }` block.
         lattice_mode::register_foundation_modes(boot.modes_mut());
+        // SU.3a: register surround-mode with the operator handles it owns.
+        lattice_mode::modes::surround::register_surround_modes(
+            boot.modes_mut(),
+            surround_operators,
+        );
         lattice_syntax::register_language_modes(boot.modes_mut());
         // BC.8a: the LSP modes (`register_lsp_log_modes` + the
         // supervisor-handle-bound `lsp-completion-mode`) moved into

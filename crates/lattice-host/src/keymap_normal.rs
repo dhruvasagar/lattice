@@ -73,7 +73,7 @@ use std::sync::Arc;
 
 use lattice_grammar::SourceLocation;
 use lattice_grammar::Target;
-use lattice_grammar::args::Args;
+use lattice_grammar::args::{Args, ArgValue};
 use lattice_grammar::builtins::Builtins;
 use lattice_grammar::command::CommandInvocation;
 use lattice_protocol::ids::CommandId;
@@ -2008,15 +2008,22 @@ pub(crate) fn action_from_bound_with_capture(
     bound: &Arc<BoundCommand>,
     captured: &[char],
 ) -> Action {
-    // Fold any captured wildcard char into `Args::Char(c)` so the
-    // bound `ActionSpec`'s apply closure can see it. Validation
-    // lives in the spec (e.g. `m<X>` requires `[a-zA-Z0-9]`);
-    // invalid chars dispatch to `Effect::None`, which is a benign
-    // no-op because `App::apply` clears the partial-chord stack on
-    // every non-`AbsorbPartialChord(_)` action.
+    // Fold captured wildcard chars into the invocation's args.
+    // Single-char capture (the common case: `fX`, `mX`, `rX`, …)
+    // routes through `substitute_invocation_char_arg`. Multi-char
+    // capture (e.g. surround's `cs{char1}{char2}` → two wildcards)
+    // packs into `Args::List([ArgValue::Char(c), …])`.
     let mut inv = bound.command.clone();
-    if let Some(&c) = captured.first() {
-        inv = substitute_invocation_char_arg(inv, c);
+    match captured.len() {
+        0 => {}
+        1 => {
+            inv = substitute_invocation_char_arg(inv, captured[0]);
+        }
+        _ => {
+            inv = inv.with_args(Args::List(
+                captured.iter().map(|&c| ArgValue::Char(c)).collect(),
+            ));
+        }
     }
     Action::Invoke(inv)
 }

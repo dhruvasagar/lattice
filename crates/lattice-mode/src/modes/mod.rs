@@ -37,6 +37,7 @@ pub mod display;
 pub mod help;
 pub mod hover;
 pub mod messages;
+pub mod surround;
 pub mod text;
 
 pub use completion::{

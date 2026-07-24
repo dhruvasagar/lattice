@@ -45,6 +45,7 @@ shows full metadata.
 | `:b N`                 | Switch to buffer #N                                          |
 | `:b PATTERN`           | Switch to buffer matching PATTERN                            |
 | `:buffers` / `:b`      | Open the fuzzy buffer switcher (picker)                     |
+| `:history [commands\|searches]` | Fuzzy picker over history. `commands` (default): command line (`q:`). `searches`: search line (`q/` / `q?`). `<CR>` loads into the prompt, does not run |
 | `:bd` / `:bdelete`     | Close active buffer                                          |
 | `:bd!`                 | Close even if dirty                                          |
 | `:ls`                  | List every open buffer as static text                       |
@@ -192,6 +193,65 @@ Specific behaviours:
   command (when implemented).
 - `<Up>` / `<Down>` walk command history.
 - `<C-n>` / `<C-p>` same as `<Down>` / `<Up>`.
+
+As you type, the `:` line is **live-decorated**:
+
+- **Syntax highlighting** — the command word, range prefix (`%`,
+  `'<,'>`), `!` bang, and `:s/pattern/replacement/flags` fields each
+  colour by their role.
+- **Error indicator** — an unknown command (once you type a space
+  after it) is flagged inline, and its word turns the diagnostic-error
+  colour.
+- **Parameter hint** — a dim hint of the command's expected arguments
+  (`<file>`, `<pattern>/<replacement>/[flags]`, …) trails the line.
+- **`:s///` preview** — matches of the in-progress substitution are
+  highlighted in the buffer before you press `<CR>`.
+
+### Expanding the command line
+
+`<C-x><C-e>` expands the one-row `:` line into a full-modal
+**mini-buffer band** that grows upward, pushing the panes above it
+up. In the band you get the whole vim grammar — Normal/Insert/Visual,
+motions, registers, undo, multi-line editing. `<C-x><C-e>` again (or
+`<Esc>` then the chord) collapses back to the one-row line with your
+edits intact; `<CR>` from the collapsed line runs it (the band never
+auto-executes). `<C-c>` cancels and discards the expanded edits.
+
+- **`command-line.expand-height`** sizes the band: `half` (default,
+  half the frame), `full` (as tall as the frame allows), or a bare
+  integer for a fixed row count. E.g. `:set command-line.expand-height=full`.
+
+### Command-line history picker
+
+Beyond the in-line `<Up>`/`<Down>` walk, past commands and search
+patterns are browsable through **fuzzy pickers** — the modern
+replacement for vim's command-line window:
+
+**Command history** (`command_history`):
+
+- **`q:`** (Normal-mode chord) or **`:history`** or **`:history commands`**
+  opens a fuzzy picker over your command history, newest first. Type to
+  filter; `<CR>` **loads** the chosen command into the `:` line — it
+  does **not** run it. Tweak it (or `<C-x><C-e>` to expand into the
+  full-modal band), then `<CR>` to execute.
+- `q:` from inside the expanded command-line band seeds the picker
+  filter with whatever you have typed so far.
+- `q:` steals nothing from macro recording: `qa`…`qz` still record
+  into their registers (`:` is not a valid register name).
+
+**Search history** (`search_history`):
+
+- **`q/`** or **`q?`** (Normal-mode chords) or **`:history searches`**
+  opens a fuzzy picker over your search history, newest first. Accept
+  loads the chosen term into the `/` search line — does **not** run
+  the search. Tweak it (or expand), then `<CR>` to execute.
+- `q/` and `q?` share the same ring; the direction matches the chord.
+- Like `q:`, these are exact-path bindings that don't interfere with
+  macro recording (`/` and `?` are not valid register names).
+
+Both pickers are trait-driven via `CommandHistorySource` /
+`SearchHistorySource` in `lattice-picker`, accessible through
+`:picker history` / `:picker search-history` as well.
 
 ---
 
@@ -393,10 +453,15 @@ batched runs.
 
 ### History
 
-The cmdline keeps a history ring (in-memory; not persisted to
-disk in v1). `<Up>` / `<Down>` walk it. The history is shared
-across `:` and `/` (when implemented separately, this
-diverges).
+The editor keeps two independent history rings (in-memory; not
+persisted to disk in v1):
+
+- **`command_history`** — every `:` submit pushes here (oldest-first,
+  cap 100, dedup on consecutive identical). Walked by `<Up>`/`<Down>`
+  in the `:` line; browsed via `q:` / `:history` / `:history commands`.
+- **`search_history`** — every `/` / `?` submit pushes here (same
+  dedup and cap). Walked by `<Up>`/`<Down>` in the search line;
+  browsed via `q/` / `q?` / `:history searches`.
 
 ---
 

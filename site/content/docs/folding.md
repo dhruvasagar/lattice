@@ -373,7 +373,9 @@ Categories vim has but lattice does not auto-open:
 - `hor` — horizontal motion across a fold boundary (rare; vim
   opens; we don't, since `j`/`k` step visible lines and never
   cross into a fold body).
-- `quickfix` / `tag` — features lattice doesn't have yet.
+- `quickfix` — auto-opening a fold when `:next-error` lands inside it;
+  the [error list](error-list) itself exists, but this fold trigger
+  isn't wired yet. `tag` — no tag stack yet.
 - `undo` — auto-open after an undo that crosses a fold (vim
   opens; we don't, since the cursor lands on the heading).
 

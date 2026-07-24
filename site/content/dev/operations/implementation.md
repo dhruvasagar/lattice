@@ -174,6 +174,38 @@ window-management surface. Each slice is a single commit:
 - **Font config** (`a224e52`) — `ui.font_family` /
   `ui.font_size` options; GPUI cursor alignment fix.
 
+Popup generalization — `popup_focused` field (2026-07-22)
+---------------------------------------------------------
+
+Decoupled State-B detection (does the popup overlay have keyboard
+focus?) from content identity (is the buffer kind Help?). The old
+pattern `active_buffer == BufferKind::Help` served both roles; the
+new `Editor::popup_focused` bool (published in
+`ActiveDocumentRenderState::popup_focused`) is the dedicated
+focus-state signal.
+
+- **New field** (`editor.rs`, `render_state.rs`): `pub popup_focused: bool`
+  on both `Editor` and `ActiveDocumentRenderState`, populated in
+  `build_render_state`.
+- **Mutation sites:** `focus_help_popup`, `open_popup_buffer(Steal)`,
+  `dismiss_popup` (set/clear).
+- **20 State-B detection sites** migrated across `dispatch.rs`, TUI
+  (`render.rs`, `runtime.rs`), GPUI (`window.rs`): `active_buffer ==
+  Help` → `popup_focused`.
+- **`dispatch_fused`**: added `pre_popup_focused` param for the
+  popup-dismissed `ensure_cursor_visible` skip.
+- **`active_text()` / `active_cursor()` generalization:**
+  `popup_buffer_content()` replaces `popup_help()` for reading the
+  popup buffer's text content — works for any document-shaped buffer
+  (Help, Document, Messages, Multibuffer, Dashboard). `active_cursor()`
+  returns `self.cursor` directly in State B (fixes a pre-existing
+  staleness bug where the initial open-time stash was returned instead
+  of the live cursor after motions).
+- **17 content-identity sites** (`pane_tree.active().buffer == Help`)
+  left untouched — they are genuine kind checks, not focus-state leaks.
+- **Build:** `lattice-host`, `lattice-ui-tui`, `lattice-ui-gpui` all
+  clean. **697/698 tests pass** (1 pre-existing `copen` alias failure).
+
 Plugin-facing API surface preserved at four layers across all
 slices: Editor methods (`do_*_tab`, `do_split_pane`, etc.);
 typed `Action` variants; `AppEffect` variants; named
@@ -390,7 +422,7 @@ mode-shaped instead.
 
 | Slice | Status | What landed / what lands                                                                                                                                                                                                                                                                                                                                                       |
 |-------|--------|-------------|
-| B'.1a | ✅     | `BufferStore` trait + `BufferStoreHandle` defined in `lattice-mode`. `Send + Sync` so a mode's tokio task can call from any thread. Three methods: `find_by_name`, `ensure_named_document(name, major, flags)`, `handle_for(id)`. No implementation yet -- the trait is the contract surface for B'.3 onward.                                                                  |
+| B'.1a | ✅     | `BufferStore` trait + `BufferStoreHandle` defined in `lattice-mode`. `Send + Sync` so a mode's tokio task can call from any thread. Methods: `find_by_name`, `handle_for(id)`, `insert_document_buffer`. **(2026-07-22: the original `ensure_named_document(name, major, flags)` was removed — its `&self` impl could only *find* [activating a mode needs `&mut Editor`], so it panicked on a miss. Creation moved to the `&mut`-backed `ModeActivator::ensure_named_document`; see `design.md` §5.10.5.)** |
 | B'.1b | ✅     | `BufferRegistry` switched to interior mutability (`Arc<Mutex<BufferRegistryInner>>`). Methods take `&self` and lock internally; the type is `Clone` (Arc bump) so it threads naturally into `BufferStoreHandle`. Callback-based read/write API (`with_entry`, `with_help`, `with_oil`, `with_file_tree`, `for_each`) replaces reference returns -- guards never escape the lock. 30+ App-side call sites migrated; 1574 lattice-ui-tui tests stay green. Sharp edges to honour: no lock-across-`.await`, no re-entrant `with_X(\|_\| with_Y(...))` (`std::sync::Mutex` is not reentrant). |
 | B'.2  | ✅     | Per-instance LSP logger keying. `InstanceKey { server_id: Arc<str>, workspace: Arc<Path> }` is the new canonical key; `LspLogger`'s per-server map becomes per-instance. `LogRecord` and `LspLogPushed` carry workspace alongside server_id. All four `Inbound*` bus payloads (applyEdit / configuration / showDocument / showMessageRequest) carry workspace so the App-side drain can route logs and side-effects to the correct instance. `ServerHandle::instance()` / `::workspace_root()` expose the canonical pair. App ex-commands (`:lsp-log-level` / `:lsp-log-clear` / `:lsp-trace`) walk running actors + the logger's `known_instances`, with a cwd-synth fallback so pre-spawn toggling still works. 1574 lattice-ui-tui tests pass. |
 | B'.3  | ✅     | `LspLogMode` owns `*lsp*`. Hand-written `Mode` impl: `on_activate` pulls the buffer's `DocumentHandle` via the `BufferStoreHandle` service, subscribes to `LspLogPushed` events, spawns a tokio task that drains the subscription, coalesces, and applies one batched edit per drain cycle. `on_deactivate` removes the buffer-local subscription stash + unsubscribes. The App's `drain_lsp_log_events` skips the subsystem write when `LspLogMode` is the active major on `*lsp*`. `BufferStore` impl for `BufferRegistry`; `BufferStoreHandle` registered in `ServiceRegistry` at boot. `format_log_event_line` hoisted to `lattice-lsp::logging` so the mode can reuse it. Mode degrades gracefully when no service or runtime is wired (test paths). |
@@ -5480,6 +5512,70 @@ conversation UI). Slice plans archived under
   than only trust-allowed) is the real fix.
 - **Other ACP providers + `:ai-send` context push + in-protocol auth** (the
   original AI-4 slice). Not started.
+
+---
+
+## compilation-mode + error-list (✅ core complete, 2026-07-24)
+
+Design fragments:
+[`../architecture/compilation-mode.md`](../architecture/compilation-mode)
+(the runner + `*compilation*` / `*problems*`) and
+[`../architecture/error-list.md`](../architecture/error-list) (the
+core error-list / quickfix substrate). Slice plan + status:
+[`slice-plans/compilation-mode.md`](slice-plans/compilation-mode).
+Native built-in (`lattice-compilation` crate + `SubsystemBoot` install
+seam); Option C — streaming buffer primary, error-list navigation,
+`*problems*` multibuffer secondary.
+
+What's done:
+
+- **Streaming `*compilation*` buffer** — `:compile <cmd>` / `:recompile`
+  / `:make` run a shell command **off the UI thread** (`spawn_blocking`
+  child + two dedicated pipe-reader threads); output streams line-by-line
+  into a read-only synthetic `Document` created through the mode-owned
+  `ModeActivator::ensure_named_document` seam. `compilation-mode` (major,
+  ReadOnly + NoFile) owns the keymap, drain, parser wiring, and handler
+  bodies. Kill-prior-on-`:recompile`. On Unix the child runs in its own
+  process group (`pre_exec` + `setpgid(0,0)`; `libc` FFI gated behind
+  `#[cfg(unix)]`, `#![allow(unsafe_code)]` scoped to this crate) so
+  `:compilation-kill` terminates the shell AND all pipeline grandchildren
+  atomically via `killpg(-pgid, SIGKILL)`. On Windows `TerminateProcess`
+  handles the single child. Exit summary line appended.
+- **Compilation headerline** — mode-owned sticky view-header virtual row
+  (twin of project-search's): icon-led format — `⟳ "cargo build" …`
+  (running), `✔ "cargo build" ok` (clean), `✗ "cargo build" 3e 2w`
+  (errors), `■ "cargo build" killed` (killed). Killed state is detected
+  from `"Compilation terminated"` in the Finished summary. Five
+  theme-resolved colours (`compilation.headerline.command` /
+  `in_progress` / `success` / `failure` / `dim`). Drain owns the state;
+  Reset clears killed on new runs.
+- **4-parser tool-agnostic error list** — `ParserRegistry::with_builtins`
+  registers CargoRustc (multi-line) + GnuStyle + TestPanic (Rust
+  `thread '…' panicked at …`) + General (catch-all `file:line:col`
+  anywhere, `is_file_like`-gated, registered last), de-duped by
+  `(path, line, col)`. **Both
+  stdout and stderr are parsed** (test panics print on stdout), merged
+  through a shared `Arc<Mutex<Vec<ErrorEntry>>>` → `InboundBus` →
+  `AppEffect::SetErrorList`. Phase 7 opens WASM parser contribution.
+- **Navigation** — the error list is core `Editor` state (like the jump
+  ring), walked by generic `:next-error` family + vim `:c*` aliases +
+  Builtin `]qq`/`[qq`/`]qf`/`[qf`/`]Q`/`[Q` from any buffer; survives
+  closing `*compilation*`; no diagnostic fallback. `<CR>` in
+  `*compilation*` parses the cursor line (interleaving-proof) and jumps +
+  syncs the index. `<C-c>` (mode-dispatchable chord) → `:compilation-kill`
+  → `CompilationService::kill()`.
+- **Decorations** — severity gutter marks (native `render_state` →
+  `DecorationCtx` → `Mode::gutter_decorations` path, shared with LSP/diff)
+  + location-line background tint (`compilation.location` theme element);
+  both produced off-thread in the drain.
+- **`*problems*` view** — `:problems` / `:copen` groups error-list entries
+  as anchored, editable source excerpts (multibuffer search-provider
+  template); `:error-list` / `:cl` is the fuzzy picker. Third view of the
+  one list (step / pick / group). Generic multibuffer `<CR>` jump-to-source
+  + excerpt motions apply.
+
+Deferred (⛔): CM.5 ANSI-SGR → decorations; CM.6 WASM-contributable
+parsers (Phase 7 plugin host).
 
 ---
 

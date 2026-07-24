@@ -601,7 +601,8 @@ With `lsp-mode` ON (cascade activates all 15 sub-modes):
 - [ ] `]d` jumps to the next diagnostic
 - [ ] `[d` jumps to the previous
 - [ ] `:diagnostics<CR>` opens the diagnostics picker
-- [ ] `:cnext` / `:cprev` walk the quickfix-style cursor through diagnostics
+- [ ] `:next-error` / `:cnext` walk the **error list** (compiler/tool
+      output), NOT diagnostics; an empty list echoes `no error list`
 - [ ] On a server advertising pull (`textDocument/diagnostic`), edits trigger
       a refresh without push notifications (verify in `:lsp-trace`:
       `→ textDocument/diagnostic` after a doc-version change)

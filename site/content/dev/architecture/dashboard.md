@@ -277,7 +277,8 @@ custom `dashboard.*` elements where the visual payoff is highest.
 ## 7. Lifecycle & composition
 
 - **Creation is off-thread.** The `*dashboard*` buffer is a synthetic Document
-  (`ensure_named_document`) with `name = "*dashboard*"`. Composition
+  created host-side (`register_dashboard_document`, content-seeded like help)
+  with `name = "*dashboard*"`. Composition
   (registry → fragments → cells + rope) runs on the actor / `spawn_blocking`,
   never in a render frame (paramount #1). Owner writes go through
   `apply_edit_batch_blocking`; read-only enforcement at the dispatcher's

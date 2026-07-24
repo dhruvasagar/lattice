@@ -51,6 +51,7 @@ edit-propagation work identically in all of them.
 
 | Keystroke / command          | Meaning                                                         |
 |------------------------------|-----------------------------------------------------------------|
+| `<CR>`                       | Jump to the **source** file/line of the excerpt under the cursor |
 | `]e` / `[e`                  | Jump to the next / previous **excerpt** start                  |
 | `]E` / `[E`                  | Jump to the next / previous **file boundary** (excerpt whose source file differs) |
 | `:multibuffer-expand [n]`    | Grow the excerpt under the cursor by `n` source lines (default `5`) |
@@ -104,12 +105,21 @@ their line positions slide to stay anchored to the right content.
 
 ## Navigating
 
-`]e` / `[e` walk excerpt starts; `]E` / `[E` walk *file* boundaries
-— the first excerpt of each distinct source file — which is the fast
-way to move through a many-file view. Landing past the last excerpt
-(or before the first) is a no-op: the cursor stays put rather than
-wrapping, so an operator like `d]e` at the end deletes nothing
-unexpected.
+`<CR>` jumps to the **source** of the excerpt under the cursor — it
+opens (or switches to) the source file at that line and records a jump,
+so `<C-o>` brings you back. `]e` / `[e` walk excerpt starts; `]E` /
+`[E` walk *file* boundaries — the first excerpt of each distinct
+source file — which is the fast way to move through a many-file view.
+Landing past the last excerpt (or before the first) is a no-op: the
+cursor stays put rather than wrapping, so an operator like `d]e` at the
+end deletes nothing unexpected.
+
+These work in **every** multibuffer — search results
+([project-search.md](project-search)), the
+[`*problems*`](compilation#the-problems-view) error view,
+[narrow](narrow-mode) views, and any future one — because `<CR>`
+jump-to-source and the excerpt motions belong to the shared multibuffer
+substrate, not to any one producer.
 
 ## Expanding context
 

@@ -6,8 +6,9 @@ title = "Popup API"
 A first-class, content-agnostic overlay surface that modes own and plugins will
 inherit.
 
-**Status:** design. See `docs/dev/operations/slice-plans/acp-ux-enhancements.md`
-(slices PU-A, PU-B) for sequencing.
+**Status:** implemented (PU-A, PU-B complete; popup_focused field delivered
+2026-07-22). Referenced by `docs/dev/operations/slice-plans/acp-ux-enhancements.md`
+(slices PU-A, PU-B).
 
 ---
 
@@ -27,11 +28,18 @@ And `crates/lattice-ui-tui/src/app/popup.rs` already states the contract:
 > own. Mode-specific behaviour comes from the buffer's major mode, exactly as it
 > would in a split.
 
-Both are true statements of intent. Neither is true of the code. `Editor::open_popup`
-takes a `lattice_help::HelpContent`, branches on `BufferKind::Help`, maintains a
-`popup_back_stack` for help's `<C-o>`, and stashes focus in a field literally
-named `prev_pane_for_help`. Every popup in the editor is a help popup wearing a
-different hat.
+Before PU-A and the `popup_focused` migration, neither statement was true of the
+code. `Editor::open_popup` took a `lattice_help::HelpContent`, branched on
+`BufferKind::Help`, maintained a `popup_back_stack` for help's `<C-o>`, and
+stashed focus in a field named `prev_pane_for_help`. Every popup was a help popup
+wearing a different hat. The focus-detection mechanism — `active_buffer == Help` —
+conflated State-B detection (does the popup have keyboard focus?) with content
+identity (is the buffer kind Help?). **PU (popup unification) and the
+`popup_focused` migration (2026-07-22) decoupled the two axes:**
+- **State-B detection** → `Editor::popup_focused` (a dedicated bool, published in
+  `ActiveDocumentRenderState.popup_focused`)
+- **Content identity** → `BufferKind::Help` (unchanged; still the kind for
+  document-shaped help/popup surfaces)
 
 The immediate consumer is the ACP permission menu (`acp-ux-enhancements.md`
 §4.1), which must show an agent-supplied option list. It could be bolted on as a
@@ -70,6 +78,11 @@ design can exist.
 > content, and no result.
 
 Three consequences, each load-bearing:
+
+The focus-state axis is tracked by `Editor::popup_focused` (a dedicated bool,
+replacing the old `active_buffer == BufferKind::Help` pattern which conflated
+State-B detection with content identity). Published in
+`ActiveDocumentRenderState::popup_focused` so both renderers read it directly.
 
 **No behaviour.** Keys go to the buffer's major mode, which the mode that opened
 the popup also owns. A permission menu's `1`/`2`/`3` bindings live in
@@ -125,6 +138,14 @@ impl Editor {
 	) -> Vec<RendererSignal>;
 
 	pub fn dismiss_popup(&mut self);  // already idempotent
+
+	// State-B detection: dedicated bool (replaces old
+	// `active_buffer == BufferKind::Help` conflation).
+	pub popup_focused: bool;
+
+	// Content accessor: works for any document-shaped buffer
+	// in the popup slot (Help, Document, Messages, ...).
+	pub fn popup_buffer_content(&self) -> Option<lattice_core::Buffer>;
 }
 ```
 
@@ -132,6 +153,12 @@ impl Editor {
 materialises the help buffer, pushes its own back-stack entry, and delegates.
 `PopupSnapshot` and its `metadata: HelpMetadata` field move into `lattice-help`,
 where they always belonged — they are help's `<C-o>` history, not popup state.
+
+State-B detection uses `popup_focused`; `active_buffer_id()` and the buffer-kind
+match arms in `active_text()` / `active_cursor()` are fallbacks for in-pane Help
+(State-A equivalent), gated behind the `popup_focused` early return. The
+renderer reads `ad().popup_focused` directly — no re-derivation from
+`buffer_kind`.
 
 ### 4.3 Mode-facing effects (`lattice-grammar`)
 
@@ -181,15 +208,22 @@ native mode path is unblocked because a mode's popup returns nothing — §3.
 The layering is the point: when PH7.5 lands, the WIT interface wraps a primitive
 that is already generic, rather than a Help-shaped one that has to be rewritten.
 
-## 5. Defects the generalisation must fix
+## 5. Defects the generalisation fixed
 
-These are pre-existing bugs, surfaced by asking a Help-only surface to be
+These were pre-existing bugs, surfaced by asking a Help-only surface to be
 generic. Each is fixed in the primitive, not worked around by the caller.
 
-**Modal state is neither set on open nor restored on dismiss.** `PrevPaneState`
-captures `{ buffer, buffer_id, cursor, scroll }`; `open_popup` flips
-`active_buffer` without touching `Editor::modal`, and `dismiss_popup` restores
-the four fields and leaves `modal` wherever the popup left it.
+**State-B detection conflated with content identity.** The old pattern
+`active_buffer == BufferKind::Help` served double duty: detecting that the popup
+overlay has keyboard focus (State B) AND that the buffer kind is help. The
+`popup_focused` bool (2026-07-22) decouples them. State-B detection now reads
+`editor.popup_focused` / `ad().popup_focused`; content-identity checks
+(`pane_tree.active().buffer == BufferKind::Help`) remain unchanged.
+
+**Modal state is neither set on open nor restored on dismiss.** (PU-A, fixed)
+`PrevPaneState` captures `{ buffer, buffer_id, cursor, scroll }`; `open_popup`
+flips `active_buffer` without touching `Editor::modal`, and `dismiss_popup`
+restores the four fields and leaves `modal` wherever the popup left it.
 
 Nothing hits this today because every popup is opened by an explicit user command
 from Normal, so `modal` happens to already be correct. The ACP permission menu
@@ -198,19 +232,19 @@ at once: the menu's `1`/`2`/`3` bindings never fire, because Insert takes the
 keystroke first and tries to self-insert into a read-only buffer; and on dismiss
 the user is returned to the prompt in whatever mode the popup left behind.
 
-So `PopupFocus::Steal` must set `ModalState::Normal` as part of moving focus —
+`PopupFocus::Steal` now sets `ModalState::Normal` as part of moving focus —
 the popup buffer's mode is a Normal-mode surface, like every other buffer you
-land on — and `PrevPaneState` gains `modal: ModalState`, which `dismiss_popup`
+land on — and `PrevPaneState` gained `modal: ModalState`, which `dismiss_popup`
 restores. A user typing at the ACP prompt is put back in Insert, at their
 caret, with their partial prompt intact.
 
 `PopupFocus::Passive` touches neither, by definition.
 
-**State-A dismissal restores the wrong buffer kind.** When focus never moved into
-the popup, `dismiss_popup` sets `active_buffer = BufferKind::Document`
-unconditionally. A floating popup opened over oil, the file tree, or the
-dashboard restores focus to `Document`. Snapshot the actual prior `active_buffer`
-instead.
+**State-A dismissal restores the wrong buffer kind.** (PU-A, fixed) When focus
+never moved into the popup, `dismiss_popup` set `active_buffer =
+BufferKind::Document` unconditionally. A floating popup opened over oil, the file
+tree, or the dashboard restored focus to `Document`. Now snaps the actual prior
+`active_buffer`.
 
 **Chrome is Help-flavoured in both renderers.** The title comes from
 `help.title` and the hint is a hardcoded `"Esc to dismiss"` string
@@ -218,7 +252,7 @@ instead.
 The hint stays `"Esc to dismiss"` — it is true of any dismissible popup, and
 YAGNI says do not parameterise it until a popup wants a different one.
 
-**`prev_pane_for_help`** is renamed `prev_pane_for_popup`.
+**`prev_pane_for_help`** is renamed `prev_pane_for_popup`. (PU-A)
 
 The next three were found while scoping PU-A and fixed ahead of it (slice plan
 `../operations/slice-plans/archive/popup-input-caret.md`). Each is the same half-migration
@@ -251,6 +285,19 @@ exclusive capture is a **dispatch-seam** concern, not a mode keymap layer:
 `action_escapes_focused_popup` + a guard in `handle_action` consume tab/pane nav
 while a popup is focused (alongside the read-only guard). The generalisation
 inherits the gate there.
+
+**`active_cursor()` returned stale cursor in State B.** (fixed 2026-07-22) The old
+code routed through `popup_help()?.cursor` which returned `self.popup_cursor` —
+the initial open-time stash, not the live cursor after motions. Now returns
+`self.cursor` directly (in State B, `self.cursor` IS the live popup cursor;
+`open_popup_buffer(Steal)` copies the initial position, then motions update it).
+
+**`active_text()` gated on `popup_help()` only.** (fixed 2026-07-22) The old code
+called `popup_help()` which returned `None` for any non-Help buffer, falling
+through to the match which returned the *background* document's content. Now
+`popup_buffer_content()` uses `document_handle(id)` → `.snapshot().buffer`,
+working for any document-shaped popup buffer (Help, Document, Messages,
+Multibuffer, Dashboard).
 
 ## 6. Alternatives rejected
 

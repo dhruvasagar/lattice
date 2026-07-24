@@ -943,7 +943,7 @@ Layered to mirror emacs's `*lsp-log*` / `*<server> stderr*` convention on lattic
 - **`*lsp:<server-id>:<workspace-path>*`** -- per-instance: stderr lines (Warn/Stderr), `window/logMessage` and `window/showMessage` notifications mapped by the server's `type` field, `publishDiagnostics` summaries (Debug), lifecycle events, decode failures. The full workspace path is the canonical store key (multiple instances of the same `server-id` against different workspaces stay distinct); the display label may shorten with `~/`. Owned by `LspServerLogMode`.
 - **`*lsp:<server-id>:<workspace-path>:trace*`** -- full JSON-RPC wire trace. Off by default; toggle per-instance. `←` (inbound) / `→` (outbound) markers + 240-char body excerpt. Owned by `LspTraceLogMode`.
 
-These three modes own their buffers end-to-end per the B' contract (§5.10.5). The App holds no LSP-specific buffer-handling code; ex-commands (`:lsp-log`, `:lsp-server-log`, `:lsp-trace-log`) are thin wrappers that call `BufferStore::ensure_named_document` with the relevant mode id and activate the resulting buffer. On server detach the mode's `on_deactivate` drops its event subscription; the buffer survives (frozen — no further appends) for post-mortem inspection. `:bd` removes it.
+These three modes own their buffers end-to-end per the B' contract (§5.10.5). The App holds no LSP-specific buffer-handling code; the ex-commands (`:lsp-log`, `:lsp-server-log`, `:lsp-trace-log`) provision the buffer through the mode-owned creation seam (§5.10.5) with the relevant mode id and activate it. On server detach the mode's `Guard` drops its event subscription; the buffer survives (frozen — no further appends) for post-mortem inspection. `:bd` removes it.
 
 Producer: `LspLogger.log(server_id, level, source, message)` runs:
 
@@ -1601,7 +1601,8 @@ This is the load-bearing commitment that makes the mode system the *extension me
 - **Keymaps** -- pushed at `KeymapLayer::MinorMode(id)` / `MajorMode(id)`, *never* `KeymapLayer::Builtin`. Builtin is the universal vim grammar that fires in every buffer; a feature chord scoped to one mode does not belong there. A mode contributes its layer via `Mode::keymap()` (or `register_<mode>_keymap(...)`) in the mode's own crate; the host's generic translate pass pushes it under `MinorMode(<mode>::mode_id())` and a per-keystroke filter scopes the chord to mode-active buffers.
 - **Command declarations** -- the `action:*` and `:ex-command` `CommandSpec`s that the chords and the `:` line resolve. A mode registers them in its crate's `install(&mut impl SubsystemBoot)` via `boot.commands_mut()` (the multibuffer / diff pattern), *not* in the host's grammar `ex_commands.rs` or `actions.rs`. The registered names are what the keymap's `cmd` and the `ActionHandlerRegistry` handler key against. (User-friendly short names register under their plain canonical form -- no `ex:` prefix or host alias shim.)
 - **Action-handler bodies** -- the closure that runs when a chord or ex-command fires. A mode contributes global, buffer-agnostic handlers declaratively via `Mode::action_handlers()` (registered once at boot, keyed by `CommandId`), and per-buffer session-scoped handlers in `on_activate` (token in the `Guard`). There is no `Editor::do_<provider>_action` in the host. (`ActionHandlerRegistry`: `mode-architecture.md` §5.3.)
-- **Lifecycle subscriptions, decoration providers, completion sources, option overrides, and the production of the mode's buffers** -- all owned by the mode, acquired in `on_activate`, released by `Guard` drop.
+- **Lifecycle subscriptions, decoration providers, completion sources, option overrides** -- all owned by the mode, acquired in `on_activate`, released by `Guard` drop.
+- **Production of the mode's buffers** -- a mode that backs a synthetic buffer owns *creating* it, through the `&mut`-backed creation seam **`ModeActivator::ensure_named_document`** (imperative, from a provider trigger fn -- e.g. compilation's `start_compilation`) or the declarative peer **`Effect::OpenSyntheticBuffer`** (from a pure ex-command). Creation is NOT on the `&self` `BufferStore` (which can't activate a mode) and NOT in `on_activate` (which runs *on* the already-created buffer). See §5.10.5 and `mode-architecture.md` §5.4.
 
 **What stays in the host** is purely generic: the buffer-store service, the typed event bus, the `ActionHandlerRegistry`, the generic chord dispatcher (walks the layer stack, resolves a chord to an `ActionId`), and the generic `Effect` applier. None of these branch on mode or `BufferKind`.
 
@@ -1953,7 +1954,7 @@ pub enum BufferMutability {
 
 The user opens any of these like opening a file: a command (`:open file-tree`, key binding, command palette entry) creates a new buffer of that major mode and places it in the active pane (or a new split, by user choice). To get a "left sidebar with a file tree," the user creates a vertical split and opens `file-tree` in the left pane; the layout is theirs to compose, save, and restore via tabs (§5.9.3).
 
-**Implementation seed: help / log buffers in the registry.** The unified `BufferRegistry` carries the same `BufferData::Help(HelpBuffer)` variant the introspection layer (§5.11) uses for `:describe-*`, `:apropos`, `:diagnostics`, and the LSP log views. `App::open_help_in_pane(buffer)` is the in-pane entry point (durable record + active hot-path mirror); `App::open_help` is the popup overlay path (transient surfaces: hover, doc lookups, error toasts). De-dup by title means re-running `:lsp-log rust` surfaces the existing buffer rather than spawning a duplicate. The picker (§5.9.7) and the LSP command refactor (`:lsp-log` / `:lsp-server-log` / `:lsp-trace-log`) consume this primitive: candidate generation walks `BufferRegistry::help_ids_sorted()`, on-accept activates the chosen `BufferId` in the current pane.
+**Implementation: help / log buffers in the registry (PU.1a).** The unified `BufferRegistry` stores help content as `BufferData::Help(DocumentEntry)` — the same actor-backed `DocumentEntry` used by `BufferKind::Document`, `Messages`, `Multibuffer`, and `Dashboard`. The old `BufferData::Help(HelpBuffer)` variant (an owned blob) was superseded in PU.1a: help content is now an actor-backed Document with wait-free snapshot access. `App::open_help_in_pane(buffer)` is the in-pane entry point (durable record + active hot-path mirror); `App::open_help` is the popup overlay path (transient surfaces: hover, doc lookups, error toasts). De-dup by title means re-running `:lsp-log rust` surfaces the existing buffer rather than spawning a duplicate. The picker (§5.9.7) and the LSP command refactor (`:lsp-log` / `:lsp-server-log` / `:lsp-trace-log`) consume this primitive: candidate generation walks `BufferRegistry::help_ids_sorted()`, on-accept activates the chosen `BufferId` in the current pane.
 
 **Performance:** content providers are lazy. They populate on first display; they refresh on declared triggers (event, periodic, manual), all off the UI thread on the blocking pool (`spawn_blocking`). A buffer that is open but whose pane is not visible can be configured to suspend updates entirely.
 
@@ -1997,7 +1998,7 @@ struct NotificationAction {
 
 #### 5.9.10 Minibuffer and echo area
 
-> **🟡 Status.** The command line is a **single-line widget today** (`Editor.command_line: String`), not yet a full buffer-with-a-major-mode. What *is* built: the `:` / `/` / `?` cmdline with completion popups, command history, and — notably — **live substitute preview** (`:s///` decorates the target buffer as you type). The "every prompt is a real buffer with `command-line` / `search-line` / `git-commit-line` / `repl-input` major modes, full vim grammar, tree-sitter highlighting, live error indicators" vision below is 📝 the forward design (see `mode-architecture.md`); the rich-minibuffer-as-buffer work is deferred.
+> **✅ Shipped (2026-07-24, rich-minibuffer MB.1–MB.5).** The `:` command line is a **buffer-backed, readline-grade editing surface** (`*command-line*` synthetic `Document` with `command-line-mode` major mode). The `/`·`?` search line is the same substrate (`*search-line*` buffer, `search-line-mode`). Both are insert-only (tier 1) with `<C-x><C-e>` expanding in place into a full-modal mini-buffer band (tier 2). Built: `<C-p>`/`<C-n>` history walk, `q:` / `q/` / `q?` fuzzy history pickers, `command-line` grammar syntax highlighting, live error indication, parameter hints, `:s///` substitution preview, `command-line.expand-height` typed option, and an independent `search_history` ring. The substrate is ready for `git-commit-line` / `repl-input` / interactive `input()` prompts — each is a new major mode on the same one-line-buffer pattern. See `rich-minibuffer.md` for the full design, `slice-plans/rich-minibuffer.md` for sequencing.
 
 The design intent: the "command line" surface is a **rich editing space, not a single-line widget** — a real buffer with a major mode, opened transiently, painted through the cell-grid pipeline. Every interactive prompt would reuse the buffer, command-dispatch, decoration, popup, and renderer machinery -- nothing minibuffer-specific outside of "this buffer is currently the input focus."
 
@@ -2015,15 +2016,14 @@ struct Minibuffer {
 
 Built-in minibuffer major modes:
 
-| Major mode | Triggered by | Purpose |
-|---|---|---|
-| `command-line` | `:` | ex-command parsing and dispatch |
-| `search-line-forward` | `/` | incremental search forward |
-| `search-line-backward` | `?` | incremental search backward |
-| `git-commit-line` | git plugin | one-line commit messages |
-| `repl-input` | REPL plugins | interactive evaluation |
-| `picker-query` | pickers | fuzzy-match query input |
-| `prompt` | interactive arg specs (§B.1) | typed argument prompts |
+| Major mode | Triggered by | Purpose | Status |
+|---|---|---|---|
+| `command-line` | `:` | ex-command parsing and dispatch | ✅ shipped |
+| `search-line` | `/` / `?` | incremental search (forward/backward) | ✅ shipped |
+| `git-commit-line` | git plugin | one-line commit messages | 📝 |
+| `repl-input` | REPL plugins | interactive evaluation | 📝 |
+| `picker-query` | pickers | fuzzy-match query input | 📝 |
+| `prompt` | interactive arg specs (§B.1) | typed argument prompts | 📝 |
 
 Each major mode brings its own keymap, parser, syntax highlighting, completion source, validator, and live-preview decorator.
 
@@ -2198,31 +2198,44 @@ Subscriptions for `Before`-class events are bounded in count per event; if a use
 
 `*lsp*`, `*messages*`, future `*scratch*`, `*compilation*`, REPL buffers, plugin-emitted log streams: synthetic buffers whose content originates from a subsystem rather than user keystrokes. The contract for v1:
 
-**A mode owns the synthetic buffer it produces, end-to-end.** No subsystem-specific code lives on the `App`. Two host primitives carry the contract:
+**A mode owns the synthetic buffer it produces, end-to-end.** No subsystem-specific code lives on the `App`. The contract splits across two host traits by their mutability:
 
 ```rust
 // lattice-mode
+
+// `&self`, thread-safe — READ / FIND + write-HANDLE. NOT creation:
+// creating a named buffer must activate a mode (mutating the mode
+// registry / active-modes / options cache), which needs `&mut Editor`.
 pub trait BufferStore: Send + Sync {
 	fn find_by_name(&self, name: &str) -> Option<BufferId>;
-	fn ensure_named_document(
-		&self,
-		name: &str,
-		major: ModeId,
-		flags: BufferFlags,
-	) -> BufferId;
 	fn handle_for(&self, id: BufferId) -> Option<DocumentHandle>;
+	fn insert_document_buffer(&self, id: BufferId, kind: BufferKind, /* … */);
 }
 
-pub struct ServiceRegistry { /* typed Arc<dyn T> map */ }
+// `&mut Editor`-backed — the mode-owned CREATION + activation seam.
+pub trait ModeActivator {
+	/// Find-or-create the synthetic named `Document` and activate
+	/// `major` on it *by id* (runs `on_activate`). Returns the id;
+	/// idempotent (a second call reuses the buffer, no re-activation).
+	fn ensure_named_document(&mut self, name: &str, major: ModeId, flags: BufferFlags) -> BufferId;
+	fn activate_major_for_kind(&mut self, buffer: BufferId, kind: BufferKind);
+	fn activate_minor_by_id(&mut self, buffer: BufferId, mode: ModeId);
+	fn services(&self) -> Arc<ServiceRegistry>;
+}
 ```
 
-`BufferStore` is `Send + Sync` so a mode's tokio task can call it from any thread; the implementation (in `lattice-ui-tui`) wraps the buffer registry in `Arc<Mutex<...>>` for cross-thread safety. `ServiceRegistry` is the typed lookup the App registers at boot — modes pull `Arc<BufferStoreHandle>` from their `ModeContext`.
+`BufferStore` is `Send + Sync` so a mode's tokio task can pull a handle from any thread. **Creation lives on `ModeActivator`, not `BufferStore`** — a `&self` handle cannot activate a mode. (An earlier `BufferStore::ensure_named_document` *claimed* find-or-create but its `&self` impl could only find, and panicked on a miss — removed.) `ServiceRegistry` is the typed lookup the App registers at boot — modes pull `Arc<BufferStoreHandle>` from their `ModeContext`.
+
+**Creation is the mode's responsibility, through one of two front-ends to the same primitive** (`Editor::ensure_named_synthetic_document`), chosen by call context:
+
+- **Imperative** — a provider's trigger function, called with `&mut dyn ModeActivator`, invokes `ensure_named_document` directly (e.g. compilation's `start_compilation`: create the `*compilation*` buffer *and* kick off the run in one `&mut Editor` operation).
+- **Declarative** — a *pure* ex-command's `apply` closure (which has no `&mut Editor` / services in scope) returns `Effect::OpenSyntheticBuffer { name, mode_id }`; the host applies it (e.g. AI-log / ACP).
 
 **Lifecycle:**
 
-1. `Mode::on_activate(ctx)` calls `ctx.service::<BufferStoreHandle>()?.ensure_named_document(name, major, flags)`. Idempotent — a second activation returns the existing id.
-2. The mode subscribes to its typed source event (`LspLogPushed`, `MessageEmitted`, `ReplOutput`, ...) and spawns a tokio task that drains the subscription, coalesces records into batches, and applies one `DocumentHandle::apply_edit_batch` per drain cycle.
-3. `Mode::on_deactivate(ctx)` drops the subscription handle; the task exits. The buffer survives in the registry (frozen — no further appends) until `:bd` removes it.
+1. A trigger (either front-end above) creates the buffer + activates `major`.
+2. Activation runs `Mode::on_activate(ctx)`, which pulls the buffer's `DocumentHandle` via `ctx.service::<BufferStoreHandle>()?.handle_for(buffer_id)`, subscribes to its typed source event (`LspLogPushed`, `MessageEmitted`, `ReplOutput`, `CompilationOutputPushed`, …), and spawns a tokio task that drains the subscription, coalesces records into batches, and applies one `DocumentHandle::apply_edit_batch` per drain cycle. (The drain establishes *before* the producer's first record when the trigger creates the buffer synchronously ahead of publishing.)
+3. Dropping the `Mode::Guard` (deactivation) drops the subscription; the task exits. The buffer survives in the registry (frozen — no further appends) until `:bd` removes it.
 
 **Why this matters:**
 
@@ -2233,7 +2246,7 @@ pub struct ServiceRegistry { /* typed Arc<dyn T> map */ }
 **Sharp edges to honor:**
 
 - *No lock-across-`.await`.* The `BufferStore` impl uses `std::sync::Mutex`; the guard must not cross `.await`. Pull data out, drop the guard, then `.await`. Conventional in the codebase; not statically enforced.
-- *Lazy creation.* `ensure_named_document` runs on the App thread (ex-command dispatch) until M-async-activate lands. Publishers that fire records *before* the user opens the buffer route through the event bus — the records buffer in the in-memory ring; first `ensure` seeds the buffer from the ring.
+- *Lazy creation.* Creation (`ModeActivator::ensure_named_document`, or the `Effect::OpenSyntheticBuffer` front-end) runs on the App / actor thread (ex-command / effect dispatch). Publishers that fire records *before* the buffer exists route through the event bus — the records buffer in the in-memory ring; first creation seeds the buffer from the ring.
 
 #### 5.10.6 `messages-mode` v1 (tracing-bridged echo log)
 

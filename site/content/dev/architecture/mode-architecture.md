@@ -614,6 +614,51 @@ mode; the substrate data the handler reads is a helper, not a
 trait method that implies host involvement; the host's role
 is purely generic dispatch.
 
+### 5.4 Modes own the production of their buffers
+
+A mode that backs a synthetic buffer (`*compilation*`, `*lsp*`,
+`*messages*`, `*ai:…*`, future `*scratch*` / REPL / DAP logs)
+owns **creating** that buffer, not just filling it. Creation
+means "find-or-create the named `Document` **and activate the
+major on it**" — and activating a mode mutates the mode
+registry / active-modes / options cache, so it needs
+`&mut Editor`. That rules out doing it through the `&self`
+`BufferStore` handle (which is find / read / write-handle
+only). The reliable, mode-owned creation seam is:
+
+```rust
+// lattice-mode::ModeActivator (impl'd by Editor)
+fn ensure_named_document(&mut self, name: &str, major: ModeId, flags: BufferFlags) -> BufferId;
+```
+
+Idempotent (a second call reuses the buffer, no re-activation);
+the `Editor` impl forwards to `ensure_named_synthetic_document`,
+which mints the buffer and runs `major`'s `on_activate` — so the
+drain / subscription the mode sets up there is live before the
+producer's first record.
+
+Two front-ends to this one primitive, chosen by call context:
+
+- **Imperative** — a provider's trigger function, called with
+  `&mut dyn ModeActivator`, invokes `ensure_named_document`
+  directly (e.g. compilation's `start_compilation` creates
+  `*compilation*` *and* starts the run in one `&mut Editor`
+  operation). This is `ModeActivator`'s reason for existing:
+  extension crates that create buffers + activate modes host-side
+  without depending on `lattice-host`.
+- **Declarative** — a *pure* ex-command `apply` closure (no
+  `&mut Editor` / services in scope; it can only return an
+  `Effect`) returns `Effect::OpenSyntheticBuffer { name, mode_id }`,
+  which the host applies through the same primitive (e.g. AI-log,
+  ACP popups from a tick-callback).
+
+`BufferStore` deliberately carries **no** create method — an
+earlier `BufferStore::ensure_named_document` claimed find-or-create
+but its `&self` impl could only find and panicked on a miss; it
+was removed. `BufferStore` is find (`find_by_name`), write-handle
+(`handle_for`), and generic insertion (`insert_document_buffer`).
+See `design.md` §5.10.5 and `multibuffer-views.md` §3.7.
+
 ## 6. Option resolution
 
 ### 6.1 Layers (highest to lowest priority)

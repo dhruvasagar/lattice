@@ -565,10 +565,31 @@ The mode owns:
 - The typed per-buffer context (`MultibufferModeContext`
   carrying `Arc<MultibufferDocumentHandle>`).
 - The keymap that binds excerpt motions (`]e` / `[e` / `]E` /
-  `[E`) to grammar motion ids.
+  `[E`) to grammar motion ids **and `<CR>`
+  jump-to-source** (see below).
 - The lifecycle wiring for header / fold providers.
 - Future kind-specific behaviour (M.5 expand-context,
   M.7 / M.8 fold providers).
+
+**`<CR>` jump-to-source is generic multibuffer, not per-provider.**
+`<CR>` binds to `action:multibuffer-jump-to-source`, and
+`MultibufferMode::on_activate` registers the handler on the per-buffer
+`ActionHandlerRegistry`: it translates the composed cursor position to
+its source `(BufferId, Position)` via the view handle
+(`translate_composed_to_source` + `source_path`) and emits
+`RecordJump` + `OpenBufferAt`. Because this lives in the shared major
+mode, **every** multibuffer kind — project search, `*problems*`,
+narrow, future references / diff / diagnostics views — gets `<CR>`
+jump plus the excerpt-jump motions (`]e` / `[e` next/prev excerpt,
+`]E` / `[E` next/prev file boundary) for free, with no per-provider
+wiring. The handler was originally implemented inside the search
+provider (`providers/search.rs`) and was hoisted out into the mode
+(the provider shrank ~115 lines); a provider-minor may still bind its
+own `<CR>` to shadow the generic handler via minor-mode keymap
+priority, but none needs to for basic jump-to-source. This is the
+mode-owns-its-surface rule applied to a capability shared across all
+providers: the binding *and* the body belong to the mode that owns the
+buffer kind.
 
 **Motions as grammar operations.** `]e` / `[e` / `]E` / `[E`
 register as `lattice-grammar` motions. Operators (`d` / `c`
@@ -658,17 +679,24 @@ pub trait ModeActivator {
     fn activate_major_for_kind(&mut self, id: BufferId, kind: BufferKind);
     fn activate_minor_by_id(&mut self, id: BufferId, mode: ModeId);
     fn services(&self) -> Arc<ServiceRegistry>;
+    /// Create-or-find a synthetic named `Document` + activate `major`
+    /// by id (runs `on_activate`). The `&mut`-backed, mode-owned buffer
+    /// **creation** seam — a provider provisions its own synthetic
+    /// buffer here (creation can't live on the `&self` `BufferStore`,
+    /// which cannot activate a mode). Idempotent.
+    fn ensure_named_document(&mut self, name: &str, major: ModeId, flags: BufferFlags) -> BufferId;
 }
 ```
 
-`impl ModeActivator for Editor` is three thin wrappers — the
-existing `Editor::activate_major_for_buffer_kind` /
+`impl ModeActivator for Editor` is thin wrappers — the existing
+`Editor::activate_major_for_buffer_kind` /
 `Editor::activate_minor_by_id` already run the full cascade
 (major → default minor → auto minors → recompute options +
-completion → maybe-auto-LSP). `services()` returns a cloned
-`Arc<ServiceRegistry>` so extension-crate code can pull
-service handles without fighting the borrow checker against the
-`&mut` activator borrow.
+completion → maybe-auto-LSP), and `ensure_named_document`
+forwards to `Editor::ensure_named_synthetic_document`.
+`services()` returns a cloned `Arc<ServiceRegistry>` so
+extension-crate code can pull service handles without fighting the
+borrow checker against the `&mut` activator borrow.
 
 **Why a trait, not `&mut Editor`:** `lattice-multibuffer` can't
 depend on `lattice-host` (host already depends on

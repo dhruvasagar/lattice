@@ -42,6 +42,11 @@ full-width multi-row **mini-buffer band** at the bottom of the
 frame, pushing the panes and mode-lines up. The band enables the
 **full vim grammar** on the command text:
 
+- When expanded, the `*command-line*` buffer switches its major mode
+  to **`command-line-expand-mode`** (a dedicated tier-2 mode with
+  isolated option overrides — line numbers, sign column, and wrap
+  are all off, scoped to the band only, never leaking to the
+  document pane). Collapsing reactivates `command-line-mode`.
 - Normal / Insert / Visual modal editing
 - Motions, operators, registers, undo, multi-line editing
 - `<CR>` inserts a newline (multi-line commands)

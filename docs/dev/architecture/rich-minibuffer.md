@@ -105,6 +105,13 @@ grown large:
   `.`-repeat, registers, undo, multi-line) turns on. There is **one
   command being edited** the whole time — tier 1 and tier 2 are two
   sizes of one surface, not two buffers with copy-back.
+- **Dedicated expanded mode.** Expanding activates
+  **`command-line-expand-mode`** as the buffer's major (collapsing
+  reactivates `command-line-mode`). The two modes have independent
+  `ModeId`s so their option overrides (`Number = false`, `SignColumn =
+  No`, `Wrap = false`, `CursorLine = false`) are correctly scoped per
+  activation. The mode owns its own keymap surface (same Insert-layer
+  chords as tier 1 plus Normal-layer `<C-x><C-e>` for collapse).
 - **`:` is a no-op inside the mini-buffer.** Because you are *already in*
   the command line, the `:` "enter-command-line" chord does nothing
   here (it must not open a nested command line). In tier 1 (insert-only)
@@ -273,13 +280,18 @@ option; the mode reads it when expanding.
 ## 10. Impact surface (delivered)
 
 - **Modes** (`lattice-host`): `command-line-mode` (`*command-line*` buffer,
-  `command_line_mode.rs`) and `search-line-mode` (`*search-line*` buffer,
-  `search_line_mode.rs`). Both are insert-only (tier 1) with Insert-layer
-  keymaps for submit / cancel / history walk / expand. Tier 2 reuses the
-  same buffer (no separate `command-line-edit-mode`). The `MinibufferFocus`
-  struct (shared by both prompts) stashes the prior editing buffer + cursor
-  + modal; `Editor::open_command_line` / `open_search_line` create/focus
-  the synthetic buffer through `ensure_named_synthetic_document`.
+  `command_line_mode.rs`), `command-line-expand-mode` (same buffer, tier-2
+  expanded band, `command_line_expand_mode.rs`), and `search-line-mode`
+  (`*search-line*` buffer, `search_line_mode.rs`). Tier 1 modes are
+  insert-only with Insert-layer keymaps for submit / cancel / history walk /
+  expand. Tier 2 (`command-line-expand-mode`) is full-modal (Normal / Insert
+  / Visual) with its own `ModeId` for isolated option overrides — the
+  buffer's major mode switches on expand/collapse via `activate_major_by_id`,
+  scoping `Number=false`, `SignColumn=No`, etc. to the band only.
+  The `MinibufferFocus` struct (shared by all prompts) stashes the prior
+  editing buffer + cursor + modal; `Editor::open_command_line` /
+  `open_search_line` create/focus the synthetic buffer through
+  `ensure_named_synthetic_document`.
 - **Modal / input** (`input.rs`): `ModalState::Command` and
   `ModalState::Search` both route through `dispatch_insert`. The old
   `translate_command` / `translate_search` / `command_line: String` /

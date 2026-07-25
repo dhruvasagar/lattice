@@ -29,7 +29,7 @@ use lattice_grammar::{
     Effect,
     registry::CommandRegistry,
 };
-use lattice_mode::{ModeRegistry, SubsystemBoot};
+use lattice_mode::SubsystemBoot;
 
 use magit_blame_mode::MagitBlameMode;
 use magit_branch_mode::MagitBranchMode;

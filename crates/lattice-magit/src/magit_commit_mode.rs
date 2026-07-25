@@ -10,7 +10,6 @@ use lattice_mode::{
     CapabilitySet, Keymap, KeymapEntry, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind,
     OptionOverrideSet, keymap_entry,
 };
-use lattice_vcs::Repository;
 
 pub struct MagitCommitMode;
 

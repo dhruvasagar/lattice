@@ -80,10 +80,12 @@ fn magit_status_keymap_entries() -> &'static [KeymapEntry] {
     })
 }
 
-/// MG.3: RAII guard holding per-buffer action handler registrations.
+/// MG.3: RAII guard holding per-buffer action handler registrations
+/// and shared state the handlers read at chord-press time.
 #[derive(Default)]
 pub struct MagitStatusGuard {
     _action_handler_registrations: Vec<lattice_mode::ActionHandlerRegistration>,
+    _state: Option<std::sync::Arc<std::sync::Mutex<actions::StatusBufferState>>>,
 }
 
 impl Mode for MagitStatusMode {
@@ -166,23 +168,30 @@ impl Mode for MagitStatusMode {
                 rt.block_on(refresh::refresh_status(buffer_id, handle_clone, wd));
             });
 
-            // MG.3: register per-buffer action handlers (s, u, x, <CR>, gr, q, ...)
+            // MG.3: register per-buffer action handlers
+            let shared_state = std::sync::Arc::new(std::sync::Mutex::new(
+                actions::StatusBufferState {
+                    buffer_id,
+                    store: store.clone(),
+                    workdir: workdir.clone(),
+                },
+            ));
+
             let mut action_registrations = Vec::new();
             if let (Some(cmd_registry_arc), Some(action_handlers_arc)) = (
                 ctx.service::<CommandRegistryHandle>(),
                 ctx.service::<ActionHandlerRegistryHandle>(),
             ) {
                 action_registrations = actions::register_action_handlers(
-                    buffer_id,
-                    &store,
+                    shared_state.clone(),
                     &cmd_registry_arc,
                     &action_handlers_arc,
-                    workdir.clone(),
                 );
             }
 
             Ok(MagitStatusGuard {
                 _action_handler_registrations: action_registrations,
+                _state: Some(shared_state),
             })
         })
     }

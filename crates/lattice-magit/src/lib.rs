@@ -8,6 +8,7 @@
 //! See [`docs/dev/architecture/magit.md`] and
 //! [`docs/dev/operations/slice-plans/magit.md`].
 
+pub mod actions;
 pub mod magit_core_mode;
 pub mod magit_status_mode;
 pub mod refresh;

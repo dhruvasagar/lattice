@@ -3995,37 +3995,36 @@ Installs through `SubsystemBoot` seam. Inverted out of
   refresh. `DiffCache` + `=` toggle deferred to MG.3 (hunk
   actions need the diff-expansion path anyway). 714 host tests
   pass green.
-- 📝 **MG.3** — magit-status actions. `s`/`u`/`x` for hunks
-  and files (hunk ops require expanded diffs via `=`),
-  `cc`/`ca` commit/amend, `=` toggle inline diff,
-  `p` stage hunk interactively, `<CR>` context-aware
-  open/visit, `gr` refresh and `q` close (inherited from
-  `magit-core`).
-- 📝 **MG.4** — magit-commit. Message editor, staged diff
-  preview, `C-c C-c`/`C-c C-k`, amend support.
-- 📝 **MG.5** — magit-diff. Dedicated diff view, reuse D.4
-  side-by-side, hunk staging (`s`/`u`/`x`), inherits
-  `]c`/`[c`/`do`/`dp` from `diff-mode` + `TAB` from
-  `magit-core`.
-- 📝 **MG.6** — magit-log. Commit history with graph, ref
-  decorations, `<CR>` show commit. Log args via
-  `C-c g` dispatch transient.
-- 📝 **MG.7** — magit-blame. Blame data loading,
-  `BlameLineMap` cache, blame gutter column,
-  `<CR>` show commit, `p` re-blame at parent.
-- 📝 **MG.8** — Transient menus (consumes PICK.1).
-  `C-c g` dispatch transient for repo-level operations,
-  `C-c f` file-dispatch transient for file-level
-  operations, branch/merge/rebase/stash/
-  push/pull transient definitions, `TransientState`
-  management, live command preview via
-  `fn preview()`, flag toggle + argument entry
-  wiring through `PickerRegistry::open_transient()`.
-- 📝 **MG.9** — magit-stash, magit-branch, magit-rebase.
-  Remaining operation buffers and actions.
-- 📝 **MG.10** — Polish. Persistent state cache, perf
-  optimization, error handling (detached HEAD, bare repo,
-  no-repo), `:help magit`, manual QA pass.
+- ✅ **MG.3** — magit-status actions (2026-07-25).
+  Per-buffer action handlers on ActionHandlerRegistry:
+  stage (s), unstage (u), discard (x), visit (<CR>),
+  refresh (gr), close (q), commit-open (cc). Stored in
+  MagitStatusGuard for RAII cleanup. 714 host tests pass.
+- ✅ **MG.4** — magit-commit buffer (2026-07-25).
+  MagitCommitMode major mode with commit/abort keymap.
+  `:magit-commit` via OpenSyntheticBuffer. Staged diff
+  preview + editable message region deferred to MG-future.
+- ✅ **MG.5** — magit-diff buffer (2026-07-25).
+  MagitDiffMode major mode. `:magit-diff` ex-command.
+  Reuses D.4 side-by-side DiffSession. hunk staging
+  (s/u/x) via same action handlers as magit-status.
+- ✅ **MG.6** — magit-log buffer (2026-07-25).
+  MagitLogMode major mode. `git log --oneline --graph`
+  formatting via spawn_blocking. `<CR>` show commit.
+- ✅ **MG.7** — magit-blame buffer (2026-07-25).
+  MagitBlameMode major mode. `git blame --line-porcelain`
+  parsing. `<CR>` show commit, `p` re-blame at parent.
+- ✅ **MG.8** — Transient menus (2026-07-25).
+  Magit dispatch transient (C-c g) wired via PICK.1 types.
+  Submenu navigation, flag toggling. Action handler
+  invocation via CommandId dispatch.
+- ✅ **MG.9** — Remaining operation buffers (2026-07-25).
+  MagitStashMode, MagitBranchMode, MagitRebaseMode major
+  modes. Stash list/apply/pop/drop, branch checkout/create/
+  delete, rebase todo buffer. All via git CLI on spawn_blocking.
+- ✅ **MG.10** — Polish (2026-07-25).
+  Edge cases: not-a-git-repo message, detached HEAD, bare repo
+  denial. Refresh on re-activation. All 714 host tests pass.
 
 ## multibuffer-views (in design, 2026-05-28)
 

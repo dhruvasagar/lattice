@@ -8,12 +8,14 @@
 use std::sync::OnceLock;
 
 use lattice_config;
+use lattice_grammar::CommandRegistryHandle;
 use lattice_mode::{
-    BufferStoreHandle, CapabilitySet, Keymap, KeymapEntry, LifecycleFuture, Mode, ModeContext,
-    ModeId, ModeKind, OptionOverrideSet, keymap_entry,
+    ActionHandlerRegistryHandle, BufferStoreHandle, CapabilitySet, Keymap, KeymapEntry,
+    LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, OptionOverrideSet, keymap_entry,
 };
 use lattice_vcs::Repository;
 
+use crate::actions;
 use crate::refresh;
 
 /// Major mode for the `*magit:status*` buffer.
@@ -78,10 +80,11 @@ fn magit_status_keymap_entries() -> &'static [KeymapEntry] {
     })
 }
 
-/// MG.1: empty guard — no subscriptions or state yet.
-/// MG.2 populates with refresh task + event subscriptions.
+/// MG.3: RAII guard holding per-buffer action handler registrations.
 #[derive(Default)]
-pub struct MagitStatusGuard;
+pub struct MagitStatusGuard {
+    _action_handler_registrations: Vec<lattice_mode::ActionHandlerRegistration>,
+}
 
 impl Mode for MagitStatusMode {
     type Guard = MagitStatusGuard;
@@ -157,12 +160,30 @@ impl Mode for MagitStatusMode {
 
             // Spawn the refresh on spawn_blocking
             let handle_clone = handle.clone();
+            let wd = workdir.clone();
             runtime.spawn_blocking(move || {
                 let rt = tokio::runtime::Runtime::new().unwrap();
-                rt.block_on(refresh::refresh_status(buffer_id, handle_clone, workdir));
+                rt.block_on(refresh::refresh_status(buffer_id, handle_clone, wd));
             });
 
-            Ok(MagitStatusGuard::default())
+            // MG.3: register per-buffer action handlers (s, u, x, <CR>, gr, q, ...)
+            let mut action_registrations = Vec::new();
+            if let (Some(cmd_registry_arc), Some(action_handlers_arc)) = (
+                ctx.service::<CommandRegistryHandle>(),
+                ctx.service::<ActionHandlerRegistryHandle>(),
+            ) {
+                action_registrations = actions::register_action_handlers(
+                    buffer_id,
+                    &store,
+                    &cmd_registry_arc,
+                    &action_handlers_arc,
+                    workdir.clone(),
+                );
+            }
+
+            Ok(MagitStatusGuard {
+                _action_handler_registrations: action_registrations,
+            })
         })
     }
 }

@@ -3929,11 +3929,23 @@ impl Render for EditorView {
         // recompute could subtract the strip's rows.
         // Slice 3c.final.B (group 3): picker via published
         // substate; reuse `picker_substate` bound at top of render.
+        // PICK.1: transient overlay — rendered when the picker is in
+        // transient mode (grouped action menu). Skip the normal picker
+        // overlay when transient is active.
+        let transient_overlay: Option<gpui::Div> = picker_substate
+            .state
+            .as_deref()
+            .and_then(|p| p.transient.as_ref())
+            .map(|spec| build_transient_gpui(spec, picker_substate.state.as_deref().unwrap(), &theme));
+
         let picker_overlay: Option<gpui::Div> =
-            (!picker_use_minibuffer)
-                .then(|| picker_substate.state.as_deref())
-                .flatten()
-                .map(|picker| {
+            if transient_overlay.is_some() {
+                None
+            } else {
+                (!picker_use_minibuffer)
+                    .then(|| picker_substate.state.as_deref())
+                    .flatten()
+                    .map(|picker| {
                     let max_visible = 30usize;
                     let total = picker.candidates.len();
                     let window_start = picker
@@ -4697,7 +4709,7 @@ impl Render for EditorView {
             root = root.child(strip);
         }
 
-        if let Some(overlay) = picker_overlay {
+        if let Some(overlay) = transient_overlay.or(picker_overlay) {
             root = root.child(
                 div()
                     .absolute()
@@ -4973,6 +4985,112 @@ pub fn document_from_path(path: &std::path::Path) -> Result<Document> {
 // `lattice_host::cursor_shape::tests`; the GPUI peer's local
 // duplicates were removed. Window-side tests (popup focus, dispatch
 // integration) still live in `crate::tests` at the lib's root.
+
+/// PICK.1: build the GPUI transient overlay div tree — grouped
+/// action menu with section headers, key+label rows, flag
+/// indicators, and optional preview + footer.
+fn build_transient_gpui(
+    spec: &lattice_picker::TransientSpec,
+    picker: &lattice_picker::Picker,
+    theme: &crate::AppTheme,
+) -> gpui::Div {
+    let mut container = div()
+        .flex()
+        .flex_col()
+        .min_w(px(480.0))
+        .max_w(px(960.0))
+        .max_h(px(720.0))
+        .p_4()
+        .bg(rgb(theme.popup_background))
+        .text_color(rgb(theme.foreground))
+        .border_2()
+        .border_color(rgb(theme.popup_border));
+
+    // Title
+    container = container.child(
+        div()
+            .text_color(rgb(theme.popup_border))
+            .pb_1()
+            .child(format!(" {} ", spec.title)),
+    );
+
+    // Groups
+    for group in &spec.groups {
+        container = container.child(
+            div()
+                .pt_1()
+                .font_weight(gpui::FontWeight::BOLD)
+                .child(format!("  ▸ {}", group.label)),
+        );
+
+        for item in &group.items {
+            let key = format!("[{}]", item.key.join("/"));
+            let flag = match &item.kind {
+                lattice_picker::TransientItemKind::Flag { name, .. } => {
+                    let v = picker.transient_state.get(name)
+                        .and_then(|v| match v {
+                            lattice_picker::TransientValue::Bool(b) => Some(*b),
+                            _ => None,
+                        })
+                        .unwrap_or(false);
+                    if v { "[x]" } else { "[ ]" }
+                }
+                _ => "",
+            };
+
+            container = container.child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .pl_4()
+                    .child(
+                        div()
+                            .text_color(rgb(theme.selection_background))
+                            .child(format!("{:<6}", key)),
+                    )
+                    .child(div().child(format!("{:<20}", item.label)))
+                    .child(
+                        div()
+                            .text_color(rgb(theme.popup_border))
+                            .child(&item.description),
+                    )
+                    .child(
+                        div()
+                            .text_color(rgb(theme.cursor_background))
+                            .child(format!("  {}", flag)),
+                    ),
+            );
+        }
+
+        // Blank line between groups
+        container = container.child(div().h_1());
+    }
+
+    // Preview
+    if let Some(ref preview_fn) = spec.preview {
+        container = container.child(
+            div().pt_2().text_color(rgb(theme.popup_border)).child("─".repeat(60)),
+        );
+        let text = (preview_fn)(&picker.transient_state);
+        container = container.child(
+            div()
+                .text_color(rgb(theme.popup_border))
+                .child(format!("  {}", text)),
+        );
+    }
+
+    // Footer
+    if let Some(ref footer) = spec.footer {
+        container = container.child(
+            div()
+                .pt_1()
+                .text_color(rgb(theme.popup_border))
+                .child(format!("  {}", footer)),
+        );
+    }
+
+    container
+}
 
 #[cfg(test)]
 mod popup_geometry_tests {

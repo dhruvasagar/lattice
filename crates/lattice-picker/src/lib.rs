@@ -427,6 +427,9 @@ pub struct Picker {
     /// Stack of parent transient specs for `BS`/`DEL` back
     /// navigation through nested submenus.
     pub transient_stack: Vec<(std::sync::Arc<TransientSpec>, TransientState)>,
+    /// Scroll offset for transient group rendering when groups
+    /// overflow the viewport. Incremented by `j`, decremented by `k`.
+    pub transient_scroll: usize,
 }
 
 impl Picker {
@@ -448,6 +451,7 @@ impl Picker {
             transient: None,
             transient_state: TransientState::new(),
             transient_stack: Vec::new(),
+            transient_scroll: 0,
         }
     }
 

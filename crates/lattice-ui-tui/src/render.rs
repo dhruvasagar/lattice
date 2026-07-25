@@ -405,7 +405,14 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) -> Opti
     // visible and the picker query renders inside the overlay
     // instead.
     if app.picker_state().state.is_some() && picker_is_minibuffer {
-        draw_picker_prompt(frame, chunks[2], app);
+        let picker = app.picker_state();
+        let is_transient = picker.state.as_deref().map_or(false, |p| p.transient.is_some());
+        // Transient menus always use overlay mode regardless of display setting.
+        if is_transient {
+            draw_transient_overlay(frame, chunks[1], app);
+        } else {
+            draw_picker_prompt(frame, chunks[2], app);
+        }
     } else {
         draw_command_or_echo(frame, chunks[2], app);
     }
@@ -431,7 +438,8 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) -> Opti
     // only one is interactive at a time). Only the minibuffer
     // display mode uses the bottom band; the popup mode draws
     // its own self-contained overlay below.
-    if chrome.picker > 0 {
+    let is_transient = app.picker_state().state.as_deref().map_or(false, |p| p.transient.is_some());
+    if chrome.picker > 0 && !is_transient {
         draw_picker_candidates(frame, chunks[3], app);
     } else if chrome.completion > 0 {
         draw_completion_popup(frame, chunks[3], app);
@@ -440,8 +448,16 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) -> Opti
     // is `"popup"` and a picker is open. Floats centered over
     // the buffer area (chunks[0]) so the user still sees the
     // mode line and any echo / cmdline content underneath.
-    if app.picker_state().state.is_some() && !picker_is_minibuffer {
-        draw_picker_overlay(frame, chunks[1], app);
+    let picker_state = app.picker_state();
+    if picker_state.state.is_some()
+        && (!picker_is_minibuffer || picker_state.state.as_deref().map_or(false, |p| p.transient.is_some()))
+    {
+        let p = picker_state.state.as_deref().unwrap();
+        if p.transient.is_some() {
+            draw_transient_overlay(frame, chunks[1], app);
+        } else {
+            draw_picker_overlay(frame, chunks[1], app);
+        }
     }
     // Slice 3c.gpui-cmdline-completion: cmdline-completion popup
     // overlay. Mutually exclusive with the picker (picker doesn't
@@ -1674,6 +1690,108 @@ fn picker_display_is_minibuffer(app: &App) -> bool {
 /// feels like part of the same overlay family. The overlay is
 /// painted on top of [`Clear`] so buffer content underneath
 /// doesn't bleed through.
+
+/// Transient-mode picker overlay — grouped action menu with
+/// section headers, key+label+description rows, flag indicators,
+/// preview line, and footer.
+fn draw_transient_overlay(frame: &mut Frame, buffer_area: Rect, app: &App) {
+    let picker = app.picker_state();
+    let Some(p) = picker.state.as_deref() else { return };
+    let Some(ref spec) = p.transient else { return };
+
+    let total_items: usize = spec.groups.iter().map(|g| g.items.len()).sum();
+    let group_count = spec.groups.len();
+    let preview_rows = if spec.preview.is_some() { 2 } else { 0 };
+    let footer_rows = if spec.footer.is_some() { 1 } else { 0 };
+    let row_count = total_items + group_count + preview_rows + footer_rows;
+    let height = (row_count as u16 + 3).min(35).max(8);
+    let width = buffer_area.width.saturating_sub(4).min(80).max(40);
+    let x = buffer_area.x + buffer_area.width.saturating_sub(width) / 2;
+    let y = buffer_area.y + buffer_area.height.saturating_sub(height) / 3;
+    let area = Rect { x, y, width, height };
+
+    frame.render_widget(Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(TuiStyle::default().fg(Color::Cyan));
+    let title_line = Line::from(vec![
+        Span::styled(format!(" {} ", spec.title), TuiStyle::default().add_modifier(Modifier::BOLD)),
+    ]);
+    let block = block.title(title_line);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let visible = inner.height as usize;
+    let scroll = p.transient_scroll.min(row_count.saturating_sub(visible.max(1)));
+
+    let mut lines: Vec<Line> = Vec::new();
+    let mut ln: usize = 0;
+
+    for group in &spec.groups {
+        if ln >= scroll && lines.len() < visible {
+            lines.push(Line::from(Span::styled(
+                format!("  ▸ {}", group.label),
+                TuiStyle::default().add_modifier(Modifier::BOLD),
+            )));
+        }
+        ln += 1;
+
+        for item in &group.items {
+            if ln >= scroll && lines.len() < visible {
+                let key = format!("[{}]", item.key.join("/"));
+                let flag = match &item.kind {
+                    lattice_picker::TransientItemKind::Flag { name, .. } => {
+                        let v = p.transient_state.get(name)
+                            .and_then(|v| match v { lattice_picker::TransientValue::Bool(b) => Some(*b), _ => None })
+                            .unwrap_or(false);
+                        if v { "[x]" } else { "[ ]" }
+                    }
+                    _ => "",
+                };
+                lines.push(Line::from(vec![
+                    Span::styled(format!("    {:<6}", key), TuiStyle::default().fg(Color::Yellow)),
+                    Span::raw(format!("{:<20}", item.label)),
+                    Span::styled(&item.description, TuiStyle::default().fg(Color::DarkGray)),
+                    Span::styled(format!("  {}", flag), TuiStyle::default().fg(Color::Green)),
+                ]));
+            }
+            ln += 1;
+        }
+
+        if ln >= scroll && lines.len() < visible {
+            lines.push(Line::from(""));
+        }
+        ln += 1;
+    }
+
+    if let Some(ref preview_fn) = spec.preview {
+        if ln >= scroll && lines.len() < visible {
+            let sep = "─".repeat(inner.width as usize);
+            lines.push(Line::from(Span::styled(sep, TuiStyle::default().fg(Color::DarkGray))));
+        }
+        ln += 1;
+        if ln >= scroll && lines.len() < visible {
+            let text = (preview_fn)(&p.transient_state);
+            lines.push(Line::from(Span::styled(
+                format!("  {}", text),
+                TuiStyle::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+            )));
+        }
+        ln += 1;
+    }
+
+    if let Some(ref footer) = spec.footer {
+        if ln >= scroll && lines.len() < visible {
+            lines.push(Line::from(Span::styled(
+                format!("  {}", footer),
+                TuiStyle::default().fg(Color::DarkGray),
+            )));
+        }
+    }
+
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
 fn draw_picker_overlay(frame: &mut Frame, buffer_area: Rect, app: &App) {
     // Slice 3c.final.B (group 3): bind picker substate Arc.
     let picker = app.picker_state();

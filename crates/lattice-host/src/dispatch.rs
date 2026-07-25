@@ -2554,14 +2554,23 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
             }
         }
         Action::PickerSelectNext => {
-            if let Some(p) = editor.picker.as_mut() {
+            // PICK.1: in transient mode, scroll group view down
+            if let Some(ref mut picker) = editor.picker
+                && picker.transient.is_some()
+            {
+                picker.transient_scroll = picker.transient_scroll.saturating_add(1);
+            } else if let Some(p) = editor.picker.as_mut() {
                 p.select_next();
             }
             _out.renderer_signals
                 .extend(editor.preview_picker_selection());
         }
         Action::PickerSelectPrev => {
-            if let Some(p) = editor.picker.as_mut() {
+            if let Some(ref mut picker) = editor.picker
+                && picker.transient.is_some()
+            {
+                picker.transient_scroll = picker.transient_scroll.saturating_sub(1);
+            } else if let Some(p) = editor.picker.as_mut() {
                 p.select_prev();
             }
             _out.renderer_signals

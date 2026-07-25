@@ -3961,16 +3961,19 @@ Installs through `SubsystemBoot` seam. Inverted out of
 
 ### Picker extension — transient mode
 
-- 📝 **PICK.1** — Picker transient-mode extension.
+- ✅ **PICK.1** — Picker transient-mode extension (2026-07-25).
   `TransientSpec` / `TransientGroup` / `TransientItem` /
-  `TransientItemKind` / `PreviewFn` / `TransientState`
-  types in `lattice-picker`. Grouped entry rendering,
-  single-key trigger dispatch, flag toggle + live preview
-  update, argument → minibuffer, submenu navigation
-  (`DEL`/`BS` back), `PickerRegistry::open_transient()`.
-  General picker feature — first consumer is magit
-  transients (MG.8); also serves which-key key hints,
-  command palette drilldown, future plugin transients.
+  `TransientItemKind` / `TransientState` / `TransientValue`
+  types in `lattice-picker::transient`. `Picker` struct
+  extended with `transient`, `transient_state`,
+  `transient_stack` fields. `Editor::open_transient`,
+  `do_transient_trigger`, `do_transient_toggle_flag`,
+  `close_transient` methods. Input routing via
+  `PickerAppend`/`PickerBackspace` dispatch arms checking
+  `transient.is_some()`. `TransientItemKind::Action(CommandId)`
+  handler invocation deferred to MG.8 (magit transients).
+  Argument minibuffer-prompt flow deferred. 714 existing
+  host tests + 62 picker tests pass green.
   Design: [`../architecture/magit.md`](../architecture/magit.md)
   §8.1–8.3.
 

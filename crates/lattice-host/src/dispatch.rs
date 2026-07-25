@@ -2519,20 +2519,39 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         // 5.5.G.11: picker append/backspace/select + CloseHover.
         // Accept/Dismiss stay App-side (file-open / SMR / preview).
         Action::PickerAppend(c) => {
-            if let Some(p) = editor.picker.as_mut() {
-                p.append_query(c);
+            // PICK.1: if in transient mode, route through transient dispatch
+            if let Some(ref picker) = editor.picker
+                && picker.transient.is_some()
+            {
+                let key = c.to_string();
+                let signals = editor.do_transient_trigger(key);
+                _out.renderer_signals.extend(signals);
+            } else {
+                if let Some(p) = editor.picker.as_mut() {
+                    p.append_query(c);
+                }
+                editor.bump_live_picker_debounce();
+                _out.renderer_signals
+                    .extend(editor.preview_picker_selection());
             }
-            editor.bump_live_picker_debounce();
-            _out.renderer_signals
-                .extend(editor.preview_picker_selection());
         }
         Action::PickerBackspace => {
-            if let Some(p) = editor.picker.as_mut() {
-                p.backspace_query();
+            // PICK.1: in transient mode, BS pops the stack (back to parent)
+            if let Some(ref mut picker) = editor.picker
+                && picker.transient.is_some()
+            {
+                if let Some((parent_spec, parent_state)) = picker.transient_stack.pop() {
+                    picker.transient = Some(parent_spec);
+                    picker.transient_state = parent_state;
+                }
+            } else {
+                if let Some(p) = editor.picker.as_mut() {
+                    p.backspace_query();
+                }
+                editor.bump_live_picker_debounce();
+                _out.renderer_signals
+                    .extend(editor.preview_picker_selection());
             }
-            editor.bump_live_picker_debounce();
-            _out.renderer_signals
-                .extend(editor.preview_picker_selection());
         }
         Action::PickerSelectNext => {
             if let Some(p) = editor.picker.as_mut() {
@@ -2781,6 +2800,19 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
             _out.merge(editor.do_picker_accept());
         }
         Action::PickerDismiss => {
+            let signals = editor.do_picker_dismiss();
+            _out.renderer_signals.extend(signals);
+        }
+        // PICK.1: transient-mode actions within the picker.
+        Action::TransientTrigger(key) => {
+            let signals = editor.do_transient_trigger(key);
+            _out.renderer_signals.extend(signals);
+        }
+        Action::TransientToggleFlag(name) => {
+            let signals = editor.do_transient_toggle_flag(name);
+            _out.renderer_signals.extend(signals);
+        }
+        Action::TransientDismiss => {
             let signals = editor.do_picker_dismiss();
             _out.renderer_signals.extend(signals);
         }
@@ -26805,6 +26837,125 @@ impl Editor {
         let mut signals = theme_restore_signals;
         signals.extend(self.clear_active_preview());
         signals
+    }
+
+    /// PICK.1: open a transient menu. Seats a picker in transient mode
+    /// with the given spec, state, and preview function.
+    pub fn open_transient(&mut self, spec: lattice_picker::TransientSpec) -> Vec<RendererSignal> {
+        use lattice_picker::{Picker, PickerAction, PickerSource};
+
+        let title = spec.title.clone();
+        let state = lattice_picker::transient_initial_state(&spec);
+        let spec = std::sync::Arc::new(spec);
+
+        let mut picker = Picker::new(&title, PickerSource::Buffers, PickerAction::OpenFile);
+        picker.transient = Some(spec);
+        picker.transient_state = state;
+        // Hide the query input for transient mode — set placeholder title
+        picker.query = String::new();
+
+        self.picker = Some(picker);
+
+        Vec::new()
+    }
+
+    /// PICK.1: close the transient and dismiss the picker.
+    pub fn close_transient(&mut self) -> Vec<RendererSignal> {
+        self.do_picker_dismiss()
+    }
+
+    /// PICK.1: trigger a transient item by key. Searches the current
+    /// transient spec's groups for an item whose `key` matches.
+    pub fn do_transient_trigger(&mut self, key: String) -> Vec<RendererSignal> {
+        let Some(ref mut picker) = self.picker else {
+            return Vec::new();
+        };
+        let Some(ref spec_arc) = picker.transient else {
+            return Vec::new();
+        };
+        let spec = spec_arc.clone(); // clone Arc
+        let _state = &picker.transient_state;
+
+        // Find the item matching the key across all groups
+        let found: Option<(lattice_picker::TransientItem, std::sync::Arc<lattice_picker::TransientSpec>)> =
+            spec.groups.iter().find_map(|g| {
+                g.items.iter().find_map(|item| {
+                    if item.key.iter().any(|k| *k == key) {
+                        Some((item.clone(), spec.clone()))
+                    } else {
+                        None
+                    }
+                })
+            });
+
+        let Some((item, spec)) = found else {
+            return Vec::new();
+        };
+
+        match item.kind {
+            lattice_picker::TransientItemKind::Action(cmd_id) => {
+                // MG.8: action handler invocation. For PICK.1, the
+                // cmd_id is routed through the editor's dispatch
+                // path. The mode's Guard holds the handler registry
+                // reference and fires handlers in its own closure
+                // context. Here we store the cmd_id for the caller
+                // to resolve post-transient-close.
+                tracing::debug!(
+                    target: "lattice_host::transient",
+                    "transient action triggered: {cmd_id:?}",
+                );
+                // The caller (magit status mode) should register a
+                // handler for this command_id via ActionHandlerRegistry.
+                // When the transient picks it, the handler fires.
+                // For now, close the transient.
+                self.do_picker_dismiss()
+            }
+            lattice_picker::TransientItemKind::Submenu(sub_spec) => {
+                // Push current onto stack, open submenu
+                let parent_spec = spec;
+                let parent_state = std::mem::take(&mut picker.transient_state);
+                picker
+                    .transient_stack
+                    .push((parent_spec, parent_state));
+                picker.transient = Some(sub_spec.clone());
+                picker.transient_state =
+                    lattice_picker::transient_initial_state(&sub_spec);
+                Vec::new()
+            }
+            lattice_picker::TransientItemKind::Flag { name, .. } => {
+                // Toggle the flag
+                let prev = picker.transient_state.get(&name);
+                let new_val = match prev {
+                    Some(lattice_picker::TransientValue::Bool(v)) => !*v,
+                    _ => true,
+                };
+                picker
+                    .transient_state
+                    .insert(name.clone(), lattice_picker::TransientValue::Bool(new_val));
+                Vec::new()
+            }
+            lattice_picker::TransientItemKind::Argument { .. } => {
+                // Arguments deferred to MG.8 — they need minibuffer
+                // prompt + return-to-transient flow. For now, no-op.
+                Vec::new()
+            }
+        }
+    }
+
+    /// PICK.1: toggle a boolean flag in the transient state by name.
+    pub fn do_transient_toggle_flag(&mut self, name: String) -> Vec<RendererSignal> {
+        let Some(ref mut picker) = self.picker else {
+            return Vec::new();
+        };
+        let prev = picker.transient_state.get(&name);
+        let new_val = match prev {
+            Some(lattice_picker::TransientValue::Bool(v)) => !*v,
+            _ => true,
+        };
+        picker
+            .transient_state
+            .insert(name, lattice_picker::TransientValue::Bool(new_val));
+        Vec::new()
     }
 
     /// Full `Action::PickerAccept`. Phase 5.8.AF: complete body

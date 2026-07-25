@@ -477,6 +477,16 @@ pub enum Action {
     /// Drop the picker without acting on any candidate.
     PickerDismiss,
 
+    // ---- Transient (picker transient mode — PICK.1) ----
+    /// Fire the action for a transient item key press. The string
+    /// is the item's label (used as the lookup key in the current
+    /// transient spec's groups).
+    TransientTrigger(String),
+    /// Toggle a boolean flag in the transient state.
+    TransientToggleFlag(String),
+    /// Dismiss the transient (close the picker overlay).
+    TransientDismiss,
+
     // ---- Paste (`p`, `P`) ----
     /// Vim's `p` -- paste the unnamed register after the cursor (charwise)
     /// or below the current line (linewise).

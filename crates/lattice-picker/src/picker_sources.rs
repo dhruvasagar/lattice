@@ -769,7 +769,7 @@ impl PickerSourceGenerator for LinesSource {
             // Slice 7b.4: typed accept payload.
             cand.accept_action = Some(Box::new(lattice_completion::AcceptAction::JumpInBuffer {
                 buffer_id: lattice_core::BufferId(buffer_id),
-                line: line as u32,
+                line: line,
                 col: 0,
             }));
             pairs.push((

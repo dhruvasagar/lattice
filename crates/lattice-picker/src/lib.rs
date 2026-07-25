@@ -51,6 +51,7 @@ pub mod mru;
 pub mod outcome;
 pub mod picker_sources;
 pub mod source;
+pub mod transient;
 
 pub use context::{
     ActiveBufferSnapshot, BufferEntry, PickerContext, PositionEntry, PositionSource,
@@ -63,6 +64,10 @@ pub use outcome::{OpenTarget, PickerAcceptOutcome};
 pub use source::{
     AcceptFuture, CandidateBatch, CandidateFuture, CandidateStream, PickerInitResult,
     PickerRegistry, PickerRegistryHandle, PickerSourceGenerator, PickerSourceSpec, SourceResult,
+};
+pub use transient::{
+    TransientGroup, TransientItem, TransientItemKind, TransientSpec, TransientState,
+    TransientValue, transient_initial_state,
 };
 
 use std::path::PathBuf;
@@ -412,6 +417,16 @@ pub struct Picker {
     /// fetch errors. See `seat_picker_from_pairs` /
     /// `open_picker` / `fire_live_picker_query_changed`.
     pub loading: bool,
+    /// Active transient-mode specification + live state. When
+    /// `Some`, the renderer switches to grouped section layout
+    /// with single-key chord dispatch, and the input layer routes
+    /// keystrokes through transient chord matching rather than
+    /// the query → filter path. See `transient.rs`.
+    pub transient: Option<std::sync::Arc<TransientSpec>>,
+    pub transient_state: TransientState,
+    /// Stack of parent transient specs for `BS`/`DEL` back
+    /// navigation through nested submenus.
+    pub transient_stack: Vec<(std::sync::Arc<TransientSpec>, TransientState)>,
 }
 
 impl Picker {
@@ -430,6 +445,9 @@ impl Picker {
             mru_bonuses: Vec::new(),
             loading: false,
             live_source_mode: false,
+            transient: None,
+            transient_state: TransientState::new(),
+            transient_stack: Vec::new(),
         }
     }
 

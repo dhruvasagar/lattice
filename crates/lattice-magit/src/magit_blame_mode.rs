@@ -73,8 +73,14 @@ impl Mode for MagitBlameMode {
                 .and_then(|r| r.workdir().map(|p| p.to_path_buf()))
                 .unwrap_or_default();
 
-            // Try to determine the file from the active buffer's path
-            let file_path = ".".to_string(); // fallback — blame needs a real path
+            // Extract file path from buffer name: "*magit:blame:<path>*" → "<path>"
+            let file_path = store
+                .name_for(buffer_id)
+                .and_then(|name| {
+                    let s = name.strip_prefix("*magit:blame:")?;
+                    Some(s.strip_suffix("*")?.to_string())
+                })
+                .unwrap_or_else(|| ".".to_string());
 
             let h = handle.clone();
             let wd = workdir.clone();

@@ -25,7 +25,7 @@ pub mod sections;
 use std::sync::Arc;
 
 use lattice_grammar::{
-    ActionSpec, Args, ExCommandSpec, GrammarResult, LatencyClass, SurfaceForm,
+    ActionSpec, ArgKind, ArgSpec, Args, ExCommandSpec, GrammarResult, LatencyClass, SurfaceForm,
     Effect,
     registry::CommandRegistry,
 };
@@ -123,17 +123,48 @@ fn register_ex_commands(registry: &mut CommandRegistry) {
 
     mk("magit-status", "Open the Magit status buffer for the current git repository.", "*magit:status*", "magit-status-mode");
     mk("magit-commit", "Open the Magit commit buffer with staged diff preview.", "*magit:commit*", "magit-commit-mode");
-    mk("magit-diff", "Open a dedicated side-by-side diff view.", "*magit:diff*", "magit-diff-mode");
+    mk("magit-diff", "Open a dedicated side-by-side diff view against HEAD.", "*magit:diff*", "magit-diff-mode");
     mk("magit-log", "Open the Magit commit history log.", "*magit:log*", "magit-log-mode");
-    mk("magit-blame", "Open git blame annotations for the current file.", "*magit:blame*", "magit-blame-mode");
     mk("magit-stash-list", "Open the Magit stash list buffer.", "*magit:stash*", "magit-stash-mode");
     mk("magit-branch", "Open the Magit branch list buffer.", "*magit:branch*", "magit-branch-mode");
     mk("magit-rebase", "Start interactive rebase.", "*magit:rebase*", "magit-rebase-mode");
-
-    // Global entry-point commands — dispatch and file-dispatch open the
-    // status buffer as a placeholder; transient menus land in a follow-up.
     mk("magit-dispatch", "Open the Magit repo-level dispatch transient.", "*magit:status*", "magit-status-mode");
     mk("magit-file-dispatch", "Open the Magit file-level dispatch transient.", "*magit:status*", "magit-status-mode");
+    // Drop the mk closure to release mutable borrow
+    drop(mk);
+    {
+        registry.register_ex_command(
+            "magit-blame",
+            "Open git blame annotations for a file. With arg: specifies the file path.",
+            ExCommandSpec {
+                latency_class: LatencyClass::Reflex,
+                accepts_bang: false,
+                accepts_range: false,
+                parse_args: Arc::new(|line: &str, _bang: bool| {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() {
+                        Ok(Args::None)
+                    } else {
+                        Ok(Args::String(trimmed.to_string()))
+                    }
+                }),
+                apply: Arc::new(|ctx| {
+                    let name = if let Args::String(ref path) = ctx.args {
+                        format!("*magit:blame:{}*", path)
+                    } else {
+                        "*magit:blame*".to_string()
+                    };
+                    let mode_id = "magit-blame-mode".to_string();
+                    Ok(Effect::OpenSyntheticBuffer {
+                        name,
+                        mode_id,
+                    })
+                }),
+                args_schema: vec![ArgSpec::optional("file", lattice_grammar::ArgKind::String, "file path to blame")],
+                surface_form: SurfaceForm::Keyword,
+            },
+        );
+    }
 }
 
 /// Register every `action:magit-*` command so that mode keymap

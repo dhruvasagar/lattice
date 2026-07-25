@@ -5348,6 +5348,7 @@ dependencies = [
  "lattice-help",
  "lattice-keymap",
  "lattice-lsp",
+ "lattice-magit",
  "lattice-mode",
  "lattice-multibuffer",
  "lattice-oil",
@@ -5413,6 +5414,27 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "toml 0.8.23",
+ "tracing",
+]
+
+[[package]]
+name = "lattice-magit"
+version = "0.1.0"
+dependencies = [
+ "lattice-config",
+ "lattice-core",
+ "lattice-diff",
+ "lattice-grammar",
+ "lattice-keymap",
+ "lattice-mode",
+ "lattice-protocol",
+ "lattice-runtime",
+ "lattice-theme",
+ "lattice-vcs",
+ "ropey",
+ "smallvec",
+ "tempfile",
+ "tokio",
  "tracing",
 ]
 

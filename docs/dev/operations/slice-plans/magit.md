@@ -16,7 +16,7 @@ owns *what* and *why*.
 | VCS.1 | `lattice-vcs` crate — Layer 1 data API | None | ✅ |
 | VCS.2 | Layer 2 auto-inline-diff subsystem | VCS.1 | ✅ |
 | PICK.1 | Picker transient-mode extension | None (picker subsystem) | ✅ |
-| MG.1 | `lattice-magit` crate scaffolding | VCS.2, mode-architecture | 📝 |
+| MG.1 | `lattice-magit` crate scaffolding | VCS.2, mode-architecture | ✅ |
 | MG.2 | magit-status buffer rendering | MG.1 | 📝 |
 | MG.3 | magit-status actions (s/u/x, cc/ca, =, p, <CR>) | MG.2 | 📝 |
 | MG.4 | magit-commit buffer | MG.2 | 📝 |

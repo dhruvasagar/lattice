@@ -1,0 +1,38 @@
+[package]
+name = "lattice-magit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# MG.1+: Magit — git porcelain as a core plugin.
+#
+# Feature-buffer crate inverted out of lattice-host (same tier as
+# oil/file-tree/compilation). Owns every magit buffer view's mode,
+# keymap, action handler, and synthetic-buffer provisioning. Installs
+# through SubsystemBoot seam.
+#
+# See docs/dev/architecture/magit.md and
+# docs/dev/operations/slice-plans/magit.md.
+
+[dependencies]
+lattice-vcs = { path = "../lattice-vcs" }
+lattice-diff = { path = "../lattice-diff" }
+lattice-mode = { path = "../lattice-mode" }
+lattice-runtime = { path = "../lattice-runtime" }
+lattice-core = { path = "../lattice-core" }
+lattice-protocol = { path = "../lattice-protocol" }
+lattice-grammar = { path = "../lattice-grammar" }
+lattice-config = { path = "../lattice-config" }
+lattice-keymap = { path = "../lattice-keymap" }
+lattice-theme = { path = "../lattice-theme" }
+tokio = { workspace = true, features = ["sync", "rt", "macros"] }
+tracing = { workspace = true }
+ropey = { workspace = true }
+smallvec = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

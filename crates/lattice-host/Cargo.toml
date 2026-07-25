@@ -109,6 +109,10 @@ lattice-diff = { path = "../lattice-diff" }
 # repository discovery, and git object reading. Leaf dep — only
 # gix/ropey transitively.
 lattice-vcs = { path = "../lattice-vcs" }
+# MG.1+: Magit — git porcelain as a core plugin. Installed through
+# the generic SubsystemBoot seam (one line in the Phase-B list,
+# zero Editor::do_magit_* methods).
+lattice-magit = { path = "../lattice-magit" }
 # AI (AI-1b / AG-4): both agent transports. `lattice_ai::install` wires the
 # ACP agent client (opencode et al: supervisor idle until `:opencode`,
 # `AiClientHandle`/`AiLogger` services, `ai-log-mode`, `:opencode` /

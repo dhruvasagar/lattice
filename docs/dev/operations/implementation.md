@@ -3979,12 +3979,13 @@ Installs through `SubsystemBoot` seam. Inverted out of
 
 ### Magit Layer 3 — `lattice-magit` feature-buffer crate
 
-- 📝 **MG.1** — Crate scaffolding. `MagitCoreMode` (minor mode),
-  `MagitStatusMode` (major mode shell), `install(boot)` via
-  `SubsystemBoot`, mode + command registrations, global
-  keybindings (`C-x g` → `:magit-status`, `C-c g` →
-  `magit-dispatch`, `C-c f` → `magit-file-dispatch`). No
-  view content yet.
+- ✅ **MG.1** — Crate scaffolding (2026-07-25).
+  `MagitCoreMode` (minor mode, `ActivationPolicy::Majors`,
+  navigation + close keymap), `MagitStatusMode` (major mode,
+  status keymap stubs, `on_activate` creates empty buffer),
+  `install(boot)` via `SubsystemBoot`, `:magit-status` via
+  `Effect::OpenSyntheticBuffer`. Zero `Editor::do_magit_*`
+  methods. 714 host tests pass green.
 - 📝 **MG.2** — magit-status buffer. Section index (file
   paths + status labels, no diffs), `DiffCache` (lazy
   per-file diff cache), lightweight refresh

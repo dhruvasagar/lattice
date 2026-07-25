@@ -594,6 +594,10 @@ impl Editor {
         // `PluginTracerHandle` at activation (registered by the loader install),
         // so this needs no ordering vs the loader install.
         lattice_plugin_trace::install(&mut boot);
+        // MG.1: Magit — git porcelain as a core plugin. Registers
+        // `magit-core-mode` (minor), `magit-status-mode` (major),
+        // and the `:magit-status` ex-command. See magit.md §5.
+        lattice_magit::install(&mut boot);
         // LSP (BC.8a — last + largest, sub-sliced BC.8a–e): registers the LSP
         // modes (`lsp-completion-mode` reads the supervisor handle via
         // `boot.service::<LspSupervisorHandle>()`, registered in Phase A) + the

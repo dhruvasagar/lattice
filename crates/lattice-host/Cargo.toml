@@ -104,6 +104,11 @@ lattice-cells = { path = "../lattice-cells" }
 # reads. Compute lands D.2.b. See
 # `docs/dev/architecture/diff-system.md`.
 lattice-diff = { path = "../lattice-diff" }
+# VCS.2 (magit Layer 2): the VCS subsystem in lattice-host depends
+# on the pure `lattice-vcs` data layer for GitBaseline snapshots,
+# repository discovery, and git object reading. Leaf dep — only
+# gix/ropey transitively.
+lattice-vcs = { path = "../lattice-vcs" }
 # AI (AI-1b / AG-4): both agent transports. `lattice_ai::install` wires the
 # ACP agent client (opencode et al: supervisor idle until `:opencode`,
 # `AiClientHandle`/`AiLogger` services, `ai-log-mode`, `:opencode` /

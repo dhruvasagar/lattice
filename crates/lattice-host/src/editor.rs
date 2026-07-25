@@ -1555,6 +1555,11 @@ pub struct Editor {
     /// boot through `editor_boot`) can leave it unset without
     /// the bind machinery firing.
     pub diff_subscription_guard: Option<crate::diff::subsystem::DiffSubscriptionGuard>,
+    /// VCS.2 (2026-07-25): the bus-subscription guard from
+    /// `VcsSubsystem::bind`. Held for the editor's lifetime;
+    /// its `Drop` unsubscribes the bus + aborts the drainer
+    /// task on editor teardown. Mirrors `diff_subscription_guard`.
+    pub vcs_subscription_guard: Option<crate::vcs::VcsSubscriptionGuard>,
     /// D.3.a.1 (2026-05-29): per-session wake-forwarder
     /// `JoinHandle`s. `:diff` spawns a tokio task that awaits
     /// `DiffSession::publish_notify().notified()` and fires

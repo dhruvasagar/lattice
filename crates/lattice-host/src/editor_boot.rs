@@ -1370,6 +1370,26 @@ impl Editor {
             >,
         > = std::sync::Arc::default();
 
+        // VCS.2 (2026-07-25): auto-inline-diff against git HEAD.
+        // Subscribes to DocumentOpened / DocumentClosed and
+        // auto-registers a DiffSession with GitBaseline(HEAD)
+        // for files inside git repos, producing immediate gutter
+        // signs. Gated by `git.auto-head-diff` (default true).
+        let vcs_subsystem = std::sync::Arc::new(crate::vcs::VcsSubsystem::new());
+        let vcs_subscription_guard = {
+            let _enter = runtime_handle.enter();
+            let resolver: std::sync::Arc<dyn crate::diff::subsystem::DocumentBufferResolver> =
+                std::sync::Arc::new(crate::diff::subsystem::BufferRegistryDocumentResolver::new(
+                    buffers.clone(),
+                ));
+            vcs_subsystem.bind(
+                event_bus.clone(),
+                diff_subsystem.clone(),
+                config.clone(),
+                resolver,
+            )
+        };
+
         // M.7: pre-create shared fold registry so `FoldOverlayServiceImpl`
         // and the `fold_registry:` field both point at the same Arc.
         let fold_registry = std::sync::Arc::new(std::sync::Mutex::new(
@@ -1977,6 +1997,7 @@ impl Editor {
             diff_subsystem,
             diff_subscription_guard: Some(diff_subscription_guard),
             diff_forwarders,
+            vcs_subscription_guard: Some(vcs_subscription_guard),
             lsp_log_event_rx: Some(lsp_log_event_rx),
             lsp_progress_store: lsp_progress_store.clone(),
             modeline_update_rx: Some(modeline_update_rx),

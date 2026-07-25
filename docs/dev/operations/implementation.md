@@ -3942,14 +3942,22 @@ Installs through `SubsystemBoot` seam. Inverted out of
 
 ### VCS Layer 2 — auto-inline-diff subsystem
 
-- 📝 **VCS.2** — `RepositoryWatcher` (tokio fs-watcher on
-  `.git/HEAD`, `.git/index`, `.git/refs/heads/*`), debounced
-  publish of `RepositoryEvent` on event bus. Auto-register
-  `DiffSession(GitBaseline(HEAD, path))` on `DocumentOpened`
-  for files inside a discovered git repo; tear down on
-  `DocumentClosed`. Subscribe to `RepositoryEvent`; poke
-  affected sessions' debouncers. `git.auto-head-diff` typed
-  option (default `true`). Formerly D.7.
+- ✅ **VCS.2** — Host-side VCS subsystem (2026-07-25).
+  `VcsSubsystem` in `crates/lattice-host/src/vcs/`.
+  Subscribes to `DocumentOpened` / `DocumentClosed` via
+  event bus drainer; auto-registers
+  `DiffSession(GitBaseline(HEAD, path))` for files inside
+  a discovered git repo; tears down on `DocumentClosed`.
+  `GitBaseline` impl `DiffParticipantSource` via
+  `git show <rev>:<path>` on `spawn_blocking`.
+  `git.auto-head-diff` typed option (default `true`).
+  `VcsSubscriptionGuard` Drop cleans up subscription +
+  abort drainer. 714 existing host tests pass green.
+  `RepositoryWatcher` deferred to VCS-future (notify
+  watcher on `.git/` — `lattice-vcs` already provides
+  `WorkingTree::statuses`; external-change poke of
+  diff sessions is layered on top of the auto-registration
+  seam post-MG.1).
 
 ### Picker extension — transient mode
 

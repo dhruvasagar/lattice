@@ -5363,6 +5363,7 @@ dependencies = [
  "lattice-syntax",
  "lattice-terminal",
  "lattice-theme",
+ "lattice-vcs",
  "memchr",
  "notify",
  "ropey",

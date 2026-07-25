@@ -186,6 +186,10 @@ pub mod messages;
 pub mod synthetic_buffers;
 pub mod tutor;
 pub mod ui;
+// VCS.2 (magit Layer 2): auto-inline-diff against git HEAD.
+// See `docs/dev/architecture/magit.md` §3 and
+// `docs/dev/operations/slice-plans/magit.md` VCS.2.
+pub mod vcs;
 
 // Perf plan B.4: tiny newtype wrapper that bumps a `u64` version
 // on every `DerefMut` access. Drives the identity-preserving Arc

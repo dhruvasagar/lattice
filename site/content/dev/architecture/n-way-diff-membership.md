@@ -27,7 +27,7 @@ Three reinforcing pressures came out of D.6:
    The descriptor should carry N opaque sources; the engine layer
    decides how to diff them.
 3. **Magit-style plugins need a generic consumption surface.** When
-   the magit plugin (per `vcs-and-magit.md`) consumes
+   the magit plugin (per [`magit.md`](../magit/)) consumes
    `DiffSubsystem`, branching on "two-way / three-way" through
    `is_three_way()` would force the plugin to reimplement the same
    arity dispatch the engine already does. One arity-agnostic API at
@@ -609,6 +609,6 @@ know it's an intentional limit, not a bug.
 - `diff-system.md` §8 — open question "doc-close behaviour":
   D.8's per-buffer `:diffoff` lets the auto-close on document
   closure be expressed as a `remove_participant_buffer` call.
-- `vcs-and-magit.md` — the future magit plugin consumes the D.8
-  arity-agnostic descriptor surface via the WIT bridge.
+- [`magit.md`](../magit/) — the future magit plugin consumes the D.8
+  arity-agnostic descriptor surface.
 - `slice-plans/diff-system.md` — D.8 row gets re-carved per §9.

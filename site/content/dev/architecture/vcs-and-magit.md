@@ -3,11 +3,15 @@ title = "VCS and Magit-style Integration"
 +++
 
 
-**Status:** sketch — design captured during 2026-05-31's D.6 → D.7 review.
-The diff system (D-series) ships first; this fragment locks in the
-architectural shape so the eventual VCS implementation doesn't drive a
-contract break. **Magit is v1.** Plugin API is v1. This doc revisits in
-detail when D.7 / Phase 7 plugin architecture begin.
+**Status: SUPERSEDED 2026-07-25** — this 2026-05-31 sketch is replaced by the
+detailed design fragment [`magit.md`](../magit/), which owns the authoritative
+contracts, mode decomposition, keymap surface, performance posture, and slice
+plan. The three-layer model survives; everything else (mode decomposition,
+deliverable path as native crate through `SubsystemBoot`, WIT-gap analysis,
+`lattice-vcs` vs `lattice-magit` crate split rationale, complete view
+inventory, and 12-slice plan) is in `magit.md`. This file is retained for
+historical reference (the original three-layer concept); cross-references
+have been repointed to `magit.md`.
 
 ## 1. Why this fragment exists
 

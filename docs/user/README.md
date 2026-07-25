@@ -51,6 +51,10 @@ same surface).
 | The error list (`:next-error` / `:cnext`, `]qq`/`[qq`, `:error-list`, `:problems` — quickfix filled by `:compile`) | [error-list.md](error-list.md) | ✅ |
 | Narrow mode (`zn` operator, `:narrow` / `:widen`, edit-in-view → source, stacked one-hop, `znaf` in view)   | [narrow-mode.md](narrow-mode.md)    | ✅     |
 | Diff & merge (`:diffthis` / `:diffsplit`, `]c` / `[c`, `do` / `dp`, sign column, two- + three-way)          | [diff.md](diff.md)                  | ✅     |
+| Magit (git porcelain: `C-x g` status, `C-c g` dispatch, `C-c f` file-dispatch, staging, committing, branching, stashing, rebasing) | [magit.md](magit.md)                | ✅     |
+| Magit status buffer (staged / unstaged / untracked sections, lazy inline diffs, hunk staging, commit / amend, context-aware visit) | [magit-status.md](magit-status.md)  | ✅     |
+| Magit buffers (commit, diff, log, blame, stash, branch, rebase — each a dedicated major-mode Document)     | [magit-buffers.md](magit-buffers.md) | ✅     |
+| Magit transient menus (dispatch `C-c g` / file-dispatch `C-c f` grouped action popups, flag toggles, live command previews) | [magit-transient.md](magit-transient.md) | ✅ |
 | Display & layout (soft-wrap, tab width, scroll-off, whitespace markers)                                     | [display.md](display.md)            | ✅     |
 | Modeline (per-pane status row: zones, the modal tag + showmode echo, `ui.modeline.*` layout config)         | [modeline.md](modeline.md)          | ✅     |
 | Themes & colours (`:colorscheme` + the live-preview picker, the builtin theme catalog, `:customize`, `register_theme`) | [themes.md](themes.md)   | ✅     |

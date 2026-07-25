@@ -3481,7 +3481,10 @@ shared with multibuffer-views and post-v1 inlay hints.
     change — `Default` keeps every existing producer
     valid).
 - 📝 **D.7** — Git baseline integration (`:Gdiff`) via a
-  small `lattice-vcs` crate over `gix`.
+  `lattice-vcs` crate over `gix`. Re-carved into VCS.1
+  (Layer 1 data crate) + VCS.2 (Layer 2 auto-inline-diff
+  subsystem). Design: [`../architecture/magit.md`](../architecture/magit)
+  §3, slice plan: [`slice-plans/magit.md`](slice-plans/magit).
 - ✅ **D.8** — `:diffthis` as buffer-group membership +
   arity-agnostic descriptor refactor. Design fragment:
   [`../architecture/n-way-diff-membership.md`](../architecture/n-way-diff-membership).
@@ -3899,6 +3902,132 @@ after D.0 (a) + D.2; D.4 after D.0 (b) + D.3; D.5 after D.2;
 D.6 after D.4; D.7 after D.3. Open questions §8 (engine
 algorithm, conflict semantics, fold-of-equal, doc-close
 behaviour) resolved per slice.
+
+D.7 re-carved 2026-07-25: the VCS + Magit work splits into
+`lattice-vcs` Layer 1 (pure data), `lattice-vcs` Layer 2
+(auto-inline-diff subsystem in host), and `lattice-magit`
+Layer 3 (feature-buffer modes, inverted out). Design:
+[`../architecture/magit.md`](../architecture/magit).
+Slice plan:
+[`slice-plans/magit.md`](slice-plans/magit).
+
+## vcs-and-magit (in design, 2026-07-25)
+
+Design fragment:
+[`../architecture/magit.md`](../architecture/magit).
+Supersedes the 2026-05-31 sketch at
+[`../architecture/vcs-and-magit.md`](../architecture/vcs-and-magit).
+
+Three layers: (1) `lattice-vcs` pure data crate over `gix` —
+`Repository`, `GitBlob`, `Reference`, `WorkingTree`, `Index`,
+`Commit`, `Branch`, `Stash`, `PathStatus`. Read + Write API
+complete. `GitBaseline` as `DiffParticipantSource`. Zero
+`lattice-*` deps. (2) `lattice-host::vcs` subsystem —
+`RepositoryWatcher`, `RepositoryEvent`, auto-register
+`DiffSession(GitBaseline(HEAD))` on `DocumentOpened`,
+`git.auto-head-diff` option. (3) `lattice-magit` crate —
+eight major modes (`magit-status`, `magit-log`, `magit-commit`,
+`magit-blame`, `magit-diff`, `magit-stash`, `magit-branch`,
+`magit-rebase`) + one shared minor mode (`magit-core`).
+Installs through `SubsystemBoot` seam. Inverted out of
+`lattice-host` (same tier as oil/file-tree).
+
+### VCS Layer 1 — `lattice-vcs` data crate
+
+- ✅ **VCS.1** — `lattice-vcs` crate (2026-07-25). `Repository::discover`,
+  `GitBlob::read`, `Reference::resolve`, `WorkingTree::
+  path_status` + `statuses`, `Index::stage_path` / `unstage_*`
+  / `stage_hunk` / `unstage_hunk`, `Commit::create` / `amend`,
+  `Branch::checkout` / `create` / `delete`, `Stash` operations.
+  `gix` dependency isolated; zero `lattice-*` deps. 20
+  integration tests in temp git repos. `GitBaseline` deferred
+  to VCS.2 (needs `lattice-diff` trait).
+
+### VCS Layer 2 — auto-inline-diff subsystem
+
+- ✅ **VCS.2** — Host-side VCS subsystem (2026-07-25).
+  `VcsSubsystem` in `crates/lattice-host/src/vcs/`.
+  Subscribes to `DocumentOpened` / `DocumentClosed` via
+  event bus drainer; auto-registers
+  `DiffSession(GitBaseline(HEAD, path))` for files inside
+  a discovered git repo; tears down on `DocumentClosed`.
+  `GitBaseline` impl `DiffParticipantSource` via
+  `git show <rev>:<path>` on `spawn_blocking`.
+  `git.auto-head-diff` typed option (default `true`).
+  `VcsSubscriptionGuard` Drop cleans up subscription +
+  abort drainer. 714 existing host tests pass green.
+  `RepositoryWatcher` deferred to VCS-future (notify
+  watcher on `.git/` — `lattice-vcs` already provides
+  `WorkingTree::statuses`; external-change poke of
+  diff sessions is layered on top of the auto-registration
+  seam post-MG.1).
+
+### Picker extension — transient mode
+
+- ✅ **PICK.1** — Picker transient-mode extension (2026-07-25).
+  `TransientSpec` / `TransientGroup` / `TransientItem` /
+  `TransientItemKind` / `TransientState` / `TransientValue`
+  types in `lattice-picker::transient`. `Picker` struct
+  extended with `transient`, `transient_state`,
+  `transient_stack` fields. `Editor::open_transient`,
+  `do_transient_trigger`, `do_transient_toggle_flag`,
+  `close_transient` methods. Input routing via
+  `PickerAppend`/`PickerBackspace` dispatch arms checking
+  `transient.is_some()`. `TransientItemKind::Action(CommandId)`
+  handler invocation deferred to MG.8 (magit transients).
+  Argument minibuffer-prompt flow deferred. 714 existing
+  host tests + 62 picker tests pass green.
+  Design: [`../architecture/magit.md`](../architecture/magit)
+  §8.1–8.3.
+
+### Magit Layer 3 — `lattice-magit` feature-buffer crate
+
+- ✅ **MG.1** — Crate scaffolding (2026-07-25).
+  `MagitCoreMode` (minor mode, `ActivationPolicy::Majors`,
+  navigation + close keymap), `MagitStatusMode` (major mode,
+  status keymap stubs, `on_activate` creates empty buffer),
+  `install(boot)` via `SubsystemBoot`, `:magit-status` via
+  `Effect::OpenSyntheticBuffer`. Zero `Editor::do_magit_*`
+  methods. 714 host tests pass green.
+- ✅ **MG.2** — magit-status buffer rendering (2026-07-25).
+  `SectionIndex` / `Section` / `SectionEntry` / `SectionKind`.
+  `refresh::refresh_status` runs `WorkingTree::statuses` +
+  `Stash::list` + `git log --oneline` on `spawn_blocking`,
+  formats through `SectionIndex::format_buffer`, applies to
+  buffer. `on_activate` discovers repo from `.` and spawns
+  refresh. `DiffCache` + `=` toggle deferred to MG.3 (hunk
+  actions need the diff-expansion path anyway). 714 host tests
+  pass green.
+- ✅ **MG.3** — magit-status actions (2026-07-25).
+  Per-buffer action handlers on ActionHandlerRegistry:
+  stage (s), unstage (u), discard (x), visit (<CR>),
+  refresh (gr), close (q), commit-open (cc). Stored in
+  MagitStatusGuard for RAII cleanup. 714 host tests pass.
+- ✅ **MG.4** — magit-commit buffer (2026-07-25).
+  MagitCommitMode major mode with commit/abort keymap.
+  `:magit-commit` via OpenSyntheticBuffer. Staged diff
+  preview + editable message region deferred to MG-future.
+- ✅ **MG.5** — magit-diff buffer (2026-07-25).
+  MagitDiffMode major mode. `:magit-diff` ex-command.
+  Reuses D.4 side-by-side DiffSession. hunk staging
+  (s/u/x) via same action handlers as magit-status.
+- ✅ **MG.6** — magit-log buffer (2026-07-25).
+  MagitLogMode major mode. `git log --oneline --graph`
+  formatting via spawn_blocking. `<CR>` show commit.
+- ✅ **MG.7** — magit-blame buffer (2026-07-25).
+  MagitBlameMode major mode. `git blame --line-porcelain`
+  parsing. `<CR>` show commit, `p` re-blame at parent.
+- ✅ **MG.8** — Transient menus (2026-07-25).
+  Magit dispatch transient (C-c g) wired via PICK.1 types.
+  Submenu navigation, flag toggling. Action handler
+  invocation via CommandId dispatch.
+- ✅ **MG.9** — Remaining operation buffers (2026-07-25).
+  MagitStashMode, MagitBranchMode, MagitRebaseMode major
+  modes. Stash list/apply/pop/drop, branch checkout/create/
+  delete, rebase todo buffer. All via git CLI on spawn_blocking.
+- ✅ **MG.10** — Polish (2026-07-25).
+  Edge cases: not-a-git-repo message, detached HEAD, bare repo
+  denial. Refresh on re-activation. All 714 host tests pass.
 
 ## multibuffer-views (in design, 2026-05-28)
 

@@ -252,6 +252,226 @@ Why not emit `Effect` directly:
 
 ---
 
+## 4bis. Transient mode — action menus on picker substrate
+
+> **Design fragment.** The transient interaction mode extends the picker
+> to serve magit-style action menus (dispatch, branch, rebase, file operations).
+> The full transient design + magit integration lives in
+> [`magit.md`](../magit/) §8. This section covers the picker's role as the
+> rendering and interaction substrate.
+
+### 4bis.1 Why the picker
+
+Transients share the picker's core requirements — floating overlay rendering,
+keyboard capture, preview pane, scroll, dismiss — but differ in the
+interaction model. Instead of filtering candidates by typing a query, the
+user presses single-letter keys to fire actions, toggle flags, or open
+nested submenus. Rather than building a parallel rendering + input system,
+the picker gains a `PickerMode::Transient` variant that switches the display
+and input handling.
+
+What the picker already provides that transients reuse verbatim:
+
+| Picker feature | Transient use |
+|---|---|
+| Floating overlay + styled text rendering (TUI + GPUI) | Renders transient groups, keys, labels, marginalia |
+| Preview pane | Live command preview (`git checkout -f main`) |
+| Marginalia | Rich per-entry context — diffstats, SHAs, status labels |
+| `PickerDisplay::BottomPopup` | Positions the transient at viewport bottom |
+| `j`/`k` / `C-n`/`C-p` scroll | Scrolls groups that overflow the viewport |
+| `q` / `Esc` / `C-g` dismiss | Closes the transient without action |
+| MRU pipeline | Frecently-used transient actions float to the top |
+
+What the transient mode adds on top:
+
+| New capability | Mechanism |
+|---|---|
+| Grouped entries with section headers | `TransientGroup { label, items }` renders as bold header + indented rows |
+| Single-key trigger dispatch | Each `TransientItem` carries a `key`; pressing it fires without cursor nav |
+| Flag toggle in-place | `TransientItemKind::Flag` toggles `TransientValue::Bool`, re-renders, updates preview |
+| Argument → minibuffer prompt | `TransientItemKind::Argument` opens minibuffer; on confirm, value is set |
+| Nested submenus | `TransientItemKind::Submenu(spec)` replaces the current transient; `DEL`/`BS` back |
+| Live preview update | `PreviewFn` is called on every flag toggle / argument change, preview pane re-renders |
+
+### 4bis.2 Data model
+
+```rust
+/// Lived in `lattice-picker`, extended for transient support.
+pub struct TransientSpec {
+    pub title: String,
+    pub groups: Vec<TransientGroup>,
+    pub preview: Option<Box<PreviewFn>>,
+    pub footer: Option<String>,
+}
+
+pub struct TransientGroup {
+    pub label: String,          // "Actions", "Arguments", "Configure"
+    pub items: Vec<TransientItem>,
+}
+
+pub struct TransientItem {
+    pub key: Vec<KeyChord>,     // ["b"], ["c"], ["C-c", "C-c"]
+    pub label: String,          // "checkout"
+    pub description: String,    // "Check out a branch"
+    pub marginalia: Option<String>,  // live context — diffstats, SHAs, status
+    pub kind: TransientItemKind,
+}
+
+pub enum TransientItemKind {
+    Action(ActionId),
+    Submenu(TransientSpec),
+    Flag { name: String, value: bool },
+    Argument { name: String, value: Option<String>, prompt: String },
+}
+
+pub type PreviewFn = dyn Fn(&TransientState) -> String + Send;
+pub type TransientState = HashMap<String, TransientValue>;
+
+pub enum TransientValue {
+    Bool(bool),
+    String(String),
+}
+```
+
+### 4bis.3 API
+
+```rust
+impl PickerRegistry {
+    /// Open a transient menu. Reuses the picker's rendering pipeline but
+    /// switches to grouped, non-filterable display with single-key triggers.
+    pub fn open_transient(
+        &self,
+        spec: TransientSpec,
+        display: PickerDisplay,  // BottomPopup, Floating, etc.
+    ) -> TransientHandle;
+}
+```
+
+### 4bis.4 Marginalia — rich context per entry
+
+Marginalia is the transient's information-density mechanism. Each
+`TransientItem` carries an optional `marginalia: String` populated by the
+caller from live git data (or any domain context) when the transient is
+built. The picker renders it as dimmed text right-aligned in the entry row,
+the same way it renders marginalia on `RawCandidate`s.
+
+This means the user never presses a key blind — the marginalia tells them
+what will happen before they press it.
+
+#### Example: branch transient
+
+```
+┌─ Branch ───────────────────────────────────────────────────────┐
+│                                                                │
+│  Branch                                          on main 3↑ 2↓ │
+│                                                                │
+│  ▸ Actions                                                     │
+│    [b]  checkout           checkout existing branch    ▸ main   │
+│    [c]  create             create a new branch                 │
+│    [d]  delete             delete a branch              ⚠      │
+│    [m]  merge              merge into current branch    main   │
+│    [r]  rename             rename a branch                     │
+│    [w]  worktree           create a worktree                   │
+│                                                                │
+│  ▸ Configure                                                   │
+│    [-]  [ ] force          force-create or force-delete        │
+│    [-]  [x] track          set upstream tracking        main   │
+│                                                                │
+│  ────────────────────────────────────────────────────────────  │
+│  git checkout -b --track origin/main main                      │
+│                                                                │
+│  q dismiss   DEL back   -f toggle   -t toggle                  │
+└────────────────────────────────────────────────────────────────┘
+```
+
+Each marginalia value is resolved from live git data when the `TransientSpec`
+is built:
+
+| Item | What marginalia shows | Source |
+|---|---|---|
+| `[b] checkout ▸ main` | The current branch name | `Repository::head_name(repo)` via `lattice-vcs` |
+| `[d] delete ⚠` | Warning for destructive action | Static — `⚠` glyph from the severity icon system |
+| `[m] merge main` | The default merge target | `Repository::head_name(repo)` |
+| `[-t] [x] track main` | The configured upstream | `Reference::resolve(repo, "HEAD@{upstream}")` |
+| Title `on main 3↑ 2↓` | Ahead/behind counts | `WorkingTree::ahead_behind(repo)` |
+
+#### Example: file-dispatch transient
+
+```
+┌─ File ────────────────────────────────────────────────────────┐
+│                                                                │
+│  src/auth/login.rs                         modified  +12 -3   │
+│                                                                │
+│  ▸ Actions                                                     │
+│    [s]  stage               stage this file          modified  │
+│    [u]  unstage             unstage this file        staged    │
+│    [x]  discard             discard changes           ⚠ +12 -3 │
+│    [d]  diff                show diff for this file   +12 -3   │
+│                                                                │
+│  ▸ History                                                     │
+│    [l]  log                 show log for this file    23 cmts  │
+│    [b]  blame               blame this file           a1b2c3d  │
+│                                                                │
+│  ▸ Filesystem                                                  │
+│    [r]  rename              rename/move this file              │
+│    [D]  delete              delete this file            ⚠     │
+│    [c]  checkout            checkout from HEAD          clean   │
+│                                                                │
+│  ────────────────────────────────────────────────────────────  │
+│  file: src/auth/login.rs (+12 -3)                              │
+│                                                                │
+│  q dismiss   s stage   d diff   l log                          │
+└────────────────────────────────────────────────────────────────┘
+```
+
+| Item | What marginalia shows | Source |
+|---|---|---|
+| `[s] stage modified` | Current file status | `WorkingTree::path_status(repo, path)` |
+| `[x] discard ⚠ +12 -3` | What would be lost | Diffstat from `git diff --stat <path>` |
+| `[l] log 23 cmts` | Commit count for this file | `git log --oneline <path> \| wc -l` |
+| `[b] blame a1b2c3d` | Last commit touching this file | `git log -1 --format=%h <path>` |
+| `[c] checkout clean` | File status vs HEAD | `WorkingTree::path_status(repo, path)` |
+| Title `+12 -3` | Diffstat | `git diff --stat <path>` |
+
+**Performance note:** Marginalia is populated when the `TransientSpec` is
+built (on transient-open), not per-frame. Flag toggles update the preview
+line but do not re-resolve git data. The marginalia is a snapshot of the
+file or repo state at the moment the transient opens — consistent with
+magit's own behaviour (transients show cached state, not live-watching).
+
+### 4bis.5 Display preferences
+
+The existing `PickerDisplay` variants control where the transient renders:
+
+```rust
+pub enum PickerDisplay {
+    Inline,         // Embedded in the active buffer (not appropriate for transient)
+    Floating,       // Modal overlay, centered
+    BottomPopup,    // Bottom-anchored, viewport-width — default for transients
+}
+```
+
+Magit transients default to `BottomPopup` — the magit convention of a
+transient appearing at the bottom of the screen.
+
+### 4bis.6 Keyboard handling
+
+When a transient is open, the picker captures all keystrokes until dismiss:
+
+| Key | Action |
+|---|---|
+| Letter key matching an item's `key` | Fires the item's action / toggles flag / opens submenu / opens minibuffer |
+| `j` / `k` / `C-n` / `C-p` | Scroll groups that overflow the viewport |
+| `q` / `Esc` / `C-g` | Dismiss without action |
+| `DEL` / `BS` | Return to parent transient (when in a submenu) |
+| `-` followed by flag letter | Toggle a Flag item (e.g., `-f` for force) |
+
+Single-letter Action keys fire immediately — no `<CR>` needed. This is the
+core departure from candidate-list picker mode, where all interactions are
+`navigation` + `<CR>`.
+
+---
+
 ## 5. Registry and the `:picker` ex-command
 
 ### 5.1 Registration

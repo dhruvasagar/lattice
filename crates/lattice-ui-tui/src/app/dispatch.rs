@@ -504,7 +504,13 @@ impl App {
             | Action::DisplayLineDown
             | Action::DisplayLineUp
             | Action::DisplayLineStart
-            | Action::DisplayLineEnd => {}
+            | Action::DisplayLineEnd
+            // PICK.1: transient-mode actions are host-handled
+            // (routed through Editor::dispatch in the host match,
+            // grouped no-op here for exhaustiveness).
+            | Action::TransientTrigger(_)
+            | Action::TransientToggleFlag(_)
+            | Action::TransientDismiss => {}
             // 5.5.LSP.5: workspace-symbol request migrated to
             // `Editor::dispatch`. Action carries the query string;
             // a data-bearing variant can't sit in the grouped

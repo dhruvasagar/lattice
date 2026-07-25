@@ -21,6 +21,7 @@ pub mod magit_stash_mode;
 pub mod magit_status_mode;
 pub mod refresh;
 pub mod sections;
+pub mod transients;
 
 use std::sync::Arc;
 

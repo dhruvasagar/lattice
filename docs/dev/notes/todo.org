@@ -11,12 +11,12 @@
 - [ ] :! shell execution
 - [ ] ! filter operator
 - [ ] :.! shell execution and replace range
-- [ ] enhanced mini-buffer
+- [X] enhanced mini-buffer
 - [X] enhanced, configurable mode-line
 - [X] language support
 - [ ] transient like menu
 - [X] compilation-mode
-- [ ] surround operator
+- [X] surround operator
 - [X] argument operator
 - [X] Search operators
 - [X] borderless gui windows
@@ -57,15 +57,15 @@
   - [X] <C-x><C-f> file :files
   - [X] <C-x>0 :close
   - [X] <C-x>1 :only
-- [ ] Tree sitter motions (next function, next block, prev function, etc)
+- [X] Tree sitter motions (next function, next block, prev function, etc)
 - [X] Improve oil `-` to search and position cursor on editing file
 - [X] Refresh buffer if updated outside. vim's `autoread`.
 - [X] GPUI: Maximise window after init
-- [ ] `:opencode` support, similar to `:claude`
+- [X] `:opencode` support, similar to `:claude`
 - [ ] indent guide
 
 * Plugins
-- [ ] plugin manager
+- [X] plugin manager
 - [ ] project.el
 - [X] Claude Code IDE
 - [ ] Org Mode
@@ -145,7 +145,7 @@
   may need a peer-level opacity / palette-darken pass.
 - [X] visual block mode does not work
 - [X] marginalia columns alignment
-- [ ] `scrolloff` not respected properly
+- [X] `scrolloff` not respected properly
 - [X] ]e,[e, ]E, [E for multibuffer view not working
 - [X] Any edit breaks syntax highlighting
 - [X] `:e!` clones the buffer instead of just refreshing

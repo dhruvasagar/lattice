@@ -70,6 +70,12 @@ impl Mode for MagitCommitMode {
                 .and_then(|r| r.workdir().map(|p| p.to_path_buf()))
                 .unwrap_or_default();
 
+            // Detect amend: opened via `ca` → buffer name is "*magit:amend*"
+            let amend = store
+                .name_for(buffer_id)
+                .map(|n| n.contains("amend"))
+                .unwrap_or(false);
+
             // Populate the buffer: staged diff + message area
             let staged = run_staged_diff(&workdir);
             let initial = format!(
@@ -90,7 +96,7 @@ impl Mode for MagitCommitMode {
 
             // Register action handlers
             let state = Arc::new(Mutex::new(CommitState {
-                buffer_id, store: store.clone(), workdir, amend: false,
+                buffer_id, store: store.clone(), workdir, amend,
             }));
 
             let Some(cmd_arc) = ctx.service::<CommandRegistryHandle>() else { return Ok(()); };

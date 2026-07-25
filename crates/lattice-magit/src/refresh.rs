@@ -68,13 +68,19 @@ fn build_section_index(repo: &Repository) -> SectionIndex {
             PathStatus::Added => {
                 staged.push(SectionEntry::File { path, status });
             }
-            PathStatus::Modified | PathStatus::Conflicted => {
-                // Modified in worktree → unstaged.
-                // Conflicted (both staged + unstaged changes) appears in both.
+            PathStatus::Modified => {
                 unstaged.push(SectionEntry::File {
                     path: path.clone(),
                     status,
                 });
+            }
+            PathStatus::Conflicted => {
+                // Both staged and unstaged changes — appears in both sections
+                staged.push(SectionEntry::File {
+                    path: path.clone(),
+                    status,
+                });
+                unstaged.push(SectionEntry::File { path, status });
             }
             PathStatus::Deleted => {
                 unstaged.push(SectionEntry::File { path, status });
@@ -149,8 +155,10 @@ fn populate_ahead_behind(repo: &Repository, index: &mut SectionIndex) {
     {
         let parts: Vec<&str> = output.split_whitespace().collect();
         if parts.len() == 2 {
-            index.behind = parts[0].parse().unwrap_or(0);
-            index.ahead = parts[1].parse().unwrap_or(0);
+            // HEAD is left side → parts[0] = ahead (local commits not on upstream)
+            // @{upstream} is right → parts[1] = behind (upstream commits not local)
+            index.ahead = parts[0].parse().unwrap_or(0);
+            index.behind = parts[1].parse().unwrap_or(0);
         }
     }
 }

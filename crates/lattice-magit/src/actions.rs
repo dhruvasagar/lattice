@@ -201,7 +201,7 @@ pub fn register_action_handlers(
     {
         handler!("action:magit-commit-amend", move |_ctx: &ActionContext<'_>| {
             Some(Effect::OpenSyntheticBuffer {
-                name: "*magit:commit*".to_string(),
+                name: "*magit:amend*".to_string(),
                 mode_id: "magit-commit-mode".to_string(),
             })
         });

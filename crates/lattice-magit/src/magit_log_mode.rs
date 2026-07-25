@@ -103,17 +103,17 @@ impl Mode for MagitLogMode {
                         let handle = g.store.handle_for(g.buffer_id)?;
                         let snap = handle.snapshot();
                         let line = snap.buffer.line(ctx.cursor.line)?;
-                        // Parse SHA from log line (first word)
                         let sha = line.split_whitespace().next()?;
-                        // Open commit detail via git show
                         let output = std::process::Command::new("git")
-                            .args(["show", "--stat", sha])
+                            .args(["show", "--stat", "-p", sha])
                             .current_dir(&g.workdir)
                             .output().ok()?;
-                        let detail = String::from_utf8(output.stdout).ok()?;
-                        // Open as a new buffer
+                        let text = String::from_utf8(output.stdout).ok()?;
+                        // Write to a temp file and open it
+                        let tmp = g.workdir.join(format!(".lattice_commit_{}", sha));
+                        std::fs::write(&tmp, text).ok()?;
                         Some(Effect::OpenBuffer {
-                            path: Some(g.workdir.join(format!("COMMIT_{}", sha))),
+                            path: Some(tmp),
                             force: true,
                         })
                     });

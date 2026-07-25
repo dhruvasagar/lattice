@@ -14,6 +14,7 @@ pub mod magit_branch_mode;
 pub mod magit_commit_mode;
 pub mod magit_core_mode;
 pub mod magit_diff_mode;
+pub mod magit_global_mode;
 pub mod magit_log_mode;
 pub mod magit_rebase_mode;
 pub mod magit_stash_mode;
@@ -35,6 +36,7 @@ use magit_branch_mode::MagitBranchMode;
 use magit_commit_mode::MagitCommitMode;
 use magit_core_mode::MagitCoreMode;
 use magit_diff_mode::MagitDiffMode;
+use magit_global_mode::MagitGlobalMode;
 use magit_log_mode::MagitLogMode;
 use magit_rebase_mode::MagitRebaseMode;
 use magit_stash_mode::MagitStashMode;
@@ -45,6 +47,10 @@ use magit_status_mode::MagitStatusMode;
 /// the Phase-B subsystem install pass.
 pub fn install(boot: &mut impl SubsystemBoot) {
     // ── Modes ──────────────────────────────────────────────
+
+    boot.modes_mut()
+        .register(MagitGlobalMode)
+        .expect("magit-global-mode registers without conflict");
 
     boot.modes_mut()
         .register(MagitCoreMode)
@@ -119,4 +125,9 @@ fn register_ex_commands(registry: &mut CommandRegistry) {
     mk("magit-stash-list", "Open the Magit stash list buffer.", "*magit:stash*", "magit-stash-mode");
     mk("magit-branch", "Open the Magit branch list buffer.", "*magit:branch*", "magit-branch-mode");
     mk("magit-rebase", "Start interactive rebase.", "*magit:rebase*", "magit-rebase-mode");
+
+    // Global entry-point commands — dispatch and file-dispatch open the
+    // status buffer as a placeholder; transient menus land in a follow-up.
+    mk("magit-dispatch", "Open the Magit repo-level dispatch transient.", "*magit:status*", "magit-status-mode");
+    mk("magit-file-dispatch", "Open the Magit file-level dispatch transient.", "*magit:status*", "magit-status-mode");
 }

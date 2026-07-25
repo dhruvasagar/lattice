@@ -13,7 +13,7 @@
 - [ ] :.! shell execution and replace range
 - [ ] enhanced mini-buffer
 - [X] enhanced, configurable mode-line
-- [ ] language support
+- [X] language support
 - [ ] transient like menu
 - [X] compilation-mode
 - [ ] surround operator

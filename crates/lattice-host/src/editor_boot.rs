@@ -440,7 +440,7 @@ impl Editor {
         // SU.3a: register surround-mode with the operator handles it owns.
         lattice_mode::modes::surround::register_surround_modes(
             boot.modes_mut(),
-            surround_operators,
+            surround_operators.clone(),
         );
         lattice_syntax::register_language_modes(boot.modes_mut());
         // BC.8a: the LSP modes (`register_lsp_log_modes` + the
@@ -1754,6 +1754,7 @@ impl Editor {
                     &builtins,
                     &syntax_textobject_ids,
                     &syntax_motion_ids,
+                    false,
                 );
                 // K.3.2 (2026-06-02): emacs-style <C-h> map at
                 // KeymapLayer::Builtin (Normal-mode only) —
@@ -1810,6 +1811,32 @@ impl Editor {
                 // path above; migrating them is a separate
                 // MO.x slice tracked under
                 // `mode-ownership-cleanup.md`.)
+
+                // SU.4: register `ys{motion}{char}` operator-pending
+                // bindings. The `post_motion_char: true` flag appends
+                // `ChordPattern::CharLiteral` to every motion/text-object
+                // path so the wrapping character is captured as
+                // `Args::Char` by the wildcard resolution.
+                crate::keymap_normal::register_operator_bindings(
+                    &h,
+                    &[
+                        lattice_protocol::chord::ChordPattern::Literal(
+                            lattice_protocol::chord::KeyChord::char('y'),
+                        ),
+                        lattice_protocol::chord::ChordPattern::Literal(
+                            lattice_protocol::chord::KeyChord::char('s'),
+                        ),
+                    ],
+                    surround_operators.add,
+                    lattice_protocol::chord::ChordPattern::Literal(
+                        lattice_protocol::chord::KeyChord::char('s'),
+                    ),
+                    &builtins,
+                    &syntax_textobject_ids,
+                    &syntax_motion_ids,
+                    true, // post_motion_char
+                );
+
                 // K.2.4 (2026-06-01): translate every registered
                 // mode's `Mode::keymap()` contribution into a
                 // `MinorMode(mode_id)` layer on `h`. Today most

@@ -734,12 +734,14 @@ mod operator_tests {
     use lattice_grammar::command::CommandInvocation;
     use lattice_grammar::dispatcher::execute as grammar_execute;
 
-    fn fixture(text: &str) -> (CommandRegistry, SurroundOperators, Document) {
+    use lattice_grammar::builtins::Builtins;
+
+    fn fixture(text: &str) -> (CommandRegistry, Builtins, SurroundOperators, Document) {
         let mut r = CommandRegistry::new();
-        let _builtins = grammar_builtins_populate(&mut r);
+        let builtins = grammar_builtins_populate(&mut r);
         let ops = register_surround_operators(&mut r);
         let d = Document::from_text(text);
-        (r, ops, d)
+        (r, builtins, ops, d)
     }
 
     fn doc_text(doc: &Document) -> String {
@@ -753,7 +755,7 @@ mod operator_tests {
 
     #[test]
     fn surround_delete_removes_double_quotes() {
-        let (registry, ops, mut doc) = fixture("hello \"world\" foo");
+        let (registry, _builtins, ops, mut doc) = fixture("hello \"world\" foo");
         let cursor = Position::new(0, 8); // on 'o' in "world"
         set_cursor(&mut doc, cursor);
         let inv = CommandInvocation::of(ops.delete.0)
@@ -773,7 +775,7 @@ mod operator_tests {
 
     #[test]
     fn surround_delete_no_match_is_noop() {
-        let (registry, ops, mut doc) = fixture("hello world");
+        let (registry, _builtins, ops, mut doc) = fixture("hello world");
         let cursor = Position::ZERO;
         set_cursor(&mut doc, cursor);
         let inv = CommandInvocation::of(ops.delete.0)
@@ -795,7 +797,7 @@ mod operator_tests {
 
     #[test]
     fn surround_delete_removes_parens() {
-        let (registry, ops, mut doc) = fixture("fn foo(x: i32) {}");
+        let (registry, _builtins, ops, mut doc) = fixture("fn foo(x: i32) {}");
         let cursor = Position::new(0, 10); // on 'i' in i32
         set_cursor(&mut doc, cursor);
         let inv = CommandInvocation::of(ops.delete.0)
@@ -815,7 +817,7 @@ mod operator_tests {
 
     #[test]
     fn surround_delete_with_close_char_target() {
-        let (registry, ops, mut doc) = fixture("(hello world)");
+        let (registry, _builtins, ops, mut doc) = fixture("(hello world)");
         let cursor = Position::new(0, 3); // on 'l'
         set_cursor(&mut doc, cursor);
         let inv = CommandInvocation::of(ops.delete.0)
@@ -835,7 +837,7 @@ mod operator_tests {
 
     #[test]
     fn surround_change_double_to_single_quotes() {
-        let (registry, ops, mut doc) = fixture("hello \"world\" foo");
+        let (registry, _builtins, ops, mut doc) = fixture("hello \"world\" foo");
         let cursor = Position::new(0, 8); // on 'o' in "world"
         set_cursor(&mut doc, cursor);
         let inv = CommandInvocation::of(ops.change.0)
@@ -858,7 +860,7 @@ mod operator_tests {
 
     #[test]
     fn surround_change_parens_to_brackets() {
-        let (registry, ops, mut doc) = fixture("(hello)");
+        let (registry, _builtins, ops, mut doc) = fixture("(hello)");
         let cursor = Position::new(0, 2); // on 'e'
         set_cursor(&mut doc, cursor);
         let inv = CommandInvocation::of(ops.change.0)
@@ -881,7 +883,7 @@ mod operator_tests {
 
     #[test]
     fn surround_add_linewise_wraps_line() {
-        let (registry, ops, mut doc) = fixture("hello world\n");
+        let (registry, _builtins, ops, mut doc) = fixture("hello world\n");
         let cursor = Position::new(0, 0);
         let inv = CommandInvocation::of(ops.add.0)
             .with_range(lattice_grammar::range::Range::CurrentLine)
@@ -900,7 +902,7 @@ mod operator_tests {
 
     #[test]
     fn surround_add_linewise_wraps_line_with_brackets() {
-        let (registry, ops, mut doc) = fixture("hello\n");
+        let (registry, _builtins, ops, mut doc) = fixture("hello\n");
         let cursor = Position::new(0, 0);
         let inv = CommandInvocation::of(ops.add.0)
             .with_range(lattice_grammar::range::Range::CurrentLine)
@@ -919,7 +921,7 @@ mod operator_tests {
 
     #[test]
     fn surround_add_on_selection_wraps_text() {
-        let (registry, ops, mut doc) = fixture("hello world");
+        let (registry, _builtins, ops, mut doc) = fixture("hello world");
         let cursor = Position::new(0, 0);
         // Set the document's selection to cover "hello" (bytes 0-5, half-open).
         use lattice_protocol::selection::{Selection, SelectionSet};
@@ -952,7 +954,7 @@ mod operator_tests {
 
     #[test]
     fn surround_change_no_match_is_noop() {
-        let (registry, ops, mut doc) = fixture("hello world");
+        let (registry, _builtins, ops, mut doc) = fixture("hello world");
         let cursor = Position::ZERO;
         set_cursor(&mut doc, cursor);
         let inv = CommandInvocation::of(ops.change.0)
@@ -976,7 +978,7 @@ mod operator_tests {
 
     #[test]
     fn surround_add_with_unknown_wrapper_is_noop() {
-        let (registry, ops, mut doc) = fixture("hello\n");
+        let (registry, _builtins, ops, mut doc) = fixture("hello\n");
         let cursor = Position::ZERO;
         let inv = CommandInvocation::of(ops.add.0)
             .with_range(lattice_grammar::range::Range::CurrentLine)
@@ -991,5 +993,52 @@ mod operator_tests {
         )
         .unwrap();
         assert!(matches!(eff, lattice_grammar::effect::Effect::None));
+    }
+
+    // ── ys{motion}{char} operator dispatch tests ────────────────
+
+    #[test]
+    fn surround_add_via_motion_word_forward() {
+        // ysw" → wrap from cursor to word end in double quotes.
+        let (registry, builtins, ops, mut doc) = fixture("hello world");
+        let cursor = Position::new(0, 0); // on 'h'
+        set_cursor(&mut doc, cursor);
+        let inv = CommandInvocation::of(ops.add.0)
+            .with_target(lattice_grammar::Target::Motion(builtins.word_forward, Args::None))
+            .with_args(Args::Char('"'));
+        grammar_execute(
+            &registry,
+            &mut doc,
+            BufferId(0),
+            cursor,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
+        // word_forward from 0 resolves past the space after "hello",
+        // so the wrapped span is "hello " (vim-accurate: w goes to next word start).
+        assert!(doc_text(&doc).starts_with("\"hello"),
+            "expected wrapped text to start with \"hello, got: {}", doc_text(&doc));
+    }
+
+    #[test]
+    fn surround_add_via_inner_word_text_object() {
+        // ysiw" → wrap inner word in double quotes.
+        let (registry, builtins, ops, mut doc) = fixture("hello world");
+        let cursor = Position::new(0, 2); // on 'l' in "hello"
+        set_cursor(&mut doc, cursor);
+        let inv = CommandInvocation::of(ops.add.0)
+            .with_target(lattice_grammar::Target::TextObject(builtins.inner_word, Args::None))
+            .with_args(Args::Char('"'));
+        grammar_execute(
+            &registry,
+            &mut doc,
+            BufferId(0),
+            cursor,
+            inv,
+            &CancellationToken::never(),
+        )
+        .unwrap();
+        assert_eq!(doc_text(&doc), "\"hello\" world");
     }
 }

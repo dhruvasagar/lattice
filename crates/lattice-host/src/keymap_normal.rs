@@ -882,6 +882,7 @@ pub fn register_normal_bindings(
         builtins,
         syntax_textobjects,
         syntax_motions,
+        false,
     );
     register_operator_bindings(
         handle,
@@ -891,6 +892,7 @@ pub fn register_normal_bindings(
         builtins,
         syntax_textobjects,
         syntax_motions,
+        false,
     );
     register_operator_bindings(
         handle,
@@ -900,6 +902,7 @@ pub fn register_normal_bindings(
         builtins,
         syntax_textobjects,
         syntax_motions,
+        false,
     );
     register_operator_bindings(
         handle,
@@ -909,6 +912,7 @@ pub fn register_normal_bindings(
         builtins,
         syntax_textobjects,
         syntax_motions,
+        false,
     );
     register_operator_bindings(
         handle,
@@ -918,6 +922,7 @@ pub fn register_normal_bindings(
         builtins,
         syntax_textobjects,
         syntax_motions,
+        false,
     );
     // Case operators -- prefix is the two-key sequence registered
     // at slice 8.g.ii. Their doubled forms (`gUU` / `guu` / `g~~`)
@@ -930,6 +935,7 @@ pub fn register_normal_bindings(
         builtins,
         syntax_textobjects,
         syntax_motions,
+        false,
     );
     register_operator_bindings(
         handle,
@@ -939,6 +945,7 @@ pub fn register_normal_bindings(
         builtins,
         syntax_textobjects,
         syntax_motions,
+        false,
     );
     register_operator_bindings(
         handle,
@@ -948,6 +955,7 @@ pub fn register_normal_bindings(
         builtins,
         syntax_textobjects,
         syntax_motions,
+        false,
     );
     // `g/` search operator (Lattice extension) -- same operator-pending
     // cross-product as the case operators, so `g/{motion}` / `g/i{obj}`
@@ -961,6 +969,7 @@ pub fn register_normal_bindings(
         builtins,
         syntax_textobjects,
         syntax_motions,
+        false,
     );
 
     // ---- Slice 8.g.v: mark / register / find-char / macro
@@ -1398,6 +1407,7 @@ pub fn register_operator_bindings(
     builtins: &Builtins,
     syntax_textobjects: &SyntaxTextObjectIds,
     syntax_motions: &SyntaxMotionIds,
+    post_motion_char: bool,
 ) {
     let layer = KeymapLayer::Builtin;
     let mode = BindingMode::Normal;
@@ -1408,14 +1418,27 @@ pub fn register_operator_bindings(
     // ---- as `d<motion>` / `y<motion>` / ... automatically. (This is
     // ---- also where `dG` / `cG` / `yG` come from now -- `G` was
     // ---- previously absent from the operator-pending list.)
+    //
+    // ---- When `post_motion_char` is true (e.g. surround's `ys{motion}{char}`),
+    // ---- appends `ChordPattern::CharLiteral` so the wrapping char is
+    // ---- captured as `Args::Char` by the wildcard resolution.
+    // ---- The motion target uses `Args::Char('\0')` as a placeholder so
+    // ---- `substitute_invocation_char_arg` routes the captured char to
+    // ---- the operator's args (not the motion's).
     for (chord, motion) in motion_rows(builtins) {
         let mut path: Vec<ChordPattern> = op_prefix.to_vec();
         path.push(chord);
+        let motion_args = if post_motion_char {
+            path.push(ChordPattern::CharLiteral);
+            Args::Char('\0')
+        } else {
+            Args::None
+        };
         handle.bind(
             layer,
             mode,
             &path,
-            CommandInvocation::of(op.0).with_target(Target::Motion(motion, Args::None)),
+            CommandInvocation::of(op.0).with_target(Target::Motion(motion, motion_args)),
             source(),
         );
     }
@@ -1428,11 +1451,17 @@ pub fn register_operator_bindings(
     for (seq, motion) in syntax_motion_rows(syntax_motions) {
         let mut path: Vec<ChordPattern> = op_prefix.to_vec();
         path.extend(seq);
+        let motion_args = if post_motion_char {
+            path.push(ChordPattern::CharLiteral);
+            Args::Char('\0')
+        } else {
+            Args::None
+        };
         handle.bind(
             layer,
             mode,
             &path,
-            CommandInvocation::of(op.0).with_target(Target::Motion(motion, Args::None)),
+            CommandInvocation::of(op.0).with_target(Target::Motion(motion, motion_args)),
             source(),
         );
     }
@@ -1470,6 +1499,7 @@ pub fn register_operator_bindings(
             around,
             builtins,
             syntax_textobjects,
+            post_motion_char,
         );
     }
 
@@ -1786,6 +1816,7 @@ fn register_text_object_resolutions(
     around: bool,
     builtins: &Builtins,
     syntax_textobjects: &SyntaxTextObjectIds,
+    post_motion_char: bool,
 ) {
     let layer = KeymapLayer::Builtin;
     let mode = BindingMode::Normal;
@@ -1795,6 +1826,9 @@ fn register_text_object_resolutions(
         for chord in &chord_aliases {
             let mut path: Vec<ChordPattern> = pending_prefix.to_vec();
             path.push(chord.clone());
+            if post_motion_char {
+                path.push(ChordPattern::CharLiteral);
+            }
             handle.bind(
                 layer,
                 mode,

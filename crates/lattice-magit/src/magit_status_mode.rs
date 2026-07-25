@@ -1,7 +1,9 @@
-//! MG.1: magit-status major mode definition.
+//! MG.2: magit-status major mode definition.
 //!
-//! The empty scaffold — buffer creation + keymap stubs.
-//! Real status rendering arrives in MG.2; actions in MG.3.
+//! Creates the `*magit:status*` buffer, spawns a refresh task on
+//! `spawn_blocking` that runs `git status` / `git stash list` /
+//! `git log`, formats the section index, and applies it as buffer
+//! content. Diffs load on demand via `=` (MG.3).
 
 use std::sync::OnceLock;
 
@@ -10,6 +12,9 @@ use lattice_mode::{
     BufferStoreHandle, CapabilitySet, Keymap, KeymapEntry, LifecycleFuture, Mode, ModeContext,
     ModeId, ModeKind, OptionOverrideSet, keymap_entry,
 };
+use lattice_vcs::Repository;
+
+use crate::refresh;
 
 /// Major mode for the `*magit:status*` buffer.
 pub struct MagitStatusMode;
@@ -116,19 +121,46 @@ impl Mode for MagitStatusMode {
 
     fn on_activate(&self, ctx: ModeContext) -> LifecycleFuture<'_, Self::Guard> {
         Box::pin(async move {
-            // MG.1: empty buffer. MG.2 spawns refresh task here.
-            let _buffer_id = lattice_core::BufferId(ctx.buffer_id().0 as u32);
+            let buffer_id = lattice_core::BufferId(ctx.buffer_id().0 as u32);
             let Some(store) = ctx.service::<BufferStoreHandle>() else {
                 return Ok(MagitStatusGuard::default());
             };
-            let Some(_handle) = store.handle_for(_buffer_id) else {
+            let Some(handle) = store.handle_for(buffer_id) else {
                 return Ok(MagitStatusGuard::default());
+            };
+            let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+                return Ok(MagitStatusGuard::default());
+            };
+
+            // Discover git repo from current directory
+            let workdir = match Repository::discover(".").ok().and_then(|r| r.workdir().map(|p| p.to_path_buf())) {
+                Some(w) => w,
+                None => {
+                    // Write "not a git repository" message into buffer
+                    let _ = handle
+                        .apply_edit_batch(vec![lattice_protocol::edit::Edit::replace(
+                            lattice_protocol::position::Range::new(
+                                lattice_protocol::position::Position::ZERO,
+                                lattice_protocol::position::Position::new(0, 0),
+                            ),
+                            "Not a git repository.\n".to_string(),
+                        )])
+                        .await;
+                    return Ok(MagitStatusGuard::default());
+                }
             };
 
             tracing::debug!(
                 target: "lattice_magit",
-                "magit-status-mode activated on buffer {_buffer_id:?}",
+                "magit-status-mode activated on buffer {buffer_id:?}, workdir={workdir:?}",
             );
+
+            // Spawn the refresh on spawn_blocking
+            let handle_clone = handle.clone();
+            runtime.spawn_blocking(move || {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                rt.block_on(refresh::refresh_status(buffer_id, handle_clone, workdir));
+            });
 
             Ok(MagitStatusGuard::default())
         })

@@ -45,7 +45,7 @@ impl Repository {
 
     /// Run a git command in the working directory and return its stdout
     /// as bytes. Runs on the calling thread.
-    pub(crate) fn run_git<I, S>(&self, args: I) -> Result<Vec<u8>>
+    pub fn run_git<I, S>(&self, args: I) -> Result<Vec<u8>>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<std::ffi::OsStr>,
@@ -71,7 +71,7 @@ impl Repository {
     }
 
     /// Run a git command and return stdout as a UTF-8 string.
-    pub(crate) fn run_git_str<I, S>(&self, args: I) -> Result<String>
+    pub fn run_git_str<I, S>(&self, args: I) -> Result<String>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<std::ffi::OsStr>,
@@ -84,7 +84,7 @@ impl Repository {
     }
 
     /// Run a git command and return stdout lines as trimmed UTF-8 strings.
-    pub(crate) fn run_git_lines<I, S>(&self, args: I) -> Result<Vec<String>>
+    pub fn run_git_lines<I, S>(&self, args: I) -> Result<Vec<String>>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<std::ffi::OsStr>,

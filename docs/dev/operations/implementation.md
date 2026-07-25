@@ -3986,15 +3986,15 @@ Installs through `SubsystemBoot` seam. Inverted out of
   `install(boot)` via `SubsystemBoot`, `:magit-status` via
   `Effect::OpenSyntheticBuffer`. Zero `Editor::do_magit_*`
   methods. 714 host tests pass green.
-- 📝 **MG.2** — magit-status buffer. Section index (file
-  paths + status labels, no diffs), `DiffCache` (lazy
-  per-file diff cache), lightweight refresh
-  (`WorkingTree::statuses` + `git stash list` + `git log` —
-  no diff commands), `=` toggle for on-demand diff loading,
-  section fold registration, inline diff via D.3 virtual
-  rows, headerline with branch/repo status, auto-refresh on
-  `RepositoryEvent` (fast path only, invalidates stale
-  diffs).
+- ✅ **MG.2** — magit-status buffer rendering (2026-07-25).
+  `SectionIndex` / `Section` / `SectionEntry` / `SectionKind`.
+  `refresh::refresh_status` runs `WorkingTree::statuses` +
+  `Stash::list` + `git log --oneline` on `spawn_blocking`,
+  formats through `SectionIndex::format_buffer`, applies to
+  buffer. `on_activate` discovers repo from `.` and spawns
+  refresh. `DiffCache` + `=` toggle deferred to MG.3 (hunk
+  actions need the diff-expansion path anyway). 714 host tests
+  pass green.
 - 📝 **MG.3** — magit-status actions. `s`/`u`/`x` for hunks
   and files (hunk ops require expanded diffs via `=`),
   `cc`/`ca` commit/amend, `=` toggle inline diff,

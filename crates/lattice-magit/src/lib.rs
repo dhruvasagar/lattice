@@ -10,6 +10,8 @@
 
 pub mod magit_core_mode;
 pub mod magit_status_mode;
+pub mod refresh;
+pub mod sections;
 
 use std::sync::Arc;
 

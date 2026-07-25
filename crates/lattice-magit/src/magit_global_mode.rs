@@ -24,17 +24,17 @@ fn magit_global_keymap_entries() -> &'static [KeymapEntry] {
     ENTRIES.get_or_init(|| {
         vec![
             keymap_entry! {
-                mode: Normal, chord: "C-x g",
+                mode: Normal, chord: "<C-x>g",
                 doc: "Open magit-status for the current repo",
-                cmd: "magit-status"
+               cmd: "magit-status"
             },
             keymap_entry! {
-                mode: Normal, chord: "C-c g",
+                mode: Normal, chord: "<C-c>g",
                 doc: "Open magit dispatch transient (repo-level)",
                 cmd: "magit-dispatch"
             },
             keymap_entry! {
-                mode: Normal, chord: "C-c f",
+                mode: Normal, chord: "<C-c>f",
                 doc: "Open magit file-dispatch transient",
                 cmd: "magit-file-dispatch"
             },

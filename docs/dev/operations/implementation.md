@@ -104,8 +104,8 @@ with `ChordPattern::CharLiteral` wildcard capture for `ds{char}`,
 `cs{char1}{char2}`, `yss{char}`, and visual `S{char}`. Multi-char
 capture support added to `action_from_bound_with_capture`.
 19 tests (8 unit + 11 operator dispatcher integration). Design:
-[`plugin-surround.md`](../architecture/plugin-surround.md);
-slice plan: [`plugin-surround.md`](slice-plans/plugin-surround.md).
+[`surround-mode.md`](../architecture/surround-mode.md);
+slice plan: [`surround-mode.md`](slice-plans/surround-mode.md).
 Deferred to v2: `ys{motion}{char}` (needs post-motion char capture
 infrastructure), HTML/XML tag targets.
 

@@ -3,7 +3,7 @@
 > **Status: 🚧 ACTIVE (2026-07-25).** SU.1–SU.3d complete (19 tests).
 > SU.4–SU.6 deferred to v2.
 > Sequencing companion to the design fragment
-> [`../../architecture/plugin-surround.md`](../../architecture/plugin-surround.md).
+> [`../../architecture/surround-mode.md`](../../architecture/surround-mode.md).
 
 Native minor mode in `lattice-mode` (SL.0). Three operators registered in
 `CommandRegistry` at boot; keymap at `MinorMode(surround-mode)`; one infrastructure

@@ -2,7 +2,7 @@
 
 > **Design fragment.** Contracts, data model, rationale, rejected alternatives,
 > paramount-goal alignment. Slice sequencing is §12 and lives in
-> [`../operations/slice-plans/plugin-surround.md`](../operations/slice-plans/plugin-surround.md).
+> [`../operations/slice-plans/surround-mode.md`](../operations/slice-plans/surround-mode.md).
 > Companion fragments:
 > [`design.md`](design.md) (§5.8.3 — bundled plugin candidates),
 > [`plugin-auto-pair.md`](plugin-auto-pair.md) (the first bundled plugin, structural template).
@@ -368,7 +368,7 @@ HTML-aware parser or heuristic tag-name matching. Deferred to v2.
 
 ## 12. Slices
 
-See [`../operations/slice-plans/plugin-surround.md`](../operations/slice-plans/plugin-surround.md).
+See [`../operations/slice-plans/surround-mode.md`](../operations/slice-plans/surround-mode.md).
 Five slices implemented:
 
 - **SU.1** — Pair detection + surround operators

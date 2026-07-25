@@ -5,8 +5,8 @@
 //! (`yss{char}` / `S{char}` in visual). All three are registered
 //! in the shared `CommandRegistry` at boot.
 //!
-//! Design: [`docs/dev/architecture/plugin-surround.md`];
-//! slice plan: [`docs/dev/operations/slice-plans/plugin-surround.md`].
+//! Design: [`docs/dev/architecture/surround-mode.md`];
+//! slice plan: [`docs/dev/operations/slice-plans/surround-mode.md`].
 
 use std::sync::Arc;
 

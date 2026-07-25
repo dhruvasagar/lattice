@@ -95,6 +95,20 @@ track (PM.1–PM.4)**. **Remaining Phase-8 work:** the plugin-manager
 **user track (PM.5–PM.8** — use-package `require` + build-on-boot), more
 core plugins, and repackaging the built-in modes as WASM components.
 
+**surround-mode landed (2026-07-25, branch `feature/surround-mode`):**
+vim-surround semantics as a native minor mode in `lattice-mode`
+(`SurroundMode`, SU.1–SU.3b). Three grammar operators
+(`surround-delete` / `surround-change` / `surround-add`) registered
+in `CommandRegistry` at boot; keymap at `MinorMode(surround-mode)`
+with `ChordPattern::CharLiteral` wildcard capture for `ds{char}`,
+`cs{char1}{char2}`, `yss{char}`, and visual `S{char}`. Multi-char
+capture support added to `action_from_bound_with_capture`.
+19 tests (8 unit + 11 operator dispatcher integration). Design:
+[`plugin-surround.md`](../architecture/plugin-surround.md);
+slice plan: [`plugin-surround.md`](slice-plans/plugin-surround.md).
+Deferred to v2: `ys{motion}{char}` (needs post-motion char capture
+infrastructure), HTML/XML tag targets.
+
 Recent Phase 5.8 polish slices (2026-05-22)
 -------------------------------------------
 

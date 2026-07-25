@@ -708,6 +708,20 @@ use lattice_core::buffer::Buffer;
         assert_eq!(open_pos, Position::new(0, 0)); // '('
         assert_eq!(close_pos, Position::new(0, 6)); // ')'
     }
+
+    #[test]
+    fn find_surround_pair_large_line_performance() {
+        // Worst-case: scan a long line with no matching pair.
+        let line = "x".repeat(10_000);
+        let buf = Buffer::from_text(&line);
+        let cursor = buf.position_to_byte(Position::new(0, 5000)).unwrap();
+        let cursor_pos = buf.byte_to_position(cursor).unwrap();
+        let start = std::time::Instant::now();
+        let _ = find_surround_pair(&buf, cursor_pos, '"');
+        let elapsed = start.elapsed();
+        // 10k chars should be well under 1ms (linear scan).
+        assert!(elapsed.as_micros() < 1000, "find_surround_pair on 10k chars took {:?}", elapsed);
+    }
 }
 
 #[cfg(test)]

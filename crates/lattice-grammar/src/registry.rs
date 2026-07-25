@@ -166,6 +166,11 @@ pub struct OperatorSpec {
     /// range covering anchor..head; `apply` runs once. This keeps
     /// the operator a single undo unit instead of N per-row units.
     pub blockwise_per_row: bool,
+    /// When true (e.g. surround's `ys{motion}{char}`), the operator's
+    /// keymap bindings append `ChordPattern::CharLiteral` after every
+    /// motion path so a wrapping character is captured as `Args::Char`
+    /// by the wildcard resolution. Default false.
+    pub post_motion_char: bool,
 }
 
 impl std::fmt::Debug for OperatorSpec {
@@ -1172,6 +1177,7 @@ mod tests {
                 apply: Arc::new(|_| Ok(crate::effect::Effect::None)),
                 args_schema: vec![],
                 blockwise_per_row: false,
+            post_motion_char: false,
             },
         );
         let spec = r.lookup(id.0).unwrap();

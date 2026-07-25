@@ -279,6 +279,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             apply: Arc::new(operator_delete),
             args_schema: vec![],
             blockwise_per_row: true,
+            post_motion_char: false,
         },
     );
     let change = registry.register_operator(
@@ -289,6 +290,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             apply: Arc::new(operator_change),
             args_schema: vec![],
             blockwise_per_row: true,
+            post_motion_char: false,
         },
     );
     let yank = registry.register_operator(
@@ -299,6 +301,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             apply: Arc::new(operator_yank),
             args_schema: vec![],
             blockwise_per_row: true,
+            post_motion_char: false,
         },
     );
     let indent_left = registry.register_operator(
@@ -311,6 +314,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             // Linewise effect -- one batched edit covers every line
             // in the visual span, regardless of charwise / blockwise.
             blockwise_per_row: false,
+            post_motion_char: false,
         },
     );
     let indent_right = registry.register_operator(
@@ -321,6 +325,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             apply: Arc::new(operator_indent_right),
             args_schema: vec![],
             blockwise_per_row: false,
+            post_motion_char: false,
         },
     );
     let upper = registry.register_operator(
@@ -331,6 +336,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             apply: Arc::new(operator_upper),
             args_schema: vec![],
             blockwise_per_row: false,
+            post_motion_char: false,
         },
     );
     let lower = registry.register_operator(
@@ -341,6 +347,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             apply: Arc::new(operator_lower),
             args_schema: vec![],
             blockwise_per_row: false,
+            post_motion_char: false,
         },
     );
     let toggle_case = registry.register_operator(
@@ -351,6 +358,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             apply: Arc::new(operator_toggle_case),
             args_schema: vec![],
             blockwise_per_row: false,
+            post_motion_char: false,
         },
     );
     let search = registry.register_operator(
@@ -361,6 +369,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             apply: Arc::new(operator_search),
             args_schema: vec![],
             blockwise_per_row: false,
+            post_motion_char: false,
         },
     );
     let replace_char = registry.register_operator(
@@ -376,6 +385,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
             // Blockwise visual `r` overwrites each row's column slice
             // independently, exactly like `d` / `y` / `c`.
             blockwise_per_row: true,
+            post_motion_char: false,
         },
     );
 

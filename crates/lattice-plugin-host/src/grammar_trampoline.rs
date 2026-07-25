@@ -262,6 +262,7 @@ fn build_operator_spec(
         repeatable: spec.repeatable,
         args_schema,
         blockwise_per_row: spec.blockwise_per_row,
+        post_motion_char: spec.post_motion_char,
         apply: Arc::new(
             move |ctx: &mut OperatorContext| -> GrammarResult<NativeEffect> {
                 let wit_ctx = project_operator_context(ctx).map_err(CommandError::Plugin)?;

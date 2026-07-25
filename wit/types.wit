@@ -1033,6 +1033,10 @@ interface types {
         repeatable: bool,
         args-schema: list<arg-spec>,
         blockwise-per-row: bool,
+        /// When true, the operator's keymap bindings need a trailing
+        /// character wildcard after each motion path (e.g. surround's
+        /// `ys{motion}{char}` captures the wrapping char).
+        post-motion-char: bool,
     }
 
     /// Mirrors `lattice_grammar::registry::TextObjectSpec` (metadata; `apply` is

@@ -446,6 +446,7 @@ pub fn register_surround_operators(
                 ArgSpec::required("target", ArgKind::Char, "The surrounding pair character to delete (e.g. `\"`, `(`, `[`)"),
             ],
             blockwise_per_row: false,
+            post_motion_char: false,
         },
     );
 
@@ -460,12 +461,13 @@ pub fn register_surround_operators(
                 ArgSpec::required("replacement", ArgKind::Char, "The replacement surrounding pair character"),
             ],
             blockwise_per_row: false,
+            post_motion_char: false,
         },
     );
 
     let add = registry.register_operator(
         "operator:surround-add",
-        "Wrap the target range in a surrounding pair (vim's `yss{char}` / visual `S{char}`).",
+        "Wrap the target range in a surrounding pair (vim's `yss{char}` / visual `S{char}` / `ys{motion}{char}`).",
         OperatorSpec {
             repeatable: true,
             apply: Arc::new(operator_surround_add),
@@ -473,6 +475,7 @@ pub fn register_surround_operators(
                 ArgSpec::required("wrapper", ArgKind::Char, "The pair character to wrap with"),
             ],
             blockwise_per_row: false,
+            post_motion_char: true,
         },
     );
 

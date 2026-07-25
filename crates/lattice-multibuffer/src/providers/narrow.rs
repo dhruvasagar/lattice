@@ -251,6 +251,7 @@ pub fn register_narrow_operator(registry: &mut CommandRegistry) -> lattice_gramm
         OperatorSpec {
             repeatable: false,
             blockwise_per_row: false,
+            post_motion_char: false,
             args_schema: vec![],
             apply: Arc::new(|ctx: &mut OperatorContext| {
                 let (start_line, end_line) = range_to_narrow_lines(

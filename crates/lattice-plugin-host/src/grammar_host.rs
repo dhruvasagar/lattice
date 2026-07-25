@@ -251,6 +251,7 @@ mod tests {
                 repeatable: true,
                 args_schema: arg_schema(),
                 blockwise_per_row: false,
+            post_motion_char: false,
             },
             20,
         );

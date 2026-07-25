@@ -5,51 +5,52 @@
 //! index, and applies it to the buffer via `apply_edit_batch`.
 //! No diff commands — diffs load on demand via `=`.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
-use lattice_core::BufferId;
 use lattice_protocol::edit::Edit;
 use lattice_protocol::position::{Position, Range};
 use lattice_runtime::Document;
-use lattice_vcs::{Repository, WorkingTree, PathStatus, Stash};
+use lattice_vcs::{PathStatus, Repository, Stash, WorkingTree};
 
 use crate::sections::{Section, SectionEntry, SectionIndex, SectionKind};
 
-/// Run the magit-status refresh and apply formatted output to the
-/// buffer. Call on `spawn_blocking` — this does blocking git I/O.
-pub async fn refresh_status(
-    _buffer_id: BufferId,
+/// Run the magit-status refresh and apply formatted output.
+/// Called from inside `spawn_blocking` — this does blocking I/O
+/// (git commands), formats, then sends edits to the actor thread.
+pub async fn refresh_and_apply(
     handle: Arc<dyn Document>,
-    workdir: std::path::PathBuf,
+    workdir: PathBuf,
 ) {
-    let repo = match Repository::discover(&workdir) {
+    let text = build_status_text(&workdir);
+    apply_full_replace(&handle, text).await;
+}
+
+/// Build the status buffer text from live git data.
+/// Blocking — call on `spawn_blocking`.
+fn build_status_text(workdir: &PathBuf) -> String {
+    let repo = match Repository::discover(workdir) {
         Ok(r) => r,
         Err(e) => {
             tracing::debug!(target: "lattice_magit", "refresh: repo discover failed: {e}");
-            return;
+            return "Not a git repository.\n".to_string();
         }
     };
 
     let index = build_section_index(&repo);
-
-    // Format buffer content
     let text = index.format_buffer();
     if text.is_empty() {
-        let empty = "No changes (working tree clean)\n";
-        apply_full_replace(&handle, empty.to_string()).await;
+        "No changes (working tree clean)\n".to_string()
     } else {
-        apply_full_replace(&handle, text).await;
+        text
     }
 }
 
-/// Build the section index from live git data.
 fn build_section_index(repo: &Repository) -> SectionIndex {
     let mut index = SectionIndex::default();
-
-    // Branch name
     index.branch = current_branch(repo);
+    populate_ahead_behind(repo, &mut index);
 
-    // Statuses
     let statuses = match WorkingTree::statuses(repo) {
         Ok(s) => s,
         Err(_) => return index,
@@ -67,27 +68,30 @@ fn build_section_index(repo: &Repository) -> SectionIndex {
             PathStatus::Added => {
                 staged.push(SectionEntry::File { path, status });
             }
-            PathStatus::Modified => {
-                unstaged.push(SectionEntry::File { path, status });
+            PathStatus::Modified | PathStatus::Conflicted => {
+                // Modified in worktree → unstaged.
+                // Conflicted (both staged + unstaged changes) appears in both.
+                unstaged.push(SectionEntry::File {
+                    path: path.clone(),
+                    status,
+                });
             }
             PathStatus::Deleted => {
                 unstaged.push(SectionEntry::File { path, status });
             }
-            PathStatus::Conflicted => {
-                // Show in both sections
-                staged.push(SectionEntry::File {
+            PathStatus::Unmerged => {
+                // Show unmerged in unstaged with a distinct label
+                unstaged.push(SectionEntry::File {
                     path: path.clone(),
                     status,
                 });
-                unstaged.push(SectionEntry::File { path, status });
             }
-            _ => {
-                unstaged.push(SectionEntry::File { path, status });
+            PathStatus::Ignored | PathStatus::Clean => {
+                // Skip — ignored files don't appear in status
             }
         }
     }
 
-    // Stashes
     let stashes: Vec<SectionEntry> = Stash::list(repo)
         .unwrap_or_default()
         .into_iter()
@@ -97,7 +101,6 @@ fn build_section_index(repo: &Repository) -> SectionIndex {
         })
         .collect();
 
-    // Recent commits
     let commits: Vec<SectionEntry> = recent_commits(repo)
         .into_iter()
         .map(|(sha, subject)| SectionEntry::Commit { sha, subject })
@@ -105,74 +108,31 @@ fn build_section_index(repo: &Repository) -> SectionIndex {
 
     let mut line = 0usize;
 
-    // Staged section
-    if !staged.is_empty() {
-        let body_start = line + 1; // after header
-        let body_end = body_start + staged.len();
-        index.sections.push(Section {
-            kind: SectionKind::Staged,
-            header_line: line,
-            body_start,
-            body_end,
-            entries: staged,
-        });
-        line = body_end + 1; // +1 for blank line after section
-    }
+    let mut push_section =
+        |idx: &mut SectionIndex,
+         entries: Vec<SectionEntry>,
+         kind: SectionKind,
+         line: &mut usize| {
+            if entries.is_empty() {
+                return;
+            }
+            let body_start = *line + 1;
+            let body_end = body_start + entries.len();
+            idx.sections.push(Section {
+                kind,
+                header_line: *line,
+                body_start,
+                body_end,
+                entries,
+            });
+            *line = body_end + 1; // +1 for blank separator
+        };
 
-    // Unstaged section
-    if !unstaged.is_empty() {
-        let body_start = line + 1;
-        let body_end = body_start + unstaged.len();
-        index.sections.push(Section {
-            kind: SectionKind::Unstaged,
-            header_line: line,
-            body_start,
-            body_end,
-            entries: unstaged,
-        });
-        line = body_end + 1;
-    }
-
-    // Untracked section
-    if !untracked.is_empty() {
-        let body_start = line + 1;
-        let body_end = body_start + untracked.len();
-        index.sections.push(Section {
-            kind: SectionKind::Untracked,
-            header_line: line,
-            body_start,
-            body_end,
-            entries: untracked,
-        });
-        line = body_end + 1;
-    }
-
-    // Stashes section
-    if !stashes.is_empty() {
-        let body_start = line + 1;
-        let body_end = body_start + stashes.len();
-        index.sections.push(Section {
-            kind: SectionKind::Stashes,
-            header_line: line,
-            body_start,
-            body_end,
-            entries: stashes,
-        });
-        line = body_end + 1;
-    }
-
-    // Recent commits section
-    if !commits.is_empty() {
-        let body_start = line + 1;
-        let body_end = body_start + commits.len();
-        index.sections.push(Section {
-            kind: SectionKind::RecentCommits,
-            header_line: line,
-            body_start,
-            body_end,
-            entries: commits,
-        });
-    }
+    push_section(&mut index, staged, SectionKind::Staged, &mut line);
+    push_section(&mut index, unstaged, SectionKind::Unstaged, &mut line);
+    push_section(&mut index, untracked, SectionKind::Untracked, &mut line);
+    push_section(&mut index, stashes, SectionKind::Stashes, &mut line);
+    push_section(&mut index, commits, SectionKind::RecentCommits, &mut line);
 
     index
 }
@@ -180,17 +140,24 @@ fn build_section_index(repo: &Repository) -> SectionIndex {
 fn current_branch(repo: &Repository) -> String {
     repo.run_git_str(["rev-parse", "--abbrev-ref", "HEAD"])
         .map(|s| s.trim().to_string())
-        .unwrap_or_else(|_| "(unknown)".to_string())
+        .unwrap_or_else(|_| "(detached)".to_string())
+}
+
+fn populate_ahead_behind(repo: &Repository, index: &mut SectionIndex) {
+    if let Ok(output) =
+        repo.run_git_str(["rev-list", "--left-right", "--count", "HEAD...@{upstream}"])
+    {
+        let parts: Vec<&str> = output.split_whitespace().collect();
+        if parts.len() == 2 {
+            index.behind = parts[0].parse().unwrap_or(0);
+            index.ahead = parts[1].parse().unwrap_or(0);
+        }
+    }
 }
 
 fn recent_commits(repo: &Repository) -> Vec<(String, String)> {
     let output = repo
-        .run_git_str([
-            "log",
-            "--oneline",
-            "-20",
-            "--format=%h %s",
-        ])
+        .run_git_str(["log", "--oneline", "-20", "--format=%h %s"])
         .unwrap_or_default();
 
     output
@@ -205,7 +172,6 @@ fn recent_commits(repo: &Repository) -> Vec<(String, String)> {
         .collect()
 }
 
-/// Replace the entire buffer content with new text.
 async fn apply_full_replace(handle: &Arc<dyn Document>, text: String) {
     let snap = handle.snapshot();
     let last = snap.buffer.line_count().saturating_sub(1);

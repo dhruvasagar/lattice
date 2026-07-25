@@ -2,33 +2,19 @@
 //!
 //! Lazy by default: stores file paths + status labels only.
 //! No diffs are pre-computed — diffs load on demand via `=`.
-//! See `docs/dev/architecture/magit.md` §6-7.
 
 use std::path::PathBuf;
 
 use lattice_vcs::PathStatus;
 
-/// One entry in a magit-status section.
 #[derive(Debug, Clone)]
 pub enum SectionEntry {
-    File {
-        path: PathBuf,
-        status: PathStatus,
-    },
-    Stash {
-        index: usize,
-        message: String,
-    },
-    Commit {
-        sha: String,
-        subject: String,
-    },
-    UntrackedFile {
-        path: PathBuf,
-    },
+    File { path: PathBuf, status: PathStatus },
+    Stash { index: usize, message: String },
+    Commit { sha: String, subject: String },
+    UntrackedFile { path: PathBuf },
 }
 
-/// A named section in the magit-status buffer.
 #[derive(Debug, Clone)]
 pub struct Section {
     pub kind: SectionKind,
@@ -38,7 +24,6 @@ pub struct Section {
     pub entries: Vec<SectionEntry>,
 }
 
-/// Top-level section categories in magit-status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SectionKind {
     Staged,
@@ -48,20 +33,15 @@ pub enum SectionKind {
     RecentCommits,
 }
 
-/// The full section index for a magit-status buffer.
 #[derive(Debug, Clone, Default)]
 pub struct SectionIndex {
     pub sections: Vec<Section>,
-    /// Branch name for the headerline.
     pub branch: String,
-    /// Ahead/behind counts.
     pub ahead: usize,
     pub behind: usize,
 }
 
 impl SectionIndex {
-    /// Build formatted buffer content from the section index.
-    /// Returns lines of text suitable for setting as the buffer content.
     pub fn format_buffer(&self) -> String {
         let mut out = String::new();
 
@@ -85,10 +65,9 @@ impl SectionIndex {
             for entry in &section.entries {
                 match entry {
                     SectionEntry::File { path, status } => {
-                        let label = status_label(*status);
                         out.push_str(&format!(
                             "  {:<12} {}\n",
-                            label,
+                            status_label(*status),
                             path.display()
                         ));
                     }
@@ -99,19 +78,16 @@ impl SectionIndex {
                         out.push_str(&format!("  {} {}\n", sha, subject));
                     }
                     SectionEntry::UntrackedFile { path } => {
-                        out.push_str(&format!("  {:<12} {}\n", "untracked", path.display()));
+                        out.push_str(&format!("  untracked    {}\n", path.display()));
                     }
                 }
             }
-
             out.push('\n');
         }
 
         out
     }
 
-    /// Return the current branch name as a human-readable string,
-    /// including ahead/behind indicators.
     pub fn branch_status_line(&self) -> String {
         let mut s = self.branch.clone();
         if self.ahead > 0 {
@@ -124,7 +100,6 @@ impl SectionIndex {
     }
 }
 
-/// Human-readable status label matching `git status --porcelain`.
 fn status_label(status: PathStatus) -> &'static str {
     match status {
         PathStatus::Clean => "clean",

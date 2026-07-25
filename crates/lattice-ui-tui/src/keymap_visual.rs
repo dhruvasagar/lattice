@@ -215,6 +215,7 @@ mod tests {
             &b,
             &so,
             &sm,
+            false,
         );
 
         // Visual `zn`: `z` absorbs as a partial, `n` resolves the pair to

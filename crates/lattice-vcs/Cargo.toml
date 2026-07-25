@@ -1,0 +1,34 @@
+[package]
+name = "lattice-vcs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# VCS.1: pure git data layer for the magit feature.
+# Wraps `gix` for read + write git operations — repository discovery,
+# blob reads, ref resolution, working-tree status, index staging,
+# commit creation, branch manipulation, stash operations.
+# Zero `lattice-*` deps; only `gix`, `ropey`, `smallvec`, `thiserror`.
+# Consumed by `lattice-host::vcs` (Layer 2 auto-inline-diff subsystem)
+# and `lattice-magit` (Layer 3 buffer modes).
+# See `docs/dev/architecture/magit.md` §3.1 and
+# `docs/dev/operations/slice-plans/magit.md` VCS.1.
+
+[dependencies]
+gix = { workspace = true, features = ["blob-diff"] }
+ropey = { workspace = true }
+smallvec = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+criterion = { workspace = true }
+insta = { workspace = true }
+
+[[bench]]
+name = "status"
+harness = false
+
+[lints]
+workspace = true

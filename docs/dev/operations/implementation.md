@@ -3478,7 +3478,10 @@ shared with multibuffer-views and post-v1 inlay hints.
     change — `Default` keeps every existing producer
     valid).
 - 📝 **D.7** — Git baseline integration (`:Gdiff`) via a
-  small `lattice-vcs` crate over `gix`.
+  `lattice-vcs` crate over `gix`. Re-carved into VCS.1
+  (Layer 1 data crate) + VCS.2 (Layer 2 auto-inline-diff
+  subsystem). Design: [`../architecture/magit.md`](../architecture/magit.md)
+  §3, slice plan: [`slice-plans/magit.md`](slice-plans/magit.md).
 - ✅ **D.8** — `:diffthis` as buffer-group membership +
   arity-agnostic descriptor refactor. Design fragment:
   [`../architecture/n-way-diff-membership.md`](../architecture/n-way-diff-membership.md).
@@ -3896,6 +3899,121 @@ after D.0 (a) + D.2; D.4 after D.0 (b) + D.3; D.5 after D.2;
 D.6 after D.4; D.7 after D.3. Open questions §8 (engine
 algorithm, conflict semantics, fold-of-equal, doc-close
 behaviour) resolved per slice.
+
+D.7 re-carved 2026-07-25: the VCS + Magit work splits into
+`lattice-vcs` Layer 1 (pure data), `lattice-vcs` Layer 2
+(auto-inline-diff subsystem in host), and `lattice-magit`
+Layer 3 (feature-buffer modes, inverted out). Design:
+[`../architecture/magit.md`](../architecture/magit.md).
+Slice plan:
+[`slice-plans/magit.md`](slice-plans/magit.md).
+
+## vcs-and-magit (in design, 2026-07-25)
+
+Design fragment:
+[`../architecture/magit.md`](../architecture/magit.md).
+Supersedes the 2026-05-31 sketch at
+[`../architecture/vcs-and-magit.md`](../architecture/vcs-and-magit.md).
+
+Three layers: (1) `lattice-vcs` pure data crate over `gix` —
+`Repository`, `GitBlob`, `Reference`, `WorkingTree`, `Index`,
+`Commit`, `Branch`, `Stash`, `PathStatus`. Read + Write API
+complete. `GitBaseline` as `DiffParticipantSource`. Zero
+`lattice-*` deps. (2) `lattice-host::vcs` subsystem —
+`RepositoryWatcher`, `RepositoryEvent`, auto-register
+`DiffSession(GitBaseline(HEAD))` on `DocumentOpened`,
+`git.auto-head-diff` option. (3) `lattice-magit` crate —
+eight major modes (`magit-status`, `magit-log`, `magit-commit`,
+`magit-blame`, `magit-diff`, `magit-stash`, `magit-branch`,
+`magit-rebase`) + one shared minor mode (`magit-core`).
+Installs through `SubsystemBoot` seam. Inverted out of
+`lattice-host` (same tier as oil/file-tree).
+
+### VCS Layer 1 — `lattice-vcs` data crate
+
+- ✅ **VCS.1** — `lattice-vcs` crate (2026-07-25). `Repository::discover`,
+  `GitBlob::read`, `Reference::resolve`, `WorkingTree::
+  path_status` + `statuses`, `Index::stage_path` / `unstage_*`
+  / `stage_hunk` / `unstage_hunk`, `Commit::create` / `amend`,
+  `Branch::checkout` / `create` / `delete`, `Stash` operations.
+  `gix` dependency isolated; zero `lattice-*` deps. 20
+  integration tests in temp git repos. `GitBaseline` deferred
+  to VCS.2 (needs `lattice-diff` trait).
+
+### VCS Layer 2 — auto-inline-diff subsystem
+
+- 📝 **VCS.2** — `RepositoryWatcher` (tokio fs-watcher on
+  `.git/HEAD`, `.git/index`, `.git/refs/heads/*`), debounced
+  publish of `RepositoryEvent` on event bus. Auto-register
+  `DiffSession(GitBaseline(HEAD, path))` on `DocumentOpened`
+  for files inside a discovered git repo; tear down on
+  `DocumentClosed`. Subscribe to `RepositoryEvent`; poke
+  affected sessions' debouncers. `git.auto-head-diff` typed
+  option (default `true`). Formerly D.7.
+
+### Picker extension — transient mode
+
+- 📝 **PICK.1** — Picker transient-mode extension.
+  `TransientSpec` / `TransientGroup` / `TransientItem` /
+  `TransientItemKind` / `PreviewFn` / `TransientState`
+  types in `lattice-picker`. Grouped entry rendering,
+  single-key trigger dispatch, flag toggle + live preview
+  update, argument → minibuffer, submenu navigation
+  (`DEL`/`BS` back), `PickerRegistry::open_transient()`.
+  General picker feature — first consumer is magit
+  transients (MG.8); also serves which-key key hints,
+  command palette drilldown, future plugin transients.
+  Design: [`../architecture/magit.md`](../architecture/magit.md)
+  §8.1–8.3.
+
+### Magit Layer 3 — `lattice-magit` feature-buffer crate
+
+- 📝 **MG.1** — Crate scaffolding. `MagitCoreMode` (minor mode),
+  `MagitStatusMode` (major mode shell), `install(boot)` via
+  `SubsystemBoot`, mode + command registrations, global
+  keybindings (`C-x g` → `:magit-status`, `C-c g` →
+  `magit-dispatch`, `C-c f` → `magit-file-dispatch`). No
+  view content yet.
+- 📝 **MG.2** — magit-status buffer. Section index (file
+  paths + status labels, no diffs), `DiffCache` (lazy
+  per-file diff cache), lightweight refresh
+  (`WorkingTree::statuses` + `git stash list` + `git log` —
+  no diff commands), `=` toggle for on-demand diff loading,
+  section fold registration, inline diff via D.3 virtual
+  rows, headerline with branch/repo status, auto-refresh on
+  `RepositoryEvent` (fast path only, invalidates stale
+  diffs).
+- 📝 **MG.3** — magit-status actions. `s`/`u`/`x` for hunks
+  and files (hunk ops require expanded diffs via `=`),
+  `cc`/`ca` commit/amend, `=` toggle inline diff,
+  `p` stage hunk interactively, `<CR>` context-aware
+  open/visit, `gr` refresh and `q` close (inherited from
+  `magit-core`).
+- 📝 **MG.4** — magit-commit. Message editor, staged diff
+  preview, `C-c C-c`/`C-c C-k`, amend support.
+- 📝 **MG.5** — magit-diff. Dedicated diff view, reuse D.4
+  side-by-side, hunk staging (`s`/`u`/`x`), inherits
+  `]c`/`[c`/`do`/`dp` from `diff-mode` + `TAB` from
+  `magit-core`.
+- 📝 **MG.6** — magit-log. Commit history with graph, ref
+  decorations, `<CR>` show commit. Log args via
+  `C-c g` dispatch transient.
+- 📝 **MG.7** — magit-blame. Blame data loading,
+  `BlameLineMap` cache, blame gutter column,
+  `<CR>` show commit, `p` re-blame at parent.
+- 📝 **MG.8** — Transient menus (consumes PICK.1).
+  `C-c g` dispatch transient for repo-level operations,
+  `C-c f` file-dispatch transient for file-level
+  operations, branch/merge/rebase/stash/
+  push/pull transient definitions, `TransientState`
+  management, live command preview via
+  `fn preview()`, flag toggle + argument entry
+  wiring through `PickerRegistry::open_transient()`.
+- 📝 **MG.9** — magit-stash, magit-branch, magit-rebase.
+  Remaining operation buffers and actions.
+- 📝 **MG.10** — Polish. Persistent state cache, perf
+  optimization, error handling (detached HEAD, bare repo,
+  no-repo), `:help magit`, manual QA pass.
 
 ## multibuffer-views (in design, 2026-05-28)
 

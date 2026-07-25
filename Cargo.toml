@@ -29,6 +29,7 @@ members = [
 	"crates/lattice-ui-gpui",
 	"crates/lattice-cli",
 	"crates/lattice-diff",
+	"crates/lattice-vcs",
 	"crates/lattice-agent",
 	"crates/lattice-plugin-host",
 	"crates/lattice-plugin-loader",
@@ -112,6 +113,17 @@ notify = "6"
 # cost stays O(1) regardless of how many patterns are
 # registered.
 globset = "0.4"
+
+# VCS.1 (magit Layer 1): pure-Rust git repository interaction.
+# `lattice-vcs` wraps gix for read + write git operations
+# (status, blobs, refs, index, commits, branches). This is the
+# full crate, not individual gix-* sub-crates, because the data
+# layer needs Repository, Object, Index, Reference, and working-
+# tree status — each provided by different sub-crates we'd
+# otherwise list individually. Feature-gated to default set
+# (no `max-pure` / `max-performance` toggles — the simple
+# defaults are fast enough for magit workloads).
+gix = "0.86"
 
 # 5.8.AF.5 Slice 2: `.gitignore` / `.ignore` aware matching for
 # the LSP file-watcher's source-side filter. Built by ripgrep's

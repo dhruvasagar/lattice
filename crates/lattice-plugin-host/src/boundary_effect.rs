@@ -517,6 +517,16 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
             edit: edit.to_wit()?,
             cursor: cursor.as_ref().map(|p| p.to_wit()).transpose()?,
         }),
+        NativeEffect::CursorMove(pos) => {
+            let p = *pos;
+            WitEffect::SelectionChange(
+                NativeSelectionSet::single(NativeSelection {
+                    anchor: p,
+                    head: p,
+                    visual: None,
+                }).to_wit()?
+            )
+        }
         NativeEffect::SelectionChange(set) => WitEffect::SelectionChange(set.to_wit()?),
         NativeEffect::Yank {
             register,

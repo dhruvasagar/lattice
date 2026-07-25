@@ -190,6 +190,11 @@ pub enum Effect {
         cursor: Option<lattice_protocol::position::Position>,
     },
     SelectionChange(SelectionSet),
+    /// Move the cursor to `target` without affecting the selection.
+    /// The semantically-clean cursor-only jump — use this for navigation
+    /// chords (]]/[[, ]c/[c, ]f/[f) rather than overloading SelectionChange
+    /// with a collapsed cursor. The host writes `editor.cursor = target`.
+    CursorMove(lattice_protocol::position::Position),
     Yank {
         register: Register,
         content: String,

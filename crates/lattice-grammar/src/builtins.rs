@@ -2641,8 +2641,8 @@ mod tests {
         )
         .unwrap();
         match effect {
-            Effect::SelectionChange(s) => s.primary().head,
-            other => panic!("expected SelectionChange, got {other:?}"),
+            Effect::CursorMove(pos) => pos,
+            other => panic!("expected CursorMove, got {other:?}"),
         }
     }
 
@@ -2692,10 +2692,10 @@ mod tests {
         )
         .unwrap();
         match effect {
-            Effect::SelectionChange(s) => {
-                assert_eq!(s.primary().head, Position::new(0, 6));
+            Effect::CursorMove(pos) => {
+                assert_eq!(pos, Position::new(0, 6));
             }
-            other => panic!("expected SelectionChange, got {other:?}"),
+            other => panic!("expected CursorMove, got {other:?}"),
         }
     }
 
@@ -2713,12 +2713,12 @@ mod tests {
         )
         .unwrap();
         match effect {
-            Effect::SelectionChange(s) => {
+            Effect::CursorMove(pos) => {
                 // "one two THREE four" -- two words forward from origin lands
                 // at the start of "three" (byte 8).
-                assert_eq!(s.primary().head, Position::new(0, 8));
+                assert_eq!(pos, Position::new(0, 8));
             }
-            other => panic!("expected SelectionChange, got {other:?}"),
+            other => panic!("expected CursorMove, got {other:?}"),
         }
     }
 
@@ -2736,10 +2736,10 @@ mod tests {
         )
         .unwrap();
         match effect {
-            Effect::SelectionChange(s) => {
-                assert_eq!(s.primary().head, Position::new(1, 0));
+            Effect::CursorMove(pos) => {
+                assert_eq!(pos, Position::new(1, 0));
             }
-            other => panic!("expected SelectionChange, got {other:?}"),
+            other => panic!("expected CursorMove, got {other:?}"),
         }
     }
 
@@ -2877,8 +2877,8 @@ mod tests {
         )
         .unwrap();
         match effect {
-            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::ZERO),
-            other => panic!("expected SelectionChange, got {other:?}"),
+            Effect::CursorMove(pos) => assert_eq!(pos, Position::ZERO),
+            other => panic!("expected CursorMove, got {other:?}"),
         }
     }
 
@@ -2896,8 +2896,8 @@ mod tests {
         )
         .unwrap();
         match effect {
-            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 1)),
-            other => panic!("expected SelectionChange, got {other:?}"),
+            Effect::CursorMove(pos) => assert_eq!(pos, Position::new(0, 1)),
+            other => panic!("expected CursorMove, got {other:?}"),
         }
     }
 
@@ -2918,8 +2918,8 @@ mod tests {
         )
         .unwrap();
         match effect {
-            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 3)),
-            other => panic!("expected SelectionChange, got {other:?}"),
+            Effect::CursorMove(pos) => assert_eq!(pos, Position::new(0, 3)),
+            other => panic!("expected CursorMove, got {other:?}"),
         }
     }
 
@@ -2939,8 +2939,8 @@ mod tests {
         )
         .unwrap();
         match effect {
-            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::ZERO),
-            other => panic!("expected SelectionChange, got {other:?}"),
+            Effect::CursorMove(pos) => assert_eq!(pos, Position::ZERO),
+            other => panic!("expected CursorMove, got {other:?}"),
         }
     }
 
@@ -2958,8 +2958,8 @@ mod tests {
         )
         .unwrap();
         match effect {
-            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 2)),
-            other => panic!("expected SelectionChange, got {other:?}"),
+            Effect::CursorMove(pos) => assert_eq!(pos, Position::new(0, 2)),
+            other => panic!("expected CursorMove, got {other:?}"),
         }
     }
 
@@ -2977,8 +2977,8 @@ mod tests {
         )
         .unwrap();
         match effect {
-            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(1, 2)),
-            other => panic!("expected SelectionChange, got {other:?}"),
+            Effect::CursorMove(pos) => assert_eq!(pos, Position::new(1, 2)),
+            other => panic!("expected CursorMove, got {other:?}"),
         }
     }
 
@@ -2996,8 +2996,8 @@ mod tests {
         )
         .unwrap();
         match effect {
-            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::ZERO),
-            other => panic!("expected SelectionChange, got {other:?}"),
+            Effect::CursorMove(pos) => assert_eq!(pos, Position::ZERO),
+            other => panic!("expected CursorMove, got {other:?}"),
         }
     }
 
@@ -3015,8 +3015,8 @@ mod tests {
         )
         .unwrap();
         match effect {
-            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 0)),
-            other => panic!("expected SelectionChange, got {other:?}"),
+            Effect::CursorMove(pos) => assert_eq!(pos, Position::new(0, 0)),
+            other => panic!("expected CursorMove, got {other:?}"),
         }
     }
 
@@ -3034,8 +3034,8 @@ mod tests {
         )
         .unwrap();
         match effect {
-            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 11)),
-            other => panic!("expected SelectionChange, got {other:?}"),
+            Effect::CursorMove(pos) => assert_eq!(pos, Position::new(0, 11)),
+            other => panic!("expected CursorMove, got {other:?}"),
         }
     }
 
@@ -3053,8 +3053,8 @@ mod tests {
         )
         .unwrap();
         match effect {
-            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::ZERO),
-            other => panic!("expected SelectionChange, got {other:?}"),
+            Effect::CursorMove(pos) => assert_eq!(pos, Position::ZERO),
+            other => panic!("expected CursorMove, got {other:?}"),
         }
     }
 
@@ -3072,8 +3072,8 @@ mod tests {
         )
         .unwrap();
         match effect {
-            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(2, 0)),
-            other => panic!("expected SelectionChange, got {other:?}"),
+            Effect::CursorMove(pos) => assert_eq!(pos, Position::new(2, 0)),
+            other => panic!("expected CursorMove, got {other:?}"),
         }
     }
 
@@ -3092,8 +3092,8 @@ mod tests {
         )
         .unwrap();
         match effect {
-            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(2, 0)),
-            other => panic!("expected SelectionChange, got {other:?}"),
+            Effect::CursorMove(pos) => assert_eq!(pos, Position::new(2, 0)),
+            other => panic!("expected CursorMove, got {other:?}"),
         }
     }
 
@@ -3112,8 +3112,8 @@ mod tests {
         )
         .unwrap();
         match effect {
-            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(2, 0)),
-            other => panic!("expected SelectionChange, got {other:?}"),
+            Effect::CursorMove(pos) => assert_eq!(pos, Position::new(2, 0)),
+            other => panic!("expected CursorMove, got {other:?}"),
         }
     }
 
@@ -3159,8 +3159,8 @@ mod tests {
         )
         .unwrap();
         match effect {
-            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 6)),
-            other => panic!("expected SelectionChange, got {other:?}"),
+            Effect::CursorMove(pos) => assert_eq!(pos, Position::new(0, 6)),
+            other => panic!("expected CursorMove, got {other:?}"),
         }
     }
 
@@ -3179,8 +3179,8 @@ mod tests {
         )
         .unwrap();
         match effect {
-            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 4)),
-            other => panic!("expected SelectionChange, got {other:?}"),
+            Effect::CursorMove(pos) => assert_eq!(pos, Position::new(0, 4)),
+            other => panic!("expected CursorMove, got {other:?}"),
         }
     }
 
@@ -3198,8 +3198,8 @@ mod tests {
         )
         .unwrap();
         match effect {
-            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::ZERO),
-            other => panic!("expected SelectionChange, got {other:?}"),
+            Effect::CursorMove(pos) => assert_eq!(pos, Position::ZERO),
+            other => panic!("expected CursorMove, got {other:?}"),
         }
     }
 
@@ -3218,8 +3218,8 @@ mod tests {
         )
         .unwrap();
         match effect {
-            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::ZERO),
-            other => panic!("expected SelectionChange, got {other:?}"),
+            Effect::CursorMove(pos) => assert_eq!(pos, Position::ZERO),
+            other => panic!("expected CursorMove, got {other:?}"),
         }
     }
 
@@ -3238,8 +3238,8 @@ mod tests {
         )
         .unwrap();
         match effect {
-            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 4)),
-            other => panic!("expected SelectionChange, got {other:?}"),
+            Effect::CursorMove(pos) => assert_eq!(pos, Position::new(0, 4)),
+            other => panic!("expected CursorMove, got {other:?}"),
         }
     }
 
@@ -3260,8 +3260,8 @@ mod tests {
         )
         .unwrap();
         match effect {
-            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 5)),
-            other => panic!("expected SelectionChange, got {other:?}"),
+            Effect::CursorMove(pos) => assert_eq!(pos, Position::new(0, 5)),
+            other => panic!("expected CursorMove, got {other:?}"),
         }
     }
 
@@ -3282,8 +3282,8 @@ mod tests {
         )
         .unwrap();
         match effect {
-            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 4)),
-            other => panic!("expected SelectionChange, got {other:?}"),
+            Effect::CursorMove(pos) => assert_eq!(pos, Position::new(0, 4)),
+            other => panic!("expected CursorMove, got {other:?}"),
         }
     }
 
@@ -3302,8 +3302,8 @@ mod tests {
         )
         .unwrap();
         match effect {
-            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 10)),
-            other => panic!("expected SelectionChange, got {other:?}"),
+            Effect::CursorMove(pos) => assert_eq!(pos, Position::new(0, 10)),
+            other => panic!("expected CursorMove, got {other:?}"),
         }
     }
 
@@ -3322,8 +3322,8 @@ mod tests {
         )
         .unwrap();
         match effect {
-            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 1)),
-            other => panic!("expected SelectionChange, got {other:?}"),
+            Effect::CursorMove(pos) => assert_eq!(pos, Position::new(0, 1)),
+            other => panic!("expected CursorMove, got {other:?}"),
         }
     }
 
@@ -3342,8 +3342,8 @@ mod tests {
         )
         .unwrap();
         match effect {
-            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(1, 2)),
-            other => panic!("expected SelectionChange, got {other:?}"),
+            Effect::CursorMove(pos) => assert_eq!(pos, Position::new(1, 2)),
+            other => panic!("expected CursorMove, got {other:?}"),
         }
     }
 
@@ -3362,8 +3362,8 @@ mod tests {
         )
         .unwrap();
         match effect {
-            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 6)),
-            other => panic!("expected SelectionChange, got {other:?}"),
+            Effect::CursorMove(pos) => assert_eq!(pos, Position::new(0, 6)),
+            other => panic!("expected CursorMove, got {other:?}"),
         }
     }
 
@@ -3383,8 +3383,8 @@ mod tests {
         )
         .unwrap();
         match effect {
-            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 4)),
-            other => panic!("expected SelectionChange, got {other:?}"),
+            Effect::CursorMove(pos) => assert_eq!(pos, Position::new(0, 4)),
+            other => panic!("expected CursorMove, got {other:?}"),
         }
     }
 
@@ -3402,8 +3402,8 @@ mod tests {
         )
         .unwrap();
         match effect {
-            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 2)),
-            other => panic!("expected SelectionChange, got {other:?}"),
+            Effect::CursorMove(pos) => assert_eq!(pos, Position::new(0, 2)),
+            other => panic!("expected CursorMove, got {other:?}"),
         }
     }
 
@@ -3421,8 +3421,8 @@ mod tests {
         )
         .unwrap();
         match effect {
-            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::ZERO),
-            other => panic!("expected SelectionChange, got {other:?}"),
+            Effect::CursorMove(pos) => assert_eq!(pos, Position::ZERO),
+            other => panic!("expected CursorMove, got {other:?}"),
         }
     }
 
@@ -3440,11 +3440,11 @@ mod tests {
         )
         .unwrap();
         match effect {
-            Effect::SelectionChange(s) => {
+            Effect::CursorMove(pos) => {
                 // No non-blank chars; cursor lands at end of line (byte 4).
-                assert_eq!(s.primary().head, Position::new(0, 4));
+                assert_eq!(pos, Position::new(0, 4));
             }
-            other => panic!("expected SelectionChange, got {other:?}"),
+            other => panic!("expected CursorMove, got {other:?}"),
         }
     }
 
@@ -3463,8 +3463,8 @@ mod tests {
         )
         .unwrap();
         match effect {
-            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(1, 2)),
-            other => panic!("expected SelectionChange, got {other:?}"),
+            Effect::CursorMove(pos) => assert_eq!(pos, Position::new(1, 2)),
+            other => panic!("expected CursorMove, got {other:?}"),
         }
     }
 
@@ -4161,11 +4161,11 @@ mod tests {
         )
         .unwrap();
         match effect {
-            Effect::SelectionChange(s) => {
+            Effect::CursorMove(pos) => {
                 // After "First sentence. " -> 'S' of "Second" at byte 16.
-                assert_eq!(s.primary().head, Position::new(0, 16));
+                assert_eq!(pos, Position::new(0, 16));
             }
-            other => panic!("expected SelectionChange, got {other:?}"),
+            other => panic!("expected CursorMove, got {other:?}"),
         }
     }
 
@@ -4184,8 +4184,8 @@ mod tests {
         )
         .unwrap();
         match effect {
-            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::ZERO),
-            other => panic!("expected SelectionChange, got {other:?}"),
+            Effect::CursorMove(pos) => assert_eq!(pos, Position::ZERO),
+            other => panic!("expected CursorMove, got {other:?}"),
         }
     }
 
@@ -4226,11 +4226,11 @@ mod tests {
         )
         .unwrap();
         match effect {
-            Effect::SelectionChange(s) => {
+            Effect::CursorMove(pos) => {
                 // First blank line is line 2.
-                assert_eq!(s.primary().head, Position::new(2, 0));
+                assert_eq!(pos, Position::new(2, 0));
             }
-            other => panic!("expected SelectionChange, got {other:?}"),
+            other => panic!("expected CursorMove, got {other:?}"),
         }
     }
 
@@ -4248,8 +4248,8 @@ mod tests {
         )
         .unwrap();
         match effect {
-            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(1, 0)),
-            other => panic!("expected SelectionChange, got {other:?}"),
+            Effect::CursorMove(pos) => assert_eq!(pos, Position::new(1, 0)),
+            other => panic!("expected CursorMove, got {other:?}"),
         }
     }
 
@@ -4267,11 +4267,11 @@ mod tests {
         )
         .unwrap();
         match effect {
-            Effect::SelectionChange(s) => {
+            Effect::CursorMove(pos) => {
                 // No blank line; lands at last addressable line.
-                assert_eq!(s.primary().head.line, 1);
+                assert_eq!(pos.line, 1);
             }
-            other => panic!("expected SelectionChange, got {other:?}"),
+            other => panic!("expected CursorMove, got {other:?}"),
         }
     }
 
@@ -4332,11 +4332,11 @@ mod tests {
         )
         .unwrap();
         match effect {
-            Effect::SelectionChange(s) => {
+            Effect::CursorMove(pos) => {
                 // From byte 0, "foo,bar" is one WORD; next WORD is "baz" at byte 8.
-                assert_eq!(s.primary().head, Position::new(0, 8));
+                assert_eq!(pos, Position::new(0, 8));
             }
-            other => panic!("expected SelectionChange, got {other:?}"),
+            other => panic!("expected CursorMove, got {other:?}"),
         }
     }
 
@@ -4355,8 +4355,8 @@ mod tests {
         )
         .unwrap();
         match effect {
-            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::ZERO),
-            other => panic!("expected SelectionChange, got {other:?}"),
+            Effect::CursorMove(pos) => assert_eq!(pos, Position::ZERO),
+            other => panic!("expected CursorMove, got {other:?}"),
         }
     }
 
@@ -4374,11 +4374,11 @@ mod tests {
         )
         .unwrap();
         match effect {
-            Effect::SelectionChange(s) => {
+            Effect::CursorMove(pos) => {
                 // End of "foo,bar" is byte 6 (the 'r').
-                assert_eq!(s.primary().head, Position::new(0, 6));
+                assert_eq!(pos, Position::new(0, 6));
             }
-            other => panic!("expected SelectionChange, got {other:?}"),
+            other => panic!("expected CursorMove, got {other:?}"),
         }
     }
 
@@ -4403,8 +4403,8 @@ mod tests {
         )
         .unwrap();
         match effect {
-            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 4)),
-            other => panic!("expected SelectionChange, got {other:?}"),
+            Effect::CursorMove(pos) => assert_eq!(pos, Position::new(0, 4)),
+            other => panic!("expected CursorMove, got {other:?}"),
         }
     }
 
@@ -4423,8 +4423,8 @@ mod tests {
         )
         .unwrap();
         match effect {
-            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 2)),
-            other => panic!("expected SelectionChange, got {other:?}"),
+            Effect::CursorMove(pos) => assert_eq!(pos, Position::new(0, 2)),
+            other => panic!("expected CursorMove, got {other:?}"),
         }
     }
 
@@ -4442,8 +4442,8 @@ mod tests {
         )
         .unwrap();
         match effect {
-            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::ZERO),
-            other => panic!("expected SelectionChange, got {other:?}"),
+            Effect::CursorMove(pos) => assert_eq!(pos, Position::ZERO),
+            other => panic!("expected CursorMove, got {other:?}"),
         }
     }
 
@@ -4462,8 +4462,8 @@ mod tests {
         )
         .unwrap();
         match effect {
-            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::ZERO),
-            other => panic!("expected SelectionChange, got {other:?}"),
+            Effect::CursorMove(pos) => assert_eq!(pos, Position::ZERO),
+            other => panic!("expected CursorMove, got {other:?}"),
         }
     }
 
@@ -4482,8 +4482,8 @@ mod tests {
         )
         .unwrap();
         match effect {
-            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 7)),
-            other => panic!("expected SelectionChange, got {other:?}"),
+            Effect::CursorMove(pos) => assert_eq!(pos, Position::new(0, 7)),
+            other => panic!("expected CursorMove, got {other:?}"),
         }
     }
 
@@ -4501,8 +4501,8 @@ mod tests {
         )
         .unwrap();
         match effect {
-            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 4)),
-            other => panic!("expected SelectionChange, got {other:?}"),
+            Effect::CursorMove(pos) => assert_eq!(pos, Position::new(0, 4)),
+            other => panic!("expected CursorMove, got {other:?}"),
         }
     }
 
@@ -4521,8 +4521,8 @@ mod tests {
         )
         .unwrap();
         match effect {
-            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 5)),
-            other => panic!("expected SelectionChange, got {other:?}"),
+            Effect::CursorMove(pos) => assert_eq!(pos, Position::new(0, 5)),
+            other => panic!("expected CursorMove, got {other:?}"),
         }
     }
 
@@ -4541,8 +4541,8 @@ mod tests {
         )
         .unwrap();
         match effect {
-            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 1)),
-            other => panic!("expected SelectionChange, got {other:?}"),
+            Effect::CursorMove(pos) => assert_eq!(pos, Position::new(0, 1)),
+            other => panic!("expected CursorMove, got {other:?}"),
         }
     }
 
@@ -4578,8 +4578,8 @@ mod tests {
         )
         .unwrap();
         match effect {
-            Effect::SelectionChange(s) => assert_eq!(s.primary().head, Position::new(0, 3)),
-            other => panic!("expected SelectionChange, got {other:?}"),
+            Effect::CursorMove(pos) => assert_eq!(pos, Position::new(0, 3)),
+            other => panic!("expected CursorMove, got {other:?}"),
         }
     }
 

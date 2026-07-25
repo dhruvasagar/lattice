@@ -928,6 +928,7 @@ impl App {
             | Effect::EchoMarks
             | Effect::EchoRegisters
             | Effect::Yank { .. }
+            | Effect::CursorMove(_)
             | Effect::SelectionChange(_)
             | Effect::EnterMode(_)
             | Effect::SetOption { .. }
@@ -1268,6 +1269,7 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         // AP.0.2: a declined effect did nothing — not a mutation/yank.
         Effect::Declined
         | Effect::None
+        | Effect::CursorMove(_)
         | Effect::SelectionChange(_)
         | Effect::EnterMode(_)
         | Effect::SaveBuffer { .. }
@@ -1400,6 +1402,7 @@ fn effect_mutates(effect: &Effect) -> bool {
         // AP.0.2: a declined effect did nothing — not a buffer mutation.
         Effect::Declined
         | Effect::None
+        | Effect::CursorMove(_)
         | Effect::SelectionChange(_)
         | Effect::Yank { .. }
         | Effect::EnterMode(_)

@@ -250,8 +250,6 @@ fn operator_surround_delete(
         open_pos
     };
 
-    let selection = SelectionSet::single(Selection::cursor(new_cursor));
-
     Ok(Effect::Many(vec![
         Effect::Edits(applied),
         Effect::Yank {
@@ -260,7 +258,7 @@ fn operator_surround_delete(
             kind: YankKind::Charwise,
             explicit_yank: false,
         },
-        Effect::SelectionChange(selection),
+        Effect::CursorMove(new_cursor),
     ]))
 }
 
@@ -337,8 +335,6 @@ fn operator_surround_change(
     } else {
         Position::new(open_pos.line, open_pos.byte + new_open.len_utf8() as u32)
     };
-    let selection = SelectionSet::single(Selection::cursor(new_cursor));
-
     Ok(Effect::Many(vec![
         Effect::Edits(applied),
         Effect::Yank {
@@ -347,7 +343,7 @@ fn operator_surround_change(
             kind: YankKind::Charwise,
             explicit_yank: false,
         },
-        Effect::SelectionChange(selection),
+        Effect::CursorMove(new_cursor),
     ]))
 }
 
@@ -407,11 +403,9 @@ fn operator_surround_add(
     let edit = Edit::replace(wrap_range, wrapped);
     let applied = ctx.document.apply_edit(edit)?;
 
-    let selection = SelectionSet::single(Selection::cursor(new_cursor));
-
     Ok(Effect::Many(vec![
         Effect::Edits(vec![applied]),
-        Effect::SelectionChange(selection),
+        Effect::CursorMove(new_cursor),
     ]))
 }
 

@@ -1,9 +1,9 @@
 //! MG.1: magit-core shared minor mode.
 //!
-//! Activates on magit buffers. Provides shared keymap. Navigation
-//! chords (]]/[[,/]f/[f,/]c/[c) are registered but produce no-ops —
-//! cursor movement from action handlers requires Effect extensions.
-//! `gr` (refresh) and `q` (close) handlers are live.
+//! Activates on magit buffers. Provides shared keymap with real
+//! navigation handlers: ]]/[[ (sections), ]f/[f (files/entries),
+//! ]c/[c (hunks). Each returns Effect::SelectionChange — the same
+//! cursor-move primitive diff-mode uses for hunk navigation.
 
 use std::sync::{Arc, OnceLock};
 
@@ -14,6 +14,7 @@ use lattice_mode::{
     CapabilitySet, Keymap, KeymapEntry, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind,
     OptionOverrideSet, keymap_entry,
 };
+use lattice_protocol::position::Position;
 
 use crate::magit_blame_mode::MagitBlameMode;
 use crate::magit_branch_mode::MagitBranchMode;
@@ -48,6 +49,82 @@ fn magit_core_keymap_entries() -> &'static [KeymapEntry] {
     })
 }
 
+/// Move cursor to `target_row`. Returns `Effect::CursorMove` —
+/// the canonical cursor-jump primitive.
+fn cursor_at(target_row: u32) -> Effect {
+    Effect::CursorMove(Position::new(target_row, 0))
+}
+
+/// Scan buffer for section header lines and return their row numbers.
+fn section_headers(store: &BufferStoreHandle, buffer_id: BufferId) -> Vec<u32> {
+    let Some(h) = store.handle_for(buffer_id) else { return vec![] };
+    let snap = h.snapshot();
+    let mut lines = Vec::new();
+    for l in 0..snap.buffer.line_count() as u32 {
+        if let Some(t) = snap.buffer.line(l) {
+            let t = t.trim();
+            if t.starts_with("Staged changes")
+                || t.starts_with("Unstaged changes")
+                || t.starts_with("Untracked files")
+                || t.starts_with("Stashes")
+                || t.starts_with("Recent commits")
+            {
+                lines.push(l);
+            }
+        }
+    }
+    lines
+}
+
+/// Scan buffer for file/entry lines (indented, non-header).
+fn entry_lines(store: &BufferStoreHandle, buffer_id: BufferId) -> Vec<u32> {
+    let Some(h) = store.handle_for(buffer_id) else { return vec![] };
+    let snap = h.snapshot();
+    let mut lines = Vec::new();
+    for l in 0..snap.buffer.line_count() as u32 {
+        if let Some(t) = snap.buffer.line(l) {
+            let t = t.trim();
+            if t.starts_with("  ") && !t.is_empty()
+                && !t.starts_with("Staged") && !t.starts_with("Unstaged")
+                && !t.starts_with("Untracked") && !t.starts_with("Stashes")
+                && !t.starts_with("Recent") && !t.starts_with("No changes")
+            {
+                lines.push(l);
+            }
+        }
+    }
+    lines
+}
+
+/// Scan for hunk-start lines (@@ or diff --git) and return their
+/// row numbers.
+fn hunk_lines(store: &BufferStoreHandle, buffer_id: BufferId) -> Vec<u32> {
+    let Some(h) = store.handle_for(buffer_id) else { return vec![] };
+    let snap = h.snapshot();
+    let mut lines = Vec::new();
+    for l in 0..snap.buffer.line_count() as u32 {
+        if let Some(t) = snap.buffer.line(l) {
+            let t = t.trim();
+            if t.starts_with("@@") || t.starts_with("diff --git") {
+                lines.push(l);
+            }
+        }
+    }
+    lines
+}
+
+/// Walk `items` forward from `cursor_row` and return the first
+/// item strictly greater. Wraps to the first item if none found.
+fn next_item(items: &[u32], cursor_row: u32) -> Option<u32> {
+    items.iter().copied().find(|&r| r > cursor_row).or_else(|| items.first().copied())
+}
+
+/// Walk `items` backward from `cursor_row` and return the first
+/// item strictly less. Wraps to the last item if none found.
+fn prev_item(items: &[u32], cursor_row: u32) -> Option<u32> {
+    items.iter().rev().copied().find(|&r| r < cursor_row).or_else(|| items.last().copied())
+}
+
 impl Mode for MagitCoreMode {
     type Guard = ();
 
@@ -69,7 +146,7 @@ impl Mode for MagitCoreMode {
 
     fn on_activate(&self, ctx: ModeContext) -> LifecycleFuture<'_, Self::Guard> {
         Box::pin(async move {
-            let buffer_id = lattice_core::BufferId(ctx.buffer_id().0 as u32);
+            let buffer_id = BufferId(ctx.buffer_id().0 as u32);
             let Some(store) = ctx.service::<BufferStoreHandle>() else { return Ok(()); };
 
             let Some(cmd_arc) = ctx.service::<CommandRegistryHandle>() else { return Ok(()); };
@@ -86,18 +163,66 @@ impl Mode for MagitCoreMode {
                 };
             }
 
-            // close (q)
+            // ── close (q) ─────────────────────────────────
             h!("action:magit-close", move |_ctx: &ActionContext<'_>| {
                 Some(Effect::QuitEditor { force: false, scope: QuitScope::Pane })
             });
 
-            // Navigation chords — no-ops until cursor-move effects are available
-            h!("action:magit-next-section", move |_ctx: &ActionContext<'_>| { None });
-            h!("action:magit-prev-section", move |_ctx: &ActionContext<'_>| { None });
-            h!("action:magit-next-file", move |_ctx: &ActionContext<'_>| { None });
-            h!("action:magit-prev-file", move |_ctx: &ActionContext<'_>| { None });
-            h!("action:magit-next-hunk", move |_ctx: &ActionContext<'_>| { None });
-            h!("action:magit-prev-hunk", move |_ctx: &ActionContext<'_>| { None });
+            // ── next-section (]]) ──────────────────────────
+            {
+                let s = store.clone();
+                h!("action:magit-next-section", move |ctx: &ActionContext<'_>| {
+                    let headers = section_headers(&s, buffer_id);
+                    Some(cursor_at(next_item(&headers, ctx.cursor.line)?))
+                });
+            }
+
+            // ── prev-section ([[) ──────────────────────────
+            {
+                let s = store.clone();
+                h!("action:magit-prev-section", move |ctx: &ActionContext<'_>| {
+                    let headers = section_headers(&s, buffer_id);
+                    Some(cursor_at(prev_item(&headers, ctx.cursor.line)?))
+                });
+            }
+
+            // ── next-file (]f) ────────────────────────────
+            {
+                let s = store.clone();
+                h!("action:magit-next-file", move |ctx: &ActionContext<'_>| {
+                    let entries = entry_lines(&s, buffer_id);
+                    Some(cursor_at(next_item(&entries, ctx.cursor.line)?))
+                });
+            }
+
+            // ── prev-file ([f) ────────────────────────────
+            {
+                let s = store.clone();
+                h!("action:magit-prev-file", move |ctx: &ActionContext<'_>| {
+                    let entries = entry_lines(&s, buffer_id);
+                    Some(cursor_at(prev_item(&entries, ctx.cursor.line)?))
+                });
+            }
+
+            // ── next-hunk (]c) ────────────────────────────
+            {
+                let s = store.clone();
+                h!("action:magit-next-hunk", move |ctx: &ActionContext<'_>| {
+                    let hunks = hunk_lines(&s, buffer_id);
+                    Some(cursor_at(next_item(&hunks, ctx.cursor.line)?))
+                });
+            }
+
+            // ── prev-hunk ([c) ────────────────────────────
+            {
+                let s = store.clone();
+                h!("action:magit-prev-hunk", move |ctx: &ActionContext<'_>| {
+                    let hunks = hunk_lines(&s, buffer_id);
+                    Some(cursor_at(prev_item(&hunks, ctx.cursor.line)?))
+                });
+            }
+
+            // TAB / S-TAB — fold engine handles these via Effect
             h!("action:magit-toggle-fold", move |_ctx: &ActionContext<'_>| { None });
             h!("action:magit-cycle-sections", move |_ctx: &ActionContext<'_>| { None });
 

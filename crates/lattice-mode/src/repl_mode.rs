@@ -130,9 +130,7 @@ fn focus_input_handler() -> ActionHandler {
             .len() as u32;
         let pos = lattice_protocol::position::Position::new(last_line, end_byte);
         Some(Effect::Many(vec![
-            Effect::SelectionChange(lattice_protocol::selection::SelectionSet::single(
-                lattice_protocol::selection::Selection::cursor(pos),
-            )),
+            Effect::CursorMove(pos),
             Effect::EnterMode(ModalState::Insert),
         ]))
     })

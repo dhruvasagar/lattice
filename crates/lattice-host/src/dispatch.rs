@@ -3086,6 +3086,22 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
             // the `+`/`*` register) call for it.
             editor.store_yank(register, content, kind, explicit_yank);
         }
+        Effect::CursorMove(pos) => {
+            editor.cursor = pos;
+            let active_kind = match editor.modal {
+                ModalState::Visual(kind) | ModalState::Select(kind) => Some(kind),
+                _ => None,
+            };
+            if let Some(kind) = active_kind {
+                let anchor = editor.visual_anchor.unwrap_or(pos);
+                let sel = Selection {
+                    anchor,
+                    head: pos,
+                    visual: Some(visual_kind_to_mode(kind)),
+                };
+                editor.set_selections_blocking(SelectionSet::single(sel));
+            }
+        }
         Effect::SelectionChange(set) => {
             // 5.5.E.4: motion / selection-class effects emit a
             // SelectionSet; the host syncs `editor.cursor` to the
@@ -32019,6 +32035,7 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         // AP.0.2: a declined chord did nothing — not a mutation/yank.
         Effect::Declined
         | Effect::None
+        | Effect::CursorMove(_)
         | Effect::SelectionChange(_)
         | Effect::EnterMode(_)
         | Effect::SaveBuffer { .. }
@@ -32153,6 +32170,7 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         // AP.0.2: a declined chord did nothing — not a mutation/yank.
         Effect::Declined
         | Effect::None
+        | Effect::CursorMove(_)
         | Effect::SelectionChange(_)
         | Effect::Yank { .. }
         | Effect::EnterMode(_)
@@ -33053,10 +33071,13 @@ impl Editor {
                 self.last_change = Some(inv_for_repeat);
                 should_exit_visual = true;
             }
-            Effect::SelectionChange(set) => {
-                let primary = set.primary();
-                self.cursor = primary.head;
+            Effect::CursorMove(pos) => {
+                self.cursor = *pos;
             }
+            Effect::SelectionChange(set) => {
+            let primary = set.primary();
+            self.cursor = primary.head;
+        }
             Effect::Yank {
                 register,
                 content,
@@ -33846,6 +33867,7 @@ impl Editor {
                 self.set_message(EchoLevel::Info, format!("yanked {summary}"));
             }
             lattice_grammar::Effect::None
+            | lattice_grammar::Effect::CursorMove(_)
             | lattice_grammar::Effect::SelectionChange(_)
             | lattice_grammar::Effect::EchoRegisters => {
                 // Non-mutating; nothing to apply on the buffer.

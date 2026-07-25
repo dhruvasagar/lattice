@@ -226,15 +226,12 @@ fn execute_motion(
         scope_resolver: env.scope_resolver,
     };
     let result = (motion.apply)(&ctx)?;
-    // Motions in Phase 1 don't mutate selections directly here; the modal
-    // engine's caller takes the new position and updates state. We surface
-    // the position via Effect::SelectionChange when the caller is the
-    // dispatch (i.e., a top-level invocation).
-    let mut selections = document.selections().clone();
-    selections.replace_primary(lattice_protocol::selection::Selection::cursor(
-        result.target,
-    ));
-    Ok(Effect::SelectionChange(selections))
+    // Motions emit a cursor-only jump — the modal engine's caller
+    // takes the new position and updates state. We surface the
+    // position via Effect::CursorMove, the semantically-clean
+    // cursor-jump primitive (replaces the former SelectionChange-
+    // with-collapsed-cursor pattern).
+    Ok(Effect::CursorMove(result.target))
 }
 
 fn execute_text_object(
@@ -592,9 +589,7 @@ fn merge_blockwise_effects(
     // (top_line, 0) -- without this override the host's handle_edits
     // would drag the cursor to column 0.
     if let Some(pos) = cursor_target {
-        let mut sels = document.selections().clone();
-        sels.replace_primary(lattice_protocol::selection::Selection::cursor(pos));
-        out.push(Effect::SelectionChange(sels));
+        out.push(Effect::CursorMove(pos));
     }
     if let Some(m) = enter_mode {
         out.push(Effect::EnterMode(m));
@@ -1009,10 +1004,10 @@ mod tests {
         .unwrap();
         // The motion resolved to row 7 via the resolver.
         match eff {
-            Effect::SelectionChange(sels) => {
-                assert_eq!(sels.primary().head.line, 7);
+            Effect::CursorMove(pos) => {
+                assert_eq!(pos.line, 7);
             }
-            other => panic!("expected SelectionChange, got {other:?}"),
+            other => panic!("expected CursorMove, got {other:?}"),
         }
     }
 }

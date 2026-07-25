@@ -1125,6 +1125,7 @@ impl GpuiApp {
             // `Action::ApplyEdit`; the renderer has nothing to do (parity
             // with the TUI peer per [[feedback_tui_gpui_parity]]).
             | Effect::ApplyEdit { .. }
+            | Effect::CursorMove(_)
             | Effect::SelectionChange(_)
             | Effect::EnterMode(_)
             | Effect::Yank { .. }

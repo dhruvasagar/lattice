@@ -499,9 +499,7 @@ fn snippet_group_cursor_effect(
     } else {
         // Empty tabstop (`$1` / `${1:}`): nothing to overtype, so keep the
         // bare Insert cursor — do NOT enter Select on a zero-width stop.
-        Some(Effect::SelectionChange(SelectionSet::single(
-            Selection::cursor(start),
-        )))
+        Some(Effect::CursorMove(start))
     }
 }
 

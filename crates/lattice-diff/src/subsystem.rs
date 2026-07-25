@@ -713,14 +713,10 @@ fn hunk_nav_echo(text: &str) -> lattice_grammar::Effect {
     }
 }
 
-/// CR.6: a collapsed-cursor `Effect::SelectionChange` at `(row, 0)` — the
-/// generic cursor-move the host applies for hunk navigation.
+/// Returns `Effect::CursorMove` at `(row, 0)` — the cursor-jump the
+/// host applies for hunk navigation.
 fn hunk_selection(row: u32) -> lattice_grammar::Effect {
-    lattice_grammar::Effect::SelectionChange(lattice_protocol::selection::SelectionSet::single(
-        lattice_protocol::selection::Selection::cursor(lattice_protocol::position::Position::new(
-            row, 0,
-        )),
-    ))
+    lattice_grammar::Effect::CursorMove(lattice_protocol::position::Position::new(row, 0))
 }
 
 /// D.5.b helper: slice the rope at the given line range and
@@ -5304,8 +5300,8 @@ mod tests {
         );
         // slot-1 hunk starts are [1, 5].
         let row = |eff: Option<lattice_grammar::Effect>| match eff {
-            Some(lattice_grammar::Effect::SelectionChange(set)) => set.primary().head.line,
-            other => panic!("expected SelectionChange, got {other:?}"),
+            Some(lattice_grammar::Effect::CursorMove(pos)) => pos.line,
+            other => panic!("expected CursorMove, got {other:?}"),
         };
         assert_eq!(row(sub.diff_next_hunk_effect(key, 0)), 1, "next from 0 → 1");
         assert_eq!(row(sub.diff_next_hunk_effect(key, 3)), 5, "next from 3 → 5");

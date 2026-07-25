@@ -120,17 +120,10 @@ fn insert_one(ctx: &ActionContext, ch: &str) -> Vec<Effect> {
     })]
 }
 
-/// Step the caret one right with no text change (a collapsed selection — no
-/// spurious `DocumentChanged`).
+/// Step the caret one right with no text change — a cursor-only
+/// move, no spurious `DocumentChanged`.
 fn step_over(ctx: &ActionContext) -> Vec<Effect> {
-    vec![Effect::SelectionChange(SelectionSet {
-        selections: vec![Selection {
-            anchor: one_right(ctx.cursor),
-            head: one_right(ctx.cursor),
-            visual: None,
-        }],
-        primary: 0,
-    })]
+    vec![Effect::CursorMove(one_right(ctx.cursor))]
 }
 
 /// A closer (`)` `]` `}`): step over a matching closer already after the caret,

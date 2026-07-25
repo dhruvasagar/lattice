@@ -11,6 +11,13 @@ use lattice_mode::{
     ModeId, ModeKind, OptionOverrideSet, keymap_entry,
 };
 
+use crate::magit_blame_mode::MagitBlameMode;
+use crate::magit_branch_mode::MagitBranchMode;
+use crate::magit_commit_mode::MagitCommitMode;
+use crate::magit_diff_mode::MagitDiffMode;
+use crate::magit_log_mode::MagitLogMode;
+use crate::magit_rebase_mode::MagitRebaseMode;
+use crate::magit_stash_mode::MagitStashMode;
 use crate::magit_status_mode::MagitStatusMode;
 
 /// Minor mode active on every magit buffer.
@@ -93,10 +100,16 @@ impl Mode for MagitCoreMode {
     }
 
     fn activation_policy(&self) -> ActivationPolicy {
-        // Activate on any buffer whose major mode id is magit-status-mode
-        // (the first registered magit major). Extended when more major
-        // modes register (MG.4–MG.7).
-        ActivationPolicy::Majors(vec![MagitStatusMode::mode_id()])
+        ActivationPolicy::Majors(vec![
+            MagitStatusMode::mode_id(),
+            MagitCommitMode::mode_id(),
+            MagitDiffMode::mode_id(),
+            MagitLogMode::mode_id(),
+            MagitBlameMode::mode_id(),
+            MagitStashMode::mode_id(),
+            MagitBranchMode::mode_id(),
+            MagitRebaseMode::mode_id(),
+        ])
     }
 
     fn options(&self) -> OptionOverrideSet {

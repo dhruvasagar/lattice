@@ -494,7 +494,36 @@ Upgrades over today's hand-rolled state machine:
    genuine Visual-only aliases `x`→delete and `s`→change (in Normal
    `x`/`s` are different commands, so they cannot be derived from
    the operator registration). A contributed operator reaches
-   Visual with zero host edits.
+    Visual with zero host edits.
+
+#### 7.2.1 `post_motion_char` — post-motion wildcard capture
+
+Some operators need a character argument AFTER the motion range resolves
+(e.g. surround's `ys{motion}{char}` — the motion determines WHAT to wrap,
+the trailing char determines the wrapping pair). `register_operator_bindings`
+accepts a `post_motion_char: bool` parameter (default `false`). When `true`,
+every motion, text-object, and syntax-motion binding path gets an additional
+`ChordPattern::CharLiteral` at the end:
+
+```
+ysw → [y, s, w]                          (without post_motion_char)
+ysw → [y, s, w, CharLiteral]             (with post_motion_char)
+ysiw → [y, s, i, w, CharLiteral]         (text-object)
+ys]f → [y, s, ], f, CharLiteral]         (syntax motion)
+```
+
+The motion target's args are set to the non-`None` placeholder
+`Args::Char('\0')` so the trie's `substitute_invocation_char_arg` routes
+the captured char to the invocation's `args` slot (the wrapping character)
+rather than to the motion target's args. Multi-char capture support in
+`action_from_bound_with_capture` (handling `captured.len() > 1`) ensures
+operators with two wildcards (e.g. surround's `cs{char1}{char2}`) receive
+both captured chars as `Args::List([ArgValue::Char(c1), ArgValue::Char(c2)])`.
+
+The flag is also stored in `OperatorSpec::post_motion_char` (native) and
+`operator-spec.post-motion-char` (WIT) so WASM plugin operators can declare
+the same intent. The host's `build_operator_spec` trampoline plumbes the
+WIT field through to the native spec.
 
 ### 7.3 Marks, registers, find-char
 

@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use lattice_cells::style::{Style, StyledSpan};
 use lattice_core::BufferId;
-use lattice_grammar::{CommandRegistryHandle, Effect, QuitScope};
+use lattice_grammar::{CommandRegistryHandle, Effect};
 use lattice_mode::{
     ActionContext, ActionHandlerRegistration, ActionHandlerRegistryHandle, BufferStoreHandle,
     PendingSyntheticHighlights,
@@ -96,7 +96,7 @@ fn diff_line_count(state: &StatusBufferState, file_line: u32) -> Option<usize> {
             || t.starts_with("Untracked files")
             || t.starts_with("Stashes")
             || t.starts_with("Recent commits")
-            || parse_file_path(&text).is_some()
+            || text.starts_with("  ")
         {
             break;
         }
@@ -406,10 +406,7 @@ pub fn register_action_handlers(
     // ── close (q) ─────────────────────────────────────
     {
         handler!("action:magit-close", move |_ctx: &ActionContext<'_>| {
-            Some(Effect::QuitEditor {
-                force: false,
-                scope: QuitScope::Pane,
-            })
+            Some(Effect::BufferDelete { force: false })
         });
     }
 

@@ -33016,7 +33016,12 @@ fn apply_effect_host(
         }
         other => {
             handle_effect(editor, other.clone(), out);
-            out.effects.push(other);
+            // Effect::None is a no-op — don't push it to out.effects,
+            // otherwise the fused-path guard (can_fuse) would always
+            // decline fusion for commands that return None.
+            if !matches!(other, lattice_grammar::Effect::None) {
+                out.effects.push(other);
+            }
         }
     }
 }

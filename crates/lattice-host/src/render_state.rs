@@ -220,10 +220,7 @@ pub struct RenderState {
     /// The value `Arc` makes both the publish clone and the render-path
     /// read O(1).
     pub compilation_location_lines: std::sync::Arc<
-        std::collections::HashMap<
-            lattice_core::BufferId,
-            std::sync::Arc<Vec<(u32, u32, u32)>>,
-        >,
+        std::collections::HashMap<lattice_core::BufferId, std::sync::Arc<Vec<(u32, u32, u32)>>>,
     >,
     /// CM.3d (2026-07-22): snapshot of `Editor::compilation_theme_colors`.
     pub compilation_theme_colors: std::sync::Arc<(u32, u32)>,

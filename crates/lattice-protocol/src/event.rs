@@ -188,11 +188,17 @@ pub enum Event {
     /// deferred config against a now-present plugin (`with-eval-after-load`;
     /// config-and-init.md). `name` is the manifest id; `id` the host-issued
     /// numeric plugin id.
-    PluginLoaded { name: String, id: u32 },
+    PluginLoaded {
+        name: String,
+        id: u32,
+    },
     /// A plugin was unloaded (CI.1): teardown reversed its contributions
     /// (`:plugin-unload` / crash-teardown). Delivered to guests so a handler can
     /// tear down its own dependent setup. Fields mirror [`Self::PluginLoaded`].
-    PluginUnloaded { name: String, id: u32 },
+    PluginUnloaded {
+        name: String,
+        id: u32,
+    },
     /// A request to enable/disable a minor mode globally (CI.4) — the
     /// guest-to-Editor bridge for `enable-mode` / `disable-mode`. A plugin
     /// (init.rs) calls the modes-seam `enable-mode` from an `on-plugin-loaded`
@@ -200,7 +206,10 @@ pub enum Event {
     /// registry + the open-buffer set + the activator) flips the enablement and
     /// re-activates open buffers. Host-internal — NOT delivered back to guests
     /// (like [`Self::PluginCrashed`]). `mode` is the mode id.
-    ModeEnablementRequested { mode: String, enabled: bool },
+    ModeEnablementRequested {
+        mode: String,
+        enabled: bool,
+    },
 }
 
 // M.5.3.b: `LspLogPushed`, `LspBufferAttached`, and

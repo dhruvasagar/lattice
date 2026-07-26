@@ -46,9 +46,9 @@ impl Lang {
             if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
                 let lower = name.to_ascii_lowercase();
                 match lower.as_str() {
-                    ".bashrc" | ".bash_profile" | ".bash_login" | ".bash_logout"
-                    | ".zshrc" | ".zshenv" | ".zprofile" | ".zlogin" | ".zlogout"
-                    | ".profile" | ".shrc" | ".kshrc" => return Lang::Bash,
+                    ".bashrc" | ".bash_profile" | ".bash_login" | ".bash_logout" | ".zshrc"
+                    | ".zshenv" | ".zprofile" | ".zlogin" | ".zlogout" | ".profile" | ".shrc"
+                    | ".kshrc" => return Lang::Bash,
                     _ => {}
                 }
             }
@@ -148,9 +148,7 @@ impl Lang {
             Lang::Rust | Lang::JavaScript | Lang::TypeScript | Lang::Tsx => {
                 (Some("//"), Some(("/*", "*/")))
             }
-            Lang::Python | Lang::Ruby | Lang::Bash | Lang::Yaml | Lang::Toml => {
-                (Some("#"), None)
-            }
+            Lang::Python | Lang::Ruby | Lang::Bash | Lang::Yaml | Lang::Toml => (Some("#"), None),
             Lang::Go | Lang::C | Lang::Cpp | Lang::Java | Lang::Sql => {
                 (Some("//"), Some(("/*", "*/")))
             }

@@ -11,11 +11,11 @@
 //! The ACP lifecycle commands (`:opencode` / `:ai-prompt` / `:ai-stop`) live in
 //! [`crate::acp::commands`], gated with the rest of the ACP transport.
 
-use std::sync::Arc;
 use lattice_grammar::args::Args;
 use lattice_grammar::command::LatencyClass;
 use lattice_grammar::effect::Effect;
 use lattice_grammar::registry::{CommandRegistry, ExCommandSpec, SurfaceForm};
+use std::sync::Arc;
 
 /// Register the transport-neutral `:ai-log [provider]` command. Captures NO
 /// handle: the host reads the `AiLogger` service to enumerate sessions and

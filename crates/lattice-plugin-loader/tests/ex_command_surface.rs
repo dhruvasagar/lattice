@@ -66,13 +66,19 @@ fn loader_with_ex_commands(base: &std::path::Path) -> (PluginLoaderHandle, Comma
         LoaderServices {
             runtime: Some(tokio::runtime::Handle::current()),
             bus: Some(Arc::new(EventBus::new())),
-            picker_registry: Some(Arc::new(arc_swap::ArcSwap::from_pointee(PickerRegistry::new()))),
+            picker_registry: Some(Arc::new(arc_swap::ArcSwap::from_pointee(
+                PickerRegistry::new(),
+            ))),
             command_registry: Some(commands.clone()),
-            mode_registry: Some(Arc::new(arc_swap::ArcSwap::from_pointee(ModeRegistry::default()))),
+            mode_registry: Some(Arc::new(arc_swap::ArcSwap::from_pointee(
+                ModeRegistry::default(),
+            ))),
             config_registry: Some(Arc::new(ConfigRegistry::default())),
             keymap: Some(KeymapHandle::new()),
             meta_sink: Some(Arc::new(RecordingSink::default()) as Arc<dyn PluginMetaSink>),
-            decoration_registry: Some(std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(lattice_mode::GutterDecorationSourceRegistry::default()))),
+            decoration_registry: Some(std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(
+                lattice_mode::GutterDecorationSourceRegistry::default(),
+            ))),
             tracer: None,
         },
     ));
@@ -118,7 +124,12 @@ async fn all_three_commands_register_with_plain_names() {
     let snapshot = commands.load();
     // Plain names resolve directly via `id_by_name` — no `expand_alias` host
     // entry (option A: zero host code).
-    for name in ["plugin-load", "plugin-unload", "plugin-reload", "reload-config"] {
+    for name in [
+        "plugin-load",
+        "plugin-unload",
+        "plugin-reload",
+        "reload-config",
+    ] {
         assert!(
             snapshot.id_by_name(name).is_some(),
             "`{name}` registered under its plain name"
@@ -136,7 +147,10 @@ async fn reload_config_echoes_and_takes_no_arg() {
     let effect = invoke(&commands, "reload-config", None);
     let (level, text) = echo_text(&effect);
     assert_eq!(*level, EchoLevel::Info);
-    assert!(text.contains("init.rs"), "acknowledges the config reload: {text}");
+    assert!(
+        text.contains("init.rs"),
+        "acknowledges the config reload: {text}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -150,7 +164,10 @@ async fn missing_arg_echoes_a_usage_hint() {
             (*l, t.to_string())
         };
         assert_eq!(level, EchoLevel::Warn, "{name} with no arg warns");
-        assert!(text.contains("usage:"), "{name} echoes a usage hint: {text}");
+        assert!(
+            text.contains("usage:"),
+            "{name} echoes a usage hint: {text}"
+        );
     }
 }
 
@@ -174,7 +191,10 @@ async fn unload_command_removes_a_loaded_plugin_synchronously() {
     let (level, text) = echo_text(&effect);
     assert_eq!(*level, EchoLevel::Info);
     assert!(text.contains("unloaded"), "reports the unload: {text}");
-    assert!(!loader.is_loaded("picker-fixture"), "plugin gone after :plugin-unload");
+    assert!(
+        !loader.is_loaded("picker-fixture"),
+        "plugin gone after :plugin-unload"
+    );
 
     // `:plugin-unload` of an unknown target warns, no panic.
     let effect = invoke(&commands, "plugin-unload", Some("ghost"));
@@ -215,5 +235,8 @@ async fn load_command_echoes_then_loads_asynchronously() {
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    assert!(loaded, "the async :plugin-load eventually registers the plugin");
+    assert!(
+        loaded,
+        "the async :plugin-load eventually registers the plugin"
+    );
 }

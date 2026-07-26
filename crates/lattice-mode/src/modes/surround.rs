@@ -12,22 +12,21 @@ use std::sync::Arc;
 
 use lattice_grammar::CommandError;
 
-use lattice_core::buffer::Buffer;
 use lattice_core::Document;
-use lattice_grammar::args::{ArgSpec, Args, ArgKind, ArgValue};
+use lattice_core::buffer::Buffer;
+use lattice_grammar::args::{ArgKind, ArgSpec, ArgValue, Args};
 use lattice_grammar::effect::{Effect, YankKind};
 use lattice_grammar::registry::{CommandRegistry, OperatorId, OperatorSpec};
 use lattice_grammar::source::SourceLocation;
 use lattice_keymap::contribution::Keymap;
 use lattice_keymap::keymap_entry::KeymapEntry;
-use lattice_protocol::chord::KeyChord;
 use lattice_protocol::ChordPattern;
+use lattice_protocol::chord::KeyChord;
 use lattice_protocol::edit::Edit;
 use lattice_protocol::position::Position;
-use lattice_protocol::selection::{Selection, SelectionSet};
 
-use crate::{CapabilitySet, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind};
 use crate::mode::ActivationPolicy;
+use crate::{CapabilitySet, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind};
 
 // ── Pair mapping ──────────────────────────────────────────────
 
@@ -224,7 +223,10 @@ fn operator_surround_delete(
         let target_close = open_close_pair(target).map(|(_, c)| c).unwrap_or(target);
         let yanked_close = buffer.slice(lattice_protocol::position::Range::new(
             close_pos,
-            Position::new(close_pos.line, close_pos.byte + target_close.len_utf8() as u32),
+            Position::new(
+                close_pos.line,
+                close_pos.byte + target_close.len_utf8() as u32,
+            ),
         ))?;
 
         (open_pos, close_pos, yanked_open, yanked_close)
@@ -235,7 +237,10 @@ fn operator_surround_delete(
     // Apply deletions as one undo batch (closer first so byte offsets stay valid).
     let edit_close = Edit::delete(lattice_protocol::position::Range::new(
         close_pos,
-        Position::new(close_pos.line, close_pos.byte + target_close.len_utf8() as u32),
+        Position::new(
+            close_pos.line,
+            close_pos.byte + target_close.len_utf8() as u32,
+        ),
     ));
     let edit_open = Edit::delete(lattice_protocol::position::Range::new(
         open_pos,
@@ -279,7 +284,11 @@ fn operator_surround_change(
             };
             (t, r)
         }
-        _ => return Err(CommandError::InvalidArgs("cs requires Args::List([Char, Char])")),
+        _ => {
+            return Err(CommandError::InvalidArgs(
+                "cs requires Args::List([Char, Char])",
+            ));
+        }
     };
 
     let (new_open, new_close) = match open_close_pair(replacement) {
@@ -304,7 +313,10 @@ fn operator_surround_change(
         ))?;
         let yanked_close = buffer.slice(lattice_protocol::position::Range::new(
             close_pos,
-            Position::new(close_pos.line, close_pos.byte + target_close.len_utf8() as u32),
+            Position::new(
+                close_pos.line,
+                close_pos.byte + target_close.len_utf8() as u32,
+            ),
         ))?;
 
         (open_pos, close_pos, yanked_open, yanked_close)
@@ -316,7 +328,10 @@ fn operator_surround_change(
     let edit_close = Edit::replace(
         lattice_protocol::position::Range::new(
             close_pos,
-            Position::new(close_pos.line, close_pos.byte + target_close.len_utf8() as u32),
+            Position::new(
+                close_pos.line,
+                close_pos.byte + target_close.len_utf8() as u32,
+            ),
         ),
         close_text_repl.clone(),
     );
@@ -354,7 +369,11 @@ fn operator_surround_add(
 ) -> Result<Effect, CommandError> {
     let wrapper = match &ctx.args {
         Args::Char(c) => *c,
-        _ => return Err(CommandError::InvalidArgs("surround-add requires Args::Char")),
+        _ => {
+            return Err(CommandError::InvalidArgs(
+                "surround-add requires Args::Char",
+            ));
+        }
     };
 
     let (open, close) = match open_close_pair(wrapper) {
@@ -372,9 +391,7 @@ fn operator_surround_add(
         let buffer = ctx.document.buffer();
 
         let (wrap_start, wrap_end, wrap_text) = if ctx.linewise {
-            let line = buffer
-                .line(ctx.range.start.line)
-                .unwrap_or_default();
+            let line = buffer.line(ctx.range.start.line).unwrap_or_default();
             let start = Position::new(ctx.range.start.line, 0);
             let line_byte_len = buffer.line_byte_len(ctx.range.start.line);
             let end = Position::new(ctx.range.start.line, line_byte_len);
@@ -427,18 +444,18 @@ pub struct SurroundOperators {
 
 /// Register the three surround operators in the shared
 /// `CommandRegistry`. Called from the host's grammar bootstrap.
-pub fn register_surround_operators(
-    registry: &mut CommandRegistry,
-) -> SurroundOperators {
+pub fn register_surround_operators(registry: &mut CommandRegistry) -> SurroundOperators {
     let delete = registry.register_operator(
         "operator:surround-delete",
         "Delete the nearest surrounding pair (vim's `ds{char}`).",
         OperatorSpec {
             repeatable: true,
             apply: Arc::new(operator_surround_delete),
-            args_schema: vec![
-                ArgSpec::required("target", ArgKind::Char, "The surrounding pair character to delete (e.g. `\"`, `(`, `[`)"),
-            ],
+            args_schema: vec![ArgSpec::required(
+                "target",
+                ArgKind::Char,
+                "The surrounding pair character to delete (e.g. `\"`, `(`, `[`)",
+            )],
             blockwise_per_row: false,
             post_motion_char: false,
         },
@@ -451,8 +468,16 @@ pub fn register_surround_operators(
             repeatable: true,
             apply: Arc::new(operator_surround_change),
             args_schema: vec![
-                ArgSpec::required("target", ArgKind::Char, "The current surrounding pair character"),
-                ArgSpec::required("replacement", ArgKind::Char, "The replacement surrounding pair character"),
+                ArgSpec::required(
+                    "target",
+                    ArgKind::Char,
+                    "The current surrounding pair character",
+                ),
+                ArgSpec::required(
+                    "replacement",
+                    ArgKind::Char,
+                    "The replacement surrounding pair character",
+                ),
             ],
             blockwise_per_row: false,
             post_motion_char: false,
@@ -473,7 +498,11 @@ pub fn register_surround_operators(
         },
     );
 
-    SurroundOperators { delete, change, add }
+    SurroundOperators {
+        delete,
+        change,
+        add,
+    }
 }
 
 // ── Mode ──────────────────────────────────────────────────────
@@ -510,9 +539,9 @@ impl Mode for SurroundMode {
     }
 
     fn keymap(&self) -> Keymap {
-        use lattice_keymap::contribution::KeymapBinding;
-        use lattice_keymap::binding_mode::BindingMode;
         use lattice_grammar::command::CommandInvocation;
+        use lattice_keymap::binding_mode::BindingMode;
+        use lattice_keymap::contribution::KeymapBinding;
 
         let lit_ch = |c: char| ChordPattern::Literal(KeyChord::char(c));
 
@@ -520,34 +549,58 @@ impl Mode for SurroundMode {
         // (with CharLiteral wildcards for char capture).
         // Table-form entries provide the :describe-key / :keymap catalog.
         Keymap::new()
-            .bind(KeymapBinding::new(
-                BindingMode::Normal,
-                vec![lit_ch('d'), lit_ch('s'), ChordPattern::CharLiteral],
-                CommandInvocation::of(self.operators.delete.0)
-                    .with_range(lattice_grammar::range::Range::CurrentLine),
-                SourceLocation::builtin_file(file!(), line!()),
-            ).with_doc("Delete the nearest surrounding pair (vim's `ds{char}`)."))
-            .bind(KeymapBinding::new(
-                BindingMode::Normal,
-                vec![lit_ch('c'), lit_ch('s'), ChordPattern::CharLiteral, ChordPattern::CharLiteral],
-                CommandInvocation::of(self.operators.change.0)
-                    .with_range(lattice_grammar::range::Range::CurrentLine),
-                SourceLocation::builtin_file(file!(), line!()),
-            ).with_doc("Change the nearest surrounding pair (vim's `cs{old}{new}`)."))
-            .bind(KeymapBinding::new(
-                BindingMode::Normal,
-                vec![lit_ch('y'), lit_ch('s'), lit_ch('s'), ChordPattern::CharLiteral],
-                CommandInvocation::of(self.operators.add.0)
-                    .with_range(lattice_grammar::range::Range::CurrentLine),
-                SourceLocation::builtin_file(file!(), line!()),
-            ).with_doc("Wrap the current line in a surrounding pair (vim's `yss{char}`)."))
-            .bind(KeymapBinding::new(
-                BindingMode::Visual,
-                vec![lit_ch('S'), ChordPattern::CharLiteral],
-                CommandInvocation::of(self.operators.add.0)
-                    .with_range(lattice_grammar::range::Range::Selection),
-                SourceLocation::builtin_file(file!(), line!()),
-            ).with_doc("Wrap the visual selection in a surrounding pair (vim's visual `S{char}`)."))
+            .bind(
+                KeymapBinding::new(
+                    BindingMode::Normal,
+                    vec![lit_ch('d'), lit_ch('s'), ChordPattern::CharLiteral],
+                    CommandInvocation::of(self.operators.delete.0)
+                        .with_range(lattice_grammar::range::Range::CurrentLine),
+                    SourceLocation::builtin_file(file!(), line!()),
+                )
+                .with_doc("Delete the nearest surrounding pair (vim's `ds{char}`)."),
+            )
+            .bind(
+                KeymapBinding::new(
+                    BindingMode::Normal,
+                    vec![
+                        lit_ch('c'),
+                        lit_ch('s'),
+                        ChordPattern::CharLiteral,
+                        ChordPattern::CharLiteral,
+                    ],
+                    CommandInvocation::of(self.operators.change.0)
+                        .with_range(lattice_grammar::range::Range::CurrentLine),
+                    SourceLocation::builtin_file(file!(), line!()),
+                )
+                .with_doc("Change the nearest surrounding pair (vim's `cs{old}{new}`)."),
+            )
+            .bind(
+                KeymapBinding::new(
+                    BindingMode::Normal,
+                    vec![
+                        lit_ch('y'),
+                        lit_ch('s'),
+                        lit_ch('s'),
+                        ChordPattern::CharLiteral,
+                    ],
+                    CommandInvocation::of(self.operators.add.0)
+                        .with_range(lattice_grammar::range::Range::CurrentLine),
+                    SourceLocation::builtin_file(file!(), line!()),
+                )
+                .with_doc("Wrap the current line in a surrounding pair (vim's `yss{char}`)."),
+            )
+            .bind(
+                KeymapBinding::new(
+                    BindingMode::Visual,
+                    vec![lit_ch('S'), ChordPattern::CharLiteral],
+                    CommandInvocation::of(self.operators.add.0)
+                        .with_range(lattice_grammar::range::Range::Selection),
+                    SourceLocation::builtin_file(file!(), line!()),
+                )
+                .with_doc(
+                    "Wrap the visual selection in a surrounding pair (vim's visual `S{char}`).",
+                ),
+            )
             .extend_with_entries(surround_mode_keymap_entries())
     }
 
@@ -607,7 +660,8 @@ pub fn register_surround_modes(
     registry: &mut crate::registry::ModeRegistry,
     operators: SurroundOperators,
 ) {
-    registry.register(SurroundMode { operators })
+    registry
+        .register(SurroundMode { operators })
         .expect("surround-mode must register without conflict");
 }
 
@@ -616,7 +670,7 @@ pub fn register_surround_modes(
 #[cfg(test)]
 mod tests {
     use super::*;
-use lattice_core::buffer::Buffer;
+    use lattice_core::buffer::Buffer;
     use lattice_protocol::position::Position;
 
     #[test]
@@ -653,7 +707,7 @@ use lattice_core::buffer::Buffer;
         let pair = find_surround_pair(&buf, cursor_pos, '"').unwrap();
         let open_pos = buf.byte_to_position(pair.0).unwrap();
         let close_pos = buf.byte_to_position(pair.1).unwrap();
-        assert_eq!(open_pos, Position::new(0, 6));  // first "
+        assert_eq!(open_pos, Position::new(0, 6)); // first "
         assert_eq!(close_pos, Position::new(0, 12)); // second "
     }
 
@@ -667,7 +721,7 @@ use lattice_core::buffer::Buffer;
         let open_pos = buf.byte_to_position(pair.0).unwrap();
         let close_pos = buf.byte_to_position(pair.1).unwrap();
         // f(0)n(1) (2)f(3)o(4)o(5)((6)x(7):(8) (9)i(10)3(11)2(12))(13) (14){(15)}(16)
-        assert_eq!(open_pos, Position::new(0, 6));  // '('
+        assert_eq!(open_pos, Position::new(0, 6)); // '('
         assert_eq!(close_pos, Position::new(0, 13)); // ')'
     }
 
@@ -682,7 +736,7 @@ use lattice_core::buffer::Buffer;
         let close_pos = buf.byte_to_position(pair.1).unwrap();
         // Inner pair: `(c)`
         // a(0) (1)(2)b(3) (4)((5)c(6))(7) (8)d(9))(10) (11)e(12)
-        assert_eq!(open_pos, Position::new(0, 5));  // inner '('
+        assert_eq!(open_pos, Position::new(0, 5)); // inner '('
         assert_eq!(close_pos, Position::new(0, 7)); // inner ')'
     }
 
@@ -717,7 +771,11 @@ use lattice_core::buffer::Buffer;
         let _ = find_surround_pair(&buf, cursor_pos, '"');
         let elapsed = start.elapsed();
         // 10k chars should be well under 1ms (linear scan).
-        assert!(elapsed.as_micros() < 1000, "find_surround_pair on 10k chars took {:?}", elapsed);
+        assert!(
+            elapsed.as_micros() < 1000,
+            "find_surround_pair on 10k chars took {:?}",
+            elapsed
+        );
     }
 }
 
@@ -726,7 +784,7 @@ mod operator_tests {
     use super::*;
     use lattice_core::BufferId;
     use lattice_grammar::CancellationToken;
-    use lattice_grammar::args::{Args, ArgValue};
+    use lattice_grammar::args::{ArgValue, Args};
     use lattice_grammar::builtins::populate as grammar_builtins_populate;
     use lattice_grammar::command::CommandInvocation;
     use lattice_grammar::dispatcher::execute as grammar_execute;
@@ -839,10 +897,7 @@ mod operator_tests {
         set_cursor(&mut doc, cursor);
         let inv = CommandInvocation::of(ops.change.0)
             .with_range(lattice_grammar::range::Range::CurrentLine)
-            .with_args(Args::List(vec![
-                ArgValue::Char('"'),
-                ArgValue::Char('\''),
-            ]));
+            .with_args(Args::List(vec![ArgValue::Char('"'), ArgValue::Char('\'')]));
         grammar_execute(
             &registry,
             &mut doc,
@@ -862,10 +917,7 @@ mod operator_tests {
         set_cursor(&mut doc, cursor);
         let inv = CommandInvocation::of(ops.change.0)
             .with_range(lattice_grammar::range::Range::CurrentLine)
-            .with_args(Args::List(vec![
-                ArgValue::Char('('),
-                ArgValue::Char('['),
-            ]));
+            .with_args(Args::List(vec![ArgValue::Char('('), ArgValue::Char('[')]));
         grammar_execute(
             &registry,
             &mut doc,
@@ -956,10 +1008,7 @@ mod operator_tests {
         set_cursor(&mut doc, cursor);
         let inv = CommandInvocation::of(ops.change.0)
             .with_range(lattice_grammar::range::Range::CurrentLine)
-            .with_args(Args::List(vec![
-                ArgValue::Char('"'),
-                ArgValue::Char('\''),
-            ]));
+            .with_args(Args::List(vec![ArgValue::Char('"'), ArgValue::Char('\'')]));
         let eff = grammar_execute(
             &registry,
             &mut doc,
@@ -1001,7 +1050,10 @@ mod operator_tests {
         let cursor = Position::new(0, 0); // on 'h'
         set_cursor(&mut doc, cursor);
         let inv = CommandInvocation::of(ops.add.0)
-            .with_target(lattice_grammar::Target::Motion(builtins.word_forward, Args::None))
+            .with_target(lattice_grammar::Target::Motion(
+                builtins.word_forward,
+                Args::None,
+            ))
             .with_args(Args::Char('"'));
         grammar_execute(
             &registry,
@@ -1014,8 +1066,11 @@ mod operator_tests {
         .unwrap();
         // word_forward from 0 resolves past the space after "hello",
         // so the wrapped span is "hello " (vim-accurate: w goes to next word start).
-        assert!(doc_text(&doc).starts_with("\"hello"),
-            "expected wrapped text to start with \"hello, got: {}", doc_text(&doc));
+        assert!(
+            doc_text(&doc).starts_with("\"hello"),
+            "expected wrapped text to start with \"hello, got: {}",
+            doc_text(&doc)
+        );
     }
 
     #[test]
@@ -1025,7 +1080,10 @@ mod operator_tests {
         let cursor = Position::new(0, 2); // on 'l' in "hello"
         set_cursor(&mut doc, cursor);
         let inv = CommandInvocation::of(ops.add.0)
-            .with_target(lattice_grammar::Target::TextObject(builtins.inner_word, Args::None))
+            .with_target(lattice_grammar::Target::TextObject(
+                builtins.inner_word,
+                Args::None,
+            ))
             .with_args(Args::Char('"'));
         grammar_execute(
             &registry,

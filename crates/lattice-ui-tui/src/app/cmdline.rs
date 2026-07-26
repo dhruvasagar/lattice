@@ -341,8 +341,7 @@ use lattice_host::dispatch::prefer_aliases_for_command_candidates;
 mod tests {
     use super::*;
     use crate::app::test_helpers::{
-        app_in_command_mode, app_with, invoke_motion, press, press_chars, submit_ex,
-        unique_tempdir,
+        app_in_command_mode, app_with, invoke_motion, press, press_chars, submit_ex, unique_tempdir,
     };
     use crate::app::*;
 
@@ -376,7 +375,10 @@ mod tests {
         );
         // `<C-b>` (readline) moves the caret the same way the arrow does:
         // from after `X` to before it, so `Y` lands between `a` and `X`.
-        press(&mut a, KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
+        press(
+            &mut a,
+            KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL),
+        );
         press_chars(&mut a, "Y");
         assert_eq!(a.editor.command_line(), "eaYXbc");
     }
@@ -524,9 +526,7 @@ mod tests {
         assert!(a.editor.command_line_expanded());
         assert_eq!(a.editor.command_line(), "e foo");
         assert!(
-            a.editor
-                .command_line_full_text()
-                .starts_with("e foo\nbar"),
+            a.editor.command_line_full_text().starts_with("e foo\nbar"),
             "band reads the full multi-line text: {:?}",
             a.editor.command_line_full_text()
         );
@@ -618,7 +618,10 @@ mod tests {
         let mut a = app_with("hello\n", 10);
         submit_ex(&mut a, "write");
         submit_ex(&mut a, "history");
-        assert_eq!(a.editor.picker.as_ref().unwrap().source_id.as_deref(), Some("history"));
+        assert_eq!(
+            a.editor.picker.as_ref().unwrap().source_id.as_deref(),
+            Some("history")
+        );
     }
 
     /// `q:` with no history is graceful: no picker opens, no panic —
@@ -659,7 +662,10 @@ mod tests {
             .picker
             .as_ref()
             .expect("`q:` in the band must open the history picker");
-        assert_eq!(p.query, "set", "filter seeded from the in-progress `:` text");
+        assert_eq!(
+            p.query, "set",
+            "filter seeded from the in-progress `:` text"
+        );
         assert_eq!(p.candidates.len(), 1);
         assert!(p.candidates[0].raw.display.contains("set number"));
     }
@@ -683,7 +689,11 @@ mod tests {
             .command_line_decorations
             .as_ref()
             .expect("decorations produced on edit");
-        assert_eq!(d.spans[0].style, Style::Keyword, "command word is a keyword");
+        assert_eq!(
+            d.spans[0].style,
+            Style::Keyword,
+            "command word is a keyword"
+        );
         assert!(d.error.is_none(), "known command has no error");
         assert!(d.param_hint.is_some(), "`:write <file>` offers a hint");
     }

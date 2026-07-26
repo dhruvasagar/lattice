@@ -100,8 +100,7 @@ pub fn install(boot: &mut impl SubsystemBoot) {
         return;
     }
 
-    let loader: PluginLoaderHandle =
-        Arc::new(PluginLoader::with_services(host, services));
+    let loader: PluginLoaderHandle = Arc::new(PluginLoader::with_services(host, services));
     // Option A (PL8.C.2): the loader self-registers its `:plugin-load` /
     // `:plugin-unload` / `:plugin-reload` ex-commands into the runtime-mutable
     // command registry — zero host code, the full command surface owned by the
@@ -218,7 +217,9 @@ pub fn install(boot: &mut impl SubsystemBoot) {
             }
             // 2. Then the plugins the init.rs handlers react to.
             if let Some(dir) = plugins_dir {
-                let n = loader.discover_and_load(&dir, TrustTier::UserInstalled).await;
+                let n = loader
+                    .discover_and_load(&dir, TrustTier::UserInstalled)
+                    .await;
                 if n > 0 {
                     tracing::info!(count = n, dir = %dir.display(), "plugins loaded from disk");
                 }

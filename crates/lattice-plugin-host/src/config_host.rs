@@ -102,7 +102,11 @@ fn build_and_register<T: OptionType>(
     // `ConfigRegistry::unregister`, so repeated `:plugin-reload` / `:reload-config`
     // no longer grows the interned-string footprint.
     registry
-        .try_register(ConfigOption::<T>::new(name.to_owned(), value, doc.to_owned()))
+        .try_register(ConfigOption::<T>::new(
+            name.to_owned(),
+            value,
+            doc.to_owned(),
+        ))
         .is_ok()
 }
 

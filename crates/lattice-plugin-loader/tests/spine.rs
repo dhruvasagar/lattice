@@ -45,7 +45,10 @@ fn discovered(bytes: Vec<u8>, manifest: PluginManifest) -> DiscoveredPlugin {
 /// A hermetic host that writes its cache + per-plugin data dirs under a temp
 /// base, so the spine proof never touches the user's real plugin dirs.
 fn host() -> Arc<PluginHost> {
-    let base = std::env::temp_dir().join(format!("lattice-plugin-loader-spine-{}", std::process::id()));
+    let base = std::env::temp_dir().join(format!(
+        "lattice-plugin-loader-spine-{}",
+        std::process::id()
+    ));
     let cache = base.join("cache");
     let data = base.join("data");
     Arc::new(PluginHost::with_dirs(cache, data).expect("host builds with temp dirs"))
@@ -57,11 +60,18 @@ async fn loads_a_component_through_the_lifecycle_spine() {
     assert_eq!(loader.loaded_count(), 0, "loader starts empty");
 
     let id = loader
-        .load_discovered(&discovered(noop_bytes(), manifest("noop-plugin")), TrustTier::Bundled)
+        .load_discovered(
+            &discovered(noop_bytes(), manifest("noop-plugin")),
+            TrustTier::Bundled,
+        )
         .await
         .expect("the no-op component compiles, instantiates, and activates");
 
-    assert_eq!(loader.loaded_count(), 1, "the loaded set records the plugin");
+    assert_eq!(
+        loader.loaded_count(),
+        1,
+        "the loaded set records the plugin"
+    );
     assert!(
         loader.is_loaded("noop-plugin"),
         "the plugin is reachable by its manifest id (the `:plugin-unload <name>` key)"
@@ -84,8 +94,18 @@ async fn a_failed_load_leaves_the_loader_live_and_unchanged() {
         )
         .await
         .expect_err("garbage bytes must not load");
-    assert!(matches!(err, PluginLoaderError::Host(_)), "compile failure is a host error");
+    assert!(
+        matches!(err, PluginLoaderError::Host(_)),
+        "compile failure is a host error"
+    );
 
-    assert_eq!(loader.loaded_count(), 0, "a failed load stores no partial record");
-    assert!(!loader.is_loaded("broken"), "a failed load is not reported as loaded");
+    assert_eq!(
+        loader.loaded_count(),
+        0,
+        "a failed load stores no partial record"
+    );
+    assert!(
+        !loader.is_loaded("broken"),
+        "a failed load is not reported as loaded"
+    );
 }

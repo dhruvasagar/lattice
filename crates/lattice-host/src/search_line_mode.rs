@@ -24,7 +24,9 @@
 //! cancels cleanly.
 
 use lattice_core::BufferKind;
-use lattice_mode::{keymap_entry, Keymap, KeymapEntry, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind};
+use lattice_mode::{
+    Keymap, KeymapEntry, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, keymap_entry,
+};
 
 /// Synthetic name of the `/`·`?` search-line buffer. `ephemeral`
 /// keeps it out of `:ls` and the `:bn`/`:bp` cycle.

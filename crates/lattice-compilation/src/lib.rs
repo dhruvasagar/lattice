@@ -34,7 +34,9 @@ mod service;
 
 pub use events::{CompilationOutputPushed, OutputChunk};
 pub use ex_commands::register_compilation_ex_commands;
-pub use headerline::{CompilationHeadlineState, CompilationHeaderline, COMPILATION_HEADERLINE_PROVIDER_ID};
+pub use headerline::{
+    COMPILATION_HEADERLINE_PROVIDER_ID, CompilationHeaderline, CompilationHeadlineState,
+};
 pub use mode::{CompilationMode, apply_chunk};
 pub use parser::{
     CompilationLocation, CompilationParser, ParserRegistry, match_severity, parse_location_line,
@@ -194,7 +196,10 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     // `compilation.location` bg/fg once during activation so the
     // renderers read from the theme rather than hardcoding RGB.
     let theme_colors_bus = boot.inbound::<(u32, u32), _>(|(bg, fg)| {
-        vec![Effect::AppAction(AppEffect::CompilationThemeColors { bg, fg })]
+        vec![Effect::AppAction(AppEffect::CompilationThemeColors {
+            bg,
+            fg,
+        })]
     });
     boot.register_service::<CompilationThemeColorsBusHandle>(Arc::new(theme_colors_bus));
 

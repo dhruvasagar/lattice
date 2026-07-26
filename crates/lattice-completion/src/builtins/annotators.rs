@@ -177,11 +177,7 @@ impl CandidateAnnotator for KeybindingAnnotator {
             }
         }
         if !seen.is_empty() {
-            let joined: Arc<str> = seen
-                .into_iter()
-                .collect::<Vec<_>>()
-                .join(", ")
-                .into();
+            let joined: Arc<str> = seen.into_iter().collect::<Vec<_>>().join(", ").into();
             c.annotations.push(Annotation::Source(joined));
         }
     }

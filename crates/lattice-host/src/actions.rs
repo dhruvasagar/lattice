@@ -1722,7 +1722,10 @@ mod tests {
             (ids.redraw_screen, "action:redraw-screen"),
             (ids.open_command_picker, "action:open-command-picker"),
             (ids.open_history_picker, "action:open-history-picker"),
-            (ids.open_search_history_picker, "action:open-search-history-picker"),
+            (
+                ids.open_search_history_picker,
+                "action:open-search-history-picker",
+            ),
             (ids.enter_command_line, "action:enter-command-line"),
             (ids.command_line_submit, "action:command-line-submit"),
             (ids.command_line_cancel, "action:command-line-cancel"),

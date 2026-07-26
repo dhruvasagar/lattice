@@ -12,8 +12,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use lattice_config::ConfigRegistry;
-use lattice_grammar::registry::CommandRegistry;
 use lattice_grammar::CommandRegistryHandle;
+use lattice_grammar::registry::CommandRegistry;
 use lattice_keymap::KeymapHandle;
 use lattice_mode::{ModeRegistry, ModeRegistryHandle};
 use lattice_plugin_host::{PluginHost, TrustTier};
@@ -85,8 +85,9 @@ async fn default_mode_gate_enables_on_load_and_toggles_with_the_option() {
 
     let config = Arc::new(ConfigRegistry::default());
     let mode_registry = empty_mode_registry();
-    let host =
-        Arc::new(PluginHost::with_dirs(base.path().join("cache"), base.path().join("data")).unwrap());
+    let host = Arc::new(
+        PluginHost::with_dirs(base.path().join("cache"), base.path().join("data")).unwrap(),
+    );
     let loader = Arc::new(PluginLoader::with_services(
         host,
         LoaderServices {
@@ -176,8 +177,9 @@ async fn no_default_mode_means_no_gate_option() {
 
     let bus = Arc::new(EventBus::new());
     let config = Arc::new(ConfigRegistry::default());
-    let host =
-        Arc::new(PluginHost::with_dirs(base.path().join("cache"), base.path().join("data")).unwrap());
+    let host = Arc::new(
+        PluginHost::with_dirs(base.path().join("cache"), base.path().join("data")).unwrap(),
+    );
     let loader = Arc::new(PluginLoader::with_services(
         host,
         LoaderServices {

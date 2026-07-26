@@ -45,9 +45,7 @@ impl Mode for PiMode {
 /// Register `pi-mode` against `registry`. Called from
 /// [`super::install`].
 pub fn register_pi_modes(registry: &mut ModeRegistry) {
-    registry
-        .register(PiMode)
-        .expect("pi-mode register");
+    registry.register(PiMode).expect("pi-mode register");
 }
 
 #[cfg(test)]

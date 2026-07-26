@@ -260,8 +260,8 @@ impl Mode for MultibufferMode {
                     let action_handlers: ActionHandlerRegistryHandle =
                         (*action_handlers_arc).clone();
                     let view_id_for_handler = core_buffer_id;
-                    let handler: ActionHandler = Arc::new(
-                        move |ctx: &ActionContext<'_>| -> Option<Effect> {
+                    let handler: ActionHandler =
+                        Arc::new(move |ctx: &ActionContext<'_>| -> Option<Effect> {
                             let view = mb_reg.handle(view_id_for_handler)?;
                             let (source_buffer_id, source_position) =
                                 view.translate_composed_to_source(ctx.cursor)?;
@@ -274,8 +274,7 @@ impl Mode for MultibufferMode {
                                     force: false,
                                 },
                             ]))
-                        },
-                    );
+                        });
                     action_registrations.push(action_handlers.register(jump_command_id, handler));
                 }
             }

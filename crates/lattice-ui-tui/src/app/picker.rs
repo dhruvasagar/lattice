@@ -854,8 +854,9 @@ mod tests {
     fn gen_picker_sources_handles_dropped_registry_gracefully() {
         use std::sync::{Arc, Weak};
 
-        let reg: lattice_picker::PickerRegistryHandle =
-            Arc::new(arc_swap::ArcSwap::from_pointee(lattice_picker::PickerRegistry::new()));
+        let reg: lattice_picker::PickerRegistryHandle = Arc::new(arc_swap::ArcSwap::from_pointee(
+            lattice_picker::PickerRegistry::new(),
+        ));
         let weak: Weak<arc_swap::ArcSwap<lattice_picker::PickerRegistry>> = Arc::downgrade(&reg);
         drop(reg);
         let generator = crate::host_generators::PickerSourcesGenerator { registry: weak };

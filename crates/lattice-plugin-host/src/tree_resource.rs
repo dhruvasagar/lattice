@@ -384,11 +384,17 @@ impl NodeResource {
         let cur = last as usize;
         let candidate = if forward {
             (cur + 1..parent.child_count()).find(|&i| {
-                parent.child(i as u32).map(|c| c.is_named()).unwrap_or(false)
+                parent
+                    .child(i as u32)
+                    .map(|c| c.is_named())
+                    .unwrap_or(false)
             })
         } else {
             (0..cur).rev().find(|&i| {
-                parent.child(i as u32).map(|c| c.is_named()).unwrap_or(false)
+                parent
+                    .child(i as u32)
+                    .map(|c| c.is_named())
+                    .unwrap_or(false)
             })
         };
         candidate.map(|i| {
@@ -458,7 +464,11 @@ impl CursorResource {
             return false;
         };
         for i in (last as usize + 1)..parent.child_count() {
-            if parent.child(i as u32).map(|c| c.is_named()).unwrap_or(false) {
+            if parent
+                .child(i as u32)
+                .map(|c| c.is_named())
+                .unwrap_or(false)
+            {
                 let plen = self.path.len();
                 self.path[plen - 1] = i as u32;
                 return true;
@@ -538,9 +548,7 @@ mod tests {
         let src = "fn main() { let x = 1; }\n";
         let ts = TreeSnapshotResource::new(rust_snapshot(src));
         let x_col = src.find('x').unwrap() as u32;
-        let block = ts
-            .enclosing(pos(0, x_col), &["block".to_string()])
-            .unwrap();
+        let block = ts.enclosing(pos(0, x_col), &["block".to_string()]).unwrap();
         assert_eq!(block.kind(), "block");
         let r = block.byte_range();
         // The block spans the braces.
@@ -552,9 +560,10 @@ mod tests {
     fn enclosing_with_no_matching_kind_is_none() {
         let src = "fn main() {}\n";
         let ts = TreeSnapshotResource::new(rust_snapshot(src));
-        assert!(ts
-            .enclosing(pos(0, 3), &["nonexistent_kind".to_string()])
-            .is_none());
+        assert!(
+            ts.enclosing(pos(0, 3), &["nonexistent_kind".to_string()])
+                .is_none()
+        );
     }
 
     #[test]
@@ -623,7 +632,10 @@ mod tests {
         assert!(caps.iter().all(|(name, _)| name == "fname"));
         // The captured nodes are the identifiers `alpha` / `beta`.
         assert_eq!(caps[0].1.kind(), "identifier");
-        let starts: Vec<u32> = caps.iter().map(|(_, n)| n.byte_range().start.byte).collect();
+        let starts: Vec<u32> = caps
+            .iter()
+            .map(|(_, n)| n.byte_range().start.byte)
+            .collect();
         assert_eq!(starts, vec![3, 3]); // both at column 3 on their lines
     }
 
@@ -697,7 +709,12 @@ mod tests {
     fn no_tree_snapshot_reports_absent() {
         // A snapshot taken before the first parse has no tree — the trampoline
         // would pass `none` (parse pending; `Lang::Plain` has no grammar at all).
-        let snap = Arc::new(Syntax::for_language(Lang::Rust).unwrap().unwrap().snapshot_owned());
+        let snap = Arc::new(
+            Syntax::for_language(Lang::Rust)
+                .unwrap()
+                .unwrap()
+                .snapshot_owned(),
+        );
         let ts = TreeSnapshotResource::new(snap);
         assert!(!ts.has_tree());
         assert!(ts.node_at(pos(0, 0)).is_none());

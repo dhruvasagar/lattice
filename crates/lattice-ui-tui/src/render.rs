@@ -359,8 +359,7 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) -> Opti
     // default / `full` / fixed rows), resolved against the live frame
     // height. The band claims rows from the `Min(1)` pane area above it.
     let cmdline_rows: u16 = if app.command_line_expanded() {
-        let base = app.command_line_expand_height()
-            .rows(frame.area().height);
+        let base = app.command_line_expand_height().rows(frame.area().height);
         // When the completion popup is open inside the expanded band,
         // deduct its rows from the band height so candidates sit flush
         // against the cursor instead of at the very bottom of the frame.
@@ -406,7 +405,10 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) -> Opti
     // instead.
     if app.picker_state().state.is_some() && picker_is_minibuffer {
         let picker = app.picker_state();
-        let is_transient = picker.state.as_deref().map_or(false, |p| p.transient.is_some());
+        let is_transient = picker
+            .state
+            .as_deref()
+            .map_or(false, |p| p.transient.is_some());
         // Transient menus always use overlay mode regardless of display setting.
         if is_transient {
             draw_transient_overlay(frame, chunks[1], app);
@@ -438,7 +440,11 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) -> Opti
     // only one is interactive at a time). Only the minibuffer
     // display mode uses the bottom band; the popup mode draws
     // its own self-contained overlay below.
-    let is_transient = app.picker_state().state.as_deref().map_or(false, |p| p.transient.is_some());
+    let is_transient = app
+        .picker_state()
+        .state
+        .as_deref()
+        .map_or(false, |p| p.transient.is_some());
     if chrome.picker > 0 && !is_transient {
         draw_picker_candidates(frame, chunks[3], app);
     } else if chrome.completion > 0 {
@@ -450,7 +456,11 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) -> Opti
     // mode line and any echo / cmdline content underneath.
     let picker_state = app.picker_state();
     if picker_state.state.is_some()
-        && (!picker_is_minibuffer || picker_state.state.as_deref().map_or(false, |p| p.transient.is_some()))
+        && (!picker_is_minibuffer
+            || picker_state
+                .state
+                .as_deref()
+                .map_or(false, |p| p.transient.is_some()))
     {
         let p = picker_state.state.as_deref().unwrap();
         if p.transient.is_some() {
@@ -1696,7 +1706,9 @@ fn picker_display_is_minibuffer(app: &App) -> bool {
 /// preview line, and footer.
 fn draw_transient_overlay(frame: &mut Frame, buffer_area: Rect, app: &App) {
     let picker = app.picker_state();
-    let Some(p) = picker.state.as_deref() else { return };
+    let Some(p) = picker.state.as_deref() else {
+        return;
+    };
     let Some(ref spec) = p.transient else { return };
 
     let total_items: usize = spec.groups.iter().map(|g| g.items.len()).sum();
@@ -1708,21 +1720,29 @@ fn draw_transient_overlay(frame: &mut Frame, buffer_area: Rect, app: &App) {
     let width = buffer_area.width.saturating_sub(4).min(80).max(40);
     let x = buffer_area.x + buffer_area.width.saturating_sub(width) / 2;
     let y = buffer_area.y + buffer_area.height.saturating_sub(height) / 3;
-    let area = Rect { x, y, width, height };
+    let area = Rect {
+        x,
+        y,
+        width,
+        height,
+    };
 
     frame.render_widget(Clear, area);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(TuiStyle::default().fg(Color::Cyan));
-    let title_line = Line::from(vec![
-        Span::styled(format!(" {} ", spec.title), TuiStyle::default().add_modifier(Modifier::BOLD)),
-    ]);
+    let title_line = Line::from(vec![Span::styled(
+        format!(" {} ", spec.title),
+        TuiStyle::default().add_modifier(Modifier::BOLD),
+    )]);
     let block = block.title(title_line);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
     let visible = inner.height as usize;
-    let scroll = p.transient_scroll.min(row_count.saturating_sub(visible.max(1)));
+    let scroll = p
+        .transient_scroll
+        .min(row_count.saturating_sub(visible.max(1)));
 
     let mut lines: Vec<Line> = Vec::new();
     let mut ln: usize = 0;
@@ -1741,15 +1761,23 @@ fn draw_transient_overlay(frame: &mut Frame, buffer_area: Rect, app: &App) {
                 let key = format!("[{}]", item.key.join("/"));
                 let flag = match &item.kind {
                     lattice_picker::TransientItemKind::Flag { name, .. } => {
-                        let v = p.transient_state.get(name)
-                            .and_then(|v| match v { lattice_picker::TransientValue::Bool(b) => Some(*b), _ => None })
+                        let v = p
+                            .transient_state
+                            .get(name)
+                            .and_then(|v| match v {
+                                lattice_picker::TransientValue::Bool(b) => Some(*b),
+                                _ => None,
+                            })
                             .unwrap_or(false);
                         if v { "[x]" } else { "[ ]" }
                     }
                     _ => "",
                 };
                 lines.push(Line::from(vec![
-                    Span::styled(format!("    {:<6}", key), TuiStyle::default().fg(Color::Yellow)),
+                    Span::styled(
+                        format!("    {:<6}", key),
+                        TuiStyle::default().fg(Color::Yellow),
+                    ),
                     Span::raw(format!("{:<20}", item.label)),
                     Span::styled(&item.description, TuiStyle::default().fg(Color::DarkGray)),
                     Span::styled(format!("  {}", flag), TuiStyle::default().fg(Color::Green)),
@@ -1767,14 +1795,19 @@ fn draw_transient_overlay(frame: &mut Frame, buffer_area: Rect, app: &App) {
     if let Some(ref preview_fn) = spec.preview {
         if ln >= scroll && lines.len() < visible {
             let sep = "─".repeat(inner.width as usize);
-            lines.push(Line::from(Span::styled(sep, TuiStyle::default().fg(Color::DarkGray))));
+            lines.push(Line::from(Span::styled(
+                sep,
+                TuiStyle::default().fg(Color::DarkGray),
+            )));
         }
         ln += 1;
         if ln >= scroll && lines.len() < visible {
             let text = (preview_fn)(&p.transient_state);
             lines.push(Line::from(Span::styled(
                 format!("  {}", text),
-                TuiStyle::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+                TuiStyle::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::ITALIC),
             )));
         }
         ln += 1;
@@ -3609,8 +3642,7 @@ fn draw_command_or_echo(frame: &mut Frame, area: Rect, app: &App) {
                     if let Some(d) = deco
                         && !d.spans.is_empty()
                     {
-                        let mut spans: Vec<Span<'_>> =
-                            Vec::with_capacity(d.spans.len() + 2);
+                        let mut spans: Vec<Span<'_>> = Vec::with_capacity(d.spans.len() + 2);
                         let prompt_span = Span::raw(prompt.to_string());
                         let full_first = line_str.clone();
                         let first_line = l;
@@ -3725,11 +3757,7 @@ fn draw_command_or_echo(frame: &mut Frame, area: Rect, app: &App) {
                 for sp in &d.spans {
                     let s = sp.range.start.min(line.len());
                     let e = sp.range.end.min(line.len());
-                    if s < pos
-                        || e < s
-                        || !line.is_char_boundary(s)
-                        || !line.is_char_boundary(e)
-                    {
+                    if s < pos || e < s || !line.is_char_boundary(s) || !line.is_char_boundary(e) {
                         continue;
                     }
                     if s > pos {
@@ -4929,9 +4957,7 @@ pub(crate) fn compose_pane_lines(
         // background tint on the whole line + link foreground on
         // the file-path portion.
         let body = match compilation_location_tint(view, ctx.buffer_id, line_idx) {
-            Some((start, end, bg, fg)) => {
-                apply_compilation_location_tint(body, start, end, bg, fg)
-            }
+            Some((start, end, bg, fg)) => apply_compilation_location_tint(body, start, end, bg, fg),
             None => body,
         };
         // DR.3: inactive panes are a paint-time opacity (the design's
@@ -5801,8 +5827,16 @@ fn compilation_location_tint(
     let entries = rs.compilation_location_lines.get(&buffer_id)?;
     let entry = entries.iter().find(|(l, _, _)| *l == line_idx)?;
     let (bg, fg) = *rs.compilation_theme_colors;
-    let bg = Color::Rgb((bg >> 16) as u8, ((bg >> 8) & 0xff) as u8, (bg & 0xff) as u8);
-    let fg = Color::Rgb((fg >> 16) as u8, ((fg >> 8) & 0xff) as u8, (fg & 0xff) as u8);
+    let bg = Color::Rgb(
+        (bg >> 16) as u8,
+        ((bg >> 8) & 0xff) as u8,
+        (bg & 0xff) as u8,
+    );
+    let fg = Color::Rgb(
+        (fg >> 16) as u8,
+        ((fg >> 8) & 0xff) as u8,
+        (fg & 0xff) as u8,
+    );
     Some((entry.1, entry.2, bg, fg))
 }
 
@@ -5822,8 +5856,8 @@ fn apply_compilation_location_tint(
         .map(|s| {
             let span_len = s.content.len();
             let span_end = byte_pos + span_len;
-            let inside_link = byte_pos < path_byte_end as usize
-                && span_end > path_byte_start as usize;
+            let inside_link =
+                byte_pos < path_byte_end as usize && span_end > path_byte_start as usize;
             let style = s.style.bg(bg);
             let style = if inside_link { style.fg(fg) } else { style };
             byte_pos = span_end;

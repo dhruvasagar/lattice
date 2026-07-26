@@ -122,11 +122,7 @@ impl VcsSubsystem {
                         };
 
                         // Build GitBaseline source
-                        let source = Arc::new(GitBaseline::new(
-                            workdir,
-                            "HEAD",
-                            rel_path,
-                        ));
+                        let source = Arc::new(GitBaseline::new(workdir, "HEAD", rel_path));
 
                         // Register diff session
                         let descriptor = DiffDescriptor {
@@ -143,12 +139,7 @@ impl VcsSubsystem {
 
                         // Track
                         if let Ok(mut sessions) = self.sessions.lock() {
-                            sessions.insert(
-                                buffer_id,
-                                TrackedSession {
-                                    buffer_id,
-                                },
-                            );
+                            sessions.insert(buffer_id, TrackedSession { buffer_id });
                         }
                     }
                     Event::DocumentClosed { id } => {

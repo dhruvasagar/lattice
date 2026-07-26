@@ -2088,7 +2088,10 @@ impl Editor {
         };
         // MG.2: wire the async_landed Notify into the pending-highlights
         // service so async refresh tasks can fire it after storing spans.
-        if let Some(pending) = editor.services.get::<lattice_mode::PendingSyntheticHighlights>() {
+        if let Some(pending) = editor
+            .services
+            .get::<lattice_mode::PendingSyntheticHighlights>()
+        {
             *pending.waker.lock().expect("waker init") = Some(editor.async_landed.clone());
         }
 

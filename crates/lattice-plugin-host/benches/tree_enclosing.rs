@@ -15,7 +15,7 @@
 
 use std::sync::Arc;
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use lattice_plugin_host::tree_resource::TreeSnapshotResource;
 use lattice_protocol::position::Position;
 use lattice_syntax::{Lang, Syntax};

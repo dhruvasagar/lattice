@@ -23,7 +23,11 @@ impl GitBaseline {
     /// `workdir` — the repository working tree root.
     /// `rev` — the git revision (e.g., `"HEAD"`, `"main~3"`).
     /// `rel_path` — file path relative to `workdir`.
-    pub fn new(workdir: impl Into<PathBuf>, rev: impl Into<String>, rel_path: impl Into<PathBuf>) -> Self {
+    pub fn new(
+        workdir: impl Into<PathBuf>,
+        rev: impl Into<String>,
+        rel_path: impl Into<PathBuf>,
+    ) -> Self {
         Self {
             workdir: workdir.into(),
             rev: rev.into(),
@@ -41,12 +45,10 @@ impl DiffParticipantSource for GitBaseline {
             .output();
 
         match result {
-            Ok(output) if output.status.success() => {
-                match String::from_utf8(output.stdout) {
-                    Ok(text) => Rope::from(text),
-                    Err(_) => Rope::new(),
-                }
-            }
+            Ok(output) if output.status.success() => match String::from_utf8(output.stdout) {
+                Ok(text) => Rope::from(text),
+                Err(_) => Rope::new(),
+            },
             _ => {
                 tracing::debug!(
                     target: "lattice_host::vcs",

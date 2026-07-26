@@ -18,9 +18,9 @@
 
 use std::sync::Arc;
 
+use lattice_grammar::source::SourceLocation;
 use lattice_grammar::{CommandInvocation, CommandRegistry};
 use lattice_keymap::{BindingMode, KeymapCapability, KeymapHandle, KeymapLayer};
-use lattice_grammar::source::SourceLocation;
 
 use crate::{
     Component, PluginBudget, PluginHost, PluginHostError, PluginId, PluginManifest, TrustTier,
@@ -201,7 +201,10 @@ mod tests {
             "ex:write",
         );
         assert!(bound, "a well-formed binding to a real command lands");
-        assert!(keymap.binding_count() >= 1, "the User-layer binding is live");
+        assert!(
+            keymap.binding_count() >= 1,
+            "the User-layer binding is live"
+        );
     }
 
     #[test]
@@ -209,7 +212,14 @@ mod tests {
         let commands = registry_with_write();
         let keymap = KeymapHandle::new();
         assert!(
-            !bind_user_keybinding(&keymap, &commands, 7, BindingMode::Normal, "<C-s>", "nope:nope"),
+            !bind_user_keybinding(
+                &keymap,
+                &commands,
+                7,
+                BindingMode::Normal,
+                "<C-s>",
+                "nope:nope"
+            ),
             "an unregistered command binds nothing"
         );
         assert_eq!(keymap.binding_count(), 0, "no binding leaked");
@@ -220,7 +230,14 @@ mod tests {
         let commands = registry_with_write();
         let keymap = KeymapHandle::new();
         assert!(
-            !bind_user_keybinding(&keymap, &commands, 7, BindingMode::Normal, "<not-a-chord", "ex:write"),
+            !bind_user_keybinding(
+                &keymap,
+                &commands,
+                7,
+                BindingMode::Normal,
+                "<not-a-chord",
+                "ex:write"
+            ),
             "a malformed chord binds nothing"
         );
         assert_eq!(keymap.binding_count(), 0);

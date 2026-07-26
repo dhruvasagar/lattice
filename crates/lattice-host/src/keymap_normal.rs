@@ -73,7 +73,7 @@ use std::sync::Arc;
 
 use lattice_grammar::SourceLocation;
 use lattice_grammar::Target;
-use lattice_grammar::args::{Args, ArgValue};
+use lattice_grammar::args::{ArgValue, Args};
 use lattice_grammar::builtins::Builtins;
 use lattice_grammar::command::CommandInvocation;
 use lattice_protocol::ids::CommandId;

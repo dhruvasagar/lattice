@@ -2523,7 +2523,8 @@ mod tests {
             .expect("fold");
         a.editor.folds[first_idx].closed = true;
         // Open + activate the new buffer.
-        a.editor.set_command_line_text(&format!("e {}", path.display()));
+        a.editor
+            .set_command_line_text(&format!("e {}", path.display()));
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         // Switch back via :bn.
@@ -2551,7 +2552,8 @@ mod tests {
         // Open the second file under foldmethod=manual so no folds
         // get seeded into its entry.
         a.set_foldmethod_for_test(FoldMethod::Manual);
-        a.editor.set_command_line_text(&format!("e {}", path.display()));
+        a.editor
+            .set_command_line_text(&format!("e {}", path.display()));
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let id_target = a.editor.document_buffer_id;

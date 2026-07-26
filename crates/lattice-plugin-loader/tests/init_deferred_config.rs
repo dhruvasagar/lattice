@@ -17,8 +17,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use lattice_config::ConfigRegistry;
-use lattice_grammar::registry::CommandRegistry;
 use lattice_grammar::CommandRegistryHandle;
+use lattice_grammar::registry::CommandRegistry;
 use lattice_keymap::KeymapHandle;
 use lattice_mode::{ModeId, ModeRegistry, ModeRegistryHandle};
 use lattice_plugin_host::{PluginHost, TrustTier};
@@ -69,11 +69,20 @@ async fn init_rs_enables_auto_pairs_mode_when_auto_pair_loads() {
     // plugin.toml + the wasm go straight in it — no per-plugin subdir.
     let init_dir = base.path().join("init");
     std::fs::create_dir_all(&init_dir).unwrap();
-    std::fs::write(init_dir.join("plugin.toml"), "id = \"init\"\nprovides = [\"events\"]\n").unwrap();
+    std::fs::write(
+        init_dir.join("plugin.toml"),
+        "id = \"init\"\nprovides = [\"events\"]\n",
+    )
+    .unwrap();
     std::fs::write(init_dir.join("component.wasm"), &init_wasm).unwrap();
     // The plugins dir is a scanned tree — each plugin in its own subdir.
     let plugins_dir = base.path().join("plugins");
-    write_plugin_dir(&plugins_dir, "auto-pair", "\"grammar\", \"modes\", \"config\"", &ap_wasm);
+    write_plugin_dir(
+        &plugins_dir,
+        "auto-pair",
+        "\"grammar\", \"modes\", \"config\"",
+        &ap_wasm,
+    );
 
     let bus = Arc::new(EventBus::new());
     // Observe the enablement REQUEST the init handler will publish.

@@ -314,7 +314,11 @@ impl PluginTracer {
             record.clone(),
             self.state.capacity,
         );
-        push_bounded(&mut lock(&self.state.global), record.clone(), self.state.capacity);
+        push_bounded(
+            &mut lock(&self.state.global),
+            record.clone(),
+            self.state.capacity,
+        );
         if let Some(publisher) = lock(&self.state.publisher).as_ref() {
             publisher(record);
         }
@@ -344,7 +348,11 @@ impl PluginTracer {
 }
 
 /// Push `record`, evicting the oldest if at `capacity` (a bounded ring).
-fn push_bounded(ring: &mut VecDeque<PluginTraceRecord>, record: PluginTraceRecord, capacity: usize) {
+fn push_bounded(
+    ring: &mut VecDeque<PluginTraceRecord>,
+    record: PluginTraceRecord,
+    capacity: usize,
+) {
     if ring.len() >= capacity {
         ring.pop_front();
     }
@@ -462,7 +470,11 @@ mod tests {
             seen.push(lvl);
             lvl = lvl.cycle_next();
         }
-        assert_eq!(seen, TraceLevel::ALL.to_vec(), "cycle visits every level in order");
+        assert_eq!(
+            seen,
+            TraceLevel::ALL.to_vec(),
+            "cycle visits every level in order"
+        );
         assert_eq!(lvl, TraceLevel::Off, "Trace wraps back to Off");
         assert_eq!(TraceLevel::Info.as_str(), "info");
     }
@@ -495,7 +507,10 @@ mod tests {
         let gate = t.hot_gate(1);
         assert!(!gate.records_calls(), "starts off at the Info default");
         t.set_plugin_level(1, TraceLevel::Debug);
-        assert!(gate.records_calls(), "the already-handed-out gate sees the raise");
+        assert!(
+            gate.records_calls(),
+            "the already-handed-out gate sees the raise"
+        );
         t.set_plugin_level(1, TraceLevel::Off);
         assert_eq!(gate.level(), TraceLevel::Off, "and the lowering");
     }
@@ -507,8 +522,16 @@ mod tests {
         let g2 = t.hot_gate(2);
         t.set_plugin_level(2, TraceLevel::Off); // g2 pinned Off
         t.set_default_level(TraceLevel::Trace);
-        assert_eq!(g1.level(), TraceLevel::Trace, "the unoverridden gate follows the default");
-        assert_eq!(g2.level(), TraceLevel::Off, "the overridden gate is untouched");
+        assert_eq!(
+            g1.level(),
+            TraceLevel::Trace,
+            "the unoverridden gate follows the default"
+        );
+        assert_eq!(
+            g2.level(),
+            TraceLevel::Off,
+            "the overridden gate is untouched"
+        );
     }
 
     #[test]
@@ -542,7 +565,11 @@ mod tests {
             t.trace(rec(1, TraceLevel::Info));
         }));
         assert!(poisoned.is_err(), "the panicking publisher unwound");
-        assert_eq!(t.snapshot_plugin(1).len(), 1, "record #1 landed pre-publish");
+        assert_eq!(
+            t.snapshot_plugin(1).len(),
+            1,
+            "record #1 landed pre-publish"
+        );
         // Replace the publisher (locks the POISONED publisher mutex — must recover),
         // then trace again (locks it again to publish). Neither may panic.
         t.set_event_publisher(Box::new(|_| {}));
@@ -568,6 +595,10 @@ mod tests {
         // The global ring keeps history.
         assert_eq!(t.snapshot_global().len(), 1);
         // The old gate handle is orphaned; a fresh gate seeds from the default.
-        assert_eq!(t.hot_gate(1).level(), TraceLevel::Trace, "default is Trace here");
+        assert_eq!(
+            t.hot_gate(1).level(),
+            TraceLevel::Trace,
+            "default is Trace here"
+        );
     }
 }

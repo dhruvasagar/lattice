@@ -22,8 +22,8 @@ use lattice_core::BufferId;
 use lattice_grammar::{CommandInvocation, CommandRegistry, TextObjectEnv};
 use lattice_mode::CapabilitySet;
 use lattice_plugin_host::{PluginHost, PluginManifest, TrustTier};
-use lattice_protocol::position::Position;
 use lattice_protocol::CancellationToken;
+use lattice_protocol::position::Position;
 use lattice_syntax::{Lang, Syntax};
 
 fn guest_wasm() -> Option<&'static str> {
@@ -36,8 +36,7 @@ fn guest_wasm() -> Option<&'static str> {
 fn register_grammar(editor: CapabilitySet) -> (CommandRegistry, tempfile::TempDir) {
     let path = guest_wasm().expect("caller checked the fixture exists");
     let dirs = tempfile::tempdir().unwrap();
-    let host =
-        PluginHost::with_dirs(dirs.path().join("cache"), dirs.path().join("data")).unwrap();
+    let host = PluginHost::with_dirs(dirs.path().join("cache"), dirs.path().join("data")).unwrap();
     let component = host.compile(&std::fs::read(path).unwrap()).unwrap();
     let manifest = PluginManifest::new("multiseam", Vec::new(), editor);
     let bus = Arc::new(lattice_runtime::EventBus::new());

@@ -330,8 +330,7 @@ pub struct KeymapRegistry {
     ///   [`KeymapLayer`] alongside the chord so the completion
     ///   margin can show which mode provides the binding and
     ///   filter by active modes (MARG.3).
-    pub(crate) reverse_cache:
-        Arc<ArcSwap<HashMap<CommandId, Vec<(KeyChord, KeymapLayer)>>>>,
+    pub(crate) reverse_cache: Arc<ArcSwap<HashMap<CommandId, Vec<(KeyChord, KeymapLayer)>>>>,
 }
 
 impl KeymapRegistry {
@@ -438,9 +437,8 @@ fn build_reverse_cache_from_merged(
             return;
         }
         let layer = bound.layer;
-        out.entry(bound.command.command).or_insert_with(|| {
-            chords.into_iter().map(|c| (c, layer)).collect()
-        });
+        out.entry(bound.command.command)
+            .or_insert_with(|| chords.into_iter().map(|c| (c, layer)).collect());
     });
     out
 }

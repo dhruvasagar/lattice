@@ -23,8 +23,8 @@ use lattice_mode::{
     GutterDecoration, GutterDecorationSourceRegistry, GutterDecorationSourceRegistryHandle,
     GutterDiffKind, GutterSeverityLevel, ModeRegistry, ModeRegistryHandle, PluginMetaSink,
 };
-use lattice_picker::source::PickerRegistry;
 use lattice_picker::PickerRegistryHandle;
+use lattice_picker::source::PickerRegistry;
 use lattice_plugin_host::{PluginHost, TrustTier};
 use lattice_plugin_loader::{LoaderServices, PluginLoader, discover};
 use lattice_runtime::EventBus;
@@ -76,8 +76,9 @@ struct Rig {
 }
 
 fn rig(base: &std::path::Path) -> Rig {
-    let decorations: GutterDecorationSourceRegistryHandle =
-        Arc::new(arc_swap::ArcSwap::from_pointee(GutterDecorationSourceRegistry::new()));
+    let decorations: GutterDecorationSourceRegistryHandle = Arc::new(
+        arc_swap::ArcSwap::from_pointee(GutterDecorationSourceRegistry::new()),
+    );
     let commands: CommandRegistryHandle =
         Arc::new(arc_swap::ArcSwap::from_pointee(CommandRegistry::new()));
     let pickers: PickerRegistryHandle =
@@ -119,19 +120,30 @@ async fn discovered_decorations_plugin_registers_a_callable_producer() {
     write_plugin_dir(&plugins_dir, "deco-fixture", "decorations", &wasm);
 
     let rig = rig(base.path());
-    assert_eq!(discover(&plugins_dir).len(), 1, "discovery finds the plugin");
+    assert_eq!(
+        discover(&plugins_dir).len(),
+        1,
+        "discovery finds the plugin"
+    );
 
     let n = rig
         .loader
         .discover_and_load(&plugins_dir, TrustTier::Bundled)
         .await;
     assert_eq!(n, 1, "the decorations plugin loads");
-    assert!(rig.loader.is_loaded("deco-fixture"), "loader tracks it loaded");
+    assert!(
+        rig.loader.is_loaded("deco-fixture"),
+        "loader tracks it loaded"
+    );
 
     // The producer is registered into the wait-free decoration registry — the
     // handle the host's per-tick refresh reads.
     let sources = rig.decorations.load().sources();
-    assert_eq!(sources.len(), 1, "exactly the plugin's producer is registered");
+    assert_eq!(
+        sources.len(),
+        1,
+        "exactly the plugin's producer is registered"
+    );
 
     // It is callable off the render path: for a 5-line buffer the fixture emits
     // Diff/Change@0, Severity/Error@1, Diff/Add@4 (the last line proves
@@ -187,7 +199,10 @@ async fn discovered_decorations_plugin_registers_a_callable_producer() {
         rig.decorations.load().is_empty(),
         "the decoration registry is empty after unload — no dangling producer"
     );
-    assert!(!rig.loader.is_loaded("deco-fixture"), "loader no longer tracks it");
+    assert!(
+        !rig.loader.is_loaded("deco-fixture"),
+        "loader no longer tracks it"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -650,10 +650,28 @@ mod tests {
     #[test]
     fn standard_registry_includes_every_supported_language() {
         let r = LangRegistry::standard().unwrap();
-        for name in ["rust", "python", "javascript", "markdown", "markdown_inline",
-                      "bash", "c", "cpp", "css", "go", "html", "java", "json",
-                      "lua", "ruby", "sql", "toml", "typescript", "tsx", "yaml"]
-        {
+        for name in [
+            "rust",
+            "python",
+            "javascript",
+            "markdown",
+            "markdown_inline",
+            "bash",
+            "c",
+            "cpp",
+            "css",
+            "go",
+            "html",
+            "java",
+            "json",
+            "lua",
+            "ruby",
+            "sql",
+            "toml",
+            "typescript",
+            "tsx",
+            "yaml",
+        ] {
             assert!(r.has_lang(name), "missing language: {name}");
         }
     }
@@ -661,9 +679,10 @@ mod tests {
     #[test]
     fn registry_resolves_common_aliases() {
         let r = LangRegistry::standard().unwrap();
-        for alias in ["rs", "py", "js", "md", "sh", "h", "cc", "cxx",
-                       "hpp", "hh", "hxx", "rb", "ts", "mts", "cts", "yml"]
-        {
+        for alias in [
+            "rs", "py", "js", "md", "sh", "h", "cc", "cxx", "hpp", "hh", "hxx", "rb", "ts", "mts",
+            "cts", "yml",
+        ] {
             assert!(r.has_lang(alias), "alias not resolved: {alias}");
         }
     }
@@ -673,10 +692,25 @@ mod tests {
         let r = LangRegistry::standard().unwrap();
         // Every language except markdown_inline ships folds.scm.
         let with_folds = [
-            "rust", "python", "javascript", "markdown",
-            "bash", "c", "cpp", "css", "go", "html", "java",
-            "json", "lua", "ruby", "sql", "toml",
-            "typescript", "tsx", "yaml",
+            "rust",
+            "python",
+            "javascript",
+            "markdown",
+            "bash",
+            "c",
+            "cpp",
+            "css",
+            "go",
+            "html",
+            "java",
+            "json",
+            "lua",
+            "ruby",
+            "sql",
+            "toml",
+            "typescript",
+            "tsx",
+            "yaml",
         ];
         for lang in with_folds {
             assert!(r.folds_query(lang).is_some(), "{lang} folds.scm");
@@ -702,17 +736,34 @@ mod tests {
         // at `standard()` construction and `.unwrap()` panics here.
         let r = LangRegistry::standard().unwrap();
         let with_textobjects = [
-            "rust", "python", "javascript",
-            "bash", "c", "cpp", "css", "go", "html", "java",
-            "json", "lua", "ruby", "sql", "toml",
-            "typescript", "tsx", "yaml",
+            "rust",
+            "python",
+            "javascript",
+            "bash",
+            "c",
+            "cpp",
+            "css",
+            "go",
+            "html",
+            "java",
+            "json",
+            "lua",
+            "ruby",
+            "sql",
+            "toml",
+            "typescript",
+            "tsx",
+            "yaml",
         ];
         for lang in with_textobjects {
             assert!(r.textobjects_query(lang).is_some(), "{lang} textobjects");
         }
         // Prose has no function/class/block semantics -- no query.
         for lang in ["markdown", "markdown_inline"] {
-            assert!(r.textobjects_query(lang).is_none(), "{lang} ships textobjects (unexpected)");
+            assert!(
+                r.textobjects_query(lang).is_none(),
+                "{lang} ships textobjects (unexpected)"
+            );
         }
     }
 
@@ -720,7 +771,10 @@ mod tests {
     fn textobjects_query_resolves_aliases() {
         let r = LangRegistry::standard().unwrap();
         for alias in ["rs", "py", "js", "sh", "cc", "rb", "ts", "yml"] {
-            assert!(r.textobjects_query(alias).is_some(), "textobjects alias: {alias}");
+            assert!(
+                r.textobjects_query(alias).is_some(),
+                "textobjects alias: {alias}"
+            );
         }
     }
 
@@ -735,10 +789,7 @@ mod tests {
     fn each_tier1_language_has_highlights_query() {
         let r = LangRegistry::standard().unwrap();
         for name in r.lang_names() {
-            assert!(
-                r.highlights_query(name).is_some(),
-                "{name} highlights.scm"
-            );
+            assert!(r.highlights_query(name).is_some(), "{name} highlights.scm");
         }
     }
 

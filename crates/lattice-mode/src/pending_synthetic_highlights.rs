@@ -35,11 +35,7 @@ impl PendingSyntheticHighlights {
 
     /// Store per-line spans for `buffer_id` and fire the waker so the
     /// Editor drains them on the next tick.
-    pub fn store_and_wake(
-        &self,
-        buffer_id: BufferId,
-        spans: Vec<Vec<StyledSpan>>,
-    ) {
+    pub fn store_and_wake(&self, buffer_id: BufferId, spans: Vec<Vec<StyledSpan>>) {
         if let Ok(mut map) = self.map.lock() {
             map.insert(buffer_id, spans);
         }

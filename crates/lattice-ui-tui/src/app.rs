@@ -335,7 +335,9 @@ pub struct App {
     /// in their render loop); without this every independent `ad()`
     /// site in a renderer loads a fresh `Arc` from the shared ArcSwap
     /// and can see a torn snapshot relative to other sites.
-    frame_ad: std::sync::Mutex<Option<std::sync::Arc<lattice_host::render_state::ActiveDocumentRenderState>>>,
+    frame_ad: std::sync::Mutex<
+        Option<std::sync::Arc<lattice_host::render_state::ActiveDocumentRenderState>>,
+    >,
     /// Perf plan B.2 slice B.2.a: renderer-owned clone of the
     /// editor's `syntax_static_overlay_quads_cell`. The cell is the
     /// overlay worker's output channel — written by
@@ -2477,7 +2479,8 @@ mod tests {
         // ranking) is one of the describe-* family.
         a.apply(Action::CommandLineAcceptCompletion);
         assert!(
-            a.editor.command_line().starts_with("describe-") || a.editor.command_line() == "apropos",
+            a.editor.command_line().starts_with("describe-")
+                || a.editor.command_line() == "apropos",
             "expected user-facing alias, got `{}`",
             a.editor.command_line()
         );
@@ -2634,7 +2637,8 @@ mod tests {
         let path = write_temp_file("b", "one\n");
         let mut a = app_with("xx", 10);
         let first_id = a.editor.document_buffer_id;
-        a.editor.set_command_line_text(&format!("e {}", path.display()));
+        a.editor
+            .set_command_line_text(&format!("e {}", path.display()));
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let second_id = a.editor.document_buffer_id;
@@ -2655,7 +2659,8 @@ mod tests {
         let path = write_temp_file("d", "alpha\n");
         let mut a = app_with("xx", 10);
         let initial_id = a.editor.document_buffer_id;
-        a.editor.set_command_line_text(&format!("e {}", path.display()));
+        a.editor
+            .set_command_line_text(&format!("e {}", path.display()));
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let new_id = a.editor.document_buffer_id;
@@ -2666,7 +2671,8 @@ mod tests {
         assert_eq!(a.editor.document_buffer_id, initial_id);
         // Re-editing the new file's path should switch to its
         // existing buffer rather than spawning a third.
-        a.editor.set_command_line_text(&format!("e {}", path.display()));
+        a.editor
+            .set_command_line_text(&format!("e {}", path.display()));
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert_eq!(a.editor.document_buffer_id, new_id);
@@ -2693,7 +2699,8 @@ mod tests {
         let path = write_temp_file("activate-manual", "a:\n    x\n    y\nb:\n    p\n    q\n");
         let mut a = app_with("xx", 10);
         a.set_foldmethod_for_test(FoldMethod::Manual);
-        a.editor.set_command_line_text(&format!("e {}", path.display()));
+        a.editor
+            .set_command_line_text(&format!("e {}", path.display()));
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert!(
@@ -3671,7 +3678,8 @@ mod tests {
         // Wire up a Rust syntax instance so there's something to lose.
         attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
         // Open the tree, then dismiss.
-        a.editor.set_command_line_text(&format!("Filetree {}", dir.display()));
+        a.editor
+            .set_command_line_text(&format!("Filetree {}", dir.display()));
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert!(matches!(
@@ -3705,7 +3713,8 @@ mod tests {
         a.editor.terminal_width = Some(80);
         a.apply(Action::SplitPaneVertical);
         a.apply(Action::NavigatePane(PaneDirection::Right));
-        a.editor.set_command_line_text(&format!("Filetree {}", dir.display()));
+        a.editor
+            .set_command_line_text(&format!("Filetree {}", dir.display()));
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert_eq!(a.editor.buffers.file_tree_ids_sorted().len(), 1);
@@ -3720,7 +3729,8 @@ mod tests {
         let path = write_temp_file("e", "alpha\n");
         let mut a = app_with("xx", 10);
         let initial_id = a.editor.document_buffer_id;
-        a.editor.set_command_line_text(&format!("e {}", path.display()));
+        a.editor
+            .set_command_line_text(&format!("e {}", path.display()));
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         // Now active = new buffer; delete it. Successor should
@@ -3761,7 +3771,8 @@ mod tests {
         );
         let mut a = app_with("xx", 10);
         a.set_foldmethod_for_test(FoldMethod::Indent);
-        a.editor.set_command_line_text(&format!("e {}", path.display()));
+        a.editor
+            .set_command_line_text(&format!("e {}", path.display()));
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         // The new buffer should have folds without `<C-l>`.

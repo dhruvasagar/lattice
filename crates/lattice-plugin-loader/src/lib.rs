@@ -82,8 +82,9 @@ use lattice_config::ConfigRegistry;
 use lattice_grammar::CommandRegistryHandle;
 use lattice_keymap::KeymapHandle;
 use lattice_mode::{
-    ActivationPolicy, AsyncGutterDecorationSource, CapabilitySet, GutterDecorationSourceRegistryHandle,
-    LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, ModeRegistryHandle, PluginMetaSinkHandle,
+    ActivationPolicy, AsyncGutterDecorationSource, CapabilitySet,
+    GutterDecorationSourceRegistryHandle, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind,
+    ModeRegistryHandle, PluginMetaSinkHandle,
 };
 use lattice_picker::{PickerRegistryHandle, PickerSourceGenerator};
 use lattice_plugin_host::{
@@ -519,11 +520,10 @@ impl PluginLoader {
                     // well-formed `provides`, and the import is wired into the
                     // linker for every async world regardless. A malformed manifest
                     // that lists it drains nothing (no-op), never an error.
-                    PluginSeam::Logging => {}
-                    // Exhaustive: every contribution `PluginSeam` variant is drained
-                    // (PL8.E closed the last, decorations). A new seam variant
-                    // must add its drain here — the compiler enforces it rather
-                    // than a silent skip.
+                    PluginSeam::Logging => {} // Exhaustive: every contribution `PluginSeam` variant is drained
+                                              // (PL8.E closed the last, decorations). A new seam variant
+                                              // must add its drain here — the compiler enforces it rather
+                                              // than a silent skip.
                 }
             }
         }
@@ -581,7 +581,8 @@ impl PluginLoader {
     /// config registry / bus is wired.
     fn apply_default_mode_gate(&self, plugin_id: &str, default_mode: Option<&str>) {
         let Some(mode) = default_mode else { return };
-        let (Some(registry), Some(bus)) = (self.env.config_registry.as_ref(), self.env.bus.as_ref())
+        let (Some(registry), Some(bus)) =
+            (self.env.config_registry.as_ref(), self.env.bus.as_ref())
         else {
             return;
         };

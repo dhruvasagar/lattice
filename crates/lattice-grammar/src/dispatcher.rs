@@ -520,7 +520,7 @@ fn merge_blockwise_effects(
     primary_register: crate::register::Register,
     collapsed_edit: Option<lattice_core::buffer::AppliedEdit>,
     cursor_target: Option<Position>,
-    document: &Document,
+    _document: &Document,
 ) -> Effect {
     let mut flat: Vec<Effect> = Vec::new();
     for e in per_row_effects {

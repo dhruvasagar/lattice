@@ -69,11 +69,7 @@ impl Stash {
     /// If `message` is provided, it is used as the stash message.
     ///
     /// Equivalent to `git stash push [-u] [-m <message>]`.
-    pub fn create(
-        repo: &Repository,
-        message: Option<&str>,
-        include_untracked: bool,
-    ) -> Result<()> {
+    pub fn create(repo: &Repository, message: Option<&str>, include_untracked: bool) -> Result<()> {
         let mut args: Vec<String> = vec!["stash".into(), "push".into()];
         if include_untracked {
             args.push("--include-untracked".into());

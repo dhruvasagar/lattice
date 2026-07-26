@@ -102,19 +102,28 @@ async fn discovered_grammar_plugin_registers_and_dispatches_through_the_registry
             bus: Some(Arc::new(EventBus::new())),
             command_registry: Some(command_registry.clone()),
             meta_sink: Some(sink.clone() as Arc<dyn PluginMetaSink>),
-            decoration_registry: Some(std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(lattice_mode::GutterDecorationSourceRegistry::default()))),
+            decoration_registry: Some(std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(
+                lattice_mode::GutterDecorationSourceRegistry::default(),
+            ))),
             ..Default::default()
         },
     );
 
     // Sanity: discovery finds exactly the one plugin dir.
-    assert_eq!(discover(&plugins_dir).len(), 1, "discovery finds the plugin");
+    assert_eq!(
+        discover(&plugins_dir).len(),
+        1,
+        "discovery finds the plugin"
+    );
 
     let n = loader
         .discover_and_load(&plugins_dir, TrustTier::Bundled)
         .await;
     assert_eq!(n, 1, "the grammar plugin loads");
-    assert!(loader.is_loaded("grammar-fixture"), "loader tracks it loaded");
+    assert!(
+        loader.is_loaded("grammar-fixture"),
+        "loader tracks it loaded"
+    );
 
     // Provenance recorded — `:list-plugins` would show it.
     let plugin_id = {

@@ -28,7 +28,7 @@
 
 use lattice_core::BufferKind;
 use lattice_mode::{
-    keymap_entry, Keymap, KeymapEntry, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind,
+    Keymap, KeymapEntry, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, keymap_entry,
 };
 
 /// Synthetic name of the `:` command-line buffer. `:ls` / `:b` can

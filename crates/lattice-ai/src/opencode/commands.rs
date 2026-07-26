@@ -6,11 +6,11 @@
 //! the minor) is requested through the [`Effect`] vocabulary — the host
 //! boundary — not a bespoke channel, exactly like `:claude`.
 
-use std::sync::Arc;
 use lattice_agent::parse_no_args;
 use lattice_grammar::command::LatencyClass;
 use lattice_grammar::effect::Effect;
 use lattice_grammar::registry::{CommandRegistry, ExCommandSpec, SurfaceForm};
+use std::sync::Arc;
 
 use crate::opencode::modes::OpencodeMode;
 

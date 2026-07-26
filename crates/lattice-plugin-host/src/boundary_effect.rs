@@ -524,7 +524,8 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
                     anchor: p,
                     head: p,
                     visual: None,
-                }).to_wit()?
+                })
+                .to_wit()?,
             )
         }
         NativeEffect::SelectionChange(set) => WitEffect::SelectionChange(set.to_wit()?),

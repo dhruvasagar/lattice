@@ -360,7 +360,11 @@ impl ThemeRegistry for InMemoryThemeRegistry {
 
     fn element_names(&self) -> Vec<String> {
         let inner = self.inner.read().expect("theme registry lock poisoned");
-        let mut names: Vec<String> = inner.by_name.keys().map(|n| n.as_str().to_string()).collect();
+        let mut names: Vec<String> = inner
+            .by_name
+            .keys()
+            .map(|n| n.as_str().to_string())
+            .collect();
         names.sort();
         names
     }

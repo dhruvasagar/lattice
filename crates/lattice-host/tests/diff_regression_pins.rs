@@ -65,7 +65,10 @@ fn boot() -> Editor {
 #[test]
 fn diff_mode_registered_at_boot() {
     assert!(
-        boot().mode_registry.load().is_registered(ModeId::new("diff-mode")),
+        boot()
+            .mode_registry
+            .load()
+            .is_registered(ModeId::new("diff-mode")),
         "diff-mode must be registered at boot"
     );
 }

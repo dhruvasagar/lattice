@@ -80,8 +80,9 @@ fn chord(s: &str) -> KeyChord {
 /// dev-only wasmtime runtime), separate from whatever the editor's boot-installed
 /// loader points at, keeping this test hermetic.
 fn loader_over_editor(editor: &Editor, base: &std::path::Path) -> PluginLoader {
-    let host =
-        Arc::new(PluginHost::with_dirs(base.join("cache"), base.join("data")).expect("host builds"));
+    let host = Arc::new(
+        PluginHost::with_dirs(base.join("cache"), base.join("data")).expect("host builds"),
+    );
     PluginLoader::with_services(
         host,
         LoaderServices {
@@ -158,7 +159,11 @@ async fn emacs_keys_leader_shipped_as_a_component_dispatches_like_native() {
 
     // --- Load the emacs-keys mode as a component through the loader, into the
     // editor's live registries.
-    assert_eq!(discover(&plugins_dir).len(), 1, "discovery finds the plugin");
+    assert_eq!(
+        discover(&plugins_dir).len(),
+        1,
+        "discovery finds the plugin"
+    );
     let loaded = loader_over_editor(&editor, base.path())
         .discover_and_load(&plugins_dir, TrustTier::Bundled)
         .await;
@@ -213,7 +218,11 @@ async fn emacs_keys_leader_shipped_as_a_component_dispatches_like_native() {
     // actually execute it — a component-shipped mode driving a real editor
     // action, indistinguishable from native at the dispatch layer.
     activate_modes(&mut editor);
-    assert_eq!(editor.pane_tree.len(), 1, "one pane before the leader chord");
+    assert_eq!(
+        editor.pane_tree.len(),
+        1,
+        "one pane before the leader chord"
+    );
 
     let mut partial: Vec<KeyChord> = Vec::new();
     let _ = editor.dispatch_chord(chord("<C-x>"), &mut partial);

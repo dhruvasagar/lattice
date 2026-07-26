@@ -29,7 +29,7 @@ use lattice_protocol::{Event, EventKind};
 use lattice_runtime::{Document, EventFilter, SubscriptionTarget};
 
 use crate::actions;
-use crate::render::{render_status, PLUGINS_MODE_ID};
+use crate::render::{PLUGINS_MODE_ID, render_status};
 
 /// The `*plugins*` buffer's major mode.
 pub struct PluginManagerMode;

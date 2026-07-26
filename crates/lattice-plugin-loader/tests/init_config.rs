@@ -53,9 +53,7 @@ fn write_init_dir(dir: &std::path::Path, wasm: &[u8]) {
 }
 
 fn loader(base: &std::path::Path, keymap: KeymapHandle) -> PluginLoaderHandle {
-    let host = Arc::new(
-        PluginHost::with_dirs(base.join("cache"), base.join("data")).unwrap(),
-    );
+    let host = Arc::new(PluginHost::with_dirs(base.join("cache"), base.join("data")).unwrap());
     Arc::new(PluginLoader::with_services(
         host,
         LoaderServices {
@@ -63,11 +61,18 @@ fn loader(base: &std::path::Path, keymap: KeymapHandle) -> PluginLoaderHandle {
             bus: Some(Arc::new(EventBus::new())),
             command_registry: Some(commands_with_builtins()),
             keymap: Some(keymap),
-            picker_registry: Some(Arc::new(arc_swap::ArcSwap::from_pointee(PickerRegistry::new()))),
-            mode_registry: Some(Arc::new(arc_swap::ArcSwap::from_pointee(ModeRegistry::default())) as ModeRegistryHandle),
+            picker_registry: Some(Arc::new(arc_swap::ArcSwap::from_pointee(
+                PickerRegistry::new(),
+            ))),
+            mode_registry: Some(
+                Arc::new(arc_swap::ArcSwap::from_pointee(ModeRegistry::default()))
+                    as ModeRegistryHandle,
+            ),
             config_registry: Some(Arc::new(ConfigRegistry::default())),
             meta_sink: Some(Arc::new(Sink) as Arc<dyn PluginMetaSink>),
-            decoration_registry: Some(std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(lattice_mode::GutterDecorationSourceRegistry::default()))),
+            decoration_registry: Some(std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(
+                lattice_mode::GutterDecorationSourceRegistry::default(),
+            ))),
             tracer: None,
         },
     ))
@@ -92,7 +97,10 @@ async fn init_loads_as_a_plugin_and_survives_reload_config() {
         .load_path(&init_dir, TrustTier::Bundled)
         .await
         .expect("init.rs loads from the config dir");
-    assert!(loader.is_loaded("init"), "loaded under its `init` manifest id");
+    assert!(
+        loader.is_loaded("init"),
+        "loaded under its `init` manifest id"
+    );
     assert_eq!(keymap.binding_count(), 1, "init's keybinding is live");
     let chord = lattice_protocol::parse_chord_sequence("<C-s>").unwrap();
     assert!(matches!(
@@ -106,7 +114,10 @@ async fn init_loads_as_a_plugin_and_survives_reload_config() {
         .reload("init", TrustTier::Bundled)
         .await
         .expect("reload-config re-instantiates init from disk");
-    assert!(loader.is_loaded("init"), "init still loaded after reload-config");
+    assert!(
+        loader.is_loaded("init"),
+        "init still loaded after reload-config"
+    );
     assert_ne!(new_id.0, id.0, "a fresh host id (fresh Store) after reload");
     assert_eq!(
         keymap.binding_count(),
@@ -134,13 +145,23 @@ async fn sync_init_loads_when_absent_then_reloads_when_present() {
 
     // Not loaded → sync_init loads.
     assert!(!loader.is_loaded("init"));
-    let id1 = loader.sync_init(&init_dir, TrustTier::Bundled).await.unwrap();
+    let id1 = loader
+        .sync_init(&init_dir, TrustTier::Bundled)
+        .await
+        .unwrap();
     assert!(loader.is_loaded("init"));
     assert_eq!(keymap.binding_count(), 1);
 
     // Loaded → sync_init reloads (fresh id, no binding accumulation).
-    let id2 = loader.sync_init(&init_dir, TrustTier::Bundled).await.unwrap();
+    let id2 = loader
+        .sync_init(&init_dir, TrustTier::Bundled)
+        .await
+        .unwrap();
     assert!(loader.is_loaded("init"));
     assert_ne!(id1.0, id2.0, "reload minted a fresh Store/id");
-    assert_eq!(keymap.binding_count(), 1, "reload did not accumulate bindings");
+    assert_eq!(
+        keymap.binding_count(),
+        1,
+        "reload did not accumulate bindings"
+    );
 }

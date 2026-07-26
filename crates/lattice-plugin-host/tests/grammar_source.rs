@@ -185,7 +185,11 @@ fn traced_guest_err_records_a_warn_even_at_the_default_gate() {
     .expect_err("the guest err is a typed CommandError");
 
     let recs = tracer.snapshot_plugin(plugin_id);
-    assert_eq!(recs.len(), 1, "the guest err is captured at the default gate");
+    assert_eq!(
+        recs.len(),
+        1,
+        "the guest err is captured at the default gate"
+    );
     assert_eq!(recs[0].level, TraceLevel::Warn);
 }
 
@@ -384,6 +388,10 @@ fn a_trapping_motion_quarantines_and_short_circuits() {
         .into_iter()
         .filter(|r| matches!(r.outcome, TraceOutcome::Trap { .. }))
         .collect();
-    assert_eq!(traps.len(), 1, "one trap record from the trip, none from the re-trip");
+    assert_eq!(
+        traps.len(),
+        1,
+        "one trap record from the trip, none from the re-trip"
+    );
     assert_eq!(traps[0].level, TraceLevel::Error);
 }

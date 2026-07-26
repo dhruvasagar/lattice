@@ -131,7 +131,11 @@ pub struct RenderedIntrospection {
 pub fn render_introspection(item: &dyn Introspectable) -> RenderedIntrospection {
     let mut lines = Vec::new();
     let mut anchors = Vec::new();
-    lines.push(format!("{} {}", item.identifier(), kind_icon(item.kind_label())));
+    lines.push(format!(
+        "{} {}",
+        item.identifier(),
+        kind_icon(item.kind_label())
+    ));
     lines.push(String::new());
     let doc = item.doc();
     if doc.is_empty() {

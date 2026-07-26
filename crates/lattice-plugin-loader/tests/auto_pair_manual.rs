@@ -25,10 +25,10 @@ use lattice_grammar::registry::{CommandRegistry, TextObjectEnv};
 use lattice_grammar::{CancellationToken, CommandRegistryHandle, Effect};
 use lattice_keymap::KeymapHandle;
 use lattice_mode::{ModeRegistry, ModeRegistryHandle};
-use lattice_protocol::edit::EditKind;
-use lattice_protocol::position::Position;
 use lattice_plugin_host::{PluginHost, TrustTier};
 use lattice_plugin_loader::{LoaderServices, PluginLoader};
+use lattice_protocol::edit::EditKind;
+use lattice_protocol::position::Position;
 use lattice_runtime::EventBus;
 use lattice_syntax::{Lang, Syntax};
 
@@ -137,7 +137,11 @@ async fn manual_close_key_closes_the_nearest_unmatched_opener_in_scope() {
                 "closes the unmatched ( with ), got {:?}",
                 edit.kind
             );
-            assert_eq!(cursor, Some(Position::new(1, 9)), "caret after the inserted )");
+            assert_eq!(
+                cursor,
+                Some(Position::new(1, 9)),
+                "caret after the inserted )"
+            );
         }
         other => panic!("expected ApplyEdit inserting ), got {other:?}"),
     }

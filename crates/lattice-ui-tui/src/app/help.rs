@@ -400,7 +400,8 @@ mod tests {
         // §5.11 anchor system: every arg produces an `arg:<name>`
         // anchor, plus a parent `args` anchor for the section.
         let mut a = app_with("xx", 10);
-        a.editor.set_command_line_text("describe-command ex:apropos");
+        a.editor
+            .set_command_line_text("describe-command ex:apropos");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let _ = a.popup_help().unwrap();
@@ -438,7 +439,8 @@ mod tests {
         // Verify the recorded line index actually points at the
         // section's heading row in the rendered content.
         let mut a = app_with("xx", 10);
-        a.editor.set_command_line_text("describe-command ex:apropos");
+        a.editor
+            .set_command_line_text("describe-command ex:apropos");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let lines = a.popup_help().unwrap().lines();
@@ -453,7 +455,8 @@ mod tests {
     fn describe_command_arguments_section_renders_args_schema() {
         // ex:apropos has a schema with one required arg "pattern".
         let mut a = app_with("xx", 10);
-        a.editor.set_command_line_text("describe-command ex:apropos");
+        a.editor
+            .set_command_line_text("describe-command ex:apropos");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let body = a.popup_help().unwrap().content.as_string();
@@ -1011,7 +1014,8 @@ mod tests {
         // buffers topic's `buffer` pattern, so the describe view
         // should append a `[buffers](help:buffers)` cross-link.
         let mut a = app_with("xx", 10);
-        a.editor.set_command_line_text("describe-command ex:buffers");
+        a.editor
+            .set_command_line_text("describe-command ex:buffers");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let _ = a.popup_help().expect("describe-command open");
@@ -1029,7 +1033,8 @@ mod tests {
         // Open describe-command for a buffers cmd (which appends a
         // topic link), then follow that link via FollowLink.
         let mut a = app_with("xx", 10);
-        a.editor.set_command_line_text("describe-command ex:buffers");
+        a.editor
+            .set_command_line_text("describe-command ex:buffers");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let _ = a.popup_help().expect("describe open");
@@ -1435,7 +1440,8 @@ mod tests {
         // M.8: `:describe-mode line-numbers-mode` shows kind +
         // contributed options + capabilities.
         let mut a = app_with("xx", 10);
-        a.editor.set_command_line_text("describe-mode line-numbers-mode");
+        a.editor
+            .set_command_line_text("describe-mode line-numbers-mode");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let h = a.popup_help().expect("describe-mode help");
@@ -1455,7 +1461,8 @@ mod tests {
     #[test]
     fn describe_mode_unknown_emits_error_no_overlay() {
         let mut a = app_with("xx", 10);
-        a.editor.set_command_line_text("describe-mode definitely-not-a-mode");
+        a.editor
+            .set_command_line_text("describe-mode definitely-not-a-mode");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert!(a.editor.popup_buffer.is_none());
@@ -1470,7 +1477,8 @@ mod tests {
         // view marks that minor as a contributor for `number`.
         let mut a = app_with("xx", 10);
         a.toggle_mode_by_name("line-numbers-mode");
-        a.editor.set_command_line_text("describe-option-resolution number");
+        a.editor
+            .set_command_line_text("describe-option-resolution number");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let body = a.popup_help().unwrap().content.as_string();
@@ -1487,7 +1495,8 @@ mod tests {
         // No display mode active ⇒ minor section says none
         // contribute.
         let mut a = app_with("xx", 10);
-        a.editor.set_command_line_text("describe-option-resolution wrap");
+        a.editor
+            .set_command_line_text("describe-option-resolution wrap");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let body = a.popup_help().unwrap().content.as_string();
@@ -1552,7 +1561,8 @@ mod tests {
         // line-numbers-mode contributes Number=true. The
         // mode view should show that option.
         let mut a = app_with("xx", 10);
-        a.editor.set_command_line_text("customize line-numbers-mode");
+        a.editor
+            .set_command_line_text("customize line-numbers-mode");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let h = a.popup_help().expect("customize line-numbers-mode");
@@ -1573,7 +1583,8 @@ mod tests {
         // write would be overridden.
         let mut a = app_with("xx", 10);
         a.toggle_mode_by_name("line-numbers-mode");
-        a.editor.set_command_line_text("customize line-numbers-mode");
+        a.editor
+            .set_command_line_text("customize line-numbers-mode");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let body = a.popup_help().unwrap().content.as_string();
@@ -1741,7 +1752,8 @@ mod tests {
     #[test]
     fn customize_unknown_group_emits_error_no_overlay() {
         let mut a = app_with("xx", 10);
-        a.editor.set_command_line_text("customize definitely-not-a-group");
+        a.editor
+            .set_command_line_text("customize definitely-not-a-group");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert!(a.editor.popup_buffer.is_none());
@@ -1753,7 +1765,8 @@ mod tests {
     #[test]
     fn customize_unknown_mode_emits_error_no_overlay() {
         let mut a = app_with("xx", 10);
-        a.editor.set_command_line_text("customize definitely-not-a-mode");
+        a.editor
+            .set_command_line_text("customize definitely-not-a-mode");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         assert!(a.editor.popup_buffer.is_none());
@@ -1765,7 +1778,8 @@ mod tests {
     #[test]
     fn describe_option_resolution_unknown_emits_error() {
         let mut a = app_with("xx", 10);
-        a.editor.set_command_line_text("describe-option-resolution definitely-not-an-option");
+        a.editor
+            .set_command_line_text("describe-option-resolution definitely-not-an-option");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
         let msg = a.editor.last_message.as_ref().expect("error echo");

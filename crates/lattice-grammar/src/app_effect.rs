@@ -833,10 +833,7 @@ pub enum AppEffect {
     /// — published by the mode during activation so the renderer
     /// reads `compilation.location` bg/fg from the theme rather than
     /// hardcoding RGB values.
-    CompilationThemeColors {
-        bg: u32,
-        fg: u32,
-    },
+    CompilationThemeColors { bg: u32, fg: u32 },
     /// CM.3d (2026-07-22): kill the running compilation child
     /// process. The host arm calls `CompilationService::kill()`.
     CompilationKill,

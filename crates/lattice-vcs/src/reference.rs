@@ -26,11 +26,7 @@ impl Reference {
     ///
     /// Uses `git symbolic-ref -q <name>`.
     pub fn symbolic_target(repo: &Repository, name: &str) -> Result<Option<String>> {
-        match repo.run_git_str([
-            "symbolic-ref",
-            "-q",
-            name,
-        ]) {
+        match repo.run_git_str(["symbolic-ref", "-q", name]) {
             Ok(target) => Ok(Some(target.trim().to_string())),
             Err(_) => Ok(None),
         }

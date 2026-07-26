@@ -22,7 +22,12 @@ pub struct CompilationHeadlineState {
 
 impl Default for CompilationHeadlineState {
     fn default() -> Self {
-        Self { command: String::new(), last_counts: None, running: false, killed: false }
+        Self {
+            command: String::new(),
+            last_counts: None,
+            running: false,
+            killed: false,
+        }
     }
 }
 
@@ -53,7 +58,15 @@ impl CompilationHeaderline {
         failure_fg: u32,
         dim_fg: u32,
     ) -> Self {
-        Self { state, version, command_fg, in_progress_fg, success_fg, failure_fg, dim_fg }
+        Self {
+            state,
+            version,
+            command_fg,
+            in_progress_fg,
+            success_fg,
+            failure_fg,
+            dim_fg,
+        }
     }
 }
 
@@ -135,15 +148,19 @@ impl Headerline for CompilationHeaderline {
 
 /// Provider id tag for the compilation headerline so re-activations
 /// can `unregister` / `register` idempotently.
-pub const COMPILATION_HEADERLINE_PROVIDER_ID: u64 =
-    0x636f_6d70_686c_0300; // "comp-hl"
+pub const COMPILATION_HEADERLINE_PROVIDER_ID: u64 = 0x636f_6d70_686c_0300; // "comp-hl"
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::RwLock;
 
-    fn state(cmd: &str, running: bool, killed: bool, counts: Option<(usize, usize)>) -> Arc<RwLock<CompilationHeadlineState>> {
+    fn state(
+        cmd: &str,
+        running: bool,
+        killed: bool,
+        counts: Option<(usize, usize)>,
+    ) -> Arc<RwLock<CompilationHeadlineState>> {
         Arc::new(RwLock::new(CompilationHeadlineState {
             command: cmd.to_string(),
             last_counts: counts,
@@ -175,10 +192,18 @@ mod tests {
         let h = CompilationHeaderline::new(
             state("cargo build", true, false, None),
             Arc::new(AtomicU64::new(1)),
-            0xf9e2af, 0x999999, 0x44cc88, 0xff4444, 0x888888,
+            0xf9e2af,
+            0x999999,
+            0x44cc88,
+            0xff4444,
+            0x888888,
         );
         let row = h.render().expect("headerline must render");
-        let text: String = row.cells.iter().map(|c| char::from_u32(c.codepoint).unwrap()).collect();
+        let text: String = row
+            .cells
+            .iter()
+            .map(|c| char::from_u32(c.codepoint).unwrap())
+            .collect();
         assert!(text.contains('\u{27f3}'), "spinner icon \u{27f3} present");
         assert!(text.contains('"'), "command is quoted");
         assert!(text.contains("cargo build"), "command text present");
@@ -190,10 +215,18 @@ mod tests {
         let h = CompilationHeaderline::new(
             state("cargo build", false, false, Some((0, 0))),
             Arc::new(AtomicU64::new(1)),
-            0xf9e2af, 0x999999, 0x44cc88, 0xff4444, 0x888888,
+            0xf9e2af,
+            0x999999,
+            0x44cc88,
+            0xff4444,
+            0x888888,
         );
         let row = h.render().expect("headerline must render");
-        let text: String = row.cells.iter().map(|c| char::from_u32(c.codepoint).unwrap()).collect();
+        let text: String = row
+            .cells
+            .iter()
+            .map(|c| char::from_u32(c.codepoint).unwrap())
+            .collect();
         assert!(text.contains('\u{2714}'), "checkmark icon present");
         assert!(text.contains("ok"), "ok status present");
     }
@@ -203,10 +236,18 @@ mod tests {
         let h = CompilationHeaderline::new(
             state("cargo build", false, false, Some((3, 2))),
             Arc::new(AtomicU64::new(1)),
-            0xf9e2af, 0x999999, 0x44cc88, 0xff4444, 0x888888,
+            0xf9e2af,
+            0x999999,
+            0x44cc88,
+            0xff4444,
+            0x888888,
         );
         let row = h.render().expect("headerline must render");
-        let text: String = row.cells.iter().map(|c| char::from_u32(c.codepoint).unwrap()).collect();
+        let text: String = row
+            .cells
+            .iter()
+            .map(|c| char::from_u32(c.codepoint).unwrap())
+            .collect();
         assert!(text.contains('\u{2717}'), "cross icon present");
         assert!(text.contains("3e"), "error count present");
         assert!(text.contains("2w"), "warning count present");
@@ -217,10 +258,18 @@ mod tests {
         let h = CompilationHeaderline::new(
             state("cargo build", false, true, Some((0, 0))),
             Arc::new(AtomicU64::new(1)),
-            0xf9e2af, 0x999999, 0x44cc88, 0xff4444, 0x888888,
+            0xf9e2af,
+            0x999999,
+            0x44cc88,
+            0xff4444,
+            0x888888,
         );
         let row = h.render().expect("headerline must render");
-        let text: String = row.cells.iter().map(|c| char::from_u32(c.codepoint).unwrap()).collect();
+        let text: String = row
+            .cells
+            .iter()
+            .map(|c| char::from_u32(c.codepoint).unwrap())
+            .collect();
         assert!(text.contains('\u{25a0}'), "square icon present");
         assert!(text.contains("killed"), "killed text present");
     }

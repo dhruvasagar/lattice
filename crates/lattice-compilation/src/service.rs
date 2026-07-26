@@ -174,96 +174,95 @@ impl CompilationService for DefaultCompilationService {
             header: format!("$ {cmd}\n\n"),
         });
 
-            // CM.3a: a new run clears the stale error list. Send an
-            // empty vec through the inbound seam so the host's
-            // replace-semantics `set_error_list` drops the prior run's
-            // entries before fresh ones stream in.
-            let _ = self.qf_bus.send(Vec::new());
+        // CM.3a: a new run clears the stale error list. Send an
+        // empty vec through the inbound seam so the host's
+        // replace-semantics `set_error_list` drops the prior run's
+        // entries before fresh ones stream in.
+        let _ = self.qf_bus.send(Vec::new());
 
-            let events = self.events.clone();
-            let state = self.state.clone();
-            let qf_bus = self.qf_bus.clone();
-            self.runtime.spawn_blocking(move || {
-                let mut command = Command::new("sh");
-                command
-                    .arg("-c")
-                    .arg(&cmd)
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped());
-                // Unix: put the shell (and all its pipeline children) in
-                // their own process group so kill() terminates the entire
-                // tree, not just the shell PID. Without this, pipe
-                // grandchildren outlive the parent and keep the pipe
-                // readers blocking indefinitely.
-                #[cfg(unix)]
-                unsafe {
-                    command.pre_exec(|| {
-                        libc::setpgid(0, 0);
-                        Ok(())
-                    });
-                }
-                if let Some(dir) = cwd {
-                    command.current_dir(dir);
-                }
-
-                let mut child = match command.spawn() {
-                    Ok(child) => child,
-                    Err(e) => {
-                        publish(
-                            &events,
-                            OutputChunk::Finished {
-                                summary: format!("\nCompilation failed to launch — {e}\n"),
-                            },
-                        );
-                        return;
-                    }
-                };
-
-                // Take the pipes out before parking the child in shared
-                // state, so kill-on-recompile and this task's reap never
-                // contend over the pipe fds.
-                let stdout = child.stdout.take();
-                let stderr = child.stderr.take();
-                if let Ok(mut st) = state.lock() {
-                    st.child = Some(child);
-                }
-
-                // CM.3a+. Shared
-                // `Arc<Mutex<Vec<ErrorEntry>>>` so both stdout and
-                // stderr readers contribute to the same growing error
-                // list. Each reader locks, extends, clones, and sends the
-                // full state through the inbound seam — the host's
-                // replace-semantics `set_error_list` then grows the
-                // visible list regardless of which pipe delivered the
-                // entry. Each reader has its own `ParserRegistry` (the
-                // multi-line cargo parser is safe on both streams since
-                // cargo only emits diagnostics on stderr and the
-                // non-matching lines are no-ops).
-                //
-                // A shared list means the qf_bus always carries the
-                // complete state: stdout entries can't overwrite stderr
-                // entries (or vice versa) when the readers race.
-                let shared: Arc<Mutex<Vec<ErrorEntry>>> =
-                    Arc::new(Mutex::new(Vec::new()));
-
-                // Two dedicated reader threads so a large pipe can't
-                // deadlock the other. Both parse for error locations:
-                // compile diagnostics (rustc/cargo) go to stderr; test
-                // failure output (thread panics) goes to stdout.
-                let out_events = events.clone();
-                let out_qf = qf_bus.clone();
-                let out_shared = shared.clone();
-                let out_reader = std::thread::spawn(move || {
-                    read_parsed_pipe(stdout, &out_events, &out_qf, &out_shared)
+        let events = self.events.clone();
+        let state = self.state.clone();
+        let qf_bus = self.qf_bus.clone();
+        self.runtime.spawn_blocking(move || {
+            let mut command = Command::new("sh");
+            command
+                .arg("-c")
+                .arg(&cmd)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            // Unix: put the shell (and all its pipeline children) in
+            // their own process group so kill() terminates the entire
+            // tree, not just the shell PID. Without this, pipe
+            // grandchildren outlive the parent and keep the pipe
+            // readers blocking indefinitely.
+            #[cfg(unix)]
+            unsafe {
+                command.pre_exec(|| {
+                    libc::setpgid(0, 0);
+                    Ok(())
                 });
-                let err_events = events.clone();
-                let err_qf = qf_bus.clone();
-                let err_shared = shared.clone();
-                let err_reader = std::thread::spawn(move || {
-                    read_parsed_pipe(stderr, &err_events, &err_qf, &err_shared)
-                });
-                let _ = out_reader.join();
-                let _ = err_reader.join();
+            }
+            if let Some(dir) = cwd {
+                command.current_dir(dir);
+            }
+
+            let mut child = match command.spawn() {
+                Ok(child) => child,
+                Err(e) => {
+                    publish(
+                        &events,
+                        OutputChunk::Finished {
+                            summary: format!("\nCompilation failed to launch — {e}\n"),
+                        },
+                    );
+                    return;
+                }
+            };
+
+            // Take the pipes out before parking the child in shared
+            // state, so kill-on-recompile and this task's reap never
+            // contend over the pipe fds.
+            let stdout = child.stdout.take();
+            let stderr = child.stderr.take();
+            if let Ok(mut st) = state.lock() {
+                st.child = Some(child);
+            }
+
+            // CM.3a+. Shared
+            // `Arc<Mutex<Vec<ErrorEntry>>>` so both stdout and
+            // stderr readers contribute to the same growing error
+            // list. Each reader locks, extends, clones, and sends the
+            // full state through the inbound seam — the host's
+            // replace-semantics `set_error_list` then grows the
+            // visible list regardless of which pipe delivered the
+            // entry. Each reader has its own `ParserRegistry` (the
+            // multi-line cargo parser is safe on both streams since
+            // cargo only emits diagnostics on stderr and the
+            // non-matching lines are no-ops).
+            //
+            // A shared list means the qf_bus always carries the
+            // complete state: stdout entries can't overwrite stderr
+            // entries (or vice versa) when the readers race.
+            let shared: Arc<Mutex<Vec<ErrorEntry>>> = Arc::new(Mutex::new(Vec::new()));
+
+            // Two dedicated reader threads so a large pipe can't
+            // deadlock the other. Both parse for error locations:
+            // compile diagnostics (rustc/cargo) go to stderr; test
+            // failure output (thread panics) goes to stdout.
+            let out_events = events.clone();
+            let out_qf = qf_bus.clone();
+            let out_shared = shared.clone();
+            let out_reader = std::thread::spawn(move || {
+                read_parsed_pipe(stdout, &out_events, &out_qf, &out_shared)
+            });
+            let err_events = events.clone();
+            let err_qf = qf_bus.clone();
+            let err_shared = shared.clone();
+            let err_reader = std::thread::spawn(move || {
+                read_parsed_pipe(stderr, &err_events, &err_qf, &err_shared)
+            });
+            let _ = out_reader.join();
+            let _ = err_reader.join();
 
             // Reap the child — unless a concurrent recompile already
             // took + killed it (then `child` is gone and the readers

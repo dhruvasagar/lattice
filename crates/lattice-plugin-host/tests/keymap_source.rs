@@ -43,7 +43,9 @@ async fn keymap_plugin_binds_a_user_keybinding_and_reports_tokens() {
     let dir = TempDir::new().unwrap();
     let host = PluginHost::with_dirs(dir.path().join("cache"), dir.path().join("data"))
         .expect("host builds with tempdirs");
-    let component = host.compile(&std::fs::read(path).unwrap()).expect("compile keymap fixture");
+    let component = host
+        .compile(&std::fs::read(path).unwrap())
+        .expect("compile keymap fixture");
     let manifest = PluginManifest::new("keymap-fixture", Vec::new(), CapabilitySet::empty());
 
     let commands = commands();
@@ -64,7 +66,11 @@ async fn keymap_plugin_binds_a_user_keybinding_and_reports_tokens() {
     assert_ne!(plugin_id.0 as i64, -1, "a host id is issued");
     // Exactly one binding landed — `<C-s>`→`ex:write`; the `gq`→unregistered one
     // was gracefully skipped (bound nothing, no trap).
-    assert_eq!(tokens.len(), 1, "one binding landed, one skipped: {tokens:?}");
+    assert_eq!(
+        tokens.len(),
+        1,
+        "one binding landed, one skipped: {tokens:?}"
+    );
     assert_eq!(tokens[0].mode, BindingMode::Normal);
     assert_eq!(tokens[0].chord, "<C-s>");
 

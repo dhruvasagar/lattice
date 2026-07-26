@@ -70,11 +70,11 @@ fn plugins_mode_chords_override_in_its_layer() {
     // PO.4.2: `t` in plugins-mode drills into the plugin's boundary trace.
     let t = lattice_protocol::parse_chord_sequence("t").unwrap();
     let plugins_mode_t = ModeId::new("plugins-mode");
-    let LookupResult::Bound { command, .. } = editor.keymap.lookup_with_context(
-        BindingMode::Normal,
-        &t,
-        &[plugins_mode_t.clone()],
-    ) else {
+    let LookupResult::Bound { command, .. } =
+        editor
+            .keymap
+            .lookup_with_context(BindingMode::Normal, &t, &[plugins_mode_t.clone()])
+    else {
         panic!("`t` should be bound in the plugins-mode layer");
     };
     assert_eq!(

@@ -67,12 +67,7 @@ pub trait ModeActivator {
     /// returns. Idempotent: a second call with the same `name` returns
     /// the existing id without re-activating (the drain from the first
     /// activation stays put).
-    fn ensure_named_document(
-        &mut self,
-        name: &str,
-        major: ModeId,
-        flags: BufferFlags,
-    ) -> BufferId;
+    fn ensure_named_document(&mut self, name: &str, major: ModeId, flags: BufferFlags) -> BufferId;
 
     /// Cheap-clone handle to the App's [`ServiceRegistry`]. Used
     /// by extension-crate trigger functions that need to look up

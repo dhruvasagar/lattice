@@ -19,9 +19,9 @@
 //! paired operator no-ops -- matching vim, where `daf` with no enclosing
 //! function does nothing.
 
-use std::sync::Arc;
 use lattice_grammar::TextObjectId;
 use lattice_grammar::registry::{CommandRegistry, TextObjectSpec};
+use std::sync::Arc;
 
 /// The eight structural text-object [`TextObjectId`]s, returned by
 /// [`register_syntax_text_objects`] so the host can bind their chords

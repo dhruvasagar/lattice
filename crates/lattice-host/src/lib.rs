@@ -46,8 +46,8 @@ pub mod boot_context;
 pub mod buffer_registry;
 pub mod buffers;
 pub mod chord;
-pub mod command_line_mode;
 pub mod command_line_expand_mode;
+pub mod command_line_mode;
 pub mod search_line_mode;
 // CB.4: native `arboard` clipboard backend shared by both renderer peers.
 // Only compiled with the `system-clipboard` feature (pulls X11/Wayland

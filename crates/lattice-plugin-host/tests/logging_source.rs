@@ -29,8 +29,7 @@ fn guest_wasm() -> Option<&'static str> {
 async fn activate_logging_guest(default_level: TraceLevel) -> (PluginTracerHandle, u32) {
     let path = guest_wasm().unwrap();
     let dirs = tempfile::tempdir().unwrap();
-    let host =
-        PluginHost::with_dirs(dirs.path().join("cache"), dirs.path().join("data")).unwrap();
+    let host = PluginHost::with_dirs(dirs.path().join("cache"), dirs.path().join("data")).unwrap();
     let tracer: PluginTracerHandle = Arc::new(PluginTracer::new(default_level, 100));
     host.set_tracer(tracer.clone());
 
@@ -94,7 +93,11 @@ async fn raising_the_gate_captures_the_guest_debug_line() {
     // `trace` narrative appears once the plugin is raised.
     let (tracer, id) = activate_logging_guest(TraceLevel::Trace).await;
     let recs = tracer.snapshot_plugin(id);
-    assert_eq!(recs.len(), 6, "every activate line kept at Trace — got {recs:#?}");
+    assert_eq!(
+        recs.len(),
+        6,
+        "every activate line kept at Trace — got {recs:#?}"
+    );
     let debug = recs.iter().find(|r| r.level == TraceLevel::Debug).unwrap();
     assert_eq!(debug.call, "detail");
     assert_eq!(debug.detail.as_deref(), Some("walked 40 files in 3ms"));
@@ -115,8 +118,7 @@ async fn a_guest_log_without_a_tracer_wired_is_a_graceful_drop() {
     // — never a panic (the `event_emit`-None precedent).
     let path = guest_wasm().unwrap();
     let dirs = tempfile::tempdir().unwrap();
-    let host =
-        PluginHost::with_dirs(dirs.path().join("cache"), dirs.path().join("data")).unwrap();
+    let host = PluginHost::with_dirs(dirs.path().join("cache"), dirs.path().join("data")).unwrap();
     // Deliberately do NOT call host.set_tracer.
     let component = host.compile(&std::fs::read(path).unwrap()).unwrap();
     let mut plugin = host.instantiate(&component).await.unwrap();

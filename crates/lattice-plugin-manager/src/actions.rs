@@ -43,8 +43,14 @@ pub const TRACE_LEVEL: &str = "action:plugins-trace-level";
 /// `register_repl_mode_actions` precedent.
 pub fn register_actions(commands: &mut CommandRegistry) {
     for (name, doc) in [
-        (RELOAD, "plugins: reload the plugin under the cursor (mode-owned)."),
-        (UNLOAD, "plugins: unload the plugin under the cursor (mode-owned)."),
+        (
+            RELOAD,
+            "plugins: reload the plugin under the cursor (mode-owned).",
+        ),
+        (
+            UNLOAD,
+            "plugins: unload the plugin under the cursor (mode-owned).",
+        ),
         (
             DESCRIBE,
             "plugins: describe the plugin under the cursor (mode-owned).",
@@ -76,7 +82,10 @@ pub fn register_actions(commands: &mut CommandRegistry) {
 fn plugin_row_at(ctx: &ActionContext<'_>) -> Option<(u32, String)> {
     let loader = ctx.services.get::<PluginLoaderHandle>()?;
     let idx = (ctx.cursor.line as usize).checked_sub(HEADER_LINES)?;
-    loader.plugin_status().get(idx).map(|s| (s.id, s.name.clone()))
+    loader
+        .plugin_status()
+        .get(idx)
+        .map(|s| (s.id, s.name.clone()))
 }
 
 /// The manifest name of the plugin under the cursor (the row → name half of
@@ -243,13 +252,22 @@ mod tests {
             services: &services,
             events: &events,
         };
-        assert!(reload_handler()(&ctx).is_none(), "reload no-ops without a loader");
-        assert!(unload_handler()(&ctx).is_none(), "unload no-ops without a loader");
+        assert!(
+            reload_handler()(&ctx).is_none(),
+            "reload no-ops without a loader"
+        );
+        assert!(
+            unload_handler()(&ctx).is_none(),
+            "unload no-ops without a loader"
+        );
         assert!(
             describe_handler()(&ctx).is_none(),
             "describe no-ops without a loader"
         );
-        assert!(trace_handler()(&ctx).is_none(), "trace no-ops without a loader");
+        assert!(
+            trace_handler()(&ctx).is_none(),
+            "trace no-ops without a loader"
+        );
         assert!(
             trace_level_handler()(&ctx).is_none(),
             "trace-level no-ops without a loader"

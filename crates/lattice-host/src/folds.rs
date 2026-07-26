@@ -709,11 +709,7 @@ pub fn nth_visible_line_forward(
 /// bodies to their visible heads, then continues from the preceding
 /// line. Returns 0 when the walk hits BOF before consuming `offset`
 /// rows.
-pub fn nth_visible_line_backward(
-    fold_idx: &FoldIndex,
-    start_line: u32,
-    offset: u32,
-) -> u32 {
+pub fn nth_visible_line_backward(fold_idx: &FoldIndex, start_line: u32, offset: u32) -> u32 {
     if offset == 0 || !fold_idx.foldenable {
         return start_line;
     }
@@ -734,11 +730,7 @@ pub fn nth_visible_line_backward(
 /// bodies are skipped. Both lines must be *visible* (not inside a
 /// closed fold body) — callers ensure this before calling. Returns
 /// the number of display rows spanning the range.
-pub fn count_visible_rows_between(
-    fold_idx: &FoldIndex,
-    from_line: u32,
-    to_line: u32,
-) -> u32 {
+pub fn count_visible_rows_between(fold_idx: &FoldIndex, from_line: u32, to_line: u32) -> u32 {
     if from_line >= to_line || !fold_idx.foldenable {
         return to_line.saturating_sub(from_line);
     }

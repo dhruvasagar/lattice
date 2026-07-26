@@ -18,7 +18,7 @@
 
 use lattice_core::BufferKind;
 use lattice_mode::{
-    keymap_entry, Keymap, KeymapEntry, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind,
+    Keymap, KeymapEntry, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, keymap_entry,
 };
 
 /// `command-line-expand-mode`: the major mode of the `*command-line*`

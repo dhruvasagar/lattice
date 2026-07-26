@@ -147,8 +147,9 @@ fn bench_first_batch(c: &mut Criterion) {
                     regex: false,
                     context_lines: 0,
                 };
-                let registry =
-                    Arc::new(arc_swap::ArcSwap::from_pointee(lattice_grammar::CommandRegistry::new()));
+                let registry = Arc::new(arc_swap::ArcSwap::from_pointee(
+                    lattice_grammar::CommandRegistry::new(),
+                ));
                 let _view = project_search(
                     &mut activator,
                     needle.to_string(),

@@ -72,7 +72,7 @@ fn outcome_cell(level: TraceLevel, outcome: &TraceOutcome) -> String {
 /// (a guest export the host drove). Kept subtle — most records are exports.
 fn direction_arrow(direction: Direction) -> &'static str {
     match direction {
-        Direction::HostImport => "«", // guest → host
+        Direction::HostImport => "«",  // guest → host
         Direction::GuestExport => "»", // host → guest
     }
 }
@@ -191,7 +191,10 @@ mod tests {
         );
         r.direction = Direction::HostImport;
         let line = format_trace_line(&r);
-        assert!(line.contains("«apply-motion"), "guest→host glyph, got {line}");
+        assert!(
+            line.contains("«apply-motion"),
+            "guest→host glyph, got {line}"
+        );
         assert!(line.ends_with("→ denied(fs)"), "got {line}");
     }
 

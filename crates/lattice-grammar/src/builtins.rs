@@ -9,9 +9,9 @@
 //! Subsequent revisions populate the full vim catalog. Each new built-in is
 //! a registration here; no new dispatcher wiring needed.
 
-use std::sync::Arc;
 use lattice_protocol::edit::Edit;
 use lattice_protocol::position::{Position, Range as ProtoRange};
+use std::sync::Arc;
 
 use crate::effect::{Effect, YankKind};
 use crate::error::CommandError;
@@ -2438,8 +2438,15 @@ mod tests {
         let cursor = Position::new(0, 4); // on `needle`
         let inv = CommandInvocation::of(b.search.0)
             .with_target(Target::TextObject(b.inner_word, crate::args::Args::None));
-        let eff = execute(&registry, &mut doc, lattice_core::BufferId(0), cursor, inv, &cancel)
-            .unwrap();
+        let eff = execute(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0),
+            cursor,
+            inv,
+            &cancel,
+        )
+        .unwrap();
         assert_eq!(search_query(eff), "needle");
     }
 
@@ -2449,10 +2456,19 @@ mod tests {
         let (registry, b, mut doc) = fixture("let s = \"find me\";\n");
         let cancel = CancellationToken::never();
         let cursor = Position::new(0, 10); // inside the quotes
-        let inv = CommandInvocation::of(b.search.0)
-            .with_target(Target::TextObject(b.inner_quote_double, crate::args::Args::None));
-        let eff = execute(&registry, &mut doc, lattice_core::BufferId(0), cursor, inv, &cancel)
-            .unwrap();
+        let inv = CommandInvocation::of(b.search.0).with_target(Target::TextObject(
+            b.inner_quote_double,
+            crate::args::Args::None,
+        ));
+        let eff = execute(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0),
+            cursor,
+            inv,
+            &cancel,
+        )
+        .unwrap();
         assert_eq!(search_query(eff), "find me");
     }
 
@@ -2464,9 +2480,19 @@ mod tests {
         let cursor = Position::new(0, 0);
         let inv = CommandInvocation::of(b.search.0)
             .with_target(Target::TextObject(b.inner_word, crate::args::Args::None));
-        let eff = execute(&registry, &mut doc, lattice_core::BufferId(0), cursor, inv, &cancel)
-            .unwrap();
-        assert!(matches!(eff, Effect::None), "empty range must be a no-op, got {eff:?}");
+        let eff = execute(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0),
+            cursor,
+            inv,
+            &cancel,
+        )
+        .unwrap();
+        assert!(
+            matches!(eff, Effect::None),
+            "empty range must be a no-op, got {eff:?}"
+        );
     }
 
     #[test]

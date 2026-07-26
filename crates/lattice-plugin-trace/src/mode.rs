@@ -24,7 +24,7 @@ use lattice_mode::{
     BufferStoreHandle, CapabilitySet, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind,
     OptionOverrideSet, Subscription,
 };
-use lattice_plugin_host::{PluginTraceRecord, PluginTracePushed, PluginTracerHandle};
+use lattice_plugin_host::{PluginTracePushed, PluginTraceRecord, PluginTracerHandle};
 use lattice_plugin_loader::PluginLoaderHandle;
 use lattice_runtime::Document;
 

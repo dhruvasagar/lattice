@@ -116,7 +116,10 @@ fn load_spec(loader: Arc<PluginLoader>) -> ExCommandSpec {
                 return Ok(echo(EchoLevel::Warn, "usage: :plugin-load <path>"));
             };
             loader.spawn_load_path(std::path::PathBuf::from(&path));
-            Ok(echo(EchoLevel::Info, format!("loading plugin from {path}…")))
+            Ok(echo(
+                EchoLevel::Info,
+                format!("loading plugin from {path}…"),
+            ))
         }),
         args_schema: string_arg(
             "path",
@@ -194,10 +197,7 @@ fn reload_config_spec(loader: Arc<PluginLoader>) -> ExCommandSpec {
         parse_args: Arc::new(|_line: &str, _bang: bool| Ok(Args::None)),
         apply: Arc::new(move |_ctx: &ExCommandContext| {
             loader.spawn_reload(INIT_PLUGIN_ID.to_string());
-            Ok(echo(
-                EchoLevel::Info,
-                "reloading user config (init.rs)…",
-            ))
+            Ok(echo(EchoLevel::Info, "reloading user config (init.rs)…"))
         }),
         args_schema: Vec::new(),
         surface_form: SurfaceForm::Keyword,

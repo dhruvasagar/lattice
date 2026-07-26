@@ -4,9 +4,9 @@
 //! text objects (`text_objects.rs`); both read the same textobjects.scm
 //! captures. See docs/dev/architecture/treesitter-motions.md.
 
-use std::sync::Arc;
 use lattice_grammar::registry::{CommandRegistry, MotionResult, MotionSpec};
 use lattice_grammar::{MotionId, NavBoundary, NavDir};
+use std::sync::Arc;
 
 /// The sixteen structural motion [`MotionId`]s, returned by
 /// [`register_syntax_motions`] so the host can bind their chords

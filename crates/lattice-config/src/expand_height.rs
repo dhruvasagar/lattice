@@ -121,8 +121,14 @@ mod tests {
 
     #[test]
     fn parse_round_trips_named_and_numeric() {
-        assert_eq!(ExpandHeight::parse_label("half").unwrap(), ExpandHeight::Half);
-        assert_eq!(ExpandHeight::parse_label("full").unwrap(), ExpandHeight::Full);
+        assert_eq!(
+            ExpandHeight::parse_label("half").unwrap(),
+            ExpandHeight::Half
+        );
+        assert_eq!(
+            ExpandHeight::parse_label("full").unwrap(),
+            ExpandHeight::Full
+        );
         assert_eq!(
             ExpandHeight::parse_label("12").unwrap(),
             ExpandHeight::Fixed(12)

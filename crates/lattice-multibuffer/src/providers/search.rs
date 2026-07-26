@@ -423,13 +423,11 @@ impl ProjectSearchMultibufferMode {
 fn project_search_keymap_entries() -> &'static [KeymapEntry] {
     static ENTRIES: OnceLock<Vec<KeymapEntry>> = OnceLock::new();
     ENTRIES.get_or_init(|| {
-        vec![
-            keymap_entry! {
-                mode: Normal, chord: "gr",
-                doc: "Re-run the project-search scan with the view's current query",
-                cmd: "action:search-refresh"
-            },
-        ]
+        vec![keymap_entry! {
+            mode: Normal, chord: "gr",
+            doc: "Re-run the project-search scan with the view's current query",
+            cmd: "action:search-refresh"
+        }]
     })
 }
 
@@ -575,8 +573,7 @@ impl Mode for ProjectSearchMultibufferMode {
                             // Re-resolve the scan root from the editor's
                             // current working directory so `gr` picks up
                             // `:cd` changes.
-                            if let Some(current_dir_handle) =
-                                ctx.services.get::<CurrentDirHandle>()
+                            if let Some(current_dir_handle) = ctx.services.get::<CurrentDirHandle>()
                             {
                                 if let Ok(dir) = current_dir_handle.lock() {
                                     if let Some(ref current_dir) = *dir {

@@ -25,13 +25,13 @@
 //! See `docs/dev/architecture/multibuffer-views.md` §3.7 +
 //! slice plan M.2.b.3.
 
-use std::sync::Arc;
 use lattice_core::BufferId;
 use lattice_grammar::registry::{MotionContext, MotionResult};
 use lattice_grammar::{
     CheckCancelled, CommandError, CommandRegistry, GrammarResult, MotionId, MotionSpec,
 };
 use lattice_protocol::position::Position;
+use std::sync::Arc;
 
 use crate::Excerpt;
 use crate::registry::MultibufferRegistryHandle;

@@ -36,22 +36,13 @@ impl WorkingTree {
     /// Uses `git status --porcelain=v1 -- <path>`.
     pub fn path_status(repo: &Repository, path: impl AsRef<Path>) -> Result<PathStatus> {
         let path = path.as_ref();
-        let output = repo.run_git_str([
-            "status",
-            "--porcelain=v1",
-            "--",
-            &path.to_string_lossy(),
-        ])?;
+        let output =
+            repo.run_git_str(["status", "--porcelain=v1", "--", &path.to_string_lossy()])?;
 
         if output.trim().is_empty() {
             // File might be tracked but clean, or nonexistent.
             // Check if it's tracked at all.
-            match repo.run_git_str([
-                "ls-files",
-                "--error-unmatch",
-                "--",
-                &path.to_string_lossy(),
-            ]) {
+            match repo.run_git_str(["ls-files", "--error-unmatch", "--", &path.to_string_lossy()]) {
                 Ok(_) => Ok(PathStatus::Clean),
                 Err(_) => Err(VcsError::StatusParse(format!(
                     "path not in repository: {}",

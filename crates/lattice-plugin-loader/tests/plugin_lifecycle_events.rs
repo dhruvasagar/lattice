@@ -9,8 +9,8 @@
 
 use std::sync::Arc;
 
-use lattice_grammar::registry::CommandRegistry;
 use lattice_grammar::CommandRegistryHandle;
+use lattice_grammar::registry::CommandRegistry;
 use lattice_keymap::KeymapHandle;
 use lattice_mode::{ModeRegistry, ModeRegistryHandle};
 use lattice_plugin_host::{PluginHost, TrustTier};

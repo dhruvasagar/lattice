@@ -45,7 +45,6 @@
 //!   ordering). The descriptor + `diff_content` formatter are mode-owned (in
 //!   [`crate::mode`]); only the registration *call* is host-sequenced.
 
-use std::sync::Arc;
 use lattice_grammar::AppEffect;
 use lattice_grammar::CommandRegistry;
 use lattice_grammar::args::{ArgDefault, ArgKind, ArgSpec, Args};
@@ -54,6 +53,7 @@ use lattice_grammar::effect::Effect;
 use lattice_grammar::error::{CommandError, GrammarResult};
 use lattice_grammar::registry::{ActionSpec, ExCommandContext, ExCommandSpec, SurfaceForm};
 use lattice_mode::SubsystemBoot;
+use std::sync::Arc;
 
 use crate::mode::register_diff_modes;
 
@@ -207,7 +207,8 @@ fn register_diff_ex_commands(registry: &mut CommandRegistry) {
                 ArgSpec {
                     name: "remote".into(),
                     kind: ArgKind::String,
-                    doc: "Optional second file path → three-way merge (current pane = local).".into(),
+                    doc: "Optional second file path → three-way merge (current pane = local)."
+                        .into(),
                     prompt: "remote path:".into(),
                     default: ArgDefault::None,
                     completion: Some("gen:files".into()),

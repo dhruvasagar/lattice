@@ -14,19 +14,19 @@ answer is in the editor.
 
 ## Quick reference
 
-| Keystroke / command            | What it does                                          |
-|-------------------------------|-------------------------------------------------------|
-| `<C-h> k`                     | `:describe-key` — what does this chord do?            |
-| `<C-h> c`                     | `:describe-command` — metadata for a named command    |
-| `<C-h> o`                     | `:describe-option` — description + current value      |
-| `<C-h> e`                     | `:describe-event` — event payload + who subscribes    |
-| `<C-h> m`                     | `:describe-mode` — active modes on the current buffer |
-| `<C-h> b`                     | `:describe-buffer` — buffer kind, flags, mode stack   |
-| `<C-h> a`                     | `:apropos` — cross-cutting search                     |
-| `<C-h> K`                     | `:keymap` — full chord table for the current state    |
-| `<C-h> <C-h>` or `<C-h> ?`   | `:help-for-help` — this index                         |
-| `:help [topic]`               | Open a topic by name (`:help modal-editing`, etc.)    |
-| `:help`                       | Open the topic index                                  |
+| Keystroke / command        | What it does                                          |
+|----------------------------|-------------------------------------------------------|
+| `<C-h> k`                  | `:describe-key` — what does this chord do?            |
+| `<C-h> c`                  | `:describe-command` — metadata for a named command    |
+| `<C-h> o`                  | `:describe-option` — description + current value      |
+| `<C-h> e`                  | `:describe-event` — event payload + who subscribes    |
+| `<C-h> m`                  | `:describe-mode` — active modes on the current buffer |
+| `<C-h> b`                  | `:describe-buffer` — buffer kind, flags, mode stack   |
+| `<C-h> a`                  | `:apropos` — cross-cutting search                     |
+| `<C-h> K`                  | `:keymap` — full chord table for the current state    |
+| `<C-h> <C-h>` or `<C-h> ?` | `:help-for-help` — this index                         |
+| `:help [topic]`            | Open a topic by name (`:help modal-editing`, etc.)    |
+| `:help`                    | Open the topic index                                  |
 
 The `<C-h>` prefix is available in **Normal mode only** — the same
 scope vim uses for the help key. In Insert mode `<C-h>` is backspace

@@ -83,11 +83,18 @@ async fn discovered_keymap_plugin_binds_then_unbinds_on_unload() {
             command_registry: Some(commands.clone()),
             keymap: Some(keymap.clone()),
             // The teardown driver needs the full registry set.
-            picker_registry: Some(Arc::new(arc_swap::ArcSwap::from_pointee(PickerRegistry::new()))),
-            mode_registry: Some(Arc::new(arc_swap::ArcSwap::from_pointee(ModeRegistry::default())) as ModeRegistryHandle),
+            picker_registry: Some(Arc::new(arc_swap::ArcSwap::from_pointee(
+                PickerRegistry::new(),
+            ))),
+            mode_registry: Some(
+                Arc::new(arc_swap::ArcSwap::from_pointee(ModeRegistry::default()))
+                    as ModeRegistryHandle,
+            ),
             config_registry: Some(Arc::new(ConfigRegistry::default())),
             meta_sink: Some(sink.clone() as Arc<dyn PluginMetaSink>),
-            decoration_registry: Some(std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(lattice_mode::GutterDecorationSourceRegistry::default()))),
+            decoration_registry: Some(std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(
+                lattice_mode::GutterDecorationSourceRegistry::default(),
+            ))),
             tracer: None,
         },
     );
@@ -109,7 +116,10 @@ async fn discovered_keymap_plugin_binds_then_unbinds_on_unload() {
 
     // Unload reverses it: the User-layer binding is unbound.
     let report = loader.unload("keymap-fixture").expect("was loaded");
-    assert_eq!(report.keymap_bindings, 1, "the one user binding was unbound");
+    assert_eq!(
+        report.keymap_bindings, 1,
+        "the one user binding was unbound"
+    );
     assert_eq!(keymap.binding_count(), 0, "no binding remains after unload");
     assert!(
         matches!(

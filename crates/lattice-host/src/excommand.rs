@@ -1011,10 +1011,7 @@ fn field_style(state: u8) -> Style {
 /// Compute the live decorations for a `:` command line (MB.4). `line`
 /// is the text without the leading `:` (i.e. `command_line()`). Pure +
 /// cheap (one line, no I/O) so it runs on the actor thread each edit.
-pub fn command_line_decorations(
-    line: &str,
-    registry: &CommandRegistry,
-) -> CommandLineDecorations {
+pub fn command_line_decorations(line: &str, registry: &CommandRegistry) -> CommandLineDecorations {
     let mut deco = CommandLineDecorations::default();
     if line.trim().is_empty() {
         return deco;
@@ -1135,9 +1132,7 @@ mod tests {
         // `:cclose` in the table below) are registered by the multibuffer
         // install path at boot, not by the grammar populate. Mirror that
         // here so `aliases_table_is_self_consistent` sees their targets.
-        lattice_multibuffer::providers::problems::register_problems_ex_commands(
-            &mut registry,
-        );
+        lattice_multibuffer::providers::problems::register_problems_ex_commands(&mut registry);
         registry
     }
 
@@ -1160,10 +1155,7 @@ mod tests {
         assert_eq!(d.spans[0].range, 0..5);
         assert_eq!(d.spans[0].style, Style::Keyword);
         assert!(d.error.is_none(), "known command has no error");
-        assert!(
-            d.param_hint.is_some(),
-            "`:write` takes a path arg → a hint"
-        );
+        assert!(d.param_hint.is_some(), "`:write` takes a path arg → a hint");
     }
 
     /// An unknown command, once committed (a trailing space), flags an

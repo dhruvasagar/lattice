@@ -259,7 +259,12 @@ fn plugin_lifecycle_ex_commands_registered_at_boot() {
         .get::<lattice_grammar::CommandRegistryHandle>()
         .expect("command registry service present");
     let snapshot = commands.load();
-    for name in ["plugin-load", "plugin-unload", "plugin-reload", "reload-config"] {
+    for name in [
+        "plugin-load",
+        "plugin-unload",
+        "plugin-reload",
+        "reload-config",
+    ] {
         assert!(
             snapshot.id_by_name(name).is_some(),
             "`:{name}` must be registered in the editor's command registry at boot"

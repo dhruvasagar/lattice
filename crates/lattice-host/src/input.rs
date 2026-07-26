@@ -397,17 +397,23 @@ pub fn translate(ctx: TranslateContext<'_>, chord: KeyChord) -> Action {
         // keymap supplies submit / cancel / history / completion. The
         // chord-capture overlay (missing-arg `Chord` slot) is handled
         // earlier at the top of `translate`.
-        ModalState::Command => {
-            dispatch_insert(ctx.keymap, &chord, ctx.partial_chord, ctx.active_minor_modes)
-        }
+        ModalState::Command => dispatch_insert(
+            ctx.keymap,
+            &chord,
+            ctx.partial_chord,
+            ctx.active_minor_modes,
+        ),
         // MB.5a: the `/`·`?` search line is a buffer-backed readline
         // surface (peer of the `:` command line). Keys route through
         // the universal Insert dispatcher onto the focused
         // `*search-line*` buffer; `search-line-mode`'s Insert-layer
         // keymap supplies submit / cancel.
-        ModalState::Search(_) => {
-            dispatch_insert(ctx.keymap, &chord, ctx.partial_chord, ctx.active_minor_modes)
-        }
+        ModalState::Search(_) => dispatch_insert(
+            ctx.keymap,
+            &chord,
+            ctx.partial_chord,
+            ctx.active_minor_modes,
+        ),
         // Slice 8.e: Visual mode dispatches through the layered
         // registry. The hand-rolled match table moved to
         // `keymap_visual::register_visual_bindings`; the

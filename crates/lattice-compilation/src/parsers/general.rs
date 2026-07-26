@@ -92,7 +92,9 @@ fn extract_entry(m: &fancy_regex::Match<'_>) -> Option<ErrorEntry> {
 pub(crate) fn match_location(line: &str) -> Option<(PathBuf, u32, u32)> {
     let re = general_re()?;
     for result in re.find_iter(line) {
-        let Ok(m) = result else { continue; };
+        let Ok(m) = result else {
+            continue;
+        };
         let entry = extract_entry(&m)?;
         return Some((entry.path, entry.line, entry.col));
     }
@@ -123,7 +125,9 @@ impl CompilationParser for GeneralParser {
             return Vec::new();
         };
         for result in re.find_iter(line) {
-            let Ok(m) = result else { continue; };
+            let Ok(m) = result else {
+                continue;
+            };
             if let Some(entry) = extract_entry(&m) {
                 return vec![entry];
             }
@@ -179,20 +183,30 @@ mod tests {
     fn timestamp_is_rejected() {
         let mut p = GeneralParser::new();
         assert!(p.feed("12:34:56").is_empty(), "timestamp must be rejected");
-        assert!(p.feed("  12:34:56 starting").is_empty(), "timestamp with text must be rejected");
+        assert!(
+            p.feed("  12:34:56 starting").is_empty(),
+            "timestamp with text must be rejected"
+        );
     }
 
     #[test]
     fn plain_version_without_colon_is_rejected() {
         let mut p = GeneralParser::new();
-        assert!(p.feed("1.2.3").is_empty(), "version without colon must be rejected");
+        assert!(
+            p.feed("1.2.3").is_empty(),
+            "version without colon must be rejected"
+        );
     }
 
     #[test]
     fn version_like_string_is_parsed_when_followed_by_line() {
         let mut p = GeneralParser::new();
         let entries = p.feed("v1.2.3:4");
-        assert_eq!(entries.len(), 1, "v1.2.3 contains . so is_file_like accepts it");
+        assert_eq!(
+            entries.len(),
+            1,
+            "v1.2.3 contains . so is_file_like accepts it"
+        );
         assert_eq!(entries[0].path.to_string_lossy(), "v1.2.3");
         assert_eq!(entries[0].line, 3);
     }
@@ -228,8 +242,10 @@ mod tests {
     #[test]
     fn path_without_extension_or_slash_is_rejected() {
         let mut p = GeneralParser::new();
-        assert!(p.feed("Makefile:10: missing separator").is_empty(),
-            "Makefile (no / or .) must be rejected by general parser");
+        assert!(
+            p.feed("Makefile:10: missing separator").is_empty(),
+            "Makefile (no / or .) must be rejected by general parser"
+        );
     }
 
     #[test]
@@ -276,7 +292,11 @@ mod tests {
     fn path_with_multiple_records_line_only_uses_first() {
         let mut p = GeneralParser::new();
         let entries = p.feed("file1.rs:10 and file2.rs:20 and file3.rs:30");
-        assert_eq!(entries.len(), 1, "general parser returns at most one entry per line");
+        assert_eq!(
+            entries.len(),
+            1,
+            "general parser returns at most one entry per line"
+        );
         assert_eq!(entries[0].path, PathBuf::from("file1.rs"));
     }
 
@@ -292,7 +312,13 @@ mod tests {
     #[test]
     fn all_numeric_path_is_rejected() {
         let mut p = GeneralParser::new();
-        assert!(p.feed("1234:56").is_empty(), "all-numeric path must be rejected");
-        assert!(p.feed("12:34:56").is_empty(), "purely numeric path:line:col must be rejected");
+        assert!(
+            p.feed("1234:56").is_empty(),
+            "all-numeric path must be rejected"
+        );
+        assert!(
+            p.feed("12:34:56").is_empty(),
+            "purely numeric path:line:col must be rejected"
+        );
     }
 }

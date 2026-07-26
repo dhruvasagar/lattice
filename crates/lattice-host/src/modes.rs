@@ -23,8 +23,6 @@
 //! refactor isn't landed yet -- those modes are deferred to
 //! the slice that ships them.
 
-
-
 use lattice_mode::{BufferLocal, ModeId, ModeRegistry, TextMode};
 use lattice_syntax::Lang;
 

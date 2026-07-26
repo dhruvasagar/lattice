@@ -25,9 +25,9 @@ use lattice_completion::{
 };
 use lattice_config::ConfigRegistry;
 use lattice_grammar::CommandRegistryHandle;
-use lattice_protocol::KeyChord;
 use lattice_grammar::args::{ArgDefault, ArgSpec, Args};
 use lattice_grammar::command::{CommandKind, LatencyClass};
+use lattice_protocol::KeyChord;
 
 use crate::{
     PickerAcceptOutcome, PickerContext, PickerInitResult, PickerSourceGenerator, PickerSourceSpec,
@@ -1180,9 +1180,9 @@ impl PickerSourceGenerator for CommandHistorySource {
         routing: &RoutingPayload,
     ) -> SourceResult<PickerAcceptOutcome> {
         match routing {
-            RoutingPayload::LoadCommandLine { text } => Ok(PickerAcceptOutcome::LoadCommandLine {
-                text: text.clone(),
-            }),
+            RoutingPayload::LoadCommandLine { text } => {
+                Ok(PickerAcceptOutcome::LoadCommandLine { text: text.clone() })
+            }
             other => Err(format!("history: unexpected routing payload {other:?}")),
         }
     }
@@ -1247,9 +1247,9 @@ impl PickerSourceGenerator for SearchHistorySource {
         routing: &RoutingPayload,
     ) -> SourceResult<PickerAcceptOutcome> {
         match routing {
-            RoutingPayload::LoadSearchLine { text } => Ok(PickerAcceptOutcome::LoadSearchLine {
-                text: text.clone(),
-            }),
+            RoutingPayload::LoadSearchLine { text } => {
+                Ok(PickerAcceptOutcome::LoadSearchLine { text: text.clone() })
+            }
             other => Err(format!(
                 "search-history: unexpected routing payload {other:?}"
             )),

@@ -21,8 +21,9 @@ use lattice_host::editor::Editor;
 use lattice_host::per_buffer_cache::PerBufferCacheExt;
 use lattice_host::wasm_decorations::{WasmDecorationState, WasmGutterDecorationCache};
 use lattice_mode::{
-    AsyncGutterDecorationSource, DecorationFuture, GutterDecoration, GutterDecorationSourceRegistry,
-    GutterDecorationSourceRegistryHandle, GutterDiffKind, GutterSeverityLevel,
+    AsyncGutterDecorationSource, DecorationFuture, GutterDecoration,
+    GutterDecorationSourceRegistry, GutterDecorationSourceRegistryHandle, GutterDiffKind,
+    GutterSeverityLevel,
 };
 
 /// A native decoration producer standing in for a WASM one. Either yields a
@@ -40,16 +41,19 @@ impl AsyncGutterDecorationSource for StubProducer {
     fn source_id(&self) -> u64 {
         self.id
     }
-    fn produce(&self, _buffer: u64, _path: Option<std::path::PathBuf>, _lines: u32) -> DecorationFuture<'_> {
+    fn produce(
+        &self,
+        _buffer: u64,
+        _path: Option<std::path::PathBuf>,
+        _lines: u32,
+    ) -> DecorationFuture<'_> {
         self.calls.fetch_add(1, Ordering::Relaxed);
         let result = self.result.clone();
         Box::pin(async move { result })
     }
 }
 
-fn registry_with(
-    producer: StubProducer,
-) -> GutterDecorationSourceRegistryHandle {
+fn registry_with(producer: StubProducer) -> GutterDecorationSourceRegistryHandle {
     let mut r = GutterDecorationSourceRegistry::new();
     r.register(Arc::new(producer));
     Arc::new(arc_swap::ArcSwap::from_pointee(r))
@@ -75,8 +79,14 @@ async fn refresh_populates_the_cache_off_the_render_path_and_wakes_paint() {
     let mut editor = Editor::boot(CoreDocument::from_text("a\nb\nc\nd\ne\n"));
     let buffer = editor.document_buffer_id;
     let marks = vec![
-        GutterDecoration::Diff { line: 0, kind: GutterDiffKind::Change },
-        GutterDecoration::Severity { line: 1, level: GutterSeverityLevel::Error },
+        GutterDecoration::Diff {
+            line: 0,
+            kind: GutterDiffKind::Change,
+        },
+        GutterDecoration::Severity {
+            line: 1,
+            level: GutterSeverityLevel::Error,
+        },
     ];
     let calls = Arc::new(AtomicU64::new(0));
     editor.wasm_decorations = WasmDecorationState::with_registry(registry_with(StubProducer {
@@ -95,13 +105,20 @@ async fn refresh_populates_the_cache_off_the_render_path_and_wakes_paint() {
         landed_within(&editor, 2).await,
         "a decoration write must fire async_landed so the gutter repaints without a keystroke"
     );
-    assert_eq!(calls.load(Ordering::Relaxed), 1, "the producer was polled once");
+    assert_eq!(
+        calls.load(Ordering::Relaxed),
+        1,
+        "the producer was polled once"
+    );
     let cache = editor
         .wasm_decorations
         .cache
         .get_for(buffer)
         .expect("the refresh wrote this buffer's decorations");
-    assert_eq!(cache.decorations, marks, "the cached marks are the producer's output");
+    assert_eq!(
+        cache.decorations, marks,
+        "the cached marks are the producer's output"
+    );
     assert!(
         editor.wasm_decorations.generation.load(Ordering::Relaxed) > gen_before,
         "the paint generation bumped (folded into compute_paint_revision)"
@@ -126,7 +143,10 @@ async fn erroring_producer_keeps_the_prior_snapshot_zero_flicker() {
     // Seed a prior good snapshot (as if an earlier refresh landed).
     let prior = WasmGutterDecorationCache {
         document_version: 0,
-        decorations: vec![GutterDecoration::Diff { line: 0, kind: GutterDiffKind::Add }],
+        decorations: vec![GutterDecoration::Diff {
+            line: 0,
+            kind: GutterDiffKind::Add,
+        }],
     };
     let calls = Arc::new(AtomicU64::new(0));
     editor.wasm_decorations = WasmDecorationState::with_registry(registry_with(StubProducer {
@@ -136,7 +156,10 @@ async fn erroring_producer_keeps_the_prior_snapshot_zero_flicker() {
     }));
     // Insert the prior snapshot AFTER swapping in the registry so the cache slot
     // is the one the refresh writes through.
-    editor.wasm_decorations.cache.insert_for(buffer, prior.clone());
+    editor
+        .wasm_decorations
+        .cache
+        .insert_for(buffer, prior.clone());
     settle(&editor).await;
 
     editor.maybe_refresh_wasm_decorations();
@@ -145,7 +168,11 @@ async fn erroring_producer_keeps_the_prior_snapshot_zero_flicker() {
         !landed_within(&editor, 1).await,
         "an all-error refresh writes nothing, so it fires no paint wake"
     );
-    assert_eq!(calls.load(Ordering::Relaxed), 1, "the producer was polled and errored");
+    assert_eq!(
+        calls.load(Ordering::Relaxed),
+        1,
+        "the producer was polled and errored"
+    );
     let cache = editor
         .wasm_decorations
         .cache

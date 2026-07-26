@@ -441,12 +441,7 @@ mod tests {
                 "markdown-mode" => Box::new(MarkdownMode),
                 other => panic!("unexpected mode id: {other}"),
             };
-            assert_eq!(
-                mode.kind(),
-                ModeKind::Major,
-                "{} is not Major",
-                id.as_str()
-            );
+            assert_eq!(mode.kind(), ModeKind::Major, "{} is not Major", id.as_str());
         }
     }
 }

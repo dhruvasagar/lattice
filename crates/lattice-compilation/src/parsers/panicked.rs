@@ -37,9 +37,9 @@ pub(crate) fn match_location(line: &str) -> Option<(PathBuf, u32, u32)> {
 
 pub(crate) fn match_severity(line: &str) -> Option<ErrorSeverity> {
     let re = panic_re()?;
-    re.is_match(line).ok().and_then(|m| {
-        if m { Some(ErrorSeverity::Error) } else { None }
-    })
+    re.is_match(line)
+        .ok()
+        .and_then(|m| if m { Some(ErrorSeverity::Error) } else { None })
 }
 
 pub struct TestPanicParser;
@@ -139,18 +139,24 @@ mod tests {
     fn test_non_panic_line_returns_empty() {
         let mut parser = TestPanicParser::new();
         assert!(parser.feed("running 1 test").is_empty());
-        assert!(parser.feed("test result: ok. 0 passed; 0 failed").is_empty());
+        assert!(
+            parser
+                .feed("test result: ok. 0 passed; 0 failed")
+                .is_empty()
+        );
         assert!(parser.feed("error[E0308]: mismatched types").is_empty());
         assert!(parser.feed("  --> src/foo.rs:12:9").is_empty());
-        assert!(parser.feed("main.c:10:5: error: 'foo' undeclared").is_empty());
+        assert!(
+            parser
+                .feed("main.c:10:5: error: 'foo' undeclared")
+                .is_empty()
+        );
     }
 
     #[test]
     fn test_absolute_path() {
         let mut parser = TestPanicParser::new();
-        let entries = parser.feed(
-            "thread 'main' panicked at /home/user/src/app/src/lib.rs:15:3:",
-        );
+        let entries = parser.feed("thread 'main' panicked at /home/user/src/app/src/lib.rs:15:3:");
         assert_eq!(entries.len(), 1);
         let e = &entries[0];
         assert_eq!(e.path, PathBuf::from("/home/user/src/app/src/lib.rs"));

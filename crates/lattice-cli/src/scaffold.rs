@@ -11,7 +11,7 @@
 
 use std::path::Path;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
 const CARGO_TOML: &str = r#"# Your lattice config, compiled to a wasm32-wasip2 component.
 # A standalone [workspace] so it doesn't inherit an outer cargo toolchain.
@@ -307,10 +307,7 @@ pub fn scaffold_plugin(name: &str) -> Result<()> {
 /// A plugin name must be a valid cargo crate name + WIT-friendly id: lowercase,
 /// starting with a letter, only `a-z0-9-`.
 fn validate_plugin_name(name: &str) -> Result<()> {
-    let ok = name
-        .chars()
-        .next()
-        .is_some_and(|c| c.is_ascii_lowercase())
+    let ok = name.chars().next().is_some_and(|c| c.is_ascii_lowercase())
         && name
             .chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
@@ -358,7 +355,8 @@ fn prepare_dir(dir: &Path) -> Result<()> {
             dir.display()
         );
     }
-    std::fs::create_dir_all(dir.join("src")).with_context(|| format!("creating {}", dir.display()))?;
+    std::fs::create_dir_all(dir.join("src"))
+        .with_context(|| format!("creating {}", dir.display()))?;
     std::fs::create_dir_all(dir.join("wit"))?;
     Ok(())
 }
@@ -391,8 +389,14 @@ mod tests {
         assert!(dir.join("plugin.toml").exists());
         assert!(dir.join("src/lib.rs").exists());
         assert!(dir.join("wit/init.wit").exists());
-        assert!(dir.join("wit/types.wit").exists(), "the API package is copied");
-        assert!(!crate::WIT_FILES.is_empty(), "wit package embedded at build");
+        assert!(
+            dir.join("wit/types.wit").exists(),
+            "the API package is copied"
+        );
+        assert!(
+            !crate::WIT_FILES.is_empty(),
+            "wit package embedded at build"
+        );
 
         // The manifest the editor discovers declares the init id.
         let manifest = std::fs::read_to_string(dir.join("plugin.toml")).unwrap();
@@ -413,7 +417,10 @@ mod tests {
         let dir = tmp.path().join("init");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("keep.me"), "existing config").unwrap();
-        assert!(write_scaffold_init(&dir).is_err(), "won't overwrite existing config");
+        assert!(
+            write_scaffold_init(&dir).is_err(),
+            "won't overwrite existing config"
+        );
     }
 
     #[test]
@@ -423,7 +430,10 @@ mod tests {
         write_scaffold_plugin(&dir, "my-plugin").unwrap();
 
         assert!(dir.join("wit/plugin.wit").exists());
-        assert!(dir.join("wit/types.wit").exists(), "the API package is copied");
+        assert!(
+            dir.join("wit/types.wit").exists(),
+            "the API package is copied"
+        );
 
         let manifest = std::fs::read_to_string(dir.join("plugin.toml")).unwrap();
         assert!(manifest.contains("id = \"my-plugin\""));
@@ -442,7 +452,10 @@ mod tests {
         assert!(validate_plugin_name("my-plugin").is_ok());
         assert!(validate_plugin_name("foo2").is_ok());
         for bad in ["My-Plugin", "1foo", "foo_bar", "foo bar", "foo-", ""] {
-            assert!(validate_plugin_name(bad).is_err(), "{bad} should be rejected");
+            assert!(
+                validate_plugin_name(bad).is_err(),
+                "{bad} should be rejected"
+            );
         }
     }
 }

@@ -162,12 +162,19 @@ mod tests {
 
     #[test]
     fn capabilities_show_granted_and_denied() {
-        let mut s = status("cap-plugin", TrustTier::UserInstalled, PluginHealth::Healthy);
+        let mut s = status(
+            "cap-plugin",
+            TrustTier::UserInstalled,
+            PluginHealth::Healthy,
+        );
         s.granted = vec![Capability::NetHttp("crates.io".into())];
         s.denied = vec![Capability::ProcSpawn];
         let out = render_status(&[s]);
         let row = out.lines().find(|l| l.contains("cap-plugin")).unwrap();
-        assert!(row.contains("net:http:crates.io"), "granted cap in wire form");
+        assert!(
+            row.contains("net:http:crates.io"),
+            "granted cap in wire form"
+        );
         assert!(row.contains("(denied: proc:spawn)"), "denied cap noted");
     }
 
@@ -188,11 +195,7 @@ mod tests {
 
     #[test]
     fn empty_grant_renders_a_dash_not_blank() {
-        let out = render_status(&[status(
-            "no-caps",
-            TrustTier::Bundled,
-            PluginHealth::Healthy,
-        )]);
+        let out = render_status(&[status("no-caps", TrustTier::Bundled, PluginHealth::Healthy)]);
         let row = out.lines().find(|l| l.contains("no-caps")).unwrap();
         assert!(row.trim_end().ends_with('—'), "empty caps render as a dash");
     }

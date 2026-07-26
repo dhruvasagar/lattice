@@ -213,7 +213,10 @@ fn describe_plugin_renders_registered_metadata_and_lists_it() {
         .build_describe_plugin_content("git-gutter")
         .expect("a registered plugin is describable");
     let body = text(&content);
-    assert!(body.contains("git-gutter +"), "heading (kind_icon: plugin → +):\n{body}");
+    assert!(
+        body.contains("git-gutter +"),
+        "heading (kind_icon: plugin → +):\n{body}"
+    );
     assert!(
         body.contains("Shows git diff signs in the gutter."),
         "the plugin's own doc renders"

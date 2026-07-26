@@ -89,7 +89,9 @@ fn rig(base: &std::path::Path) -> Rig {
             config_registry: Some(Arc::new(ConfigRegistry::default())),
             keymap: Some(KeymapHandle::new()),
             meta_sink: Some(sink.clone() as Arc<dyn PluginMetaSink>),
-            decoration_registry: Some(std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(lattice_mode::GutterDecorationSourceRegistry::default()))),
+            decoration_registry: Some(std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(
+                lattice_mode::GutterDecorationSourceRegistry::default(),
+            ))),
             tracer: None,
         },
     );
@@ -115,20 +117,36 @@ async fn unload_reverses_picker_and_grammar_contributions() {
     write_plugin_dir(&dir, "grammar-fixture", "grammar", &grammar);
 
     let r = rig(base.path());
-    assert_eq!(r.loader.discover_and_load(&dir, TrustTier::Bundled).await, 2);
+    assert_eq!(
+        r.loader.discover_and_load(&dir, TrustTier::Bundled).await,
+        2
+    );
 
     // Both contributions are live.
-    assert!(r.pickers.load().get("fixture").is_some(), "picker source live");
+    assert!(
+        r.pickers.load().get("fixture").is_some(),
+        "picker source live"
+    );
     assert!(
         r.commands.load().id_by_name("down-n").is_some(),
         "grammar motion live"
     );
-    assert_eq!(r.sink.registered.lock().unwrap().len(), 2, "both provenance");
+    assert_eq!(
+        r.sink.registered.lock().unwrap().len(),
+        2,
+        "both provenance"
+    );
 
     // Unload the picker plugin — its source is gone, the grammar plugin untouched.
-    let report = r.loader.unload("picker-fixture").expect("picker was loaded");
+    let report = r
+        .loader
+        .unload("picker-fixture")
+        .expect("picker was loaded");
     assert_eq!(report.pickers, 1, "one picker source reversed");
-    assert!(r.pickers.load().get("fixture").is_none(), "picker source gone");
+    assert!(
+        r.pickers.load().get("fixture").is_none(),
+        "picker source gone"
+    );
     assert!(!r.loader.is_loaded("picker-fixture"), "record removed");
     assert!(
         r.commands.load().id_by_name("down-n").is_some(),
@@ -142,7 +160,10 @@ async fn unload_reverses_picker_and_grammar_contributions() {
             _ => panic!("plugin provenance"),
         })
     });
-    let report = r.loader.unload("grammar-fixture").expect("grammar was loaded");
+    let report = r
+        .loader
+        .unload("grammar-fixture")
+        .expect("grammar was loaded");
     assert_eq!(
         report.commands, 5,
         "all five grammar contributions (down-n / to-cursor / fails / traps / read-at-cursor) reversed"
@@ -155,7 +176,10 @@ async fn unload_reverses_picker_and_grammar_contributions() {
 
     // Everything unloaded — the loaded set + provenance sink are empty.
     assert_eq!(r.loader.loaded_count(), 0);
-    assert!(r.sink.registered.lock().unwrap().is_empty(), "provenance cleared");
+    assert!(
+        r.sink.registered.lock().unwrap().is_empty(),
+        "provenance cleared"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -169,7 +193,10 @@ async fn reload_reinstantiates_from_disk() {
     write_plugin_dir(&dir, "picker-fixture", "picker-source", &picker);
 
     let r = rig(base.path());
-    assert_eq!(r.loader.discover_and_load(&dir, TrustTier::Bundled).await, 1);
+    assert_eq!(
+        r.loader.discover_and_load(&dir, TrustTier::Bundled).await,
+        1
+    );
     assert!(r.pickers.load().get("fixture").is_some());
 
     // Reload: unload + re-load from the recorded source dir. Still loaded, and
@@ -179,13 +206,20 @@ async fn reload_reinstantiates_from_disk() {
         .reload("picker-fixture", TrustTier::Bundled)
         .await
         .expect("reload succeeds from the on-disk source");
-    assert!(r.loader.is_loaded("picker-fixture"), "loaded again after reload");
+    assert!(
+        r.loader.is_loaded("picker-fixture"),
+        "loaded again after reload"
+    );
     assert_eq!(r.loader.loaded_count(), 1, "no duplicate record");
     assert!(
         r.pickers.load().get("fixture").is_some(),
         "the source is live again after reload"
     );
-    assert_eq!(id.0, r.sink.registered.lock().unwrap()[0].0, "fresh id recorded");
+    assert_eq!(
+        id.0,
+        r.sink.registered.lock().unwrap()[0].0,
+        "fresh id recorded"
+    );
     // `modes` handle is unused here but kept so the rig wires a full registry set.
     let _ = &r.modes;
 }

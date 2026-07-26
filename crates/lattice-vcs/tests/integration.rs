@@ -8,7 +8,9 @@
 use std::path::Path;
 use std::process::Command;
 
-use lattice_vcs::{Branch, Commit, GitBlob, Index, PathStatus, Reference, Repository, Stash, WorkingTree};
+use lattice_vcs::{
+    Branch, Commit, GitBlob, Index, PathStatus, Reference, Repository, Stash, WorkingTree,
+};
 
 /// Create a temporary directory, initialise a git repo in it, and
 /// return the path to the workdir.
@@ -22,7 +24,10 @@ fn init_temp_repo() -> (tempfile::TempDir, Repository) {
     assert!(status.success(), "git init failed");
 
     // Configure git user for commits
-    for (key, val) in [("user.email", "test@lattice.dev"), ("user.name", "lattice-test")] {
+    for (key, val) in [
+        ("user.email", "test@lattice.dev"),
+        ("user.name", "lattice-test"),
+    ] {
         let status = Command::new("git")
             .args(["config", key, val])
             .current_dir(dir.path())

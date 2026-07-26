@@ -334,7 +334,11 @@ mod tests {
             "App::new must register the `:opencode` (ACP conversation) ex-command"
         );
         assert!(
-            app.editor.registry.load().id_by_name("opencode-term").is_some(),
+            app.editor
+                .registry
+                .load()
+                .id_by_name("opencode-term")
+                .is_some(),
             "App::new must register the `:opencode-term` (terminal) ex-command"
         );
         app.editor

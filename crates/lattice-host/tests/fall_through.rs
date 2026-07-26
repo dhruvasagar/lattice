@@ -40,8 +40,9 @@ fn write_plugin_dir(root: &std::path::Path, id: &str, provides: &str, wasm: &[u8
 }
 
 fn loader_over_editor(editor: &Editor, base: &std::path::Path) -> PluginLoader {
-    let host =
-        Arc::new(PluginHost::with_dirs(base.join("cache"), base.join("data")).expect("host builds"));
+    let host = Arc::new(
+        PluginHost::with_dirs(base.join("cache"), base.join("data")).expect("host builds"),
+    );
     PluginLoader::with_services(
         host,
         LoaderServices {

@@ -16,8 +16,8 @@ use lattice_keymap::KeymapHandle;
 use lattice_mode::{ModeRegistry, ModeRegistryHandle, PluginMetaSink};
 use lattice_picker::PickerRegistry;
 use lattice_plugin_host::{PluginHost, TrustTier};
-use lattice_plugin_loader::{LoaderServices, PluginLoader, PluginLoaderHandle};
 use lattice_plugin_loader::watch::spawn_init_watcher;
+use lattice_plugin_loader::{LoaderServices, PluginLoader, PluginLoaderHandle};
 use lattice_runtime::EventBus;
 
 fn keymap_wasm() -> Option<Vec<u8>> {
@@ -49,7 +49,11 @@ fn commands_with_builtins() -> CommandRegistryHandle {
 
 fn write_init_dir(dir: &std::path::Path, wasm: &[u8]) {
     std::fs::create_dir_all(dir).unwrap();
-    std::fs::write(dir.join("plugin.toml"), "id = \"init\"\nprovides = [\"keymap\"]\n").unwrap();
+    std::fs::write(
+        dir.join("plugin.toml"),
+        "id = \"init\"\nprovides = [\"keymap\"]\n",
+    )
+    .unwrap();
     std::fs::write(dir.join("init.wasm"), wasm).unwrap();
 }
 
@@ -76,19 +80,37 @@ async fn rewriting_the_init_artifact_auto_reloads() {
             bus: Some(Arc::new(EventBus::new())),
             command_registry: Some(commands_with_builtins()),
             keymap: Some(keymap.clone()),
-            picker_registry: Some(Arc::new(arc_swap::ArcSwap::from_pointee(PickerRegistry::new()))),
-            mode_registry: Some(Arc::new(arc_swap::ArcSwap::from_pointee(ModeRegistry::default())) as ModeRegistryHandle),
+            picker_registry: Some(Arc::new(arc_swap::ArcSwap::from_pointee(
+                PickerRegistry::new(),
+            ))),
+            mode_registry: Some(
+                Arc::new(arc_swap::ArcSwap::from_pointee(ModeRegistry::default()))
+                    as ModeRegistryHandle,
+            ),
             config_registry: Some(Arc::new(ConfigRegistry::default())),
             meta_sink: Some(sink.clone() as Arc<dyn PluginMetaSink>),
-            decoration_registry: Some(std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(lattice_mode::GutterDecorationSourceRegistry::default()))),
+            decoration_registry: Some(std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(
+                lattice_mode::GutterDecorationSourceRegistry::default(),
+            ))),
             tracer: None,
         },
     ));
 
     // Initial load (as boot would), then start watching.
-    loader.load_path(&init_dir, TrustTier::Bundled).await.unwrap();
-    assert_eq!(*sink.registers.lock().unwrap(), 1, "one register from the initial load");
-    spawn_init_watcher(loader.clone(), init_dir.clone(), &tokio::runtime::Handle::current());
+    loader
+        .load_path(&init_dir, TrustTier::Bundled)
+        .await
+        .unwrap();
+    assert_eq!(
+        *sink.registers.lock().unwrap(),
+        1,
+        "one register from the initial load"
+    );
+    spawn_init_watcher(
+        loader.clone(),
+        init_dir.clone(),
+        &tokio::runtime::Handle::current(),
+    );
 
     // Give the watcher a moment to establish, then simulate a rebuild by
     // rewriting the artifact.
@@ -107,5 +129,8 @@ async fn rewriting_the_init_artifact_auto_reloads() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     assert!(reloaded, "rewriting init.wasm auto-reloaded the config");
-    assert!(loader.is_loaded("init"), "init still loaded after the auto-reload");
+    assert!(
+        loader.is_loaded("init"),
+        "init still loaded after the auto-reload"
+    );
 }

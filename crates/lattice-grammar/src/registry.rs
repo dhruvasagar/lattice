@@ -356,7 +356,9 @@ pub enum SurfaceForm {
     /// errors with a redirect message; the embedded `hint` is the
     /// canonical syntax shown in that error (`:s/pat/repl/`,
     /// `:g/pat/body`).
-    Delimiter { hint: std::borrow::Cow<'static, str> },
+    Delimiter {
+        hint: std::borrow::Cow<'static, str>,
+    },
 }
 
 #[derive(Clone)]
@@ -399,8 +401,7 @@ impl std::fmt::Debug for ExCommandSpec {
 
 /// Doc string for an auto-generated `:<mode-name>` mode-toggle ex-command —
 /// shared so native and plugin modes read identically in `:describe-command`.
-pub const MODE_TOGGLE_COMMAND_DOC: &str =
-    "Toggle the mode on the active buffer (auto-generated; see `:help modes` for \
+pub const MODE_TOGGLE_COMMAND_DOC: &str = "Toggle the mode on the active buffer (auto-generated; see `:help modes` for \
      the full mode-system overview).";
 
 /// Build the auto-generated `:<mode-name>` mode-toggle ex-command spec. The
@@ -1084,7 +1085,10 @@ mod tests {
         assert!(g2 > g1, "a plugin registration must bump generation");
         assert_eq!(r.unregister_plugin(7), 1);
         let g3 = r.generation();
-        assert!(g3 > g2, "unregistering a plugin's commands must bump generation");
+        assert!(
+            g3 > g2,
+            "unregistering a plugin's commands must bump generation"
+        );
         // A no-op unregister (nothing removed) must NOT bump — no cache churn.
         assert_eq!(r.unregister_plugin(7), 0);
         assert_eq!(
@@ -1177,7 +1181,7 @@ mod tests {
                 apply: Arc::new(|_| Ok(crate::effect::Effect::None)),
                 args_schema: vec![],
                 blockwise_per_row: false,
-            post_motion_char: false,
+                post_motion_char: false,
             },
         );
         let spec = r.lookup(id.0).unwrap();

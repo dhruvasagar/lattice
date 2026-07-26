@@ -54,13 +54,13 @@ use crate::boundary_grammar::{
 };
 use crate::grammar_host::RecordedContribution;
 use crate::grammar_host::bindings::GrammarPlugin;
-use crate::trace::{
-    Direction, HotGate, PluginTraceRecord, PluginTracerHandle, TraceLevel, TraceOutcome,
-};
 use crate::lattice::plugin_host::types::{
     ActionSpec as WitActionSpec, ArgSpec as WitArgSpec, ExCommandSpec as WitExCommandSpec,
     MotionSpec as WitMotionSpec, OperatorSpec as WitOperatorSpec,
     TextObjectSpec as WitTextObjectSpec,
+};
+use crate::trace::{
+    Direction, HotGate, PluginTraceRecord, PluginTracerHandle, TraceLevel, TraceOutcome,
 };
 use crate::{
     Component, PluginBudget, PluginHost, PluginHostError, PluginId, PluginManifest, PluginState,
@@ -338,8 +338,10 @@ fn build_action_spec(
                 // entries after the call (the host owns them throughout). Any
                 // `node` the guest derives from the tree borrow is guest-owned and
                 // dropped by the guest before it returns.
-                let owned_doc =
-                    s.data_mut().table.push(DocumentResource::new(snapshot.clone()))?;
+                let owned_doc = s
+                    .data_mut()
+                    .table
+                    .push(DocumentResource::new(snapshot.clone()))?;
                 let doc_borrow = Resource::new_borrow(owned_doc.rep());
                 let owned_tree = match &tree_snapshot {
                     Some(snap) => Some(
@@ -524,7 +526,12 @@ impl PluginHost {
                 "grammar plugin loaded with a withheld capability (reduced function)"
             );
         }
-        let mut store = self.new_store(wasi, outcome.grant, PluginBudget::default(), Some(&manifest.id))?;
+        let mut store = self.new_store(
+            wasi,
+            outcome.grant,
+            PluginBudget::default(),
+            Some(&manifest.id),
+        )?;
         // AP.3: wire the shared config registry so a grammar action's
         // `config::get-option` reads the live editor options.
         store.data_mut().config_registry = config_registry.cloned();

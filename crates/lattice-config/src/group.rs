@@ -276,8 +276,7 @@ impl OptionGroup for Diagnostics {
 pub struct Plugin;
 impl OptionGroup for Plugin {
     const NAME: &'static str = "plugin";
-    const DOC: &'static str =
-        "Plugin observability: the global default boundary-trace verbosity.";
+    const DOC: &'static str = "Plugin observability: the global default boundary-trace verbosity.";
 }
 
 /// GPUI window options: OS chrome (`ui.window.decorations`) and

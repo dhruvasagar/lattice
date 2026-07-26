@@ -14,8 +14,8 @@
 
 use std::sync::Arc;
 
-use lattice_grammar::registry::CommandRegistry;
 use lattice_grammar::CommandRegistryHandle;
+use lattice_grammar::registry::CommandRegistry;
 use lattice_keymap::KeymapHandle;
 use lattice_mode::{ModeRegistry, ModeRegistryHandle};
 use lattice_plugin_host::{Capability, PluginHost, TrustTier};
@@ -114,7 +114,11 @@ async fn status_reflects_capabilities_denied_under_user_tier() {
         s.granted.is_empty(),
         "the only requested capability was denied, so nothing was granted"
     );
-    assert_eq!(s.health, PluginHealth::Healthy, "loaded plugins start healthy");
+    assert_eq!(
+        s.health,
+        PluginHealth::Healthy,
+        "loaded plugins start healthy"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -2,6 +2,7 @@
 	<img src="./assets/readme-banner.svg" alt="Lattice - a modal, GPU-accelerated, plugin-first text editor in Rust" width="720" />
 </p>
 
+
 A modal, GPU-accelerated, plugin-first text editor written in Rust. Combines
 **vim's modal editing power** with **emacs's extensibility model** on a
 non-blocking, multi-threaded core where the UI thread does no I/O, no parsing,

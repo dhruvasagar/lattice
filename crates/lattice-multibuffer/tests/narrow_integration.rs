@@ -99,7 +99,11 @@ fn make_source(text: &str) -> (BufferId, Arc<dyn Document>) {
     let document = lattice_core::DocumentBuilder::default()
         .with_text(text)
         .build();
-    let handle = lattice_runtime::spawn_document(id, document, Arc::new(arc_swap::ArcSwap::from_pointee(CommandRegistry::new())));
+    let handle = lattice_runtime::spawn_document(
+        id,
+        document,
+        Arc::new(arc_swap::ArcSwap::from_pointee(CommandRegistry::new())),
+    );
     let dyn_handle: Arc<dyn Document> = Arc::new(handle);
     (id, dyn_handle)
 }

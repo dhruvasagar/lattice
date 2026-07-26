@@ -16,7 +16,9 @@
 use std::sync::{Arc, Mutex};
 
 use lattice_completion::CompletionSourceKind;
-use lattice_mode::{ActivationPolicy, ModeId, ModeKind, ModeRegistry, ModeRegistryHandle, PluginMetaSink};
+use lattice_mode::{
+    ActivationPolicy, ModeId, ModeKind, ModeRegistry, ModeRegistryHandle, PluginMetaSink,
+};
 use lattice_plugin_host::{PluginHost, TrustTier};
 use lattice_plugin_loader::{LoaderServices, PluginLoader, discover};
 use lattice_runtime::EventBus;
@@ -71,7 +73,12 @@ async fn discovered_completion_plugin_rides_a_universal_carrier_mode() {
 
     let base = tempfile::tempdir().unwrap();
     let plugins_dir = base.path().join("plugins");
-    write_plugin_dir(&plugins_dir, "completion-fixture", "completion-source", &wasm);
+    write_plugin_dir(
+        &plugins_dir,
+        "completion-fixture",
+        "completion-source",
+        &wasm,
+    );
 
     let mode_registry = empty_mode_registry();
     let sink: Arc<RecordingSink> = Arc::new(RecordingSink::default());
@@ -83,18 +90,27 @@ async fn discovered_completion_plugin_rides_a_universal_carrier_mode() {
             bus: Some(Arc::new(EventBus::new())),
             mode_registry: Some(mode_registry.clone()),
             meta_sink: Some(sink.clone() as Arc<dyn PluginMetaSink>),
-            decoration_registry: Some(std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(lattice_mode::GutterDecorationSourceRegistry::default()))),
+            decoration_registry: Some(std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(
+                lattice_mode::GutterDecorationSourceRegistry::default(),
+            ))),
             ..Default::default()
         },
     );
 
-    assert_eq!(discover(&plugins_dir).len(), 1, "discovery finds the plugin");
+    assert_eq!(
+        discover(&plugins_dir).len(),
+        1,
+        "discovery finds the plugin"
+    );
 
     let n = loader
         .discover_and_load(&plugins_dir, TrustTier::Bundled)
         .await;
     assert_eq!(n, 1, "the completion plugin loads");
-    assert!(loader.is_loaded("completion-fixture"), "loader tracks it loaded");
+    assert!(
+        loader.is_loaded("completion-fixture"),
+        "loader tracks it loaded"
+    );
 
     // The carrier mode is registered — universal minor, `<id>-completion-mode`.
     let modes = mode_registry.load();
@@ -112,11 +128,24 @@ async fn discovered_completion_plugin_rides_a_universal_carrier_mode() {
     // exact shape `recompute_active_completion_sources_for` walks. Wrapped as a
     // native async contribution at the documented plugin default priority.
     let sources = mode.completion_sources();
-    assert_eq!(sources.len(), 1, "the carrier mode contributes exactly the plugin source");
+    assert_eq!(
+        sources.len(),
+        1,
+        "the carrier mode contributes exactly the plugin source"
+    );
     let contribution = &sources[0];
-    assert_eq!(contribution.id.0, "keywords", "the guest-declared source id");
-    assert_eq!(contribution.default_priority, 100, "the plugin-source default bucket");
-    assert!(contribution.auto_trigger, "auto-triggers on identifier chars");
+    assert_eq!(
+        contribution.id.0, "keywords",
+        "the guest-declared source id"
+    );
+    assert_eq!(
+        contribution.default_priority, 100,
+        "the plugin-source default bucket"
+    );
+    assert!(
+        contribution.auto_trigger,
+        "auto-triggers on identifier chars"
+    );
     assert!(
         matches!(contribution.kind, CompletionSourceKind::Async(_)),
         "a WASM source is async (produce runs off the keystroke path)"
@@ -137,7 +166,12 @@ async fn completion_plugin_without_a_wired_mode_registry_is_skipped_not_fatal() 
 
     let base = tempfile::tempdir().unwrap();
     let plugins_dir = base.path().join("plugins");
-    write_plugin_dir(&plugins_dir, "completion-fixture", "completion-source", &wasm);
+    write_plugin_dir(
+        &plugins_dir,
+        "completion-fixture",
+        "completion-source",
+        &wasm,
+    );
 
     // No mode registry wired — the carrier-mode registration has nowhere to land,
     // so the drain hits `NotWired("completion-source")`, which `discover_and_load`

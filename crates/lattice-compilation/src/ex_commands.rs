@@ -13,13 +13,13 @@
 
 use std::sync::Arc;
 
+use lattice_grammar::CommandRegistry;
 use lattice_grammar::app_effect::AppEffect;
 use lattice_grammar::args::{ArgKind, ArgSpec, Args};
 use lattice_grammar::command::LatencyClass;
 use lattice_grammar::effect::Effect;
 use lattice_grammar::error::CommandError;
 use lattice_grammar::registry::{ExCommandSpec, SurfaceForm};
-use lattice_grammar::CommandRegistry;
 
 /// Parse an already-trimmed argument string into an optional
 /// cmdline (empty ⇒ `None`).

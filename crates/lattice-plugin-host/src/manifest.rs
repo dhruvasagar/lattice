@@ -261,7 +261,9 @@ pub enum ManifestError {
     /// per-plugin on-disk data dir (joined into a path + mounted WRITABLE into
     /// the guest), so a `/`, `\`, `.`, `..`, or absolute id would let a crafted
     /// manifest escape its sandbox and write outside the data dir. Rejected.
-    #[error("plugin manifest `id` `{0}` must be a single path component (no `/`, `\\`, `.`, `..`, or absolute path)")]
+    #[error(
+        "plugin manifest `id` `{0}` must be a single path component (no `/`, `\\`, `.`, `..`, or absolute path)"
+    )]
     InvalidId(String),
 
     /// A `provides` entry was not a recognised seam name.
@@ -472,7 +474,13 @@ mod tests {
 
     #[test]
     fn a_safe_id_is_a_single_normal_component() {
-        for ok in ["git-gutter", "fuzzy_finder", "a.b.c", "plugin123", "with space"] {
+        for ok in [
+            "git-gutter",
+            "fuzzy_finder",
+            "a.b.c",
+            "plugin123",
+            "with space",
+        ] {
             assert!(is_safe_plugin_id(ok), "`{ok}` should be accepted");
         }
     }
@@ -484,13 +492,13 @@ mod tests {
         for bad in [
             "",
             "   ",
-            "/etc/cron.d",       // absolute → base discarded
-            "../../../.ssh",     // traversal
-            "..",                // parent
-            ".",                 // current
-            "a/b",               // separator (nested)
-            "sub/../../escape",  // mixed
-            "/",                 // root
+            "/etc/cron.d",      // absolute → base discarded
+            "../../../.ssh",    // traversal
+            "..",               // parent
+            ".",                // current
+            "a/b",              // separator (nested)
+            "sub/../../escape", // mixed
+            "/",                // root
         ] {
             assert!(!is_safe_plugin_id(bad), "`{bad}` must be rejected");
         }

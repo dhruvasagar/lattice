@@ -84,13 +84,19 @@ async fn discovered_picker_plugin_registers_its_source_and_provenance() {
             bus: Some(Arc::new(EventBus::new())),
             picker_registry: Some(picker_registry.clone()),
             meta_sink: Some(sink.clone() as Arc<dyn PluginMetaSink>),
-            decoration_registry: Some(std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(lattice_mode::GutterDecorationSourceRegistry::default()))),
+            decoration_registry: Some(std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(
+                lattice_mode::GutterDecorationSourceRegistry::default(),
+            ))),
             ..Default::default()
         },
     );
 
     // Sanity: discovery finds exactly the one plugin dir.
-    assert_eq!(discover(&plugins_dir).len(), 1, "discovery finds the plugin");
+    assert_eq!(
+        discover(&plugins_dir).len(),
+        1,
+        "discovery finds the plugin"
+    );
 
     let n = loader
         .discover_and_load(&plugins_dir, TrustTier::Bundled)
@@ -107,9 +113,15 @@ async fn discovered_picker_plugin_registers_its_source_and_provenance() {
     // Provenance was recorded — `:list-plugins` would show it.
     let recorded = sink.registered.lock().unwrap();
     assert_eq!(recorded.len(), 1, "one plugin's provenance recorded");
-    assert_eq!(recorded[0].1, "picker-fixture", "recorded under its manifest id");
+    assert_eq!(
+        recorded[0].1, "picker-fixture",
+        "recorded under its manifest id"
+    );
 
-    assert!(loader.is_loaded("picker-fixture"), "loader tracks it as loaded");
+    assert!(
+        loader.is_loaded("picker-fixture"),
+        "loader tracks it as loaded"
+    );
 }
 
 fn config_guest_wasm() -> Option<Vec<u8>> {
@@ -142,7 +154,9 @@ async fn discovered_config_plugin_registers_its_options() {
             bus: Some(Arc::new(EventBus::new())),
             config_registry: Some(config_registry.clone()),
             meta_sink: Some(sink.clone() as Arc<dyn PluginMetaSink>),
-            decoration_registry: Some(std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(lattice_mode::GutterDecorationSourceRegistry::default()))),
+            decoration_registry: Some(std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(
+                lattice_mode::GutterDecorationSourceRegistry::default(),
+            ))),
             ..Default::default()
         },
     );
@@ -186,9 +200,16 @@ async fn a_broken_plugin_dir_is_skipped_without_aborting_discovery() {
         LoaderServices {
             runtime: Some(tokio::runtime::Handle::current()),
             bus: Some(Arc::new(EventBus::new())),
-            picker_registry: Some(Arc::new(arc_swap::ArcSwap::from_pointee(PickerRegistry::new()))),
+            picker_registry: Some(Arc::new(arc_swap::ArcSwap::from_pointee(
+                PickerRegistry::new(),
+            ))),
             ..Default::default()
         },
     );
-    assert_eq!(loader.discover_and_load(&plugins_dir, TrustTier::Bundled).await, 0);
+    assert_eq!(
+        loader
+            .discover_and_load(&plugins_dir, TrustTier::Bundled)
+            .await,
+        0
+    );
 }

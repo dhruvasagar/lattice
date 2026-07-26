@@ -49,9 +49,15 @@ pub struct MagitStatusGuard {
 impl Mode for MagitStatusMode {
     type Guard = MagitStatusGuard;
 
-    fn id(&self) -> ModeId { Self::mode_id() }
-    fn kind(&self) -> ModeKind { ModeKind::Major }
-    fn target_buffer_kind(&self) -> Option<lattice_core::BufferKind> { None }
+    fn id(&self) -> ModeId {
+        Self::mode_id()
+    }
+    fn kind(&self) -> ModeKind {
+        ModeKind::Major
+    }
+    fn target_buffer_kind(&self) -> Option<lattice_core::BufferKind> {
+        None
+    }
 
     fn options(&self) -> OptionOverrideSet {
         lattice_config::overrides! {
@@ -63,8 +69,12 @@ impl Mode for MagitStatusMode {
         }
     }
 
-    fn required_capabilities(&self) -> CapabilitySet { CapabilitySet::empty() }
-    fn keymap(&self) -> Keymap { Keymap::from_entries(magit_status_keymap_entries()) }
+    fn required_capabilities(&self) -> CapabilitySet {
+        CapabilitySet::empty()
+    }
+    fn keymap(&self) -> Keymap {
+        Keymap::from_entries(magit_status_keymap_entries())
+    }
 
     fn on_activate(&self, ctx: ModeContext) -> LifecycleFuture<'_, Self::Guard> {
         Box::pin(async move {
@@ -108,11 +118,10 @@ impl Mode for MagitStatusMode {
             let pending = ctx.service::<lattice_mode::PendingSyntheticHighlights>();
             {
                 let wd = workdir.clone();
-                let (text, spans) = tokio::task::spawn_blocking(move || {
-                    refresh::build_and_format(&wd)
-                })
-                .await
-                .expect("spawn_blocking");
+                let (text, spans) =
+                    tokio::task::spawn_blocking(move || refresh::build_and_format(&wd))
+                        .await
+                        .expect("spawn_blocking");
                 refresh::apply_and_highlight(
                     handle.clone(),
                     text,
@@ -123,29 +132,24 @@ impl Mode for MagitStatusMode {
                 .await;
             }
 
-            let pending_highlights = ctx
-                .service::<lattice_mode::PendingSyntheticHighlights>();
+            let pending_highlights = ctx.service::<lattice_mode::PendingSyntheticHighlights>();
 
-            let shared_state = std::sync::Arc::new(std::sync::Mutex::new(
-                actions::StatusBufferState {
+            let shared_state =
+                std::sync::Arc::new(std::sync::Mutex::new(actions::StatusBufferState {
                     buffer_id,
                     store: store.clone(),
                     workdir: workdir.clone(),
                     runtime: runtime.clone(),
                     pending_highlights,
-                },
-            ));
+                }));
 
             let mut action_registrations = Vec::new();
             if let (Some(cmd_arc), Some(ah_arc)) = (
                 ctx.service::<CommandRegistryHandle>(),
                 ctx.service::<ActionHandlerRegistryHandle>(),
             ) {
-                action_registrations = actions::register_action_handlers(
-                    shared_state.clone(),
-                    &cmd_arc,
-                    &ah_arc,
-                );
+                action_registrations =
+                    actions::register_action_handlers(shared_state.clone(), &cmd_arc, &ah_arc);
             }
 
             Ok(MagitStatusGuard {

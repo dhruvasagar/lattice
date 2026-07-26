@@ -11,8 +11,8 @@
 //! buffer through the actor handle. The returned `Subscription`
 //! guard unsubscribes on drop.
 
-use std::sync::{Arc, OnceLock};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 
 use lattice_cells::{HeaderlineProvider, VirtualRowProvider};
 use lattice_grammar::{AppEffect, CommandRegistryHandle, Effect};
@@ -29,11 +29,18 @@ use lattice_protocol::position::{Position, Range};
 use lattice_runtime::Document;
 // T.7 (2026-06-18): mode-owned theme elements for the
 // compilation-mode highlighting.
-use lattice_theme::{Color, ColorRef, ElementId, ElementName, ElementOwner, StyleSpec, ThemeRegistryHandle};
+use lattice_theme::{
+    Color, ColorRef, ElementId, ElementName, ElementOwner, StyleSpec, ThemeRegistryHandle,
+};
 
 use crate::events::{CompilationOutputPushed, OutputChunk};
-use crate::headerline::{CompilationHeadlineState, CompilationHeaderline, COMPILATION_HEADERLINE_PROVIDER_ID};
-use crate::{CompilationGutterBusHandle, CompilationLocationBusHandle, CompilationThemeColorsBusHandle, scan_location_lines, scan_severities};
+use crate::headerline::{
+    COMPILATION_HEADERLINE_PROVIDER_ID, CompilationHeaderline, CompilationHeadlineState,
+};
+use crate::{
+    CompilationGutterBusHandle, CompilationLocationBusHandle, CompilationThemeColorsBusHandle,
+    scan_location_lines, scan_severities,
+};
 
 /// Count the `\n`s in `text` — how many buffer lines it advances the
 /// running line counter (CM.3c drain line-tracking).
@@ -225,7 +232,10 @@ impl Mode for CompilationMode {
             // resolve the actual colours from the theme so the
             // headerline doesn't use hardcoded RGB.
             let mut hl_colors: Option<(u32, u32, u32, u32, u32)> = None; // cmd, in_progress, success, failure, dim
-            if let Some(theme) = ctx.service::<ThemeRegistryHandle>().map(|outer| (*outer).clone()) {
+            if let Some(theme) = ctx
+                .service::<ThemeRegistryHandle>()
+                .map(|outer| (*outer).clone())
+            {
                 let owner = ElementOwner::Mode(Self::mode_id().as_str().to_string().into());
                 let loc_id = theme.register(
                     ElementName::from_static("compilation.location"),
@@ -267,7 +277,11 @@ impl Mode for CompilationMode {
 
                 let resolved = theme.resolved();
                 let resolve_fg = |id: ElementId, fallback: u32| -> u32 {
-                    resolved.get(id).fg.map(|c| c.to_rgb_u32(0)).unwrap_or(fallback)
+                    resolved
+                        .get(id)
+                        .fg
+                        .map(|c| c.to_rgb_u32(0))
+                        .unwrap_or(fallback)
                 };
                 hl_colors = Some((
                     resolve_fg(cmd_id, 0xf9e2af),
@@ -283,8 +297,16 @@ impl Mode for CompilationMode {
                     .service::<CompilationThemeColorsBusHandle>()
                     .map(|h| (**h).clone())
                 {
-                    let loc_bg = resolved.get(loc_id).bg.map(|c| c.to_rgb_u32(0)).unwrap_or(0x45475a);
-                    let loc_fg = resolved.get(loc_id).fg.map(|c| c.to_rgb_u32(0)).unwrap_or(0x89b4fa);
+                    let loc_bg = resolved
+                        .get(loc_id)
+                        .bg
+                        .map(|c| c.to_rgb_u32(0))
+                        .unwrap_or(0x45475a);
+                    let loc_fg = resolved
+                        .get(loc_id)
+                        .fg
+                        .map(|c| c.to_rgb_u32(0))
+                        .unwrap_or(0x89b4fa);
                     let _ = bus.send((loc_bg, loc_fg));
                 }
             }
@@ -304,9 +326,9 @@ impl Mode for CompilationMode {
 
             // CM.3c (2026-07-22): the off-thread location-line index
             // producer for theme-based highlighting. Twin of gutter_bus.
-            let location_bus: Option<InboundBus<(lattice_core::BufferId, Vec<(u32, u32, u32)>)>> = ctx
-                .service::<CompilationLocationBusHandle>()
-                .map(|h| (**h).clone());
+            let location_bus: Option<InboundBus<(lattice_core::BufferId, Vec<(u32, u32, u32)>)>> =
+                ctx.service::<CompilationLocationBusHandle>()
+                    .map(|h| (**h).clone());
 
             // CM.3d (2026-07-22): create + register the
             // compilation headerline — a sticky virtual row the
@@ -413,8 +435,14 @@ impl Mode for CompilationMode {
                                 pending.push_str(&summary);
                                 // CM.3d: update headerline with final counts.
                                 // errors = count of Error severity; warnings = count of Warning.
-                                let errors = severities.iter().filter(|(_, s)| *s == ErrorSeverity::Error).count();
-                                let warnings = severities.iter().filter(|(_, s)| *s == ErrorSeverity::Warning).count();
+                                let errors = severities
+                                    .iter()
+                                    .filter(|(_, s)| *s == ErrorSeverity::Error)
+                                    .count();
+                                let warnings = severities
+                                    .iter()
+                                    .filter(|(_, s)| *s == ErrorSeverity::Warning)
+                                    .count();
                                 if let Ok(mut s) = drain_state.write() {
                                     s.running = false;
                                     s.last_counts = Some((errors, warnings));
@@ -618,9 +646,7 @@ mod tests {
             "doc",
             lattice_grammar::ActionSpec {
                 args_schema: vec![],
-                apply: std::sync::Arc::new(|_| {
-                    Ok(lattice_grammar::Effect::None)
-                }),
+                apply: std::sync::Arc::new(|_| Ok(lattice_grammar::Effect::None)),
             },
         );
         registry.register_action(
@@ -628,9 +654,7 @@ mod tests {
             "doc",
             lattice_grammar::ActionSpec {
                 args_schema: vec![],
-                apply: std::sync::Arc::new(|_| {
-                    Ok(lattice_grammar::Effect::None)
-                }),
+                apply: std::sync::Arc::new(|_| Ok(lattice_grammar::Effect::None)),
             },
         );
 

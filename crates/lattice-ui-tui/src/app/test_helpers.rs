@@ -7,8 +7,8 @@
 //! these in via `use crate::app::test_helpers::*;`.
 
 use lattice_core::Document;
-use lattice_grammar::registry::MotionId;
 use lattice_grammar::CommandInvocation;
+use lattice_grammar::registry::MotionId;
 use lattice_protocol::Event;
 
 use crate::buffers::BufferKind;

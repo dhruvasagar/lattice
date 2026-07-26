@@ -23,8 +23,8 @@ use lattice_mode::{
     GutterDecorationSourceRegistry, GutterDecorationSourceRegistryHandle, ModeRegistry,
     ModeRegistryHandle,
 };
-use lattice_picker::source::PickerRegistry;
 use lattice_picker::PickerRegistryHandle;
+use lattice_picker::source::PickerRegistry;
 use lattice_plugin_host::{PluginHost, TrustTier};
 use lattice_plugin_loader::{LoaderServices, PluginLoader};
 use lattice_runtime::EventBus;
@@ -116,7 +116,10 @@ async fn reloading_a_config_plugin_keeps_the_option_footprint_bounded() {
     // point PL8.F adds is that the *strings* now free with those entries rather
     // than leaking as `&'static str`.
     for round in 1..=12 {
-        loader.reload("config-fixture", TrustTier::Bundled).await.unwrap();
+        loader
+            .reload("config-fixture", TrustTier::Bundled)
+            .await
+            .unwrap();
         assert_eq!(
             config.len(),
             FIXTURE_OPTIONS,

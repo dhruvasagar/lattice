@@ -38,12 +38,7 @@ impl ModeActivator for Editor {
     /// inserts the buffer + runs the major's `on_activate` by id). This
     /// is why buffer creation lives here on the `&mut`-backed
     /// `ModeActivator` and not on the `&self` `BufferStore`.
-    fn ensure_named_document(
-        &mut self,
-        name: &str,
-        major: ModeId,
-        flags: BufferFlags,
-    ) -> BufferId {
+    fn ensure_named_document(&mut self, name: &str, major: ModeId, flags: BufferFlags) -> BufferId {
         self.ensure_named_synthetic_document(name, major, flags)
     }
 

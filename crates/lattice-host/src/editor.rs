@@ -440,10 +440,7 @@ pub struct Editor {
     /// inner per-buffer `Arc<Vec<(u32,u32,u32)>>` lets the renderer read
     /// wait-free.
     pub compilation_location_lines: std::sync::Arc<
-        std::collections::HashMap<
-            lattice_core::BufferId,
-            std::sync::Arc<Vec<(u32, u32, u32)>>,
-        >,
+        std::collections::HashMap<lattice_core::BufferId, std::sync::Arc<Vec<(u32, u32, u32)>>>,
     >,
     /// CM.3d (2026-07-22): resolved `compilation.location` theme
     /// colours — published by the mode during activation so the TUI

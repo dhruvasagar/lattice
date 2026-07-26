@@ -124,8 +124,12 @@ impl Editor {
             if registry_changed {
                 self.wasm_decorations
                     .cache
-                    .store(Arc::new(HashMap::<BufferId, Arc<WasmGutterDecorationCache>>::new()));
-                self.wasm_decorations.generation.fetch_add(1, Ordering::Relaxed);
+                    .store(Arc::new(
+                        HashMap::<BufferId, Arc<WasmGutterDecorationCache>>::new(),
+                    ));
+                self.wasm_decorations
+                    .generation
+                    .fetch_add(1, Ordering::Relaxed);
                 self.wasm_decorations.last_registry_epoch = epoch;
                 self.wasm_decorations.pending = None;
             }
@@ -172,7 +176,10 @@ impl Editor {
             let mut merged: Vec<GutterDecoration> = Vec::new();
             let mut any_ok = false;
             for source in sources {
-                match source.produce(buffer_id.0 as u64, path.clone(), line_count).await {
+                match source
+                    .produce(buffer_id.0 as u64, path.clone(), line_count)
+                    .await
+                {
                     Ok(decorations) => {
                         any_ok = true;
                         merged.extend(decorations);

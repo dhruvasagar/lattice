@@ -25,11 +25,11 @@ use lattice_grammar::dispatcher::execute;
 use lattice_grammar::registry::CommandRegistry;
 use lattice_grammar::{CancellationToken, CommandRegistryHandle, Effect};
 use lattice_keymap::{BindingMode, KeymapHandle, LookupResult};
-use lattice_protocol::edit::EditKind;
-use lattice_protocol::position::Position;
 use lattice_mode::{ModeId, ModeRegistry, ModeRegistryHandle, PluginMetaSink};
 use lattice_plugin_host::{PluginHost, TrustTier};
 use lattice_plugin_loader::{LoaderServices, PluginLoader};
+use lattice_protocol::edit::EditKind;
+use lattice_protocol::position::Position;
 use lattice_runtime::EventBus;
 
 /// The auto-pair component, if the `wasm32-wasip2` build produced it. The loader
@@ -98,8 +98,9 @@ async fn bundled_auto_pair_registers_grammar_modes_and_config_through_the_loader
     let keymap = KeymapHandle::new();
     let sink: Arc<RecordingSink> = Arc::new(RecordingSink::default());
 
-    let host =
-        Arc::new(PluginHost::with_dirs(base.path().join("cache"), base.path().join("data")).unwrap());
+    let host = Arc::new(
+        PluginHost::with_dirs(base.path().join("cache"), base.path().join("data")).unwrap(),
+    );
     let loader = PluginLoader::with_services(
         host,
         LoaderServices {
@@ -216,14 +217,22 @@ async fn bundled_auto_pair_registers_grammar_modes_and_config_through_the_loader
     )
     .expect("open dispatches");
     match effect {
-        Effect::ApplyEdit { target, edit, cursor } => {
+        Effect::ApplyEdit {
+            target,
+            edit,
+            cursor,
+        } => {
             assert_eq!(target, BufferId(1), "targets the active buffer");
             assert!(
                 matches!(&edit.kind, EditKind::Replace { text } if text == "()"),
                 "inserts the pair, got {:?}",
                 edit.kind
             );
-            assert_eq!(cursor, Some(Position::new(0, 1)), "caret parked between the pair");
+            assert_eq!(
+                cursor,
+                Some(Position::new(0, 1)),
+                "caret parked between the pair"
+            );
         }
         other => panic!("open: expected ApplyEdit, got {other:?}"),
     }
@@ -270,7 +279,11 @@ async fn bundled_auto_pair_registers_grammar_modes_and_config_through_the_loader
                 "inserts a close paren, got {:?}",
                 edit.kind
             );
-            assert_eq!(cursor, Some(Position::new(0, 2)), "caret after the inserted )");
+            assert_eq!(
+                cursor,
+                Some(Position::new(0, 2)),
+                "caret after the inserted )"
+            );
         }
         other => panic!("close-insert: expected ApplyEdit, got {other:?}"),
     }
@@ -294,7 +307,11 @@ async fn bundled_auto_pair_registers_grammar_modes_and_config_through_the_loader
                 "inserts the bracket pair, got {:?}",
                 edit.kind
             );
-            assert_eq!(cursor, Some(Position::new(0, 1)), "caret between the brackets");
+            assert_eq!(
+                cursor,
+                Some(Position::new(0, 1)),
+                "caret between the brackets"
+            );
         }
         other => panic!("open-square: expected ApplyEdit, got {other:?}"),
     }
@@ -318,7 +335,11 @@ async fn bundled_auto_pair_registers_grammar_modes_and_config_through_the_loader
                 "inserts the quote pair, got {:?}",
                 edit.kind
             );
-            assert_eq!(cursor, Some(Position::new(0, 1)), "caret between the quotes");
+            assert_eq!(
+                cursor,
+                Some(Position::new(0, 1)),
+                "caret between the quotes"
+            );
         }
         other => panic!("quote-open: expected ApplyEdit, got {other:?}"),
     }

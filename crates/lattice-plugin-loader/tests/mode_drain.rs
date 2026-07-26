@@ -17,8 +17,8 @@
 
 use std::sync::{Arc, Mutex};
 
-use lattice_grammar::registry::CommandRegistry;
 use lattice_grammar::CommandRegistryHandle;
+use lattice_grammar::registry::CommandRegistry;
 use lattice_keymap::{BindingMode, KeymapHandle, LookupResult};
 use lattice_mode::{ModeId, ModeRegistry, ModeRegistryHandle, PluginMetaSink};
 use lattice_plugin_host::{PluginHost, TrustTier};
@@ -104,12 +104,18 @@ async fn discovered_mode_plugin_registers_its_minor_modes_and_gated_keymap() {
             mode_registry: Some(mode_registry.clone()),
             keymap: Some(keymap.clone()),
             meta_sink: Some(sink.clone() as Arc<dyn PluginMetaSink>),
-            decoration_registry: Some(std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(lattice_mode::GutterDecorationSourceRegistry::default()))),
+            decoration_registry: Some(std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(
+                lattice_mode::GutterDecorationSourceRegistry::default(),
+            ))),
             ..Default::default()
         },
     );
 
-    assert_eq!(discover(&plugins_dir).len(), 1, "discovery finds the plugin");
+    assert_eq!(
+        discover(&plugins_dir).len(),
+        1,
+        "discovery finds the plugin"
+    );
 
     let n = loader
         .discover_and_load(&plugins_dir, TrustTier::Bundled)

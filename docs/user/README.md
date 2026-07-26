@@ -35,47 +35,47 @@ same surface).
 
 ## Topics
 
-| Topic                                                                                                       | File                                | Status |
-|-------------------------------------------------------------------------------------------------------------|-------------------------------------|--------|
-| Getting started (the ten-minute orientation: the modal loop, open/save, the command line, splits, next steps) | [getting-started.md](getting-started.md) | ✅ |
-| Modal editing (Normal / Insert / Visual / Op-pending / Command / Search / Replace + the vim grammar)        | [modal-editing.md](modal-editing.md)| ✅     |
-| Modes (major + minor; `:<mode-name>` toggle; LSP umbrella + sub-modes; display modes; convergence with `:set`) | [modes.md](modes.md)             | ✅     |
-| The command line (`:`, `/`, `?` — the rich minibuffer: buffer-backed readline editing, `<C-x><C-e>` expand, history picker, live decorations, incsearch) | [command-line.md](command-line.md) | ✅ |
-| Search and substitute (`/` / `?` / `:s` / live preview / regex syntax / backrefs)                           | _covered in command-line + ex-commands_ | 🟡 |
-| Ex-commands (`:w`, `:e`, `:s`, `:g`, `:d`, arg schemas, completion, ranges, aliases)                        | [ex-commands.md](ex-commands.md)    | ✅     |
-| Buffers and panes (registry, splits, file tree, navigation, theme)                                          | [buffers.md](buffers.md)            | ✅     |
-| File tree & Oil (browse / edit the filesystem; oil-style writable directory listing; icons + colors)        | [filetree-oil.md](filetree-oil.md)  | ✅     |
-| Multibuffer views (excerpts composed into one editable buffer; the substrate behind search + project diff)  | [multibuffer.md](multibuffer.md)    | ✅     |
-| Project search (`:search`, streaming results multibuffer, `<CR>` jump-to-source, `gr` refresh)              | [project-search.md](project-search.md) | ✅  |
-| Compilation mode (`:compile` / `:recompile` / `:make` any CLI tool, live `*compilation*` stream + headerline, `<CR>` jump, `<C-c>` kill, `:problems`) | [compilation.md](compilation.md) | ✅ |
-| The error list (`:next-error` / `:cnext`, `]qq`/`[qq`, `:error-list`, `:problems` — quickfix filled by `:compile`) | [error-list.md](error-list.md) | ✅ |
-| Narrow mode (`zn` operator, `:narrow` / `:widen`, edit-in-view → source, stacked one-hop, `znaf` in view)   | [narrow-mode.md](narrow-mode.md)    | ✅     |
-| Diff & merge (`:diffthis` / `:diffsplit`, `]c` / `[c`, `do` / `dp`, sign column, two- + three-way)          | [diff.md](diff.md)                  | ✅     |
-| Magit (git porcelain: `C-x g` status, `C-c g` dispatch, `C-c f` file-dispatch, staging, committing, branching, stashing, rebasing) | [magit.md](magit.md)                | ✅     |
-| Magit status buffer (staged / unstaged / untracked sections, lazy inline diffs, hunk staging, commit / amend, context-aware visit) | [magit-status.md](magit-status.md)  | ✅     |
-| Magit buffers (commit, diff, log, blame, stash, branch, rebase — each a dedicated major-mode Document)     | [magit-buffers.md](magit-buffers.md) | ✅     |
-| Magit transient menus (dispatch `C-c g` / file-dispatch `C-c f` grouped action popups, flag toggles, live command previews) | [magit-transient.md](magit-transient.md) | ✅ |
-| Display & layout (soft-wrap, tab width, scroll-off, whitespace markers)                                     | [display.md](display.md)            | ✅     |
-| Modeline (per-pane status row: zones, the modal tag + showmode echo, `ui.modeline.*` layout config)         | [modeline.md](modeline.md)          | ✅     |
-| Themes & colours (`:colorscheme` + the live-preview picker, the builtin theme catalog, `:customize`, `register_theme`) | [themes.md](themes.md)   | ✅     |
-| Folding (manual + indent + markdown + tree-sitter, operator interaction, navigation, auto-open)             | [folding.md](folding.md)            | ✅     |
-| Insert completion (sources, popup keymap, ranking, ghost text, snippets)                                    | [completion.md](completion.md)      | ✅     |
-| Picker & marginalia (`:picker <source>` fuzzy finder — files/grep/buffers/lines/outline/…; typed annotation columns; syntax-highlighted previews; frecency ranking) | [picker.md](picker.md) | ✅ |
-| Options and configuration (`:set`, layered resolver, TOML, groups, live `:options` reference)               | [options.md](options.md)            | ✅     |
-| LSP (servers, capabilities, attach lifecycle, every `:lsp-*` command in context)                            | [lsp.md](lsp.md)                    | ✅     |
-| `lsp-mode` (the umbrella minor + 9 sub-modes that gate per-feature LSP traffic)                             | [lsp-mode.md](lsp-mode.md)          | ✅     |
-| `emacs-keys-mode` (the `<C-x>` leader: emacs-style buffer / file / window chords layered over vim)          | [emacs-keys-mode.md](emacs-keys-mode.md) | ✅ |
-| Claude Code (the `:claude` agent IDE peer: `claude` CLI attaches over WebSocket/MCP, runs in a terminal buffer, edits via reviewable side-by-side diffs; wire shapes provisional) | [claude-code.md](claude-code.md) | ✅ |
-| opencode (the `:opencode` agent: runs opencode's native TUI in a terminal buffer with `opencode-mode`; `:opencode-acp` is the buffer-native alternative with lattice-owned diff review) | [opencode.md](opencode.md) | ✅ |
-| Languages (bundled set, coverage roadmap, add new language tree-sitter or otherwise)                        | [languages.md](languages.md)        | ✅     |
-| Search and substitute (`/` / `?` / `:s` / live preview / regex syntax / backrefs)                           | _covered in command-line + ex-commands_ | 🟡     |
-| Registers, marks, macros                                                                                    | _covered in modal-editing_          | 🟡     |
-| Help system (`:describe-*`, `:apropos`, `:keymap`, `<C-h>` map, mode-prefix syntax for `:describe-key`)    | [help.md](help.md)                  | ✅     |
-| Plugins (WASM Component Model, capabilities, fuel, crash isolation, API introspection)                      | [plugins.md](plugins.md)            | ✅     |
-| Core plugins (ship with lattice, prebuilt, on by default; `auto-pair`; `<id>.enabled` gates)                | [core-plugins.md](core-plugins.md)  | ✅     |
-| Configuring with `init.rs` (Rust/WASM config: event handlers, custom commands / motions / text-objects, keybinds, options; `:reload-config`) | [init.md](init.md) | ✅     |
-| Performance posture (latency budgets, what's safe in a hot loop)                                            | _planned_                           | ⛔     |
-| Tutor (the gamified `:tutor` lesson sequence — lives/score/HUD; 7 lessons: motions → grammar → visual → modes/help → splits/diff/LSP → advanced editing → customization) | [tutor.md](tutor.md) · [lessons](tutor/) | ✅ |
+| Topic                      | File                                     | Status |
+|----------------------------|------------------------------------------|--------|
+| Getting started            | [getting-started.md](getting-started.md) | ✅     |
+| Modal editing              | [modal-editing.md](modal-editing.md)     | ✅     |
+| Modes                      | [modes.md](modes.md)                     | ✅     |
+| The command line           | [command-line.md](command-line.md)       | ✅     |
+| Search and substitute      | _covered in command-line + ex-commands_  | 🟡     |
+| Ex-commands                | [ex-commands.md](ex-commands.md)         | ✅     |
+| Buffers and panes          | [buffers.md](buffers.md)                 | ✅     |
+| File tree & Oil            | [filetree-oil.md](filetree-oil.md)       | ✅     |
+| Multibuffer views          | [multibuffer.md](multibuffer.md)         | ✅     |
+| Project search             | [project-search.md](project-search.md)   | ✅     |
+| Compilation mode           | [compilation.md](compilation.md)         | ✅     |
+| The error list             | [error-list.md](error-list.md)           | ✅     |
+| Narrow mode                | [narrow-mode.md](narrow-mode.md)         | ✅     |
+| Diff & merge               | [diff.md](diff.md)                       | ✅     |
+| Magit                      | [magit.md](magit.md)                     | ✅     |
+| Magit status buffer        | [magit-status.md](magit-status.md)       | ✅     |
+| Magit buffers              | [magit-buffers.md](magit-buffers.md)     | ✅     |
+| Magit transient menus      | [magit-transient.md](magit-transient.md) | ✅     |
+| Display & layout           | [display.md](display.md)                 | ✅     |
+| Modeline                   | [modeline.md](modeline.md)               | ✅     |
+| Themes & colours           | [themes.md](themes.md)                   | ✅     |
+| Folding                    | [folding.md](folding.md)                 | ✅     |
+| Insert completion          | [completion.md](completion.md)           | ✅     |
+| Picker & marginalia        | [picker.md](picker.md)                   | ✅     |
+| Options and configuration  | [options.md](options.md)                 | ✅     |
+| LSP                        | [lsp.md](lsp.md)                         | ✅     |
+| `lsp-mode`                 | [lsp-mode.md](lsp-mode.md)               | ✅     |
+| `emacs-keys-mode`          | [emacs-keys-mode.md](emacs-keys-mode.md) | ✅     |
+| Claude Code                | [claude-code.md](claude-code.md)         | ✅     |
+| opencode                   | [opencode.md](opencode.md)               | ✅     |
+| Languages                  | [languages.md](languages.md)             | ✅     |
+| Search and substitute      | _covered in command-line + ex-commands_  | 🟡     |
+| Registers, marks, macros   | _covered in modal-editing_               | 🟡     |
+| Help system                | [help.md](help.md)                       | ✅     |
+| Plugins                    | [plugins.md](plugins.md)                 | ✅     |
+| Core plugins               | [core-plugins.md](core-plugins.md)       | ✅     |
+| Configuring with `init.rs` | [init.md](init.md)                       | ✅     |
+| Performance posture        | _planned_                                | ⛔     |
+| Tutor                      | [tutor.md](tutor.md) · [lessons](tutor/) | ✅     |
 
 Topics with `_planned_` aren't drafted yet — open an issue or send
 a PR if you want one prioritized.

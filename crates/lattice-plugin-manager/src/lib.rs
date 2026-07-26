@@ -29,7 +29,7 @@ mod mode;
 mod render;
 
 pub use mode::PluginManagerMode;
-pub use render::{render_status, PLUGINS_BUFFER_NAME, PLUGINS_MODE_ID};
+pub use render::{PLUGINS_BUFFER_NAME, PLUGINS_MODE_ID, render_status};
 
 /// Install the plugin-manager view: register `plugins-mode` + the `:plugins`
 /// ex-command. Seated in the host's Phase-B install list (before the registry

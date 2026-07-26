@@ -6,11 +6,11 @@
 //! the minor) is requested through the [`Effect`] vocabulary — the host
 //! boundary — not a bespoke channel, exactly like `:opencode`.
 
-use std::sync::Arc;
 use lattice_agent::parse_no_args;
 use lattice_grammar::command::LatencyClass;
 use lattice_grammar::effect::Effect;
 use lattice_grammar::registry::{CommandRegistry, ExCommandSpec, SurfaceForm};
+use std::sync::Arc;
 
 use crate::pi::modes::PiMode;
 
@@ -64,9 +64,7 @@ mod tests {
     fn pi_spawns_terminal_and_activates_mode() {
         let mut registry = CommandRegistry::new();
         register_pi_ex_commands(&mut registry);
-        let id = registry
-            .id_by_name("pi")
-            .expect("`:pi` registered");
+        let id = registry.id_by_name("pi").expect("`:pi` registered");
         let spec = registry.ex_command_spec(id).expect("spec present");
         match (spec.apply)(&ctx()).expect("apply ok") {
             Effect::SpawnTerminal {

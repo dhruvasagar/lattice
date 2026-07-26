@@ -154,7 +154,8 @@ impl Buffer {
     /// `AppliedEdit::replaced_text` is exactly what the caller needs to push
     /// onto the undo stack as the inverse.
     pub fn apply_edit(&mut self, edit: &Edit) -> CoreResult<AppliedEdit> {
-        let start_byte = snap_to_char_boundary(&self.rope, self.position_to_byte(edit.range.start)?);
+        let start_byte =
+            snap_to_char_boundary(&self.rope, self.position_to_byte(edit.range.start)?);
         let end_byte = snap_to_char_boundary(&self.rope, self.position_to_byte(edit.range.end)?);
         if end_byte < start_byte {
             return Err(ProtocolError::InvalidRange("end < start").into());

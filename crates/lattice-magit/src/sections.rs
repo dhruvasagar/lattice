@@ -59,10 +59,7 @@ impl SectionIndex {
                 SectionKind::Unstaged => format!("Unstaged changes ({})", section.entries.len()),
                 SectionKind::Untracked => format!("Untracked files ({})", section.entries.len()),
                 SectionKind::Stashes => format!("Stashes ({})", section.entries.len()),
-                SectionKind::RecentCommits => format!(
-                    "Recent commits ({})",
-                    section.entries.len()
-                ),
+                SectionKind::RecentCommits => format!("Recent commits ({})", section.entries.len()),
             };
             let line_idx = out.matches('\n').count();
             while spans.len() <= line_idx {
@@ -70,13 +67,11 @@ impl SectionIndex {
             }
             out.push_str(&header);
             out.push('\n');
-            spans[line_idx] = vec![
-                lattice_cells::style::StyledSpan {
-                    start: 0,
-                    end: header.len(),
-                    style: lattice_cells::style::Style::Heading2,
-                },
-            ];
+            spans[line_idx] = vec![lattice_cells::style::StyledSpan {
+                start: 0,
+                end: header.len(),
+                style: lattice_cells::style::Style::Heading2,
+            }];
 
             for entry in &section.entries {
                 let line_idx = out.matches('\n').count();
@@ -95,41 +90,49 @@ impl SectionIndex {
                         spans[line_idx] = match status {
                             PathStatus::Deleted => vec![
                                 lattice_cells::style::StyledSpan {
-                                    start: 2, end: label_end,
+                                    start: 2,
+                                    end: label_end,
                                     style: lattice_cells::style::Style::DiagnosticError,
                                 },
                                 lattice_cells::style::StyledSpan {
-                                    start: path_start, end: path_text.len(),
+                                    start: path_start,
+                                    end: path_text.len(),
                                     style: lattice_cells::style::Style::String,
                                 },
                             ],
                             PathStatus::Added => vec![
                                 lattice_cells::style::StyledSpan {
-                                    start: 2, end: label_end,
+                                    start: 2,
+                                    end: label_end,
                                     style: lattice_cells::style::Style::String,
                                 },
                                 lattice_cells::style::StyledSpan {
-                                    start: path_start, end: path_text.len(),
+                                    start: path_start,
+                                    end: path_text.len(),
                                     style: lattice_cells::style::Style::String,
                                 },
                             ],
                             PathStatus::Conflicted => vec![
                                 lattice_cells::style::StyledSpan {
-                                    start: 2, end: label_end,
+                                    start: 2,
+                                    end: label_end,
                                     style: lattice_cells::style::Style::DiagnosticWarning,
                                 },
                                 lattice_cells::style::StyledSpan {
-                                    start: path_start, end: path_text.len(),
+                                    start: path_start,
+                                    end: path_text.len(),
                                     style: lattice_cells::style::Style::String,
                                 },
                             ],
                             _ => vec![
                                 lattice_cells::style::StyledSpan {
-                                    start: 2, end: label_end,
+                                    start: 2,
+                                    end: label_end,
                                     style: lattice_cells::style::Style::Keyword,
                                 },
                                 lattice_cells::style::StyledSpan {
-                                    start: path_start, end: path_text.len(),
+                                    start: path_start,
+                                    end: path_text.len(),
                                     style: lattice_cells::style::Style::String,
                                 },
                             ],
@@ -142,15 +145,18 @@ impl SectionIndex {
                         out.push('\n');
                         spans[line_idx] = vec![
                             lattice_cells::style::StyledSpan {
-                                start: 2, end: 9,
+                                start: 2,
+                                end: 9,
                                 style: lattice_cells::style::Style::Keyword,
                             },
                             lattice_cells::style::StyledSpan {
-                                start: 9, end: 9 + idx_str.len(),
+                                start: 9,
+                                end: 9 + idx_str.len(),
                                 style: lattice_cells::style::Style::Number,
                             },
                             lattice_cells::style::StyledSpan {
-                                start: 11 + idx_str.len(), end: line_text.len(),
+                                start: 11 + idx_str.len(),
+                                end: line_text.len(),
                                 style: lattice_cells::style::Style::Comment,
                             },
                         ];
@@ -162,11 +168,13 @@ impl SectionIndex {
                         out.push('\n');
                         spans[line_idx] = vec![
                             lattice_cells::style::StyledSpan {
-                                start: 2, end: 2 + sha_len,
+                                start: 2,
+                                end: 2 + sha_len,
                                 style: lattice_cells::style::Style::Link,
                             },
                             lattice_cells::style::StyledSpan {
-                                start: 2 + sha_len + 1, end: line_text.len(),
+                                start: 2 + sha_len + 1,
+                                end: line_text.len(),
                                 style: lattice_cells::style::Style::Comment,
                             },
                         ];
@@ -180,11 +188,13 @@ impl SectionIndex {
                         let path_start = 2 + 12 + 1;
                         spans[line_idx] = vec![
                             lattice_cells::style::StyledSpan {
-                                start: 2, end: 2 + label.len(),
+                                start: 2,
+                                end: 2 + label.len(),
                                 style: lattice_cells::style::Style::Comment,
                             },
                             lattice_cells::style::StyledSpan {
-                                start: path_start, end: line_text.len(),
+                                start: path_start,
+                                end: line_text.len(),
                                 style: lattice_cells::style::Style::Comment,
                             },
                         ];

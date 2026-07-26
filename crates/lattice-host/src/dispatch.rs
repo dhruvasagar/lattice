@@ -14478,6 +14478,9 @@ impl Editor {
         // (the generic tick-callback registry) and apply their effects.
         // No-op until a mode registers one (e.g. the Claude Code IDE
         // peer's `IdeInbound` drain, I3).
+        // MG.2: drain pending synthetic-buffer highlights (magit status,
+        // etc.) into buffer_locals. Written by async refresh tasks, read here.
+        self.drain_pending_synthetic_highlights();
         signals.extend(self.drain_tick_callbacks());
         signals
     }
@@ -14511,6 +14514,31 @@ impl Editor {
             apply_effect_host(self, effect, &mut out);
         }
         out.renderer_signals
+    }
+
+    /// MG.2: drain pending synthetic-buffer highlight spans from the
+    /// PendingSyntheticHighlights service into each buffer's ExtraHighlights
+    /// local. Called from `run_tick_pending`; spans written by async refresh
+    /// tasks (magit status, etc.) are picked up immediately on the next tick.
+    /// No-op when the service is missing or the map is empty.
+    fn drain_pending_synthetic_highlights(&mut self) {
+        let Some(pending) = self
+            .services
+            .get::<lattice_mode::PendingSyntheticHighlights>()
+        else {
+            return;
+        };
+        let entries: Vec<(lattice_core::BufferId, Vec<Vec<lattice_syntax::StyledSpan>>)> = {
+            let mut map = match pending.map.lock() {
+                Ok(m) => m,
+                Err(_) => return,
+            };
+            map.drain().collect()
+        };
+        for (buf_id, spans) in entries {
+            let locals = self.buffer_locals.entry(buf_id).or_default();
+            locals.insert(crate::modes::ExtraHighlights(spans));
+        }
     }
 
     pub fn drain_pending_hover(&mut self) -> Vec<RendererSignal> {

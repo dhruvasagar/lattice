@@ -1570,6 +1570,17 @@ impl Editor {
         // `Editor::drain_tick_callbacks`; written by modes' `on_activate` via
         // `ctx.service::<TickCallbackRegistryHandle>()`.
         boot.register_service::<lattice_mode::TickCallbackRegistryHandle>(tick_callbacks.clone());
+        // MG.2: shared map for pending synthetic-buffer highlight spans
+        // (magit status, etc.). The async refresh writes per-line StyledSpan
+        // entries here; the Editor drains them in run_tick_pending to set
+        // ExtraHighlights on each buffer.
+        // MG.2: register the PendingSyntheticHighlights directly (the
+        // ServiceRegistry wraps it in Arc automatically, and get::<T>()
+        // returns Option<Arc<T>>).
+        boot.register_service::<lattice_mode::PendingSyntheticHighlights>(
+            lattice_mode::PendingSyntheticHighlights::new(),
+        );
+
         // M.10.3 (2026-06-03): expose the CommandRegistry as a service so mode
         // handlers (registered via M.10.1.b ActionHandlerRegistry) can look up
         // CommandIds by action name at `on_activate` time — e.g.
@@ -2075,6 +2086,12 @@ impl Editor {
             fold_registry,
             ..Editor::default()
         };
+        // MG.2: wire the async_landed Notify into the pending-highlights
+        // service so async refresh tasks can fire it after storing spans.
+        if let Some(pending) = editor.services.get::<lattice_mode::PendingSyntheticHighlights>() {
+            *pending.waker.lock().expect("waker init") = Some(editor.async_landed.clone());
+        }
+
         // 2026-05-26: register the built-in invocation runners
         // under the mode-ids each owning [`lattice_mode::Mode`]
         // exposes via [`lattice_mode::Mode::invocation_runner`].

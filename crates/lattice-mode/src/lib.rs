@@ -97,6 +97,9 @@ pub use lattice_keymap::keymap_entry;
 pub mod locals;
 pub mod mode;
 pub mod modeline;
+// MG.2: pending synthetic-buffer highlights service, shared between
+// lattice-host (drain) and lattice-magit (async refresh tasks).
+pub mod pending_synthetic_highlights;
 pub mod modes;
 pub mod plugin_meta_sink;
 pub mod registry;
@@ -164,6 +167,9 @@ pub use lattice_keymap::KeymapEntry;
 pub use crate::emacs_keys_mode::{EmacsKeysMode, emacs_keys_layer_bindings};
 pub use crate::repl_mode::{ReplMode, register_repl_mode, register_repl_mode_actions};
 // ML.0a: configurable-modeline element model + descriptor registry.
+pub use crate::pending_synthetic_highlights::{
+    PendingSyntheticHighlights, PendingSyntheticHighlightsHandle,
+};
 pub use crate::modeline::{
     ElementContent, ElementId, HoverSpec, Interaction, ModelineElement, ModelineElementUpdate,
     ModelineKey, ModelineRegistry, ModelineRole, ModelineService, ModelineServiceHandle,

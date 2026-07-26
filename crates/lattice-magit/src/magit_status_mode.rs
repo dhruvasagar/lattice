@@ -103,21 +103,36 @@ impl Mode for MagitStatusMode {
                 "magit-status-mode activated on buffer {buffer_id:?}, workdir={workdir:?}",
             );
 
-            // Initial refresh on spawn_blocking
-            let h = handle.clone();
-            let wd = workdir.clone();
-            runtime.spawn_blocking(move || {
-                let rt = tokio::runtime::Runtime::new().unwrap();
-                rt.block_on(refresh::refresh_and_apply(h, wd));
-            });
+            // Initial refresh: blocking I/O on spawn_blocking, then async
+            // edit apply + highlights on the current task.
+            let pending = ctx.service::<lattice_mode::PendingSyntheticHighlights>();
+            {
+                let wd = workdir.clone();
+                let (text, spans) = tokio::task::spawn_blocking(move || {
+                    refresh::build_and_format(&wd)
+                })
+                .await
+                .expect("spawn_blocking");
+                refresh::apply_and_highlight(
+                    handle.clone(),
+                    text,
+                    spans,
+                    pending.clone(),
+                    buffer_id,
+                )
+                .await;
+            }
 
-            // Register action handlers
+            let pending_highlights = ctx
+                .service::<lattice_mode::PendingSyntheticHighlights>();
+
             let shared_state = std::sync::Arc::new(std::sync::Mutex::new(
                 actions::StatusBufferState {
                     buffer_id,
                     store: store.clone(),
                     workdir: workdir.clone(),
                     runtime: runtime.clone(),
+                    pending_highlights,
                 },
             ));
 

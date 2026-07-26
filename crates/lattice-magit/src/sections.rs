@@ -43,7 +43,12 @@ pub struct SectionIndex {
 
 impl SectionIndex {
     pub fn format_buffer(&self) -> String {
+        self.format_buffer_styled().0
+    }
+
+    pub fn format_buffer_styled(&self) -> (String, Vec<Vec<lattice_cells::style::StyledSpan>>) {
         let mut out = String::new();
+        let mut spans: Vec<Vec<lattice_cells::style::StyledSpan>> = Vec::new();
 
         for section in &self.sections {
             if section.entries.is_empty() {
@@ -59,33 +64,142 @@ impl SectionIndex {
                     section.entries.len()
                 ),
             };
+            let line_idx = out.matches('\n').count();
+            while spans.len() <= line_idx {
+                spans.push(Vec::new());
+            }
             out.push_str(&header);
             out.push('\n');
+            spans[line_idx] = vec![
+                lattice_cells::style::StyledSpan {
+                    start: 0,
+                    end: header.len(),
+                    style: lattice_cells::style::Style::Heading2,
+                },
+            ];
 
             for entry in &section.entries {
+                let line_idx = out.matches('\n').count();
+                while spans.len() <= line_idx {
+                    spans.push(Vec::new());
+                }
                 match entry {
                     SectionEntry::File { path, status } => {
-                        out.push_str(&format!(
-                            "  {:<12} {}\n",
-                            status_label(*status),
-                            path.display()
-                        ));
+                        let label = status_label(*status);
+                        let path_s = path.to_string_lossy();
+                        let path_text = format!("  {:<12} {}", label, path_s);
+                        out.push_str(&path_text);
+                        out.push('\n');
+                        let path_start = 2 + 12 + 1;
+                        let label_end = 2 + label.len();
+                        spans[line_idx] = match status {
+                            PathStatus::Deleted => vec![
+                                lattice_cells::style::StyledSpan {
+                                    start: 2, end: label_end,
+                                    style: lattice_cells::style::Style::DiagnosticError,
+                                },
+                                lattice_cells::style::StyledSpan {
+                                    start: path_start, end: path_text.len(),
+                                    style: lattice_cells::style::Style::String,
+                                },
+                            ],
+                            PathStatus::Added => vec![
+                                lattice_cells::style::StyledSpan {
+                                    start: 2, end: label_end,
+                                    style: lattice_cells::style::Style::String,
+                                },
+                                lattice_cells::style::StyledSpan {
+                                    start: path_start, end: path_text.len(),
+                                    style: lattice_cells::style::Style::String,
+                                },
+                            ],
+                            PathStatus::Conflicted => vec![
+                                lattice_cells::style::StyledSpan {
+                                    start: 2, end: label_end,
+                                    style: lattice_cells::style::Style::DiagnosticWarning,
+                                },
+                                lattice_cells::style::StyledSpan {
+                                    start: path_start, end: path_text.len(),
+                                    style: lattice_cells::style::Style::String,
+                                },
+                            ],
+                            _ => vec![
+                                lattice_cells::style::StyledSpan {
+                                    start: 2, end: label_end,
+                                    style: lattice_cells::style::Style::Keyword,
+                                },
+                                lattice_cells::style::StyledSpan {
+                                    start: path_start, end: path_text.len(),
+                                    style: lattice_cells::style::Style::String,
+                                },
+                            ],
+                        };
                     }
                     SectionEntry::Stash { index, message } => {
-                        out.push_str(&format!("  stash@{{{}}} {}\n", index, message));
+                        let idx_str = format!("{}", index);
+                        let line_text = format!("  stash@{{{}}} {}", index, message);
+                        out.push_str(&line_text);
+                        out.push('\n');
+                        spans[line_idx] = vec![
+                            lattice_cells::style::StyledSpan {
+                                start: 2, end: 9,
+                                style: lattice_cells::style::Style::Keyword,
+                            },
+                            lattice_cells::style::StyledSpan {
+                                start: 9, end: 9 + idx_str.len(),
+                                style: lattice_cells::style::Style::Number,
+                            },
+                            lattice_cells::style::StyledSpan {
+                                start: 11 + idx_str.len(), end: line_text.len(),
+                                style: lattice_cells::style::Style::Comment,
+                            },
+                        ];
                     }
                     SectionEntry::Commit { sha, subject } => {
-                        out.push_str(&format!("  {} {}\n", sha, subject));
+                        let sha_len = sha.len();
+                        let line_text = format!("  {} {}", sha, subject);
+                        out.push_str(&line_text);
+                        out.push('\n');
+                        spans[line_idx] = vec![
+                            lattice_cells::style::StyledSpan {
+                                start: 2, end: 2 + sha_len,
+                                style: lattice_cells::style::Style::Link,
+                            },
+                            lattice_cells::style::StyledSpan {
+                                start: 2 + sha_len + 1, end: line_text.len(),
+                                style: lattice_cells::style::Style::Comment,
+                            },
+                        ];
                     }
                     SectionEntry::UntrackedFile { path } => {
-                        out.push_str(&format!("  untracked    {}\n", path.display()));
+                        let label = "untracked";
+                        let path_s = path.to_string_lossy();
+                        let line_text = format!("  {:<12} {}", label, path_s);
+                        out.push_str(&line_text);
+                        out.push('\n');
+                        let path_start = 2 + 12 + 1;
+                        spans[line_idx] = vec![
+                            lattice_cells::style::StyledSpan {
+                                start: 2, end: 2 + label.len(),
+                                style: lattice_cells::style::Style::Comment,
+                            },
+                            lattice_cells::style::StyledSpan {
+                                start: path_start, end: line_text.len(),
+                                style: lattice_cells::style::Style::Comment,
+                            },
+                        ];
                     }
                 }
+            }
+            // blank separator line
+            let line_idx = out.matches('\n').count();
+            while spans.len() <= line_idx {
+                spans.push(Vec::new());
             }
             out.push('\n');
         }
 
-        out
+        (out, spans)
     }
 
     pub fn branch_status_line(&self) -> String {

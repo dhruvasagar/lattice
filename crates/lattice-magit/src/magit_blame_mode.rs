@@ -62,10 +62,6 @@ impl Mode for MagitBlameMode {
             let Some(handle) = store.handle_for(buffer_id) else {
                 return Ok(());
             };
-            let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-                return Ok(());
-            };
-
             // Get the blamed file path from the active buffer (before
             // switching to blame view) or from current file.
             let workdir = Repository::discover(".")
@@ -82,21 +78,20 @@ impl Mode for MagitBlameMode {
                 })
                 .unwrap_or_else(|| ".".to_string());
 
-            let h = handle.clone();
+            // Populate blame: blocking I/O on spawn_blocking, then apply
+            // edit on the current task (no Runtime::new()).
             let wd = workdir.clone();
-            runtime.spawn_blocking(move || {
-                let text = run_blame(&wd, &file_path);
-                let rt = tokio::runtime::Runtime::new().unwrap();
-                rt.block_on(async {
-                    let snap = h.snapshot();
-                    let last = snap.buffer.line_count().saturating_sub(1);
-                    let last_line = snap.buffer.line(last).unwrap_or_default();
-                    let end = Position::new(last, last_line.len() as u32);
-                    let _ = h.apply_edit_batch(vec![
-                        Edit::replace(Range::new(Position::ZERO, end), text),
-                    ]).await;
-                });
-            });
+            let fp = file_path.clone();
+            let text = tokio::task::spawn_blocking(move || {
+                run_blame(&wd, &fp)
+            }).await.unwrap();
+            let snap = handle.snapshot();
+            let last = snap.buffer.line_count().saturating_sub(1);
+            let last_line = snap.buffer.line(last).unwrap_or_default();
+            let end = Position::new(last, last_line.len() as u32);
+            let _ = handle.apply_edit_batch(vec![
+                Edit::replace(Range::new(Position::ZERO, end), text),
+            ]).await;
 
             Ok(())
         })

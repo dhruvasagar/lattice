@@ -8,6 +8,9 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use lattice_cells::StyledSpan;
+use lattice_core::BufferId;
+use lattice_mode::PendingSyntheticHighlightsHandle;
 use lattice_protocol::edit::Edit;
 use lattice_protocol::position::{Position, Range};
 use lattice_runtime::Document;
@@ -15,34 +18,23 @@ use lattice_vcs::{PathStatus, Repository, Stash, WorkingTree};
 
 use crate::sections::{Section, SectionEntry, SectionIndex, SectionKind};
 
-/// Run the magit-status refresh and apply formatted output.
-/// Called from inside `spawn_blocking` — this does blocking I/O
-/// (git commands), formats, then sends edits to the actor thread.
-pub async fn refresh_and_apply(
-    handle: Arc<dyn Document>,
-    workdir: PathBuf,
-) {
-    let text = build_status_text(&workdir);
-    apply_full_replace(&handle, text).await;
-}
-
-/// Build the status buffer text from live git data.
-/// Blocking — call on `spawn_blocking`.
-fn build_status_text(workdir: &PathBuf) -> String {
+/// Build the status buffer text (+ styled spans) from live git data.
+/// Blocking — call on `spawn_blocking`. Returns (text, per-line spans).
+pub fn build_and_format(workdir: &PathBuf) -> (String, Vec<Vec<StyledSpan>>) {
     let repo = match Repository::discover(workdir) {
         Ok(r) => r,
         Err(e) => {
             tracing::debug!(target: "lattice_magit", "refresh: repo discover failed: {e}");
-            return "Not a git repository.\n".to_string();
+            return ("Not a git repository.\n".to_string(), Vec::new());
         }
     };
 
     let index = build_section_index(&repo);
-    let text = index.format_buffer();
+    let (text, spans) = index.format_buffer_styled();
     if text.is_empty() {
-        "No changes (working tree clean)\n".to_string()
+        ("No changes (working tree clean)\n".to_string(), Vec::new())
     } else {
-        text
+        (text, spans)
     }
 }
 
@@ -187,4 +179,21 @@ async fn apply_full_replace(handle: &Arc<dyn Document>, text: String) {
     let end = Position::new(last, last_line.len() as u32);
     let edit = Edit::replace(Range::new(Position::ZERO, end), text);
     let _ = handle.apply_edit_batch(vec![edit]).await;
+}
+
+/// Apply a full buffer replacement, then store highlights and fire the
+/// waker so the Editor repaints immediately. Async — call from a tokio
+/// task (NOT spawn_blocking). The blocking I/O phase
+/// (`build_and_format`) must complete before calling this.
+pub async fn apply_and_highlight(
+    handle: Arc<dyn Document>,
+    text: String,
+    spans: Vec<Vec<StyledSpan>>,
+    pending_highlights: Option<PendingSyntheticHighlightsHandle>,
+    buffer_id: BufferId,
+) {
+    apply_full_replace(&handle, text).await;
+    if let Some(ref ph) = pending_highlights {
+        ph.store_and_wake(buffer_id, spans);
+    }
 }

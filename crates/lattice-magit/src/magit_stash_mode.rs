@@ -62,28 +62,24 @@ impl Mode for MagitStashMode {
             let buffer_id = lattice_core::BufferId(ctx.buffer_id().0 as u32);
             let Some(store) = ctx.service::<BufferStoreHandle>() else { return Ok(()); };
             let Some(handle) = store.handle_for(buffer_id) else { return Ok(()); };
-            let Ok(runtime) = tokio::runtime::Handle::try_current() else { return Ok(()); };
-
             let workdir = Repository::discover(".")
                 .ok()
                 .and_then(|r| r.workdir().map(|p| p.to_path_buf()))
                 .unwrap_or_default();
 
-            let h = handle.clone();
+            // Populate stash list: blocking I/O on spawn_blocking, then
+            // apply edit on the current task (no Runtime::new()).
             let wd = workdir.clone();
-            runtime.spawn_blocking(move || {
-                let text = build_stash_list(&wd);
-                let rt = tokio::runtime::Runtime::new().unwrap();
-                rt.block_on(async {
-                    let snap = h.snapshot();
-                    let last = snap.buffer.line_count().saturating_sub(1);
-                    let last_line = snap.buffer.line(last).unwrap_or_default();
-                    let end = Position::new(last, last_line.len() as u32);
-                    let _ = h.apply_edit_batch(vec![
-                        Edit::replace(Range::new(Position::ZERO, end), text)
-                    ]).await;
-                });
-            });
+            let text = tokio::task::spawn_blocking(move || {
+                build_stash_list(&wd)
+            }).await.unwrap();
+            let snap = handle.snapshot();
+            let last = snap.buffer.line_count().saturating_sub(1);
+            let last_line = snap.buffer.line(last).unwrap_or_default();
+            let end = Position::new(last, last_line.len() as u32);
+            let _ = handle.apply_edit_batch(vec![
+                Edit::replace(Range::new(Position::ZERO, end), text),
+            ]).await;
 
             let state = Arc::new(Mutex::new(StashState {
                 buffer_id, store: store.clone(), workdir: workdir.clone(),

@@ -12,7 +12,7 @@ use lattice_core::BufferId;
 use lattice_grammar::{Effect, QuitScope, CommandRegistryHandle};
 use lattice_mode::{
     ActionContext, ActionHandler, ActionHandlerRegistration, ActionHandlerRegistryHandle,
-    BufferStoreHandle,
+    BufferStoreHandle, PendingSyntheticHighlights,
 };
 use lattice_protocol::edit::Edit;
 use lattice_protocol::position::{Position, Range};
@@ -26,6 +26,9 @@ pub struct StatusBufferState {
     pub store: Arc<BufferStoreHandle>,
     pub workdir: PathBuf,
     pub runtime: tokio::runtime::Handle,
+    /// MG.2: optional handle to store styled spans after async edit
+    /// lands, so highlights appear without a keystroke.
+    pub pending_highlights: Option<std::sync::Arc<PendingSyntheticHighlights>>,
 }
 
 // ── cursor helpers ──────────────────────────────────────
@@ -136,6 +139,26 @@ pub fn register_action_handlers(
         };
     }
 
+    /// MG.2: helper that reads state, spawns blocking I/O on
+    /// spawn_blocking, then applies the edit + stores highlights on a
+    /// tokio task. No `Runtime::new()` — the current runtime is used.
+    let trigger_refresh = |s: Arc<Mutex<StatusBufferState>>| {
+        let (handle, wd, pending, bid) = {
+            let g = s.lock().ok()?;
+            let h = g.store.handle_for(g.buffer_id)?;
+            (h, g.workdir.clone(), g.pending_highlights.clone(), g.buffer_id)
+        };
+        tokio::task::spawn(async move {
+            let (text, spans) = tokio::task::spawn_blocking(move || {
+                refresh::build_and_format(&wd)
+            })
+            .await
+            .expect("spawn_blocking");
+            refresh::apply_and_highlight(handle, text, spans, pending, bid).await;
+        });
+        None::<Effect>
+    };
+
     // ── stage (s) ──────────────────────────────────────
     {
         let s = state.clone();
@@ -144,7 +167,8 @@ pub fn register_action_handlers(
             let path = file_path_at_cursor(&g, ctx.cursor)?;
             let repo = Repository::discover(&g.workdir).ok()?;
             Index::stage_path(&repo, &path).ok()?;
-            None
+            drop(g);
+            trigger_refresh(s.clone())
         });
     }
 
@@ -156,7 +180,8 @@ pub fn register_action_handlers(
             let path = file_path_at_cursor(&g, ctx.cursor)?;
             let repo = Repository::discover(&g.workdir).ok()?;
             Index::unstage_path(&repo, &path).ok()?;
-            None
+            drop(g);
+            trigger_refresh(s.clone())
         });
     }
 
@@ -168,7 +193,8 @@ pub fn register_action_handlers(
             let path = file_path_at_cursor(&g, ctx.cursor)?;
             let repo = Repository::discover(&g.workdir).ok()?;
             repo.run_git(["checkout", "--", &path.to_string_lossy()]).ok()?;
-            None
+            drop(g);
+            trigger_refresh(s.clone())
         });
     }
 
@@ -214,9 +240,9 @@ pub fn register_action_handlers(
             let g = s.lock().ok()?;
             let path = file_path_at_cursor(&g, ctx.cursor)?;
             let repo = Repository::discover(&g.workdir).ok()?;
-            // Interactive patch staging: git add -p <path>
             repo.run_git(["add", "-p", "--", &path.to_string_lossy()]).ok()?;
-            None
+            drop(g);
+            trigger_refresh(s.clone())
         });
     }
 
@@ -224,16 +250,7 @@ pub fn register_action_handlers(
     {
         let s = state.clone();
         handler!("action:magit-refresh", move |_ctx: &ActionContext<'_>| {
-            let (handle, wd) = {
-                let g = s.lock().ok()?;
-                let h = g.store.handle_for(g.buffer_id)?;
-                (h, g.workdir.clone())
-            };
-            tokio::task::spawn_blocking(move || {
-                let rt = tokio::runtime::Runtime::new().unwrap();
-                rt.block_on(refresh::refresh_and_apply(handle, wd));
-            });
-            None
+            trigger_refresh(s.clone())
         });
     }
 
@@ -241,11 +258,11 @@ pub fn register_action_handlers(
     {
         let s = state.clone();
         handler!("action:magit-toggle-diff", move |ctx: &ActionContext<'_>| {
-            let (handle, wd, rt, expanded_opt) = {
+            let (handle, wd, rt, expanded_opt, pending) = {
                 let g = s.lock().ok()?;
                 let h = g.store.handle_for(g.buffer_id)?;
                 let expanded = diff_is_expanded(&g, ctx.cursor.line).unwrap_or(false);
-                (h, g.workdir.clone(), g.runtime.clone(), expanded)
+                (h, g.workdir.clone(), g.runtime.clone(), expanded, g.pending_highlights.clone())
             };
             let path = {
                 let g = s.lock().ok()?;
@@ -268,6 +285,9 @@ pub fn register_action_handlers(
                         let _ = handle.apply_edit_batch(vec![
                             Edit::replace(Range::new(start, end), String::new()),
                         ]).await;
+                        if let Some(ref ph) = pending {
+                            ph.wake();
+                        }
                     });
                 }
             } else {
@@ -286,6 +306,9 @@ pub fn register_action_handlers(
                                 Edit::insert(pos, format!("\n{}\n", diff.trim())),
                             ])
                             .await;
+                        if let Some(ref ph) = pending {
+                            ph.wake();
+                        }
                     });
                 }
             }

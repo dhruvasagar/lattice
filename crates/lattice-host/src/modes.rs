@@ -23,6 +23,8 @@
 //! refactor isn't landed yet -- those modes are deferred to
 //! the slice that ships them.
 
+
+
 use lattice_mode::{BufferLocal, ModeId, ModeRegistry, TextMode};
 use lattice_syntax::Lang;
 
@@ -536,3 +538,8 @@ mod tests {
         );
     }
 }
+
+// MG.2: PendingSyntheticHighlights lives in lattice-mode now
+// (crates/lattice-mode/src/pending_synthetic_highlights.rs).
+// No import needed here — it's accessed via lattice_mode::PendingSyntheticHighlights
+// in dispatch.rs and editor_boot.rs.

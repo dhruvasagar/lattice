@@ -48,8 +48,7 @@ use lattice::plugin_host::modes::{
 };
 use lattice::plugin_host::types::{
     ActionContext, ActionSpec, ApplyEditPayload, Args, Edit, EditKind, Effect, ExCommandContext,
-    MotionContext, MotionResult, OperatorContext, Position, Range, Selection, SelectionSet,
-    TextObjectContext,
+    MotionContext, MotionResult, OperatorContext, Position, Range, TextObjectContext,
 };
 use lattice::plugin_host::{config, grammar, modes};
 

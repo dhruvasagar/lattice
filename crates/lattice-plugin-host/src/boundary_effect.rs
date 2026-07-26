@@ -790,6 +790,7 @@ fn effect_from_wit(w: WitEffect) -> Result<NativeEffect, String> {
         WitEffect::SelectionChange(set) => {
             NativeEffect::SelectionChange(NativeSelectionSet::from_wit(set)?)
         }
+        WitEffect::CursorMove(pos) => NativeEffect::CursorMove(NativePosition::from_wit(pos)?),
         WitEffect::Yank(p) => NativeEffect::Yank {
             register: NativeRegister::from_wit(p.register)?,
             content: p.content,

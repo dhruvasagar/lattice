@@ -807,6 +807,17 @@ pub fn register_builtins(reg: &dyn ThemeRegistry) {
         spec().bg("diff.conflict.bg"),
         "Conflict-region background tint.",
     );
+    // MG.4 — inline diff text fg colours (magit unified diff ± lines).
+    reg_one(
+        "diff.add.text",
+        spec().fg("green"),
+        "Added-line text colour in a unified diff.",
+    );
+    reg_one(
+        "diff.remove.text",
+        spec().fg("red"),
+        "Removed-line text colour in a unified diff.",
+    );
 
     // ---- Fold markers ----
     // Gutter glyphs on a foldable head row: `▾` when the fold is open,
@@ -1153,6 +1164,9 @@ pub struct BuiltinElementIds {
     pub diff_remove_line: ElementId,
     pub diff_deletion_block: ElementId,
     pub diff_conflict_line: ElementId,
+    // MG.4 — inline diff text fg colours (magit unified diff ± lines).
+    pub diff_add_text: ElementId,
+    pub diff_remove_text: ElementId,
     // Fold-marker gutter glyphs (`▾` open head, `▸` collapsed head).
     // Muted by cross-editor convention (VS Code / Zed / JetBrains /
     // Sublime / Neovim all render fold controls in a low-emphasis gray,
@@ -1293,6 +1307,8 @@ impl Default for BuiltinElementIds {
             diff_remove_line: ElementId::INVALID,
             diff_deletion_block: ElementId::INVALID,
             diff_conflict_line: ElementId::INVALID,
+            diff_add_text: ElementId::INVALID,
+            diff_remove_text: ElementId::INVALID,
             gutter_fold_open: ElementId::INVALID,
             gutter_fold_closed: ElementId::INVALID,
             pane_status_active: ElementId::INVALID,
@@ -1471,6 +1487,8 @@ impl BuiltinElementIds {
             diff_remove_line: id("diff.remove.line"),
             diff_deletion_block: id("diff.deletion_block"),
             diff_conflict_line: id("diff.conflict.line"),
+            diff_add_text: id("diff.add.text"),
+            diff_remove_text: id("diff.remove.text"),
             gutter_fold_open: id("gutter.fold.open"),
             gutter_fold_closed: id("gutter.fold.closed"),
             pane_status_active: id("pane.status.active"),

@@ -8,6 +8,7 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+use lattice_cells::style::{Style, StyledSpan};
 use lattice_core::BufferId;
 use lattice_grammar::{CommandRegistryHandle, Effect, QuitScope};
 use lattice_mode::{
@@ -123,6 +124,62 @@ fn run_diff(workdir: &PathBuf, path: &PathBuf, staged: bool) -> Option<String> {
     } else {
         None
     }
+}
+
+fn diff_styled_spans(diff: &str) -> Vec<Vec<StyledSpan>> {
+    let mut result = Vec::new();
+    for line in diff.lines() {
+        let line_len = line.len();
+        let spans = if line.starts_with('+') && !line.starts_with("+++") {
+            vec![
+                StyledSpan {
+                    start: 0,
+                    end: 1,
+                    style: Style::DiffAdd,
+                },
+                StyledSpan {
+                    start: 1,
+                    end: line_len,
+                    style: Style::DiffAdd,
+                },
+            ]
+        } else if line.starts_with('-') && !line.starts_with("---") {
+            vec![
+                StyledSpan {
+                    start: 0,
+                    end: 1,
+                    style: Style::DiffRemove,
+                },
+                StyledSpan {
+                    start: 1,
+                    end: line_len,
+                    style: Style::DiffRemove,
+                },
+            ]
+        } else if line.starts_with("@@") {
+            vec![StyledSpan {
+                start: 0,
+                end: line_len,
+                style: Style::Comment,
+            }]
+        } else if line.starts_with("diff --git") {
+            vec![StyledSpan {
+                start: 0,
+                end: line_len,
+                style: Style::Keyword,
+            }]
+        } else if line.starts_with("---") || line.starts_with("+++") {
+            vec![StyledSpan {
+                start: 0,
+                end: line_len,
+                style: Style::Link,
+            }]
+        } else {
+            Vec::new()
+        };
+        result.push(spans);
+    }
+    result
 }
 
 // ── registration ────────────────────────────────────────
@@ -277,7 +334,7 @@ pub fn register_action_handlers(
         handler!("action:magit-toggle-diff", move |ctx: &ActionContext<
             '_,
         >| {
-            let (handle, wd, rt, expanded_opt, pending) = {
+            let (handle, wd, rt, expanded_opt, pending, bid) = {
                 let g = s.lock().ok()?;
                 let h = g.store.handle_for(g.buffer_id)?;
                 let expanded = diff_is_expanded(&g, ctx.cursor.line).unwrap_or(false);
@@ -287,6 +344,7 @@ pub fn register_action_handlers(
                     g.runtime.clone(),
                     expanded,
                     g.pending_highlights.clone(),
+                    g.buffer_id,
                 )
             };
             let path = {
@@ -328,15 +386,15 @@ pub fn register_action_handlers(
                 let diff = run_diff(&wd, &path, staged).unwrap_or_default();
                 if !diff.trim().is_empty() {
                     let pos = Position::new(ctx.cursor.line + 1, 0);
+                    let text = diff.trim().to_string();
+                    let spans = diff_styled_spans(&text);
+                    let start_line = ctx.cursor.line + 1;
                     rt.spawn(async move {
                         let _ = handle
-                            .apply_edit_batch(vec![Edit::insert(
-                                pos,
-                                format!("\n{}\n", diff.trim()),
-                            )])
+                            .apply_edit_batch(vec![Edit::insert(pos, format!("{}\n", text))])
                             .await;
                         if let Some(ref ph) = pending {
-                            ph.wake();
+                            ph.merge_at_and_wake(bid, start_line, spans);
                         }
                     });
                 }

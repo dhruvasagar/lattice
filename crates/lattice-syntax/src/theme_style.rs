@@ -59,6 +59,8 @@ pub fn syntax_element_id(ids: &BuiltinElementIds, style: Style) -> ElementId {
         S::DiagnosticWarning => ids.diagnostic_warning,
         S::DiagnosticInfo => ids.diagnostic_info,
         S::DiagnosticHint => ids.diagnostic_hint,
+        S::DiffAdd => ids.diff_add_text,
+        S::DiffRemove => ids.diff_remove_text,
     }
 }
 

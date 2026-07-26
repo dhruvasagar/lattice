@@ -14526,16 +14526,40 @@ impl Editor {
         else {
             return;
         };
-        let entries: Vec<(lattice_core::BufferId, Vec<Vec<lattice_syntax::StyledSpan>>)> = {
+        let entries: Vec<(
+            lattice_core::BufferId,
+            lattice_mode::pending_synthetic_highlights::HighlightsOp,
+        )> = {
             let mut map = match pending.map.lock() {
                 Ok(m) => m,
                 Err(_) => return,
             };
             map.drain().collect()
         };
-        for (buf_id, spans) in entries {
+        for (buf_id, op) in entries {
             let locals = self.buffer_locals.entry(buf_id).or_default();
-            locals.insert(crate::modes::ExtraHighlights(spans));
+            match op {
+                lattice_mode::pending_synthetic_highlights::HighlightsOp::Replace(spans) => {
+                    locals.insert(crate::modes::ExtraHighlights(spans));
+                }
+                lattice_mode::pending_synthetic_highlights::HighlightsOp::MergeAt {
+                    start_line,
+                    spans,
+                } => {
+                    let end = start_line as usize + spans.len();
+                    let mut merged = locals
+                        .get::<crate::modes::ExtraHighlights>()
+                        .map(|e| e.0.clone())
+                        .unwrap_or_default();
+                    if end > merged.len() {
+                        merged.resize(end, Vec::new());
+                    }
+                    for (i, line_spans) in spans.into_iter().enumerate() {
+                        merged[start_line as usize + i] = line_spans;
+                    }
+                    locals.insert(crate::modes::ExtraHighlights(merged));
+                }
+            }
         }
     }
 

@@ -173,7 +173,7 @@ pub use crate::modeline::{
     ModelineSnapshot, Scope, Span, Zone,
 };
 pub use crate::pending_synthetic_highlights::{
-    PendingSyntheticHighlights, PendingSyntheticHighlightsHandle,
+    HighlightsOp, PendingSyntheticHighlights, PendingSyntheticHighlightsHandle,
 };
 // M.4 dep-inversion: layer-input types live in `lattice-config`
 // now. Re-exported here for compatibility -- callers that

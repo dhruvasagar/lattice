@@ -69,6 +69,11 @@ pub enum Style {
     DiagnosticInfo,
     /// Hint-severity diagnostic line.
     DiagnosticHint,
+    // ---- Diff text styles (magit inline diff content) ----
+    /// Added line content (`+` lines) in a unified diff.
+    DiffAdd,
+    /// Removed line content (`-` lines) in a unified diff.
+    DiffRemove,
 }
 
 /// Byte-range span within one source line, carrying a semantic [`Style`].

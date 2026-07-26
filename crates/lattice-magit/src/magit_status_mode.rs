@@ -34,6 +34,7 @@ fn magit_status_keymap_entries() -> &'static [KeymapEntry] {
             keymap_entry! { mode: Normal, chord: "cc", doc: "Open commit buffer", cmd: "action:magit-commit" },
             keymap_entry! { mode: Normal, chord: "ca", doc: "Amend previous commit", cmd: "action:magit-commit-amend" },
             keymap_entry! { mode: Normal, chord: "=", doc: "Toggle inline diff at cursor", cmd: "action:magit-toggle-diff" },
+            keymap_entry! { mode: Normal, chord: "<Tab>", doc: "Toggle inline diff at cursor", cmd: "action:magit-toggle-diff" },
             keymap_entry! { mode: Normal, chord: "p", doc: "Stage hunk interactively", cmd: "action:magit-stage-patch" },
             keymap_entry! { mode: Normal, chord: "<CR>", doc: "Context-aware open/visit at cursor", cmd: "action:magit-visit" },
         ]

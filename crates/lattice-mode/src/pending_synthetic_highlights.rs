@@ -19,9 +19,19 @@ use std::sync::{Arc, Mutex};
 use lattice_cells::StyledSpan;
 use lattice_core::BufferId;
 
+/// Entry in the pending highlights map: either a full replacement or
+/// a merge-at-offset partial update.
+pub enum HighlightsOp {
+    Replace(Vec<Vec<StyledSpan>>),
+    MergeAt {
+        start_line: u32,
+        spans: Vec<Vec<StyledSpan>>,
+    },
+}
+
 /// Shared state between async refresh tasks and the Editor's tick drain.
 pub struct PendingSyntheticHighlights {
-    pub map: Arc<Mutex<HashMap<BufferId, Vec<Vec<StyledSpan>>>>>,
+    pub map: Arc<Mutex<HashMap<BufferId, HighlightsOp>>>,
     pub waker: Arc<Mutex<Option<Arc<tokio::sync::Notify>>>>,
 }
 
@@ -34,10 +44,27 @@ impl PendingSyntheticHighlights {
     }
 
     /// Store per-line spans for `buffer_id` and fire the waker so the
-    /// Editor drains them on the next tick.
+    /// Editor drains them on the next tick. Replaces any existing highlights
+    /// for the buffer.
     pub fn store_and_wake(&self, buffer_id: BufferId, spans: Vec<Vec<StyledSpan>>) {
         if let Ok(mut map) = self.map.lock() {
-            map.insert(buffer_id, spans);
+            map.insert(buffer_id, HighlightsOp::Replace(spans));
+        }
+        self.fire_waker();
+    }
+
+    /// Store per-line spans to be merged into existing highlights at
+    /// a given line offset. Lines outside `start_line..start_line+spans.len()`
+    /// keep their existing highlights. Use for partial buffer updates
+    /// (e.g. toggle-diff inserting diff content at a specific line).
+    pub fn merge_at_and_wake(
+        &self,
+        buffer_id: BufferId,
+        start_line: u32,
+        spans: Vec<Vec<StyledSpan>>,
+    ) {
+        if let Ok(mut map) = self.map.lock() {
+            map.insert(buffer_id, HighlightsOp::MergeAt { start_line, spans });
         }
         self.fire_waker();
     }

@@ -450,6 +450,7 @@ interface types {
         edits(list<applied-edit>),
         apply-edit(apply-edit-payload),
         selection-change(selection-set),
+        cursor-move(position),
         yank(yank-payload),
         enter-mode(modal-state),
         save-buffer(option<string>),

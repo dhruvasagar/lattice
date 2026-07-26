@@ -10,9 +10,9 @@ use std::sync::{Arc, OnceLock};
 use lattice_core::BufferId;
 use lattice_grammar::{CommandRegistryHandle, Effect, QuitScope};
 use lattice_mode::{
-    ActionContext, ActionHandler, ActionHandlerRegistryHandle, ActivationPolicy, BufferStoreHandle,
-    CapabilitySet, Keymap, KeymapEntry, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind,
-    OptionOverrideSet, keymap_entry,
+    ActionContext, ActionHandlerRegistryHandle, ActivationPolicy, BufferStoreHandle, CapabilitySet,
+    Keymap, KeymapEntry, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, OptionOverrideSet,
+    keymap_entry,
 };
 use lattice_protocol::position::Position;
 
@@ -28,7 +28,9 @@ use crate::magit_status_mode::MagitStatusMode;
 pub struct MagitCoreMode;
 
 impl MagitCoreMode {
-    pub fn mode_id() -> ModeId { ModeId::new("magit-core-mode") }
+    pub fn mode_id() -> ModeId {
+        ModeId::new("magit-core-mode")
+    }
 }
 
 fn magit_core_keymap_entries() -> &'static [KeymapEntry] {
@@ -57,7 +59,9 @@ fn cursor_at(target_row: u32) -> Effect {
 
 /// Scan buffer for section header lines and return their row numbers.
 fn section_headers(store: &BufferStoreHandle, buffer_id: BufferId) -> Vec<u32> {
-    let Some(h) = store.handle_for(buffer_id) else { return vec![] };
+    let Some(h) = store.handle_for(buffer_id) else {
+        return vec![];
+    };
     let snap = h.snapshot();
     let mut lines = Vec::new();
     for l in 0..snap.buffer.line_count() as u32 {
@@ -78,16 +82,22 @@ fn section_headers(store: &BufferStoreHandle, buffer_id: BufferId) -> Vec<u32> {
 
 /// Scan buffer for file/entry lines (indented, non-header).
 fn entry_lines(store: &BufferStoreHandle, buffer_id: BufferId) -> Vec<u32> {
-    let Some(h) = store.handle_for(buffer_id) else { return vec![] };
+    let Some(h) = store.handle_for(buffer_id) else {
+        return vec![];
+    };
     let snap = h.snapshot();
     let mut lines = Vec::new();
     for l in 0..snap.buffer.line_count() as u32 {
         if let Some(t) = snap.buffer.line(l) {
             let t = t.trim();
-            if t.starts_with("  ") && !t.is_empty()
-                && !t.starts_with("Staged") && !t.starts_with("Unstaged")
-                && !t.starts_with("Untracked") && !t.starts_with("Stashes")
-                && !t.starts_with("Recent") && !t.starts_with("No changes")
+            if t.starts_with("  ")
+                && !t.is_empty()
+                && !t.starts_with("Staged")
+                && !t.starts_with("Unstaged")
+                && !t.starts_with("Untracked")
+                && !t.starts_with("Stashes")
+                && !t.starts_with("Recent")
+                && !t.starts_with("No changes")
             {
                 lines.push(l);
             }
@@ -99,7 +109,9 @@ fn entry_lines(store: &BufferStoreHandle, buffer_id: BufferId) -> Vec<u32> {
 /// Scan for hunk-start lines (@@ or diff --git) and return their
 /// row numbers.
 fn hunk_lines(store: &BufferStoreHandle, buffer_id: BufferId) -> Vec<u32> {
-    let Some(h) = store.handle_for(buffer_id) else { return vec![] };
+    let Some(h) = store.handle_for(buffer_id) else {
+        return vec![];
+    };
     let snap = h.snapshot();
     let mut lines = Vec::new();
     for l in 0..snap.buffer.line_count() as u32 {
@@ -116,41 +128,70 @@ fn hunk_lines(store: &BufferStoreHandle, buffer_id: BufferId) -> Vec<u32> {
 /// Walk `items` forward from `cursor_row` and return the first
 /// item strictly greater. Wraps to the first item if none found.
 fn next_item(items: &[u32], cursor_row: u32) -> Option<u32> {
-    items.iter().copied().find(|&r| r > cursor_row).or_else(|| items.first().copied())
+    items
+        .iter()
+        .copied()
+        .find(|&r| r > cursor_row)
+        .or_else(|| items.first().copied())
 }
 
 /// Walk `items` backward from `cursor_row` and return the first
 /// item strictly less. Wraps to the last item if none found.
 fn prev_item(items: &[u32], cursor_row: u32) -> Option<u32> {
-    items.iter().rev().copied().find(|&r| r < cursor_row).or_else(|| items.last().copied())
+    items
+        .iter()
+        .rev()
+        .copied()
+        .find(|&r| r < cursor_row)
+        .or_else(|| items.last().copied())
 }
 
 impl Mode for MagitCoreMode {
     type Guard = ();
 
-    fn id(&self) -> ModeId { Self::mode_id() }
-    fn kind(&self) -> ModeKind { ModeKind::Minor }
+    fn id(&self) -> ModeId {
+        Self::mode_id()
+    }
+    fn kind(&self) -> ModeKind {
+        ModeKind::Minor
+    }
 
     fn activation_policy(&self) -> ActivationPolicy {
         ActivationPolicy::Majors(vec![
-            MagitStatusMode::mode_id(), MagitCommitMode::mode_id(),
-            MagitDiffMode::mode_id(), MagitLogMode::mode_id(),
-            MagitBlameMode::mode_id(), MagitStashMode::mode_id(),
-            MagitBranchMode::mode_id(), MagitRebaseMode::mode_id(),
+            MagitStatusMode::mode_id(),
+            MagitCommitMode::mode_id(),
+            MagitDiffMode::mode_id(),
+            MagitLogMode::mode_id(),
+            MagitBlameMode::mode_id(),
+            MagitStashMode::mode_id(),
+            MagitBranchMode::mode_id(),
+            MagitRebaseMode::mode_id(),
         ])
     }
 
-    fn options(&self) -> OptionOverrideSet { OptionOverrideSet::new() }
-    fn required_capabilities(&self) -> CapabilitySet { CapabilitySet::empty() }
-    fn keymap(&self) -> Keymap { Keymap::from_entries(magit_core_keymap_entries()) }
+    fn options(&self) -> OptionOverrideSet {
+        OptionOverrideSet::new()
+    }
+    fn required_capabilities(&self) -> CapabilitySet {
+        CapabilitySet::empty()
+    }
+    fn keymap(&self) -> Keymap {
+        Keymap::from_entries(magit_core_keymap_entries())
+    }
 
     fn on_activate(&self, ctx: ModeContext) -> LifecycleFuture<'_, Self::Guard> {
         Box::pin(async move {
             let buffer_id = BufferId(ctx.buffer_id().0 as u32);
-            let Some(store) = ctx.service::<BufferStoreHandle>() else { return Ok(()); };
+            let Some(store) = ctx.service::<BufferStoreHandle>() else {
+                return Ok(());
+            };
 
-            let Some(cmd_arc) = ctx.service::<CommandRegistryHandle>() else { return Ok(()); };
-            let Some(ah_arc) = ctx.service::<ActionHandlerRegistryHandle>() else { return Ok(()); };
+            let Some(cmd_arc) = ctx.service::<CommandRegistryHandle>() else {
+                return Ok(());
+            };
+            let Some(ah_arc) = ctx.service::<ActionHandlerRegistryHandle>() else {
+                return Ok(());
+            };
             let registry = cmd_arc.load();
             let handlers = (*ah_arc).clone();
             let mut regs = Vec::new();
@@ -165,13 +206,18 @@ impl Mode for MagitCoreMode {
 
             // ── close (q) ─────────────────────────────────
             h!("action:magit-close", move |_ctx: &ActionContext<'_>| {
-                Some(Effect::QuitEditor { force: false, scope: QuitScope::Pane })
+                Some(Effect::QuitEditor {
+                    force: false,
+                    scope: QuitScope::Pane,
+                })
             });
 
             // ── next-section (]]) ──────────────────────────
             {
                 let s = store.clone();
-                h!("action:magit-next-section", move |ctx: &ActionContext<'_>| {
+                h!("action:magit-next-section", move |ctx: &ActionContext<
+                    '_,
+                >| {
                     let headers = section_headers(&s, buffer_id);
                     Some(cursor_at(next_item(&headers, ctx.cursor.line)?))
                 });
@@ -180,7 +226,9 @@ impl Mode for MagitCoreMode {
             // ── prev-section ([[) ──────────────────────────
             {
                 let s = store.clone();
-                h!("action:magit-prev-section", move |ctx: &ActionContext<'_>| {
+                h!("action:magit-prev-section", move |ctx: &ActionContext<
+                    '_,
+                >| {
                     let headers = section_headers(&s, buffer_id);
                     Some(cursor_at(prev_item(&headers, ctx.cursor.line)?))
                 });
@@ -223,8 +271,13 @@ impl Mode for MagitCoreMode {
             }
 
             // TAB / S-TAB — fold engine handles these via Effect
-            h!("action:magit-toggle-fold", move |_ctx: &ActionContext<'_>| { None });
-            h!("action:magit-cycle-sections", move |_ctx: &ActionContext<'_>| { None });
+            h!("action:magit-toggle-fold", move |_ctx: &ActionContext<
+                '_,
+            >| { None });
+            h!(
+                "action:magit-cycle-sections",
+                move |_ctx: &ActionContext<'_>| { None }
+            );
 
             std::mem::forget(regs);
             Ok(())

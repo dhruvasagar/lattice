@@ -517,8 +517,8 @@ impl Editor {
             // is now Document; with `popup_up == false` an *overlay* popup
             // can't be involved, but an in-pane Help→Document transition
             // still could (now captured via pre_popup_focused).
-            let popup_dismissed = pre_popup_focused
-                && matches!(self.active_buffer, BufferKind::Document);
+            let popup_dismissed =
+                pre_popup_focused && matches!(self.active_buffer, BufferKind::Document);
             if !popup_dismissed {
                 self.ensure_cursor_visible();
             }
@@ -2631,8 +2631,7 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
             } else {
                 String::new()
             };
-            let sigs =
-                editor.open_picker("search-history".to_string(), Vec::new());
+            let sigs = editor.open_picker("search-history".to_string(), Vec::new());
             _out.renderer_signals.extend(sigs);
             if !seed.is_empty()
                 && let Some(picker) = editor.picker.as_mut()
@@ -2666,7 +2665,8 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
             // `'<` / `'>` source) BEFORE the focus swap moves
             // `self.document` off the edited buffer, then prefill the `:`
             // line so `:s`, `:narrow`, etc. operate on the selection.
-            let prefill = if let ModalState::Visual(kind) | ModalState::Select(kind) = editor.modal {
+            let prefill = if let ModalState::Visual(kind) | ModalState::Select(kind) = editor.modal
+            {
                 let sel = *editor.document.selections().primary();
                 editor.last_visual = Some(crate::state::LastVisual {
                     anchor: sel.anchor,
@@ -5919,9 +5919,7 @@ impl Editor {
         // the popup's visible area even though it's within the pane.
         // Fall back to viewport_height when popup_viewport_height is 0
         // (not yet set by the renderer's first draw of this popup).
-        let height = if self.popup_focused
-            && self.popup_viewport_height > 0
-        {
+        let height = if self.popup_focused && self.popup_viewport_height > 0 {
             self.popup_viewport_height
         } else {
             self.viewport_height
@@ -7006,22 +7004,14 @@ impl Editor {
     /// the mode-line up); the dispatcher reads it to allow real modal
     /// editing on the `*command-line*` buffer.
     pub fn command_line_expanded(&self) -> bool {
-        self.command_line_active()
-            && self
-                .minibuffer_focus
-                .as_ref()
-                .is_some_and(|f| f.expanded)
+        self.command_line_active() && self.minibuffer_focus.as_ref().is_some_and(|f| f.expanded)
     }
 
     /// MB.5c: `true` while the `/`·`?` search line is expanded into the
     /// tier-2 band (its own `<C-x><C-e>`). Same shared `expanded` flag as
     /// the command line, scoped to the search prompt.
     pub fn search_line_expanded(&self) -> bool {
-        self.search_line_active()
-            && self
-                .minibuffer_focus
-                .as_ref()
-                .is_some_and(|f| f.expanded)
+        self.search_line_active() && self.minibuffer_focus.as_ref().is_some_and(|f| f.expanded)
     }
 
     /// MB.2e: the resolved `command-line.expand-height` policy driving
@@ -7045,8 +7035,12 @@ impl Editor {
         if !self.command_line_active() {
             return String::new();
         }
-        self.document.snapshot().text().to_string()
-            .trim_end().to_string()
+        self.document
+            .snapshot()
+            .text()
+            .to_string()
+            .trim_end()
+            .to_string()
     }
 
     /// MB.5c: the full (possibly multi-line) text of the `/`·`?` search
@@ -7057,8 +7051,12 @@ impl Editor {
         if !self.search_line_active() {
             return String::new();
         }
-        self.document.snapshot().text().to_string()
-            .trim_end().to_string()
+        self.document
+            .snapshot()
+            .text()
+            .to_string()
+            .trim_end()
+            .to_string()
     }
 
     /// MB.2: `<C-x><C-e>` — toggle the `:` line between the one-row
@@ -7090,10 +7088,7 @@ impl Editor {
                     crate::command_line_expand_mode::CommandLineExpandMode::mode_id(),
                 );
             } else {
-                self.activate_major_by_id(
-                    id,
-                    crate::command_line_mode::CommandLineMode::mode_id(),
-                );
+                self.activate_major_by_id(id, crate::command_line_mode::CommandLineMode::mode_id());
             }
         }
         self.modal = if expanding {
@@ -7390,8 +7385,8 @@ impl Editor {
         // (multi-line editing). Submit happens only from the collapsed
         // one-row line — the user `<C-x><C-e>`s back, then `<CR>`s.
         if self.command_line_expanded() {
-            if let Ok(applied) = self
-                .apply_edit_blocking(lattice_protocol::edit::Edit::insert(self.cursor, "\n"))
+            if let Ok(applied) =
+                self.apply_edit_blocking(lattice_protocol::edit::Edit::insert(self.cursor, "\n"))
             {
                 self.cursor = applied.inserted_range.end;
             }
@@ -7732,9 +7727,9 @@ impl Editor {
             AppEffect::CommandLineCompletePrev => {
                 out.next_actions.push(Action::CommandLineCompletePrev)
             }
-            AppEffect::CommandLineDescribeUnderCursor => {
-                out.next_actions.push(Action::CommandLineDescribeUnderCursor)
-            }
+            AppEffect::CommandLineDescribeUnderCursor => out
+                .next_actions
+                .push(Action::CommandLineDescribeUnderCursor),
             AppEffect::OilNavigateUp => out.next_actions.push(Action::OilNavigateUp),
             AppEffect::ReselectLastVisual => out.next_actions.push(Action::ReselectLastVisual),
             AppEffect::SwapVisualEnds => out.next_actions.push(Action::SwapVisualEnds),
@@ -8095,7 +8090,10 @@ impl Editor {
             AppEffect::CompilationKill => {
                 // Look up the registered compilation service and
                 // call its kill method. No-op if unregistered.
-                if let Some(svc) = self.services.get::<lattice_compilation::CompilationServiceHandle>() {
+                if let Some(svc) = self
+                    .services
+                    .get::<lattice_compilation::CompilationServiceHandle>()
+                {
                     (**svc).kill();
                     self.set_message(EchoLevel::Info, "compilation killed".to_string());
                 }
@@ -20242,12 +20240,11 @@ impl Editor {
         // searched, stashed at focus time via `minibuffer_focus`) —
         // mirroring `refresh_substitute_preview`.
         let buffer = match self.minibuffer_focus.as_ref() {
-            Some(focus) => {
-                self.buffers
-                    .document_handle(focus.prior_buffer_id)
-                    .map(|h| h.snapshot().buffer.clone())
-                    .unwrap_or_else(|| self.document.snapshot().buffer.clone())
-            }
+            Some(focus) => self
+                .buffers
+                .document_handle(focus.prior_buffer_id)
+                .map(|h| h.snapshot().buffer.clone())
+                .unwrap_or_else(|| self.document.snapshot().buffer.clone()),
             None => self.document.snapshot().buffer.clone(),
         };
         match lattice_core::search::find(
@@ -20461,9 +20458,7 @@ impl Editor {
             return;
         };
         // MB.5b: push onto search_history (dedup consecutive identical).
-        if !pattern.trim().is_empty()
-            && self.search_history.last() != Some(&pattern)
-        {
+        if !pattern.trim().is_empty() && self.search_history.last() != Some(&pattern) {
             self.search_history.push(pattern.clone());
             if self.search_history.len() > COMMAND_HISTORY_CAP {
                 self.search_history.remove(0);
@@ -20842,8 +20837,9 @@ impl Editor {
                 // the `*command-line*` buffer (the source of truth), not a
                 // projection append.
                 if self.command_line_active()
-                    && let Ok(applied) = self
-                        .apply_edit_blocking(lattice_protocol::edit::Edit::insert(self.cursor, text))
+                    && let Ok(applied) = self.apply_edit_blocking(
+                        lattice_protocol::edit::Edit::insert(self.cursor, text),
+                    )
                 {
                     self.cursor = applied.inserted_range.end;
                 }
@@ -20854,8 +20850,9 @@ impl Editor {
                 // the cursor in the `*search-line*` buffer (mirrors the
                 // `:` line's paste path directly above).
                 if self.search_line_active()
-                    && let Ok(applied) = self
-                        .apply_edit_blocking(lattice_protocol::edit::Edit::insert(self.cursor, text))
+                    && let Ok(applied) = self.apply_edit_blocking(
+                        lattice_protocol::edit::Edit::insert(self.cursor, text),
+                    )
                 {
                     self.cursor = applied.inserted_range.end;
                     self.preview_search();
@@ -26930,16 +26927,18 @@ impl Editor {
         let _state = &picker.transient_state;
 
         // Find the item matching the key across all groups
-        let found: Option<(lattice_picker::TransientItem, std::sync::Arc<lattice_picker::TransientSpec>)> =
-            spec.groups.iter().find_map(|g| {
-                g.items.iter().find_map(|item| {
-                    if item.key.iter().any(|k| *k == key) {
-                        Some((item.clone(), spec.clone()))
-                    } else {
-                        None
-                    }
-                })
-            });
+        let found: Option<(
+            lattice_picker::TransientItem,
+            std::sync::Arc<lattice_picker::TransientSpec>,
+        )> = spec.groups.iter().find_map(|g| {
+            g.items.iter().find_map(|item| {
+                if item.key.iter().any(|k| *k == key) {
+                    Some((item.clone(), spec.clone()))
+                } else {
+                    None
+                }
+            })
+        });
 
         let Some((item, spec)) = found else {
             return Vec::new();
@@ -26967,12 +26966,9 @@ impl Editor {
                 // Push current onto stack, open submenu
                 let parent_spec = spec;
                 let parent_state = std::mem::take(&mut picker.transient_state);
-                picker
-                    .transient_stack
-                    .push((parent_spec, parent_state));
+                picker.transient_stack.push((parent_spec, parent_state));
                 picker.transient = Some(sub_spec.clone());
-                picker.transient_state =
-                    lattice_picker::transient_initial_state(&sub_spec);
+                picker.transient_state = lattice_picker::transient_initial_state(&sub_spec);
                 Vec::new()
             }
             lattice_picker::TransientItemKind::Flag { name, .. } => {
@@ -28437,9 +28433,8 @@ impl Editor {
                                 Err(e) => {
                                     self.set_message(EchoLevel::Error, e.to_string());
                                     return Vec::new();
-        }
-    }
-
+                                }
+                            }
                         }
                     };
                     // Remove the override for this TypeId.
@@ -33117,9 +33112,9 @@ impl Editor {
                 self.cursor = *pos;
             }
             Effect::SelectionChange(set) => {
-            let primary = set.primary();
-            self.cursor = primary.head;
-        }
+                let primary = set.primary();
+                self.cursor = primary.head;
+            }
             Effect::Yank {
                 register,
                 content,
@@ -40549,7 +40544,8 @@ mod tests {
             editor.modal
         );
         assert_eq!(
-            editor.command_line(), "'<,'>",
+            editor.command_line(),
+            "'<,'>",
             "Visual `:` prefills the visual range (vim's `:'<,'>`)"
         );
         let lv = editor.last_visual.as_ref().expect("last_visual captured");
@@ -40803,7 +40799,11 @@ mod tests {
         // prior document before dispatching, so narrow runs on the doc).
         let _ = editor.dispatch(Action::EnterCommandLine);
         assert!(editor.command_line_active(), "`:` opens the command line");
-        assert_eq!(editor.command_line(), "'<,'>", "Visual `:` prefills the range");
+        assert_eq!(
+            editor.command_line(),
+            "'<,'>",
+            "Visual `:` prefills the range"
+        );
         editor.set_command_line_text("'<,'>narrow");
         let _ = editor.dispatch(Action::CommandLineSubmit);
         assert!(
@@ -40842,7 +40842,10 @@ mod tests {
         let mut editor = Editor::boot(lattice_core::Document::from_text("hello\nworld\n"));
         let prior_doc = editor.document_buffer_id;
         let prior_pane = editor.active_pane_buffer_id();
-        assert_eq!(prior_doc, prior_pane, "precondition: document == active pane");
+        assert_eq!(
+            prior_doc, prior_pane,
+            "precondition: document == active pane"
+        );
         editor.dispatch(Action::EnterCommandLine);
         assert!(editor.command_line_active(), "`:` opens the command line");
         assert_ne!(
@@ -40867,7 +40870,11 @@ mod tests {
         cl_chord(&mut editor, crate::chord::KeyChord::ctrl('a'));
         assert_eq!(editor.cursor.byte, 0, "<C-a> moves to line start");
         cl_type(&mut editor, "e");
-        assert_eq!(editor.command_line(), "edit foo", "mid-line insert lands at cursor");
+        assert_eq!(
+            editor.command_line(),
+            "edit foo",
+            "mid-line insert lands at cursor"
+        );
         // <C-a> then <C-f> moves one byte right.
         cl_chord(&mut editor, crate::chord::KeyChord::ctrl('a'));
         cl_chord(&mut editor, crate::chord::KeyChord::ctrl('f'));
@@ -40880,7 +40887,11 @@ mod tests {
         editor.dispatch(Action::EnterCommandLine);
         cl_type(&mut editor, "edit foo bar");
         cl_chord(&mut editor, crate::chord::KeyChord::ctrl('w'));
-        assert_eq!(editor.command_line(), "edit foo ", "<C-w> deletes a word backward");
+        assert_eq!(
+            editor.command_line(),
+            "edit foo ",
+            "<C-w> deletes a word backward"
+        );
         cl_chord(&mut editor, crate::chord::KeyChord::ctrl('u'));
         assert_eq!(editor.command_line(), "", "<C-u> kills to line start");
     }
@@ -40897,7 +40908,10 @@ mod tests {
             &mut editor,
             crate::chord::KeyChord::special(crate::chord::SpecialKey::Esc),
         );
-        assert!(!editor.command_line_active(), "<Esc> cancels the command line");
+        assert!(
+            !editor.command_line_active(),
+            "<Esc> cancels the command line"
+        );
         assert_eq!(editor.document_buffer_id, prior_doc, "document restored");
         assert_eq!(editor.cursor, prior_cursor, "cursor restored");
         assert!(matches!(editor.modal, ModalState::Normal), "modal restored");
@@ -40916,7 +40930,10 @@ mod tests {
         cl_chord(&mut editor, crate::chord::KeyChord::ctrl('c'));
         assert!(!editor.command_line_active(), "<C-c> cancels");
         assert_eq!(editor.document_buffer_id, prior_doc, "document restored");
-        assert!(editor.command_history.is_empty(), "no history push on cancel");
+        assert!(
+            editor.command_history.is_empty(),
+            "no history push on cancel"
+        );
     }
 
     #[test]
@@ -40929,8 +40946,14 @@ mod tests {
             &mut editor,
             crate::chord::KeyChord::special(crate::chord::SpecialKey::Enter),
         );
-        assert!(!editor.command_line_active(), "<CR> submits + closes the line");
-        assert_eq!(editor.document_buffer_id, prior_doc, "document restored on submit");
+        assert!(
+            !editor.command_line_active(),
+            "<CR> submits + closes the line"
+        );
+        assert_eq!(
+            editor.document_buffer_id, prior_doc,
+            "document restored on submit"
+        );
         assert_eq!(
             editor.command_history.last().map(String::as_str),
             Some("set number"),
@@ -40960,7 +40983,11 @@ mod tests {
         assert_eq!(editor.command_line(), "set wrap");
         // Past the newest, the in-progress typed text returns.
         cl_chord(&mut editor, crate::chord::KeyChord::ctrl('n'));
-        assert_eq!(editor.command_line(), "xy", "history walk restores pending text");
+        assert_eq!(
+            editor.command_line(),
+            "xy",
+            "history walk restores pending text"
+        );
     }
 
     #[test]
@@ -41011,8 +41038,15 @@ mod tests {
         let mut editor = Editor::boot(lattice_core::Document::from_text("hello\n"));
         let armed = editor.arm_missing_arg_prompt("describe-key");
         assert!(armed, "describe-key has a required Chord first arg");
-        assert!(editor.command_line_active(), "missing-arg prompt opens the `:` line");
-        assert_eq!(editor.command_line(), "describe-key ", "prefilled through the buffer");
+        assert!(
+            editor.command_line_active(),
+            "missing-arg prompt opens the `:` line"
+        );
+        assert_eq!(
+            editor.command_line(),
+            "describe-key ",
+            "prefilled through the buffer"
+        );
         assert!(editor.auto_submit_after_chord, "chord-capture armed");
     }
 
@@ -41057,7 +41091,8 @@ mod tests {
         let mut out = DispatchOutcome::default();
         editor.dispatch_invocation(inv, &mut out);
         assert_eq!(
-            editor.command_line(), "describe-key ",
+            editor.command_line(),
+            "describe-key ",
             "run_invocation must arm the prompt with the alias form"
         );
         assert!(matches!(editor.modal, lattice_grammar::ModalState::Command));

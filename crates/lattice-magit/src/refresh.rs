@@ -106,25 +106,24 @@ fn build_section_index(repo: &Repository) -> SectionIndex {
 
     let mut line = 0usize;
 
-    let mut push_section =
-        |idx: &mut SectionIndex,
-         entries: Vec<SectionEntry>,
-         kind: SectionKind,
-         line: &mut usize| {
-            if entries.is_empty() {
-                return;
-            }
-            let body_start = *line + 1;
-            let body_end = body_start + entries.len();
-            idx.sections.push(Section {
-                kind,
-                header_line: *line,
-                body_start,
-                body_end,
-                entries,
-            });
-            *line = body_end + 1; // +1 for blank separator
-        };
+    let push_section = |idx: &mut SectionIndex,
+                        entries: Vec<SectionEntry>,
+                        kind: SectionKind,
+                        line: &mut usize| {
+        if entries.is_empty() {
+            return;
+        }
+        let body_start = *line + 1;
+        let body_end = body_start + entries.len();
+        idx.sections.push(Section {
+            kind,
+            header_line: *line,
+            body_start,
+            body_end,
+            entries,
+        });
+        *line = body_end + 1; // +1 for blank separator
+    };
 
     push_section(&mut index, staged, SectionKind::Staged, &mut line);
     push_section(&mut index, unstaged, SectionKind::Unstaged, &mut line);

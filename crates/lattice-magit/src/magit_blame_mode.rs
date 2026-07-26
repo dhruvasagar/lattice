@@ -3,7 +3,7 @@
 //! Runs `git blame --line-porcelain <path>` on open, populates
 //! buffer with annotated content. <CR> shows commit, p re-blames.
 
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 
 use lattice_config;
 use lattice_mode::{
@@ -12,15 +12,14 @@ use lattice_mode::{
 };
 use lattice_protocol::edit::Edit;
 use lattice_protocol::position::{Position, Range};
-use lattice_runtime::Document;
 use lattice_vcs::Repository;
-
-use crate::magit_status_mode::MagitStatusMode;
 
 pub struct MagitBlameMode;
 
 impl MagitBlameMode {
-    pub fn mode_id() -> ModeId { ModeId::new("magit-blame-mode") }
+    pub fn mode_id() -> ModeId {
+        ModeId::new("magit-blame-mode")
+    }
 }
 
 fn magit_blame_keymap_entries() -> &'static [KeymapEntry] {
@@ -36,9 +35,15 @@ fn magit_blame_keymap_entries() -> &'static [KeymapEntry] {
 impl Mode for MagitBlameMode {
     type Guard = ();
 
-    fn id(&self) -> ModeId { Self::mode_id() }
-    fn kind(&self) -> ModeKind { ModeKind::Major }
-    fn target_buffer_kind(&self) -> Option<lattice_core::BufferKind> { None }
+    fn id(&self) -> ModeId {
+        Self::mode_id()
+    }
+    fn kind(&self) -> ModeKind {
+        ModeKind::Major
+    }
+    fn target_buffer_kind(&self) -> Option<lattice_core::BufferKind> {
+        None
+    }
 
     fn options(&self) -> OptionOverrideSet {
         lattice_config::overrides! {
@@ -48,15 +53,17 @@ impl Mode for MagitBlameMode {
         }
     }
 
-    fn required_capabilities(&self) -> CapabilitySet { CapabilitySet::empty() }
-    fn keymap(&self) -> Keymap { Keymap::from_entries(magit_blame_keymap_entries()) }
+    fn required_capabilities(&self) -> CapabilitySet {
+        CapabilitySet::empty()
+    }
+    fn keymap(&self) -> Keymap {
+        Keymap::from_entries(magit_blame_keymap_entries())
+    }
 
     fn on_activate(&self, ctx: ModeContext) -> LifecycleFuture<'_, Self::Guard> {
         Box::pin(async move {
             let buffer_id = lattice_core::BufferId(ctx.buffer_id().0 as u32);
-            let Some(store) = ctx
-                .service::<lattice_mode::BufferStoreHandle>()
-            else {
+            let Some(store) = ctx.service::<lattice_mode::BufferStoreHandle>() else {
                 return Ok(());
             };
             let Some(handle) = store.handle_for(buffer_id) else {
@@ -82,16 +89,16 @@ impl Mode for MagitBlameMode {
             // edit on the current task (no Runtime::new()).
             let wd = workdir.clone();
             let fp = file_path.clone();
-            let text = tokio::task::spawn_blocking(move || {
-                run_blame(&wd, &fp)
-            }).await.unwrap();
+            let text = tokio::task::spawn_blocking(move || run_blame(&wd, &fp))
+                .await
+                .unwrap();
             let snap = handle.snapshot();
             let last = snap.buffer.line_count().saturating_sub(1);
             let last_line = snap.buffer.line(last).unwrap_or_default();
             let end = Position::new(last, last_line.len() as u32);
-            let _ = handle.apply_edit_batch(vec![
-                Edit::replace(Range::new(Position::ZERO, end), text),
-            ]).await;
+            let _ = handle
+                .apply_edit_batch(vec![Edit::replace(Range::new(Position::ZERO, end), text)])
+                .await;
 
             Ok(())
         })
@@ -128,5 +135,9 @@ fn run_blame(workdir: &std::path::Path, path: &str) -> String {
         }
     }
 
-    if result.is_empty() { format!("No blame data for {}\n", path) } else { result }
+    if result.is_empty() {
+        format!("No blame data for {}\n", path)
+    } else {
+        result
+    }
 }

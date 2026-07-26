@@ -7,10 +7,7 @@
 
 use std::sync::Arc;
 
-use lattice_picker::{
-    TransientGroup, TransientItem, TransientItemKind, TransientSpec, TransientState,
-    TransientValue,
-};
+use lattice_picker::{TransientGroup, TransientItem, TransientItemKind, TransientSpec};
 
 /// Build the repo-level dispatch transient (`C-c g`).
 ///
@@ -96,31 +93,29 @@ fn commit_transient() -> TransientSpec {
 pub fn file_dispatch_transient() -> TransientSpec {
     TransientSpec {
         title: "File dispatch".into(),
-        groups: vec![
-            TransientGroup {
-                label: "Actions".into(),
-                items: vec![
-                    TransientItem {
-                        key: vec!["s".into()],
-                        label: "stage".into(),
-                        description: "Stage this file".into(),
-                        kind: TransientItemKind::Flag {
-                            name: "stage_file".into(),
-                            default: false,
-                        },
+        groups: vec![TransientGroup {
+            label: "Actions".into(),
+            items: vec![
+                TransientItem {
+                    key: vec!["s".into()],
+                    label: "stage".into(),
+                    description: "Stage this file".into(),
+                    kind: TransientItemKind::Flag {
+                        name: "stage_file".into(),
+                        default: false,
                     },
-                    TransientItem {
-                        key: vec!["d".into()],
-                        label: "diff".into(),
-                        description: "Show diff for this file".into(),
-                        kind: TransientItemKind::Flag {
-                            name: "diff_file".into(),
-                            default: false,
-                        },
+                },
+                TransientItem {
+                    key: vec!["d".into()],
+                    label: "diff".into(),
+                    description: "Show diff for this file".into(),
+                    kind: TransientItemKind::Flag {
+                        name: "diff_file".into(),
+                        default: false,
                     },
-                ],
-            },
-        ],
+                },
+            ],
+        }],
         preview: None,
         footer: Some("q dismiss".into()),
     }

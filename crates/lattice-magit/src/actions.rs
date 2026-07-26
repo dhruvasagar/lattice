@@ -9,14 +9,13 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use lattice_core::BufferId;
-use lattice_grammar::{Effect, QuitScope, CommandRegistryHandle};
+use lattice_grammar::{CommandRegistryHandle, Effect, QuitScope};
 use lattice_mode::{
-    ActionContext, ActionHandler, ActionHandlerRegistration, ActionHandlerRegistryHandle,
-    BufferStoreHandle, PendingSyntheticHighlights,
+    ActionContext, ActionHandlerRegistration, ActionHandlerRegistryHandle, BufferStoreHandle,
+    PendingSyntheticHighlights,
 };
 use lattice_protocol::edit::Edit;
 use lattice_protocol::position::{Position, Range};
-use lattice_runtime::Document;
 use lattice_vcs::{Index, Repository};
 
 use crate::refresh;
@@ -44,9 +43,13 @@ fn parse_file_path(line: &str) -> Option<PathBuf> {
         return None;
     }
     let parts: Vec<&str> = trimmed.splitn(2, ' ').collect();
-    if parts.len() < 2 { return None; }
+    if parts.len() < 2 {
+        return None;
+    }
     let path_str = parts[1].trim();
-    if path_str.is_empty() { return None; }
+    if path_str.is_empty() {
+        return None;
+    }
     Some(PathBuf::from(path_str))
 }
 
@@ -103,7 +106,9 @@ fn diff_line_count(state: &StatusBufferState, file_line: u32) -> Option<usize> {
 
 fn run_diff(workdir: &PathBuf, path: &PathBuf, staged: bool) -> Option<String> {
     let mut args: Vec<&str> = vec!["diff"];
-    if staged { args.push("--cached"); }
+    if staged {
+        args.push("--cached");
+    }
     args.push("--");
     let ps = path.to_string_lossy();
     let ps: &str = &ps;
@@ -139,21 +144,24 @@ pub fn register_action_handlers(
         };
     }
 
-    /// MG.2: helper that reads state, spawns blocking I/O on
-    /// spawn_blocking, then applies the edit + stores highlights on a
-    /// tokio task. No `Runtime::new()` — the current runtime is used.
+    // MG.2: helper that reads state, spawns blocking I/O on
+    // spawn_blocking, then applies the edit + stores highlights on a
+    // tokio task. No `Runtime::new()` — the current runtime is used.
     let trigger_refresh = |s: Arc<Mutex<StatusBufferState>>| {
         let (handle, wd, pending, bid) = {
             let g = s.lock().ok()?;
             let h = g.store.handle_for(g.buffer_id)?;
-            (h, g.workdir.clone(), g.pending_highlights.clone(), g.buffer_id)
+            (
+                h,
+                g.workdir.clone(),
+                g.pending_highlights.clone(),
+                g.buffer_id,
+            )
         };
         tokio::task::spawn(async move {
-            let (text, spans) = tokio::task::spawn_blocking(move || {
-                refresh::build_and_format(&wd)
-            })
-            .await
-            .expect("spawn_blocking");
+            let (text, spans) = tokio::task::spawn_blocking(move || refresh::build_and_format(&wd))
+                .await
+                .expect("spawn_blocking");
             refresh::apply_and_highlight(handle, text, spans, pending, bid).await;
         });
         None::<Effect>
@@ -192,7 +200,8 @@ pub fn register_action_handlers(
             let g = s.lock().ok()?;
             let path = file_path_at_cursor(&g, ctx.cursor)?;
             let repo = Repository::discover(&g.workdir).ok()?;
-            repo.run_git(["checkout", "--", &path.to_string_lossy()]).ok()?;
+            repo.run_git(["checkout", "--", &path.to_string_lossy()])
+                .ok()?;
             drop(g);
             trigger_refresh(s.clone())
         });
@@ -206,7 +215,10 @@ pub fn register_action_handlers(
             let path = file_path_at_cursor(&g, ctx.cursor)?;
             let full = g.workdir.join(&path);
             if full.exists() {
-                Some(Effect::OpenBuffer { path: Some(full), force: false })
+                Some(Effect::OpenBuffer {
+                    path: Some(full),
+                    force: false,
+                })
             } else {
                 None
             }
@@ -225,7 +237,9 @@ pub fn register_action_handlers(
 
     // ── commit amend (ca) ─────────────────────────────
     {
-        handler!("action:magit-commit-amend", move |_ctx: &ActionContext<'_>| {
+        handler!("action:magit-commit-amend", move |_ctx: &ActionContext<
+            '_,
+        >| {
             Some(Effect::OpenSyntheticBuffer {
                 name: "*magit:amend*".to_string(),
                 mode_id: "magit-commit-mode".to_string(),
@@ -236,11 +250,14 @@ pub fn register_action_handlers(
     // ── stage patch (p) ───────────────────────────────
     {
         let s = state.clone();
-        handler!("action:magit-stage-patch", move |ctx: &ActionContext<'_>| {
+        handler!("action:magit-stage-patch", move |ctx: &ActionContext<
+            '_,
+        >| {
             let g = s.lock().ok()?;
             let path = file_path_at_cursor(&g, ctx.cursor)?;
             let repo = Repository::discover(&g.workdir).ok()?;
-            repo.run_git(["add", "-p", "--", &path.to_string_lossy()]).ok()?;
+            repo.run_git(["add", "-p", "--", &path.to_string_lossy()])
+                .ok()?;
             drop(g);
             trigger_refresh(s.clone())
         });
@@ -257,12 +274,20 @@ pub fn register_action_handlers(
     // ── toggle diff (=) ───────────────────────────────
     {
         let s = state.clone();
-        handler!("action:magit-toggle-diff", move |ctx: &ActionContext<'_>| {
+        handler!("action:magit-toggle-diff", move |ctx: &ActionContext<
+            '_,
+        >| {
             let (handle, wd, rt, expanded_opt, pending) = {
                 let g = s.lock().ok()?;
                 let h = g.store.handle_for(g.buffer_id)?;
                 let expanded = diff_is_expanded(&g, ctx.cursor.line).unwrap_or(false);
-                (h, g.workdir.clone(), g.runtime.clone(), expanded, g.pending_highlights.clone())
+                (
+                    h,
+                    g.workdir.clone(),
+                    g.runtime.clone(),
+                    expanded,
+                    g.pending_highlights.clone(),
+                )
             };
             let path = {
                 let g = s.lock().ok()?;
@@ -282,9 +307,12 @@ pub fn register_action_handlers(
                     let end_line_text = snap.buffer.line(end_line).unwrap_or_default();
                     let end = Position::new(end_line, end_line_text.len() as u32);
                     rt.spawn(async move {
-                        let _ = handle.apply_edit_batch(vec![
-                            Edit::replace(Range::new(start, end), String::new()),
-                        ]).await;
+                        let _ = handle
+                            .apply_edit_batch(vec![Edit::replace(
+                                Range::new(start, end),
+                                String::new(),
+                            )])
+                            .await;
                         if let Some(ref ph) = pending {
                             ph.wake();
                         }
@@ -302,9 +330,10 @@ pub fn register_action_handlers(
                     let pos = Position::new(ctx.cursor.line + 1, 0);
                     rt.spawn(async move {
                         let _ = handle
-                            .apply_edit_batch(vec![
-                                Edit::insert(pos, format!("\n{}\n", diff.trim())),
-                            ])
+                            .apply_edit_batch(vec![Edit::insert(
+                                pos,
+                                format!("\n{}\n", diff.trim()),
+                            )])
                             .await;
                         if let Some(ref ph) = pending {
                             ph.wake();
@@ -319,7 +348,10 @@ pub fn register_action_handlers(
     // ── close (q) ─────────────────────────────────────
     {
         handler!("action:magit-close", move |_ctx: &ActionContext<'_>| {
-            Some(Effect::QuitEditor { force: false, scope: QuitScope::Pane })
+            Some(Effect::QuitEditor {
+                force: false,
+                scope: QuitScope::Pane,
+            })
         });
     }
 

@@ -1389,6 +1389,75 @@ impl GpuiApp {
                     self.handle_renderer_signal(s);
                 }
             }
+            // PU.6: confirmation dialog opens a transient picker for
+            // y/n/q dismissal (TUI/GPUI parity per `do_confirm`).
+            Effect::Confirm { prompt, yes_action } => {
+                let signals = self.mutate_editor_with(move |e| {
+                    let Some(cmd_reg) = e.services.get::<lattice_grammar::CommandRegistryHandle>()
+                    else {
+                        e.set_message(
+                            lattice_host::action::EchoLevel::Error,
+                            "confirm: command registry unavailable".to_string(),
+                        );
+                        return Vec::new();
+                    };
+                    let Some(cmd_id) = cmd_reg.load().id_by_name(&yes_action) else {
+                        e.set_message(
+                            lattice_host::action::EchoLevel::Error,
+                            format!("confirm: unknown action `{yes_action}`"),
+                        );
+                        return Vec::new();
+                    };
+                    let spec = lattice_picker::confirm_transient_spec(&prompt, cmd_id);
+                    e.open_transient(spec)
+                });
+                for s in signals {
+                    self.handle_renderer_signal(s);
+                }
+            }
+            // Fold audit fix: named transient menus (magit-dispatch /
+            // magit-file-dispatch), resolved via the owning mode
+            // crate's `TransientSourceRegistry` registration. TUI/GPUI
+            // parity with `do_open_transient`.
+            Effect::OpenTransient { source } => {
+                let signals = self.mutate_editor_with(move |e| {
+                    let Some(registry) =
+                        e.services.get::<lattice_picker::TransientSourceRegistryHandle>()
+                    else {
+                        e.set_message(
+                            lattice_host::action::EchoLevel::Error,
+                            "transient: source registry unavailable".to_string(),
+                        );
+                        return Vec::new();
+                    };
+                    let Some(spec) = registry.build(&source) else {
+                        e.set_message(
+                            lattice_host::action::EchoLevel::Error,
+                            format!("transient: unknown source `{source}`"),
+                        );
+                        return Vec::new();
+                    };
+                    e.open_transient(spec)
+                });
+                for s in signals {
+                    self.handle_renderer_signal(s);
+                }
+            }
+            // Generic one-line minibuffer text prompt. TUI/GPUI
+            // parity with `do_open_prompt`.
+            Effect::OpenPrompt {
+                prompt,
+                initial,
+                on_submit_action,
+                buffer_name,
+            } => {
+                let signals = self.mutate_editor_with(move |e| {
+                    e.open_prompt_line(prompt, initial, on_submit_action, buffer_name)
+                });
+                for s in signals {
+                    self.handle_renderer_signal(s);
+                }
+            }
             // Phase 5.8.AD.1: oil + file-tree migrated host-side
             // so `:e .` / `:Oil` / `:Tree` work in GPUI.
             Effect::OpenOil { dir } => {

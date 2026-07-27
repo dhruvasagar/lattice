@@ -39,6 +39,11 @@ tracing-subscriber = { workspace = true }
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "time"] }
 criterion = { workspace = true }
+# Benches build a `CommandRegistryHandle`
+# (`Arc<ArcSwap<CommandRegistry>>`) to hand to `spawn_document`,
+# which took a bare `Arc<CommandRegistry>` before the handle
+# migration. Dev-only: the crate itself never names arc-swap.
+arc-swap = { workspace = true }
 
 [[bench]]
 name = "actor"

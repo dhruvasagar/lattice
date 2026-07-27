@@ -1224,6 +1224,7 @@ mod tests {
             cursor: lattice_protocol::position::Position::ZERO,
             services: &services,
             events: &events,
+            prompt_value: None,
         };
 
         let expected: &[(&str, LspRequest)] = &[

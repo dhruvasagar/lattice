@@ -229,6 +229,12 @@ pub enum PickerAcceptOutcome {
     OpenLspTraceLog { server_id: String },
     ApplyLspCodeAction { handle: CodeActionHandle, index: u32 },
     ApplyLspCompletion { item_index: u32 },
+    OpenPrompt {                     // picker-accept's peer of Effect::OpenPrompt
+        prompt: String,
+        initial: String,
+        on_submit_action: String,
+        buffer_name: Option<String>,
+    },
     NoOp,                                                    // dismissed via accept-on-empty etc.
 }
 ```
@@ -247,81 +253,120 @@ Why not emit `Effect` directly:
 - Audit-able: every picker side-effect on App routes through
   one translator function, easy to test.
 
+**`OpenPrompt` chains "pick, then type."** Same fields as
+`Effect::OpenPrompt` (§8's rich-minibuffer cross-reference below),
+same name-based `on_submit_action` lookup through
+`ActionHandlerRegistry` — no closures cross the source/host boundary.
+It exists because a source's `accept` can only return a typed
+`PickerAcceptOutcome`, never call `&mut Editor` itself; a source that
+wants to *chain* a picker step into a follow-up text prompt (rather
+than complete the operation on accept) needs its own outcome variant
+to carry the prompt's parameters back to the host, exactly like
+`OpenFile`/`SwitchBuffer`/etc. carry theirs. `Editor::apply_picker_outcome`
+handles it identically to how it handles every other outcome variant:
+by calling `open_prompt_line(prompt, initial, on_submit_action,
+buffer_name)`, the same host method `Effect::OpenPrompt` calls. The
+first (and, as of this writing, only) consumer is magit's branch-create
+wizard: `BranchPickBaseSource` (`lattice-magit/src/picker_sources.rs`)
+returns `OpenPrompt` from `accept` to ask for the new branch's name
+after the user picks a base branch, stashing the picked base in the
+prompt buffer's synthetic name (`*magit:branch-create-from:<base>*`)
+for the submit handler to read back — see
+[`magit.md`](magit.md) §12.9. This is a picker-crate-level mechanism,
+not magit-specific; any source can chain a prompt this way.
+
 ---
 
 ## 4bis. Transient mode — action menus on picker substrate
 
 > **Design fragment.** The transient interaction mode extends the picker
 > to serve magit-style action menus (dispatch, branch, rebase, file operations).
-> The full transient design + magit integration lives in
-> [`magit.md`](magit.md) §8. This section covers the picker's role as the
-> rendering and interaction substrate.
+> The magit-specific menu content (dispatch / file-dispatch item lists,
+> key choices) lives in [`magit.md`](magit.md) §8. This section covers the
+> picker's role as the rendering and interaction substrate — the generic
+> mechanism any mode (or plugin, eventually) can build on, not just magit.
 
 ### 4bis.1 Why the picker
 
-Transients share the picker's core requirements — floating overlay rendering,
-keyboard capture, preview pane, scroll, dismiss — but differ in the
-interaction model. Instead of filtering candidates by typing a query, the
-user presses single-letter keys to fire actions, toggle flags, or open
-nested submenus. Rather than building a parallel rendering + input system,
-the picker gains a `PickerMode::Transient` variant that switches the display
-and input handling.
+Transients share the picker's core requirements — floating-overlay /
+minibuffer rendering, keyboard capture, scroll, dismiss — but differ in
+the interaction model. Instead of filtering candidates by typing a
+query, the user presses single-letter keys to fire actions, toggle
+flags, or open nested submenus. Rather than building a parallel
+rendering + input system, a transient is carried as sibling state on
+the existing `Picker` struct: `picker.transient: Option<Arc<TransientSpec>>`,
+plus `transient_state` (flag/argument values), `transient_stack`
+(submenu back-stack), and `transient_scroll`. There is no `PickerMode`
+enum — the picker's candidate-list fields (`candidates`, `query`, ...)
+simply sit unused while `transient.is_some()`, and every call site that
+needs to tell the two apart checks that field directly.
 
-What the picker already provides that transients reuse verbatim:
+What the picker substrate actually provides that transients reuse:
 
 | Picker feature | Transient use |
 |---|---|
-| Floating overlay + styled text rendering (TUI + GPUI) | Renders transient groups, keys, labels, marginalia |
-| Preview pane | Live command preview (`git checkout -f main`) |
-| Marginalia | Rich per-entry context — diffstats, SHAs, status labels |
-| `PickerDisplay::BottomPopup` | Positions the transient at viewport bottom |
-| `j`/`k` / `C-n`/`C-p` scroll | Scrolls groups that overflow the viewport |
-| `q` / `Esc` / `C-g` dismiss | Closes the transient without action |
-| MRU pipeline | Frecently-used transient actions float to the top |
+| The `Picker` struct + its open/dismiss lifecycle | `picker.transient` is a field on the same struct; `q`/`Esc`/`C-g` close a transient through the same `do_picker_dismiss` every other picker surface uses |
+| `picker.display` (config: `"minibuffer"` \| `"popup"`) | The SAME computed flag (`picker_display_is_minibuffer` / `picker_use_minibuffer`) that places regular candidate lists also places the transient — popup box or bottom-anchored strip, see §4bis.5 |
+| Theme-consistent overlay chrome (border, background, text colors) | The transient's own popup/strip builders (TUI `draw_transient_overlay`, GPUI `build_transient_gpui`) use the same theme fields as the regular picker overlay, styled as a sibling surface, not a shared render function |
 
-What the transient mode adds on top:
+What is genuinely new for transient mode, not reused from candidate-list
+pickers at all:
 
 | New capability | Mechanism |
 |---|---|
 | Grouped entries with section headers | `TransientGroup { label, items }` renders as bold header + indented rows |
-| Single-key trigger dispatch | Each `TransientItem` carries a `key`; pressing it fires without cursor nav |
-| Flag toggle in-place | `TransientItemKind::Flag` toggles `TransientValue::Bool`, re-renders, updates preview |
-| Argument → minibuffer prompt | `TransientItemKind::Argument` opens minibuffer; on confirm, value is set |
-| Nested submenus | `TransientItemKind::Submenu(spec)` replaces the current transient; `DEL`/`BS` back |
-| Live preview update | `PreviewFn` is called on every flag toggle / argument change, preview pane re-renders |
+| Single-key trigger dispatch | Each `TransientItem` carries `key: Vec<String>`; pressing a matching key fires immediately, no `<CR>`, no cursor navigation |
+| Flag toggle in-place | `TransientItemKind::Flag { name, default }` toggles the `TransientValue::Bool` keyed by `name` in `transient_state` |
+| Nested submenus with scroll-preserving back-stack | `TransientItemKind::Submenu(Arc<TransientSpec>)` pushes `(parent_spec, parent_state, parent_scroll)` onto `transient_stack`; `BS`/`DEL` pops it — see §4bis.6 |
+| Inline live preview | `TransientSpec::preview: Option<Box<dyn Fn(&TransientState) -> String + Send + Sync>>` is called on every render and its output painted below the item list, inside the transient's own popup/strip — NOT the picker's file/buffer preview pane |
+
+Not reused: **MRU**. Transient items are a fixed, spec-defined list —
+they never go through the source-generator / scoring pipeline (§6), so
+there is no frecency ranking, no `routing_identity`, no MRU record on
+accept. Firing a transient action dismisses and invokes an action
+handler directly (§4bis.3); it isn't a scored candidate.
 
 ### 4bis.2 Data model
 
+The real shape, `crates/lattice-picker/src/transient.rs`:
+
 ```rust
-/// Lived in `lattice-picker`, extended for transient support.
 pub struct TransientSpec {
     pub title: String,
     pub groups: Vec<TransientGroup>,
-    pub preview: Option<Box<PreviewFn>>,
+    /// Called on every render (flag toggle, argument change, submenu
+    /// nav); the picker's file/buffer preview pane is NOT involved.
+    pub preview: Option<Box<dyn Fn(&TransientState) -> String + Send + Sync>>,
     pub footer: Option<String>,
 }
 
 pub struct TransientGroup {
-    pub label: String,          // "Actions", "Arguments", "Configure"
+    pub label: String,
     pub items: Vec<TransientItem>,
 }
 
 pub struct TransientItem {
-    pub key: Vec<KeyChord>,     // ["b"], ["c"], ["C-c", "C-c"]
-    pub label: String,          // "checkout"
-    pub description: String,    // "Check out a branch"
-    pub marginalia: Option<String>,  // live context — diffstats, SHAs, status
+    pub key: Vec<String>,       // ["y", "Y"] — no dedicated KeyChord type
+    pub label: String,
+    pub description: String,
     pub kind: TransientItemKind,
+    // no `marginalia` field — see §4bis.7
 }
 
 pub enum TransientItemKind {
-    Action(ActionId),
-    Submenu(TransientSpec),
-    Flag { name: String, value: bool },
-    Argument { name: String, value: Option<String>, prompt: String },
+    /// Fires an action via the action-handler registry and closes
+    /// the transient.
+    Action(CommandId),
+    /// Opens a nested transient (submenu).
+    Submenu(Arc<TransientSpec>),
+    /// Toggles in place. `default` seeds `transient_initial_state`.
+    Flag { name: String, default: bool },
+    /// Defined, but not wired to input yet — see §4bis.7.
+    Argument { name: String, default: Option<String>, prompt: String },
+    /// Dismisses without firing anything (`n`/`q` in a confirm dialog).
+    Dismiss,
 }
 
-pub type PreviewFn = dyn Fn(&TransientState) -> String + Send;
 pub type TransientState = HashMap<String, TransientValue>;
 
 pub enum TransientValue {
@@ -330,142 +375,200 @@ pub enum TransientValue {
 }
 ```
 
-### 4bis.3 API
+There is no `ActionId` type (transient actions fire through
+`lattice_protocol::ids::CommandId`, the same id every other command
+dispatch path uses) and no separate `PreviewFn` type alias — the
+closure type is written out inline on `TransientSpec::preview`.
+
+### 4bis.3 Two paths to open a transient
+
+There are exactly two ways a `TransientSpec` reaches the screen, and
+they exist for a structural reason, not stylistic preference:
+
+**(a) Direct call, from code with `&mut Editor` access.** A mode
+handler builds a spec and calls it straight:
 
 ```rust
-impl PickerRegistry {
-    /// Open a transient menu. Reuses the picker's rendering pipeline but
-    /// switches to grouped, non-filterable display with single-key triggers.
-    pub fn open_transient(
-        &self,
-        spec: TransientSpec,
-        display: PickerDisplay,  // BottomPopup, Floating, etc.
-    ) -> TransientHandle;
+impl Editor {
+    /// Seats `spec` as the open picker's transient, hidden query line.
+    /// No `PickerMode` variant, no `display` param, no handle type —
+    /// the caller already holds `&mut Editor` and gets nothing back
+    /// worth returning.
+    pub fn open_transient(&mut self, spec: TransientSpec) -> Vec<RendererSignal>;
+
+    /// Tears the transient down via the same `do_picker_dismiss` every
+    /// other picker surface uses.
+    pub fn close_transient(&mut self) -> Vec<RendererSignal>;
 }
 ```
 
-### 4bis.4 Marginalia — rich context per entry
+The only current caller is `Effect::Confirm { prompt, yes_action }`'s
+handling (yes/no confirmation dialogs): it resolves `yes_action` to a
+`CommandId`, builds a spec via
+`lattice_picker::confirm_transient_spec(&prompt, cmd_id)` (a two-item
+spec: `y`/`Y` → `Action(cmd_id)`, `n`/`N`/`q`/`Q` → `Dismiss`), and
+calls `open_transient` directly. `TransientItemKind::Dismiss` exists
+specifically for this — a confirmation's "no" answer must close the
+transient without an action ever being registered for it.
 
-Marginalia is the transient's information-density mechanism. Each
-`TransientItem` carries an optional `marginalia: String` populated by the
-caller from live git data (or any domain context) when the transient is
-built. The picker renders it as dimmed text right-aligned in the entry row,
-the same way it renders marginalia on `RawCandidate`s.
-
-This means the user never presses a key blind — the marginalia tells them
-what will happen before they press it.
-
-#### Example: branch transient
-
-```
-┌─ Branch ───────────────────────────────────────────────────────┐
-│                                                                │
-│  Branch                                          on main 3↑ 2↓ │
-│                                                                │
-│  ▸ Actions                                                     │
-│    [b]  checkout           checkout existing branch    ▸ main   │
-│    [c]  create             create a new branch                 │
-│    [d]  delete             delete a branch              ⚠      │
-│    [m]  merge              merge into current branch    main   │
-│    [r]  rename             rename a branch                     │
-│    [w]  worktree           create a worktree                   │
-│                                                                │
-│  ▸ Configure                                                   │
-│    [-]  [ ] force          force-create or force-delete        │
-│    [-]  [x] track          set upstream tracking        main   │
-│                                                                │
-│  ────────────────────────────────────────────────────────────  │
-│  git checkout -b --track origin/main main                      │
-│                                                                │
-│  q dismiss   DEL back   -f toggle   -t toggle                  │
-└────────────────────────────────────────────────────────────────┘
-```
-
-Each marginalia value is resolved from live git data when the `TransientSpec`
-is built:
-
-| Item | What marginalia shows | Source |
-|---|---|---|
-| `[b] checkout ▸ main` | The current branch name | `Repository::head_name(repo)` via `lattice-vcs` |
-| `[d] delete ⚠` | Warning for destructive action | Static — `⚠` glyph from the severity icon system |
-| `[m] merge main` | The default merge target | `Repository::head_name(repo)` |
-| `[-t] [x] track main` | The configured upstream | `Reference::resolve(repo, "HEAD@{upstream}")` |
-| Title `on main 3↑ 2↓` | Ahead/behind counts | `WorkingTree::ahead_behind(repo)` |
-
-#### Example: file-dispatch transient
-
-```
-┌─ File ────────────────────────────────────────────────────────┐
-│                                                                │
-│  src/auth/login.rs                         modified  +12 -3   │
-│                                                                │
-│  ▸ Actions                                                     │
-│    [s]  stage               stage this file          modified  │
-│    [u]  unstage             unstage this file        staged    │
-│    [x]  discard             discard changes           ⚠ +12 -3 │
-│    [d]  diff                show diff for this file   +12 -3   │
-│                                                                │
-│  ▸ History                                                     │
-│    [l]  log                 show log for this file    23 cmts  │
-│    [b]  blame               blame this file           a1b2c3d  │
-│                                                                │
-│  ▸ Filesystem                                                  │
-│    [r]  rename              rename/move this file              │
-│    [D]  delete              delete this file            ⚠     │
-│    [c]  checkout            checkout from HEAD          clean   │
-│                                                                │
-│  ────────────────────────────────────────────────────────────  │
-│  file: src/auth/login.rs (+12 -3)                              │
-│                                                                │
-│  q dismiss   s stage   d diff   l log                          │
-└────────────────────────────────────────────────────────────────┘
-```
-
-| Item | What marginalia shows | Source |
-|---|---|---|
-| `[s] stage modified` | Current file status | `WorkingTree::path_status(repo, path)` |
-| `[x] discard ⚠ +12 -3` | What would be lost | Diffstat from `git diff --stat <path>` |
-| `[l] log 23 cmts` | Commit count for this file | `git log --oneline <path> \| wc -l` |
-| `[b] blame a1b2c3d` | Last commit touching this file | `git log -1 --format=%h <path>` |
-| `[c] checkout clean` | File status vs HEAD | `WorkingTree::path_status(repo, path)` |
-| Title `+12 -3` | Diffstat | `git diff --stat <path>` |
-
-**Performance note:** Marginalia is populated when the `TransientSpec` is
-built (on transient-open), not per-frame. Flag toggles update the preview
-line but do not re-resolve git data. The marginalia is a snapshot of the
-file or repo state at the moment the transient opens — consistent with
-magit's own behaviour (transients show cached state, not live-watching).
-
-### 4bis.5 Display preferences
-
-The existing `PickerDisplay` variants control where the transient renders:
+**(b) `Effect::OpenTransient { source: String }`, resolved through the
+`TransientSourceRegistry`.** An ex-command's `apply` closure can only
+return an `Effect` — it has no `&mut Editor`, no service access, just
+a typed value handed back to the dispatcher. `Effect` is defined in
+`lattice-grammar`, and `TransientSpec` lives in `lattice-picker`, which
+depends on `lattice-grammar` (for `CommandId`) — not the other way
+around. `lattice-grammar`'s `Effect` enum therefore CANNOT embed a
+`TransientSpec` directly without an illegal upward dependency. So
+`Effect::OpenTransient` carries only a name; each renderer's
+effect-handling site resolves it:
 
 ```rust
-pub enum PickerDisplay {
-    Inline,         // Embedded in the active buffer (not appropriate for transient)
-    Floating,       // Modal overlay, centered
-    BottomPopup,    // Bottom-anchored, viewport-width — default for transients
+// TUI: lattice-ui-tui/src/app/picker.rs, do_open_transient
+// GPUI: lattice-ui-gpui/src/lib.rs, the Effect::OpenTransient arm
+let Some(registry) = e.services.get::<TransientSourceRegistryHandle>() else { ... };
+let Some(spec) = registry.build(&source) else { ... };
+e.open_transient(spec)
+```
+
+This mirrors `Effect::OpenPicker { source: String, args }`'s existing
+named-source shape exactly, for the identical structural reason (§5.2).
+magit's `magit-dispatch` and `magit-file-dispatch` ex-commands are the
+only current users of path (b).
+
+### 4bis.4 `TransientSourceRegistry`
+
+```rust
+pub struct TransientSourceRegistry {
+    sources: std::sync::Mutex<HashMap<String, Arc<dyn Fn() -> TransientSpec + Send + Sync>>>,
+}
+pub type TransientSourceRegistryHandle = Arc<TransientSourceRegistry>;
+
+impl TransientSourceRegistry {
+    pub fn register(&self, name: impl Into<String>, builder: impl Fn() -> TransientSpec + Send + Sync + 'static);
+    pub fn build(&self, name: &str) -> Option<TransientSpec>;
 }
 ```
 
-Magit transients default to `BottomPopup` — the magit convention of a
-transient appearing at the bottom of the screen.
+Registered as a service handle (`SubsystemBoot::register_service`),
+same `Arc<X>` register-and-lookup convention as every other service.
+`lattice-magit::install()` populates it while it still has direct
+`&mut CommandRegistry` access (`boot.commands_mut()`): it resolves the
+`CommandId`s for its `action:magit-global-*` handlers first, then
+captures them **by value** into a `move || ...` zero-arg builder
+closure. That's the trick that lets a zero-arg `Fn() -> TransientSpec`
+builder still fire real per-item actions — the ids are resolved once,
+at boot, and baked into the closure; `build()` re-invokes the closure
+(and therefore reconstructs the spec, with those same ids) every time
+the transient opens.
+
+**Deliberate asymmetry with `PickerRegistry`, not an oversight:**
+`PickerRegistry` (§5.1) is an `ArcSwap`-backed RCU registry, because
+picker sources can be registered at WASM plugin-load time, at runtime.
+`TransientSourceRegistry` is a plain `Mutex<HashMap<...>>` — read-only
+after boot in practice, since each owning crate's `install()` populates
+it once and nothing currently unregisters or re-registers later. That
+said, `PickerRegistry` also exposes `unregister`, and this registry
+does not; if a future WASM-loaded transient source needs to be pulled
+at runtime (plugin disabled/reloaded), that gap would need closing —
+flagged here, not yet needed.
+
+### 4bis.5 Display: picker decides where, transient decides what
+
+Before this session, transient always rendered as a floating popup
+regardless of `picker.display`, using its own separate (and buggy —
+GPUI had no minibuffer path at all, and its popup path duplicated the
+scroll-windowing logic) placement code. That violated the same
+principle every other picker surface follows: **the picker owns
+placement, the surface owns content.**
+
+Now the split is exact:
+
+- **Picker's job — where.** The typed `picker.display` option
+  (`lattice_config::core_options::PickerDisplay`, a `String` valued
+  `"minibuffer"` or `"popup"`, default `"minibuffer"`) is read once per
+  frame into a single boolean (TUI: `picker_display_is_minibuffer` →
+  `picker_is_minibuffer`; GPUI: `picker_display_is_minibuffer` →
+  `picker_use_minibuffer`). `render()` / `draw_frame` branch on that
+  ONE flag to decide whether the *transient* renders as a bordered
+  floating popup (TUI `draw_transient_overlay`; GPUI
+  `build_transient_gpui`) or a bottom-anchored strip claiming the
+  cmdline/candidate rows (TUI `draw_transient_minibuffer_prompt` +
+  `draw_transient_minibuffer_candidates`; GPUI
+  `build_transient_minibuffer_gpui`) — the exact same flag that already
+  decided popup-vs-strip for regular candidate-list pickers. There is
+  no separate `PickerDisplay` enum with `Inline`/`Floating`/
+  `BottomPopup` variants; it's the one config string, one flag, reused.
+- **Transient's job — what.** Both placements call the SAME
+  row-windowing function to get the visible group/item lines: TUI
+  `transient_group_item_lines`, GPUI `transient_rows_gpui`. Each walks
+  `spec.groups`, applies `transient_scroll`, and stops once its visible
+  budget is reached (GPUI bounds this at a fixed
+  `TRANSIENT_MAX_VISIBLE_ROWS = 24`, since it has no cheap "how many
+  rows fit" query the way the TUI can measure its actual terminal
+  area). One function per renderer, called by BOTH the popup wrapper
+  and the minibuffer wrapper, so the row/scroll computation cannot
+  drift between the two placement modes the way it did before (GPUI's
+  popup path had its own scroll-aware loop; there was no minibuffer
+  loop to drift *from* until this session).
+
+Two smaller fixes landed alongside the split:
+
+- `transient_stack` is now `Vec<(Arc<TransientSpec>, TransientState, usize)>`
+  (was a 2-tuple) — entering a submenu pushes the parent's
+  `transient_scroll` alongside its spec + state and resets scroll to
+  0; backing out (`BS`/`DEL`) restores it. Previously scroll leaked
+  across submenu navigation: entering a submenu from partway down a
+  scrolled parent opened the submenu already scrolled, and backing out
+  left the parent scrolled wherever the submenu happened to leave the
+  shared field.
+- GPUI's popup container (`build_transient_gpui`) now has
+  `.overflow_hidden()` — every sibling popup in that file already
+  clips its content; this one didn't, so a transient with enough items
+  to exceed its `max_h` bled past the bordered box onto whatever was
+  underneath.
 
 ### 4bis.6 Keyboard handling
 
-When a transient is open, the picker captures all keystrokes until dismiss:
+When a transient is open, keystrokes route through
+`Action::TransientTrigger` / `TransientToggleFlag` / `TransientDismiss`
+instead of the candidate-list actions:
 
 | Key | Action |
 |---|---|
-| Letter key matching an item's `key` | Fires the item's action / toggles flag / opens submenu / opens minibuffer |
-| `j` / `k` / `C-n` / `C-p` | Scroll groups that overflow the viewport |
-| `q` / `Esc` / `C-g` | Dismiss without action |
-| `DEL` / `BS` | Return to parent transient (when in a submenu) |
-| `-` followed by flag letter | Toggle a Flag item (e.g., `-f` for force) |
+| A key matching one of an item's `key` strings | `do_transient_trigger` fires the item: dispatches the action and dismisses (`Action`), toggles the flag in place (`Flag`), pushes the stack and opens the submenu (`Submenu`), or dismisses without acting (`Dismiss`) |
+| Scroll-next / scroll-prev (same chords the candidate list uses) | Adjusts `transient_scroll` by ±1 instead of moving a candidate cursor |
+| `q` / `Esc` / `C-g` | `Action::TransientDismiss` → the same `do_picker_dismiss` every picker surface uses |
+| `DEL` / `BS` | Pops `transient_stack`, restoring the parent's spec, state, AND scroll (§4bis.5) |
 
-Single-letter Action keys fire immediately — no `<CR>` needed. This is the
-core departure from candidate-list picker mode, where all interactions are
-`navigation` + `<CR>`.
+There is no reserved `-`-prefix convention for flags — a `Flag` item
+fires by pressing its own assigned key, exactly like an `Action` item;
+`key` is just `Vec<String>` per item, so a spec author picks whatever
+letters make sense (magit's file-dispatch uses plain `s`/`d`, not
+`-s`/`-d`). Single-key items fire immediately, no `<CR>` — the core
+departure from candidate-list picker mode, where interaction is
+`navigate` + `<CR>`.
+
+### 4bis.7 Known gaps
+
+- **`Argument` is defined but not wired.** The type exists
+  (`TransientItemKind::Argument { name, default, prompt }`) and
+  `transient_initial_state` seeds its `TransientState` entry from
+  `default`, but `do_transient_trigger`'s `Argument { .. }` arm is a
+  bare no-op — pressing an argument's key does nothing. The
+  minibuffer-prompt-then-return-to-transient flow it implies is
+  deferred (tracked as MG.8 in the magit slice plan); no ex-command
+  currently relies on it.
+- **No marginalia.** `TransientItem` has no per-item rich-context
+  field, and no renderer draws one. An earlier draft of this section
+  described a marginalia mechanism (diffstats, SHAs, ahead/behind
+  counts rendered inline) as if implemented; it never was, and no
+  current slice plans it. If it's built later, model it as an explicit
+  field on `TransientItem` populated when the spec is built (a
+  snapshot, not a live watch) — matching how `RawCandidate::marginalia`
+  already works for regular pickers (`lattice-picker/src/lib.rs`).
+- **`TransientSourceRegistry` has no `unregister`** (§4bis.4) —
+  harmless today, would block a future runtime-unloadable transient
+  source.
 
 ---
 

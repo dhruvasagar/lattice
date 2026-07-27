@@ -2504,6 +2504,9 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         // grammar executor can resolve `action:search-line-submit` directly.
         Action::SearchLineSubmit => editor.do_search_line_submit(),
         Action::SearchLineCancel => editor.do_search_line_cancel(),
+        Action::SearchLineBackspace => editor.do_search_line_backspace(),
+        Action::PromptLineSubmit => editor.do_prompt_line_submit(_out),
+        Action::PromptLineCancel => editor.do_prompt_line_cancel(),
         Action::SearchLineHistoryPrev => editor.do_search_history_step(true),
         Action::SearchLineHistoryNext => editor.do_search_history_step(false),
         Action::SearchLineToggleExpand => {
@@ -2524,8 +2527,7 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
                 && picker.transient.is_some()
             {
                 let key = c.to_string();
-                let signals = editor.do_transient_trigger(key);
-                _out.renderer_signals.extend(signals);
+                editor.do_transient_trigger(key, _out);
             } else {
                 if let Some(p) = editor.picker.as_mut() {
                     p.append_query(c);
@@ -2540,9 +2542,12 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
             if let Some(ref mut picker) = editor.picker
                 && picker.transient.is_some()
             {
-                if let Some((parent_spec, parent_state)) = picker.transient_stack.pop() {
+                if let Some((parent_spec, parent_state, parent_scroll)) =
+                    picker.transient_stack.pop()
+                {
                     picker.transient = Some(parent_spec);
                     picker.transient_state = parent_state;
+                    picker.transient_scroll = parent_scroll;
                 }
             } else {
                 if let Some(p) = editor.picker.as_mut() {
@@ -2814,8 +2819,7 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         }
         // PICK.1: transient-mode actions within the picker.
         Action::TransientTrigger(key) => {
-            let signals = editor.do_transient_trigger(key);
-            _out.renderer_signals.extend(signals);
+            editor.do_transient_trigger(key, _out);
         }
         Action::TransientToggleFlag(name) => {
             let signals = editor.do_transient_toggle_flag(name);
@@ -7334,6 +7338,14 @@ impl Editor {
     /// through the Insert dispatcher because the buffer is the focused
     /// Insert-editable surface (mirrors [`Self::open_command_line`]).
     pub fn open_search_line(&mut self, direction: lattice_grammar::SearchDirection) {
+        // Capture the origin BEFORE focusing the search line.
+        // `focus_editing_buffer` swaps `self.cursor` to the
+        // `*search-line*` buffer's own cursor, so reading `self.cursor`
+        // after it always yielded (0,0) — every search then ran from
+        // the top of the file instead of the cursor, `<Esc>` restored
+        // to the top instead of where you were, and the wrap warning
+        // never fired because nothing ever wrapped.
+        let origin = self.cursor;
         let id = self.ensure_named_synthetic_document(
             crate::search_line_mode::SEARCH_LINE_BUFFER_NAME,
             crate::search_line_mode::SearchLineMode::mode_id(),
@@ -7344,10 +7356,7 @@ impl Editor {
             },
         );
         self.focus_editing_buffer(id);
-        self.search_line = Some(SearchLine {
-            direction,
-            origin: self.cursor,
-        });
+        self.search_line = Some(SearchLine { direction, origin });
         self.modal = ModalState::Search(direction);
         self.last_message = None;
         self.current_match = None;
@@ -7357,6 +7366,161 @@ impl Editor {
         // from the previous search. `<C-p>` loads the last entry from
         // `search_history`.
         self.set_search_line_text("");
+    }
+
+    /// Open a generic one-line minibuffer text prompt (see
+    /// `Effect::OpenPrompt`) — ensure/focus a synthetic buffer (named
+    /// `buffer_name`, or a default singleton when `None`), seed it
+    /// with `initial`, set `ModalState::Prompt`, remember
+    /// `on_submit_action` for `do_prompt_line_submit`, and show
+    /// `prompt` as an info echo (there is no dedicated prompt-glyph
+    /// rendering path — the echo area carries the label, same surface
+    /// `Effect::Echo` already uses). Mirrors
+    /// [`Self::open_command_line`]/[`Self::open_search_line`]'s shape.
+    pub fn open_prompt_line(
+        &mut self,
+        prompt: String,
+        initial: String,
+        on_submit_action: String,
+        buffer_name: Option<String>,
+    ) -> Vec<RendererSignal> {
+        let name = buffer_name.unwrap_or_else(|| {
+            crate::prompt_line_mode::PROMPT_LINE_BUFFER_NAME_DEFAULT.to_string()
+        });
+        let id = self.ensure_named_synthetic_document(
+            &name,
+            crate::prompt_line_mode::PromptLineMode::mode_id(),
+            lattice_core::BufferFlags {
+                listed: false,
+                hidden: false,
+                ephemeral: true,
+            },
+        );
+        self.focus_editing_buffer(id);
+        self.modal = ModalState::Prompt;
+        self.pending_prompt_submit_action = Some(on_submit_action);
+        self.set_prompt_line_text(&initial);
+        self.set_message(EchoLevel::Info, prompt);
+        Vec::new()
+    }
+
+    /// Owner-write the focused prompt buffer's text (analogous to
+    /// [`Self::set_command_line_text`]/[`Self::set_search_line_text`]).
+    /// No-op when no prompt is focused.
+    fn set_prompt_line_text(&mut self, s: &str) {
+        if !matches!(self.modal, ModalState::Prompt) {
+            return;
+        }
+        let cur_len = self
+            .document
+            .snapshot()
+            .text()
+            .lines()
+            .next()
+            .unwrap_or("")
+            .len();
+        let full = lattice_protocol::position::Range {
+            start: lattice_protocol::position::Position::ZERO,
+            end: lattice_protocol::position::Position {
+                line: 0,
+                byte: cur_len as u32,
+            },
+        };
+        let _ = self.apply_edit_blocking(lattice_protocol::edit::Edit::replace(full, s));
+        self.cursor = lattice_protocol::position::Position {
+            line: 0,
+            byte: s.len() as u32,
+        };
+    }
+
+    /// `<CR>` on a generic prompt — read the typed text, restore the
+    /// prior editing buffer, then resolve `on_submit_action` (stashed
+    /// by [`Self::open_prompt_line`]) through the same
+    /// `ActionHandlerRegistry` magit's global actions use, firing it
+    /// with `ActionContext::prompt_value` set to the typed text.
+    ///
+    /// The fired handler's `ActionContext::buffer_id`/`cursor` are the
+    /// PROMPT buffer's own (captured before restoring focus), not
+    /// whatever buffer was active before the prompt opened — so a
+    /// handler can read the prompt buffer's synthetic name back for
+    /// any context the caller stashed there (mirrors magit's
+    /// blame/rebase/revision modes encoding their target the same
+    /// way). A future caller that instead wants "the buffer the user
+    /// was editing before the prompt" needs a different mechanism;
+    /// this one always hands the handler its own invoking buffer,
+    /// exactly like a transient item's `Action` sees the buffer that
+    /// had focus when the transient was opened.
+    pub fn do_prompt_line_submit(&mut self, out: &mut DispatchOutcome) {
+        if !matches!(self.modal, ModalState::Prompt) {
+            return;
+        }
+        let text = self
+            .document
+            .snapshot()
+            .text()
+            .lines()
+            .next()
+            .unwrap_or("")
+            .to_string();
+        let prompt_buffer_id = self.document_buffer_id;
+        let prompt_cursor = self.cursor;
+        self.restore_editing_buffer();
+        let Some(on_submit_action) = self.pending_prompt_submit_action.take() else {
+            return;
+        };
+        let Some(cmd_reg) = self
+            .services
+            .get::<lattice_grammar::CommandRegistryHandle>()
+        else {
+            self.set_message(
+                EchoLevel::Error,
+                "prompt: command registry unavailable".to_string(),
+            );
+            return;
+        };
+        let Some(cmd_id) = cmd_reg.load().id_by_name(&on_submit_action) else {
+            self.set_message(
+                EchoLevel::Error,
+                format!("prompt: unknown action `{on_submit_action}`"),
+            );
+            return;
+        };
+        let Some(handler) = self
+            .services
+            .get::<lattice_mode::ActionHandlerRegistryHandle>()
+            .and_then(|reg| reg.lookup(cmd_id))
+        else {
+            self.set_message(
+                EchoLevel::Error,
+                format!("prompt: no handler registered for `{on_submit_action}`"),
+            );
+            return;
+        };
+        let ctx = lattice_mode::ActionContext {
+            buffer_id: lattice_protocol::ids::BufferId::new(prompt_buffer_id.0 as u64),
+            cursor: prompt_cursor,
+            services: &self.services,
+            events: &self.event_bus,
+            prompt_value: Some(text.as_str()),
+        };
+        if let Some(effect) = handler(&ctx) {
+            // `apply_effect_host` already pushes non-`None` effects
+            // onto `out.effects` internally (see its own body) — the
+            // real fix here was passing the CALLER's `out` through
+            // instead of a throwaway local `DispatchOutcome` whose
+            // `effects` never made it back to the caller.
+            apply_effect_host(self, effect, out);
+        }
+    }
+
+    /// `<Esc>` / `<C-c>` on a generic prompt — cancel without firing
+    /// anything, restore the prior editing buffer.
+    pub fn do_prompt_line_cancel(&mut self) {
+        if !matches!(self.modal, ModalState::Prompt) {
+            return;
+        }
+        self.pending_prompt_submit_action = None;
+        self.restore_editing_buffer();
     }
 
     /// 5.5.G.23.cmdline: handle a `:`-line submit. Resolves the
@@ -7706,6 +7870,9 @@ impl Editor {
             }
             AppEffect::SearchLineSubmit => out.next_actions.push(Action::SearchLineSubmit),
             AppEffect::SearchLineCancel => out.next_actions.push(Action::SearchLineCancel),
+            AppEffect::SearchLineBackspace => {
+                out.next_actions.push(Action::SearchLineBackspace)
+            }
             AppEffect::SearchLineHistoryPrev => {
                 out.next_actions.push(Action::SearchLineHistoryPrev)
             }
@@ -7715,6 +7882,8 @@ impl Editor {
             AppEffect::SearchLineToggleExpand => {
                 out.next_actions.push(Action::SearchLineToggleExpand)
             }
+            AppEffect::PromptLineSubmit => out.next_actions.push(Action::PromptLineSubmit),
+            AppEffect::PromptLineCancel => out.next_actions.push(Action::PromptLineCancel),
             AppEffect::CommandLineHistoryPrev => {
                 out.next_actions.push(Action::CommandLineHistoryPrev)
             }
@@ -14542,21 +14711,34 @@ impl Editor {
                 lattice_mode::pending_synthetic_highlights::HighlightsOp::Replace(spans) => {
                     locals.insert(crate::modes::ExtraHighlights(spans));
                 }
-                lattice_mode::pending_synthetic_highlights::HighlightsOp::MergeAt {
+                lattice_mode::pending_synthetic_highlights::HighlightsOp::InsertAt {
                     start_line,
                     spans,
                 } => {
-                    let end = start_line as usize + spans.len();
                     let mut merged = locals
                         .get::<crate::modes::ExtraHighlights>()
                         .map(|e| e.0.clone())
                         .unwrap_or_default();
-                    if end > merged.len() {
-                        merged.resize(end, Vec::new());
-                    }
-                    for (i, line_spans) in spans.into_iter().enumerate() {
-                        merged[start_line as usize + i] = line_spans;
-                    }
+                    lattice_mode::pending_synthetic_highlights::splice_insert(
+                        &mut merged,
+                        start_line,
+                        spans,
+                    );
+                    locals.insert(crate::modes::ExtraHighlights(merged));
+                }
+                lattice_mode::pending_synthetic_highlights::HighlightsOp::RemoveAt {
+                    start_line,
+                    count,
+                } => {
+                    let mut merged = locals
+                        .get::<crate::modes::ExtraHighlights>()
+                        .map(|e| e.0.clone())
+                        .unwrap_or_default();
+                    lattice_mode::pending_synthetic_highlights::splice_remove(
+                        &mut merged,
+                        start_line,
+                        count,
+                    );
                     locals.insert(crate::modes::ExtraHighlights(merged));
                 }
             }
@@ -19200,7 +19382,8 @@ impl Editor {
                 ModalState::Normal
                 | ModalState::OperatorPending
                 | ModalState::Command
-                | ModalState::Search(_) => None,
+                | ModalState::Search(_)
+                | ModalState::Prompt => None,
             };
             match showmode {
                 Some(text) => self.set_ephemeral_echo(EchoLevel::Info, text),
@@ -20491,6 +20674,33 @@ impl Editor {
         self.restore_editing_buffer();
         self.search_line = None;
         self.execute_search(&pattern, line.direction, line.origin);
+    }
+
+    /// `<BS>` on the `/`·`?` line. Deletes the character before the
+    /// cursor; on an already-empty pattern it CANCELS the search
+    /// instead — vim's behaviour, and what the one-row line implies
+    /// (backspacing off the front of `/` leaves nothing to edit).
+    ///
+    /// MB.5a lost this: `Action::SearchBackspace` became a no-op and
+    /// `<BS>` fell through to base Insert, which just does nothing on
+    /// an empty buffer, stranding the user in Search mode with no
+    /// pattern.
+    pub fn do_search_line_backspace(&mut self) {
+        if !self.search_line_active() {
+            return;
+        }
+        if self.search_pattern().is_empty() {
+            self.do_search_line_cancel();
+            return;
+        }
+        let pattern = self.search_pattern();
+        // Pop one CHARACTER, not one byte — a multi-byte char must
+        // not be split into invalid UTF-8.
+        let mut chars = pattern.chars();
+        chars.next_back();
+        let shortened: String = chars.as_str().to_string();
+        self.set_search_line_text(&shortened);
+        self.preview_search();
     }
 
     /// MB.5a: `<Esc>` / `<C-c>` on the `/`·`?` line — cancel the search.
@@ -24038,6 +24248,19 @@ impl Editor {
                 self.open_search_line(lattice_grammar::SearchDirection::Forward);
                 self.set_search_line_text(&text);
             }
+            OpenPrompt {
+                prompt,
+                initial,
+                on_submit_action,
+                buffer_name,
+            } => {
+                out.renderer_signals.extend(self.open_prompt_line(
+                    prompt,
+                    initial,
+                    on_submit_action,
+                    buffer_name,
+                ));
+            }
             PasteRegister { name } => {
                 if let Some(reg) = lattice_grammar::register::Register::from_input_char(name) {
                     self.pending_register = Some(reg);
@@ -26003,6 +26226,32 @@ impl Editor {
             lattice_mode::ModeId::new(mode_id),
             crate::synthetic_buffers::SYNTHETIC_BUFFER_FLAGS,
         );
+        // Bug fix: stash the pane's pre-open state so a later
+        // `Effect::DismissPopup` (magit's `q`, bound in
+        // `magit-core-mode` and inherited by every magit buffer) can
+        // bury this buffer back to whatever was showing before,
+        // instead of magit's `q` having nothing to fall back to and
+        // reaching for `Effect::QuitEditor` (which, with one pane
+        // open, quit the whole editor — the exact live-reported bug
+        // this fixes). Mirrors `activate_help_in_pane`'s stash
+        // (`dispatch.rs` ~31105-31123): only set when not already
+        // populated, so chained synthetic-buffer opens (magit-status
+        // -> magit-log -> back) restore the TRUE origin buffer, not
+        // the intermediate one. A no-op for callers that never
+        // trigger `DismissPopup` afterward (every other
+        // `Effect::OpenSyntheticBuffer` consumer today) — the stash
+        // just sits unused until GC'd by the next successful
+        // `dismiss_popup`/`activate_help_in_pane` stash-and-clear.
+        if self.prev_pane_for_popup.is_none() && self.active_pane_buffer_id() != id {
+            let active = self.pane_tree.active();
+            self.prev_pane_for_popup = Some(crate::state::PrevPaneState {
+                buffer: active.buffer,
+                buffer_id: active.buffer_id,
+                cursor: self.cursor,
+                scroll: self.scroll,
+                modal: self.modal,
+            });
+        }
         self.activate_buffer(id);
     }
 
@@ -26940,12 +27189,39 @@ impl Editor {
 
     /// PICK.1: trigger a transient item by key. Searches the current
     /// transient spec's groups for an item whose `key` matches.
-    pub fn do_transient_trigger(&mut self, key: String) -> Vec<RendererSignal> {
+    ///
+    /// Bug fix: the fired handler's `Effect` must reach the CALLER's
+    /// real `DispatchOutcome`, not a throwaway local one.
+    /// `apply_effect_host` itself already does the right thing — it
+    /// runs `handle_effect` (host-side state mutation) AND pushes the
+    /// non-`None` effect onto the `out: &mut DispatchOutcome` it's
+    /// given, precisely so renderer-coupled effects (`Effect::
+    /// OpenSyntheticBuffer` — used by EVERY "open the X buffer" magit
+    /// action — `Confirm`, `OpenTransient`, `OpenPrompt`, ...) reach
+    /// each renderer's own `apply_effect_app_arms`, which drains
+    /// `DispatchOutcome.effects` after dispatch returns (see that
+    /// field's doc comment) — `handle_effect` alone doesn't know about
+    /// them. The previous version of this function built its own
+    /// short-lived `DispatchOutcome::default()`, called
+    /// `apply_effect_host` on THAT, and only copied out
+    /// `renderer_signals` — silently discarding the `effects` it had
+    /// just been correctly given, with no path back to the caller.
+    /// Now this function takes `out: &mut DispatchOutcome` directly, so
+    /// `apply_effect_host(self, effect, out)` populates the real thing.
+    /// For a host-appliable effect (`Effect::Echo`) the bug was
+    /// invisible (`handle_effect` alone was enough). Symptom: EVERY
+    /// transient item whose action opens a buffer (log, branch, stash,
+    /// rebase, commit, status, file-diff)
+    /// visibly did nothing but dismiss the menu, while `Effect::Echo`-
+    /// returning items (pull/push's optimistic message, discard's
+    /// confirm) appeared to work — because they never needed the
+    /// renderer-side arm in the first place, masking the bug.
+    pub fn do_transient_trigger(&mut self, key: String, out: &mut DispatchOutcome) {
         let Some(ref mut picker) = self.picker else {
-            return Vec::new();
+            return;
         };
         let Some(ref spec_arc) = picker.transient else {
-            return Vec::new();
+            return;
         };
         let spec = spec_arc.clone(); // clone Arc
         let _state = &picker.transient_state;
@@ -26965,35 +27241,63 @@ impl Editor {
         });
 
         let Some((item, spec)) = found else {
-            return Vec::new();
+            return;
         };
 
         match item.kind {
             lattice_picker::TransientItemKind::Action(cmd_id) => {
-                // MG.8: action handler invocation. For PICK.1, the
-                // cmd_id is routed through the editor's dispatch
-                // path. The mode's Guard holds the handler registry
-                // reference and fires handlers in its own closure
-                // context. Here we store the cmd_id for the caller
-                // to resolve post-transient-close.
                 tracing::debug!(
                     target: "lattice_host::transient",
                     "transient action triggered: {cmd_id:?}",
                 );
-                // The caller (magit status mode) should register a
-                // handler for this command_id via ActionHandlerRegistry.
-                // When the transient picks it, the handler fires.
-                // For now, close the transient.
-                self.do_picker_dismiss()
+                let handler = self
+                    .services
+                    .get::<lattice_mode::ActionHandlerRegistryHandle>()
+                    .and_then(|reg| reg.lookup(cmd_id));
+                out.renderer_signals.extend(self.do_picker_dismiss());
+                if let Some(handler) = handler {
+                    let ctx = lattice_mode::ActionContext {
+                        buffer_id: lattice_protocol::ids::BufferId::new(
+                            self.document_buffer_id.0 as u64,
+                        ),
+                        cursor: self.cursor,
+                        services: &self.services,
+                        events: &self.event_bus,
+                        prompt_value: None,
+                    };
+                    if let Some(effect) = handler(&ctx) {
+                        // `apply_effect_host` already pushes non-`None`
+                        // effects onto `out.effects` internally — the
+                        // real fix here was accepting the CALLER's
+                        // `out: &mut DispatchOutcome` instead of a
+                        // throwaway local whose `effects` never made it
+                        // back to the caller (so renderer-coupled
+                        // effects like `Effect::OpenSyntheticBuffer`
+                        // silently vanished).
+                        apply_effect_host(self, effect, out);
+                    }
+                }
+            }
+            lattice_picker::TransientItemKind::Dismiss => {
+                out.renderer_signals.extend(self.do_picker_dismiss());
             }
             lattice_picker::TransientItemKind::Submenu(sub_spec) => {
-                // Push current onto stack, open submenu
+                // Push current onto stack, open submenu.
+                // Fold audit fix: also push/reset `transient_scroll` —
+                // it used to carry over unchanged, so entering a
+                // submenu from partway down a scrolled parent opened
+                // it already scrolled past its own top, and backing
+                // back out left the parent scrolled wherever the
+                // submenu happened to leave it instead of where the
+                // user had actually left it.
                 let parent_spec = spec;
                 let parent_state = std::mem::take(&mut picker.transient_state);
-                picker.transient_stack.push((parent_spec, parent_state));
+                let parent_scroll = std::mem::take(&mut picker.transient_scroll);
+                picker
+                    .transient_stack
+                    .push((parent_spec, parent_state, parent_scroll));
                 picker.transient = Some(sub_spec.clone());
                 picker.transient_state = lattice_picker::transient_initial_state(&sub_spec);
-                Vec::new()
             }
             lattice_picker::TransientItemKind::Flag { name, .. } => {
                 // Toggle the flag
@@ -27005,12 +27309,10 @@ impl Editor {
                 picker
                     .transient_state
                     .insert(name.clone(), lattice_picker::TransientValue::Bool(new_val));
-                Vec::new()
             }
             lattice_picker::TransientItemKind::Argument { .. } => {
                 // Arguments deferred to MG.8 — they need minibuffer
                 // prompt + return-to-transient flow. For now, no-op.
-                Vec::new()
             }
         }
     }
@@ -27365,6 +27667,16 @@ impl Editor {
                 out.merge(self.apply_picker_outcome(
                     lattice_picker::PickerAcceptOutcome::ExpandSnippet { id },
                 ));
+            }
+            // BranchBase is only ever emitted by a generator-based
+            // source (the `generator.accept` path above, never
+            // reaches here in practice) — kept for match
+            // exhaustiveness, mirroring ExpandSnippet's shape.
+            lattice_picker::RoutingPayload::BranchBase { .. } => {
+                self.set_message(
+                    EchoLevel::Error,
+                    "picker: branch-base routing requires a generator-based source".to_string(),
+                );
             }
             lattice_picker::RoutingPayload::AcceptShowMessageAction {
                 request_id,
@@ -32115,6 +32427,9 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         | Effect::ListBuffers
         | Effect::OpenBufferPicker
         | Effect::OpenPicker { .. }
+        | Effect::Confirm { .. }
+        | Effect::OpenTransient { .. }
+        | Effect::OpenPrompt { .. }
         | Effect::BufferDelete { .. }
         | Effect::OpenFileTree { .. }
         | Effect::CloseFileTree
@@ -32228,7 +32543,11 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         | Effect::None
         | Effect::CursorMove(_)
         | Effect::SelectionChange(_)
+        // Yank is a mutation-free effect for the purpose of dot-repeat.
         | Effect::Yank { .. }
+        | Effect::Confirm { .. }
+        | Effect::OpenTransient { .. }
+        | Effect::OpenPrompt { .. }
         | Effect::EnterMode(_)
         | Effect::SaveBuffer { .. }
         | Effect::QuitEditor { .. }
@@ -33352,6 +33671,7 @@ impl Editor {
                     cursor: self.cursor,
                     services: &self.services,
                     events: &self.event_bus,
+                    prompt_value: None,
                 };
                 if let Some(effect) = handler(&ctx) {
                     // M.10.x bug fix (2026-06-03): route through

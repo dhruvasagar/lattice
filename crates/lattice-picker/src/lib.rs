@@ -66,8 +66,9 @@ pub use source::{
     PickerRegistry, PickerRegistryHandle, PickerSourceGenerator, PickerSourceSpec, SourceResult,
 };
 pub use transient::{
-    TransientGroup, TransientItem, TransientItemKind, TransientSpec, TransientState,
-    TransientValue, transient_initial_state,
+    TransientGroup, TransientItem, TransientItemKind, TransientSourceRegistry,
+    TransientSourceRegistryHandle, TransientSpec, TransientState, TransientValue,
+    confirm_transient_spec, transient_initial_state,
 };
 
 use std::path::PathBuf;
@@ -228,6 +229,13 @@ pub enum RoutingPayload {
     /// with Forward direction and seeds the pattern; the user tweaks
     /// it, then `<CR>` to execute. Ephemeral — no MRU recency.
     LoadSearchLine { text: String },
+    /// The branch name a base-branch-picker candidate carries.
+    /// Emitted by magit's branch-create wizard (`c` in
+    /// `magit-branch-mode`): the user picks an existing branch as the
+    /// base, then accept opens a follow-up text prompt for the new
+    /// branch's name (`PickerAcceptOutcome::OpenPrompt`, stashing
+    /// this name in the prompt buffer's synthetic name).
+    BranchBase { name: String },
 }
 
 /// Where a picker pulls its raw candidates from. The App resolves
@@ -425,8 +433,11 @@ pub struct Picker {
     pub transient: Option<std::sync::Arc<TransientSpec>>,
     pub transient_state: TransientState,
     /// Stack of parent transient specs for `BS`/`DEL` back
-    /// navigation through nested submenus.
-    pub transient_stack: Vec<(std::sync::Arc<TransientSpec>, TransientState)>,
+    /// navigation through nested submenus. The `usize` is the
+    /// parent's `transient_scroll` at the moment its submenu opened —
+    /// popping restores it instead of leaving the parent scrolled
+    /// wherever the submenu happened to leave the shared field.
+    pub transient_stack: Vec<(std::sync::Arc<TransientSpec>, TransientState, usize)>,
     /// Scroll offset for transient group rendering when groups
     /// overflow the viewport. Incremented by `j`, decremented by `k`.
     pub transient_scroll: usize,

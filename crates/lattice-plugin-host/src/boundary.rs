@@ -402,6 +402,12 @@ impl WitBoundary for NativePickerAcceptOutcome {
                         .into(),
                 );
             }
+            NativePickerAcceptOutcome::OpenPrompt { .. } => {
+                return Err(
+                    "open-prompt is a host-internal picker outcome, not representable over WIT"
+                        .into(),
+                );
+            }
             NativePickerAcceptOutcome::NoOp => WitPickerAcceptOutcome::NoOp,
         })
     }

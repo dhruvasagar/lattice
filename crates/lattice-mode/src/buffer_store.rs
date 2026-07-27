@@ -87,6 +87,14 @@ pub trait BufferStore: Send + Sync {
     /// host having to seed a buffer-local first.
     fn name_for(&self, id: BufferId) -> Option<String>;
 
+    /// Read the buffer's on-disk file path, if it has one. `None`
+    /// for path-less/synthetic buffers or when `id` is not
+    /// registered. Default `None` so existing implementors (e.g.
+    /// `NullBufferStore`) don't need updating for this addition.
+    fn path_for(&self, _id: BufferId) -> Option<std::path::PathBuf> {
+        None
+    }
+
     /// **H.1 (2026-05-31): generic Document-shaped buffer
     /// insertion.** Used by extension crates (`lattice-multibuffer`
     /// today; future plugin-defined Document-shaped kinds) to
@@ -156,6 +164,10 @@ impl BufferStoreHandle {
 
     pub fn name_for(&self, id: BufferId) -> Option<String> {
         self.inner.name_for(id)
+    }
+
+    pub fn path_for(&self, id: BufferId) -> Option<std::path::PathBuf> {
+        self.inner.path_for(id)
     }
 
     /// H.1 pass-through wrapper. See

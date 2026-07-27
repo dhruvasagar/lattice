@@ -2,19 +2,26 @@
 //!
 //! Runs `git log --oneline --graph --decorate -50` on open,
 //! populates buffer content. <CR> shows commit detail.
+//!
+//! `*magit:log:<path>*` scopes the log to one file's history
+//! (`git log -- <path>`) — the target of `C-c f l` in the file
+//! dispatch transient, mirroring `magit-blame`/`magit-diff`'s
+//! path-in-buffer-name pattern. Bare `*magit:log*` stays repo-wide.
 
 use std::sync::{Arc, Mutex, OnceLock};
 
 use lattice_config;
 use lattice_grammar::{CommandRegistryHandle, Effect};
 use lattice_mode::{
-    ActionContext, ActionHandler, ActionHandlerRegistryHandle, BufferStoreHandle, CapabilitySet,
-    Keymap, KeymapEntry, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, OptionOverrideSet,
+    ActionContext, ActionHandlerRegistryHandle, BufferStoreHandle, CapabilitySet, Keymap,
+    KeymapEntry, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, OptionOverrideSet,
     keymap_entry,
 };
 use lattice_protocol::edit::Edit;
 use lattice_protocol::position::{Position, Range};
 use lattice_vcs::Repository;
+
+use crate::magit_core_mode::ActionRegsGuard;
 
 pub struct MagitLogMode;
 
@@ -37,10 +44,15 @@ struct LogState {
     buffer_id: lattice_core::BufferId,
     store: Arc<BufferStoreHandle>,
     workdir: std::path::PathBuf,
+    /// `Some` when this buffer is scoped to one file's history
+    /// (opened as `*magit:log:<path>*`); `None` for the repo-wide
+    /// `*magit:log*`.
+    path: Option<std::path::PathBuf>,
+    pending_highlights: Option<lattice_mode::PendingSyntheticHighlightsHandle>,
 }
 
 impl Mode for MagitLogMode {
-    type Guard = ();
+    type Guard = ActionRegsGuard;
 
     fn id(&self) -> ModeId {
         Self::mode_id()
@@ -71,84 +83,175 @@ impl Mode for MagitLogMode {
         Box::pin(async move {
             let buffer_id = lattice_core::BufferId(ctx.buffer_id().0 as u32);
             let Some(store) = ctx.service::<BufferStoreHandle>() else {
-                return Ok(());
+                return Ok(ActionRegsGuard::default());
             };
             let Some(handle) = store.handle_for(buffer_id) else {
-                return Ok(());
+                return Ok(ActionRegsGuard::default());
             };
             let workdir = Repository::discover(".")
                 .ok()
                 .and_then(|r| r.workdir().map(|p| p.to_path_buf()))
                 .unwrap_or_default();
 
-            // Populate log: blocking I/O on spawn_blocking, then apply edit
-            // on the current task (no Runtime::new()).
+            // "*magit:log:<path>*" scopes the history to one file
+            // (mirrors magit-blame/magit-diff's file-in-buffer-name
+            // pattern); bare "*magit:log*" stays repo-wide.
+            let path: Option<std::path::PathBuf> = store.name_for(buffer_id).and_then(|name| {
+                let s = name.strip_prefix("*magit:log:")?;
+                let s = s.strip_suffix('*')?;
+                (!s.is_empty()).then(|| std::path::PathBuf::from(s))
+            });
+
+            // Populate log: blocking I/O on spawn_blocking, then apply
+            // edit on the current task (no Runtime::new()).
             let wd = workdir.clone();
-            let text = tokio::task::spawn_blocking(move || run_log(&wd))
+            let path_for_task = path.clone();
+            let text = tokio::task::spawn_blocking(move || run_log(&wd, path_for_task.as_deref()))
                 .await
                 .unwrap();
-            let snap = handle.snapshot();
-            let last = snap.buffer.line_count().saturating_sub(1);
-            let last_line = snap.buffer.line(last).unwrap_or_default();
-            let end = Position::new(last, last_line.len() as u32);
-            let _ = handle
-                .apply_edit_batch(vec![Edit::replace(Range::new(Position::ZERO, end), text)])
-                .await;
+            let spans = crate::highlight::log_styled_spans(&text);
+            apply_full_replace(&handle, text).await;
+            let pending_highlights = ctx.service::<lattice_mode::PendingSyntheticHighlights>();
+            if let Some(ref ph) = pending_highlights {
+                ph.store_and_wake(buffer_id, spans);
+            }
 
-            // Register <CR> handler
             let state = Arc::new(Mutex::new(LogState {
                 buffer_id,
+                path,
                 store: store.clone(),
                 workdir,
+                pending_highlights,
             }));
 
             let Some(cmd_arc) = ctx.service::<CommandRegistryHandle>() else {
-                return Ok(());
+                return Ok(ActionRegsGuard::default());
             };
             let Some(ah_arc) = ctx.service::<ActionHandlerRegistryHandle>() else {
-                return Ok(());
+                return Ok(ActionRegsGuard::default());
             };
             let registry = cmd_arc.load();
             let handlers = (*ah_arc).clone();
+            let mut regs = Vec::new();
 
+            // refresh (gr) — re-run the log. Previously only
+            // magit-status supported `gr`.
             {
                 let s = state.clone();
-                if let Some(cid) = registry.id_by_name("action:magit-log-show-commit") {
-                    let h: ActionHandler = Arc::new(move |ctx: &ActionContext<'_>| {
-                        let g = s.lock().ok()?;
-                        let handle = g.store.handle_for(g.buffer_id)?;
-                        let snap = handle.snapshot();
-                        let line = snap.buffer.line(ctx.cursor.line)?;
-                        let sha = line.split_whitespace().next()?;
-                        let output = std::process::Command::new("git")
-                            .args(["show", "--stat", "-p", sha])
-                            .current_dir(&g.workdir)
-                            .output()
-                            .ok()?;
-                        let text = String::from_utf8(output.stdout).ok()?;
-                        // Write to a temp file and open it
-                        let tmp = g.workdir.join(format!(".lattice_commit_{}", sha));
-                        std::fs::write(&tmp, text).ok()?;
-                        Some(Effect::OpenBuffer {
-                            path: Some(tmp),
-                            force: true,
-                        })
-                    });
-                    handlers.register(cid, h.clone());
+                if let Some(cid) = registry.id_by_name("action:magit-refresh") {
+                    regs.push(handlers.register(
+                        cid,
+                        Arc::new(move |_ctx: &ActionContext<'_>| refresh(s.clone())),
+                    ));
                 }
             }
 
-            Ok(())
+            // <CR> — show commit detail. Fold audit fix: the
+            // registration guard used to be discarded
+            // (`handlers.register(cid, h.clone());` with no binding),
+            // which unregistered the handler immediately — `<CR>` was
+            // dead on arrival. Now pushed into `regs`, kept alive by
+            // the mode's `Guard` for the buffer's lifetime. Also
+            // switched from writing an uncleaned temp file in the
+            // repo workdir to the real `*magit:commit:<sha>*`
+            // synthetic buffer (`magit-revision-mode`).
+            {
+                let s = state.clone();
+                if let Some(cid) = registry.id_by_name("action:magit-log-show-commit") {
+                    regs.push(handlers.register(
+                        cid,
+                        Arc::new(move |ctx: &ActionContext<'_>| {
+                            let g = s.lock().ok()?;
+                            let handle = g.store.handle_for(g.buffer_id)?;
+                            let snap = handle.snapshot();
+                            let line = snap.buffer.line(ctx.cursor.line)?;
+                            let sha = extract_sha(&line)?;
+                            Some(Effect::OpenSyntheticBuffer {
+                                name: format!("*magit:commit:{sha}*"),
+                                mode_id: "magit-revision-mode".to_string(),
+                            })
+                        }),
+                    ));
+                }
+            }
+
+            Ok(ActionRegsGuard(regs))
         })
     }
 }
 
-fn run_log(workdir: &std::path::Path) -> String {
-    std::process::Command::new("git")
-        .args(["log", "--oneline", "--graph", "--decorate", "-50"])
+async fn apply_full_replace(handle: &Arc<dyn lattice_runtime::Document>, text: String) {
+    let snap = handle.snapshot();
+    let last = snap.buffer.line_count().saturating_sub(1);
+    let last_line = snap.buffer.line(last).unwrap_or_default();
+    let end = Position::new(last, last_line.len() as u32);
+    let _ = handle
+        .apply_edit_batch(vec![Edit::replace(Range::new(Position::ZERO, end), text)])
+        .await;
+}
+
+fn refresh(s: Arc<Mutex<LogState>>) -> Option<Effect> {
+    let (handle, wd, path, pending, buffer_id) = {
+        let g = s.lock().ok()?;
+        (
+            g.store.handle_for(g.buffer_id)?,
+            g.workdir.clone(),
+            g.path.clone(),
+            g.pending_highlights.clone(),
+            g.buffer_id,
+        )
+    };
+    tokio::task::spawn(async move {
+        let text = tokio::task::spawn_blocking(move || run_log(&wd, path.as_deref()))
+            .await
+            .unwrap_or_default();
+        let spans = crate::highlight::log_styled_spans(&text);
+        apply_full_replace(&handle, text).await;
+        if let Some(ph) = pending {
+            ph.store_and_wake(buffer_id, spans);
+        }
+    });
+    None
+}
+
+/// `git log --oneline --graph --decorate` renders each commit as
+/// `[graph chars] <sha> <subject>` — the sha is the first
+/// hex-looking whitespace-delimited token on the line, wherever the
+/// graph drawing characters end. Returns `None` for graph-only lines
+/// (merge/branch connectors with no commit).
+fn extract_sha(line: &str) -> Option<&str> {
+    line.split_whitespace()
+        .find(|tok| tok.len() >= 4 && tok.chars().all(|c| c.is_ascii_hexdigit()))
+}
+
+fn run_log(workdir: &std::path::Path, path: Option<&std::path::Path>) -> String {
+    let mut args = vec![
+        "log".to_string(),
+        "--oneline".to_string(),
+        "--graph".to_string(),
+        "--decorate".to_string(),
+        "-50".to_string(),
+    ];
+    if let Some(p) = path {
+        args.push("--".to_string());
+        args.push(p.to_string_lossy().into_owned());
+    }
+    let text = std::process::Command::new("git")
+        .args(&args)
         .current_dir(workdir)
         .output()
         .ok()
         .and_then(|o| String::from_utf8(o.stdout).ok())
-        .unwrap_or_else(|| "Not a git repository.\n".to_string())
+        .unwrap_or_else(|| "Not a git repository.\n".to_string());
+    if text.trim().is_empty() {
+        // A path-scoped log with no commits is a real, common
+        // outcome (an untracked or brand-new file) — say so rather
+        // than leaving a blank buffer that reads like a failure.
+        match path {
+            Some(p) => format!("No commits touching {}.\n", p.display()),
+            None => "No commits yet.\n".to_string(),
+        }
+    } else {
+        text
+    }
 }

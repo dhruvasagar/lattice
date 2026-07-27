@@ -61,6 +61,11 @@ pub fn syntax_element_id(ids: &BuiltinElementIds, style: Style) -> ElementId {
         S::DiagnosticHint => ids.diagnostic_hint,
         S::DiffAdd => ids.diff_add_text,
         S::DiffRemove => ids.diff_remove_text,
+        S::MagitSha => ids.magit_sha,
+        S::MagitBranchCurrent => ids.magit_branch_current,
+        S::MagitRefDecoration => ids.magit_ref_decoration,
+        S::MagitRebaseVerb => ids.magit_rebase_verb,
+        S::MagitAuthor => ids.magit_author,
     }
 }
 

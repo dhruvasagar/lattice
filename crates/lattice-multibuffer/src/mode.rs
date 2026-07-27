@@ -45,7 +45,13 @@ pub struct MultibufferModeGuard {
     /// `on_activate`. Dropping the Guard drops these, which in
     /// turn unregisters the closures from `ActionHandlerRegistry`.
     /// Currently: `<CR>` jump-to-source.
-    _action_handler_registrations: Vec<ActionHandlerRegistration>,
+    ///
+    /// `pub(crate)` (matching `fold_registrations`) so the
+    /// guard-drop unit test in `lib.rs` can construct a guard
+    /// directly — it was left private when this field was added,
+    /// which broke that test's struct literal and stopped the whole
+    /// crate's test target from compiling.
+    pub(crate) _action_handler_registrations: Vec<ActionHandlerRegistration>,
 }
 
 impl Drop for MultibufferModeGuard {

@@ -819,6 +819,38 @@ pub fn register_builtins(reg: &dyn ThemeRegistry) {
         "Removed-line text colour in a unified diff.",
     );
 
+    // ---- Magit-owned styles ----
+    // Git concepts magit's own buffers render — distinct from the
+    // `syntax.*` categories above, which name source-code concepts a
+    // magit buffer never actually contains (a SHA is not a "link", the
+    // checked-out branch is not a "keyword"). Kept close to the diff
+    // text colours above since both are magit-domain roles.
+    reg_one(
+        "magit.sha",
+        spec().fg("blue"),
+        "Commit SHA colour (magit-log, magit-blame, magit-rebase's todo).",
+    );
+    reg_one(
+        "magit.branch.current",
+        spec().fg("green").bold(),
+        "The checked-out branch's `* ` marker + name in magit-branch's list.",
+    );
+    reg_one(
+        "magit.ref.decoration",
+        spec().fg("pink"),
+        "Ref-decoration list after a log SHA (`(HEAD -> main, ...)`).",
+    );
+    reg_one(
+        "magit.rebase.verb",
+        spec().fg("purple").bold(),
+        "A rebase-todo verb (pick/reword/edit/squash/fixup/drop).",
+    );
+    reg_one(
+        "magit.author",
+        spec().fg("overlay"),
+        "The author column in magit-blame output.",
+    );
+
     // ---- Fold markers ----
     // Gutter glyphs on a foldable head row: `▾` when the fold is open,
     // `▸` when collapsed. Muted by cross-editor convention — VS Code
@@ -1167,6 +1199,14 @@ pub struct BuiltinElementIds {
     // MG.4 — inline diff text fg colours (magit unified diff ± lines).
     pub diff_add_text: ElementId,
     pub diff_remove_text: ElementId,
+    // Magit-owned styles — git concepts magit's log/blame/branch/
+    // rebase buffers render, distinct from `syntax.*` (which names
+    // source-code categories a magit buffer never actually contains).
+    pub magit_sha: ElementId,
+    pub magit_branch_current: ElementId,
+    pub magit_ref_decoration: ElementId,
+    pub magit_rebase_verb: ElementId,
+    pub magit_author: ElementId,
     // Fold-marker gutter glyphs (`▾` open head, `▸` collapsed head).
     // Muted by cross-editor convention (VS Code / Zed / JetBrains /
     // Sublime / Neovim all render fold controls in a low-emphasis gray,
@@ -1309,6 +1349,11 @@ impl Default for BuiltinElementIds {
             diff_conflict_line: ElementId::INVALID,
             diff_add_text: ElementId::INVALID,
             diff_remove_text: ElementId::INVALID,
+            magit_sha: ElementId::INVALID,
+            magit_branch_current: ElementId::INVALID,
+            magit_ref_decoration: ElementId::INVALID,
+            magit_rebase_verb: ElementId::INVALID,
+            magit_author: ElementId::INVALID,
             gutter_fold_open: ElementId::INVALID,
             gutter_fold_closed: ElementId::INVALID,
             pane_status_active: ElementId::INVALID,
@@ -1489,6 +1534,11 @@ impl BuiltinElementIds {
             diff_conflict_line: id("diff.conflict.line"),
             diff_add_text: id("diff.add.text"),
             diff_remove_text: id("diff.remove.text"),
+            magit_sha: id("magit.sha"),
+            magit_branch_current: id("magit.branch.current"),
+            magit_ref_decoration: id("magit.ref.decoration"),
+            magit_rebase_verb: id("magit.rebase.verb"),
+            magit_author: id("magit.author"),
             gutter_fold_open: id("gutter.fold.open"),
             gutter_fold_closed: id("gutter.fold.closed"),
             pane_status_active: id("pane.status.active"),

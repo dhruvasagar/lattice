@@ -3994,34 +3994,139 @@ Installs through `SubsystemBoot` seam. Inverted out of
   buffer. `on_activate` discovers repo from `.` and spawns
   refresh. `DiffCache` + `=` toggle deferred to MG.3 (hunk
   actions need the diff-expansion path anyway). 714 host tests
-  pass green.
+  pass green. **Fold provider added (2026-07-26):** the
+  "register fold ranges via fold overlay service" deliverable
+  was never actually implemented — `*magit:status*` registered
+  zero `FoldSource` overlays, so folding a file didn't fold its
+  inline diff, and hunks/diffs weren't nested (TAB was also
+  structurally dead: `magit-core`'s handler unconditionally
+  returned `None` before the generic fold-toggle path could
+  run). Added `MagitStatusFoldSource` (`fold_source.rs`),
+  mirroring `lattice_diff::HunkFoldSource`'s live-recompute
+  shape: emits a nested `Fold` per expanded entry (header
+  line through its patch) containing one `Fold` per `@@`
+  hunk, using the exact inserted-line count from
+  `StatusBufferState::expanded` (see MG.3) rather than a
+  re-scanned guess — sidesteps the same text-parsing ambiguity
+  MG.3's fix addresses. `magit-core`'s TAB/S-TAB handlers now
+  return `Effect::AppAction(ToggleFoldAtCursor)` /
+  `CycleFoldsGlobal`; the redundant `<Tab>` → toggle-diff
+  binding in `magit-status-mode`'s own keymap (duplicate of
+  `=`, shadowing magit-core's fold binding) was removed.
 - ✅ **MG.3** — magit-status actions (2026-07-25).
   Per-buffer action handlers on ActionHandlerRegistry:
   stage (s), unstage (u), discard (x), visit (<CR>),
   refresh (gr), close (q), commit-open (cc). Stored in
   MagitStatusGuard for RAII cleanup. 714 host tests pass.
+  **Audit fix (2026-07-26):** the original handlers re-parsed
+  rendered buffer *text* (`parse_file_path` splitting on the
+  first space) instead of the structured `SectionIndex` data
+  `sections.rs`/`refresh.rs` already build — this broke `u`
+  and `=`/`x` on every Staged entry (the "new file" status
+  label is two words, so the first-space split returned
+  garbage), left `<CR>` a no-op on Stash/Commit lines, and
+  truncated `=`'s toggle-off on any diff containing
+  indentation-colliding context lines. Replaced with
+  `classify_line`/`StatusLine` (fixed-format label matching)
+  + a `StatusBufferState::expanded` map tracking exact
+  inserted-line counts per entry (file diff / stash show /
+  commit show, all via the same inline-toggle mechanism now).
+  `x`'s in-flight `Effect::Confirm` wiring (from a prior
+  session) was also missing its `CommandRegistry` entry for
+  `action:magit-discard-execute` — added.
 - ✅ **MG.4** — magit-commit buffer (2026-07-25).
   MagitCommitMode major mode with commit/abort keymap.
   `:magit-commit` via OpenSyntheticBuffer. Staged diff
   preview + editable message region deferred to MG-future.
-- ✅ **MG.5** — magit-diff buffer (2026-07-25).
-  MagitDiffMode major mode. `:magit-diff` ex-command.
-  Reuses D.4 side-by-side DiffSession. hunk staging
-  (s/u/x) via same action handlers as magit-status.
-- ✅ **MG.6** — magit-log buffer (2026-07-25).
-  MagitLogMode major mode. `git log --oneline --graph`
-  formatting via spawn_blocking. `<CR>` show commit.
-- ✅ **MG.7** — magit-blame buffer (2026-07-25).
-  MagitBlameMode major mode. `git blame --line-porcelain`
-  parsing. `<CR>` show commit, `p` re-blame at parent.
-- ✅ **MG.8** — Transient menus (2026-07-25).
-  Magit dispatch transient (C-c g) wired via PICK.1 types.
-  Submenu navigation, flag toggling. Action handler
-  invocation via CommandId dispatch.
+  **Audit note (2026-07-26):** empty-subject validation
+  silently no-ops instead of the spec'd headerline error;
+  amend doesn't pre-populate the previous commit message; no
+  explicit refresh-status-after-commit. Not fixed in this
+  pass — tracked as follow-up.
+- 🚧 **MG.5** — magit-diff buffer. **Audit correction
+  (2026-07-26):** `on_activate` registers only a close
+  handler — no `DiffSession`/content population at all, the
+  buffer opens empty. `s`/`u` are declared in its keymap but
+  have no handler registered in this mode; pressing them only
+  appears to work if `magit-status` was already activated in
+  the session (its handler is keyed by the same `CommandId`
+  and captures the *status* buffer's state, not the diff
+  buffer's — a cross-buffer hijack, see MG.9 audit note).
+  Was marked ✅; corrected to reflect actual state. Not
+  rebuilt in this pass.
+- 🚧 **MG.6** — magit-log buffer. **Audit correction
+  (2026-07-26):** log rendering (`git log --oneline --graph`)
+  is real, but `<CR>`'s `ActionHandlerRegistration` guard is
+  dropped immediately after registration (never stored), so
+  the handler unregisters itself on the spot — dead on
+  arrival. Commit-open also writes an uncleaned temp file
+  into the repo workdir and opens it via plain `OpenBuffer`,
+  not the spec'd `*magit:commit:<sha>*` synthetic buffer. Was
+  marked ✅; corrected. Not rebuilt in this pass.
+- 🚧 **MG.7** — magit-blame buffer. **Audit correction
+  (2026-07-26):** blame text population (`git blame
+  --line-porcelain`) is real, but `<CR>`/`p` are declared in
+  the keymap with zero `ActionHandlerRegistry.register` calls
+  in `on_activate` — both are dead. "Styled cells" gutter is
+  actually a plain text prefix, no `StyledSpan`s. Was marked
+  ✅; corrected. Not rebuilt in this pass.
+- 🚧 **MG.8** — Transient menus. **Audit correction
+  (2026-07-26):** the ledger's original "wired via PICK.1
+  types... action handler invocation via CommandId dispatch"
+  claim did not match source — `magit-dispatch` /
+  `magit-file-dispatch` were registered as plain aliases of
+  `:magit-status` (`Effect::OpenSyntheticBuffer` with
+  identical args), and `transients.rs`'s `dispatch_transient`/
+  `file_dispatch_transient` builders, though real, were never
+  called from anywhere. **Fixed in this pass:** added
+  `Effect::OpenTransient { source }` + a
+  `lattice_picker::TransientSourceRegistry` service (named
+  builders registered by the owning mode crate, resolved at
+  the renderer's effect-handling site — mirrors `OpenPicker`'s
+  named-source shape, needed because `TransientSpec` lives
+  downstream of `lattice-grammar`'s `Effect` enum);
+  `magit-dispatch`/`magit-file-dispatch` now open their own
+  transients. `dispatch_transient()`'s group list completed
+  (Stashing/Remotes/Misc added; was 3 of 6). Still open:
+  every item in the root/file transients remains a
+  `TransientItemKind::Flag` placeholder (no real `CommandId`
+  wiring — the registry's builder closures take no context, so
+  resolving action names to `CommandId`s needs a
+  `CommandRegistry` reference threaded through, not done
+  here), the branch/merge/rebase/stash/push/pull sub-transients
+  don't exist, `TransientState`/live `preview()` aren't wired,
+  and file-dispatch's path resolution (from active buffer or
+  `SectionIndex` at cursor) isn't implemented.
+  **`--features window` build was broken (2026-07-26):**
+  discovered verifying GPUI parity for this fix —
+  `crates/lattice-ui-gpui/src/window.rs`'s `render()` had a
+  missing `};` closing `let picker_overlay = if ... else {
+  ... }` (introduced with the PICK.1 picker-overlay code;
+  never caught because `cargo check -p lattice-cli`/`--workspace`
+  don't compile this crate's `window` feature by default — see
+  the standing GPUI-feature-gating pitfall note). Once parseable,
+  `build_transient_gpui` (the PICK.1 GPUI transient renderer,
+  also apparently never compiled) had two more errors: a
+  nonexistent `crate::AppTheme` type (should be `GpuiTheme`) and
+  a nonexistent `GpuiTheme::selection_background` field (should
+  be `cursor_background`) and a `.child(&item.description)` type
+  error (`String`, not `&String`). All fixed; `cargo check -p
+  lattice-ui-gpui --features window` is green again.
 - ✅ **MG.9** — Remaining operation buffers (2026-07-25).
   MagitStashMode, MagitBranchMode, MagitRebaseMode major
   modes. Stash list/apply/pop/drop, branch checkout/create/
   delete, rebase todo buffer. All via git CLI on spawn_blocking.
+  **Audit note (2026-07-26):** branch `c` (create) is an
+  explicit stub ("needs minibuffer prompt", not implemented).
+  `magit-rebase`'s todo buffer is populated with a hardcoded
+  fake sample instead of real `git rebase -i` output, and
+  `C-c C-c` writes that fake content + runs `git rebase
+  --continue` against a rebase that was never started (fails
+  silently — `.ok()?` swallows the error). Stash/branch
+  mutations don't auto-refresh their list (`gr` is only ever
+  bound by `magit-status`'s `on_activate`; see the
+  `ActionHandlerRegistry` cross-buffer note under MG.5). None
+  of this fixed in this pass — tracked as follow-up.
 - ✅ **MG.10** — Polish (2026-07-25).
   Edge cases: not-a-git-repo message, detached HEAD, bare repo
   denial. Refresh on re-activation. All 714 host tests pass.

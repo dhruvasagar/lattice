@@ -27,6 +27,7 @@ lattice-config = { path = "../lattice-config" }
 lattice-keymap = { path = "../lattice-keymap" }
 lattice-theme = { path = "../lattice-theme" }
 lattice-picker = { path = "../lattice-picker" }
+lattice-completion = { path = "../lattice-completion" }
 lattice-cells = { path = "../lattice-cells" }
 tokio = { workspace = true, features = ["sync", "rt", "macros"] }
 tracing = { workspace = true }

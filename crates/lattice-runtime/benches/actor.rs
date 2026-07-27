@@ -24,7 +24,7 @@ use std::sync::Arc;
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 
 use lattice_core::Document;
-use lattice_grammar::CommandRegistry;
+use lattice_grammar::{CommandRegistry, CommandRegistryHandle};
 use lattice_protocol::edit::Edit;
 use lattice_protocol::position::Position;
 use lattice_runtime::{block_on, spawn_document};
@@ -73,7 +73,8 @@ fn snapshot_publish_standalone(c: &mut Criterion) {
 /// above isolates the publish step itself.
 fn snapshot_publish_via_apply_edit(c: &mut Criterion) {
     let mut g = c.benchmark_group("runtime::snapshot_publish_via_apply_edit");
-    let registry = Arc::new(CommandRegistry::new());
+    let registry: CommandRegistryHandle =
+        Arc::new(arc_swap::ArcSwap::from_pointee(CommandRegistry::new()));
 
     for size in [10usize, 1_000, 50_000] {
         let text = build_buffer_text(size);
@@ -105,7 +106,8 @@ fn snapshot_publish_via_apply_edit(c: &mut Criterion) {
 /// §5.6.8's renderer-side floor.
 fn snapshot_load_cached(c: &mut Criterion) {
     let mut g = c.benchmark_group("runtime::snapshot_load_cached");
-    let registry = Arc::new(CommandRegistry::new());
+    let registry: CommandRegistryHandle =
+        Arc::new(arc_swap::ArcSwap::from_pointee(CommandRegistry::new()));
     let handle = spawn_document(
         lattice_core::BufferId(0),
         Document::from_text("x"),
@@ -128,7 +130,8 @@ fn snapshot_load_cached(c: &mut Criterion) {
 /// pointer-sized.
 fn snapshot_load(c: &mut Criterion) {
     let mut g = c.benchmark_group("runtime::snapshot_load");
-    let registry = Arc::new(CommandRegistry::new());
+    let registry: CommandRegistryHandle =
+        Arc::new(arc_swap::ArcSwap::from_pointee(CommandRegistry::new()));
     let handle = spawn_document(
         lattice_core::BufferId(0),
         Document::from_text("x"),
@@ -151,7 +154,8 @@ fn snapshot_load(c: &mut Criterion) {
 /// to that path, before the renderer compose phase.
 fn apply_edit_round_trip(c: &mut Criterion) {
     let mut g = c.benchmark_group("runtime::apply_edit_round_trip");
-    let registry = Arc::new(CommandRegistry::new());
+    let registry: CommandRegistryHandle =
+        Arc::new(arc_swap::ArcSwap::from_pointee(CommandRegistry::new()));
 
     for size in [10usize, 1_000, 50_000] {
         let text = build_buffer_text(size);
@@ -180,7 +184,8 @@ fn apply_edit_round_trip(c: &mut Criterion) {
 /// load, then iterate).
 fn snapshot_post_publish_read(c: &mut Criterion) {
     let mut g = c.benchmark_group("runtime::snapshot_post_publish_read");
-    let registry = Arc::new(CommandRegistry::new());
+    let registry: CommandRegistryHandle =
+        Arc::new(arc_swap::ArcSwap::from_pointee(CommandRegistry::new()));
 
     for size in [10usize, 1_000, 50_000] {
         let text = build_buffer_text(size);
@@ -214,7 +219,7 @@ fn dispatch_round_trip(c: &mut Criterion) {
     let mut g = c.benchmark_group("runtime::dispatch_round_trip");
     let mut registry_inner = lattice_grammar::CommandRegistry::new();
     let builtins = populate(&mut registry_inner);
-    let registry = Arc::new(registry_inner);
+    let registry: CommandRegistryHandle = Arc::new(arc_swap::ArcSwap::from_pointee(registry_inner));
     for size in [10usize, 1_000, 50_000] {
         let text = build_buffer_text(size);
         g.bench_with_input(BenchmarkId::from_parameter(size), &text, |bencher, t| {
@@ -249,7 +254,8 @@ fn dispatch_round_trip(c: &mut Criterion) {
 /// the cost on the editor's per-frame path.
 fn status_segment_update(c: &mut Criterion) {
     let mut g = c.benchmark_group("runtime::status_segment_update");
-    let registry = Arc::new(CommandRegistry::new());
+    let registry: CommandRegistryHandle =
+        Arc::new(arc_swap::ArcSwap::from_pointee(CommandRegistry::new()));
     let handle = spawn_document(
         lattice_core::BufferId(0),
         Document::from_text(build_buffer_text(1_000).as_str()),

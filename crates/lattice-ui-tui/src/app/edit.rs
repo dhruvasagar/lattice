@@ -935,10 +935,12 @@ mod tests {
         a.apply(Action::EnterSearch(
             lattice_grammar::SearchDirection::Forward,
         ));
-        a.apply(Action::SearchAppend('a'));
+        // MB.5a: SearchAppend is a retired no-op; real typing
+        // goes through the Insert dispatcher onto `*search-line*`.
+        a.apply(Action::Insert("a".to_string()));
         a.apply(Action::PasteText("bcd".into()));
-        let line = a.editor.search_line.as_ref().unwrap();
-        assert_eq!(line.pattern, "abcd");
+        assert!(a.editor.search_line.is_some(), "search line still active");
+        assert_eq!(a.editor.search_pattern(), "abcd");
     }
 
     #[test]

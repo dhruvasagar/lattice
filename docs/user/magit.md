@@ -7,9 +7,11 @@ related: [magit-status, magit-buffers, magit-transient, ex:magit-status, ex:magi
 
 Magit is Lattice's git porcelain — a complete, modal, keyboard-driven
 interface for git that lives inside the editor. It is modeled on Emacs
-magit's section-collapsible status buffer, hunk-at-a-time staging, and
-transient prefix menus, adapted to Lattice's vim-normal-mode
-conventions and everything-is-a-buffer architecture.
+magit's section-collapsible status buffer and transient prefix menus,
+adapted to Lattice's vim-normal-mode conventions and
+everything-is-a-buffer architecture. Unlike Emacs magit, staging today
+is **file-level only** — there is no hunk-at-a-time staging anywhere in
+Lattice's magit yet.
 
 Every magit view is a buffer-backed Document with a major mode. You
 open, close, navigate, and search them the same way you do any other
@@ -30,11 +32,11 @@ no hidden state.
 | Key / command | Meaning |
 |---|---|
 | `C-x g` | Open [magit-status](magit-status.md) for the current repo |
-| `C-c g` | Open the [repo dispatch transient](magit-transient.md) (branch, merge, rebase, fetch, push, …) |
-| `C-c f` | Open the [file dispatch transient](magit-transient.md) (stage, unstage, diff, log, blame for the current file) |
+| `C-c g` | Open the [repo dispatch transient](magit-transient.md) — flat menu, one entry point per view (status/commit/log/branch/stash/rebase), plus `F` (pull) / `P` (push), both real git operations run in the background |
+| `C-c f` | Open the [file dispatch transient](magit-transient.md) — `s` stages / `d` diffs the file in your *current* buffer (not an entry under the cursor elsewhere) |
 | `:magit-status` | Same as `C-x g` — open the status buffer |
 | `:magit-commit` | Open the commit message buffer |
-| `:magit-diff` | Open a side-by-side diff view |
+| `:magit-diff` | Open a read-only `git diff HEAD` view with file-level stage/unstage |
 | `:magit-log` | Open the commit history log |
 | `:magit-blame` | Open blame annotations for the current file |
 | `:magit-stash-list` | Open the stash list |
@@ -89,7 +91,7 @@ Expensive operations — diffs, blame data, commit details — are
 |---|---|---|
 | `*magit:status*` | File paths + status labels (fast list view) | `=` loads `git diff --cached <path>` / `git diff <path>` per-file |
 | `*magit:diff*` | Diff loaded on open (the view IS the diff) | — |
-| `*magit:log*` | `git log --oneline --graph --decorate -N` | `<CR>` loads `git show <sha>` for the commit at cursor |
+| `*magit:log*` | `git log --oneline --graph --decorate -50` (count is currently hardcoded) | `<CR>` opens `*magit:commit:<sha>*`, a `git show <sha>` view, for the commit at cursor |
 | `*magit:blame*` | Blame loaded on open (the view IS the blame) | `<CR>` shows the commit for the blamed line; `p` re-blames at parent |
 | `*magit:commit*` | Staged diff loaded on open (the purpose of this view) | — |
 
@@ -132,15 +134,31 @@ buffer's directory. If you're not in a git repository, the buffer shows
 ### `C-c g` — dispatch transient
 
 Press `C-c g` from any buffer to open the **repo-level dispatch
-transient** — a grouped action menu that gives you single-key access to
-every magit operation: stage/unstage, commit, log, branch, merge,
-rebase, stash, fetch, push. See [transient menus](magit-transient.md).
+transient** — a grouped menu with one entry point per magit view:
+status, commit, log, branch, stash, rebase all genuinely open their
+buffer, from wherever you happen to be. `F` (pull) and `P` (push) are
+also real: `F` runs `git fetch` + a fast-forward-only merge (it will
+never create a merge commit — if your branch has diverged it fails
+cleanly instead of merging), `P` runs `git push`. Both run in the
+background and fail fast if git needs credentials it doesn't have;
+the result shows up in the `*messages*` buffer / debug log, not as an
+immediate on-screen confirmation. It's a flat list today — pressing
+`s`, `l`, `b`, `z`, `r`, `F`, or `P` just fires the corresponding
+buffer-open or git operation (the same thing `:magit-status` /
+`:magit-log` / … does for the buffer-opening ones); there are no
+nested branch/stash/push submenus with their own actions yet. See
+[transient menus](magit-transient.md).
 
 ### `C-c f` — file dispatch transient
 
-Press `C-c f` to open the **file-level dispatch transient** for the
-current buffer's file. Shows per-file operations: stage, unstage,
-discard, diff, log, blame, rename, delete. See [transient
+Press `C-c f` to open the **file-level dispatch transient**. `s`
+stages and `d` opens a diff scoped to just that one file — both act
+on the file belonging to whatever buffer was active when you pressed
+`C-c f`, not an entry at the cursor in some other buffer (pressing
+`C-c f` while inside `magit-status`, for instance, does not act on
+the entry under the cursor there). If the active buffer has no file
+(a synthetic buffer, an empty scratch buffer, …) there's no path to
+resolve and the action does nothing. See [transient
 menus](magit-transient.md).
 
 All three chords follow Emacs convention and are unused in default vim
@@ -150,28 +168,28 @@ normal mode — they map cleanly over the vim grammar.
 
 ## Options
 
-Registered through the typed-options system (`:set` / `:customize`),
-owned by `lattice-magit`:
+`git.auto-head-diff` is registered through the typed-options system
+(`:set` / `:customize`), owned by `lattice-host`'s VCS subsystem:
 
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `git.auto-head-diff` | `bool` | `true` | Auto-register a gutter-diff against HEAD when opening files in git repos |
-| `magit.auto-refresh` | `bool` | `true` | Auto-refresh magit buffers on repository changes |
-| `magit.refresh-debounce-ms` | `u32` | `100` | Debounce window for auto-refresh (milliseconds) |
-| `magit.status.show-untracked` | `bool` | `true` | Show untracked files section |
-| `magit.status.show-stashes` | `bool` | `true` | Show stash list section |
-| `magit.status.recent-commits-count` | `u32` | `20` | Number of recent commits to show |
-| `magit.log.count` | `u32` | `50` | Default log entry count |
-| `magit.log.graph` | `bool` | `true` | Show commit graph in log |
-| `magit.log.decorate` | `bool` | `true` | Show branch/tag decorations in log |
-| `magit.blame.author-width` | `u8` | `12` | Max author name width in blame gutter |
-| `magit.blame.date-format` | `string` | `"relative"` | `relative`, `short`, or `iso` |
-| `magit.commit.show-diff` | `bool` | `true` | Show staged diff in commit buffer |
-| `magit.diff.context-lines` | `u32` | `3` | Context lines in inline and side-by-side diffs |
 
-Use `:set magit.status.show-untracked=false` to hide the untracked
-files section. Options are live — changes take effect on the next
-buffer refresh.
+Everything else that earlier revisions of this page listed here
+(`magit.auto-refresh`, `magit.refresh-debounce-ms`,
+`magit.status.show-untracked`, `magit.status.show-stashes`,
+`magit.status.recent-commits-count`, `magit.log.count`,
+`magit.log.graph`, `magit.log.decorate`, `magit.blame.author-width`,
+`magit.blame.date-format`, `magit.commit.show-diff`,
+`magit.diff.context-lines`) is **not currently a registered option** —
+`lattice-magit` doesn't register any options of its own, and none of
+these names appear in the typed-options registry. `:set` on any of them
+fails loudly with `unknown option` rather than silently accepting and
+ignoring the value. The behavior each name implies is often real
+(untracked files do show by default, the log does default to `-50`
+entries, blame dates are relative, …) but today it's hardcoded, not a
+live knob — treat this whole list as a roadmap for options that should
+exist, not ones that do.
 
 ---
 

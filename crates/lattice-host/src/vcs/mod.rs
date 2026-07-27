@@ -104,8 +104,16 @@ impl VcsSubsystem {
                             continue;
                         };
 
-                        // Discover git repo
-                        let repo = match Repository::discover(&path) {
+                        // Discover git repo. `gix::discover` requires a
+                        // directory — `path` is the opened file itself, so
+                        // start from its parent (bug fix: this previously
+                        // always failed with "not a directory", meaning
+                        // auto-head-diff gutter signs never appeared for
+                        // any file).
+                        let Some(parent) = path.parent() else {
+                            continue;
+                        };
+                        let repo = match Repository::discover(parent) {
                             Ok(r) => r,
                             Err(_) => continue, // not in a git repo
                         };
@@ -167,8 +175,6 @@ impl VcsSubsystem {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     // Tests for the VCS subsystem live in `editor.rs` (integration)
     // alongside the diff subsystem tests, since they require a full
     // Editor + BufferRegistry + diff subsystem setup.

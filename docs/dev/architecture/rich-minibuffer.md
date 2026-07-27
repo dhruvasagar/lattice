@@ -3,10 +3,18 @@
 > **✅ Shipped (2026-07-24, MB.1–MB.5).** The `:` command line and `/`·`?`
 > search line are **buffer-backed, readline-grade editing surfaces** with
 > two independent history rings, `<C-x><C-e>` expand, live decorations, and
-> fuzzy pickers. The substrate is ready for future prompt kinds
-> (`git-commit-line`, `repl-input`). See the
+> fuzzy pickers. See the
 > [slice plan](../operations/slice-plans/rich-minibuffer.md) for the
 > delivered slice catalogue.
+>
+> **✅ Also shipped: a generic third family member.** Rather than
+> `git-commit-line`/`repl-input` as separate purpose-built kinds, a
+> single generic `prompt-line-mode` (`Effect::OpenPrompt`) now exists —
+> "ask for one line of text, then fire a named action with it," no
+> history/completion. Magit's branch-create wizard is its first
+> consumer. See §6. `git-commit-line`/`repl-input` themselves are still
+> unbuilt — magit-commit-mode still opens a full multi-region buffer,
+> not this prompt.
 
 Authoritative design for Lattice's **rich minibuffer**: the `:` command
 line and `/`·`?` search line are **readline-grade editing surfaces**
@@ -226,6 +234,60 @@ Search-line unification (MB.5, shipped 2026-07-24):
 - `preview_search()` reads pattern from buffer, runs against the target
   document (via `minibuffer_focus.prior_buffer_id`).
 - The parallel search `String` is deleted; the input path is unified.
+
+**Generic prompt unification (`prompt-line-mode`, shipped alongside the
+magit branch-create wizard):** rather than building purpose-specific
+kinds one at a time as predicted above (`git-commit-line`, `repl-input`),
+the third member of the family generalizes the pattern once instead —
+`prompt-line-mode` (`crates/lattice-host/src/prompt_line_mode.rs`) is a
+single mode any caller can reuse for "ask for one line of text, then do
+something with it," backed by `Effect::OpenPrompt { prompt, initial,
+on_submit_action, buffer_name }`:
+
+- Same one-line-buffer + `ModeContext::ensure_named_document` +
+  `focus_editing_buffer`/`restore_editing_buffer` shape as
+  `command-line-mode`/`search-line-mode`; new `ModalState::Prompt`.
+  `<CR>` → `action:prompt-line-submit`, `<Esc>`/`<C-c>` →
+  `action:prompt-line-cancel` — no history ring, no completion, no
+  purpose-specific logic (unlike tier 1's `:`/`/`, which own those).
+- **Closure-free by design, matching `Effect::Confirm`'s convention**:
+  `on_submit_action` names a registered `action:*` handler (resolved via
+  `CommandRegistryHandle::id_by_name` + `ActionHandlerRegistry::lookup`),
+  fired with the typed text available as the new
+  `ActionContext::prompt_value: Option<&str>` field. No closure crosses
+  from the caller into `Effect`/`Action`/`AppEffect` — those stay plain,
+  serializable-shaped enums, same reasoning as `Effect::OpenTransient`'s
+  name-only `source` field (`picker.md` §4bis.4).
+- **Context passing via buffer name, not a new field**: a caller that
+  needs the handler to know more than "the typed text" (e.g. magit's
+  branch-create wizard needs the picked base branch, decided in an
+  earlier step) passes `buffer_name` — the handler reads it back via
+  `ctx.services.get::<BufferStoreHandle>()?.name_for(ctx.buffer_id)`,
+  the exact trick magit's blame/rebase/revision modes already use to
+  encode their target in a buffer's synthetic name. `ctx.buffer_id`/
+  `ctx.cursor` inside the fired handler are the PROMPT buffer's own
+  (captured before focus restores), not whatever was active before the
+  prompt opened — a deliberate choice, not an oversight; see
+  `Editor::do_prompt_line_submit`'s doc comment.
+- Dispatched through the same native `AppEffect`→`Action`→
+  `Editor::do_*` path as `command-line-submit`/`search-line-submit`
+  (NOT `ActionHandlerRegistry`, which is how MAGIT's own per-buffer
+  actions register — `prompt-line-mode` lives in `lattice-host` and
+  needs full `&mut Editor` access no `ActionHandlerRegistry` closure
+  gets).
+- `PickerAcceptOutcome::OpenPrompt` (`picker.md` §4.4) is the
+  picker-accept peer of the same mechanism, letting a picker source
+  chain "pick an item, then prompt for a value" — magit's
+  `BranchPickBaseSource` (`magit.md` §12.9) is the first consumer:
+  pick a base branch via a real picker, then this prompt asks for the
+  new branch's name.
+- Host-internal: `Effect::OpenPrompt` and `AppEffect::PromptLineSubmit`/
+  `PromptLineCancel` are not mirrored over WIT (same "host-internal
+  minibuffer-prompt effect" carve-out as every `*Line*` `AppEffect`
+  already gets in `lattice-plugin-host/src/boundary_app_effect.rs`) —
+  plugins don't get this for free yet, unlike the paramount-#2 framing
+  in §7 below, which describes the STEADY-STATE substrate shape, not
+  today's plugin-visibility boundary.
 
 ## 7. Paramount-goal alignment
 

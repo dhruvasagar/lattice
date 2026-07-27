@@ -251,6 +251,7 @@ mod tests {
             cursor: Position { line: 5, byte: 0 },
             services: &services,
             events: &events,
+            prompt_value: None,
         };
         assert!(
             reload_handler()(&ctx).is_none(),

@@ -5115,6 +5115,11 @@ mod excerpt_fold_tests {
         {
             let _guard = crate::mode::MultibufferModeGuard {
                 fold_registrations: vec![(svc, lattice_core::ProviderId(1))],
+                // Empty: this test covers the fold-registration half
+                // of Drop only. The action-handler tokens unregister
+                // themselves via their own Drop impl, which
+                // `lattice-mode` tests separately.
+                _action_handler_registrations: Vec::new(),
             };
         }
         assert!(

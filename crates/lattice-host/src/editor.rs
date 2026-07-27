@@ -469,6 +469,11 @@ pub struct Editor {
     /// In-progress `/` or `?` search. `Some` only while
     /// `modal == ModalState::Search(_)`.
     pub search_line: Option<SearchLine>,
+    /// The `action:*` name to fire on `<CR>` while a generic
+    /// `Effect::OpenPrompt` prompt is focused (`modal ==
+    /// ModalState::Prompt`). Set by `open_prompt_line`, consumed
+    /// (`.take()`) by `do_prompt_line_submit`.
+    pub pending_prompt_submit_action: Option<String>,
     /// Most recent submitted search; consulted by `n` / `N`.
     pub last_search: Option<LastSearch>,
     /// Range of the most recent search match, used to draw

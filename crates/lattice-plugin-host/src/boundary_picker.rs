@@ -459,6 +459,14 @@ impl WitBoundary for NativeRoutingPayload {
                         .into(),
                 );
             }
+            // magit's branch-create wizard — host-internal, same shape
+            // as LoadCommandLine/LoadSearchLine above.
+            NativeRoutingPayload::BranchBase { .. } => {
+                return Err(
+                    "branch-base is a host-internal picker routing payload, not representable over WIT"
+                        .into(),
+                );
+            }
         })
     }
 

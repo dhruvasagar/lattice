@@ -131,6 +131,7 @@ fn built_in_picker_registry(
         reg.register_generator(generator);
     }
     lattice_snippet::picker_sources::register(&mut reg, snippet_registry);
+    lattice_magit::picker_sources::register(&mut reg);
     // T.12a: the live-preview theme picker (`:colorscheme` no-arg).
     // Holds a clone of the host's `ThemeRegistryHandle` so it can
     // enumerate registered theme names + drive live preview.
@@ -485,6 +486,14 @@ impl Editor {
         boot.modes_mut()
             .register(crate::search_line_mode::SearchLineMode)
             .expect("search-line-mode must register without conflict");
+        // `prompt-line-mode` — the generic one-line minibuffer text
+        // prompt backing `Effect::OpenPrompt`. Host-owned; unlike
+        // command-line/search-line it has no purpose-specific keymap
+        // beyond submit/cancel — the caller supplies the label,
+        // initial text, and submit-target per invocation.
+        boot.modes_mut()
+            .register(crate::prompt_line_mode::PromptLineMode)
+            .expect("prompt-line-mode must register without conflict");
         // BC.7 (2026-06-24): `multibuffer-mode` (+ its `DocumentClosed`
         // cleanup subscriber), `narrow-minor-mode`, and the project-search
         // provider mode moved into `lattice_multibuffer::install(boot)`

@@ -5,7 +5,7 @@
 use std::sync::{Arc, Mutex, OnceLock};
 
 use lattice_config;
-use lattice_grammar::CommandRegistryHandle;
+use lattice_grammar::{CommandRegistryHandle, Effect};
 use lattice_mode::{
     ActionContext, ActionHandlerRegistryHandle, BufferStoreHandle, CapabilitySet, Keymap,
     KeymapEntry, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, OptionOverrideSet,
@@ -14,6 +14,8 @@ use lattice_mode::{
 use lattice_protocol::edit::Edit;
 use lattice_protocol::position::{Position, Range};
 use lattice_vcs::{Branch, Repository};
+
+use crate::magit_core_mode::ActionRegsGuard;
 
 pub struct MagitBranchMode;
 
@@ -39,10 +41,11 @@ struct BranchState {
     buffer_id: lattice_core::BufferId,
     store: Arc<BufferStoreHandle>,
     workdir: std::path::PathBuf,
+    pending_highlights: Option<lattice_mode::PendingSyntheticHighlightsHandle>,
 }
 
 impl Mode for MagitBranchMode {
-    type Guard = ();
+    type Guard = ActionRegsGuard;
 
     fn id(&self) -> ModeId {
         Self::mode_id()
@@ -72,10 +75,10 @@ impl Mode for MagitBranchMode {
         Box::pin(async move {
             let buffer_id = lattice_core::BufferId(ctx.buffer_id().0 as u32);
             let Some(store) = ctx.service::<BufferStoreHandle>() else {
-                return Ok(());
+                return Ok(ActionRegsGuard::default());
             };
             let Some(handle) = store.handle_for(buffer_id) else {
-                return Ok(());
+                return Ok(ActionRegsGuard::default());
             };
             let workdir = Repository::discover(".")
                 .ok()
@@ -88,29 +91,42 @@ impl Mode for MagitBranchMode {
             let text = tokio::task::spawn_blocking(move || build_branch_list(&wd))
                 .await
                 .unwrap();
-            let snap = handle.snapshot();
-            let last = snap.buffer.line_count().saturating_sub(1);
-            let last_line = snap.buffer.line(last).unwrap_or_default();
-            let end = Position::new(last, last_line.len() as u32);
-            let _ = handle
-                .apply_edit_batch(vec![Edit::replace(Range::new(Position::ZERO, end), text)])
-                .await;
+            let spans = crate::highlight::branch_styled_spans(&text);
+            apply_full_replace(&handle, text).await;
+            let pending_highlights = ctx.service::<lattice_mode::PendingSyntheticHighlights>();
+            if let Some(ref ph) = pending_highlights {
+                ph.store_and_wake(buffer_id, spans);
+            }
 
             let state = Arc::new(Mutex::new(BranchState {
                 buffer_id,
                 store: store.clone(),
                 workdir: workdir.clone(),
+                pending_highlights,
             }));
 
             let Some(cmd_arc) = ctx.service::<CommandRegistryHandle>() else {
-                return Ok(());
+                return Ok(ActionRegsGuard::default());
             };
             let Some(ah_arc) = ctx.service::<ActionHandlerRegistryHandle>() else {
-                return Ok(());
+                return Ok(ActionRegsGuard::default());
             };
             let registry = cmd_arc.load();
             let handlers = (*ah_arc).clone();
             let mut regs = Vec::new();
+
+            // refresh (gr) — re-list branches. Previously only
+            // magit-status supported `gr`; every other magit buffer
+            // silently no-op'd on it.
+            {
+                let s = state.clone();
+                if let Some(cid) = registry.id_by_name("action:magit-refresh") {
+                    regs.push(handlers.register(
+                        cid,
+                        Arc::new(move |_ctx: &ActionContext<'_>| refresh(s.clone())),
+                    ));
+                }
+            }
 
             // checkout (<CR>)
             {
@@ -119,11 +135,15 @@ impl Mode for MagitBranchMode {
                     regs.push(handlers.register(
                         cid,
                         Arc::new(move |ctx: &ActionContext<'_>| {
-                            let g = s.lock().ok()?;
-                            let name = branch_name_at_cursor(&g, ctx.cursor)?;
-                            Branch::checkout(&Repository::discover(&g.workdir).ok()?, &name)
-                                .ok()?;
-                            None
+                            let (name, workdir) = {
+                                let g = s.lock().ok()?;
+                                (branch_name_at_cursor(&g, ctx.cursor)?, g.workdir.clone())
+                            };
+                            spawn_mutation_and_refresh(s.clone(), move || {
+                                if let Ok(repo) = Repository::discover(&workdir) {
+                                    let _ = Branch::checkout(&repo, &name);
+                                }
+                            })
                         }),
                     ));
                 }
@@ -136,10 +156,15 @@ impl Mode for MagitBranchMode {
                     regs.push(handlers.register(
                         cid,
                         Arc::new(move |ctx: &ActionContext<'_>| {
-                            let g = s.lock().ok()?;
-                            let name = branch_name_at_cursor(&g, ctx.cursor)?;
-                            Branch::delete(&Repository::discover(&g.workdir).ok()?, &name).ok()?;
-                            None
+                            let (name, workdir) = {
+                                let g = s.lock().ok()?;
+                                (branch_name_at_cursor(&g, ctx.cursor)?, g.workdir.clone())
+                            };
+                            spawn_mutation_and_refresh(s.clone(), move || {
+                                if let Ok(repo) = Repository::discover(&workdir) {
+                                    let _ = Branch::delete(&repo, &name);
+                                }
+                            })
                         }),
                     ));
                 }
@@ -152,29 +177,109 @@ impl Mode for MagitBranchMode {
                     regs.push(handlers.register(
                         cid,
                         Arc::new(move |ctx: &ActionContext<'_>| {
-                            let g = s.lock().ok()?;
-                            let name = branch_name_at_cursor(&g, ctx.cursor)?;
-                            let repo = Repository::discover(&g.workdir).ok()?;
-                            repo.run_git(["merge", &name]).ok()?;
-                            None
+                            let (name, workdir) = {
+                                let g = s.lock().ok()?;
+                                (branch_name_at_cursor(&g, ctx.cursor)?, g.workdir.clone())
+                            };
+                            spawn_mutation_and_refresh(s.clone(), move || {
+                                if let Ok(repo) = Repository::discover(&workdir) {
+                                    let _ = repo.run_git(["merge", &name]);
+                                }
+                            })
                         }),
                     ));
                 }
             }
 
-            // create (c) — not yet implemented (needs minibuffer prompt)
+            // create (c) — Emacs-magit-style two-step wizard: pick an
+            // existing branch as the base via the picker, then a
+            // follow-up prompt asks for the new branch's name (see
+            // `picker_sources::BranchPickBaseSource` +
+            // `action:magit-branch-create-finish` in
+            // `magit_global_mode`). The direct `:magit-branch-create
+            // <name>` ex-command (creates from HEAD, no base choice)
+            // stays available for the scriptable/quick path.
             {
                 if let Some(cid) = registry.id_by_name("action:magit-branch-create") {
-                    regs.push(
-                        handlers.register(cid, Arc::new(move |_ctx: &ActionContext<'_>| None)),
-                    );
+                    regs.push(handlers.register(
+                        cid,
+                        Arc::new(move |_ctx: &ActionContext<'_>| {
+                            Some(Effect::OpenPicker {
+                                source: "magit-branch-pick-base".to_string(),
+                                args: Vec::new(),
+                            })
+                        }),
+                    ));
                 }
             }
 
-            std::mem::forget(regs);
-            Ok(())
+            Ok(ActionRegsGuard(regs))
         })
     }
+}
+
+async fn apply_full_replace(handle: &Arc<dyn lattice_runtime::Document>, text: String) {
+    let snap = handle.snapshot();
+    let last = snap.buffer.line_count().saturating_sub(1);
+    let last_line = snap.buffer.line(last).unwrap_or_default();
+    let end = Position::new(last, last_line.len() as u32);
+    let _ = handle
+        .apply_edit_batch(vec![Edit::replace(Range::new(Position::ZERO, end), text)])
+        .await;
+}
+
+/// `gr` — re-list branches without a prior mutation.
+fn refresh(s: Arc<Mutex<BranchState>>) -> Option<Effect> {
+    let (handle, wd, pending, buffer_id) = {
+        let g = s.lock().ok()?;
+        (
+            g.store.handle_for(g.buffer_id)?,
+            g.workdir.clone(),
+            g.pending_highlights.clone(),
+            g.buffer_id,
+        )
+    };
+    tokio::task::spawn(async move {
+        let text = tokio::task::spawn_blocking(move || build_branch_list(&wd))
+            .await
+            .unwrap_or_default();
+        let spans = crate::highlight::branch_styled_spans(&text);
+        apply_full_replace(&handle, text).await;
+        if let Some(ph) = pending {
+            ph.store_and_wake(buffer_id, spans);
+        }
+    });
+    None
+}
+
+/// Run `mutate` (a blocking git call) on `spawn_blocking`, off the
+/// actor thread, then re-list branches — the shape every mutating
+/// handler above uses instead of calling git synchronously inline.
+fn spawn_mutation_and_refresh(
+    s: Arc<Mutex<BranchState>>,
+    mutate: impl FnOnce() + Send + 'static,
+) -> Option<Effect> {
+    let (handle, wd, pending, buffer_id) = {
+        let g = s.lock().ok()?;
+        (
+            g.store.handle_for(g.buffer_id)?,
+            g.workdir.clone(),
+            g.pending_highlights.clone(),
+            g.buffer_id,
+        )
+    };
+    tokio::task::spawn(async move {
+        let _ = tokio::task::spawn_blocking(mutate).await;
+        let text = tokio::task::spawn_blocking(move || build_branch_list(&wd))
+            .await
+            .unwrap_or_default();
+        let spans = crate::highlight::branch_styled_spans(&text);
+        apply_full_replace(&handle, text).await;
+        if let Some(ph) = pending {
+            ph.store_and_wake(buffer_id, spans);
+        }
+    });
+    None
 }
 
 fn branch_name_at_cursor(state: &BranchState, cursor: Position) -> Option<String> {

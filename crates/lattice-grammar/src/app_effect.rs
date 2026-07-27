@@ -320,6 +320,8 @@ pub enum AppEffect {
     /// MB.5a: `<Esc>` / `<C-c>` on the `/`·`?` search line — cancel
     /// the search and restore the prior editing buffer.
     SearchLineCancel,
+    /// `<BS>` on the `/`·`?` line: delete a char, or cancel when empty.
+    SearchLineBackspace,
     /// MB.5b: `<C-p>` / `<Up>` on the `/`·`?` search line — walk to an
     /// older entry in `search_history`.
     SearchLineHistoryPrev,
@@ -329,6 +331,14 @@ pub enum AppEffect {
     /// MB.5c: `<C-x><C-e>` on the `/`·`?` search line — toggle the
     /// expanded tier-2 mini-buffer band.
     SearchLineToggleExpand,
+    /// `<CR>` in `prompt-line-mode` (`Effect::OpenPrompt`'s generic
+    /// one-line text prompt) — submit the typed text to whichever
+    /// `action:*` handler the caller named as `on_submit_action`.
+    /// Drives `Editor::do_prompt_line_submit`.
+    PromptLineSubmit,
+    /// `<Esc>` / `<C-c>` in `prompt-line-mode` — cancel without
+    /// firing anything, restore the prior editing buffer.
+    PromptLineCancel,
     /// Lattice's `-`. Open / step up in the oil-style directory
     /// view (DESIGN.md §5.9.4). Promoted from
     /// `Action::OilNavigateUp` in slice 8.i.1.e.

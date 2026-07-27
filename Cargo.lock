@@ -5422,6 +5422,7 @@ name = "lattice-magit"
 version = "0.1.0"
 dependencies = [
  "lattice-cells",
+ "lattice-completion",
  "lattice-config",
  "lattice-core",
  "lattice-diff",
@@ -5763,6 +5764,7 @@ dependencies = [
  "lattice-host",
  "lattice-lsp",
  "lattice-mode",
+ "lattice-picker",
  "lattice-syntax",
  "lattice-terminal",
  "objc",

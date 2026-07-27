@@ -176,15 +176,23 @@ fn compile_search_pattern(pattern: &str) -> Result<Regex, String> {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
 
-    use crate::app::test_helpers::{app_with, install_help, submit_ex};
+    use crate::app::test_helpers::{app_with, install_help, press, submit_ex};
     use crate::app::*;
     use crate::help::HelpContent;
     use lattice_grammar::{ModalState, SearchDirection};
     use lattice_protocol::position::Position;
 
+    /// Type into the `/`·`?` line the way a real keystroke does.
+    ///
+    /// MB.5a retired `Action::SearchAppend` — its dispatcher arm is an
+    /// explicit no-op, because the search line became a buffer-backed
+    /// readline surface whose text arrives via the universal Insert
+    /// dispatcher onto the focused `*search-line*` document. Driving
+    /// `SearchAppend` here left the pattern permanently empty, so every
+    /// search in this module silently matched nothing.
     fn type_pattern(a: &mut App, pattern: &str) {
         for c in pattern.chars() {
-            a.apply(Action::SearchAppend(c));
+            a.apply(Action::Insert(c.to_string()));
         }
     }
 
@@ -282,7 +290,7 @@ mod tests {
             .search_line
             .as_ref()
             .expect("search_line populated");
-        assert_eq!(line.pattern, "");
+        assert_eq!(a.editor.search_pattern(), "");
         assert_eq!(line.origin, Position::ZERO);
     }
 
@@ -291,12 +299,16 @@ mod tests {
         let mut a = app_with("foo bar foo", 10);
         a.apply(Action::EnterSearch(SearchDirection::Forward));
         type_pattern(&mut a, "bar");
-        let line = a.editor.search_line.as_ref().unwrap();
-        assert_eq!(line.pattern, "bar");
+        assert!(a.editor.search_line.is_some());
+        assert_eq!(a.editor.search_pattern(), "bar");
         // Preview should highlight the first match without moving cursor.
         let m = a.editor.current_match.expect("match previewed");
         assert_eq!(m.start, Position::new(0, 4));
-        assert_eq!(a.editor.cursor, Position::ZERO);
+        // MB.5a: `editor.cursor` now addresses the focused
+        // `*search-line*` buffer (byte 3, end of "bar"), not the
+        // document. The invariant under test — preview must not move
+        // the DOCUMENT cursor — is carried by the recorded origin.
+        assert_eq!(a.editor.search_line.as_ref().unwrap().origin, Position::ZERO);
     }
 
     #[test]
@@ -304,8 +316,14 @@ mod tests {
         let mut a = app_with("foo bar baz", 10);
         a.apply(Action::EnterSearch(SearchDirection::Forward));
         type_pattern(&mut a, "baz");
-        a.apply(Action::SearchBackspace);
-        assert_eq!(a.editor.search_line.as_ref().unwrap().pattern, "ba");
+        // MB.5a retired `Action::SearchBackspace` (its dispatcher arm is
+        // a no-op); a real `<BS>` routes through the Insert dispatcher
+        // onto the `*search-line*` buffer.
+        press(
+            &mut a,
+            crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Backspace),
+        );
+        assert_eq!(a.editor.search_pattern(), "ba");
         let m = a.editor.current_match.expect("preview after backspace");
         assert_eq!(m.start, Position::new(0, 4));
     }
@@ -314,7 +332,15 @@ mod tests {
     fn search_backspace_on_empty_pattern_exits_search() {
         let mut a = app_with("hello", 10);
         a.apply(Action::EnterSearch(SearchDirection::Forward));
-        a.apply(Action::SearchBackspace);
+        // Driven as an Action rather than `press(<BS>)` for the same
+        // reason the sibling submit/cancel tests do: `search-line-mode`'s
+        // keymap layer is pushed by mode activation, which runs through
+        // `ModeRegistry::spawn_cascade` (async) and so has not landed
+        // inside a synchronous App test. `press(<BS>)` therefore still
+        // resolves to base Insert's delete-backward, which no-ops on an
+        // empty buffer. The binding itself lives in
+        // `search_line_mode::search_line_entries`.
+        a.apply(Action::SearchLineBackspace);
         assert_eq!(a.editor.modal, ModalState::Normal);
         assert!(a.editor.search_line.is_none());
     }
@@ -534,9 +560,7 @@ mod tests {
         let mut a = app_with("foo bar baz foo", 10);
         a.editor.cursor = Position::new(0, 8); // on 'b' of "baz"
         a.apply(Action::EnterSearch(SearchDirection::Forward));
-        for c in "foo".chars() {
-            a.apply(Action::SearchAppend(c));
-        }
+        type_pattern(&mut a, "foo");
         a.apply(Action::SearchSubmit);
         // Cursor jumped to second "foo" at byte 12.
         assert_eq!(a.editor.cursor, Position::new(0, 12));
@@ -561,13 +585,15 @@ mod tests {
             .position(|f| f.start_line == 0)
             .expect("H1 fold");
         a.editor.folds[idx].closed = true;
-        // Submit a forward search from the top of the buffer.
-        a.editor.search_line = Some(SearchLine {
-            origin: Position::ZERO,
-            pattern: "needle".into(),
-            direction: SearchDirection::Forward,
-        });
-        a.editor.modal = ModalState::Search(SearchDirection::Forward);
+        // Submit a forward search from the top of the buffer. Goes
+        // through the real `open_search_line`/`set_search_line_text`
+        // API (MB.5: the pattern lives in the buffer-backed
+        // `*search-line*` document, not a `SearchLine` field) instead
+        // of hand-constructing `SearchLine`, which no longer carries
+        // a `pattern` to set.
+        a.editor.cursor = Position::ZERO;
+        a.editor.open_search_line(SearchDirection::Forward);
+        a.editor.set_search_line_text("needle");
         a.apply(Action::SearchSubmit);
         // The fold containing `body one` should now be open.
         let fold = a
@@ -597,9 +623,7 @@ mod tests {
         install_help(&mut a, HelpContent::from_lines("search-test", body));
         // Open `/` and type `needle` then submit.
         a.apply(Action::EnterSearch(SearchDirection::Forward));
-        for c in "needle".chars() {
-            a.apply(Action::SearchAppend(c));
-        }
+        type_pattern(&mut a, "needle");
         a.apply(Action::SearchSubmit);
         // Cursor should land on line 2 (gamma needle).
         assert_eq!(a.editor.cursor.line, 2, "cursor jumped to the help line");
@@ -626,9 +650,7 @@ mod tests {
         ];
         install_help(&mut a, HelpContent::from_lines("hl-test", body));
         a.apply(Action::EnterSearch(SearchDirection::Forward));
-        for c in "needle".chars() {
-            a.apply(Action::SearchAppend(c));
-        }
+        type_pattern(&mut a, "needle");
         a.apply(Action::SearchSubmit);
         assert_eq!(
             a.editor.all_matches.len(),

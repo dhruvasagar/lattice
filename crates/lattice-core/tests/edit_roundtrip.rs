@@ -103,13 +103,28 @@ fn save_as_then_reopen_via_new_path() {
     cleanup(&dir);
 }
 
+/// A directory no other test in this binary can collide with.
+///
+/// The timestamp alone is NOT sufficient: `cargo test` runs these in
+/// parallel threads, and two calls landing in the same clock tick
+/// (or on a platform whose `SystemTime` resolution is coarser than
+/// nanoseconds) get the SAME path. Both tests then write `file.txt`
+/// into one shared directory, and whichever reaches `cleanup` first
+/// deletes the other's file mid-test — surfacing as an unwrap panic
+/// on `read_to_string` in whichever test lost the race, only under
+/// a loaded full-workspace run and never when run alone. The atomic
+/// counter makes the name unique per call regardless of clock
+/// behaviour; the timestamp is kept only so leftover directories
+/// from a killed run remain human-sortable.
 fn unique_tempdir() -> std::path::PathBuf {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let base = std::env::temp_dir();
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let dir = base.join(format!("lattice-roundtrip-{nanos}"));
+    let dir = base.join(format!("lattice-roundtrip-{nanos}-{n}"));
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }

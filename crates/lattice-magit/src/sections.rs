@@ -33,6 +33,29 @@ pub enum SectionKind {
     RecentCommits,
 }
 
+/// The fixed prefix `format_buffer_styled` renders for each
+/// [`SectionKind`]'s header line, before the `" (N)"` count suffix.
+/// Single source of truth for "is this line a section header" —
+/// previously hand-duplicated as three independent string-prefix
+/// lists (here implicitly, `actions.rs::section_header_above`, and
+/// `magit_core_mode.rs::section_headers`), free to drift out of sync
+/// with each other and with this list.
+pub const SECTION_HEADER_PREFIXES: [&str; 5] = [
+    "Staged changes",
+    "Unstaged changes",
+    "Untracked files",
+    "Stashes",
+    "Recent commits",
+];
+
+/// True if `text` (already trimmed of buffer indentation) is a
+/// section header line.
+pub fn is_section_header(text: &str) -> bool {
+    SECTION_HEADER_PREFIXES
+        .iter()
+        .any(|prefix| text.starts_with(prefix))
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct SectionIndex {
     pub sections: Vec<Section>,
@@ -234,5 +257,48 @@ fn status_label(status: PathStatus) -> &'static str {
         PathStatus::Ignored => "ignored",
         PathStatus::Unmerged => "unmerged",
         PathStatus::Conflicted => "modified",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_section_header_matches_every_rendered_header_prefix() {
+        for prefix in SECTION_HEADER_PREFIXES {
+            let rendered = format!("{prefix} (3)");
+            assert!(is_section_header(&rendered), "{rendered:?} should match");
+        }
+    }
+
+    #[test]
+    fn is_section_header_rejects_entry_lines() {
+        assert!(!is_section_header("modified     src/lib.rs"));
+        assert!(!is_section_header("stash@{0} WIP on main"));
+        assert!(!is_section_header(""));
+    }
+
+    #[test]
+    fn status_label_is_a_subset_of_actions_file_labels() {
+        // actions::FILE_LABELS must stay in sync with every label this
+        // renders — the comment there documents the pairing; this
+        // test catches drift mechanically instead of by inspection.
+        for status in [
+            PathStatus::Clean,
+            PathStatus::Modified,
+            PathStatus::Added,
+            PathStatus::Deleted,
+            PathStatus::Untracked,
+            PathStatus::Ignored,
+            PathStatus::Unmerged,
+            PathStatus::Conflicted,
+        ] {
+            let label = status_label(status);
+            assert!(
+                crate::actions::FILE_LABELS.contains(&label),
+                "status_label({status:?}) = {label:?} not in actions::FILE_LABELS"
+            );
+        }
     }
 }

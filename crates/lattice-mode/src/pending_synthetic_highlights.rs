@@ -19,13 +19,19 @@ use std::sync::{Arc, Mutex};
 use lattice_cells::StyledSpan;
 use lattice_core::BufferId;
 
-/// Entry in the pending highlights map: either a full replacement or
-/// a merge-at-offset partial update.
+/// Entry in the pending highlights map: a full replacement, or a
+/// splice (insert or remove) that shifts every subsequent line's
+/// spans to stay aligned with a text edit that inserted/removed
+/// lines at the same position.
 pub enum HighlightsOp {
     Replace(Vec<Vec<StyledSpan>>),
-    MergeAt {
+    InsertAt {
         start_line: u32,
         spans: Vec<Vec<StyledSpan>>,
+    },
+    RemoveAt {
+        start_line: u32,
+        count: usize,
     },
 }
 
@@ -53,18 +59,35 @@ impl PendingSyntheticHighlights {
         self.fire_waker();
     }
 
-    /// Store per-line spans to be merged into existing highlights at
-    /// a given line offset. Lines outside `start_line..start_line+spans.len()`
-    /// keep their existing highlights. Use for partial buffer updates
-    /// (e.g. toggle-diff inserting diff content at a specific line).
-    pub fn merge_at_and_wake(
+    /// Store per-line spans to be SPLICED IN to existing highlights at
+    /// a given line offset — lines before `start_line` keep their
+    /// spans; `spans` becomes the new content at `start_line`; every
+    /// line that was already at or after `start_line` shifts DOWN by
+    /// `spans.len()`. Use when the underlying text edit INSERTED
+    /// `spans.len()` new lines at `start_line` (e.g. toggle-diff
+    /// expanding inline content) — the highlight vector must grow and
+    /// shift in lockstep with the text, or every line after the
+    /// insertion point ends up painted with the wrong span.
+    pub fn insert_at_and_wake(
         &self,
         buffer_id: BufferId,
         start_line: u32,
         spans: Vec<Vec<StyledSpan>>,
     ) {
         if let Ok(mut map) = self.map.lock() {
-            map.insert(buffer_id, HighlightsOp::MergeAt { start_line, spans });
+            map.insert(buffer_id, HighlightsOp::InsertAt { start_line, spans });
+        }
+        self.fire_waker();
+    }
+
+    /// Remove `count` lines of highlights starting at `start_line`,
+    /// shifting everything after them UP by `count`. The exact
+    /// inverse of [`Self::insert_at_and_wake`] — use when the
+    /// underlying text edit DELETED `count` lines at `start_line`
+    /// (e.g. toggle-diff collapsing inline content back down).
+    pub fn remove_at_and_wake(&self, buffer_id: BufferId, start_line: u32, count: usize) {
+        if let Ok(mut map) = self.map.lock() {
+            map.insert(buffer_id, HighlightsOp::RemoveAt { start_line, count });
         }
         self.fire_waker();
     }
@@ -94,3 +117,83 @@ impl Default for PendingSyntheticHighlights {
 /// Convenience alias for registration in the service registry (Arc-sharing
 /// follows the `BufferStoreHandle` / `ActionHandlerRegistryHandle` convention).
 pub type PendingSyntheticHighlightsHandle = Arc<PendingSyntheticHighlights>;
+
+/// Splice `spans` into `base` at `start_line`, shifting everything at
+/// or after `start_line` down by `spans.len()`. Pulled out as a pure
+/// function (rather than inlined at the drain call site) so the
+/// line-offset arithmetic — the exact thing that regressed into an
+/// in-place overwrite once already — has its own unit tests.
+pub fn splice_insert(
+    base: &mut Vec<Vec<StyledSpan>>,
+    start_line: u32,
+    spans: Vec<Vec<StyledSpan>>,
+) {
+    let at = (start_line as usize).min(base.len());
+    base.splice(at..at, spans);
+}
+
+/// Remove `count` lines from `base` starting at `start_line`,
+/// shifting everything after them up by `count`. Exact inverse of
+/// [`splice_insert`].
+pub fn splice_remove(base: &mut Vec<Vec<StyledSpan>>, start_line: u32, count: usize) {
+    let start = (start_line as usize).min(base.len());
+    let end = (start + count).min(base.len());
+    base.drain(start..end);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn line(len: usize) -> Vec<StyledSpan> {
+        vec![StyledSpan {
+            start: 0,
+            end: len,
+            style: lattice_cells::Style::Default,
+        }]
+    }
+
+    fn labels(spans: &[Vec<StyledSpan>]) -> Vec<usize> {
+        spans.iter().map(|v| v[0].end).collect()
+    }
+
+    #[test]
+    fn insert_in_the_middle_shifts_the_tail_down() {
+        // Base has 3 "lines" (lengths 1/2/3 standing in for identity).
+        let mut base = vec![line(1), line(2), line(3)];
+        splice_insert(&mut base, 1, vec![line(4), line(5)]);
+        // Line 0 untouched, new lines land at 1..3, old line 1/2 now at 3/4.
+        assert_eq!(labels(&base), vec![1, 4, 5, 2, 3]);
+    }
+
+    #[test]
+    fn insert_past_the_end_clamps_instead_of_panicking() {
+        let mut base = vec![line(1)];
+        splice_insert(&mut base, 50, vec![line(2)]);
+        assert_eq!(labels(&base), vec![1, 2]);
+    }
+
+    #[test]
+    fn remove_in_the_middle_shifts_the_tail_up() {
+        // 5 lines; remove the 2 that were inserted at offset 1.
+        let mut base = vec![line(1), line(4), line(5), line(2), line(3)];
+        splice_remove(&mut base, 1, 2);
+        assert_eq!(labels(&base), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn remove_past_the_end_clamps_instead_of_panicking() {
+        let mut base = vec![line(1), line(2)];
+        splice_remove(&mut base, 1, 50);
+        assert_eq!(labels(&base), vec![1]);
+    }
+
+    #[test]
+    fn insert_then_remove_round_trips_to_the_original() {
+        let original = vec![line(1), line(2), line(3)];
+        let mut base = original.clone();
+        splice_insert(&mut base, 1, vec![line(4), line(5)]);
+        splice_remove(&mut base, 1, 2);
+        assert_eq!(labels(&base), labels(&original));
+    }
+}

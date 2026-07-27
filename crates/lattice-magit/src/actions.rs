@@ -5,10 +5,10 @@
 //! operations. Async operations (diff expansion, refresh) use the
 //! stored tokio handle — no `Runtime::new()`, no `block_on`.
 
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use lattice_cells::style::{Style, StyledSpan};
 use lattice_core::BufferId;
 use lattice_grammar::{CommandRegistryHandle, Effect};
 use lattice_mode::{
@@ -29,44 +29,118 @@ pub struct StatusBufferState {
     /// MG.2: optional handle to store styled spans after async edit
     /// lands, so highlights appear without a keystroke.
     pub pending_highlights: Option<std::sync::Arc<PendingSyntheticHighlights>>,
+    /// Entries currently inline-expanded (file diff / stash show /
+    /// commit show), keyed by [`entry_key`], value = number of buffer
+    /// lines the expansion occupies. A full refresh replaces the whole
+    /// buffer (see `refresh::apply_full_replace`), which collapses any
+    /// inline expansion, so this map is cleared whenever a refresh
+    /// lands — see `trigger_refresh`.
+    pub expanded: HashMap<String, usize>,
 }
 
-// ── cursor helpers ──────────────────────────────────────
+// ── line classification ─────────────────────────────────
 
-fn parse_file_path(line: &str) -> Option<PathBuf> {
-    let trimmed = line.trim();
-    if trimmed.is_empty()
-        || trimmed.ends_with(')')
-        || trimmed.starts_with("stash@")
-        || trimmed.contains("No changes")
-        || trimmed.contains("Not a git repository")
-    {
-        return None;
-    }
-    let parts: Vec<&str> = trimmed.splitn(2, ' ').collect();
-    if parts.len() < 2 {
-        return None;
-    }
-    let path_str = parts[1].trim();
-    if path_str.is_empty() {
-        return None;
-    }
-    Some(PathBuf::from(path_str))
+/// What kind of entry occupies a status-buffer line. Derived directly
+/// from the rendered line's fixed layout (see
+/// `SectionIndex::format_buffer_styled`), not by guessing at word
+/// boundaries — this is what lets `classify_line` tell a "new file"
+/// (two-word label) entry apart from every other one-word label.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum StatusLine {
+    File { path: PathBuf, staged: bool },
+    Stash { index: usize },
+    Commit { sha: String },
 }
 
-fn file_path_at_cursor(state: &StatusBufferState, cursor: Position) -> Option<PathBuf> {
+/// Status labels `SectionIndex::format_buffer_styled` renders via
+/// `format!("  {:<12} {}", label, path)`. Checked as whole-word
+/// prefixes (label followed by whitespace) so diff content inserted
+/// by a toggled-open entry — which can start with an arbitrary
+/// number of leading spaces when the underlying source line is
+/// itself indented — never collides with these.
+///
+/// Must stay in sync with `sections::status_label`'s outputs (the
+/// deduplicated set — `PathStatus::Modified` and `::Conflicted` both
+/// render `"modified"`).
+pub(crate) const FILE_LABELS: [&str; 7] = [
+    "clean",
+    "modified",
+    "new file",
+    "deleted",
+    "untracked",
+    "ignored",
+    "unmerged",
+];
+
+/// Classify the entry at `line`, or `None` if it isn't a
+/// stage/unstage/visit-able entry line (a header, blank line, or
+/// content inside an inline-expanded diff).
+pub(crate) fn classify_line(state: &StatusBufferState, line: u32) -> Option<StatusLine> {
     let handle = state.store.handle_for(state.buffer_id)?;
     let snap = handle.snapshot();
-    parse_file_path(&snap.buffer.line(cursor.line)?)
+    let text = snap.buffer.line(line)?;
+    // `section_header_above` needs the live buffer, so only call it
+    // when `classify_line_text` actually needs to disambiguate
+    // (File → staged?, or the Recent-commits fallback) — see there.
+    classify_line_text(&text, || section_header_above(state, line))
 }
 
-/// True if the line after `file_line` is diff content.
-fn diff_is_expanded(state: &StatusBufferState, file_line: u32) -> Option<bool> {
-    let handle = state.store.handle_for(state.buffer_id)?;
-    let snap = handle.snapshot();
-    let next = snap.buffer.line(file_line + 1)?;
-    let t = next.trim();
-    Some(t.starts_with("diff --git") || t.starts_with("@@") || t.starts_with("---"))
+/// The pure classification core of [`classify_line`], split out so it's
+/// testable without a live buffer/store. `header_above` is called lazily
+/// (only when a candidate match needs to know its enclosing section) so
+/// callers with a real buffer don't pay for an unnecessary backward scan.
+fn classify_line_text(
+    text: &str,
+    header_above: impl FnOnce() -> Option<String>,
+) -> Option<StatusLine> {
+    if !text.starts_with("  ") {
+        return None;
+    }
+    let trimmed = &text[2..];
+    if let Some(rest) = trimmed.strip_prefix("stash@{") {
+        let idx_str = rest.split('}').next()?;
+        return Some(StatusLine::Stash {
+            index: idx_str.parse().ok()?,
+        });
+    }
+    for label in FILE_LABELS {
+        if let Some(rest) = trimmed.strip_prefix(label) {
+            if rest.starts_with(char::is_whitespace) {
+                let path = PathBuf::from(rest.trim_start());
+                let staged = header_above()
+                    .map(|h| h.starts_with("Staged"))
+                    .unwrap_or(false);
+                return Some(StatusLine::File { path, staged });
+            }
+        }
+    }
+    // Only "Recent commits" entries fall through to here: "<sha> <subject>".
+    let header = header_above()?;
+    if header.starts_with("Recent commits") {
+        let sha = trimmed.split_whitespace().next()?;
+        if !sha.is_empty() && sha.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Some(StatusLine::Commit {
+                sha: sha.to_string(),
+            });
+        }
+    }
+    None
+}
+
+/// Stable identity for a `StatusLine`, used as the [`StatusBufferState::expanded`]
+/// key. Includes `staged` for `File` — a `Conflicted` path appears in
+/// BOTH the Staged and Unstaged sections simultaneously (see
+/// `refresh::build_section_index`), as two distinct buffer rows that
+/// can be independently expanded; collapsing that distinction would
+/// let expanding one row's diff make `toggle_expand` treat the
+/// *other* row as already-expanded too, and collapse the wrong line
+/// range.
+pub(crate) fn entry_key(sl: &StatusLine) -> String {
+    match sl {
+        StatusLine::File { path, staged } => format!("f:{staged}:{}", path.display()),
+        StatusLine::Stash { index } => format!("s:{index}"),
+        StatusLine::Commit { sha } => format!("c:{sha}"),
+    }
 }
 
 fn section_header_above(state: &StatusBufferState, line: u32) -> Option<String> {
@@ -75,50 +149,34 @@ fn section_header_above(state: &StatusBufferState, line: u32) -> Option<String> 
     for l in (0..=line).rev() {
         let text = snap.buffer.line(l)?;
         let t = text.trim();
-        if t.starts_with("Staged changes") || t.starts_with("Unstaged changes") {
+        if crate::sections::is_section_header(t) {
             return Some(t.to_string());
         }
     }
     None
 }
 
-fn diff_line_count(state: &StatusBufferState, file_line: u32) -> Option<usize> {
-    let handle = state.store.handle_for(state.buffer_id)?;
-    let snap = handle.snapshot();
-    let total = snap.buffer.line_count() as u32;
-    let mut count = 0usize;
-    for l in (file_line + 1)..total {
-        let text = snap.buffer.line(l)?;
-        let t = text.trim();
-        if t.is_empty()
-            || t.starts_with("Staged changes")
-            || t.starts_with("Unstaged changes")
-            || t.starts_with("Untracked files")
-            || t.starts_with("Stashes")
-            || t.starts_with("Recent commits")
-            || text.starts_with("  ")
-        {
-            break;
+/// Run the git command that shows `sl`'s content: a file's diff
+/// (staged-aware), a stash's patch, or a commit's patch.
+fn run_show(workdir: &Path, sl: &StatusLine) -> Option<String> {
+    let mut cmd = std::process::Command::new("git");
+    cmd.current_dir(workdir);
+    match sl {
+        StatusLine::File { path, staged } => {
+            cmd.arg("diff");
+            if *staged {
+                cmd.arg("--cached");
+            }
+            cmd.arg("--").arg(path);
         }
-        count += 1;
+        StatusLine::Stash { index } => {
+            cmd.args(["stash", "show", "-p", &format!("stash@{{{index}}}")]);
+        }
+        StatusLine::Commit { sha } => {
+            cmd.args(["show", sha]);
+        }
     }
-    Some(count)
-}
-
-fn run_diff(workdir: &PathBuf, path: &PathBuf, staged: bool) -> Option<String> {
-    let mut args: Vec<&str> = vec!["diff"];
-    if staged {
-        args.push("--cached");
-    }
-    args.push("--");
-    let ps = path.to_string_lossy();
-    let ps: &str = &ps;
-    args.push(ps);
-    let output = std::process::Command::new("git")
-        .args(&args)
-        .current_dir(workdir)
-        .output()
-        .ok()?;
+    let output = cmd.output().ok()?;
     if output.status.success() {
         String::from_utf8(output.stdout).ok()
     } else {
@@ -126,60 +184,132 @@ fn run_diff(workdir: &PathBuf, path: &PathBuf, staged: bool) -> Option<String> {
     }
 }
 
-fn diff_styled_spans(diff: &str) -> Vec<Vec<StyledSpan>> {
-    let mut result = Vec::new();
-    for line in diff.lines() {
-        let line_len = line.len();
-        let spans = if line.starts_with('+') && !line.starts_with("+++") {
-            vec![
-                StyledSpan {
-                    start: 0,
-                    end: 1,
-                    style: Style::DiffAdd,
-                },
-                StyledSpan {
-                    start: 1,
-                    end: line_len,
-                    style: Style::DiffAdd,
-                },
-            ]
-        } else if line.starts_with('-') && !line.starts_with("---") {
-            vec![
-                StyledSpan {
-                    start: 0,
-                    end: 1,
-                    style: Style::DiffRemove,
-                },
-                StyledSpan {
-                    start: 1,
-                    end: line_len,
-                    style: Style::DiffRemove,
-                },
-            ]
-        } else if line.starts_with("@@") {
-            vec![StyledSpan {
-                start: 0,
-                end: line_len,
-                style: Style::Comment,
-            }]
-        } else if line.starts_with("diff --git") {
-            vec![StyledSpan {
-                start: 0,
-                end: line_len,
-                style: Style::Keyword,
-            }]
-        } else if line.starts_with("---") || line.starts_with("+++") {
-            vec![StyledSpan {
-                start: 0,
-                end: line_len,
-                style: Style::Link,
-            }]
-        } else {
-            Vec::new()
-        };
-        result.push(spans);
+/// The delete range that collapses an inline expansion inserted at
+/// `cursor_line + 1` occupying exactly `count` rows.
+///
+/// The end position must land at COLUMN 0 of the row following the
+/// diff, not at the end of that row's own text — the diff occupies
+/// exactly `count` rows (`cursor_line+1 ..= cursor_line+count`);
+/// anything at or past `cursor_line+1+count` belongs to the next
+/// real entry and must survive the collapse untouched. Anchoring the
+/// end column on that row's text length instead (the bug this
+/// replaces) deletes the next entry's content too, leaving a blank
+/// line in its place and shifting every subsequent row — which
+/// desyncs previously-applied syntax-highlight spans from their
+/// rows, producing exactly the "corrupts subsequent files'
+/// highlighting" symptom this was reported as.
+///
+/// `total_lines`/`last_line_len` describe the buffer's current
+/// shape: when the diff is the last content in the buffer (no
+/// following row to anchor on), the range instead ends at the end of
+/// the diff's own last line.
+fn collapse_range(
+    cursor_line: u32,
+    count: u32,
+    total_lines: u32,
+    last_line_len: u32,
+) -> (Position, Position) {
+    let start = Position::new(cursor_line + 1, 0);
+    let target_end_line = cursor_line + 1 + count;
+    let end = if target_end_line < total_lines {
+        Position::new(target_end_line, 0)
+    } else {
+        let last = total_lines.saturating_sub(1);
+        Position::new(last, last_line_len)
+    };
+    (start, end)
+}
+
+/// Toggle the inline expansion of `sl` at `cursor_line`: collapse it
+/// if already expanded (removing exactly the number of lines recorded
+/// in `StatusBufferState::expanded` — not a re-scanned guess), or
+/// insert its `git show`/`git diff` output and record the inserted
+/// line count if collapsed. Shared by `=` (files) and `<CR>`
+/// (stashes/commits).
+fn toggle_expand(
+    s: &Arc<Mutex<StatusBufferState>>,
+    sl: StatusLine,
+    cursor_line: u32,
+) -> Option<Effect> {
+    let key = entry_key(&sl);
+    let (handle, wd, rt, existing_count, pending, bid) = {
+        let g = s.lock().ok()?;
+        let h = g.store.handle_for(g.buffer_id)?;
+        (
+            h,
+            g.workdir.clone(),
+            g.runtime.clone(),
+            g.expanded.get(&key).copied(),
+            g.pending_highlights.clone(),
+            g.buffer_id,
+        )
+    };
+
+    if let Some(count) = existing_count {
+        if count > 0 {
+            let snap = handle.snapshot();
+            let total = snap.buffer.line_count() as u32;
+            let last_line_len = snap
+                .buffer
+                .line(total.saturating_sub(1))
+                .map(|t| t.len() as u32)
+                .unwrap_or(0);
+            let (start, end) = collapse_range(cursor_line, count as u32, total, last_line_len);
+            let start_line = cursor_line + 1;
+            let s = s.clone();
+            rt.spawn(async move {
+                let _ = handle
+                    .apply_edit_batch(vec![Edit::replace(Range::new(start, end), String::new())])
+                    .await;
+                // Only now that the collapse has actually landed is it
+                // safe to forget this entry's expansion — clearing it
+                // earlier let a rapid second toggle race ahead of the
+                // edit and compute a delete range against rows that
+                // didn't contain the diff yet (see the insert-branch
+                // comment below for the mirrored insert-side hazard).
+                if let Ok(mut g) = s.lock() {
+                    g.expanded.remove(&key);
+                }
+                if let Some(ref ph) = pending {
+                    // Mirror the insert branch's `insert_at_and_wake`:
+                    // the diff's `count` highlight-span rows must be
+                    // spliced OUT (not just left in place) or every
+                    // line after them stays shifted-and-mispainted
+                    // forever, surviving even a full collapse.
+                    ph.remove_at_and_wake(bid, start_line, count);
+                }
+            });
+        } else if let Ok(mut g) = s.lock() {
+            g.expanded.remove(&key);
+        }
+    } else {
+        let diff = run_show(&wd, &sl).unwrap_or_default();
+        if !diff.trim().is_empty() {
+            let text = diff.trim().to_string();
+            let line_count = text.lines().count();
+            let spans = crate::highlight::diff_styled_spans(&text);
+            let pos = Position::new(cursor_line + 1, 0);
+            let start_line = cursor_line + 1;
+            let s = s.clone();
+            rt.spawn(async move {
+                let _ = handle
+                    .apply_edit_batch(vec![Edit::insert(pos, format!("{}\n", text))])
+                    .await;
+                // Recorded only after the insert lands — see the
+                // collapse-branch comment above. Recording it
+                // beforehand let a rapid second `=`/`<CR>` press see
+                // "already expanded" and race the collapse branch
+                // against rows the insert hadn't populated yet.
+                if let Ok(mut g) = s.lock() {
+                    g.expanded.insert(key, line_count);
+                }
+                if let Some(ref ph) = pending {
+                    ph.insert_at_and_wake(bid, start_line, spans);
+                }
+            });
+        }
     }
-    result
+    None
 }
 
 // ── registration ────────────────────────────────────────
@@ -201,13 +331,56 @@ pub fn register_action_handlers(
         };
     }
 
-    // MG.2: helper that reads state, spawns blocking I/O on
-    // spawn_blocking, then applies the edit + stores highlights on a
-    // tokio task. No `Runtime::new()` — the current runtime is used.
+    // Refresh the status buffer: blocking `git status`/`stash
+    // list`/`log` on `spawn_blocking`, then apply the formatted text +
+    // highlights on the current task. Clears `expanded` — a
+    // full-buffer replace collapses any inline expansion, so stale
+    // entries there would desync `toggle_expand`'s "already expanded"
+    // check from what's actually on screen.
+    async fn do_refresh(
+        handle: Arc<dyn lattice_runtime::Document>,
+        wd: PathBuf,
+        pending: Option<Arc<PendingSyntheticHighlights>>,
+        bid: BufferId,
+    ) {
+        let (text, spans) = tokio::task::spawn_blocking(move || refresh::build_and_format(&wd))
+            .await
+            .expect("spawn_blocking");
+        refresh::apply_and_highlight(handle, text, spans, pending, bid).await;
+    }
+
+    // `gr` — bare refresh, no prior mutation.
     let trigger_refresh = |s: Arc<Mutex<StatusBufferState>>| {
         let (handle, wd, pending, bid) = {
-            let g = s.lock().ok()?;
+            let mut g = s.lock().ok()?;
             let h = g.store.handle_for(g.buffer_id)?;
+            g.expanded.clear();
+            (
+                h,
+                g.workdir.clone(),
+                g.pending_highlights.clone(),
+                g.buffer_id,
+            )
+        };
+        tokio::task::spawn(do_refresh(handle, wd, pending, bid));
+        None::<Effect>
+    };
+
+    // Run `mutate` (a blocking git call) on `spawn_blocking`, off the
+    // actor thread entirely, then refresh — the shape every mutating
+    // handler below uses instead of calling git synchronously inline.
+    // Handlers read whatever cursor/path state they need up front
+    // (fast, in-memory) and hand this a self-contained closure; the
+    // handler itself returns `None` immediately, before the git call
+    // has even started.
+    fn spawn_mutation_and_refresh(
+        s: Arc<Mutex<StatusBufferState>>,
+        mutate: impl FnOnce() + Send + 'static,
+    ) -> Option<Effect> {
+        let (handle, wd, pending, bid) = {
+            let mut g = s.lock().ok()?;
+            let h = g.store.handle_for(g.buffer_id)?;
+            g.expanded.clear();
             (
                 h,
                 g.workdir.clone(),
@@ -216,24 +389,28 @@ pub fn register_action_handlers(
             )
         };
         tokio::task::spawn(async move {
-            let (text, spans) = tokio::task::spawn_blocking(move || refresh::build_and_format(&wd))
-                .await
-                .expect("spawn_blocking");
-            refresh::apply_and_highlight(handle, text, spans, pending, bid).await;
+            let _ = tokio::task::spawn_blocking(mutate).await;
+            do_refresh(handle, wd, pending, bid).await;
         });
-        None::<Effect>
-    };
+        None
+    }
 
     // ── stage (s) ──────────────────────────────────────
     {
         let s = state.clone();
         handler!("action:magit-stage", move |ctx: &ActionContext<'_>| {
-            let g = s.lock().ok()?;
-            let path = file_path_at_cursor(&g, ctx.cursor)?;
-            let repo = Repository::discover(&g.workdir).ok()?;
-            Index::stage_path(&repo, &path).ok()?;
-            drop(g);
-            trigger_refresh(s.clone())
+            let (path, workdir) = {
+                let g = s.lock().ok()?;
+                let StatusLine::File { path, .. } = classify_line(&g, ctx.cursor.line)? else {
+                    return None;
+                };
+                (path, g.workdir.clone())
+            };
+            spawn_mutation_and_refresh(s.clone(), move || {
+                if let Ok(repo) = Repository::discover(&workdir) {
+                    let _ = Index::stage_path(&repo, &path);
+                }
+            })
         });
     }
 
@@ -241,43 +418,109 @@ pub fn register_action_handlers(
     {
         let s = state.clone();
         handler!("action:magit-unstage", move |ctx: &ActionContext<'_>| {
-            let g = s.lock().ok()?;
-            let path = file_path_at_cursor(&g, ctx.cursor)?;
-            let repo = Repository::discover(&g.workdir).ok()?;
-            Index::unstage_path(&repo, &path).ok()?;
-            drop(g);
-            trigger_refresh(s.clone())
+            let (path, workdir) = {
+                let g = s.lock().ok()?;
+                let StatusLine::File { path, .. } = classify_line(&g, ctx.cursor.line)? else {
+                    return None;
+                };
+                (path, g.workdir.clone())
+            };
+            spawn_mutation_and_refresh(s.clone(), move || {
+                if let Ok(repo) = Repository::discover(&workdir) {
+                    let _ = Index::unstage_path(&repo, &path);
+                }
+            })
         });
     }
 
     // ── discard (x) ───────────────────────────────────
+    // PU.6: prompt for confirmation before destructive discard.
     {
         let s = state.clone();
         handler!("action:magit-discard", move |ctx: &ActionContext<'_>| {
             let g = s.lock().ok()?;
-            let path = file_path_at_cursor(&g, ctx.cursor)?;
-            let repo = Repository::discover(&g.workdir).ok()?;
-            repo.run_git(["checkout", "--", &path.to_string_lossy()])
-                .ok()?;
+            let StatusLine::File { path, .. } = classify_line(&g, ctx.cursor.line)? else {
+                return None;
+            };
             drop(g);
-            trigger_refresh(s.clone())
+            Some(Effect::Confirm {
+                prompt: format!("Discard changes to {}?", path.display()),
+                yes_action: "action:magit-discard-execute".to_string(),
+            })
         });
     }
+    // PU.6: actual discard, dispatched by Confirm's yes-action.
+    {
+        let s = state.clone();
+        handler!(
+            "action:magit-discard-execute",
+            move |ctx: &ActionContext<'_>| {
+                let (path, workdir) = {
+                    let g = s.lock().ok()?;
+                    let StatusLine::File { path, .. } = classify_line(&g, ctx.cursor.line)? else {
+                        return None;
+                    };
+                    (path, g.workdir.clone())
+                };
+                spawn_mutation_and_refresh(s.clone(), move || {
+                    if let Ok(repo) = Repository::discover(&workdir) {
+                        let _ = repo.run_git(["checkout", "--", &path.to_string_lossy()]);
+                    }
+                })
+            }
+        );
+    }
 
-    // ── visit (<CR>) ──────────────────────────────────
+    // ── visit (<CR>) ───────────────────────────────────
+    // File entries open the file — the INDEX blob for a Staged
+    // entry (`*magit:file:staged:<path>*`, read-only: this section
+    // describes what's staged, which may already differ from a
+    // since-edited working copy), the live editable working-tree
+    // file for Unstaged (uniform with magit-diff-mode's own
+    // Staged-vs-Unstaged `<CR>` split — see magit.md §6.3). Stash
+    // entries toggle their inline patch, same mechanism `=` uses
+    // for files (there's no dedicated "stash detail" buffer to open
+    // instead).
     {
         let s = state.clone();
         handler!("action:magit-visit", move |ctx: &ActionContext<'_>| {
-            let g = s.lock().ok()?;
-            let path = file_path_at_cursor(&g, ctx.cursor)?;
-            let full = g.workdir.join(&path);
-            if full.exists() {
-                Some(Effect::OpenBuffer {
-                    path: Some(full),
-                    force: false,
-                })
-            } else {
-                None
+            let sl = {
+                let g = s.lock().ok()?;
+                classify_line(&g, ctx.cursor.line)?
+            };
+            match sl {
+                StatusLine::File { path, staged: true } => Some(Effect::OpenSyntheticBuffer {
+                    name: format!("*magit:file:staged:{}*", path.display()),
+                    mode_id: "magit-file-revision-mode".to_string(),
+                }),
+                StatusLine::File {
+                    path,
+                    staged: false,
+                } => {
+                    let g = s.lock().ok()?;
+                    let full = g.workdir.join(&path);
+                    if full.exists() {
+                        Some(Effect::OpenBuffer {
+                            path: Some(full),
+                            force: false,
+                        })
+                    } else {
+                        None
+                    }
+                }
+                StatusLine::Stash { .. } => toggle_expand(&s, sl, ctx.cursor.line),
+                // Bug fix: `<CR>` on a commit SHA used to toggle the
+                // inline diff (same as `=`) — but every other magit
+                // view that shows a SHA (log, blame, rebase) treats
+                // `<CR>` as "open the dedicated commit buffer", so
+                // status was the one inconsistent surface. `=` still
+                // does the inline toggle for a quick look without
+                // leaving the status buffer; `<CR>` now matches log/
+                // blame/rebase's convention.
+                StatusLine::Commit { sha } => Some(Effect::OpenSyntheticBuffer {
+                    name: format!("*magit:commit:{sha}*"),
+                    mode_id: "magit-revision-mode".to_string(),
+                }),
             }
         });
     }
@@ -305,18 +548,25 @@ pub fn register_action_handlers(
     }
 
     // ── stage patch (p) ───────────────────────────────
+    // `git add -p` is genuinely interactive — it reads its own
+    // prompts from stdin, which the TUI's raw-mode input loop already
+    // owns. Running it via `Command::output()` (as this handler used
+    // to) blocks the single-threaded actor waiting for a child that's
+    // also waiting on stdin neither process routes to the other —
+    // an indefinite hang, not just a slow blocking call. Until there's
+    // a terminal-suspend mechanism (`:!`-style handoff) to route through,
+    // fail loudly instead of hanging: stage via `s` (file-level) or
+    // expand the diff with `=` and review before staging.
     {
-        let s = state.clone();
-        handler!("action:magit-stage-patch", move |ctx: &ActionContext<
+        handler!("action:magit-stage-patch", move |_ctx: &ActionContext<
             '_,
         >| {
-            let g = s.lock().ok()?;
-            let path = file_path_at_cursor(&g, ctx.cursor)?;
-            let repo = Repository::discover(&g.workdir).ok()?;
-            repo.run_git(["add", "-p", "--", &path.to_string_lossy()])
-                .ok()?;
-            drop(g);
-            trigger_refresh(s.clone())
+            Some(Effect::Echo {
+                level: lattice_grammar::EchoLevel::Error,
+                text: "magit: interactive `git add -p` isn't supported yet — stage the whole \
+                       file with `s`, or expand the diff with `=` to review first"
+                    .to_string(),
+            })
         });
     }
 
@@ -334,72 +584,33 @@ pub fn register_action_handlers(
         handler!("action:magit-toggle-diff", move |ctx: &ActionContext<
             '_,
         >| {
-            let (handle, wd, rt, expanded_opt, pending, bid) = {
+            let sl = {
                 let g = s.lock().ok()?;
-                let h = g.store.handle_for(g.buffer_id)?;
-                let expanded = diff_is_expanded(&g, ctx.cursor.line).unwrap_or(false);
-                (
-                    h,
-                    g.workdir.clone(),
-                    g.runtime.clone(),
-                    expanded,
-                    g.pending_highlights.clone(),
-                    g.buffer_id,
-                )
+                classify_line(&g, ctx.cursor.line)?
             };
-            let path = {
-                let g = s.lock().ok()?;
-                file_path_at_cursor(&g, ctx.cursor)?
-            };
-
-            if expanded_opt {
-                let count = {
-                    let g = s.lock().ok()?;
-                    diff_line_count(&g, ctx.cursor.line).unwrap_or(0)
-                };
-                if count > 0 {
-                    let snap = handle.snapshot();
-                    let start = Position::new(ctx.cursor.line + 1, 0);
-                    let end_line = (ctx.cursor.line + 1 + count as u32)
-                        .min(snap.buffer.line_count().saturating_sub(1) as u32);
-                    let end_line_text = snap.buffer.line(end_line).unwrap_or_default();
-                    let end = Position::new(end_line, end_line_text.len() as u32);
-                    rt.spawn(async move {
-                        let _ = handle
-                            .apply_edit_batch(vec![Edit::replace(
-                                Range::new(start, end),
-                                String::new(),
-                            )])
-                            .await;
-                        if let Some(ref ph) = pending {
-                            ph.wake();
-                        }
-                    });
-                }
-            } else {
-                let staged = {
-                    let g = s.lock().ok()?;
-                    section_header_above(&g, ctx.cursor.line)
-                        .map(|h| h.contains("Staged"))
-                        .unwrap_or(false)
-                };
-                let diff = run_diff(&wd, &path, staged).unwrap_or_default();
-                if !diff.trim().is_empty() {
-                    let pos = Position::new(ctx.cursor.line + 1, 0);
-                    let text = diff.trim().to_string();
-                    let spans = diff_styled_spans(&text);
-                    let start_line = ctx.cursor.line + 1;
-                    rt.spawn(async move {
-                        let _ = handle
-                            .apply_edit_batch(vec![Edit::insert(pos, format!("{}\n", text))])
-                            .await;
-                        if let Some(ref ph) = pending {
-                            ph.merge_at_and_wake(bid, start_line, spans);
-                        }
-                    });
-                }
+            if !matches!(sl, StatusLine::File { .. }) {
+                return None;
             }
-            None
+            toggle_expand(&s, sl, ctx.cursor.line)
+        });
+    }
+
+    // ── diff-file (d) — open a dedicated diff buffer scoped to
+    // the file at cursor AND its section's baseline (index for
+    // Staged, working-tree-vs-index for Unstaged), instead of
+    // expanding inline like `=`. See `magit_diff_mode`'s `DiffScope`.
+    {
+        let s = state.clone();
+        handler!("action:magit-diff-file", move |ctx: &ActionContext<'_>| {
+            let g = s.lock().ok()?;
+            let StatusLine::File { path, staged } = classify_line(&g, ctx.cursor.line)? else {
+                return None;
+            };
+            let scope = if staged { "staged" } else { "unstaged" };
+            Some(Effect::OpenSyntheticBuffer {
+                name: format!("*magit:diff:{scope}:{}*", path.display()),
+                mode_id: "magit-diff-mode".to_string(),
+            })
         });
     }
 
@@ -411,4 +622,183 @@ pub fn register_action_handlers(
     }
 
     registrations
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn header(s: &str) -> impl FnOnce() -> Option<String> + '_ {
+        move || Some(s.to_string())
+    }
+
+    fn no_header() -> impl FnOnce() -> Option<String> {
+        || None
+    }
+
+    // ── audit fix: collapse deleted the following entry's text ──
+
+    #[test]
+    fn collapse_range_ends_at_next_row_column_zero_not_its_text_length() {
+        // File header at line 5; a 3-line diff was inserted at 6..=8;
+        // line 9 is the next real entry ("  modified  other.rs", 21
+        // bytes). Collapsing must end at (9, 0), not (9, 21) — ending
+        // at the row's text length is exactly the bug that deleted
+        // the next entry's content and left a blank line behind.
+        let (start, end) = collapse_range(5, 3, 20, 21);
+        assert_eq!(start, Position::new(6, 0));
+        assert_eq!(
+            end,
+            Position::new(9, 0),
+            "must not consume the next row's text"
+        );
+    }
+
+    #[test]
+    fn collapse_range_at_buffer_end_falls_back_to_the_diffs_own_last_line() {
+        // Diff inserted at 6..=8 with nothing after it (total_lines
+        // == 9, so target_end_line == 9 == total_lines, out of
+        // range) — there's no following row to anchor on, so the end
+        // must land at the end of the diff's own last line (8, 12).
+        let (start, end) = collapse_range(5, 3, 9, 12);
+        assert_eq!(start, Position::new(6, 0));
+        assert_eq!(end, Position::new(8, 12));
+    }
+
+    #[test]
+    fn collapse_range_single_line_diff() {
+        let (start, end) = collapse_range(0, 1, 10, 0);
+        assert_eq!(start, Position::new(1, 0));
+        assert_eq!(end, Position::new(2, 0));
+    }
+
+    // ── audit fix: the "new file" (two-word) label bug ──────────
+
+    #[test]
+    fn staged_new_file_entry_classifies_with_full_path() {
+        // Root cause of the u / =-on-staged bugs: the old
+        // `parse_file_path` split on the first space and got the
+        // "file" half of the "new file" label instead of the path.
+        let line = format!("  {:<12} {}", "new file", "src/lib.rs");
+        let sl = classify_line_text(&line, header("Staged changes (1)"));
+        assert_eq!(
+            sl,
+            Some(StatusLine::File {
+                path: PathBuf::from("src/lib.rs"),
+                staged: true,
+            })
+        );
+    }
+
+    #[test]
+    fn unstaged_modified_entry_classifies_as_not_staged() {
+        let line = format!("  {:<12} {}", "modified", "src/main.rs");
+        let sl = classify_line_text(&line, header("Unstaged changes (1)"));
+        assert_eq!(
+            sl,
+            Some(StatusLine::File {
+                path: PathBuf::from("src/main.rs"),
+                staged: false,
+            })
+        );
+    }
+
+    #[test]
+    fn untracked_file_entry_classifies_as_not_staged() {
+        let line = format!("  {:<12} {}", "untracked", "notes.txt");
+        let sl = classify_line_text(&line, header("Untracked files (1)"));
+        assert_eq!(
+            sl,
+            Some(StatusLine::File {
+                path: PathBuf::from("notes.txt"),
+                staged: false,
+            })
+        );
+    }
+
+    #[test]
+    fn deleted_entry_classifies_correctly() {
+        let line = format!("  {:<12} {}", "deleted", "old.rs");
+        let sl = classify_line_text(&line, header("Unstaged changes (1)"));
+        assert_eq!(
+            sl,
+            Some(StatusLine::File {
+                path: PathBuf::from("old.rs"),
+                staged: false,
+            })
+        );
+    }
+
+    // ── stash / commit entries — <CR> previously no-op'd on both ──
+
+    #[test]
+    fn stash_entry_classifies_by_index() {
+        let sl = classify_line_text("  stash@{2} WIP on main: 1234abc msg", no_header());
+        assert_eq!(sl, Some(StatusLine::Stash { index: 2 }));
+    }
+
+    #[test]
+    fn commit_entry_classifies_sha_under_recent_commits_header() {
+        let sl = classify_line_text("  a1b2c3d Fix the thing", header("Recent commits (20)"));
+        assert_eq!(
+            sl,
+            Some(StatusLine::Commit {
+                sha: "a1b2c3d".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn commit_like_line_outside_recent_commits_header_is_not_a_commit() {
+        // Guards against misclassifying arbitrary indented text as a
+        // commit entry when it isn't actually under that section.
+        let sl = classify_line_text("  a1b2c3d Fix the thing", header("Stashes (1)"));
+        assert_eq!(sl, None);
+    }
+
+    // ── non-entry lines ──────────────────────────────────────────
+
+    #[test]
+    fn section_header_line_is_not_an_entry() {
+        assert_eq!(classify_line_text("Staged changes (2)", no_header()), None);
+    }
+
+    #[test]
+    fn blank_line_is_not_an_entry() {
+        assert_eq!(classify_line_text("", no_header()), None);
+    }
+
+    #[test]
+    fn no_changes_message_is_not_an_entry() {
+        assert_eq!(
+            classify_line_text("No changes (working tree clean)", no_header()),
+            None
+        );
+    }
+
+    // ── entry_key: Conflicted-file staged/unstaged collision fix ──
+
+    #[test]
+    fn entry_key_distinguishes_staged_and_unstaged_rows_for_the_same_path() {
+        // A Conflicted file appears in BOTH sections at once
+        // (refresh::build_section_index); the two rows must map to
+        // distinct expansion-tracking keys or expanding one would
+        // make `toggle_expand` treat the other as already-expanded.
+        let staged = StatusLine::File {
+            path: PathBuf::from("conflict.rs"),
+            staged: true,
+        };
+        let unstaged = StatusLine::File {
+            path: PathBuf::from("conflict.rs"),
+            staged: false,
+        };
+        assert_ne!(entry_key(&staged), entry_key(&unstaged));
+    }
+
+    #[test]
+    fn entry_key_stable_for_same_status_line() {
+        let a = StatusLine::Stash { index: 3 };
+        let b = StatusLine::Stash { index: 3 };
+        assert_eq!(entry_key(&a), entry_key(&b));
+    }
 }

@@ -108,6 +108,21 @@ pub enum PickerAcceptOutcome {
     /// and `<CR>` to execute. Emitted by the `search-history` picker
     /// source (`q/` / `q?` / `:history search`).
     LoadSearchLine { text: String },
+    /// Open a generic one-line minibuffer text prompt —
+    /// picker-accept's peer of `Effect::OpenPrompt` (same fields, same
+    /// name-based `on_submit_action` lookup, no closures). Lets a
+    /// source chain "pick an item, then type a value" (e.g. magit's
+    /// branch-create: pick the base branch via this picker, then
+    /// prompt for the new branch's name) without inventing bespoke
+    /// per-source plumbing. `buffer_name`, when set, stashes context
+    /// (e.g. the picked base branch) in the prompt buffer's synthetic
+    /// name for the submit handler to read back.
+    OpenPrompt {
+        prompt: String,
+        initial: String,
+        on_submit_action: String,
+        buffer_name: Option<String>,
+    },
     /// Picker dismissed without action -- source-side
     /// abort, accept-on-empty filter, etc. Host applies no
     /// mutation. Distinct from `Err` returned from `accept`

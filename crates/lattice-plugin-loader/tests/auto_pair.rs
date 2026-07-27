@@ -249,15 +249,15 @@ async fn bundled_auto_pair_registers_grammar_modes_and_config_through_the_loader
         &CancellationToken::never(),
     )
     .expect("close (skip) dispatches");
+    // A pure caret move is `Effect::CursorMove`, not a zero-width
+    // `SelectionChange` — this assertion went stale when the
+    // bare-caret representation changed. The behaviour under test
+    // (step past the existing `)`, no text change) is unchanged.
     match effect {
-        Effect::SelectionChange(set) => {
-            assert_eq!(
-                set.primary().head,
-                Position::new(0, 2),
-                "caret stepped past the existing )"
-            );
+        Effect::CursorMove(pos) => {
+            assert_eq!(pos, Position::new(0, 2), "caret stepped past the existing )");
         }
-        other => panic!("close-skip: expected SelectionChange, got {other:?}"),
+        other => panic!("close-skip: expected CursorMove, got {other:?}"),
     }
 
     // close `)` with a non-`)` after the caret → INSERT `)`. Buffer `ab`, caret

@@ -435,9 +435,12 @@ impl App {
             | Action::SearchWordUnderCursor(_)
             | Action::SearchLineSubmit
             | Action::SearchLineCancel
+            | Action::SearchLineBackspace
             | Action::SearchLineHistoryPrev
             | Action::SearchLineHistoryNext
             | Action::SearchLineToggleExpand
+            | Action::PromptLineSubmit
+            | Action::PromptLineCancel
             // 5.5.G.11: picker append/backspace/select + close-hover.
             | Action::PickerAppend(_)
             | Action::PickerBackspace
@@ -1054,6 +1057,14 @@ impl App {
             // no-op above.
             Effect::OpenBufferPicker => self.open_buffer_picker(),
             Effect::OpenPicker { source, args } => self.open_picker(source, args),
+            Effect::Confirm { prompt, yes_action } => self.do_confirm(prompt, yes_action),
+            Effect::OpenTransient { source } => self.do_open_transient(source),
+            Effect::OpenPrompt {
+                prompt,
+                initial,
+                on_submit_action,
+                buffer_name,
+            } => self.do_open_prompt(prompt, initial, on_submit_action, buffer_name),
             // 5.5.F.4.4: `BufferDelete` migrated to
             // `Editor::handle_effect`; emits `BufferActivated` for the
             // post-activation tail. Routed through the grouped no-op
@@ -1266,6 +1277,12 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         Effect::ShowDiagnosticsPopup { .. } => false,
         // L7: an LSP nav request neither mutates nor yanks.
         Effect::Lsp(_) => false,
+        // Confirm dialog opens a transient — not a mutation/yank.
+        Effect::Confirm { .. } => false,
+        // Opening a named transient menu neither mutates nor yanks.
+        Effect::OpenTransient { .. } => false,
+        // Opening a text prompt neither mutates nor yanks.
+        Effect::OpenPrompt { .. } => false,
         // AP.0.2: a declined effect did nothing — not a mutation/yank.
         Effect::Declined
         | Effect::None
@@ -1399,6 +1416,12 @@ fn effect_mutates(effect: &Effect) -> bool {
         Effect::ShowDiagnosticsPopup { .. } => false,
         // L7: an LSP nav request is not a buffer mutation.
         Effect::Lsp(_) => false,
+        // Confirm dialog opens a transient — not a buffer mutation.
+        Effect::Confirm { .. } => false,
+        // Opening a named transient menu is not a buffer mutation.
+        Effect::OpenTransient { .. } => false,
+        // Opening a text prompt is not a buffer mutation.
+        Effect::OpenPrompt { .. } => false,
         // AP.0.2: a declined effect did nothing — not a buffer mutation.
         Effect::Declined
         | Effect::None

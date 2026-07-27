@@ -19,13 +19,57 @@ owns *what* and *why*.
 | MG.1 | `lattice-magit` crate scaffolding | VCS.2, mode-architecture | ✅ |
 | MG.2 | magit-status buffer rendering | MG.1 | ✅ |
 | MG.3 | magit-status actions (s/u/x, cc/ca, =, p, <CR>) | MG.2 | ✅ |
-| MG.4 | magit-commit buffer | MG.2 | 📝 |
-| MG.5 | magit-diff buffer | MG.2 | 📝 |
-| MG.6 | magit-log buffer | MG.2 | 📝 |
-| MG.7 | magit-blame buffer | VCS.2 | 📝 |
-| MG.8 | Transient menus (picker transient mode) | MG.3, PICK.1 | 📝 |
-| MG.9 | magit-stash, magit-branch, magit-rebase | MG.8 | 📝 |
-| MG.10 | Polish + perf + edge cases | MG.1–MG.9 | 📝 |
+| MG.4 | magit-commit buffer | MG.2 | ✅ |
+| MG.5 | magit-diff buffer | MG.2 | ✅ |
+| MG.6 | magit-log buffer | MG.2 | ✅ |
+| MG.7 | magit-blame buffer | VCS.2 | ✅ |
+| MG.8 | Transient menus (picker transient mode) | MG.3, PICK.1 | ✅ |
+| MG.9 | magit-stash, magit-branch, magit-rebase | MG.8 | ✅ |
+| MG.10 | Polish + perf + edge cases | MG.1–MG.9 | ✅ |
+| MG.11 | Cross-view uniformity: `<CR>`, highlighting, file-at-revision | MG.4–MG.9 | ✅ |
+
+**2026-07-26 audit correction:** this table (last synced when MG.1-3 landed) had
+drifted from `implementation.md`'s per-slice status, which had marked MG.4-10 all
+✅ — neither matched source. A functional audit (prompted by real-usage bugs in
+MG.3) found MG.5 is a content-population stub, MG.6/MG.7's primary action
+(`<CR>`) is dead on arrival (registration guard dropped / never registered),
+MG.8's dispatch transients were never wired to their ex-commands, and MG.9's
+branch-create and rebase are stubbed/disconnected from real git. See the dated
+notes under each slice in `implementation.md` for specifics; MG.3 and MG.8 got
+partial fixes in the same pass (see there).
+
+**2026-07-27 close-out:** the gaps above are closed and MG.4–MG.9 move to ✅.
+Landed in this pass:
+
+- **MG.8 root cause** — `do_transient_trigger` built a throwaway
+  `DispatchOutcome` and discarded its `.effects`, so *every* transient item's
+  `Effect::OpenSyntheticBuffer` vanished before reaching the renderer: the menu
+  closed and nothing happened. Now takes the caller's `&mut DispatchOutcome`.
+  Compounding this, `MagitGlobalMode` registered its handlers from
+  `on_activate` behind a `OnceLock`, which `ModeRegistry::spawn_cascade` could
+  defer to an unfinished background task — moved to `Mode::action_handlers()`
+  (synchronous, boot-time).
+- **MG.8 breadth** — `C-c g` gained `d` (diff), `f` (fetch), a real `c` submenu
+  (`c c` commit / `c a` amend) and `z` submenu (`z z` push / `z l` list);
+  `C-c f` gained `u` (unstage), `x` (discard, with confirmation), `l`
+  (file log), `b` (blame). Keys follow Emacs magit's own. Three regression
+  tests guard the menus (no inert `Flag` leaves incl. submenus, no duplicate
+  keys per level, plus an inverse vacuity check).
+- **MG.11 (new)** — cross-view uniformity work driven by real usage:
+  `<CR>` on a commit SHA opens the dedicated commit buffer in *every* view
+  that shows one (status, log, blame, rebase); `<CR>` on a file line opens
+  the file **at that revision** (new `magit-file-revision-mode`,
+  `*magit:file:<ref>:<path>*`) wherever the surrounding buffer describes a
+  fixed revision or the index, and the live working-tree file where it
+  describes current state; per-view syntax highlighting for all eight
+  non-status views via the new `highlight.rs` + five magit-owned theme
+  elements (`magit.sha`, `magit.branch.current`, `magit.ref.decoration`,
+  `magit.rebase.verb`, `magit.author`); and `d` on a status file entry opens
+  a dedicated section-scoped diff buffer (`--cached` for Staged,
+  working-tree-vs-index for Unstaged) as a scalable alternative to `=`.
+- **Latent bug fixed** — `gix::discover` requires a *directory*; three sites
+  passed a file path and always failed. One was `lattice-host`'s auto-head-diff
+  subsystem, meaning gutter diff signs had never worked for any file.
 
 ## Dependency graph
 

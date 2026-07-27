@@ -23,6 +23,12 @@ pub enum ModalState {
     Command,
     Search(SearchDirection),
     Replace,
+    /// A generic one-line minibuffer text prompt is focused (see
+    /// `Effect::OpenPrompt`) — distinct from `Command`/`Search`
+    /// because those are tied to the specific `*command-line*` /
+    /// `*search-line*` buffers and their own submit semantics; a
+    /// prompt's buffer/label/submit-action varies per invocation.
+    Prompt,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

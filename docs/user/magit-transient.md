@@ -1,20 +1,30 @@
 ---
-summary: "magit-transient: the dispatch (C-c g) and file-dispatch (C-c f) grouped action menus — single-key triggers, toggleable flags, argument inputs, live command previews, submenu navigation."
+summary: "magit-transient: the dispatch (C-c g) and file-dispatch (C-c f) grouped menus. C-c g opens every magit buffer plus fetch/pull/push, with commit and stash submenus. C-c f stages/unstages/discards and opens diff/log/blame for the current buffer's file. Keys follow Emacs magit's own. The substrate also supports toggleable flags, argument inputs, and live previews, but no shipped magit menu uses them yet."
 related: [magit, magit-status, magit-buffers, picker]
 ---
 
 # Magit transient menus
 
-Transient menus are grouped action popups that give you single-key
-access to every magit operation. They are Lattice's equivalent of magit
-transient prefix commands — a "which-key on steroids" that shows
-available actions, toggleable flags, and a live command preview in one
-overlay.
+Transient menus are grouped popup menus, Lattice's equivalent of Emacs
+magit's transient prefix commands — a "which-key on steroids" overlay.
+`C-c g` gives you single-key access to every magit **entry point**
+(opening the right buffer from wherever you are) plus the remote
+operations and stash-push; `C-c f` covers the six most common
+operations on the file you're editing. Neither is yet the full
+per-domain action surface (flags, arguments, merge/tag/reset/revert)
+that Emacs magit's transients provide — see below for exactly what's
+real.
+
+**Key assignments follow Emacs magit's own** wherever lattice has the
+corresponding capability, so muscle memory carries across. Magit
+entries lattice has no implementation for are deliberately **absent**
+rather than present-and-inert — a menu row that does nothing when
+pressed is worse than a row that isn't there.
 
 Transients are built on the [picker](picker.md) subsystem's transient-
 mode extension — the same rendering and interaction substrate that
-powers which-key key hints, command palette drilldown, and future
-plugin transients.
+powers which-key key hints and command palette drilldown, and (per its
+module doc) is meant to power future plugin transients too.
 
 ---
 
@@ -38,232 +48,237 @@ plugin transients.
 
 ## Repo dispatch transient (`C-c g`)
 
-Opens from any buffer. Groups:
+Opens from any buffer. Groups, as they actually render today:
 
 ```
-┌─ Magit ───────────────────────────────────────┐
-│  Magit dispatch                    on main    │
+┌─ Magit dispatch ───────────────────────────────┐
 │                                                │
 │  ▸ Working tree                                │
-│    [s]  stage          Stage changes       3   │
-│    [u]  unstage        Unstage changes     2   │
-│    [c]  commit         Commit changes          │
+│    [s]  status          Open the status buffer │
+│    [d]  diff            Diff the working tree  │
+│                          against HEAD          │
+│    [c]  commit        ▸ Commit changes         │
 │                                                │
 │  ▸ History                                     │
-│    [l]  log            Show commit history     │
+│    [l]  log             Show commit history    │
 │                                                │
-│  ▸ Branches, merging, rebasing                │
-│    [b]  branch         Branch operations       │
-│    [m]  merge          Merge operations        │
-│    [r]  rebase         Rebase operations       │
+│  ▸ Branches                                    │
+│    [b]  branch          Open the branch list   │
 │                                                │
 │  ▸ Stashing                                    │
-│    [z]  stash          Stash operations        │
+│    [z]  stash         ▸ Stash operations       │
 │                                                │
 │  ▸ Remotes                                     │
-│    [F]  fetch          Fetch from remote       │
-│    [P]  push           Push to remote          │
+│    [f]  fetch           Fetch from the remote  │
+│                          without merging       │
+│    [F]  pull            Fetch + fast-forward   │
+│                          merge from the remote │
+│    [P]  push            Push to the remote     │
 │                                                │
-│  q dismiss                                     │
+│  ▸ Misc                                        │
+│    [r]  rebase          Start an interactive   │
+│                          rebase                │
+│                                                │
+│  q dismiss  BS back                            │
 └────────────────────────────────────────────────┘
 ```
 
-Groups marked `▸` are **submenus** — pressing their key opens a nested
-transient specific to that operation (e.g., `b` opens the branch menu).
+`s`/`d`/`l`/`b`/`r` open the corresponding buffer directly — the same
+thing `:magit-status`/`:magit-diff`/`:magit-log`/`:magit-branch`/
+`:magit-rebase` do. Once you're in that buffer, use its own direct
+chords (`s`/`u`/`x`/`<CR>`/… — see
+[magit-buffers.md](magit-buffers.md)) for the actual operations.
 
-### Submenu: Branch (`b`)
+Two submenus drill down:
 
-```
-┌─ Branch ───────────────────────────────────────┐
-│  Branch                             on main    │
-│                                                │
-│  ▸ Actions                                     │
-│    [b]  checkout          checkout branch       │
-│    [c]  create            create new branch     │
-│    [d]  delete            delete branch      ⚠ │
-│    [m]  merge             merge into current    │
-│                                                │
-│  ▸ Configure                                   │
-│    [-]  [ ] force         force-create/delete   │
-│                                                │
-│  ────────────────────────────────────────────  │
-│  git checkout main                             │
-│                                                │
-│  q dismiss   DEL back                          │
-└────────────────────────────────────────────────┘
-```
+| Chord | Action |
+|---|---|
+| `c c` | Open the commit buffer |
+| `c a` | Amend the previous commit |
+| `z z` | Stash the working tree (`git stash push`) |
+| `z l` | Open the stash list |
 
-### Submenu: Stash (`z`)
+`c c`/`c a` are the same two keystrokes as magit-status's own `cc`/`ca`
+chords, so committing and amending feel identical whether you're in
+the status buffer or reaching for the dispatch menu from an ordinary
+file. Stash apply/pop/drop are **not** in the `z` submenu — they need
+a stash selected, which only the stash-list buffer provides; `z l`
+then `a`/`p`/`d` there.
 
-```
-┌─ Stash ────────────────────────────────────────┐
-│  Stash                                          │
-│                                                │
-│  ▸ Actions                                     │
-│    [z]  create           create new stash       │
-│    [a]  apply            apply stash            │
-│    [p]  pop              apply + drop stash     │
-│    [d]  drop             drop stash             │
-│                                                │
-│  ▸ Configure                                   │
-│    [-]  [ ] untracked    include untracked       │
-│                                                │
-│  ────────────────────────────────────────────  │
-│  git stash push                                │
-│                                                │
-│  q dismiss   DEL back   -u toggle               │
-└────────────────────────────────────────────────┘
-```
+`f` (fetch), `F` (pull), `P` (push), and `z z` (stash push) run git
+directly rather than opening a buffer. `f` runs plain `git fetch`
+(updates your remote-tracking refs, touches nothing else); `F` runs
+`git pull --ff-only` — it will never create a merge commit, and fails
+cleanly if your branch has diverged rather than merging; `P` runs
+`git push`. All run in the background and fail fast (no hang) if git
+needs credentials it doesn't have. **None reports success or failure
+back into the menu** — there's no synchronous path from the background
+task back to a transient that's already dismissed. Check the
+`*messages*` buffer or the debug log for the outcome.
 
-### Submenu: Push (`P`)
+### Magit entries that aren't here
 
-```
-┌─ Push ─────────────────────────────────────────┐
-│  Push                                to origin  │
-│                                                │
-│  ▸ Actions                                     │
-│    [p]  push              push current branch   │
-│    [u]  push-set-upstream push + set upstream  │
-│                                                │
-│  ▸ Configure                                   │
-│    [-]  [ ] force         force push            │
-│    [-]  [ ] all           push all branches    │
-│                                                │
-│  ────────────────────────────────────────────  │
-│  git push origin main                          │
-│                                                │
-│  q dismiss   DEL back   -f toggle   -a toggle   │
-└────────────────────────────────────────────────┘
-```
+`C-c g` covers what lattice implements. Emacs magit's dispatch also
+offers bisect (`B`), merge (`m`), tag (`t`), revert (`V`), reset
+(`X`), cherry-pick (`A`), submodule (`o`), remote (`M`), and patch
+(`w`/`W`) — none of which lattice has behind them, so none appears in
+the menu. Branch *merge* specifically does exist, but only as the `m`
+chord inside the branch-list buffer (it needs a branch selected);
+`b` then `m` gets you there.
 
-### How submenus work
+### How submenus work (mechanism)
 
-1. Press a submenu key (e.g., `b` for branch). The current transient is
-   pushed onto a stack and the submenu transient replaces it.
-2. Press `BS` or `DEL` to pop the stack and return to the parent.
-3. Press `q`, `Esc`, or `C-g` to dismiss the entire transient stack.
-4. Submenus can nest — from branch you can go to merge, from merge you
-   can go to rebase. Each step pushes onto the stack.
+Pressing a submenu's key pushes the current transient onto a stack and
+opens the submenu; `BS`/`DEL` pops back to the parent; `q`/`Esc`/`C-g`
+dismisses the whole stack.
 
 ---
 
 ## File dispatch transient (`C-c f`)
 
-Opens from any buffer. Shows per-file operations for the current
-buffer's file. If opened from a magit buffer with a file entry under
-the cursor, it resolves the file path from the section index instead.
+Opens from any buffer via `C-c f`:
 
 ```
-┌─ File ─────────────────────────────────────────┐
-│  src/auth/login.rs             modified +12 -3 │
+┌─ File dispatch ────────────────────────────────┐
 │                                                │
-│  ▸ Actions                                     │
-│    [s]  stage              stage this file      │
-│    [u]  unstage            unstage this file    │
-│    [x]  discard            discard changes   ⚠ │
-│    [d]  diff               show diff            │
+│  ▸ Stage                                       │
+│    [s]  stage           Stage this file        │
+│    [u]  unstage         Unstage this file      │
+│    [x]  discard         Discard this file's    │
+│                          working-tree changes  │
+│                          (asks first)          │
 │                                                │
-│  ▸ History                                     │
-│    [l]  log                show log       23 💬 │
-│    [b]  blame              blame this file      │
+│  ▸ Inspect                                     │
+│    [d]  diff            Show diff for this file│
+│    [l]  log             Show commit history    │
+│                          for this file         │
+│    [b]  blame           Blame this file        │
 │                                                │
-│  ▸ Filesystem                                  │
-│    [r]  rename             rename file          │
-│    [D]  delete             delete file       ⚠ │
-│    [c]  checkout           checkout from HEAD  │
-│                                                │
-│  q dismiss   s stage   d diff   l log           │
+│  q dismiss                                     │
 └────────────────────────────────────────────────┘
 ```
 
-Marginalia (dimmed right-aligned text) shows live data from git: file
-status, diffstat (`+12 -3`), commit count (`23 💬`), and last commit SHA.
-The `⚠` glyph marks destructive actions (discard, delete).
+Every item acts on the file belonging to **whichever buffer was active
+when you pressed `C-c f`** — not an entry at the cursor in some other
+buffer. If the active buffer has no file (a synthetic buffer, an
+unsaved scratch buffer), or isn't inside a git repository, there's no
+path to resolve and the key does nothing.
+
+| Chord | What it runs |
+|---|---|
+| `s` | `git add <file>` |
+| `u` | `git reset HEAD -- <file>` (unstage, keep working-tree changes) |
+| `x` | `git checkout -- <file>` — **destructive**, asks `Discard changes to <path>?` first |
+| `d` | Opens `*magit:diff:<path>*` ([diff buffer](magit-buffers.md#diff-buffer)) |
+| `l` | Opens `*magit:log:<path>*` — the [log buffer](magit-buffers.md#log-buffer) scoped to this file's history |
+| `b` | Opens `*magit:blame:<path>*` ([blame buffer](magit-buffers.md#blame-buffer)) |
+
+`x` is the only destructive item, and the only one that confirms
+first — same `y`/`n` confirmation dialog magit-status's own `x` uses.
+`s`/`u` report optimistically ("magit: staged <path>") and log the
+real outcome; they don't block on git.
+
+This transient still can't do what its name in Emacs magit implies —
+"act on the entry at cursor in magit-status" — because the ex-command
+that opens it has no buffer/cursor context from any *other* buffer to
+resolve, only the one that was active. Use the direct chords in
+`magit-status` (`s`/`u`/`x`/`d`) for acting on a file other than the
+one you're currently in.
+
+Magit's file dispatch also offers stage-all/unstage-all, edit-blob,
+trace-definition, and commit-fixup — absent here for the same reason
+as the repo menu's gaps: no implementation behind them.
 
 ---
 
-## Toggleable flags
+## Toggleable flags, arguments, and live preview — substrate capabilities, not shipped magit features
 
-Flag items (like `[-f] force` in the branch menu) toggle boolean values
-in-place. Pressing the flag's key toggles the indicator between `[x]`
-and `[ ]` and updates the live command preview.
+The underlying transient data model (`TransientItemKind`) supports
+boolean flags that toggle in place, argument items that open a
+minibuffer prompt for a string value (branch name, remote name, commit
+reference, …), and a live command-preview line that updates as flags
+and arguments change. All three are real, tested mechanisms in
+`lattice-picker`.
 
-Flag values accumulate across multiple transients in the same session
-— if you toggle `--force` in the push menu, dismiss it, and reopen, the
-flag retains its last-set value.
+**No shipped magit menu exercises any of them for real today.** Every
+leaf item in every shipped menu is a `TransientItemKind::Action` that
+fires a real handler; none is a `Flag`. (The data model still supports
+a `Flag` item as a defensive fallback if an action name somehow failed
+to resolve — that path is what a regression test in `lattice-magit`
+asserts never triggers, recursing through submenus, because an item
+silently degrading to an inert `Flag` looks exactly like "pressing the
+key does nothing" from your side.)
 
-The transient state (flag values + argument values) is held in a
-`HashMap<String, TransientValue>` on the mode's Guard.
-
----
-
-## Arguments
-
-Argument items open a minibuffer prompt for a string value (e.g., a
-branch name, a remote name, a commit reference). After confirming the
-prompt, the value is set and control returns to the transient. The live
-command preview updates to reflect the argument.
-
-Arguments persist across transient invocations — if you set a branch
-name argument and dismiss, reopening the transient retains the value.
-
----
-
-## Live command preview
-
-Each transient has an optional `PreviewFn` — a closure that builds the
-preview line from the current transient state (flag values, argument
-values). The preview updates every time a flag toggles or an argument
-changes.
-
-In the examples above, the `─── git checkout main ───` line is the
-live preview — it shows the exact git command that will run when you
-press the action key.
+So: no menu has a working `--force`, `--include-untracked`, or `--all`
+toggle. `z z` always runs plain `git stash push` with no
+include-untracked option; `P` always runs plain `git push` with no
+force or set-upstream option. No menu has an `Argument` item at all,
+so there's no way to type a branch name, remote name, or commit
+reference from inside a transient; the branch-create wizard's
+name-entry prompt (see [magit-buffers.md](magit-buffers.md#branch-buffer))
+is a separate mechanism — a picker-triggered follow-up prompt, not an
+in-place `Argument` field inside a transient menu. No shipped menu
+sets a `preview` closure, so there's no live command-preview line
+anywhere in magit today. `Flag`/`Argument`/`preview` are the machinery
+a future flag-carrying submenu would use — but as of now, treat
+"toggle a flag", "fill in an argument", and "watch the preview update"
+as not-yet-real for magit specifically.
 
 ---
 
-## Direct chords (advanced-user fast path)
+## Direct chords vs. the dispatch transient
 
-Every transient action also has a direct chord binding registered on
-the mode's keymap. Advanced users who have memorised the chords can
-press them directly without opening the transient first — the chord
-and the transient-submitted action fire the same `ActionId`.
+Every magit buffer's own operations (`s`/`u`/`x`/`<CR>`/… in
+magit-status, `s`/`u` in magit-diff, `a`/`p`/`d`/`z` in magit-stash, …)
+are ordinary chords on that buffer's keymap — see
+[magit-buffers.md](magit-buffers.md) and
+[magit-status.md](magit-status.md). They are **not** exposed as items
+in the `C-c g` dispatch transient: for its buffer-opening items
+(`s`/`d`/`l`/`b`/`r`, plus `c c`/`c a`/`z l`) the dispatch transient
+only opens buffers, it doesn't reach into a buffer and stage a file
+for you. So `C-c g` then `s` opens the status buffer (equivalent to
+`:magit-status` or `C-x g`) — it does not stage anything, even though
+plain `s` inside that same status buffer does. The letters coincide by
+mnemonic convenience, not because they fire the same action.
 
-For example, from the magit-status buffer, `s` directly stages the
-hunk at cursor — it skips `C-c g` → `s` and fires the identical
-handler. The transient is a **discoverability surface** for new
-users; the direct chords are a speed path for experienced users.
+The direct-action exceptions are `f`/`F`/`P` (fetch/pull/push) and
+`z z` (stash push), which fire the git operation straight from the
+transient — there's no equivalent buffer to open first. Every `C-c f`
+item acts directly too, on the current buffer's file.
 
----
-
-## Options
-
-| Option | Type | Default | Description |
-|---|---|---|---|
-| `magit.transient.persist-state` | `bool` | `true` | Retain flag and argument values across transient invocations |
+So the repo dispatch's job is primarily **discoverability of entry
+points** (with the remote/stash-push exceptions), while the file
+dispatch is a genuine **action menu** for the file you're editing.
+Once you're in a magit buffer, its own direct chords are how you do
+the rest of the work.
 
 ---
 
 ## How transients work
 
 Transients are a **picker interaction mode** — the picker's rendering
-pipeline (floating overlay, keyboard capture, styled text rendering,
-TUI + GPUI parity) is the substrate. The transparent mode extension
-adds:
+pipeline (floating overlay or minibuffer strip depending on
+`picker.display`, keyboard capture, styled text rendering, TUI + GPUI
+parity) is the substrate. See [picker.md](picker.md) for that shared
+rendering machinery. The transient mode extension adds:
 
 1. **Grouped, non-filterable entries** — `TransientGroup` with section
    headers, unlike the standard picker's flat, fuzzy-filterable list.
 2. **Single-key triggers** — each item carries a key binding; pressing
    that key fires the item's action without cursor navigation.
-3. **Flag toggle indicators** — `[x]` / `[ ]` display for boolean
-   flags, updated in-place.
-4. **Argument → minibuffer → return** — clicking an argument item opens
-   a minibuffer prompt; confirming sets the value and returns to the
-   transient.
-5. **Submenu stack** — nested transients push onto a stack; `BS`/`DEL`
-   pops back to the parent.
+3. **Flag toggle indicators, argument → minibuffer → return, and a
+   live preview line** — supported by the data model
+   (`TransientItemKind::Flag`/`Argument`, `TransientSpec::preview`),
+   but not exercised by any shipped magit menu yet — see above.
+4. **Submenu stack** — nested transients push onto a stack; `BS`/`DEL`
+   pops back to the parent. Exercised today by the commit (`c`) and
+   stash (`z`) submenus under `C-c g`.
 
 The transient data model (`TransientSpec`, `TransientGroup`,
 `TransientItem`, `TransientItemKind`, `TransientState`,
 `TransientValue`) lives in `lattice-picker`, consumed by
-`lattice-magit` for magit-specific transient definitions.
+`lattice-magit` for magit's dispatch/file-dispatch menus, and by the
+generic `x`-discard confirmation dialog (a two-item `y`/`n` transient
+built from `confirm_transient_spec`, reused wherever the editor needs
+a yes/no confirmation — magit-status's discard prompt is the first
+consumer).

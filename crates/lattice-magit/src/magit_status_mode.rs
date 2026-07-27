@@ -6,6 +6,7 @@
 use std::sync::OnceLock;
 
 use lattice_config;
+use lattice_core::FoldOverlayServiceHandle;
 use lattice_grammar::CommandRegistryHandle;
 use lattice_mode::{
     ActionHandlerRegistryHandle, BufferStoreHandle, CapabilitySet, Keymap, KeymapEntry,
@@ -14,6 +15,7 @@ use lattice_mode::{
 use lattice_vcs::Repository;
 
 use crate::actions;
+use crate::fold_source::MagitStatusFoldSource;
 use crate::refresh;
 
 pub struct MagitStatusMode;
@@ -34,7 +36,7 @@ fn magit_status_keymap_entries() -> &'static [KeymapEntry] {
             keymap_entry! { mode: Normal, chord: "cc", doc: "Open commit buffer", cmd: "action:magit-commit" },
             keymap_entry! { mode: Normal, chord: "ca", doc: "Amend previous commit", cmd: "action:magit-commit-amend" },
             keymap_entry! { mode: Normal, chord: "=", doc: "Toggle inline diff at cursor", cmd: "action:magit-toggle-diff" },
-            keymap_entry! { mode: Normal, chord: "<Tab>", doc: "Toggle inline diff at cursor", cmd: "action:magit-toggle-diff" },
+            keymap_entry! { mode: Normal, chord: "d", doc: "Open file diff in a dedicated buffer", cmd: "action:magit-diff-file" },
             keymap_entry! { mode: Normal, chord: "p", doc: "Stage hunk interactively", cmd: "action:magit-stage-patch" },
             keymap_entry! { mode: Normal, chord: "<CR>", doc: "Context-aware open/visit at cursor", cmd: "action:magit-visit" },
         ]
@@ -45,6 +47,18 @@ fn magit_status_keymap_entries() -> &'static [KeymapEntry] {
 pub struct MagitStatusGuard {
     _action_handler_registrations: Vec<lattice_mode::ActionHandlerRegistration>,
     _state: Option<std::sync::Arc<std::sync::Mutex<actions::StatusBufferState>>>,
+    /// Fold-audit fix: deregisters the buffer's `MagitStatusFoldSource`
+    /// on deactivation — same Drop-based lifecycle
+    /// `DiffModeGuard`/`MultibufferModeGuard` use.
+    fold_registration: Option<(FoldOverlayServiceHandle, lattice_core::ProviderId)>,
+}
+
+impl Drop for MagitStatusGuard {
+    fn drop(&mut self) {
+        if let Some((svc, id)) = self.fold_registration.take() {
+            svc.remove_source(id);
+        }
+    }
 }
 
 impl Mode for MagitStatusMode {
@@ -142,6 +156,7 @@ impl Mode for MagitStatusMode {
                     workdir: workdir.clone(),
                     runtime: runtime.clone(),
                     pending_highlights,
+                    expanded: std::collections::HashMap::new(),
                 }));
 
             let mut action_registrations = Vec::new();
@@ -153,9 +168,24 @@ impl Mode for MagitStatusMode {
                     actions::register_action_handlers(shared_state.clone(), &cmd_arc, &ah_arc);
             }
 
+            // Fold-audit fix: register the nested file>hunk fold
+            // source for this buffer's inline expansions.
+            let fold_registration = ctx
+                .service::<FoldOverlayServiceHandle>()
+                .map(|outer| (*outer).clone())
+                .map(|svc| {
+                    let source = std::sync::Arc::new(MagitStatusFoldSource::new(
+                        shared_state.clone(),
+                        buffer_id,
+                    ));
+                    let id = svc.add_source(source, buffer_id);
+                    (svc, id)
+                });
+
             Ok(MagitStatusGuard {
                 _action_handler_registrations: action_registrations,
                 _state: Some(shared_state),
+                fold_registration,
             })
         })
     }

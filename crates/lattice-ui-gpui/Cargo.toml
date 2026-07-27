@@ -68,6 +68,10 @@ lattice-terminal = { path = "../lattice-terminal" }
 # `FileTreeEntry` / `FileTreeEntryKind` to read them from the shared
 # `buffer_locals` typemap.
 lattice-file-tree = { path = "../lattice-file-tree" }
+# PU.6: `Effect::Confirm` opens a y/n transient via
+# `lattice_picker::confirm_transient_spec` — same dep the TUI peer
+# already carries for the picker/transient subsystem generally.
+lattice-picker = { path = "../lattice-picker" }
 
 # Zed's GPU-accelerated UI framework. Gated behind the `window`
 # feature so the scaffold types + tests build on every host

@@ -936,6 +936,10 @@ impl lattice_mode::BufferStore for BufferRegistry {
         self.name_of(id)
     }
 
+    fn path_for(&self, id: lattice_core::BufferId) -> Option<std::path::PathBuf> {
+        self.document_path(id)
+    }
+
     /// H.1 (2026-05-31): generic Document-shaped buffer
     /// insertion for extension crates (`lattice-multibuffer`
     /// today; future plugin-defined Document-shaped kinds).

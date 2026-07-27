@@ -402,16 +402,18 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) -> Opti
     // Picker query claims the cmdline row only in minibuffer
     // mode. In popup mode the cmdline / echo content stays
     // visible and the picker query renders inside the overlay
-    // instead.
+    // instead. Fold audit fix: a transient in minibuffer mode gets
+    // its title here (the same row a regular picker's prompt uses),
+    // exactly like every other picker surface — it used to force
+    // the popup overlay unconditionally, ignoring `picker.display`.
     if app.picker_state().state.is_some() && picker_is_minibuffer {
         let picker = app.picker_state();
         let is_transient = picker
             .state
             .as_deref()
             .map_or(false, |p| p.transient.is_some());
-        // Transient menus always use overlay mode regardless of display setting.
         if is_transient {
-            draw_transient_overlay(frame, chunks[1], app);
+            draw_transient_minibuffer_prompt(frame, chunks[2], app);
         } else {
             draw_picker_prompt(frame, chunks[2], app);
         }
@@ -439,29 +441,34 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) -> Opti
     // Picker candidate list (precedence over completion popup --
     // only one is interactive at a time). Only the minibuffer
     // display mode uses the bottom band; the popup mode draws
-    // its own self-contained overlay below.
+    // its own self-contained overlay below. Fold audit fix: a
+    // transient's item list now uses this same band in minibuffer
+    // mode (`draw_transient_minibuffer_candidates`), instead of
+    // being excluded from it entirely and forced into the popup box.
     let is_transient = app
         .picker_state()
         .state
         .as_deref()
         .map_or(false, |p| p.transient.is_some());
-    if chrome.picker > 0 && !is_transient {
+    if chrome.picker > 0 && is_transient {
+        draw_transient_minibuffer_candidates(frame, chunks[3], app);
+    } else if chrome.picker > 0 {
         draw_picker_candidates(frame, chunks[3], app);
     } else if chrome.completion > 0 {
         draw_completion_popup(frame, chunks[3], app);
     }
-    // Picker popup overlay -- only drawn when `picker.display`
-    // is `"popup"` and a picker is open. Floats centered over
-    // the buffer area (chunks[0]) so the user still sees the
-    // mode line and any echo / cmdline content underneath.
+    // Picker popup overlay -- only drawn when `picker.display` is
+    // `"popup"` and a picker is open. Floats centered over the
+    // buffer area (chunks[0]) so the user still sees the mode line
+    // and any echo / cmdline content underneath. Fold audit fix:
+    // this used to draw the transient overlay unconditionally
+    // (`|| ...transient.is_some()`) regardless of `picker_is_minibuffer`
+    // — a transient in minibuffer mode got BOTH the minibuffer strip
+    // above AND this popup, or effectively always the popup since the
+    // strip path never ran. Now it follows the exact same
+    // `!picker_is_minibuffer` gate every other picker surface uses.
     let picker_state = app.picker_state();
-    if picker_state.state.is_some()
-        && (!picker_is_minibuffer
-            || picker_state
-                .state
-                .as_deref()
-                .map_or(false, |p| p.transient.is_some()))
-    {
+    if picker_state.state.is_some() && !picker_is_minibuffer {
         let p = picker_state.state.as_deref().unwrap();
         if p.transient.is_some() {
             draw_transient_overlay(frame, chunks[1], app);
@@ -582,7 +589,16 @@ pub(crate) fn chrome_rows(app: &App) -> ChromeRows {
         app.picker_state()
             .state
             .as_deref()
-            .map(|p| popup_height(p.candidates.len().max(1)))
+            .map(|p| match p.transient.as_deref() {
+                // Fold audit fix: a transient's row budget is its
+                // group/item count, not `candidates.len()` (always 0
+                // for a transient — it has no candidate list at all).
+                // Using the candidate count here meant the minibuffer
+                // band claimed only 1 row for a transient, regardless
+                // of how many items it actually had.
+                Some(spec) => popup_height(transient_row_count(spec)),
+                None => popup_height(p.candidates.len().max(1)),
+            })
             .unwrap_or(0)
     } else {
         0
@@ -1701,9 +1717,89 @@ fn picker_display_is_minibuffer(app: &App) -> bool {
 /// painted on top of [`Clear`] so buffer content underneath
 /// doesn't bleed through.
 
-/// Transient-mode picker overlay — grouped action menu with
-/// section headers, key+label+description rows, flag indicators,
-/// preview line, and footer.
+/// Rows a transient's group+item list occupies — one row per group
+/// header, one per item, EXCLUDING preview/footer (those only apply
+/// to the popup layout; the minibuffer candidate band has no room
+/// for them, mirroring how the regular picker's minibuffer strip
+/// only ever shows the candidate list, not a preview pane). Shared
+/// by `chrome_rows`' row-budget accounting and both minibuffer draw
+/// functions below, so they can't drift out of sync with each other.
+fn transient_row_count(spec: &lattice_picker::TransientSpec) -> usize {
+    let total_items: usize = spec.groups.iter().map(|g| g.items.len()).sum();
+    total_items + spec.groups.len()
+}
+
+/// The scroll-windowed group/item lines a transient renders — the
+/// ONE place that walks `spec.groups`, applies `scroll`, and stops
+/// once `visible` lines are produced. Deciding *where* these lines
+/// go (a bordered popup box vs. a bottom strip) is `picker.display`'s
+/// call, made once by the caller in `draw_frame` — a transient's own
+/// job stops at "what are the visible lines", so both
+/// `draw_transient_overlay` (popup) and
+/// `draw_transient_minibuffer_candidates` (minibuffer band) call
+/// this and differ only in where they paint the result. Before this
+/// extraction each had its own copy of the windowing loop. Returns
+/// the lines plus the running line-index they ended at, so a caller
+/// that keeps counting past the group/item section (the popup's
+/// preview/footer rows) continues from the right number.
+fn transient_group_item_lines(
+    spec: &lattice_picker::TransientSpec,
+    transient_state: &lattice_picker::TransientState,
+    scroll: usize,
+    visible: usize,
+) -> (Vec<Line<'static>>, usize) {
+    let mut lines: Vec<Line> = Vec::new();
+    let mut ln: usize = 0;
+
+    for group in &spec.groups {
+        if ln >= scroll && lines.len() < visible {
+            lines.push(Line::from(Span::styled(
+                format!("  ▸ {}", group.label),
+                TuiStyle::default().add_modifier(Modifier::BOLD),
+            )));
+        }
+        ln += 1;
+
+        for item in &group.items {
+            if ln >= scroll && lines.len() < visible {
+                let key = format!("[{}]", item.key.join("/"));
+                let flag = match &item.kind {
+                    lattice_picker::TransientItemKind::Flag { name, .. } => {
+                        let v = transient_state
+                            .get(name)
+                            .and_then(|v| match v {
+                                lattice_picker::TransientValue::Bool(b) => Some(*b),
+                                _ => None,
+                            })
+                            .unwrap_or(false);
+                        if v { "[x]" } else { "[ ]" }
+                    }
+                    _ => "",
+                };
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("    {:<6}", key),
+                        TuiStyle::default().fg(Color::Yellow),
+                    ),
+                    Span::raw(format!("{:<20}", item.label)),
+                    Span::styled(
+                        item.description.clone(),
+                        TuiStyle::default().fg(Color::DarkGray),
+                    ),
+                    Span::styled(format!("  {}", flag), TuiStyle::default().fg(Color::Green)),
+                ]));
+            }
+            ln += 1;
+        }
+
+        if ln >= scroll && lines.len() < visible {
+            lines.push(Line::from(""));
+        }
+        ln += 1;
+    }
+    (lines, ln)
+}
+
 fn draw_transient_overlay(frame: &mut Frame, buffer_area: Rect, app: &App) {
     let picker = app.picker_state();
     let Some(p) = picker.state.as_deref() else {
@@ -1711,11 +1807,9 @@ fn draw_transient_overlay(frame: &mut Frame, buffer_area: Rect, app: &App) {
     };
     let Some(ref spec) = p.transient else { return };
 
-    let total_items: usize = spec.groups.iter().map(|g| g.items.len()).sum();
-    let group_count = spec.groups.len();
     let preview_rows = if spec.preview.is_some() { 2 } else { 0 };
     let footer_rows = if spec.footer.is_some() { 1 } else { 0 };
-    let row_count = total_items + group_count + preview_rows + footer_rows;
+    let row_count = transient_row_count(spec) + preview_rows + footer_rows;
     let height = (row_count as u16 + 3).min(35).max(8);
     let width = buffer_area.width.saturating_sub(4).min(80).max(40);
     let x = buffer_area.x + buffer_area.width.saturating_sub(width) / 2;
@@ -1744,53 +1838,7 @@ fn draw_transient_overlay(frame: &mut Frame, buffer_area: Rect, app: &App) {
         .transient_scroll
         .min(row_count.saturating_sub(visible.max(1)));
 
-    let mut lines: Vec<Line> = Vec::new();
-    let mut ln: usize = 0;
-
-    for group in &spec.groups {
-        if ln >= scroll && lines.len() < visible {
-            lines.push(Line::from(Span::styled(
-                format!("  ▸ {}", group.label),
-                TuiStyle::default().add_modifier(Modifier::BOLD),
-            )));
-        }
-        ln += 1;
-
-        for item in &group.items {
-            if ln >= scroll && lines.len() < visible {
-                let key = format!("[{}]", item.key.join("/"));
-                let flag = match &item.kind {
-                    lattice_picker::TransientItemKind::Flag { name, .. } => {
-                        let v = p
-                            .transient_state
-                            .get(name)
-                            .and_then(|v| match v {
-                                lattice_picker::TransientValue::Bool(b) => Some(*b),
-                                _ => None,
-                            })
-                            .unwrap_or(false);
-                        if v { "[x]" } else { "[ ]" }
-                    }
-                    _ => "",
-                };
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        format!("    {:<6}", key),
-                        TuiStyle::default().fg(Color::Yellow),
-                    ),
-                    Span::raw(format!("{:<20}", item.label)),
-                    Span::styled(&item.description, TuiStyle::default().fg(Color::DarkGray)),
-                    Span::styled(format!("  {}", flag), TuiStyle::default().fg(Color::Green)),
-                ]));
-            }
-            ln += 1;
-        }
-
-        if ln >= scroll && lines.len() < visible {
-            lines.push(Line::from(""));
-        }
-        ln += 1;
-    }
+    let (mut lines, mut ln) = transient_group_item_lines(spec, &p.transient_state, scroll, visible);
 
     if let Some(ref preview_fn) = spec.preview {
         if ln >= scroll && lines.len() < visible {
@@ -1823,6 +1871,57 @@ fn draw_transient_overlay(frame: &mut Frame, buffer_area: Rect, app: &App) {
     }
 
     frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// Fold audit fix: transients used to hard-code the popup overlay
+/// regardless of `picker.display` — a `"minibuffer"` preference
+/// controlled every OTHER picker surface but was silently ignored
+/// for transient menus. This is the minibuffer-mode title row,
+/// mirroring `draw_picker_prompt`'s cmdline-row shape.
+fn draw_transient_minibuffer_prompt(frame: &mut Frame, area: Rect, app: &App) {
+    let picker = app.picker_state();
+    let Some(p) = picker.state.as_deref() else {
+        return;
+    };
+    let Some(ref spec) = p.transient else { return };
+    let para = Paragraph::new(Line::from(vec![Span::styled(
+        format!(" {} ", spec.title),
+        TuiStyle::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    )]));
+    frame.render_widget(para, area);
+}
+
+/// Minibuffer-mode candidate band for a transient — the group/item
+/// list, windowed to `area`'s height via `transient_scroll` (the
+/// SAME field + the same "skip until scroll, stop once the band is
+/// full" shape `draw_transient_overlay` uses for its popup box, just
+/// flowed into a bottom strip instead of a bordered floating area;
+/// see `transient_row_count`'s doc comment for why preview/footer
+/// are dropped here). Flag indicators render the same way; preview
+/// and footer don't fit the band and are omitted (matching the
+/// regular picker's minibuffer candidate band, which never shows a
+/// preview pane either).
+fn draw_transient_minibuffer_candidates(frame: &mut Frame, area: Rect, app: &App) {
+    let picker = app.picker_state();
+    let Some(p) = picker.state.as_deref() else {
+        return;
+    };
+    let Some(ref spec) = p.transient else { return };
+    frame.render_widget(Clear, area);
+
+    let visible = area.height as usize;
+    if visible == 0 {
+        return;
+    }
+    let row_count = transient_row_count(spec);
+    let scroll = p
+        .transient_scroll
+        .min(row_count.saturating_sub(visible.max(1)));
+
+    let (lines, _) = transient_group_item_lines(spec, &p.transient_state, scroll, visible);
+    frame.render_widget(Paragraph::new(lines), area);
 }
 
 fn draw_picker_overlay(frame: &mut Frame, buffer_area: Rect, app: &App) {

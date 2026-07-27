@@ -17,16 +17,22 @@ impl Branch {
 
     /// Create a new branch and optionally check it out.
     ///
-    /// If `checkout` is `true`, equivalent to `git checkout -b <name>`.
-    /// Otherwise equivalent to `git branch <name>`.
-    pub fn create(repo: &Repository, name: &str, checkout: bool) -> Result<()> {
-        if checkout {
-            repo.run_git(["checkout", "-b", name])
+    /// If `checkout` is `true`, equivalent to `git checkout -b <name>
+    /// [<from>]`. Otherwise equivalent to `git branch <name> [<from>]`.
+    /// `from` is the base ref to branch off of; `None` uses git's own
+    /// default (HEAD).
+    pub fn create(repo: &Repository, name: &str, checkout: bool, from: Option<&str>) -> Result<()> {
+        let mut args = if checkout {
+            vec!["checkout", "-b", name]
         } else {
-            repo.run_git(["branch", name])
+            vec!["branch", name]
+        };
+        if let Some(base) = from {
+            args.push(base);
         }
-        .map(|_| ())
-        .map_err(|e| VcsError::Index(format!("branch create {}: {}", name, e)))
+        repo.run_git(args)
+            .map(|_| ())
+            .map_err(|e| VcsError::Index(format!("branch create {}: {}", name, e)))
     }
 
     /// Delete a branch by name.

@@ -438,12 +438,20 @@ pub enum Action {
     /// MB.5a: `<Esc>` / `<C-c>` on the `/`·`?` search line — cancel
     /// the search and restore the prior editing buffer.
     SearchLineCancel,
+    /// `<BS>` on the `/`·`?` line: delete a char, or cancel when empty.
+    SearchLineBackspace,
     /// MB.5b: `<C-p>` / `<Up>` on the `/`·`?` search line — walk to an
     /// older entry in `search_history`.
     SearchLineHistoryPrev,
     /// MB.5b: `<C-n>` / `<Down>` on the `/`·`?` search line — walk to a
     /// newer entry in `search_history`.
     SearchLineHistoryNext,
+    /// `<CR>` in `prompt-line-mode` — submit the typed text to the
+    /// caller-named `on_submit_action` handler.
+    PromptLineSubmit,
+    /// `<Esc>` / `<C-c>` in `prompt-line-mode` — cancel, restore the
+    /// prior editing buffer.
+    PromptLineCancel,
     /// Replace the echo area with a typed message.
     Echo(EchoMessage),
 

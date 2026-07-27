@@ -8,7 +8,7 @@
 use std::sync::{Arc, OnceLock};
 
 use lattice_core::BufferId;
-use lattice_grammar::{CommandRegistryHandle, Effect, QuitScope};
+use lattice_grammar::{AppEffect, CommandRegistryHandle, Effect};
 use lattice_mode::{
     ActionContext, ActionHandlerRegistryHandle, ActivationPolicy, BufferStoreHandle, CapabilitySet,
     Keymap, KeymapEntry, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, OptionOverrideSet,
@@ -20,10 +20,25 @@ use crate::magit_blame_mode::MagitBlameMode;
 use crate::magit_branch_mode::MagitBranchMode;
 use crate::magit_commit_mode::MagitCommitMode;
 use crate::magit_diff_mode::MagitDiffMode;
+use crate::magit_file_revision_mode::MagitFileRevisionMode;
 use crate::magit_log_mode::MagitLogMode;
 use crate::magit_rebase_mode::MagitRebaseMode;
+use crate::magit_revision_mode::MagitRevisionMode;
 use crate::magit_stash_mode::MagitStashMode;
 use crate::magit_status_mode::MagitStatusMode;
+
+/// Shared RAII guard for magit modes whose lifecycle only needs to own
+/// a set of `ActionHandlerRegistration` tokens. `ActionHandlerRegistration`
+/// unregisters itself on `Drop` (see `lattice_mode::action_handler_registry`),
+/// so simply holding the `Vec` here — instead of `mem::forget`-leaking it,
+/// as every non-status magit mode did before this fix — is enough to clean
+/// up on buffer close. Without it, two buffers of the same major mode open
+/// at once silently let the second's `on_activate` replace the first's
+/// handler (registry is last-write-wins per `CommandId`), so firing the
+/// chord in buffer A can execute buffer B's captured state against A's
+/// cursor.
+#[derive(Default)]
+pub struct ActionRegsGuard(pub Vec<lattice_mode::ActionHandlerRegistration>);
 
 pub struct MagitCoreMode;
 
@@ -66,13 +81,7 @@ fn section_headers(store: &BufferStoreHandle, buffer_id: BufferId) -> Vec<u32> {
     let mut lines = Vec::new();
     for l in 0..snap.buffer.line_count() as u32 {
         if let Some(t) = snap.buffer.line(l) {
-            let t = t.trim();
-            if t.starts_with("Staged changes")
-                || t.starts_with("Unstaged changes")
-                || t.starts_with("Untracked files")
-                || t.starts_with("Stashes")
-                || t.starts_with("Recent commits")
-            {
+            if crate::sections::is_section_header(t.trim()) {
                 lines.push(l);
             }
         }
@@ -81,6 +90,14 @@ fn section_headers(store: &BufferStoreHandle, buffer_id: BufferId) -> Vec<u32> {
 }
 
 /// Scan buffer for file/entry lines (indented, non-header).
+///
+/// Fold audit fix: this used to check `starts_with("  ")` on the
+/// line AFTER trimming it — `trim()` strips all leading whitespace,
+/// so a trimmed string can never start with two spaces. The check
+/// was unsatisfiable; `]f`/`[f` never navigated anywhere, on any
+/// magit buffer, from the moment they were written. Now checks the
+/// RAW (untrimmed) line, and trims only for the prefix comparisons
+/// that follow it.
 fn entry_lines(store: &BufferStoreHandle, buffer_id: BufferId) -> Vec<u32> {
     let Some(h) = store.handle_for(buffer_id) else {
         return vec![];
@@ -88,17 +105,12 @@ fn entry_lines(store: &BufferStoreHandle, buffer_id: BufferId) -> Vec<u32> {
     let snap = h.snapshot();
     let mut lines = Vec::new();
     for l in 0..snap.buffer.line_count() as u32 {
-        if let Some(t) = snap.buffer.line(l) {
-            let t = t.trim();
-            if t.starts_with("  ")
-                && !t.is_empty()
-                && !t.starts_with("Staged")
-                && !t.starts_with("Unstaged")
-                && !t.starts_with("Untracked")
-                && !t.starts_with("Stashes")
-                && !t.starts_with("Recent")
-                && !t.starts_with("No changes")
-            {
+        if let Some(raw) = snap.buffer.line(l) {
+            // Section headers and one-off status messages ("No
+            // changes...") all render at column 0 — never indented —
+            // so this guard alone already excludes them; no need to
+            // separately re-check their text.
+            if raw.starts_with("  ") && !raw.trim().is_empty() {
                 lines.push(l);
             }
         }
@@ -147,7 +159,7 @@ fn prev_item(items: &[u32], cursor_row: u32) -> Option<u32> {
 }
 
 impl Mode for MagitCoreMode {
-    type Guard = ();
+    type Guard = ActionRegsGuard;
 
     fn id(&self) -> ModeId {
         Self::mode_id()
@@ -166,6 +178,8 @@ impl Mode for MagitCoreMode {
             MagitStashMode::mode_id(),
             MagitBranchMode::mode_id(),
             MagitRebaseMode::mode_id(),
+            MagitRevisionMode::mode_id(),
+            MagitFileRevisionMode::mode_id(),
         ])
     }
 
@@ -183,14 +197,14 @@ impl Mode for MagitCoreMode {
         Box::pin(async move {
             let buffer_id = BufferId(ctx.buffer_id().0 as u32);
             let Some(store) = ctx.service::<BufferStoreHandle>() else {
-                return Ok(());
+                return Ok(ActionRegsGuard::default());
             };
 
             let Some(cmd_arc) = ctx.service::<CommandRegistryHandle>() else {
-                return Ok(());
+                return Ok(ActionRegsGuard::default());
             };
             let Some(ah_arc) = ctx.service::<ActionHandlerRegistryHandle>() else {
-                return Ok(());
+                return Ok(ActionRegsGuard::default());
             };
             let registry = cmd_arc.load();
             let handlers = (*ah_arc).clone();
@@ -205,11 +219,23 @@ impl Mode for MagitCoreMode {
             }
 
             // ── close (q) ─────────────────────────────────
+            // Bug fix: this used to return `Effect::QuitEditor { scope:
+            // Pane, .. }` — vim's `:q` semantics ("close the pane; if
+            // it's the last one, quit the editor"). With magit buffers
+            // opened IN PLACE in the current pane (not a split), `:q`
+            // semantics on the only pane open QUIT THE WHOLE EDITOR —
+            // the exact live-reported bug. magit's `q` means "bury this
+            // buffer" (Emacs `bury-buffer` / vim alternate-buffer), not
+            // "close a window" — it must never risk quitting. Fixed by
+            // returning `Effect::DismissPopup`, which restores the
+            // pane's pre-open buffer/cursor/scroll from
+            // `Editor::prev_pane_for_popup` (stashed by
+            // `Editor::open_synthetic_buffer` — see its doc comment)
+            // without touching the editor's pane count at all. Help
+            // buffers already use this exact mechanism for their own
+            // `q`/`<Esc>`, which is how it's known to never quit.
             h!("action:magit-close", move |_ctx: &ActionContext<'_>| {
-                Some(Effect::QuitEditor {
-                    force: false,
-                    scope: QuitScope::Pane,
-                })
+                Some(Effect::DismissPopup)
             });
 
             // ── next-section (]]) ──────────────────────────
@@ -270,17 +296,23 @@ impl Mode for MagitCoreMode {
                 });
             }
 
-            // TAB / S-TAB — fold engine handles these via Effect
+            // TAB — toggle the fold at cursor (per-entry/per-hunk,
+            // per `MagitStatusFoldSource`'s nested ranges).
             h!("action:magit-toggle-fold", move |_ctx: &ActionContext<
                 '_,
-            >| { None });
+            >| {
+                Some(Effect::AppAction(AppEffect::ToggleFoldAtCursor))
+            });
+            // S-TAB — cycle overview / all-headings / everything-shown,
+            // matching magit's own section-cycling convention.
             h!(
                 "action:magit-cycle-sections",
-                move |_ctx: &ActionContext<'_>| { None }
+                move |_ctx: &ActionContext<'_>| {
+                    Some(Effect::AppAction(AppEffect::CycleFoldsGlobal))
+                }
             );
 
-            std::mem::forget(regs);
-            Ok(())
+            Ok(ActionRegsGuard(regs))
         })
     }
 }

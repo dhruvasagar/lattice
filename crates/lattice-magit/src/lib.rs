@@ -9,16 +9,21 @@
 //! [`docs/dev/operations/slice-plans/magit.md`].
 
 pub mod actions;
+pub mod fold_source;
+mod highlight;
 pub mod magit_blame_mode;
 pub mod magit_branch_mode;
 pub mod magit_commit_mode;
 pub mod magit_core_mode;
 pub mod magit_diff_mode;
+pub mod magit_file_revision_mode;
 pub mod magit_global_mode;
 pub mod magit_log_mode;
 pub mod magit_rebase_mode;
+pub mod magit_revision_mode;
 pub mod magit_stash_mode;
 pub mod magit_status_mode;
+pub mod picker_sources;
 pub mod refresh;
 pub mod sections;
 pub mod transients;
@@ -36,9 +41,11 @@ use magit_branch_mode::MagitBranchMode;
 use magit_commit_mode::MagitCommitMode;
 use magit_core_mode::MagitCoreMode;
 use magit_diff_mode::MagitDiffMode;
+use magit_file_revision_mode::MagitFileRevisionMode;
 use magit_global_mode::MagitGlobalMode;
 use magit_log_mode::MagitLogMode;
 use magit_rebase_mode::MagitRebaseMode;
+use magit_revision_mode::MagitRevisionMode;
 use magit_stash_mode::MagitStashMode;
 use magit_status_mode::MagitStatusMode;
 
@@ -88,6 +95,14 @@ pub fn install(boot: &mut impl SubsystemBoot) {
         .register(MagitRebaseMode)
         .expect("magit-rebase-mode registers without conflict");
 
+    boot.modes_mut()
+        .register(MagitRevisionMode)
+        .expect("magit-revision-mode registers without conflict");
+
+    boot.modes_mut()
+        .register(MagitFileRevisionMode)
+        .expect("magit-file-revision-mode registers without conflict");
+
     // ── Ex-commands ────────────────────────────────────────
 
     register_ex_commands(boot.commands_mut());
@@ -95,6 +110,64 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     // ── Action commands (keymap resolution targets) ──────
 
     register_action_commands(boot.commands_mut());
+
+    // ── Transient menus (magit-dispatch / magit-file-dispatch) ──
+
+    // Fold audit fix: resolve the root dispatch's action ids now,
+    // while `boot.commands_mut()` still gives direct access to the
+    // registry `register_action_commands` just populated above —
+    // `TransientSourceRegistry`'s builders are zero-arg `Fn()`
+    // closures (see its doc comment for why: `Effect::OpenTransient`
+    // can only carry a name, not a `TransientSpec`), so this is
+    // captured by value rather than looked up again on every press.
+    let dispatch_ids = resolve_dispatch_ids(boot.commands_mut());
+    let file_dispatch_ids = resolve_file_dispatch_ids(boot.commands_mut());
+    let transient_registry = lattice_picker::TransientSourceRegistry::new();
+    transient_registry.register("magit-dispatch", move || {
+        transients::dispatch_transient(&dispatch_ids)
+    });
+    transient_registry.register("magit-file-dispatch", move || {
+        transients::file_dispatch_transient(&file_dispatch_ids)
+    });
+    boot.register_service::<lattice_picker::TransientSourceRegistryHandle>(Arc::new(
+        transient_registry,
+    ));
+}
+
+/// Resolve the root dispatch transient's action ids. Factored out of
+/// [`install`] so the regression tests below exercise the SAME
+/// resolution `install` performs — a test that re-listed the field
+/// assignments by hand would silently stop covering any field added
+/// afterwards, which is exactly the class of bug (an item silently
+/// downgrading to an inert `Flag`) these tests exist to catch.
+fn resolve_dispatch_ids(registry: &CommandRegistry) -> transients::DispatchActionIds {
+    transients::DispatchActionIds {
+        status: registry.id_by_name("action:magit-global-status"),
+        commit: registry.id_by_name("action:magit-global-commit"),
+        amend: registry.id_by_name("action:magit-global-amend"),
+        log: registry.id_by_name("action:magit-global-log"),
+        diff: registry.id_by_name("action:magit-global-diff"),
+        branch: registry.id_by_name("action:magit-global-branch"),
+        stash: registry.id_by_name("action:magit-global-stash"),
+        stash_create: registry.id_by_name("action:magit-global-stash-create"),
+        rebase: registry.id_by_name("action:magit-global-rebase"),
+        fetch: registry.id_by_name("action:magit-global-fetch"),
+        pull: registry.id_by_name("action:magit-global-pull"),
+        push: registry.id_by_name("action:magit-global-push"),
+    }
+}
+
+/// Resolve the file dispatch transient's action ids — same
+/// shared-with-tests rationale as [`resolve_dispatch_ids`].
+fn resolve_file_dispatch_ids(registry: &CommandRegistry) -> transients::FileDispatchActionIds {
+    transients::FileDispatchActionIds {
+        stage: registry.id_by_name("action:magit-global-file-stage"),
+        unstage: registry.id_by_name("action:magit-global-file-unstage"),
+        discard: registry.id_by_name("action:magit-global-file-discard"),
+        diff: registry.id_by_name("action:magit-global-file-diff"),
+        log: registry.id_by_name("action:magit-global-file-log"),
+        blame: registry.id_by_name("action:magit-global-file-blame"),
+    }
 }
 
 /// Register all magit ex-commands in the command registry.
@@ -160,26 +233,43 @@ fn register_ex_commands(registry: &mut CommandRegistry) {
         "*magit:branch*",
         "magit-branch-mode",
     );
-    mk(
-        "magit-rebase",
-        "Start interactive rebase.",
-        "*magit:rebase*",
-        "magit-rebase-mode",
-    );
-    mk(
-        "magit-dispatch",
-        "Open the Magit repo-level dispatch transient.",
-        "*magit:status*",
-        "magit-status-mode",
-    );
-    mk(
-        "magit-file-dispatch",
-        "Open the Magit file-level dispatch transient.",
-        "*magit:status*",
-        "magit-status-mode",
-    );
     // Drop the mk closure to release mutable borrow
     drop(mk);
+    // Fold audit fix: `magit-dispatch` / `magit-file-dispatch` open
+    // their OWN named transients (registered into
+    // `TransientSourceRegistry` by `install`, below) instead of
+    // aliasing `magit-status` — each returns `Effect::OpenTransient`
+    // rather than `Effect::OpenSyntheticBuffer`.
+    let mut mk_transient = |name: &'static str, doc: &'static str, source: &'static str| {
+        registry.register_ex_command(
+            name,
+            doc,
+            ExCommandSpec {
+                latency_class: LatencyClass::Reflex,
+                accepts_bang: false,
+                accepts_range: false,
+                parse_args: Arc::new(|_line: &str, _bang: bool| Ok(Args::None)),
+                apply: Arc::new(move |_ctx| {
+                    Ok(Effect::OpenTransient {
+                        source: source.to_string(),
+                    })
+                }),
+                args_schema: Vec::new(),
+                surface_form: SurfaceForm::Keyword,
+            },
+        );
+    };
+    mk_transient(
+        "magit-dispatch",
+        "Open the Magit repo-level dispatch transient.",
+        "magit-dispatch",
+    );
+    mk_transient(
+        "magit-file-dispatch",
+        "Open the Magit file-level dispatch transient.",
+        "magit-file-dispatch",
+    );
+    drop(mk_transient);
     {
         registry.register_ex_command(
             "magit-blame",
@@ -214,6 +304,101 @@ fn register_ex_commands(registry: &mut CommandRegistry) {
             },
         );
     }
+    {
+        // Fold audit fix: the upstream to rebase onto is encoded into
+        // the buffer name (`*magit:rebase:<upstream>*`), mirroring
+        // `magit-blame`'s file-in-buffer-name pattern — `on_activate`
+        // extracts it the same way. No arg falls back to
+        // `*magit:rebase*`, and the mode resolves `@{upstream}` itself.
+        registry.register_ex_command(
+            "magit-rebase",
+            "Start an interactive rebase. With arg: the upstream ref to rebase onto \
+             (default: the branch's configured upstream).",
+            ExCommandSpec {
+                latency_class: LatencyClass::Reflex,
+                accepts_bang: false,
+                accepts_range: false,
+                parse_args: Arc::new(|line: &str, _bang: bool| {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() {
+                        Ok(Args::None)
+                    } else {
+                        Ok(Args::String(trimmed.to_string()))
+                    }
+                }),
+                apply: Arc::new(|ctx| {
+                    let name = if let Args::String(ref upstream) = ctx.args {
+                        format!("*magit:rebase:{}*", upstream)
+                    } else {
+                        "*magit:rebase*".to_string()
+                    };
+                    let mode_id = "magit-rebase-mode".to_string();
+                    Ok(Effect::OpenSyntheticBuffer { name, mode_id })
+                }),
+                args_schema: vec![ArgSpec::optional(
+                    "upstream",
+                    lattice_grammar::ArgKind::String,
+                    "ref to rebase onto",
+                )],
+                surface_form: SurfaceForm::Keyword,
+            },
+        );
+    }
+    {
+        // Fold audit fix: magit-branch's `c` (create) chord was an
+        // explicit stub ("needs minibuffer prompt"). This codebase
+        // has no generic single-line-prompt-with-callback mechanism
+        // yet (`:lsp-rename <new>` takes its arg the same way — typed
+        // on the `:` line, not an interactive prompt buffer); `c`
+        // points the user here instead of pretending to prompt.
+        registry.register_ex_command(
+            "magit-branch-create",
+            "Create a new branch from HEAD and check it out.",
+            ExCommandSpec {
+                latency_class: LatencyClass::Reflex,
+                accepts_bang: false,
+                accepts_range: false,
+                parse_args: Arc::new(|line: &str, _bang: bool| {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() {
+                        Err(lattice_grammar::error::CommandError::BadArgs(
+                            "magit-branch-create: branch name required".to_string(),
+                        ))
+                    } else {
+                        Ok(Args::String(trimmed.to_string()))
+                    }
+                }),
+                apply: Arc::new(|ctx| {
+                    let Args::String(ref name) = ctx.args else {
+                        return Ok(Effect::Echo {
+                            level: lattice_grammar::EchoLevel::Error,
+                            text: "magit-branch-create: branch name required".to_string(),
+                        });
+                    };
+                    let name = name.clone();
+                    tokio::task::spawn(tokio::task::spawn_blocking(move || {
+                        let Ok(repo) = lattice_vcs::Repository::discover(".") else {
+                            tracing::error!(target: "lattice_magit", "branch create: repo discover failed");
+                            return;
+                        };
+                        if let Err(e) = lattice_vcs::Branch::create(&repo, &name, true, None) {
+                            tracing::error!(target: "lattice_magit", "branch create {name}: {e}");
+                        }
+                    }));
+                    Ok(Effect::Echo {
+                        level: lattice_grammar::EchoLevel::Info,
+                        text: "magit: creating branch…".to_string(),
+                    })
+                }),
+                args_schema: vec![ArgSpec::required(
+                    "name",
+                    lattice_grammar::ArgKind::String,
+                    "new branch name",
+                )],
+                surface_form: SurfaceForm::Keyword,
+            },
+        );
+    }
 }
 
 /// Register every `action:magit-*` command so that mode keymap
@@ -243,14 +428,28 @@ fn register_action_commands(registry: &mut CommandRegistry) {
     reg("action:magit-stage", "Stage the hunk or file at cursor");
     reg("action:magit-unstage", "Unstage the hunk or file at cursor");
     reg("action:magit-discard", "Discard the hunk or file at cursor");
+    reg(
+        "action:magit-discard-execute",
+        "Execute the discard after confirmation",
+    );
     reg("action:magit-commit", "Open the commit buffer");
     reg("action:magit-commit-amend", "Amend the previous commit");
     reg("action:magit-toggle-diff", "Toggle inline diff at cursor");
+    reg(
+        "action:magit-diff-file",
+        "Open file diff in a dedicated buffer",
+    );
     reg(
         "action:magit-stage-patch",
         "Stage hunk interactively (git add -p)",
     );
     reg("action:magit-visit", "Context-aware open/visit at cursor");
+
+    // magit-diff-mode
+    reg(
+        "action:magit-diff-visit-file",
+        "Visit the file at cursor (working tree, or the index blob for a Staged-scoped diff)",
+    );
 
     // magit-core-mode
     reg("action:magit-refresh", "Refresh the current magit buffer");
@@ -285,11 +484,21 @@ fn register_action_commands(registry: &mut CommandRegistry) {
         "Create the commit with the entered message",
     );
     reg("action:magit-commit-abort", "Abort the commit");
+    reg(
+        "action:magit-commit-visit-file",
+        "Visit the staged file at cursor (index blob, not the working tree)",
+    );
 
     // magit-log-mode
     reg(
         "action:magit-log-show-commit",
         "Show the commit detail at cursor",
+    );
+
+    // magit-revision-mode
+    reg(
+        "action:magit-revision-visit-file",
+        "Visit the file at cursor as of this commit",
     );
 
     // magit-blame-mode
@@ -320,4 +529,223 @@ fn register_action_commands(registry: &mut CommandRegistry) {
     // magit-rebase-mode
     reg("action:magit-rebase-confirm", "Execute the rebase");
     reg("action:magit-rebase-abort", "Abort the rebase");
+    reg(
+        "action:magit-rebase-show-commit",
+        "Show the commit detail at cursor",
+    );
+
+    // magit-global-mode (Universal — always active, unlike every
+    // action above which only has a live handler while its owning
+    // buffer is open). Backs the `magit-dispatch` root transient's
+    // items so pressing a key inside it works from ANY buffer, not
+    // just from within the matching magit buffer kind.
+    reg("action:magit-global-status", "Open the status buffer");
+    reg("action:magit-global-commit", "Open the commit buffer");
+    reg("action:magit-global-amend", "Amend the previous commit");
+    reg("action:magit-global-log", "Open the log buffer");
+    reg("action:magit-global-diff", "Open the diff buffer");
+    reg("action:magit-global-branch", "Open the branch list");
+    reg("action:magit-global-stash", "Open the stash list");
+    reg(
+        "action:magit-global-stash-create",
+        "Stash the working tree (git stash push)",
+    );
+    reg("action:magit-global-rebase", "Start an interactive rebase");
+    reg(
+        "action:magit-global-fetch",
+        "Fetch from the remote without merging",
+    );
+    reg(
+        "action:magit-global-pull",
+        "Fetch + fast-forward merge from the remote",
+    );
+    reg("action:magit-global-push", "Push to the remote");
+
+    // File-dispatch (`C-c f`) — file-level operations scoped to the
+    // buffer active when the transient was opened.
+    reg(
+        "action:magit-global-file-stage",
+        "Stage the file in the current buffer",
+    );
+    reg(
+        "action:magit-global-file-unstage",
+        "Unstage the file in the current buffer",
+    );
+    reg(
+        "action:magit-global-file-discard",
+        "Discard changes to the file in the current buffer",
+    );
+    reg(
+        "action:magit-global-file-discard-execute",
+        "Execute the file discard after confirmation",
+    );
+    reg(
+        "action:magit-global-file-diff",
+        "Show diff for the file in the current buffer",
+    );
+    reg(
+        "action:magit-global-file-log",
+        "Show commit history for the file in the current buffer",
+    );
+    reg(
+        "action:magit-global-file-blame",
+        "Blame the file in the current buffer",
+    );
+
+    // Branch-create wizard (`c` in magit-branch-mode): fired by the
+    // prompt opened after picking a base branch via
+    // `magit-branch-pick-base`. Global like the others above — the
+    // prompt buffer isn't a magit-status/-branch buffer, so this
+    // can't be a per-buffer handler.
+    reg(
+        "action:magit-branch-create-finish",
+        "Create the new branch (from the picked base) with the typed name",
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Collect every leaf item in `spec` — RECURSING through
+    /// submenus — that did NOT resolve to a real `Action`.
+    /// `action_or_placeholder` silently downgrades an unresolved id
+    /// to an inert `Flag` (see its doc comment), which from the
+    /// user's side looks EXACTLY like "pressing the key does
+    /// nothing": no error, no effect, transient stays open.
+    /// Recursion matters because the root dispatch's `c` (commit)
+    /// and `z` (stash) items are submenus whose own leaves would
+    /// otherwise go unchecked.
+    ///
+    /// Returns findings rather than panicking so the vacuity test
+    /// below can assert the walker actually FINDS inert items on a
+    /// deliberately-unresolved spec (`TransientSpec` holds a
+    /// `Box<dyn Fn>` preview, so it isn't `UnwindSafe` and can't be
+    /// probed via `catch_unwind`).
+    fn inert_items(spec: &lattice_picker::TransientSpec, path: &str) -> Vec<String> {
+        let mut found = Vec::new();
+        for group in &spec.groups {
+            for item in &group.items {
+                let where_ = format!("{path}{} / {}", group.label, item.label);
+                match &item.kind {
+                    lattice_picker::TransientItemKind::Action(_) => {}
+                    lattice_picker::TransientItemKind::Submenu(sub) => {
+                        found.extend(inert_items(sub, &format!("{where_} > ")));
+                    }
+                    lattice_picker::TransientItemKind::Flag { name, .. } => {
+                        found.push(format!(
+                            "'{where_}' fell back to an inert Flag placeholder \
+                             named '{name}' — its action id failed to resolve"
+                        ));
+                    }
+                    other => found.push(format!("unexpected item kind for '{where_}': {other:?}")),
+                }
+            }
+        }
+        found
+    }
+
+    fn assert_no_inert_items(spec: &lattice_picker::TransientSpec) {
+        let found = inert_items(spec, "");
+        assert!(
+            found.is_empty(),
+            "inert transient items:\n  {}",
+            found.join("\n  ")
+        );
+    }
+
+    /// Regression test for a live-reported bug: `C-c g` then `l`
+    /// (log) / `b` (branch) did nothing. Mirrors `install()`'s exact
+    /// `register_action_commands` → resolve-`DispatchActionIds`
+    /// sequence — every root dispatch item, at every submenu depth,
+    /// must resolve to a real `Action`, not `Flag`.
+    #[test]
+    fn every_root_dispatch_item_resolves_to_a_real_action_not_a_flag_fallback() {
+        let mut registry = CommandRegistry::new();
+        register_action_commands(&mut registry);
+        // Resolved through the SAME function `install` uses, so a
+        // field added later is covered automatically rather than
+        // needing this test to be remembered and updated.
+        let ids = resolve_dispatch_ids(&registry);
+        let spec = transients::dispatch_transient(&ids);
+        assert_no_inert_items(&spec);
+    }
+
+    #[test]
+    fn file_dispatch_items_resolve_to_real_actions() {
+        let mut registry = CommandRegistry::new();
+        register_action_commands(&mut registry);
+        let ids = resolve_file_dispatch_ids(&registry);
+        let spec = transients::file_dispatch_transient(&ids);
+        assert_no_inert_items(&spec);
+    }
+
+    /// Guards against a subtler variant of the same bug: two items
+    /// in one menu level sharing a key means the second is
+    /// unreachable — pressing the key always fires the first. Not
+    /// caught by the inert-Flag check (both resolve fine); it only
+    /// shows up as "this menu entry does nothing".
+    #[test]
+    fn no_duplicate_keys_within_any_transient_menu_level() {
+        fn check(spec: &lattice_picker::TransientSpec, path: &str) {
+            let mut seen: Vec<(String, String)> = Vec::new();
+            for group in &spec.groups {
+                for item in &group.items {
+                    for key in &item.key {
+                        if let Some((_, prior)) = seen.iter().find(|(k, _)| k == key) {
+                            panic!(
+                                "key '{key}' in menu '{path}' is bound twice: \
+                                 '{prior}' and '{}' — the second is unreachable",
+                                item.label
+                            );
+                        }
+                        seen.push((key.clone(), item.label.clone()));
+                    }
+                    if let lattice_picker::TransientItemKind::Submenu(sub) = &item.kind {
+                        check(sub, &format!("{path}{} > ", item.label));
+                    }
+                }
+            }
+        }
+        let mut registry = CommandRegistry::new();
+        register_action_commands(&mut registry);
+        check(
+            &transients::dispatch_transient(&resolve_dispatch_ids(&registry)),
+            "dispatch",
+        );
+        check(
+            &transients::file_dispatch_transient(&resolve_file_dispatch_ids(&registry)),
+            "file-dispatch",
+        );
+    }
+
+    /// The inverse guard: with NO ids resolved, EVERY leaf must be
+    /// reported inert — proving the walker actually visits leaves
+    /// and detects the failure it claims to. A walker that silently
+    /// visited nothing (wrong field, empty groups, no recursion)
+    /// would pass the two tests above vacuously.
+    #[test]
+    fn unresolved_ids_do_produce_inert_items_so_the_guard_is_not_vacuous() {
+        // 6 file-dispatch items: stage/unstage/discard + diff/log/blame.
+        let file = inert_items(
+            &transients::file_dispatch_transient(&Default::default()),
+            "",
+        );
+        assert_eq!(
+            file.len(),
+            6,
+            "expected every file-dispatch leaf to report inert, got: {file:?}"
+        );
+        // Root dispatch: 10 leaves — status, diff, log, branch,
+        // fetch, pull, push, rebase + the commit submenu's 2 (c/a)
+        // + the stash submenu's 2 (z/l) = 12. Recursion is what
+        // makes the submenu leaves visible at all.
+        let root = inert_items(&transients::dispatch_transient(&Default::default()), "");
+        assert_eq!(
+            root.len(),
+            12,
+            "expected every root-dispatch leaf (incl. both submenus') to \
+             report inert, got: {root:?}"
+        );
+    }
 }

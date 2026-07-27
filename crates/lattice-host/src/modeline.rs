@@ -118,6 +118,7 @@ pub fn modal_label(rs: &RenderState) -> &'static str {
         ModalState::Command => "CMD",
         ModalState::Search(_) => "SEARCH",
         ModalState::Replace => "REPLACE",
+        ModalState::Prompt => "PROMPT",
     }
 }
 
@@ -148,6 +149,7 @@ pub fn modal_label_short(rs: &RenderState) -> &'static str {
         ModalState::Command => "CMD",
         ModalState::Search(_) => "SEA",
         ModalState::Replace => "REP",
+        ModalState::Prompt => "PMT",
     }
 }
 

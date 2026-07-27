@@ -180,17 +180,22 @@ the `*magit:<kind>*` convention (consistent with `*messages*`, `*lsp*`,
 The primary workhorse. One buffer that shows the state of the current
 repository.
 
-**Sections** (top to bottom, each collapsible via fold):
+**Sections** (top to bottom, each collapsible via fold). "Unpulled
+commits" / "Unpushed commits" sections are target design, **not built** —
+`SectionKind` has no such variants; the only ahead/behind signal today is
+the two counts in the branch status line (below), not a per-commit list:
 
 | Section | Content | Data source |
 |---|---|---|
-| Unpulled commits | Commits on upstream not yet merged | `WorkingTree::unpulled(repo)` via gix |
-| Unpushed commits | Local commits not yet on upstream | `WorkingTree::unpushed(repo)` via gix |
-| Staged changes | Files with changes in the index — paths + status only. Diffs loaded on demand via `=`. | `WorkingTree::statuses(repo)` filtered to `Modified` (staged) |
-| Unstaged changes | Files with working-tree changes — paths + status only. Diffs loaded on demand via `=`. | `WorkingTree::statuses(repo)` filtered to `Modified` (unstaged) |
+| Staged changes | Files with changes in the index — paths + status only. Diffs loaded on demand via `=`. | `WorkingTree::statuses(repo)` filtered to `Modified`/`Added`/`Conflicted` (staged) |
+| Unstaged changes | Files with working-tree changes — paths + status only. Diffs loaded on demand via `=`. | `WorkingTree::statuses(repo)` filtered to `Modified`/`Deleted`/`Unmerged`/`Conflicted` (unstaged) |
 | Untracked files | Untracked files, listed | `WorkingTree::statuses(repo)` filtered to `Untracked` |
 | Stashes | List of stashes with messages | `Stash::list(repo)` via gix |
-| Recent commits | Last N commits with abbreviated SHAs and subjects | `git log --oneline -N` |
+| Recent commits | Last N commits with abbreviated SHAs and subjects | `git log --oneline -N` (CLI, not gix) |
+
+A `Conflicted` path appears in BOTH the Staged and Unstaged sections
+simultaneously — real double-listing, not a bug (see §7.2's `entry_key`
+note on why this matters for expansion state).
 
 **Section rendering:** Each section has a header line (bold, with section name
 and item count) followed by its body. Sections are fold regions anchored at the
@@ -199,13 +204,16 @@ magit-specific code.
 
 **Inlined diffs:** Staged and unstaged sections start as file lists with
 status labels only. Pressing `=` on a file entry loads and inlines the diff
-for that file — a local edit to the buffer, not a full refresh. The diff
-uses the existing virtual-row provider + inline overlay path from D.3 for
-deletion blocks, gutter signs, and background tints. Diffs are cached in the
-`DiffCache` (§6.4) and invalidated when the file's status changes.
+for that file — a local edit to the buffer, not a full refresh (§6.3 has
+the real mechanism: a full-text `git diff` insert with syntax-highlight
+spans, not virtual-row deletion blocks or a per-file cache).
 
-**Headerline:** The view-header virtual row shows: branch name + repo status
-indicator (clean/dirty/+N~M) + upstream tracking (ahead/behind counts).
+**Headerline:** target design — a view-header virtual row showing branch
+name + repo status indicator + upstream tracking (ahead/behind counts).
+**Not wired up.** `SectionIndex::branch_status_line()` computes the string
+(`branch [N↑] [N↓]`) but nothing calls it yet; branch/ahead/behind data is
+computed during refresh but not currently surfaced to the user anywhere in
+the buffer.
 
 ### 4.2 magit-log (`*magit:log*`)
 
@@ -242,14 +250,35 @@ Per-line git blame annotations alongside the current file.
 - `<CR>` on a blame line opens `*magit:commit:<sha>*`.
 - Blame data cached in a per-file `BlameLineMap`; invalidated on file changes.
 
-### 4.5 magit-diff (`*magit:diff*`)
+### 4.5 magit-diff (`*magit:diff*`, or path-scoped `*magit:diff:<path>*`)
 
-Enhanced diff view for reviewing unstaged or staged changes.
+Target design: a two-pane side-by-side diff (reuses D.4 pane group
+machinery), left pane staged/HEAD, right pane working tree, hunk-level
+staging including partial-hunk staging from a Visual-mode selection.
+**Not built.** The current `MagitDiffMode` is a real, scoped middle
+ground, not the target: it populates the buffer with `git diff HEAD`
+(staged + unstaged changes combined against HEAD, matching this
+section's original "against HEAD" framing) as plain styled text —
+one buffer, no panes, no `DiffSession`/`GitBaseline` integration. It
+registers its OWN `s`/`u` handlers, scoped to this buffer's own
+`DiffState`, resolving the file at cursor by scanning upward for the
+nearest `diff --git a/<path> b/<path>` header — file-level only, not
+hunk-level (no `x`/discard chord either). This closes a real bug: the
+buffer used to open empty with `s`/`u` declared in the keymap but no
+handler of their own, so pressing them silently fired whatever
+`magit-status` handler happened to be registered, against
+magit-status's captured state rather than this buffer's cursor. The
+full side-by-side `DiffSession` + hunk-level staging design above
+remains a real follow-up, larger than this pass.
 
-- Opens a two-pane side-by-side diff (reuses D.4 pane group machinery).
-- Left pane: staged version (or HEAD), right pane: working tree.
-- Hunk staging directly from the diff buffer (same `s` / `u` chords).
-- Visual mode over hunks + `s` stages the selected region as a partial hunk.
+The mode now also backs a path-scoped variant, opened by file-dispatch's
+`d` item (§8.8): buffer name `*magit:diff:<path>*` instead of the bare
+`*magit:diff*`. `on_activate` parses the optional path back out of the
+buffer name (`store.name_for(buffer_id)` stripped of the
+`*magit:diff:`/`*` wrapper) and runs `git diff HEAD -- <path>` instead of
+the whole-tree `git diff HEAD` — same mode, same `s`/`u` handlers, same
+`DiffState`, just a narrower git invocation. The unscoped `:magit-diff`
+ex-command is unaffected; it still opens the bare `*magit:diff*` buffer.
 
 ### 4.6 magit-stash, magit-branch, magit-rebase
 
@@ -257,11 +286,31 @@ Each is a synthetic Document with its own major mode:
 
 - **magit-stash** (`*magit:stash*`): stash list with apply/pop/drop/create
   operations.
-- **magit-branch** (`*magit:branch*`): branch list with checkout/create/delete/
-  merge operations.
-- **magit-rebase** (`*magit:rebase*`): interactive rebase todo buffer.
-  Editable pick/reword/squash/fixup/drop list. `C-c C-c` runs the rebase;
-  `C-c C-k` aborts.
+- **magit-branch** (`*magit:branch*`): branch list with checkout/delete/merge
+  operations. `c` (create) opens a two-step picker-driven wizard (pick base
+  branch, then type the new name) — see §12.9.
+- **magit-rebase** (`*magit:rebase[:<upstream>]*`): interactive rebase todo
+  buffer. The upstream is encoded in the buffer name, mirroring magit-blame's
+  file-in-buffer-name pattern (`*magit:rebase*` with no arg falls back to
+  resolving `@{upstream}`). The todo is real — built from `git log --reverse
+  --format="pick %h %s" <upstream>..HEAD`, not a placeholder. Editable
+  pick/reword/squash/fixup/drop list. `C-c C-c` writes the buffer's
+  (possibly user-edited) non-comment lines to a temp file and actually
+  STARTS the rebase via `git rebase -i <upstream>` with
+  `GIT_SEQUENCE_EDITOR="cp <tempfile>"` and `GIT_EDITOR=true` (accepts a
+  `reword` step's original message unchanged — no message-edit UI, a known
+  limitation). `C-c C-k` runs `git rebase --abort` only if
+  `.git/rebase-merge` or `.git/rebase-apply` actually exists, so it can't
+  fail against a rebase that was never started.
+
+### 4.7 magit-revision (`*magit:commit:<sha>*`)
+
+A read-only `git show --stat -p <sha>` view of a single commit. Opened by
+magit-log's `<CR>` and magit-blame's `<CR>`, both of which resolve a sha and
+open this buffer rather than duplicating a "show one commit" view per
+caller. No mode-specific chords — `q`/`gr`/nav come from `magit-core` (this
+mode is in its `ActivationPolicy::Majors` list); `gr` is a harmless no-op
+here since a commit's content doesn't change under a fixed sha.
 
 ## 5. Mode decomposition
 
@@ -271,7 +320,18 @@ and lifecycle.
 
 ```
 lattice-magit crate
-├── magit-core          (MinorMode, ActivationPolicy::OnMajorMatch)
+├── magit-global-mode   (MinorMode, ActivationPolicy::Universal)
+│   ├── Keymap:  C-x g  → :magit-status
+│   │            C-c g  → :magit-dispatch (Effect::OpenTransient)
+│   │            C-c f  → :magit-file-dispatch (Effect::OpenTransient)
+│   └── ActionHandlers: action:magit-global-* (status/commit/log/branch/
+│       stash/rebase/pull/push/file-stage/file-diff/branch-create-finish) —
+│       the root dispatch + file-dispatch transients' items (and the
+│       branch-create wizard's prompt) fire these, registered ONCE
+│       process-wide via a static OnceLock (see §8.8)
+│
+├── magit-core          (MinorMode, ActivationPolicy::Majors([...9 major
+│   │                    modes incl. magit-revision-mode]))
 │   ├── Keymap:  gr     → refresh
 │   │            q      → close (bury, return to previous buffer)
 │   │            ]] / [[→ next/prev section
@@ -280,104 +340,139 @@ lattice-magit crate
 │   │            TAB    → toggle section fold
 │   │            S-TAB  → cycle section visibility
 │   ├── ActionHandlers: refresh, close, navigation, fold
-│   │   (dispatch and file-dispatch via global `C-c g`/`C-c f`)
-│   └── Shared providers: section fold registration, headerline
+│   └── Shared: `ActionRegsGuard` — RAII guard every non-status mode below
+│       uses to hold its `ActionHandlerRegistration`s (see §5.2)
 │
 ├── magit-status-mode   (MajorMode)
-│   ├── Keymap:  s / u / x → stage / unstage / discard
+│   ├── Keymap:  s / u / x → stage / unstage / discard file at cursor
 │   │            cc / ca    → commit / amend
-│   │            =          → toggle inline diff
-│   │            p          → stage hunk interactively
+│   │            =          → toggle inline diff (file-level)
+│   │            p          → stage hunk interactively (not supported — see §12.2)
 │   │            <CR>       → open/visit at cursor
-│   │            (branch/stash/rebase/fetch/push via C-c g dispatch transient)
 │   ├── ActionHandlers: stage/unstage/discard at cursor, open views
-│   └── Buffer provisioning: ensure *magit:status*, populate, refresh
+│   └── Buffer provisioning: ensure *magit:status*, populate, refresh;
+│       registers its own `MagitStatusFoldSource` (§7.1)
 │
 ├── magit-commit-mode   (MajorMode)
 │   ├── Keymap:  C-c C-c → commit
 │   │            C-c C-k → abort
-│   │            C-c C-d → toggle diff view
-│   ├── ActionHandlers: commit, abort, toggle-diff
-│   └── Buffer provisioning: ensure *magit:commit*, populate staged diff
+│   ├── ActionHandlers: commit, abort
+│   └── Buffer provisioning: ensure *magit:commit*/*magit:amend*, populate
+│       staged diff + (amend) prior message
 │
 ├── magit-log-mode      (MajorMode)
-│   ├── Keymap:  <CR>   → show commit detail
-│   │            = =    → toggle log arguments
-│   ├── ActionHandlers: open commit, refresh with args
+│   ├── Keymap:  <CR>   → open *magit:commit:<sha>* (magit-revision-mode)
+│   ├── ActionHandlers: open commit, refresh
 │   └── Buffer provisioning: ensure *magit:log*, run git log, render
 │
+├── magit-revision-mode (MajorMode) — new: `git show --stat -p <sha>` for
+│   │                    one commit; buffer name carries the sha
+│   ├── Keymap:  (none — q/gr/nav inherited from magit-core)
+│   └── Buffer provisioning: ensure *magit:commit:<sha>*, render
+│
 ├── magit-blame-mode    (MajorMode)
-│   ├── Keymap:  <CR>   → show commit for line
-│   │            q      → close blame
-│   │            p      → blame parent commit
+│   ├── Keymap:  <CR>   → open *magit:commit:<sha>* for blamed line
+│   │            p      → re-blame at the parent of the revision shown
 │   ├── ActionHandlers: open commit at SHA, re-blame at parent
 │   └── Buffer provisioning: ensure *magit:blame:<path>*, render annotations
+│       inline (not a gutter column — see §10.2)
 │
 ├── magit-diff-mode     (MajorMode)
-│   ├── Keymap:  s / u / x → stage / unstage / discard
-│   ├── ActionHandlers: stage/unstage hunk at cursor
-│   └── Buffer provisioning: ensure diff session, render
+│   ├── Keymap:  s / u → stage / unstage file at cursor (no `x`)
+│   ├── ActionHandlers: stage/unstage file at cursor, refresh
+│   └── Buffer provisioning: `git diff HEAD` (staged+unstaged combined) as
+│       plain text — no `DiffSession`, no panes (§4.5)
 │
 ├── magit-stash-mode    (MajorMode)
-│   ├── Keymap:  a / p → apply / pop stash
-│   │            d     → drop stash
-│   │            z     → create new stash
-│   │            <CR>  → show stash diff
-│   ├── ActionHandlers: apply/pop/drop/create/show stash
+│   ├── Keymap:  a → apply stash    p → pop stash
+│   │            d → drop stash     z → create new stash
+│   ├── ActionHandlers: apply/pop/drop/create stash
 │   └── Buffer provisioning: ensure *magit:stash*, list stashes
 │
 ├── magit-branch-mode   (MajorMode)
 │   ├── Keymap:  <CR>  → checkout branch
-│   │            c     → create branch (minibuffer prompt)
+│   │            c     → open branch-create wizard (Effect::OpenPicker
+│   │                    { source: "magit-branch-pick-base" })
 │   │            d     → delete branch
 │   │            m     → merge branch
-│   ├── ActionHandlers: checkout/create/delete/merge branch
+│   ├── ActionHandlers: checkout/delete/merge branch; create's second step
+│   │       (`action:magit-branch-create-finish`) is a GLOBAL handler in
+│   │       magit-global-mode, not here — it fires against the PROMPT
+│   │       buffer opened by the wizard's picker step, not this buffer
 │   └── Buffer provisioning: ensure *magit:branch*, list branches
 │
 └── magit-rebase-mode   (MajorMode)
     ├── Keymap:  C-c C-c → execute rebase
-    │            C-c C-k → abort rebase
-    │            editable buffer (pick/reword/squash/fixup/drop)
+    │            C-c C-k → abort rebase (only if a rebase is in progress)
+    │            editable buffer (pick/reword/squash/fixup/drop), a REAL
+    │            todo from `git log --reverse` against the resolved upstream
     ├── ActionHandlers: execute/abort rebase
-    └── Buffer provisioning: ensure *magit:rebase*, populate todo list
+    └── Buffer provisioning: ensure *magit:rebase[:<upstream>]*, populate
+        real todo list
 ```
 
 **Standing-rule check (mode ownership):** every chord (`s`, `u`, `c c`, `TAB`,
 etc.) is registered by the mode that owns the buffer it fires on. The
 action-handler body lives in the same crate as the keymap registration.
 `lattice-magit/src/magit_status_mode.rs` contains both the keymap definition
-AND the `fn stage_hunk_at_cursor(...)` handler. No `Editor::do_magit_stage_hunk`
-shim exists. The acid test holds.
+AND the handler bodies (`crate::actions::register_action_handlers`). No
+`Editor::do_magit_stage_hunk` shim exists. The acid test holds. One real
+gotcha this surfaced: every non-status mode used to `mem::forget` its
+`Vec<ActionHandlerRegistration>` rather than holding it in the mode's
+`Guard` — harmless for a single open buffer, but with two buffers of the
+same major mode open simultaneously the second's registration silently
+replaced the first's (registry is last-write-wins per `CommandId`), so
+firing a chord in buffer A could execute buffer B's captured state against
+A's cursor. Fixed by a shared `ActionRegsGuard` (`magit_core_mode.rs`) that
+all modes but magit-status now hold — magit-status already did this
+correctly via its own `MagitStatusGuard`.
 
 ### 5.1 Activation policy
 
-- **`magit-core` minor mode**: activated on any buffer whose major mode matches
-  `magit-status-mode | magit-log-mode | magit-commit-mode | ...`.
-  Registered as `MinorMode::with_major_matcher(...)`.
+- **`magit-core` minor mode**: `ActivationPolicy::Majors(vec![...])` naming
+  every magit major mode explicitly (status, commit, diff, log, blame,
+  stash, branch, rebase, revision) — not a major-id pattern matcher.
+- **`magit-global-mode` minor mode**: `ActivationPolicy::Universal` — active
+  on every buffer, of any kind, so `C-x g`/`C-c g`/`C-c f` work from
+  anywhere. `on_activate` runs on EVERY buffer activation under this
+  policy, not once (see §8.8 for the idempotency gotcha this creates for
+  the global action handlers it also registers).
 - **Major modes**: activated by id when the buffer is created via
-  `ModeActivator::ensure_named_document("magit:status", MAGIT_STATUS_MODE_ID, ...)`.
+  `ctx.activator.ensure_named_document(name, mode_id, flags)` (an ex-command's
+  `apply` closure returning `Effect::OpenSyntheticBuffer { name, mode_id }`,
+  resolved by the host the same way every other synthetic buffer is).
 
 ### 5.2 Lifecycle — `ModeActivator` + tick drain pattern
 
 Each magit view follows the synthetic-buffer lifecycle proven by `*compilation*`
-and `*messages*`:
+and `*messages*`, with one simplification from what was originally planned
+here: there is no `RepositoryEvent` to subscribe to yet (VCS Layer 2 — the
+`RepositoryWatcher` — is still design-only, see §1). Refresh is
+trigger-driven, not filesystem-watch-driven:
 
-1. **Trigger** (action handler or ex-command): calls
-   `ctx.activator.ensure_named_document(name, mode_id, flags)`. The activator
-   creates the buffer, sets the major mode, returns `BufferId`.
-2. **`on_activate`**: pulls `DocumentHandle`, subscribes to `RepositoryEvent`
-   and `DocumentChanged`, spawns a refresh task.
-3. **Refresh task** (`spawn_blocking`): runs only lightweight git commands
-   (`git status --porcelain` via gitoxide, `git stash list`, `git log
-   --oneline -N`). Produces formatted buffer content as file lists with
-   status labels — no diff content. Pushes through
-   `apply_edit_batch_blocking`.
-4. **Tick drain** (on actor thread): coalesces output into `apply_edit_batch`
-   calls. Folds and decorations recompute via standard provider refresh
-   cycle. Diff content is loaded lazily via `=` on demand (§6.3).
-5. **Guard `Drop`** (deactivation): drops the event subscription, aborts
-   in-flight refresh tasks, removes keymap layer. Buffer survives frozen until
-   `:bd`.
+1. **Trigger** (ex-command): calls `ctx.activator.ensure_named_document(name,
+   mode_id, flags)`. The activator creates the buffer, sets the major mode,
+   returns `BufferId`.
+2. **`on_activate`**: pulls the `DocumentHandle`, runs an initial
+   `spawn_blocking` refresh, populates the buffer, and registers this
+   buffer's action handlers into a `Vec<ActionHandlerRegistration>` held by
+   the mode's `Guard` (see §5's standing-rule check for why this matters).
+3. **Refresh task** (`spawn_blocking`): runs the view's git command(s) —
+   lightweight for magit-status (`git status --porcelain`-equivalent via
+   gitoxide, `git stash list`, `git log --oneline -N`), heavier where the
+   view IS the content (magit-diff's `git diff HEAD`, magit-blame's
+   `git blame --line-porcelain`). Produces formatted text, applied via
+   `apply_edit_batch`.
+4. **Refresh trigger, in practice**: `gr` (explicit, every view) and
+   post-mutation auto-refresh (stage/unstage/discard/checkout/etc. — see
+   §13's async-architecture note) both re-run step 3. There is no
+   background watch: an external change to the repo (another terminal's
+   `git commit`) is not picked up until the user presses `gr` or triggers a
+   mutation from within the buffer.
+5. **Guard `Drop`** (deactivation): drops the action-handler registrations
+   (unregistering them — see §5's standing-rule check), removes any
+   registered fold source (magit-status only, §7.1). Buffer survives frozen
+   until `:bd`.
 
 ## 6. Data flow — lazy by default
 
@@ -405,74 +500,97 @@ is async with a headerline progress indicator.
 
 ### 6.2 Status buffer refresh — fast path
 
-A `RepositoryEvent` fires (file saved, index changed, HEAD moved). The
-status buffer refresh task runs on `spawn_blocking`:
+Triggered by `gr` or by an auto-refresh after a mutation (stage/unstage/
+discard) — NOT by a filesystem watch (§5.2: there is no `RepositoryEvent`
+yet). The refresh task runs on `spawn_blocking` (`refresh::build_and_format`):
 
 1. `WorkingTree::statuses(repo)` → list of changed files with status codes
    (gitoxide — fast, no process spawn).
 2. `Stash::list(repo)` → stash entries (gitoxide).
-3. `git log --oneline -20` → recent commits (CLI — fast, formatted output).
-4. Format sections as file lists with status labels. **No diffs.**
-5. `apply_edit_batch_blocking(buffer_id, edits)` replaces buffer content.
-6. Invalidate cached diff data for files whose status changed.
+3. `git log --oneline -20 --format="%h %s"` → recent commits (CLI, not gix).
+4. Format sections as file lists with status labels via `SectionIndex::
+   format_buffer_styled`. **No diffs.**
+5. `apply_edit_batch` (async, on the current task, after the blocking phase
+   completes) replaces buffer content wholesale.
+6. Clear `StatusBufferState::expanded` — a full-buffer replace collapses any
+   inline expansion, so stale entries there would desync the next `=`/`<CR>`
+   press's "already expanded" check from what's actually on screen (§6.3).
 
 The buffer shows file names and statuses only — a list view, not a diff
-view. Rendering is O(files), not O(lines-of-diff), and typically completes
-in 10-50ms for repos up to 500 tracked files.
+view. Rendering is O(files), not O(lines-of-diff).
 
-### 6.3 Lazy diff loading — `=` on a file entry
+### 6.3 Lazy diff/patch loading — `=` on a file, `<CR>` on a stash, `d` for a dedicated buffer
 
-When the user presses `=` on a file entry in the Staged or Unstaged section:
+One shared mechanism (`toggle_expand` in `actions.rs`) backs `=` on a file
+entry and `<CR>` on a stash entry — there is no per-kind duplication. The
+cursor line is classified first (`classify_line` → `StatusLine::{File,
+Stash, Commit}`, §7.2), then:
 
-1. Check the `DiffCache`: if the file's diff is already loaded and still
-   valid (status hasn't changed since cached), re-render it inline and
-   register fold ranges. If the diff was previously expanded and the user is
-   toggling it off, remove the inline diff content and fold ranges.
-2. If not cached: run `git diff --cached <path>` or `git diff <path>` on
-   `spawn_blocking`.
-3. Parse hunks, format as styled text with deletion blocks as virtual rows.
-4. Insert the diff content into the buffer below the file header line
-   (using `apply_edit_batch_blocking` — a targeted edit, not a full buffer
-   replacement).
-5. Store hunk data in the `DiffCache` keyed by `(path, section_kind)`.
-6. Register hunk fold ranges via the fold overlay service.
-7. Move cursor to the inserted diff region.
+1. Look up the entry's `entry_key` in `StatusBufferState::expanded:
+   HashMap<String, usize>` (key → inserted line count, not a hunk-aware
+   cache — there is no `DiffCache`, no hunk parsing, no per-file `git diff`
+   caching keyed by status version).
+2. If already expanded: delete exactly the recorded line count starting the
+   row after the entry (`collapse_range` — the end must land at column 0 of
+   the following row, not that row's text length, or the collapse eats the
+   next entry's content; see the fix's regression tests in `actions.rs`).
+3. If not expanded: run `git diff [--cached] -- <path>` (file) / `git stash
+   show -p` (stash) on `spawn_blocking`, apply line-level syntax-highlight
+   spans (add/remove/hunk-header/diff-header — `highlight::diff_styled_spans`,
+   NOT the diff system's virtual-row deletion-block machinery), insert the
+   whole text as one edit below the entry line, and record the inserted
+   line count in `expanded`.
 
-The diff insertion is a **local edit** to the buffer — other sections and
-files above/below are untouched. The renderer's virtual-row interleaving
-handles deletion blocks; the fold engine handles hunk folding.
+Both branches record/clear `expanded` only AFTER the edit has actually
+landed (not eagerly before spawning the task) — recording eagerly let a
+rapid second toggle race ahead of the edit and compute a delete/insert
+range against rows that didn't reflect it yet.
 
-`=` on a section header (e.g., "Unstaged changes") toggles diffs for all
-files in that section. Each file's diff loads independently on
-`spawn_blocking`; results stream in as they complete.
+`=` on a section header does NOT currently expand every file in the
+section — only single-entry toggle is implemented.
 
-### 6.4 `DiffCache` — per-file diff state
+`<CR>` on a **commit** entry does NOT go through `toggle_expand` — it opens
+the dedicated `*magit:commit:<sha>*` buffer (`magit-revision-mode`),
+matching every other magit view with a per-row SHA (log, blame, rebase).
+This changed from an earlier inline-toggle behaviour identical to `=`/stash
+— kept for stashes (which have no dedicated "stash detail" mode to open)
+but inconsistent for commits, which do.
+
+`d` on a **file** entry (staged or unstaged) is a third path, independent
+of `toggle_expand`: it opens a dedicated `magit-diff-mode` buffer scoped to
+that file AND that section's baseline (`*magit:diff:staged:<path>*` /
+`*magit:diff:unstaged:<path>*` — see `magit_diff_mode::DiffScope`), rather
+than inserting the diff inline. Exists alongside `=`, not instead of it —
+`=` is the quick in-place look, `d` is for a diff too large to read
+comfortably without its own scrollable buffer (and without growing the
+status buffer's line count or re-triggering its splice-based inline-
+highlight bookkeeping for every subsequent entry).
+
+### 6.4 Expansion tracking — `StatusBufferState::expanded`
+
+The target design's per-file `DiffCache` (parsed hunks, per-file staging,
+staleness detection) is **not built**. What exists is much simpler — a
+map from entry identity to how many buffer lines its expansion occupies:
 
 ```rust
-/// Owned by the mode's Guard. Keyed by (path, section: Staged | Unstaged).
-pub struct DiffCache {
-    entries: HashMap<DiffKey, DiffEntry>,
-}
-
-pub struct DiffKey {
-    pub path: PathBuf,
-    pub section: SectionKind,  // Staged or Unstaged
-}
-
-pub struct DiffEntry {
-    pub hunks: Vec<Hunk>,           // parsed hunk data (from git diff output)
-    pub expanded: bool,             // whether the diff is currently visible
-    pub status_version: PathStatus, // the status when this diff was computed
-    pub line_start: usize,          // buffer line where the diff content starts
-    pub line_count: usize,          // number of lines the diff occupies
+pub struct StatusBufferState {
+    // ...
+    pub expanded: HashMap<String, usize>,
 }
 ```
 
-Invalidation: when a `RepositoryEvent` fires and a file's `PathStatus`
-changes, any cached `DiffEntry` for that file is invalidated. The status
-buffer re-renders to a clean state (file list only). If the diff was
-expanded, the user must press `=` again after the refresh to re-expand it
-(the diff data is stale and must be recomputed).
+Keyed by `entry_key()`, which includes `staged` for `File` entries — a
+`Conflicted` path appears in BOTH the Staged and Unstaged sections at once
+(§4.1), as two distinct buffer rows that can be independently expanded;
+collapsing that distinction into a path-only key would let expanding one
+row's diff make `toggle_expand` treat the *other* row as already-expanded
+too, corrupting the collapse.
+
+No hunk data is parsed or stored — `s`/`u`/`x` always act at file
+granularity (§7.3), regardless of whether the diff is expanded. No
+invalidation-on-repo-change exists either, since there's no
+`RepositoryEvent`: a full refresh (§6.2) simply clears the whole map,
+collapsing every expansion unconditionally.
 
 ### 6.5 Process spawning
 
@@ -483,58 +601,74 @@ Sections are the core UX primitive in magit-status. By default, sections show
 on demand when the user presses `=` on a file entry (§6.3).
 
 ```
-▼ Staged changes (3)                                  ← header (foldable)
-  modified   src/main.rs                              ← file entry (status only)
-  modified   src/lib.rs
+Staged changes (3)                                    ← header (not foldable — §7.1)
+  modified     src/main.rs                             ← file entry (status only)
+  modified     src/lib.rs
   ...
 ```
 
-After pressing `=` on `src/main.rs`:
+After pressing `=` on `src/main.rs` (actual current rendering — no
+separator lines, no fold triangle; the raw `git diff` text is inserted
+directly below the entry with syntax-highlight spans, and the whole
+inserted span is what `MagitStatusFoldSource` folds as one unit):
 
 ```
-▼ Staged changes (3)
-  modified   src/main.rs                              ← file entry (state: expanded)
-  ──────────────────────────────────────────────────  ← separator
-  │ -old line                                         ← inline diff hunk (loaded on demand)
-  │ +new line
-  ──────────────────────────────────────────────────  ← hunk boundary
-  modified   src/lib.rs                               ← file entry (status only, not expanded)
+Staged changes (3)
+  modified     src/main.rs                             ← file entry (state: expanded)
+diff --git a/src/main.rs b/src/main.rs
+@@ -1,2 +1,2 @@
+-old line
++new line
+  modified     src/lib.rs                              ← file entry (status only, not expanded)
   ...
 ```
 
 ### 7.1 Section folds
 
-- **Section header → fold range.** Start is the header line; end is the next
-  section's header (or buffer end). Toggling a section fold collapses the
-  entire section body.
-- **Hunk fold → nested fold** (optional). Within the "Unstaged changes" section,
-  each hunk is individually foldable. Repeated `TAB` walks innermost→outermost
-  (vim convention).
-- **Register through the fold overlay service.** `magit-core`'s `on_activate`
-  registers a `SectionFoldProvider` that computes fold ranges from the section
-  index.
+- **Section header → fold range.** Target design; **not built** — there is
+  no fold registered for the section headers themselves today, only for
+  *expanded entries* (below). `TAB`/`S-TAB` at a section header currently
+  have nothing to fold there.
+- **Expanded-entry fold → nested fold.** What IS built, and differs from
+  the original design: `MagitStatusFoldSource` (`fold_source.rs`) is an
+  overlay `FoldSource` — mirroring `lattice_diff::HunkFoldSource`'s shape —
+  that recomputes fold ranges live from `StatusBufferState::expanded` plus
+  a buffer scan on every `compute_folds()` call, rather than caching stale
+  line numbers. For each expanded entry it emits one outer fold (header
+  line through the end of the inserted patch) containing one inner fold
+  per `@@ ...@@` hunk within it — nesting expressed the same way the
+  generic fold engine expresses it everywhere else: range containment.
+- **Registered by `MagitStatusMode`, not `magit-core`.** `MagitStatusMode::
+  on_activate` registers the source via the generic `FoldOverlayService`
+  extension point (`FoldOverlayServiceHandle::add_source`); `MagitStatusGuard::
+  drop` removes it — same Drop-based lifecycle `DiffModeGuard` and
+  `MultibufferModeGuard` use. Other magit views have no folds at all today.
+- **`magit-core`'s `TAB`/`S-TAB` dispatch to the generic fold engine.**
+  `Effect::AppAction(ToggleFoldAtCursor)` / `CycleFoldsGlobal` — previously
+  these unconditionally returned `None` (dead keys).
 
 ### 7.2 Section index (mode-private data)
 
 The section index is an in-memory data structure built during buffer refresh.
-It stores file paths and status labels — **not diffs**. Diff data lives in
-the separate `DiffCache` (§6.4) and is populated lazily when the user presses
-`=`.
+It stores file paths and status labels — **not diffs**:
 
 ```rust
-struct SectionIndex {
-    sections: Vec<Section>,
+pub struct SectionIndex {
+    pub sections: Vec<Section>,
+    pub branch: String,
+    pub ahead: usize,
+    pub behind: usize,
 }
 
-struct Section {
-    pub kind: SectionKind,       // Staged, Unstaged, Untracked, Stashes, ...
+pub struct Section {
+    pub kind: SectionKind,       // Staged, Unstaged, Untracked, Stashes, RecentCommits
     pub header_line: usize,
     pub body_start: usize,
     pub body_end: usize,
     pub entries: Vec<SectionEntry>,
 }
 
-enum SectionEntry {
+pub enum SectionEntry {
     File { path: PathBuf, status: PathStatus },
     Stash { index: usize, message: String },
     Commit { sha: String, subject: String },
@@ -542,67 +676,49 @@ enum SectionEntry {
 }
 ```
 
-The `DiffCache` (§6.4) holds per-file diff data, populated lazily:
+This matches the real `sections.rs` types (the target design's separate
+`DiffCache` keyed by `(path, section)` with parsed `Hunk`/`ParsedHunk` data
+does not exist — see §6.4 for what actually tracks expansion state).
 
-```rust
-pub struct DiffCache {
-    entries: HashMap<DiffKey, DiffEntry>,
-}
+A second, independent data structure resolves *which* line the cursor is
+on back to a `StatusLine` — `classify_line`/`classify_line_text` in
+`actions.rs`. It matches the line against `FILE_LABELS` (a fixed list —
+`"clean"`, `"modified"`, `"new file"`, `"deleted"`, `"untracked"`,
+`"ignored"`, `"unmerged"` — checked as whole-word prefixes) rather than
+guessing at word boundaries. This exists because a naive "split the line on
+the first space" parse mis-splits the two-word `"new file"` label, taking
+`"file"` as the label and the wrong half of the path — a real bug this
+replaced. `status_label()` (`sections.rs`) and `FILE_LABELS` (`actions.rs`)
+must stay in sync; a unit test in `sections.rs` checks that every rendered
+label is a member of `FILE_LABELS` mechanically rather than by inspection.
 
-pub struct DiffKey {
-    pub path: PathBuf,
-    pub section: SectionKind,  // Staged or Unstaged
-}
-
-pub struct DiffEntry {
-    pub hunks: Vec<ParsedHunk>,      // parsed from git diff output
-    pub expanded: bool,              // currently visible in the buffer
-    pub status_version: PathStatus,  // status when computed; stale if changed
-    pub line_start: usize,           // buffer line of first diff content row
-    pub line_count: usize,           // number of diff content rows
-}
-```
-
-Invalidation: when `RepositoryEvent` fires and a file's `PathStatus`
-changes, any cached `DiffEntry` for that file is dropped. The file returns
-to its unexpanded state; the user must press `=` again to re-expand it with
-fresh diff data.
-
-Both stored in `RefCell`s on the mode's Guard — NOT on `Document` or
-`Editor`. Consumed only by magit action handlers. This is the
+Both live as helper data in `lattice-magit` (`StatusBufferState` on the
+mode's `Guard`-reachable state, not `RefCell`s specifically) — NOT on
+`Document` or `Editor`. Consumed only by magit action handlers. This is the
 **substrate-helper** pattern (CLAUDE.md substrate-vs-helper rule): consumed
 only by the mode's own handlers → lives as helper data in `lattice-magit`,
 not as a `Document` trait method.
 
-### 7.3 Hunk staging from sections
+### 7.3 Staging from sections — file-level only
 
-Hunk-level operations (`s`/`u`/`x`) require the file's diff to be expanded
-(via `=`) — the `DiffCache` must have a valid `DiffEntry` for the file at
-cursor. If the diff is not expanded, `s`/`u`/`x` on the file header operate
-on the entire file instead (stage/unstage/discard the whole file).
-
-When the cursor is on a line inside an expanded diff:
-
-- `s` (stage): resolves the file path and hunk boundaries from the
-  `DiffEntry`, runs `git add -p <file>` with the hunk spec. Index change
-  fires `RepositoryEvent` → status buffer auto-refreshes, diff cache
-  invalidated.
-- `u` (unstage): symmetric via `git reset -p <file>`.
-- `x` (discard): `git checkout -- <file>` or `git restore <file>` for the
-  hunk.
-
-When the cursor is on a file header (diff not expanded, or outside any
-hunk): `s` stages the entire file; `u` unstages; `x` discards all
-working-tree changes.
+Target design: hunk-level `s`/`u`/`x` when the diff is expanded, file-level
+otherwise. **Not built.** The real `s`/`u`/`x` (and `<CR>`'s stash/commit
+toggle) always resolve `classify_line` at the cursor and act on the whole
+`StatusLine::File`/`Stash`/`Commit` — whether or not its diff/patch happens
+to be expanded makes no difference to what the action does. There is no
+code path that inspects cursor position *inside* an expanded diff to
+resolve a hunk. `git add -p`-equivalent hunk staging is explicitly
+unsupported today (§12.2's `p` chord explains why: it's genuinely
+interactive over stdin, which the TUI's raw-mode input loop already owns —
+running it via `Command::output()` would hang the actor waiting on a child
+that's also waiting on stdin neither process routes to the other).
 
 ### 7.4 Stale hunk boundary detection
 
-Hunk boundaries from `git diff` output may become stale if the file has been
-edited since the status buffer was refreshed. Before applying a partial stage:
-re-read the file's current hunks, check that the cursor's hunk still matches
-its recorded boundaries, and reject with "file changed — refresh and retry" if
-boundaries have shifted. This is important because `git add -p` semantics tied
-to stale diff output produce confusing results.
+Not applicable yet — there is no hunk-level staging (§7.3) to have stale
+boundaries in the first place. This section describes a target-design
+safeguard for when hunk-level staging is eventually built, not a current
+mechanism.
 
 ### 7.5 Navigation model — three levels, three chord families
 
@@ -610,45 +726,43 @@ The magit-status buffer has a three-level structure:
 **sections → files/entries → hunks**. Navigation follows vim-unimpaired
 conventions adapted to this hierarchy.
 
-| Level | What you navigate | Chord family | Walks | Registered by |
+| Level | What you navigate | Chord family | Walks (actual) | Registered by |
 |---|---|---|---|---|
-| **Sections** | Top-level section headers (Staged, Unstaged, Untracked, Stashes, Recent commits) | `]]` / `[[` | `SectionIndex::sections`, stopping at section header lines | `magit-core` |
-| **Files/entries** | File headers within the current section, stash entries, commit lines | `]f` / `[f` | `SectionIndex::entries` within the current section, stopping at entry boundary lines | `magit-core` |
-| **Hunks** | Individual diff hunks within a file's displayed diff | `]c` / `[c` | `DiffCache` hunk entries for the current file (magit-status, only after `=` has expanded the diff); `HunkIndex` from the `DiffSession` (magit-diff) | `magit-core` (shadows diff system) + diff system (magit-diff) |
+| **Sections** | Top-level section headers (Staged, Unstaged, Untracked, Stashes, Recent commits) | `]]` / `[[` | A raw buffer scan for lines matching `sections::is_section_header` (untrimmed-line prefix check against `SECTION_HEADER_PREFIXES`) — NOT `SectionIndex::sections` (that structure isn't retained past the refresh that built it) | `magit-core` |
+| **Files/entries** | Any indented, non-blank line | `]f` / `[f` | A raw buffer scan for lines whose UNTRIMMED text starts with `"  "` — every entry line, not "current section" scoped; see below for a real bug this fixed | `magit-core` |
+| **Hunks** | `@@ ...@@` / `diff --git` lines anywhere in the buffer | `]c` / `[c` | A raw buffer scan for lines starting with `@@` or `diff --git` (trimmed) — same scan in every magit buffer, magit-status and magit-diff alike | `magit-core` |
 
-**Hunk navigation after lazy loading:** `]c`/`[c` in magit-status only skip
-between hunks for files whose diff is currently expanded (present in
-`DiffCache` with `expanded = true`). If the cursor is on a file header line
-(diff not expanded), `]c`/`[c` moves to the next/previous file header
-instead — same as `]f`/`[f`.
+None of these three walkers consult `SectionIndex`, `StatusBufferState::
+expanded`, or any per-file cache — they are plain buffer-text scans
+(`section_headers`/`entry_lines`/`hunk_lines` in `magit_core_mode.rs`),
+identical in every magit buffer kind. The target design's
+`DiffCache`-aware "only walk expanded files' hunks" behavior for
+magit-status, and the `HunkIndex`-backed `DiffSession` navigation for
+magit-diff, are **not built** — there is no `DiffSession` or `diff-mode`
+minor mode active on any magit buffer; `]c`/`[c` are entirely `magit-core`'s
+in every case.
 
-**Why `]c`/`[c` are registered in both the diff system and `magit-core`:**
-
-- The diff system registers `]c`/`[c` at `KeymapLayer::MinorMode(diff-mode)`.
-  `diff-mode` activates only on buffers with an active `DiffSession`
-  (magit-diff, files with auto-inline-diff against HEAD).
-- `magit-core` registers `]c`/`[c` at `KeymapLayer::MinorMode(magit-core)`.
-  `magit-core` activates on every magit buffer (magit-status, magit-log, etc.).
-- In `magit-diff` buffers, BOTH `diff-mode` and `magit-core` carry `]c`/`[c`.
-  Minor-mode keymap priority is activation order; the first-activated mode's
-  binding wins. Both point at the same `HunkIndex` (magit-diff has a real
-  `DiffSession`), so the behaviour is identical.
-- In `magit-status` buffers, only `magit-core`'s `]c`/`[c` fire — they walk the
-  `DiffCache`'s hunk entries for expanded files. No `DiffSession` exists here.
-- In non-magit buffers with `diff-mode` (e.g., a file with auto-gutter-diff),
-  only the diff system's `]c`/`[c` fire. No magit mode is active.
+**A real bug this uncovered:** `entry_lines` used to check
+`starts_with("  ")` on the line AFTER trimming it — `trim()` strips all
+leading whitespace, so a trimmed string can never start with two spaces.
+The check was unsatisfiable; `]f`/`[f` never navigated anywhere, on any
+magit buffer, from the moment they were written. Fixed by checking the raw
+(untrimmed) line and trimming only for the prefix comparisons that follow.
 
 **Multi-file navigation** (`]E`/`[E`, `]e`/`[e`) from the multibuffer system
 is inherited when a project-wide-diff multibuffer includes magit excerpts —
-zero magit-specific code needed for cross-file jumping.
+zero magit-specific code needed for cross-file jumping. (Aspirational: no
+magit view currently participates in a project-wide-diff multibuffer.)
 
-**Section visibility cycling** (`S-TAB`) walks through:
-1. All sections expanded (default on open).
-2. Only changed sections visible (Staged, Unstaged) — untracked/stashes/commits
-   collapsed.
-3. Only staged + unstaged file headers visible — hunks collapsed.
-4. All collapsed (only section headers visible).
-`TAB` toggles the fold at the cursor (section ↔ file ↔ hunk, innermost first).
+**Section visibility cycling** (`S-TAB`) — target design: a 4-step cycle
+from all-expanded down to only-section-headers-visible. **Not built as
+described**, since there are no section-level folds to cycle through
+(§7.1) — `TAB`/`S-TAB` dispatch to the generic fold engine
+(`Effect::AppAction(ToggleFoldAtCursor)` / `CycleFoldsGlobal`) and only
+ever have something to act on where `MagitStatusFoldSource` has registered
+a fold: an expanded entry's header (outer) or one of its `@@` hunks
+(inner). Folding an unexpanded file/section header is currently a no-op —
+there's nothing registered there to fold.
 
 ## 8. Transient menu design
 
@@ -776,7 +890,27 @@ Keyboard handling:
 - `q` / `Esc` / `C-g`: dismiss.
 - `BS` / `DEL`: back to parent transient (if nested).
 
+**What actually got built differs from §8.2/8.3 in a few ways — see §8.8
+for the real mechanism.** In short: there is no `PickerRegistry::
+open_transient()` call site (the real entry point is
+`Effect::OpenTransient { source: String }`, resolved by a
+`TransientSourceRegistry`, since `TransientSpec` can't cross into
+`lattice-grammar`'s `Effect` enum); `TransientItemKind` really is `Action
+(CommandId)` / `Submenu(Arc<TransientSpec>)` / `Flag { name, default }` /
+`Argument { name, default, prompt }` / `Dismiss` (used for confirmation
+dialogs' `n`/`q`); and `Argument` is currently a no-op when pressed (§8.8).
+
 ### 8.4 Magit transients — concrete layouts
+
+The layouts below (marginalia, nested Branch/Merge/Rebase menus,
+diffstat, ahead/behind counts, warning glyphs, `Flag` toggles) are the
+**target design**. **Partially built** — see §8.8 for what actually
+renders today. In short: the group structure and most action items are
+real (including `commit` and `stash` sub-transients), but there is no
+marginalia column, no `Flag`/`Argument` item anywhere, no preview line,
+and no Branch/Merge/Rebase sub-transient. File-dispatch's six items are
+real but still act on the active buffer's own file, not a
+cursor-resolved entry.
 
 Every entry in the examples below carries **marginalia** — live git data
 rendered as dimmed right-aligned text alongside the entry. Marginalia is
@@ -930,9 +1064,15 @@ access:
 
 - `C-x g` → opens `*magit:status*` (the primary entry point)
 - `C-c g` → opens the repo-level dispatch transient
-- `C-c f` → opens the file-dispatch transient for the current buffer's file
+- `C-c f` → opens the file-dispatch transient — **its items are real**
+  (stage / diff the active buffer's own file, §8.8); it still cannot
+  resolve "the entry at cursor in a magit-status buffer", only "the
+  active buffer's own file"
 
 These follow emacs convention; all are unused in default vim normal mode.
+All three are registered by `magit-global-mode` (`ActivationPolicy::
+Universal`), not `magit-core` — `magit-core` only activates on magit
+buffers, which would make these unreachable from anywhere else.
 
 Within magit buffers, the dispatch and file-dispatch transients are accessed
 through the same global bindings — there is no buffer-local dispatch key
@@ -966,33 +1106,212 @@ slice before MG.8 builds the magit transient definitions.
 MG.8 then builds magit-specific transient definitions (dispatch, branch,
 merge, rebase, stash, file-dispatch) on top of this picker mode.
 
+### 8.8 Current implementation — dispatch, discovery, and display
+
+This is the largest gap between this fragment's original design and what
+shipped. The mechanism differs in ways that matter beyond naming, so this
+section documents the *actual* current wiring rather than annotating every
+paragraph above in place.
+
+**`Effect::OpenTransient { source: String }` carries only a name, not a
+spec.** `magit-dispatch`/`magit-file-dispatch` (`C-c g`/`C-c f`) return this
+new effect instead of aliasing `:magit-status` as they originally did.
+`TransientSpec` lives in `lattice-picker`, which sits downstream of
+`lattice-grammar` (where `Effect` is defined) — `lattice-grammar` cannot
+depend on `lattice-picker`, so the effect can only carry a name. A
+`lattice_picker::TransientSourceRegistry` (mirroring `PickerRegistry`'s
+named-source shape, simplified — no candidate generator or arg-schema
+concept, just a name and a zero-arg `Fn() -> TransientSpec` builder)
+resolves the name to a spec at the RENDERER's effect-handling site. Magit's
+`install(boot)` registers `"magit-dispatch"` and `"magit-file-dispatch"`
+builders via `boot.register_service::<TransientSourceRegistryHandle>(...)`.
+
+**Root dispatch's items fire real actions, but only through a mechanism
+built specifically for this.** `TransientItemKind::Action(CommandId)`
+dispatch (`do_transient_trigger` in `lattice-host/src/dispatch.rs`)
+resolves ONLY via `ActionHandlerRegistry::lookup` — never through the
+ex-command path. But every other `action:magit-*` handler in this crate is
+registered PER-BUFFER (only live while its owning buffer is open) —
+unusable for a menu reachable from any buffer. So `magit_global_mode.rs`
+contributes a SEPARATE set of `action:magit-global-*` handlers
+(status/commit/amend/log/diff/branch/stash/rebase — each just builds the
+same `Effect::OpenSyntheticBuffer` its ex-command equivalent returns —
+plus real fetch/pull/push/stash-push handlers, the six file-dispatch
+handlers, and the branch-create wizard's finish handler; see below).
+
+These are contributed via **`Mode::action_handlers()`**, NOT registered
+from `on_activate`. An earlier version did the latter, gated by a
+`static OnceLock` (because `ActivationPolicy::Universal` re-runs
+`on_activate` on every buffer activation) — that was fundamentally racy:
+`on_activate`'s future runs through `ModeRegistry::spawn_cascade`'s
+try-sync-then-spawn path shared with every other mode in the same
+activation batch, so if any of those has real async work, this mode's
+own synchronous registration defers to a background task with no
+guarantee it lands before the next keystroke. Symptom: the transient
+opened fine but every item just dismissed it (`ActionHandlerRegistry::
+lookup` returned `None`). `Mode::action_handlers()` sidesteps it
+entirely — the host walks every mode's contributed list in a plain
+synchronous loop at boot, strictly after the command registry is
+frozen. See `magit_global_mode.rs`'s module doc for the full history.
+
+The `CommandId`s the dispatch items need are resolved once at
+`install()` time (`boot.commands_mut().id_by_name(...)`, since every
+`action:magit-*` name is registered earlier in the same `install()`
+call) and captured by value into the builder closures
+(`transients::DispatchActionIds` / `FileDispatchActionIds`, built by
+`resolve_dispatch_ids` / `resolve_file_dispatch_ids`) — the registry's
+builders are zero-arg, so this is how a boot-time-resolved id reaches a
+spec built long after boot, possibly once per `C-c g` press. Those two
+resolver functions are shared with the regression tests in `lib.rs`
+precisely so a field added later can't silently escape coverage.
+
+**Root dispatch: 6 groups, 12 leaf items across 2 submenu levels.**
+Working tree (`s` status, `d` diff, `c` ▸ commit) / History (`l` log) /
+Branches (`b` branch) / Stashing (`z` ▸ stash) / Remotes (`f` fetch,
+`F` pull, `P` push) / Misc (`r` rebase). Two sub-transients exist:
+`commit_transient` (`c c` commit, `c a` amend) and `stash_transient`
+(`z z` push, `z l` list). The richer marginalia layout in §8.4
+(diffstat, ahead/behind, warning glyphs, per-item counts) does not
+exist, and neither do the branch/merge/rebase sub-transients with
+`Flag` toggles — no item in either menu is a `Flag`.
+
+**Key assignments track Emacs magit's own `magit-dispatch` /
+`magit-file-dispatch` wherever lattice has the capability** (`s` `c`
+`d` `l` `b` `z` `r` `f` `F` `P`; file: `s` `u` `x` `d` `l` `b`) — this
+is the UX-convention rule, not heuristic #2: muscle memory is the
+dominant cost for a menu this central, so matching magit beats a
+locally-reasoned alternative. Magit entries lattice has no
+implementation behind (bisect, merge, tag, revert, reset, cherry-pick,
+submodule, remote, patch; file-level stage-all/unstage-all, edit-blob,
+trace-definition) are **absent, not present-and-inert** — the whole
+point of the `Flag`-fallback regression test is that a menu row which
+does nothing when pressed is indistinguishable from a bug.
+
+**Remote/stash operations (`f`/`F`/`P`, `z z`) are real, run off the
+actor thread, never block on credentials.** `magit_global_mode`'s
+`action:magit-global-{fetch,pull,push,stash-create}` handlers each
+spawn a detached `tokio::task` running `git fetch` / `git pull
+--ff-only` / `git push` / `git stash push` on `spawn_blocking`, all
+with `GIT_TERMINAL_PROMPT=0` so a missing/expired credential fails the
+git subprocess immediately instead of hanging the task on interactive
+input that can never arrive. Pull is deliberately `--ff-only` — it
+never opens a merge-commit editor or leaves a conflict mid-merge for a
+background task to get stuck in. Each handler returns an optimistic
+`Effect::Echo` synchronously; the real outcome (success or the git
+error text) lands via `tracing::info!`/`tracing::error!` only — same
+documented limitation as every other detached background mutation in
+this crate (commit, rebase execute): no synchronous path exists back to
+the echo area from a task that outlives the handler call.
+
+**File-dispatch (`C-c f`) has six real items.** All resolve the file
+through the shared `active_file(ctx)` helper —
+`BufferStore::path_for(id)` on whatever buffer was active when the
+transient was opened, then `Repository::discover(path.parent())` (a
+directory, per `gix`'s requirement) to get the workdir and a
+repo-relative path. `s`/`u` call `Index::stage_path`/`unstage_path` on
+`spawn_blocking`; `x` returns `Effect::Confirm` targeting
+`action:magit-global-file-discard-execute`, which runs `git checkout
+--` — the same two-step destructive-action shape magit-status's own
+`x` uses. `d`/`l`/`b` open path-scoped `*magit:diff:<path>*` /
+`*magit:log:<path>*` / `*magit:blame:<path>*` buffers (each mode parses
+its own optional path out of the buffer name, §4.5/§11).
+
+This resolves ONLY "the active buffer's own file" — it still cannot
+resolve "the entry at cursor in a magit-status buffer" (there's no
+plumbing carrying a `SectionIndex` cursor into the file-dispatch
+transient's build), so invoking `C-c f` from inside `*magit:status*`
+itself acts on whatever file `*magit:status*`'s own buffer resolves to
+(i.e. nothing — it's synthetic, so `path_for` returns `None` and the
+item no-ops), not the entry under the cursor. Use magit-status's own
+`s`/`u`/`x`/`d` chords there. A real fix needs the same kind of
+context-capture the branch-create wizard uses (stash the target in the
+transient or a captured buffer id), not a structural change to
+`file_dispatch_transient` itself.
+
+**Three regression tests guard the menus** (`lattice-magit/src/lib.rs`):
+every leaf resolves to a real `Action` and not the inert `Flag`
+fallback (recursing through both submenus); no two items share a key
+within one menu level (a duplicate makes the second unreachable, which
+also presents as "this entry does nothing"); and an inverse vacuity
+check asserting an all-unresolved spec DOES report every leaf inert —
+without it, a walker that silently visited nothing would pass the
+first two tests trivially.
+
+**`TransientItemKind::Argument` is still a no-op** — `do_transient_trigger`
+explicitly defers it; pressing an Argument item's key does nothing. This
+is a *different* mechanism from the one below: `Argument` is meant to be
+an in-place, in-transient-menu value edit (type a value, stay in the
+transient, item shows the new value). It is unrelated to and NOT solved
+by the new prompt mechanism just described — that one is a full-buffer
+minibuffer swap (transient closes, prompt buffer opens, transient does
+not resume). No item in this crate uses `Argument` today.
+
+**A generic single-line prompt-with-callback mechanism now exists** —
+`Effect::OpenPrompt` / `PickerAcceptOutcome::OpenPrompt` /
+`PromptLineMode`, see §12.9 and `docs/dev/architecture/picker.md` §4.4
+and `docs/dev/architecture/rich-minibuffer.md` §6. It backs the
+branch-create wizard's second step; it does not back `Argument` (above).
+
+**Display-preference bug, now fixed.** Transients used to ALWAYS render as
+a floating popup regardless of `picker.display` — a real user-reported bug
+("picker display should not have anything to do with transient's own
+logic, but transient should respect the picker's display preference").
+Now: `picker_use_minibuffer`/`picker_is_minibuffer` — computed once,
+generically, by the picker's own render dispatch (TUI's `render.rs`,
+GPUI's `window.rs`) — governs transient placement exactly like it already
+governed regular candidate-list pickers. Transient code only contributes
+ROW CONTENT: `transient_rows_gpui` (GPUI) and `transient_group_item_lines`
+(TUI) are each a SINGLE shared windowing function used by BOTH the popup
+and minibuffer-strip placement variants, so the actual group/item/scroll
+computation cannot drift between the two. **The separation of concerns:
+the picker owns placement, the transient owns content + interaction** —
+worth stating explicitly since it's easy to reintroduce the bug by having
+transient code make its own placement decision again.
+
 ## 9. Commit buffer design
 
-The commit buffer (`*magit:commit*`) is a synthetic Document in
-`magit-commit-mode` with two regions:
+The commit buffer (`*magit:commit*`/`*magit:amend*`) is a synthetic
+Document in `magit-commit-mode`. Target design has two regions with the
+diff region read-only and rendered as an inline overlay; **not built as
+such** — the real buffer is one flat, fully-editable text buffer (the
+mode's options set `NoFile`/`Number` only, no `ReadOnly`) with a fixed
+marker line splitting it conceptually in two:
 
 ```
 ┌─────────────────────────────────────────────┐
-│ [read-only] diff of staged changes          │
-│ (scrollable, background-tinted)             │
-│ ─────────── message area ────────────────   │
-│ │ Add user authentication endpoint          │  ← subject
-│ │                                           │
-│ │ Implements OAuth2 flow with...            │  ← body
-│ ──────────────────────────────────────────  │
-│ C-c C-c commit   C-c C-k abort   C-c C-d toggle diff │
+│ --- Staged diff (review before committing) ---│  ← plain text, not
+│ diff --git a/... (git diff --cached output)  │    read-only-enforced,
+│ ...                                           │    not an overlay
+│ --- Commit message (edit below) ---           │  ← MESSAGE_MARKER
+│ Add user authentication endpoint              │  ← subject
+│                                                │
+│ Implements OAuth2 flow with...                │  ← body
+│                                                │
 └─────────────────────────────────────────────┘
 ```
 
-- **Diff region** (top, read-only): populated by `git diff --cached` —
-  the exception to the lazy rule, since reviewing staged changes IS the
-  purpose of this buffer. Loaded async on open with a headerline progress
-  indicator. Rendered as inline overlay (reuses D.3 machinery).
-- **Message region** (bottom, editable): standard text content.
-- `C-c C-c`: validate subject non-empty → `Commit::create(repo, message)` →
-  close buffer → publish `RepositoryEvent`.
+`C-c C-c` confirm / `C-c C-k` abort are the only chords — there is no
+`C-c C-d` toggle-diff (it was never implemented).
+
+- **Diff region** (top): populated by `git diff --cached`, synchronously
+  awaited during `on_activate` before the buffer is shown to the user —
+  no headerline progress indicator exists. Amend (`ca`, buffer name
+  `*magit:amend*`) additionally pre-populates the message region from
+  `git log -1 --format=%B` (the current HEAD commit's message) instead of
+  leaving it blank.
+- **Message region** (below `MESSAGE_MARKER`): plain editable text; the
+  confirm handler collects every non-blank line after the marker as the
+  message.
+- `C-c C-c`: if the message is empty, fails loud with an
+  `Effect::Echo { level: Error, .. }` instead of silently no-op'ing (a real
+  fix — it used to just do nothing). Otherwise runs `Commit::create`/
+  `Commit::amend` on `spawn_blocking` in a detached background task and
+  closes the buffer OPTIMISTICALLY (`Effect::QuitEditor`) before the git
+  write completes — there is no `RepositoryEvent` to publish (§5.2); a
+  failure surfaces only via `tracing::error!`, not back to the echo area,
+  since there's no synchronous path from a detached task. A known,
+  documented limitation, not a silently swallowed error.
 - `C-c C-k`: close without committing.
-- Amend: `c a` pre-populates the previous message, uses `Commit::amend`.
 
 ## 10. Log and blame views
 
@@ -1010,38 +1329,67 @@ Generated from `git log --oneline --graph --decorate -N`:
 * u6v7w8x Initial commit
 ```
 
-Each commit line stores its SHA, refs, and subject in the section index for
-`<CR>` resolution. Graph characters styled with git's default coloring.
+`<CR>` does NOT resolve from a stored section index — magit-log-mode
+builds no `SectionIndex` at all (that structure is magit-status-only).
+Instead `extract_sha` re-parses the buffer line at the cursor directly:
+the first whitespace-delimited token that's ≥4 hex-digit characters,
+wherever the graph-drawing characters happen to end (returns `None` for
+graph-only connector lines with no commit). `<CR>` opens
+`*magit:commit:<sha>*` (`magit-revision-mode`, §4.7) — a real synthetic
+buffer; it used to write the same `git show` content to an uncleaned temp
+file in the repo workdir and open that via a plain file buffer, which this
+replaced. The buffer text itself carries no styled spans — plain
+`git log --oneline --graph --decorate` CLI output, unstyled (no
+`--color`, no post-processing into spans).
 
 ### 10.2 Blame view
 
-Blame data is loaded per-file from `git blame --line-porcelain`, rendered as
-**gutter decorations** in a dedicated blame gutter column (right of line
-numbers). Cached per-file + per-revision; invalidated on file changes. Follows
-the same pattern as the diff gutter column (`DiffSignKind`).
+Target design: gutter decorations in a dedicated blame column alongside
+the original file, following `DiffSignKind`'s pattern. **Not built this
+way.** The real `magit-blame-mode` is a separate whole-buffer view
+(`*magit:blame:<path>*`, path extracted from the buffer name) that
+REPLACES its own content with `git blame --line-porcelain <path>`
+reformatted as one line per source line: `<sha-8> <author right-padded to
+12>  <source line text>` — the blame annotation is inlined into the text
+itself, not a gutter beside a separately-open file. `<CR>` on a line opens
+`*magit:commit:<sha>*` for that line's blamed commit. `p` re-blames at the
+PARENT of whatever revision is currently shown (`BlameState::rev`,
+starting at `"HEAD"`, walked back via `git rev-parse <rev>^` — resolution
+failure, e.g. at the root commit, logs via `tracing::debug!` and leaves
+the buffer showing the current revision rather than erroring) — not
+always "the commit at the cursor line" and not always "the parent of
+HEAD"; repeated `p` presses keep walking further back. No per-revision
+cache exists; each `p` press re-runs `git blame` on `spawn_blocking`.
 
 ## 11. Integration with the diff subsystem
 
-Three integration points, all consuming existing diff primitives:
+Target design: three integration points consuming existing diff
+primitives (`DiffSession`, `GitBaseline`, virtual-row deletion blocks,
+`do`/`dp` hunk transfer operators). **None of the three currently
+integrate with the diff subsystem at all** — no magit buffer registers a
+`DiffSession`, and `diff-mode` is never active on any magit buffer.
+What each view actually does:
 
-1. **Inline diffs in magit-status** — loaded lazily via `=` on demand (§6.3).
-   Parsed from `git diff --cached <path>` / `git diff <path>` for the file
-   at cursor. Rendered as styled text with deletion blocks as virtual rows.
+1. **Inline diffs in magit-status** — loaded lazily via `=`/`<CR>` on
+   demand (§6.3). Plain `git diff [--cached] -- <path>` / `git stash show
+   -p` / `git show <sha>` output, inserted as text with line-level
+   syntax-highlight spans (add/remove/hunk-header/diff-header) — not
+   virtual-row deletion blocks, not sourced from a `DiffSession`.
 
-2. **magit-diff** — a full `DiffSession` (HEAD vs working tree via
-   `GitBaseline`, side-by-side presentation). Reuses D.4 pane groups and
-   `HunkRowMapper`. Diff loaded on open (the view IS the diff — this is the
-   reason the user opened it). Hunk navigation (`]c`/`[c`) works through
-   the diff system's registered motions (via `diff-mode`). Hunk transfer
-   operators (`do`/`dp`) also work natively.
+2. **magit-diff** (§4.5) — `git diff HEAD` (staged + unstaged combined),
+   one buffer, no panes, no `GitBaseline`. `]c`/`[c` here are exactly
+   `magit-core`'s generic buffer-text scan for `@@`/`diff --git` lines
+   (§7.5) — the same mechanism every other magit buffer uses, not a
+   diff-system-registered motion. `do`/`dp` hunk-transfer operators do not
+   apply — there is no diff session for them to operate against.
 
-3. **Commit buffer diff preview** — loaded on open (the exception — the
-   user opened the commit buffer to review staged changes). Content from
-   `git diff --cached` at buffer-open time, rendered as inline overlay.
+3. **Commit buffer diff preview** — loaded on open via `git diff --cached`
+   as plain text (§9), not an inline overlay.
 
-**`magit-diff-mode` keymap** adds `s`/`u` (stage/unstage hunk) on top of the
-diff system's native `]c`/`[c` + `do`/`dp` surface, since `diff-mode` and
-`magit-core` are both active on the diff buffer.
+**`magit-diff-mode` keymap** adds `s`/`u` (stage/unstage file, not hunk —
+§4.5) on top of `magit-core`'s shared chords. There is no `diff-mode`
+active on this buffer to add `]c`/`[c`/`do`/`dp` "on top of" — those come
+from `magit-core` alone, same as everywhere else.
 
 ## 12. Keybindings — complete grammar surface
 
@@ -1114,51 +1462,66 @@ preserved.
 
 | Chord | Action | Command | Vim conflict resolved |
 |---|---|---|---|
-| `s` | Stage hunk or file at cursor | `magit-stage` | `s` is vim's substitute operator. Fugitive convention; no-op on read-only buffer. |
-| `u` | Unstage hunk or file at cursor | `magit-unstage` | `u` is vim's undo. Fugitive convention; no-op on read-only buffer. |
-| `x` | Discard hunk or file at cursor | `magit-discard` | `x` is vim's delete character. No-op on read-only. `x` is easier to type than `X` (no shift); the read-only buffer makes the override safe. |
-| `=` | Toggle inline diff at cursor | `magit-toggle-diff` | `=` is vim's format/indent operator. Fugitive convention. |
+| `s` | Stage file at cursor (file-level, not hunk — §7.3) | `magit-stage` | `s` is vim's substitute operator. Fugitive convention; no-op on read-only buffer. |
+| `u` | Unstage file at cursor (file-level, not hunk) | `magit-unstage` | `u` is vim's undo. Fugitive convention; no-op on read-only buffer. |
+| `x` | Discard file at cursor (file-level, not hunk) | `magit-discard` | `x` is vim's delete character. No-op on read-only. `x` is easier to type than `X` (no shift); the read-only buffer makes the override safe. |
+| `=` | Toggle inline diff at cursor (file entries only) | `magit-toggle-diff` | `=` is vim's format/indent operator. Fugitive convention. |
+| `d` | Open the file at cursor's diff in a dedicated `magit-diff-mode` buffer, scoped to the section's baseline (§6.3) | `magit-diff-file` | `d` is vim's delete-operator prefix (`dd`, `dw`, ...) but has no meaning standalone; no-op on read-only, so safe to override. |
 | `cc` | Commit — open `*magit:commit*` | `magit-commit` | `cc` = change-line (suppressed in read-only). Fugitive convention. |
 | `ca` | Amend previous commit | `magit-commit-amend` | `ca` = change-around (suppressed in read-only). |
-| `p` | Stage hunk interactively (`git add -p`) | `magit-stage-patch` | `p` is vim's paste. No-op on read-only. Fugitive convention. |
+| `p` | Attempt `git add -p` — shows an error explaining it's unsupported (genuinely interactive over stdin; running it would hang the actor waiting on a child also waiting on stdin) | `magit-stage-patch` | `p` is vim's paste. No-op on read-only. Fugitive convention. |
 | `<CR>` | Context-aware open/visit at cursor | `magit-visit` | See §12.3. |
 
-**Operations accessed through the `C-c g` dispatch transient or ex-commands**
-(removed from direct keybindings — the first key of each two-key chord clashes
-with a fundamental vim navigation or operator prefix):
+**Operations reachable through the `C-c g` dispatch transient or
+ex-commands** (removed from direct keybindings — the first key of each
+two-key chord clashes with a fundamental vim navigation or operator
+prefix). The transient column below is aspirational for most rows — only
+a flat, one-item-per-group root dispatch exists today (§8.8); there are no
+Branch/Merge/Stash/Rebase SUBMENUS yet, only the direct ex-commands:
 
 | Operation | Removed binding | Clash | Access via |
 |---|---|---|---|
-| Open log for file | `ll`/`lo` | `l` = right motion | `:magit-log` / `:magit-log-buffer-file` / `C-c g` dispatch |
-| Open detail diff | `dd`/`dr` | `d` = delete operator prefix | `:magit-diff` / `:magit-diff-range` / `C-c g` dispatch |
-| Branch checkout/create/delete | `bb`/`bc`/`bd`/`bm` | `b` = back-word motion | `:magit-branch` / `C-c g` → Branch submenu |
-| Merge | `mm`/`ma` | — | `C-c g` → Merge submenu |
-| Stash operations | `zz`/`za`/`zp`/`zd`/`zl` | `z` = fold/scroll prefix — worst clash since magit also uses folds | `:magit-stash-list` / `C-c g` → Stash submenu |
-| Fetch / Push | `F` / `P` | `F{char}` = find-backwards, `P` = paste-before | `:magit-fetch` / `:magit-push` / `C-c g` dispatch |
-| Rebase | `rr`/`rc`/`ra` | `r{char}` = replace char | `:magit-rebase` / `C-c g` → Rebase submenu |
+| Open log | `ll`/`lo` | `l` = right motion | `:magit-log` |
+| Open detail diff | `dd`/`dr` | `d` = delete operator prefix | `:magit-diff` |
+| Branch checkout/delete/merge | `bb`/`bd`/`bm` | `b` = back-word motion | `:magit-branch` |
+| Branch create | `bc` | `b` = back-word motion | `:magit-branch-create <name>` (from HEAD), or `c` inside `*magit:branch*` for the pick-base-then-name wizard (§12.9) |
+| Stash operations | `zz`/`za`/`zp`/`zd` | `z` = fold/scroll prefix — worst clash since magit also uses folds | `:magit-stash-list` |
+| Fetch / Push | `F` / `P` | `F{char}` = find-backwards, `P` = paste-before | No standalone ex-command — only via the root dispatch's real `F`/`P` items (`git pull --ff-only` / `git push`, §8.8) |
+| Rebase | `rr`/`rc`/`ra` | `r{char}` = replace char | `:magit-rebase [upstream]` |
 
-The `C-c g` dispatch transient (§8.4.1) is the **discoverability surface** — it shows
-every available operation with descriptions and submenus. Users learn the
-direct chords over time; new users press `C-c g`.
+The `C-c g` dispatch transient is the **discoverability surface** in
+target design; today it shows one item per group (status/commit/log/
+branch/stash/rebase/pull/push — the last two now real, §8.8) rather
+than every operation above — see §8.8 for exactly what it renders.
 
 ### 12.3 `<CR>` — context-aware open/visit
 
-`<CR>` is a general "visit/drill-into" action, not file-dispatch. Its behavior
-depends on what's under the cursor:
+`<CR>` is a general "visit/drill-into" action, not file-dispatch. Its
+behavior depends on what's under the cursor and which mode's buffer it's
+pressed in — there is no single generic dispatcher; each major mode
+registers its own `<CR>` handler:
 
-| Cursor on | `<CR>` action |
-|---|---|
-| File entry (staged/unstaged/untracked section) | Open the file for editing (working-tree version) |
-| Commit line (log, recent commits section) | Open `*magit:commit:<sha>*` showing full diff |
-| Blame line | Open `*magit:commit:<sha>*` for the line's commit |
-| Branch name | Check out that branch |
-| Stash entry | Open stash detail diff |
-| Hunk (staged/unstaged diff) | Open the file with cursor at the hunk location |
+| Mode | Cursor on | `<CR>` action |
+|---|---|---|
+| magit-status | File entry | Open the file for editing (working-tree version) |
+| magit-status | Stash / Commit entry | Toggle its patch inline (same mechanism as `=` on a file — §6.3), NOT a separate buffer |
+| magit-log | Commit line | Open `*magit:commit:<sha>*` (magit-revision-mode) |
+| magit-blame | Blame line | Open `*magit:commit:<sha>*` for the line's commit |
+| magit-branch | Branch name | Check out that branch |
 
-This is registered as a generic `magit-visit` action in `magit-core` that
-dispatches on the `SectionIndex` entry kind at the cursor position. Per-view
-major modes can shadow it with view-specific behavior (e.g., `magit-log-mode`
-binds `<CR>` to `magit-log-show-commit` which opens the commit detail buffer).
+"Hunk (staged/unstaged diff) → open the file at the hunk location" is
+target design, **not built** — there is no hunk-level resolution anywhere
+(§7.3).
+
+`magit-status`'s `<CR>` is `action:magit-visit`, registered PER-BUFFER by
+`magit_status_mode`'s `on_activate` (via `actions::register_action_handlers`)
+— NOT a generic handler in `magit-core`, and NOT dispatched from a
+`SectionIndex` entry kind. It calls the same `classify_line` cursor
+classification §7.2 describes, then branches on `StatusLine::File` (open)
+vs. `Stash`/`Commit` (toggle inline). Every other mode listed above
+registers its own separate `<CR>` handler under its own `action:magit-*`
+command name — "shadowing" is really "each major mode owns its own
+binding," not one action dispatching differently per mode.
 
 ### 12.4 `magit-commit-mode`
 
@@ -1171,7 +1534,8 @@ so there is no clash in the editable commit-message region.
 |---|---|---|
 | `C-c C-c` | Commit with message | `magit-commit-confirm` |
 | `C-c C-k` | Abort commit | `magit-commit-abort` |
-| `C-c C-d` | Toggle diff preview | `magit-commit-toggle-diff` |
+
+There is no `C-c C-d` toggle-diff-preview chord — never implemented (§9).
 
 ### 12.5 `magit-log-mode`
 
@@ -1188,70 +1552,124 @@ with arguments.
 | Chord | Action | Command |
 |---|---|---|
 | `<CR>` | Show commit for the blamed line | `magit-blame-show-commit` |
-| `p` | Re-blame at the parent commit | `magit-blame-parent` |
-| `q` | Close blame buffer | `magit-close` |
+| `p` | Re-blame at the parent of the revision currently shown | `magit-blame-parent` |
 
-Blame chunk navigation (next/previous blame chunk, recentering) uses the
-`]c`/`[c` hunk motions inherited from `magit-core`. `p` re-runs blame
-against the parent of the commit at the cursor line.
+`q`/`gr`/nav come from `magit-core` (not a blame-mode-specific `q`). Both
+`<CR>` and `p` used to be dead — keymapped but never registered at all
+(always fell through to the registry's dead-marker `Effect::None`); both
+are real now (§10.2). Blame chunk navigation via `]c`/`[c` inherits
+`magit-core`'s generic scan (§7.5) — since blame output contains no `@@`/
+`diff --git` lines, `]c`/`[c` are effectively inert in a blame buffer
+today, not "hunk motions" in the diff-system sense.
 
 ### 12.7 `magit-diff-mode`
 
-`magit-diff-mode` inherits all `diff-mode` chords (`]c`/`[c`, `do`/`dp`)
-plus `magit-core` chords. It adds:
+There is no `diff-mode` active on this buffer to inherit chords from (§11)
+— `]c`/`[c` come from `magit-core`'s generic scan, same as every other
+magit buffer. `magit-diff-mode` itself adds only:
 
 | Chord | Action | Command |
 |---|---|---|
-| `s` | Stage hunk at cursor | `magit-stage` |
-| `u` | Unstage hunk at cursor | `magit-unstage` |
-| `x` | Discard hunk at cursor | `magit-discard` |
+| `s` | Stage file at cursor (file-level, not hunk — §4.5) | `magit-stage` |
+| `u` | Unstage file at cursor (file-level, not hunk) | `magit-unstage` |
+
+No `x`/discard chord exists in `magit-diff-mode`.
 
 ### 12.8 `magit-stash-mode`
 
 | Chord | Action | Command |
 |---|---|---|
-| `<CR>` | Show stash diff at cursor | `magit-stash-show` |
 | `a` | Apply stash at cursor (keep in list) | `magit-stash-apply` |
 | `p` | Pop stash at cursor (apply + drop) | `magit-stash-pop` |
 | `d` | Drop stash at cursor | `magit-stash-drop` |
 | `z` | Create new stash (`git stash`) | `magit-stash-create` |
+
+There is no `<CR>` chord in `magit-stash-mode` — stash-detail-on-`<CR>` was
+never implemented (nor is there an `action:magit-stash-show` command).
 
 ### 12.9 `magit-branch-mode`
 
 | Chord | Action | Command |
 |---|---|---|
 | `<CR>` | Check out branch at cursor | `magit-branch-checkout` |
-| `c` | Create new branch (minibuffer prompt) | `magit-branch-create` |
+| `c` | Open the branch-create wizard (pick base, then type name) | `magit-branch-create` |
 | `d` | Delete branch at cursor | `magit-branch-delete` |
 | `m` | Merge branch at cursor into current | `magit-branch-merge` |
+
+**`c` now opens a real two-step wizard, modeled on Emacs magit's own
+branch-create flow, instead of pointing at an ex-command.** This closes
+the gap this section used to document ("no generic single-line
+interactive text-prompt-with-callback mechanism anywhere") — that
+mechanism now exists (`Effect::OpenPrompt` / `PromptLineMode`, a new
+host-level rich-minibuffer primitive documented in
+`docs/dev/architecture/rich-minibuffer.md` §6 and
+`docs/dev/architecture/picker.md` §4.4/§4bis.7) and the branch-create
+wizard is its first real consumer:
+
+1. `c`'s handler in `magit_branch_mode.rs` returns
+   `Effect::OpenPicker { source: "magit-branch-pick-base" }` — no
+   prompt yet, just a normal picker.
+2. `BranchPickBaseSource` (`crates/lattice-magit/src/picker_sources.rs`,
+   registered as `:picker magit-branch-pick-base`) lists `Branch::list`
+   as candidates, routed through `RoutingPayload::BranchBase { name }`
+   (picker.md §6.1 — branch names get MRU identity like theme names).
+3. Accepting a candidate returns `PickerAcceptOutcome::OpenPrompt` — the
+   picker-accept peer of `Effect::OpenPrompt`, same fields — asking
+   "New branch name (from `<base>`):" and stashing `base` in the
+   follow-up prompt buffer's synthetic name
+   (`*magit:branch-create-from:<base>*`), exactly like magit's blame/
+   rebase/revision modes already encode their target in a buffer name.
+4. `<CR>` on the prompt fires `action:magit-branch-create-finish` — a
+   GLOBAL handler in `magit_global_mode.rs` (not `magit_branch_mode`,
+   since the prompt can outlive the branch buffer) — which reads the
+   typed name via `ActionContext::prompt_value`, recovers `base` by
+   parsing the prompt buffer's own name back out, and runs
+   `Branch::create(repo, name, true, Some(&base))` on `spawn_blocking`
+   in a detached task (result surfaces via `tracing`, not synchronously
+   — same limitation as every other detached mutation in this crate).
+
+The direct ex-command, `:magit-branch-create <name>` (creates from HEAD,
+no base choice — `Branch::create(repo, name, true, None)`), is still
+registered unchanged for the scriptable/quick path; the wizard is the
+interactive path when a non-HEAD base is wanted.
 
 ### 12.10 `magit-rebase-mode`
 
 | Chord | Action | Command |
 |---|---|---|
 | `C-c C-c` | Execute rebase | `magit-rebase-confirm` |
-| `C-c C-k` | Abort rebase | `magit-rebase-abort` |
+| `C-c C-k` | Abort rebase (only if a rebase is actually in progress) | `magit-rebase-abort` |
 
-The buffer is an editable todo list (`pick`/`reword`/`squash`/`fixup`/`drop`).
-The user edits the list using normal vim editing commands, then `C-c C-c` to
-execute.
+The buffer is a REAL editable todo list (`pick`/`reword`/`squash`/`fixup`/
+`drop`), built from `git log --reverse --format="pick %h %s"
+<upstream>..HEAD` — not a hardcoded placeholder. `C-c C-c` collects the
+buffer's non-comment lines and actually starts the rebase (§4.6); `C-c
+C-k` checks `.git/rebase-merge`/`.git/rebase-apply` before running
+`--abort`, so it cannot fail against a rebase that was never started.
 
 ### 12.11 Ex-commands (dashed + namespaced)
 
 | Command | Action |
 |---|---|
 | `:magit-status` | Open magit-status for the current repo |
-| `:magit-log [ref]` | Open magit-log buffer |
+| `:magit-log` | Open magit-log buffer (no ref/count argument yet — always `-50`) |
 | `:magit-blame [path]` | Open blame for current file or path |
 | `:magit-commit` | Open commit buffer |
-| `:magit-diff [ref]` | Open detail diff against ref |
+| `:magit-diff` | Open `*magit:diff*` (`git diff HEAD`) — no ref argument yet |
 | `:magit-stash-list` | Open stash list buffer |
 | `:magit-branch` | Open branch list buffer |
-| `:magit-file-dispatch` | Open file-dispatch popup for the current code buffer's file |
-| `:magit-rebase` | Start interactive rebase |
-| `:magit-fetch [remote]` | Fetch from remote |
-| `:magit-push [remote] [branch]` | Push to remote |
-| `:magit-merge [branch]` | Merge a branch into current |
+| `:magit-branch-create <name>` | Create a branch from HEAD and check it out (no base choice — the interactive `c` wizard in `*magit:branch*` lets you pick a base, §12.9) |
+| `:magit-rebase [upstream]` | Start interactive rebase; no arg resolves `@{upstream}` |
+| `:magit-dispatch` | Open the repo-level dispatch transient (`Effect::OpenTransient`) |
+| `:magit-file-dispatch` | Open the file-dispatch transient — its items are real (stage/diff the active buffer's file, §8.8) |
+
+`:magit-fetch`, `:magit-push`, and `:magit-merge` are still **not
+registered as standalone ex-commands** — pull/push are real operations
+now (`git pull --ff-only` / `git push`, §8.8) but reachable only through
+the root dispatch transient's `F`/`P` items (`action:magit-global-pull`/
+`-push`), not through a `:` command. Branch merge exists only as the
+branch-list buffer's `m` chord (`git merge <branch>`), not as a
+standalone ex-command either.
 
 ### 12.12 Registrations
 
@@ -1283,58 +1701,81 @@ deferred until explicitly invoked by the user. The status buffer opens as a
 fast file list — no pre-computed diffs, no full-repo git operations beyond
 `git status --porcelain`.
 
-- **Status buffer open (initial):** `git status --porcelain` (via gitoxide)
-  + `git stash list` + `git log --oneline -20`. For a repo with 500 tracked
-  files, completes in **10-50ms** on `spawn_blocking`. The buffer is a file
-  list with status labels — no diff content. Headerline shows progress
-  during initial load; subsequent loads are near-instant.
+- **Status buffer open (initial):** `git status --porcelain`-equivalent (via
+  gitoxide) + `git stash list` + `git log --oneline -20`. For a repo with
+  500 tracked files, completes in **10-50ms** on `spawn_blocking`. The
+  buffer is a file list with status labels — no diff content. There is no
+  headerline progress indicator (§4.1) — the buffer simply appears once the
+  initial refresh completes.
 
-- **Status buffer auto-refresh (after commit/stage/unstage):** same fast path.
-  Only file statuses are re-fetched. Cached diffs are invalidated for files
-  whose status changed; files with unchanged status keep their cached diff
-  (if expanded). Buffer update is a full replace via `apply_edit_batch`;
-  file list renders instantly.
+- **Status buffer auto-refresh (after commit/stage/unstage):** same fast
+  path. `StatusBufferState::expanded` is cleared UNCONDITIONALLY on every
+  refresh (§6.2/§6.4) — there is no selective per-file invalidation by
+  status change, since there is no per-file diff cache to invalidate. Any
+  previously-expanded entry collapses; the user re-expands with `=`/`<CR>`
+  if still wanted. Buffer update is a full replace via `apply_edit_batch`.
 
-- **Diff loading (`=` on a file):** `git diff --cached <path>` or
-  `git diff <path>` on `spawn_blocking`. For typical files (100-2000 lines),
-  completes in **5-50ms**. Content inserted as a local edit — other sections
-  and files are untouched. Renders as virtual rows on next frame.
-
-- **Diff loading (`=` on a section):** N files load independently on
-  `spawn_blocking`. Results stream in as each file completes; the buffer
-  updates incrementally. For 20 changed files, all diffs visible within
-  **100-400ms** total.
+- **Diff/patch loading (`=` on a file, `<CR>` on a stash/commit):** a single
+  `git diff`/`git stash show -p`/`git show` invocation on `spawn_blocking`.
+  Content inserted as a local edit with syntax-highlight spans — NOT
+  virtual-row deletion blocks (§6.3); no diff-system integration here at
+  all. Section-level "`=` expands every file in the section" is target
+  design, not built — only single-entry toggle exists today.
 
 - **Per-keystroke (in magit buffer):** chord dispatch → mode filter → action
   handler. Identical overhead to any other buffer (<500ns p99). No WASM
   boundary.
 
-- **Section folding:** fold engine is viewport-bounded. Collapsing a 200-line
-  section (or a group of expanded diffs) is O(fold-elision in cells worker).
-  Proven by D-fix.5.
+- **Fold recompute (`MagitStatusFoldSource`):** recomputes live from
+  `expanded` + a buffer scan on every `compute_folds()` call (§7.1) rather
+  than caching stale ranges — O(buffer lines), not O(expanded-entries²);
+  bounded by how much of the buffer is currently expanded, not repo size.
 
-- **Inline diff rendering:** deletion blocks as virtual rows — renderer treats
-  them identically to document rows. O(viewport-rows). Proven by D.3.
-
-- **Blame annotations:** loaded async on demand, cached per-file. Gutter
-  column rendering O(viewport-lines). No per-frame recompute.
-
-- **Memory:** section index ~5-20KB for typical repo, `DiffCache` ~1-5KB
-  per expanded file, blame line map ~5-50KB per file. Git process output
-  buffered and discarded after parse. Total memory overhead for a fully-
-  expanded status buffer with 20 changed files: < 200KB.
+- **Blame:** each `<CR>`-triggered re-blame (or the initial load) is a full
+  `git blame --line-porcelain` invocation on `spawn_blocking`, replacing the
+  whole buffer. No gutter column, no per-file/per-revision cache (§10.2) —
+  every `p` press re-runs blame from scratch against the new parent.
 
 - **Comparison with Emacs magit:** Emacs magit runs `git diff --cached` and
   `git diff` on every status refresh — O(all-changed-lines). In large repos
   with 50+ changed files and large diffs (refactors touching hundreds of
-  lines), this can take 2-10 seconds. Lattice's lazy approach is O(files) on
-  open, O(lines-in-expanded-files) on demand — typically 50-100× faster for
-  the initial status render.
+  lines), this can take 2-10 seconds. Lattice's lazy approach never runs a
+  diff command during status refresh at all — diffs load only on explicit
+  `=`/`<CR>`, one file/stash/commit at a time.
 
 - **No UI-thread work.** Zero I/O, parsing, git operations, or formatting on
   the render thread. Renderer sees ordinary Documents. `match buffer_kind` is
   untouched — magit buffers are ordinary Documents with major modes, folds, and
   decorations. The kind-agnostic-buffer invariant holds.
+
+- **Async architecture — every mutation off the actor thread.** Every
+  mutating git operation across the whole crate (stage/unstage/discard/
+  checkout/delete/merge/stash-ops/rebase/commit/branch-create/pull/push/
+  file-stage) runs via `tokio::task::spawn_blocking`, never synchronously
+  on the actor thread. Three shapes, all avoiding a synchronous git call
+  inline in an action handler:
+  - **Refresh-in-place** (`spawn_mutation_and_refresh` in `actions.rs`,
+    `magit_branch_mode.rs`, `magit_stash_mode.rs`): the handler returns
+    `None` immediately; a spawned task runs the mutation, then re-runs the
+    view's own refresh and applies it. Used by everything that only needs
+    to update its own buffer's content (stage/unstage/discard, checkout/
+    delete/merge branch, apply/pop/drop/create stash).
+  - **Optimistic close** (commit-confirm, rebase-confirm/-abort): the
+    handler returns the close effect (`Effect::QuitEditor`) SYNCHRONOUSLY,
+    then runs the git write in a fire-and-forget background task, logging
+    failure via `tracing::error!`. There is no synchronous path back to the
+    echo area from a detached task — a real, documented limitation (§9,
+    §4.6), not a silently swallowed error.
+  - **Optimistic echo, no buffer to refresh** (pull/push in
+    `magit_global_mode`'s `remote_op!` macro; file-stage; the
+    branch-create wizard's finish handler): there is no per-buffer state
+    to refresh — these fire from the global dispatch/prompt, not a magit
+    buffer's own action. The handler returns `Effect::Echo` ("pulling…" /
+    "staged `<path>`" / "creating branch…") synchronously, then a
+    detached task runs the git write and logs success/failure via
+    `tracing::info!`/`tracing::error!` only. Same "no synchronous path
+    back" limitation as optimistic-close, just with no buffer to close
+    either.
 
 ## 14. WIT surface gaps and WASM migration path
 

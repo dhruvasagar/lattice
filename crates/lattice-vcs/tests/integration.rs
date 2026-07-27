@@ -320,10 +320,35 @@ fn branch_list_and_create() {
     let branches = Branch::list(&repo).unwrap();
     assert_eq!(branches, vec!["main"]);
 
-    Branch::create(&repo, "feature", false).unwrap();
+    Branch::create(&repo, "feature", false, None).unwrap();
     let branches = Branch::list(&repo).unwrap();
     assert!(branches.contains(&"main".to_string()));
     assert!(branches.contains(&"feature".to_string()));
+}
+
+#[test]
+fn branch_create_from_explicit_base() {
+    let (_dir, repo) = init_temp_repo();
+    write_file(repo.workdir().unwrap(), "a.txt", "a\n");
+    git_add(&repo, "a.txt");
+    git_commit(&repo, "initial on main");
+
+    // Branch off main, add a commit only 'topic' has.
+    Branch::create(&repo, "topic", true, None).unwrap();
+    write_file(repo.workdir().unwrap(), "b.txt", "b\n");
+    git_add(&repo, "b.txt");
+    git_commit(&repo, "only on topic");
+    Branch::checkout(&repo, "main").unwrap();
+
+    // Create a new branch explicitly from 'topic' while sitting on
+    // 'main' — the wizard's flow (pick a base different from HEAD).
+    Branch::create(&repo, "from-topic", true, Some("topic")).unwrap();
+
+    let head = git(&repo, &["rev-parse", "--abbrev-ref", "HEAD"]);
+    assert_eq!(head.trim(), "from-topic");
+    // 'from-topic' must contain topic's commit, not just main's.
+    let log = git(&repo, &["log", "--format=%s"]);
+    assert!(log.contains("only on topic"));
 }
 
 #[test]
@@ -333,7 +358,7 @@ fn branch_checkout_and_delete() {
     git_add(&repo, "a.txt");
     git_commit(&repo, "initial");
 
-    Branch::create(&repo, "topic", true).unwrap();
+    Branch::create(&repo, "topic", true, None).unwrap();
 
     // We should be on 'topic' now
     let head = git(&repo, &["rev-parse", "--abbrev-ref", "HEAD"]);

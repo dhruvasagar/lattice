@@ -941,33 +941,23 @@ mod tests {
     fn enter_in_search_submits() {
         let (_, b) = fixture();
         let modal = ModalState::Search(SearchDirection::Forward);
-        assert!(matches!(
-            translate(ctx(modal, &b), key(KeyCode::Enter)),
-            Action::SearchSubmit
-        ));
+        panic!("PROBE enter => {:?}", translate(ctx(modal, &b), key(KeyCode::Enter)));
     }
 
     #[test]
     fn esc_in_search_cancels() {
         let (_, b) = fixture();
         let modal = ModalState::Search(SearchDirection::Backward);
-        assert!(matches!(
-            translate(ctx(modal, &b), key(KeyCode::Esc)),
-            Action::SearchCancel
-        ));
+        panic!("PROBE esc => {:?}", translate(ctx(modal, &b), key(KeyCode::Esc)));
     }
 
     #[test]
     fn backspace_in_search_pops_pattern() {
         let (_, b) = fixture();
         let modal = ModalState::Search(SearchDirection::Forward);
-        assert!(matches!(
-            translate(ctx(modal, &b), key(KeyCode::Backspace)),
-            Action::SearchBackspace
-        ));
+        panic!("PROBE bs => {:?}", translate(ctx(modal, &b), key(KeyCode::Backspace)));
     }
 
-    #[test]
     #[test]
     fn ctrl_c_in_search_does_not_quit() {
         // <C-c> is no longer a universal quit hatch in search mode.

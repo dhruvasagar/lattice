@@ -225,7 +225,7 @@ than refusing to open.
 | `picker.mru.recency-half-life-days` | `7` | Days for a pick's recency weight to halve. |
 | `picker.mru.cap-per-namespace` | `1000` | Max history entries per source before the lowest-frecency one is evicted. |
 | `picker.mru.persist` | `true` | Write the index to disk between runs. |
-| `picker.display` | `minibuffer` | `minibuffer` (vertico-style, list above the `:` line) or `popup` (centred overlay). |
+| `picker.display` | `minibuffer` | `minibuffer` (vertico-style, list above the `:` line) or `popup` (centred overlay). Also governs [transient-mode menus](magit-transient.md) — magit's dispatch menu, its confirmation dialogs, and any future which-key-style overlay built on the same picker substrate — which used to always render as a popup regardless of this setting; they now honor it like every other picker surface. |
 | `picker.result.display` | `active-pane` | Where an accepted buffer/location opens (`active-pane`, `split-h`, `split-v`). |
 | `picker.grep.backend` | `auto` | Grep binary: `auto` picks the first of `rg` / `ag` / `grep` on `PATH`; or force one by name. |
 | `picker.grep.max-hits` | `2000` | Cap on hits surfaced per `:picker grep`. |

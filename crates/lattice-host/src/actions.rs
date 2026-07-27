@@ -109,12 +109,23 @@ pub struct ActionIds {
     pub search_line_submit: CommandId,
     /// MB.5a: `action:search-line-cancel` — `<Esc>` / `<C-c>` on the `/`·`?` line.
     pub search_line_cancel: CommandId,
+    /// `action:search-line-backspace` — `<BS>` on the `/`·`?` line.
+    /// Deletes a char; on an ALREADY-EMPTY pattern it cancels the
+    /// search instead (vim's behaviour, which MB.5a dropped when
+    /// `Action::SearchBackspace` became a no-op).
+    pub search_line_backspace: CommandId,
     /// MB.5b: `action:search-line-history-prev` — `<C-p>` / `<Up>` on the `/`·`?` line.
     pub search_line_history_prev: CommandId,
     /// MB.5b: `action:search-line-history-next` — `<C-n>` / `<Down>` on the `/`·`?` line.
     pub search_line_history_next: CommandId,
     /// MB.5c: `action:search-line-toggle-expand` — `<C-x><C-e>` on the `/`·`?` line.
     pub search_line_toggle_expand: CommandId,
+    /// `action:prompt-line-submit` — `<CR>` on a generic
+    /// `Effect::OpenPrompt` prompt.
+    pub prompt_line_submit: CommandId,
+    /// `action:prompt-line-cancel` — `<Esc>` / `<C-c>` on a generic
+    /// `Effect::OpenPrompt` prompt.
+    pub prompt_line_cancel: CommandId,
     pub oil_navigate_up: CommandId,
     pub reselect_last_visual: CommandId,
     pub paste_after: CommandId,
@@ -656,6 +667,14 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
              the search and restore the prior editing buffer.",
             AppEffect::SearchLineCancel,
         ),
+        search_line_backspace: register_simple(
+            registry,
+            "action:search-line-backspace",
+            "`<BS>` on the `/`·`?` search line — delete the character \
+             before the cursor, or cancel the search when the pattern \
+             is already empty (vim's behaviour).",
+            AppEffect::SearchLineBackspace,
+        ),
         search_line_history_prev: register_simple(
             registry,
             "action:search-line-history-prev",
@@ -676,6 +695,18 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
             "MB.5c: `<C-x><C-e>` on the `/`·`?` search line — toggle the \
              expanded tier-2 mini-buffer band.",
             AppEffect::SearchLineToggleExpand,
+        ),
+        prompt_line_submit: register_simple(
+            registry,
+            "action:prompt-line-submit",
+            "Submit a generic `Effect::OpenPrompt` prompt.",
+            AppEffect::PromptLineSubmit,
+        ),
+        prompt_line_cancel: register_simple(
+            registry,
+            "action:prompt-line-cancel",
+            "Cancel a generic `Effect::OpenPrompt` prompt.",
+            AppEffect::PromptLineCancel,
         ),
         oil_navigate_up: register_simple(
             registry,
@@ -1752,6 +1783,7 @@ mod tests {
             ),
             (ids.search_line_submit, "action:search-line-submit"),
             (ids.search_line_cancel, "action:search-line-cancel"),
+            (ids.search_line_backspace, "action:search-line-backspace"),
             (
                 ids.search_line_history_prev,
                 "action:search-line-history-prev",
@@ -1764,6 +1796,8 @@ mod tests {
                 ids.search_line_toggle_expand,
                 "action:search-line-toggle-expand",
             ),
+            (ids.prompt_line_submit, "action:prompt-line-submit"),
+            (ids.prompt_line_cancel, "action:prompt-line-cancel"),
             (ids.oil_navigate_up, "action:oil-navigate-up"),
             (ids.reselect_last_visual, "action:reselect-last-visual"),
             (ids.paste_after, "action:paste-after"),

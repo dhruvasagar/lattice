@@ -65,6 +65,8 @@ fn with_ctx<R>(workspace_root: &str, f: impl FnOnce(&PickerContext<'_>) -> R) ->
         marks: Vec::new(),
         registers: Vec::new(),
         active_modes: Vec::new(),
+        command_history: Vec::new(),
+        search_history: Vec::new(),
     };
     f(&ctx)
 }

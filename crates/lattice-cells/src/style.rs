@@ -74,6 +74,25 @@ pub enum Style {
     DiffAdd,
     /// Removed line content (`-` lines) in a unified diff.
     DiffRemove,
+    // ---- Magit-owned styles ----
+    // Git concepts magit's own buffers render (commit SHAs, the
+    // checked-out branch, ref-decoration lists, rebase-todo verbs,
+    // blame authors) are NOT tree-sitter syntax categories — giving
+    // them their own `Style` variants (rather than reusing
+    // `Keyword`/`Link`/`Type`/`Comment`, which name unrelated
+    // source-code concepts) keeps the mapping honest and lets a theme
+    // retune magit's palette independently of its code-syntax colors.
+    /// A commit SHA (magit-log, magit-blame, magit-rebase's todo).
+    MagitSha,
+    /// The checked-out branch in a branch list (magit-branch's `* `
+    /// marker + name).
+    MagitBranchCurrent,
+    /// A ref-decoration list after a log SHA (`(HEAD -> main, ...)`).
+    MagitRefDecoration,
+    /// A rebase-todo verb (`pick`/`reword`/`edit`/`squash`/`fixup`/`drop`).
+    MagitRebaseVerb,
+    /// The author column in `magit-blame` output.
+    MagitAuthor,
 }
 
 /// Byte-range span within one source line, carrying a semantic [`Style`].

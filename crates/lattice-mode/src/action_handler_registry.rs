@@ -65,6 +65,12 @@ pub struct ActionContext<'a> {
     /// subsystems subscribe to (e.g.
     /// `ProjectSearchRefreshed`).
     pub events: &'a EventBus,
+    /// Set only when this handler fires as the submit callback of an
+    /// `Effect::OpenPrompt`-opened prompt (`Editor::do_prompt_line_submit`)
+    /// — the prompt buffer's typed content at the moment of submit.
+    /// `None` for every other firing path (chord dispatch, transient
+    /// item click, `Effect::Confirm`'s yes-action, ...).
+    pub prompt_value: Option<&'a str>,
 }
 
 /// Action handler closure shape. Returns an [`Effect`] when
@@ -320,6 +326,7 @@ mod tests {
             cursor: Position::ZERO,
             services: &services,
             events: &events,
+            prompt_value: None,
         };
         let effect = h(&ctx);
         assert!(matches!(effect, Some(Effect::None)));

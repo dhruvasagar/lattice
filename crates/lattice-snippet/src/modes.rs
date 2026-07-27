@@ -924,6 +924,7 @@ mod tests {
             cursor: Position::new(0, 3),
             services: &services,
             events: &events,
+            prompt_value: None,
         };
         assert!(handler(&ctx).is_none());
     }
@@ -979,13 +980,15 @@ mod tests {
             has_default: false,
             is_choice: false,
         };
+        // A bare cursor is expressed as `Effect::CursorMove`, NOT as a
+        // zero-width `SelectionChange`. This assertion previously
+        // expected the latter and went stale when the bare-cursor
+        // representation changed; the test's INTENT (its name — "keeps
+        // bare cursor") was always the behaviour below, so only the
+        // encoding is updated here, not what's being guarded.
         match snippet_group_cursor_effect(&buffer, &group).expect("effect") {
-            Effect::SelectionChange(set) => {
-                let p = set.primary();
-                assert_eq!(p.anchor, p.head, "bare cursor: zero-width");
-                assert_eq!(p.head, Position::new(0, 4));
-            }
-            other => panic!("expected a bare SelectionChange, got {other:?}"),
+            Effect::CursorMove(pos) => assert_eq!(pos, Position::new(0, 4)),
+            other => panic!("expected a bare CursorMove, got {other:?}"),
         }
     }
 
@@ -1150,6 +1153,7 @@ mod tests {
             cursor: Position::new(0, 0),
             services,
             events: &events,
+            prompt_value: None,
         };
         let handler = handlers.lookup(id).expect("handler registered");
         handler(&ctx)

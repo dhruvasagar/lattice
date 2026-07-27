@@ -1643,8 +1643,7 @@ impl EditorView {
         // registry-keyed) rather than adopting the command-line cursor — the
         // same treatment as a focus-stealing popup.
         // MB.5: same for the `/`·`?` search line.
-        let popup_owns_active =
-            ad.popup_focused || ad.command_line_active || ad.search_line_active;
+        let popup_owns_active = ad.popup_focused || ad.command_line_active || ad.search_line_active;
         // When the popup has focus the document pane should look
         // inactive — no cursorline, no selection, no active status
         // bar — the same appearance it has when a different pane has
@@ -2062,24 +2061,19 @@ impl EditorView {
         // CM.3d (2026-07-22): compilation location-line bg tint,
         // computed from the render-state location-line index.
         // Same shape as diff tint above.
-        let compilation_location_tint_per_row: Vec<Option<u32>> =
-            (visible_start..visible_end)
-                .filter(|line_idx| !fold_index.line_inside_closed_fold(*line_idx as u32))
-                .map(|line_idx| {
-                    rs_guard
-                        .compilation_location_lines
-                        .get(&pane.buffer_id)
-                        .and_then(|entries| {
-                            entries
-                                .iter()
-                                .find(|(l, _, _)| *l == line_idx as u32)
-                        })
-                        .map(|_| {
-                            let (bg, _fg) = *rs_guard.compilation_theme_colors;
-                            bg
-                        })
-                })
-                .collect();
+        let compilation_location_tint_per_row: Vec<Option<u32>> = (visible_start..visible_end)
+            .filter(|line_idx| !fold_index.line_inside_closed_fold(*line_idx as u32))
+            .map(|line_idx| {
+                rs_guard
+                    .compilation_location_lines
+                    .get(&pane.buffer_id)
+                    .and_then(|entries| entries.iter().find(|(l, _, _)| *l == line_idx as u32))
+                    .map(|_| {
+                        let (bg, _fg) = *rs_guard.compilation_theme_colors;
+                        bg
+                    })
+            })
+            .collect();
 
         // Active-pane cursor state. `None` on inactive panes so the
         // element doesn't paint a cursor marker there.
@@ -3289,7 +3283,23 @@ impl Render for EditorView {
             picker_substate
                 .state
                 .as_deref()
-                .map(|p| 1 + p.candidates.len().min(10) as i32) // 1 prompt + up to 10 cands
+                .map(|p| {
+                    // Fold audit fix: a transient has no `candidates`
+                    // (always 0 here before this fix), so the strip's
+                    // actual row count — `transient_minibuffer`'s
+                    // title row + up to `TRANSIENT_MAX_VISIBLE_ROWS`
+                    // group/item rows — went unaccounted for, and the
+                    // viewport never shrank to make room for it.
+                    match p.transient.as_deref() {
+                        Some(spec) => {
+                            let total_items: usize =
+                                spec.groups.iter().map(|g| g.items.len()).sum();
+                            let row_count = total_items + spec.groups.len();
+                            1 + row_count.min(TRANSIENT_MAX_VISIBLE_ROWS) as i32
+                        }
+                        None => 1 + p.candidates.len().min(10) as i32, // 1 prompt + up to 10 cands
+                    }
+                })
                 .unwrap_or(0)
         } else {
             0
@@ -3932,20 +3942,30 @@ impl Render for EditorView {
         // PICK.1: transient overlay — rendered when the picker is in
         // transient mode (grouped action menu). Skip the normal picker
         // overlay when transient is active.
-        let transient_overlay: Option<gpui::Div> = picker_substate
-            .state
-            .as_deref()
+        //
+        // Fold audit fix: this used to build unconditionally,
+        // regardless of `picker_use_minibuffer` — a transient always
+        // rendered as a floating popup even with `picker.display =
+        // "minibuffer"`, ignoring the setting every other picker
+        // surface (`picker_minibuffer`, `cmdline_completion_minibuffer`)
+        // already respects. Now gated the same way `picker_overlay`
+        // is: only in popup mode. `transient_minibuffer` (below)
+        // handles the minibuffer-mode case.
+        let transient_overlay: Option<gpui::Div> = (!picker_use_minibuffer)
+            .then(|| picker_substate.state.as_deref())
+            .flatten()
             .and_then(|p| p.transient.as_ref())
-            .map(|spec| build_transient_gpui(spec, picker_substate.state.as_deref().unwrap(), &theme));
+            .map(|spec| {
+                build_transient_gpui(spec, picker_substate.state.as_deref().unwrap(), &theme)
+            });
 
-        let picker_overlay: Option<gpui::Div> =
-            if transient_overlay.is_some() {
-                None
-            } else {
-                (!picker_use_minibuffer)
-                    .then(|| picker_substate.state.as_deref())
-                    .flatten()
-                    .map(|picker| {
+        let picker_overlay: Option<gpui::Div> = if transient_overlay.is_some() {
+            None
+        } else {
+            (!picker_use_minibuffer)
+                .then(|| picker_substate.state.as_deref())
+                .flatten()
+                .map(|picker| {
                     let max_visible = 30usize;
                     let total = picker.candidates.len();
                     let window_start = picker
@@ -4048,7 +4068,8 @@ impl Render for EditorView {
                         .child(div().pt_2().text_color(rgb(theme.popup_border)).child(
                             "[ <C-n>/<C-p> navigate · <CR> accept · <Esc> cancel ]".to_string(),
                         ))
-                });
+                })
+        };
 
         // Vertico-style minibuffer strip (matches TUI when
         // `picker.display = "minibuffer"`). Two rows below the
@@ -4062,6 +4083,15 @@ impl Render for EditorView {
         let picker_minibuffer: Option<gpui::Div> = picker_use_minibuffer
             .then(|| picker_substate.state.as_deref())
             .flatten()
+            // Fold audit fix: a transient has no `candidates` (it has
+            // `groups`/`items` instead), so without this filter an
+            // active transient in minibuffer mode rendered THIS as an
+            // always-empty "(no matches)" strip, in addition to
+            // whatever `transient_overlay`/`transient_minibuffer` drew
+            // — mutually exclusive with the transient's own strip
+            // below, matching how `transient_overlay`/`picker_overlay`
+            // are already mutually exclusive.
+            .filter(|p| p.transient.is_none())
             .map(|picker| {
                 const MAX_VISIBLE: usize = 10;
                 let total = picker.candidates.len();
@@ -4148,6 +4178,20 @@ impl Render for EditorView {
                         .children(cand_rows),
                 )
             });
+
+        // Fold audit fix: transient's minibuffer-mode strip — the
+        // counterpart `picker_minibuffer` filtered out above. Same
+        // title-row-then-band shape, windowed by
+        // `transient_row_count`/`TRANSIENT_MAX_VISIBLE_ROWS` the same
+        // way `build_transient_gpui`'s popup box is (see there for
+        // why GPUI uses a fixed row budget rather than a measured
+        // one), just flowed into a claimed-layout-space strip instead
+        // of an absolute overlay.
+        let transient_minibuffer: Option<gpui::Div> = picker_use_minibuffer
+            .then(|| picker_substate.state.as_deref())
+            .flatten()
+            .and_then(|p| p.transient.as_deref().map(|spec| (p, spec)))
+            .map(|(p, spec)| build_transient_minibuffer_gpui(spec, p, &theme));
 
         // Slice 3c.gpui-cmdline-completion: cmdline-completion
         // minibuffer strip. Mirrors the picker minibuffer's shape
@@ -4702,6 +4746,9 @@ impl Render for EditorView {
         if let Some(strip) = picker_minibuffer {
             root = root.child(strip);
         }
+        if let Some(strip) = transient_minibuffer {
+            root = root.child(strip);
+        }
         // Slice 3c.gpui-cmdline-completion: minibuffer strip + overlay.
         // Mutually exclusive with the picker (the picker doesn't
         // activate while typing in `:`).
@@ -4989,10 +5036,112 @@ pub fn document_from_path(path: &std::path::Path) -> Result<Document> {
 /// PICK.1: build the GPUI transient overlay div tree — grouped
 /// action menu with section headers, key+label rows, flag
 /// indicators, and optional preview + footer.
+/// Row budget for [`build_transient_gpui`]'s windowing — the TUI
+/// peer derives its equivalent from the actual terminal area
+/// (`draw_transient_overlay`'s `inner.height`); GPUI has no
+/// comparably cheap "how many rows fit" query at this call site, so
+/// this is a fixed, generous budget instead. What matters for
+/// parity is that BOTH peers stop rendering once a bounded number of
+/// rows is reached and respect `transient_scroll` — not that the
+/// exact row count matches to the pixel.
+const TRANSIENT_MAX_VISIBLE_ROWS: usize = 24;
+
+/// The scroll-windowed group/item rows a transient renders — the
+/// ONE place that walks `spec.groups`, applies `transient_scroll`,
+/// and stops at `TRANSIENT_MAX_VISIBLE_ROWS`. Deciding *where* these
+/// rows go (a floating popup vs. a bottom strip) is `picker.display`'s
+/// call, made once by the caller in `render()` — a transient's own
+/// job stops at "what are the visible rows", so both
+/// [`build_transient_gpui`] (popup) and
+/// [`build_transient_minibuffer_gpui`] (minibuffer strip) call this
+/// and differ only in the outer container they wrap it in. Before
+/// this extraction each had its own copy of the windowing loop —
+/// exactly the kind of duplication that let the minibuffer copy go
+/// unwritten (and the scroll-respecting behavior go unimplemented in
+/// GPUI entirely) in the first place.
+fn transient_rows_gpui(
+    spec: &lattice_picker::TransientSpec,
+    picker: &lattice_picker::Picker,
+    theme: &GpuiTheme,
+) -> Vec<gpui::Div> {
+    let total_items: usize = spec.groups.iter().map(|g| g.items.len()).sum();
+    let row_count = total_items + spec.groups.len();
+    let scroll = picker
+        .transient_scroll
+        .min(row_count.saturating_sub(TRANSIENT_MAX_VISIBLE_ROWS.max(1)));
+    let mut ln: usize = 0;
+    let mut rendered: usize = 0;
+    let mut rows: Vec<gpui::Div> = Vec::new();
+
+    for group in &spec.groups {
+        if ln >= scroll && rendered < TRANSIENT_MAX_VISIBLE_ROWS {
+            rows.push(
+                div()
+                    .font_weight(gpui::FontWeight::BOLD)
+                    .child(format!("▸ {}", group.label)),
+            );
+            rendered += 1;
+        }
+        ln += 1;
+
+        for item in &group.items {
+            let show = ln >= scroll && rendered < TRANSIENT_MAX_VISIBLE_ROWS;
+            ln += 1;
+            if !show {
+                continue;
+            }
+            rendered += 1;
+            let key = format!("[{}]", item.key.join("/"));
+            let flag = match &item.kind {
+                lattice_picker::TransientItemKind::Flag { name, .. } => {
+                    let v = picker
+                        .transient_state
+                        .get(name)
+                        .and_then(|v| match v {
+                            lattice_picker::TransientValue::Bool(b) => Some(*b),
+                            _ => None,
+                        })
+                        .unwrap_or(false);
+                    if v { "[x]" } else { "[ ]" }
+                }
+                _ => "",
+            };
+            rows.push(
+                div()
+                    .flex()
+                    .flex_row()
+                    .pl_4()
+                    .child(
+                        div()
+                            .text_color(rgb(theme.cursor_background))
+                            .child(format!("{:<6}", key)),
+                    )
+                    .child(div().child(format!("{:<16}", item.label)))
+                    .child(
+                        div()
+                            .text_color(rgb(theme.popup_border))
+                            .child(item.description.clone()),
+                    )
+                    .child(
+                        div()
+                            .text_color(rgb(theme.cursor_background))
+                            .child(format!("  {}", flag)),
+                    ),
+            );
+        }
+
+        // Blank line between groups.
+        if rendered < TRANSIENT_MAX_VISIBLE_ROWS {
+            rows.push(div().h_1());
+        }
+    }
+    rows
+}
+
 fn build_transient_gpui(
     spec: &lattice_picker::TransientSpec,
     picker: &lattice_picker::Picker,
-    theme: &crate::AppTheme,
+    theme: &GpuiTheme,
 ) -> gpui::Div {
     let mut container = div()
         .flex()
@@ -5000,6 +5149,12 @@ fn build_transient_gpui(
         .min_w(px(480.0))
         .max_w(px(960.0))
         .max_h(px(720.0))
+        // Fold audit fix: every sibling popup in this file
+        // (docs popup, picker overlay) clips its content —
+        // this one didn't, so a transient with enough items
+        // to exceed `max_h` bled past the bordered box onto
+        // whatever was underneath instead of scrolling.
+        .overflow_hidden()
         .p_4()
         .bg(rgb(theme.popup_background))
         .text_color(rgb(theme.foreground))
@@ -5014,62 +5169,15 @@ fn build_transient_gpui(
             .child(format!(" {} ", spec.title)),
     );
 
-    // Groups
-    for group in &spec.groups {
-        container = container.child(
-            div()
-                .pt_1()
-                .font_weight(gpui::FontWeight::BOLD)
-                .child(format!("  ▸ {}", group.label)),
-        );
-
-        for item in &group.items {
-            let key = format!("[{}]", item.key.join("/"));
-            let flag = match &item.kind {
-                lattice_picker::TransientItemKind::Flag { name, .. } => {
-                    let v = picker.transient_state.get(name)
-                        .and_then(|v| match v {
-                            lattice_picker::TransientValue::Bool(b) => Some(*b),
-                            _ => None,
-                        })
-                        .unwrap_or(false);
-                    if v { "[x]" } else { "[ ]" }
-                }
-                _ => "",
-            };
-
-            container = container.child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .pl_4()
-                    .child(
-                        div()
-                            .text_color(rgb(theme.selection_background))
-                            .child(format!("{:<6}", key)),
-                    )
-                    .child(div().child(format!("{:<20}", item.label)))
-                    .child(
-                        div()
-                            .text_color(rgb(theme.popup_border))
-                            .child(&item.description),
-                    )
-                    .child(
-                        div()
-                            .text_color(rgb(theme.cursor_background))
-                            .child(format!("  {}", flag)),
-                    ),
-            );
-        }
-
-        // Blank line between groups
-        container = container.child(div().h_1());
-    }
+    container = container.children(transient_rows_gpui(spec, picker, theme));
 
     // Preview
     if let Some(ref preview_fn) = spec.preview {
         container = container.child(
-            div().pt_2().text_color(rgb(theme.popup_border)).child("─".repeat(60)),
+            div()
+                .pt_2()
+                .text_color(rgb(theme.popup_border))
+                .child("─".repeat(60)),
         );
         let text = (preview_fn)(&picker.transient_state);
         container = container.child(
@@ -5090,6 +5198,35 @@ fn build_transient_gpui(
     }
 
     container
+}
+
+/// Fold audit fix: minibuffer-mode rendering for a transient — a
+/// title row (mirrors `draw_transient_minibuffer_prompt`/the regular
+/// picker minibuffer's prompt row) followed by [`transient_rows_gpui`]'s
+/// windowed group/item band, instead of [`build_transient_gpui`]'s
+/// bordered floating popup. No preview or footer — the same omission
+/// the regular picker's minibuffer strip makes (it never shows a
+/// preview pane either); there's no room for them in a
+/// claimed-layout-space strip the way there is in a popup box.
+fn build_transient_minibuffer_gpui(
+    spec: &lattice_picker::TransientSpec,
+    picker: &lattice_picker::Picker,
+    theme: &GpuiTheme,
+) -> gpui::Div {
+    let title_row = div()
+        .px_2()
+        .bg(rgb(theme.background))
+        .text_color(rgb(theme.cursor_background))
+        .child(format!("{} ", spec.title));
+
+    div().flex().flex_col().child(title_row).child(
+        div()
+            .px_2()
+            .flex()
+            .flex_col()
+            .bg(rgb(theme.background))
+            .children(transient_rows_gpui(spec, picker, theme)),
+    )
 }
 
 #[cfg(test)]

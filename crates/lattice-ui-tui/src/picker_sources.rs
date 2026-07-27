@@ -309,6 +309,11 @@ mod tests {
                 "jumps",
                 "commands",
                 "history",
+                // MB.5: `search-history` (`q/` / `q?` / `:history
+                // search`) joined `first_party_generators` alongside
+                // the command-history source; this expectation listed
+                // only the latter and went stale when it landed.
+                "search-history",
                 "registers",
                 "marks",
                 "grep",

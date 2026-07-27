@@ -98,6 +98,7 @@ fn search_line_entries() -> &'static [KeymapEntry] {
             keymap_entry! { mode: Insert, chord: "<CR>", doc: "Submit the search pattern", cmd: "action:search-line-submit" },
             keymap_entry! { mode: Insert, chord: "<Esc>", doc: "Cancel the search line", cmd: "action:search-line-cancel" },
             keymap_entry! { mode: Insert, chord: "<C-c>", doc: "Cancel the search line", cmd: "action:search-line-cancel" },
+            keymap_entry! { mode: Insert, chord: "<BS>", doc: "Delete a character, or cancel the search when the pattern is empty", cmd: "action:search-line-backspace" },
             keymap_entry! { mode: Insert, chord: "<C-p>", doc: "Previous search history entry", cmd: "action:search-line-history-prev" },
             keymap_entry! { mode: Insert, chord: "<C-n>", doc: "Next search history entry", cmd: "action:search-line-history-next" },
             keymap_entry! { mode: Insert, chord: "<Up>", doc: "Previous search history entry", cmd: "action:search-line-history-prev" },

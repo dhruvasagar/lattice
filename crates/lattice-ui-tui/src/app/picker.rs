@@ -147,6 +147,81 @@ impl App {
         }
     }
 
+    /// Open a y/n confirmation transient dialog.
+    pub(crate) fn do_confirm(&mut self, prompt: String, yes_action: String) {
+        let signals = self.mutate_editor_with(move |e| {
+            let Some(cmd_reg) = e.services.get::<lattice_grammar::CommandRegistryHandle>() else {
+                e.set_message(
+                    crate::app::EchoLevel::Error,
+                    "confirm: command registry unavailable".to_string(),
+                );
+                return Vec::new();
+            };
+            let Some(cmd_id) = cmd_reg.load().id_by_name(&yes_action) else {
+                e.set_message(
+                    crate::app::EchoLevel::Error,
+                    format!("confirm: unknown action `{yes_action}`"),
+                );
+                return Vec::new();
+            };
+            let spec = lattice_picker::confirm_transient_spec(&prompt, cmd_id);
+            e.open_transient(spec)
+        });
+        for s in signals {
+            self.handle_renderer_signal(s);
+        }
+    }
+
+    /// Open a named transient picker menu — resolves `source`
+    /// against the `TransientSourceRegistry` service (populated at
+    /// boot by the owning mode crate; e.g. magit registers
+    /// `magit-dispatch` / `magit-file-dispatch`) and opens the
+    /// built spec. Mirrors `do_confirm`'s shape.
+    pub(crate) fn do_open_transient(&mut self, source: String) {
+        let signals = self.mutate_editor_with(move |e| {
+            let Some(registry) = e
+                .services
+                .get::<lattice_picker::TransientSourceRegistryHandle>()
+            else {
+                e.set_message(
+                    crate::app::EchoLevel::Error,
+                    "transient: source registry unavailable".to_string(),
+                );
+                return Vec::new();
+            };
+            let Some(spec) = registry.build(&source) else {
+                e.set_message(
+                    crate::app::EchoLevel::Error,
+                    format!("transient: unknown source `{source}`"),
+                );
+                return Vec::new();
+            };
+            e.open_transient(spec)
+        });
+        for s in signals {
+            self.handle_renderer_signal(s);
+        }
+    }
+
+    /// Open a generic one-line minibuffer text prompt. Mirrors
+    /// `do_confirm`/`do_open_transient`'s shape — the actual
+    /// buffer-focus mutation lives host-side (`Editor::open_prompt_line`),
+    /// this wrapper just routes the resulting renderer signals.
+    pub(crate) fn do_open_prompt(
+        &mut self,
+        prompt: String,
+        initial: String,
+        on_submit_action: String,
+        buffer_name: Option<String>,
+    ) {
+        let signals = self.mutate_editor_with(move |e| {
+            e.open_prompt_line(prompt, initial, on_submit_action, buffer_name)
+        });
+        for s in signals {
+            self.handle_renderer_signal(s);
+        }
+    }
+
     /// Drain the pending async picker init, if any. Called
     /// from the main loop tick. Pumps the channel that the
     /// spawned future writes to; once a result arrives the
@@ -831,10 +906,17 @@ mod tests {
                 "history",
                 "jumps",
                 "lines",
+                // magit's branch-create wizard registers its base-branch
+                // picker via `lattice_magit::picker_sources::register`
+                // (editor_boot.rs), so it appears here like any other
+                // first-party source.
+                "magit-branch-pick-base",
                 "marks",
                 "outline",
                 "recent",
                 "registers",
+                // MB.5: `q/` / `q?` / `:history search`.
+                "search-history",
                 "snippets",
             ]
         );
@@ -1446,6 +1528,255 @@ mod tests {
             msg.text.contains("files") && msg.text.contains("recent"),
             "missing known-ids listing: {}",
             msg.text
+        );
+    }
+
+    /// Narrow regression coverage for one half of the `c_c_g_log_item_...`
+    /// bug fixed below: `action:magit-global-log`'s handler must be
+    /// registered in `ActionHandlerRegistry` right after `App::new()`.
+    /// Isolates registration from the dispatch/effect-application path
+    /// (fixed separately — see that test's doc comment) so a future
+    /// regression in either half fails independently with a precise
+    /// signal instead of both collapsing into one generic "does nothing"
+    /// symptom.
+    #[test]
+    fn diagnostic_magit_global_log_handler_registered_after_boot() {
+        let app = app_with("hi\n", 24);
+        let cmd_reg = app
+            .editor
+            .services
+            .get::<lattice_grammar::CommandRegistryHandle>()
+            .expect("CommandRegistryHandle service must exist");
+        let cid = cmd_reg
+            .load()
+            .id_by_name("action:magit-global-log")
+            .expect("action:magit-global-log must be a registered command");
+        let ah_reg = app
+            .editor
+            .services
+            .get::<lattice_mode::ActionHandlerRegistryHandle>()
+            .expect("ActionHandlerRegistryHandle service must exist");
+        let handler = ah_reg.lookup(cid);
+        assert!(
+            handler.is_some(),
+            "action:magit-global-log (cid={cid:?}) has no registered handler in ActionHandlerRegistry"
+        );
+    }
+
+    /// End-to-end regression test for a live-reported bug: `C-c g`
+    /// opened magit's root dispatch transient, but every item's key
+    /// just closed the menu and did nothing.
+    ///
+    /// Two distinct root causes, both fixed:
+    /// 1. `MagitGlobalMode` registered its `action:magit-global-*`
+    ///    handlers from `on_activate`, gated by a `OnceLock` consumed
+    ///    on the FIRST attempt regardless of success — a failure on
+    ///    whichever buffer activated first (a real hazard: `on_activate`
+    ///    futures run through a shared "try-sync-then-spawn" cascade,
+    ///    `ModeRegistry::spawn_cascade`, where one mode's real async
+    ///    work in the same batch defers EVERY step in that batch to a
+    ///    background task with no completion guarantee) left every
+    ///    handler permanently unregistered. Fixed by moving these to
+    ///    `Mode::action_handlers()` — a plain synchronous list the host
+    ///    walks once at boot, no activation-timing dependency at all.
+    /// 2. Even with the handler correctly found and fired,
+    ///    `do_transient_trigger` only ran the returned `Effect` through
+    ///    `apply_effect_host` (host-only effect application) and never
+    ///    queued it in `DispatchOutcome.effects` — so a renderer-coupled
+    ///    effect like `Effect::OpenSyntheticBuffer` (which EVERY "open
+    ///    the X buffer" transient item returns) was silently dropped:
+    ///    `apply_effect_host`/`handle_effect` doesn't know about it: only
+    ///    each renderer's own `apply_effect_app_arms` does, reached by
+    ///    draining `out.effects` after dispatch returns. Fixed by also
+    ///    pushing the effect into `out.effects`.
+    ///
+    /// This drives the REAL end-to-end path (`press` → `translate` →
+    /// `App::apply`, full `App::new()` boot with `lattice-magit`
+    /// installed exactly as production does) rather than hand-testing
+    /// `DispatchActionIds` resolution in isolation — that narrower test
+    /// (`lattice-magit`'s
+    /// `every_root_dispatch_item_resolves_to_a_real_action_not_a_flag_fallback`)
+    /// could not have caught either bug, since the `CommandId`s it
+    /// checks resolve correctly regardless; only the buffer actually
+    /// opening proves the fix. `#[tokio::test]`: the fired handler opens
+    /// `magit-log-mode`, whose `on_activate` runs a real `git log` via
+    /// `spawn_blocking` — needs a runtime, and needs a few yields for
+    /// that spawned task to complete.
+    #[tokio::test]
+    async fn c_c_g_log_item_actually_opens_the_log_buffer_not_just_dismiss() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        use crate::app::test_helpers::press;
+
+        let mut app = app_with("hi\n", 24);
+        press(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+        );
+        press(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE),
+        );
+        assert!(
+            app.editor
+                .picker
+                .as_ref()
+                .and_then(|p| p.transient.as_ref())
+                .is_some(),
+            "C-c g must open the magit dispatch transient"
+        );
+
+        press(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE),
+        );
+
+        // The transient always closes on an Action item (do_picker_dismiss
+        // runs unconditionally) — that alone does NOT prove the handler
+        // fired, which is exactly what made both bugs above invisible at
+        // the dismiss level. The real proof is that the log buffer exists.
+        let mut found = false;
+        for _ in 0..50 {
+            if app.editor.buffers.by_name("*magit:log*").is_some() {
+                found = true;
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            found,
+            "pressing 'l' must actually open *magit:log*, not just \
+             dismiss the transient with no effect"
+        );
+    }
+
+    /// Same shape as the log test above, for the file-dispatch
+    /// transient (`C-c f`) — covers the OTHER global-action set
+    /// (`action:magit-global-file-stage`/`-file-diff`), also
+    /// contributed via `Mode::action_handlers()` now. `d` (diff) is
+    /// used here since it has an observable effect (a new buffer)
+    /// even with no staged changes in the test's temp repo-less
+    /// directory; `s` (stage) would silently no-op outside a real
+    /// repo regardless of the bugs above.
+    #[tokio::test]
+    async fn c_c_f_diff_item_actually_opens_a_diff_buffer_not_just_dismiss() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        use crate::app::test_helpers::{app_with_path, press};
+
+        // Must live INSIDE a real git repo, not `/tmp` — the file-diff
+        // handler's `Repository::discover(&path)` fails (and the
+        // handler returns `None` via `?`, correctly, no bug) for a
+        // path outside one. `cargo test`'s cwd is the lattice repo
+        // itself.
+        let tmp = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
+            "lattice-magit-file-dispatch-test-{}.txt",
+            std::process::id()
+        ));
+        std::fs::write(&tmp, "hello\n").expect("write temp file");
+        // RAII cleanup: a bare `remove_file` at the end of the test
+        // leaks the file whenever an assertion panics first — which is
+        // exactly what happened while the transient-dispatch bug this
+        // test guards was still live, littering the repo root with
+        // `lattice-magit-file-dispatch-test-*.txt`.
+        struct Cleanup(std::path::PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(tmp.clone());
+        let mut app = app_with_path("hello\n", 24, tmp.clone());
+
+        press(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+        );
+        press(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE),
+        );
+        assert!(
+            app.editor
+                .picker
+                .as_ref()
+                .and_then(|p| p.transient.as_ref())
+                .is_some(),
+            "C-c f must open the magit file-dispatch transient"
+        );
+
+        press(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE),
+        );
+
+        let mut found = false;
+        for _ in 0..50 {
+            if app.editor.buffers.document_ids_sorted().iter().any(|id| {
+                app.editor
+                    .buffers
+                    .name_of(*id)
+                    .is_some_and(|n| n.starts_with("*magit:diff:"))
+            }) {
+                found = true;
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            found,
+            "pressing 'd' must actually open a *magit:diff:<path>* buffer, \
+             not just dismiss the transient with no effect"
+        );
+
+        // `_cleanup` removes the file on the way out, panic or not.
+    }
+
+    /// Regression test for a live-reported bug: pressing `q` on the
+    /// magit-status buffer closed the WHOLE EDITOR. Root cause:
+    /// `action:magit-close` (bound to `q` in `magit-core-mode`, shared
+    /// by every magit buffer) returned `Effect::QuitEditor { scope:
+    /// QuitScope::Pane, .. }` — vim's `:q` semantics, "close the pane;
+    /// on the last pane, quit". magit buffers open IN PLACE in the
+    /// current pane (not a split), so with only one pane open (the
+    /// common case — just launched the editor, opened magit-status),
+    /// `q` quit the whole app. `q` on a magit buffer means "bury this
+    /// buffer" (Emacs `bury-buffer`), never "close a window" — fixed
+    /// by returning `Effect::DismissPopup` instead, which restores the
+    /// pane's pre-open buffer via `Editor::prev_pane_for_popup`
+    /// (stashed by `Editor::open_synthetic_buffer`, mirroring the same
+    /// mechanism Help's own `q`/`<Esc>` already used correctly).
+    #[test]
+    fn q_on_magit_status_buries_it_and_never_quits_the_editor() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        use crate::app::test_helpers::press;
+
+        let mut app = app_with("hi\n", 24);
+        let original_buffer_id = app.editor.active_pane_buffer_id();
+
+        press(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL),
+        );
+        press(&mut app, KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE));
+        assert_ne!(
+            app.editor.active_pane_buffer_id(),
+            original_buffer_id,
+            "C-x g must switch the pane to the magit-status buffer"
+        );
+        assert!(!app.editor.should_quit, "opening magit-status must not quit");
+
+        press(&mut app, KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
+
+        assert!(
+            !app.editor.should_quit,
+            "q on magit-status must bury the buffer, never quit the editor"
+        );
+        assert_eq!(
+            app.editor.active_pane_buffer_id(),
+            original_buffer_id,
+            "q on magit-status must restore the buffer that was active before it opened"
         );
     }
 }

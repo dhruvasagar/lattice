@@ -274,6 +274,7 @@ impl WitBoundary for NativeModalState {
             NativeModalState::Command => WitModalState::Command,
             NativeModalState::Search(d) => WitModalState::Search(d.to_wit()?),
             NativeModalState::Replace => WitModalState::Replace,
+            NativeModalState::Prompt => WitModalState::Prompt,
         })
     }
     fn from_wit(w: WitModalState) -> Result<Self, String> {
@@ -288,6 +289,7 @@ impl WitBoundary for NativeModalState {
                 NativeModalState::Search(NativeSearchDirection::from_wit(d)?)
             }
             WitModalState::Replace => NativeModalState::Replace,
+            WitModalState::Prompt => NativeModalState::Prompt,
         })
     }
 }
@@ -750,9 +752,12 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
         NativeEffect::RecordJump => WitEffect::RecordJump,
         // Host-only ex-commands (no WIT mirror; plugins never see them).
         // CM.8: `:clist` — the error picker is a host-only surface.
-        NativeEffect::ChangeDir(_) | NativeEffect::PrintWorkingDir | NativeEffect::ListErrors => {
-            WitEffect::None
-        }
+        NativeEffect::ChangeDir(_)
+        | NativeEffect::PrintWorkingDir
+        | NativeEffect::ListErrors
+        | NativeEffect::Confirm { .. }
+        | NativeEffect::OpenTransient { .. }
+        | NativeEffect::OpenPrompt { .. } => WitEffect::None,
         NativeEffect::OpenAiLog { session } => WitEffect::OpenAiLog(session.clone()),
         NativeEffect::OpenSyntheticBuffer { name, mode_id } => {
             WitEffect::OpenSyntheticBuffer(WitOpenSyntheticBufferPayload {

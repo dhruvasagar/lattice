@@ -1025,6 +1025,45 @@ pub enum Effect {
     /// new doc's start, not the pre-jump location.
     RecordJump,
 
+    /// Open a yes/no confirmation dialog. The host shows a transient
+    /// picker with `prompt` as the title; `y` dispatches `yes_action`,
+    /// `n` / `q` / Esc dismisses.
+    Confirm {
+        prompt: String,
+        yes_action: String,
+    },
+
+    /// Open a named transient picker menu. `source` is a name
+    /// registered into a `TransientSourceRegistry` (`lattice-picker`)
+    /// by the owning mode crate at boot — mirrors `OpenPicker`'s
+    /// named-source shape. The registry, not this enum, holds the
+    /// actual `TransientSpec` builder, since `TransientSpec` lives in
+    /// a crate downstream of `lattice-grammar`.
+    OpenTransient {
+        source: String,
+    },
+
+    /// Open a one-line minibuffer text prompt. `prompt` is shown as
+    /// an info-level echo label; `initial` pre-seeds the input
+    /// buffer's content; `on_submit_action` names a registered
+    /// `action:*` handler fired on `<CR>` with the typed text
+    /// available as `ActionContext::prompt_value` (never a closure —
+    /// same name-based-lookup convention as `Confirm`'s `yes_action`
+    /// and `OpenTransient`'s `source`, so the variant stays a plain,
+    /// serializable value with no crate carrying a callback type
+    /// downstream of `lattice-grammar`). `buffer_name`, when set,
+    /// becomes the synthetic prompt buffer's name — callers use this
+    /// to stash context for the submit handler to read back (mirrors
+    /// how magit's blame/rebase/revision modes encode their target in
+    /// the buffer name); `None` uses a default unnamed prompt buffer.
+    /// `<Esc>` cancels without firing anything.
+    OpenPrompt {
+        prompt: String,
+        initial: String,
+        on_submit_action: String,
+        buffer_name: Option<String>,
+    },
+
     Many(Vec<Effect>),
 }
 

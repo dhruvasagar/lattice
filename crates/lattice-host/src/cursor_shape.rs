@@ -36,7 +36,10 @@ impl CursorShape {
     /// Map a [`ModalState`] to its canonical cursor shape.
     pub fn for_mode(modal: ModalState) -> Self {
         match modal {
-            ModalState::Insert | ModalState::Command | ModalState::Search(_) => Self::Bar,
+            ModalState::Insert
+            | ModalState::Command
+            | ModalState::Search(_)
+            | ModalState::Prompt => Self::Bar,
             ModalState::Replace => Self::Underline,
             // SN.3d: Select shares Visual's Block cursor — the
             // selection conveys the mode; the cursor matches Visual.

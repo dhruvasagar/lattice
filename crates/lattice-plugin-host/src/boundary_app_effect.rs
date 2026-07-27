@@ -213,9 +213,12 @@ impl WitBoundary for NativeAppEffect {
             | NativeAppEffect::CommandLineToggleExpand
             | NativeAppEffect::SearchLineSubmit
             | NativeAppEffect::SearchLineCancel
+            | NativeAppEffect::SearchLineBackspace
             | NativeAppEffect::SearchLineHistoryPrev
             | NativeAppEffect::SearchLineHistoryNext
-            | NativeAppEffect::SearchLineToggleExpand => {
+            | NativeAppEffect::SearchLineToggleExpand
+            | NativeAppEffect::PromptLineSubmit
+            | NativeAppEffect::PromptLineCancel => {
                 return Err(
                     "AppEffect::*Line* are host-internal minibuffer-prompt effects \
                      (rich-minibuffer MB.1–MB.5); no plugin (WIT) surface"

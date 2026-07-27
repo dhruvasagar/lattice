@@ -931,9 +931,12 @@ mod tests {
     fn printable_char_in_search_appends_to_pattern() {
         let (_, b) = fixture();
         let modal = ModalState::Search(SearchDirection::Forward);
+        // MB.5a: typing in the search line is an ordinary Insert onto
+        // the focused `*search-line*` buffer; `Action::SearchAppend` is
+        // retired (its dispatcher arm is a no-op).
         match translate(ctx(modal, &b), key(KeyCode::Char('f'))) {
-            Action::SearchAppend(c) => assert_eq!(c, 'f'),
-            other => panic!("expected SearchAppend, got {other:?}"),
+            Action::Insert(s) => assert_eq!(s, "f"),
+            other => panic!("expected Insert(\"f\"), got {other:?}"),
         }
     }
 
@@ -941,21 +944,44 @@ mod tests {
     fn enter_in_search_submits() {
         let (_, b) = fixture();
         let modal = ModalState::Search(SearchDirection::Forward);
-        panic!("PROBE enter => {:?}", translate(ctx(modal, &b), key(KeyCode::Enter)));
+        // MB.5a: `<CR>` in Search mode is no longer a hardcoded
+        // `Action::SearchSubmit` — the search line is a buffer-backed
+        // readline surface, so keys route through the Insert dispatcher
+        // and `search-line-mode`'s keymap layer supplies submit/cancel.
+        // This fixture builds only the BASE keymap (no mode layers), so
+        // all this layer can honestly assert is that the key is
+        // keymap-resolved rather than intercepted. Submit semantics are
+        // covered by `app::search::tests`.
+        assert!(matches!(
+            translate(ctx(modal, &b), key(KeyCode::Enter)),
+            Action::Invoke(_)
+        ));
     }
 
     #[test]
     fn esc_in_search_cancels() {
         let (_, b) = fixture();
         let modal = ModalState::Search(SearchDirection::Backward);
-        panic!("PROBE esc => {:?}", translate(ctx(modal, &b), key(KeyCode::Esc)));
+        // See `enter_in_search_submits`: cancel now lives in
+        // `search-line-mode`'s keymap, not in `translate`.
+        assert!(matches!(
+            translate(ctx(modal, &b), key(KeyCode::Esc)),
+            Action::Invoke(_)
+        ));
     }
 
     #[test]
     fn backspace_in_search_pops_pattern() {
         let (_, b) = fixture();
         let modal = ModalState::Search(SearchDirection::Forward);
-        panic!("PROBE bs => {:?}", translate(ctx(modal, &b), key(KeyCode::Backspace)));
+        // See `enter_in_search_submits`: `<BS>` resolves through the
+        // keymap (base Insert's delete-backward here; `search-line-mode`
+        // overrides it with `action:search-line-backspace`, which also
+        // cancels on an empty pattern).
+        assert!(matches!(
+            translate(ctx(modal, &b), key(KeyCode::Backspace)),
+            Action::Invoke(_)
+        ));
     }
 
     #[test]

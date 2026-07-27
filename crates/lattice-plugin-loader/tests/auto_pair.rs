@@ -356,14 +356,16 @@ async fn bundled_auto_pair_registers_grammar_modes_and_config_through_the_loader
         &CancellationToken::never(),
     )
     .expect("quote (skip) dispatches");
+    // Same as the close-skip case above: a pure caret move is
+    // `Effect::CursorMove`, not a zero-width `SelectionChange`.
     match effect {
-        Effect::SelectionChange(set) => {
+        Effect::CursorMove(pos) => {
             assert_eq!(
-                set.primary().head,
+                pos,
                 Position::new(0, 2),
                 "caret stepped past the existing quote"
             );
         }
-        other => panic!("quote-skip: expected SelectionChange, got {other:?}"),
+        other => panic!("quote-skip: expected CursorMove, got {other:?}"),
     }
 }

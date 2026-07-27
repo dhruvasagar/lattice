@@ -27,6 +27,18 @@ pub(crate) fn app_with(text: &str, viewport: u32) -> App {
     // the first boot spawns it (synchronous gate → set before App::new).
     lattice_host::disable_autoload();
     let mut a = App::new(Document::from_text(text));
+    // Same hermeticity concern as autoload, one layer deeper: `clipboard`
+    // defaults to ON, and `read_register` prefers the OS clipboard over
+    // `unnamed_register` when it is. So a yank test anywhere in this
+    // binary mirrors its text to the REAL system clipboard, and the paste
+    // tests then read that instead of the register they just set —
+    // passing in isolation, failing under a full-suite run, and clobbering
+    // the developer's clipboard on every `cargo test`. Off by default in
+    // tests; a clipboard-specific test can opt back in explicitly.
+    let _ = a
+        .editor
+        .config
+        .set_typed::<lattice_config::ClipboardEnabled>(false);
     a.set_viewport_height(viewport);
     a
 }

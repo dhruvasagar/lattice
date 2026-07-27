@@ -980,6 +980,21 @@ impl Editor {
             },
             None => lattice_picker::PickerMruIndex::with_cap(mru_cap),
         };
+        // `gen:modes` — one candidate per registered mode, backing
+        // `:describe-mode <Tab>`. `ModesGenerator` existed in
+        // `host_generators` but was never constructed, so the source
+        // `:describe-mode`'s ArgSpec advertises resolved to nothing and
+        // `<Tab>` silently produced no candidates — exactly the bug
+        // class `every_advertised_completion_source_resolves_at_boot`
+        // was written to catch.
+        completion_registry.register_generator(
+            "gen:modes",
+            "Every registered mode name; drives `:describe-mode <Tab>` \
+             completion.",
+            crate::host_generators::ModesGenerator {
+                registry: Arc::downgrade(&mode_registry),
+            },
+        );
         completion_registry.register_generator(
             "gen:picker-sources",
             "Every source id registered with the `PickerRegistry`; \

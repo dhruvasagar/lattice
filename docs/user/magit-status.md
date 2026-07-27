@@ -25,8 +25,13 @@ Open it with **`C-x g`** or **`:magit-status`** from any buffer.
 > `TAB` genuinely folds:
 > closing a file's fold hides its inline diff, and each `@@` hunk
 > inside an expanded diff is independently foldable and nested inside
-> the file's fold. Headerline showing branch name + ahead/behind is
-> active.
+> the file's fold.
+>
+> **No headerline yet.** An earlier revision of this page claimed a
+> branch + ahead/behind headerline was active; it never was — the
+> function that would build it has no callers. Branch and ahead/behind
+> are tracked internally but not displayed anywhere. A headerline across
+> every magit buffer is slice MG.14.
 
 ---
 

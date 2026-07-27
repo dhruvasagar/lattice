@@ -27,6 +27,15 @@ owns *what* and *why*.
 | MG.9 | magit-stash, magit-branch, magit-rebase | MG.8 | ✅ |
 | MG.10 | Polish + perf + edge cases | MG.1–MG.9 | ✅ |
 | MG.11 | Cross-view uniformity: `<CR>`, highlighting, file-at-revision | MG.4–MG.9 | ✅ |
+| MG.12 | Destructive-action parity — confirm before branch delete / stash drop | MG.9 | 📝 |
+| MG.13 | Mode-keymap binding testability (harness) | MG.8 | 📝 |
+| MG.14 | Headerline across every magit buffer | MG.4–MG.11 | 📝 |
+| MG.15 | Stash detail view (`<CR>` in magit-stash) | MG.9, MG.14 | 📝 |
+| MG.16 | Remote/stash ex-command parity (`:magit-push` etc.) | MG.8 | 📝 |
+| MG.17 | Transient flags + arguments (`--force`, `--include-untracked`, …) | MG.8 | 📝 |
+| MG.18 | Hunk-level staging | MG.5, MG.13 | 📝 |
+| MG.19 | magit-diff side-by-side + `do`/`dp` | MG.18, D.4 | 📝 |
+| MG.20 | Operation coverage — merge / tag / reset / revert / cherry-pick | MG.17 | 📝 |
 
 **2026-07-26 audit correction:** this table (last synced when MG.1-3 landed) had
 drifted from `implementation.md`'s per-slice status, which had marked MG.4-10 all
@@ -81,7 +90,25 @@ PICK.1 ────────┘    │       ├── MG.5   │
                     │       └── MG.7 ──┘
                     │
                     └── (MG.7 also reads VCS.2 data for blame)
+
+MG.9 ─→ MG.10 ─→ MG.11 ──┬─→ MG.12 (confirm parity)   ← do first: wiring only
+                         ├─→ MG.13 (binding testability) ← then this: unblocks
+                         │                                  every slice below
+                         ├─→ MG.14 (headerline) ─┬─→ MG.15 (stash detail)
+                         ├─→ MG.16 (ex-cmd parity)
+                         └─→ MG.17 (flags/args) ─┬─→ MG.20 (operations)
+                                                 │
+                    MG.5 ─→ MG.18 (hunk staging) ─→ MG.19 (side-by-side)
 ```
+
+**Recommended order: MG.12 → MG.13 → MG.14 → the rest.** MG.12 is pure
+wiring over machinery that already exists and closes a real safety
+inconsistency. MG.13 comes next because every slice after it adds chords,
+and until mode-keymap bindings are testable they all ship on the blind
+spot that already produced one live bug (MG.8). MG.14 is
+user-facing polish with no dependants blocking it. MG.18 is the largest
+functional gap but wants a design fragment first, so it runs on its own
+track rather than gating the others.
 
 VCS.1, VCS.2, and PICK.1 are independent and buildable concurrently.
 MG.1 depends on VCS.2 (needs `RepositoryEvent` and git data types).
@@ -265,6 +292,180 @@ MG.4/MG.5/MG.6/MG.7 can run in parallel after MG.1 lands.
   - GPUI renderer parity verification (TUI + GPUI inline diff, blame gutter, folds)
   - Manual QA pass against canonical magit workflows
 - **Tests:** detached HEAD renders correctly; bare repo rejects writes; no-repo shows message; help buffer opens with keybinding table
+
+---
+
+The slices below were carved from a 2026-07-27 source audit (see
+`implementation.md`). MG.1–MG.11 being ✅ means **each slice's declared
+scope landed** — not that magit is at parity with Emacs magit. These
+close the audited gap between the two.
+
+### MG.12 — Destructive-action parity
+
+magit-status's `x` (discard) asks first via `Effect::Confirm` →
+`action:magit-discard-execute`. `d` in magit-branch calls
+`Branch::delete` (force `-D`) **immediately**, and `d` in magit-stash
+drops without asking. Same class of irreversible act, three different
+safety postures — the inconsistency is the bug, not any one binding.
+
+- **Deliverables:** route branch-delete and stash-drop through the
+  existing `Effect::Confirm` two-step; audit every remaining magit
+  mutation for the same gap; prompt text names the target
+  (`Delete branch <name>?`) so the confirm is answerable without
+  looking away.
+- **Tests:** each destructive chord emits `Confirm` and mutates nothing
+  until the yes-action fires; `n` leaves the repo untouched.
+- **Note:** the confirm machinery already exists — this is wiring, not
+  new mechanism. Highest value-to-effort of the open slices.
+
+### MG.13 — Mode-keymap binding testability (harness)
+
+Mode keymap layers are pushed by mode activation, which runs through
+`ModeRegistry::spawn_cascade` (async). No synchronous App-level test can
+observe them, so **no test can prove a mode's chord actually fires**.
+This is not hypothetical: it is exactly what let the `C-c g` / `C-c f`
+dead-transient bug ship (MG.8), and why MG.12's confirms and the
+`search-line-mode` `<BS>` binding are handler-tested but binding-untested.
+
+- **Deliverables:** a test seam that deterministically drives mode
+  activation to completion (await the cascade, or a test-only
+  synchronous activation path), so `press(chord)` resolves through the
+  real layered keymap.
+- **Tests:** a magit chord bound only by a mode's keymap fires via
+  `press()`; the guard fails if the layer is absent.
+- **Sequencing:** worth doing BEFORE the feature slices below — each one
+  adds chords that would otherwise ship on the same blind spot.
+
+### MG.14 — Headerline across every magit buffer
+
+**Audit finding:** magit uses the `Headerline` trait **zero** times.
+`SectionIndex::branch_status_line()` exists but has **no callers** — dead
+code. `magit-status.md`'s claim that a branch/ahead-behind headerline "is
+active" is false and must be corrected with this slice.
+
+The mechanism already exists and is proven: `lattice_cells::headerline::
+{Headerline, HeaderlineProvider, HeaderlineRow}`, consumed today by
+`lattice-multibuffer` and `lattice-compilation`. `Headerline::version()`
+is polled per tick and `render()` is only called when the version
+advances, so the row costs nothing while static — it must not block, and
+background refreshes bump the version rather than computing inline
+(paramount goal #1).
+
+Per-buffer content, so each view answers "what am I looking at?" without
+re-deriving it from the body:
+
+| Buffer | Headerline |
+|---|---|
+| magit-status | branch, ahead/behind, repo name, dirty counts |
+| magit-commit | branch being committed to, staged file/insertion counts, `AMEND` marker |
+| magit-revision | short SHA, author, relative date, subject |
+| magit-file-revision | `<path> @ <short-sha>` (or `@ index` for the `staged` pseudo-ref) |
+| magit-diff | scope (`HEAD` / `staged` / `unstaged`) + path when file-scoped |
+| magit-log | ref being logged, commit count, path filter when file-scoped |
+| magit-blame | path + revision currently blamed (walks back with `p`) |
+| magit-branch | current branch, total branch count |
+| magit-stash | stash count |
+| magit-rebase | upstream, commit count, `REBASE IN PROGRESS` when applicable |
+
+- **Deliverables:** one `MagitHeaderline` provider parameterised per mode
+  (NOT one impl per buffer kind — the differences are data, not code, so
+  this must not become a `match buffer_kind`); wire through each mode's
+  `on_activate`; theme elements for the header's own styling reusing the
+  MG.11 `magit.*` palette (`magit.sha` for the SHA field, etc.).
+- **Tests:** each mode publishes a non-empty row carrying its identifying
+  field; `version()` does not advance when nothing changed (the
+  no-work-per-tick guarantee); a background refresh bumps it exactly once.
+- **Docs:** correct the false "headerline is active" claim in
+  `magit-status.md`; delete or wire `branch_status_line()`.
+
+### MG.15 — Stash detail view
+
+magit-stash has **no `<CR>`** — you cannot preview a stash from the stash
+list, only from magit-status (where `<CR>` toggles its patch inline).
+That is the one remaining inconsistency in MG.11's `<CR>` uniformity
+rule: every other list view navigates to a detail buffer.
+
+- **Deliverables:** `*magit:stash:<n>*` (`git stash show -p`), reusing
+  `highlight::diff_styled_spans` and the MG.14 headerline; `<CR>` in
+  magit-stash opens it. Keeps magit-status's inline toggle as-is (there
+  the stash is one row among many).
+- **Tests:** `<CR>` on a stash row opens the detail buffer with that
+  stash's patch; the status buffer's inline toggle is unchanged.
+
+### MG.16 — Remote/stash ex-command parity
+
+Asymmetry: every buffer-opening operation has an ex-command, but
+fetch / pull / push / stash-push are **transient-only** — reachable from
+`C-c g` and nowhere else. Ex-commands are the scriptable surface and the
+`:` discovery path; a transient-only operation is invisible to both.
+
+- **Deliverables:** `:magit-fetch`, `:magit-pull`, `:magit-push`,
+  `:magit-stash` sharing the transient handlers' bodies (one
+  implementation, two front-ends — the unified-dispatch rule). Dashed
+  namespaced names per the standing ex-command naming rule; no new 1–2
+  letter shorts.
+- **Tests:** each ex-command reaches the same handler its transient item
+  fires.
+
+### MG.17 — Transient flags and arguments
+
+The only `TransientItemKind::Flag` in magit is the defensive fallback for
+an unresolved id, so no shipped item is a real toggle: `z z` is always
+bare `git stash push`, `P` always bare `git push`. `Argument` is unused
+crate-wide, and no magit spec sets a `preview` closure. The picker
+substrate supports all three; magit simply does not use them.
+
+- **Deliverables:** `--force` / `--set-upstream` on push,
+  `--include-untracked` on stash, `--all` / count / path-filter on log;
+  a live preview line rendering the resolved git command.
+- **Tests:** toggling a flag changes the preview string and the argv the
+  handler builds; defaults round-trip.
+- **Note:** `Argument` is currently a no-op in `do_transient_trigger`
+  (§8.8) — that must land first or arguments silently do nothing, the
+  same failure shape as the MG.8 bug.
+
+### MG.18 — Hunk-level staging
+
+**The largest divergence from Emacs magit.** `Index::stage_hunk` /
+`unstage_hunk` exist in `lattice-vcs` with **zero callers**; every
+`s`/`u`/`x` in every view is file-level. MG.5's original scope included
+"hunk staging from diff buffer" and that part did not land. With `p`
+(`git add -p`) deliberately disabled — genuinely blocked on terminal
+suspend — there is currently **no path to partial staging at all**.
+
+- **Deliverables:** hunk parsing over the diff text with a stable
+  identity per hunk; `s`/`u`/`x` resolving hunk-at-cursor before falling
+  back to file-at-cursor; visual-mode region staging (magit's
+  most-used partial-stage path); the same behaviour in magit-status's
+  inline diffs and magit-diff's buffer.
+- **Tests:** staging one hunk leaves the file's other hunks unstaged;
+  region staging splits a hunk correctly; cursor on a file header still
+  stages the whole file (no regression).
+- **Note:** wants its own design fragment before implementation — it
+  touches the diff model, the section index, and all three staging
+  surfaces. Sequence after MG.13 so the new chords are testable.
+
+### MG.19 — magit-diff side-by-side + `do`/`dp`
+
+magit-diff is a single-pane text view; MG.5's "reuse D.4 side-by-side"
+did not land, and there is no `do`/`dp` hunk transfer.
+
+- **Deliverables:** two-pane layout via D.4's pane-group machinery,
+  scroll-bound; `do`/`dp` on top of MG.18's hunk identity.
+- **Tests:** panes stay scroll-synced; `do`/`dp` move exactly one hunk.
+
+### MG.20 — Operation coverage
+
+Absent: merge (except magit-branch's `m`), tag, reset, revert,
+cherry-pick, bisect, submodule, remote management. Deliberately omitted
+from the transients so far, because a menu row that does nothing is worse
+than an absent one — they appear only as they gain real implementations.
+
+- **Deliverables:** prioritised by daily use — reset (`--soft`/`--mixed`/
+  `--hard`, hard behind MG.12's confirm), revert, cherry-pick, tag, then
+  the rest. Each lands with its transient entry and ex-command together.
+- **Tests:** per operation, plus a transient-completeness check that the
+  menu lists exactly the implemented set.
 
 ## Cross-references
 

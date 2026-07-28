@@ -82,7 +82,17 @@ pub trait Clipboard: Send + Sync {
 - **GPUI peer:** gpui's own `read_from_clipboard` / `write_to_clipboard` (gpui 0.2.2),
   wrapped in the same trait so the host stays renderer-neutral.
 - **Test/CI:** an in-memory `FakeClipboard` so headless CI exercises the roundtrip
-  without a real display.
+  without a real display. **Binding rule: a test build never binds a real backend.**
+  Both renderer boot seams select on `cfg(test)` — the TUI's
+  `clipboard::boot_backend` returns the fake, the GPUI peer's `arboard` override is
+  `not(test)`-gated — so `cargo test` cannot clobber the developer's system clipboard
+  (`arboard`, which is on by default on macOS / Windows) nor spray OSC52 escapes at the
+  test runner's stdout. The fake is per-`App`, so a yank in one test is invisible to the
+  next. Each peer pins this with a boot-level guard test (fresh handle reads `None`,
+  then round-trips) — a real backend fails both halves. (The TUI's `app_with` fixture
+  still sets `clipboard=false` on top. That predates the structural fix and is no longer
+  load-bearing for hermeticity; turning it back on is a deliberate, full-suite-verified
+  change to every fixture's paste semantics, not a side effect of backend work.)
 
 **Threading:** the trait's `write` is fire-and-forget (backend spawns its own blocking
 task); `read` is only ever called from a `spawn_blocking` context in the paste path.
@@ -146,7 +156,8 @@ crate-private) — not that the handler bodies live in the `lattice-terminal` cr
 ## 7. Cross-renderer parity
 
 TUI and GPUI move in lockstep behind the same `ClipboardHandle`, both overriding CB.0's
-default `FakeClipboard` at boot; no renderer reads the clipboard directly.
+default `FakeClipboard` at boot (production builds only — see the binding rule in §4);
+no renderer reads the clipboard directly.
 
 **The native backend is shared, not per-peer (CB.4 finding).** Fork 1 named
 "gpui-native" for the GPUI peer, but gpui's clipboard is reachable only through `&App`

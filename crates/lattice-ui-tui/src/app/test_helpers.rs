@@ -27,14 +27,14 @@ pub(crate) fn app_with(text: &str, viewport: u32) -> App {
     // the first boot spawns it (synchronous gate → set before App::new).
     lattice_host::disable_autoload();
     let mut a = App::new(Document::from_text(text));
-    // Same hermeticity concern as autoload, one layer deeper: `clipboard`
-    // defaults to ON, and `read_register` prefers the OS clipboard over
-    // `unnamed_register` when it is. So a yank test anywhere in this
-    // binary mirrors its text to the REAL system clipboard, and the paste
-    // tests then read that instead of the register they just set —
-    // passing in isolation, failing under a full-suite run, and clobbering
-    // the developer's clipboard on every `cargo test`. Off by default in
-    // tests; a clipboard-specific test can opt back in explicitly.
+    // Hermeticity is NO LONGER why this line exists: `clipboard::boot_backend`
+    // binds an in-memory `FakeClipboard` in every test build, so neither the
+    // yank mirror nor `read_register`'s clipboard-preferred read can reach the
+    // developer's real system clipboard, and each `App` owns its own fake so
+    // there is no cross-test leakage. It stays only because leaving `clipboard`
+    // at its production default (`true`) is an untested change to ~1500 tests'
+    // paste semantics — flip it deliberately, with a full-suite run, not as a
+    // side effect of the clipboard-backend work.
     let _ = a
         .editor
         .config

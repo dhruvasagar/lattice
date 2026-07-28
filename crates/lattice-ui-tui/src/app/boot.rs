@@ -42,8 +42,7 @@ impl App {
         // during boot, wrapped only at the very end), so `Arc::get_mut`
         // is guaranteed to succeed here.
         if let Some(services) = std::sync::Arc::get_mut(&mut editor.services) {
-            let clipboard: lattice_core::ClipboardHandle =
-                std::sync::Arc::new(crate::clipboard::TuiClipboard::detect());
+            let clipboard: lattice_core::ClipboardHandle = crate::clipboard::boot_backend();
             services.register(clipboard);
         } else {
             debug_assert!(
@@ -284,39 +283,38 @@ mod tests {
     /// fixture), not just this one. This test pins the invariant
     /// explicitly rather than relying on that incidental discovery.
     ///
-    /// Behavioral assertion is gated to the default (no `system-clipboard`)
-    /// build: without that feature, `TuiClipboard::detect()` always
-    /// resolves to the OSC52 fallback regardless of the host machine's
-    /// display, so the "write then read returns None" spot-check
-    /// (distinguishing it from the CB.0 default `FakeClipboard`, which
-    /// always roundtrips) is environment-independent. With the feature on,
-    /// a real display would make `Native(ArboardClipboard)` roundtrip too
-    /// -- a legitimate difference, not a regression -- so that combination
-    /// only gets the panic-free assertion below.
+    /// The behavioral half asserts *test hermeticity*, not which real
+    /// backend production picks: `clipboard::boot_backend` hands test builds
+    /// the in-memory fake precisely so `cargo test` can't clobber the
+    /// developer's system clipboard (or spray OSC52 at the runner's stdout),
+    /// so what this pins is "the handle a booted App exposes starts empty and
+    /// round-trips" -- true of the fake, false of either real backend. The
+    /// production selection itself is covered in `clipboard::tests`
+    /// (`detect_prefers_osc52_under_ssh`,
+    /// `detect_without_ssh_falls_back_when_feature_off`), which test the pure
+    /// `detect_with` logic without booting an App.
     #[test]
-    fn new_registers_tui_clipboard_without_panicking() {
+    fn new_registers_a_hermetic_clipboard_without_panicking() {
         let app = App::new(Document::from_text("hello\n"));
         let clipboard = app
             .editor
             .services
             .get::<lattice_core::ClipboardHandle>()
             .expect("App::new must leave a ClipboardHandle registered");
-        #[cfg(not(feature = "system-clipboard"))]
-        {
-            clipboard.write("cb2-boot-probe".to_string());
-            assert_eq!(
-                clipboard.read(),
-                None,
-                "without system-clipboard, TuiClipboard is always the OSC52 \
-                 fallback, which never round-trips a write through read"
-            );
-        }
-        // With `system-clipboard` on, `Native(ArboardClipboard)` would
-        // round-trip on a real display, so there's no environment-independent
-        // behavioral spot-check -- the `.expect()` above is the panic-free
-        // presence assertion for this config.
-        #[cfg(feature = "system-clipboard")]
-        let _ = clipboard;
+        assert_eq!(
+            clipboard.read(),
+            None,
+            "a freshly booted test App must expose an empty in-memory \
+             clipboard -- a non-None read means the suite is talking to the \
+             OS clipboard"
+        );
+        clipboard.write("cb2-boot-probe".to_string());
+        assert_eq!(
+            clipboard.read(),
+            Some("cb2-boot-probe".to_string()),
+            "the fake round-trips, so yank/paste still exercise the register \
+             layer's clipboard-preferred read"
+        );
     }
 
     /// Agent boot-presence guard: `lattice_ai::install` runs in `Editor::boot`'s

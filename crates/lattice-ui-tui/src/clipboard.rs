@@ -27,6 +27,28 @@ use lattice_core::Clipboard;
 #[cfg(feature = "system-clipboard")]
 use lattice_host::clipboard::ArboardClipboard;
 
+/// The clipboard backend [`crate::app::App::new`] registers over CB.0's
+/// default, as a ready-made [`lattice_core::ClipboardHandle`].
+///
+/// **Test builds get [`lattice_core::FakeClipboard`], never a real backend.**
+/// `cargo test` must not reach outside the process: `Native(ArboardClipboard)`
+/// (any `--features system-clipboard` run, which is the default on macOS /
+/// Windows via `lattice-cli`'s target-gated dep) would clobber the developer's
+/// actual system clipboard on every yank, and the OSC52 fallback would spray
+/// `ESC ] 52 ; ...` escape sequences at the test runner's stdout. The
+/// in-memory fake round-trips text with identical semantics, so the register
+/// layer (`Editor::read_register`'s clipboard-preferred read, the yank mirror)
+/// is still exercised end-to-end — it just terminates inside this process.
+/// `cfg!(test)` rather than `#[cfg(test)]` so both arms stay type-checked in
+/// every build.
+pub(crate) fn boot_backend() -> lattice_core::ClipboardHandle {
+    if cfg!(test) {
+        std::sync::Arc::new(lattice_core::FakeClipboard::new())
+    } else {
+        std::sync::Arc::new(TuiClipboard::detect())
+    }
+}
+
 /// OSC52 clipboard-write escape sequence
 /// (`ESC ] 52 ; c ; <base64> BEL`, `c` = the clipboard selection). No
 /// system-lib dependency; the write-only fallback for headless / SSH
@@ -156,5 +178,30 @@ mod tests {
     fn detect_without_ssh_falls_back_when_feature_off() {
         let cb = TuiClipboard::detect_with(false);
         assert!(matches!(cb, TuiClipboard::Fallback(_)));
+    }
+
+    /// Hermeticity guard for the whole TUI suite: no test may reach the
+    /// developer's real clipboard. Both real backends fail this assertion --
+    /// OSC52 (`read` is unconditionally `None`) in the default build, and
+    /// `Native(ArboardClipboard)` in a `--features system-clipboard` build,
+    /// where the pre-write read below returns whatever the developer last
+    /// copied rather than the empty fake. Only the in-memory fake starts
+    /// empty and then round-trips.
+    #[test]
+    fn boot_backend_is_the_in_memory_fake_in_test_builds() {
+        let cb = boot_backend();
+        assert_eq!(
+            cb.read(),
+            None,
+            "a fresh boot backend must start empty in tests -- a non-None \
+             read means `cargo test` is talking to the OS clipboard"
+        );
+        cb.write("hermetic".to_string());
+        assert_eq!(
+            cb.read(),
+            Some("hermetic".to_string()),
+            "the fake must round-trip so the register layer's \
+             clipboard-preferred read is still exercised"
+        );
     }
 }

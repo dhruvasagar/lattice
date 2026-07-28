@@ -369,7 +369,14 @@ impl GpuiApp {
         // succeeds here for the same reason as the TUI seam: the registry
         // is a freshly-frozen, uniquely-owned Arc immediately after
         // `Editor::boot`.
-        #[cfg(feature = "system-clipboard")]
+        //
+        // `not(test)`: test builds keep CB.0's `FakeClipboard` so `cargo
+        // test` never clobbers the developer's real system clipboard —
+        // the same hermeticity rule the TUI peer applies in
+        // `lattice-ui-tui/src/clipboard.rs`'s `boot_backend`. Nothing else
+        // changes: leaving the fake in place is already this seam's
+        // no-display path below.
+        #[cfg(all(feature = "system-clipboard", not(test)))]
         match lattice_host::clipboard::ArboardClipboard::new() {
             Some(native) => {
                 if let Some(services) = std::sync::Arc::get_mut(&mut editor.services) {
@@ -1564,23 +1571,30 @@ mod tests {
 
     /// CB.4 regression guard: `GpuiApp::new` must always leave a working
     /// `ClipboardHandle` registered and never panic through its
-    /// clipboard-override path. In a default (`system-clipboard`-off) test
-    /// run this is CB.0's `FakeClipboard`, preserved through GPUI boot; the
-    /// arboard override (feature-on, real display) is exercised on the dev
-    /// machine + via the `--features window` build. The point pinned here
-    /// is the invariant that survives regardless of feature/display: boot
-    /// completes and a handle resolves.
+    /// clipboard-override path. The arboard override is `not(test)`-gated,
+    /// so every test run — feature on or off, display or none — keeps CB.0's
+    /// `FakeClipboard`, and `cargo test` can never clobber the developer's
+    /// real system clipboard (the TUI peer's `clipboard::boot_backend`
+    /// applies the same rule). Hence the hermeticity assertions below:
+    /// starts empty, round-trips. The production arboard path is exercised
+    /// by the `--features window` build on the dev machine.
     #[test]
-    fn new_leaves_a_working_clipboard_handle() {
+    fn new_leaves_a_hermetic_clipboard_handle() {
         let app = GpuiApp::new(Document::empty());
         let clipboard = app
             .editor
             .services
             .get::<lattice_core::ClipboardHandle>()
             .expect("GpuiApp::new must leave a ClipboardHandle registered");
-        // Whatever backend is bound, write+read must not panic.
+        assert_eq!(
+            clipboard.read(),
+            None,
+            "a freshly booted test GpuiApp must expose an empty in-memory \
+             clipboard -- a non-None read means the suite is talking to the \
+             OS clipboard"
+        );
         clipboard.write("cb4-gpui-probe".to_string());
-        let _ = clipboard.read();
+        assert_eq!(clipboard.read(), Some("cb4-gpui-probe".to_string()));
     }
 
     /// End-to-end pipeline assertion: a key string flows through

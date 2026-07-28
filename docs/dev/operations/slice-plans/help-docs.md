@@ -61,7 +61,7 @@ unnoticed. Only the 59 `](help:topic)` links worked.
 |---|---|---|
 | HD.1 | Mode-aligned renames, link rewrite, guard tests, describe-mode ↔ help cross-link | ✅ |
 | HD.2 | Split `magit-buffers.md` into per-mode docs | ✅ |
-| HD.3 | Docs for the ~22 user-facing modes with no coverage | 📝 |
+| HD.3 | Docs for the user-facing modes with no coverage | ✅ |
 | HD.4 | Docs for the family modes (19 language, 6 display) + internals | 📝 |
 
 ### HD.1 — naming + links ✅ (2026-07-28)
@@ -151,15 +151,43 @@ still the right answer), but it means a renamed heading silently
 degrades every link pointing at it with nothing reporting it at
 runtime. Verified non-vacuous by injecting a broken anchor.
 
-### HD.3 — the undocumented user-facing modes 📝
+### HD.3 — the undocumented user-facing modes ✅ (2026-07-28)
 
-`dashboard-mode`, `messages-mode`, `repl-mode`, `hover-mode`,
-`problems-minor-mode`, `diff-conflict-mode`, `terminal-normal-mode`,
-`terminal-insert-mode`, `snippet-mode`, `active-snippet-mode`,
-`ai-conversation-mode`, `ai-permission-mode`, `ai-log-mode`,
-`pi-mode`, `lsp-log-mode`, `lsp-server-log-mode`,
-`lsp-trace-log-mode`, `text-mode`, `search-line-mode`,
-`prompt-line-mode`, `command-line-expand-mode`, `plugins-mode`.
+23 new docs. Mode coverage goes from 14/83 to **50/83**; everything
+left is HD.4's scope (19 language majors, 6 display minors, 8
+internals).
+
+| Area | Docs |
+|---|---|
+| Launch / logs | `dashboard-mode`, `messages-mode`, `plugins-mode` |
+| Terminal | `terminal-normal-mode`, `terminal-insert-mode`, `repl-mode` |
+| Minibuffer | `search-line-mode`, `prompt-line-mode`, `command-line-expand-mode` |
+| Snippets | `snippet-mode`, `snippet-completion-mode`, `active-snippet-mode` |
+| LSP logs | `lsp-log-mode`, `lsp-server-log-mode`, `lsp-trace-log-mode`, `hover-mode` |
+| AI | `ai-conversation-mode`, `ai-permission-mode`, `ai-log-mode`, `pi-mode` |
+| Other | `text-mode`, `problems-minor-mode`, `diff-conflict-mode` |
+
+`snippet-completion-mode` was pulled forward from HD.4: the two other
+snippet docs link to it, and a forward reference would have been a
+dangling link.
+
+**Every page written against source**, not against the old prose —
+each mode's real keymap, options, and module docs were read first.
+Two things that surfaced and are documented as they actually are:
+
+- `diff-conflict-mode` is a **marker shell**. It activates on the
+  right buffers, but the resolution chords (keep-ours / keep-theirs /
+  keep-both / next-conflict) and the conflict gutter do not exist. The
+  page says so at the top rather than describing an smerge surface
+  that isn't there.
+- `problems-minor-mode` has no chords of its own — `q`-to-close is a
+  tracked follow-up — so the page points at `multibuffer-mode` for
+  what you can actually do in the buffer.
+
+**The guard tests earned their keep immediately:** the link test
+caught two forward references (`markdown-mode`, `snippet-completion-mode`)
+in the first drafts, and the index test enumerated all 23 missing
+index rows rather than leaving them to be spotted by eye.
 
 ### HD.4 — family + internal modes 📝
 

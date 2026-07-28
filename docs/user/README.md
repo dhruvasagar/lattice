@@ -38,9 +38,13 @@ same surface).
 | Topic                      | `:help <name>`                           | Status |
 |----------------------------|------------------------------------------|--------|
 | Getting started            | [`getting-started`](help:getting-started) | ✅      |
+| The launch dashboard       | [`dashboard-mode`](help:dashboard-mode) | ✅      |
 | Modal editing              | [`modal-editing`](help:modal-editing)    | ✅      |
 | Modes                      | [`modes`](help:modes)                    | ✅      |
 | The command line           | [`command-line-mode`](help:command-line-mode) | ✅      |
+|   — expanded `:` band      | [`command-line-expand-mode`](help:command-line-expand-mode) | ✅      |
+| The search line            | [`search-line-mode`](help:search-line-mode) | ✅      |
+| One-line prompts           | [`prompt-line-mode`](help:prompt-line-mode) | ✅      |
 | Search and substitute      | _covered in command-line + ex-commands_  | 🟡      |
 | Ex-commands                | [`ex-commands`](help:ex-commands)        | ✅      |
 | Buffers and panes          | [`buffers`](help:buffers)                | ✅      |
@@ -50,8 +54,10 @@ same surface).
 | Project search             | [`project-search-mode`](help:project-search-mode) | ✅      |
 | Compilation mode           | [`compilation-mode`](help:compilation-mode) | ✅      |
 | The error list             | [`error-list`](help:error-list)          | ✅      |
+| The problems view          | [`problems-minor-mode`](help:problems-minor-mode) | ✅      |
 | Narrow mode                | [`narrow-mode`](help:narrow-mode)        | ✅      |
 | Diff & merge               | [`diff-mode`](help:diff-mode)            | ✅      |
+|   — conflict resolution    | [`diff-conflict-mode`](help:diff-conflict-mode) | ✅      |
 | Magit                      | [`magit`](help:magit)                    | ✅      |
 | Magit status buffer        | [`magit-status-mode`](help:magit-status-mode) | ✅      |
 | magit — commit buffer      | [`magit-commit-mode`](help:magit-commit-mode) | ✅      |
@@ -72,20 +78,37 @@ same surface).
 | Themes & colours           | [`themes`](help:themes)                  | ✅      |
 | Surround (`ds`/`cs`/`ys`)  | [`surround-mode`](help:surround-mode)    | ✅      |
 | Terminal buffers           | [`terminal-mode`](help:terminal-mode)    | ✅      |
+|   — motions over output    | [`terminal-normal-mode`](help:terminal-normal-mode) | ✅      |
+|   — typing at the shell    | [`terminal-insert-mode`](help:terminal-insert-mode) | ✅      |
+| REPL input buffers         | [`repl-mode`](help:repl-mode) | ✅      |
 | Folding                    | [`folding`](help:folding)                | ✅      |
 | Insert completion          | [`completion`](help:completion)          | ✅      |
+| Snippets                   | [`snippet-mode`](help:snippet-mode) | ✅      |
+|   — as completions         | [`snippet-completion-mode`](help:snippet-completion-mode) | ✅      |
+|   — while expanding        | [`active-snippet-mode`](help:active-snippet-mode) | ✅      |
 | Picker & marginalia        | [`picker`](help:picker)                  | ✅      |
 | Options and configuration  | [`options`](help:options)                | ✅      |
 | LSP                        | [`lsp`](help:lsp)                        | ✅      |
 | `lsp-mode`                 | [`lsp-mode`](help:lsp-mode)              | ✅      |
+|   — subsystem log          | [`lsp-log-mode`](help:lsp-log-mode) | ✅      |
+|   — one server's log       | [`lsp-server-log-mode`](help:lsp-server-log-mode) | ✅      |
+|   — protocol trace         | [`lsp-trace-log-mode`](help:lsp-trace-log-mode) | ✅      |
+| Hover popups               | [`hover-mode`](help:hover-mode) | ✅      |
 | `emacs-keys-mode`          | [`emacs-keys-mode`](help:emacs-keys-mode) | ✅      |
 | Claude Code                | [`claude-code-mode`](help:claude-code-mode) | ✅      |
 | opencode                   | [`opencode-mode`](help:opencode-mode)    | ✅      |
+| pi                         | [`pi-mode`](help:pi-mode) | ✅      |
+| Agent conversation         | [`ai-conversation-mode`](help:ai-conversation-mode) | ✅      |
+|   — permission prompts     | [`ai-permission-mode`](help:ai-permission-mode) | ✅      |
+|   — agent process log      | [`ai-log-mode`](help:ai-log-mode) | ✅      |
 | Languages                  | [`languages`](help:languages)            | ✅      |
+| Plain text (fallback)      | [`text-mode`](help:text-mode) | ✅      |
 | Search and substitute      | _covered in command-line + ex-commands_  | 🟡      |
 | Registers, marks, macros   | _covered in modal-editing_               | 🟡      |
 | Help system                | [`help`](help:help)                      | ✅      |
+| The `*messages*` log       | [`messages-mode`](help:messages-mode) | ✅      |
 | Plugins                    | [`plugins`](help:plugins)                | ✅      |
+|   — the manager buffer     | [`plugins-mode`](help:plugins-mode) | ✅      |
 | Core plugins               | [`core-plugins`](help:core-plugins)      | ✅      |
 | Configuring with `init.rs` | [`init`](help:init)                      | ✅      |
 | Performance posture        | _planned_                                | ⛔      |

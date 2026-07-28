@@ -5318,10 +5318,12 @@ dependencies = [
 name = "lattice-help"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "lattice-completion",
  "lattice-core",
  "lattice-protocol",
  "lattice-syntax",
+ "miniz_oxide",
 ]
 
 [[package]]

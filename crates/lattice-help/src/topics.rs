@@ -2,19 +2,27 @@
 //!
 //! Hand-written, free-form help docs (the `:help <topic>` surface,
 //! distinct from the introspection-driven `:describe-*` views) live
-//! here. v1 ships a small built-in set sourced from `docs/user/*.md`
-//! at build time via `include_str!`; plugins / future LSP / config
-//! extensions register additional topics through the same registry,
-//! so `:help` becomes the single user-facing entry point for
-//! discoverable documentation regardless of who supplies it.
+//! here. The built-in set is generated from `docs/user/**/*.md` by
+//! `build.rs` and embedded **deflate-compressed**, so `:help` works
+//! offline with no filesystem layout assumption beyond the binary
+//! itself, without the binary paying raw markdown volume.
 //!
 //! The registry is intentionally indirection-friendly:
 //!
-//! - [`HelpTopicBody::Static`] embeds compile-time markdown.
+//! - [`HelpTopicBody::Compressed`] is what every builtin uses —
+//!   inflated on first open and cached, so a session that never opens
+//!   `:help` never decompresses anything.
+//! - [`HelpTopicBody::Static`] embeds compile-time markdown directly.
 //! - [`HelpTopicBody::Dynamic`] takes a closure that produces text
 //!   on demand -- this is the seam for LSP-driven topics
 //!   (`:help symbol::Foo`), in-process introspection that can't be
 //!   captured at compile time, or any plugin-supplied source.
+//!
+//! **Known limit:** the host holds this as a plain
+//! `Arc<HelpTopicRegistry>` built once at boot, so nothing can add a
+//! topic at runtime — a plugin cannot ship a `:help` page today. That
+//! is the gap the runtime-directory slice closes; see
+//! `docs/dev/operations/embedded-docs-budget.md`.
 //!
 //! Topics also carry an optional list of substring patterns that
 //! match command names; `:describe-command` walks these to emit a
@@ -22,7 +30,7 @@
 //! covered by a topic is described.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use lattice_completion::candidate::{CandidateData, CandidateKind, RawCandidate};
 use lattice_completion::traits::{CandidateGenerator, GenerateContext};
@@ -49,6 +57,7 @@ impl std::fmt::Debug for HelpTopic {
                 "body_kind",
                 &match &self.body {
                     HelpTopicBody::Static(_) => "static",
+                    HelpTopicBody::Compressed { .. } => "compressed",
                     HelpTopicBody::Dynamic(_) => "dynamic",
                 },
             )
@@ -56,12 +65,26 @@ impl std::fmt::Debug for HelpTopic {
     }
 }
 
-/// Where a topic's body comes from. `Static` is a compile-time
-/// `&'static str` (most v1 topics); `Dynamic` is a closure invoked
-/// each time the topic is opened (the seam for LSP / introspection
-/// / plugin-supplied content).
+/// Where a topic's body comes from.
+///
+/// - `Static` — a compile-time `&'static str`. Used by tests and by
+///   any caller registering a topic from a string it already holds.
+/// - `Compressed` — deflate-compressed markdown embedded at build
+///   time. Every builtin topic is one of these. Decompressed on first
+///   render and cached, so a session that never opens `:help` never
+///   decompresses anything and the second open of a topic is free.
+/// - `Dynamic` — a closure invoked on every open (the seam for LSP /
+///   introspection / plugin-supplied content).
 pub enum HelpTopicBody {
     Static(&'static str),
+    Compressed {
+        /// Raw deflate stream (no zlib/gzip wrapper).
+        packed: &'static [u8],
+        /// Decompressed length, used to size the output buffer exactly.
+        raw_len: usize,
+        /// Decompressed body, filled on first [`HelpTopicBody::render`].
+        cache: OnceLock<String>,
+    },
     Dynamic(Box<dyn Fn() -> String + Send + Sync>),
 }
 
@@ -69,8 +92,28 @@ impl HelpTopicBody {
     pub fn render(&self) -> String {
         match self {
             HelpTopicBody::Static(s) => s.to_string(),
+            HelpTopicBody::Compressed {
+                packed,
+                raw_len,
+                cache,
+            } => cache.get_or_init(|| inflate(packed, *raw_len)).clone(),
             HelpTopicBody::Dynamic(f) => f(),
         }
+    }
+}
+
+/// Decompress an embedded topic body.
+///
+/// A failure here means the build script and this decoder disagree,
+/// which is a build-time bug rather than anything the user did — so it
+/// surfaces as visible text in the help buffer instead of a panic that
+/// takes the editor down, or a silent empty page that looks like a
+/// missing doc.
+fn inflate(packed: &[u8], raw_len: usize) -> String {
+    match miniz_oxide::inflate::decompress_to_vec_with_limit(packed, raw_len.max(1)) {
+        Ok(bytes) => String::from_utf8(bytes)
+            .unwrap_or_else(|e| format!("help: embedded topic is not valid UTF-8 ({e})")),
+        Err(e) => format!("help: could not decompress embedded topic ({e:?})"),
     }
 }
 
@@ -178,11 +221,15 @@ include!(concat!(env!("OUT_DIR"), "/help_topics.rs"));
 /// `.md` into `docs/user/` and it registers automatically.
 pub fn builtin_topics() -> Arc<HelpTopicRegistry> {
     let mut r = HelpTopicRegistry::new();
-    for &(name, summary, related, body) in HELP_TOPICS {
+    for &(name, summary, related, packed, raw_len) in HELP_TOPICS {
         r.register(HelpTopic {
             name: name.to_string(),
             summary: summary.to_string(),
-            body: HelpTopicBody::Static(body),
+            body: HelpTopicBody::Compressed {
+                packed,
+                raw_len,
+                cache: OnceLock::new(),
+            },
             related_command_patterns: related.iter().map(|s| (*s).to_string()).collect(),
         });
     }
@@ -226,59 +273,121 @@ mod tests {
         );
     }
 
-    /// Soft binary-size budget for embedded user docs. When the total
-    /// size of `docs/user/*.md` exceeds this threshold, this test
-    /// fails and forces a re-evaluation of the `include_str!`-based
-    /// embedding model.
+    /// Soft binary-size budget for the **embedded** (compressed) user
+    /// docs — the bytes that actually land in the binary.
     ///
-    /// Rationale (see `docs/dev/operations/embedded-docs-budget.md`):
-    /// every user doc is currently `include_str!`'d uncompressed into
-    /// the binary, which gives the editor the "works offline, no
-    /// filesystem layout assumption" property (paramount goal). The
-    /// cost is linear in doc volume. At 166 KB of markdown today,
-    /// the cost is ~0.5-1.5% of a typical release binary — invisible.
-    /// At 3× that (500 KB) the cost becomes visible; that's the
-    /// trigger to switch to compressed-embed (gzip/deflate, ~5×
-    /// reduction) before the bloat is real.
+    /// It used to measure raw markdown, because that *was* what got
+    /// embedded. Docs are deflate-compressed at build time now, so raw
+    /// size is no longer the cost: measuring it would fire the alarm on
+    /// volume the binary never pays for.
     ///
-    /// **Action when this test fails:** pick one of the options
-    /// in `docs/dev/operations/embedded-docs-budget.md` (compress,
-    /// feature-gate, lazy-load) and implement it. Do NOT just bump
-    /// the budget number.
-    const EMBEDDED_DOCS_BUDGET_BYTES: u64 = 512 * 1024;
+    /// The budget is deliberately generous relative to today's usage
+    /// (see the report the test prints) because the whole point of
+    /// compressing was to buy room for the doc set to grow.
+    ///
+    /// **Action when this test fails:** do NOT just bump the number.
+    /// Compression is already spent; the next lever is moving docs out
+    /// of the binary entirely into a runtime directory — the model
+    /// every editor in this class uses (Vim's `$VIMRUNTIME/doc`,
+    /// Helix's `runtime/`, Kakoune's `share/kak/doc`), and the one that
+    /// also lets plugins ship their own `:help` pages. See
+    /// `docs/dev/operations/embedded-docs-budget.md`.
+    const EMBEDDED_DOCS_BUDGET_BYTES: usize = 384 * 1024;
 
     #[test]
     fn embedded_user_docs_stay_under_size_budget() {
-        let docs_user = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/user");
-        let mut total: u64 = 0;
-        let mut per_file: Vec<(String, u64)> = Vec::new();
-        for entry in std::fs::read_dir(&docs_user).expect("docs/user readable") {
-            let entry = entry.expect("dir entry");
-            let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) != Some("md") {
-                continue;
-            }
-            let meta = std::fs::metadata(&path).expect("stat md file");
-            total += meta.len();
-            per_file.push((
-                path.file_name().unwrap().to_string_lossy().into_owned(),
-                meta.len(),
-            ));
+        let mut packed_total = 0usize;
+        let mut raw_total = 0usize;
+        let mut per_topic: Vec<(&str, usize, usize)> = Vec::new();
+        for &(name, _summary, _related, packed, raw_len) in HELP_TOPICS {
+            packed_total += packed.len();
+            raw_total += raw_len;
+            per_topic.push((name, packed.len(), raw_len));
         }
-        per_file.sort_by(|a, b| b.1.cmp(&a.1));
-        let detail = per_file
+        per_topic.sort_by(|a, b| b.1.cmp(&a.1));
+        let detail = per_topic
             .iter()
-            .map(|(n, s)| format!("    {:>7} B  {}", s, n))
+            .take(10)
+            .map(|(n, p, r)| format!("    {p:>7} B packed ({r:>7} B raw)  {n}"))
             .collect::<Vec<_>>()
             .join("\n");
+        let ratio = raw_total as f64 / packed_total.max(1) as f64;
+
         assert!(
-            total <= EMBEDDED_DOCS_BUDGET_BYTES,
-            "embedded user docs total {total} B exceeds budget of \
-             {budget} B. Time to switch from `include_str!` to a \
-             compressed-embed scheme — see \
-             `docs/dev/operations/embedded-docs-budget.md`. Per-file:\n{detail}",
+            packed_total <= EMBEDDED_DOCS_BUDGET_BYTES,
+            "embedded user docs total {packed_total} B compressed \
+             ({raw_total} B raw, {ratio:.1}x) — over the {budget} B budget. \
+             Compression is already spent, so the next step is a runtime \
+             directory, NOT a bigger number here. See \
+             `docs/dev/operations/embedded-docs-budget.md`. Largest:\n{detail}",
             budget = EMBEDDED_DOCS_BUDGET_BYTES,
         );
+    }
+
+    /// Compression has to actually be doing something. If a future
+    /// change accidentally embeds bodies raw (a build-script regression,
+    /// or a `Static` fallback), the budget test above would still pass
+    /// while the binary quietly grew — this catches that directly.
+    #[test]
+    fn embedded_bodies_are_actually_compressed() {
+        let (packed, raw): (usize, usize) = HELP_TOPICS
+            .iter()
+            .fold((0, 0), |(p, r), &(_, _, _, packed, raw_len)| {
+                (p + packed.len(), r + raw_len)
+            });
+        assert!(
+            raw > packed * 2,
+            "expected embedded docs to compress at least 2x; got {raw} B raw \
+             -> {packed} B packed. Are bodies being embedded uncompressed?"
+        );
+    }
+
+    /// Every embedded body must round-trip. A topic that fails to
+    /// inflate renders an error string rather than panicking, which is
+    /// the right runtime behaviour but would be invisible without this.
+    #[test]
+    fn every_embedded_topic_decompresses_to_its_original_length() {
+        let r = builtin_topics();
+        let mut bad: Vec<String> = Vec::new();
+        for &(name, _summary, _related, _packed, raw_len) in HELP_TOPICS {
+            let body = r.lookup(name).expect("registered").body.render();
+            if body.len() != raw_len {
+                bad.push(format!(
+                    "{name}: inflated to {} B, expected {raw_len} B — {}",
+                    body.len(),
+                    body.chars().take(80).collect::<String>()
+                ));
+            }
+        }
+        assert!(
+            bad.is_empty(),
+            "topics that failed to round-trip:\n  {}",
+            bad.join("\n  ")
+        );
+    }
+
+    /// The cache means a topic decompresses once per process, not once
+    /// per `:help`. Pins the lazy half of the design.
+    #[test]
+    fn a_topic_body_is_decompressed_once_and_cached() {
+        let r = builtin_topics();
+        let topic = r.lookup("index").expect("index topic");
+        let first = topic.body.render();
+        let second = topic.body.render();
+        assert_eq!(first, second);
+        match &topic.body {
+            HelpTopicBody::Compressed { cache, .. } => {
+                assert!(cache.get().is_some(), "render must populate the cache");
+            }
+            other => panic!(
+                "builtin topics must be compressed, got {other:?}",
+                other = match other {
+                    HelpTopicBody::Static(_) => "static",
+                    HelpTopicBody::Dynamic(_) => "dynamic",
+                    HelpTopicBody::Compressed { .. } => unreachable!(),
+                }
+            ),
+        }
     }
 
     #[test]

@@ -71,6 +71,32 @@ target rather than just a slower number.
 
 ---
 
+## HD.5 — compressed embedded help docs (2026-07-29)
+
+⚠️ **Measured on the Apple Silicon box**, like the MG.14 rows below and
+unlike everything further down. Not comparable to the Ryzen numbers.
+
+User docs are embedded deflate-compressed and inflated on first open
+into a `OnceLock` cache (495 KB raw → 197 KB embedded, 2.5×). The
+laziness is the part worth guarding: boot must not decompress anything,
+or every session pays for docs most users never open.
+
+Bench file: `crates/lattice-help/benches/topics.rs`.
+Run: `cargo bench -p lattice-help --bench topics`.
+
+| Bench | Median | Floor / Target | What it measures |
+|---|---|---|---|
+| `help_registry_boot_ns` | ~17.8 µs | 18 µs / 50 µs | `builtin_topics()` on the editor-boot path, for every session. Decompresses nothing — 73 name/summary `String`s and the map build. If this starts scaling with doc *volume*, laziness has regressed. |
+| `help_topic_first_open_ns` | ~66.6 µs | 67 µs / 250 µs | Inflate + cache fill for the largest topic (`modal-editing`, ~26 KB). The one-time cost per topic per session, on an explicit `:help`. |
+| `help_topic_cached_open_ns` | ~562 ns | 570 ns / 2 µs | Every later open of the same topic: a clone of the cached string. |
+
+All three sit on an explicit user action, never per-keystroke or
+per-frame, so the bar is "imperceptible within a command" rather than
+the frame budget. Context in
+[`embedded-docs-budget.md`](embedded-docs-budget.md).
+
+---
+
 ## MG.14 — magit headerline (2026-07-28)
 
 ⚠️ **Measured on a different box** than every other row in this file:

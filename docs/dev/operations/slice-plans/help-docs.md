@@ -63,6 +63,8 @@ unnoticed. Only the 59 `](help:topic)` links worked.
 | HD.2 | Split `magit-buffers.md` into per-mode docs | ✅ |
 | HD.3 | Docs for the user-facing modes with no coverage | ✅ |
 | HD.4 | Docs for the family modes (19 language, 6 display) + internals | 📝 |
+| HD.5 | Compress the embedded docs (unblocks HD.4) | ✅ |
+| HD.6 | Runtime doc directory + plugin-contributed topics | 📝 |
 
 ### HD.1 — naming + links ✅ (2026-07-28)
 
@@ -189,25 +191,17 @@ caught two forward references (`markdown-mode`, `snippet-completion-mode`)
 in the first drafts, and the index test enumerated all 23 missing
 index rows rather than leaving them to be spotted by eye.
 
-### HD.4 — family + internal modes ⛔ blocked on the embed budget
+### HD.4 — family + internal modes 📝
 
-**Blocker.** User docs are embedded in the binary via `include_str!`,
-under a 512K soft budget guarded by
-`embedded_user_docs_stay_under_size_budget`. HD.3 took `docs/user` to
-**498K — 14K of headroom**. The 33 pages HD.4 adds (19 language, 6
-display, 8 internal) will breach it at roughly 2–4K each.
+Unblocked by HD.5. 33 pages: 19 language majors, 6 display minors, 8
+internals (`help-mode`, `completion-mode`, `completion-popup-mode`,
+`buffer-words-mode`, `path-completion-mode`,
+`tree-sitter-completion-mode`, `lsp-completion-mode`, `preview-mode`).
 
-That test's own doc comment forbids the easy out: *"Action when this
-test fails: pick one of the options in
-`docs/dev/operations/embedded-docs-budget.md` (compress, feature-gate,
-lazy-load). Do NOT just bump the budget number."* So the embedding
-model is a decision to take before HD.4 writes anything — compress
-(gzip/deflate, ~5× reduction, keeps the works-offline property),
-feature-gate, or lazy-load from disk (loses works-offline).
-
-Note the language-mode pages are the cheapest to shrink: 19 of them
-differ only in grammar and a few settings, so whatever is decided,
-they should share a template rather than 19 hand-written variants.
+The 19 language pages differ only in grammar and a few settings, so
+they should share a template rather than 19 hand-written variants;
+`languages.md` and `display.md` become index pages pointing at their
+family members.
 
 #### Scope once unblocked
 
@@ -218,3 +212,51 @@ Internal plumbing modes (`preview-mode`, `completion-popup-mode`,
 `tree-sitter-completion-mode`, `snippet-completion-mode`,
 `lsp-completion-mode`) get short docs saying what they are and what
 they exist for, so `:help <mode-id>` is never dead.
+
+### HD.5 — compressed embed ✅ (2026-07-29)
+
+HD.3 left 14 KB of headroom under a 512 KB raw-markdown budget, with 33
+HD.4 pages queued. The budget doc forbids raising the number, so the
+embedding model changed instead.
+
+Docs are now deflate-compressed at build time and inflated on first
+open into a `OnceLock` cache. **495 KB raw → 197 KB embedded (2.5×)**;
+the budget is now 384 KB *compressed*, which allows roughly 960 KB of
+raw markdown — about double the current set.
+
+- The budget test measures **embedded** bytes now. Raw size stopped
+  being the cost the moment compression landed; continuing to measure
+  it would fire the alarm on volume the binary never pays for.
+- Two new guards: `embedded_bodies_are_actually_compressed` (a
+  regression embedding bodies raw would otherwise slip under a
+  compressed-bytes budget while the binary grew) and
+  `every_embedded_topic_decompresses_to_its_original_length`.
+- `miniz_oxide` was already in the tree transitively (via flate2 and
+  zstd), so the direct edge adds no new distinct dependency.
+- Bench `crates/lattice-help/benches/topics.rs`: boot 17.8 µs and
+  decompresses nothing; first open of the largest topic 66.6 µs;
+  cached open 562 ns.
+
+**The budget doc predicted ~5× and got 2.5×** — each doc deflates
+independently and at ~7 KB the window barely warms up. Corrected there
+rather than left as folklore. A shared dictionary would compress
+better but would mean inflating the whole corpus to read one topic,
+which costs the laziness.
+
+### HD.6 — runtime doc directory 📝
+
+The deferred half of the 2026-07-29 distribution decision. Compression
+bought room; it did not create the seam that matters:
+`Editor::help_topics` is a plain `Arc<HelpTopicRegistry>` built once at
+boot, **so a plugin cannot ship a `:help` page at all**. Given
+plugin-first extensibility is paramount goal #2, that closes eventually
+regardless of size.
+
+Shape, resolution order, the survey of how Vim / Helix / Kakoune / Zed
+handle it, and why the embedded set stays as a floor (`cargo install`
+and scp'd binaries have no runtime dir, and unlike Helix a missing docs
+dir fails quietly) are all recorded in
+[`../embedded-docs-budget.md`](../embedded-docs-budget.md).
+
+Scoped docs-only but named for growth, so `runtime/themes/` and
+`runtime/queries/` can move later without a second migration.

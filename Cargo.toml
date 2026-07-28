@@ -50,6 +50,10 @@ license = "MIT"
 repository = "https://github.com/dhruvasagar/lattice"
 
 [workspace.dependencies]
+# Pure-Rust deflate. Already in the tree transitively (flate2, zstd);
+# a direct edge adds no new distinct dependency. Used to compress the
+# embedded user docs — see docs/dev/operations/embedded-docs-budget.md.
+miniz_oxide = "0.8"
 # Core
 ropey = "1.6"
 thiserror = "2.0"

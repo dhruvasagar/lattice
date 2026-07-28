@@ -10,6 +10,19 @@ lattice-core = { path = "../lattice-core" }
 lattice-protocol = { path = "../lattice-protocol" }
 lattice-syntax = { path = "../lattice-syntax" }
 lattice-completion = { path = "../lattice-completion" }
+miniz_oxide = { workspace = true }
+
+[build-dependencies]
+miniz_oxide = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+# HD.5: the cost of the compressed-embed scheme — boot must not
+# decompress, first open must stay imperceptible, cached opens free.
+[[bench]]
+name = "topics"
+harness = false
 
 [lints]
 workspace = true

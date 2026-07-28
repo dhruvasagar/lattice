@@ -9,7 +9,7 @@ Lattice is a modal editor: the keys you press mean different things
 depending on the **mode** you're in. If you've used vim, everything
 here is familiar. If you haven't, this page is the ten-minute version
 that gets you editing; [`modal-editing`](help:modal-editing) is the
-full treatment, and [`:tutor`](help:tutor) teaches it hands-on.
+full treatment, and [`:tutor`](help:tutor-mode) teaches it hands-on.
 
 > **New here?** The fastest way to learn the grammar is the
 > interactive tutor: type `:tutor` and press `<CR>`. This page is the
@@ -146,7 +146,7 @@ learn it:
 
 ## Where to go next
 
-- [`:tutor`](help:tutor) — the interactive lessons. Start here.
+- [`:tutor`](help:tutor-mode) — the interactive lessons. Start here.
 - [`modal-editing`](help:modal-editing) — the vim grammar in full:
   motions, operators, text objects, registers, marks, macros.
 - [`modes`](help:modes) — major and minor modes, and how

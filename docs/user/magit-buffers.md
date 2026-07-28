@@ -9,7 +9,7 @@ Every magit view beyond the status buffer is its own dedicated major-
 mode Document. Each buffer has its own keymap, its own ex-command entry
 point, and its own action handlers — all living inside the
 `lattice-magit` crate. Every buffer inherits the [shared magit-core
-navigation chords](magit.md#shared-navigation-magit-core).
+navigation chords](help:magit#shared-navigation-magit-core).
 
 ---
 
@@ -23,7 +23,7 @@ file. The row answers that:
 
 | Buffer | Headerline |
 |---|---|
-| [status](magit-status.md) | `lattice  main ↑2 ↓1  3 staged  5 unstaged` |
+| [status](help:magit-status-mode) | `lattice  main ↑2 ↓1  3 staged  5 unstaged` |
 | Commit | `main  3 files +120 −18` — plus `AMEND` when amending |
 | Commit detail | `a1b2c3d  Jane Doe  3 days ago  Fix the thing` |
 | File-at-revision | `src/main.rs  @  a1b2c3d`, or `@  index` for a staged blob |
@@ -142,7 +142,7 @@ path" (`git show :<path>`) rather than any commit.
 ### Behaviour
 
 - No mode-specific chords beyond the shared
-  [magit-core](magit.md#shared-navigation-magit-core) navigation —
+  [magit-core](help:magit#shared-navigation-magit-core) navigation —
   this is a plain read-only view, not an interactive one.
 - No syntax highlighting for the file's own language yet — synthetic
   buffers have no filename-based language detection wired up. A known
@@ -169,7 +169,7 @@ eventually calls for.
 | `gr` | Refresh (re-run the underlying `git diff`) |
 
 `]]`/`[[`/`]f`/`[f`/`]c`/`[c`/`TAB`/`q` come from the shared
-[magit-core](magit.md#shared-navigation-magit-core) minor mode, same as
+[magit-core](help:magit#shared-navigation-magit-core) minor mode, same as
 every other magit buffer.
 
 ### Behaviour
@@ -186,14 +186,14 @@ every other magit buffer.
   doesn't exist anywhere in magit today — file-level is as granular as
   it gets.
 - **File-scoped variants**: pressing `d` in the [file dispatch
-  transient](magit-transient.md) (`C-c f`) opens `*magit:diff:<path>*`
+  transient](help:magit-transient) (`C-c f`) opens `*magit:diff:<path>*`
   — the same mode, populated with a diff scoped to just that one file
   (against HEAD) instead of the whole repo. Pressing `d` on a file in
   magit-status's Staged/Unstaged sections opens a further-scoped
   variant with a baseline matching that section:
   `*magit:diff:staged:<path>*` (`git diff --cached`) or
   `*magit:diff:unstaged:<path>*` (`git diff`) — see
-  [magit-status.md](magit-status.md). The buffer's `<CR>` behaviour
+  [`magit-status-mode`](help:magit-status-mode). The buffer's `<CR>` behaviour
   (index blob vs. working file) depends on which of these three
   scopes it was opened with.
 
@@ -225,7 +225,7 @@ way: it navigates to this buffer, never toggles anything inline.
   interactively configurable yet — there's no Log submenu inside the
   `C-c g` dispatch transient (it's a flat menu; `l` just opens this
   buffer). The `magit.log.count`/`magit.log.graph`/`magit.log.decorate`
-  options are the only current lever; see [magit.md](magit.md#options).
+  options are the only current lever; see [`magit`](help:magit#options).
 
 ---
 
@@ -302,7 +302,7 @@ subject.
 ### Behaviour
 
 - No mode-specific chords beyond the shared
-  [magit-core](magit.md#shared-navigation-magit-core) navigation.
+  [magit-core](help:magit#shared-navigation-magit-core) navigation.
 - `gr` is a no-op — `stash@{n}`'s patch does not change under a fixed
   index. Note that dropping or popping a stash renumbers the *others*,
   so a detail buffer opened earlier still names the index it was opened
@@ -340,7 +340,7 @@ Open with `:magit-branch`. Lists all local branches.
   editor to use a genuinely new interaction shape — an Emacs
   `read-string`-style follow-up prompt chained after a picker accept
   — rather than the ex-command-line arg-prompt mechanism described in
-  [ex-commands.md](ex-commands.md#arg-prompts). The direct
+  [`ex-commands`](help:ex-commands#arg-prompts). The direct
   `:magit-branch-create <name>` ex-command (creates from HEAD, no base
   choice, no prompt) still works exactly as before for scripting or a
   quick one-shot create — the wizard is the new interactive path, not

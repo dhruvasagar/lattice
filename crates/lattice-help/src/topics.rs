@@ -284,10 +284,11 @@ mod tests {
     #[test]
     fn every_user_doc_in_docs_user_is_registered_as_a_topic() {
         // Regression for the gap discovered post-3c.final.E.cleanup:
-        // `docs/user/lsp.md` and the new `docs/user/filetree-oil.md`
-        // existed on disk but weren't in the registry, so `:help lsp`
-        // (or `:help filetree-oil`) failed at runtime even though the
-        // user doc shipped with the source tree.
+        // `docs/user/lsp.md` and the then-new filetree/oil doc existed
+        // on disk but weren't in the registry, so `:help lsp` failed at
+        // runtime even though the user doc shipped with the source
+        // tree. (Registration is generated from the directory now, so
+        // this guards the generator rather than a hand-written list.)
         //
         // This test walks every top-level `docs/user/*.md` and asserts
         // each is registered as a topic. README.md is the "index"
@@ -324,6 +325,189 @@ mod tests {
             "user docs not registered as help topics — \
              add a `r.register(...)` for each in `builtin_topics()`:\n  {}",
             missing.join("\n  ")
+        );
+    }
+
+    /// Blank out fenced blocks and inline code spans so the link
+    /// scanners below see only *live* links.
+    ///
+    /// Docs legitimately show link syntax as an example —
+    /// `buffers.md` explains the index format with a literal
+    /// `` `[name](help:name)` ``. That is documentation of the form,
+    /// not a link to a topic called `name`, and flagging it would
+    /// push authors into not documenting the syntax at all. Replacing
+    /// the spans with spaces (rather than deleting them) keeps byte
+    /// offsets stable, so any future line/column reporting stays
+    /// honest.
+    #[cfg(test)]
+    fn strip_code(text: &str) -> String {
+        let bytes = text.as_bytes();
+        let mut out = String::with_capacity(text.len());
+        let mut i = 0;
+        while i < bytes.len() {
+            // Fenced block: ``` … ``` (also covers ~~~ via the same
+            // shape when authors use it — checked separately).
+            let fence = if text[i..].starts_with("```") {
+                Some("```")
+            } else if text[i..].starts_with("~~~") {
+                Some("~~~")
+            } else {
+                None
+            };
+            if let Some(f) = fence {
+                let end = text[i + 3..]
+                    .find(f)
+                    .map(|p| i + 3 + p + 3)
+                    .unwrap_or(bytes.len());
+                out.extend(std::iter::repeat_n(' ', end - i));
+                i = end;
+                continue;
+            }
+            if bytes[i] == b'`' {
+                let end = text[i + 1..]
+                    .find('`')
+                    .map(|p| i + 1 + p + 1)
+                    .unwrap_or(bytes.len());
+                out.extend(std::iter::repeat_n(' ', end - i));
+                i = end;
+                continue;
+            }
+            out.push(text[i..].chars().next().unwrap());
+            i += text[i..].chars().next().unwrap().len_utf8();
+        }
+        out
+    }
+
+    /// HD.1 — every `](help:topic)` link in a user doc must resolve.
+    ///
+    /// This is the test whose absence let 210 dead links accumulate.
+    /// Cross-doc links used to be written `](magit-status.md)`, which
+    /// `classify_link_url` classifies as `Unresolved` — pressing
+    /// `<CR>` on one echoed ``no handler for `magit-status.md` ``.
+    /// They rendered correctly on GitHub, so nothing surfaced it. The
+    /// docs now use `](help:topic)` throughout, and this pins that
+    /// every target is a real topic so a rename cannot silently
+    /// orphan a link again.
+    #[test]
+    fn every_help_link_in_a_user_doc_resolves_to_a_registered_topic() {
+        let docs_user = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/user");
+        let r = builtin_topics();
+        let mut dangling: Vec<String> = Vec::new();
+        let mut checked = 0usize;
+
+        for entry in std::fs::read_dir(&docs_user).expect("docs/user readable") {
+            let path = entry.expect("dir entry").path();
+            if path.extension().and_then(|s| s.to_str()) != Some("md") {
+                continue;
+            }
+            let text = strip_code(&std::fs::read_to_string(&path).expect("read md"));
+            let file = path.file_name().unwrap().to_string_lossy().into_owned();
+            for (idx, _) in text.match_indices("](help:") {
+                let rest = &text[idx + "](help:".len()..];
+                let Some(end) = rest.find(')') else { continue };
+                let target = &rest[..end];
+                // `help:topic#anchor` — the topic is the part before
+                // the anchor (`do_open_help_topic` splits the same way).
+                let name = target.split('#').next().unwrap_or(target);
+                checked += 1;
+                if r.lookup(name).is_none() {
+                    dangling.push(format!("{file}: `help:{target}` — no such topic"));
+                }
+            }
+        }
+
+        assert!(
+            checked > 50,
+            "expected the docs to be densely cross-linked; only found {checked} help: links — did the link form change?"
+        );
+        assert!(
+            dangling.is_empty(),
+            "dangling help links ({} of {checked}):\n  {}",
+            dangling.len(),
+            dangling.join("\n  ")
+        );
+    }
+
+    /// HD.1 — the index lists every topic.
+    ///
+    /// `README.md` is the `index` topic, the page bare `:help` opens
+    /// and the only browsable catalogue of what documentation exists.
+    /// A topic missing from it is discoverable only by already knowing
+    /// its name. `surround-mode` and `terminal-mode` were both absent
+    /// when this test was written.
+    #[test]
+    fn the_index_lists_every_registered_topic() {
+        let docs_user = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/user");
+        let index = std::fs::read_to_string(docs_user.join("README.md")).expect("read index");
+        let index = strip_code(&index);
+
+        let mut listed: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for (idx, _) in index.match_indices("](help:") {
+            let rest = &index[idx + "](help:".len()..];
+            if let Some(end) = rest.find(')') {
+                listed.insert(rest[..end].split('#').next().unwrap_or("").to_string());
+            }
+        }
+
+        let mut missing: Vec<String> = Vec::new();
+        for entry in std::fs::read_dir(&docs_user).expect("docs/user readable") {
+            let path = entry.expect("dir entry").path();
+            if path.extension().and_then(|s| s.to_str()) != Some("md") {
+                continue;
+            }
+            let stem = path.file_stem().and_then(|s| s.to_str()).expect("stem");
+            // README is the index itself.
+            if stem == "README" || listed.contains(stem) {
+                continue;
+            }
+            missing.push(stem.to_string());
+        }
+        missing.sort();
+        assert!(
+            missing.is_empty(),
+            "topics missing from the `:help` index (docs/user/README.md) — \
+             they exist but nothing links to them:\n  {}",
+            missing.join("\n  ")
+        );
+    }
+
+    /// The other half: a *sibling* markdown link (`](compilation-mode.md)`)
+    /// is dead inside `:help` because nothing resolves a bare `.md`
+    /// path to a topic. Links to `../dev/**` are exempt — those are
+    /// developer docs that are deliberately not help topics, and they
+    /// stay plain markdown so they still resolve on disk and on
+    /// GitHub.
+    #[test]
+    fn no_user_doc_links_to_a_sibling_doc_by_filename() {
+        let docs_user = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/user");
+        let mut offenders: Vec<String> = Vec::new();
+
+        for entry in std::fs::read_dir(&docs_user).expect("docs/user readable") {
+            let path = entry.expect("dir entry").path();
+            if path.extension().and_then(|s| s.to_str()) != Some("md") {
+                continue;
+            }
+            let text = strip_code(&std::fs::read_to_string(&path).expect("read md"));
+            let file = path.file_name().unwrap().to_string_lossy().into_owned();
+            for (idx, _) in text.match_indices("](") {
+                let rest = &text[idx + 2..];
+                let Some(end) = rest.find(')') else { continue };
+                let url = &rest[..end];
+                // Only bare siblings: no scheme, no parent-dir escape.
+                if url.ends_with(".md") && !url.contains('/') && !url.contains(':') {
+                    offenders.push(format!(
+                        "{file}: `{url}` — use `help:{}`",
+                        &url[..url.len() - 3]
+                    ));
+                }
+            }
+        }
+
+        assert!(
+            offenders.is_empty(),
+            "sibling `.md` links are dead inside `:help` (they classify as \
+             `Unresolved`); use the `help:` form:\n  {}",
+            offenders.join("\n  ")
         );
     }
 

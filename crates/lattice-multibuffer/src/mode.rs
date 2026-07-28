@@ -6,7 +6,7 @@
 //! (M.3 will make `ReadOnly` conditional once edit propagation
 //! lands). Excerpt-jump motion keymap (`]e` / `[e` / `]E` / `[E`)
 //! arrives in M.2.b.3. Provider-specific behaviour layers on as
-//! minor modes (`ProjectSearchMultibufferMode` etc., M.6+).
+//! minor modes (`ProjectSearchMode` etc., M.6+).
 //!
 //! `register_multibuffer_modes(®istry, &events, mb_registry)`
 //! is the single boot-wiring entry point the host calls. It
@@ -250,7 +250,7 @@ impl Mode for MultibufferMode {
             // multibuffer view support `<CR>` navigation regardless
             // of provider (search, problems, narrow, etc.). Provider-
             // specific minor modes that bind their own `<CR>`
-            // (e.g. `ProjectSearchMultibufferMode`) shadow this via
+            // (e.g. `ProjectSearchMode`) shadow this via
             // the minor-mode keymap priority — their handler fires
             // instead.
             let mut action_registrations: Vec<ActionHandlerRegistration> = Vec::new();

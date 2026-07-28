@@ -17,7 +17,7 @@
 //!   as a service the host reads back at dispatch time
 //!   (`Editor::resolve_narrow_target`) via `services.get::<MultibufferRegistryHandle>()`.
 //! - **Modes** — `multibuffer-mode` (+ its `DocumentClosed` cleanup
-//!   subscriber), `narrow-minor-mode`, and the `search` provider mode.
+//!   subscriber), `narrow-mode`, and the `search` provider mode.
 //! - **Commands** — the excerpt-jump motions (`]e`/`[e`/`]E`/`[E`), the
 //!   `:multibuffer-*` ex-commands, `:narrow`/`:widen`, the `zn` narrow
 //!   operator SPEC, and the `:search` ex-command.

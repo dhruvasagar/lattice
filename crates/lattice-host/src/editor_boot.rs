@@ -495,7 +495,7 @@ impl Editor {
             .register(crate::prompt_line_mode::PromptLineMode)
             .expect("prompt-line-mode must register without conflict");
         // BC.7 (2026-06-24): `multibuffer-mode` (+ its `DocumentClosed`
-        // cleanup subscriber), `narrow-minor-mode`, and the project-search
+        // cleanup subscriber), `narrow-mode`, and the project-search
         // provider mode moved into `lattice_multibuffer::install(boot)`
         // (Phase-B install list below), alongside its commands + services +
         // the `MultibufferExcerptsReady` wake. The registry handle is now
@@ -564,7 +564,7 @@ impl Editor {
         // is fully mode-owned (MO.x): `DiffMode::keymap()` + the K.2.4 pass —
         // see `lattice_diff::install` for the full rationale.
         lattice_diff::install(&mut boot);
-        // multibuffer (BC.7): `multibuffer-mode` + `narrow-minor-mode` + the
+        // multibuffer (BC.7): `multibuffer-mode` + `narrow-mode` + the
         // project-search mode, the excerpt-jump motions + `:multibuffer-*` /
         // `:narrow` / `:widen` / `:search` ex-commands + the `zn` operator SPEC,
         // the `MultibufferRegistryHandle` + project-search services, and the
@@ -1860,10 +1860,10 @@ impl Editor {
                 );
                 // K.2.5 (2026-06-02): explicit push_layer calls
                 // for `multibuffer-mode` and
-                // `project-search-multibuffer-mode` retired.
+                // `project-search-mode` retired.
                 // Their bindings now flow through
                 // `MultibufferMode::keymap()` and
-                // `ProjectSearchMultibufferMode::keymap()` via
+                // `ProjectSearchMode::keymap()` via
                 // the K.2.4 translation pass below — host glue
                 // no longer needs to know about them. (Diff
                 // mode's bindings still go through the explicit

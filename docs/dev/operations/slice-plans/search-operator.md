@@ -15,7 +15,7 @@ motion / text-object span and fires project search for it, reusing the existing
 |---|---|---|
 | SO.1 | ✅ | Grammar: `operator_search` (read-only) + `register_operator` + `Builtins.search` field; emits `Effect::AppAction(AppEffect::SearchTrigger { query })`. Grammar unit tests (`iw` / `i"` → correct query; empty range → `Effect::None`). |
 | SO.2 | ✅ | Host wiring: 9th `absorb_operator_search` operator-prefix action + `[g, /]` Builtin binding. Host test: `[g, /]` resolves to `absorb_operator_search` in Normal. |
-| SO.3 | ✅ | User docs: `docs/user/project-search.md` gained a `g/` section + use-case table, cross-ref `modal-editing.md`. |
+| SO.3 | ✅ | User docs: `docs/user/project-search-mode.md` gained a `g/` section + use-case table, cross-ref `modal-editing.md`. |
 
 ---
 
@@ -63,7 +63,7 @@ no-op; a motion that resolves no range is the existing operator-pending no-op.
 
 ## SO.3 — user docs  ✅
 
-**Change:** `docs/user/project-search.md` — add a "Search operator (`g/`)"
+**Change:** `docs/user/project-search-mode.md` — add a "Search operator (`g/`)"
 section with the use-case table from the design fragment §1, noting literal /
 case-insensitive semantics and the single-line-text-object intent; cross-ref
 `docs/user/modal-editing.md` (where `/` and `*` live) so the `/` ↔ `g/`

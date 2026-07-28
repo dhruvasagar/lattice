@@ -229,7 +229,7 @@ impl OptionGroup for Terminal {
 /// Project-search options (`:search`, project-search multibuffer,
 /// future LSP-references etc. as those settle). K.4.6 follow-up
 /// (2026-06-02): `search.context_size` added by
-/// `ProjectSearchMultibufferMode` in `lattice-multibuffer`.
+/// `ProjectSearchMode` in `lattice-multibuffer`.
 pub struct Search;
 impl OptionGroup for Search {
     const NAME: &'static str = "search";

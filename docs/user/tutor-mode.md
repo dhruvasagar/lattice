@@ -3,7 +3,7 @@ summary: "The interactive tutor: a gamified lesson sequence (lives, score, high 
 related: [modal-editing, modes, help]
 ---
 
-# Tutor
+# tutor-mode
 
 The **tutor** is an interactive, gamified lesson sequence — vim's `vimtutor`
 crossed with an arcade scoreboard. You learn lattice *inside* lattice: each
@@ -92,6 +92,6 @@ lesson to try again, or `<CR>` skips the exercise (no points) and moves on.
 
 ## See also
 
-- [Modal editing](modal-editing.md) — the grammar lessons 1–2 drill.
-- [Modes](modes.md) and [Help](help.md) — what lesson 4 covers.
-- [Themes](themes.md) / [Options](options.md) — what lesson 7 covers.
+- [Modal editing](help:modal-editing) — the grammar lessons 1–2 drill.
+- [Modes](help:modes) and [Help](help:help) — what lesson 4 covers.
+- [Themes](help:themes) / [Options](help:options) — what lesson 7 covers.

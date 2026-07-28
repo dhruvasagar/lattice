@@ -3,14 +3,14 @@ summary: ":opencode launches the opencode agent's native TUI in a terminal buffe
 related: [opencode, opencode-acp]
 ---
 
-# opencode agent
+# opencode-mode
 
 `:opencode` runs the **opencode** coding agent's native terminal UI in a
 lattice terminal buffer. You get opencode's complete interface — its
 prompt with line editing, `/` commands, model switching, session
 management, history, and its own diff-based edit review — running inside
 lattice, with a thin `opencode-mode` layered on top for lattice-side
-navigation. This is the same shape as the [Claude Code](claude-code.md)
+navigation. This is the same shape as the [Claude Code](help:claude-code-mode)
 integration: the agent runs its own TUI in a terminal buffer, and lattice
 provides the surrounding editor.
 
@@ -67,7 +67,7 @@ to keep talking to the agent.
 opencode's TUI owns the interaction, so its own documentation is the
 reference for prompts, commands, and shortcuts. The lattice-specific part
 is just the two-mode terminal wrapper (`opencode-mode` over
-[`terminal-mode`](terminal.md)):
+[`terminal-mode`](help:terminal-mode)):
 
 - **Insert-in-terminal** (the default when you open it) forwards every
   keystroke straight to opencode — including `<C-c>`, arrow keys, and `/`.
@@ -147,11 +147,11 @@ default because it gives opencode's complete experience for free.
 
 ## Related
 
-- [`claude-code.md`](claude-code.md) — the other terminal-topology agent
+- [`claude-code-mode`](help:claude-code-mode) — the other terminal-topology agent
   (the `claude` CLI as an IDE peer over WebSocket/MCP).
-- [`terminal.md`](terminal.md) — the terminal buffer opencode runs in, and
+- [`terminal-mode`](help:terminal-mode) — the terminal buffer opencode runs in, and
   the Normal/Insert-in-terminal model `opencode-mode` builds on.
-- [`diff.md`](diff.md) — the side-by-side diff UI `:opencode-acp` uses to
+- [`diff-mode`](help:diff-mode) — the side-by-side diff UI `:opencode-acp` uses to
   review edits.
 - [`docs/dev/architecture/agent-integration.md`](../dev/architecture/agent-integration.md)
   — why the two agents (and the two opencode topologies) share one design.

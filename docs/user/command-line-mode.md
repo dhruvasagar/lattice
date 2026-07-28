@@ -1,4 +1,4 @@
-# Command Line
+# command-line-mode
 
 Lattice's command line is a **rich editing surface** — a real
 buffer with a major mode, not a single-line widget. It supports the

@@ -3,10 +3,10 @@ summary: "Project-wide search: :search streams matches into a multibuffer; g/{mo
 related: [search, ex:search]
 ---
 
-# Project search
+# project-search-mode
 
 `:search` walks the project, collects every line matching your
-query, and streams the results into a [multibuffer](multibuffer.md)
+query, and streams the results into a [multibuffer](help:multibuffer-mode)
 view — one excerpt per match, grouped under each file's header. The
 scan runs off the UI thread, so results appear progressively and the
 editor stays responsive even on a large tree.
@@ -27,7 +27,7 @@ editor stays responsive even on a large tree.
 | `g/{motion}`        | Project-search for the text a motion / text object spans (e.g. `g/iw`, `g/i"`) |
 | `<CR>`              | (in results) Jump to the source file + line of the match under the cursor |
 | `gr`               | (in results) Re-run the scan with the same query                 |
-| `]e` / `[e`        | Move between matches (excerpt motions — see [multibuffer.md](multibuffer.md)) |
+| `]e` / `[e`        | Move between matches (excerpt motions — see [`multibuffer-mode`](help:multibuffer-mode)) |
 | `:multibuffer-expand [n]` | Show `n` lines of context around the match under the cursor |
 
 ---
@@ -83,7 +83,7 @@ passes the literal text *with* its newlines, which the line-oriented scan
 won't match.
 
 `g/` and `/` are deliberately distinct: `/` searches the **current
-buffer** (see [modal-editing.md](modal-editing.md)); `g/` searches the
+buffer** (see [`modal-editing`](help:modal-editing)); `g/` searches the
 **whole project**.
 
 ## Acting on results
@@ -91,7 +91,7 @@ buffer** (see [modal-editing.md](modal-editing.md)); `g/` searches the
 - **`<CR>`** opens the source file in the active pane at the matched
   line and records the position in the jump list, so `<C-o>` brings
   you back — the same round-trip as `gd` or a tag jump. See
-  [position history in modal-editing.md](modal-editing.md).
+  [position history](help:modal-editing).
 - **`gr`** re-runs the scan with the view's current query (after
   you've edited files and want fresh results). It clears the view,
   resets the headerline, and streams again.

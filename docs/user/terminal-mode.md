@@ -3,7 +3,7 @@ summary: "Terminal"
 related: [terminal, tnew, tabterminal]
 ---
 
-# Terminal Mode
+# terminal-mode
 
 Lattice embeds a real shell inside the editor as a buffer.
 Open one with `:terminal`, type commands, scroll the output
@@ -368,11 +368,11 @@ gt / gT / 2gt            " switch tabs
 
 ## Related
 
-- [`modal-editing.md`](modal-editing.md) — the vim grammar that
+- [`modal-editing`](help:modal-editing) — the vim grammar that
   drives Normal-in-terminal.
-- [`buffers.md`](buffers.md) — buffer concepts that terminals
+- [`buffers`](help:buffers) — buffer concepts that terminals
   participate in.
-- [`options.md`](options.md) — full `:set` reference, including
+- [`options`](help:options) — full `:set` reference, including
   the `terminal.*` group.
 - [`docs/dev/architecture/terminal-mode.md`](../dev/architecture/terminal-mode.md)
   — developer reference (implementation details).

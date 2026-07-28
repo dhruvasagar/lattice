@@ -23,7 +23,8 @@ no hidden state.
 > magit-log, magit-blame, magit-stash, magit-branch, magit-rebase,
 > and the transient dispatch menus (`C-c g` / `C-c f`) are shipped.
 > Auto-gutter-diff against HEAD is on by default (`git.auto-head-diff`).
-> See the [implementation ledger](help:magit-status) for per-slice detail.
+> See [magit-status-mode](help:magit-status-mode) for the workhorse
+> view's full chord set.
 
 ---
 
@@ -31,9 +32,9 @@ no hidden state.
 
 | Key / command | Meaning |
 |---|---|
-| `C-x g` | Open [magit-status](magit-status.md) for the current repo |
-| `C-c g` | Open the [repo dispatch transient](magit-transient.md) — flat menu, one entry point per view (status/commit/log/branch/stash/rebase), plus `F` (pull) / `P` (push), both real git operations run in the background |
-| `C-c f` | Open the [file dispatch transient](magit-transient.md) — `s` stages / `d` diffs the file in your *current* buffer (not an entry under the cursor elsewhere) |
+| `C-x g` | Open [magit-status](help:magit-status-mode) for the current repo |
+| `C-c g` | Open the [repo dispatch transient](help:magit-transient) — flat menu, one entry point per view (status/commit/log/branch/stash/rebase), plus `F` (pull) / `P` (push), both real git operations run in the background |
+| `C-c f` | Open the [file dispatch transient](help:magit-transient) — `s` stages / `d` diffs the file in your *current* buffer (not an entry under the cursor elsewhere) |
 | `:magit-status` | Same as `C-x g` — open the status buffer |
 | `:magit-commit` | Open the commit message buffer |
 | `:magit-diff` | Open a read-only `git diff HEAD` view with file-level stage/unstage |
@@ -114,7 +115,7 @@ because no diffs are pre-computed.
 
 ### Shared navigation (magit-core)
 
-Every magit buffer inherits a shared [minor mode](modes.md),
+Every magit buffer inherits a shared [minor mode](help:modes),
 `magit-core-mode`, which provides the following chords:
 
 | Chord | Action |
@@ -160,7 +161,7 @@ immediate on-screen confirmation. It's a flat list today — pressing
 buffer-open or git operation (the same thing `:magit-status` /
 `:magit-log` / … does for the buffer-opening ones); there are no
 nested branch/stash/push submenus with their own actions yet. See
-[transient menus](magit-transient.md).
+[transient menus](help:magit-transient).
 
 ### `C-c f` — file dispatch transient
 
@@ -172,7 +173,7 @@ on the file belonging to whatever buffer was active when you pressed
 the entry under the cursor there). If the active buffer has no file
 (a synthetic buffer, an empty scratch buffer, …) there's no path to
 resolve and the action does nothing. See [transient
-menus](magit-transient.md).
+menus](help:magit-transient).
 
 All three chords follow Emacs convention and are unused in default vim
 normal mode — they map cleanly over the vim grammar.
@@ -209,9 +210,9 @@ exist, not ones that do.
 ## Help and discovery
 
 - `:help magit` — this page
-- `:help magit-status` — the [status buffer](magit-status.md) deep-dive
-- `:help magit-buffers` — the [commit/diff/log/blame/stash/branch/rebase buffers](magit-buffers.md)
-- `:help magit-transient` — the [transient dispatch menus](magit-transient.md)
+- `:help magit-status` — the [status buffer](help:magit-status-mode) deep-dive
+- `:help magit-buffers` — the [commit/diff/log/blame/stash/branch/rebase buffers](help:magit-buffers)
+- `:help magit-transient` — the [transient dispatch menus](help:magit-transient)
 - `:magit-<Tab>` — list all magit ex-commands
 - `:describe-key` then press any magit chord to see its bound action
 - `:describe-mode` in a magit buffer to see the active mode's full keymap

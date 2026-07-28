@@ -765,7 +765,7 @@ crate::options! {
     /// Maximum scrollback ring size (lines). Set to `0` to
     /// disable scrollback entirely (saves RAM on long-running
     /// terminals with chatty output). Default `10000` matches
-    /// the user-facing `docs/user/terminal.md` table and what
+    /// the user-facing `docs/user/terminal-mode.md` table and what
     /// most modern terminal emulators ship with.
     ///
     /// Capped at 1_000_000 — beyond that the ring's memory

@@ -53,13 +53,13 @@ const CONTEXT: u32 = 2;
 // ─────────────────────────────────────────────────────────────────
 
 /// `problems-minor-mode` — the provider-minor activated on a
-/// `*problems*` view. Pure identity marker (like [`NarrowMinorMode`]):
+/// `*problems*` view. Pure identity marker (like [`NarrowMode`]):
 /// a multibuffer with this minor active IS a problems view, which the
 /// host's `:cclose` guard reads. Editable — no `ReadOnly` override, so
 /// edits propagate to the source. `on_activate` is a no-op so the
 /// marker is cheap; the `q`→close chord can land in a follow-up.
 ///
-/// [`NarrowMinorMode`]: crate::providers::narrow::NarrowMinorMode
+/// [`NarrowMode`]: crate::providers::narrow::NarrowMode
 pub struct ProblemsMinorMode;
 
 impl ProblemsMinorMode {
@@ -69,7 +69,7 @@ impl ProblemsMinorMode {
 }
 
 /// RAII guard for `ProblemsMinorMode`. Unit — no subscriptions /
-/// action handlers yet (mirrors `NarrowMinorModeGuard`).
+/// action handlers yet (mirrors `NarrowModeGuard`).
 pub struct ProblemsMinorModeGuard;
 
 impl Mode for ProblemsMinorMode {

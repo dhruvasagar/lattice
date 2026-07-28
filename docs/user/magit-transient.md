@@ -21,7 +21,7 @@ entries lattice has no implementation for are deliberately **absent**
 rather than present-and-inert — a menu row that does nothing when
 pressed is worse than a row that isn't there.
 
-Transients are built on the [picker](picker.md) subsystem's transient-
+Transients are built on the [picker](help:picker) subsystem's transient-
 mode extension — the same rendering and interaction substrate that
 powers which-key key hints and command palette drilldown, and (per its
 module doc) is meant to power future plugin transients too.
@@ -87,7 +87,7 @@ Opens from any buffer. Groups, as they actually render today:
 thing `:magit-status`/`:magit-diff`/`:magit-log`/`:magit-branch`/
 `:magit-rebase` do. Once you're in that buffer, use its own direct
 chords (`s`/`u`/`x`/`<CR>`/… — see
-[magit-buffers.md](magit-buffers.md)) for the actual operations.
+[`magit-buffers`](help:magit-buffers)) for the actual operations.
 
 Two submenus drill down:
 
@@ -169,9 +169,9 @@ path to resolve and the key does nothing.
 | `s` | `git add <file>` |
 | `u` | `git reset HEAD -- <file>` (unstage, keep working-tree changes) |
 | `x` | `git checkout -- <file>` — **destructive**, asks `Discard changes to <path>?` first |
-| `d` | Opens `*magit:diff:<path>*` ([diff buffer](magit-buffers.md#diff-buffer)) |
-| `l` | Opens `*magit:log:<path>*` — the [log buffer](magit-buffers.md#log-buffer) scoped to this file's history |
-| `b` | Opens `*magit:blame:<path>*` ([blame buffer](magit-buffers.md#blame-buffer)) |
+| `d` | Opens `*magit:diff:<path>*` ([diff buffer](help:magit-buffers#diff-buffer)) |
+| `l` | Opens `*magit:log:<path>*` — the [log buffer](help:magit-buffers#log-buffer) scoped to this file's history |
+| `b` | Opens `*magit:blame:<path>*` ([blame buffer](help:magit-buffers#blame-buffer)) |
 
 `x` is the only destructive item, and the only one that confirms
 first — same `y`/`n` confirmation dialog magit-status's own `x` uses.
@@ -215,7 +215,7 @@ include-untracked option; `P` always runs plain `git push` with no
 force or set-upstream option. No menu has an `Argument` item at all,
 so there's no way to type a branch name, remote name, or commit
 reference from inside a transient; the branch-create wizard's
-name-entry prompt (see [magit-buffers.md](magit-buffers.md#branch-buffer))
+name-entry prompt (see [`magit-buffers`](help:magit-buffers#branch-buffer))
 is a separate mechanism — a picker-triggered follow-up prompt, not an
 in-place `Argument` field inside a transient menu. No shipped menu
 sets a `preview` closure, so there's no live command-preview line
@@ -231,8 +231,8 @@ as not-yet-real for magit specifically.
 Every magit buffer's own operations (`s`/`u`/`x`/`<CR>`/… in
 magit-status, `s`/`u` in magit-diff, `a`/`p`/`d`/`z` in magit-stash, …)
 are ordinary chords on that buffer's keymap — see
-[magit-buffers.md](magit-buffers.md) and
-[magit-status.md](magit-status.md). They are **not** exposed as items
+[`magit-buffers`](help:magit-buffers) and
+[`magit-status-mode`](help:magit-status-mode). They are **not** exposed as items
 in the `C-c g` dispatch transient: for its buffer-opening items
 (`s`/`d`/`l`/`b`/`r`, plus `c c`/`c a`/`z l`) the dispatch transient
 only opens buffers, it doesn't reach into a buffer and stage a file
@@ -259,7 +259,7 @@ the rest of the work.
 Transients are a **picker interaction mode** — the picker's rendering
 pipeline (floating overlay or minibuffer strip depending on
 `picker.display`, keyboard capture, styled text rendering, TUI + GPUI
-parity) is the substrate. See [picker.md](picker.md) for that shared
+parity) is the substrate. See [`picker`](help:picker) for that shared
 rendering machinery. The transient mode extension adds:
 
 1. **Grouped, non-filterable entries** — `TransientGroup` with section

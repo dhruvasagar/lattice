@@ -148,7 +148,7 @@ async fn reset_to(handle: &Arc<dyn Document>, header: &str) {
 /// registrations (whose `Drop` unregisters the `<CR>` jump handler
 /// from the `ActionHandlerRegistry`). Fields drop in declaration
 /// order; no custom `Drop` is needed — each field cleans up itself.
-/// Mirrors `ProjectSearchMultibufferModeGuard`. Both fields default
+/// Mirrors `ProjectSearchModeGuard`. Both fields default
 /// to empty so the early-return (missing service / runtime) paths
 /// hand back an inert guard.
 #[derive(Default)]

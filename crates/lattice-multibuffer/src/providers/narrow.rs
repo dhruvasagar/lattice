@@ -39,10 +39,10 @@ use crate::view::create_multibuffer_view;
 use crate::{Excerpt, HeaderlineStatus};
 
 // ─────────────────────────────────────────────────────────────────
-// NarrowMinorMode — identity marker for narrow views
+// NarrowMode — identity marker for narrow views
 // ─────────────────────────────────────────────────────────────────
 
-/// `narrow-minor-mode` — the provider-minor activated on a narrow
+/// `narrow-mode` — the provider-minor activated on a narrow
 /// view. In N.1.1 it is a pure identity marker: a multibuffer with
 /// this minor active IS a narrow view (distinguished from search /
 /// diff multibuffers), which the host's `:widen` guard and N.1.5's
@@ -51,21 +51,21 @@ use crate::{Excerpt, HeaderlineStatus};
 /// N.1.1.b adds the in-view surface (`q` → widen chord, `:w`
 /// source-save override) here; for now `on_activate` is a no-op so
 /// the marker is cheap.
-pub struct NarrowMinorMode;
+pub struct NarrowMode;
 
-impl NarrowMinorMode {
+impl NarrowMode {
     pub fn mode_id() -> ModeId {
-        ModeId::new("narrow-minor-mode")
+        ModeId::new("narrow-mode")
     }
 }
 
-/// RAII guard for `NarrowMinorMode`. Unit in N.1.1 (no
+/// RAII guard for `NarrowMode`. Unit in N.1.1 (no
 /// subscriptions / action handlers yet); becomes a `Vec` of
 /// `ActionHandlerRegistration` when the `q` / `:w` surface lands.
-pub struct NarrowMinorModeGuard;
+pub struct NarrowModeGuard;
 
-impl Mode for NarrowMinorMode {
-    type Guard = NarrowMinorModeGuard;
+impl Mode for NarrowMode {
+    type Guard = NarrowModeGuard;
 
     fn id(&self) -> ModeId {
         Self::mode_id()
@@ -87,7 +87,7 @@ impl Mode for NarrowMinorMode {
         Keymap::default()
     }
     fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, Self::Guard> {
-        Box::pin(async move { Ok(NarrowMinorModeGuard) })
+        Box::pin(async move { Ok(NarrowModeGuard) })
     }
 }
 
@@ -97,7 +97,7 @@ impl Mode for NarrowMinorMode {
 
 /// Allocate a one-excerpt multibuffer view over
 /// `[start_line, end_line]` (inclusive, 0-based) of `source_id` and
-/// activate [`NarrowMinorMode`] on it. Returns the new view's
+/// activate [`NarrowMode`] on it. Returns the new view's
 /// `BufferId`.
 ///
 /// `source_handle` is the *existing* source buffer's document handle
@@ -154,7 +154,7 @@ pub fn create_narrow_view(
         }
     }
 
-    activator.activate_minor_by_id(view_id, NarrowMinorMode::mode_id());
+    activator.activate_minor_by_id(view_id, NarrowMode::mode_id());
     view_id
 }
 
@@ -167,8 +167,8 @@ pub fn create_narrow_view(
 /// mode registrations.
 pub fn register_narrow_mode(mode_registry: &mut ModeRegistry) {
     mode_registry
-        .register(NarrowMinorMode)
-        .expect("narrow-minor-mode registers without conflict at boot");
+        .register(NarrowMode)
+        .expect("narrow-mode registers without conflict at boot");
 }
 
 /// Boot helper — register the `:narrow` + `:widen` ex-commands.
@@ -231,7 +231,7 @@ pub fn register_narrow_ex_commands(registry: &mut CommandRegistry) {
 /// returned `OperatorId` at the universal operator-pending layer
 /// (operator-pending composition needs the host-resolved `Builtins`,
 /// which this crate can't reach). The narrow-VIEW surface
-/// (`:widen` / `:w` / `q`) stays with `NarrowMinorMode`.
+/// (`:widen` / `:w` / `q`) stays with `NarrowMode`.
 ///
 /// `apply` reads the resolved `OperatorContext.range` (the span the
 /// following motion / text object produced), converts it to an

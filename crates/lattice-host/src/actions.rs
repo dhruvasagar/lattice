@@ -295,7 +295,7 @@ pub struct ActionIds {
     pub snippet_prev_placeholder: CommandId,
     pub snippet_leave: CommandId,
     /// M.6.1 (2026-06-01): `gr` chord under
-    /// `MinorMode(project-search-multibuffer-mode)`. Re-run the
+    /// `MinorMode(project-search-mode)`. Re-run the
     /// scan with the view's current query.
     pub search_refresh: CommandId,
     /// CM.3a (2026-07-22): `gr` chord under
@@ -1545,7 +1545,7 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
         search_refresh: register_simple(
             registry,
             "action:search-refresh",
-            "project-search-multibuffer-mode `gr`: re-run the scan with the view's current query.",
+            "project-search-mode `gr`: re-run the scan with the view's current query.",
             AppEffect::SearchRefresh,
         ),
         compilation_recompile: register_simple(

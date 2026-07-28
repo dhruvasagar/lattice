@@ -2,7 +2,7 @@
 //!
 //! Exercises `create_narrow_view` end-to-end against a `MockActivator`
 //! (mirrors `m2b2_integration.rs`): a one-excerpt multibuffer focused
-//! on a line range, with `NarrowMinorMode` activated and the
+//! on a line range, with `NarrowMode` activated and the
 //! headerline set. The `:narrow` / `:widen` range-resolution + host
 //! activation is covered by `lattice-host` dispatch tests; here we
 //! pin the substrate contract.
@@ -15,7 +15,7 @@ use lattice_core::{BufferFlags, BufferId, BufferKind};
 use lattice_grammar::CommandRegistry;
 use lattice_mode::{BufferStore, BufferStoreHandle, ModeActivator, ModeId, ServiceRegistry};
 use lattice_multibuffer::providers::narrow::{
-    NarrowMinorMode, create_narrow_view, register_narrow_ex_commands,
+    NarrowMode, create_narrow_view, register_narrow_ex_commands,
 };
 use lattice_multibuffer::{
     HeaderlineStatus, InMemoryMultibufferRegistry, MultibufferRegistryHandle,
@@ -141,7 +141,7 @@ fn narrow_renders_only_the_requested_range() {
 }
 
 #[test]
-fn narrow_activates_narrow_minor_mode() {
+fn narrow_activates_narrow_mode() {
     let mut activator = MockActivator::new();
     let (source_id, source_handle) = make_source(EIGHT_LINES);
 
@@ -160,8 +160,8 @@ fn narrow_activates_narrow_minor_mode() {
         activator
             .minor_calls
             .iter()
-            .any(|(b, m)| *b == view_id && *m == NarrowMinorMode::mode_id()),
-        "create_narrow_view must activate narrow-minor-mode on the view; got {:?}",
+            .any(|(b, m)| *b == view_id && *m == NarrowMode::mode_id()),
+        "create_narrow_view must activate narrow-mode on the view; got {:?}",
         activator.minor_calls
     );
 }

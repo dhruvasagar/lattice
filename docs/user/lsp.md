@@ -56,7 +56,7 @@ asynchronicity.
 | **Document highlight**      | Parking the cursor on an identifier paints a soft bg tint on every occurrence (read / write / text variants). Gated by `lsp-document-highlight-mode`.                                                                                                              |
 | **Inlay hints**             | Type annotations, parameter names, lifetime hints rendered as italic dim virtual text. Gated by `lsp-inlay-hint-mode` (toggle with `:lsp-inlay-hint-mode`).                                                                                                       |
 | **Semantic tokens**         | LSP-aware syntax highlighting that augments tree-sitter (e.g. distinguishes mutable vs immutable bindings, type vs value namespaces). `full` + `full/delta` paths both used. Gated by `lsp-semantic-tokens-mode`.                                                |
-| **Folding**                 | `:set foldmethod=lsp` uses server-driven folds via `textDocument/foldingRange`; gated by `lsp-folding-mode`. See [`folding.md`](folding.md).                                                                                                                       |
+| **Folding**                 | `:set foldmethod=lsp` uses server-driven folds via `textDocument/foldingRange`; gated by `lsp-folding-mode`. See [`folding`](help:folding).                                                                                                                       |
 | **Selection range**         | `:lsp-expand-region` widens Visual selection to the next semantic range (token → expr → block → fn); `:lsp-shrink-region` walks back. Gated by `lsp-selection-range-mode`.                                                                                       |
 | **Call hierarchy**          | `:lsp-incoming-calls` / `:lsp-outgoing-calls` open pickers of callers / callees at the cursor.                                                                                                                                                                    |
 | **Type hierarchy**          | `:lsp-supertypes` / `:lsp-subtypes` open pickers of super / sub types at the cursor.                                                                                                                                                                              |
@@ -227,7 +227,7 @@ four places:
 | `:diagnostics`      | Open the workspace diagnostics picker.                                                   |
 | `:diag-clear`       | Drop the renderer's overlay for the active buffer (server may republish).                |
 
-> Diagnostics are **separate** from the [error list](error-list.md).
+> Diagnostics are **separate** from the [error list](help:error-list).
 > `:next-error` / `:cnext` walk the *error list* (compiler / tool
 > output), **not** diagnostics — use `]d` / `[d` / `:diagnostics` for
 > LSP diagnostics.
@@ -494,7 +494,7 @@ Two **separate** systems — don't conflate them:
   only** (wraps); **`:diagnostics`** opens the **workspace-wide**
   diagnostics in a fuzzy picker. The per-pane cursor is the walk state,
   so two panes on the same file walk independently.
-- **The [error list](error-list.md)** — a separate, cross-file list
+- **The [error list](help:error-list)** — a separate, cross-file list
   populated by *tool output* (`:compile`, grep, …), walked with
   **`:next-error` / `:previous-error`** (vim `:cnext` / `:cprev`). It is
   **not** diagnostics: `:next-error` never touches the LSP diagnostic
@@ -552,7 +552,7 @@ not yet supported (multi-root workspace folders are post-1.0).
 ### Toggling features off
 
 Every LSP feature has a sub-mode (M.6 cascade). The full list
-lives in [`lsp-mode.md`](lsp-mode.md); common ones:
+lives in [`lsp-mode`](help:lsp-mode); common ones:
 
 - `:lsp-diagnostics-mode` — hides gutter glyphs + inline underlines
 - `:lsp-inlay-hint-mode` — hides inlay-hint virtual text
@@ -569,7 +569,7 @@ sub-mode to active.
 
 ## Related
 
-- **[`folding.md`](folding.md)** — fold engine; LSP fold ranges
+- **[`folding`](help:folding)** — fold engine; LSP fold ranges
   merge in via `FoldMethod::Lsp` (4.4).
 - **[`../dev/notes/lsp-features.md`](../dev/notes/lsp-features.md)** — feature
   matrix.

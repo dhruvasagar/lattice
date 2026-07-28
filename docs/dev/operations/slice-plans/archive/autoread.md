@@ -169,7 +169,7 @@ the user reconciles per hunk (`do`/`dp` / `:diffget`/`:diffput`), finalizes with
 host-side, so the dropped receiver is irrelevant), then `:e!` reconciles their
 buffer. The full step-by-step UX (3-pane layout, per-hunk transfer, `:e!` +
 guard rationale, honest friction list) lives in **design fragment §5 "Conflict
-resolution flow"** and user-facing **`docs/user/diff.md` → "Autoread conflicts"**.
+resolution flow"** and user-facing **`docs/user/diff-mode.md` → "Autoread conflicts"**.
 Awaiting the verdict to auto-reload (drop the `:e!` step) and 3-way auto-merge are
 deferred enhancements (design §6).
 

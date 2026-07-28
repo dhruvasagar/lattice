@@ -3,7 +3,7 @@ summary: "vim-surround: ds, cs, ys operators — delete, change, and add surroun
 related: [surround, ds, cs, ys]
 ---
 
-# Surround
+# surround-mode
 
 vim-surround operators for working with surrounding pairs — delete,
 change, or add brackets, quotes, and other paired characters around

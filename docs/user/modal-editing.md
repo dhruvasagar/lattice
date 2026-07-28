@@ -374,7 +374,7 @@ end-of-file. Edits in the narrow view save back to the source file;
 `textobjects.scm`. A language with no query simply has no
 tree-sitter objects (the delimiter objects above still work).
 Adding a language's objects is one query file — see
-[languages.md](languages.md).
+[`languages`](help:languages).
 
 ---
 
@@ -548,7 +548,7 @@ rows still get the replicated text.
 - [`ex-commands`](help:ex-commands) — the `:` line.
 - [`options`](help:options) — `:set` + `:customize`.
 - [`lsp`](help:lsp) — LSP feature surface.
-- [`tutor`](help:tutor) — interactive lesson sequence (when
+- [`tutor`](help:tutor-mode) — interactive lesson sequence (when
   available).
 - `docs/dev/architecture/keymap-architecture.md` — developer
   reference for the keymap registry + dispatch.

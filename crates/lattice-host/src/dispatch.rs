@@ -8346,12 +8346,12 @@ impl Editor {
             }
             // N.1.1 (2026-06-10): `:widen` — close the active narrow
             // view, restoring the full source buffer. Guarded to
-            // narrow views (NarrowMinorMode active) so it never
+            // narrow views (NarrowMode active) so it never
             // deletes an arbitrary buffer or a non-narrow multibuffer
             // (search / diff results).
             AppEffect::NarrowWiden => {
                 let active = self.active_pane_buffer_id();
-                let narrow_id = lattice_multibuffer::providers::narrow::NarrowMinorMode::mode_id();
+                let narrow_id = lattice_multibuffer::providers::narrow::NarrowMode::mode_id();
                 if self.minor_mode_enabled_for(active, narrow_id) {
                     if self.do_buffer_delete(true) {
                         let signals = self.activate_buffer_state();
@@ -24362,7 +24362,17 @@ impl Editor {
 
     /// `:help [topic]` direct-call entry. Phase 5.8.AD.5.
     pub fn do_open_help_topic(&mut self, topic: Option<&str>) -> Vec<RendererSignal> {
-        let name = topic.unwrap_or("index").to_string();
+        // A topic may carry a `#anchor` suffix (`help:lsp#attach`) —
+        // the cross-doc link form the user docs use to point at a
+        // specific section. Split it off before the registry lookup;
+        // the anchor seeds the initial scroll below. Without this the
+        // whole `topic#anchor` string would be looked up verbatim and
+        // miss, which is what made every anchored cross-doc link dead.
+        let raw = topic.unwrap_or("index");
+        let (name, anchor) = match raw.split_once('#') {
+            Some((n, a)) => (n.to_string(), Some(a.to_string())),
+            None => (raw.to_string(), None),
+        };
         let registry = self.help_topics.clone();
         let Some(t) = registry.lookup(&name) else {
             self.set_message(EchoLevel::Error, format!("no help topic: {name}"));
@@ -24376,7 +24386,13 @@ impl Editor {
         } else {
             format!("help {name}")
         };
-        let content = lattice_help::HelpContent::from_lines_and_anchors(title, lines, anchors);
+        let mut content = lattice_help::HelpContent::from_lines_and_anchors(title, lines, anchors);
+        if let Some(anchor) = anchor {
+            // A stale anchor (heading renamed) opens the topic at the
+            // top rather than erroring — the page is still the right
+            // answer, just not scrolled.
+            content.scroll_to_anchor(&anchor);
+        }
         vec![RendererSignal::DisplayBuffer(Box::new(
             DisplayBufferRequest {
                 content,
@@ -31448,6 +31464,22 @@ impl Editor {
         }
 
         lines.push(String::new());
+        // The two halves of a mode's documentation are `:describe-mode`
+        // (this view — live keymap, options, capabilities, read out of
+        // the registry) and `:help <mode-id>` (hand-written prose:
+        // what the mode is for, workflows, worked examples). They
+        // answer different questions, so neither replaces the other —
+        // but arriving at one and not knowing the other exists is the
+        // common failure. The topic is named after the mode id, so the
+        // link is a registry hit away; modes with no prose doc yet
+        // simply get no line rather than a dead link.
+        if self.help_topics.lookup(name).is_some() {
+            lines.push(format!(
+                "See also: [{name}](help:{name}) — what this mode is for, \
+                 with worked examples.",
+            ));
+            lines.push(String::new());
+        }
         lines.push(format!(
             "Toggle with `:{mode_id}`. For options the mode contributes, \
              see `:describe-option <name>`.",

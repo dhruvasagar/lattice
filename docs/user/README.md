@@ -35,47 +35,50 @@ same surface).
 
 ## Topics
 
-| Topic                      | File                                     | Status |
+| Topic                      | `:help <name>`                           | Status |
 |----------------------------|------------------------------------------|--------|
-| Getting started            | [getting-started.md](getting-started.md) | ✅     |
-| Modal editing              | [modal-editing.md](modal-editing.md)     | ✅     |
-| Modes                      | [modes.md](modes.md)                     | ✅     |
-| The command line           | [command-line.md](command-line.md)       | ✅     |
-| Search and substitute      | _covered in command-line + ex-commands_  | 🟡     |
-| Ex-commands                | [ex-commands.md](ex-commands.md)         | ✅     |
-| Buffers and panes          | [buffers.md](buffers.md)                 | ✅     |
-| File tree & Oil            | [filetree-oil.md](filetree-oil.md)       | ✅     |
-| Multibuffer views          | [multibuffer.md](multibuffer.md)         | ✅     |
-| Project search             | [project-search.md](project-search.md)   | ✅     |
-| Compilation mode           | [compilation.md](compilation.md)         | ✅     |
-| The error list             | [error-list.md](error-list.md)           | ✅     |
-| Narrow mode                | [narrow-mode.md](narrow-mode.md)         | ✅     |
-| Diff & merge               | [diff.md](diff.md)                       | ✅     |
-| Magit                      | [magit.md](magit.md)                     | ✅     |
-| Magit status buffer        | [magit-status.md](magit-status.md)       | ✅     |
-| Magit buffers              | [magit-buffers.md](magit-buffers.md)     | ✅     |
-| Magit transient menus      | [magit-transient.md](magit-transient.md) | ✅     |
-| Display & layout           | [display.md](display.md)                 | ✅     |
-| Modeline                   | [modeline.md](modeline.md)               | ✅     |
-| Themes & colours           | [themes.md](themes.md)                   | ✅     |
-| Folding                    | [folding.md](folding.md)                 | ✅     |
-| Insert completion          | [completion.md](completion.md)           | ✅     |
-| Picker & marginalia        | [picker.md](picker.md)                   | ✅     |
-| Options and configuration  | [options.md](options.md)                 | ✅     |
-| LSP                        | [lsp.md](lsp.md)                         | ✅     |
-| `lsp-mode`                 | [lsp-mode.md](lsp-mode.md)               | ✅     |
-| `emacs-keys-mode`          | [emacs-keys-mode.md](emacs-keys-mode.md) | ✅     |
-| Claude Code                | [claude-code.md](claude-code.md)         | ✅     |
-| opencode                   | [opencode.md](opencode.md)               | ✅     |
-| Languages                  | [languages.md](languages.md)             | ✅     |
-| Search and substitute      | _covered in command-line + ex-commands_  | 🟡     |
-| Registers, marks, macros   | _covered in modal-editing_               | 🟡     |
-| Help system                | [help.md](help.md)                       | ✅     |
-| Plugins                    | [plugins.md](plugins.md)                 | ✅     |
-| Core plugins               | [core-plugins.md](core-plugins.md)       | ✅     |
-| Configuring with `init.rs` | [init.md](init.md)                       | ✅     |
-| Performance posture        | _planned_                                | ⛔     |
-| Tutor                      | [tutor.md](tutor.md) · [lessons](tutor/) | ✅     |
+| Getting started            | [`getting-started`](help:getting-started) | ✅      |
+| Modal editing              | [`modal-editing`](help:modal-editing)    | ✅      |
+| Modes                      | [`modes`](help:modes)                    | ✅      |
+| The command line           | [`command-line-mode`](help:command-line-mode) | ✅      |
+| Search and substitute      | _covered in command-line + ex-commands_  | 🟡      |
+| Ex-commands                | [`ex-commands`](help:ex-commands)        | ✅      |
+| Buffers and panes          | [`buffers`](help:buffers)                | ✅      |
+| File tree                  | [`file-tree-mode`](help:file-tree-mode)  | ✅      |
+| Oil (editable directory)   | [`oil-mode`](help:oil-mode)              | ✅      |
+| Multibuffer views          | [`multibuffer-mode`](help:multibuffer-mode) | ✅      |
+| Project search             | [`project-search-mode`](help:project-search-mode) | ✅      |
+| Compilation mode           | [`compilation-mode`](help:compilation-mode) | ✅      |
+| The error list             | [`error-list`](help:error-list)          | ✅      |
+| Narrow mode                | [`narrow-mode`](help:narrow-mode)        | ✅      |
+| Diff & merge               | [`diff-mode`](help:diff-mode)            | ✅      |
+| Magit                      | [`magit`](help:magit)                    | ✅      |
+| Magit status buffer        | [`magit-status-mode`](help:magit-status-mode) | ✅      |
+| Magit buffers              | [`magit-buffers`](help:magit-buffers)    | ✅      |
+| Magit transient menus      | [`magit-transient`](help:magit-transient) | ✅      |
+| Display & layout           | [`display`](help:display)                | ✅      |
+| Modeline                   | [`modeline`](help:modeline)              | ✅      |
+| Themes & colours           | [`themes`](help:themes)                  | ✅      |
+| Surround (`ds`/`cs`/`ys`)  | [`surround-mode`](help:surround-mode)    | ✅      |
+| Terminal buffers           | [`terminal-mode`](help:terminal-mode)    | ✅      |
+| Folding                    | [`folding`](help:folding)                | ✅      |
+| Insert completion          | [`completion`](help:completion)          | ✅      |
+| Picker & marginalia        | [`picker`](help:picker)                  | ✅      |
+| Options and configuration  | [`options`](help:options)                | ✅      |
+| LSP                        | [`lsp`](help:lsp)                        | ✅      |
+| `lsp-mode`                 | [`lsp-mode`](help:lsp-mode)              | ✅      |
+| `emacs-keys-mode`          | [`emacs-keys-mode`](help:emacs-keys-mode) | ✅      |
+| Claude Code                | [`claude-code-mode`](help:claude-code-mode) | ✅      |
+| opencode                   | [`opencode-mode`](help:opencode-mode)    | ✅      |
+| Languages                  | [`languages`](help:languages)            | ✅      |
+| Search and substitute      | _covered in command-line + ex-commands_  | 🟡      |
+| Registers, marks, macros   | _covered in modal-editing_               | 🟡      |
+| Help system                | [`help`](help:help)                      | ✅      |
+| Plugins                    | [`plugins`](help:plugins)                | ✅      |
+| Core plugins               | [`core-plugins`](help:core-plugins)      | ✅      |
+| Configuring with `init.rs` | [`init`](help:init)                      | ✅      |
+| Performance posture        | _planned_                                | ⛔      |
+| Tutor                      | [`tutor-mode`](help:tutor-mode)          | ✅      |
 
 Topics with `_planned_` aren't drafted yet — open an issue or send
 a PR if you want one prioritized.

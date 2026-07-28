@@ -161,7 +161,7 @@ Two threads, decided with Dhruva (2026-06-24):
     no new `Effect`/`DiffSignKind` variant, so there was nothing to propagate.
   - **Design** `diff-extraction.md` §4 → updated from "forward-looking" to "landed
     in CR.x" with the chord set + activation mechanism.
-  - **User docs** `docs/user/diff.md` → rewrote "Three-way merge": fixed the
+  - **User docs** `docs/user/diff-mode.md` → rewrote "Three-way merge": fixed the
     inverted `:diffsplit` roles (it's `:diffsplit <base> <remote>`, current buffer
     = local/ours), added the fugitive chord table + the `d2o`/`d2p` echo
     rationale + the `:diffget`/`:diffput <bufnr>` optional-target note.

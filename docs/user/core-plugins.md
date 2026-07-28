@@ -8,7 +8,7 @@ them off.
 
 This is distinct from **user plugins**, which you declare from a git repo or a
 local directory and which the editor builds on first boot — see
-[plugins.md](plugins.md) for that (the use-package model).
+[`plugins`](help:plugins) for that (the use-package model).
 
 ## The list
 

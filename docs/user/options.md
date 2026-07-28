@@ -175,7 +175,7 @@ there is no Lua / vimscript / elisp.
 > programmable surface now ships too — the WASM plugin host and the
 > `init.rs` (Rust→WASM) config loader are live (`:reload-config`),
 > and core plugins (e.g. `auto-pair`) load at boot. See
-> [`init.md`](init.md) and [`core-plugins.md`](core-plugins.md).
+> [`init`](help:init) and [`core-plugins`](help:core-plugins).
 > Track progress in
 > [`../dev/operations/implementation.md`](../dev/operations/implementation.md).
 

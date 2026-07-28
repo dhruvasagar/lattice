@@ -112,7 +112,7 @@ rewrite a global default). See
 |-----------------------|--------------------------------------------------------------------------------------------|
 | `hover-mode`          | The hover popup buffer (composed with `markdown-mode`).                                    |
 | `auto-pair-mode`      | Auto-close brackets / quotes — the `auto-pair` core plugin (WASM), on by default; toggle with `:auto-pair-mode`. |
-| `surround-mode`       | vim-surround operators (`ds`, `cs`, `ys`, `S` in visual) — native built-in, always active on document buffers. See [`surround`](surround.md). |
+| `surround-mode`       | vim-surround operators (`ds`, `cs`, `ys`, `S` in visual) — native built-in, always active on document buffers. See [`surround`](help:surround-mode). |
 
 ---
 

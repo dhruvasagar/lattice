@@ -740,11 +740,11 @@ pub enum AppEffect {
     /// trampolines through `Action::SearchTrigger` /
     /// `Editor::do_search` (both deleted).
     SearchTrigger { query: String },
-    /// M.6.1 (2026-06-01): `<CR>` chord in project-search-multibuffer-mode.
+    /// M.6.1 (2026-06-01): `<CR>` chord in project-search-mode.
     /// Resolves the excerpt under cursor → source path → opens
     /// the file at the matched row. M.10.3 (2026-06-03) made
     /// this mode-owned: the search mode's `on_activate`
-    /// M.6.1 (2026-06-01): `gr` chord in project-search-multibuffer-mode.
+    /// M.6.1 (2026-06-01): `gr` chord in project-search-mode.
     /// Re-runs the scan with the view's current query. M.10.5
     /// (2026-06-03) made this mode-owned: the search mode's
     /// `on_activate` registers a closure that intercepts via

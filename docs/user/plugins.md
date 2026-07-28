@@ -25,7 +25,7 @@ feature uses — it is not a second-class bolt-on.
 > manager view, the `init.rs` config path, and the full boundary-trace
 > observability stack (`:plugin-trace`, `plugin.trace-level`, guest logging).
 > **`auto-pair` now ships as the first *core plugin*** — prebuilt, discovered at
-> boot, on by default (see [core-plugins.md](core-plugins.md)). The frontier is
+> boot, on by default (see [`core-plugins`](help:core-plugins)). The frontier is
 > more core plugins (`git-gutter`, rainbow-delimiters) plus the **use-package
 > layer** — declaring *user* plugins from a git/local source and building them on
 > first boot (the plugin-manager PM.5–PM.8 slices).
@@ -58,7 +58,7 @@ Lattice has **two plugin roots**:
 - **Core plugins** ship *with* lattice — prebuilt components in a runtime root
   beside the binary, discovered at boot at the bundled tier, and enabled by
   default via a `<id>.enabled` gate. `auto-pair` is the first. You configure or
-  disable them, you don't install them. See **[core-plugins.md](core-plugins.md)**.
+  disable them, you don't install them. See **[`core-plugins`](help:core-plugins)**.
 - **User plugins** live in `~/.config/lattice/plugins/` — you install them (drop a
   built component there, or, with the use-package layer, declare a git/local
   source that the editor builds on first boot). These load at the user-installed
@@ -247,6 +247,6 @@ the manifest format, fuel budgets, and a worked `fuzzy-finder` example, see the
 
 ## See also
 
-- [Options / configuration](options.md) — the typed-option system plugins register into (and where `plugin.trace-level` lives).
-- [Modes](modes.md) — major/minor modes, shipping as components.
-- [Completion](completion.md) and [LSP](lsp.md) — seams a completion-source plugin mirrors.
+- [Options / configuration](help:options) — the typed-option system plugins register into (and where `plugin.trace-level` lives).
+- [Modes](help:modes) — major/minor modes, shipping as components.
+- [Completion](help:completion) and [LSP](help:lsp) — seams a completion-source plugin mirrors.

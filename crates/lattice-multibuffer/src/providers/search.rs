@@ -12,7 +12,7 @@
 //!    source events via M.4.
 //! 3. Seeds initial provider state (query, options, scanning).
 //! 4. Sets the headerline to `InProgress { label: "Searching" }`.
-//! 5. Activates `ProjectSearchMultibufferMode` (this minor's
+//! 5. Activates `ProjectSearchMode` (this minor's
 //!    `on_activate` subscribes to `ProjectSearchBatchReady` +
 //!    `ProjectSearchCompleted` and forwards them into
 //!    `MultibufferDocumentHandle::append_excerpts` /
@@ -48,7 +48,7 @@ use crate::{Excerpt, ExcerptHeader, HeaderlineStatus};
 // ─────────────────────────────────────────────────────────────────
 
 // ─────────────────────────────────────────────────────────────────
-// Typed options (defined by ProjectSearchMultibufferMode)
+// Typed options (defined by ProjectSearchMode)
 // K.4.6 follow-up (2026-06-02): per
 // [[feedback_mode_owns_its_surface]] the project-search minor
 // mode owns its options. Bound to the `search` group registered
@@ -389,19 +389,19 @@ lattice_protocol::register_event!(
 // Provider-minor mode
 // ─────────────────────────────────────────────────────────────────
 
-/// `project-search-multibuffer-mode` — provider-minor for
+/// `project-search-mode` — provider-minor for
 /// project-search views. Contributes `ReadOnly = true` in M.6.0
 /// (wgrep-style editable results land in a follow-up).
-pub struct ProjectSearchMultibufferMode;
+pub struct ProjectSearchMode;
 
-impl ProjectSearchMultibufferMode {
+impl ProjectSearchMode {
     pub fn mode_id() -> ModeId {
-        ModeId::new("project-search-multibuffer-mode")
+        ModeId::new("project-search-mode")
     }
 }
 
 /// K.2.5 (2026-06-02): static keymap catalog for
-/// `ProjectSearchMultibufferMode`.
+/// `ProjectSearchMode`.
 ///
 /// One action chord:
 /// - `g` `r` → `action:search-refresh` (re-run scan with the
@@ -431,7 +431,7 @@ fn project_search_keymap_entries() -> &'static [KeymapEntry] {
     })
 }
 
-pub struct ProjectSearchMultibufferModeGuard {
+pub struct ProjectSearchModeGuard {
     forwarder: Option<tokio::task::JoinHandle<()>>,
     subs: Vec<lattice_runtime::SubscriptionId>,
     bus: Arc<EventBus>,
@@ -443,7 +443,7 @@ pub struct ProjectSearchMultibufferModeGuard {
     _action_handler_registrations: Vec<ActionHandlerRegistration>,
 }
 
-impl Drop for ProjectSearchMultibufferModeGuard {
+impl Drop for ProjectSearchModeGuard {
     fn drop(&mut self) {
         if let Some(h) = self.forwarder.take() {
             h.abort();
@@ -458,8 +458,8 @@ impl Drop for ProjectSearchMultibufferModeGuard {
     }
 }
 
-impl Mode for ProjectSearchMultibufferMode {
-    type Guard = ProjectSearchMultibufferModeGuard;
+impl Mode for ProjectSearchMode {
+    type Guard = ProjectSearchModeGuard;
 
     fn id(&self) -> ModeId {
         Self::mode_id()
@@ -502,7 +502,7 @@ impl Mode for ProjectSearchMultibufferMode {
             let view_id = lattice_core::BufferId(proto_view_id.raw() as u32);
             let mb_registry_arc = ctx.service::<MultibufferRegistryHandle>().ok_or_else(|| {
                 lattice_mode::ModeActivationError::MissingCapability {
-                    mode: ProjectSearchMultibufferMode::mode_id(),
+                    mode: ProjectSearchMode::mode_id(),
                     missing: CapabilitySet::empty(),
                 }
             })?;
@@ -708,7 +708,7 @@ impl Mode for ProjectSearchMultibufferMode {
                                 // `options.context_lines` (resolved
                                 // from the `search.context_size`
                                 // typed option, defined by
-                                // `ProjectSearchMultibufferMode`).
+                                // `ProjectSearchMode`).
                                 //
                                 // - context_lines == 0 (default):
                                 //   one single-row excerpt per
@@ -843,7 +843,7 @@ impl Mode for ProjectSearchMultibufferMode {
                 }
             });
 
-            Ok(ProjectSearchMultibufferModeGuard {
+            Ok(ProjectSearchModeGuard {
                 forwarder: Some(forwarder),
                 subs,
                 bus,
@@ -917,7 +917,7 @@ pub fn project_search(
         }
     }
 
-    activator.activate_minor_by_id(view_id, ProjectSearchMultibufferMode::mode_id());
+    activator.activate_minor_by_id(view_id, ProjectSearchMode::mode_id());
 
     let cancel = search_svc
         .state(view_id)
@@ -1190,8 +1190,8 @@ fn scan_file(path: &Path, matcher: &Matcher, max_hits: usize) -> Vec<u32> {
 /// flexibility.
 pub fn register_project_search_mode(mode_registry: &mut ModeRegistry) {
     mode_registry
-        .register(ProjectSearchMultibufferMode)
-        .expect("project-search-multibuffer-mode registers without conflict at boot");
+        .register(ProjectSearchMode)
+        .expect("project-search-mode registers without conflict at boot");
 }
 
 /// M.6 boot helper — register the service handle. Call in the

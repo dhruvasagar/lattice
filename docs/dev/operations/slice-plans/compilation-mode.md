@@ -12,7 +12,7 @@
 > [`../../architecture/error-list.md`](../../architecture/error-list.md)
 > (the core error-list / quickfix substrate — CM.2/CM.7/CM.8). This file
 > owns *when + in what order + status*. User docs:
-> `docs/user/compilation.md`, `docs/user/error-list.md`.
+> `docs/user/compilation-mode.md`, `docs/user/error-list.md`.
 
 Native built-in (`lattice-compilation` crate + `SubsystemBoot` install
 seam). Option C: streaming `*compilation*` buffer primary, quickfix
@@ -209,7 +209,7 @@ green; ship doc + bench + test + graceful-error together.
     `:diagnostics`/`do_list_diagnostics` (shared `PickerSource::LspLocations`
     + `JumpToLspLocation`). The third view of the list (step / pick /
     group). Host-only effect (WIT→`None`). Tests in `quickfix_navigation.rs`.
-  - **Docs:** `docs/user/error-list.md`, `docs/user/compilation.md`,
+  - **Docs:** `docs/user/error-list.md`, `docs/user/compilation-mode.md`,
     `docs/dev/architecture/error-list.md` all ✅ updated (readable
     `next-error` names + vim `:c*` aliases, `q`-chords, picker,
     no-fallback, three views). Full quickfix→error-list type rename.

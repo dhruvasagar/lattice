@@ -189,7 +189,27 @@ caught two forward references (`markdown-mode`, `snippet-completion-mode`)
 in the first drafts, and the index test enumerated all 23 missing
 index rows rather than leaving them to be spotted by eye.
 
-### HD.4 — family + internal modes 📝
+### HD.4 — family + internal modes ⛔ blocked on the embed budget
+
+**Blocker.** User docs are embedded in the binary via `include_str!`,
+under a 512K soft budget guarded by
+`embedded_user_docs_stay_under_size_budget`. HD.3 took `docs/user` to
+**498K — 14K of headroom**. The 33 pages HD.4 adds (19 language, 6
+display, 8 internal) will breach it at roughly 2–4K each.
+
+That test's own doc comment forbids the easy out: *"Action when this
+test fails: pick one of the options in
+`docs/dev/operations/embedded-docs-budget.md` (compress, feature-gate,
+lazy-load). Do NOT just bump the budget number."* So the embedding
+model is a decision to take before HD.4 writes anything — compress
+(gzip/deflate, ~5× reduction, keeps the works-offline property),
+feature-gate, or lazy-load from disk (loses works-offline).
+
+Note the language-mode pages are the cheapest to shrink: 19 of them
+differ only in grammar and a few settings, so whatever is decided,
+they should share a template rather than 19 hand-written variants.
+
+#### Scope once unblocked
 
 19 language majors and 6 display minors get standalone docs;
 `languages.md` and `display.md` become index pages pointing at them.

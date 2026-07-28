@@ -428,6 +428,90 @@ mod tests {
         );
     }
 
+    /// HD.2 — an anchored link (`help:magit#options`) must name a
+    /// heading that exists in the target topic.
+    ///
+    /// `do_open_help_topic` treats a missing anchor as "open the topic
+    /// unscrolled" rather than an error — the page is still the right
+    /// answer, so failing loudly at the user would be worse than
+    /// landing at the top. That leniency is what makes this test
+    /// necessary: a renamed heading silently degrades every link
+    /// pointing at it, and nothing at runtime would say so.
+    ///
+    /// Slugs follow `generate_heading_anchors` (GitHub-style:
+    /// lowercase, non-alphanumeric runs collapsed to `-`, edges
+    /// trimmed), with inline code backticks stripped first so a
+    /// heading like `` ## `C-c g` — dispatch `` slugs the way its
+    /// rendered text reads.
+    #[test]
+    fn every_anchored_help_link_names_a_heading_that_exists() {
+        fn slug(heading: &str) -> String {
+            let plain = heading.replace('`', "");
+            let mut out = String::new();
+            let mut pending_dash = false;
+            for c in plain.chars() {
+                if c.is_ascii_alphanumeric() {
+                    if pending_dash && !out.is_empty() {
+                        out.push('-');
+                    }
+                    pending_dash = false;
+                    out.extend(c.to_lowercase());
+                } else {
+                    pending_dash = true;
+                }
+            }
+            out
+        }
+
+        let docs_user = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/user");
+        let mut headings: std::collections::HashMap<String, std::collections::HashSet<String>> =
+            std::collections::HashMap::new();
+        let mut bodies: Vec<(String, String)> = Vec::new();
+
+        for entry in std::fs::read_dir(&docs_user).expect("docs/user readable") {
+            let path = entry.expect("dir entry").path();
+            if path.extension().and_then(|s| s.to_str()) != Some("md") {
+                continue;
+            }
+            let stem = path.file_stem().and_then(|s| s.to_str()).expect("stem");
+            let topic = if stem == "README" { "index" } else { stem }.to_string();
+            let text = std::fs::read_to_string(&path).expect("read md");
+            let set: std::collections::HashSet<String> = text
+                .lines()
+                .filter_map(|l| l.strip_prefix('#'))
+                .map(|l| slug(l.trim_start_matches('#').trim()))
+                .collect();
+            headings.insert(topic.clone(), set);
+            bodies.push((topic, strip_code(&text)));
+        }
+
+        let mut broken: Vec<String> = Vec::new();
+        for (from, text) in &bodies {
+            for (idx, _) in text.match_indices("](help:") {
+                let rest = &text[idx + "](help:".len()..];
+                let Some(end) = rest.find(')') else { continue };
+                let Some((topic, anchor)) = rest[..end].split_once('#') else {
+                    continue;
+                };
+                if let Some(known) = headings.get(topic)
+                    && !known.contains(anchor)
+                {
+                    broken.push(format!(
+                        "{from}.md: `help:{topic}#{anchor}` — `{topic}` has no such heading"
+                    ));
+                }
+            }
+        }
+
+        assert!(
+            broken.is_empty(),
+            "anchored help links pointing at headings that no longer exist \
+             (they open the topic unscrolled, so nothing reports this at \
+             runtime):\n  {}",
+            broken.join("\n  ")
+        );
+    }
+
     /// HD.1 — the index lists every topic.
     ///
     /// `README.md` is the `index` topic, the page bare `:help` opens

@@ -1,6 +1,6 @@
 ---
 summary: "magit-status: the primary magit workhorse — staged / unstaged / untracked sections, stashes, recent commits, lazy inline diffs (via = for files, <CR> for stashes), a dedicated per-file diff buffer (d), file-level staging (s/u/x — no hunk-level staging), commit (cc/ca), and context-aware visit (<CR>, opens the commit buffer for a commit entry)."
-related: [magit, magit-buffers, magit-transient, ex:magit-status]
+related: [magit, magit-transient, ex:magit-status]
 ---
 
 # magit-status-mode
@@ -20,7 +20,7 @@ Open it with **`C-x g`** or **`:magit-status`** from any buffer.
 > for diffs too large to read comfortably inline), file-level staging
 > (`s`/`u`/`x` — there is no hunk-level staging anywhere in this
 > buffer), commit (`cc`/`ca`), context-aware visit (`<CR>`, opens the
-> dedicated [commit buffer](help:magit-buffers#commit-buffer) for a
+> dedicated [commit buffer](help:magit-commit-mode) for a
 > commit entry), manual refresh (`gr`), and close (`q`) are shipped.
 > `TAB` genuinely folds:
 > closing a file's fold hides its inline diff, and each `@@` hunk
@@ -47,7 +47,7 @@ Open it with **`C-x g`** or **`:magit-status`** from any buffer.
 | `x` | Discard the file at cursor (asks for confirmation first) |
 | `=` | Toggle inline diff for the file at cursor |
 | `d` | Open the file at cursor's diff in a dedicated buffer (against the section's baseline) |
-| `cc` | Open the [commit buffer](help:magit-buffers#commit-buffer) |
+| `cc` | Open the [commit buffer](help:magit-commit-mode) |
 | `ca` | Amend the previous commit |
 | `p` | Disabled — shows an error (see [Staging and unstaging](#staging-and-unstaging)) |
 | `<CR>` | Context-aware open/visit at cursor (open file, toggle a stash's inline patch, open the commit buffer for a commit entry) |
@@ -124,7 +124,7 @@ patch inline, at the cursor — the same mechanism `=` uses for files.
 ### Recent commits
 
 Last N commits (default 20) with abbreviated SHAs and subjects.
-`<CR>` opens the dedicated [commit buffer](help:magit-buffers#commit-buffer)
+`<CR>` opens the dedicated [commit buffer](help:magit-commit-mode)
 for the commit at cursor — the same target `:magit-log`'s own `<CR>`
 opens, and every other magit view that shows a per-row SHA (log,
 blame, rebase). This used to toggle the commit's patch inline (the
@@ -193,7 +193,7 @@ Hunk navigation only works for files whose diff is currently expanded
 
 ### New commit (`cc`)
 
-Press `cc` to open the [commit buffer](help:magit-buffers#commit-buffer)
+Press `cc` to open the [commit buffer](help:magit-commit-mode)
 (`*magit:commit*`). The commit buffer shows the staged diff as a read-
 only preview and provides an editable message region. `C-c C-c` creates
 the commit; `C-c C-k` aborts.
@@ -217,7 +217,7 @@ on what's under the cursor:
 |---|---|
 | File entry (staged / unstaged) | Open the file for editing (working-tree version) |
 | Untracked file | Open the file for editing |
-| Commit line | Open the dedicated [commit buffer](help:magit-buffers#commit-buffer) for that commit |
+| Commit line | Open the dedicated [commit buffer](help:magit-commit-mode) for that commit |
 | Stash entry | Toggle the stash's patch inline (same mechanism as `=`) |
 | A diff content line (inside an expanded entry) | Nothing — `<CR>` only acts on a classified file/stash/commit line, not on the diff text itself |
 

@@ -60,7 +60,7 @@ unnoticed. Only the 59 `](help:topic)` links worked.
 | Slice | Description | Status |
 |---|---|---|
 | HD.1 | Mode-aligned renames, link rewrite, guard tests, describe-mode ↔ help cross-link | ✅ |
-| HD.2 | Split `magit-buffers.md` into per-mode docs | 📝 |
+| HD.2 | Split `magit-buffers.md` into per-mode docs | ✅ |
 | HD.3 | Docs for the ~22 user-facing modes with no coverage | 📝 |
 | HD.4 | Docs for the family modes (19 language, 6 display) + internals | 📝 |
 
@@ -110,17 +110,46 @@ unnoticed. Only the 59 `](help:topic)` links worked.
 in sync. Every in-repo reference was updated in the same pass; notes
 outside the repo will break.
 
-### HD.2 — magit per-mode docs 📝
+### HD.2 — magit per-mode docs ✅ (2026-07-28)
 
-`magit-buffers.md` covers 10 modes in one page. Split into
-`magit-commit-mode.md`, `magit-revision-mode.md`,
-`magit-file-revision-mode.md`, `magit-diff-mode.md`,
-`magit-log-mode.md`, `magit-blame-mode.md`, `magit-stash-mode.md`,
-`magit-stash-show-mode.md`, `magit-branch-mode.md`,
-`magit-rebase-mode.md`. `magit.md` stays the subsystem umbrella;
-`magit-transient.md` stays (the dispatch menus are not a mode).
-`magit-core-mode` and `magit-global-mode` need docs too — their chord
-surfaces are currently described inside `magit.md`.
+`magit-buffers.md` covered 10 modes in one page. Retired; each mode now
+has its own topic, so `:help magit-log-mode` reaches the log buffer's
+page directly instead of an anchor part-way down a 400-line document.
+
+12 new docs: `magit-commit-mode`, `magit-revision-mode`,
+`magit-file-revision-mode`, `magit-diff-mode`, `magit-log-mode`,
+`magit-blame-mode`, `magit-stash-mode`, `magit-stash-show-mode`,
+`magit-branch-mode`, `magit-rebase-mode`, plus `magit-core-mode` and
+`magit-global-mode` — the two shared modes, whose chord surfaces were
+previously buried inside `magit.md`.
+
+`magit.md` stays the subsystem umbrella and gains the cross-cutting
+Headerline table (one row per view, each linking its mode's page); its
+duplicated magit-core chord table is now a pointer to
+`magit-core-mode`. `magit-transient.md` stays as-is — the dispatch
+menus are not a mode.
+
+**Stale claims corrected against source while splitting** (the split
+forced a read of every mode's real keymap, which is how these
+surfaced):
+
+- Branch `d` was documented as deleting "without confirmation, no
+  confirmation dialog, no destructive-action warning". MG.12 gave it
+  an `Effect::Confirm` two-step; the doc had never caught up.
+- `magit.log.count` / `.graph` / `.decorate` and
+  `magit.blame.author-width` / `.date-format` were documented as the
+  configuration lever for those views. `lattice-magit` registers **no
+  options at all** — `:set` on any of them fails with `unknown
+  option`. `magit.md` already said so in its Options section, so the
+  page contradicted itself; the per-mode pages now state the values
+  are hardcoded and point at that section.
+
+**Test added:** `every_anchored_help_link_names_a_heading_that_exists`.
+`do_open_help_topic` treats a missing anchor as "open the topic
+unscrolled" rather than erroring — correct behaviour (the page is
+still the right answer), but it means a renamed heading silently
+degrades every link pointing at it with nothing reporting it at
+runtime. Verified non-vacuous by injecting a broken anchor.
 
 ### HD.3 — the undocumented user-facing modes 📝
 

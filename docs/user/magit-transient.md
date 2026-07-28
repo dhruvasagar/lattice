@@ -1,6 +1,6 @@
 ---
 summary: "magit-transient: the dispatch (C-c g) and file-dispatch (C-c f) grouped menus. C-c g opens every magit buffer plus fetch/pull/push, with commit and stash submenus. C-c f stages/unstages/discards and opens diff/log/blame for the current buffer's file. Keys follow Emacs magit's own. The substrate also supports toggleable flags, argument inputs, and live previews, but no shipped magit menu uses them yet."
-related: [magit, magit-status, magit-buffers, picker]
+related: [magit, magit-status, picker]
 ---
 
 # Magit transient menus
@@ -87,7 +87,7 @@ Opens from any buffer. Groups, as they actually render today:
 thing `:magit-status`/`:magit-diff`/`:magit-log`/`:magit-branch`/
 `:magit-rebase` do. Once you're in that buffer, use its own direct
 chords (`s`/`u`/`x`/`<CR>`/… — see
-[`magit-buffers`](help:magit-buffers)) for the actual operations.
+[`magit`](help:magit)) for the actual operations.
 
 Two submenus drill down:
 
@@ -169,9 +169,9 @@ path to resolve and the key does nothing.
 | `s` | `git add <file>` |
 | `u` | `git reset HEAD -- <file>` (unstage, keep working-tree changes) |
 | `x` | `git checkout -- <file>` — **destructive**, asks `Discard changes to <path>?` first |
-| `d` | Opens `*magit:diff:<path>*` ([diff buffer](help:magit-buffers#diff-buffer)) |
-| `l` | Opens `*magit:log:<path>*` — the [log buffer](help:magit-buffers#log-buffer) scoped to this file's history |
-| `b` | Opens `*magit:blame:<path>*` ([blame buffer](help:magit-buffers#blame-buffer)) |
+| `d` | Opens `*magit:diff:<path>*` ([diff buffer](help:magit-diff-mode)) |
+| `l` | Opens `*magit:log:<path>*` — the [log buffer](help:magit-log-mode) scoped to this file's history |
+| `b` | Opens `*magit:blame:<path>*` ([blame buffer](help:magit-blame-mode)) |
 
 `x` is the only destructive item, and the only one that confirms
 first — same `y`/`n` confirmation dialog magit-status's own `x` uses.
@@ -215,7 +215,7 @@ include-untracked option; `P` always runs plain `git push` with no
 force or set-upstream option. No menu has an `Argument` item at all,
 so there's no way to type a branch name, remote name, or commit
 reference from inside a transient; the branch-create wizard's
-name-entry prompt (see [`magit-buffers`](help:magit-buffers#branch-buffer))
+name-entry prompt (see [`magit-branch-mode`](help:magit-branch-mode))
 is a separate mechanism — a picker-triggered follow-up prompt, not an
 in-place `Argument` field inside a transient menu. No shipped menu
 sets a `preview` closure, so there's no live command-preview line
@@ -231,7 +231,7 @@ as not-yet-real for magit specifically.
 Every magit buffer's own operations (`s`/`u`/`x`/`<CR>`/… in
 magit-status, `s`/`u` in magit-diff, `a`/`p`/`d`/`z` in magit-stash, …)
 are ordinary chords on that buffer's keymap — see
-[`magit-buffers`](help:magit-buffers) and
+[`magit`](help:magit) and
 [`magit-status-mode`](help:magit-status-mode). They are **not** exposed as items
 in the `C-c g` dispatch transient: for its buffer-opening items
 (`s`/`d`/`l`/`b`/`r`, plus `c c`/`c a`/`z l`) the dispatch transient

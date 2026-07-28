@@ -1,6 +1,6 @@
 ---
 summary: "Magit: git porcelain inside Lattice — status, commit, diff, log, blame, stash, branch, rebase, and transient dispatch menus, all backed by the VCS subsystem."
-related: [magit-status, magit-buffers, magit-transient, ex:magit-status, ex:magit-commit, ex:magit-diff, ex:magit-log, ex:magit-blame]
+related: [magit-status, magit-transient, ex:magit-status, ex:magit-commit, ex:magit-diff, ex:magit-log, ex:magit-blame]
 ---
 
 # Magit
@@ -116,20 +116,11 @@ because no diffs are pre-computed.
 ### Shared navigation (magit-core)
 
 Every magit buffer inherits a shared [minor mode](help:modes),
-`magit-core-mode`, which provides the following chords:
-
-| Chord | Action |
-|---|---|
-| `gr` | Refresh the current magit buffer |
-| `q` | Close the buffer (bury — return to previous) |
-| `]]` / `[[` | Next / previous top-level section |
-| `]f` / `[f` | Next / previous file or entry within the current section |
-| `]c` / `[c` | Next / previous hunk |
-| `TAB` | Toggle section or hunk fold at cursor |
-| `S-TAB` | Cycle section visibility (all → changed only → collapsed → all) |
-
-These work in every magit buffer: status, log, diff, stash, branch —
-the shared minor mode ensures a consistent navigation model.
+[`magit-core-mode`](help:magit-core-mode), which supplies `gr`
+(refresh), `q` (close), `]]` / `[[` / `]f` / `[f` / `]c` / `[c`
+(navigate at three scales), and `TAB` / `S-TAB` (fold). One movement
+vocabulary across status, log, diff, blame, stash, branch and rebase —
+see that page for the full table and what `gr` means per view.
 
 ---
 
@@ -180,6 +171,42 @@ normal mode — they map cleanly over the vim grammar.
 
 ---
 
+## Headerline
+
+Every magit buffer carries a sticky row above its first line saying
+what you are looking at — the thing the buffer's own text usually
+cannot tell you. A diff does not say which scope it diffed; a blame
+does not say how far back `p` has walked; a file-at-revision looks
+exactly like the live file. The row answers that:
+
+| Buffer | Headerline |
+|---|---|
+| [`magit-status-mode`](help:magit-status-mode) | `lattice  main ↑2 ↓1  3 staged  5 unstaged` |
+| [`magit-commit-mode`](help:magit-commit-mode) | `main  3 files +120 −18` — plus `AMEND` |
+| [`magit-revision-mode`](help:magit-revision-mode) | `a1b2c3d  Jane Doe  3 days ago  Fix the thing` |
+| [`magit-file-revision-mode`](help:magit-file-revision-mode) | `src/main.rs  @  a1b2c3d`, or `@  index` |
+| [`magit-diff-mode`](help:magit-diff-mode) | `staged  src/main.rs` |
+| [`magit-log-mode`](help:magit-log-mode) | `HEAD  50 commits  src/main.rs` |
+| [`magit-blame-mode`](help:magit-blame-mode) | `src/main.rs  @  a1b2c3d` — updates as `p` walks back |
+| [`magit-branch-mode`](help:magit-branch-mode) | `main  12 branches` |
+| [`magit-stash-mode`](help:magit-stash-mode) | `3 stashes` |
+| [`magit-stash-show-mode`](help:magit-stash-show-mode) | `stash@{2}  WIP on main: fix the thing` |
+| [`magit-rebase-mode`](help:magit-rebase-mode) | `onto  origin/main  4 commits` — plus `REBASE IN PROGRESS` |
+
+Fields are coloured by what they are — SHAs, branches, refs, and
+authors each take their own theme colour — rather than labelled, so the
+row stays short on a narrow split. Two theme elements are magit's own:
+`magit.headerline.label` (counts, paths, dates) and
+`magit.headerline.alert` (`AMEND`, `REBASE IN PROGRESS`); the rest
+reuse the `magit.*` colours the buffer bodies already use.
+`:colorscheme` repaints the row live.
+
+The row refreshes with its buffer — `gr`, and any action that rebuilds
+the view. It stays hidden until the buffer's first content lands, so
+nothing shifts down and back up while git answers.
+
+---
+
 ## Options
 
 `git.auto-head-diff` is registered through the typed-options system
@@ -210,9 +237,24 @@ exist, not ones that do.
 ## Help and discovery
 
 - `:help magit` — this page
-- `:help magit-status` — the [status buffer](help:magit-status-mode) deep-dive
-- `:help magit-buffers` — the [commit/diff/log/blame/stash/branch/rebase buffers](help:magit-buffers)
+- `:help magit-status-mode` — the [status buffer](help:magit-status-mode) deep-dive
 - `:help magit-transient` — the [transient dispatch menus](help:magit-transient)
+- `:help <mode>` for any view — every magit buffer has its own page,
+  named after its mode:
+  [`magit-commit-mode`](help:magit-commit-mode),
+  [`magit-revision-mode`](help:magit-revision-mode),
+  [`magit-file-revision-mode`](help:magit-file-revision-mode),
+  [`magit-diff-mode`](help:magit-diff-mode),
+  [`magit-log-mode`](help:magit-log-mode),
+  [`magit-blame-mode`](help:magit-blame-mode),
+  [`magit-stash-mode`](help:magit-stash-mode),
+  [`magit-stash-show-mode`](help:magit-stash-show-mode),
+  [`magit-branch-mode`](help:magit-branch-mode),
+  [`magit-rebase-mode`](help:magit-rebase-mode)
+- `:help magit-core-mode` — the [shared chords](help:magit-core-mode)
+  every magit buffer inherits
+- `:help magit-global-mode` — the [entry chords](help:magit-global-mode)
+  (`C-x g`, `C-c g`, `C-c f`)
 - `:magit-<Tab>` — list all magit ex-commands
 - `:describe-key` then press any magit chord to see its bound action
 - `:describe-mode` in a magit buffer to see the active mode's full keymap

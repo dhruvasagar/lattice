@@ -54,7 +54,18 @@ same surface).
 | Diff & merge               | [`diff-mode`](help:diff-mode)            | ✅      |
 | Magit                      | [`magit`](help:magit)                    | ✅      |
 | Magit status buffer        | [`magit-status-mode`](help:magit-status-mode) | ✅      |
-| Magit buffers              | [`magit-buffers`](help:magit-buffers)    | ✅      |
+| magit — commit buffer      | [`magit-commit-mode`](help:magit-commit-mode) | ✅      |
+| magit — commit detail      | [`magit-revision-mode`](help:magit-revision-mode) | ✅      |
+| magit — file at revision   | [`magit-file-revision-mode`](help:magit-file-revision-mode) | ✅      |
+| magit — diff buffer        | [`magit-diff-mode`](help:magit-diff-mode) | ✅      |
+| magit — log buffer         | [`magit-log-mode`](help:magit-log-mode)  | ✅      |
+| magit — blame buffer       | [`magit-blame-mode`](help:magit-blame-mode) | ✅      |
+| magit — stash list         | [`magit-stash-mode`](help:magit-stash-mode) | ✅      |
+| magit — stash detail       | [`magit-stash-show-mode`](help:magit-stash-show-mode) | ✅      |
+| magit — branch list        | [`magit-branch-mode`](help:magit-branch-mode) | ✅      |
+| magit — rebase todo        | [`magit-rebase-mode`](help:magit-rebase-mode) | ✅      |
+| magit — shared chords      | [`magit-core-mode`](help:magit-core-mode) | ✅      |
+| magit — entry chords       | [`magit-global-mode`](help:magit-global-mode) | ✅      |
 | Magit transient menus      | [`magit-transient`](help:magit-transient) | ✅      |
 | Display & layout           | [`display`](help:display)                | ✅      |
 | Modeline                   | [`modeline`](help:modeline)              | ✅      |

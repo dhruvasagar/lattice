@@ -180,8 +180,20 @@ No conditional branches on buffer state, no version checks, no shape calls. Ever
 | Fold change | folds version bump | rebuild chunks intersecting fold range |
 | Theme change | theme version bump | rebuild all chunks (rare event) |
 | Cursor / selection / visual range | overlays.cursor swap | none — overlay layer only |
+| `display.whitespace.*` / `:set list` | whitespace version bump | rebuild all chunks (markers are baked into `Cell.ch` at emission) |
 
 The cell-builder worker computes "smallest rebuild set" by intersecting the changed range against chunk ranges. For pure typing (single-line edits), this is one chunk worth of rebuild per keystroke.
+
+### The renderer-side half: don't paint a matrix built under different inputs
+
+The table above is what makes the *worker* rebuild. A renderer must also refuse to paint a matrix whose stamp disagrees with the live inputs, because the rebuild is async and a request already in flight when the config changed lands *after* it, storing pre-change cells into the pane's (stable-identity) matrix cell.
+
+Two axes are guarded at paint time, in both peers — TUI `display_stale` in `render.rs`, GPUI's `.filter(...)` on `cell_matrix` / `display_matrix` in `window.rs`:
+
+- **`text`** — the matrix lags the snapshot. Fall back to plain snapshot text: current content uncoloured beats pre-edit content coloured.
+- **`whitespace`** — the matrix was emitted under a different `display.whitespace.*` config. Markers live in `Cell.ch`, and the TUI's compose-loop decoration pre-pass deliberately skips cell-derived bodies (re-decorating desyncs source bytes once tabs expand), so painting such a matrix means `:set list` shows nothing and `:set nolist` keeps showing glyphs. Falling back lets the TUI's pre-pass decorate the raw text on the very same frame; GPUI drops to `shape_row` until the worker republishes.
+
+Compare against `CellsRenderState::whitespace_version_for_pane(pane_id)` (the stamp a matrix built *now* would carry), never against a locally recomputed hash — one producer, one comparison. The remaining axes (syntax, inlay, folds, theme) deliberately do **not** gate paint: they change often and their staleness is a colour/layout lag the overlay and next publish absorb, so gating on them would reintroduce whole-viewport flicker.
 
 ---
 

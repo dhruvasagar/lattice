@@ -2514,12 +2514,24 @@ impl EditorView {
             // fallback. `snapshot` is THIS pane's buffer, so the stale
             // guard is correct per pane. No focus-keyed branch
             // [[feedback_buffers_no_special_case]].
+            // W.4.t.2 (parity with the TUI's `display_stale`): the
+            // whitespace axis joins the guard. The builder bakes
+            // `display.whitespace.*` markers into the cells, so a matrix
+            // whose stamp disagrees with the live options was emitted
+            // under a different config — after `:set nolist` it would keep
+            // painting glyphs the user just turned off. Skipping it drops
+            // to the plain `shape_row` path for the frame or two until the
+            // worker rebuilds (the differing axis is what triggers that
+            // rebuild), same trade-off the text axis already makes.
             cell_matrix: {
                 let cells = rs_guard.cells.load();
+                let ws = cells.whitespace_version_for_pane(pane.id);
                 cells
                     .matrix_for_pane(pane.id)
                     .map(|cell| cell.load_full())
-                    .filter(|m| m.version.text == snapshot.text_version)
+                    .filter(|m| {
+                        m.version.text == snapshot.text_version && m.version.whitespace == ws
+                    })
             },
             // B3 (2026-06-04): the canonical DisplayMatrix is the GPU's
             // primary shaping source (cell_matrix above now feeds only the
@@ -2537,10 +2549,13 @@ impl EditorView {
             // shared path. Same per-pane stale guard.
             display_matrix: {
                 let cells = rs_guard.cells.load();
+                let ws = cells.whitespace_version_for_pane(pane.id);
                 cells
                     .display_matrix_for_pane(pane.id)
                     .map(|cell| cell.load_full())
-                    .filter(|m| m.version.text == snapshot.text_version)
+                    .filter(|m| {
+                        m.version.text == snapshot.text_version && m.version.whitespace == ws
+                    })
             },
             // T.5.b: the resolved table + builtin ids the display-line
             // path resolves syntax styles through (`resolve_syntax_style`),

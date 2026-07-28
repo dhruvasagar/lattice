@@ -4265,6 +4265,12 @@ pub(crate) fn compose_pane_lines(
     // array index, not a per-overlay name lookup (paramount #1).
     let overlay_resolved = &cells_rs.resolved_theme;
     let overlay_ids = &cells_rs.theme_ids;
+    // W.4.t.2: the whitespace stamp a matrix built RIGHT NOW would
+    // carry. The per-line body compose below compares the retained
+    // matrix's stamp against it — see the `display_stale` comment. One
+    // lookup per pane per frame (O(#panes)), hoisted out of the line
+    // loop like every other per-frame read here (paramount #1).
+    let current_whitespace_version = cells_rs.whitespace_version_for_pane(ctx.pane_id);
     // Fold-marker colours, resolved once per pane from the theme
     // (`gutter.fold.open` / `gutter.fold.closed`). Muted by cross-editor
     // convention; the GPUI peer resolves the same two elements. `DarkGray`
@@ -4509,7 +4515,23 @@ pub(crate) fn compose_pane_lines(
             //      (multi-edit batch, doc switch); painting current
             //      plain-text for a frame beats painting PRE-edit content,
             //      and the async worker recolours within a frame or two.
-            let display_stale = display_matrix.version.text != snap.text_version;
+            //   4. W.4.t.2: matrix whitespace config lags the options
+            //      (`version.whitespace` differs from what a matrix built
+            //      now would carry). The builder bakes whitespace markers
+            //      into `Cell.ch` at emission, and the compose-loop
+            //      pre-pass below deliberately skips cell-derived bodies
+            //      (it would double-decorate) — so a matrix built before
+            //      `:set list` paints UNDECORATED text and the pre-pass
+            //      declines to fix it. Toggling whitespace would then do
+            //      nothing visible until the async worker rebuilt. Same
+            //      trade-off as (3): fall back to raw text for a frame so
+            //      the pre-pass runs and the glyphs appear on the very
+            //      next paint; syntax colour catches up when the worker
+            //      republishes. Whitespace toggles are a rare, deliberate
+            //      gesture, so the momentary uncoloured frame costs
+            //      nothing on the hot path.
+            let display_stale = display_matrix.version.text != snap.text_version
+                || display_matrix.version.whitespace != current_whitespace_version;
             let spans = if display_stale {
                 Vec::new()
             } else {
@@ -7735,6 +7757,73 @@ mod tests {
         assert!(
             row0.contains("hello") && row0.contains('·'),
             "ws-mode on should show content + trailing dots: {row0:?}",
+        );
+    }
+
+    /// W.4.t.2: the same assertion as the sibling above, but with a
+    /// **late worker write** — a rebuild that was already in flight when
+    /// the toggle landed and finishes afterwards, storing cells built
+    /// under the PRE-toggle whitespace config into the pane's (shared,
+    /// stable-identity) matrix cell. Nothing re-runs the worker after
+    /// that, so this is the state a frame paints from.
+    ///
+    /// The builder bakes whitespace markers into `Cell.ch` at emission
+    /// and the compose-loop pre-pass deliberately skips cell-derived
+    /// bodies (re-decorating would desync source bytes), so without the
+    /// whitespace axis in the staleness guard the frame paints
+    /// undecorated text and `:set list` looks like it did nothing.
+    ///
+    /// This is the deterministic form of a flake: pre-fix, the sibling
+    /// test failed whenever the real worker lost this race (~50% of
+    /// full-suite runs under `--features system-clipboard`, green in
+    /// isolation).
+    #[test]
+    fn whitespace_shows_dots_when_a_late_worker_write_predates_the_toggle() {
+        let mut app = app_with("hello   \n", 5);
+        app.editor.publish_render_state();
+        let pane_id = app.panes().tree.active().id;
+        // Capture the PRE-toggle worker inputs: version stamp + whitespace
+        // config as they were when the in-flight rebuild started.
+        let stale_inputs = app.editor.render_state.load().cells.load_full();
+        assert!(
+            !stale_inputs.whitespace.show,
+            "precondition: the in-flight rebuild started with whitespace off"
+        );
+        // Toggle whitespace on. The option cascade republishes (and
+        // rebuilds) with the new config.
+        app.toggle_mode_by_name("whitespace-show-mode");
+        // Now the in-flight rebuild lands, stamping the pane's matrix cell
+        // with the pre-toggle version + undecorated cells.
+        let pane = stale_inputs
+            .panes
+            .iter()
+            .find(|p| p.pane_id == pane_id)
+            .expect("active document pane present in cells inputs");
+        let _ = lattice_host::cells_worker::recompute_pane(
+            pane,
+            lattice_host::cells_worker::CellTheme {
+                resolved: &stale_inputs.resolved_theme,
+                ids: &stale_inputs.theme_ids,
+            },
+            &stale_inputs.whitespace,
+        );
+        let live = app.editor.render_state.load().cells.load_full();
+        assert_ne!(
+            live.display_matrix_for_pane(pane_id)
+                .expect("pane matrix")
+                .load()
+                .version
+                .whitespace,
+            live.whitespace_version_for_pane(pane_id),
+            "precondition: the painted matrix carries the pre-toggle \
+             whitespace stamp"
+        );
+        let lines = compose_visible_lines(&app, &app.ad().snapshot.clone(), 5, 80);
+        let row0 = line_text(&lines[0]);
+        assert!(
+            row0.contains("hello") && row0.contains('·'),
+            "a stale-whitespace matrix must fall back to the raw-text \
+             pre-pass so the glyphs appear on this frame: {row0:?}",
         );
     }
 

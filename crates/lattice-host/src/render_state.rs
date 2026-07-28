@@ -1276,6 +1276,26 @@ impl CellsRenderState {
     ) -> Option<&Arc<arc_swap::ArcSwap<lattice_cells::CellMatrix>>> {
         self.pane_matrices.get(&pane_id)
     }
+
+    /// The **current** whitespace-axis stamp for `pane_id` — what a
+    /// matrix built right now would carry. A renderer compares it
+    /// against the matrix it is about to paint from
+    /// ([`lattice_cells::MatrixVersion::whitespace`]); a mismatch means
+    /// the cells were emitted under a *different* `display.whitespace.*`
+    /// configuration and their decoration is wrong until the worker
+    /// rebuilds.
+    ///
+    /// Falls back to the top-level aggregate when the pane has no entry
+    /// (non-Document leaf, or a publish gap) — that stamp is computed
+    /// from the same option fields, so the comparison stays meaningful
+    /// rather than silently passing.
+    pub fn whitespace_version_for_pane(&self, pane_id: lattice_core::ui::pane::PaneId) -> u64 {
+        self.panes
+            .iter()
+            .find(|p| p.pane_id == pane_id)
+            .map(|p| p.version.whitespace)
+            .unwrap_or(self.version.whitespace)
+    }
 }
 
 /// D.4.d.1.a (2026-05-29): per-visible-Document-pane build

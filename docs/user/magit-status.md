@@ -27,11 +27,14 @@ Open it with **`C-x g`** or **`:magit-status`** from any buffer.
 > inside an expanded diff is independently foldable and nested inside
 > the file's fold.
 >
-> **No headerline yet.** An earlier revision of this page claimed a
-> branch + ahead/behind headerline was active; it never was — the
-> function that would build it has no callers. Branch and ahead/behind
-> are tracked internally but not displayed anywhere. A headerline across
-> every magit buffer is slice MG.14.
+> **Headerline (MG.14).** A sticky row above the first line shows the
+> repository name, the checked-out branch with upstream tracking, and
+> the dirty counts — ` lattice  main ↑2 ↓1  3 staged  5 unstaged `, or
+> ` lattice  main  clean ` when there is nothing to commit. It refreshes
+> with the buffer (`gr` and every staging action), and every other magit
+> buffer carries the equivalent row for its own view. (An earlier
+> revision of this page claimed this headerline was already active when
+> it was not; MG.14 made the claim true.)
 
 ---
 
@@ -258,7 +261,8 @@ the `RepositoryWatcher`. The auto-refresh runs the same fast path as
 ## Edge cases
 
 - **Not a git repository:** the buffer shows `Not a git repository.`
-- **Detached HEAD:** the headerline shows `(HEAD detached at <sha>)`.
+- **Detached HEAD:** the headerline shows `HEAD` as the branch (what
+  `git rev-parse --abbrev-ref HEAD` reports), with no ahead/behind.
 - **Bare repository:** write operations (stage, commit, branch) are
   rejected with a user-visible message.
 - **Empty repository (no commits yet):** the staged / unstaged sections

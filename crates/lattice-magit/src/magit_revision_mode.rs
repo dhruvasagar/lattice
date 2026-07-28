@@ -26,6 +26,7 @@ use lattice_protocol::position::{Position, Range};
 use lattice_vcs::Repository;
 
 use crate::buffer_state::{BufferStateGuard, BufferStates};
+use crate::headerline;
 
 pub struct MagitRevisionMode;
 
@@ -138,6 +139,15 @@ impl Mode for MagitRevisionMode {
                 })
                 .unwrap_or_default();
 
+            // MG.14: the commit's identity (author, date, subject) is
+            // not in the buffer name, so the header is filled in below
+            // from the same `spawn_blocking` that runs `git show`.
+            let (hl, hl_registration) =
+                match headerline::install(&ctx, buffer_id, Self::mode_id().as_str()) {
+                    Some((h, reg)) => (Some(h), Some(reg)),
+                    None => (None, None),
+                };
+
             // MG.13: publish BEFORE the first `.await` — see the note
             // in `magit_branch_mode::on_activate`.
             let Some(states) = ctx.service::<RevisionStatesHandle>() else {
@@ -151,13 +161,20 @@ impl Mode for MagitRevisionMode {
                     sha: sha.clone(),
                 },
             );
-            let guard = BufferStateGuard::new((*states).clone(), buffer_id);
+            let guard = BufferStateGuard::new((*states).clone(), buffer_id)
+                .with_headerline(hl_registration);
 
             let wd = workdir.clone();
             let sha_for_task = sha.clone();
-            let text = tokio::task::spawn_blocking(move || run_show(&wd, &sha_for_task))
-                .await
-                .unwrap_or_default();
+            let (text, meta) = tokio::task::spawn_blocking(move || {
+                (
+                    run_show(&wd, &sha_for_task),
+                    run_show_meta(&wd, &sha_for_task),
+                )
+            })
+            .await
+            .unwrap_or_default();
+            headerline::publish(&hl, headerline::revision_fields(&meta));
             // `git show --stat -p` is header lines (commit/author/date/
             // message/stat-summary) followed by a unified diff — none
             // of the header lines start with `+`/`-`/`@@`/`diff --git`/
@@ -209,6 +226,27 @@ fn parse_stat_line(line: &str) -> Option<PathBuf> {
     let trimmed = line.trim_start();
     let (path, _rest) = trimmed.split_once(" | ")?;
     (!path.is_empty()).then(|| PathBuf::from(path.trim()))
+}
+
+/// MG.14 header data: the commit's short sha, author, relative date
+/// and subject. A separate `git show -s --format=…` rather than
+/// scraping `run_show`'s header, because that output is locale- and
+/// config-dependent (`log.date`, `i18n.logOutputEncoding`) while
+/// `--format` is not. `-s` suppresses the diff, so this is a
+/// metadata-only read next to the patch `run_show` already fetches.
+fn run_show_meta(workdir: &std::path::Path, sha: &str) -> headerline::RevisionMeta {
+    if sha.is_empty() {
+        return headerline::RevisionMeta::default();
+    }
+    let raw = std::process::Command::new("git")
+        .args(["show", "-s", "--format=%h%x00%an%x00%ar%x00%s", sha])
+        .current_dir(workdir)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .unwrap_or_default();
+    headerline::parse_revision_meta(&raw)
 }
 
 fn run_show(workdir: &std::path::Path, sha: &str) -> String {

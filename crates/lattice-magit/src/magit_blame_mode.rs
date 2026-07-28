@@ -18,6 +18,7 @@ use lattice_protocol::position::{Position, Range};
 use lattice_vcs::Repository;
 
 use crate::buffer_state::{BufferStateGuard, BufferStates};
+use crate::headerline::{self, MagitHeaderlineHandle};
 
 pub struct MagitBlameMode;
 
@@ -47,6 +48,10 @@ pub struct BlameState {
     /// working tree's current checkout).
     rev: String,
     pending_highlights: Option<lattice_mode::PendingSyntheticHighlightsHandle>,
+    /// MG.14: the buffer's headerline. `p` walks `rev` back to its
+    /// parent; without the header there is no way to tell how far
+    /// back you have walked.
+    headerline: Option<MagitHeaderlineHandle>,
 }
 
 /// MG.13: service alias for this mode's per-buffer state
@@ -112,7 +117,7 @@ impl Mode for MagitBlameMode {
                 action_name: "action:magit-blame-parent",
                 handler: Arc::new(|ctx: &ActionContext<'_>| {
                     let s = state(ctx)?;
-                    let (handle, wd, path, rev, pending, buffer_id) = {
+                    let (handle, wd, path, rev, pending, buffer_id, hl) = {
                         let g = s.lock().ok()?;
                         (
                             g.store.handle_for(g.buffer_id)?,
@@ -121,6 +126,7 @@ impl Mode for MagitBlameMode {
                             g.rev.clone(),
                             g.pending_highlights.clone(),
                             g.buffer_id,
+                            g.headerline.clone(),
                         )
                     };
                     let s2 = s.clone();
@@ -143,6 +149,10 @@ impl Mode for MagitBlameMode {
                         if let Ok(mut g) = s2.lock() {
                             g.rev = parent.clone();
                         }
+                        // MG.14: the header is the only place the
+                        // walked-to revision is visible — the blame
+                        // body itself looks identical at every step.
+                        headerline::publish(&hl, headerline::blame_fields(&path, &parent));
                         let wd3 = wd.clone();
                         let path2 = path.clone();
                         let parent2 = parent.clone();
@@ -189,6 +199,15 @@ impl Mode for MagitBlameMode {
 
             let pending_highlights = ctx.service::<lattice_mode::PendingSyntheticHighlights>();
 
+            // MG.14: path and revision are both known here, so the
+            // header is complete before the blame itself runs.
+            let (hl, hl_registration) =
+                match headerline::install(&ctx, buffer_id, Self::mode_id().as_str()) {
+                    Some((h, reg)) => (Some(h), Some(reg)),
+                    None => (None, None),
+                };
+            headerline::publish(&hl, headerline::blame_fields(&file_path, "HEAD"));
+
             // MG.13: publish BEFORE the first `.await` — see the note
             // in `magit_branch_mode::on_activate`.
             let Some(states) = ctx.service::<BlameStatesHandle>() else {
@@ -203,9 +222,11 @@ impl Mode for MagitBlameMode {
                     path: file_path.clone(),
                     rev: "HEAD".to_string(),
                     pending_highlights: pending_highlights.clone(),
+                    headerline: hl.clone(),
                 },
             );
-            let guard = BufferStateGuard::new((*states).clone(), buffer_id);
+            let guard = BufferStateGuard::new((*states).clone(), buffer_id)
+                .with_headerline(hl_registration);
 
             // Populate blame: blocking I/O on spawn_blocking, then apply
             // edit on the current task (no Runtime::new()).

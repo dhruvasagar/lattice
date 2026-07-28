@@ -208,12 +208,12 @@ for that file — a local edit to the buffer, not a full refresh (§6.3 has
 the real mechanism: a full-text `git diff` insert with syntax-highlight
 spans, not virtual-row deletion blocks or a per-file cache).
 
-**Headerline:** target design — a view-header virtual row showing branch
-name + repo status indicator + upstream tracking (ahead/behind counts).
-**Not wired up.** `SectionIndex::branch_status_line()` computes the string
-(`branch [N↑] [N↓]`) but nothing calls it yet; branch/ahead/behind data is
-computed during refresh but not currently surfaced to the user anywhere in
-the buffer.
+**Headerline:** a sticky virtual row above line 0 showing repo name,
+branch, upstream tracking (ahead/behind), and dirty counts — ` lattice
+main ↑2 ↓1  3 staged  5 unstaged `, or ` lattice  main  clean `. Built
+from the same `SectionIndex` the body is formatted from, so it costs no
+git call of its own, and re-set by every refresh path. See §4.9 for the
+mechanism, which is shared by every magit view.
 
 ### 4.2 magit-log (`*magit:log*`)
 
@@ -285,7 +285,13 @@ ex-command is unaffected; it still opens the bare `*magit:diff*` buffer.
 Each is a synthetic Document with its own major mode:
 
 - **magit-stash** (`*magit:stash*`): stash list with apply/pop/drop/create
-  operations.
+  operations, one row per stash as `  stash@{N} <message>` — the same row
+  shape magit-status renders for its Stashes section, so a stash reads
+  identically in both. Every chord in the buffer locates its stash by
+  parsing `stash@{N}` back out of the row under the cursor, which is why
+  the label is load-bearing rather than decorative: MG.15 found the list
+  rendering a bare message and the parser reading a label that was never
+  written, leaving `a`/`p`/`d` silently dead. `<CR>` opens §4.8.
 - **magit-branch** (`*magit:branch*`): branch list with checkout/delete/merge
   operations. `c` (create) opens a two-step picker-driven wizard (pick base
   branch, then type the new name) — see §12.9.
@@ -311,6 +317,93 @@ open this buffer rather than duplicating a "show one commit" view per
 caller. No mode-specific chords — `q`/`gr`/nav come from `magit-core` (this
 mode is in its `ActivationPolicy::Majors` list); `gr` is a harmless no-op
 here since a commit's content doesn't change under a fixed sha.
+
+### 4.8 magit-stash-show (`*magit:stash:<n>*`)
+
+A read-only `git stash show -p stash@{n}` view of one stash's patch,
+opened by `<CR>` in the stash list. Before MG.15 the stash list was the
+only list view with no `<CR>` — the sole exception to the `<CR>` uniformity
+rule (§12.3) — and the only way to see a stash's contents was magit-status,
+where `<CR>` toggles the patch inline among the other sections.
+
+That inline toggle stays: there a stash is one row among many and
+expanding in place keeps the surrounding context. Here the stash IS the
+subject, which is the same reasoning that gives a commit both an inline
+`=` and a dedicated `*magit:commit:<sha>*`.
+
+Fixed-content, like magit-revision: no mode-specific chords
+(`q`/`gr`/nav come from magit-core), and `gr` is a deliberate no-op
+because `stash@{n}`'s patch does not change under a fixed index.
+Dropping or popping a stash renumbers its *neighbours*, which is why the
+buffer name carries the index it was opened at and the stash list — not
+this buffer — is what refreshes.
+
+### 4.9 Headerline — every view answers "what am I looking at?"
+
+Each magit view is a slab of git output whose identity lives outside the
+text. `*magit:diff*` does not say which scope it diffed; `*magit:blame:
+x.rs*` does not say which revision `p` has walked back to; the status
+buffer computed branch and ahead/behind on every refresh and displayed
+neither. Every view therefore carries one sticky row above line 0,
+through `lattice_cells::{Headerline, HeaderlineProvider}` — the same
+mechanism `lattice-multibuffer` and `lattice-compilation` use.
+
+**One provider, every view.** There is a single `Headerline` impl
+(`lattice_magit::headerline::MagitHeaderline`); the per-view difference
+is *data*, a `Vec<Field>` where each `Field` is a string plus a
+`FieldStyle` naming its git role (`Sha`, `Branch`, `Ref`, `Author`,
+`Alert`, `Label`). No `match buffer_kind`, no impl per view — adding a
+view means adding a field-builder function.
+
+**Compact and symbol-led**, not `Head:`-labelled: colour carries the
+field identity, so the row stays readable on a narrow split. This
+matches the two headerlines lattice already ships rather than Emacs
+magit's in-body `Head:` / `Merge:` lines.
+
+| View | Row |
+|---|---|
+| magit-status | `lattice  main ↑2 ↓1  3 staged  5 unstaged` |
+| magit-commit | `main  3 files +120 −18  AMEND` |
+| magit-revision | `a1b2c3d  Jane Doe  3 days ago  Fix the thing` |
+| magit-file-revision | `src/main.rs  @  a1b2c3d` (or `@  index`) |
+| magit-diff | `staged  src/main.rs` |
+| magit-log | `HEAD  50 commits  src/main.rs` |
+| magit-blame | `src/main.rs  @  a1b2c3d` |
+| magit-branch | `main  12 branches` |
+| magit-stash | `3 stashes` |
+| magit-stash-show | `stash@{2}  WIP on main: fix the thing` |
+| magit-rebase | `onto  origin/main  4 commits  REBASE IN PROGRESS` |
+
+**No git call of its own.** Fields are produced by the same blocking
+builder that produces the buffer's text — `build_and_format`,
+`build_branch_list`, `run_log`, and peers — so a header is a byproduct
+of work already done. The two exceptions are honest: magit-revision runs
+one `git show -s --format=%h%x00%an%x00%ar%x00%s` (a metadata-only read
+next to the patch it already fetches, and `--format` rather than
+scraping `git show`'s locale-dependent header), and magit-commit adds
+one `rev-parse --abbrev-ref HEAD` inside the `spawn_blocking` that
+already runs two git commands.
+
+**No work per tick.** The cells worker polls `version()` every tick and
+calls `render()` only when it advanced. `set()` compares before it
+bumps, so a `gr` that finds the same branch and the same counts costs
+one comparison and no repaint (paramount goal #1). Measured:
+`version()` 26ns, `render()` 581ns, an unchanged `set()` 129ns — see
+the `headerline` bench.
+
+**Theme-live.** Colours resolve inside `render()`, and the theme's
+resolved version folds into the row's own, so `:colorscheme` repaints
+the header rather than leaving it on the previous palette. The four git
+roles reuse the MG.11 `magit.*` palette (registered as builtins because
+`lattice-syntax`'s styled-span table resolves them by builtin id); the
+two header-only roles, `magit.headerline.alert` and
+`magit.headerline.label`, are registered by the mode itself.
+
+**Lifecycle.** The provider is installed in `on_activate`'s synchronous
+prefix, alongside the MG.13 state publish, and renders nothing (`render`
+returns `None`) until its first fields land — so a buffer never shows a
+half-built row that shifts content down and back up. Teardown rides the
+mode's Guard: `HeaderlineRegistration::drop` unregisters.
 
 ## 5. Mode decomposition
 
@@ -495,8 +588,11 @@ repos because it pre-computes every diff on status open; Lattice never does.
 **Why magit-commit is the exception:** The commit buffer exists solely to
 review staged changes and write a message. The staged diff IS the content
 the user came to see — deferring it would leave an empty buffer. However,
-it's scoped to staged changes only (not the full working tree), and loading
-is async with a headerline progress indicator.
+it's scoped to staged changes only (not the full working tree), and the
+load is async. There is no progress indicator: the buffer carries a
+headerline (§4.9) but it reports what is staged, not load progress —
+the row appears with the content, which for a staged diff is fast enough
+that a spinner would flash rather than inform.
 
 ### 6.2 Status buffer refresh — fast path
 
@@ -2034,7 +2130,7 @@ Magit views build incrementally on top.
 | **VCS.2** | Layer 2 subsystem — `RepositoryWatcher`, `RepositoryEvent` on event bus, auto-register `DiffSession(GitBaseline(HEAD))` on `DocumentOpened`, `git.auto-head-diff` option. Formerly D.7. | VCS.1 | 📝 |
 | **PICK.1** | Picker transient-mode extension — `TransientSpec` / `TransientGroup` / `TransientItem` / `TransientItemKind` / `PreviewFn` / `TransientState` types in `lattice-picker`. Grouped entry rendering, single-key triggers, flag toggle + live preview update, argument → minibuffer, submenu navigation, `PickerRegistry::open_transient()`. General picker feature; NOT magit-specific. Serves which-key hints, command palette drilldown, future plugin transients. | None (picker subsystem) | 📝 |
 | **MG.1** | `lattice-magit` crate scaffolding — crate layout, `MagitCoreMode` (minor), `MagitStatusMode` (major shell), `install(boot)`, mode+command registrations, `SubsystemBoot` wiring. No view content yet. | VCS.2, mode-architecture | 📝 |
-| **MG.2** | magit-status buffer — section index (file paths + status labels, no diffs), `DiffCache` (lazy per-file diff cache), lightweight refresh (no diff commands), `=` toggle for on-demand diff loading, section fold registration, inline diff via D.3 virtual rows, headerline with branch/repo status, auto-refresh on `RepositoryEvent`. | MG.1 | 📝 |
+| **MG.2** | magit-status buffer — section index (file paths + status labels, no diffs), `DiffCache` (lazy per-file diff cache), lightweight refresh (no diff commands), `=` toggle for on-demand diff loading, section fold registration, inline diff via D.3 virtual rows, auto-refresh on `RepositoryEvent`. (The headerline originally scoped here landed in MG.14 — §4.9 — across every view rather than status alone.) | MG.1 | 📝 |
 | **MG.3** | magit-status actions — `s`/`u`/`x` for hunks and files, `cc`/`ca` commit/amend, `=` toggle inline diff, `p` stage hunk interactively, `<CR>` context-aware open/visit. | MG.2 | 📝 |
 | **MG.4** | magit-commit — message editor, staged diff preview, `C-c C-c`/`C-c C-k`, amend. | MG.2 | 📝 |
 | **MG.5** | magit-diff — dedicated diff view, reuse D.4 side-by-side, hunk staging from diff buffer (`s`/`u`/`x`). | MG.2 | 📝 |

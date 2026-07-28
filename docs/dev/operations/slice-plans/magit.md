@@ -29,9 +29,9 @@ owns *what* and *why*.
 | MG.11 | Cross-view uniformity: `<CR>`, highlighting, file-at-revision | MG.4–MG.9 | ✅ |
 | MG.12 | Destructive-action parity — confirm before branch delete / stash drop | MG.9 | ✅ |
 | MG.13 | Action handlers at boot, not activation (was: "binding testability") | MG.8 | ✅ |
-| MG.14 | Headerline across every magit buffer | MG.4–MG.11 | 📝 |
-| MG.15 | Stash detail view (`<CR>` in magit-stash) | MG.9, MG.14 | 📝 |
-| MG.16 | Remote/stash ex-command parity (`:magit-push` etc.) | MG.8 | 📝 |
+| MG.14 | Headerline across every magit buffer | MG.4–MG.11 | ✅ |
+| MG.15 | Stash detail view (`<CR>` in magit-stash) | MG.9, MG.14 | ✅ |
+| MG.16 | Remote/stash ex-command parity (`:magit-push` etc.) | MG.8 | ✅ |
 | MG.17 | Transient flags + arguments (`--force`, `--include-untracked`, …) | MG.8 | 📝 |
 | MG.18 | Hunk-level staging | MG.5, MG.13 | 📝 |
 | MG.19 | magit-diff side-by-side + `do`/`dp` | MG.18, D.4 | 📝 |
@@ -101,7 +101,7 @@ MG.9 ─→ MG.10 ─→ MG.11 ──┬─→ MG.12 (confirm parity)   ← do f
                     MG.5 ─→ MG.18 (hunk staging) ─→ MG.19 (side-by-side)
 ```
 
-**Recommended order: ~~MG.12~~ (done) → MG.13 → MG.14 → the rest.** MG.12 was pure
+**Recommended order: ~~MG.12~~ → ~~MG.13~~ → ~~MG.14~~ (all done) → the rest.** MG.12 was pure
 wiring over machinery that already existed and closed a real safety
 inconsistency. MG.13 comes next because every slice after it adds chords,
 and until a chord can be pressed in a test they all ship on the blind
@@ -525,6 +525,68 @@ re-deriving it from the body:
 - **Docs:** correct the false "headerline is active" claim in
   `magit-status.md`; delete or wire `branch_status_line()`.
 
+**2026-07-28 — landed.** `crates/lattice-magit/src/headerline.rs`: one
+`Headerline` impl, ten per-view field builders. The row is compact and
+symbol-led (colour carries field identity, no `Head:` labels) — matching
+the two headerlines lattice already ships rather than Emacs magit's
+in-body header lines. Design: `../../architecture/magit.md` §4.11.
+
+Choices worth recording, each on merit rather than on the shape of the
+existing code:
+
+- **Fields ride the existing builder.** `build_and_format`,
+  `build_branch_list`, `build_stash_list`, `run_log` and peers now
+  return their header fields alongside their text, so the row is a
+  byproduct of work already done — no second refresh path to keep in
+  sync, and `gr` / mutation refreshes update the header for free
+  (paramount goal #1). Two honest exceptions: magit-revision runs one
+  `git show -s --format=…` for author/date/subject (`--format` rather
+  than scraping `git show`'s locale-dependent header), magit-commit one
+  `rev-parse --abbrev-ref HEAD` — both inside a `spawn_blocking` that
+  was already running git.
+- **Theme-live, unlike its two predecessors.** Colours resolve inside
+  `render()` and the theme's resolved version folds into the row's, so
+  `:colorscheme` repaints the header. compilation and ai-conversation
+  capture `u32`s at activation and go stale; heuristic #1 says take the
+  better shape rather than copy the incumbent. Cost measured at 26ns per
+  tick (bench below) — the read-lock this adds is not the hot path.
+- **Two mode-owned theme elements.** `magit.headerline.alert` and
+  `magit.headerline.label` are registered by the mode, not added to
+  `lattice-theme`'s builtin block. The five MG.11 `magit.*` elements
+  stay builtin because `lattice-syntax`'s styled-span table resolves
+  them by builtin id — the header's own two have no such constraint, so
+  mode ownership applies.
+- **`branch_status_line()` deleted**, not wired: it flattened branch +
+  ahead/behind into one `String`, and the header wants per-role coloured
+  fields. `headerline::status_fields` renders the same data from the
+  same `SectionIndex`.
+
+- **Tests:** 22 in `headerline.rs` — a per-view test for each of the ten
+  builders (each asserts the row is non-empty AND carries that view's
+  identifying field), the no-work-per-tick guarantee both ways
+  (identical fields do not bump; a changed refresh bumps exactly once),
+  hide-when-empty, per-role colouring, and the teardown contract. Plus
+  one in `magit_bindings.rs` that opens a real `*magit:status*` and
+  reads the row back through the provider registry the cells worker
+  reads — the wiring no pure test can see.
+- **Bench:** `crates/lattice-magit/benches/headerline.rs` —
+  `version()` 26ns (per tick), `render()` 581ns (only on change), an
+  unchanged `set()` 129ns.
+
+**Follow-up found, not fixed here (host, not magit):**
+`Editor::do_buffer_delete` removes a buffer from the registry but never
+removes its `active_modes` entry, so **no mode's `Guard::drop` runs on
+`:bd`** — not magit's fold source, `MagitView`, or `BufferStates` entry
+(MG.13), not ai-conversation's headerline + subscription, not diff
+mode's fold sources. `gc_ephemeral_buffer` and
+`dismiss_stale_popup_registry` both clear it; `do_buffer_delete` is the
+outlier. Buffer ids come from a monotonic counter and are never reused,
+so the effect is a bounded leak rather than a stale row over a live
+buffer — which is why MG.14's teardown coverage is a unit test on
+`HeaderlineRegistration::drop` rather than a `:bd` integration test.
+The fix belongs in a host slice: it changes every mode's lifecycle at
+once and wants its own test pass.
+
 ### MG.15 — Stash detail view
 
 magit-stash has **no `<CR>`** — you cannot preview a stash from the stash
@@ -538,6 +600,48 @@ rule: every other list view navigates to a detail buffer.
   the stash is one row among many).
 - **Tests:** `<CR>` on a stash row opens the detail buffer with that
   stash's patch; the status buffer's inline toggle is unchanged.
+
+**2026-07-28 — landed, and it found a live bug first.**
+
+`magit-stash`'s list rendered `  <message>` per row, while
+`stash_index_at_cursor` — the function EVERY chord in that buffer calls
+to find out which stash it is acting on — parsed `stash@{N}`. So `a`
+(apply), `p` (pop) and `d` (drop) all resolved `None` and silently did
+nothing: no error, no effect, indistinguishable from an unbound key.
+`<CR>` would have shipped dead the same way. The same class as MG.6's
+dead `<CR>` and MG.8's inert transients: a line format with a writer and
+a reader that were only ever tested apart. `highlight::stash_styled_spans`
+had even *documented* the mismatch ("no `stash@{N}` prefix in the CURRENT
+buffer format") and treated it as intended, and the MG.12 confirm test
+built its example row as a hand-written literal in the format the author
+believed was rendered rather than calling the renderer.
+
+Fixed by giving the list the `stash@{N}` label — matching the stash rows
+magit-status already renders, so a stash reads the same in both views,
+the drop prompt (`Drop stash@{2}?`) names what is on screen, and
+`stash_styled_spans` stops being a no-op (same Keyword/Number/Comment
+split `sections.rs` uses). `list_row` is now the single writer and
+`parse_index` its single reader, with a round-trip test spanning them
+plus an inverse test proving the old format is exactly what the parser
+cannot read.
+
+- **New mode:** `magit-stash-show-mode` (`crates/lattice-magit/src/
+  magit_stash_show_mode.rs`) — `git stash show -p stash@{n}`, read-only,
+  no mode-specific chords (`q`/`gr`/nav from magit-core), MG.14
+  headerline showing `stash@{n}` + the stash's subject. Fixed-content
+  like `magit-revision-mode`, so `gr` is a deliberate no-op.
+- **Cross-cutting guard added:** `every_chord_every_mode_binds_reaches_a_
+  registered_action_and_a_handler` walks every chord of every magit mode
+  and asserts all three links — the `cmd:` names a registered action
+  command (the MG.8 failure), some mode contributes a boot handler for it
+  (the MG.13 failure), and no shared-action collision. Each prior slice
+  bolted a bespoke test onto one link after a bug shipped through it;
+  this covers all three for every chord at once, so the next chord added
+  is covered by construction. It passes today, i.e. no OTHER magit chord
+  is currently inert.
+- **Tests:** 8 new in `lattice-magit` (round-trip + inverse + non-row
+  lines, buffer-name parse/build agreement, 4 styler cases) plus the
+  cross-cutting guard, and a chord-level test in `magit_bindings.rs`.
 
 ### MG.16 — Remote/stash ex-command parity
 
@@ -553,6 +657,32 @@ fetch / pull / push / stash-push are **transient-only** — reachable from
   letter shorts.
 - **Tests:** each ex-command reaches the same handler its transient item
   fires.
+
+**2026-07-28 — landed.** The shared body is `magit_global_mode::
+spawn_remote_op(RemoteOp)`, and the operation itself is a `RemoteOp`
+constant (`PULL` / `PUSH` / `FETCH` / `STASH`) naming its argv and its
+echo verb in exactly one place. The transient item and the ex-command
+both resolve the same constant and call the same function, so the two
+surfaces cannot drift in argv, in the `GIT_TERMINAL_PROMPT=0`
+fail-fast handling, in the optimistic echo, or in how the outcome is
+logged. The `remote_op!` macro that previously inlined the whole body
+per item now only pushes the contribution.
+
+`:magit-stash` creates a stash and `:magit-stash-list` opens the list —
+mirroring Emacs magit's `z z` / `z l`, where the bare stash key is the
+create. One name is a strict prefix of the other, which is safe:
+`resolve_command_name_or_alias` is exact-match-then-alias with no prefix
+fallback, and a test pins that the two resolve to distinct `CommandId`s
+(a prefix fallthrough would make `:magit-stash` silently open the list
+instead of stashing — a wrong action, not an error).
+
+- **Tests:** both-surfaces-exist for all four operations, distinct-argv
+  per `RemoteOp`, the prefix-distinctness guard, and a boot-level check
+  in `magit_bindings.rs` that the commands reach the registry a real
+  editor booted with (the unit tests build their own registry, so they
+  prove `register_ex_commands` is correct, not that `install` calls it).
+  None of them *execute* an operation: `:magit-stash` would stash the
+  suite's own working tree and the other three would hit the network.
 
 ### MG.17 — Transient flags and arguments
 

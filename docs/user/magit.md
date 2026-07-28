@@ -42,11 +42,24 @@ no hidden state.
 | `:magit-stash-list` | Open the stash list |
 | `:magit-branch` | Open the branch list |
 | `:magit-rebase` | Start interactive rebase |
+| `:magit-fetch` | Fetch from the default remote without merging |
+| `:magit-pull` | Pull from the upstream branch (fast-forward only) |
+| `:magit-push` | Push the current branch to its upstream |
+| `:magit-stash` | Stash the working tree's changes (`:magit-stash-list` opens the list) |
 | `g?` | (in any magit buffer) Open help for the current mode's keybindings |
 
 Every magit command name is dashed + namespaced (`magit-status`,
 `magit-log`, `magit-blame`, …) — type `:magit-<Tab>` to see the full
 command palette.
+
+The last four run a git operation rather than opening a buffer. They are
+the same operations the `C-c g` transient offers, reaching the same
+implementation — the transient is the discoverable surface, the
+ex-command the scriptable one. Each returns immediately with a
+`magit: pushing…`-style echo; the outcome is reported through the log
+(and `*messages*`), because the operation outlives the keystroke that
+started it. A missing or expired credential fails fast rather than
+hanging, since git is run with `GIT_TERMINAL_PROMPT=0`.
 
 ---
 

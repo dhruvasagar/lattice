@@ -16,6 +16,7 @@ use lattice_protocol::position::{Position, Range};
 use lattice_vcs::{Branch, Repository};
 
 use crate::buffer_state::{BufferStateGuard, BufferStates, MagitView, MagitViewsHandle};
+use crate::headerline::{self, Field, MagitHeaderlineHandle};
 
 pub struct MagitBranchMode;
 
@@ -42,6 +43,10 @@ pub struct BranchState {
     store: Arc<BufferStoreHandle>,
     workdir: std::path::PathBuf,
     pending_highlights: Option<lattice_mode::PendingSyntheticHighlightsHandle>,
+    /// MG.14: the buffer's headerline — current branch + total,
+    /// re-set from the same `build_branch_list` call that produced
+    /// the list itself.
+    headerline: Option<MagitHeaderlineHandle>,
 }
 
 /// MG.13: service alias for this mode's per-buffer state. Register
@@ -214,6 +219,15 @@ impl Mode for MagitBranchMode {
                 .unwrap_or_default();
             let pending_highlights = ctx.service::<lattice_mode::PendingSyntheticHighlights>();
 
+            // MG.14: install the headerline in the same synchronous
+            // prefix as the state publish; it stays hidden until the
+            // branch list below lands.
+            let (hl, hl_registration) =
+                match headerline::install(&ctx, buffer_id, Self::mode_id().as_str()) {
+                    Some((h, reg)) => (Some(h), Some(reg)),
+                    None => (None, None),
+                };
+
             // MG.13: publish BEFORE the first `.await`. `spawn_cascade`
             // polls this future once synchronously on the App thread
             // before spawning it, so everything above the first await
@@ -231,9 +245,11 @@ impl Mode for MagitBranchMode {
                     store: store.clone(),
                     workdir: workdir.clone(),
                     pending_highlights: pending_highlights.clone(),
+                    headerline: hl.clone(),
                 },
             );
-            let mut guard = BufferStateGuard::new((*states).clone(), buffer_id);
+            let mut guard = BufferStateGuard::new((*states).clone(), buffer_id)
+                .with_headerline(hl_registration);
             if let Some(views) = ctx.service::<MagitViewsHandle>() {
                 views.publish(buffer_id, Arc::new(BranchView(state.clone())));
                 guard = guard.with_views((*views).clone());
@@ -242,9 +258,10 @@ impl Mode for MagitBranchMode {
             // Populate branch list: blocking I/O on spawn_blocking, then
             // apply edit on the current task (no Runtime::new()).
             let wd = workdir.clone();
-            let text = tokio::task::spawn_blocking(move || build_branch_list(&wd))
+            let (text, header) = tokio::task::spawn_blocking(move || build_branch_list(&wd))
                 .await
                 .unwrap();
+            headerline::publish(&hl, header);
             let spans = crate::highlight::branch_styled_spans(&text);
             apply_full_replace(&handle, text).await;
             if let Some(ref ph) = pending_highlights {
@@ -268,19 +285,21 @@ async fn apply_full_replace(handle: &Arc<dyn lattice_runtime::Document>, text: S
 
 /// `gr` — re-list branches without a prior mutation.
 fn refresh(s: Arc<Mutex<BranchState>>) -> Option<Effect> {
-    let (handle, wd, pending, buffer_id) = {
+    let (handle, wd, pending, buffer_id, hl) = {
         let g = s.lock().ok()?;
         (
             g.store.handle_for(g.buffer_id)?,
             g.workdir.clone(),
             g.pending_highlights.clone(),
             g.buffer_id,
+            g.headerline.clone(),
         )
     };
     tokio::task::spawn(async move {
-        let text = tokio::task::spawn_blocking(move || build_branch_list(&wd))
+        let (text, header) = tokio::task::spawn_blocking(move || build_branch_list(&wd))
             .await
             .unwrap_or_default();
+        headerline::publish(&hl, header);
         let spans = crate::highlight::branch_styled_spans(&text);
         apply_full_replace(&handle, text).await;
         if let Some(ph) = pending {
@@ -297,20 +316,22 @@ fn spawn_mutation_and_refresh(
     s: Arc<Mutex<BranchState>>,
     mutate: impl FnOnce() + Send + 'static,
 ) -> Option<Effect> {
-    let (handle, wd, pending, buffer_id) = {
+    let (handle, wd, pending, buffer_id, hl) = {
         let g = s.lock().ok()?;
         (
             g.store.handle_for(g.buffer_id)?,
             g.workdir.clone(),
             g.pending_highlights.clone(),
             g.buffer_id,
+            g.headerline.clone(),
         )
     };
     tokio::task::spawn(async move {
         let _ = tokio::task::spawn_blocking(mutate).await;
-        let text = tokio::task::spawn_blocking(move || build_branch_list(&wd))
+        let (text, header) = tokio::task::spawn_blocking(move || build_branch_list(&wd))
             .await
             .unwrap_or_default();
+        headerline::publish(&hl, header);
         let spans = crate::highlight::branch_styled_spans(&text);
         apply_full_replace(&handle, text).await;
         if let Some(ph) = pending {
@@ -342,21 +363,27 @@ fn branch_name_at_cursor(state: &BranchState, cursor: Position) -> Option<String
     Some(name.to_string())
 }
 
-fn build_branch_list(workdir: &std::path::Path) -> String {
+/// Build the branch list AND its MG.14 header fields. One pass: the
+/// header's "current branch, N branches" comes from the same
+/// `Branch::list` + `rev-parse` this call already made, so the row
+/// costs no git of its own.
+fn build_branch_list(workdir: &std::path::Path) -> (String, Vec<Field>) {
     let repo = match Repository::discover(workdir) {
         Ok(r) => r,
-        Err(_) => return "Not a git repository.\n".to_string(),
+        Err(_) => return ("Not a git repository.\n".to_string(), Vec::new()),
     };
     let branches = Branch::list(&repo).unwrap_or_default();
-    if branches.is_empty() {
-        return "No branches.\n".to_string();
-    }
 
     // Determine current branch
     let current = repo
         .run_git_str(["rev-parse", "--abbrev-ref", "HEAD"])
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
+    let header = headerline::branch_fields(&current, branches.len());
+
+    if branches.is_empty() {
+        return ("No branches.\n".to_string(), header);
+    }
 
     let mut out = format!("Branches ({})\n", branches.len());
     for b in &branches {
@@ -364,7 +391,7 @@ fn build_branch_list(workdir: &std::path::Path) -> String {
         out.push_str(&format!("{}{}\n", marker, b));
     }
     out.push('\n');
-    out
+    (out, header)
 }
 
 #[cfg(test)]

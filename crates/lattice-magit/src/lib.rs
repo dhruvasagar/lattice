@@ -12,6 +12,7 @@ pub mod actions;
 pub mod buffer_state;
 mod confirm;
 pub mod fold_source;
+pub mod headerline;
 mod highlight;
 pub mod magit_blame_mode;
 pub mod magit_branch_mode;
@@ -24,6 +25,7 @@ pub mod magit_log_mode;
 pub mod magit_rebase_mode;
 pub mod magit_revision_mode;
 pub mod magit_stash_mode;
+pub mod magit_stash_show_mode;
 pub mod magit_status_mode;
 pub mod picker_sources;
 pub mod refresh;
@@ -104,6 +106,11 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     boot.modes_mut()
         .register(MagitFileRevisionMode)
         .expect("magit-file-revision-mode registers without conflict");
+
+    // MG.15
+    boot.modes_mut()
+        .register(magit_stash_show_mode::MagitStashShowMode)
+        .expect("magit-stash-show-mode registers without conflict");
 
     // ── Per-buffer mode state (MG.13) ──────────────────────
     //
@@ -328,6 +335,60 @@ fn register_ex_commands(registry: &mut CommandRegistry) {
         "magit-file-dispatch",
     );
     drop(mk_transient);
+
+    // MG.16: the remote/stash operations were reachable from `C-c g`
+    // and nowhere else. Ex-commands are the scriptable surface and the
+    // `:` discovery path, so a transient-only operation is invisible
+    // to both — you cannot bind it, cannot script it, and cannot find
+    // it by typing `:magit-<Tab>`.
+    //
+    // These are front-ends, not reimplementations: each resolves the
+    // same `RemoteOp` constant its transient item fires and calls the
+    // same `spawn_remote_op` body (the unified-dispatch rule). Names
+    // are dashed + namespaced per the standing ex-command rule; no new
+    // 1-2 letter shorts.
+    let mut mk_op = |name: &'static str, doc: &'static str, op: magit_global_mode::RemoteOp| {
+        registry.register_ex_command(
+            name,
+            doc,
+            ExCommandSpec {
+                latency_class: LatencyClass::Reflex,
+                accepts_bang: false,
+                accepts_range: false,
+                parse_args: Arc::new(|_line: &str, _bang: bool| Ok(Args::None)),
+                // MG.17 will add `--force` / `--include-untracked` and
+                // peers here as real arguments, on both front-ends at
+                // once — which is the point of there being one body.
+                apply: Arc::new(move |_ctx| Ok(magit_global_mode::spawn_remote_op(op))),
+                args_schema: Vec::new(),
+                surface_form: SurfaceForm::Keyword,
+            },
+        );
+    };
+    mk_op(
+        "magit-fetch",
+        "Fetch from the default remote without merging.",
+        magit_global_mode::RemoteOp::FETCH,
+    );
+    mk_op(
+        "magit-pull",
+        "Pull from the upstream branch (fast-forward only).",
+        magit_global_mode::RemoteOp::PULL,
+    );
+    mk_op(
+        "magit-push",
+        "Push the current branch to its upstream.",
+        magit_global_mode::RemoteOp::PUSH,
+    );
+    // `:magit-stash` creates a stash; `:magit-stash-list` opens the
+    // list buffer. The pair mirrors Emacs magit's own `z z` / `z l`,
+    // where the bare stash key is the create.
+    mk_op(
+        "magit-stash",
+        "Stash the working tree's changes.",
+        magit_global_mode::RemoteOp::STASH,
+    );
+    drop(mk_op);
     {
         registry.register_ex_command(
             "magit-blame",
@@ -577,6 +638,11 @@ fn register_action_commands(registry: &mut CommandRegistry) {
         "Execute the stash drop after confirmation",
     );
     reg("action:magit-stash-create", "Create a new stash");
+    // MG.15
+    reg(
+        "action:magit-stash-show",
+        "Show the patch of the stash at cursor",
+    );
 
     // magit-branch-mode
     reg(
@@ -793,6 +859,190 @@ mod tests {
             "duplicate boot action handlers:\n  {}",
             collisions.join("\n  ")
         );
+    }
+
+    /// MG.15 — every chord every magit mode binds must reach a real
+    /// handler. Three links, each of which has broken in production:
+    ///
+    /// 1. the keymap's `cmd:` names an action registered in the
+    ///    command registry (an unregistered name resolves to nothing —
+    ///    the key is silently inert, the MG.8 failure);
+    /// 2. some mode contributes a boot handler for that action (a
+    ///    registered command with no handler is equally inert, the
+    ///    MG.13 failure);
+    /// 3. and the mode binding it is the mode owning it, or reaches it
+    ///    through `magit-core-mode` (the shared-action collision).
+    ///
+    /// Every prior slice bolted a bespoke test onto one of these after
+    /// a bug shipped through it. This walks all three for every chord
+    /// at once, so the next chord added is covered by construction.
+    #[test]
+    fn every_chord_every_mode_binds_reaches_a_registered_action_and_a_handler() {
+        use lattice_mode::Mode;
+
+        let mut registry = CommandRegistry::new();
+        register_action_commands(&mut registry);
+
+        // The union of every boot-registered handler, from every mode.
+        let mut handled: Vec<&'static str> = Vec::new();
+        macro_rules! handlers {
+            ($($mode:expr),* $(,)?) => {
+                $(for c in $mode.action_handlers() { handled.push(c.action_name); })*
+            };
+        }
+        handlers!(
+            MagitGlobalMode,
+            MagitCoreMode,
+            MagitStatusMode,
+            MagitCommitMode,
+            MagitDiffMode,
+            MagitLogMode,
+            MagitBlameMode,
+            MagitStashMode,
+            MagitBranchMode,
+            MagitRebaseMode,
+            MagitRevisionMode,
+            MagitFileRevisionMode,
+            magit_stash_show_mode::MagitStashShowMode,
+        );
+
+        let mut dead: Vec<String> = Vec::new();
+        macro_rules! check {
+            ($($mode:expr => $label:literal),* $(,)?) => {
+                $(for entry in $mode.keymap().entries {
+                    // `None` = a synthetic action with no registered
+                    // command (`PushDigit` and peers); magit binds none
+                    // today, but skipping keeps this honest if it does.
+                    let Some(cmd) = entry.command else { continue };
+                    // Only `action:` chords are this test's business;
+                    // `ex:` chords route through the ex-command table.
+                    if !cmd.starts_with("action:") {
+                        continue;
+                    }
+                    if registry.lookup_by_name(cmd).is_none() {
+                        dead.push(format!(
+                            "{}: chord `{}` → `{cmd}`, which is NOT a registered \
+                             action command — the key is silently inert",
+                            $label, entry.chord
+                        ));
+                    } else if !handled.contains(&cmd) {
+                        dead.push(format!(
+                            "{}: chord `{}` → `{cmd}`, registered but NO mode \
+                             contributes a handler — the key does nothing",
+                            $label, entry.chord
+                        ));
+                    }
+                })*
+            };
+        }
+        check!(
+            MagitCoreMode => "magit-core-mode",
+            MagitStatusMode => "magit-status-mode",
+            MagitCommitMode => "magit-commit-mode",
+            MagitDiffMode => "magit-diff-mode",
+            MagitLogMode => "magit-log-mode",
+            MagitBlameMode => "magit-blame-mode",
+            MagitStashMode => "magit-stash-mode",
+            MagitBranchMode => "magit-branch-mode",
+            MagitRebaseMode => "magit-rebase-mode",
+            MagitRevisionMode => "magit-revision-mode",
+            MagitFileRevisionMode => "magit-file-revision-mode",
+            magit_stash_show_mode::MagitStashShowMode => "magit-stash-show-mode",
+        );
+
+        assert!(
+            dead.is_empty(),
+            "chords that cannot reach a handler:\n  {}",
+            dead.join("\n  ")
+        );
+    }
+
+    /// MG.16 — the remote/stash operations exist on both surfaces.
+    ///
+    /// They were transient-only: reachable from `C-c g` and nowhere
+    /// else, so they could not be scripted, could not be rebound, and
+    /// did not appear under `:magit-<Tab>`. Each ex-command must be
+    /// registered AND resolve to the same `RemoteOp` its transient item
+    /// fires — two front-ends, one body.
+    #[test]
+    fn every_remote_operation_has_both_a_transient_item_and_an_ex_command() {
+        use lattice_mode::Mode;
+
+        let mut registry = CommandRegistry::new();
+        register_ex_commands(&mut registry);
+        register_action_commands(&mut registry);
+        let handlers = MagitGlobalMode.action_handlers();
+
+        for (ex_name, action_name) in [
+            ("magit-fetch", "action:magit-global-fetch"),
+            ("magit-pull", "action:magit-global-pull"),
+            ("magit-push", "action:magit-global-push"),
+            ("magit-stash", "action:magit-global-stash-create"),
+        ] {
+            assert!(
+                registry.lookup_by_name(ex_name).is_some(),
+                "`:{ex_name}` must exist — an operation reachable only from a \
+                 transient is invisible to `:` and unscriptable"
+            );
+            assert!(
+                handlers.iter().any(|c| c.action_name == action_name),
+                "`{action_name}` must still have its transient handler — the \
+                 ex-command is a second front-end, not a replacement"
+            );
+        }
+    }
+
+    /// The four `RemoteOp` constants are the single definition of what
+    /// each operation runs. If a fifth operation is added without a
+    /// distinct argv this catches the copy-paste.
+    #[test]
+    fn each_remote_op_names_a_distinct_git_invocation() {
+        use magit_global_mode::RemoteOp;
+        let ops = [
+            RemoteOp::FETCH,
+            RemoteOp::PULL,
+            RemoteOp::PUSH,
+            RemoteOp::STASH,
+        ];
+        for (i, a) in ops.iter().enumerate() {
+            assert!(!a.args.is_empty(), "`{}` has no argv", a.what);
+            assert_eq!(
+                a.args[0],
+                match a.what {
+                    "stash" => "stash",
+                    other => other,
+                },
+                "argv must lead with the operation it claims to be"
+            );
+            for b in &ops[i + 1..] {
+                assert_ne!(
+                    a.args, b.args,
+                    "`{}` and `{}` run the same git",
+                    a.what, b.what
+                );
+            }
+        }
+    }
+
+    /// `:magit-stash` (create) and `:magit-stash-list` (open the list)
+    /// are distinct commands where one name is a strict prefix of the
+    /// other. Both must resolve to themselves — a lookup that fell
+    /// through to prefix matching would make `:magit-stash` open the
+    /// list instead of stashing, which is a silent wrong action rather
+    /// than an error.
+    #[test]
+    fn magit_stash_and_magit_stash_list_are_distinct_commands() {
+        let mut registry = CommandRegistry::new();
+        register_ex_commands(&mut registry);
+        let create = registry
+            .lookup_by_name("magit-stash")
+            .expect("`:magit-stash` registered");
+        let list = registry
+            .lookup_by_name("magit-stash-list")
+            .expect("`:magit-stash-list` registered");
+        assert_eq!(create.name, "magit-stash");
+        assert_eq!(list.name, "magit-stash-list");
+        assert_ne!(create.id, list.id, "a prefix collision would alias the two");
     }
 
     /// Every shared action has exactly one owner, and it is

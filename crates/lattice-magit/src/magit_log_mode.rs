@@ -22,6 +22,7 @@ use lattice_protocol::position::{Position, Range};
 use lattice_vcs::Repository;
 
 use crate::buffer_state::{BufferStateGuard, BufferStates, MagitView, MagitViewsHandle};
+use crate::headerline::{self, MagitHeaderlineHandle};
 
 pub struct MagitLogMode;
 
@@ -49,6 +50,9 @@ pub struct LogState {
     /// `*magit:log*`.
     path: Option<std::path::PathBuf>,
     pending_highlights: Option<lattice_mode::PendingSyntheticHighlightsHandle>,
+    /// MG.14: the buffer's headerline. Re-set on every refresh from
+    /// the same `run_log` output that produced the text.
+    headerline: Option<MagitHeaderlineHandle>,
 }
 
 /// MG.13: service alias for this mode's per-buffer state
@@ -137,6 +141,16 @@ impl Mode for MagitLogMode {
 
             let pending_highlights = ctx.service::<lattice_mode::PendingSyntheticHighlights>();
 
+            // MG.14: install the headerline in the same synchronous
+            // prefix as the state publish. It renders nothing until
+            // the log lands below; installing here means a reopened
+            // buffer never inherits the previous activation's row.
+            let (hl, hl_registration) =
+                match headerline::install(&ctx, buffer_id, Self::mode_id().as_str()) {
+                    Some((h, reg)) => (Some(h), Some(reg)),
+                    None => (None, None),
+                };
+
             // MG.13: publish BEFORE the first `.await` — see the note
             // in `magit_branch_mode::on_activate`.
             let Some(states) = ctx.service::<LogStatesHandle>() else {
@@ -150,9 +164,11 @@ impl Mode for MagitLogMode {
                     store: store.clone(),
                     workdir: workdir.clone(),
                     pending_highlights: pending_highlights.clone(),
+                    headerline: hl.clone(),
                 },
             );
-            let mut guard = BufferStateGuard::new((*states).clone(), buffer_id);
+            let mut guard = BufferStateGuard::new((*states).clone(), buffer_id)
+                .with_headerline(hl_registration);
             if let Some(views) = ctx.service::<MagitViewsHandle>() {
                 views.publish(buffer_id, Arc::new(LogView(state.clone())));
                 guard = guard.with_views((*views).clone());
@@ -165,6 +181,7 @@ impl Mode for MagitLogMode {
             let text = tokio::task::spawn_blocking(move || run_log(&wd, path_for_task.as_deref()))
                 .await
                 .unwrap();
+            headerline::publish(&hl, log_header_fields(&text, path.as_deref()));
             let spans = crate::highlight::log_styled_spans(&text);
             apply_full_replace(&handle, text).await;
             if let Some(ref ph) = pending_highlights {
@@ -187,7 +204,7 @@ async fn apply_full_replace(handle: &Arc<dyn lattice_runtime::Document>, text: S
 }
 
 fn refresh(s: Arc<Mutex<LogState>>) -> Option<Effect> {
-    let (handle, wd, path, pending, buffer_id) = {
+    let (handle, wd, path, pending, buffer_id, hl) = {
         let g = s.lock().ok()?;
         (
             g.store.handle_for(g.buffer_id)?,
@@ -195,12 +212,15 @@ fn refresh(s: Arc<Mutex<LogState>>) -> Option<Effect> {
             g.path.clone(),
             g.pending_highlights.clone(),
             g.buffer_id,
+            g.headerline.clone(),
         )
     };
     tokio::task::spawn(async move {
-        let text = tokio::task::spawn_blocking(move || run_log(&wd, path.as_deref()))
+        let for_task = path.clone();
+        let text = tokio::task::spawn_blocking(move || run_log(&wd, for_task.as_deref()))
             .await
             .unwrap_or_default();
+        headerline::publish(&hl, log_header_fields(&text, path.as_deref()));
         let spans = crate::highlight::log_styled_spans(&text);
         apply_full_replace(&handle, text).await;
         if let Some(ph) = pending {
@@ -208,6 +228,16 @@ fn refresh(s: Arc<Mutex<LogState>>) -> Option<Effect> {
         }
     });
     None
+}
+
+/// MG.14: the header for this view — the ref logged, how many
+/// commits are shown, and the path filter when file-scoped. The
+/// count comes from the text just produced rather than a second
+/// `git rev-list`, so the header costs no extra git round-trip.
+/// `--graph` connector rows carry no SHA and are not counted.
+fn log_header_fields(text: &str, path: Option<&std::path::Path>) -> Vec<crate::headerline::Field> {
+    let commits = text.lines().filter(|l| extract_sha(l).is_some()).count();
+    crate::headerline::log_fields("HEAD", commits, path)
 }
 
 /// `git log --oneline --graph --decorate` renders each commit as

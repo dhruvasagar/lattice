@@ -57,6 +57,9 @@ pub struct MagitStatusGuard {
         crate::buffer_state::MagitViewsHandle,
         lattice_core::BufferId,
     )>,
+    /// MG.14: the headerline provider registration. Its own `Drop`
+    /// unregisters the sticky row when the mode deactivates.
+    _headerline: Option<crate::headerline::HeaderlineRegistration>,
 }
 
 impl Drop for MagitStatusGuard {
@@ -147,6 +150,16 @@ impl Mode for MagitStatusMode {
 
             let pending = ctx.service::<lattice_mode::PendingSyntheticHighlights>();
 
+            // MG.14: the header this buffer never had — branch,
+            // ahead/behind, repo, dirty counts. Installed in the same
+            // synchronous prefix as the state publish; it renders
+            // nothing until the first refresh below lands.
+            let (hl, hl_registration) =
+                match crate::headerline::install(&ctx, buffer_id, Self::mode_id().as_str()) {
+                    Some((h, reg)) => (Some(h), Some(reg)),
+                    None => (None, None),
+                };
+
             // MG.13: build and publish BEFORE the initial refresh's
             // `.await`. Every field here is synchronous, so this lands
             // during `spawn_cascade`'s first synchronous poll — before
@@ -163,6 +176,7 @@ impl Mode for MagitStatusMode {
                     runtime: runtime.clone(),
                     pending_highlights: pending.clone(),
                     expanded: std::collections::HashMap::new(),
+                    headerline: hl.clone(),
                 }));
             if let Some(states) = ctx.service::<actions::StatusStatesHandle>() {
                 states.publish_shared(buffer_id, shared_state.clone());
@@ -172,10 +186,11 @@ impl Mode for MagitStatusMode {
             // edit apply + highlights on the current task.
             {
                 let wd = workdir.clone();
-                let (text, spans) =
+                let (text, spans, header) =
                     tokio::task::spawn_blocking(move || refresh::build_and_format(&wd))
                         .await
                         .expect("spawn_blocking");
+                crate::headerline::publish(&hl, header);
                 refresh::apply_and_highlight(
                     handle.clone(),
                     text,
@@ -221,6 +236,7 @@ impl Mode for MagitStatusMode {
                 _state: Some(shared_state),
                 fold_registration,
                 views: views.map(|v| (v, buffer_id)),
+                _headerline: hl_registration,
             })
         })
     }

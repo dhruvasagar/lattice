@@ -16,6 +16,7 @@ use lattice_protocol::position::{Position, Range};
 use lattice_vcs::{Repository, Stash};
 
 use crate::buffer_state::{BufferStateGuard, BufferStates, MagitView, MagitViewsHandle};
+use crate::headerline::{self, Field, MagitHeaderlineHandle};
 
 pub struct MagitStashMode;
 
@@ -33,6 +34,7 @@ fn magit_stash_keymap_entries() -> &'static [KeymapEntry] {
             keymap_entry! { mode: Normal, chord: "p", doc: "Pop stash", cmd: "action:magit-stash-pop" },
             keymap_entry! { mode: Normal, chord: "d", doc: "Drop stash", cmd: "action:magit-stash-drop" },
             keymap_entry! { mode: Normal, chord: "z", doc: "Create stash", cmd: "action:magit-stash-create" },
+            keymap_entry! { mode: Normal, chord: "<CR>", doc: "Show this stash's patch", cmd: "action:magit-stash-show" },
         ]
     })
 }
@@ -42,6 +44,9 @@ pub struct StashState {
     store: Arc<BufferStoreHandle>,
     workdir: std::path::PathBuf,
     pending_highlights: Option<lattice_mode::PendingSyntheticHighlightsHandle>,
+    /// MG.14: the buffer's headerline — the stash count, re-set from
+    /// the same `build_stash_list` call that produced the list.
+    headerline: Option<MagitHeaderlineHandle>,
 }
 
 /// MG.13: service alias for this mode's per-buffer state — register
@@ -160,6 +165,24 @@ impl Mode for MagitStashMode {
                     })
                 }),
             },
+            // MG.15: <CR> — open this stash's patch in its own buffer.
+            // The one list view that had no `<CR>`, which made it the
+            // last exception to MG.11's uniformity rule. Read-only and
+            // non-mutating, so no confirm.
+            ActionHandlerContribution {
+                action_name: "action:magit-stash-show",
+                handler: Arc::new(|ctx: &ActionContext<'_>| {
+                    let s = state(ctx)?;
+                    let idx = {
+                        let g = s.lock().ok()?;
+                        stash_index_at_cursor(&g, ctx.cursor)?
+                    };
+                    Some(Effect::OpenSyntheticBuffer {
+                        name: crate::magit_stash_show_mode::buffer_name(idx),
+                        mode_id: "magit-stash-show-mode".to_string(),
+                    })
+                }),
+            },
             // create (z)
             ActionHandlerContribution {
                 action_name: "action:magit-stash-create",
@@ -192,6 +215,14 @@ impl Mode for MagitStashMode {
                 .unwrap_or_default();
             let pending_highlights = ctx.service::<lattice_mode::PendingSyntheticHighlights>();
 
+            // MG.14: install the headerline in the same synchronous
+            // prefix as the state publish.
+            let (hl, hl_registration) =
+                match headerline::install(&ctx, buffer_id, Self::mode_id().as_str()) {
+                    Some((h, reg)) => (Some(h), Some(reg)),
+                    None => (None, None),
+                };
+
             // MG.13: publish BEFORE the first `.await` — see the note
             // in `magit_branch_mode::on_activate`.
             let Some(states) = ctx.service::<StashStatesHandle>() else {
@@ -204,9 +235,11 @@ impl Mode for MagitStashMode {
                     store: store.clone(),
                     workdir: workdir.clone(),
                     pending_highlights: pending_highlights.clone(),
+                    headerline: hl.clone(),
                 },
             );
-            let mut guard = BufferStateGuard::new((*states).clone(), buffer_id);
+            let mut guard = BufferStateGuard::new((*states).clone(), buffer_id)
+                .with_headerline(hl_registration);
             if let Some(views) = ctx.service::<MagitViewsHandle>() {
                 views.publish(buffer_id, Arc::new(StashView(state.clone())));
                 guard = guard.with_views((*views).clone());
@@ -215,9 +248,10 @@ impl Mode for MagitStashMode {
             // Populate stash list: blocking I/O on spawn_blocking, then
             // apply edit on the current task (no Runtime::new()).
             let wd = workdir.clone();
-            let text = tokio::task::spawn_blocking(move || build_stash_list(&wd))
+            let (text, header) = tokio::task::spawn_blocking(move || build_stash_list(&wd))
                 .await
                 .unwrap();
+            headerline::publish(&hl, header);
             let spans = crate::highlight::stash_styled_spans(&text);
             apply_full_replace(&handle, text).await;
             if let Some(ref ph) = pending_highlights {
@@ -241,19 +275,21 @@ async fn apply_full_replace(handle: &Arc<dyn lattice_runtime::Document>, text: S
 
 /// `gr` — re-list stashes without a prior mutation.
 fn refresh(s: Arc<Mutex<StashState>>) -> Option<Effect> {
-    let (handle, wd, pending, buffer_id) = {
+    let (handle, wd, pending, buffer_id, hl) = {
         let g = s.lock().ok()?;
         (
             g.store.handle_for(g.buffer_id)?,
             g.workdir.clone(),
             g.pending_highlights.clone(),
             g.buffer_id,
+            g.headerline.clone(),
         )
     };
     tokio::task::spawn(async move {
-        let text = tokio::task::spawn_blocking(move || build_stash_list(&wd))
+        let (text, header) = tokio::task::spawn_blocking(move || build_stash_list(&wd))
             .await
             .unwrap_or_default();
+        headerline::publish(&hl, header);
         let spans = crate::highlight::stash_styled_spans(&text);
         apply_full_replace(&handle, text).await;
         if let Some(ph) = pending {
@@ -270,20 +306,22 @@ fn spawn_mutation_and_refresh(
     s: Arc<Mutex<StashState>>,
     mutate: impl FnOnce() + Send + 'static,
 ) -> Option<Effect> {
-    let (handle, wd, pending, buffer_id) = {
+    let (handle, wd, pending, buffer_id, hl) = {
         let g = s.lock().ok()?;
         (
             g.store.handle_for(g.buffer_id)?,
             g.workdir.clone(),
             g.pending_highlights.clone(),
             g.buffer_id,
+            g.headerline.clone(),
         )
     };
     tokio::task::spawn(async move {
         let _ = tokio::task::spawn_blocking(mutate).await;
-        let text = tokio::task::spawn_blocking(move || build_stash_list(&wd))
+        let (text, header) = tokio::task::spawn_blocking(move || build_stash_list(&wd))
             .await
             .unwrap_or_default();
+        headerline::publish(&hl, header);
         let spans = crate::highlight::stash_styled_spans(&text);
         apply_full_replace(&handle, text).await;
         if let Some(ph) = pending {
@@ -303,42 +341,125 @@ fn drop_stash_confirm(index: usize) -> Effect {
     )
 }
 
+/// One row of the stash list. The single writer of this format —
+/// [`stash_index_at_cursor`] is its only reader, and
+/// `highlight::stash_styled_spans` colours it by the same offsets.
+pub fn list_row(index: usize, message: &str) -> String {
+    format!("  stash@{{{index}}} {message}")
+}
+
 fn stash_index_at_cursor(state: &StashState, cursor: Position) -> Option<usize> {
     let handle = state.store.handle_for(state.buffer_id)?;
     let snap = handle.snapshot();
     let line = snap.buffer.line(cursor.line)?;
-    // Format: "  stash@{N} message"
-    let trimmed = line.trim();
-    if let Some(idx_str) = trimmed
-        .strip_prefix("stash@{")
-        .and_then(|s| s.split('}').next())
-    {
-        idx_str.parse().ok()
-    } else {
-        None
-    }
+    parse_index(&line)
 }
 
-fn build_stash_list(workdir: &std::path::Path) -> String {
+/// `"  stash@{N} message"` → `N`. The reader half of [`list_row`],
+/// split out as a free function so the round-trip between the two is
+/// testable without a live buffer — the seam where they drifted apart
+/// is what left every chord in this buffer dead.
+pub fn parse_index(line: &str) -> Option<usize> {
+    line.trim()
+        .strip_prefix("stash@{")
+        .and_then(|s| s.split('}').next())
+        .and_then(|idx| idx.parse().ok())
+}
+
+/// Build the stash list AND its MG.14 header fields — the count comes
+/// from the same `Stash::list` the body is formatted from.
+fn build_stash_list(workdir: &std::path::Path) -> (String, Vec<Field>) {
     let repo = match Repository::discover(workdir) {
         Ok(r) => r,
-        Err(_) => return "Not a git repository.\n".to_string(),
+        Err(_) => return ("Not a git repository.\n".to_string(), Vec::new()),
     };
     let stashes = Stash::list(&repo).unwrap_or_default();
+    let header = headerline::stash_fields(stashes.len());
     if stashes.is_empty() {
-        return "No stashes.\n".to_string();
+        return ("No stashes.\n".to_string(), header);
     }
+    // MG.15: rows carry the `stash@{N}` label, matching the stash
+    // entries magit-status already renders (`sections.rs`). This is a
+    // BUG FIX, not cosmetics: `stash_index_at_cursor` has always
+    // parsed `stash@{N}` out of the row, so while the list rendered a
+    // bare message EVERY chord in this buffer — `a`, `p`, `d` — read
+    // `None` and silently did nothing. Same failure class as MG.6's
+    // dead `<CR>`: the reader and the writer of a line format drifted
+    // apart with no test spanning them. `list_row` is now the one
+    // writer and `stash_index_at_cursor` reads it back; a round-trip
+    // test spans the pair.
     let mut out = format!("Stashes ({})\n", stashes.len());
     for s in &stashes {
-        out.push_str(&format!("  {}\n", s.message));
+        out.push_str(&list_row(s.index, &s.message));
+        out.push('\n');
     }
     out.push('\n');
-    out
+    (out, header)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// MG.15 — the regression guard for a bug that made EVERY chord in
+    /// this buffer dead.
+    ///
+    /// `stash_index_at_cursor` has always parsed `stash@{N}` out of the
+    /// row under the cursor, but `build_stash_list` rendered a bare
+    /// `  <message>`. So `a` (apply), `p` (pop) and `d` (drop) all
+    /// resolved `None` and silently did nothing — no error, no effect,
+    /// indistinguishable from an unbound key. Nothing caught it because
+    /// the writer and the reader were only ever tested apart.
+    ///
+    /// This spans them: whatever `list_row` writes, `parse_index` must
+    /// read back.
+    #[test]
+    fn every_row_the_list_writes_parses_back_to_its_own_index() {
+        for (index, message) in [
+            (0usize, "WIP on main: 1234abc a message"),
+            (7, "On feature/x: another"),
+            (12, ""),
+        ] {
+            let row = list_row(index, message);
+            assert_eq!(
+                parse_index(&row),
+                Some(index),
+                "the chord handlers read the row the list writes; a \
+                 format the parser cannot read leaves a/p/d/<CR> dead: {row:?}"
+            );
+        }
+    }
+
+    /// The inverse, so the guard above cannot pass vacuously: the
+    /// pre-MG.15 format (bare message, no label) is exactly what the
+    /// parser cannot read.
+    #[test]
+    fn the_old_unlabelled_row_format_is_unparseable() {
+        assert_eq!(parse_index("  WIP on main: 1234abc a message"), None);
+    }
+
+    /// The list header and blank separator are not stash rows — a
+    /// chord fired on either must decline rather than act on stash 0.
+    #[test]
+    fn non_row_lines_carry_no_index() {
+        assert_eq!(parse_index("Stashes (3)"), None);
+        assert_eq!(parse_index(""), None);
+        assert_eq!(parse_index("No stashes."), None);
+    }
+
+    /// MG.15: `<CR>` targets the detail buffer for the stash at the
+    /// cursor. Asserted through the same name builder the mode's own
+    /// parser round-trips (see `magit_stash_show_mode`), so the two
+    /// halves cannot drift the way the list format did.
+    #[test]
+    fn enter_opens_the_detail_buffer_for_the_row_under_the_cursor() {
+        let row = list_row(3, "WIP on main: deadbee something");
+        let index = parse_index(&row).expect("a list row carries its index");
+        assert_eq!(
+            crate::magit_stash_show_mode::buffer_name(index),
+            "*magit:stash:3*"
+        );
+    }
 
     /// MG.12: `d` used to call `Stash::drop` straight from the chord,
     /// while magit-status's `x` on the same class of act asked first.
@@ -356,10 +477,16 @@ mod tests {
     /// The prompt names the stash with the same `stash@{N}` ref the
     /// list row shows, so the question matches what is on screen
     /// behind the transient.
+    ///
+    /// MG.15 note: this test used to build `row` as a hand-written
+    /// string literal — which is precisely how the bug below survived.
+    /// It asserted against the format the author *believed* the list
+    /// rendered, and the list rendered something else. It now calls
+    /// [`list_row`], the real writer.
     #[test]
     fn drop_prompt_uses_the_same_ref_form_the_list_row_shows() {
         let index = 0;
-        let row = format!("  stash@{{{index}}} WIP on main: 1234abc msg");
+        let row = list_row(index, "WIP on main: 1234abc msg");
         match drop_stash_confirm(index) {
             Effect::Confirm { prompt, .. } => {
                 let stash_ref = format!("stash@{{{index}}}");

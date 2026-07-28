@@ -29,6 +29,8 @@ use lattice_protocol::edit::Edit;
 use lattice_protocol::position::{Position, Range};
 use lattice_vcs::Repository;
 
+use crate::headerline;
+
 pub struct MagitFileRevisionMode;
 
 impl MagitFileRevisionMode {
@@ -43,7 +45,9 @@ fn magit_file_revision_keymap_entries() -> &'static [KeymapEntry] {
 }
 
 impl Mode for MagitFileRevisionMode {
-    type Guard = ();
+    /// MG.14: the headerline registration — this mode's only
+    /// per-activation resource. Dropping it removes the sticky row.
+    type Guard = Option<crate::headerline::HeaderlineRegistration>;
 
     fn id(&self) -> ModeId {
         Self::mode_id()
@@ -78,10 +82,10 @@ impl Mode for MagitFileRevisionMode {
         Box::pin(async move {
             let buffer_id = lattice_core::BufferId(ctx.buffer_id().0 as u32);
             let Some(store) = ctx.service::<lattice_mode::BufferStoreHandle>() else {
-                return Ok(());
+                return Ok(None);
             };
             let Some(handle) = store.handle_for(buffer_id) else {
-                return Ok(());
+                return Ok(None);
             };
             let workdir = Repository::discover(".")
                 .ok()
@@ -91,6 +95,20 @@ impl Mode for MagitFileRevisionMode {
             let parsed = store
                 .name_for(buffer_id)
                 .and_then(|name| parse_buffer_name(&name));
+
+            // MG.14: `<path> @ <ref>`. Without it this buffer is
+            // indistinguishable from the live file — which is exactly
+            // the mistake the mode exists to prevent. Both fields come
+            // out of the buffer name, so the header is complete before
+            // `git show` runs.
+            let (hl, hl_registration) =
+                match headerline::install(&ctx, buffer_id, Self::mode_id().as_str()) {
+                    Some((h, reg)) => (Some(h), Some(reg)),
+                    None => (None, None),
+                };
+            if let Some((git_ref, path)) = parsed.as_ref() {
+                headerline::publish(&hl, headerline::file_revision_fields(git_ref, path));
+            }
 
             let wd = workdir.clone();
             let text = tokio::task::spawn_blocking(move || match parsed {
@@ -110,7 +128,7 @@ impl Mode for MagitFileRevisionMode {
                 ph.wake();
             }
 
-            Ok(())
+            Ok(hl_registration)
         })
     }
 }

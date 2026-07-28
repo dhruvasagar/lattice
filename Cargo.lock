@@ -5421,6 +5421,7 @@ dependencies = [
 name = "lattice-magit"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "lattice-cells",
  "lattice-completion",
  "lattice-config",

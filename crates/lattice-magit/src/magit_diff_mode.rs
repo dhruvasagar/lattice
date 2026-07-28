@@ -38,6 +38,7 @@ use lattice_protocol::position::{Position, Range};
 use lattice_vcs::{Index, Repository};
 
 use crate::buffer_state::{BufferStateGuard, BufferStates, MagitView, MagitViewsHandle};
+use crate::headerline;
 
 pub struct MagitDiffMode;
 
@@ -71,6 +72,19 @@ enum DiffScope {
     Staged,
     /// `git diff` — working tree vs index (the Unstaged section).
     Unstaged,
+}
+
+impl DiffScope {
+    /// MG.14: how this scope reads in the headerline. The same three
+    /// words `parse_buffer_name` accepts, so the header echoes the
+    /// buffer name rather than inventing a second vocabulary.
+    fn header_label(self) -> &'static str {
+        match self {
+            DiffScope::Head => "HEAD",
+            DiffScope::Staged => "staged",
+            DiffScope::Unstaged => "unstaged",
+        }
+    }
 }
 
 pub struct DiffState {
@@ -219,6 +233,21 @@ impl Mode for MagitDiffMode {
 
             let pending_highlights = ctx.service::<lattice_mode::PendingSyntheticHighlights>();
 
+            // MG.14: this view's header is fully known from the buffer
+            // name — scope, plus the path when file-scoped — so it is
+            // set here rather than after the diff lands. Neither field
+            // changes under `gr`: re-diffing the same scope of the
+            // same path still describes the same view.
+            let (hl, hl_registration) =
+                match headerline::install(&ctx, buffer_id, Self::mode_id().as_str()) {
+                    Some((h, reg)) => (Some(h), Some(reg)),
+                    None => (None, None),
+                };
+            headerline::publish(
+                &hl,
+                headerline::diff_fields(scope.header_label(), path.as_deref()),
+            );
+
             // MG.13: publish BEFORE the first `.await` — see the note
             // in `magit_branch_mode::on_activate`.
             let Some(states) = ctx.service::<DiffStatesHandle>() else {
@@ -235,7 +264,8 @@ impl Mode for MagitDiffMode {
                     pending_highlights: pending_highlights.clone(),
                 },
             );
-            let mut guard = BufferStateGuard::new((*states).clone(), buffer_id);
+            let mut guard = BufferStateGuard::new((*states).clone(), buffer_id)
+                .with_headerline(hl_registration);
             if let Some(views) = ctx.service::<MagitViewsHandle>() {
                 views.publish(buffer_id, Arc::new(DiffView(state.clone())));
                 guard = guard.with_views((*views).clone());

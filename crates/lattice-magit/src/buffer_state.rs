@@ -236,12 +236,17 @@ impl<G> Drop for ViewGuard<G> {
 /// Drops a buffer's state entry when its mode deactivates.
 ///
 /// Handler registrations are no longer per-activation anywhere in this
-/// crate, so the only thing left to unwind is the state entry.
+/// crate, so what is left to unwind is the state entry, the published
+/// view, and (MG.14) the headerline's virtual-row provider.
 pub struct BufferStateGuard<S: Send + Sync + 'static> {
     states: Arc<BufferStates<S>>,
     /// Set when the mode also published a [`MagitView`]; dropped
     /// together with the state so a dead buffer's `gr` cannot resolve.
     views: Option<MagitViewsHandle>,
+    /// MG.14: the headerline provider registration. Its own `Drop`
+    /// unregisters — holding it here just ties its lifetime to the
+    /// mode's, so the sticky row disappears with the mode.
+    _headerline: Option<crate::headerline::HeaderlineRegistration>,
     buffer: BufferId,
 }
 
@@ -250,6 +255,7 @@ impl<S: Send + Sync + 'static> BufferStateGuard<S> {
         Self {
             states,
             views: None,
+            _headerline: None,
             buffer,
         }
     }
@@ -257,6 +263,16 @@ impl<S: Send + Sync + 'static> BufferStateGuard<S> {
     /// Also unpublish this buffer's [`MagitView`] on drop.
     pub fn with_views(mut self, views: MagitViewsHandle) -> Self {
         self.views = Some(views);
+        self
+    }
+
+    /// Also tear down this buffer's headerline on drop. `None` (a
+    /// harness with no virtual-row registrar) is a no-op.
+    pub fn with_headerline(
+        mut self,
+        registration: Option<crate::headerline::HeaderlineRegistration>,
+    ) -> Self {
+        self._headerline = registration;
         self
     }
 }

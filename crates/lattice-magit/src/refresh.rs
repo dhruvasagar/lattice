@@ -16,25 +16,42 @@ use lattice_protocol::position::{Position, Range};
 use lattice_runtime::Document;
 use lattice_vcs::{PathStatus, Repository, Stash, WorkingTree};
 
+use crate::headerline::{self, Field};
 use crate::sections::{Section, SectionEntry, SectionIndex, SectionKind};
 
-/// Build the status buffer text (+ styled spans) from live git data.
-/// Blocking — call on `spawn_blocking`. Returns (text, per-line spans).
-pub fn build_and_format(workdir: &PathBuf) -> (String, Vec<Vec<StyledSpan>>) {
+/// Build the status buffer text (+ styled spans + MG.14 header
+/// fields) from live git data. Blocking — call on `spawn_blocking`.
+///
+/// The header comes out of the SAME [`SectionIndex`] the body is
+/// formatted from — branch, ahead/behind, and the per-section counts
+/// are all already in hand — so surfacing it costs no extra git call.
+/// (Before MG.14 the index's branch/ahead/behind were computed on
+/// every refresh and thrown away: `SectionIndex::branch_status_line`
+/// was written to render them and never called from anywhere.)
+pub fn build_and_format(workdir: &PathBuf) -> (String, Vec<Vec<StyledSpan>>, Vec<Field>) {
     let repo = match Repository::discover(workdir) {
         Ok(r) => r,
         Err(e) => {
             tracing::debug!(target: "lattice_magit", "refresh: repo discover failed: {e}");
-            return ("Not a git repository.\n".to_string(), Vec::new());
+            return (
+                "Not a git repository.\n".to_string(),
+                Vec::new(),
+                Vec::new(),
+            );
         }
     };
 
     let index = build_section_index(&repo);
+    let header = headerline::status_fields(&index, workdir);
     let (text, spans) = index.format_buffer_styled();
     if text.is_empty() {
-        ("No changes (working tree clean)\n".to_string(), Vec::new())
+        (
+            "No changes (working tree clean)\n".to_string(),
+            Vec::new(),
+            header,
+        )
     } else {
-        (text, spans)
+        (text, spans, header)
     }
 }
 

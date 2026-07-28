@@ -243,14 +243,56 @@ pub(crate) fn branch_styled_spans(text: &str) -> Vec<Vec<StyledSpan>> {
         .collect()
 }
 
-/// Color `magit_stash_mode::build_stash_list` output
-/// (`  <message>` per stash, no `stash@{N}` prefix in the CURRENT
-/// buffer format — see that function). Kept intentionally minimal
-/// (no styling) until the stash list carries the `stash@{N}` label
-/// `sections.rs`'s status-buffer stash entries already show — adding
-/// color to a label this buffer doesn't render would be misleading.
+/// Color `magit_stash_mode::build_stash_list` output — `  stash@{N}
+/// <message>` per stash. MG.15 gave the list the `stash@{N}` label
+/// (fixing the dead-chord bug where the index parser read a label the
+/// renderer never wrote), so this styler is no longer the no-op it
+/// was: it now applies the SAME split `sections.rs` gives the
+/// status-buffer stash entries — `stash@{` → `Style::Keyword`, the
+/// index → `Style::Number`, the message → `Style::Comment` — so a
+/// stash reads identically in both places.
 pub(crate) fn stash_styled_spans(text: &str) -> Vec<Vec<StyledSpan>> {
-    text.lines().map(|_| Vec::new()).collect()
+    text.lines()
+        .map(|line| {
+            // Byte offsets, matching `magit_stash_mode::list_row`'s
+            // `"  stash@{N} message"`. `stash@{` is ASCII and the
+            // index is ASCII digits, so the only non-ASCII a row can
+            // carry is inside the message — after every boundary
+            // computed here.
+            const PREFIX: &str = "  stash@{";
+            let Some(rest) = line.strip_prefix(PREFIX) else {
+                return Vec::new();
+            };
+            let Some(close) = rest.find('}') else {
+                return Vec::new();
+            };
+            let idx_start = PREFIX.len();
+            let idx_end = idx_start + close;
+            let mut spans = vec![
+                StyledSpan {
+                    start: 2,
+                    end: idx_start,
+                    style: Style::Keyword,
+                },
+                StyledSpan {
+                    start: idx_start,
+                    end: idx_end,
+                    style: Style::Number,
+                },
+            ];
+            // `}` then a space, then the message — absent for a stash
+            // with an empty subject, which git allows.
+            let message_start = idx_end + 2;
+            if message_start < line.len() {
+                spans.push(StyledSpan {
+                    start: message_start,
+                    end: line.len(),
+                    style: Style::Comment,
+                });
+            }
+            spans
+        })
+        .collect()
 }
 
 /// Color the rebase todo buffer (`magit_rebase_mode`): the verb
@@ -384,6 +426,54 @@ mod tests {
         assert!(spans[0].is_empty());
         assert_eq!(spans[1][0].style, Style::MagitBranchCurrent);
         assert!(spans[2].is_empty());
+    }
+
+    /// MG.15: the stash list carries `stash@{N}` now, so this styler
+    /// stopped being a no-op. Offsets must land on the label, the
+    /// index, and the message — the same split `sections.rs` gives the
+    /// status buffer's stash entries, so a stash reads the same in
+    /// both views.
+    #[test]
+    fn stash_styled_spans_colors_the_label_index_and_message() {
+        let row = crate::magit_stash_mode::list_row(2, "WIP on main: 1234abc msg");
+        let text = format!("Stashes (1)\n{row}\n");
+        let spans = stash_styled_spans(&text);
+        assert!(spans[0].is_empty(), "the header is not a stash row");
+        let row_spans = &spans[1];
+        assert_eq!(row_spans[0].style, Style::Keyword);
+        assert_eq!(&row[row_spans[0].start..row_spans[0].end], "stash@{");
+        assert_eq!(row_spans[1].style, Style::Number);
+        assert_eq!(&row[row_spans[1].start..row_spans[1].end], "2");
+        assert_eq!(row_spans[2].style, Style::Comment);
+        assert_eq!(
+            &row[row_spans[2].start..row_spans[2].end],
+            "WIP on main: 1234abc msg"
+        );
+    }
+
+    /// A two-digit index must not shift the message span off by one —
+    /// the offsets are computed, not hardcoded.
+    #[test]
+    fn stash_styled_spans_handles_a_multi_digit_index() {
+        let row = crate::magit_stash_mode::list_row(12, "message");
+        let spans = stash_styled_spans(&row);
+        assert_eq!(&row[spans[0][1].start..spans[0][1].end], "12");
+        assert_eq!(&row[spans[0][2].start..spans[0][2].end], "message");
+    }
+
+    /// A non-ASCII message must not panic the byte-offset slicing, and
+    /// the message span must cover all of it.
+    #[test]
+    fn stash_styled_spans_is_byte_safe_with_a_non_ascii_message() {
+        let row = crate::magit_stash_mode::list_row(0, "WIP — café ☕");
+        let spans = stash_styled_spans(&row);
+        assert_eq!(&row[spans[0][2].start..spans[0][2].end], "WIP — café ☕");
+    }
+
+    #[test]
+    fn stash_styled_spans_leaves_non_row_lines_alone() {
+        assert!(stash_styled_spans("No stashes.\n")[0].is_empty());
+        assert!(stash_styled_spans("Stashes (0)\n")[0].is_empty());
     }
 
     #[test]

@@ -13,6 +13,42 @@ navigation chords](magit.md#shared-navigation-magit-core).
 
 ---
 
+## Headerline
+
+Every magit buffer carries a sticky row above its first line saying what
+you are looking at — the thing the buffer's own text usually cannot tell
+you. A diff does not say which scope it diffed; a blame does not say how
+far back `p` has walked; a file-at-revision looks exactly like the live
+file. The row answers that:
+
+| Buffer | Headerline |
+|---|---|
+| [status](magit-status.md) | `lattice  main ↑2 ↓1  3 staged  5 unstaged` |
+| Commit | `main  3 files +120 −18` — plus `AMEND` when amending |
+| Commit detail | `a1b2c3d  Jane Doe  3 days ago  Fix the thing` |
+| File-at-revision | `src/main.rs  @  a1b2c3d`, or `@  index` for a staged blob |
+| Diff | `staged  src/main.rs` (scope, then path when file-scoped) |
+| Log | `HEAD  50 commits  src/main.rs` (path only when file-scoped) |
+| Blame | `src/main.rs  @  a1b2c3d` — the revision updates as `p` walks back |
+| Branch | `main  12 branches` |
+| Stash | `3 stashes` |
+| Stash detail | `stash@{2}  WIP on main: fix the thing` |
+| Rebase | `onto  origin/main  4 commits` — plus `REBASE IN PROGRESS` |
+
+Fields are coloured by what they are — SHAs, branches, refs, and authors
+each take their own theme colour — rather than labelled, so the row
+stays short on a narrow split. Two theme elements are new:
+`magit.headerline.label` (counts, paths, dates) and
+`magit.headerline.alert` (`AMEND`, `REBASE IN PROGRESS`); the rest reuse
+the `magit.*` colours the buffer bodies already use. `:colorscheme`
+repaints the row live.
+
+The row refreshes with its buffer — `gr`, and any action that rebuilds
+the view. It stays hidden until the buffer's first content lands, so
+nothing shifts down and back up while git answers.
+
+---
+
 ## Commit buffer (`*magit:commit*`)
 
 Open with `cc` from the status buffer, or `:magit-commit` from
@@ -230,19 +266,49 @@ Open with `:magit-stash-list`. Lists all stash entries.
 | `p` | Pop the stash at cursor (apply + drop) |
 | `d` | Drop the stash at cursor without applying |
 | `z` | Create a new stash from the current working tree (`git stash push`, no untracked files) |
+| `<CR>` | Show this stash's patch in a [detail buffer](#stash-detail-buffer-magitstashn) |
 | `gr` | Refresh (re-run `git stash list`) |
 
-There is no `<CR>` binding in this buffer today — it doesn't show a
-stash's diff. (If you want to preview a stash's patch before deciding,
-open `*magit:status*` instead: `<CR>` on a stash entry there toggles
-its patch inline.)
+Each row reads `  stash@{N} <message>` — the same shape magit-status
+uses for its Stashes section.
 
 ### Behaviour
 
 - `z` always runs plain `git stash push` — there's no flag to include
   untracked files or attach a message yet.
 - Stash apply/restore uses `git stash apply` / `git stash pop`. `d`
-  drops without confirmation.
+  asks for confirmation first (a dropped stash is unrecoverable);
+  `a` and `p` do not, since both put the content somewhere you can
+  still see it.
+- **Fixed in this release:** `a`, `p` and `d` previously did nothing at
+  all in this buffer. Each locates its stash by reading the `stash@{N}`
+  label out of the row under the cursor, and the list was rendering rows
+  without that label — so every one of them silently no-op'd. The list
+  now renders the label the chords read.
+
+---
+
+## Stash detail buffer (`*magit:stash:<n>*`)
+
+Open with `<CR>` on a row in the stash buffer. Read-only
+`git stash show -p` for that one stash — "what would `a` actually apply
+to my working tree?", answered before you press `a`.
+
+magit-status keeps its own inline behaviour: `<CR>` on a stash row there
+toggles the patch in place, because there a stash is one row among many
+and the surrounding sections are the context. Here the stash is the
+subject.
+
+### Behaviour
+
+- No mode-specific chords beyond the shared
+  [magit-core](magit.md#shared-navigation-magit-core) navigation.
+- `gr` is a no-op — `stash@{n}`'s patch does not change under a fixed
+  index. Note that dropping or popping a stash renumbers the *others*,
+  so a detail buffer opened earlier still names the index it was opened
+  at; re-open from the refreshed list after a drop.
+- An empty patch (a stash of untracked files only) says so rather than
+  showing a blank buffer.
 
 ---
 

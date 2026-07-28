@@ -35,6 +35,7 @@ use lattice_protocol::position::{Position, Range};
 use lattice_vcs::Repository;
 
 use crate::buffer_state::{BufferStateGuard, BufferStates};
+use crate::headerline;
 
 pub struct MagitRebaseMode;
 
@@ -255,6 +256,16 @@ impl Mode for MagitRebaseMode {
                 (!s.is_empty()).then(|| s.to_string())
             });
 
+            // MG.14: the upstream is resolved below (it may come from
+            // `@{upstream}` rather than the buffer name), so the header
+            // fills in with the todo text.
+            let (hl, hl_registration) =
+                match headerline::install(&ctx, buffer_id, Self::mode_id().as_str()) {
+                    Some((h, reg)) => (Some(h), Some(reg)),
+                    None => (None, None),
+                };
+            let rebase_running = rebase_in_progress(&gitdir);
+
             // MG.13: publish BEFORE the first `.await`. `upstream` is
             // not resolvable yet; it starts empty, and `confirm`
             // already refuses on an empty upstream.
@@ -271,7 +282,8 @@ impl Mode for MagitRebaseMode {
                     gitdir,
                 },
             );
-            let guard = BufferStateGuard::new((*states).clone(), buffer_id);
+            let guard = BufferStateGuard::new((*states).clone(), buffer_id)
+                .with_headerline(hl_registration);
 
             let wd = workdir.clone();
             let (upstream, initial) = tokio::task::spawn_blocking(move || {
@@ -280,6 +292,16 @@ impl Mode for MagitRebaseMode {
             .await
             .unwrap_or_else(|_| (String::new(), "Failed to prepare rebase.\n".to_string()));
 
+            // Counted from the text just built, so no second
+            // `rev-list`. Keyed on the leading verb rather than "has a
+            // hex-looking token": the explanatory `#` footer is prose,
+            // and an ordinary English word made only of `abcdef`
+            // ("added", "faced") would otherwise count as a commit.
+            let commits = initial.lines().filter(|l| is_todo_line(l)).count();
+            headerline::publish(
+                &hl,
+                headerline::rebase_fields(&upstream, commits, rebase_running),
+            );
             let spans = crate::highlight::rebase_styled_spans(&initial);
             let snap = handle.snapshot();
             let last = snap.buffer.line_count().saturating_sub(1);
@@ -320,6 +342,19 @@ fn abort_rebase_confirm() -> Effect {
         "Abort this rebase?".to_string(),
         "action:magit-rebase-abort-execute",
     )
+}
+
+/// The verbs a rebase-todo line may lead with. Shared by the commit
+/// counter below and mirrored by `highlight::rebase_styled_spans`,
+/// which colours the same set.
+const TODO_VERBS: [&str; 6] = ["pick", "reword", "edit", "squash", "fixup", "drop"];
+
+/// MG.14: is this todo line a real commit row? `<verb> <sha> ...` —
+/// not a `#` comment and not the trailing blank.
+fn is_todo_line(line: &str) -> bool {
+    TODO_VERBS
+        .iter()
+        .any(|v| line.strip_prefix(v).is_some_and(|r| r.starts_with(' ')))
 }
 
 /// A rebase-todo line is `<verb> <sha> <subject>` (or a `#`-comment) —

@@ -35,6 +35,10 @@ pub struct StatusBufferState {
     /// inline expansion, so this map is cleared whenever a refresh
     /// lands — see `trigger_refresh`.
     pub expanded: HashMap<String, usize>,
+    /// MG.14: the buffer's headerline — branch, ahead/behind, repo
+    /// name, dirty counts. Re-set by every refresh from the same
+    /// `SectionIndex` the body is built from.
+    pub headerline: Option<crate::headerline::MagitHeaderlineHandle>,
 }
 
 // ── line classification ─────────────────────────────────
@@ -575,7 +579,7 @@ fn spawn_mutation_and_refresh(
     s: Arc<Mutex<StatusBufferState>>,
     mutate: impl FnOnce() + Send + 'static,
 ) -> Option<Effect> {
-    let (handle, wd, pending, bid) = {
+    let (handle, wd, pending, bid, hl) = {
         let mut g = s.lock().ok()?;
         let h = g.store.handle_for(g.buffer_id)?;
         g.expanded.clear();
@@ -584,11 +588,12 @@ fn spawn_mutation_and_refresh(
             g.workdir.clone(),
             g.pending_highlights.clone(),
             g.buffer_id,
+            g.headerline.clone(),
         )
     };
     tokio::task::spawn(async move {
         let _ = tokio::task::spawn_blocking(mutate).await;
-        do_refresh(handle, wd, pending, bid).await;
+        do_refresh(handle, wd, pending, bid, hl).await;
     });
     None
 }
@@ -608,10 +613,15 @@ async fn do_refresh(
     wd: PathBuf,
     pending: Option<Arc<PendingSyntheticHighlights>>,
     bid: BufferId,
+    headerline: Option<crate::headerline::MagitHeaderlineHandle>,
 ) {
-    let (text, spans) = tokio::task::spawn_blocking(move || refresh::build_and_format(&wd))
+    let (text, spans, header) = tokio::task::spawn_blocking(move || refresh::build_and_format(&wd))
         .await
         .expect("spawn_blocking");
+    // MG.14: publish before the edit — the header describes the state
+    // the body is about to show, and `set` is a comparison plus (at
+    // most) one atomic, nowhere near the edit's cost.
+    crate::headerline::publish(&headerline, header);
     refresh::apply_and_highlight(handle, text, spans, pending, bid).await;
 }
 
@@ -622,7 +632,7 @@ async fn do_refresh(
 /// registered once at boot by `magit-core-mode` and reaches this
 /// through [`StatusView`]; see `buffer_state::MagitView`.
 pub fn trigger_refresh(s: Arc<Mutex<StatusBufferState>>) -> Option<Effect> {
-    let (handle, wd, pending, bid) = {
+    let (handle, wd, pending, bid, hl) = {
         let mut g = s.lock().ok()?;
         let h = g.store.handle_for(g.buffer_id)?;
         g.expanded.clear();
@@ -631,9 +641,10 @@ pub fn trigger_refresh(s: Arc<Mutex<StatusBufferState>>) -> Option<Effect> {
             g.workdir.clone(),
             g.pending_highlights.clone(),
             g.buffer_id,
+            g.headerline.clone(),
         )
     };
-    tokio::task::spawn(do_refresh(handle, wd, pending, bid));
+    tokio::task::spawn(do_refresh(handle, wd, pending, bid, hl));
     None::<Effect>
 }
 

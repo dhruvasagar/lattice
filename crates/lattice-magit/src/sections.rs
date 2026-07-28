@@ -235,16 +235,12 @@ impl SectionIndex {
         (out, spans)
     }
 
-    pub fn branch_status_line(&self) -> String {
-        let mut s = self.branch.clone();
-        if self.ahead > 0 {
-            s.push_str(&format!(" {}↑", self.ahead));
-        }
-        if self.behind > 0 {
-            s.push_str(&format!(" {}↓", self.behind));
-        }
-        s
-    }
+    // MG.14 removed `branch_status_line()`. It formatted branch +
+    // ahead/behind into a `String` and had no callers in any revision
+    // of this crate — the header it was written for did not exist.
+    // `headerline::status_fields` renders the same data now, as
+    // per-role coloured fields rather than one flat string, and is
+    // reached from the one place a status refresh runs.
 }
 
 fn status_label(status: PathStatus) -> &'static str {

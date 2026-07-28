@@ -36,6 +36,16 @@ smallvec = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+criterion = { workspace = true }
+
+# MG.14: the headerline's per-tick `version()` cost. It resolves theme
+# colours live (so `:colorscheme` lands on the row) rather than
+# capturing them at activation, which puts a theme-registry read-lock on
+# the cells worker's every tick — this bench is what keeps that choice
+# honest.
+[[bench]]
+name = "headerline"
+harness = false
 
 [lints]
 workspace = true

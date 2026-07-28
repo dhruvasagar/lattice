@@ -202,58 +202,30 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
     // synchronous path exists back to the echo area from a task that
     // outlives the handler call, so success/failure is logged rather
     // than silently dropped (never both silent AND absent).
+    // MG.16: the body lives in [`spawn_remote_op`], NOT in this
+    // macro. The transient item and the ex-command are two front-ends
+    // over one implementation (the unified-dispatch rule) — a second
+    // copy behind `:magit-push` would be a second place for the
+    // credential handling, the echo text, and the outcome logging to
+    // drift.
     macro_rules! remote_op {
-        ($action_name:expr, $what:expr, $git_args:expr) => {
+        ($action_name:expr, $op:expr) => {
             contributions.push(ActionHandlerContribution {
                 action_name: $action_name,
-                handler: Arc::new(|_ctx: &ActionContext<'_>| {
-                    let workdir = Repository::discover(".")
-                        .ok()
-                        .and_then(|r| r.workdir().map(|p| p.to_path_buf()))
-                        .unwrap_or_default();
-                    tokio::task::spawn(async move {
-                        let result = tokio::task::spawn_blocking(move || {
-                            run_remote_op(&workdir, $git_args)
-                        })
-                        .await
-                        .unwrap_or_else(|e| Err(e.to_string()));
-                        match result {
-                            Ok(out) => tracing::info!(
-                                target: "lattice_magit",
-                                "magit: {} succeeded: {out}", $what
-                            ),
-                            Err(err) => tracing::error!(
-                                target: "lattice_magit",
-                                "magit: {} failed: {err}", $what
-                            ),
-                        }
-                    });
-                    Some(Effect::Echo {
-                        level: lattice_grammar::EchoLevel::Info,
-                        text: concat!("magit: ", $what, "ing…").to_string(),
-                    })
-                }),
+                handler: Arc::new(|_ctx: &ActionContext<'_>| Some(spawn_remote_op($op))),
             });
         };
     }
-    remote_op!(
-        "action:magit-global-pull",
-        "pull",
-        &["pull", "--ff-only"][..]
-    );
-    remote_op!("action:magit-global-push", "push", &["push"][..]);
+    remote_op!("action:magit-global-pull", RemoteOp::PULL);
+    remote_op!("action:magit-global-push", RemoteOp::PUSH);
     // Fetch is the non-merging half of pull — magit gives it its own
     // top-level key (`f`) precisely because "see what's upstream
     // without touching my tree" is a distinct, frequent intent.
-    remote_op!("action:magit-global-fetch", "fetch", &["fetch"][..]);
+    remote_op!("action:magit-global-fetch", RemoteOp::FETCH);
     // Stash-push is local, not remote, but `run_remote_op`'s
     // fail-fast + log-the-outcome shape fits any one-shot git
     // invocation whose result can't come back synchronously.
-    remote_op!(
-        "action:magit-global-stash-create",
-        "stash",
-        &["stash", "push"][..]
-    );
+    remote_op!("action:magit-global-stash-create", RemoteOp::STASH);
 
     // file-dispatch (`C-c f`) — every item acts on the file in
     // whatever buffer was active when the transient was opened,
@@ -425,6 +397,76 @@ fn base_branch_from_prompt_buffer_name(buffer_name: &str) -> Option<String> {
     let s = buffer_name.strip_prefix("*magit:branch-create-from:")?;
     let s = s.strip_suffix("*")?;
     (!s.is_empty()).then(|| s.to_string())
+}
+
+/// MG.16: one detached git operation, named once.
+///
+/// The transient item (`C-c g p`) and the ex-command (`:magit-pull`)
+/// both resolve to one of these constants and call
+/// [`spawn_remote_op`] — the operation is defined in exactly one
+/// place, so the two surfaces cannot drift in argv, in echo text, or
+/// in how the outcome is reported.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RemoteOp {
+    /// Verb for the echo + logs, in `-ing` form ("pull" → "pulling…").
+    pub what: &'static str,
+    /// argv passed to `git`.
+    pub args: &'static [&'static str],
+}
+
+impl RemoteOp {
+    pub const PULL: Self = Self {
+        what: "pull",
+        args: &["pull", "--ff-only"],
+    };
+    pub const PUSH: Self = Self {
+        what: "push",
+        args: &["push"],
+    };
+    pub const FETCH: Self = Self {
+        what: "fetch",
+        args: &["fetch"],
+    };
+    pub const STASH: Self = Self {
+        what: "stash",
+        args: &["stash", "push"],
+    };
+}
+
+/// Run `op` off the actor thread and return the optimistic echo.
+///
+/// `GIT_TERMINAL_PROMPT=0` (in [`run_remote_op`]) makes a missing or
+/// expired credential fail fast and cleanly instead of hanging the
+/// background task on interactive input that can never arrive. The
+/// echo returns synchronously; the real outcome lands via `tracing`,
+/// same as every other detached background mutation in this crate —
+/// no synchronous path exists back to the echo area from a task that
+/// outlives the call, so success and failure are logged rather than
+/// silently dropped (never both silent AND absent).
+pub fn spawn_remote_op(op: RemoteOp) -> Effect {
+    let workdir = Repository::discover(".")
+        .ok()
+        .and_then(|r| r.workdir().map(|p| p.to_path_buf()))
+        .unwrap_or_default();
+    tokio::task::spawn(async move {
+        let result = tokio::task::spawn_blocking(move || run_remote_op(&workdir, op.args))
+            .await
+            .unwrap_or_else(|e| Err(e.to_string()));
+        match result {
+            Ok(out) => tracing::info!(
+                target: "lattice_magit",
+                "magit: {} succeeded: {out}", op.what
+            ),
+            Err(err) => tracing::error!(
+                target: "lattice_magit",
+                "magit: {} failed: {err}", op.what
+            ),
+        }
+    });
+    Effect::Echo {
+        level: lattice_grammar::EchoLevel::Info,
+        text: format!("magit: {}ing…", op.what),
+    }
 }
 
 /// Run a git subcommand for a remote operation (pull/push), with

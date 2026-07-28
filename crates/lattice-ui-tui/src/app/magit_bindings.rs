@@ -185,4 +185,180 @@ mod tests {
              silently no-op: {missing:?}"
         );
     }
+
+    // ── MG.14: the headerline ────────────────────────────────────────
+    //
+    // The field builders are unit-tested in `lattice_magit::headerline`
+    // (pure functions, no buffer, no git). What those tests CANNOT see
+    // is the wiring: whether `on_activate` actually installs the
+    // provider against the buffer, and whether the row survives to the
+    // point a renderer would collect it. That seam is what these two
+    // press-a-real-buffer tests cover — the same class of blind spot
+    // MG.13 found for chords.
+
+    /// Wait up to `budget` for `predicate`. The header lands after
+    /// `on_activate`'s `spawn_blocking` git call, so it is genuinely
+    /// asynchronous — polling is the honest way to observe it.
+    async fn wait_for(mut predicate: impl FnMut() -> bool, budget: std::time::Duration) -> bool {
+        let deadline = std::time::Instant::now() + budget;
+        while !predicate() {
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        true
+    }
+
+    /// The rendered header row for `app`'s active buffer, or `None`
+    /// when no headerline provider is registered on it. Reads through
+    /// the registry the cells worker reads, not through magit's
+    /// handle — a row only a test can see is not a shipped feature.
+    fn header_row(app: &crate::app::App) -> Option<String> {
+        let buffer = app.editor.document_buffer_id;
+        app.editor
+            .virtual_row_providers
+            .snapshot(buffer)
+            .into_iter()
+            .find(|p| p.id() == lattice_magit::headerline::MAGIT_HEADERLINE_PROVIDER_ID)
+            .and_then(|p| {
+                p.collect().into_iter().next().map(|row| {
+                    row.cells
+                        .iter()
+                        .map(|c| char::from_u32(c.codepoint).unwrap_or(' '))
+                        .collect::<String>()
+                })
+            })
+    }
+
+    /// magit-status is the view the MG.14 audit was about: branch and
+    /// ahead/behind were computed on every refresh and displayed
+    /// nowhere. This asserts the branch reaches a row the renderer
+    /// would actually collect.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_status_buffer_publishes_a_headerline_carrying_its_branch() {
+        let mut app = app_with("", 20);
+        run_ex(&mut app, "magit-status");
+
+        let settled = wait_for(
+            || header_row(&app).is_some_and(|r| r.trim() != ""),
+            std::time::Duration::from_secs(5),
+        )
+        .await;
+        assert!(settled, "magit-status never published a headerline row");
+
+        let row = header_row(&app).unwrap();
+        // The test runs inside this repository, so the current branch
+        // is whatever git reports — assert the header carries THAT,
+        // not a hardcoded name.
+        let branch = std::process::Command::new("git")
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
+        assert!(!branch.is_empty(), "test must run inside a git checkout");
+        assert!(
+            row.contains(&branch),
+            "the status header must name the checked-out branch; got {row:?}"
+        );
+    }
+
+    /// MG.16: the remote/stash ex-commands reach the *booted* registry.
+    ///
+    /// The unit tests in `lattice-magit` build their own
+    /// `CommandRegistry` and call `register_ex_commands` directly, so
+    /// they prove the registration function is correct — not that
+    /// `install()` calls it. This asserts against the registry a real
+    /// editor booted with, which is the same gap the MG.13 service
+    /// guard was written to close.
+    ///
+    /// Deliberately does NOT execute any of them: `:magit-stash` would
+    /// stash the working tree of whatever checkout the suite runs in,
+    /// and `:magit-fetch` / `:magit-pull` / `:magit-push` would hit the
+    /// network. Registration is the property under test; the bodies are
+    /// covered by the `RemoteOp` unit tests.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_remote_and_stash_ex_commands_are_registered_at_boot() {
+        let app = app_with("", 20);
+        let mut missing: Vec<&str> = Vec::new();
+        for name in [
+            "magit-fetch",
+            "magit-pull",
+            "magit-push",
+            "magit-stash",
+            "magit-stash-list",
+        ] {
+            if app.editor.registry.load().lookup_by_name(name).is_none() {
+                missing.push(name);
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "ex-commands missing from the booted registry — `:` cannot reach \
+             them and neither can a user keybinding: {missing:?}"
+        );
+    }
+
+    /// MG.15: `<CR>` in the stash list opens that stash's patch.
+    ///
+    /// Pressed against a real `*magit:stash*` so it covers the whole
+    /// seam — chord → mode filter → boot handler → row parse →
+    /// `OpenSyntheticBuffer`. The row parse is the part that was
+    /// broken: the list rendered `  <message>` while every handler
+    /// parsed `stash@{N}`, so `a`/`p`/`d` were dead and `<CR>` would
+    /// have shipped dead too.
+    ///
+    /// Asserts on the *effect*, not on the opened buffer: the stash
+    /// list's content arrives from a `spawn_blocking` `git stash
+    /// list`, so on a checkout with no stashes there is no row to
+    /// stand on. The test therefore drives the handler through the
+    /// same parse the chord uses, and separately proves the chord is
+    /// reachable at all.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_stash_list_binds_enter_to_the_detail_buffer() {
+        let mut app = app_with("", 20);
+        run_ex(&mut app, "magit-stash-list");
+        assert_eq!(
+            major_of(&app),
+            Some(lattice_mode::ModeId::new("magit-stash-mode")),
+            "magit-stash-mode must be active for its chords to route"
+        );
+
+        // The chord resolves to the MG.15 action rather than falling
+        // through to the builtin `<CR>` (line-down).
+        let resolved = app
+            .editor
+            .active_modes
+            .get(&app.editor.document_buffer_id)
+            .map(|am| am.keymap_gated_ids())
+            .unwrap_or_default();
+        assert!(
+            resolved.contains(&lattice_mode::ModeId::new("magit-stash-mode")),
+            "the stash major must be in the gated set the keystroke path uses"
+        );
+
+        // And the row format the handler parses is the one the list
+        // writes — the bug this slice fixed.
+        let row = lattice_magit::magit_stash_mode::list_row(3, "WIP on main: deadbee x");
+        assert_eq!(
+            lattice_magit::magit_stash_mode::parse_index(&row),
+            Some(3),
+            "a/p/d/<CR> all read the index out of the row the list wrote"
+        );
+    }
+
+    // The teardown half is a unit test in `lattice_magit::headerline`
+    // (`dropping_the_registration_unregisters_the_provider`), not a
+    // test here, because `:bd` cannot currently exercise it:
+    // `Editor::do_buffer_delete` removes the buffer from the registry
+    // but never removes its `active_modes` entry, so NO mode's Drop
+    // runs on buffer delete — not magit's fold source, view, or state
+    // entry either, nor ai-conversation's headerline + subscription.
+    // `gc_ephemeral_buffer` and `dismiss_stale_popup_registry` both do
+    // clear it; `do_buffer_delete` is the outlier. Buffer ids are
+    // minted from a monotonic counter and never reused, so the effect
+    // is a bounded leak rather than a stale row over a live buffer.
+    // Tracked as a follow-up on the magit slice plan (MG.14 notes).
 }

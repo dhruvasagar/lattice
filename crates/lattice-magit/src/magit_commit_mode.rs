@@ -17,6 +17,7 @@ use lattice_protocol::position::{Position, Range};
 use lattice_vcs::{Commit, Repository};
 
 use crate::buffer_state::{BufferStateGuard, BufferStates};
+use crate::headerline;
 
 pub struct MagitCommitMode;
 
@@ -216,6 +217,17 @@ impl Mode for MagitCommitMode {
                 .map(|n| n.contains("amend"))
                 .unwrap_or(false);
 
+            // MG.14: what is staged is not knowable until the diff
+            // below lands, so the header fills in with it. `AMEND` is
+            // known now but is published together with the rest — a
+            // half-row that gains fields a beat later reads as a
+            // glitch.
+            let (hl, hl_registration) =
+                match headerline::install(&ctx, buffer_id, Self::mode_id().as_str()) {
+                    Some((h, reg)) => (Some(h), Some(reg)),
+                    None => (None, None),
+                };
+
             // MG.13: publish BEFORE the first `.await`. `diff_end_line`
             // is not knowable yet (it comes out of the generated text);
             // it starts at 0 — which makes `<CR>` decline rather than
@@ -234,23 +246,33 @@ impl Mode for MagitCommitMode {
                     diff_end_line: 0,
                 },
             );
-            let guard = BufferStateGuard::new((*states).clone(), buffer_id);
+            let guard = BufferStateGuard::new((*states).clone(), buffer_id)
+                .with_headerline(hl_registration);
 
             // Populate the buffer: staged diff + message area. Amend
             // pre-populates the previous commit's message instead of a
             // blank region, matching what it's about to replace.
             let wd = workdir.clone();
-            let (staged, prior_message) = tokio::task::spawn_blocking(move || {
+            let (staged, prior_message, branch) = tokio::task::spawn_blocking(move || {
                 let staged = run_staged_diff(&wd);
                 let prior = if amend {
                     run_prior_commit_message(&wd)
                 } else {
                     String::new()
                 };
-                (staged, prior)
+                // MG.14: the branch this commit lands on. One
+                // `rev-parse` inside the SAME blocking call that
+                // already runs two git commands.
+                let branch = Repository::discover(&wd)
+                    .ok()
+                    .and_then(|r| r.run_git_str(["rev-parse", "--abbrev-ref", "HEAD"]).ok())
+                    .map(|s| s.trim().to_string())
+                    .unwrap_or_default();
+                (staged, prior, branch)
             })
             .await
             .unwrap_or_default();
+            headerline::publish(&hl, headerline::commit_fields(&branch, &staged, amend));
             let initial = format!(
                 "--- Staged diff (review before committing) ---\n\
                  {}\n\

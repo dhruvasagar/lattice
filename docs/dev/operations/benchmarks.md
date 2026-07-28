@@ -71,6 +71,37 @@ target rather than just a slower number.
 
 ---
 
+## MG.14 — magit headerline (2026-07-28)
+
+⚠️ **Measured on a different box** than every other row in this file:
+Apple Silicon / macOS, not the Ryzen 9700X WSL2 dev box the hardware
+caveat above describes. Treat these as same-order-of-magnitude, not
+comparable to the rows below.
+
+The magit headerline resolves its theme colours *inside* `render()` and
+folds the theme's resolved version into its own `version()`, so
+`:colorscheme` repaints the row — unlike the compilation and
+ai-conversation headerlines, which capture `u32`s at activation and go
+stale. That choice puts a theme-registry read-lock on the cells worker's
+every tick, which is exactly what `magit_headerline_version_ns` exists
+to keep honest.
+
+Bench file: `crates/lattice-magit/benches/headerline.rs`.
+Run: `cargo bench -p lattice-magit --bench headerline`.
+
+| Bench | Median | Floor / Target | What it measures |
+|---|---|---|---|
+| `magit_headerline_version_ns` | ~26 ns | 26 ns / 100 ns | `version()` — called every tick per visible magit buffer. Theme read-lock + ArcSwap load + one atomic. The row that must stay flat; a regression here means the theme-live choice stopped paying for itself. |
+| `magit_headerline_render_ns` | ~581 ns | 580 ns / 2 µs | `render()` — builds the widest row any view produces (status: repo + branch + ahead/behind + three counts) as cells. Called only when the version advanced, i.e. on real change. |
+| `magit_headerline_set_unchanged_ns` | ~129 ns | 130 ns / 500 ns | The no-work refresh path: `set()` with identical fields. Every `gr` and every future auto-refresh that finds the repo unchanged lands here, and must not bump the version (paramount goal #1 — no repaint for no change). |
+
+Backs design §8.2's "UI thread does no work proportional to content"
+posture indirectly: all three run on the cells worker, never the UI
+thread, so the bar is "cheap enough to do every tick" rather than the
+frame budget itself.
+
+---
+
 ## PH7.7a — grammar-extension boundary marshalling (2026-07-12)
 
 The host-side marshalling half of the **grammar-extension round-trip < 5 µs p99**

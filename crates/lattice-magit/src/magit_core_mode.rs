@@ -186,6 +186,7 @@ impl Mode for MagitCoreMode {
             MagitRebaseMode::mode_id(),
             MagitRevisionMode::mode_id(),
             MagitFileRevisionMode::mode_id(),
+            crate::magit_stash_show_mode::MagitStashShowMode::mode_id(),
         ])
     }
 

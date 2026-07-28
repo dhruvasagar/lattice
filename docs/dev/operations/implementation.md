@@ -4161,7 +4161,44 @@ Installs through `SubsystemBoot` seam. Inverted out of
   changing behaviour), and
   core-mode's own chords collapsed the same way with two magit
   buffers open. See the slice plan.
-- **MG.14–MG.20 remain open** — per-slice status and sequencing
+- ✅ **MG.14** — Headerline across every magit buffer (2026-07-28).
+  One `Headerline` impl, ten per-view field builders — the per-view
+  difference is data (a `Vec<Field>` tagged by git role), never a
+  `match buffer_kind`. Fields ride the builder that already produces
+  each buffer's text, so a header costs no git call of its own; `set`
+  compares before it bumps, so an unchanged refresh triggers no
+  repaint. Resolves colours live so `:colorscheme` lands on the row —
+  the two headerlines that shipped before it capture colours at
+  activation and go stale. Deleted `SectionIndex::branch_status_line`,
+  dead since MG.2 and the origin of the false "headerline is active"
+  claim the user docs carried. Contract:
+  [`../architecture/magit.md`](../architecture/magit.md) §4.11.
+  **Found, not fixed:** `Editor::do_buffer_delete` never removes a
+  deleted buffer's `active_modes` entry, so no mode's `Guard::drop`
+  runs on `:bd` — a host-wide lifecycle gap affecting magit, diff, and
+  ai-conversation alike. Bounded leak, not a correctness bug (buffer
+  ids are never reused); wants its own host slice. See the slice plan.
+- ✅ **MG.15** — Stash detail view (2026-07-28). `<CR>` in the stash
+  list opens `*magit:stash:<n>*` (`git stash show -p`), closing the last
+  exception to MG.11's `<CR>` uniformity rule. **Found and fixed a live
+  bug on the way:** the stash list rendered `  <message>` while every
+  chord's `stash_index_at_cursor` parsed `stash@{N}`, so `a`/`p`/`d` in
+  that buffer had always been silently dead — the MG.6/MG.8 failure
+  class again (a line format whose writer and reader were only tested
+  apart). The list now carries the label, `list_row`/`parse_index` are
+  its single writer/reader with a round-trip test spanning them, and
+  `stash_styled_spans` — a documented no-op until now — colours it.
+  Also added a cross-cutting guard: every chord of every magit mode must
+  name a registered action command AND have a boot handler, so the whole
+  dead-chord class is covered for future chords by construction.
+- ✅ **MG.16** — Remote/stash ex-command parity (2026-07-28).
+  `:magit-fetch`, `:magit-pull`, `:magit-push`, `:magit-stash` — these
+  operations were reachable from the `C-c g` transient and nowhere else,
+  so they could not be scripted, rebound, or discovered under `:`. One
+  body (`spawn_remote_op`) behind two front-ends per the unified-dispatch
+  rule, with each operation's argv and echo verb defined once as a
+  `RemoteOp` constant.
+- **MG.17–MG.20 remain open** — per-slice status and sequencing
   live in
   [`slice-plans/magit.md`](slice-plans/magit.md), which is
   authoritative for this subsystem. (The 2026-07-26 audit found

@@ -73,6 +73,8 @@ notify = { workspace = true }
 base64 = { workspace = true }
 
 [dev-dependencies]
+lattice-magit = { path = "../lattice-magit" }
+lattice-keymap = { path = "../lattice-keymap" }
 tokio = { workspace = true, features = ["sync", "macros", "rt-multi-thread", "test-util", "time"] }
 criterion = { workspace = true }
 # AI-1b boot-presence test: asserts `lattice_ai::install` (wired into

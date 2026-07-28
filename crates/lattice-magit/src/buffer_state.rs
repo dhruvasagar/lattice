@@ -1,0 +1,322 @@
+//! MG.13 — per-buffer mode state, published for boot-registered
+//! action handlers.
+//!
+//! **The problem this closes.** magit's per-buffer modes used to
+//! register their action handlers from inside `on_activate`, closing
+//! over an `Arc<Mutex<…State>>` built during activation. `on_activate`
+//! runs in the cascade future that `ModeRegistry::spawn_cascade`
+//! spawns, so there is a window after a magit buffer opens in which
+//! the chord resolves through the keymap, the mode reads as active,
+//! and **no handler exists** — the keypress does nothing. That is not
+//! a test artefact: it is what a user gets pressing `d` quickly after
+//! `:magit-branch`. It is also the exact bug MG.8 shipped
+//! (`MagitGlobalMode` registered from `on_activate` behind a
+//! `OnceLock`); the fix there was to move to `Mode::action_handlers()`,
+//! and this module finishes that migration for the modes that were
+//! left behind because they carry per-buffer state.
+//!
+//! **The shape.** Handlers move to `Mode::action_handlers()` —
+//! registered once at boot, for the lifetime of the app — and read
+//! their per-buffer state out of a [`BufferStates`] service keyed by
+//! `BufferId` at call time. `ActionContext` already carries both
+//! `buffer_id` and `services`, so the handler has everything it needs.
+//! Chord scoping is unchanged: K.1.c's per-keystroke filter only
+//! routes a mode's chords in buffers where that mode is active.
+//!
+//! **Why the state is there in time.** `spawn_cascade` polls the
+//! cascade future **once, synchronously, on the App thread** before
+//! spawning it (its try-sync-then-spawn arm). Everything in
+//! `on_activate` above its first `.await` therefore runs before
+//! `activate_major` returns. Publishing state there makes it visible
+//! to the very next keystroke — so each mode's `on_activate` must
+//! `publish` before it awaits anything. Fields that genuinely cannot
+//! be known until after an await (rebase's resolved `upstream`,
+//! commit's `diff_end_line`) are published with an inert initial value
+//! and filled in through the `Arc<Mutex<_>>` once known; their
+//! handlers already refuse to act on the inert value.
+//!
+//! **Caveat — cascade position.** The synchronous first poll reaches
+//! only as far as the first pending await in the *whole* cascade, so
+//! only the root step (the major mode) is guaranteed to publish
+//! synchronously. Implied minors run later. `magit-core-mode` is a
+//! minor and must therefore not depend on this guarantee — which it
+//! does not: its handlers read the buffer through `BufferStoreHandle`
+//! and `ctx.buffer_id`, so they need no published state at all.
+
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
+use lattice_core::BufferId;
+use lattice_mode::ActionContext;
+
+/// Per-buffer state for one magit mode.
+///
+/// One instance per state type, registered as a service at install
+/// time. Entries are published by `on_activate` and removed when the
+/// buffer's mode guard drops, so a stale entry cannot outlive its
+/// buffer.
+pub struct BufferStates<S> {
+    map: Mutex<HashMap<BufferId, Arc<Mutex<S>>>>,
+}
+
+impl<S> Default for BufferStates<S> {
+    fn default() -> Self {
+        Self {
+            map: Mutex::new(HashMap::new()),
+        }
+    }
+}
+
+impl<S> BufferStates<S> {
+    /// Publish `state` for `buffer`, replacing any prior entry (a
+    /// re-activation on the same buffer supersedes the old state).
+    /// Returns the shared handle so the caller can keep mutating it
+    /// after an await — see the module note on late-resolved fields.
+    pub fn publish(&self, buffer: BufferId, state: S) -> Arc<Mutex<S>> {
+        let shared = Arc::new(Mutex::new(state));
+        if let Ok(mut map) = self.map.lock() {
+            map.insert(buffer, shared.clone());
+        }
+        shared
+    }
+
+    /// Publish an already-shared state handle.
+    ///
+    /// The peer of [`Self::publish`] for a mode that already owns an
+    /// `Arc<Mutex<S>>` (magit-status builds one for its fold source
+    /// before publishing).
+    pub fn publish_shared(&self, buffer: BufferId, state: Arc<Mutex<S>>) {
+        if let Ok(mut map) = self.map.lock() {
+            map.insert(buffer, state);
+        }
+    }
+
+    /// The state for `buffer`, or `None` when no magit mode of this
+    /// type is live on it. Handlers treat `None` as "not mine" and
+    /// no-op — the same outcome as before, minus the race.
+    pub fn get(&self, buffer: BufferId) -> Option<Arc<Mutex<S>>> {
+        self.map.lock().ok()?.get(&buffer).cloned()
+    }
+
+    pub fn remove(&self, buffer: BufferId) {
+        if let Ok(mut map) = self.map.lock() {
+            map.remove(&buffer);
+        }
+    }
+}
+
+/// Look up this mode's state for the buffer the action fired in.
+///
+/// `Handle` must be the same type used to register the service —
+/// `ServiceRegistry` keys on `TypeId`, so a mismatch silently returns
+/// `None` (see `feedback_servicesregistry_arc_typeid`). Each mode
+/// defines exactly one `…StatesHandle` alias and uses it for both.
+pub fn state_for<S: Send + Sync + 'static>(ctx: &ActionContext<'_>) -> Option<Arc<Mutex<S>>> {
+    let states = ctx.services.get::<Arc<BufferStates<S>>>()?;
+    states.get(BufferId(ctx.buffer_id.0 as u32))
+}
+
+/// A magit buffer's view behaviour, published per buffer alongside
+/// its state.
+///
+/// **Why this exists.** Several magit modes bind the *same* action —
+/// `action:magit-refresh` (`gr`) has five registrants (status, branch,
+/// stash, diff, log). Per-activation registration hid the collision:
+/// only the active buffer's mode had a handler installed at any
+/// moment. Boot-time registration does not, and
+/// `ActionHandlerRegistry::register` *inserts* — last writer wins — so
+/// five boot registrations would leave `gr` working in exactly one
+/// view and silently dead in the other four.
+///
+/// The fix is polymorphism rather than a central `match`: **one**
+/// handler for the shared action, owned by the mode that owns the
+/// chord (`magit-core-mode` owns `gr`), dispatching through this trait
+/// to whichever view is published for the buffer. Each view mode still
+/// owns its own refresh body — which is what mode-ownership requires —
+/// and no code branches on buffer kind.
+///
+/// **Do not mix registration styles for one action id.** Dropping an
+/// `ActionHandlerRegistration` unregisters *by action id*, so a mode
+/// that still registers `action:magit-refresh` from `on_activate` will,
+/// on deactivation, remove the boot-registered handler too and break
+/// `gr` everywhere. Any action reachable from more than one mode must
+/// be boot-registered exactly once and dispatched through here.
+pub trait MagitView: Send + Sync + 'static {
+    /// `gr` — rebuild this view's content in place.
+    fn refresh(&self) -> Option<lattice_grammar::Effect>;
+
+    /// `s` — stage the entry at `cursor`.
+    ///
+    /// Bound by `magit-status-mode` and `magit-diff-mode`, which read
+    /// their own buffer's format to find the path (a status entry line
+    /// vs. the nearest `diff --git` header). Views that offer no
+    /// staging decline, which is what the default does — `magit-log`
+    /// has no `s` chord, so its view is never asked.
+    fn stage(
+        &self,
+        cursor: lattice_protocol::position::Position,
+    ) -> Option<lattice_grammar::Effect> {
+        let _ = cursor;
+        None
+    }
+
+    /// `u` — unstage the entry at `cursor`. Peer of [`Self::stage`].
+    fn unstage(
+        &self,
+        cursor: lattice_protocol::position::Position,
+    ) -> Option<lattice_grammar::Effect> {
+        let _ = cursor;
+        None
+    }
+}
+
+/// Per-buffer [`MagitView`] registry — the shared-action peer of
+/// [`BufferStates`].
+#[derive(Default)]
+pub struct MagitViews {
+    map: Mutex<HashMap<BufferId, Arc<dyn MagitView>>>,
+}
+
+/// Service alias — register and look up through this exact type
+/// (`feedback_servicesregistry_arc_typeid`).
+pub type MagitViewsHandle = Arc<MagitViews>;
+
+impl MagitViews {
+    pub fn publish(&self, buffer: BufferId, view: Arc<dyn MagitView>) {
+        if let Ok(mut map) = self.map.lock() {
+            map.insert(buffer, view);
+        }
+    }
+
+    pub fn get(&self, buffer: BufferId) -> Option<Arc<dyn MagitView>> {
+        self.map.lock().ok()?.get(&buffer).cloned()
+    }
+
+    pub fn remove(&self, buffer: BufferId) {
+        if let Ok(mut map) = self.map.lock() {
+            map.remove(&buffer);
+        }
+    }
+}
+
+/// The view for the buffer an action fired in.
+pub fn view_for(ctx: &ActionContext<'_>) -> Option<Arc<dyn MagitView>> {
+    let views = ctx.services.get::<MagitViewsHandle>()?;
+    views.get(BufferId(ctx.buffer_id.0 as u32))
+}
+
+/// Wraps a mode's existing Guard and additionally unpublishes its
+/// [`MagitView`] on drop.
+///
+/// Retained as the composition point for a mode whose Guard already
+/// carries other teardown (magit-status's fold-source registration)
+/// and which also publishes a view.
+pub struct ViewGuard<G> {
+    _inner: G,
+    views: MagitViewsHandle,
+    buffer: BufferId,
+}
+
+impl<G> ViewGuard<G> {
+    pub fn new(inner: G, views: MagitViewsHandle, buffer: BufferId) -> Self {
+        Self {
+            _inner: inner,
+            views,
+            buffer,
+        }
+    }
+}
+
+impl<G> Drop for ViewGuard<G> {
+    fn drop(&mut self) {
+        self.views.remove(self.buffer);
+    }
+}
+
+/// Drops a buffer's state entry when its mode deactivates.
+///
+/// Handler registrations are no longer per-activation anywhere in this
+/// crate, so the only thing left to unwind is the state entry.
+pub struct BufferStateGuard<S: Send + Sync + 'static> {
+    states: Arc<BufferStates<S>>,
+    /// Set when the mode also published a [`MagitView`]; dropped
+    /// together with the state so a dead buffer's `gr` cannot resolve.
+    views: Option<MagitViewsHandle>,
+    buffer: BufferId,
+}
+
+impl<S: Send + Sync + 'static> BufferStateGuard<S> {
+    pub fn new(states: Arc<BufferStates<S>>, buffer: BufferId) -> Self {
+        Self {
+            states,
+            views: None,
+            buffer,
+        }
+    }
+
+    /// Also unpublish this buffer's [`MagitView`] on drop.
+    pub fn with_views(mut self, views: MagitViewsHandle) -> Self {
+        self.views = Some(views);
+        self
+    }
+}
+
+impl<S: Send + Sync + 'static> Drop for BufferStateGuard<S> {
+    fn drop(&mut self) {
+        self.states.remove(self.buffer);
+        if let Some(views) = &self.views {
+            views.remove(self.buffer);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Debug, PartialEq)]
+    struct Probe(u32);
+
+    #[test]
+    fn published_state_is_readable_for_its_buffer_only() {
+        let states: BufferStates<Probe> = BufferStates::default();
+        states.publish(BufferId(1), Probe(7));
+        assert_eq!(states.get(BufferId(1)).unwrap().lock().unwrap().0, 7);
+        assert!(
+            states.get(BufferId(2)).is_none(),
+            "a handler firing in another buffer must not see this state"
+        );
+    }
+
+    /// The late-resolved-field path: `on_activate` publishes before it
+    /// awaits, then fills in what it learns afterwards. A handler that
+    /// ran in between sees the inert initial value, never a missing
+    /// entry.
+    #[test]
+    fn state_published_before_an_await_is_mutable_afterwards() {
+        let states: BufferStates<Probe> = BufferStates::default();
+        let shared = states.publish(BufferId(1), Probe(0));
+        shared.lock().unwrap().0 = 42;
+        assert_eq!(states.get(BufferId(1)).unwrap().lock().unwrap().0, 42);
+    }
+
+    /// Re-activating on the same buffer must supersede, not
+    /// accumulate — otherwise a reopened magit buffer's chords would
+    /// act on the previous session's state.
+    #[test]
+    fn republishing_supersedes_the_previous_entry() {
+        let states: BufferStates<Probe> = BufferStates::default();
+        states.publish(BufferId(1), Probe(1));
+        states.publish(BufferId(1), Probe(2));
+        assert_eq!(states.get(BufferId(1)).unwrap().lock().unwrap().0, 2);
+    }
+
+    #[test]
+    fn guard_drop_removes_the_entry_so_it_cannot_outlive_the_buffer() {
+        let states: Arc<BufferStates<Probe>> = Arc::new(BufferStates::default());
+        states.publish(BufferId(1), Probe(1));
+        let guard = BufferStateGuard::new(states.clone(), BufferId(1));
+        drop(guard);
+        assert!(states.get(BufferId(1)).is_none());
+    }
+}

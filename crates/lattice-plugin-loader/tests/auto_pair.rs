@@ -255,7 +255,11 @@ async fn bundled_auto_pair_registers_grammar_modes_and_config_through_the_loader
     // (step past the existing `)`, no text change) is unchanged.
     match effect {
         Effect::CursorMove(pos) => {
-            assert_eq!(pos, Position::new(0, 2), "caret stepped past the existing )");
+            assert_eq!(
+                pos,
+                Position::new(0, 2),
+                "caret stepped past the existing )"
+            );
         }
         other => panic!("close-skip: expected CursorMove, got {other:?}"),
     }

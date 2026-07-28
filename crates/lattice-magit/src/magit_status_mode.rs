@@ -7,10 +7,9 @@ use std::sync::OnceLock;
 
 use lattice_config;
 use lattice_core::FoldOverlayServiceHandle;
-use lattice_grammar::CommandRegistryHandle;
 use lattice_mode::{
-    ActionHandlerRegistryHandle, BufferStoreHandle, CapabilitySet, Keymap, KeymapEntry,
-    LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, OptionOverrideSet, keymap_entry,
+    BufferStoreHandle, CapabilitySet, Keymap, KeymapEntry, LifecycleFuture, Mode, ModeContext,
+    ModeId, ModeKind, OptionOverrideSet, keymap_entry,
 };
 use lattice_vcs::Repository;
 
@@ -45,16 +44,29 @@ fn magit_status_keymap_entries() -> &'static [KeymapEntry] {
 
 #[derive(Default)]
 pub struct MagitStatusGuard {
-    _action_handler_registrations: Vec<lattice_mode::ActionHandlerRegistration>,
+    /// MG.13: unpublishes this buffer's state on deactivation.
+    states: Option<(actions::StatusStatesHandle, lattice_core::BufferId)>,
     _state: Option<std::sync::Arc<std::sync::Mutex<actions::StatusBufferState>>>,
     /// Fold-audit fix: deregisters the buffer's `MagitStatusFoldSource`
     /// on deactivation — same Drop-based lifecycle
     /// `DiffModeGuard`/`MultibufferModeGuard` use.
     fold_registration: Option<(FoldOverlayServiceHandle, lattice_core::ProviderId)>,
+    /// MG.13: unpublishes this buffer's `MagitView` on deactivation so
+    /// `gr` cannot resolve against a dead status buffer.
+    views: Option<(
+        crate::buffer_state::MagitViewsHandle,
+        lattice_core::BufferId,
+    )>,
 }
 
 impl Drop for MagitStatusGuard {
     fn drop(&mut self) {
+        if let Some((states, buffer)) = self.states.take() {
+            states.remove(buffer);
+        }
+        if let Some((views, buffer)) = self.views.take() {
+            views.remove(buffer);
+        }
         if let Some((svc, id)) = self.fold_registration.take() {
             svc.remove_source(id);
         }
@@ -89,6 +101,11 @@ impl Mode for MagitStatusMode {
     }
     fn keymap(&self) -> Keymap {
         Keymap::from_entries(magit_status_keymap_entries())
+    }
+
+    /// MG.13: registered once at boot; see `actions::status_action_handlers`.
+    fn action_handlers(&self) -> Vec<lattice_mode::ActionHandlerContribution> {
+        actions::status_action_handlers()
     }
 
     fn on_activate(&self, ctx: ModeContext) -> LifecycleFuture<'_, Self::Guard> {
@@ -128,9 +145,31 @@ impl Mode for MagitStatusMode {
                 "magit-status-mode activated on buffer {buffer_id:?}, workdir={workdir:?}",
             );
 
+            let pending = ctx.service::<lattice_mode::PendingSyntheticHighlights>();
+
+            // MG.13: build and publish BEFORE the initial refresh's
+            // `.await`. Every field here is synchronous, so this lands
+            // during `spawn_cascade`'s first synchronous poll — before
+            // `activate_major` returns — which is what makes the
+            // boot-registered handlers reachable on the very next
+            // keystroke. Publishing after the refresh below would leave
+            // `x` / `=` / `<CR>` dead for the width of a `git status`,
+            // which is the longest window of any magit view.
+            let shared_state =
+                std::sync::Arc::new(std::sync::Mutex::new(actions::StatusBufferState {
+                    buffer_id,
+                    store: store.clone(),
+                    workdir: workdir.clone(),
+                    runtime: runtime.clone(),
+                    pending_highlights: pending.clone(),
+                    expanded: std::collections::HashMap::new(),
+                }));
+            if let Some(states) = ctx.service::<actions::StatusStatesHandle>() {
+                states.publish_shared(buffer_id, shared_state.clone());
+            }
+
             // Initial refresh: blocking I/O on spawn_blocking, then async
             // edit apply + highlights on the current task.
-            let pending = ctx.service::<lattice_mode::PendingSyntheticHighlights>();
             {
                 let wd = workdir.clone();
                 let (text, spans) =
@@ -147,27 +186,6 @@ impl Mode for MagitStatusMode {
                 .await;
             }
 
-            let pending_highlights = ctx.service::<lattice_mode::PendingSyntheticHighlights>();
-
-            let shared_state =
-                std::sync::Arc::new(std::sync::Mutex::new(actions::StatusBufferState {
-                    buffer_id,
-                    store: store.clone(),
-                    workdir: workdir.clone(),
-                    runtime: runtime.clone(),
-                    pending_highlights,
-                    expanded: std::collections::HashMap::new(),
-                }));
-
-            let mut action_registrations = Vec::new();
-            if let (Some(cmd_arc), Some(ah_arc)) = (
-                ctx.service::<CommandRegistryHandle>(),
-                ctx.service::<ActionHandlerRegistryHandle>(),
-            ) {
-                action_registrations =
-                    actions::register_action_handlers(shared_state.clone(), &cmd_arc, &ah_arc);
-            }
-
             // Fold-audit fix: register the nested file>hunk fold
             // source for this buffer's inline expansions.
             let fold_registration = ctx
@@ -182,10 +200,27 @@ impl Mode for MagitStatusMode {
                     (svc, id)
                 });
 
+            // MG.13: publish this buffer's `MagitView` so `gr` — now
+            // registered once at boot by `magit-core-mode` — reaches
+            // the status buffer's own refresh body. See
+            // `buffer_state::MagitView`.
+            let views = ctx
+                .service::<crate::buffer_state::MagitViewsHandle>()
+                .map(|v| (*v).clone());
+            if let Some(ref v) = views {
+                v.publish(
+                    buffer_id,
+                    std::sync::Arc::new(actions::StatusView(shared_state.clone())),
+                );
+            }
+
             Ok(MagitStatusGuard {
-                _action_handler_registrations: action_registrations,
+                states: ctx
+                    .service::<actions::StatusStatesHandle>()
+                    .map(|st| ((*st).clone(), buffer_id)),
                 _state: Some(shared_state),
                 fold_registration,
+                views: views.map(|v| (v, buffer_id)),
             })
         })
     }

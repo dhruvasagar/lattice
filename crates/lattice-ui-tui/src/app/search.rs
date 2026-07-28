@@ -308,7 +308,10 @@ mod tests {
         // `*search-line*` buffer (byte 3, end of "bar"), not the
         // document. The invariant under test — preview must not move
         // the DOCUMENT cursor — is carried by the recorded origin.
-        assert_eq!(a.editor.search_line.as_ref().unwrap().origin, Position::ZERO);
+        assert_eq!(
+            a.editor.search_line.as_ref().unwrap().origin,
+            Position::ZERO
+        );
     }
 
     #[test]

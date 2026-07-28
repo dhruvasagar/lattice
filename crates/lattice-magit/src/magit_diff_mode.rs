@@ -27,9 +27,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use lattice_config;
-use lattice_grammar::{CommandRegistryHandle, Effect};
+use lattice_grammar::Effect;
 use lattice_mode::{
-    ActionContext, ActionHandlerRegistryHandle, BufferStoreHandle, CapabilitySet, Keymap,
+    ActionContext, ActionHandlerContribution, BufferStoreHandle, CapabilitySet, Keymap,
     KeymapEntry, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, OptionOverrideSet,
     keymap_entry,
 };
@@ -37,7 +37,7 @@ use lattice_protocol::edit::Edit;
 use lattice_protocol::position::{Position, Range};
 use lattice_vcs::{Index, Repository};
 
-use crate::magit_core_mode::ActionRegsGuard;
+use crate::buffer_state::{BufferStateGuard, BufferStates, MagitView, MagitViewsHandle};
 
 pub struct MagitDiffMode;
 
@@ -73,7 +73,7 @@ enum DiffScope {
     Unstaged,
 }
 
-struct DiffState {
+pub struct DiffState {
     buffer_id: lattice_core::BufferId,
     store: Arc<BufferStoreHandle>,
     workdir: PathBuf,
@@ -116,8 +116,16 @@ fn parse_buffer_name(name: &str) -> (DiffScope, Option<PathBuf>) {
     (DiffScope::Head, None)
 }
 
+/// MG.13: service alias for this mode's per-buffer state
+/// (`feedback_servicesregistry_arc_typeid`).
+pub type DiffStatesHandle = Arc<BufferStates<DiffState>>;
+
+fn state(ctx: &ActionContext<'_>) -> Option<Arc<Mutex<DiffState>>> {
+    crate::buffer_state::state_for::<DiffState>(ctx)
+}
+
 impl Mode for MagitDiffMode {
-    type Guard = ActionRegsGuard;
+    type Guard = BufferStateGuard<DiffState>;
 
     fn id(&self) -> ModeId {
         Self::mode_id()
@@ -144,14 +152,55 @@ impl Mode for MagitDiffMode {
         Keymap::from_entries(magit_diff_keymap_entries())
     }
 
+    /// MG.13: boot-registered — see `buffer_state`'s module docs. `gr`,
+    /// `s` and `u` are NOT here: they are shared actions owned by
+    /// `magit-core-mode` and reached through this mode's `MagitView`.
+    fn action_handlers(&self) -> Vec<ActionHandlerContribution> {
+        vec![
+            // <CR> — visit the file at cursor. Staged scope shows the
+            // INDEX blob (`*magit:file:staged:<path>*`, read-only) —
+            // this diff describes staged content, which may already
+            // differ from the live working-tree file. Unstaged IS the
+            // working tree, and Head combines both (no single frozen
+            // blob to show), so both open the real editable file — same
+            // target magit-status's Unstaged section opens.
+            ActionHandlerContribution {
+                action_name: "action:magit-diff-visit-file",
+                handler: Arc::new(|ctx: &ActionContext<'_>| {
+                    let s = state(ctx)?;
+                    let g = s.lock().ok()?;
+                    let path = file_at_cursor(&g, ctx.cursor.line)?;
+                    match g.scope {
+                        DiffScope::Staged => Some(Effect::OpenSyntheticBuffer {
+                            name: format!("*magit:file:staged:{}*", path.display()),
+                            mode_id: "magit-file-revision-mode".to_string(),
+                        }),
+                        DiffScope::Head | DiffScope::Unstaged => {
+                            let full = g.workdir.join(&path);
+                            if full.exists() {
+                                Some(Effect::OpenBuffer {
+                                    path: Some(full),
+                                    force: false,
+                                })
+                            } else {
+                                None
+                            }
+                        }
+                    }
+                }),
+            },
+        ]
+    }
+
     fn on_activate(&self, ctx: ModeContext) -> LifecycleFuture<'_, Self::Guard> {
         Box::pin(async move {
             let buffer_id = lattice_core::BufferId(ctx.buffer_id().0 as u32);
+            let orphan = || BufferStateGuard::new(Arc::new(BufferStates::default()), buffer_id);
             let Some(store) = ctx.service::<BufferStoreHandle>() else {
-                return Ok(ActionRegsGuard::default());
+                return Ok(orphan());
             };
             let Some(handle) = store.handle_for(buffer_id) else {
-                return Ok(ActionRegsGuard::default());
+                return Ok(orphan());
             };
             let workdir = Repository::discover(".")
                 .ok()
@@ -168,6 +217,30 @@ impl Mode for MagitDiffMode {
                 .map(|name| parse_buffer_name(&name))
                 .unwrap_or((DiffScope::Head, None));
 
+            let pending_highlights = ctx.service::<lattice_mode::PendingSyntheticHighlights>();
+
+            // MG.13: publish BEFORE the first `.await` — see the note
+            // in `magit_branch_mode::on_activate`.
+            let Some(states) = ctx.service::<DiffStatesHandle>() else {
+                return Ok(orphan());
+            };
+            let state = states.publish(
+                buffer_id,
+                DiffState {
+                    buffer_id,
+                    store: store.clone(),
+                    workdir: workdir.clone(),
+                    scope,
+                    path: path.clone(),
+                    pending_highlights: pending_highlights.clone(),
+                },
+            );
+            let mut guard = BufferStateGuard::new((*states).clone(), buffer_id);
+            if let Some(views) = ctx.service::<MagitViewsHandle>() {
+                views.publish(buffer_id, Arc::new(DiffView(state.clone())));
+                guard = guard.with_views((*views).clone());
+            }
+
             let wd = workdir.clone();
             let path_for_task = path.clone();
             let text =
@@ -176,123 +249,11 @@ impl Mode for MagitDiffMode {
                     .unwrap_or_default();
             let spans = crate::highlight::diff_styled_spans(&text);
             apply_full_replace(&handle, text).await;
-            let pending_highlights = ctx.service::<lattice_mode::PendingSyntheticHighlights>();
             if let Some(ref ph) = pending_highlights {
                 ph.store_and_wake(buffer_id, spans);
             }
 
-            let state = Arc::new(Mutex::new(DiffState {
-                buffer_id,
-                store: store.clone(),
-                workdir,
-                scope,
-                path,
-                pending_highlights,
-            }));
-
-            let Some(cmd_arc) = ctx.service::<CommandRegistryHandle>() else {
-                return Ok(ActionRegsGuard::default());
-            };
-            let Some(ah_arc) = ctx.service::<ActionHandlerRegistryHandle>() else {
-                return Ok(ActionRegsGuard::default());
-            };
-            let registry = cmd_arc.load();
-            let handlers = (*ah_arc).clone();
-            let mut regs = Vec::new();
-
-            // refresh (gr)
-            {
-                let s = state.clone();
-                if let Some(cid) = registry.id_by_name("action:magit-refresh") {
-                    regs.push(handlers.register(
-                        cid,
-                        Arc::new(move |_ctx: &ActionContext<'_>| refresh(s.clone())),
-                    ));
-                }
-            }
-
-            // stage (s) — file-level: finds the nearest "diff --git
-            // a/X b/X" header above the cursor.
-            {
-                let s = state.clone();
-                if let Some(cid) = registry.id_by_name("action:magit-stage") {
-                    regs.push(handlers.register(
-                        cid,
-                        Arc::new(move |ctx: &ActionContext<'_>| {
-                            let (path, workdir) = {
-                                let g = s.lock().ok()?;
-                                (file_at_cursor(&g, ctx.cursor.line)?, g.workdir.clone())
-                            };
-                            spawn_mutation_and_refresh(s.clone(), move || {
-                                if let Ok(repo) = Repository::discover(&workdir) {
-                                    let _ = Index::stage_path(&repo, &path);
-                                }
-                            })
-                        }),
-                    ));
-                }
-            }
-
-            // unstage (u)
-            {
-                let s = state.clone();
-                if let Some(cid) = registry.id_by_name("action:magit-unstage") {
-                    regs.push(handlers.register(
-                        cid,
-                        Arc::new(move |ctx: &ActionContext<'_>| {
-                            let (path, workdir) = {
-                                let g = s.lock().ok()?;
-                                (file_at_cursor(&g, ctx.cursor.line)?, g.workdir.clone())
-                            };
-                            spawn_mutation_and_refresh(s.clone(), move || {
-                                if let Ok(repo) = Repository::discover(&workdir) {
-                                    let _ = Index::unstage_path(&repo, &path);
-                                }
-                            })
-                        }),
-                    ));
-                }
-            }
-
-            // <CR> — visit the file at cursor. Staged scope shows the
-            // INDEX blob (`*magit:file:staged:<path>*`, read-only) —
-            // this diff describes staged content, which may already
-            // differ from the live working-tree file. Unstaged IS
-            // the working tree, and Head combines both (no single
-            // frozen blob to show), so both open the real editable
-            // file — same target magit-status's Unstaged section
-            // opens.
-            {
-                let s = state.clone();
-                if let Some(cid) = registry.id_by_name("action:magit-diff-visit-file") {
-                    regs.push(handlers.register(
-                        cid,
-                        Arc::new(move |ctx: &ActionContext<'_>| {
-                            let g = s.lock().ok()?;
-                            let path = file_at_cursor(&g, ctx.cursor.line)?;
-                            match g.scope {
-                                DiffScope::Staged => Some(Effect::OpenSyntheticBuffer {
-                                    name: format!("*magit:file:staged:{}*", path.display()),
-                                    mode_id: "magit-file-revision-mode".to_string(),
-                                }),
-                                DiffScope::Head | DiffScope::Unstaged => {
-                                    let full = g.workdir.join(&path);
-                                    if full.exists() {
-                                        Some(Effect::OpenBuffer {
-                                            path: Some(full),
-                                            force: false,
-                                        })
-                                    } else {
-                                        None
-                                    }
-                                }
-                            }
-                        }),
-                    ));
-                }
-            }
-
-            Ok(ActionRegsGuard(regs))
+            Ok(guard)
         })
     }
 }
@@ -410,5 +371,43 @@ fn run_diff(workdir: &Path, scope: DiffScope, path: Option<&Path>) -> String {
             }
         }
         _ => "Not a git repository, or no commits yet.\n".to_string(),
+    }
+}
+
+/// `gr` for this view — `magit-core-mode` owns the chord and the one
+/// boot-registered handler; see [`MagitView`].
+struct DiffView(Arc<Mutex<DiffState>>);
+
+impl MagitView for DiffView {
+    fn refresh(&self) -> Option<Effect> {
+        refresh(self.0.clone())
+    }
+
+    /// `s` — file-level: finds the nearest `diff --git a/X b/X` header
+    /// above the cursor.
+    fn stage(&self, cursor: Position) -> Option<Effect> {
+        let s = self.0.clone();
+        let (path, workdir) = {
+            let g = s.lock().ok()?;
+            (file_at_cursor(&g, cursor.line)?, g.workdir.clone())
+        };
+        spawn_mutation_and_refresh(s, move || {
+            if let Ok(repo) = Repository::discover(&workdir) {
+                let _ = Index::stage_path(&repo, &path);
+            }
+        })
+    }
+
+    fn unstage(&self, cursor: Position) -> Option<Effect> {
+        let s = self.0.clone();
+        let (path, workdir) = {
+            let g = s.lock().ok()?;
+            (file_at_cursor(&g, cursor.line)?, g.workdir.clone())
+        };
+        spawn_mutation_and_refresh(s, move || {
+            if let Ok(repo) = Repository::discover(&workdir) {
+                let _ = Index::unstage_path(&repo, &path);
+            }
+        })
     }
 }

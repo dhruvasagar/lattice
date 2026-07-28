@@ -7870,9 +7870,7 @@ impl Editor {
             }
             AppEffect::SearchLineSubmit => out.next_actions.push(Action::SearchLineSubmit),
             AppEffect::SearchLineCancel => out.next_actions.push(Action::SearchLineCancel),
-            AppEffect::SearchLineBackspace => {
-                out.next_actions.push(Action::SearchLineBackspace)
-            }
+            AppEffect::SearchLineBackspace => out.next_actions.push(Action::SearchLineBackspace),
             AppEffect::SearchLineHistoryPrev => {
                 out.next_actions.push(Action::SearchLineHistoryPrev)
             }
@@ -9142,11 +9140,7 @@ impl Editor {
             .args_schema
             .first()
             .and_then(|a| a.completion.as_deref())
-            .is_some_and(|source| {
-                self.completion_registry
-                    .generator_by_name(source)
-                    .is_some()
-            });
+            .is_some_and(|source| self.completion_registry.generator_by_name(source).is_some());
         drop(reg);
         if !has_completable_arg {
             return false;

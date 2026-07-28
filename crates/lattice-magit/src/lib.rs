@@ -9,6 +9,8 @@
 //! [`docs/dev/operations/slice-plans/magit.md`].
 
 pub mod actions;
+pub mod buffer_state;
+mod confirm;
 pub mod fold_source;
 mod highlight;
 pub mod magit_blame_mode;
@@ -103,6 +105,18 @@ pub fn install(boot: &mut impl SubsystemBoot) {
         .register(MagitFileRevisionMode)
         .expect("magit-file-revision-mode registers without conflict");
 
+    // ── Per-buffer mode state (MG.13) ──────────────────────
+    //
+    // Each per-buffer mode's action handlers are registered once at
+    // boot via `Mode::action_handlers()` and resolve their state
+    // through these services at call time, keyed by `BufferId`. That
+    // removes the window in which a magit chord resolved but found no
+    // handler because `on_activate` had not finished. Register and
+    // look up through the `…StatesHandle` aliases — `ServiceRegistry`
+    // keys on `TypeId` (`feedback_servicesregistry_arc_typeid`).
+    // See `buffer_state`'s module docs.
+    register_buffer_state_services(boot);
+
     // ── Ex-commands ────────────────────────────────────────
 
     register_ex_commands(boot.commands_mut());
@@ -131,6 +145,50 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     });
     boot.register_service::<lattice_picker::TransientSourceRegistryHandle>(Arc::new(
         transient_registry,
+    ));
+}
+
+/// MG.13: register one `BufferStates<S>` service per per-buffer mode.
+///
+/// Factored out of [`install`] so the test below can assert that every
+/// migrated mode has its slot — a mode whose service is missing has
+/// handlers that silently resolve `None` and no-op, which from the
+/// user's side is indistinguishable from the dead-chord bug this slice
+/// exists to remove.
+fn register_buffer_state_services(boot: &mut impl SubsystemBoot) {
+    boot.register_service::<magit_branch_mode::BranchStatesHandle>(Arc::new(
+        buffer_state::BufferStates::default(),
+    ));
+    boot.register_service::<magit_stash_mode::StashStatesHandle>(Arc::new(
+        buffer_state::BufferStates::default(),
+    ));
+    boot.register_service::<magit_revision_mode::RevisionStatesHandle>(Arc::new(
+        buffer_state::BufferStates::default(),
+    ));
+    boot.register_service::<magit_blame_mode::BlameStatesHandle>(Arc::new(
+        buffer_state::BufferStates::default(),
+    ));
+    boot.register_service::<magit_commit_mode::CommitStatesHandle>(Arc::new(
+        buffer_state::BufferStates::default(),
+    ));
+    boot.register_service::<magit_rebase_mode::RebaseStatesHandle>(Arc::new(
+        buffer_state::BufferStates::default(),
+    ));
+    boot.register_service::<magit_log_mode::LogStatesHandle>(Arc::new(
+        buffer_state::BufferStates::default(),
+    ));
+    boot.register_service::<magit_diff_mode::DiffStatesHandle>(Arc::new(
+        buffer_state::BufferStates::default(),
+    ));
+    boot.register_service::<actions::StatusStatesHandle>(Arc::new(
+        buffer_state::BufferStates::default(),
+    ));
+    // Shared-action dispatch: `gr` is bound by `magit-core-mode` and
+    // registered exactly once at boot; each view publishes its own
+    // refresh body here. See `buffer_state::MagitView` for why a
+    // per-mode registration of a shared action id is unsafe.
+    boot.register_service::<buffer_state::MagitViewsHandle>(Arc::new(
+        buffer_state::MagitViews::default(),
     ));
 }
 
@@ -512,6 +570,12 @@ fn register_action_commands(registry: &mut CommandRegistry) {
     reg("action:magit-stash-apply", "Apply the stash at cursor");
     reg("action:magit-stash-pop", "Pop the stash at cursor");
     reg("action:magit-stash-drop", "Drop the stash at cursor");
+    // MG.12: the git call lives here, behind `magit-stash-drop`'s
+    // `Effect::Confirm`. See `confirm::DESTRUCTIVE_ACTIONS`.
+    reg(
+        "action:magit-stash-drop-execute",
+        "Execute the stash drop after confirmation",
+    );
     reg("action:magit-stash-create", "Create a new stash");
 
     // magit-branch-mode
@@ -521,6 +585,13 @@ fn register_action_commands(registry: &mut CommandRegistry) {
     );
     reg("action:magit-branch-create", "Create a new branch");
     reg("action:magit-branch-delete", "Delete the branch at cursor");
+    // MG.12: `Branch::delete` is a force delete (`-D`), so it drops
+    // unmerged commits — the git call lives here, behind
+    // `magit-branch-delete`'s `Effect::Confirm`.
+    reg(
+        "action:magit-branch-delete-execute",
+        "Execute the branch delete after confirmation",
+    );
     reg(
         "action:magit-branch-merge",
         "Merge the branch at cursor into current",
@@ -529,6 +600,13 @@ fn register_action_commands(registry: &mut CommandRegistry) {
     // magit-rebase-mode
     reg("action:magit-rebase-confirm", "Execute the rebase");
     reg("action:magit-rebase-abort", "Abort the rebase");
+    // MG.12: only fired when a rebase is actually in progress — see
+    // `magit_rebase_mode`'s abort handler, which closes the pane
+    // outright when there is nothing to throw away.
+    reg(
+        "action:magit-rebase-abort-execute",
+        "Execute the rebase abort after confirmation",
+    );
     reg(
         "action:magit-rebase-show-commit",
         "Show the commit detail at cursor",
@@ -652,6 +730,113 @@ mod tests {
             "inert transient items:\n  {}",
             found.join("\n  ")
         );
+    }
+
+    /// MG.13 guard for the shared-action collision class.
+    ///
+    /// `Mode::action_handlers()` contributions are registered at boot
+    /// into a map keyed by `CommandId` — `register` *inserts*, so two
+    /// modes contributing the same `action_name` means the second
+    /// silently replaces the first and one of them is dead. Worse,
+    /// dropping either registration unregisters *by action id*, taking
+    /// the survivor with it.
+    ///
+    /// `action:magit-refresh` (`gr`) is the live example: five modes
+    /// bound it. It is now registered once by `magit-core-mode` and
+    /// dispatched per-buffer through `buffer_state::MagitView`. This
+    /// test fails if any future mode re-adds a duplicate contribution
+    /// rather than publishing a view.
+    #[test]
+    fn no_two_modes_contribute_the_same_boot_action_handler() {
+        use lattice_mode::Mode;
+        let mut seen: Vec<(&'static str, &'static str)> = Vec::new();
+        let mut collisions: Vec<String> = Vec::new();
+
+        macro_rules! collect {
+            ($mode:expr, $label:literal) => {
+                for c in $mode.action_handlers() {
+                    if let Some((prior, _)) = seen.iter().find(|(n, _)| *n == c.action_name) {
+                        let _ = prior;
+                        let owner = seen
+                            .iter()
+                            .find(|(n, _)| *n == c.action_name)
+                            .map(|(_, o)| *o)
+                            .unwrap_or("?");
+                        collisions.push(format!(
+                            "`{}` contributed by both `{}` and `{}` — the second \
+                             replaces the first at boot and dropping either kills \
+                             both; publish a `MagitView` instead",
+                            c.action_name, owner, $label
+                        ));
+                    } else {
+                        seen.push((c.action_name, $label));
+                    }
+                }
+            };
+        }
+
+        collect!(MagitGlobalMode, "magit-global-mode");
+        collect!(MagitCoreMode, "magit-core-mode");
+        collect!(MagitStatusMode, "magit-status-mode");
+        collect!(MagitCommitMode, "magit-commit-mode");
+        collect!(MagitDiffMode, "magit-diff-mode");
+        collect!(MagitLogMode, "magit-log-mode");
+        collect!(MagitBlameMode, "magit-blame-mode");
+        collect!(MagitStashMode, "magit-stash-mode");
+        collect!(MagitBranchMode, "magit-branch-mode");
+        collect!(MagitRebaseMode, "magit-rebase-mode");
+        collect!(MagitRevisionMode, "magit-revision-mode");
+        collect!(MagitFileRevisionMode, "magit-file-revision-mode");
+
+        assert!(
+            collisions.is_empty(),
+            "duplicate boot action handlers:\n  {}",
+            collisions.join("\n  ")
+        );
+    }
+
+    /// Every shared action has exactly one owner, and it is
+    /// `magit-core-mode`. Pins the arrangement the test above protects.
+    ///
+    /// `gr` is bound by core itself; `s` / `u` are bound by
+    /// `magit-status-mode` and `magit-diff-mode` — the *binding* stays
+    /// with whichever mode offers the chord, but the *handler* must
+    /// exist once, so it lives on core and dispatches through
+    /// `MagitView`.
+    #[test]
+    fn shared_actions_are_owned_solely_by_magit_core_mode() {
+        use lattice_mode::Mode;
+        const SHARED: &[&str] = &[
+            "action:magit-refresh",
+            "action:magit-stage",
+            "action:magit-unstage",
+        ];
+        for name in SHARED {
+            assert!(
+                MagitCoreMode
+                    .action_handlers()
+                    .iter()
+                    .any(|c| c.action_name == *name),
+                "`{name}` is reachable from more than one magit view, so \
+                 magit-core-mode must own its single handler"
+            );
+        }
+        for (label, contributions) in [
+            ("magit-branch-mode", MagitBranchMode.action_handlers()),
+            ("magit-stash-mode", MagitStashMode.action_handlers()),
+            ("magit-diff-mode", MagitDiffMode.action_handlers()),
+            ("magit-log-mode", MagitLogMode.action_handlers()),
+            ("magit-status-mode", MagitStatusMode.action_handlers()),
+        ] {
+            for c in contributions {
+                assert!(
+                    !SHARED.contains(&c.action_name),
+                    "`{label}` contributes shared action `{}` — it must reach \
+                     it through its MagitView instead",
+                    c.action_name
+                );
+            }
+        }
     }
 
     /// Regression test for a live-reported bug: `C-c g` then `l`

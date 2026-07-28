@@ -11,9 +11,9 @@
 use std::sync::{Arc, Mutex, OnceLock};
 
 use lattice_config;
-use lattice_grammar::{CommandRegistryHandle, Effect};
+use lattice_grammar::Effect;
 use lattice_mode::{
-    ActionContext, ActionHandlerRegistryHandle, BufferStoreHandle, CapabilitySet, Keymap,
+    ActionContext, ActionHandlerContribution, BufferStoreHandle, CapabilitySet, Keymap,
     KeymapEntry, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, OptionOverrideSet,
     keymap_entry,
 };
@@ -21,7 +21,7 @@ use lattice_protocol::edit::Edit;
 use lattice_protocol::position::{Position, Range};
 use lattice_vcs::Repository;
 
-use crate::magit_core_mode::ActionRegsGuard;
+use crate::buffer_state::{BufferStateGuard, BufferStates, MagitView, MagitViewsHandle};
 
 pub struct MagitLogMode;
 
@@ -40,7 +40,7 @@ fn magit_log_keymap_entries() -> &'static [KeymapEntry] {
     })
 }
 
-struct LogState {
+pub struct LogState {
     buffer_id: lattice_core::BufferId,
     store: Arc<BufferStoreHandle>,
     workdir: std::path::PathBuf,
@@ -51,8 +51,16 @@ struct LogState {
     pending_highlights: Option<lattice_mode::PendingSyntheticHighlightsHandle>,
 }
 
+/// MG.13: service alias for this mode's per-buffer state
+/// (`feedback_servicesregistry_arc_typeid`).
+pub type LogStatesHandle = Arc<BufferStates<LogState>>;
+
+fn state(ctx: &ActionContext<'_>) -> Option<Arc<Mutex<LogState>>> {
+    crate::buffer_state::state_for::<LogState>(ctx)
+}
+
 impl Mode for MagitLogMode {
-    type Guard = ActionRegsGuard;
+    type Guard = BufferStateGuard<LogState>;
 
     fn id(&self) -> ModeId {
         Self::mode_id()
@@ -79,14 +87,39 @@ impl Mode for MagitLogMode {
         Keymap::from_entries(magit_log_keymap_entries())
     }
 
+    /// MG.13: boot-registered — see `buffer_state`'s module docs. `gr`
+    /// is NOT here: it is a shared action owned by `magit-core-mode`
+    /// and reached through this mode's `MagitView` below.
+    fn action_handlers(&self) -> Vec<ActionHandlerContribution> {
+        vec![
+            // <CR> — show commit detail for the SHA at cursor.
+            ActionHandlerContribution {
+                action_name: "action:magit-log-show-commit",
+                handler: Arc::new(|ctx: &ActionContext<'_>| {
+                    let s = state(ctx)?;
+                    let g = s.lock().ok()?;
+                    let handle = g.store.handle_for(g.buffer_id)?;
+                    let snap = handle.snapshot();
+                    let line = snap.buffer.line(ctx.cursor.line)?;
+                    let sha = extract_sha(&line)?;
+                    Some(Effect::OpenSyntheticBuffer {
+                        name: format!("*magit:commit:{sha}*"),
+                        mode_id: "magit-revision-mode".to_string(),
+                    })
+                }),
+            },
+        ]
+    }
+
     fn on_activate(&self, ctx: ModeContext) -> LifecycleFuture<'_, Self::Guard> {
         Box::pin(async move {
             let buffer_id = lattice_core::BufferId(ctx.buffer_id().0 as u32);
+            let orphan = || BufferStateGuard::new(Arc::new(BufferStates::default()), buffer_id);
             let Some(store) = ctx.service::<BufferStoreHandle>() else {
-                return Ok(ActionRegsGuard::default());
+                return Ok(orphan());
             };
             let Some(handle) = store.handle_for(buffer_id) else {
-                return Ok(ActionRegsGuard::default());
+                return Ok(orphan());
             };
             let workdir = Repository::discover(".")
                 .ok()
@@ -102,6 +135,29 @@ impl Mode for MagitLogMode {
                 (!s.is_empty()).then(|| std::path::PathBuf::from(s))
             });
 
+            let pending_highlights = ctx.service::<lattice_mode::PendingSyntheticHighlights>();
+
+            // MG.13: publish BEFORE the first `.await` — see the note
+            // in `magit_branch_mode::on_activate`.
+            let Some(states) = ctx.service::<LogStatesHandle>() else {
+                return Ok(orphan());
+            };
+            let state = states.publish(
+                buffer_id,
+                LogState {
+                    buffer_id,
+                    path: path.clone(),
+                    store: store.clone(),
+                    workdir: workdir.clone(),
+                    pending_highlights: pending_highlights.clone(),
+                },
+            );
+            let mut guard = BufferStateGuard::new((*states).clone(), buffer_id);
+            if let Some(views) = ctx.service::<MagitViewsHandle>() {
+                views.publish(buffer_id, Arc::new(LogView(state.clone())));
+                guard = guard.with_views((*views).clone());
+            }
+
             // Populate log: blocking I/O on spawn_blocking, then apply
             // edit on the current task (no Runtime::new()).
             let wd = workdir.clone();
@@ -111,71 +167,11 @@ impl Mode for MagitLogMode {
                 .unwrap();
             let spans = crate::highlight::log_styled_spans(&text);
             apply_full_replace(&handle, text).await;
-            let pending_highlights = ctx.service::<lattice_mode::PendingSyntheticHighlights>();
             if let Some(ref ph) = pending_highlights {
                 ph.store_and_wake(buffer_id, spans);
             }
 
-            let state = Arc::new(Mutex::new(LogState {
-                buffer_id,
-                path,
-                store: store.clone(),
-                workdir,
-                pending_highlights,
-            }));
-
-            let Some(cmd_arc) = ctx.service::<CommandRegistryHandle>() else {
-                return Ok(ActionRegsGuard::default());
-            };
-            let Some(ah_arc) = ctx.service::<ActionHandlerRegistryHandle>() else {
-                return Ok(ActionRegsGuard::default());
-            };
-            let registry = cmd_arc.load();
-            let handlers = (*ah_arc).clone();
-            let mut regs = Vec::new();
-
-            // refresh (gr) — re-run the log. Previously only
-            // magit-status supported `gr`.
-            {
-                let s = state.clone();
-                if let Some(cid) = registry.id_by_name("action:magit-refresh") {
-                    regs.push(handlers.register(
-                        cid,
-                        Arc::new(move |_ctx: &ActionContext<'_>| refresh(s.clone())),
-                    ));
-                }
-            }
-
-            // <CR> — show commit detail. Fold audit fix: the
-            // registration guard used to be discarded
-            // (`handlers.register(cid, h.clone());` with no binding),
-            // which unregistered the handler immediately — `<CR>` was
-            // dead on arrival. Now pushed into `regs`, kept alive by
-            // the mode's `Guard` for the buffer's lifetime. Also
-            // switched from writing an uncleaned temp file in the
-            // repo workdir to the real `*magit:commit:<sha>*`
-            // synthetic buffer (`magit-revision-mode`).
-            {
-                let s = state.clone();
-                if let Some(cid) = registry.id_by_name("action:magit-log-show-commit") {
-                    regs.push(handlers.register(
-                        cid,
-                        Arc::new(move |ctx: &ActionContext<'_>| {
-                            let g = s.lock().ok()?;
-                            let handle = g.store.handle_for(g.buffer_id)?;
-                            let snap = handle.snapshot();
-                            let line = snap.buffer.line(ctx.cursor.line)?;
-                            let sha = extract_sha(&line)?;
-                            Some(Effect::OpenSyntheticBuffer {
-                                name: format!("*magit:commit:{sha}*"),
-                                mode_id: "magit-revision-mode".to_string(),
-                            })
-                        }),
-                    ));
-                }
-            }
-
-            Ok(ActionRegsGuard(regs))
+            Ok(guard)
         })
     }
 }
@@ -253,5 +249,15 @@ fn run_log(workdir: &std::path::Path, path: Option<&std::path::Path>) -> String 
         }
     } else {
         text
+    }
+}
+
+/// `gr` for this view — `magit-core-mode` owns the chord and the one
+/// boot-registered handler; see [`MagitView`].
+struct LogView(Arc<Mutex<LogState>>);
+
+impl MagitView for LogView {
+    fn refresh(&self) -> Option<Effect> {
+        refresh(self.0.clone())
     }
 }

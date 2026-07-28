@@ -6,9 +6,9 @@
 use std::sync::{Arc, Mutex, OnceLock};
 
 use lattice_config;
-use lattice_grammar::{CommandRegistryHandle, Effect, QuitScope};
+use lattice_grammar::{Effect, QuitScope};
 use lattice_mode::{
-    ActionContext, ActionHandlerRegistryHandle, BufferStoreHandle, CapabilitySet, Keymap,
+    ActionContext, ActionHandlerContribution, BufferStoreHandle, CapabilitySet, Keymap,
     KeymapEntry, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, OptionOverrideSet,
     keymap_entry,
 };
@@ -16,7 +16,7 @@ use lattice_protocol::edit::Edit;
 use lattice_protocol::position::{Position, Range};
 use lattice_vcs::{Commit, Repository};
 
-use crate::magit_core_mode::ActionRegsGuard;
+use crate::buffer_state::{BufferStateGuard, BufferStates};
 
 pub struct MagitCommitMode;
 
@@ -41,7 +41,7 @@ fn magit_commit_keymap_entries() -> &'static [KeymapEntry] {
     })
 }
 
-struct CommitState {
+pub struct CommitState {
     buffer_id: lattice_core::BufferId,
     store: Arc<BufferStoreHandle>,
     workdir: std::path::PathBuf,
@@ -52,8 +52,16 @@ struct CommitState {
     diff_end_line: u32,
 }
 
+/// MG.13: service alias for this mode's per-buffer state
+/// (`feedback_servicesregistry_arc_typeid`).
+pub type CommitStatesHandle = Arc<BufferStates<CommitState>>;
+
+fn state(ctx: &ActionContext<'_>) -> Option<Arc<Mutex<CommitState>>> {
+    crate::buffer_state::state_for::<CommitState>(ctx)
+}
+
 impl Mode for MagitCommitMode {
-    type Guard = ActionRegsGuard;
+    type Guard = BufferStateGuard<CommitState>;
 
     fn id(&self) -> ModeId {
         Self::mode_id()
@@ -79,14 +87,122 @@ impl Mode for MagitCommitMode {
         Keymap::from_entries(magit_commit_keymap_entries())
     }
 
+    /// MG.13: boot-registered — see `buffer_state`'s module docs.
+    ///
+    /// `diff_end_line` is the one field this mode cannot know before
+    /// its `.await` (it is derived from the generated buffer text). It
+    /// is published as `0` and filled in afterwards; a `<CR>` landing
+    /// in that window sees `cursor.line >= 0` and declines, which is
+    /// the correct answer for a buffer whose diff region does not exist
+    /// yet.
+    fn action_handlers(&self) -> Vec<ActionHandlerContribution> {
+        vec![
+            // ── confirm (C-c C-c) ──────────────────────
+            ActionHandlerContribution {
+                action_name: "action:magit-commit-confirm",
+                handler: Arc::new(|ctx: &ActionContext<'_>| {
+                    let s = state(ctx)?;
+                    let (message, workdir, amend) = {
+                        let g = s.lock().ok()?;
+                        let handle = g.store.handle_for(g.buffer_id)?;
+                        let snap = handle.snapshot();
+                        let mut message = String::new();
+                        let mut in_message = false;
+                        for l in 0..snap.buffer.line_count() as u32 {
+                            let text = snap.buffer.line(l).unwrap_or_default();
+                            if text.contains(MESSAGE_MARKER) {
+                                in_message = true;
+                                continue;
+                            }
+                            if in_message && !text.trim().is_empty() {
+                                message.push_str(&text);
+                                message.push('\n');
+                            }
+                        }
+                        (message, g.workdir.clone(), g.amend)
+                    };
+                    if message.trim().is_empty() {
+                        // Fail loud instead of silently doing nothing —
+                        // an empty subject used to just no-op the chord
+                        // with no feedback.
+                        return Some(Effect::Echo {
+                            level: lattice_grammar::EchoLevel::Error,
+                            text: "magit: commit message is empty".to_string(),
+                        });
+                    }
+                    // Commit is a bounded, single-object git write
+                    // (unlike `git status`/`git diff`, it never scans
+                    // the working tree) — but it's still disk I/O, so it
+                    // stays off the actor thread like every other
+                    // mutation. The buffer closes optimistically; a
+                    // failure surfaces via `tracing::error!` (no
+                    // synchronous path back to the echo area from a
+                    // detached task) rather than leaving the compose
+                    // buffer open forever on a rare `gix` failure.
+                    tokio::task::spawn(tokio::task::spawn_blocking(move || {
+                        let Ok(repo) = Repository::discover(&workdir) else {
+                            tracing::error!(target: "lattice_magit", "commit: repo discover failed");
+                            return;
+                        };
+                        let result = if amend {
+                            Commit::amend(&repo, message.trim())
+                        } else {
+                            Commit::create(&repo, message.trim())
+                        };
+                        if let Err(e) = result {
+                            tracing::error!(target: "lattice_magit", "commit failed: {e}");
+                        }
+                    }));
+                    Some(Effect::QuitEditor {
+                        force: false,
+                        scope: QuitScope::Pane,
+                    })
+                }),
+            },
+            // ── abort (C-c C-k) ─────────────────────────
+            ActionHandlerContribution {
+                action_name: "action:magit-commit-abort",
+                handler: Arc::new(|ctx: &ActionContext<'_>| {
+                    let _ = state(ctx)?;
+                    Some(Effect::QuitEditor {
+                        force: false,
+                        scope: QuitScope::Pane,
+                    })
+                }),
+            },
+            // <CR> — visit the file at cursor AS STAGED (the index
+            // blob), not the live working-tree file: this buffer shows
+            // the STAGED diff specifically, which may already differ
+            // from a since-edited working copy. Same target
+            // magit-diff-mode's Staged-scoped `<CR>` opens.
+            ActionHandlerContribution {
+                action_name: "action:magit-commit-visit-file",
+                handler: Arc::new(|ctx: &ActionContext<'_>| {
+                    let s = state(ctx)?;
+                    let g = s.lock().ok()?;
+                    if ctx.cursor.line >= g.diff_end_line {
+                        return None;
+                    }
+                    let handle = g.store.handle_for(g.buffer_id)?;
+                    let path = file_at_cursor(&handle, ctx.cursor.line)?;
+                    Some(Effect::OpenSyntheticBuffer {
+                        name: format!("*magit:file:staged:{}*", path.display()),
+                        mode_id: "magit-file-revision-mode".to_string(),
+                    })
+                }),
+            },
+        ]
+    }
+
     fn on_activate(&self, ctx: ModeContext) -> LifecycleFuture<'_, Self::Guard> {
         Box::pin(async move {
             let buffer_id = lattice_core::BufferId(ctx.buffer_id().0 as u32);
+            let orphan = || BufferStateGuard::new(Arc::new(BufferStates::default()), buffer_id);
             let Some(store) = ctx.service::<BufferStoreHandle>() else {
-                return Ok(ActionRegsGuard::default());
+                return Ok(orphan());
             };
             let Some(handle) = store.handle_for(buffer_id) else {
-                return Ok(ActionRegsGuard::default());
+                return Ok(orphan());
             };
 
             let workdir = Repository::discover(".")
@@ -99,6 +215,26 @@ impl Mode for MagitCommitMode {
                 .name_for(buffer_id)
                 .map(|n| n.contains("amend"))
                 .unwrap_or(false);
+
+            // MG.13: publish BEFORE the first `.await`. `diff_end_line`
+            // is not knowable yet (it comes out of the generated text);
+            // it starts at 0 — which makes `<CR>` decline rather than
+            // act on a diff region that does not exist — and is filled
+            // in below once the buffer is populated.
+            let Some(states) = ctx.service::<CommitStatesHandle>() else {
+                return Ok(orphan());
+            };
+            let state = states.publish(
+                buffer_id,
+                CommitState {
+                    buffer_id,
+                    store: store.clone(),
+                    workdir: workdir.clone(),
+                    amend,
+                    diff_end_line: 0,
+                },
+            );
+            let guard = BufferStateGuard::new((*states).clone(), buffer_id);
 
             // Populate the buffer: staged diff + message area. Amend
             // pre-populates the previous commit's message instead of a
@@ -152,136 +288,12 @@ impl Mode for MagitCommitMode {
                 ph.store_and_wake(buffer_id, spans);
             }
 
-            // Register action handlers
-            let state = Arc::new(Mutex::new(CommitState {
-                buffer_id,
-                store: store.clone(),
-                workdir,
-                amend,
-                diff_end_line: diff_end_line as u32,
-            }));
-
-            let Some(cmd_arc) = ctx.service::<CommandRegistryHandle>() else {
-                return Ok(ActionRegsGuard::default());
-            };
-            let Some(ah_arc) = ctx.service::<ActionHandlerRegistryHandle>() else {
-                return Ok(ActionRegsGuard::default());
-            };
-            let registry = cmd_arc.load();
-            let handlers = (*ah_arc).clone();
-            let mut regs = Vec::new();
-
-            // ── confirm (C-c C-c) ──────────────────────
-            {
-                let s = state.clone();
-                if let Some(cid) = registry.id_by_name("action:magit-commit-confirm") {
-                    regs.push(handlers.register(
-                        cid,
-                        Arc::new(move |_ctx: &ActionContext<'_>| {
-                            let (message, workdir, amend) = {
-                                let g = s.lock().ok()?;
-                                let handle = g.store.handle_for(g.buffer_id)?;
-                                let snap = handle.snapshot();
-                                let mut message = String::new();
-                                let mut in_message = false;
-                                for l in 0..snap.buffer.line_count() as u32 {
-                                    let text = snap.buffer.line(l).unwrap_or_default();
-                                    if text.contains(MESSAGE_MARKER) {
-                                        in_message = true;
-                                        continue;
-                                    }
-                                    if in_message && !text.trim().is_empty() {
-                                        message.push_str(&text);
-                                        message.push('\n');
-                                    }
-                                }
-                                (message, g.workdir.clone(), g.amend)
-                            };
-                            if message.trim().is_empty() {
-                                // Fail loud instead of silently doing
-                                // nothing — an empty subject used to
-                                // just no-op the chord with no feedback.
-                                return Some(Effect::Echo {
-                                    level: lattice_grammar::EchoLevel::Error,
-                                    text: "magit: commit message is empty".to_string(),
-                                });
-                            }
-                            // Commit is a bounded, single-object git
-                            // write (unlike `git status`/`git diff`,
-                            // it never scans the working tree) — but
-                            // it's still disk I/O, so it stays off the
-                            // actor thread like every other mutation.
-                            // The buffer closes optimistically; a
-                            // failure surfaces via `tracing::error!`
-                            // (no synchronous path back to the echo
-                            // area from a detached task) rather than
-                            // leaving the compose buffer open forever
-                            // on a rare `gix` failure.
-                            tokio::task::spawn(tokio::task::spawn_blocking(move || {
-                                let Ok(repo) = Repository::discover(&workdir) else {
-                                    tracing::error!(target: "lattice_magit", "commit: repo discover failed");
-                                    return;
-                                };
-                                let result = if amend {
-                                    Commit::amend(&repo, message.trim())
-                                } else {
-                                    Commit::create(&repo, message.trim())
-                                };
-                                if let Err(e) = result {
-                                    tracing::error!(target: "lattice_magit", "commit failed: {e}");
-                                }
-                            }));
-                            Some(Effect::QuitEditor {
-                                force: false,
-                                scope: QuitScope::Pane,
-                            })
-                        }),
-                    ));
-                }
+            // Late-resolved field, now that the text exists.
+            if let Ok(mut g) = state.lock() {
+                g.diff_end_line = diff_end_line as u32;
             }
 
-            // ── abort (C-c C-k) ─────────────────────────
-            {
-                if let Some(cid) = registry.id_by_name("action:magit-commit-abort") {
-                    regs.push(handlers.register(
-                        cid,
-                        Arc::new(move |_ctx: &ActionContext<'_>| {
-                            Some(Effect::QuitEditor {
-                                force: false,
-                                scope: QuitScope::Pane,
-                            })
-                        }),
-                    ));
-                }
-            }
-
-            // <CR> — visit the file at cursor AS STAGED (the index
-            // blob), not the live working-tree file: this buffer
-            // shows the STAGED diff specifically, which may already
-            // differ from a since-edited working copy. Same target
-            // magit-diff-mode's Staged-scoped `<CR>` opens.
-            {
-                let s = state.clone();
-                if let Some(cid) = registry.id_by_name("action:magit-commit-visit-file") {
-                    regs.push(handlers.register(
-                        cid,
-                        Arc::new(move |ctx: &ActionContext<'_>| {
-                            let g = s.lock().ok()?;
-                            if ctx.cursor.line >= g.diff_end_line {
-                                return None;
-                            }
-                            let handle = g.store.handle_for(g.buffer_id)?;
-                            let path = file_at_cursor(&handle, ctx.cursor.line)?;
-                            Some(Effect::OpenSyntheticBuffer {
-                                name: format!("*magit:file:staged:{}*", path.display()),
-                                mode_id: "magit-file-revision-mode".to_string(),
-                            })
-                        }),
-                    ));
-                }
-            }
-
-            Ok(ActionRegsGuard(regs))
+            Ok(guard)
         })
     }
 }

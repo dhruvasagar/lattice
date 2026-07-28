@@ -43,3 +43,10 @@ site/public/
 
 # PM.2: dev runtime root — core-plugin wasm staged by `cargo xtask build-core-plugins`.
 /runtime
+
+# Test debris: `c_c_f_diff_item_actually_opens_a_diff_buffer_not_just_dismiss`
+# must write inside a real git repo (the file-dispatch handler's
+# `Repository::discover` needs one), so it writes here and cleans up via
+# RAII. A SIGKILL'd test run skips destructors and leaves one behind —
+# ignored so it can never be committed by accident.
+lattice-magit-file-dispatch-test-*.txt

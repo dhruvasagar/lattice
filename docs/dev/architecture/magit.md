@@ -1581,7 +1581,7 @@ No `x`/discard chord exists in `magit-diff-mode`.
 |---|---|---|
 | `a` | Apply stash at cursor (keep in list) | `magit-stash-apply` |
 | `p` | Pop stash at cursor (apply + drop) | `magit-stash-pop` |
-| `d` | Drop stash at cursor | `magit-stash-drop` |
+| `d` | Drop stash at cursor (asks first — §12.13) | `magit-stash-drop` |
 | `z` | Create new stash (`git stash`) | `magit-stash-create` |
 
 There is no `<CR>` chord in `magit-stash-mode` — stash-detail-on-`<CR>` was
@@ -1593,7 +1593,7 @@ never implemented (nor is there an `action:magit-stash-show` command).
 |---|---|---|
 | `<CR>` | Check out branch at cursor | `magit-branch-checkout` |
 | `c` | Open the branch-create wizard (pick base, then type name) | `magit-branch-create` |
-| `d` | Delete branch at cursor | `magit-branch-delete` |
+| `d` | Delete branch at cursor (force `-D`, asks first — §12.13) | `magit-branch-delete` |
 | `m` | Merge branch at cursor into current | `magit-branch-merge` |
 
 **`c` now opens a real two-step wizard, modeled on Emacs magit's own
@@ -1638,7 +1638,7 @@ interactive path when a non-HEAD base is wanted.
 | Chord | Action | Command |
 |---|---|---|
 | `C-c C-c` | Execute rebase | `magit-rebase-confirm` |
-| `C-c C-k` | Abort rebase (only if a rebase is actually in progress) | `magit-rebase-abort` |
+| `C-c C-k` | Abort rebase (only if a rebase is actually in progress — and then it asks first, §12.13) | `magit-rebase-abort` |
 
 The buffer is a REAL editable todo list (`pick`/`reword`/`squash`/`fixup`/
 `drop`), built from `git log --reverse --format="pick %h %s"
@@ -1646,6 +1646,9 @@ The buffer is a REAL editable todo list (`pick`/`reword`/`squash`/`fixup`/
 buffer's non-comment lines and actually starts the rebase (§4.6); `C-c
 C-k` checks `.git/rebase-merge`/`.git/rebase-apply` before running
 `--abort`, so it cannot fail against a rebase that was never started.
+That same check decides whether it asks: nothing in progress means
+`C-c C-k` is only closing a buffer nobody ran, so it closes outright
+(§12.13).
 
 ### 12.11 Ex-commands (dashed + namespaced)
 
@@ -1693,6 +1696,151 @@ pub fn install(boot: &mut SubsystemBoot) {
     // Guard Drop unregisters on deactivation
 }
 ```
+
+### 12.12b Action-handler registration — boot, not activation
+
+**The defect.** A mode's `on_activate` runs inside the cascade future
+`ModeRegistry::spawn_cascade` spawns. Registering action handlers there
+— which every per-buffer magit mode did, because the handler closed
+over an `Arc<Mutex<…State>>` built during activation — leaves a window
+after the buffer opens where the chord resolves through the keymap, the
+mode reads as active, and **no handler exists**. The keypress does
+nothing. A user hitting `d` quickly after `:magit-branch` sees it; so
+did MG.8's dead transients, whose fix was the same move.
+
+**The contract.** Handlers live in `Mode::action_handlers()`, resolved
+once at boot (`mode_action_handlers::register_mode_action_handlers`,
+after every subsystem's `install()`). Per-buffer state is published into
+a `BufferStates<S>` service keyed by `BufferId` and read from
+`ActionContext` at call time.
+
+Two rules make this correct:
+
+1. **Publish above the first `.await`.** `spawn_cascade` polls the
+   cascade future once, synchronously, on the App thread before spawning
+   it. Everything before the first pending await has therefore run by
+   the time `activate_major` returns. Moving an `.await` above the
+   `publish` call silently reopens the window — and silently is the
+   operative word: nothing fails, the chord just does nothing for a
+   while. `magit-status-mode` was written that way at first and left
+   `x` / `=` / `<CR>` dead for the width of a `git status`, the longest
+   window of any view, in the most-used one. When touching an
+   `on_activate`, check the ordering; the mechanical version is "first
+   non-comment `.await` line number must exceed the `publish` line
+   number", modulo early-return branches that never publish (the
+   not-a-git-repo path). State that genuinely
+   cannot be known until after an await (magit-commit's `diff_end_line`,
+   magit-rebase's resolved `upstream`) publishes an inert initial value
+   and is filled in through the `Arc<Mutex<_>>` afterwards — the
+   handlers already refuse to act on the inert value. Only the cascade's
+   *root* step (the major) gets this guarantee; implied minors run
+   later, so `magit-core-mode` keeps a state-free handler shape.
+2. **One boot registration per action id.**
+   `ActionHandlerRegistry::register` inserts — last writer wins — and
+   dropping a registration unregisters *by action id*. So an action
+   bound by more than one mode must be registered exactly once, and must
+   not be registered per-activation by anyone. `action:magit-refresh`
+   (`gr`) is the case in point: five modes bound it, which only worked
+   because per-activation registration installed one at a time. It is
+   now owned by `magit-core-mode` (which binds the chord) and dispatched
+   per buffer through the `MagitView` trait, so each view still owns its
+   own refresh body and nothing branches on buffer kind. A test fails if
+   any two modes contribute the same boot `action_name`.
+
+Rule 2 is not merely a constraint of the new shape — **per-activation
+registration was never safe once two buffers can hold handlers at
+once**, because the registry is keyed by `CommandId` alone, with no
+buffer dimension. Three real instances, all fixed by the migration:
+
+- **Two modes, one action.** `action:magit-stage` / `action:magit-unstage`
+  were registered from `on_activate` by both `magit-status-mode` and
+  `magit-diff-mode`.
+- **One mode, two buffers.** `magit-core-mode` is a minor that activates
+  on *every* magit buffer and registered `q` and the six navigation
+  chords per activation. Two magit buffers ⇒ two registrations.
+- **Two modes, one action, different bodies.** `action:magit-close` was
+  registered by `magit-status-mode` (`Effect::BufferDelete`) *and*
+  `magit-core-mode` (`Effect::DismissPopup`), so `q` in the status
+  buffer did one or the other depending on cascade ordering. Note this
+  was not an open design question: `DismissPopup` is the documented and
+  **already tested** intent —
+  `q_on_magit_status_buries_it_and_never_quits_the_editor` asserts that
+  `q` restores the buffer active before magit-status opened, and core's
+  handler records the live bug (`q` quitting the editor) it fixed. The
+  status-side registration contradicted that test and silently voided
+  the guarantee whenever it won the race. Removing it makes the tested
+  behaviour deterministic rather than changing it.
+
+In every case the second registration won and the first deactivation
+unregistered the action for **both**. It only looked safe because one
+magit buffer tended to be open at a time. The old `ActionRegsGuard` doc
+comment already named the hazard; holding the tokens bounded the damage
+but could not prevent it. Boot registration removes it at the source —
+**no `handlers.register(...)` call remains anywhere in `lattice-magit`**,
+which is the cheapest regression check available.
+
+Contract and helpers: `crates/lattice-magit/src/buffer_state.rs`.
+Sequencing and per-mode migration status: the MG.13 entry in the slice
+plan.
+
+### 12.13 Destructive actions — the ask/execute contract
+
+magit mutates a repository from a lot of single keystrokes. Most of
+those are reversible and asking about them would be noise; a few throw
+away work that git itself cannot hand back. Those go through one shape,
+and only that shape:
+
+- The chord's own action (`action:magit-<x>`) performs **no git call at
+  all**. It reads the target off the buffer and returns
+  `Effect::Confirm { prompt, yes_action }`.
+- The git call lives in a separate `action:magit-<x>-execute`, named as
+  that confirm's `yes_action`.
+
+Answering `n` therefore cannot mutate anything — not by a guard that
+could be forgotten, but because the code that mutates was never
+reached. The execute half re-reads its target at the cursor rather than
+carrying it through the prompt: the confirm transient owns every
+keystroke while it is open, and `do_transient_trigger` hands the
+yes-action the *document* cursor, so the cursor is provably where the
+prompt was built from.
+
+The prompt always names its target (`Delete branch feature/foo?`,
+`Drop stash@{2}?`) — the transient covers the buffer the target was
+read from, so a question that says only "Delete branch?" is
+unanswerable without dismissing it.
+
+The set (`crates/lattice-magit/src/confirm.rs`,
+`DESTRUCTIVE_ACTIONS`):
+
+| Chord | Ask | Execute | Why it is irreversible |
+|---|---|---|---|
+| `x` in magit-status | `magit-discard` | `magit-discard-execute` | `git checkout --` overwrites the worktree copy |
+| `x` in `C-c f` | `magit-global-file-discard` | `…-execute` | same, on the active buffer's file |
+| `d` in magit-branch | `magit-branch-delete` | `…-execute` | `Branch::delete` is a force delete (`-D`) — drops unmerged commits |
+| `d` in magit-stash | `magit-stash-drop` | `…-execute` | a dropped stash is gone (`apply`/`pop` leave their content visible; only `drop` doesn't) |
+| `C-c C-k` in magit-rebase | `magit-rebase-abort` | `…-execute` | `--abort` discards everything the rebase replayed — but **only asks when a rebase is in progress**; otherwise `C-c C-k` is just closing a todo buffer nobody ran, and closes outright |
+
+That last gate is the one place the shape is conditional, and it is
+conditional on the same `rebase-merge`/`rebase-apply` check that decides
+whether `--abort` runs at all. It is a `stat` against a gitdir resolved
+once at activation — cheap enough for the actor thread in response to an
+explicit chord, and it *has* to run there because the confirm is the
+effect the handler returns.
+
+`DESTRUCTIVE_ACTIONS` is the single list, asserted two ways: a test
+proves both halves of every row resolve in the command registry (an
+unregistered execute half turns the whole action into
+`confirm: unknown action`, a failure that would otherwise only surface
+when a user presses the key), and `confirm::ask` debug-asserts its
+`yes_action` appears in the table, so a new destructive action that
+skips the list fails for its author rather than quietly for the user.
+
+**What deliberately does *not* ask:** stage / unstage (index-only),
+checkout, merge, branch-create, stash apply / pop / create, commit and
+amend, rebase execute. Each is either reversible or is itself the
+explicit confirm step of a dedicated buffer. This matches Emacs magit's
+own `magit-no-confirm` default set; the standing rule is UX convention
+over local rationale for surfaces carrying muscle memory.
 
 ## 13. Performance posture
 

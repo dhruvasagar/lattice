@@ -78,11 +78,21 @@ pub(super) fn press(app: &mut App, event: crossterm::event::KeyEvent) {
         // D.5.b: in test, drive from the editor's snapshot —
         // mirrors the runtime/gpui path so tests cover the
         // per-buffer chord gating.
+        //
+        // MG.13: this MUST be `keymap_gated_ids()`, not `minors()`.
+        // Production builds the same field from `keymap_gated_ids()`
+        // (`dispatch.rs`, "the major MUST be included"), so passing
+        // only the minors made the harness structurally unable to
+        // route ANY major-mode chord — every magit view chord, the
+        // `ai-conversation` chords, oil, compilation. Tests could not
+        // fail on a broken major-mode binding because they could not
+        // reach one; that is the blind spot MG.13 exists to close, and
+        // it lived here rather than in the modes.
         active_minor_modes: &app
             .editor
             .active_modes
             .get(&app.editor.document_buffer_id)
-            .map(|am| am.minors().to_vec())
+            .map(|am| am.keymap_gated_ids())
             .unwrap_or_default(),
     };
     let action = crate::input::translate(ctx, event);

@@ -5,9 +5,9 @@
 use std::sync::{Arc, Mutex, OnceLock};
 
 use lattice_config;
-use lattice_grammar::{CommandRegistryHandle, Effect};
+use lattice_grammar::Effect;
 use lattice_mode::{
-    ActionContext, ActionHandlerRegistryHandle, BufferStoreHandle, CapabilitySet, Keymap,
+    ActionContext, ActionHandlerContribution, BufferStoreHandle, CapabilitySet, Keymap,
     KeymapEntry, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, OptionOverrideSet,
     keymap_entry,
 };
@@ -15,7 +15,7 @@ use lattice_protocol::edit::Edit;
 use lattice_protocol::position::{Position, Range};
 use lattice_vcs::{Repository, Stash};
 
-use crate::magit_core_mode::ActionRegsGuard;
+use crate::buffer_state::{BufferStateGuard, BufferStates, MagitView, MagitViewsHandle};
 
 pub struct MagitStashMode;
 
@@ -37,15 +37,35 @@ fn magit_stash_keymap_entries() -> &'static [KeymapEntry] {
     })
 }
 
-struct StashState {
+pub struct StashState {
     buffer_id: lattice_core::BufferId,
     store: Arc<BufferStoreHandle>,
     workdir: std::path::PathBuf,
     pending_highlights: Option<lattice_mode::PendingSyntheticHighlightsHandle>,
 }
 
+/// MG.13: service alias for this mode's per-buffer state — register
+/// and look up through this exact type
+/// (`feedback_servicesregistry_arc_typeid`).
+pub type StashStatesHandle = Arc<BufferStates<StashState>>;
+
+/// Resolve this mode's state for the buffer an action fired in.
+/// `None` means no magit-stash buffer is live there.
+fn state(ctx: &ActionContext<'_>) -> Option<Arc<Mutex<StashState>>> {
+    crate::buffer_state::state_for::<StashState>(ctx)
+}
+
+/// `gr` for a stash buffer — see [`MagitView`].
+struct StashView(Arc<Mutex<StashState>>);
+
+impl MagitView for StashView {
+    fn refresh(&self) -> Option<Effect> {
+        refresh(self.0.clone())
+    }
+}
+
 impl Mode for MagitStashMode {
-    type Guard = ActionRegsGuard;
+    type Guard = BufferStateGuard<StashState>;
 
     fn id(&self) -> ModeId {
         Self::mode_id()
@@ -71,19 +91,126 @@ impl Mode for MagitStashMode {
         Keymap::from_entries(magit_stash_keymap_entries())
     }
 
+    /// MG.13: registered once at boot, not per activation — see
+    /// `buffer_state`'s module docs for why.
+    fn action_handlers(&self) -> Vec<ActionHandlerContribution> {
+        vec![
+            // apply (a)
+            ActionHandlerContribution {
+                action_name: "action:magit-stash-apply",
+                handler: Arc::new(|ctx: &ActionContext<'_>| {
+                    let s = state(ctx)?;
+                    let (idx, workdir) = {
+                        let g = s.lock().ok()?;
+                        (stash_index_at_cursor(&g, ctx.cursor)?, g.workdir.clone())
+                    };
+                    spawn_mutation_and_refresh(s, move || {
+                        if let Ok(repo) = Repository::discover(&workdir) {
+                            let _ = Stash::apply(&repo, idx);
+                        }
+                    })
+                }),
+            },
+            // pop (p)
+            ActionHandlerContribution {
+                action_name: "action:magit-stash-pop",
+                handler: Arc::new(|ctx: &ActionContext<'_>| {
+                    let s = state(ctx)?;
+                    let (idx, workdir) = {
+                        let g = s.lock().ok()?;
+                        (stash_index_at_cursor(&g, ctx.cursor)?, g.workdir.clone())
+                    };
+                    spawn_mutation_and_refresh(s, move || {
+                        if let Ok(repo) = Repository::discover(&workdir) {
+                            let _ = Stash::pop(&repo, idx);
+                        }
+                    })
+                }),
+            },
+            // drop (d) — MG.12: a dropped stash is gone; `apply` and
+            // `pop` above put their content somewhere the user can
+            // still see it, so only this one asks. No git call in this
+            // half: answering `n` never reaches the execute half.
+            ActionHandlerContribution {
+                action_name: "action:magit-stash-drop",
+                handler: Arc::new(|ctx: &ActionContext<'_>| {
+                    let s = state(ctx)?;
+                    let idx = {
+                        let g = s.lock().ok()?;
+                        stash_index_at_cursor(&g, ctx.cursor)?
+                    };
+                    Some(drop_stash_confirm(idx))
+                }),
+            },
+            // drop, after confirmation — re-reads the stash at the
+            // cursor, which the confirm transient could not have moved
+            // (see the matching note in `magit_branch_mode`).
+            ActionHandlerContribution {
+                action_name: "action:magit-stash-drop-execute",
+                handler: Arc::new(|ctx: &ActionContext<'_>| {
+                    let s = state(ctx)?;
+                    let (idx, workdir) = {
+                        let g = s.lock().ok()?;
+                        (stash_index_at_cursor(&g, ctx.cursor)?, g.workdir.clone())
+                    };
+                    spawn_mutation_and_refresh(s, move || {
+                        if let Ok(repo) = Repository::discover(&workdir) {
+                            let _ = Stash::drop(&repo, idx);
+                        }
+                    })
+                }),
+            },
+            // create (z)
+            ActionHandlerContribution {
+                action_name: "action:magit-stash-create",
+                handler: Arc::new(|ctx: &ActionContext<'_>| {
+                    let s = state(ctx)?;
+                    let workdir = { s.lock().ok()?.workdir.clone() };
+                    spawn_mutation_and_refresh(s, move || {
+                        if let Ok(repo) = Repository::discover(&workdir) {
+                            let _ = Stash::create(&repo, None, false);
+                        }
+                    })
+                }),
+            },
+        ]
+    }
+
     fn on_activate(&self, ctx: ModeContext) -> LifecycleFuture<'_, Self::Guard> {
         Box::pin(async move {
             let buffer_id = lattice_core::BufferId(ctx.buffer_id().0 as u32);
+            let orphan = || BufferStateGuard::new(Arc::new(BufferStates::default()), buffer_id);
             let Some(store) = ctx.service::<BufferStoreHandle>() else {
-                return Ok(ActionRegsGuard::default());
+                return Ok(orphan());
             };
             let Some(handle) = store.handle_for(buffer_id) else {
-                return Ok(ActionRegsGuard::default());
+                return Ok(orphan());
             };
             let workdir = Repository::discover(".")
                 .ok()
                 .and_then(|r| r.workdir().map(|p| p.to_path_buf()))
                 .unwrap_or_default();
+            let pending_highlights = ctx.service::<lattice_mode::PendingSyntheticHighlights>();
+
+            // MG.13: publish BEFORE the first `.await` — see the note
+            // in `magit_branch_mode::on_activate`.
+            let Some(states) = ctx.service::<StashStatesHandle>() else {
+                return Ok(orphan());
+            };
+            let state = states.publish(
+                buffer_id,
+                StashState {
+                    buffer_id,
+                    store: store.clone(),
+                    workdir: workdir.clone(),
+                    pending_highlights: pending_highlights.clone(),
+                },
+            );
+            let mut guard = BufferStateGuard::new((*states).clone(), buffer_id);
+            if let Some(views) = ctx.service::<MagitViewsHandle>() {
+                views.publish(buffer_id, Arc::new(StashView(state.clone())));
+                guard = guard.with_views((*views).clone());
+            }
 
             // Populate stash list: blocking I/O on spawn_blocking, then
             // apply edit on the current task (no Runtime::new()).
@@ -93,122 +220,11 @@ impl Mode for MagitStashMode {
                 .unwrap();
             let spans = crate::highlight::stash_styled_spans(&text);
             apply_full_replace(&handle, text).await;
-            let pending_highlights = ctx.service::<lattice_mode::PendingSyntheticHighlights>();
             if let Some(ref ph) = pending_highlights {
                 ph.store_and_wake(buffer_id, spans);
             }
 
-            let state = Arc::new(Mutex::new(StashState {
-                buffer_id,
-                store: store.clone(),
-                workdir: workdir.clone(),
-                pending_highlights,
-            }));
-
-            let Some(cmd_arc) = ctx.service::<CommandRegistryHandle>() else {
-                return Ok(ActionRegsGuard::default());
-            };
-            let Some(ah_arc) = ctx.service::<ActionHandlerRegistryHandle>() else {
-                return Ok(ActionRegsGuard::default());
-            };
-            let registry = cmd_arc.load();
-            let handlers = (*ah_arc).clone();
-            let mut regs = Vec::new();
-
-            // refresh (gr) — re-list stashes. Previously only
-            // magit-status supported `gr`.
-            {
-                let s = state.clone();
-                if let Some(cid) = registry.id_by_name("action:magit-refresh") {
-                    regs.push(handlers.register(
-                        cid,
-                        Arc::new(move |_ctx: &ActionContext<'_>| refresh(s.clone())),
-                    ));
-                }
-            }
-
-            // apply (a)
-            {
-                let s = state.clone();
-                if let Some(cid) = registry.id_by_name("action:magit-stash-apply") {
-                    regs.push(handlers.register(
-                        cid,
-                        Arc::new(move |ctx: &ActionContext<'_>| {
-                            let (idx, workdir) = {
-                                let g = s.lock().ok()?;
-                                (stash_index_at_cursor(&g, ctx.cursor)?, g.workdir.clone())
-                            };
-                            spawn_mutation_and_refresh(s.clone(), move || {
-                                if let Ok(repo) = Repository::discover(&workdir) {
-                                    let _ = Stash::apply(&repo, idx);
-                                }
-                            })
-                        }),
-                    ));
-                }
-            }
-
-            // pop (p)
-            {
-                let s = state.clone();
-                if let Some(cid) = registry.id_by_name("action:magit-stash-pop") {
-                    regs.push(handlers.register(
-                        cid,
-                        Arc::new(move |ctx: &ActionContext<'_>| {
-                            let (idx, workdir) = {
-                                let g = s.lock().ok()?;
-                                (stash_index_at_cursor(&g, ctx.cursor)?, g.workdir.clone())
-                            };
-                            spawn_mutation_and_refresh(s.clone(), move || {
-                                if let Ok(repo) = Repository::discover(&workdir) {
-                                    let _ = Stash::pop(&repo, idx);
-                                }
-                            })
-                        }),
-                    ));
-                }
-            }
-
-            // drop (d)
-            {
-                let s = state.clone();
-                if let Some(cid) = registry.id_by_name("action:magit-stash-drop") {
-                    regs.push(handlers.register(
-                        cid,
-                        Arc::new(move |ctx: &ActionContext<'_>| {
-                            let (idx, workdir) = {
-                                let g = s.lock().ok()?;
-                                (stash_index_at_cursor(&g, ctx.cursor)?, g.workdir.clone())
-                            };
-                            spawn_mutation_and_refresh(s.clone(), move || {
-                                if let Ok(repo) = Repository::discover(&workdir) {
-                                    let _ = Stash::drop(&repo, idx);
-                                }
-                            })
-                        }),
-                    ));
-                }
-            }
-
-            // create (z)
-            {
-                let s = state.clone();
-                if let Some(cid) = registry.id_by_name("action:magit-stash-create") {
-                    regs.push(handlers.register(
-                        cid,
-                        Arc::new(move |_ctx: &ActionContext<'_>| {
-                            let workdir = { s.lock().ok()?.workdir.clone() };
-                            spawn_mutation_and_refresh(s.clone(), move || {
-                                if let Ok(repo) = Repository::discover(&workdir) {
-                                    let _ = Stash::create(&repo, None, false);
-                                }
-                            })
-                        }),
-                    ));
-                }
-            }
-
-            Ok(ActionRegsGuard(regs))
+            Ok(guard)
         })
     }
 }
@@ -277,6 +293,16 @@ fn spawn_mutation_and_refresh(
     None
 }
 
+/// MG.12: the ask half of `d`. Names the stash by the same
+/// `stash@{N}` ref the list row shows, so the prompt and the row it
+/// came from read identically.
+fn drop_stash_confirm(index: usize) -> Effect {
+    crate::confirm::ask(
+        format!("Drop stash@{{{index}}}?"),
+        "action:magit-stash-drop-execute",
+    )
+}
+
 fn stash_index_at_cursor(state: &StashState, cursor: Position) -> Option<usize> {
     let handle = state.store.handle_for(state.buffer_id)?;
     let snap = handle.snapshot();
@@ -308,4 +334,38 @@ fn build_stash_list(workdir: &std::path::Path) -> String {
     }
     out.push('\n');
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// MG.12: `d` used to call `Stash::drop` straight from the chord,
+    /// while magit-status's `x` on the same class of act asked first.
+    #[test]
+    fn drop_asks_before_dropping_and_names_the_stash() {
+        match drop_stash_confirm(2) {
+            Effect::Confirm { prompt, yes_action } => {
+                assert_eq!(prompt, "Drop stash@{2}?");
+                assert_eq!(yes_action, "action:magit-stash-drop-execute");
+            }
+            other => panic!("expected a confirm before dropping a stash, got {other:?}"),
+        }
+    }
+
+    /// The prompt names the stash with the same `stash@{N}` ref the
+    /// list row shows, so the question matches what is on screen
+    /// behind the transient.
+    #[test]
+    fn drop_prompt_uses_the_same_ref_form_the_list_row_shows() {
+        let index = 0;
+        let row = format!("  stash@{{{index}}} WIP on main: 1234abc msg");
+        match drop_stash_confirm(index) {
+            Effect::Confirm { prompt, .. } => {
+                let stash_ref = format!("stash@{{{index}}}");
+                assert!(row.contains(&stash_ref) && prompt.contains(&stash_ref));
+            }
+            other => panic!("expected Confirm, got {other:?}"),
+        }
+    }
 }

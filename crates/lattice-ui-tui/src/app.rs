@@ -137,6 +137,8 @@ mod lsp;
 mod lsp_log_buffers;
 mod lsp_watcher;
 mod macros;
+#[cfg(test)]
+mod magit_bindings;
 mod messages;
 mod mode;
 mod motions;

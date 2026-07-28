@@ -10,10 +10,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use lattice_core::BufferId;
-use lattice_grammar::{CommandRegistryHandle, Effect};
+use lattice_grammar::Effect;
 use lattice_mode::{
-    ActionContext, ActionHandlerRegistration, ActionHandlerRegistryHandle, BufferStoreHandle,
-    PendingSyntheticHighlights,
+    ActionContext, ActionHandlerContribution, BufferStoreHandle, PendingSyntheticHighlights,
 };
 use lattice_protocol::edit::Edit;
 use lattice_protocol::position::{Position, Range};
@@ -314,57 +313,38 @@ fn toggle_expand(
 
 // ── registration ────────────────────────────────────────
 
-pub fn register_action_handlers(
-    state: Arc<Mutex<StatusBufferState>>,
-    cmd_registry_arc: &Arc<CommandRegistryHandle>,
-    action_handlers_arc: &Arc<ActionHandlerRegistryHandle>,
-) -> Vec<ActionHandlerRegistration> {
-    let mut registrations = Vec::new();
-    let registry = cmd_registry_arc.load();
-    let handlers = (*action_handlers_arc).clone();
+/// MG.13: service alias for magit-status's per-buffer state
+/// (`feedback_servicesregistry_arc_typeid`).
+pub type StatusStatesHandle = Arc<crate::buffer_state::BufferStates<StatusBufferState>>;
+
+/// Resolve the status buffer's state for the buffer an action fired
+/// in. `None` means this is not a live magit-status buffer, so the
+/// handler declines — the same outcome as before, minus the race.
+fn status_state(ctx: &ActionContext<'_>) -> Option<Arc<Mutex<StatusBufferState>>> {
+    crate::buffer_state::state_for::<StatusBufferState>(ctx)
+}
+
+/// MG.13: magit-status's action handlers, registered once at boot by
+/// `MagitStatusMode::action_handlers()`.
+///
+/// Each body opens with `let s = status_state(ctx)?;` — resolving this
+/// buffer's state from the `BufferStates<StatusBufferState>` service
+/// rather than closing over it at activation. That removes the window
+/// in which `x` / `=` / `<CR>` resolved but had no handler yet. `s`,
+/// `u` and `gr` are NOT here: they are shared with `magit-diff-mode`,
+/// so `magit-core-mode` owns their single handler and reaches this
+/// buffer through [`StatusView`] (see `buffer_state::MagitView`).
+pub fn status_action_handlers() -> Vec<ActionHandlerContribution> {
+    let mut contributions: Vec<ActionHandlerContribution> = Vec::new();
 
     macro_rules! handler {
         ($name:expr, $body:expr) => {
-            if let Some(cmd_id) = registry.id_by_name($name) {
-                registrations.push(handlers.register(cmd_id, Arc::new($body)));
-            }
+            contributions.push(ActionHandlerContribution {
+                action_name: $name,
+                handler: Arc::new($body),
+            });
         };
     }
-
-    // Refresh the status buffer: blocking `git status`/`stash
-    // list`/`log` on `spawn_blocking`, then apply the formatted text +
-    // highlights on the current task. Clears `expanded` — a
-    // full-buffer replace collapses any inline expansion, so stale
-    // entries there would desync `toggle_expand`'s "already expanded"
-    // check from what's actually on screen.
-    async fn do_refresh(
-        handle: Arc<dyn lattice_runtime::Document>,
-        wd: PathBuf,
-        pending: Option<Arc<PendingSyntheticHighlights>>,
-        bid: BufferId,
-    ) {
-        let (text, spans) = tokio::task::spawn_blocking(move || refresh::build_and_format(&wd))
-            .await
-            .expect("spawn_blocking");
-        refresh::apply_and_highlight(handle, text, spans, pending, bid).await;
-    }
-
-    // `gr` — bare refresh, no prior mutation.
-    let trigger_refresh = |s: Arc<Mutex<StatusBufferState>>| {
-        let (handle, wd, pending, bid) = {
-            let mut g = s.lock().ok()?;
-            let h = g.store.handle_for(g.buffer_id)?;
-            g.expanded.clear();
-            (
-                h,
-                g.workdir.clone(),
-                g.pending_highlights.clone(),
-                g.buffer_id,
-            )
-        };
-        tokio::task::spawn(do_refresh(handle, wd, pending, bid));
-        None::<Effect>
-    };
 
     // Run `mutate` (a blocking git call) on `spawn_blocking`, off the
     // actor thread entirely, then refresh — the shape every mutating
@@ -373,71 +353,22 @@ pub fn register_action_handlers(
     // (fast, in-memory) and hand this a self-contained closure; the
     // handler itself returns `None` immediately, before the git call
     // has even started.
-    fn spawn_mutation_and_refresh(
-        s: Arc<Mutex<StatusBufferState>>,
-        mutate: impl FnOnce() + Send + 'static,
-    ) -> Option<Effect> {
-        let (handle, wd, pending, bid) = {
-            let mut g = s.lock().ok()?;
-            let h = g.store.handle_for(g.buffer_id)?;
-            g.expanded.clear();
-            (
-                h,
-                g.workdir.clone(),
-                g.pending_highlights.clone(),
-                g.buffer_id,
-            )
-        };
-        tokio::task::spawn(async move {
-            let _ = tokio::task::spawn_blocking(mutate).await;
-            do_refresh(handle, wd, pending, bid).await;
-        });
-        None
-    }
 
     // ── stage (s) ──────────────────────────────────────
-    {
-        let s = state.clone();
-        handler!("action:magit-stage", move |ctx: &ActionContext<'_>| {
-            let (path, workdir) = {
-                let g = s.lock().ok()?;
-                let StatusLine::File { path, .. } = classify_line(&g, ctx.cursor.line)? else {
-                    return None;
-                };
-                (path, g.workdir.clone())
-            };
-            spawn_mutation_and_refresh(s.clone(), move || {
-                if let Ok(repo) = Repository::discover(&workdir) {
-                    let _ = Index::stage_path(&repo, &path);
-                }
-            })
-        });
-    }
+    // MG.13: registered once at boot by `magit-core-mode` (a shared
+    // action — `magit-diff-mode` binds `s` too) and dispatched
+    // through `StatusView`'s `MagitView` impl below.
 
     // ── unstage (u) ───────────────────────────────────
-    {
-        let s = state.clone();
-        handler!("action:magit-unstage", move |ctx: &ActionContext<'_>| {
-            let (path, workdir) = {
-                let g = s.lock().ok()?;
-                let StatusLine::File { path, .. } = classify_line(&g, ctx.cursor.line)? else {
-                    return None;
-                };
-                (path, g.workdir.clone())
-            };
-            spawn_mutation_and_refresh(s.clone(), move || {
-                if let Ok(repo) = Repository::discover(&workdir) {
-                    let _ = Index::unstage_path(&repo, &path);
-                }
-            })
-        });
-    }
+    // MG.13: registered once at boot by `magit-core-mode` (a shared
+    // action — `magit-diff-mode` binds `u` too) and dispatched
+    // through `StatusView`'s `MagitView` impl below.
 
     // ── discard (x) ───────────────────────────────────
     // PU.6: prompt for confirmation before destructive discard.
     {
-        let s = state.clone();
         handler!("action:magit-discard", move |ctx: &ActionContext<'_>| {
+            let s = status_state(ctx)?;
             let g = s.lock().ok()?;
             let StatusLine::File { path, .. } = classify_line(&g, ctx.cursor.line)? else {
                 return None;
@@ -451,10 +382,10 @@ pub fn register_action_handlers(
     }
     // PU.6: actual discard, dispatched by Confirm's yes-action.
     {
-        let s = state.clone();
         handler!(
             "action:magit-discard-execute",
             move |ctx: &ActionContext<'_>| {
+                let s = status_state(ctx)?;
                 let (path, workdir) = {
                     let g = s.lock().ok()?;
                     let StatusLine::File { path, .. } = classify_line(&g, ctx.cursor.line)? else {
@@ -482,8 +413,8 @@ pub fn register_action_handlers(
     // for files (there's no dedicated "stash detail" buffer to open
     // instead).
     {
-        let s = state.clone();
         handler!("action:magit-visit", move |ctx: &ActionContext<'_>| {
+            let s = status_state(ctx)?;
             let sl = {
                 let g = s.lock().ok()?;
                 classify_line(&g, ctx.cursor.line)?
@@ -527,7 +458,8 @@ pub fn register_action_handlers(
 
     // ── commit (cc) ───────────────────────────────────
     {
-        handler!("action:magit-commit", move |_ctx: &ActionContext<'_>| {
+        handler!("action:magit-commit", move |ctx: &ActionContext<'_>| {
+            let _ = status_state(ctx)?;
             Some(Effect::OpenSyntheticBuffer {
                 name: "*magit:commit*".to_string(),
                 mode_id: "magit-commit-mode".to_string(),
@@ -537,9 +469,10 @@ pub fn register_action_handlers(
 
     // ── commit amend (ca) ─────────────────────────────
     {
-        handler!("action:magit-commit-amend", move |_ctx: &ActionContext<
+        handler!("action:magit-commit-amend", move |ctx: &ActionContext<
             '_,
         >| {
+            let _ = status_state(ctx)?;
             Some(Effect::OpenSyntheticBuffer {
                 name: "*magit:amend*".to_string(),
                 mode_id: "magit-commit-mode".to_string(),
@@ -558,9 +491,10 @@ pub fn register_action_handlers(
     // fail loudly instead of hanging: stage via `s` (file-level) or
     // expand the diff with `=` and review before staging.
     {
-        handler!("action:magit-stage-patch", move |_ctx: &ActionContext<
+        handler!("action:magit-stage-patch", move |ctx: &ActionContext<
             '_,
         >| {
+            let _ = status_state(ctx)?;
             Some(Effect::Echo {
                 level: lattice_grammar::EchoLevel::Error,
                 text: "magit: interactive `git add -p` isn't supported yet — stage the whole \
@@ -571,19 +505,16 @@ pub fn register_action_handlers(
     }
 
     // ── refresh (gr) ──────────────────────────────────
-    {
-        let s = state.clone();
-        handler!("action:magit-refresh", move |_ctx: &ActionContext<'_>| {
-            trigger_refresh(s.clone())
-        });
-    }
+    // MG.13: registered once at boot by `magit-core-mode` and
+    // dispatched through the status buffer's `MagitView`; see
+    // `buffer_state::MagitView` for why it cannot be per-mode.
 
     // ── toggle diff (=) ───────────────────────────────
     {
-        let s = state.clone();
         handler!("action:magit-toggle-diff", move |ctx: &ActionContext<
             '_,
         >| {
+            let s = status_state(ctx)?;
             let sl = {
                 let g = s.lock().ok()?;
                 classify_line(&g, ctx.cursor.line)?
@@ -600,8 +531,8 @@ pub fn register_action_handlers(
     // Staged, working-tree-vs-index for Unstaged), instead of
     // expanding inline like `=`. See `magit_diff_mode`'s `DiffScope`.
     {
-        let s = state.clone();
         handler!("action:magit-diff-file", move |ctx: &ActionContext<'_>| {
+            let s = status_state(ctx)?;
             let g = s.lock().ok()?;
             let StatusLine::File { path, staged } = classify_line(&g, ctx.cursor.line)? else {
                 return None;
@@ -615,13 +546,138 @@ pub fn register_action_handlers(
     }
 
     // ── close (q) ─────────────────────────────────────
-    {
-        handler!("action:magit-close", move |_ctx: &ActionContext<'_>| {
-            Some(Effect::BufferDelete { force: false })
-        });
+    // MG.13: removed from here. `action:magit-close` was registered by
+    // BOTH this mode (`Effect::BufferDelete`) and `magit-core-mode`
+    // (`Effect::DismissPopup`). Same action id ⇒ last registrant won,
+    // decided by cascade ordering, so `q` in the status buffer was
+    // nondeterministic between "delete the buffer" and "bury it".
+    //
+    // This is not a behaviour *choice* — `DismissPopup` is the already
+    // documented and already tested intent. `magit-core-mode`'s handler
+    // records the live-reported bug it fixed (`q` quitting the whole
+    // editor), and
+    // `lattice-ui-tui`'s `q_on_magit_status_buries_it_and_never_quits_the_editor`
+    // asserts that `q` restores the buffer that was active before
+    // magit-status opened. The registration here contradicted that
+    // test; whenever it won the race the guarantee was simply not in
+    // force. Removing it makes the tested behaviour deterministic.
+
+    contributions
+}
+
+/// Run `mutate` (a blocking git call) on `spawn_blocking`, off the
+/// actor thread entirely, then refresh.
+///
+/// MG.13: lifted to module scope (was nested in
+/// `register_action_handlers`) so [`StatusView`]'s `stage`/`unstage`
+/// can reach it from the boot-registered path.
+fn spawn_mutation_and_refresh(
+    s: Arc<Mutex<StatusBufferState>>,
+    mutate: impl FnOnce() + Send + 'static,
+) -> Option<Effect> {
+    let (handle, wd, pending, bid) = {
+        let mut g = s.lock().ok()?;
+        let h = g.store.handle_for(g.buffer_id)?;
+        g.expanded.clear();
+        (
+            h,
+            g.workdir.clone(),
+            g.pending_highlights.clone(),
+            g.buffer_id,
+        )
+    };
+    tokio::task::spawn(async move {
+        let _ = tokio::task::spawn_blocking(mutate).await;
+        do_refresh(handle, wd, pending, bid).await;
+    });
+    None
+}
+
+/// Refresh the status buffer: blocking `git status`/`stash
+/// list`/`log` on `spawn_blocking`, then apply the formatted text +
+/// highlights on the current task. Clears `expanded` — a
+/// full-buffer replace collapses any inline expansion, so stale
+/// entries there would desync `toggle_expand`'s "already expanded"
+/// check from what's actually on screen.
+///
+/// MG.13: lifted to module scope (was nested in
+/// `register_action_handlers`) so [`trigger_refresh`] can reach it
+/// from the boot-registered `gr` path.
+async fn do_refresh(
+    handle: Arc<dyn lattice_runtime::Document>,
+    wd: PathBuf,
+    pending: Option<Arc<PendingSyntheticHighlights>>,
+    bid: BufferId,
+) {
+    let (text, spans) = tokio::task::spawn_blocking(move || refresh::build_and_format(&wd))
+        .await
+        .expect("spawn_blocking");
+    refresh::apply_and_highlight(handle, text, spans, pending, bid).await;
+}
+
+/// `gr` — bare refresh of the status buffer, no prior mutation.
+///
+/// MG.13: a free function (not a closure inside
+/// `register_action_handlers`) because the `gr` handler is now
+/// registered once at boot by `magit-core-mode` and reaches this
+/// through [`StatusView`]; see `buffer_state::MagitView`.
+pub fn trigger_refresh(s: Arc<Mutex<StatusBufferState>>) -> Option<Effect> {
+    let (handle, wd, pending, bid) = {
+        let mut g = s.lock().ok()?;
+        let h = g.store.handle_for(g.buffer_id)?;
+        g.expanded.clear();
+        (
+            h,
+            g.workdir.clone(),
+            g.pending_highlights.clone(),
+            g.buffer_id,
+        )
+    };
+    tokio::task::spawn(do_refresh(handle, wd, pending, bid));
+    None::<Effect>
+}
+
+/// The status buffer's `MagitView` — supplies `gr`'s body for buffers
+/// `magit-status-mode` owns.
+pub struct StatusView(pub Arc<Mutex<StatusBufferState>>);
+
+impl crate::buffer_state::MagitView for StatusView {
+    fn refresh(&self) -> Option<Effect> {
+        trigger_refresh(self.0.clone())
     }
 
-    registrations
+    /// `s` — stage the file on the status entry line at `cursor`.
+    fn stage(&self, cursor: Position) -> Option<Effect> {
+        let s = self.0.clone();
+        let (path, workdir) = {
+            let g = s.lock().ok()?;
+            let StatusLine::File { path, .. } = classify_line(&g, cursor.line)? else {
+                return None;
+            };
+            (path, g.workdir.clone())
+        };
+        spawn_mutation_and_refresh(s, move || {
+            if let Ok(repo) = Repository::discover(&workdir) {
+                let _ = Index::stage_path(&repo, &path);
+            }
+        })
+    }
+
+    fn unstage(&self, cursor: Position) -> Option<Effect> {
+        let s = self.0.clone();
+        let (path, workdir) = {
+            let g = s.lock().ok()?;
+            let StatusLine::File { path, .. } = classify_line(&g, cursor.line)? else {
+                return None;
+            };
+            (path, g.workdir.clone())
+        };
+        spawn_mutation_and_refresh(s, move || {
+            if let Ok(repo) = Repository::discover(&workdir) {
+                let _ = Index::unstage_path(&repo, &path);
+            }
+        })
+    }
 }
 
 #[cfg(test)]

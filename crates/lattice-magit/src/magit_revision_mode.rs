@@ -15,9 +15,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use lattice_config;
-use lattice_grammar::{CommandRegistryHandle, Effect};
+use lattice_grammar::Effect;
 use lattice_mode::{
-    ActionContext, ActionHandlerRegistryHandle, BufferStoreHandle, CapabilitySet, Keymap,
+    ActionContext, ActionHandlerContribution, BufferStoreHandle, CapabilitySet, Keymap,
     KeymapEntry, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, OptionOverrideSet,
     keymap_entry,
 };
@@ -25,7 +25,7 @@ use lattice_protocol::edit::Edit;
 use lattice_protocol::position::{Position, Range};
 use lattice_vcs::Repository;
 
-use crate::magit_core_mode::ActionRegsGuard;
+use crate::buffer_state::{BufferStateGuard, BufferStates};
 
 pub struct MagitRevisionMode;
 
@@ -44,14 +44,22 @@ fn magit_revision_keymap_entries() -> &'static [KeymapEntry] {
     })
 }
 
-struct RevisionState {
+pub struct RevisionState {
     buffer_id: lattice_core::BufferId,
     store: Arc<BufferStoreHandle>,
     sha: String,
 }
 
+/// MG.13: service alias for this mode's per-buffer state
+/// (`feedback_servicesregistry_arc_typeid`).
+pub type RevisionStatesHandle = Arc<BufferStates<RevisionState>>;
+
+fn state(ctx: &ActionContext<'_>) -> Option<Arc<Mutex<RevisionState>>> {
+    crate::buffer_state::state_for::<RevisionState>(ctx)
+}
+
 impl Mode for MagitRevisionMode {
-    type Guard = ActionRegsGuard;
+    type Guard = BufferStateGuard<RevisionState>;
 
     fn id(&self) -> ModeId {
         Self::mode_id()
@@ -82,14 +90,38 @@ impl Mode for MagitRevisionMode {
         Keymap::from_entries(magit_revision_keymap_entries())
     }
 
+    /// MG.13: boot-registered — see `buffer_state`'s module docs.
+    fn action_handlers(&self) -> Vec<ActionHandlerContribution> {
+        vec![
+            // <CR> — visit the file at cursor as of this commit.
+            ActionHandlerContribution {
+                action_name: "action:magit-revision-visit-file",
+                handler: Arc::new(|ctx: &ActionContext<'_>| {
+                    let s = state(ctx)?;
+                    let g = s.lock().ok()?;
+                    if g.sha.is_empty() {
+                        return None;
+                    }
+                    let handle = g.store.handle_for(g.buffer_id)?;
+                    let path = file_at_cursor(&handle, ctx.cursor.line)?;
+                    Some(Effect::OpenSyntheticBuffer {
+                        name: format!("*magit:file:{}:{}*", g.sha, path.display()),
+                        mode_id: "magit-file-revision-mode".to_string(),
+                    })
+                }),
+            },
+        ]
+    }
+
     fn on_activate(&self, ctx: ModeContext) -> LifecycleFuture<'_, Self::Guard> {
         Box::pin(async move {
             let buffer_id = lattice_core::BufferId(ctx.buffer_id().0 as u32);
+            let orphan = || BufferStateGuard::new(Arc::new(BufferStates::default()), buffer_id);
             let Some(store) = ctx.service::<BufferStoreHandle>() else {
-                return Ok(ActionRegsGuard::default());
+                return Ok(orphan());
             };
             let Some(handle) = store.handle_for(buffer_id) else {
-                return Ok(ActionRegsGuard::default());
+                return Ok(orphan());
             };
             let workdir = Repository::discover(".")
                 .ok()
@@ -105,6 +137,21 @@ impl Mode for MagitRevisionMode {
                     Some(s.strip_suffix("*")?.to_string())
                 })
                 .unwrap_or_default();
+
+            // MG.13: publish BEFORE the first `.await` — see the note
+            // in `magit_branch_mode::on_activate`.
+            let Some(states) = ctx.service::<RevisionStatesHandle>() else {
+                return Ok(orphan());
+            };
+            states.publish(
+                buffer_id,
+                RevisionState {
+                    buffer_id,
+                    store: store.clone(),
+                    sha: sha.clone(),
+                },
+            );
+            let guard = BufferStateGuard::new((*states).clone(), buffer_id);
 
             let wd = workdir.clone();
             let sha_for_task = sha.clone();
@@ -129,45 +176,7 @@ impl Mode for MagitRevisionMode {
                 ph.store_and_wake(buffer_id, spans);
             }
 
-            let state = Arc::new(Mutex::new(RevisionState {
-                buffer_id,
-                store: store.clone(),
-                sha,
-            }));
-
-            let Some(cmd_arc) = ctx.service::<CommandRegistryHandle>() else {
-                return Ok(ActionRegsGuard::default());
-            };
-            let Some(ah_arc) = ctx.service::<ActionHandlerRegistryHandle>() else {
-                return Ok(ActionRegsGuard::default());
-            };
-            let registry = cmd_arc.load();
-            let handlers = (*ah_arc).clone();
-            let mut regs = Vec::new();
-
-            // <CR> — visit the file at cursor as of this commit.
-            {
-                let s = state.clone();
-                if let Some(cid) = registry.id_by_name("action:magit-revision-visit-file") {
-                    regs.push(handlers.register(
-                        cid,
-                        Arc::new(move |ctx: &ActionContext<'_>| {
-                            let g = s.lock().ok()?;
-                            if g.sha.is_empty() {
-                                return None;
-                            }
-                            let handle = g.store.handle_for(g.buffer_id)?;
-                            let path = file_at_cursor(&handle, ctx.cursor.line)?;
-                            Some(Effect::OpenSyntheticBuffer {
-                                name: format!("*magit:file:{}:{}*", g.sha, path.display()),
-                                mode_id: "magit-file-revision-mode".to_string(),
-                            })
-                        }),
-                    ));
-                }
-            }
-
-            Ok(ActionRegsGuard(regs))
+            Ok(guard)
         })
     }
 }

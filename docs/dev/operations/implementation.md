@@ -4130,6 +4130,43 @@ Installs through `SubsystemBoot` seam. Inverted out of
 - ✅ **MG.10** — Polish (2026-07-25).
   Edge cases: not-a-git-repo message, detached HEAD, bare repo
   denial. Refresh on re-activation. All 714 host tests pass.
+- ✅ **MG.11** — Cross-view uniformity (2026-07-27): `<CR>`,
+  per-view highlighting, file-at-revision, expanded transients.
+- ✅ **MG.12** — Destructive-action parity (2026-07-28). Branch
+  delete, stash drop, and (when a rebase is actually in
+  progress) rebase abort now go through the same
+  `Effect::Confirm` → `-execute` two-step magit-status's `x`
+  already used; the ask half performs no git call, so `n`
+  cannot mutate. Contract + the full asks/doesn't-ask set:
+  [`../architecture/magit.md`](../architecture/magit.md) §12.13.
+- ✅ **MG.13** — Action handlers move from `on_activate` to
+  `Mode::action_handlers()` (2026-07-28). Closed a *production*
+  dead-chord window (chord resolves, mode active, no handler yet),
+  plus two defects it exposed: the TUI test harness passed
+  `minors()` where production passes `keymap_gated_ids()`, so no
+  test could route a major-mode chord at all; and
+  `action:magit-refresh` had five registrants, which boot-time
+  registration turns from harmless into last-wins-plus-delete-on-drop
+  (now one handler on `magit-core-mode` dispatching through a
+  `MagitView` trait). Contract:
+  [`../architecture/magit.md`](../architecture/magit.md) §12.12b.
+  **Every** magit mode migrated; zero `handlers.register(...)` calls
+  remain in the crate. Shared actions (`gr`, `s`, `u`) are owned by
+  `magit-core-mode` and dispatched per buffer through a new
+  `MagitView` trait. Fixed two further pre-existing bugs on the way:
+  `q` in `*magit:status*` was nondeterministic between
+  `BufferDelete` and `DismissPopup` (two registrants, one action id
+  — now uniformly `DismissPopup`, which an existing regression test
+  already asserted, so this restores a guarantee rather than
+  changing behaviour), and
+  core-mode's own chords collapsed the same way with two magit
+  buffers open. See the slice plan.
+- **MG.14–MG.20 remain open** — per-slice status and sequencing
+  live in
+  [`slice-plans/magit.md`](slice-plans/magit.md), which is
+  authoritative for this subsystem. (The 2026-07-26 audit found
+  this ledger and that plan had drifted apart *and* from source;
+  magit status is tracked in one place now.)
 
 ## multibuffer-views (in design, 2026-05-28)
 

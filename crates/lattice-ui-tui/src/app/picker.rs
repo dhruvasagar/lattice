@@ -1759,15 +1759,24 @@ mod tests {
             &mut app,
             KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL),
         );
-        press(&mut app, KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE));
+        press(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE),
+        );
         assert_ne!(
             app.editor.active_pane_buffer_id(),
             original_buffer_id,
             "C-x g must switch the pane to the magit-status buffer"
         );
-        assert!(!app.editor.should_quit, "opening magit-status must not quit");
+        assert!(
+            !app.editor.should_quit,
+            "opening magit-status must not quit"
+        );
 
-        press(&mut app, KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
+        press(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE),
+        );
 
         assert!(
             !app.editor.should_quit,

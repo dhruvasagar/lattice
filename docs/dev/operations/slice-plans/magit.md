@@ -27,8 +27,8 @@ owns *what* and *why*.
 | MG.9 | magit-stash, magit-branch, magit-rebase | MG.8 | ✅ |
 | MG.10 | Polish + perf + edge cases | MG.1–MG.9 | ✅ |
 | MG.11 | Cross-view uniformity: `<CR>`, highlighting, file-at-revision | MG.4–MG.9 | ✅ |
-| MG.12 | Destructive-action parity — confirm before branch delete / stash drop | MG.9 | 📝 |
-| MG.13 | Mode-keymap binding testability (harness) | MG.8 | 📝 |
+| MG.12 | Destructive-action parity — confirm before branch delete / stash drop | MG.9 | ✅ |
+| MG.13 | Action handlers at boot, not activation (was: "binding testability") | MG.8 | ✅ |
 | MG.14 | Headerline across every magit buffer | MG.4–MG.11 | 📝 |
 | MG.15 | Stash detail view (`<CR>` in magit-stash) | MG.9, MG.14 | 📝 |
 | MG.16 | Remote/stash ex-command parity (`:magit-push` etc.) | MG.8 | 📝 |
@@ -92,7 +92,7 @@ PICK.1 ────────┘    │       ├── MG.5   │
                     └── (MG.7 also reads VCS.2 data for blame)
 
 MG.9 ─→ MG.10 ─→ MG.11 ──┬─→ MG.12 (confirm parity)   ← do first: wiring only
-                         ├─→ MG.13 (binding testability) ← then this: unblocks
+                         ├─→ MG.13 (handlers at boot)   ← then this: unblocks
                          │                                  every slice below
                          ├─→ MG.14 (headerline) ─┬─→ MG.15 (stash detail)
                          ├─→ MG.16 (ex-cmd parity)
@@ -101,10 +101,10 @@ MG.9 ─→ MG.10 ─→ MG.11 ──┬─→ MG.12 (confirm parity)   ← do f
                     MG.5 ─→ MG.18 (hunk staging) ─→ MG.19 (side-by-side)
 ```
 
-**Recommended order: MG.12 → MG.13 → MG.14 → the rest.** MG.12 is pure
-wiring over machinery that already exists and closes a real safety
+**Recommended order: ~~MG.12~~ (done) → MG.13 → MG.14 → the rest.** MG.12 was pure
+wiring over machinery that already existed and closed a real safety
 inconsistency. MG.13 comes next because every slice after it adds chords,
-and until mode-keymap bindings are testable they all ship on the blind
+and until a chord can be pressed in a test they all ship on the blind
 spot that already produced one live bug (MG.8). MG.14 is
 user-facing polish with no dependants blocking it. MG.18 is the largest
 functional gap but wants a design fragment first, so it runs on its own
@@ -318,23 +318,170 @@ safety postures — the inconsistency is the bug, not any one binding.
 - **Note:** the confirm machinery already exists — this is wiring, not
   new mechanism. Highest value-to-effort of the open slices.
 
-### MG.13 — Mode-keymap binding testability (harness)
+**2026-07-28 — landed ✅.** Contract written up as
+[`magit.md` §12.13](../../architecture/magit.md); the set lives in
+`crates/lattice-magit/src/confirm.rs` as `DESTRUCTIVE_ACTIONS`.
 
-Mode keymap layers are pushed by mode activation, which runs through
-`ModeRegistry::spawn_cascade` (async). No synchronous App-level test can
-observe them, so **no test can prove a mode's chord actually fires**.
-This is not hypothetical: it is exactly what let the `C-c g` / `C-c f`
-dead-transient bug ship (MG.8), and why MG.12's confirms and the
-`search-line-mode` `<BS>` binding are handler-tested but binding-untested.
+- **Branch delete / stash drop** now split into ask + `-execute`. The
+  ask half performs no git call at all, so "`n` leaves the repo
+  untouched" holds structurally rather than by a guard: the code that
+  mutates is unreachable from the ask path.
+- **Audit of every remaining mutation** turned up one more: magit-rebase's
+  `C-c C-k`. `git rebase --abort` discards everything the rebase has
+  replayed — same class as discard — and asked nothing. It now asks, but
+  *only* when a rebase is actually in progress; with nothing in flight
+  `C-c C-k` is just closing a todo buffer nobody ran, and a prompt there
+  would be noise. Gated on the same `rebase-merge`/`rebase-apply` check
+  that already decided whether `--abort` runs, against a gitdir resolved
+  once at activation (the check must be synchronous — the confirm *is*
+  the effect the handler returns).
+- **Deliberately left un-asking:** stage/unstage (index-only), checkout,
+  merge, branch-create, stash apply/pop/create, commit/amend, rebase
+  execute — each reversible, or itself the explicit confirm step of a
+  dedicated buffer. Matches Emacs magit's `magit-no-confirm` defaults
+  (UX convention over local rationale, per the standing rule).
+- **Registration guard.** `confirm::ask` debug-asserts its `yes_action`
+  is in `DESTRUCTIVE_ACTIONS`, and a test proves both halves of every
+  row resolve in the command registry — an unregistered execute half
+  otherwise fails at `confirm: unknown action` only when a user presses
+  the key. This is the same class of blind spot MG.13 exists to close;
+  it does not replace MG.13 (the *bindings* are still untested — these
+  guards cover the action names and the ask-half effect, reached by
+  calling the handler bodies' helpers directly).
+- **Tests:** 10 new (2 branch, 2 stash, 3 rebase, 3 confirm — including a
+  vacuity check that `ask` rejects an untabled yes-action). Both rebase
+  backends (`rebase-merge`, `rebase-apply`) covered: missing either
+  would abort real in-flight work without asking.
 
-- **Deliverables:** a test seam that deterministically drives mode
-  activation to completion (await the cascade, or a test-only
-  synchronous activation path), so `press(chord)` resolves through the
-  real layered keymap.
-- **Tests:** a magit chord bound only by a mode's keymap fires via
-  `press()`; the guard fails if the layer is absent.
+### MG.13 — Action handlers at boot, not activation
+
+*(carved as "mode-keymap binding testability (harness)"; the premise
+turned out to be wrong — see the correction below.)*
+
+**2026-07-28 premise correction — verified against source.** This slice
+was carved on the claim that "mode keymap layers are pushed by mode
+activation, which runs through `ModeRegistry::spawn_cascade` (async), so
+no synchronous App-level test can observe them." That is **not what the
+code does**, and the distinction changes the deliverable:
+
+- **Keymap layers are pushed at boot, not at activation.**
+  `translate_mode_keymaps` (`lattice-host/src/keymap_mode_contributions.rs`)
+  walks the *whole* mode registry and pushes every mode's layer once, from
+  `lattice-ui-tui/src/input.rs:266` and `keymap_insert.rs:90`. The layer
+  exists before any buffer opens.
+- **Mode-active gating is synchronous.** `activate_major` sets
+  `active.set_major(Some(mode))` in its sync prefix, *before* building the
+  cascade plan — the source comment says so outright ("so
+  `App::active_modes.has_major(mode)` is `true` the moment this call
+  returns"). K.1.c's per-keystroke filter therefore passes immediately.
+- **Only `on_activate`'s body is deferred** — and that is where magit's
+  per-buffer modes (branch / stash / rebase / diff / commit / log)
+  register their action handlers, because those handlers close over an
+  `Arc<Mutex<…State>>` built during activation.
+
+So a chord in a magit buffer **resolves** synchronously and finds **no
+handler** until the cascade completes. That is precisely the MG.8 failure
+(`MagitGlobalMode` registered handlers from `on_activate` behind a
+`OnceLock`; the fix moved them to `Mode::action_handlers()`, synchronous
+at boot). The blind spot is real — it is just one layer lower than
+written, and "prove the layer is present" is the wrong test.
+
+- **Deliverables:** a seam that makes an `on_activate`-registered handler
+  deterministically observable from a test, so `press(chord)` resolves
+  *and dispatches* end-to-end. Three candidate shapes, evaluated when the
+  slice executes — see the session notes: (A) a test-only synchronous
+  activation path, (B) a harness helper that pumps the runtime until the
+  cascade's existing `MajorEntered` / `MinorEntered` /
+  `ModeActivationFailed` signal lands, (C) move per-buffer handler
+  registration to the synchronous `Mode::action_handlers()` seam with
+  per-buffer state looked up by `BufferId` — attacking the root cause
+  rather than the symptom, and the shape the mode-ownership standing rule
+  already points at.
+- **Tests:** a magit chord whose handler is registered only by
+  `on_activate` fires via `press()`; the guard fails if the handler is
+  absent (not merely if the layer is).
 - **Sequencing:** worth doing BEFORE the feature slices below — each one
   adds chords that would otherwise ship on the same blind spot.
+
+**2026-07-28 — landed ✅.** Option (C) was
+chosen over the two test-seam options: the dead-chord window is a
+*production* defect (a user pressing `d` quickly after `:magit-branch`
+gets nothing), so a harness that observes or waits out the window is
+instrumentation for a bug rather than a fix. Contract:
+`crates/lattice-magit/src/buffer_state.rs`.
+
+- **The shape.** Per-buffer modes register handlers via
+  `Mode::action_handlers()` (boot-time, app-lifetime) and resolve their
+  state through a `BufferStates<S>` service keyed by `BufferId` at call
+  time. `on_activate` publishes state **above its first `.await`** —
+  `spawn_cascade` polls the cascade future once synchronously on the App
+  thread before spawning, so pre-await work lands before
+  `activate_major` returns. That is what makes the handler *and* its
+  state reachable on the very next keystroke.
+- **Second defect, in the harness.** `test_helpers::press` passed
+  `ActiveModes::minors()` where production passes `keymap_gated_ids()`
+  — which includes the **major**. The harness was structurally unable to
+  route ANY major-mode chord, so no test could have caught the first
+  defect, nor a broken major-mode binding in oil / compilation /
+  ai-conversation. Fixed; full TUI suite (1598 tests) green after.
+- **Third defect, forced by the fix.** `action:magit-refresh` (`gr`) had
+  **five** registrants. Per-activation registration hid the collision —
+  one installed at a time. Boot registration does not:
+  `ActionHandlerRegistry::register` inserts (last wins), and dropping a
+  registration unregisters *by action id*, so a second registrant both
+  shadows the first while active and deletes it on deactivation. Fixed
+  with polymorphism rather than a central `match`: `magit-core-mode`
+  (which binds `gr`) owns the single boot handler and dispatches through
+  a new `MagitView` trait; each view mode publishes its own refresh
+  body. Guarded by a test that fails if any two modes contribute the
+  same boot `action_name`.
+- **Every magit mode migrated.** State lives in `BufferStates<S>`
+  services keyed by `BufferId`; handlers are contributed by
+  `Mode::action_handlers()` and registered once at boot. **Zero
+  `handlers.register(...)` calls remain in the crate** — that grep is
+  the cheapest check that this has not regressed.
+  `magit-commit` and `magit-rebase` exercise the late-resolved-field
+  path — `diff_end_line` publishes as `0` (so `<CR>` declines rather
+  than acting on a diff region that does not exist yet) and `upstream`
+  publishes empty (which `confirm` already refuses to rebase onto).
+  `magit-core-mode` needed no state at all: its handlers read the
+  buffer through `BufferStoreHandle` + `ctx.buffer_id`.
+- **Shared actions** — `gr`, `s`, `u` — are owned by `magit-core-mode`,
+  which holds their single boot registration and dispatches per buffer
+  through `MagitView`. The *binding* stays with whichever mode offers
+  the chord (`s`/`u` are bound by status and diff, not by core), so a
+  buffer whose mode does not bind `s` never routes one.
+- **Two live bugs fixed as a consequence**, both pre-existing and
+  neither introduced by this slice:
+  - **`q` in `*magit:status*` was nondeterministic.**
+    `action:magit-close` was registered by both `magit-status-mode`
+    (`Effect::BufferDelete`) and `magit-core-mode`
+    (`Effect::DismissPopup`). Same action id ⇒ last registrant won,
+    decided by cascade ordering. Removed the status-side registration.
+    This is a determinism fix, **not** a behaviour choice:
+    `DismissPopup` was already the documented and tested intent —
+    `q_on_magit_status_buries_it_and_never_quits_the_editor` (in
+    `lattice-ui-tui`) asserts `q` restores the buffer that was active
+    before magit-status opened, and core's handler records the
+    live-reported bug (`q` quitting the whole editor) it fixed. The
+    duplicate contradicted that test and voided its guarantee whenever
+    it won the race.
+  - **`s`/`u` across status and diff**, and **core-mode's own chords
+    with two magit buffers open** — both collapsed the same way. The
+    old `ActionRegsGuard` doc comment already described this hazard
+    ("firing the chord in buffer A can execute buffer B's captured
+    state against A's cursor"); holding the tokens bounded the damage
+    but could not prevent it, because the registry has no buffer
+    dimension. Boot registration removes it at the source.
+- **Tests:** 5 chord-level tests in
+  `lattice-ui-tui/src/app/magit_bindings.rs` (the first tests anywhere
+  that press a magit chord) — including a negative case proving `c`
+  does not fire outside a magit buffer, a guard on the harness fix
+  itself, and a service-registration guard that already caught a real
+  omission (`magit-log-mode`'s missing slot). Plus, in `lattice-magit`:
+  a duplicate-boot-handler guard (which caught the `magit-close`
+  collision above), a shared-action-ownership guard, and 4
+  `BufferStates` unit tests.
 
 ### MG.14 — Headerline across every magit buffer
 

@@ -213,6 +213,19 @@ Insert-layer keymap that drives tier 1 — `<Tab>` triggers
 special casing; the expanded buffer has `command-line-mode` as its
 major, so the keymap layer is active.
 
+**`<Tab>` always makes progress.** Slot-aware, in order: expand a unique
+prefix, insert the longest common prefix of ≥2 candidates, cycle an open
+popup — and, when the command name under the cursor is *already complete*,
+step right into its first argument slot (append the separating space and
+open that arg's popup). Without that last rule, `auto_insert_single`
+rewrites the identical text and returns, so `:describe-mode<Tab>` sits
+frozen forever and the `gen:modes` candidates one slot to the right are
+unreachable by `<Tab>` alone — reported as "`:describe-mode` has no
+completions". The step-right is gated on the first arg advertising a
+*registered* completion source, so arg-less commands (`:list-modes`),
+chord args captured by the submit path (`:describe-key`), and delimiter
+forms (`:s/…/…/`) never grow a stray trailing space.
+
 The `/`·`?` search line also has live match highlighting:
 `preview_search()` runs against the target document (via
 `minibuffer_focus.prior_buffer_id`) on every edit; both renderers paint

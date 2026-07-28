@@ -9102,6 +9102,59 @@ impl Editor {
         self.command_line_decorations = if deco.is_empty() { None } else { Some(deco) };
     }
 
+    /// Move the `:` line's cursor from a *complete* command name into
+    /// that command's first argument slot by appending the separating
+    /// space. Returns whether it did.
+    ///
+    /// Only fires when the whole line is a single word that resolves to a
+    /// registered command (canonical name or alias) whose first arg
+    /// advertises a completion source that is actually registered — i.e.
+    /// exactly when stepping right has something to show. Commands with no
+    /// args (`:list-modes`), with an un-completable first arg
+    /// (`:describe-key`'s `Chord`, captured by the submit path instead),
+    /// and delimiter forms (`:s/…/…/`) are left alone, so no command grows
+    /// a stray trailing space it never had.
+    fn advance_to_first_arg_slot(&mut self) -> bool {
+        let line = self.command_line();
+        let word = line.trim();
+        if word.is_empty() || word != line || word.contains(char::is_whitespace) {
+            return false;
+        }
+        let reg = self.registry.load();
+        let Some(id) = reg.id_by_name(word).or_else(|| {
+            crate::excommand::aliases()
+                .get(word)
+                .copied()
+                .and_then(|c| reg.id_by_name(c))
+        }) else {
+            return false;
+        };
+        let Some(spec) = reg.ex_command_spec(id) else {
+            return false;
+        };
+        if matches!(
+            spec.surface_form,
+            lattice_grammar::SurfaceForm::Delimiter { .. }
+        ) {
+            return false;
+        }
+        let has_completable_arg = spec
+            .args_schema
+            .first()
+            .and_then(|a| a.completion.as_deref())
+            .is_some_and(|source| {
+                self.completion_registry
+                    .generator_by_name(source)
+                    .is_some()
+            });
+        drop(reg);
+        if !has_completable_arg {
+            return false;
+        }
+        self.set_command_line_text(&format!("{line} "));
+        true
+    }
+
     /// 5.5.G.23.cmdline: open the `:` completion popup, or inline a
     /// single candidate when `completion.auto_insert_single` is on
     /// and the compute yields exactly one match. Errors echo via
@@ -9123,6 +9176,21 @@ impl Editor {
                     let mut line = self.command_line();
                     line.replace_range(state.replace_start..line.len(), &chosen_text);
                     self.set_command_line_text(&line);
+                    // `<Tab>` must always make progress. When the single
+                    // candidate IS the text already typed (`:describe-mode`
+                    // → `describe-mode`), the rewrite above is a no-op and
+                    // the user sees nothing happen, however many times they
+                    // press it -- the reported "`:describe-mode` has no
+                    // completions" bug: the mode names live one slot to the
+                    // right and nothing ever moved the cursor there. Step
+                    // into the first arg slot instead (space + its popup),
+                    // which is also what the completing minibuffer does
+                    // everywhere else the user has muscle memory for.
+                    if self.advance_to_first_arg_slot() {
+                        if let Ok(arg_state) = self.compute_completion_state() {
+                            self.completion_state = Some(arg_state);
+                        }
+                    }
                     return;
                 }
                 // LCP insertion: extend the cmdline to the longest

@@ -1121,6 +1121,95 @@ mod tests {
         );
     }
 
+    /// `:describe-mode <Tab>` must list registered mode names
+    /// (`gen:modes`). Arg-slot completion, not command-name
+    /// completion -- the trailing space moves the cursor past the
+    /// command word.
+    #[test]
+    fn describe_mode_arg_tab_lists_mode_names() {
+        let mut a = app_in_command_mode("describe-mode ");
+        a.apply(Action::CommandLineCompleteOrAdvance);
+        let state = a
+            .editor
+            .completion_state
+            .as_ref()
+            .expect("popup should open at the `:describe-mode ` arg slot");
+        assert!(
+            state.candidates.iter().any(|c| c.raw.text == "text-mode"),
+            "candidates: {:?}",
+            state
+                .candidates
+                .iter()
+                .map(|c| &c.raw.text)
+                .collect::<Vec<_>>(),
+        );
+    }
+
+    /// The reported bug: `:describe-mode<Tab>` — command name already
+    /// complete, no trailing space — used to be a silent no-op. The
+    /// single command-name candidate equals the typed text, so
+    /// auto-insert rewrote the same string and returned, and no
+    /// number of `<Tab>`s ever reached the mode-name slot. `<Tab>`
+    /// must step into the arg slot and show `gen:modes`.
+    #[test]
+    fn tab_on_complete_command_name_steps_into_the_arg_slot() {
+        let mut a = app_in_command_mode("describe-mode");
+        a.apply(Action::CommandLineCompleteOrAdvance);
+        assert_eq!(
+            a.editor.command_line(),
+            "describe-mode ",
+            "Tab on a complete command name must advance into its arg slot"
+        );
+        let state = a
+            .editor
+            .completion_state
+            .as_ref()
+            .expect("stepping into the arg slot must open that arg's popup");
+        assert!(
+            state.candidates.iter().any(|c| c.raw.text == "text-mode"),
+            "candidates: {:?}",
+            state
+                .candidates
+                .iter()
+                .map(|c| &c.raw.text)
+                .collect::<Vec<_>>(),
+        );
+    }
+
+    /// The step-right is gated on the arg actually being completable,
+    /// so an arg-less command never grows a trailing space. `:list-modes`
+    /// has an empty `args_schema`.
+    #[test]
+    fn tab_on_argless_command_does_not_append_a_space() {
+        let mut a = app_in_command_mode("list-modes");
+        a.apply(Action::CommandLineCompleteOrAdvance);
+        assert_eq!(a.editor.command_line(), "list-modes");
+    }
+
+    /// Same slot, partial prefix: `:describe-mode ma<Tab>`.
+    #[test]
+    fn describe_mode_arg_tab_filters_on_prefix() {
+        let mut a = app_in_command_mode("describe-mode ma");
+        a.apply(Action::CommandLineCompleteOrAdvance);
+        let state = a
+            .editor
+            .completion_state
+            .as_ref()
+            .expect("popup should open at the `:describe-mode ma` arg slot");
+        assert!(
+            state
+                .candidates
+                .iter()
+                .any(|c| c.raw.text.starts_with("magit-")),
+            "candidates: {:?}",
+            state
+                .candidates
+                .iter()
+                .map(|c| &c.raw.text)
+                .collect::<Vec<_>>(),
+        );
+    }
+
     #[test]
     fn tab_in_command_mode_opens_completion_popup() {
         let mut a = app_in_command_mode("descri");

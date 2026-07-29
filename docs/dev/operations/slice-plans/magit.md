@@ -33,7 +33,7 @@ owns *what* and *why*.
 | MG.15 | Stash detail view (`<CR>` in magit-stash) | MG.9, MG.14 | ✅ |
 | MG.16 | Remote/stash ex-command parity (`:magit-push` etc.) | MG.8 | ✅ |
 | MG.17a | Transient flags (`--force-with-lease`, `--prune`, …) + preview | MG.8 | ✅ |
-| MG.17b | Transient `Argument` items (prompt → back to the menu) | MG.17a | 📝 |
+| MG.17b | Transient `Argument` items (prompt → back to the menu) | MG.17a | ✅ |
 | MG.18 | Hunk-level staging | MG.5, MG.13 | 📝 |
 | MG.19 | magit-diff side-by-side + `do`/`dp` | MG.18, D.4 | 📝 |
 | MG.20 | Operation coverage — merge / tag / reset / revert / cherry-pick | MG.17a | 📝 |
@@ -767,6 +767,57 @@ mechanism, deferred with MG.17b rather than bolted on.
   `Args`, unknown-token tolerance, flagless-op passthrough) + 3 in
   `lattice-host` driving the real projection (schema order beats map
   order, empty schema ⇒ `Args::None`, unset slot ⇒ declared default).
+
+### MG.17b — transient arguments ✅ (2026-07-29)
+
+`TransientItemKind::Argument` was a literal no-op in
+`do_transient_trigger`. Now: press it, type a value, land back in the
+menu with the value in the preview.
+
+**What the slice is actually about.** A transient already *had* state —
+`picker.transient_state` persists across flag toggles, and the preview
+closure re-reads it every frame, which is why MG.17a's toggles update
+live with no extra machinery. What state could not survive was a
+**surface switch**: the prompt takes the editing buffer and the modal
+state, so the picker is torn down. `Editor::pending_transient_argument`
+owns the menu across the gap — spec, state, *and* the parent stack, so
+an argument inside a submenu returns to that submenu rather than the
+root.
+
+- **`<Esc>` cancels the argument, not the menu.** Dropping the user out
+  entirely would punish a typo by making them re-navigate.
+- **An empty submit clears the argument** rather than storing `""`.
+  `git stash push -m ""` labels a stash with nothing, which is worse
+  than no label, so the empty string must never reach argv.
+- **The prompt seeds from the current value**, so re-editing beats
+  retyping.
+- The submit path checks the parked menu *before* the action lookup,
+  and the argument path deliberately registers no submit action —
+  naming one would be a lie, since there is no handler to fire.
+
+**Shipped consumer: `git stash push -m <message>`.** Deliberate — a
+mechanism with no consumer is untested by construction, and an
+unlabelled stash is findable only by position while positions renumber
+on every drop. `RemoteFlag` grew a `kind` (`Flag` | `Value { prompt }`)
+so the one table still feeds all four consumers; `argv` emits `-m
+<text>` as two entries so a multi-word message survives as one
+argument.
+
+**Both guards needed teaching again, not silencing.** `Argument` had
+been "unexpected item kind" in the inert-items walker; it is now
+legitimate exactly when its name appears in a `RemoteOp` table — same
+rule as `Flag`, so an argument nothing consumes still fails.
+
+**Not shipped:** log's `--all` / count / path-filter. A log buffer's
+scope rides its *name* (`*magit:log:<path>*`), so its arguments need
+that channel, not this one.
+
+- **Tests:** 3 in `lattice-magit` (unset value contributes nothing;
+  multi-word message stays one argv entry; preview quotes it) and 4 in
+  `lattice-host` driving the real resume path (submit writes the value
+  and preserves flags toggled beforehand; cancel restores unchanged;
+  empty submit clears; resume declines with nothing parked, which is
+  what tells the submit path the prompt belonged to an action).
 
 ### MG.18 — Hunk-level staging
 

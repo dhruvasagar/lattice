@@ -353,6 +353,27 @@ pub struct ProgrammaticDiffPanes {
     pub origin_session: u64,
 }
 
+/// MG.17b: a transient menu parked while its argument is being typed.
+///
+/// Carries everything needed to put the menu back exactly as it was —
+/// including the parent stack, so an argument inside a submenu returns
+/// you to that submenu rather than to the root.
+#[derive(Debug, Clone)]
+pub struct PendingTransientArgument {
+    /// The menu to re-seat.
+    pub spec: std::sync::Arc<lattice_picker::TransientSpec>,
+    /// Its state, with the typed value written in on submit.
+    pub state: lattice_picker::TransientState,
+    /// Parent menus, so `BS` still walks back out after the round-trip.
+    pub stack: Vec<(
+        std::sync::Arc<lattice_picker::TransientSpec>,
+        lattice_picker::TransientState,
+        usize,
+    )>,
+    /// Which argument's value is being collected.
+    pub name: String,
+}
+
 #[derive(Debug, Default)]
 pub struct Editor {
     /// Perf plan B.4: identity-preserving sub-state cache for
@@ -474,6 +495,21 @@ pub struct Editor {
     /// ModalState::Prompt`). Set by `open_prompt_line`, consumed
     /// (`.take()`) by `do_prompt_line_submit`.
     pub pending_prompt_submit_action: Option<String>,
+
+    /// MG.17b: the transient a prompt was opened *from*, held across
+    /// the surface switch.
+    ///
+    /// A transient's `TransientState` already survives flag toggles —
+    /// the `Flag` arm mutates it in place and the menu stays open, and
+    /// the preview closure re-reads it every frame. What it cannot
+    /// survive on its own is an `Argument`: the prompt is a different
+    /// surface that takes the editing buffer and the modal state, so
+    /// the picker is torn down and something has to own the menu until
+    /// it can be re-seated. That is this.
+    ///
+    /// `Some` only between opening an argument's prompt and its submit
+    /// or cancel.
+    pub pending_transient_argument: Option<PendingTransientArgument>,
     /// Most recent submitted search; consulted by `n` / `N`.
     pub last_search: Option<LastSearch>,
     /// Range of the most recent search match, used to draw

@@ -399,22 +399,39 @@ fn base_branch_from_prompt_buffer_name(buffer_name: &str) -> Option<String> {
     (!s.is_empty()).then(|| s.to_string())
 }
 
-/// MG.17a: one toggleable flag on a [`RemoteOp`].
+/// MG.17b: what an argument contributes to the command line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoteArgKind {
+    /// A toggle: contributes `arg` when on, nothing when off.
+    Flag,
+    /// A value: contributes `arg` followed by the typed text (or just
+    /// the text when `arg` is empty, for a positional like a remote
+    /// name). Contributes nothing when unset.
+    Value {
+        /// Label shown in the minibuffer while typing.
+        prompt: &'static str,
+    },
+}
+
+/// MG.17a: one argument on a [`RemoteOp`].
 ///
-/// The single definition of a flag, read by four consumers that would
-/// otherwise drift apart: the ex-command's `args_schema`, the transient
-/// menu's `Flag` item, the live preview string, and the argv builder.
-/// Adding `--prune` to fetch means adding one row here.
+/// The single definition, read by four consumers that would otherwise
+/// drift apart: the ex-command's `args_schema`, the transient menu's
+/// item, the live preview string, and the argv builder. Adding
+/// `--prune` to fetch means adding one row here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RemoteFlag {
     /// Schema slot + transient-state key (`"force"`).
     pub name: &'static str,
-    /// The git argument it contributes (`"--force"`).
+    /// The git argument it contributes (`"--force"`), or `""` for a
+    /// bare positional value.
     pub arg: &'static str,
-    /// Key that toggles it in the transient (`"-f"`).
+    /// Key that selects it in the transient (`"-f"`).
     pub key: &'static str,
     /// One-line doc, shown in the menu and in `:describe-command`.
     pub doc: &'static str,
+    /// MG.17b: toggle or value.
+    pub kind: RemoteArgKind,
 }
 
 /// MG.16: one detached git operation, named once.
@@ -458,12 +475,14 @@ impl RemoteOp {
                 arg: "--force-with-lease",
                 key: "-f",
                 doc: "Force-push, but refuse if the remote moved since your last fetch",
+                kind: RemoteArgKind::Flag,
             },
             RemoteFlag {
                 name: "set-upstream",
                 arg: "--set-upstream",
                 key: "-u",
                 doc: "Set the pushed branch's upstream to the remote branch",
+                kind: RemoteArgKind::Flag,
             },
         ],
     };
@@ -476,24 +495,41 @@ impl RemoteOp {
                 arg: "--all",
                 key: "-a",
                 doc: "Fetch from every remote, not just the default",
+                kind: RemoteArgKind::Flag,
             },
             RemoteFlag {
                 name: "prune",
                 arg: "--prune",
                 key: "-p",
                 doc: "Delete local refs whose remote branch is gone",
+                kind: RemoteArgKind::Flag,
             },
         ],
     };
     pub const STASH: Self = Self {
         what: "stash",
         args: &["stash", "push"],
-        flags: &[RemoteFlag {
-            name: "include-untracked",
-            arg: "--include-untracked",
-            key: "-u",
-            doc: "Stash untracked files too, not just tracked changes",
-        }],
+        flags: &[
+            RemoteFlag {
+                name: "include-untracked",
+                arg: "--include-untracked",
+                key: "-u",
+                doc: "Stash untracked files too, not just tracked changes",
+                kind: RemoteArgKind::Flag,
+            },
+            // MG.17b: the first real `Argument` — a stash message. This is
+            // the reason to have arguments at all: an unlabelled stash is
+            // findable only by position, and positions renumber.
+            RemoteFlag {
+                name: "message",
+                arg: "-m",
+                key: "-m",
+                doc: "Label the stash so you can recognise it later",
+                kind: RemoteArgKind::Value {
+                    prompt: "Stash message",
+                },
+            },
+        ],
     };
 
     /// Resolve the full argv for this run: the base plus every flag the
@@ -502,12 +538,26 @@ impl RemoteOp {
     pub fn argv(&self, args: &lattice_grammar::Args) -> Vec<String> {
         let mut argv: Vec<String> = self.args.iter().map(|s| (*s).to_string()).collect();
         for (i, flag) in self.flags.iter().enumerate() {
-            let enabled = matches!(
-                args.as_list().and_then(|l| l.get(i)),
-                Some(lattice_grammar::ArgValue::Bool(true))
-            );
-            if enabled {
-                argv.push(flag.arg.to_string());
+            let slot = args.as_list().and_then(|l| l.get(i));
+            match flag.kind {
+                RemoteArgKind::Flag => {
+                    if matches!(slot, Some(lattice_grammar::ArgValue::Bool(true))) {
+                        argv.push(flag.arg.to_string());
+                    }
+                }
+                // An unset value contributes nothing at all — not an
+                // empty string, which git would read as a real (empty)
+                // argument.
+                RemoteArgKind::Value { .. } => {
+                    if let Some(lattice_grammar::ArgValue::String(v)) = slot
+                        && !v.is_empty()
+                    {
+                        if !flag.arg.is_empty() {
+                            argv.push(flag.arg.to_string());
+                        }
+                        argv.push(v.clone());
+                    }
+                }
             }
         }
         argv
@@ -516,16 +566,34 @@ impl RemoteOp {
     /// The command line this run would execute, for the transient's
     /// live preview. Renders what `argv` will actually pass, so the
     /// preview cannot claim one thing and the run do another.
-    pub fn preview(&self, enabled: &dyn Fn(&str) -> bool) -> String {
+    pub fn preview(&self, value_of: &dyn Fn(&str) -> Option<String>) -> String {
         let mut out = String::from("git");
         for a in self.args {
             out.push(' ');
             out.push_str(a);
         }
         for flag in self.flags {
-            if enabled(flag.name) {
-                out.push(' ');
-                out.push_str(flag.arg);
+            let Some(v) = value_of(flag.name) else {
+                continue;
+            };
+            match flag.kind {
+                RemoteArgKind::Flag => {
+                    if v == "true" {
+                        out.push(' ');
+                        out.push_str(flag.arg);
+                    }
+                }
+                RemoteArgKind::Value { .. } => {
+                    if !v.is_empty() {
+                        if !flag.arg.is_empty() {
+                            out.push(' ');
+                            out.push_str(flag.arg);
+                        }
+                        // Quoted: a stash message has spaces, and an
+                        // unquoted preview would read as several args.
+                        out.push_str(&format!(" {v:?}"));
+                    }
+                }
             }
         }
         out
@@ -537,7 +605,11 @@ impl RemoteOp {
         self.flags
             .iter()
             .map(|f| {
-                lattice_grammar::ArgSpec::optional(f.name, lattice_grammar::ArgKind::Bool, f.doc)
+                let kind = match f.kind {
+                    RemoteArgKind::Flag => lattice_grammar::ArgKind::Bool,
+                    RemoteArgKind::Value { .. } => lattice_grammar::ArgKind::String,
+                };
+                lattice_grammar::ArgSpec::optional(f.name, kind, f.doc)
             })
             .collect()
     }
@@ -671,9 +743,9 @@ mod tests {
         for (all, prune) in [(false, false), (true, false), (false, true), (true, true)] {
             let args = Args::List(vec![ArgValue::Bool(all), ArgValue::Bool(prune)]);
             let preview = op.preview(&|name| match name {
-                "all" => all,
-                "prune" => prune,
-                _ => false,
+                "all" => Some(all.to_string()),
+                "prune" => Some(prune.to_string()),
+                _ => None,
             });
             let from_argv = format!("git {}", op.argv(&args).join(" "));
             assert_eq!(preview, from_argv, "preview must render what runs");
@@ -693,6 +765,66 @@ mod tests {
         );
     }
 
+    /// MG.17b — a value argument contributes `-m <text>`, and only
+    /// when actually set. An unset value must contribute NOTHING, not
+    /// an empty string: `git stash push -m ""` labels the stash with
+    /// an empty message, which is worse than no label.
+    #[test]
+    fn a_value_argument_contributes_only_when_set() {
+        use lattice_grammar::{ArgValue, Args};
+        let op = RemoteOp::STASH;
+        // slots: [include-untracked: Bool, message: String]
+        assert_eq!(
+            op.argv(&Args::List(vec![
+                ArgValue::Bool(false),
+                ArgValue::String(String::new())
+            ])),
+            vec!["stash", "push"],
+            "an empty message must not reach git at all"
+        );
+        assert_eq!(
+            op.argv(&Args::List(vec![
+                ArgValue::Bool(false),
+                ArgValue::String("wip: parser".into())
+            ])),
+            vec!["stash", "push", "-m", "wip: parser"],
+            "the message is one argv entry, spaces and all"
+        );
+        assert_eq!(
+            op.argv(&Args::List(vec![
+                ArgValue::Bool(true),
+                ArgValue::String("wip".into())
+            ])),
+            vec!["stash", "push", "--include-untracked", "-m", "wip"],
+            "a flag and a value compose in schema order"
+        );
+    }
+
+    /// A message with spaces must survive as ONE argument. Passing it
+    /// unsplit is the whole reason argv is a `Vec<String>` rather than
+    /// a formatted string.
+    #[test]
+    fn a_multi_word_message_stays_a_single_argv_entry() {
+        use lattice_grammar::{ArgValue, Args};
+        let argv = RemoteOp::STASH.argv(&Args::List(vec![
+            ArgValue::Bool(false),
+            ArgValue::String("refactor the parser and fix tests".into()),
+        ]));
+        assert_eq!(argv.last().unwrap(), "refactor the parser and fix tests");
+        assert_eq!(argv.len(), 4, "push + -m + the message, not one word each");
+    }
+
+    /// The preview quotes a value so a multi-word message doesn't read
+    /// as several arguments in the menu.
+    #[test]
+    fn the_preview_quotes_a_value_argument() {
+        let preview = RemoteOp::STASH.preview(&|name| match name {
+            "message" => Some("wip: two words".to_string()),
+            _ => None,
+        });
+        assert_eq!(preview, r#"git stash push -m "wip: two words""#);
+    }
+
     /// `arg_specs` is the ex-command's schema and must line up 1:1 with
     /// the flag table the transient and argv builder read — the whole
     /// point of one definition.
@@ -708,7 +840,11 @@ mod tests {
             assert_eq!(specs.len(), op.flags.len(), "`{}` schema length", op.what);
             for (spec, flag) in specs.iter().zip(op.flags) {
                 assert_eq!(spec.name.as_ref(), flag.name);
-                assert_eq!(spec.kind, lattice_grammar::ArgKind::Bool);
+                let expected = match flag.kind {
+                    RemoteArgKind::Flag => lattice_grammar::ArgKind::Bool,
+                    RemoteArgKind::Value { .. } => lattice_grammar::ArgKind::String,
+                };
+                assert_eq!(spec.kind, expected, "`{}` slot `{}`", op.what, flag.name);
             }
         }
     }

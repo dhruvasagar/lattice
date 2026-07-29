@@ -17,15 +17,25 @@ use crate::magit_global_mode::RemoteOp;
 /// MG.17a: the `Flag` items for a [`RemoteOp`], built from the op's own
 /// flag table so the menu can't offer a toggle the argv builder ignores.
 fn flag_items(op: RemoteOp) -> Vec<TransientItem> {
+    use crate::magit_global_mode::RemoteArgKind;
     op.flags
         .iter()
         .map(|f| TransientItem {
             key: vec![f.key.to_string()],
             label: f.arg.to_string(),
             description: f.doc.to_string(),
-            kind: TransientItemKind::Flag {
-                name: f.name.to_string(),
-                default: false,
+            kind: match f.kind {
+                RemoteArgKind::Flag => TransientItemKind::Flag {
+                    name: f.name.to_string(),
+                    default: false,
+                },
+                // MG.17b: a value argument opens a prompt and comes
+                // back to this menu with the value filled in.
+                RemoteArgKind::Value { prompt } => TransientItemKind::Argument {
+                    name: f.name.to_string(),
+                    default: None,
+                    prompt: prompt.to_string(),
+                },
             },
         })
         .collect()
@@ -37,7 +47,11 @@ fn flag_items(op: RemoteOp) -> Vec<TransientItem> {
 /// cannot claim one command while the run executes another.
 fn remote_preview(op: RemoteOp) -> Box<dyn Fn(&TransientState) -> String + Send + Sync> {
     Box::new(move |state: &TransientState| {
-        op.preview(&|name| matches!(state.get(name), Some(TransientValue::Bool(true))))
+        op.preview(&|name| match state.get(name) {
+            Some(TransientValue::Bool(b)) => Some(b.to_string()),
+            Some(TransientValue::String(v)) => Some(v.clone()),
+            None => None,
+        })
     })
 }
 

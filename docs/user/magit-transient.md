@@ -205,6 +205,7 @@ while you toggle, showing the exact git command you're about to run.
 | Fetch (`C-c g` → `f`) | `-a` | `--all` |
 | | `-p` | `--prune` |
 | Stash (`C-c g` → `z`) | `-u` | `--include-untracked` |
+| | `-m` | a stash message (opens a prompt) |
 
 Push and fetch became **submenus** to hold their flags: `P` opens the
 push menu, and `P` again (or the listed run key) actually pushes. That
@@ -255,18 +256,54 @@ token is ignored rather than failing the command, since the flags are
 additive: the worst case is an operation that does slightly less than
 you asked, never something you didn't ask for.
 
-### Not yet: `Argument` items
+### Arguments that take a value
 
-The data model also supports *argument* items — a menu entry that opens
-a prompt for a string value (a remote name, a commit reference, a log
-count). **No shipped menu uses one**, and pressing such an item today
-would do nothing: the mechanism is still a no-op in the dispatcher.
-Log's `--all` / count / path-filter arguments wait on it.
+Some entries take text rather than a yes/no. `-m` in the stash menu is
+the first: press it, type a message, press `<CR>`, and you're back in
+the menu with the message filled into the preview.
+
+```
+git stash push                         # before
+git stash push -m "wip: parser"        # after -m
+git stash push --include-untracked -m "wip: parser"
+```
+
+An unlabelled stash is findable only by position, and positions
+renumber whenever you drop one — so a message is the difference
+between "stash@{2}, probably" and knowing.
+
+Things worth knowing about the round-trip:
+
+- **`<Esc>` cancels the argument, not the menu.** You come back to the
+  menu with the value unchanged, so a typo costs a keystroke rather
+  than your place.
+- **Flags you toggled before opening the prompt survive it.** The menu
+  is parked whole and restored whole, including which submenu you were
+  in.
+- **Re-selecting an argument seeds the prompt with its current value**,
+  so editing beats retyping.
+- **Submitting an empty value clears the argument.** That's how you
+  unset one you set by mistake — the empty string never reaches git,
+  because `git stash push -m ""` would label the stash with nothing,
+  which is worse than no label.
+
+On the `:` line, a value argument takes the rest of the line, so it
+needs no quoting and must come last:
+
+```
+:magit-stash --include-untracked -m wip: parser and tests
+```
 
 The branch-create wizard's name prompt (see
 [`magit-branch-mode`](help:magit-branch-mode)) is a different
-mechanism — a picker-triggered follow-up prompt, not an in-place
-argument field inside a menu.
+mechanism — a picker-triggered follow-up, not an argument field inside
+a menu.
+
+### Still to come
+
+Log's `--all` / count / path-filter. A log buffer's scope rides its
+*name* (`*magit:log:<path>*`), so its arguments need that channel
+rather than this one.
 
 ---
 

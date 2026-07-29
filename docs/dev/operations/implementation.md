@@ -4214,7 +4214,18 @@ Installs through `SubsystemBoot` seam. Inverted out of
   the argv — chosen because this crate has produced the
   independent-writer-and-reader drift bug three times now (MG.6, MG.8,
   MG.15). Force-push is `--force-with-lease` only, pinned by test.
-- **MG.17b, MG.18–MG.20 remain open** — per-slice status and sequencing
+- ✅ **MG.17b** — Transient arguments (2026-07-29).
+  `TransientItemKind::Argument` was a no-op; it now opens a prompt and
+  returns to the menu with the value filled in. The slice's real
+  subject is that a transient's state had to survive a **surface
+  switch** — the prompt takes the editing buffer and modal state, so
+  the picker is torn down; `Editor::pending_transient_argument` owns
+  spec + state + parent stack across the gap. `<Esc>` cancels the
+  argument rather than the menu, and an empty submit clears the value
+  instead of storing `""` (`git stash push -m ""` is worse than no
+  label). Shipped consumer: `git stash push -m <message>` — a mechanism
+  with no consumer is untested by construction.
+- **MG.18–MG.20 remain open** — per-slice status and sequencing
   live in
   [`slice-plans/magit.md`](slice-plans/magit.md), which is
   authoritative for this subsystem. (The 2026-07-26 audit found

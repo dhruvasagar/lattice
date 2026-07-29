@@ -7465,6 +7465,13 @@ impl Editor {
         let prompt_buffer_id = self.document_buffer_id;
         let prompt_cursor = self.cursor;
         self.restore_editing_buffer();
+        // MG.17b: a prompt opened from a transient argument belongs to
+        // that menu, not to an action handler — write the value in and
+        // put the menu back. Checked before the action lookup because
+        // the argument path deliberately registers no submit action.
+        if self.resume_parked_transient(Some(text.as_str())) {
+            return;
+        }
         let Some(on_submit_action) = self.pending_prompt_submit_action.take() else {
             return;
         };
@@ -7522,6 +7529,53 @@ impl Editor {
         }
         self.pending_prompt_submit_action = None;
         self.restore_editing_buffer();
+        // MG.17b: `<Esc>` in an argument's prompt cancels the ARGUMENT,
+        // not the menu — the menu comes back with the value unchanged.
+        // Dropping you all the way out would punish a typo by making
+        // you re-navigate to where you were.
+        self.resume_parked_transient(None);
+    }
+
+    /// MG.17b: re-seat a transient parked by an `Argument` prompt.
+    ///
+    /// `value` is the submitted text, or `None` when the prompt was
+    /// cancelled (the menu returns with its state untouched). Returns
+    /// whether a parked transient was actually resumed, so the submit
+    /// path can tell "this prompt belonged to a menu" from "this prompt
+    /// belonged to an action handler".
+    ///
+    /// An empty submitted value *clears* the argument rather than
+    /// storing `""` — that is how you unset one you set by mistake, and
+    /// it keeps the argv builder from having to treat empty as absent.
+    fn resume_parked_transient(&mut self, value: Option<&str>) -> bool {
+        let Some(parked) = self.pending_transient_argument.take() else {
+            return false;
+        };
+        let crate::editor::PendingTransientArgument {
+            spec,
+            mut state,
+            stack,
+            name,
+        } = parked;
+        if let Some(text) = value {
+            if text.is_empty() {
+                state.remove(&name);
+            } else {
+                state.insert(
+                    name,
+                    lattice_picker::TransientValue::String(text.to_string()),
+                );
+            }
+        }
+
+        use lattice_picker::{Picker, PickerAction, PickerSource};
+        let mut picker = Picker::new(&spec.title, PickerSource::Buffers, PickerAction::OpenFile);
+        picker.transient = Some(spec);
+        picker.transient_state = state;
+        picker.transient_stack = stack;
+        picker.query = String::new();
+        self.picker = Some(picker);
+        true
     }
 
     /// 5.5.G.23.cmdline: handle a `:`-line submit. Resolves the
@@ -27306,7 +27360,10 @@ impl Editor {
         // MG.17a: snapshot the toggled flags before anything can
         // dismiss the picker — `do_picker_dismiss` in the Action arm
         // drops the picker, and with it the state the handler needs.
+        // MG.17b snapshots the parent stack for the same reason: an
+        // argument inside a submenu must return to that submenu.
         let transient_state = picker.transient_state.clone();
+        let transient_stack = picker.transient_stack.clone();
 
         // Find the item matching the key across all groups
         let found: Option<(
@@ -27398,9 +27455,37 @@ impl Editor {
                     .transient_state
                     .insert(name.clone(), lattice_picker::TransientValue::Bool(new_val));
             }
-            lattice_picker::TransientItemKind::Argument { .. } => {
-                // Arguments deferred to MG.8 — they need minibuffer
-                // prompt + return-to-transient flow. For now, no-op.
+            lattice_picker::TransientItemKind::Argument {
+                name,
+                default,
+                prompt,
+            } => {
+                // MG.17b: park the whole menu, collect the value, put
+                // the menu back. The prompt is a different surface —
+                // it takes the editing buffer and the modal state — so
+                // the picker cannot stay seated underneath it.
+                //
+                // Seed the prompt with the value already held (a
+                // re-edit shows what you typed last time), falling back
+                // to the item's declared default.
+                let seeded = match transient_state.get(&name) {
+                    Some(lattice_picker::TransientValue::String(s)) => s.clone(),
+                    Some(lattice_picker::TransientValue::Bool(b)) => b.to_string(),
+                    None => default.clone().unwrap_or_default(),
+                };
+                let parked = crate::editor::PendingTransientArgument {
+                    spec: spec.clone(),
+                    state: transient_state.clone(),
+                    stack: transient_stack,
+                    name: name.clone(),
+                };
+                out.renderer_signals.extend(self.do_picker_dismiss());
+                self.pending_transient_argument = Some(parked);
+                // No submit action: `do_prompt_line_submit` routes a
+                // parked transient itself. Naming an action here would
+                // be a lie — there is no handler to fire.
+                let signals = self.open_prompt_line(prompt.clone(), seeded, String::new(), None);
+                out.renderer_signals.extend(signals);
             }
         }
     }
@@ -34561,6 +34646,107 @@ mod tests {
             .map(|(k, v)| ((*k).to_string(), v.clone()))
             .collect();
         project_transient_state(&schema, &st)
+    }
+
+    // ── MG.17b: state surviving the prompt round-trip ──
+
+    fn parked(name: &str, state: &[(&str, lattice_picker::TransientValue)]) -> Editor {
+        use lattice_picker::{TransientGroup, TransientSpec};
+        let mut ed = Editor::default();
+        ed.pending_transient_argument = Some(crate::editor::PendingTransientArgument {
+            spec: std::sync::Arc::new(TransientSpec {
+                title: "Stash".into(),
+                groups: vec![TransientGroup {
+                    label: "Arguments".into(),
+                    items: Vec::new(),
+                }],
+                preview: None,
+                footer: None,
+            }),
+            state: state
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), v.clone()))
+                .collect(),
+            stack: Vec::new(),
+            name: name.to_string(),
+        });
+        ed
+    }
+
+    /// Submitting writes the value in and puts the menu back — the
+    /// whole point of the round-trip.
+    #[test]
+    fn submitting_an_argument_restores_the_menu_with_the_value() {
+        use lattice_picker::TransientValue;
+        let mut ed = parked(
+            "message",
+            &[("include-untracked", TransientValue::Bool(true))],
+        );
+        assert!(ed.resume_parked_transient(Some("wip: parser")));
+
+        let picker = ed.picker.as_ref().expect("menu came back");
+        assert!(picker.transient.is_some(), "still a transient menu");
+        assert!(
+            matches!(
+                picker.transient_state.get("message"),
+                Some(TransientValue::String(v)) if v == "wip: parser"
+            ),
+            "the typed value landed"
+        );
+        assert!(
+            matches!(
+                picker.transient_state.get("include-untracked"),
+                Some(TransientValue::Bool(true))
+            ),
+            "the flag toggled BEFORE the prompt survived the round-trip"
+        );
+        assert!(ed.pending_transient_argument.is_none(), "park is consumed");
+    }
+
+    /// `<Esc>` cancels the ARGUMENT, not the menu. Dropping the user
+    /// out entirely would punish a typo by making them re-navigate.
+    #[test]
+    fn cancelling_an_argument_restores_the_menu_unchanged() {
+        use lattice_picker::TransientValue;
+        let mut ed = parked(
+            "message",
+            &[("message", TransientValue::String("old".into()))],
+        );
+        assert!(ed.resume_parked_transient(None));
+
+        let picker = ed.picker.as_ref().expect("menu came back");
+        assert!(
+            matches!(
+                picker.transient_state.get("message"),
+                Some(TransientValue::String(v)) if v == "old"
+            ),
+            "cancel must not clobber the value that was already there"
+        );
+    }
+
+    /// Submitting an empty value CLEARS the argument. That is how you
+    /// unset one you set by mistake, and it keeps the argv builder from
+    /// having to treat empty as absent.
+    #[test]
+    fn submitting_an_empty_value_clears_the_argument() {
+        use lattice_picker::TransientValue;
+        let mut ed = parked(
+            "message",
+            &[("message", TransientValue::String("old".into()))],
+        );
+        assert!(ed.resume_parked_transient(Some("")));
+        let picker = ed.picker.as_ref().expect("menu came back");
+        assert!(picker.transient_state.get("message").is_none());
+    }
+
+    /// With nothing parked, the resume path must decline — that is what
+    /// tells `do_prompt_line_submit` the prompt belonged to an action
+    /// handler and not to a menu.
+    #[test]
+    fn resume_declines_when_no_transient_is_parked() {
+        let mut ed = Editor::default();
+        assert!(!ed.resume_parked_transient(Some("x")));
+        assert!(ed.picker.is_none(), "and seats no picker");
     }
 
     #[test]

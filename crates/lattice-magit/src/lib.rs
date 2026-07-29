@@ -166,6 +166,7 @@ pub fn install(boot: &mut impl SubsystemBoot) {
 /// an operation that does slightly less than you asked, never
 /// something you didn't ask for.
 fn parse_remote_flags(op: magit_global_mode::RemoteOp, line: &str) -> Args {
+    use magit_global_mode::RemoteArgKind;
     if op.flags.is_empty() {
         return Args::None;
     }
@@ -173,7 +174,22 @@ fn parse_remote_flags(op: magit_global_mode::RemoteOp, line: &str) -> Args {
     Args::List(
         op.flags
             .iter()
-            .map(|f| lattice_grammar::ArgValue::Bool(given.contains(&f.arg)))
+            .map(|f| match f.kind {
+                RemoteArgKind::Flag => lattice_grammar::ArgValue::Bool(given.contains(&f.arg)),
+                // MG.17b: `-m some message` — everything after the
+                // marker to the end of the line, so a stash message
+                // does not have to be quoted. That means a value
+                // argument must come last on the line, which is stated
+                // in the ex-command's doc; the transient has no such
+                // constraint.
+                RemoteArgKind::Value { .. } => lattice_grammar::ArgValue::String(
+                    given
+                        .iter()
+                        .position(|t| *t == f.arg)
+                        .map(|i| given[i + 1..].join(" "))
+                        .unwrap_or_default(),
+                ),
+            })
             .collect(),
     )
 }
@@ -830,6 +846,17 @@ mod tests {
                             found.push(format!(
                                 "'{where_}' fell back to an inert Flag placeholder \
                                  named '{name}' — its action id failed to resolve"
+                            ));
+                        }
+                    }
+                    // MG.17b: `Argument` became a real item kind. Same
+                    // rule as `Flag` — legitimate when the name is
+                    // declared in a `RemoteOp` table, suspect otherwise.
+                    lattice_picker::TransientItemKind::Argument { name, .. } => {
+                        if !declared_flag_names().contains(name.as_str()) {
+                            found.push(format!(
+                                "'{where_}' is an Argument named '{name}' that no \
+                                 RemoteOp declares — nothing will consume its value"
                             ));
                         }
                     }

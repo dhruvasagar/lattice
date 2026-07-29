@@ -46,7 +46,7 @@ no hidden state.
 | `:magit-fetch` | Fetch from the default remote (`--all`, `--prune`) |
 | `:magit-pull` | Pull from the upstream branch (fast-forward only) |
 | `:magit-push` | Push the current branch (`--force-with-lease`, `--set-upstream`) |
-| `:magit-stash` | Stash the working tree (`--include-untracked`); `:magit-stash-list` opens the list |
+| `:magit-stash` | Stash the working tree (`--include-untracked`, `-m <message>`); `:magit-stash-list` opens the list |
 | `g?` | (in any magit buffer) Open help for the current mode's keybindings |
 
 Every magit command name is dashed + namespaced (`magit-status`,

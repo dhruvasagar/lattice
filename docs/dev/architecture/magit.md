@@ -260,16 +260,20 @@ ground, not the target: it populates the buffer with `git diff HEAD`
 (staged + unstaged changes combined against HEAD, matching this
 section's original "against HEAD" framing) as plain styled text —
 one buffer, no panes, no `DiffSession`/`GitBaseline` integration. It
-registers its OWN `s`/`u` handlers, scoped to this buffer's own
-`DiffState`, resolving the file at cursor by scanning upward for the
-nearest `diff --git a/<path> b/<path>` header — file-level only, not
-hunk-level (no `x`/discard chord either). This closes a real bug: the
+resolves the file at cursor by scanning upward for the nearest
+`diff --git a/<path> b/<path>` header (no `x`/discard chord here).
+MG.18c added hunk-level `s`/`u` on top of that fallback, but only in
+the *scoped* buffers: `git diff HEAD` combines staged and unstaged
+changes into single hunks, so a hunk from the bare `*magit:diff*` is
+not a patch against either tree and staging it is refused (§7.3).
+The earlier stub closed a real bug: the
 buffer used to open empty with `s`/`u` declared in the keymap but no
 handler of their own, so pressing them silently fired whatever
 `magit-status` handler happened to be registered, against
 magit-status's captured state rather than this buffer's cursor. The
-full side-by-side `DiffSession` + hunk-level staging design above
-remains a real follow-up, larger than this pass.
+full side-by-side `DiffSession` design above, and `do`/`dp` hunk
+transfer between panes, remain a real follow-up (MG.19), larger than
+this pass.
 
 The mode now also backs a path-scoped variant, opened by file-dispatch's
 `d` item (§8.8): buffer name `*magit:diff:<path>*` instead of the bare
@@ -624,8 +628,10 @@ Stash, Commit}`, §7.2), then:
 
 1. Look up the entry's `entry_key` in `StatusBufferState::expanded:
    HashMap<String, usize>` (key → inserted line count, not a hunk-aware
-   cache — there is no `DiffCache`, no hunk parsing, no per-file `git diff`
-   caching keyed by status version).
+   cache — there is no `DiffCache` and no per-file `git diff` caching keyed
+   by status version. MG.18c parses hunks out of the buffer text at action
+   time, §7.3, and caches nothing: a cache would give `]c` one set of hunk
+   boundaries and `s` another, with nothing forcing them to agree).
 2. If already expanded: delete exactly the recorded line count starting the
    row after the entry (`collapse_range` — the end must land at column 0 of
    the following row, not that row's text length, or the collapse eats the
@@ -795,26 +801,48 @@ mode's `Guard`-reachable state, not `RefCell`s specifically) — NOT on
 only by the mode's own handlers → lives as helper data in `lattice-magit`,
 not as a `Document` trait method.
 
-### 7.3 Staging from sections — file-level only
+### 7.3 Staging from sections — hunk, then file
 
-Target design: hunk-level `s`/`u`/`x` when the diff is expanded, file-level
-otherwise. **Not built.** The real `s`/`u`/`x` (and `<CR>`'s stash/commit
-toggle) always resolve `classify_line` at the cursor and act on the whole
-`StatusLine::File`/`Stash`/`Commit` — whether or not its diff/patch happens
-to be expanded makes no difference to what the action does. There is no
-code path that inspects cursor position *inside* an expanded diff to
-resolve a hunk. `git add -p`-equivalent hunk staging is explicitly
-unsupported today (§12.2's `p` chord explains why: it's genuinely
-interactive over stdin, which the TUI's raw-mode input loop already owns —
-running it via `Command::output()` would hang the actor waiting on a child
-that's also waiting on stdin neither process routes to the other).
+`s`/`u`/`x` resolve **hunk-at-cursor first, file-at-cursor second**
+(MG.18c). A cursor inside an expanded diff's hunk body acts on that
+hunk; anywhere else `classify_line` resolves the whole
+`StatusLine::File`/`Stash`/`Commit` exactly as before, so no
+pre-MG.18c behaviour changed.
+
+The hunk is parsed out of the buffer's own text — the same boundaries
+§7.5's `]c`/`[c` walk — and turned into a standalone patch piped to
+`git apply` (`--cached` to stage, `--cached --reverse` to unstage,
+`--reverse` alone to discard from the worktree). There is no index API
+for "stage hunk N of path P"; `git add -p` synthesizes a patch too.
+The resolution lives in `magit-core-mode`, not per view: a hunk is a
+property of diff text, identical in every magit buffer.
+
+Which of the three chords applies is gated on
+`MagitView::diff_source(cursor)` — magit-status answers from the
+section header above the cursor, magit-diff from its buffer-name
+scope. A mismatch is refused with what to press instead. This is not
+politeness: `x` on a *staged* hunk would not be refused by git, and
+would remove the change from the working tree while leaving it in the
+index. Design:
+[`magit-hunk-staging.md`](magit-hunk-staging.md).
+
+`git add -p`-equivalent *interactive* staging remains unsupported
+(§12.2's `p` chord explains why: it's genuinely interactive over
+stdin, which the TUI's raw-mode input loop already owns — running it
+via `Command::output()` would hang the actor waiting on a child that's
+also waiting on stdin neither process routes to the other). `git
+apply` has none of that: the complete patch is written, the pipe
+closed, the child exits.
 
 ### 7.4 Stale hunk boundary detection
 
-Not applicable yet — there is no hunk-level staging (§7.3) to have stale
-boundaries in the first place. This section describes a target-design
-safeguard for when hunk-level staging is eventually built, not a current
-mechanism.
+**Fulfilled by `git apply`'s exact context match** (MG.18c), not by a
+separate heuristic. A synthesized patch carries the hunk's full body
+including context, and `git apply` validates every context line
+against the real target — so a patch built from a buffer that has
+drifted from the tree is refused outright rather than applied at a
+plausible-looking offset. The failure path is "report and refresh",
+never a silent partial write.
 
 ### 7.5 Navigation model — three levels, three chord families
 
@@ -1606,8 +1634,8 @@ registers its own `<CR>` handler:
 | magit-branch | Branch name | Check out that branch |
 
 "Hunk (staged/unstaged diff) → open the file at the hunk location" is
-target design, **not built** — there is no hunk-level resolution anywhere
-(§7.3).
+target design, **not built** — `<CR>` has no hunk-aware branch, though
+the hunk-at-cursor resolution it would need now exists (§7.3).
 
 `magit-status`'s `<CR>` is `action:magit-visit`, registered PER-BUFFER by
 `magit_status_mode`'s `on_activate` (via `actions::register_action_handlers`)

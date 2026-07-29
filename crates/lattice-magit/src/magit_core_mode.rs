@@ -15,6 +15,7 @@ use lattice_mode::{
 };
 use lattice_protocol::position::Position;
 
+use crate::buffer_state::DiffSource;
 use crate::magit_blame_mode::MagitBlameMode;
 use crate::magit_branch_mode::MagitBranchMode;
 use crate::magit_commit_mode::MagitCommitMode;
@@ -200,6 +201,221 @@ fn hunk_lines(store: &BufferStoreHandle, buffer_id: BufferId) -> Vec<u32> {
     lines
 }
 
+// ── MG.18c: hunk-level staging ──────────────────────────
+//
+// The resolution lives here, not in each view, for the reason
+// `]c` / `[c` above live here: a hunk is a property of diff *text*,
+// identical in every magit buffer, so one implementation serves
+// magit-status's inline diffs, magit-diff's buffer, and whatever
+// binds `s` next. What genuinely differs per view — which file a
+// non-hunk line names, and which tree the text was diffed against —
+// stays behind `MagitView`.
+
+/// The hunk under `cursor` in the buffer an action fired in, read
+/// straight from the buffer text (`magit.md` §7.5's precedent: `]c`
+/// and `[c` derive hunk boundaries the same way, so navigation and
+/// staging cannot disagree about where a hunk begins).
+///
+/// Reads through `hunk_at_with`'s accessor rather than materialising
+/// the buffer: a `*magit:diff*` against a large change is tens of
+/// thousands of lines, and staging one hunk must not copy all of them.
+pub(crate) fn hunk_at_cursor(
+    store: &BufferStoreHandle,
+    buffer_id: BufferId,
+    cursor: u32,
+) -> Option<crate::hunk::HunkPatch> {
+    let handle = store.handle_for(buffer_id)?;
+    let snap = handle.snapshot();
+    crate::hunk::hunk_at_with(
+        |i| u32::try_from(i).ok().and_then(|l| snap.buffer.line(l)),
+        cursor as usize,
+    )
+}
+
+/// What `s` / `u` / `x` do to a resolved hunk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HunkOp {
+    /// `s` — apply the unstaged hunk forward into the index.
+    Stage,
+    /// `u` — reverse the staged hunk back out of the index.
+    Unstage,
+    /// `x` — reverse the unstaged hunk out of the working tree.
+    Discard,
+}
+
+impl HunkOp {
+    /// `(cached, reverse)` for `Index::apply_patch`.
+    fn apply_flags(self) -> (bool, bool) {
+        match self {
+            HunkOp::Stage => (true, false),
+            HunkOp::Unstage => (true, true),
+            // The worktree, not the index — matching file-level `x`,
+            // which is `git checkout -- <path>` and likewise leaves
+            // the index alone.
+            HunkOp::Discard => (false, true),
+        }
+    }
+
+    /// The only [`DiffSource`] this operation can act on. A hunk from
+    /// the other side is refused rather than handed to git, whose
+    /// "patch does not apply" says nothing about which key to press.
+    fn requires(self) -> DiffSource {
+        match self {
+            HunkOp::Stage | HunkOp::Discard => DiffSource::Unstaged,
+            HunkOp::Unstage => DiffSource::Staged,
+        }
+    }
+
+    fn present(self) -> &'static str {
+        match self {
+            HunkOp::Stage => "stage",
+            HunkOp::Unstage => "unstage",
+            HunkOp::Discard => "discard",
+        }
+    }
+
+    fn past(self) -> &'static str {
+        match self {
+            HunkOp::Stage => "staged",
+            HunkOp::Unstage => "unstaged",
+            HunkOp::Discard => "discarded",
+        }
+    }
+
+    /// Why a hunk from the wrong side cannot be acted on, phrased as
+    /// what to do instead.
+    fn wrong_source_hint(self) -> &'static str {
+        match self {
+            HunkOp::Stage => "that hunk is already staged",
+            HunkOp::Unstage => "that hunk isn't staged",
+            HunkOp::Discard => "that hunk is staged — unstage it with `u` first",
+        }
+    }
+}
+
+/// What the cursor resolved to for a hunk-level operation.
+pub(crate) enum HunkResolution {
+    /// Not inside a hunk. The caller runs its file-level path
+    /// unchanged — this is what keeps every pre-MG.18c behaviour.
+    FileLevel,
+    /// Inside a hunk this operation cannot act on. Carries the
+    /// explanation; the file-level path must NOT run, or `s` would
+    /// silently stage the whole file the user was inspecting a hunk of.
+    Refused(Effect),
+    Ready {
+        view: Arc<dyn crate::buffer_state::MagitView>,
+        workdir: std::path::PathBuf,
+        patch: crate::hunk::HunkPatch,
+    },
+}
+
+/// Resolve the hunk at the cursor for `op`, per magit-hunk-staging.md
+/// §"Resolution order: hunk, then file".
+pub(crate) fn resolve_hunk(ctx: &ActionContext<'_>, op: HunkOp) -> HunkResolution {
+    let (Some(store), Some(view)) = (
+        ctx.services.get::<BufferStoreHandle>(),
+        crate::buffer_state::view_for(ctx),
+    ) else {
+        return HunkResolution::FileLevel;
+    };
+    let Some(patch) = hunk_at_cursor(&store, BufferId(ctx.buffer_id.0 as u32), ctx.cursor.line)
+    else {
+        return HunkResolution::FileLevel;
+    };
+    let hint = match view.diff_source(ctx.cursor) {
+        Some(source) if source == op.requires() => {
+            return match view.workdir() {
+                Some(workdir) => HunkResolution::Ready {
+                    view,
+                    workdir,
+                    patch,
+                },
+                // A view that stages but cannot name its repository is
+                // a wiring bug, not a user error; decline rather than
+                // guess at a working directory.
+                None => HunkResolution::FileLevel,
+            };
+        }
+        Some(_) => op.wrong_source_hint().to_string(),
+        None => format!(
+            "hunk-level staging isn't available in this view — move to the file header to {} the whole file",
+            op.present()
+        ),
+    };
+    HunkResolution::Refused(Effect::Echo {
+        level: lattice_grammar::EchoLevel::Info,
+        text: format!("magit: {hint}"),
+    })
+}
+
+/// Apply `patch` off the actor thread, then rebuild the view.
+///
+/// Returns immediately with the echo naming what is being done; the
+/// git call has not started yet. Failure is reported the way every
+/// other async magit mutation reports it — `tracing::error!`, which
+/// the `MessagesLayer` fans into `*messages*` — and the refresh runs
+/// either way, so a refused patch leaves the buffer showing the truth
+/// rather than a state the user may believe they changed.
+pub(crate) fn spawn_hunk_apply(
+    view: Arc<dyn crate::buffer_state::MagitView>,
+    workdir: std::path::PathBuf,
+    patch: crate::hunk::HunkPatch,
+    op: HunkOp,
+) -> Effect {
+    let location = patch.display_location();
+    let text = patch.to_patch();
+    let (cached, reverse) = op.apply_flags();
+    let logged = location.clone();
+    tokio::task::spawn(async move {
+        let result = tokio::task::spawn_blocking(move || {
+            let repo = lattice_vcs::Repository::discover(&workdir)
+                .map_err(|e| format!("not a git repository: {e}"))?;
+            lattice_vcs::Index::apply_patch(&repo, &text, cached, reverse)
+                .map_err(|e| e.to_string())
+        })
+        .await
+        .unwrap_or_else(|e| Err(e.to_string()));
+        if let Err(err) = result {
+            // `git apply` refuses a patch whose context does not match
+            // the target exactly — which is the safeguard, not a
+            // malfunction: the buffer had drifted from the tree.
+            tracing::error!(
+                target: "lattice_magit",
+                "magit: could not {} hunk at {logged}: {err}", op.present()
+            );
+        }
+        // Both views drive their own async rebuild and return `None`;
+        // there is no effect to propagate from inside a spawned task.
+        let _ = view.refresh();
+    });
+    Effect::Echo {
+        level: lattice_grammar::EchoLevel::Info,
+        text: format!("magit: {} hunk at {location}", op.past()),
+    }
+}
+
+/// The `s` / `u` handler body: hunk first, then the view's file-level
+/// path. `x` runs the same resolution through its confirm pair in
+/// `actions.rs`.
+fn stage_or_unstage(ctx: &ActionContext<'_>, op: HunkOp) -> Option<Effect> {
+    match resolve_hunk(ctx, op) {
+        HunkResolution::Ready {
+            view,
+            workdir,
+            patch,
+        } => Some(spawn_hunk_apply(view, workdir, patch, op)),
+        HunkResolution::Refused(effect) => Some(effect),
+        HunkResolution::FileLevel => {
+            let view = crate::buffer_state::view_for(ctx)?;
+            match op {
+                HunkOp::Stage => view.stage(ctx.cursor),
+                HunkOp::Unstage => view.unstage(ctx.cursor),
+                HunkOp::Discard => None,
+            }
+        }
+    }
+}
+
 /// Walk `items` forward from `cursor_row` and return the first
 /// item strictly greater. Wraps to the first item if none found.
 fn next_item(items: &[u32], cursor_row: u32) -> Option<u32> {
@@ -338,13 +554,17 @@ impl Mode for MagitCoreMode {
                 "action:magit-reset-hard-execute",
                 crate::magit_global_mode::CommitOp::RESET_HARD,
             ),
+            // MG.18c: hunk-at-cursor first, the view's file-level path
+            // second. The hunk half is identical in every magit
+            // buffer, so it resolves here; only the fallback is
+            // per-view.
             lattice_mode::ActionHandlerContribution {
                 action_name: "action:magit-stage",
-                handler: Arc::new(|ctx: &ActionContext<'_>| view_for(ctx)?.stage(ctx.cursor)),
+                handler: Arc::new(|ctx: &ActionContext<'_>| stage_or_unstage(ctx, HunkOp::Stage)),
             },
             lattice_mode::ActionHandlerContribution {
                 action_name: "action:magit-unstage",
-                handler: Arc::new(|ctx: &ActionContext<'_>| view_for(ctx)?.unstage(ctx.cursor)),
+                handler: Arc::new(|ctx: &ActionContext<'_>| stage_or_unstage(ctx, HunkOp::Unstage)),
             },
             // ── close (q) ─────────────────────────────────
             // Bug fix: this used to return `Effect::QuitEditor { scope:
@@ -403,5 +623,302 @@ impl Mode for MagitCoreMode {
     /// contract (a fresh Guard per activation).
     fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, Self::Guard> {
         Box::pin(async move { Ok(ActionRegsGuard::default()) })
+    }
+}
+
+/// MG.18c — the `s` / `u` / `x` resolution ladder, exercised through a
+/// real buffer and a published view.
+///
+/// The unit tests in `hunk.rs` prove the parser; these prove the
+/// *wiring*, which is where this crate's history says the bugs live
+/// (MG.13's handler race, MG.15's dead stash chords). Each case builds
+/// the same `ActionContext` shape production dispatch builds.
+#[cfg(test)]
+mod hunk_staging {
+    use super::*;
+    use crate::buffer_state::{MagitView, MagitViews, MagitViewsHandle};
+    use lattice_mode::{BufferStore, ServiceRegistry};
+
+    const DIFF: &str = "\
+diff --git a/a.txt b/a.txt
+index 111..222 100644
+--- a/a.txt
++++ b/a.txt
+@@ -1,2 +1,2 @@
+ keep
+-old
++new
+  modified src/other.rs
+";
+    /// Row 6 is `+new` — inside the hunk. Row 8 is the status entry
+    /// below it, where staging must stay file-level.
+    const IN_HUNK: u32 = 6;
+    const BELOW_HUNK: u32 = 8;
+
+    struct OneBufferStore {
+        id: lattice_core::BufferId,
+        doc: Arc<dyn lattice_runtime::Document>,
+    }
+
+    impl BufferStore for OneBufferStore {
+        fn find_by_name(&self, _name: &str) -> Option<lattice_core::BufferId> {
+            None
+        }
+        fn name_for(&self, _id: lattice_core::BufferId) -> Option<String> {
+            None
+        }
+        fn handle_for(
+            &self,
+            id: lattice_core::BufferId,
+        ) -> Option<Arc<dyn lattice_runtime::Document>> {
+            (id == self.id).then(|| self.doc.clone())
+        }
+        fn insert_document_buffer(
+            &self,
+            _id: lattice_core::BufferId,
+            _kind: lattice_core::BufferKind,
+            _handle: Arc<dyn lattice_runtime::Document>,
+            _flags: lattice_core::BufferFlags,
+            _name: Option<String>,
+        ) {
+        }
+    }
+
+    /// A view that answers only what the ladder asks it.
+    struct StubView(Option<DiffSource>);
+
+    impl MagitView for StubView {
+        fn refresh(&self) -> Option<Effect> {
+            None
+        }
+        fn diff_source(&self, _cursor: Position) -> Option<DiffSource> {
+            self.0
+        }
+        fn workdir(&self) -> Option<std::path::PathBuf> {
+            Some(std::path::PathBuf::from("/tmp/repo"))
+        }
+    }
+
+    fn services_for(
+        text: &str,
+        source: Option<DiffSource>,
+    ) -> (ServiceRegistry, lattice_core::BufferId) {
+        let id = lattice_core::BufferId::next();
+        let registry: lattice_grammar::CommandRegistryHandle = Arc::new(
+            arc_swap::ArcSwap::from_pointee(lattice_grammar::CommandRegistry::new()),
+        );
+        let doc: Arc<dyn lattice_runtime::Document> = Arc::new(lattice_runtime::spawn_document(
+            id,
+            lattice_core::Document::from_text(text),
+            registry,
+        ));
+        let store: Arc<dyn BufferStore> = Arc::new(OneBufferStore { id, doc });
+        let views: MagitViewsHandle = Arc::new(MagitViews::default());
+        views.publish(id, Arc::new(StubView(source)));
+        let mut services = ServiceRegistry::new();
+        services.register(BufferStoreHandle::new(store));
+        services.register(views);
+        (services, id)
+    }
+
+    /// Run the ladder the way a chord press does.
+    fn resolve(cursor_line: u32, source: Option<DiffSource>, op: HunkOp) -> HunkResolution {
+        let (services, id) = services_for(DIFF, source);
+        let events = lattice_runtime::EventBus::new();
+        let ctx = ActionContext {
+            buffer_id: lattice_protocol::ids::BufferId::new(id.0 as u64),
+            cursor: Position::new(cursor_line, 0),
+            services: &services,
+            events: &events,
+            prompt_value: None,
+            args: lattice_grammar::Args::None,
+        };
+        resolve_hunk(&ctx, op)
+    }
+
+    fn refusal_text(r: HunkResolution) -> String {
+        match r {
+            HunkResolution::Refused(Effect::Echo { text, .. }) => text,
+            HunkResolution::Refused(other) => panic!("expected an Echo, got {other:?}"),
+            HunkResolution::Ready { .. } => panic!("expected a refusal, got Ready"),
+            HunkResolution::FileLevel => panic!("expected a refusal, got FileLevel"),
+        }
+    }
+
+    #[test]
+    fn s_on_an_unstaged_hunk_builds_that_hunks_patch() {
+        match resolve(IN_HUNK, Some(DiffSource::Unstaged), HunkOp::Stage) {
+            HunkResolution::Ready { patch, workdir, .. } => {
+                assert_eq!(workdir, std::path::PathBuf::from("/tmp/repo"));
+                let text = patch.to_patch();
+                assert!(text.starts_with("diff --git a/a.txt b/a.txt\n"), "{text}");
+                assert!(text.contains("+new"), "{text}");
+                assert!(
+                    !text.contains("modified src/other.rs"),
+                    "the status entry below the diff must not reach the patch:\n{text}"
+                );
+            }
+            other => panic!("expected Ready, got {}", label(&other)),
+        }
+    }
+
+    /// The file-level path is what every pre-MG.18c press did, and it
+    /// must survive: a cursor on an entry line is not in a hunk.
+    #[test]
+    fn a_cursor_below_the_diff_falls_through_to_file_level() {
+        assert!(matches!(
+            resolve(BELOW_HUNK, Some(DiffSource::Unstaged), HunkOp::Stage),
+            HunkResolution::FileLevel
+        ));
+    }
+
+    /// Pressing `u` on an unstaged hunk would hand git a patch it
+    /// refuses. Saying so beats `error: patch does not apply`.
+    #[test]
+    fn u_on_an_unstaged_hunk_is_refused_with_a_reason() {
+        let text = refusal_text(resolve(IN_HUNK, Some(DiffSource::Staged), HunkOp::Stage));
+        assert!(text.contains("already staged"), "{text}");
+        let text = refusal_text(resolve(
+            IN_HUNK,
+            Some(DiffSource::Unstaged),
+            HunkOp::Unstage,
+        ));
+        assert!(text.contains("isn't staged"), "{text}");
+    }
+
+    /// The destructive one. `x` on a staged hunk must not reverse it
+    /// out of the worktree while leaving it in the index — the change
+    /// would vanish from the file and still be committed by `cc`.
+    #[test]
+    fn x_on_a_staged_hunk_refuses_rather_than_half_discarding() {
+        let text = refusal_text(resolve(IN_HUNK, Some(DiffSource::Staged), HunkOp::Discard));
+        assert!(
+            text.contains("unstage it with `u` first"),
+            "the refusal must say what to do instead: {text}"
+        );
+    }
+
+    /// `*magit:diff*` (against HEAD) mixes both sides into one hunk,
+    /// and a commit's inline patch in magit-status belongs to neither
+    /// tree. Refusing beats falling through — falling through would
+    /// stage the WHOLE FILE from a keypress aimed at one hunk.
+    #[test]
+    fn an_unclassifiable_diff_refuses_hunk_staging_instead_of_staging_the_file() {
+        let text = refusal_text(resolve(IN_HUNK, None, HunkOp::Stage));
+        assert!(text.contains("isn't available in this view"), "{text}");
+        assert!(
+            text.contains("file header"),
+            "and must point at the way to stage the file deliberately: {text}"
+        );
+    }
+
+    fn label(r: &HunkResolution) -> &'static str {
+        match r {
+            HunkResolution::Ready { .. } => "Ready",
+            HunkResolution::Refused(_) => "Refused",
+            HunkResolution::FileLevel => "FileLevel",
+        }
+    }
+
+    /// The flag table is the whole safety contract of the three
+    /// operations: a wrong pair silently mutates the wrong tree.
+    #[test]
+    fn the_apply_flag_table_is_the_documented_one() {
+        assert_eq!(HunkOp::Stage.apply_flags(), (true, false), "index, forward");
+        assert_eq!(
+            HunkOp::Unstage.apply_flags(),
+            (true, true),
+            "index, reversed"
+        );
+        assert_eq!(
+            HunkOp::Discard.apply_flags(),
+            (false, true),
+            "the WORKTREE reversed — `--cached` here would discard from the index instead, \
+             leaving the worktree edit in place and staging its removal"
+        );
+    }
+}
+
+/// MG.18c — the discard flags against real git.
+///
+/// `hunk.rs`'s round-trips prove the *patch* is one git accepts for
+/// stage and unstage. This proves the third pairing, which is the one
+/// with no second chance: `x` must reverse the hunk out of the
+/// **working tree** and leave the index alone. `--cached` here would
+/// stage the removal instead, which reads on screen as the discard
+/// having worked while the change is still queued for the next commit.
+#[cfg(test)]
+mod discard_round_trip {
+    use super::*;
+    use std::process::Command;
+
+    fn git_ok(dir: &std::path::Path, args: &[&str]) {
+        let st = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .status()
+            .expect("git");
+        assert!(st.success(), "git {args:?} failed");
+    }
+
+    fn git_out(dir: &std::path::Path, args: &[&str]) -> String {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .expect("git");
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    #[test]
+    fn discard_reverses_the_hunk_out_of_the_worktree_and_leaves_the_index_alone() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let p = dir.path();
+        git_ok(p, &["init"]);
+        git_ok(p, &["config", "user.email", "t@lattice.dev"]);
+        git_ok(p, &["config", "user.name", "lattice-test"]);
+        let base: String = (1..=20).map(|i| format!("line {i}\n")).collect();
+        std::fs::write(p.join("a.txt"), &base).unwrap();
+        git_ok(p, &["add", "a.txt"]);
+        git_ok(p, &["commit", "-m", "base"]);
+        // Two changes far enough apart that git reports two hunks.
+        let edited: String = (1..=20)
+            .map(|i| match i {
+                2 => "line 2 EDITED\n".to_string(),
+                19 => "line 19 EDITED\n".to_string(),
+                _ => format!("line {i}\n"),
+            })
+            .collect();
+        std::fs::write(p.join("a.txt"), &edited).unwrap();
+
+        let diff = git_out(p, &["diff", "--", "a.txt"]);
+        let lines: Vec<&str> = diff.lines().collect();
+        let first_hunk = lines
+            .iter()
+            .position(|l| l.starts_with("@@ "))
+            .expect("a hunk header");
+        let patch =
+            crate::hunk::hunk_at_with(|i| lines.get(i).map(|l| (*l).to_string()), first_hunk + 1)
+                .expect("cursor inside hunk 1")
+                .to_patch();
+
+        let (cached, reverse) = HunkOp::Discard.apply_flags();
+        let repo = lattice_vcs::Repository::discover(p).expect("discover");
+        lattice_vcs::Index::apply_patch(&repo, &patch, cached, reverse).expect("discard applies");
+
+        let worktree = std::fs::read_to_string(p.join("a.txt")).unwrap();
+        assert!(
+            !worktree.contains("line 2 EDITED"),
+            "the discarded hunk is gone from the file:\n{worktree}"
+        );
+        assert!(
+            worktree.contains("line 19 EDITED"),
+            "the neighbouring hunk survives:\n{worktree}"
+        );
+        assert_eq!(
+            git_out(p, &["diff", "--cached", "--name-only"]).trim(),
+            "",
+            "discard must not touch the index"
+        );
     }
 }

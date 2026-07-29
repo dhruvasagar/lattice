@@ -18,6 +18,7 @@ use lattice_protocol::edit::Edit;
 use lattice_protocol::position::{Position, Range};
 use lattice_vcs::{Index, Repository};
 
+use crate::buffer_state::DiffSource;
 use crate::refresh;
 
 pub struct StatusBufferState {
@@ -157,6 +158,28 @@ fn section_header_above(state: &StatusBufferState, line: u32) -> Option<String> 
         }
     }
     None
+}
+
+/// MG.18c: map a status section header to the tree its entries' diffs
+/// were produced against.
+///
+/// Untracked files count as Unstaged: a whole-file `s` there is
+/// `git add`, and an untracked file has no diff to expand, so the
+/// hunk path never reaches this with one — the row is here so the
+/// mapping is total rather than silently defaulting.
+///
+/// Split from [`StatusView::diff_source`] so the classification is
+/// testable without a live buffer, the same split `classify_line` /
+/// `classify_line_text` already uses.
+pub(crate) fn diff_source_for_header(header: &str) -> Option<DiffSource> {
+    if header.starts_with("Staged") {
+        Some(DiffSource::Staged)
+    } else if header.starts_with("Unstaged") || header.starts_with("Untracked") {
+        Some(DiffSource::Unstaged)
+    } else {
+        // "Recent commits", "Stashes", "Merge conflicts", …
+        None
+    }
 }
 
 /// Run the git command that shows `sl`'s content: a file's diff
@@ -370,38 +393,81 @@ pub fn status_action_handlers() -> Vec<ActionHandlerContribution> {
 
     // ── discard (x) ───────────────────────────────────
     // PU.6: prompt for confirmation before destructive discard.
+    //
+    // MG.18c: hunk-at-cursor first, exactly as `s` / `u` resolve —
+    // but through the ask/execute pair, because §12.13 requires a
+    // destructive action's chord to perform no git call at all. The
+    // prompt names the hunk's file position so the question is
+    // answerable without dismissing it.
     {
         handler!("action:magit-discard", move |ctx: &ActionContext<'_>| {
-            let s = status_state(ctx)?;
-            let g = s.lock().ok()?;
-            let StatusLine::File { path, .. } = classify_line(&g, ctx.cursor.line)? else {
-                return None;
-            };
-            drop(g);
-            Some(Effect::Confirm {
-                prompt: format!("Discard changes to {}?", path.display()),
-                yes_action: "action:magit-discard-execute".to_string(),
-            })
-        });
-    }
-    // PU.6: actual discard, dispatched by Confirm's yes-action.
-    {
-        handler!(
-            "action:magit-discard-execute",
-            move |ctx: &ActionContext<'_>| {
-                let s = status_state(ctx)?;
-                let (path, workdir) = {
+            match crate::magit_core_mode::resolve_hunk(ctx, crate::magit_core_mode::HunkOp::Discard)
+            {
+                crate::magit_core_mode::HunkResolution::Ready { patch, .. } => {
+                    Some(crate::confirm::ask(
+                        format!("Discard hunk at {}?", patch.display_location()),
+                        "action:magit-discard-execute",
+                    ))
+                }
+                crate::magit_core_mode::HunkResolution::Refused(effect) => Some(effect),
+                crate::magit_core_mode::HunkResolution::FileLevel => {
+                    let s = status_state(ctx)?;
                     let g = s.lock().ok()?;
                     let StatusLine::File { path, .. } = classify_line(&g, ctx.cursor.line)? else {
                         return None;
                     };
-                    (path, g.workdir.clone())
-                };
-                spawn_mutation_and_refresh(s.clone(), move || {
-                    if let Ok(repo) = Repository::discover(&workdir) {
-                        let _ = repo.run_git(["checkout", "--", &path.to_string_lossy()]);
+                    drop(g);
+                    Some(crate::confirm::ask(
+                        format!("Discard changes to {}?", path.display()),
+                        "action:magit-discard-execute",
+                    ))
+                }
+            }
+        });
+    }
+    // PU.6: actual discard, dispatched by Confirm's yes-action.
+    //
+    // Re-resolves at the cursor rather than carrying the target
+    // through the prompt (§12.13). For a hunk that matters more than
+    // for a file: the patch must be built from what is on screen NOW,
+    // so a tree that moved under the buffer makes `git apply` refuse
+    // rather than discard some other lines.
+    {
+        handler!(
+            "action:magit-discard-execute",
+            move |ctx: &ActionContext<'_>| {
+                match crate::magit_core_mode::resolve_hunk(
+                    ctx,
+                    crate::magit_core_mode::HunkOp::Discard,
+                ) {
+                    crate::magit_core_mode::HunkResolution::Ready {
+                        view,
+                        workdir,
+                        patch,
+                    } => Some(crate::magit_core_mode::spawn_hunk_apply(
+                        view,
+                        workdir,
+                        patch,
+                        crate::magit_core_mode::HunkOp::Discard,
+                    )),
+                    crate::magit_core_mode::HunkResolution::Refused(effect) => Some(effect),
+                    crate::magit_core_mode::HunkResolution::FileLevel => {
+                        let s = status_state(ctx)?;
+                        let (path, workdir) = {
+                            let g = s.lock().ok()?;
+                            let StatusLine::File { path, .. } = classify_line(&g, ctx.cursor.line)?
+                            else {
+                                return None;
+                            };
+                            (path, g.workdir.clone())
+                        };
+                        spawn_mutation_and_refresh(s.clone(), move || {
+                            if let Ok(repo) = Repository::discover(&workdir) {
+                                let _ = repo.run_git(["checkout", "--", &path.to_string_lossy()]);
+                            }
+                        })
                     }
-                })
+                }
             }
         );
     }
@@ -672,6 +738,20 @@ impl crate::buffer_state::MagitView for StatusView {
         Some(self.0.lock().ok()?.workdir.clone())
     }
 
+    /// MG.18c: the section an inline diff was expanded under says
+    /// which tree it was diffed against — `run_show` passes
+    /// `--cached` for a Staged entry and nothing for an Unstaged one,
+    /// so the header the diff sits below is the same fact, already on
+    /// screen.
+    ///
+    /// Stashes and commits expand patches too, and those belong to
+    /// neither the index nor the worktree; `None` refuses hunk staging
+    /// there rather than applying a commit's diff to the index.
+    fn diff_source(&self, cursor: Position) -> Option<DiffSource> {
+        let g = self.0.lock().ok()?;
+        diff_source_for_header(&section_header_above(&g, cursor.line)?)
+    }
+
     fn refresh(&self) -> Option<Effect> {
         trigger_refresh(self.0.clone())
     }
@@ -716,6 +796,37 @@ mod tests {
 
     fn header(s: &str) -> impl FnOnce() -> Option<String> + '_ {
         move || Some(s.to_string())
+    }
+
+    /// MG.18c — the header a hunk sits under decides which tree its
+    /// patch applies to. Getting this backwards would send an
+    /// unstaged hunk through `u` (git refuses, harmless) or a staged
+    /// one through `x` (reverses it out of the worktree while leaving
+    /// it staged — the half-state the gate exists to prevent).
+    #[test]
+    fn section_headers_map_to_the_tree_their_diffs_came_from() {
+        assert_eq!(
+            diff_source_for_header("Staged changes (2)"),
+            Some(DiffSource::Staged)
+        );
+        assert_eq!(
+            diff_source_for_header("Unstaged changes (3)"),
+            Some(DiffSource::Unstaged)
+        );
+        assert_eq!(
+            diff_source_for_header("Untracked files (1)"),
+            Some(DiffSource::Unstaged),
+            "`s` on an untracked file is `git add` — the worktree side"
+        );
+    }
+
+    /// A commit's or stash's inline patch belongs to neither the index
+    /// nor the worktree. `None` refuses hunk staging there rather than
+    /// applying a commit's diff to the index.
+    #[test]
+    fn commit_and_stash_sections_have_no_stageable_source() {
+        assert_eq!(diff_source_for_header("Recent commits"), None);
+        assert_eq!(diff_source_for_header("Stashes (2)"), None);
     }
 
     fn no_header() -> impl FnOnce() -> Option<String> {

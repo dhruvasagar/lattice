@@ -14,7 +14,11 @@ mod confirm;
 pub mod fold_source;
 pub mod headerline;
 mod highlight;
-mod hunk;
+// MG.18c: public so the bench can measure the parser directly — the
+// accessor shape it pins (read the hunk, not the document) is the
+// paramount-#1 claim staging rests on, and MG.22 relocates this module
+// into `magit-hunk-mode` as the owner of diff content.
+pub mod hunk;
 pub mod magit_blame_mode;
 pub mod magit_branch_mode;
 pub mod magit_commit_mode;

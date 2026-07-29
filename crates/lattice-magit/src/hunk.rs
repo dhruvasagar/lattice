@@ -4,6 +4,17 @@
 //! `magit.md` §7.2's substrate-helper pattern, and what lets MG.22
 //! relocate this into `magit-hunk-mode` rather than rewrite it.
 //!
+//! # Why lines arrive through an accessor
+//!
+//! [`hunk_at_with`] pulls lines one at a time by index rather than
+//! taking a slice. Its production caller reads a buffer snapshot, and
+//! a `*magit:diff*` buffer can hold tens of thousands of lines —
+//! materialising all of them to stage one hunk would put an
+//! O(document) copy on a keystroke path (paramount #1). Through the
+//! accessor the read is O(distance to the file header + hunk body),
+//! which is the work the answer actually costs. The slice form below
+//! is the same parser, adapted for tests.
+//!
 //! # Why the buffer text is the source of truth
 //!
 //! `magit.md` §7.5: hunk boundaries are *already* derived from buffer
@@ -22,18 +33,13 @@
 //! paths with spaces or non-ASCII bytes, and would silently drop
 //! rename and mode metadata. Copying cannot get any of that wrong.
 
-// MG.18b lands the parser; MG.18c wires it to `s` / `u` / `x`. Until
-// then every item here is exercised only by tests. Remove this with
-// MG.18c — if it survives that slice, something did not get wired.
-#![allow(dead_code)]
-
 use std::fmt::Write as _;
 
 use crate::highlight::{DiffLineClass, classify_diff_line};
 
 /// One hunk, plus the file header needed to apply it on its own.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct HunkPatch {
+pub struct HunkPatch {
     /// Verbatim file-header lines: `diff --git` through `+++`.
     pub header: Vec<String>,
     /// The `@@` line and its body, verbatim.
@@ -45,6 +51,26 @@ pub(crate) struct HunkPatch {
 }
 
 impl HunkPatch {
+    /// `path:line` naming this hunk's position **in the file** — the
+    /// `@@` header's new-side start, not a buffer row. Prompts and
+    /// echoes use it, so `Discard hunk at src/main.rs:42?` points at
+    /// something the user can find after the buffer is rebuilt.
+    ///
+    /// Falls back to the path alone, then to `"hunk"`, so a header
+    /// this cannot parse still yields a sentence.
+    pub fn display_location(&self) -> String {
+        let path = self.display_path();
+        let start = self
+            .hunk
+            .first()
+            .and_then(|h| parse_hunk_starts(h.trim_end()));
+        match (path, start) {
+            (Some(p), Some(HunkStarts { new, .. })) => format!("{p}:{new}"),
+            (Some(p), None) => p.to_string(),
+            (None, _) => "hunk".to_string(),
+        }
+    }
+
     /// The path from the `+++ b/…` line, for prompts and messages.
     /// `None` for a deletion (`+++ /dev/null`) or a malformed header.
     ///
@@ -100,15 +126,58 @@ fn parse_range_count(range: &str) -> Option<usize> {
     }
 }
 
+/// The `-old +new` **start lines** declared by an `@@` header — the
+/// file positions, used only to name the hunk in prompts.
+struct HunkStarts {
+    #[allow(dead_code)]
+    old: usize,
+    new: usize,
+}
+
+fn parse_hunk_starts(header: &str) -> Option<HunkStarts> {
+    let inner = header.strip_prefix("@@ ")?;
+    let inner = inner.split(" @@").next()?;
+    let mut parts = inner.split_whitespace();
+    let old = parse_range_start(parts.next()?.strip_prefix('-')?)?;
+    let new = parse_range_start(parts.next()?.strip_prefix('+')?)?;
+    Some(HunkStarts { old, new })
+}
+
+/// `"12,7"` → 12; `"12"` → 12.
+fn parse_range_start(range: &str) -> Option<usize> {
+    range
+        .split_once(',')
+        .map(|(start, _)| start)
+        .unwrap_or(range)
+        .parse()
+        .ok()
+}
+
 /// Locate the hunk containing `cursor` in `lines`.
 ///
-/// Returns `None` when the cursor is not inside a hunk body — on a
-/// section header, a file entry, a commit message, or a diff's own
-/// `---`/`+++` header lines. Callers fall back to file-level staging,
-/// which is what keeps every pre-MG.18 behaviour intact.
+/// The slice form of [`hunk_at_with`], for tests: production reads a
+/// buffer, which has no slice to hand.
+#[cfg(test)]
 pub(crate) fn hunk_at(lines: &[&str], cursor: usize) -> Option<HunkPatch> {
-    let header_line = enclosing_hunk_header(lines, cursor)?;
-    let counts = parse_hunk_counts(lines[header_line].trim_end())?;
+    hunk_at_with(|i| lines.get(i).map(|l| (*l).to_string()), cursor)
+}
+
+/// Locate the hunk containing `cursor`, reading lines through `read`.
+///
+/// `read(i)` returns line `i` without its trailing newline, or `None`
+/// past the end. Lines are used **verbatim** — trailing whitespace is
+/// part of the diff's content, and trimming it produces a patch whose
+/// context no longer matches the file.
+///
+/// Returns `None` when the cursor is not inside a hunk body — on a
+/// section header, a file entry, a commit message, a diff's own
+/// `---`/`+++` header lines, or anywhere *after* the last body line of
+/// the hunk above. Callers fall back to file-level staging, which is
+/// what keeps every pre-MG.18 behaviour intact.
+pub fn hunk_at_with(read: impl Fn(usize) -> Option<String>, cursor: usize) -> Option<HunkPatch> {
+    let header_line = enclosing_hunk_header(&read, cursor)?;
+    let header_text = read(header_line)?;
+    let counts = parse_hunk_counts(header_text.trim_end())?;
 
     // Consume the body using the header's declared counts rather than
     // stopping at "a line that doesn't look like diff content".
@@ -120,15 +189,15 @@ pub(crate) fn hunk_at(lines: &[&str], cursor: usize) -> Option<HunkPatch> {
     // never runs past its end into the surrounding buffer.
     let mut old_seen = 0usize;
     let mut new_seen = 0usize;
-    let mut hunk = vec![lines[header_line].trim_end().to_string()];
+    let mut hunk = vec![header_text];
     let mut idx = header_line + 1;
-    while idx < lines.len() && (old_seen < counts.old || new_seen < counts.new) {
-        let line = lines[idx];
+    while old_seen < counts.old || new_seen < counts.new {
+        let Some(line) = read(idx) else { break };
         // "\ No newline at end of file" annotates the line above and
         // counts toward neither side, but must ride along: dropping it
         // changes whether the applied result ends in a newline.
         if line.starts_with('\\') {
-            hunk.push(line.trim_end().to_string());
+            hunk.push(line);
             idx += 1;
             continue;
         }
@@ -146,7 +215,7 @@ pub(crate) fn hunk_at(lines: &[&str], cursor: usize) -> Option<HunkPatch> {
             // ends mid-hunk). Stop rather than absorb foreign lines.
             _ => break,
         }
-        hunk.push(line.trim_end().to_string());
+        hunk.push(line);
         idx += 1;
     }
 
@@ -156,7 +225,30 @@ pub(crate) fn hunk_at(lines: &[&str], cursor: usize) -> Option<HunkPatch> {
         return None;
     }
 
-    let header = file_header_above(lines, header_line)?;
+    // A `\ No newline at end of file` following the LAST body line is
+    // reached after the counts are satisfied, so the loop above never
+    // sees it. Dropping it would tell git to append a newline the file
+    // does not have — a one-byte corruption of every no-final-newline
+    // file staged this way.
+    while let Some(line) = read(idx) {
+        if !line.starts_with('\\') {
+            break;
+        }
+        hunk.push(line);
+        idx += 1;
+    }
+
+    // The cursor must be INSIDE the hunk it resolved, not merely below
+    // one. In magit-status the line after an expanded diff is the next
+    // file entry, and `s` there must stage that file — the pre-MG.18c
+    // behaviour — rather than restage the hunk above it. Without this
+    // the backward scan would happily claim every row down to the next
+    // `@@`, whatever it contained.
+    if cursor >= idx {
+        return None;
+    }
+
+    let header = file_header_above(&read, header_line)?;
     Some(HunkPatch {
         header,
         hunk,
@@ -167,13 +259,12 @@ pub(crate) fn hunk_at(lines: &[&str], cursor: usize) -> Option<HunkPatch> {
 
 /// The `@@` line at or above `cursor`, without crossing into a
 /// different file's diff or out of the diff entirely.
-fn enclosing_hunk_header(lines: &[&str], cursor: usize) -> Option<usize> {
-    if cursor >= lines.len() {
-        return None;
-    }
+fn enclosing_hunk_header(read: &impl Fn(usize) -> Option<String>, cursor: usize) -> Option<usize> {
+    // Past the end of the buffer there is nothing to resolve.
+    read(cursor)?;
     for idx in (0..=cursor).rev() {
-        let line = lines[idx];
-        match classify_diff_line(line) {
+        let line = read(idx)?;
+        match classify_diff_line(&line) {
             DiffLineClass::Hunk => return Some(idx),
             // Reaching the file command or its path headers means the
             // cursor sat above the first `@@` — inside the header, not
@@ -191,16 +282,22 @@ fn enclosing_hunk_header(lines: &[&str], cursor: usize) -> Option<usize> {
 /// `None` when there is none above the cursor — a diff fragment with no
 /// file header cannot be applied, so refusing here is what stops a
 /// patch that would target the wrong file.
-fn file_header_above(lines: &[&str], header_line: usize) -> Option<Vec<String>> {
-    let start = (0..header_line)
-        .rev()
-        .find(|&i| classify_diff_line(lines[i]) == DiffLineClass::FileCommand)?;
+fn file_header_above(
+    read: &impl Fn(usize) -> Option<String>,
+    header_line: usize,
+) -> Option<Vec<String>> {
+    let start = (0..header_line).rev().find(|&i| {
+        read(i)
+            .map(|l| classify_diff_line(&l) == DiffLineClass::FileCommand)
+            .unwrap_or(false)
+    })?;
     let mut header = Vec::new();
-    for line in lines.iter().take(header_line).skip(start) {
-        if classify_diff_line(line) == DiffLineClass::Hunk {
+    for i in start..header_line {
+        let line = read(i)?;
+        if classify_diff_line(&line) == DiffLineClass::Hunk {
             break;
         }
-        header.push(line.trim_end().to_string());
+        header.push(line);
     }
     Some(header)
 }
@@ -305,6 +402,105 @@ diff --git a/a.txt b/a.txt
         );
     }
 
+    /// MG.18c — the fallback that keeps file-level staging alive.
+    /// `s` on the entry line *below* an expanded diff must stage that
+    /// file, not restage the hunk above it. The backward scan finds
+    /// that hunk's `@@` either way; only the containment check
+    /// distinguishes "inside it" from "somewhere after it".
+    #[test]
+    fn a_cursor_below_a_hunk_resolves_to_no_hunk() {
+        let text = "\
+diff --git a/a.txt b/a.txt
+--- a/a.txt
++++ b/a.txt
+@@ -1,2 +1,2 @@
+ keep
+-old
++new
+  modified src/other.rs
+";
+        let l = lines(text);
+        assert!(
+            hunk_at(&l, 6).is_some(),
+            "the last body line is still inside the hunk"
+        );
+        assert!(
+            hunk_at(&l, 7).is_none(),
+            "the following status entry is not in the hunk — `s` there stages the file"
+        );
+    }
+
+    /// Trailing whitespace is content. `git apply` matches context
+    /// byte-for-byte, so trimming a context line's trailing spaces
+    /// produces a patch git refuses — every diff touching a
+    /// whitespace-dirty region would fail to stage.
+    #[test]
+    fn trailing_whitespace_survives_into_the_patch() {
+        // Written with escapes: a literal with trailing spaces is
+        // invisible in review and the first formatter to touch this
+        // file would silently delete the thing under test.
+        let text = concat!(
+            "diff --git a/a.txt b/a.txt\n",
+            "--- a/a.txt\n",
+            "+++ b/a.txt\n",
+            "@@ -1,2 +1,2 @@\n",
+            " keep   \n",
+            "-old\t\n",
+            "+new\n",
+        );
+        let l = lines(text);
+        let h = hunk_at(&l, 5).expect("inside the hunk");
+        assert_eq!(h.hunk[1], " keep   ", "context kept verbatim");
+        assert_eq!(h.hunk[2], "-old\t", "removed line kept verbatim");
+    }
+
+    /// The marker after the FINAL body line is reached only once the
+    /// counts are satisfied, so the body loop never sees it. Dropping
+    /// it tells git to append a newline the file does not have.
+    #[test]
+    fn a_trailing_no_newline_marker_after_the_last_body_line_rides_along() {
+        let text = "\
+diff --git a/a.txt b/a.txt
+--- a/a.txt
++++ b/a.txt
+@@ -1 +1 @@
+-old
++new
+\\ No newline at end of file
+";
+        let l = lines(text);
+        let h = hunk_at(&l, 4).expect("inside the hunk");
+        assert_eq!(
+            h.hunk.last().map(String::as_str),
+            Some("\\ No newline at end of file"),
+            "the trailing marker must reach the patch: {:?}",
+            h.hunk
+        );
+        assert_eq!(h.end_line, 7, "and be counted as part of the hunk");
+    }
+
+    #[test]
+    fn display_location_names_the_file_line_not_the_buffer_row() {
+        let l = lines(TWO_HUNKS);
+        // Hunk 2 sits at buffer row 9 but describes file line 20.
+        let h = hunk_at(&l, 11).unwrap();
+        assert_eq!(h.display_location(), "src/main.rs:20");
+    }
+
+    #[test]
+    fn display_location_falls_back_when_the_header_is_unparseable() {
+        let text = "\
+diff --git a/gone.txt b/gone.txt
+--- a/gone.txt
++++ /dev/null
+@@ -1 +0,0 @@
+-was here
+";
+        let l = lines(text);
+        let h = hunk_at(&l, 4).unwrap();
+        assert_eq!(h.display_location(), "hunk", "a deletion has no b/ path");
+    }
+
     #[test]
     fn a_hunk_header_without_counts_means_one_line() {
         let text = "\
@@ -383,7 +579,10 @@ diff --git a/a.txt b/a.txt
             patch.contains("index 1234567..89abcde 100644"),
             "index/mode metadata is preserved, not reconstructed:\n{patch}"
         );
-        assert!(patch.ends_with('\n'), "git apply rejects an unterminated patch");
+        assert!(
+            patch.ends_with('\n'),
+            "git apply rejects an unterminated patch"
+        );
     }
 
     #[test]
@@ -574,7 +773,10 @@ mod git_round_trip {
             let got = hunk_at(&lines, cursor)
                 .unwrap_or_else(|| panic!("line {cursor} is inside hunk 1"))
                 .to_patch();
-            assert_eq!(got, expected, "cursor at line {cursor} produced a different patch");
+            assert_eq!(
+                got, expected,
+                "cursor at line {cursor} produced a different patch"
+            );
         }
     }
 }

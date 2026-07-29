@@ -128,6 +128,36 @@ frame budget itself.
 
 ---
 
+## MG.18c — magit hunk resolution (2026-07-29)
+
+⚠️ Same box caveat as MG.14 above: Apple Silicon / macOS, not the
+Ryzen 9700X WSL2 dev box.
+
+`s` / `u` / `x` resolve the hunk under the cursor from the buffer's own
+text. The parser reads lines through an accessor and stops at the `@@`
+header's declared counts, so the work is proportional to **the hunk**,
+not to the buffer holding it. These three rows exist to keep that
+honest: the obvious simplification — collect the buffer into a
+`Vec<String>` and slice it — is shorter, passes every correctness test,
+and turns one keypress in a large `*magit:diff*` into an O(document)
+copy on the actor thread.
+
+Bench file: `crates/lattice-magit/benches/hunk_staging.rs`.
+Run: `cargo bench -p lattice-magit --bench hunk_staging`.
+
+| Bench | Median | Floor / Target | What it measures |
+|---|---|---|---|
+| `magit_hunk_at_small_200_lines` | ~646 ns | 640 ns / 5 µs | Cursor inside the first hunk of a 200-line diff: parse + build the standalone patch. The baseline the two rows below are compared against. |
+| `magit_hunk_at_large_50000_lines` | ~634 ns | 630 ns / 5 µs | The **same** cursor position in a 50,000-line diff. Must stay within noise of the row above — a number that tracks buffer size means the accessor was replaced by a collect. |
+| `magit_hunk_at_last_hunk_of_50000_lines` | ~620 ns | 620 ns / 5 µs | Cursor in the *last* hunk of that buffer, where the backward scan for the file header is furthest from row 0. That distance is bounded by one file's diff, not the document. |
+
+Runs on the actor thread (an action handler), not the UI thread, so the
+bar is "imperceptible per chord press" rather than the frame budget —
+but a regression here is felt directly, as the editor going quiet after
+`s`.
+
+---
+
 ## PH7.7a — grammar-extension boundary marshalling (2026-07-12)
 
 The host-side marshalling half of the **grammar-extension round-trip < 5 µs p99**

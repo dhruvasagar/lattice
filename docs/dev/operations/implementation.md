@@ -4235,7 +4235,16 @@ Installs through `SubsystemBoot` seam. Inverted out of
   prompting on those trains you to dismiss the prompt that matters.
   `revert --no-edit`, because git would otherwise hang on `$EDITOR`.
   Tag / merge / bisect / submodule / remotes deferred to MG.21.
-- **MG.18, MG.19, MG.21 remain open** — per-slice status and sequencing
+- ✅ **MG.18c** — hunk-level `s` / `u` / `x` (2026-07-29). The hunk
+  under the cursor is parsed out of the buffer's own text and applied
+  as a synthesized patch; the file-level path is untouched for a cursor
+  that is not inside a hunk. The resolution lives in `magit-core-mode`
+  (a hunk is a property of diff text, identical in every magit buffer),
+  gated on `MagitView::diff_source` so a mismatched press is refused
+  with a sentence instead of git's "patch does not apply" — and so `x`
+  on a staged hunk cannot reverse it out of the worktree while leaving
+  it staged.
+- **MG.18d/e, MG.19, MG.21 remain open** — per-slice status and sequencing
   live in
   [`slice-plans/magit.md`](slice-plans/magit.md), which is
   authoritative for this subsystem. (The 2026-07-26 audit found

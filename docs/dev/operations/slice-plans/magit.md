@@ -885,7 +885,7 @@ Design fragment:
 |---|---|---|---|
 | MG.18a | Delete the `stage_hunk` / `unstage_hunk` stubs; add `Index::apply_patch` + `Repository::run_git_stdin` | — | ✅ |
 | MG.18b | Hunk parser + patch synthesizer as pure functions, round-trip tested | MG.18a | ✅ |
-| MG.18c | `s`/`u`/`x` resolve hunk-at-cursor, file-level fallback preserved | MG.18b | 📝 |
+| MG.18c | `s`/`u`/`x` resolve hunk-at-cursor, file-level fallback preserved | MG.18b | ✅ |
 | MG.18d | Re-expand the entry + restore cursor to the next hunk after a mutation | MG.18c | 📝 |
 | MG.18e | Region (visual-mode) staging — the hunk-splitting rewrite | MG.18c | 📝 |
 
@@ -894,6 +894,73 @@ live landmine (the stubs silently stage whole files), so it lands
 first regardless. Value arrives at MG.18c; MG.18d is not optional
 polish — at hunk granularity, losing the user's place after every
 stage defeats the feature.
+
+#### MG.18c — `s` / `u` / `x` on the hunk at the cursor ✅ (2026-07-29)
+
+Partial staging works. Put the cursor in a hunk — in magit-status's
+inline diff or in a scoped `*magit:diff:*` buffer — and `s` stages that
+hunk alone, `u` unstages it, `x` discards it after confirming.
+
+**The resolution lives in `magit-core-mode`, not in each view.** A hunk
+is a property of diff *text*, identical in every magit buffer — the
+same argument §7.5 makes for `]c` / `[c` living there. `MagitView`
+keeps only what genuinely differs per view: the file-level fallback,
+and which tree the text was diffed against. A future view showing a
+diff gains hunk staging by binding the chord, with no new code. Not a
+`Document` trait method: the consumer is magit's own handler, not
+generic host machinery (the substrate-vs-mode-helper rule).
+
+**`MagitView::diff_source` — the new seam, and why it earns its place.**
+Both `s` and `u` could have been left to fail loudly at `git apply`,
+per the design's original table. `x` could not: on a **staged** hunk,
+`git apply --reverse` against the worktree *succeeds* and removes the
+change from the file while leaving it in the index — it disappears from
+the buffer and is still committed by the next `cc`. So the operation
+asks first. magit-status answers from the section header above the
+cursor, magit-diff from the scope in its buffer name; a mismatch is
+refused with what to press instead ("that hunk isn't staged"), not with
+git's "patch does not apply".
+
+`None` — `*magit:diff*` against HEAD (its hunks mix both sides), and a
+commit's or stash's inline patch — refuses hunk staging **without**
+falling through to file level. Falling through would turn a keypress
+aimed at one hunk into staging the whole file, the same silent
+over-staging MG.18a deleted the stubs over.
+
+**Three parser corrections the buffer path exposed**, none reachable
+while MG.18b's only callers were tests that placed the cursor inside a
+hunk by construction:
+
+- **Containment, not proximity.** `hunk_at` returned the hunk *above*
+  any cursor, so `s` on the file entry below an expanded diff would
+  have restaged that hunk instead of staging the file — the file-level
+  fallback would never have fired in magit-status.
+- **`\ No newline at end of file` after the last body line** is reached
+  only once the declared counts are satisfied, so the body loop never
+  saw it. Dropping it tells git to append a newline the file does not
+  have.
+- **Trailing whitespace was trimmed** off every stored line. `git apply`
+  matches context byte-for-byte, so any diff touching a
+  whitespace-dirty region produced a patch git refuses.
+
+**Reads the hunk, not the document.** `hunk_at_with` pulls lines
+through an accessor and stops at the `@@` header's counts, so
+resolution costs ~0.63 µs whether the buffer holds 200 lines or 50,000
+(`benchmarks.md` §MG.18c). The obvious simplification — collect the
+buffer, slice it — is shorter, passes every correctness test, and puts
+an O(document) copy on the actor thread for one keypress.
+
+- **Tests:** 10 new. 6 wiring cases through a real document actor and a
+  published view (Ready / FileLevel / three refusals), 5 parser cases
+  (containment, the trailing marker, trailing whitespace, two
+  `display_location` forms), the header→source and scope→source
+  mappings, the apply-flag table, and a git round-trip proving discard
+  reverses the worktree and leaves the index alone — the pairing with
+  no second chance.
+- **Not shipped:** the cursor lands wherever the refresh puts it
+  (MG.18d), and region staging is MG.18e. `x` on a staged hunk refuses
+  rather than discarding from index + worktree; that wants
+  `apply_patch --index`, which MG.18e's rewrite is the right time for.
 
 #### Original scoping notes
 

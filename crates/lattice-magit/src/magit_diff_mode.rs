@@ -37,7 +37,9 @@ use lattice_protocol::edit::Edit;
 use lattice_protocol::position::{Position, Range};
 use lattice_vcs::{Index, Repository};
 
-use crate::buffer_state::{BufferStateGuard, BufferStates, MagitView, MagitViewsHandle};
+use crate::buffer_state::{
+    BufferStateGuard, BufferStates, DiffSource, MagitView, MagitViewsHandle,
+};
 use crate::headerline;
 
 pub struct MagitDiffMode;
@@ -52,8 +54,8 @@ fn magit_diff_keymap_entries() -> &'static [KeymapEntry] {
     static ENTRIES: OnceLock<Vec<KeymapEntry>> = OnceLock::new();
     ENTRIES.get_or_init(|| {
         vec![
-            keymap_entry! { mode: Normal, chord: "s", doc: "Stage file at cursor", cmd: "action:magit-stage" },
-            keymap_entry! { mode: Normal, chord: "u", doc: "Unstage file at cursor", cmd: "action:magit-unstage" },
+            keymap_entry! { mode: Normal, chord: "s", doc: "Stage hunk or file at cursor", cmd: "action:magit-stage" },
+            keymap_entry! { mode: Normal, chord: "u", doc: "Unstage hunk or file at cursor", cmd: "action:magit-unstage" },
             keymap_entry! { mode: Normal, chord: "<CR>", doc: "Visit file at cursor", cmd: "action:magit-diff-visit-file" },
         ]
     })
@@ -404,6 +406,18 @@ fn run_diff(workdir: &Path, scope: DiffScope, path: Option<&Path>) -> String {
     }
 }
 
+/// MG.18c: which tree this buffer's hunks can be moved between.
+///
+/// Split from [`MagitView::diff_source`] so the mapping is testable
+/// without a live buffer and a spawned document actor.
+fn source_for_scope(scope: DiffScope) -> Option<DiffSource> {
+    match scope {
+        DiffScope::Staged => Some(DiffSource::Staged),
+        DiffScope::Unstaged => Some(DiffSource::Unstaged),
+        DiffScope::Head => None,
+    }
+}
+
 /// `gr` for this view — `magit-core-mode` owns the chord and the one
 /// boot-registered handler; see [`MagitView`].
 struct DiffView(Arc<Mutex<DiffState>>);
@@ -411,6 +425,22 @@ struct DiffView(Arc<Mutex<DiffState>>);
 impl MagitView for DiffView {
     fn refresh(&self) -> Option<Effect> {
         refresh(self.0.clone())
+    }
+
+    /// MG.18c: the buffer's scope answers this for its whole content —
+    /// every line came from one `git diff` invocation.
+    ///
+    /// `DiffScope::Head` deliberately yields `None`. `git diff HEAD`
+    /// combines staged and unstaged changes into single hunks, so a
+    /// hunk from it is not a patch against either tree, and staging it
+    /// would be guesswork. `d s` / `d u` from magit-status open the
+    /// scoped views where the question has an answer.
+    fn diff_source(&self, _cursor: Position) -> Option<DiffSource> {
+        source_for_scope(self.0.lock().ok()?.scope)
+    }
+
+    fn workdir(&self) -> Option<PathBuf> {
+        Some(self.0.lock().ok()?.workdir.clone())
     }
 
     /// `s` — file-level: finds the nearest `diff --git a/X b/X` header
@@ -439,5 +469,46 @@ impl MagitView for DiffView {
                 let _ = Index::unstage_path(&repo, &path);
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// MG.18c — `*magit:diff*` compares against HEAD, so one hunk can
+    /// contain both staged and unstaged lines. It is not a patch
+    /// against either tree, and `git apply` would either refuse it or
+    /// (worse) accept a partially-correct one. `d s` / `d u` from
+    /// magit-status open the scoped views where the question has an
+    /// answer; here staging stays file-level.
+    #[test]
+    fn only_the_scoped_views_can_stage_a_hunk() {
+        assert_eq!(
+            source_for_scope(DiffScope::Staged),
+            Some(DiffSource::Staged)
+        );
+        assert_eq!(
+            source_for_scope(DiffScope::Unstaged),
+            Some(DiffSource::Unstaged)
+        );
+        assert_eq!(
+            source_for_scope(DiffScope::Head),
+            None,
+            "a HEAD diff mixes both sides in one hunk"
+        );
+    }
+
+    /// The buffer name is the only carrier of scope, so a parse that
+    /// drifted would silently reclassify every hunk in the view.
+    #[test]
+    fn the_scope_a_buffer_name_encodes_survives_the_round_trip() {
+        for (name, scope) in [
+            ("*magit:diff*", DiffScope::Head),
+            ("*magit:diff:staged:src/a.rs*", DiffScope::Staged),
+            ("*magit:diff:unstaged:src/a.rs*", DiffScope::Unstaged),
+        ] {
+            assert_eq!(parse_buffer_name(name).0, scope, "{name}");
+        }
     }
 }

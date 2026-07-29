@@ -1,7 +1,8 @@
 # Hunk-level staging
 
-**Status:** designed 2026-07-29. MG.18a (patch-shaped write API) and
-MG.18b (hunk parser) landed; MG.18c–e open. Slice plan:
+**Status:** designed 2026-07-29. MG.18a (patch-shaped write API),
+MG.18b (hunk parser) and MG.18c (`s`/`u`/`x` on the hunk at the cursor)
+landed; MG.18d–e open. Slice plan:
 [`../operations/slice-plans/magit.md`](../operations/slice-plans/magit.md)
 §MG.18.
 
@@ -273,7 +274,71 @@ magit's `magit-no-confirm` default.
 | a section header | nothing |
 
 The file-level path is untouched, so no existing behaviour regresses —
-a cursor that resolved to a file before still does.
+a cursor that resolved to a file before still does. "Inside" is
+containment, not proximity: the parser refuses a cursor *below* a
+hunk's last body line. In magit-status the row after an expanded diff
+is the next file entry, and `s` there must stage that file rather than
+restage the hunk above it.
+
+### Where the resolution lives
+
+In `magit-core-mode`'s shared handler, not in each view. A hunk is a
+property of diff *text*, identical in every magit buffer — the same
+argument `magit.md` §7.5 makes for `]c` / `[c` living there. One
+implementation serves magit-status's inline diffs, magit-diff's buffer,
+and whatever binds `s` next; a future diff-showing view gains hunk
+staging by binding the chord, with no new code.
+
+What genuinely differs per view stays behind `MagitView`: which file a
+non-hunk line names (the file-level fallback), and which tree the text
+was diffed against (below). Per the substrate-vs-mode-helper rule this
+is *not* a `Document` trait method — the consumer is magit's own
+handler, not generic host machinery.
+
+## The operation asks which tree the hunk came from
+
+A hunk's patch is only meaningful against the tree it was diffed from,
+so `MagitView::diff_source(cursor)` answers `Staged` / `Unstaged` /
+`None`, and the operation is gated on it:
+
+| Chord | Acts on | Applies |
+|---|---|---|
+| `s` | an `Unstaged` hunk | `git apply --cached` |
+| `u` | a `Staged` hunk | `git apply --cached --reverse` |
+| `x` | an `Unstaged` hunk | `git apply --reverse` (worktree) |
+
+Every view answers from what it already knows — magit-status from the
+section header above the cursor, magit-diff from the scope in its
+buffer name — so nothing is stored and nothing can go stale.
+
+**Why gate at all, when git would refuse a mismatched patch anyway.**
+Two reasons, and the second is the load-bearing one:
+
+1. `error: patch does not apply` in `*messages*` is indistinguishable,
+   from the user's seat, from a missed keypress. "that hunk isn't
+   staged" says which key to press instead.
+2. `x` on a **staged** hunk would *not* be refused by git. The staged
+   diff's `+` side is in the worktree too, so `git apply --reverse`
+   succeeds and removes the change from the file while leaving it in
+   the index — it vanishes from the buffer and is still committed by
+   the next `cc`. Refusing (with "unstage it with `u` first") is the
+   only safe answer until `apply_patch` grows `--index`, which is
+   MG.18e's territory.
+
+`None` means "not classifiable here" and refuses hunk-level staging
+rather than guessing. Two views land there: `*magit:diff*` against HEAD
+mixes staged and unstaged changes into single hunks, and a commit's or
+stash's inline patch in magit-status belongs to neither tree. **The
+refusal does not fall through to file-level** — falling through would
+turn a keypress aimed at one hunk into staging the whole file, which is
+the same class of silent over-staging MG.18a deleted the stubs over.
+The message points at the file header, where file-level staging is
+still one deliberate press away.
+
+Emacs magit reaches the same place by a different road: it computes a
+diff type per buffer and refuses to stage from a `committed` or
+`undefined` one. Ours is strictly more permissive (file-level staging
+survives in the HEAD view).
 
 ## Region staging: the hard part
 

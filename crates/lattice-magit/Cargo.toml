@@ -37,6 +37,11 @@ smallvec = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 criterion = { workspace = true }
+# MG.18c: the hunk-staging wiring tests spawn a real document actor to
+# resolve a hunk from real buffer text, and `spawn_document` wants a
+# `CommandRegistryHandle` (an `ArcSwap`) even though these buffers
+# dispatch nothing.
+arc-swap = { workspace = true }
 
 # MG.14: the headerline's per-tick `version()` cost. It resolves theme
 # colours live (so `:colorscheme` lands on the row) rather than
@@ -45,6 +50,13 @@ criterion = { workspace = true }
 # honest.
 [[bench]]
 name = "headerline"
+harness = false
+
+# MG.18c: the cost of resolving the hunk under the cursor must not
+# scale with the buffer it sits in — the reason the parser reads
+# through an accessor instead of collecting the document.
+[[bench]]
+name = "hunk_staging"
 harness = false
 
 [lints]

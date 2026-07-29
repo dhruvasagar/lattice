@@ -1,11 +1,11 @@
 ---
-summary: "magit-diff-mode: a read-only diff buffer with file-level stage/unstage (s/u) — repo-wide against HEAD, or scoped to one file and one baseline."
+summary: "magit-diff-mode: a read-only diff buffer with hunk- and file-level stage/unstage (s/u) — repo-wide against HEAD, or scoped to one file and one baseline."
 related: [magit, magit-diff, ex:magit-diff]
 ---
 
 # magit-diff-mode
 
-A read-only diff in its own buffer, with file-level staging on top.
+A read-only diff in its own buffer, with staging on top.
 `:magit-diff` opens the repo-wide view — `git diff HEAD`, staged and
 unstaged changes combined.
 
@@ -21,8 +21,8 @@ list.
 
 | Chord | Action |
 |---|---|
-| `s` | Stage the file at cursor |
-| `u` | Unstage the file at cursor |
+| `s` | Stage the hunk or file at cursor |
+| `u` | Unstage the hunk or file at cursor |
 | `<CR>` | Visit the file at cursor |
 | `gr` | Refresh (re-run the underlying `git diff`) |
 
@@ -31,9 +31,23 @@ list.
 magit buffer — `]c` / `[c` for hunk-to-hunk movement is the one you'll
 use most here.
 
-`s` and `u` resolve the file from the nearest `diff --git a/<path>
-b/<path>` header **above** the cursor, so they work from anywhere
-inside that file's diff, not only on its header line.
+`s` and `u` act on the **hunk under the cursor** when there is one, so
+`]c` then `s` stages exactly the hunk you landed on and leaves the
+file's others alone. With the cursor on a file header — or anywhere
+outside a hunk body — they fall back to the whole file, resolved from
+the nearest `diff --git a/<path> b/<path>` header above.
+
+Which chord applies depends on the buffer's scope. A
+`*magit:diff:unstaged:*` buffer stages with `s`; a `*magit:diff:staged:*`
+one unstages with `u`; pressing the other says so rather than failing
+in git.
+
+**`*magit:diff*` (against HEAD) stages files, not hunks.** Its hunks
+combine staged and unstaged changes, so a single hunk there is not a
+patch against either the index or the working tree. `s` inside one
+reports that hunk staging isn't available in this view; move to the
+file header for the whole file, or open the scoped view (`d` on the
+file in magit-status) to work hunk by hunk.
 
 ## The three scopes
 
@@ -82,14 +96,15 @@ so a second one would be redundant.
 ## Behaviour worth knowing
 
 - **Populated once on open**; `gr` re-runs the diff.
-- **`s` / `u` are file-level only.** There is no hunk-level staging
-  here — the same caveat as magit-status. File-level is as granular as
-  staging gets anywhere in magit today.
+- **`s` / `u` stage a hunk in the scoped views, a file in the HEAD
+  view** — see the note above. The same rule holds in magit-status.
+- **`x` (discard) isn't bound here**, only in magit-status.
 - **Not yet implemented:** no side-by-side pane layout, no
   `do` / `dp` hunk transfer between panes, no visual-mode partial-hunk
-  staging. For side-by-side diffing of two *files* (as opposed to
-  reviewing git state), see [`diff-mode`](help:diff-mode), which is a
-  separate feature.
+  staging (stage a *selection* of lines within a hunk). For
+  side-by-side diffing of two *files* (as opposed to reviewing git
+  state), see [`diff-mode`](help:diff-mode), which is a separate
+  feature.
 
 ## See also
 

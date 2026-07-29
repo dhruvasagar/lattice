@@ -1,5 +1,5 @@
 ---
-summary: "magit-status: the primary magit workhorse — staged / unstaged / untracked sections, stashes, recent commits, lazy inline diffs (via = for files, <CR> for stashes), a dedicated per-file diff buffer (d), file-level staging (s/u/x — no hunk-level staging), commit (cc/ca), and context-aware visit (<CR>, opens the commit buffer for a commit entry)."
+summary: "magit-status: the primary magit workhorse — staged / unstaged / untracked sections, stashes, recent commits, lazy inline diffs (via = for files, <CR> for stashes), a dedicated per-file diff buffer (d), hunk- and file-level staging (s/u/x), commit (cc/ca), and context-aware visit (<CR>, opens the commit buffer for a commit entry)."
 related: [magit, magit-transient, ex:magit-status]
 ---
 
@@ -7,9 +7,9 @@ related: [magit, magit-transient, ex:magit-status]
 
 The `*magit:status*` buffer is the primary workhorse — a section-
 collapsible view of your repository's current state. It shows every
-changed file organised into sections, lets you stage and unstage at
-file granularity (there is no hunk-level staging), commit, amend, open
-diffs on demand, and navigate between sections, files, and hunks.
+changed file organised into sections, lets you stage and unstage a
+whole file or a single hunk, commit, amend, open diffs on demand, and
+navigate between sections, files, and hunks.
 
 Open it with **`C-x g`** or **`:magit-status`** from any buffer.
 
@@ -17,9 +17,10 @@ Open it with **`C-x g`** or **`:magit-status`** from any buffer.
 > diffs via `=` (files) and `<CR>` (stashes), a dedicated per-file diff
 > buffer via `d` (opens against the file's own section baseline —
 > `--cached` for Staged, working-tree-vs-index for Unstaged — useful
-> for diffs too large to read comfortably inline), file-level staging
-> (`s`/`u`/`x` — there is no hunk-level staging anywhere in this
-> buffer), commit (`cc`/`ca`), context-aware visit (`<CR>`, opens the
+> for diffs too large to read comfortably inline), staging
+> (`s`/`u`/`x` — on the hunk under the cursor inside an expanded diff,
+> on the whole file otherwise), commit (`cc`/`ca`), context-aware
+> visit (`<CR>`, opens the
 > dedicated [commit buffer](help:magit-commit-mode) for a
 > commit entry), manual refresh (`gr`), and close (`q`) are shipped.
 > `TAB` genuinely folds:
@@ -42,9 +43,9 @@ Open it with **`C-x g`** or **`:magit-status`** from any buffer.
 
 | Chord | Action |
 |---|---|
-| `s` | Stage the file at cursor |
-| `u` | Unstage the file at cursor |
-| `x` | Discard the file at cursor (asks for confirmation first) |
+| `s` | Stage the hunk or file at cursor |
+| `u` | Unstage the hunk or file at cursor |
+| `x` | Discard the hunk or file at cursor (asks for confirmation first) |
 | `=` | Toggle inline diff for the file at cursor |
 | `d` | Open the file at cursor's diff in a dedicated buffer (against the section's baseline) |
 | `cc` | Open the [commit buffer](help:magit-commit-mode) |
@@ -146,14 +147,42 @@ When the cursor is on a **file header** (the `  modified   path` line):
 | `u` | Unstage the entire file |
 | `x` | Discard all working-tree changes to the file — asks for confirmation first (`Discard changes to <path>?`, `y`/`n`) before running `git checkout --` |
 
-### There is no hunk-level staging
+### Hunk-level
 
-`s` / `u` / `x` are always **file-level**, even with the cursor
-positioned inside an expanded (`=`-toggled) diff — the status buffer
-has no concept of staging or discarding an individual hunk. Pressing
-`s`/`u`/`x` while the cursor is on a diff content line does nothing
-(there's no file entry under the cursor to act on); move the cursor
-back onto the file's header line first.
+Expand a file's diff with `=`, put the cursor anywhere inside one hunk
+— a `+`, `-`, or context line, or the `@@` header itself — and the same
+three chords act on that hunk alone:
+
+| Chord | Action |
+|---|---|
+| `s` | Stage this hunk, leaving the file's other hunks unstaged |
+| `u` | Unstage this hunk (cursor in a **Staged** entry's diff) |
+| `x` | Discard this hunk from the working tree — asks first (`Discard hunk at <path>:<line>?`) |
+
+`]c` / `[c` jump between hunks, and staging uses the same hunk
+boundaries they do, so `]c` then `s` always stages the hunk you just
+landed on.
+
+Each chord acts on the side it belongs to. `s` and `x` want an
+**Unstaged** hunk, `u` wants a **Staged** one; press the wrong one and
+magit says so ("that hunk isn't staged") rather than running a git
+command that would fail — or, for `x` on a staged hunk, one that would
+*succeed* and quietly remove the change from your file while leaving it
+staged for the next commit. Unstage it with `u` first, then discard.
+
+Hunks inside a commit's or stash's expanded patch can't be staged —
+they belong to neither the index nor the working tree. `s` there
+reports that hunk staging isn't available in this view; move to the
+file header if you meant the whole file.
+
+If the working tree has moved under the buffer since it was drawn, git
+refuses the patch outright rather than applying it somewhere
+plausible-looking. The failure is reported in `*messages*` and the view
+refreshes; press `gr` and try again.
+
+**After a stage the view collapses back to the file entry.** Restoring
+your place at the next remaining hunk is coming (MG.18d), as is
+staging a *selection* of lines within a hunk (MG.18e).
 
 `p` (interactively stage via `git add -p`) is disabled outright: it
 shows `magit: interactive git add -p isn't supported yet` rather than

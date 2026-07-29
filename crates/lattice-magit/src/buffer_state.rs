@@ -141,6 +141,18 @@ pub fn state_for<S: Send + Sync + 'static>(ctx: &ActionContext<'_>) -> Option<Ar
 /// on deactivation, remove the boot-registered handler too and break
 /// `gr` everywhere. Any action reachable from more than one mode must
 /// be boot-registered exactly once and dispatched through here.
+/// Which tree a stretch of diff text was produced against — the
+/// answer [`MagitView::diff_source`] gives, and the only thing
+/// hunk-level `s` / `u` / `x` need to know beyond the hunk itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffSource {
+    /// `git diff --cached` — HEAD vs the index. `u` reverses it out.
+    Staged,
+    /// `git diff` — the index vs the working tree. `s` applies it in,
+    /// `x` reverses it out of the worktree.
+    Unstaged,
+}
+
 pub trait MagitView: Send + Sync + 'static {
     /// `gr` — rebuild this view's content in place.
     fn refresh(&self) -> Option<lattice_grammar::Effect>;
@@ -165,6 +177,33 @@ pub trait MagitView: Send + Sync + 'static {
         &self,
         cursor: lattice_protocol::position::Position,
     ) -> Option<lattice_grammar::Effect> {
+        let _ = cursor;
+        None
+    }
+
+    /// MG.18c: which diff the text at `cursor` came from.
+    ///
+    /// **Why staging has to ask.** A hunk's patch is only meaningful
+    /// against the tree it was diffed from: an unstaged hunk applies
+    /// forward into the index (`s`), a staged one reverses back out of
+    /// it (`u`). Pressing the wrong one produces a patch git refuses,
+    /// which reaches the user as `error: patch does not apply` —
+    /// indistinguishable from a missed keypress. Worse, `x` on a
+    /// staged hunk would reverse it out of the *worktree* while
+    /// leaving it in the index: the change vanishes from the file but
+    /// is still committed by the next `cc`.
+    ///
+    /// So the operation asks first and declines with a sentence.
+    /// Every view answers from what it already knows — magit-status
+    /// from the section header above the cursor, magit-diff from the
+    /// scope in its buffer name.
+    ///
+    /// `None` means "not classifiable here", and hunk-level staging is
+    /// refused rather than guessed: `*magit:diff*` (against HEAD)
+    /// mixes both sides in one hunk, and a commit's or stash's inline
+    /// patch in magit-status belongs to neither tree. File-level
+    /// staging is unaffected — it never needed this answer.
+    fn diff_source(&self, cursor: lattice_protocol::position::Position) -> Option<DiffSource> {
         let _ = cursor;
         None
     }

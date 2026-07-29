@@ -44,7 +44,6 @@ impl DiffLineClass {
             Self::Context => None,
         }
     }
-
 }
 
 /// Classify one line of a unified diff. The single prefix ladder.
@@ -75,7 +74,6 @@ fn spans_for(class: DiffLineClass, line_len: usize) -> Vec<StyledSpan> {
         None => Vec::new(),
     }
 }
-
 
 /// Color a unified diff: `+`/`-` content lines, `@@` hunk headers,
 /// `diff --git`/`---`/`+++` file headers. Used verbatim by

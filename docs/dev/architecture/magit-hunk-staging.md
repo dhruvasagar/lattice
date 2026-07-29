@@ -67,16 +67,22 @@ stale buffer, the apply fails loudly instead of staging the wrong
 lines. Failures surface as a user-visible error and a refresh, never a
 silent no-op.
 
-### Diverging from the "shape locked now" sketch
+### Retiring the `HunkSpec` sketch
 
-[`vcs-and-magit.md`](vcs-and-magit.md) §Write-API locks:
+The `(path, HunkSpec)` shape comes from
+[`vcs-and-magit.md`](vcs-and-magit.md), which
+[`magit.md`](magit.md) §3.2 already supersedes — it is the *early
+sketch*, and magit.md records several of its decisions as reversed
+(write-API no longer stubbed, native crate over WASM, no
+`spawn-process` WIT gate). Its Write-API block locks:
 
 ```rust
 pub fn stage_hunk(repo: &Repository, path: &Path, hunk: HunkSpec) -> Result<(), GitError>;
 ```
 
-`HunkSpec` was never defined. The shape does not survive contact with
-git, for two reasons:
+`HunkSpec` was never defined, and magit.md §7.3 records hunk staging
+itself as target-design-not-built. The shape does not survive contact
+with git, for two reasons:
 
 1. **There is no index operation that stages "hunk N of path P".** Any
    implementation would synthesize a patch internally — and to be safe
@@ -119,68 +125,140 @@ same repo. Stdin is what git's own tooling uses.
 
 ## Hunk identity: derived from the buffer, not stored
 
-The load-bearing choice. Three options, evaluated against the goals.
+The load-bearing choice — and [`magit.md`](magit.md) has already
+answered the equivalent question twice, in ways that constrain it.
 
-### (A) Re-derive from buffer text at action time
+**Precedent 1 — hunk boundaries are already text-derived.** §7.5: `]c`
+/ `[c` walk hunks via `hunk_lines` in `magit_core_mode.rs`, a raw
+buffer scan for lines starting with `@@` or `diff --git`, **identical
+in every magit buffer**, consulting no cache:
 
-Walk up from the cursor to the nearest `@@` header, take lines to the
-next `@@` (or the end of the diff region), and walk further up to the
-file header for the path.
+```rust
+if t.starts_with("@@") || t.starts_with("diff --git") { lines.push(l); }
+```
 
-> **UX (higher court):** neutral — no visible difference; correctness
-> rests on the buffer text matching what git produced, which it does
-> because the buffer *is* git's output verbatim.
-> **Paramount goals:** protects #3 (the vim grammar keeps working —
-> `s` resolves against wherever the cursor happens to be, including
-> after the user scrolled, folded or searched); protects #1 (nothing
-> is computed until the chord fires, so expansion stays cheap).
-> Sacrifices nothing measurable.
-> **Heuristic #1 (long-term fit):** genuinely better, not merely
-> smaller. One parser serves **all three** surfaces — magit-status's
-> inline expansion, magit-diff's whole buffer, and the commit buffer's
-> staged region — because all three hold the same unified-diff text.
-> The alternatives need per-surface plumbing.
+§7.5 is explicit that the target design's `DiffCache`-aware "only walk
+expanded files' hunks" behaviour is *not built*, and that `]c`/`[c` are
+plain text scans everywhere.
+
+**Precedent 2 — the mode-private data deliberately excludes diffs.**
+§7.2: `SectionIndex` "stores file paths and status labels — **not
+diffs**", and the target design's "separate `DiffCache` keyed by
+`(path, section)` with parsed `Hunk`/`ParsedHunk` data does not exist".
+
+**Precedent 3 — the confirm contract mandates re-reading anyway.**
+§12.13: the execute half of a destructive action "re-reads its target
+at the cursor rather than carrying it through the prompt". `x` is
+destructive, so hunk-discard *must* resolve its hunk from the cursor at
+execute time no matter where the identity is stored.
+
+### (A) Re-derive from buffer text at action time — **recommended**
+
+Reuse the same scan `]c`/`[c` already use: find the enclosing `@@`,
+take lines to the next `@@` / `diff --git`, walk up to the file header
+for the path.
+
+> **UX (higher court):** neutral-to-positive — navigation and staging
+> agree on where a hunk starts *by construction*, so `]c` then `s`
+> always stages the hunk you just jumped to.
+> **Paramount goals:** protects #3 (one hunk concept across every magit
+> buffer — the grammar behaves the same wherever the cursor is);
+> protects #1 (nothing computed until the chord fires).
+> **Heuristic #1 (long-term fit, on merit):** the genuinely-better
+> design, and notably *not* the smaller-diff argument — it is the same
+> mechanism already in production for hunk navigation. One parser then
+> serves all three diff surfaces (status inline, magit-diff, the commit
+> buffer's staged region) because all three hold the same text.
 > **Heuristic #2 (paramount, not other editors):** anchored on
-> everything-is-a-buffer — the buffer's text is the model, so reading
-> it back is not a hack, it is the design. (Emacs magit stores
-> structure in overlays; that is a fact about elisp, not a reason.)
+> everything-is-a-buffer — the buffer text *is* the model here, which
+> is why §7.5's walkers read it directly. Emacs magit keeps structure
+> in overlays; that is a fact about elisp, not an argument.
 > **Heuristic #3 (third option):** (B) and (C) below.
-> **Standing-rule check (mode ownership):** the parser and the chord
-> bodies both live in `lattice-magit`, and both move together into
-> `magit-hunk-mode` at MG.22. No host-side `Editor::do_stage_hunk`.
+> **Standing-rule check (mode ownership):** parser and chord bodies
+> both live in `lattice-magit` as helper functions — the
+> substrate-helper side of the rule, exactly as §7.2 classifies
+> `classify_line` — and move together into `magit-hunk-mode` at MG.22.
+> No `Editor::do_stage_hunk`.
 
 **Cost, stated plainly:** a writer/reader pair — `diff_styled_spans`
-writes the buffer, the hunk parser reads it back. That is exactly the
-drift that left every magit-stash chord dead until MG.15. Mitigated by
-routing both through MG.21a's single `classify_diff_line` ladder and by
-round-trip tests (parse(render(hunks)) == hunks), not by hoping.
+writes the buffer, the hunk parser reads it back. That is the drift
+that left every magit-stash chord dead until MG.15. Mitigated by
+routing the reader through MG.21a's single `classify_diff_line` ladder
+and by round-trip tests, not by hoping.
 
 ### (B) Store parsed hunks in mode state
 
-Keep `Vec<Hunk>` with line ranges alongside `StatusBufferState::expanded`.
+A `DiffCache` of `Vec<Hunk>` alongside `StatusBufferState::expanded`.
 
-Structural and drift-free, but: `expanded` is cleared on every refresh
-and the inline diff is re-fetched, so the map must be rebuilt in
-lockstep with an async insert that already had a race worth commenting
-(`expanded.insert` deliberately happens *after* the edit lands). It
-also solves the problem only for magit-status — magit-diff and the
-commit buffer have no `expanded` map, so they would each need their
-own. Three mechanisms where (A) has one.
+This is precisely the structure §7.2 records as *not existing*, and
+adopting it would put staging on a different hunk model than the
+navigation that shares the buffer — `]c` would find one boundary set
+and `s` another, and nothing would force them to agree. It also only
+covers magit-status: magit-diff and the commit buffer have no
+`expanded` map, so each needs its own. Three mechanisms where (A) has
+one, plus a new disagreement hazard.
+
+Additionally `expanded` is cleared on every refresh and its insert
+deliberately happens *after* the async edit lands (§6.4) — a cache
+keyed to it inherits that race.
 
 ### (C) Have git re-derive it
 
 Re-run `git diff` at action time and match the cursor's hunk by index.
 
-Correct by construction, no parser at all — but it is an fs + subprocess
-round-trip per keystroke, and the hunk index is only stable if nothing
-changed between render and action, which is precisely when it matters.
-Rejected on paramount #1 and on correctness.
+Correct by construction, no parser — but an fs + subprocess round-trip
+per keystroke, and the hunk index is only stable if nothing changed
+between render and action, which is exactly when it matters. Rejected
+on paramount #1 and on correctness.
 
 **Recommendation: (A)**, because it protects paramount-#3 — one hunk
-parser makes `s`/`u`/`x` behave identically in every buffer whose
-content is a diff, which is what "the grammar is the API" means here —
-and because heuristic #1 favours the design with one mechanism over the
-one with three.
+concept across every buffer whose content is a diff, shared with the
+navigation chords that already define it that way — and because
+heuristic #1 favours reusing the mechanism already proven in `]c`/`[c`
+over introducing a second, disagreeing one.
+
+## Fulfilling §7.4 (stale hunk boundaries)
+
+[`magit.md`](magit.md) §7.4 reserves "stale hunk boundary detection" as
+a safeguard to build when hunk staging arrives. **`git apply`'s exact
+context match is that safeguard**, and a stronger one than a hand-rolled
+check: it validates every context line against the real target, so a
+patch built from a buffer that has drifted is refused outright rather
+than applied at a plausible-looking offset. No separate staleness
+heuristic is needed; the failure path is "report and refresh".
+
+## Why this is not blocked by the `p` problem
+
+§7.3 explains that `git add -p` is unsupported because it is genuinely
+interactive over stdin, which the TUI's raw-mode input loop already
+owns — `Command::output()` would hang the actor against a child waiting
+on stdin neither routes to the other.
+
+`git apply` has none of that: it is non-interactive, we write the
+complete patch and close the pipe, and it exits. The `p` blocker does
+not transfer, which is why hunk staging can land without solving
+terminal suspend.
+
+## `x` follows the ask/execute contract
+
+Hunk-level discard is destructive — `git apply --reverse` on the
+worktree throws away work git cannot return. It therefore takes the
+§12.13 shape, not a new one:
+
+- `action:magit-discard` reads the hunk at the cursor, performs **no
+  git call**, and returns `Effect::Confirm { prompt, yes_action }`.
+- `action:magit-discard-execute` re-resolves the hunk at the cursor and
+  applies the reversed patch.
+- The prompt names its target — `Discard hunk at src/main.rs:42?` —
+  since §12.13 requires a question answerable without dismissing it.
+
+The existing `x` row in `DESTRUCTIVE_ACTIONS` already covers this
+action pair; extending it to hunks changes what the execute half
+resolves, not the contract.
+
+`s` and `u` continue **not** to ask: §12.13 lists stage/unstage among
+the deliberate no-confirm set (index-only, reversible), matching Emacs
+magit's `magit-no-confirm` default.
 
 ## Resolution order: hunk, then file
 
@@ -253,6 +331,20 @@ the mode-ownership acid test.
 
 ## Cross-references
 
-- [`magit.md`](magit.md) — the subsystem this serves
+[`magit.md`](magit.md) is the authoritative subsystem design; the
+sections this fragment builds on directly:
+
+- **§7.2** section index as mode-private helper data (no diffs cached)
+- **§7.3** staging is file-level only today, and why `p` is blocked
+- **§7.4** the stale-hunk-boundary safeguard this fulfils
+- **§7.5** `]c`/`[c` hunk boundaries as a raw buffer scan — the
+  precedent option (A) reuses
+- **§6.4** `StatusBufferState::expanded` and its post-edit insert
+- **§12.13** the destructive ask/execute contract `x` follows
+
+Also:
+
 - [`magit-hunk-mode.md`](magit-hunk-mode.md) — the eventual owner (MG.22)
 - [`mode-architecture.md`](mode-architecture.md) — mode ownership rules
+- [`vcs-and-magit.md`](vcs-and-magit.md) — the superseded early sketch,
+  kept for history; prefer magit.md

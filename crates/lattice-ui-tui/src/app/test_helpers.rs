@@ -220,6 +220,51 @@ pub(super) fn submit_ex(a: &mut App, line: &str) {
 /// vim-style chord sequences (`"2dd"`, `"d2w"`, `">>"`).
 /// For modifiers or special keys, build a `KeyEvent` and
 /// call [`press`] directly.
+/// Let asynchronous activation land, then drain it.
+///
+/// Mode activation runs as a spawned cascade: only the root step (the
+/// major) completes synchronously, and implied minors land later. The
+/// results are applied by `run_tick_pending`, which production reaches
+/// at `App::apply`'s tail — i.e. on the *next keystroke*. A test that
+/// opens a buffer and then only sleeps never applies another action,
+/// so the cascade completes on the runtime and its results are never
+/// drained.
+///
+/// That gap is invisible and expensive: it makes every minor-mode
+/// chord (`magit-core-mode`'s `q` / `gr` / `]]` / `TAB`, and any other
+/// mode implied by a major) unreachable from tests, so they can break
+/// with nothing failing. Polls up to ~2s, yielding to the runtime and
+/// draining each round.
+///
+/// Returns whether `until` held before the deadline.
+pub(super) async fn settle(app: &mut App, mut until: impl FnMut(&App) -> bool) -> bool {
+    for _ in 0..200 {
+        if until(app) {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        let signals = app.editor.run_tick_pending();
+        for s in signals {
+            app.handle_renderer_signal(s);
+        }
+    }
+    until(app)
+}
+
+/// [`settle`] specialised to "this mode is active on the active
+/// buffer" — the common case, and the one whose absence hid
+/// `magit-core-mode` entirely.
+pub(super) async fn settle_mode(app: &mut App, mode: &str) -> bool {
+    let id = lattice_mode::ModeId::new(mode);
+    settle(app, |a| {
+        a.editor
+            .active_modes
+            .get(&a.editor.document_buffer_id)
+            .is_some_and(|m| m.is_active(id.clone()))
+    })
+    .await
+}
+
 pub(super) fn press_chars(app: &mut App, keys: &str) {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     for c in keys.chars() {

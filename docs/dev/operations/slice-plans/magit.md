@@ -819,6 +819,58 @@ that channel, not this one.
   empty submit clears; resume declines with nothing parked, which is
   what tells the submit path the prompt belonged to an action).
 
+### Live bug — stale content after `q` ✅ (2026-07-29)
+
+**Reported:** `q` in magit-status returned to the previous buffer but
+the screen kept painting magit's content. Opening the command line
+showed the file; `<Esc>` brought the stale content back; a forced
+redraw did nothing.
+
+**Root cause.** `open_synthetic_buffer` opens a full-pane buffer
+through `activate_buffer`, which swaps the pane, the active-document
+handle (`Editor::document`), the snapshot cache and the syntax state
+together. magit's `q` returned via `Effect::DismissPopup` →
+`dismiss_popup`, which hand-restores only `pane.buffer_id` /
+`active_buffer` / cursor / scroll / modal. That restore is right for a
+*popup* — a popup floats over the pane, so the document was never
+swapped out — and wrong for a magit view, where it was.
+
+So the pane named the file while `Editor::document` still held magit's
+rope. The active render path paints from the document handle; inactive
+panes render from registry snapshots, which is exactly why the command
+line showed the right thing and `<Esc>` undid it; and a redraw could
+not help because the *data* was stale, not the paint.
+
+`document_buffer_id == pane_tree.active().buffer_id` is an **invariant**,
+not two independent pieces of state: `Editor::document` is a live
+handle cached so the keystroke path never does a registry lookup
+(paramount goal #1), and `document_buffer_id` is its key. Panes are
+many; the active document is one. This was a plain cache-invalidation
+bug.
+
+**Fix.** `Effect::BuryBuffer` + `Editor::bury_buffer`, distinct from
+`DismissPopup` because the two are genuinely different operations —
+dropping an overlay versus giving a pane its buffer back. `bury_buffer`
+returns *through* `activate_buffer` rather than restoring a subset by
+hand, so it cannot drift out of step with what opening does. No WIT
+mirror yet (typed error at the boundary, the shape `Effect::Global`
+uses); GPUI got its arm in the same patch per the parity rule.
+
+**A test-harness hole this exposed, worth more than the bug.** Mode
+activation runs as a spawned cascade — only the major lands
+synchronously — and its results are applied by `run_tick_pending`,
+which production reaches at `App::apply`'s tail, i.e. on the *next
+keystroke*. A test that opened a buffer and only slept never applied
+another action, so the cascade completed and was never drained.
+
+Consequence: `magit-core-mode` looked inactive in every test, which
+means **no test could reach `q`, `gr`, `]]`, `[[`, `]f`, `[f`, `]c`,
+`[c`, `TAB` or `S-TAB` in any magit buffer** — the exact blind-spot
+class MG.13 existed to close, reopened one layer down. `test_helpers`
+gained `settle` / `settle_mode`, and the end-to-end `q` test uses them;
+verified non-vacuous by reverting the fix and watching it fail with the
+reported symptom (pane restored, document still magit's).
+
 ### MG.18 — Hunk-level staging
 
 **The largest divergence from Emacs magit.** `Index::stage_hunk` /

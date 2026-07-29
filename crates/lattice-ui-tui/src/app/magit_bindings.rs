@@ -361,6 +361,55 @@ mod tests {
         check(&app, "after a no-op bury");
     }
 
+    /// The reported bug, end to end, through the actual keypress.
+    ///
+    /// The primitive-level test above proves `bury_buffer` is correct;
+    /// this proves `q` reaches it. Both are needed — the original bug
+    /// lived in the primitive, but a regression could equally well
+    /// rebind `q` or break the minor's activation, and neither would
+    /// show up in the other test.
+    ///
+    /// Needs [`settle_mode`]: `q` belongs to `magit-core-mode`, an
+    /// implied minor that lands via the spawned cascade and is applied
+    /// by `run_tick_pending` on a later keystroke. Without settling,
+    /// the chord is simply unbound and the test would pass or fail for
+    /// reasons unrelated to what it claims to check.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pressing_q_in_magit_status_returns_both_the_pane_and_the_document() {
+        let mut app = app_with("the original file content\n", 20);
+        let origin = app.editor.document_buffer_id;
+
+        run_ex(&mut app, "magit-status");
+        assert!(
+            settle_mode(&mut app, "magit-core-mode").await,
+            "magit-core-mode must activate on a magit buffer — it owns `q`, \
+             `gr`, `]]`, `[[`, `TAB`; without it every one of those is dead"
+        );
+        assert_ne!(app.editor.document_buffer_id, origin);
+
+        press(&mut app, key('q'));
+
+        assert_eq!(
+            app.editor.pane_tree.active().buffer_id,
+            origin,
+            "`q` must return the pane to the file"
+        );
+        assert_eq!(
+            app.editor.document_buffer_id, origin,
+            "`q` must return the ACTIVE DOCUMENT too — this is the reported \
+             bug: the pane named the file while the document still held \
+             magit, so the screen painted magit over it"
+        );
+        assert!(
+            app.editor
+                .document
+                .snapshot()
+                .text()
+                .contains("the original file content"),
+            "and the document must hold the file's text"
+        );
+    }
+
     /// MG.16: the remote/stash ex-commands reach the *booted* registry.
     ///
     /// The unit tests in `lattice-magit` build their own

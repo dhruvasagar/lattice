@@ -531,9 +531,14 @@ fn apply_patch_reversed_unstages_a_hunk() {
     git_add(&repo, "a.txt");
 
     let staged = git(&repo, &["diff", "--cached", "--", "a.txt"]);
-    assert_eq!(hunk_count(&staged), 2, "expected two staged hunks:\n{staged}");
+    assert_eq!(
+        hunk_count(&staged),
+        2,
+        "expected two staged hunks:\n{staged}"
+    );
 
-    Index::apply_patch(&repo, &first_hunk_only(&staged), true, true).expect("unstage the first hunk");
+    Index::apply_patch(&repo, &first_hunk_only(&staged), true, true)
+        .expect("unstage the first hunk");
 
     let still_staged = git(&repo, &["diff", "--cached", "--", "a.txt"]);
     assert!(

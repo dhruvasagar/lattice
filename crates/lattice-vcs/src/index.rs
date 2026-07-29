@@ -58,6 +58,10 @@ impl Index {
         args.push("-");
         repo.run_git_stdin(args, patch.as_bytes())
             .map(|_| ())
-            .map_err(|e| VcsError::Index(format!("apply_patch (cached={cached}, reverse={reverse}): {e}")))
+            .map_err(|e| {
+                VcsError::Index(format!(
+                    "apply_patch (cached={cached}, reverse={reverse}): {e}"
+                ))
+            })
     }
 }

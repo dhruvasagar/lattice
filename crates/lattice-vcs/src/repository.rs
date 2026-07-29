@@ -107,20 +107,16 @@ impl Repository {
                 context: "run_git_stdin: stdin already taken".into(),
                 source: std::io::Error::other("no stdin"),
             })?;
-            stdin
-                .write_all(input)
-                .map_err(|e| VcsError::GitCommand {
-                    context: "run_git_stdin: write".into(),
-                    source: e,
-                })?;
-            // `stdin` drops here, closing the pipe.
-        }
-        let output = child
-            .wait_with_output()
-            .map_err(|e| VcsError::GitCommand {
-                context: "run_git_stdin: wait".into(),
+            stdin.write_all(input).map_err(|e| VcsError::GitCommand {
+                context: "run_git_stdin: write".into(),
                 source: e,
             })?;
+            // `stdin` drops here, closing the pipe.
+        }
+        let output = child.wait_with_output().map_err(|e| VcsError::GitCommand {
+            context: "run_git_stdin: wait".into(),
+            source: e,
+        })?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(VcsError::GitCommandFailed {

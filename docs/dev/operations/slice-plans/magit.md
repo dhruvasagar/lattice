@@ -884,7 +884,7 @@ Design fragment:
 | Slice | Scope | Depends | Status |
 |---|---|---|---|
 | MG.18a | Delete the `stage_hunk` / `unstage_hunk` stubs; add `Index::apply_patch` + `Repository::run_git_stdin` | — | ✅ |
-| MG.18b | Hunk parser + patch synthesizer as pure functions, round-trip tested | MG.18a | 📝 |
+| MG.18b | Hunk parser + patch synthesizer as pure functions, round-trip tested | MG.18a | ✅ |
 | MG.18c | `s`/`u`/`x` resolve hunk-at-cursor, file-level fallback preserved | MG.18b | 📝 |
 | MG.18d | Re-expand the entry + restore cursor to the next hunk after a mutation | MG.18c | 📝 |
 | MG.18e | Region (visual-mode) staging — the hunk-splitting rewrite | MG.18c | 📝 |

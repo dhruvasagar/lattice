@@ -14,6 +14,7 @@ mod confirm;
 pub mod fold_source;
 pub mod headerline;
 mod highlight;
+mod hunk;
 pub mod magit_blame_mode;
 pub mod magit_branch_mode;
 pub mod magit_commit_mode;

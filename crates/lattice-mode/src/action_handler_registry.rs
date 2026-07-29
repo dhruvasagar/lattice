@@ -38,6 +38,7 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use lattice_grammar::effect::Effect;
+use lattice_grammar::{ArgValue, Args};
 use lattice_protocol::ids::{BufferId, CommandId};
 use lattice_protocol::position::Position;
 use lattice_runtime::EventBus;
@@ -71,6 +72,41 @@ pub struct ActionContext<'a> {
     /// `None` for every other firing path (chord dispatch, transient
     /// item click, `Effect::Confirm`'s yes-action, ...).
     pub prompt_value: Option<&'a str>,
+    /// MG.17a: arguments the invocation carried.
+    ///
+    /// `Args::None` for a bare chord press. A transient item's flags
+    /// and arguments arrive here as `Args::List`, ordered by the
+    /// action's `args_schema` — the same shape the `:` line produces
+    /// for an ex-command, so one handler body serves both front-ends
+    /// instead of each surface growing its own accessor. Read it with
+    /// [`Self::flag`] / [`Self::arg_str`] rather than matching the
+    /// list positionally.
+    pub args: Args,
+}
+
+impl ActionContext<'_> {
+    /// The boolean argument at `index` in the action's `args_schema`.
+    ///
+    /// `false` when the invocation carried no args (a bare chord), when
+    /// the index is past the end, or when that slot holds a non-bool —
+    /// a handler asking "was `--force` set?" wants `false` for all
+    /// three, not three different error paths.
+    pub fn flag(&self, index: usize) -> bool {
+        match self.args.as_list().and_then(|l| l.get(index)) {
+            Some(ArgValue::Bool(b)) => *b,
+            _ => false,
+        }
+    }
+
+    /// The string argument at `index`, or `None` when absent or empty.
+    /// Empty is treated as absent because a transient argument left at
+    /// its default renders as an empty string.
+    pub fn arg_str(&self, index: usize) -> Option<&str> {
+        match self.args.as_list().and_then(|l| l.get(index)) {
+            Some(ArgValue::String(s)) | Some(ArgValue::Raw(s)) if !s.is_empty() => Some(s.as_str()),
+            _ => None,
+        }
+    }
 }
 
 /// Action handler closure shape. Returns an [`Effect`] when
@@ -327,6 +363,7 @@ mod tests {
             services: &services,
             events: &events,
             prompt_value: None,
+            args: lattice_grammar::Args::None,
         };
         let effect = h(&ctx);
         assert!(matches!(effect, Some(Effect::None)));

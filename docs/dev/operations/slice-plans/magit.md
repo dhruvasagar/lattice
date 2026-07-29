@@ -32,10 +32,11 @@ owns *what* and *why*.
 | MG.14 | Headerline across every magit buffer | MG.4–MG.11 | ✅ |
 | MG.15 | Stash detail view (`<CR>` in magit-stash) | MG.9, MG.14 | ✅ |
 | MG.16 | Remote/stash ex-command parity (`:magit-push` etc.) | MG.8 | ✅ |
-| MG.17 | Transient flags + arguments (`--force`, `--include-untracked`, …) | MG.8 | 📝 |
+| MG.17a | Transient flags (`--force-with-lease`, `--prune`, …) + preview | MG.8 | ✅ |
+| MG.17b | Transient `Argument` items (prompt → back to the menu) | MG.17a | 📝 |
 | MG.18 | Hunk-level staging | MG.5, MG.13 | 📝 |
 | MG.19 | magit-diff side-by-side + `do`/`dp` | MG.18, D.4 | 📝 |
-| MG.20 | Operation coverage — merge / tag / reset / revert / cherry-pick | MG.17 | 📝 |
+| MG.20 | Operation coverage — merge / tag / reset / revert / cherry-pick | MG.17a | 📝 |
 
 **2026-07-26 audit correction:** this table (last synced when MG.1-3 landed) had
 drifted from `implementation.md`'s per-slice status, which had marked MG.4-10 all
@@ -96,7 +97,8 @@ MG.9 ─→ MG.10 ─→ MG.11 ──┬─→ MG.12 (confirm parity)   ← do f
                          │                                  every slice below
                          ├─→ MG.14 (headerline) ─┬─→ MG.15 (stash detail)
                          ├─→ MG.16 (ex-cmd parity)
-                         └─→ MG.17 (flags/args) ─┬─→ MG.20 (operations)
+                         └─→ MG.17a (flags) ─┬─→ MG.17b (arguments)
+                                             └─→ MG.20 (operations)
                                                  │
                     MG.5 ─→ MG.18 (hunk staging) ─→ MG.19 (side-by-side)
 ```
@@ -700,6 +702,71 @@ substrate supports all three; magit simply does not use them.
 - **Note:** `Argument` is currently a no-op in `do_transient_trigger`
   (§8.8) — that must land first or arguments silently do nothing, the
   same failure shape as the MG.8 bug.
+
+**Split into MG.17a (flags, done) and MG.17b (arguments) — the two
+halves have very different risk.** Flags are self-contained; arguments
+need a prompt round-trip that returns to an open transient, which is a
+genuinely new interaction shape.
+
+### MG.17a — transient flags + preview ✅ (2026-07-29)
+
+**The blocker the plan didn't name.** `Argument` being a no-op was
+known. What wasn't: even a *working* `Flag` toggle could not reach the
+handler. `ActionContext` carried `buffer_id` / `cursor` / `services` /
+`events` / `prompt_value` and no arguments, so a handler had no way to
+ask "was `--force` set?". And it couldn't simply gain the state:
+`TransientState` lives in `lattice-picker`, which `lattice-mode` (home
+of `ActionContext`) does not and should not depend on.
+
+**Resolved through `Args`,** the currency both crates already share and
+the one ex-commands carry. `ActionContext` gained `args: Args`;
+`do_transient_trigger` projects the toggled state onto the action's
+`args_schema` positionally. That makes MG.16's "one body, two
+front-ends" literal — `:magit-push --force-with-lease` and toggling
+`-f` in the menu produce the *same* `Args::List` and run the same
+`spawn_remote_op`. A test pins that equality directly, since it is the
+claim the slice rests on.
+
+**One table, four consumers.** `RemoteOp::flags` (a `&[RemoteFlag]` of
+name / git-arg / key / doc) is read by the ex-command's `args_schema`,
+the transient's `Flag` items, the preview string, and the argv builder.
+Adding `--prune` to fetch is one row. This shape was chosen because
+this crate has now produced the same class of bug three times (MG.6,
+MG.8, MG.15) — a format with independent writers and readers that
+drifted.
+
+- **Shipped flags:** push `--force-with-lease` / `--set-upstream`,
+  fetch `--all` / `--prune`, stash `--include-untracked`.
+- **`--force-with-lease`, never bare `--force`** — it refuses when the
+  remote moved since your last fetch, which is exactly when a bare
+  force destroys someone else's commits. Pinned by a test; Emacs magit
+  defaults the same way.
+- **Push and fetch became submenus** to hold their flags; a flat menu
+  fires on keypress, leaving no moment to toggle. One extra keystroke,
+  in exchange for the flags existing. Pull deliberately stays a direct
+  action — `--ff-only` is not optional, so it has no flags to hold.
+- **Preview** is generated from the same table as the argv, and a test
+  asserts the two agree across every flag combination. A preview that
+  can disagree with what runs is worse than none before a force-push.
+
+**The MG.8 guard needed teaching.** `every_root_dispatch_item_resolves_
+to_a_real_action_not_a_flag_fallback` treated *any* `Flag` as an inert
+placeholder, which was true when the only Flag was the unresolved-id
+fallback. It now excludes flags declared in a `RemoteOp::flags` table —
+precise without a hand-maintained exception list, since a placeholder
+is named after the action it failed to resolve and can never match.
+
+**Not shipped:** log's `--all` / count / path-filter. Log opens a
+buffer whose scope rides its *name* (`*magit:log:<path>*`), so its
+flags need that channel rather than the action-args one — a different
+mechanism, deferred with MG.17b rather than bolted on.
+
+- **Tests:** 8 in `lattice-magit` (argv per flag combination,
+  argless-invocation regression, preview/argv agreement,
+  force-with-lease pinning, schema/table alignment, both-front-ends-one-
+  `Args`, unknown-token tolerance, flagless-op passthrough) + 3 in
+  `lattice-host` driving the real projection (schema order beats map
+  order, empty schema ⇒ `Args::None`, unset slot ⇒ declared default).
 
 ### MG.18 — Hunk-level staging
 

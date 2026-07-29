@@ -7,8 +7,81 @@
 
 use std::sync::Arc;
 
-use lattice_picker::{TransientGroup, TransientItem, TransientItemKind, TransientSpec};
+use lattice_picker::{
+    TransientGroup, TransientItem, TransientItemKind, TransientSpec, TransientState, TransientValue,
+};
 use lattice_protocol::ids::CommandId;
+
+use crate::magit_global_mode::RemoteOp;
+
+/// MG.17a: the `Flag` items for a [`RemoteOp`], built from the op's own
+/// flag table so the menu can't offer a toggle the argv builder ignores.
+fn flag_items(op: RemoteOp) -> Vec<TransientItem> {
+    op.flags
+        .iter()
+        .map(|f| TransientItem {
+            key: vec![f.key.to_string()],
+            label: f.arg.to_string(),
+            description: f.doc.to_string(),
+            kind: TransientItemKind::Flag {
+                name: f.name.to_string(),
+                default: false,
+            },
+        })
+        .collect()
+}
+
+/// MG.17a: the live preview for a [`RemoteOp`] transient — the exact
+/// git command the current toggles resolve to. Rendered by the same
+/// `RemoteOp::preview` the argv builder is paired with, so the preview
+/// cannot claim one command while the run executes another.
+fn remote_preview(op: RemoteOp) -> Box<dyn Fn(&TransientState) -> String + Send + Sync> {
+    Box::new(move |state: &TransientState| {
+        op.preview(&|name| matches!(state.get(name), Some(TransientValue::Bool(true))))
+    })
+}
+
+/// MG.17a: a sub-transient for one remote operation — its flags, then
+/// the key that runs it.
+///
+/// Flags need a menu that stays open while you toggle them, which the
+/// flat root dispatch cannot do: pressing `P` there fires immediately.
+/// So `P` now opens this, and `P` again (or `<CR>`) runs it — one extra
+/// keystroke, in exchange for the flags being reachable at all.
+fn remote_op_transient(
+    title: &str,
+    op: RemoteOp,
+    run_key: &str,
+    run_id: Option<CommandId>,
+    run_label: &str,
+    run_doc: &str,
+    placeholder: &str,
+) -> TransientSpec {
+    let mut groups = Vec::new();
+    let flags = flag_items(op);
+    if !flags.is_empty() {
+        groups.push(TransientGroup {
+            label: "Arguments".into(),
+            items: flags,
+        });
+    }
+    groups.push(TransientGroup {
+        label: "Actions".into(),
+        items: vec![action_or_placeholder(
+            run_id,
+            run_key,
+            run_label,
+            run_doc,
+            placeholder,
+        )],
+    });
+    TransientSpec {
+        title: title.into(),
+        groups,
+        preview: Some(remote_preview(op)),
+        footer: Some("q dismiss  BS back".into()),
+    }
+}
 
 /// The `action:magit-global-*` `CommandId`s [`dispatch_transient`]'s
 /// items fire, resolved once at `install()` time (all the names it
@@ -134,13 +207,25 @@ pub fn dispatch_transient(ids: &DispatchActionIds) -> TransientSpec {
             TransientGroup {
                 label: "Remotes".into(),
                 items: vec![
-                    action_or_placeholder(
-                        ids.fetch,
-                        "f",
-                        "fetch",
-                        "Fetch from the remote without merging",
-                        "fetch_op",
-                    ),
+                    TransientItem {
+                        key: vec!["f".into()],
+                        label: "fetch".into(),
+                        description: "Fetch from the remote without merging".into(),
+                        kind: TransientItemKind::Submenu(Arc::new(remote_op_transient(
+                            "Fetch",
+                            RemoteOp::FETCH,
+                            "f",
+                            ids.fetch,
+                            "fetch",
+                            "Run the fetch",
+                            "fetch_op",
+                        ))),
+                    },
+                    // Pull has no flags today (`--ff-only` is not
+                    // optional — a magit pull that could create a merge
+                    // commit behind your back is the wrong default), so
+                    // it stays a direct action rather than gaining a
+                    // submenu with nothing in it.
                     action_or_placeholder(
                         ids.pull,
                         "F",
@@ -148,7 +233,20 @@ pub fn dispatch_transient(ids: &DispatchActionIds) -> TransientSpec {
                         "Fetch + fast-forward merge from the remote",
                         "pull_op",
                     ),
-                    action_or_placeholder(ids.push, "P", "push", "Push to the remote", "push_op"),
+                    TransientItem {
+                        key: vec!["P".into()],
+                        label: "push".into(),
+                        description: "Push to the remote".into(),
+                        kind: TransientItemKind::Submenu(Arc::new(remote_op_transient(
+                            "Push",
+                            RemoteOp::PUSH,
+                            "P",
+                            ids.push,
+                            "push",
+                            "Run the push",
+                            "push_op",
+                        ))),
+                    },
                 ],
             },
             TransientGroup {
@@ -206,20 +304,37 @@ fn commit_transient(ids: &DispatchActionIds) -> TransientSpec {
 fn stash_transient(ids: &DispatchActionIds) -> TransientSpec {
     TransientSpec {
         title: "Stash".into(),
-        groups: vec![TransientGroup {
-            label: "Actions".into(),
-            items: vec![
-                action_or_placeholder(
-                    ids.stash_create,
-                    "z",
-                    "stash",
-                    "Stash the working tree (git stash push)",
-                    "stash_push",
-                ),
-                action_or_placeholder(ids.stash, "l", "list", "Open the stash list", "stash_op"),
-            ],
-        }],
-        preview: None,
+        groups: vec![
+            // MG.17a: `-u` rides here rather than in a further submenu —
+            // this menu already exists and already stays open, so the
+            // flag costs no extra keystroke.
+            TransientGroup {
+                label: "Arguments".into(),
+                items: flag_items(RemoteOp::STASH),
+            },
+            TransientGroup {
+                label: "Actions".into(),
+                items: vec![
+                    action_or_placeholder(
+                        ids.stash_create,
+                        "z",
+                        "stash",
+                        "Stash the working tree (git stash push)",
+                        "stash_push",
+                    ),
+                    action_or_placeholder(
+                        ids.stash,
+                        "l",
+                        "list",
+                        "Open the stash list",
+                        "stash_op",
+                    ),
+                ],
+            },
+        ],
+        // The preview describes the stash-push the `z` key runs; `l`
+        // just opens the list and ignores the flag.
+        preview: Some(remote_preview(RemoteOp::STASH)),
         footer: Some("q dismiss  BS back".into()),
     }
 }

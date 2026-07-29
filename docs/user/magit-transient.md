@@ -191,38 +191,82 @@ as the repo menu's gaps: no implementation behind them.
 
 ---
 
-## Toggleable flags, arguments, and live preview — substrate capabilities, not shipped magit features
+## Toggleable flags and the live preview
 
-The underlying transient data model (`TransientItemKind`) supports
-boolean flags that toggle in place, argument items that open a
-minibuffer prompt for a string value (branch name, remote name, commit
-reference, …), and a live command-preview line that updates as flags
-and arguments change. All three are real, tested mechanisms in
-`lattice-picker`.
+Some operations take flags, and the menus that offer them stay open
+while you toggle, showing the exact git command you're about to run.
 
-**No shipped magit menu exercises any of them for real today.** Every
-leaf item in every shipped menu is a `TransientItemKind::Action` that
-fires a real handler; none is a `Flag`. (The data model still supports
-a `Flag` item as a defensive fallback if an action name somehow failed
-to resolve — that path is what a regression test in `lattice-magit`
-asserts never triggers, recursing through submenus, because an item
-silently degrading to an inert `Flag` looks exactly like "pressing the
-key does nothing" from your side.)
+### Where they are
 
-So: no menu has a working `--force`, `--include-untracked`, or `--all`
-toggle. `z z` always runs plain `git stash push` with no
-include-untracked option; `P` always runs plain `git push` with no
-force or set-upstream option. No menu has an `Argument` item at all,
-so there's no way to type a branch name, remote name, or commit
-reference from inside a transient; the branch-create wizard's
-name-entry prompt (see [`magit-branch-mode`](help:magit-branch-mode))
-is a separate mechanism — a picker-triggered follow-up prompt, not an
-in-place `Argument` field inside a transient menu. No shipped menu
-sets a `preview` closure, so there's no live command-preview line
-anywhere in magit today. `Flag`/`Argument`/`preview` are the machinery
-a future flag-carrying submenu would use — but as of now, treat
-"toggle a flag", "fill in an argument", and "watch the preview update"
-as not-yet-real for magit specifically.
+| Menu | Key | Flags |
+|---|---|---|
+| Push (`C-c g` → `P`) | `-f` | `--force-with-lease` |
+| | `-u` | `--set-upstream` |
+| Fetch (`C-c g` → `f`) | `-a` | `--all` |
+| | `-p` | `--prune` |
+| Stash (`C-c g` → `z`) | `-u` | `--include-untracked` |
+
+Push and fetch became **submenus** to hold their flags: `P` opens the
+push menu, and `P` again (or the listed run key) actually pushes. That
+is one extra keystroke than before, and it's the cost of the flags
+being reachable at all — a flat menu fires the instant you press its
+key, leaving no moment in which to toggle anything.
+
+Pull deliberately has no flags. `--ff-only` isn't optional: a pull that
+could silently create a merge commit is the wrong default, so it stays
+a direct action rather than a submenu with nothing in it.
+
+### The preview line
+
+While a flag menu is open, the preview shows the command as currently
+configured:
+
+```
+git push
+git push --force-with-lease          # after -f
+git push --force-with-lease --set-upstream   # after -u
+```
+
+The preview is generated from the same table that builds the argv, so
+it cannot show one command and run another.
+
+### `--force-with-lease`, not `--force`
+
+Push offers `--force-with-lease` and does not offer bare `--force`.
+The difference matters: `--force-with-lease` refuses when the remote
+moved since your last fetch, which is exactly the situation where a
+bare force quietly destroys someone else's commits. Emacs magit
+defaults the same way.
+
+### The same flags on the `:` line
+
+Every flag works as an ex-command argument too:
+
+```
+:magit-push --force-with-lease --set-upstream
+:magit-fetch --all --prune
+:magit-stash --include-untracked
+```
+
+Both surfaces resolve to the same arguments and run the same code —
+the transient is the discoverable path, the ex-command the scriptable
+one. Full spellings only; there are no abbreviations. An unrecognised
+token is ignored rather than failing the command, since the flags are
+additive: the worst case is an operation that does slightly less than
+you asked, never something you didn't ask for.
+
+### Not yet: `Argument` items
+
+The data model also supports *argument* items — a menu entry that opens
+a prompt for a string value (a remote name, a commit reference, a log
+count). **No shipped menu uses one**, and pressing such an item today
+would do nothing: the mechanism is still a no-op in the dispatcher.
+Log's `--all` / count / path-filter arguments wait on it.
+
+The branch-create wizard's name prompt (see
+[`magit-branch-mode`](help:magit-branch-mode)) is a different
+mechanism — a picker-triggered follow-up prompt, not an in-place
+argument field inside a menu.
 
 ---
 

@@ -1225,6 +1225,7 @@ mod tests {
             services: &services,
             events: &events,
             prompt_value: None,
+            args: lattice_grammar::Args::None,
         };
 
         let expected: &[(&str, LspRequest)] = &[

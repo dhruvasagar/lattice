@@ -7502,6 +7502,7 @@ impl Editor {
             services: &self.services,
             events: &self.event_bus,
             prompt_value: Some(text.as_str()),
+            args: lattice_grammar::Args::None,
         };
         if let Some(effect) = handler(&ctx) {
             // `apply_effect_host` already pushes non-`None` effects
@@ -27302,7 +27303,10 @@ impl Editor {
             return;
         };
         let spec = spec_arc.clone(); // clone Arc
-        let _state = &picker.transient_state;
+        // MG.17a: snapshot the toggled flags before anything can
+        // dismiss the picker — `do_picker_dismiss` in the Action arm
+        // drops the picker, and with it the state the handler needs.
+        let transient_state = picker.transient_state.clone();
 
         // Find the item matching the key across all groups
         let found: Option<(
@@ -27332,6 +27336,11 @@ impl Editor {
                     .services
                     .get::<lattice_mode::ActionHandlerRegistryHandle>()
                     .and_then(|reg| reg.lookup(cmd_id));
+                // MG.17a: the flags/arguments the user toggled before
+                // pressing the key. Resolved against the action's own
+                // `args_schema` BEFORE `do_picker_dismiss` tears the
+                // picker (and its state) down.
+                let args = self.transient_args_for(cmd_id, &transient_state);
                 out.renderer_signals.extend(self.do_picker_dismiss());
                 if let Some(handler) = handler {
                     let ctx = lattice_mode::ActionContext {
@@ -27342,6 +27351,7 @@ impl Editor {
                         services: &self.services,
                         events: &self.event_bus,
                         prompt_value: None,
+                        args,
                     };
                     if let Some(effect) = handler(&ctx) {
                         // `apply_effect_host` already pushes non-`None`
@@ -27393,6 +27403,35 @@ impl Editor {
                 // prompt + return-to-transient flow. For now, no-op.
             }
         }
+    }
+
+    /// MG.17a: project a transient's toggled state onto the action's
+    /// declared `args_schema`, producing the same `Args` the `:` line
+    /// would build for the equivalent ex-command.
+    ///
+    /// Positional by schema order, which is what makes one handler body
+    /// serve both front-ends: `:magit-push --force` parses to
+    /// `Args::List([Bool(true)])` and the transient's `--force` toggle
+    /// resolves to the same thing, so `spawn_remote_op` reads slot 0
+    /// once instead of each surface growing its own accessor.
+    ///
+    /// An action with an empty schema gets `Args::None` — every action
+    /// that predates flags keeps behaving exactly as before. A schema
+    /// slot the transient never set falls back to the spec's declared
+    /// default, so a handler always sees a full, correctly-ordered
+    /// list rather than having to distinguish "absent" from "false".
+    fn transient_args_for(
+        &self,
+        cmd_id: lattice_protocol::ids::CommandId,
+        state: &lattice_picker::TransientState,
+    ) -> lattice_grammar::Args {
+        use lattice_grammar::Args;
+
+        let registry = self.registry.load();
+        let Some(spec) = registry.lookup(cmd_id) else {
+            return Args::None;
+        };
+        project_transient_state(&spec.args_schema, state)
     }
 
     /// PICK.1: toggle a boolean flag in the transient state by name.
@@ -33766,6 +33805,7 @@ impl Editor {
                     services: &self.services,
                     events: &self.event_bus,
                     prompt_value: None,
+                    args: lattice_grammar::Args::None,
                 };
                 if let Some(effect) = handler(&ctx) {
                     // M.10.x bug fix (2026-06-03): route through
@@ -34467,9 +34507,112 @@ fn should_adopt_owner_write(
     has_editable_tail && doc_text_version > last_seen
 }
 
+/// MG.17a: project a transient's toggled state onto an `args_schema`.
+///
+/// Pure and free-standing so the tests exercise the SAME code the
+/// dispatcher runs. An earlier draft of this slice had the test carry
+/// its own copy of the projection — that is precisely the writer/reader
+/// drift that left every magit-stash chord dead until MG.15, so it is
+/// deliberately not repeated here.
+///
+/// Positional by schema order: slot `i` is `schema[i]`, whether the
+/// value came from a transient toggle or from the `:` line. A slot the
+/// transient never set falls back to the spec's declared default, so a
+/// handler always receives a full, correctly-ordered list and never has
+/// to distinguish "absent" from "false".
+fn project_transient_state(
+    schema: &[lattice_grammar::ArgSpec],
+    state: &lattice_picker::TransientState,
+) -> lattice_grammar::Args {
+    use lattice_grammar::{ArgDefault, ArgKind, ArgValue, Args};
+
+    if schema.is_empty() {
+        return Args::None;
+    }
+    Args::List(
+        schema
+            .iter()
+            .map(|arg| match state.get(arg.name.as_ref()) {
+                Some(lattice_picker::TransientValue::Bool(b)) => ArgValue::Bool(*b),
+                Some(lattice_picker::TransientValue::String(s)) => ArgValue::String(s.clone()),
+                None => match (&arg.default, arg.kind) {
+                    (ArgDefault::Literal(v), _) => v.clone(),
+                    (_, ArgKind::Bool) => ArgValue::Bool(false),
+                    _ => ArgValue::String(String::new()),
+                },
+            })
+            .collect(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── MG.17a: transient state -> Args, by the action's schema ──
+
+    /// Drive the REAL projection the dispatcher uses — not a copy.
+    fn args_for(
+        schema: Vec<lattice_grammar::ArgSpec>,
+        state: &[(&str, lattice_picker::TransientValue)],
+    ) -> lattice_grammar::Args {
+        let st: lattice_picker::TransientState = state
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), v.clone()))
+            .collect();
+        project_transient_state(&schema, &st)
+    }
+
+    #[test]
+    fn transient_state_projects_onto_schema_order_not_map_order() {
+        use lattice_grammar::{ArgKind, ArgSpec, ArgValue, Args};
+        use lattice_picker::TransientValue;
+        // A HashMap has no order; the schema does. Declaring `b` first
+        // must put b's value in slot 0 regardless of insertion order.
+        let schema = vec![
+            ArgSpec::optional("b", ArgKind::Bool, "second alphabetically, first in schema"),
+            ArgSpec::optional("a", ArgKind::Bool, "first alphabetically, second in schema"),
+        ];
+        let args = args_for(
+            schema,
+            &[
+                ("a", TransientValue::Bool(false)),
+                ("b", TransientValue::Bool(true)),
+            ],
+        );
+        assert_eq!(
+            args,
+            Args::List(vec![ArgValue::Bool(true), ArgValue::Bool(false)])
+        );
+    }
+
+    #[test]
+    fn an_action_with_an_empty_schema_gets_no_args() {
+        use lattice_grammar::Args;
+        use lattice_picker::TransientValue;
+        // Every action predating MG.17a declares an empty schema and
+        // must keep behaving exactly as before, even if some unrelated
+        // flag is sitting in the transient state.
+        assert_eq!(
+            args_for(Vec::new(), &[("force", TransientValue::Bool(true))]),
+            Args::None
+        );
+    }
+
+    #[test]
+    fn a_schema_slot_the_transient_never_set_falls_back_to_its_default() {
+        use lattice_grammar::{ArgKind, ArgSpec, ArgValue, Args};
+        // The handler always sees a full, correctly-ordered list, so it
+        // never has to tell "absent" from "false".
+        let schema = vec![
+            ArgSpec::optional("untouched", ArgKind::Bool, "never toggled"),
+            ArgSpec::optional("also-untouched", ArgKind::String, "never typed"),
+        ];
+        assert_eq!(
+            args_for(schema, &[]),
+            Args::List(vec![ArgValue::Bool(false), ArgValue::String(String::new())])
+        );
+    }
 
     // ── OWC: owner-write adopt gate ─────────────────────────────
     #[test]

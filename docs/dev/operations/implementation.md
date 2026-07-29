@@ -4198,7 +4198,23 @@ Installs through `SubsystemBoot` seam. Inverted out of
   body (`spawn_remote_op`) behind two front-ends per the unified-dispatch
   rule, with each operation's argv and echo verb defined once as a
   `RemoteOp` constant.
-- **MG.17–MG.20 remain open** — per-slice status and sequencing
+- ✅ **MG.17a** — Transient flags + live preview (2026-07-29). Push
+  `--force-with-lease` / `--set-upstream`, fetch `--all` / `--prune`,
+  stash `--include-untracked`, each with a preview line rendering the
+  exact git command. **The blocker the plan didn't name:** `Argument`
+  being a no-op was known, but even a working `Flag` could not reach a
+  handler — `ActionContext` carried no arguments, and `TransientState`
+  lives in `lattice-picker`, which `lattice-mode` doesn't depend on.
+  Resolved by giving `ActionContext` an `args: Args` (the currency
+  ex-commands already carry) and projecting transient state onto the
+  action's `args_schema` positionally, which makes MG.16's "one body,
+  two front-ends" literal: `:magit-push --force-with-lease` and the
+  `-f` toggle produce the same `Args` and run the same code. One
+  `RemoteOp::flags` table feeds the schema, the menu, the preview, and
+  the argv — chosen because this crate has produced the
+  independent-writer-and-reader drift bug three times now (MG.6, MG.8,
+  MG.15). Force-push is `--force-with-lease` only, pinned by test.
+- **MG.17b, MG.18–MG.20 remain open** — per-slice status and sequencing
   live in
   [`slice-plans/magit.md`](slice-plans/magit.md), which is
   authoritative for this subsystem. (The 2026-07-26 audit found

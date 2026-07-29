@@ -252,6 +252,7 @@ mod tests {
             services: &services,
             events: &events,
             prompt_value: None,
+            args: lattice_grammar::Args::None,
         };
         assert!(
             reload_handler()(&ctx).is_none(),

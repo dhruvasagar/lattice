@@ -155,6 +155,29 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     ));
 }
 
+/// MG.17a: parse a remote operation's flags off the `:` line into the
+/// positional `Args::List` its `args_schema` declares.
+///
+/// Accepts each flag's full git spelling (`--force-with-lease`) and
+/// nothing else — no abbreviations. The transient shows the same
+/// strings, so what you learn in one surface types correctly in the
+/// other, and an unrecognised token is silently ignored rather than
+/// failing the command: the flags are additive, so the worst case is
+/// an operation that does slightly less than you asked, never
+/// something you didn't ask for.
+fn parse_remote_flags(op: magit_global_mode::RemoteOp, line: &str) -> Args {
+    if op.flags.is_empty() {
+        return Args::None;
+    }
+    let given: Vec<&str> = line.split_whitespace().collect();
+    Args::List(
+        op.flags
+            .iter()
+            .map(|f| lattice_grammar::ArgValue::Bool(given.contains(&f.arg)))
+            .collect(),
+    )
+}
+
 /// MG.13: register one `BufferStates<S>` service per per-buffer mode.
 ///
 /// Factored out of [`install`] so the test below can assert that every
@@ -355,12 +378,16 @@ fn register_ex_commands(registry: &mut CommandRegistry) {
                 latency_class: LatencyClass::Reflex,
                 accepts_bang: false,
                 accepts_range: false,
-                parse_args: Arc::new(|_line: &str, _bang: bool| Ok(Args::None)),
-                // MG.17 will add `--force` / `--include-untracked` and
-                // peers here as real arguments, on both front-ends at
-                // once — which is the point of there being one body.
-                apply: Arc::new(move |_ctx| Ok(magit_global_mode::spawn_remote_op(op))),
-                args_schema: Vec::new(),
+                // MG.17a: `--force-with-lease`, `--prune`, … parsed off
+                // the `:` line into the SAME positional `Args::List` the
+                // transient's flag toggles produce. `RemoteOp::flags` is
+                // the one definition both read, so a flag added there
+                // appears on both surfaces at once.
+                parse_args: Arc::new(move |line: &str, _bang: bool| {
+                    Ok(parse_remote_flags(op, line))
+                }),
+                apply: Arc::new(move |ctx| Ok(magit_global_mode::spawn_remote_op(op, &ctx.args))),
+                args_schema: op.arg_specs(),
                 surface_form: SurfaceForm::Keyword,
             },
         );
@@ -766,6 +793,28 @@ mod tests {
     /// deliberately-unresolved spec (`TransientSpec` holds a
     /// `Box<dyn Fn>` preview, so it isn't `UnwindSafe` and can't be
     /// probed via `catch_unwind`).
+    ///
+    /// **MG.17a:** `Flag` stopped being a reliable inert-marker when
+    /// real flags landed (`--force-with-lease`, `--prune`, …). A Flag
+    /// whose name appears in some `RemoteOp::flags` table is a genuine
+    /// toggle; anything else is still the placeholder fallback. That
+    /// keeps the guard precise without hand-listing exceptions — adding
+    /// a flag to a `RemoteOp` makes it legitimate automatically, and a
+    /// placeholder can never match because placeholders are named after
+    /// the action they failed to resolve.
+    fn declared_flag_names() -> std::collections::HashSet<&'static str> {
+        use magit_global_mode::RemoteOp;
+        [
+            RemoteOp::PULL,
+            RemoteOp::PUSH,
+            RemoteOp::FETCH,
+            RemoteOp::STASH,
+        ]
+        .iter()
+        .flat_map(|op| op.flags.iter().map(|f| f.name))
+        .collect()
+    }
+
     fn inert_items(spec: &lattice_picker::TransientSpec, path: &str) -> Vec<String> {
         let mut found = Vec::new();
         for group in &spec.groups {
@@ -777,10 +826,12 @@ mod tests {
                         found.extend(inert_items(sub, &format!("{where_} > ")));
                     }
                     lattice_picker::TransientItemKind::Flag { name, .. } => {
-                        found.push(format!(
-                            "'{where_}' fell back to an inert Flag placeholder \
-                             named '{name}' — its action id failed to resolve"
-                        ));
+                        if !declared_flag_names().contains(name.as_str()) {
+                            found.push(format!(
+                                "'{where_}' fell back to an inert Flag placeholder \
+                                 named '{name}' — its action id failed to resolve"
+                            ));
+                        }
                     }
                     other => found.push(format!("unexpected item kind for '{where_}': {other:?}")),
                 }
@@ -955,6 +1006,72 @@ mod tests {
             "chords that cannot reach a handler:\n  {}",
             dead.join("\n  ")
         );
+    }
+
+    /// MG.17a — the two front-ends resolve a flag to the SAME `Args`.
+    ///
+    /// This is the claim the whole slice rests on: `:magit-push
+    /// --force-with-lease` and toggling `-f` in the transient must
+    /// reach `spawn_remote_op` with identical arguments, so there is
+    /// one body and one behaviour rather than two that agree today and
+    /// drift tomorrow.
+    ///
+    /// The transient half is simulated the way the host builds it —
+    /// project the toggled state onto `arg_specs()` in order — because
+    /// `Editor::transient_args_for` lives in `lattice-host` and can't
+    /// be reached from here.
+    #[test]
+    fn the_cmdline_and_the_transient_resolve_a_flag_to_the_same_args() {
+        use lattice_grammar::{ArgValue, Args};
+        use magit_global_mode::RemoteOp;
+
+        let op = RemoteOp::PUSH;
+
+        // Front-end 1: the `:` line.
+        let from_cmdline = parse_remote_flags(op, "--force-with-lease");
+
+        // Front-end 2: the transient, `-f` toggled on.
+        let toggled: std::collections::HashMap<&str, bool> =
+            [("force-with-lease", true)].into_iter().collect();
+        let from_transient = Args::List(
+            op.arg_specs()
+                .iter()
+                .map(|spec| {
+                    ArgValue::Bool(toggled.get(spec.name.as_ref()).copied().unwrap_or(false))
+                })
+                .collect(),
+        );
+
+        assert_eq!(from_cmdline, from_transient);
+        assert_eq!(
+            op.argv(&from_cmdline),
+            vec!["push", "--force-with-lease"],
+            "and both must produce the force-with-lease push"
+        );
+    }
+
+    /// An unknown token on the `:` line is ignored rather than failing
+    /// the command. The flags are additive, so the worst outcome is an
+    /// operation that does slightly less than asked — never one that
+    /// does something unasked.
+    #[test]
+    fn an_unrecognised_flag_on_the_cmdline_is_ignored_not_fatal() {
+        use lattice_grammar::{ArgValue, Args};
+        use magit_global_mode::RemoteOp;
+        assert_eq!(
+            parse_remote_flags(RemoteOp::PUSH, "--frce-with-lease --set-upstream"),
+            Args::List(vec![ArgValue::Bool(false), ArgValue::Bool(true)]),
+            "the typo drops out; the flag that parsed still applies"
+        );
+    }
+
+    /// An operation with no flags keeps `Args::None`, so its handler
+    /// sees exactly what it saw before MG.17a.
+    #[test]
+    fn a_flagless_operation_parses_to_no_args() {
+        use lattice_grammar::Args;
+        use magit_global_mode::RemoteOp;
+        assert_eq!(parse_remote_flags(RemoteOp::PULL, "--force"), Args::None);
     }
 
     /// MG.16 — the remote/stash operations exist on both surfaces.
@@ -1171,10 +1288,13 @@ mod tests {
             6,
             "expected every file-dispatch leaf to report inert, got: {file:?}"
         );
-        // Root dispatch: 10 leaves — status, diff, log, branch,
-        // fetch, pull, push, rebase + the commit submenu's 2 (c/a)
-        // + the stash submenu's 2 (z/l) = 12. Recursion is what
-        // makes the submenu leaves visible at all.
+        // Root dispatch: 12 ACTION leaves — status, diff, log,
+        // branch, pull, rebase directly, plus the commit submenu's 2
+        // (c/a), the stash submenu's 2 (z/l), and one each inside the
+        // fetch and push submenus MG.17a introduced to hold their
+        // flags. Recursion is what makes the submenu leaves visible.
+        // The flag items themselves are NOT counted — they are real
+        // toggles, not placeholders; see `declared_flag_names`.
         let root = inert_items(&transients::dispatch_transient(&Default::default()), "");
         assert_eq!(
             root.len(),

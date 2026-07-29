@@ -212,7 +212,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         ($action_name:expr, $op:expr) => {
             contributions.push(ActionHandlerContribution {
                 action_name: $action_name,
-                handler: Arc::new(|_ctx: &ActionContext<'_>| Some(spawn_remote_op($op))),
+                handler: Arc::new(|ctx: &ActionContext<'_>| Some(spawn_remote_op($op, &ctx.args))),
             });
         };
     }
@@ -399,6 +399,24 @@ fn base_branch_from_prompt_buffer_name(buffer_name: &str) -> Option<String> {
     (!s.is_empty()).then(|| s.to_string())
 }
 
+/// MG.17a: one toggleable flag on a [`RemoteOp`].
+///
+/// The single definition of a flag, read by four consumers that would
+/// otherwise drift apart: the ex-command's `args_schema`, the transient
+/// menu's `Flag` item, the live preview string, and the argv builder.
+/// Adding `--prune` to fetch means adding one row here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RemoteFlag {
+    /// Schema slot + transient-state key (`"force"`).
+    pub name: &'static str,
+    /// The git argument it contributes (`"--force"`).
+    pub arg: &'static str,
+    /// Key that toggles it in the transient (`"-f"`).
+    pub key: &'static str,
+    /// One-line doc, shown in the menu and in `:describe-command`.
+    pub doc: &'static str,
+}
+
 /// MG.16: one detached git operation, named once.
 ///
 /// The transient item (`C-c g p`) and the ex-command (`:magit-pull`)
@@ -406,31 +424,123 @@ fn base_branch_from_prompt_buffer_name(buffer_name: &str) -> Option<String> {
 /// [`spawn_remote_op`] — the operation is defined in exactly one
 /// place, so the two surfaces cannot drift in argv, in echo text, or
 /// in how the outcome is reported.
+///
+/// MG.17a: `flags` extends that to the optional arguments. The order
+/// of the slice IS the `args_schema` order, which is what lets a
+/// transient toggle and a `--force` on the `:` line resolve to the
+/// same `Args::List` slot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RemoteOp {
     /// Verb for the echo + logs, in `-ing` form ("pull" → "pulling…").
     pub what: &'static str,
-    /// argv passed to `git`.
+    /// Base argv passed to `git`, before flags.
     pub args: &'static [&'static str],
+    /// Toggleable flags, in `args_schema` order.
+    pub flags: &'static [RemoteFlag],
 }
 
 impl RemoteOp {
     pub const PULL: Self = Self {
         what: "pull",
         args: &["pull", "--ff-only"],
+        flags: &[],
     };
     pub const PUSH: Self = Self {
         what: "push",
         args: &["push"],
+        flags: &[
+            RemoteFlag {
+                name: "force-with-lease",
+                // `--force-with-lease`, never bare `--force`: it refuses
+                // when the remote moved since you last fetched, which is
+                // exactly the case where a bare force silently destroys
+                // someone else's commits. Magit defaults to the same.
+                arg: "--force-with-lease",
+                key: "-f",
+                doc: "Force-push, but refuse if the remote moved since your last fetch",
+            },
+            RemoteFlag {
+                name: "set-upstream",
+                arg: "--set-upstream",
+                key: "-u",
+                doc: "Set the pushed branch's upstream to the remote branch",
+            },
+        ],
     };
     pub const FETCH: Self = Self {
         what: "fetch",
         args: &["fetch"],
+        flags: &[
+            RemoteFlag {
+                name: "all",
+                arg: "--all",
+                key: "-a",
+                doc: "Fetch from every remote, not just the default",
+            },
+            RemoteFlag {
+                name: "prune",
+                arg: "--prune",
+                key: "-p",
+                doc: "Delete local refs whose remote branch is gone",
+            },
+        ],
     };
     pub const STASH: Self = Self {
         what: "stash",
         args: &["stash", "push"],
+        flags: &[RemoteFlag {
+            name: "include-untracked",
+            arg: "--include-untracked",
+            key: "-u",
+            doc: "Stash untracked files too, not just tracked changes",
+        }],
     };
+
+    /// Resolve the full argv for this run: the base plus every flag the
+    /// caller enabled. `args` is positional by `flags` order — see
+    /// [`RemoteOp::flags`].
+    pub fn argv(&self, args: &lattice_grammar::Args) -> Vec<String> {
+        let mut argv: Vec<String> = self.args.iter().map(|s| (*s).to_string()).collect();
+        for (i, flag) in self.flags.iter().enumerate() {
+            let enabled = matches!(
+                args.as_list().and_then(|l| l.get(i)),
+                Some(lattice_grammar::ArgValue::Bool(true))
+            );
+            if enabled {
+                argv.push(flag.arg.to_string());
+            }
+        }
+        argv
+    }
+
+    /// The command line this run would execute, for the transient's
+    /// live preview. Renders what `argv` will actually pass, so the
+    /// preview cannot claim one thing and the run do another.
+    pub fn preview(&self, enabled: &dyn Fn(&str) -> bool) -> String {
+        let mut out = String::from("git");
+        for a in self.args {
+            out.push(' ');
+            out.push_str(a);
+        }
+        for flag in self.flags {
+            if enabled(flag.name) {
+                out.push(' ');
+                out.push_str(flag.arg);
+            }
+        }
+        out
+    }
+
+    /// `args_schema` for this operation's ex-command — one optional
+    /// bool per flag, in slice order.
+    pub fn arg_specs(&self) -> Vec<lattice_grammar::ArgSpec> {
+        self.flags
+            .iter()
+            .map(|f| {
+                lattice_grammar::ArgSpec::optional(f.name, lattice_grammar::ArgKind::Bool, f.doc)
+            })
+            .collect()
+    }
 }
 
 /// Run `op` off the actor thread and return the optimistic echo.
@@ -443,29 +553,35 @@ impl RemoteOp {
 /// no synchronous path exists back to the echo area from a task that
 /// outlives the call, so success and failure are logged rather than
 /// silently dropped (never both silent AND absent).
-pub fn spawn_remote_op(op: RemoteOp) -> Effect {
+pub fn spawn_remote_op(op: RemoteOp, args: &lattice_grammar::Args) -> Effect {
     let workdir = Repository::discover(".")
         .ok()
         .and_then(|r| r.workdir().map(|p| p.to_path_buf()))
         .unwrap_or_default();
+    let argv = op.argv(args);
+    let shown = argv.join(" ");
+    let logged = shown.clone();
     tokio::task::spawn(async move {
-        let result = tokio::task::spawn_blocking(move || run_remote_op(&workdir, op.args))
+        let result = tokio::task::spawn_blocking(move || run_remote_op(&workdir, &argv))
             .await
             .unwrap_or_else(|e| Err(e.to_string()));
         match result {
             Ok(out) => tracing::info!(
                 target: "lattice_magit",
-                "magit: {} succeeded: {out}", op.what
+                "magit: git {logged} succeeded: {out}"
             ),
             Err(err) => tracing::error!(
                 target: "lattice_magit",
-                "magit: {} failed: {err}", op.what
+                "magit: git {logged} failed: {err}"
             ),
         }
     });
     Effect::Echo {
         level: lattice_grammar::EchoLevel::Info,
-        text: format!("magit: {}ing…", op.what),
+        // Naming the flags in the echo matters: a force-push and an
+        // ordinary push are the same word otherwise, and the echo is
+        // the only synchronous feedback this path produces.
+        text: format!("magit: {}ing… (git {shown})", op.what),
     }
 }
 
@@ -473,7 +589,7 @@ pub fn spawn_remote_op(op: RemoteOp) -> Effect {
 /// `GIT_TERMINAL_PROMPT=0` so a missing credential fails fast instead
 /// of hanging. `git push`'s human-readable progress goes to stderr
 /// even on success, so both streams are checked.
-fn run_remote_op(workdir: &std::path::Path, args: &[&str]) -> Result<String, String> {
+fn run_remote_op(workdir: &std::path::Path, args: &[String]) -> Result<String, String> {
     let output = std::process::Command::new("git")
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
@@ -494,6 +610,108 @@ fn run_remote_op(workdir: &std::path::Path, args: &[&str]) -> Result<String, Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// MG.17a — the flag table drives argv, and only when enabled.
+    #[test]
+    fn argv_appends_exactly_the_enabled_flags_in_schema_order() {
+        use lattice_grammar::{ArgValue, Args};
+        let op = RemoteOp::PUSH;
+        assert_eq!(op.argv(&Args::None), vec!["push"], "no args = bare push");
+        assert_eq!(
+            op.argv(&Args::List(vec![
+                ArgValue::Bool(false),
+                ArgValue::Bool(false)
+            ])),
+            vec!["push"]
+        );
+        assert_eq!(
+            op.argv(&Args::List(vec![
+                ArgValue::Bool(true),
+                ArgValue::Bool(false)
+            ])),
+            vec!["push", "--force-with-lease"]
+        );
+        assert_eq!(
+            op.argv(&Args::List(vec![
+                ArgValue::Bool(true),
+                ArgValue::Bool(true)
+            ])),
+            vec!["push", "--force-with-lease", "--set-upstream"]
+        );
+    }
+
+    /// A bare chord press (no transient, no args) must behave exactly
+    /// as it did before flags existed — this is the regression that
+    /// would break every existing `C-c g F` muscle memory.
+    #[test]
+    fn an_argless_invocation_runs_the_unflagged_command() {
+        use lattice_grammar::Args;
+        for op in [
+            RemoteOp::PULL,
+            RemoteOp::PUSH,
+            RemoteOp::FETCH,
+            RemoteOp::STASH,
+        ] {
+            assert_eq!(
+                op.argv(&Args::None),
+                op.args.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                "`{}` with no args must be the bare command",
+                op.what
+            );
+        }
+    }
+
+    /// The preview and the run must agree. A preview that renders a
+    /// different command than the one that executes is worse than no
+    /// preview — it actively misleads before a push.
+    #[test]
+    fn the_preview_string_matches_the_argv_that_will_run() {
+        use lattice_grammar::{ArgValue, Args};
+        let op = RemoteOp::FETCH;
+        for (all, prune) in [(false, false), (true, false), (false, true), (true, true)] {
+            let args = Args::List(vec![ArgValue::Bool(all), ArgValue::Bool(prune)]);
+            let preview = op.preview(&|name| match name {
+                "all" => all,
+                "prune" => prune,
+                _ => false,
+            });
+            let from_argv = format!("git {}", op.argv(&args).join(" "));
+            assert_eq!(preview, from_argv, "preview must render what runs");
+        }
+    }
+
+    /// Push force-pushes with `--force-with-lease`, never bare
+    /// `--force`. Pinned deliberately: the difference is whether a
+    /// colleague's commits survive when the remote moved under you.
+    #[test]
+    fn force_push_uses_force_with_lease() {
+        let force = RemoteOp::PUSH.flags[0];
+        assert_eq!(force.arg, "--force-with-lease");
+        assert!(
+            !RemoteOp::PUSH.flags.iter().any(|f| f.arg == "--force"),
+            "bare --force must not be offered"
+        );
+    }
+
+    /// `arg_specs` is the ex-command's schema and must line up 1:1 with
+    /// the flag table the transient and argv builder read — the whole
+    /// point of one definition.
+    #[test]
+    fn arg_specs_mirror_the_flag_table_positionally() {
+        for op in [
+            RemoteOp::PULL,
+            RemoteOp::PUSH,
+            RemoteOp::FETCH,
+            RemoteOp::STASH,
+        ] {
+            let specs = op.arg_specs();
+            assert_eq!(specs.len(), op.flags.len(), "`{}` schema length", op.what);
+            for (spec, flag) in specs.iter().zip(op.flags) {
+                assert_eq!(spec.name.as_ref(), flag.name);
+                assert_eq!(spec.kind, lattice_grammar::ArgKind::Bool);
+            }
+        }
+    }
 
     #[test]
     fn base_branch_from_prompt_buffer_name_extracts_the_stashed_base() {

@@ -925,6 +925,7 @@ mod tests {
             services: &services,
             events: &events,
             prompt_value: None,
+            args: lattice_grammar::Args::None,
         };
         assert!(handler(&ctx).is_none());
     }
@@ -1154,6 +1155,7 @@ mod tests {
             services,
             events: &events,
             prompt_value: None,
+            args: lattice_grammar::Args::None,
         };
         let handler = handlers.lookup(id).expect("handler registered");
         handler(&ctx)

@@ -31166,8 +31166,25 @@ impl Editor {
         // so dispatch / introspection sees the right identity.
         self.active_buffer = target_kind;
         let pane = self.pane_tree.active_mut();
+        let changed_buffer = pane.buffer_id != id;
         pane.buffer = target_kind;
         pane.buffer_id = id;
+        // A pane's stashed cursor / scroll describe the buffer it was
+        // showing. Once it shows a DIFFERENT buffer they are
+        // meaningless, and `load_active_pane` below would otherwise
+        // copy them straight back over the reset — which is how `<CR>`
+        // in magit-status opened the commit buffer at whatever line
+        // the status list happened to be scrolled to.
+        //
+        // Reset the stash as well as the hot slots, so the two agree.
+        // Restoring your position when you return to a buffer is a
+        // per-BUFFER concern (marks / position history), not something
+        // a pane can answer once its buffer has changed under it.
+        if changed_buffer {
+            pane.cursor = lattice_protocol::position::Position::ZERO;
+            pane.scroll = 0;
+            pane.leftcol = 0;
+        }
         self.current_match = None;
         self.all_matches.clear();
         self.search_line = None;

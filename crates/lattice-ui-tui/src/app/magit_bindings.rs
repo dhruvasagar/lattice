@@ -410,6 +410,41 @@ mod tests {
         );
     }
 
+    /// Live bug (2026-07-29): `<CR>` in magit-status opened the commit
+    /// / file buffer with the cursor on whatever LINE the cursor had
+    /// been on in magit-status.
+    ///
+    /// `activate_document` sets `self.cursor = Position::ZERO` for the
+    /// incoming buffer and then calls `load_active_pane`, which does
+    /// `self.cursor = pane.cursor`. The pane's stashed cursor belongs
+    /// to whatever that pane was showing BEFORE — so opening a
+    /// different buffer in the same pane restores the previous
+    /// buffer's position over the reset.
+    ///
+    /// A pane remembering its cursor is correct when you return to the
+    /// same buffer; applying it to a different one is not.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn opening_a_new_buffer_does_not_inherit_the_previous_buffers_cursor_line() {
+        use lattice_protocol::position::Position;
+
+        let mut app = app_with("one\ntwo\nthree\nfour\nfive\nsix\n", 20);
+
+        // Stand somewhere other than the top, as you would in a magit
+        // status list before pressing `<CR>` on a row further down.
+        app.editor.cursor = Position::new(4, 0);
+        app.editor.snapshot_active_pane();
+
+        // Open a different buffer in the same pane.
+        app.editor
+            .open_synthetic_buffer("*magit:commit*", "magit-commit-mode");
+
+        assert_eq!(
+            app.editor.cursor.line, 0,
+            "a newly opened buffer must start at its own top, not at the \
+             line the cursor happened to be on in the buffer you came from"
+        );
+    }
+
     /// MG.16: the remote/stash ex-commands reach the *booted* registry.
     ///
     /// The unit tests in `lattice-magit` build their own

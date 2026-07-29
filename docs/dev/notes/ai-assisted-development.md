@@ -1,6 +1,6 @@
-# Building Lattice with AI
+# AI Assisted Development
 
-### A whitepaper on constructing complex software with a capable, forgetful collaborator
+## A whitepaper on constructing complex software with a capable, forgetful collaborator
 
 **Author:** Dhruva Sagar
 **Subject:** the method — not the editor — behind Lattice

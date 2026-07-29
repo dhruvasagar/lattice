@@ -3934,7 +3934,8 @@ Installs through `SubsystemBoot` seam. Inverted out of
 - ✅ **VCS.1** — `lattice-vcs` crate (2026-07-25). `Repository::discover`,
   `GitBlob::read`, `Reference::resolve`, `WorkingTree::
   path_status` + `statuses`, `Index::stage_path` / `unstage_*`
-  / `stage_hunk` / `unstage_hunk`, `Commit::create` / `amend`,
+  / `apply_patch` (MG.18a; replaced the `stage_hunk` / `unstage_hunk`
+  stubs), `Commit::create` / `amend`,
   `Branch::checkout` / `create` / `delete`, `Stash` operations.
   `gix` dependency isolated; zero `lattice-*` deps. 20
   integration tests in temp git repos. `GitBaseline` deferred

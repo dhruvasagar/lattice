@@ -130,8 +130,17 @@ impl BaselineSource for GitBaseline { /* snapshot() reads HEAD:path */ }
 impl Index {
     pub fn stage_path(repo: &Repository, path: &Path) -> Result<(), GitError>;
     pub fn unstage_path(repo: &Repository, path: &Path) -> Result<(), GitError>;
-    pub fn stage_hunk(repo: &Repository, path: &Path, hunk: HunkSpec) -> Result<(), GitError>;
-    pub fn unstage_hunk(repo: &Repository, path: &Path, hunk: HunkSpec) -> Result<(), GitError>;
+    // MG.18a (2026-07-29): the sketched `stage_hunk(path, HunkSpec)` /
+    // `unstage_hunk(..)` pair is GONE — the shape did not survive
+    // contact with git. There is no index operation that stages "hunk N
+    // of path P"; `git add -p` synthesizes a patch and pipes it to
+    // `git apply --cached`, and a spec safe enough for that must carry
+    // the hunk's whole body — at which point it IS the patch, and
+    // `path` becomes a second source of truth that can disagree with
+    // it. Region staging (a REWRITTEN hunk) cannot be expressed as a
+    // reference to an existing hunk at all.
+    // See docs/dev/architecture/magit-hunk-staging.md.
+    pub fn apply_patch(repo: &Repository, patch: &str, cached: bool, reverse: bool) -> Result<()>;
 }
 impl Commit {
     pub fn create(repo: &Repository, message: &str, opts: CommitOpts) -> Result<Oid, GitError>;

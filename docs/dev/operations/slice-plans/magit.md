@@ -34,7 +34,7 @@ owns *what* and *why*.
 | MG.16 | Remote/stash ex-command parity (`:magit-push` etc.) | MG.8 | ✅ |
 | MG.17a | Transient flags (`--force-with-lease`, `--prune`, …) + preview | MG.8 | ✅ |
 | MG.17b | Transient `Argument` items (prompt → back to the menu) | MG.17a | ✅ |
-| MG.18 | Hunk-level staging | MG.5, MG.13 | 📝 |
+| MG.18 | Hunk-level staging (sliced a–e) | MG.5, MG.13 | 📝 |
 | MG.19 | magit-diff side-by-side + `do`/`dp` | MG.18, D.4 | 📝 |
 | MG.20 | Operation coverage — reset / revert / cherry-pick | MG.17a | ✅ |
 | MG.21 | Remaining operations — tag, merge beyond `m`, bisect, submodule, remotes | MG.17b | 📝 |
@@ -138,7 +138,9 @@ MG.4/MG.5/MG.6/MG.7 can run in parallel after MG.1 lands.
   - `WorkingTree::path_status(repo, path)` → `PathStatus`
   - `WorkingTree::statuses(repo)` → `Vec<(PathBuf, PathStatus)>`
   - `PathStatus` enum: Clean, Modified, Added, Deleted, Untracked, Ignored, Unmerged, Conflicted
-  - `Index::stage_path`, `unstage_path`, `stage_hunk`, `unstage_hunk`
+  - `Index::stage_path`, `unstage_path`, `apply_patch` (MG.18a replaced the
+    `stage_hunk` / `unstage_hunk` stubs, which discarded their hunk index
+    and staged whole files)
   - `Commit::create`, `Commit::amend`
   - `Branch::checkout`, `Branch::create`, `Branch::delete`
   - `Stash::list`, `Stash::apply`, `Stash::pop`, `Stash::drop`, `Stash::create`
@@ -874,7 +876,26 @@ gained `settle` / `settle_mode`, and the end-to-end `q` test uses them;
 verified non-vacuous by reverting the fix and watching it fail with the
 reported symptom (pane restored, document still magit's).
 
-### MG.18 — Hunk-level staging
+### MG.18 — Hunk-level staging (sliced 2026-07-29)
+
+Design fragment:
+[`../../architecture/magit-hunk-staging.md`](../../architecture/magit-hunk-staging.md).
+
+| Slice | Scope | Depends | Status |
+|---|---|---|---|
+| MG.18a | Delete the `stage_hunk` / `unstage_hunk` stubs; add `Index::apply_patch` + `Repository::run_git_stdin` | — | ✅ |
+| MG.18b | Hunk parser + patch synthesizer as pure functions, round-trip tested | MG.18a | 📝 |
+| MG.18c | `s`/`u`/`x` resolve hunk-at-cursor, file-level fallback preserved | MG.18b | 📝 |
+| MG.18d | Re-expand the entry + restore cursor to the next hunk after a mutation | MG.18c | 📝 |
+| MG.18e | Region (visual-mode) staging — the hunk-splitting rewrite | MG.18c | 📝 |
+
+MG.18a is independent of the hunk-identity choice and removes a
+live landmine (the stubs silently stage whole files), so it lands
+first regardless. Value arrives at MG.18c; MG.18d is not optional
+polish — at hunk granularity, losing the user's place after every
+stage defeats the feature.
+
+#### Original scoping notes
 
 **The largest divergence from Emacs magit.** `Index::stage_hunk` /
 `unstage_hunk` exist in `lattice-vcs` with **zero callers**; every

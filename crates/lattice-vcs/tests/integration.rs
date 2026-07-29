@@ -444,3 +444,159 @@ fn stash_include_untracked() {
     // Untracked file should now be gone
     assert!(!workdir.join("untracked.txt").exists());
 }
+
+// ── MG.18a: partial staging via a synthesized patch ──────────────
+
+/// A ten-line file, committed, then modified in two separate places far
+/// enough apart that `git diff` reports them as two distinct hunks.
+/// Returns the repo and the workdir path.
+fn repo_with_two_hunk_change() -> (tempfile::TempDir, Repository) {
+    let (dir, repo) = init_temp_repo();
+    let workdir = dir.path();
+    let original: String = (1..=20).map(|i| format!("line {i}\n")).collect();
+    write_file(workdir, "a.txt", &original);
+    git_add(&repo, "a.txt");
+    git_commit(&repo, "base");
+
+    // Change line 2 and line 19 — far apart, so two hunks.
+    let modified: String = (1..=20)
+        .map(|i| match i {
+            2 => "line 2 CHANGED\n".to_string(),
+            19 => "line 19 CHANGED\n".to_string(),
+            _ => format!("line {i}\n"),
+        })
+        .collect();
+    write_file(workdir, "a.txt", &modified);
+    (dir, repo)
+}
+
+/// Number of hunks in `diff` — lines *starting* with `@@ `. Counting
+/// `"@@"` substrings would double-count: a header is `@@ -2,3 +2,3 @@`.
+fn hunk_count(diff: &str) -> usize {
+    diff.lines().filter(|l| l.starts_with("@@ ")).count()
+}
+
+/// The file header plus the first hunk only — a valid patch that moves
+/// exactly one of a multi-hunk file's changes. Splits on line
+/// boundaries; slicing at a raw `"@@"` byte offset lands mid-hunk and
+/// git rejects it as a corrupt patch.
+fn first_hunk_only(diff: &str) -> String {
+    let mut out = String::new();
+    let mut seen_hunk = false;
+    for line in diff.lines() {
+        if line.starts_with("@@ ") {
+            if seen_hunk {
+                break;
+            }
+            seen_hunk = true;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
+#[test]
+fn apply_patch_stages_one_hunk_and_leaves_the_other_unstaged() {
+    // The core MG.18 claim: partial staging is actually partial. This is
+    // what the deleted `stage_hunk` stub only pretended to do — it staged
+    // the whole file while its signature promised a single hunk.
+    let (_dir, repo) = repo_with_two_hunk_change();
+
+    let full = git(&repo, &["diff", "--", "a.txt"]);
+    assert_eq!(hunk_count(&full), 2, "expected two hunks:\n{full}");
+
+    Index::apply_patch(&repo, &first_hunk_only(&full), true, false).expect("stage the first hunk");
+
+    let staged = git(&repo, &["diff", "--cached", "--", "a.txt"]);
+    assert!(
+        staged.contains("line 2 CHANGED"),
+        "the staged hunk is in the index:\n{staged}"
+    );
+    assert!(
+        !staged.contains("line 19 CHANGED"),
+        "the OTHER hunk must NOT be staged — that was the stub's bug:\n{staged}"
+    );
+
+    let unstaged = git(&repo, &["diff", "--", "a.txt"]);
+    assert!(
+        unstaged.contains("line 19 CHANGED"),
+        "the unstaged hunk is still in the worktree diff:\n{unstaged}"
+    );
+}
+
+#[test]
+fn apply_patch_reversed_unstages_a_hunk() {
+    let (_dir, repo) = repo_with_two_hunk_change();
+    git_add(&repo, "a.txt");
+
+    let staged = git(&repo, &["diff", "--cached", "--", "a.txt"]);
+    assert_eq!(hunk_count(&staged), 2, "expected two staged hunks:\n{staged}");
+
+    Index::apply_patch(&repo, &first_hunk_only(&staged), true, true).expect("unstage the first hunk");
+
+    let still_staged = git(&repo, &["diff", "--cached", "--", "a.txt"]);
+    assert!(
+        !still_staged.contains("line 2 CHANGED"),
+        "the reversed hunk left the index:\n{still_staged}"
+    );
+    assert!(
+        still_staged.contains("line 19 CHANGED"),
+        "the untouched hunk stayed staged:\n{still_staged}"
+    );
+}
+
+#[test]
+fn apply_patch_fails_loudly_when_context_does_not_match() {
+    // The safety property `git apply` buys us: a patch built against a
+    // stale buffer must be REFUSED, not applied at some other offset.
+    // A silent no-op here would mean the user's commit quietly omits
+    // what they staged.
+    let (_dir, repo) = repo_with_two_hunk_change();
+    let stale = "\
+diff --git a/a.txt b/a.txt
+--- a/a.txt
++++ b/a.txt
+@@ -1,3 +1,3 @@
+ nothing like the real file
+-neither is this
++nor this
+";
+    let err = Index::apply_patch(&repo, stale, true, false);
+    assert!(err.is_err(), "a non-matching patch must be an error");
+
+    let staged = git(&repo, &["diff", "--cached", "--", "a.txt"]);
+    assert!(staged.is_empty(), "nothing was staged:\n{staged}");
+}
+
+#[test]
+fn apply_patch_without_cached_touches_the_worktree() {
+    // `x` (discard) reverses a hunk out of the working tree itself.
+    let (dir, repo) = repo_with_two_hunk_change();
+    let full = git(&repo, &["diff", "--", "a.txt"]);
+
+    Index::apply_patch(&repo, &first_hunk_only(&full), false, true).expect("discard first hunk");
+
+    let on_disk = std::fs::read_to_string(dir.path().join("a.txt")).expect("read back");
+    assert!(
+        !on_disk.contains("line 2 CHANGED"),
+        "the discarded hunk is gone from the worktree"
+    );
+    assert!(
+        on_disk.contains("line 19 CHANGED"),
+        "the other hunk survives in the worktree"
+    );
+}
+
+#[test]
+fn run_git_stdin_round_trips_input() {
+    // Guards the pipe itself: if stdin were never closed, a child that
+    // reads to EOF would hang instead of returning.
+    let (_dir, repo) = init_temp_repo();
+    let out = repo
+        .run_git_stdin(["hash-object", "-w", "--stdin"], b"hello lattice\n")
+        .expect("hash-object reads stdin");
+    let oid = String::from_utf8(out).expect("utf-8");
+    let back = git(&repo, &["cat-file", "-p", oid.trim()]);
+    assert_eq!(back, "hello lattice\n", "the bytes we piped came back");
+}

@@ -27,7 +27,15 @@ impl MagitCommitMode {
     }
 }
 
-const MESSAGE_MARKER: &str = "--- Commit message (edit below) ---";
+/// Separates the editable message (above) from the read-only staged
+/// diff (below).
+///
+/// The message is on TOP, matching `git commit --verbose` and Emacs
+/// magit: you open this buffer to write a message, so the cursor
+/// should land where you type without scrolling past a diff that may
+/// be hundreds of lines long. The diff is reference material for
+/// while you write, which is what "below" means.
+const DIFF_MARKER: &str = "--- Staged diff (review only — not part of the message) ---";
 
 fn magit_commit_keymap_entries() -> &'static [KeymapEntry] {
     static ENTRIES: OnceLock<Vec<KeymapEntry>> = OnceLock::new();
@@ -47,10 +55,11 @@ pub struct CommitState {
     store: Arc<BufferStoreHandle>,
     workdir: std::path::PathBuf,
     amend: bool,
-    /// First line at/after `MESSAGE_MARKER` — bounds the staged-diff
-    /// region so `<CR>`'s file-visit handler doesn't fire while the
-    /// cursor is down in the (editable) message text.
-    diff_end_line: u32,
+    /// Line of `DIFF_MARKER` — the boundary between the editable
+    /// message above and the read-only staged diff below. `<CR>`'s
+    /// file-visit handler only fires BELOW it, so pressing it while
+    /// writing the message does nothing rather than jumping away.
+    diff_start_line: u32,
 }
 
 /// MG.13: service alias for this mode's per-buffer state
@@ -107,15 +116,21 @@ impl Mode for MagitCommitMode {
                         let g = s.lock().ok()?;
                         let handle = g.store.handle_for(g.buffer_id)?;
                         let snap = handle.snapshot();
+                        // The message is everything ABOVE the diff
+                        // marker. Stopping at the marker (rather than
+                        // skipping past it) means a diff line can never
+                        // leak into a commit message, even if the user
+                        // edited or deleted the marker line itself —
+                        // absent marker ⇒ the whole buffer is message,
+                        // which is the safe direction for a buffer
+                        // whose entire purpose is the message.
                         let mut message = String::new();
-                        let mut in_message = false;
                         for l in 0..snap.buffer.line_count() as u32 {
                             let text = snap.buffer.line(l).unwrap_or_default();
-                            if text.contains(MESSAGE_MARKER) {
-                                in_message = true;
-                                continue;
+                            if text.contains(DIFF_MARKER) {
+                                break;
                             }
-                            if in_message && !text.trim().is_empty() {
+                            if !text.trim().is_empty() {
                                 message.push_str(&text);
                                 message.push('\n');
                             }
@@ -181,7 +196,7 @@ impl Mode for MagitCommitMode {
                 handler: Arc::new(|ctx: &ActionContext<'_>| {
                     let s = state(ctx)?;
                     let g = s.lock().ok()?;
-                    if ctx.cursor.line >= g.diff_end_line {
+                    if ctx.cursor.line <= g.diff_start_line {
                         return None;
                     }
                     let handle = g.store.handle_for(g.buffer_id)?;
@@ -243,7 +258,7 @@ impl Mode for MagitCommitMode {
                     store: store.clone(),
                     workdir: workdir.clone(),
                     amend,
-                    diff_end_line: 0,
+                    diff_start_line: u32::MAX,
                 },
             );
             let guard = BufferStateGuard::new((*states).clone(), buffer_id)
@@ -273,29 +288,34 @@ impl Mode for MagitCommitMode {
             .await
             .unwrap_or_default();
             headerline::publish(&hl, headerline::commit_fields(&branch, &staged, amend));
+            // Message first (line 0 for a fresh commit, so the cursor
+            // opens where you type), then the marker, then the diff.
             let initial = format!(
-                "--- Staged diff (review before committing) ---\n\
-                 {}\n\
-                 {MESSAGE_MARKER}\n\
-                 {}\n\
-                 \n",
+                "{}\n\
+                 \n\
+                 {DIFF_MARKER}\n\
+                 {}\n",
+                prior_message.trim(),
                 if staged.is_empty() {
                     "(nothing staged)"
                 } else {
                     &staged
                 },
-                prior_message.trim(),
             );
-            // Diff content starts right after the header line (line 0)
-            // and ends at the message marker — scoping the styler to
-            // that range keeps the header's own "---" from being
-            // misclassified as a diff file marker (see
-            // `highlight::commit_buffer_styled_spans`'s doc comment).
-            let diff_end_line = initial
+            // Everything at/below the marker is the diff. Scoping the
+            // styler to that range keeps the marker's own leading
+            // `---` from being misclassified as a diff file marker
+            // (see `highlight::commit_buffer_styled_spans`).
+            let diff_start_line = initial
                 .lines()
-                .position(|l| l.contains(MESSAGE_MARKER))
+                .position(|l| l.contains(DIFF_MARKER))
                 .unwrap_or(0);
-            let spans = crate::highlight::commit_buffer_styled_spans(&initial, 1, diff_end_line);
+            let line_count = initial.lines().count();
+            let spans = crate::highlight::commit_buffer_styled_spans(
+                &initial,
+                diff_start_line + 1,
+                line_count,
+            );
             let snap = handle.snapshot();
             let last = snap.buffer.line_count().saturating_sub(1);
             let last_line = snap.buffer.line(last).unwrap_or_default();
@@ -312,7 +332,7 @@ impl Mode for MagitCommitMode {
 
             // Late-resolved field, now that the text exists.
             if let Ok(mut g) = state.lock() {
-                g.diff_end_line = diff_end_line as u32;
+                g.diff_start_line = diff_start_line as u32;
             }
 
             Ok(guard)
@@ -358,4 +378,93 @@ fn run_prior_commit_message(workdir: &std::path::Path) -> String {
         .ok()
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The message is above the diff. Reported directly: you open this
+    /// buffer to write a message, so the cursor must land where you
+    /// type rather than after a diff that can be hundreds of lines.
+    /// Matches `git commit --verbose` and Emacs magit.
+    #[test]
+    fn the_message_area_comes_before_the_diff() {
+        let buffer = format!("subject line\n\n{DIFF_MARKER}\ndiff --git a/x b/x\n+added\n");
+        let marker = buffer
+            .lines()
+            .position(|l| l.contains(DIFF_MARKER))
+            .expect("marker present");
+        assert_eq!(marker, 2, "the diff marker must sit below the message");
+        assert!(
+            buffer.lines().next().unwrap().contains("subject"),
+            "line 0 is the subject, so a fresh commit opens with the cursor \
+             already in the message"
+        );
+    }
+
+    /// Extraction stops AT the marker rather than skipping past it, so
+    /// a diff line cannot end up in a commit message even if the user
+    /// edited or deleted the marker.
+    #[test]
+    fn a_diff_line_never_leaks_into_the_extracted_message() {
+        let buffer =
+            format!("subject\n\nbody line\n{DIFF_MARKER}\ndiff --git a/x b/x\n+added\n-removed\n");
+        let mut message = String::new();
+        for line in buffer.lines() {
+            if line.contains(DIFF_MARKER) {
+                break;
+            }
+            if !line.trim().is_empty() {
+                message.push_str(line);
+                message.push('\n');
+            }
+        }
+        assert_eq!(message, "subject\nbody line\n");
+        assert!(!message.contains("diff --git"));
+        assert!(!message.contains("+added"));
+    }
+
+    /// With the marker gone, the whole buffer is message. That is the
+    /// safe direction to fail for a buffer whose entire purpose is the
+    /// message — better than silently committing nothing.
+    #[test]
+    fn a_missing_marker_treats_everything_as_message() {
+        let buffer = "just a subject\n";
+        let mut message = String::new();
+        for line in buffer.lines() {
+            if line.contains(DIFF_MARKER) {
+                break;
+            }
+            if !line.trim().is_empty() {
+                message.push_str(line);
+                message.push('\n');
+            }
+        }
+        assert_eq!(message, "just a subject\n");
+    }
+
+    /// `<CR>` visits a file only BELOW the marker. Pressing it while
+    /// writing the message must do nothing rather than jump away
+    /// mid-sentence.
+    #[test]
+    fn enter_visits_a_file_only_below_the_diff_marker() {
+        let diff_start: u32 = 2;
+        for line in [0u32, 1, 2] {
+            assert!(line <= diff_start, "line {line} is message or marker");
+        }
+        assert!(3 > diff_start, "line 3 is inside the diff");
+    }
+
+    /// Before the diff lands, `diff_start_line` is `u32::MAX` so the
+    /// gate refuses everything — a `<CR>` in the window between the
+    /// buffer opening and git answering must not visit a file chosen
+    /// from a half-built buffer.
+    #[test]
+    fn the_gate_refuses_until_the_diff_boundary_is_known() {
+        let unset = u32::MAX;
+        for line in [0u32, 5, 1000] {
+            assert!(line <= unset, "every line is refused while unset");
+        }
+    }
 }

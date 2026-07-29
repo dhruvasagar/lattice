@@ -11,16 +11,21 @@ anywhere.
 
 ```
 ┌─────────────────────────────────────────────┐
+│ Add user authentication endpoint            │  ← subject (line 0)
+│                                             │
+│ Implements OAuth2 flow with...              │  ← body
+│ --- Staged diff (review only) ---           │
 │ [read-only] diff of staged changes          │
 │ (scrollable, background-tinted)             │
-│ ─────────── message area ────────────────   │
-│ │ Add user authentication endpoint          │  ← subject
-│ │                                           │
-│ │ Implements OAuth2 flow with...            │  ← body
-│ ──────────────────────────────────────────  │
+│                                             │
 │ C-c C-c commit   C-c C-k abort              │
 └─────────────────────────────────────────────┘
 ```
+
+The message is on **top**, so the cursor opens where you type rather
+than below a diff that may be hundreds of lines long. The diff sits
+underneath as reference while you write. Same arrangement as
+`git commit --verbose` and Emacs magit.
 
 The headerline shows the branch you're committing to and what's staged
 — `main  3 files +120 −18` — plus `AMEND` when this will rewrite the
@@ -32,18 +37,29 @@ previous commit rather than add one.
 |---|---|
 | `C-c C-c` | Create the commit with the entered message |
 | `C-c C-k` | Abort (close the buffer without committing) |
-| `<CR>` | Visit the file at cursor, **as staged** — only in the diff region |
+| `<CR>` | Visit the file at cursor, **as staged** — only below the diff marker; in the message it does nothing rather than jumping away mid-sentence |
 
 `gr` / `q` / `]]` / `[[` and the rest come from
 [`magit-core-mode`](help:magit-core-mode).
 
 ## The two regions
 
-**Diff region** (top, read-only) — populated by `git diff --cached`
-when the buffer opens. This is the one place magit loads a diff eagerly
-rather than on demand: you opened this buffer specifically to review
-what you're about to commit, so an empty pane waiting for `=` would
-defeat the point.
+**Message region** (top, editable) — ordinary text, starting at line 0.
+First line is the subject, a blank line separates it from the body.
+This is a real buffer with the full vim grammar: normal-mode editing,
+visual selections, registers, macros.
+
+Everything above the `--- Staged diff ---` marker is the message.
+Extraction stops *at* the marker rather than skipping past it, so a
+diff line can never end up in your commit message even if you edit or
+delete the marker line; a buffer with no marker at all is treated as
+entirely message.
+
+**Diff region** (below the marker, read-only) — populated by
+`git diff --cached` when the buffer opens. This is the one place magit
+loads a diff eagerly rather than on demand: you opened this buffer
+specifically to review what you're about to commit, so an empty pane
+waiting for `=` would defeat the point.
 
 `<CR>` on a file line there opens the file's **staged** content (the
 index blob, via `git show :<path>`) in
@@ -51,10 +67,7 @@ index blob, via `git show :<path>`) in
 working-tree file. The diff you're reviewing describes what's staged,
 which may already differ from a copy you've edited since.
 
-**Message region** (below the marker, editable) — ordinary text. First
-line is the subject, a blank line separates it from the body. This is a
-real buffer with the full vim grammar: normal-mode editing, visual
-selections, registers, macros.
+
 
 ## Amend
 

@@ -62,7 +62,7 @@ unnoticed. Only the 59 `](help:topic)` links worked.
 | HD.1 | Mode-aligned renames, link rewrite, guard tests, describe-mode ↔ help cross-link | ✅ |
 | HD.2 | Split `magit-buffers.md` into per-mode docs | ✅ |
 | HD.3 | Docs for the user-facing modes with no coverage | ✅ |
-| HD.4 | Docs for the family modes (19 language, 6 display) + internals | 📝 |
+| HD.4 | Docs for the family modes (19 language, 6 display) + internals | ✅ |
 | HD.5 | Compress the embedded docs (unblocks HD.4) | ✅ |
 | HD.6 | Runtime doc directory + plugin-contributed topics | 📝 |
 
@@ -191,27 +191,52 @@ caught two forward references (`markdown-mode`, `snippet-completion-mode`)
 in the first drafts, and the index test enumerated all 23 missing
 index rows rather than leaving them to be spotted by eye.
 
-### HD.4 — family + internal modes 📝
+### HD.4 — family + internal modes ✅ (2026-07-29)
 
-Unblocked by HD.5. 33 pages: 19 language majors, 6 display minors, 8
-internals (`help-mode`, `completion-mode`, `completion-popup-mode`,
-`buffer-words-mode`, `path-completion-mode`,
-`tree-sitter-completion-mode`, `lsp-completion-mode`, `preview-mode`).
+33 docs. **Mode coverage is now 83/83.**
 
-The 19 language pages differ only in grammar and a few settings, so
-they should share a template rather than 19 hand-written variants;
-`languages.md` and `display.md` become index pages pointing at their
-family members.
+- **19 language majors** — generated from a fact table (grammar crate,
+  extensions, which queries exist) rather than hand-written 19 times,
+  because they genuinely differ only in those fields. Per-language
+  notes where reality diverges: `.h` maps to `c-mode` not `cpp-mode`
+  and why, `sql-mode`'s permissive multi-dialect grammar accepting more
+  than any single engine, `tsx-mode` sharing TypeScript's query files.
+  `markdown-mode` is hand-written — it is the only bundled language
+  whose highlight query lattice writes itself, it backs every help
+  buffer as well as `.md` files, and it is missing symbols + text
+  objects that the other eighteen have.
+- **6 display minors** — each documents its option, `:set` surface, and
+  default. `whitespace-show-mode` and `current-line-highlight-mode` say
+  plainly that the option cascades but **the renderer pipeline has not
+  landed**, so toggling changes state without changing the screen.
+- **8 internals** — `help-mode`, the completion gate/popup pair, the
+  four completion sources, `preview-mode`.
 
-#### Scope once unblocked
+`languages.md` and `display.md` became index pages: the language table
+links each row to its mode page, and display gained a mode/option
+table, while both keep the cross-cutting material that has no single
+mode (`tabstop`, `scrolloff`, the coverage roadmap).
 
-19 language majors and 6 display minors get standalone docs;
-`languages.md` and `display.md` become index pages pointing at them.
-Internal plumbing modes (`preview-mode`, `completion-popup-mode`,
-`path-completion-mode`, `buffer-words-mode`,
-`tree-sitter-completion-mode`, `snippet-completion-mode`,
-`lsp-completion-mode`) get short docs saying what they are and what
-they exist for, so `:help <mode-id>` is never dead.
+**Every page states its options and keybindings explicitly, including
+when the answer is "none".** A language major contributing no options
+is worth saying: it tells you there is no per-language settings
+mechanism, which is a real gap rather than an omission from the page.
+
+## Open design item — a mode for inline diff hunks
+
+Raised 2026-07-29. There is no mode owning the **inline diff** surface.
+`diff-mode` is the two-way session minor (`do` / `dp` / `]c` / `[c`);
+inline hunks are rendered by `lattice-diff`'s overlay with no mode at
+all, their colours are `diff.*` theme **builtins**, magit styles its
+own inline expansions through `highlight::diff_styled_spans`, and the
+single registered option (`git.auto-head-diff`) sits in the host's
+`git.*` group.
+
+A dedicated mode would own: syntax highlighting *within* hunk content
+(today ± lines get one flat colour, not real highlighting), context
+lines, sign glyphs, auto-expand behaviour, and the `diff.*` elements —
+per the mode-ownership rule. Overlaps MG.18 (hunk staging) and MG.19
+(side-by-side), so worth sequencing with them.
 
 ### HD.5 — compressed embed ✅ (2026-07-29)
 

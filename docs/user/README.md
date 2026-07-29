@@ -74,6 +74,12 @@ same surface).
 | magit — entry chords       | [`magit-global-mode`](help:magit-global-mode) | ✅      |
 | Magit transient menus      | [`magit-transient`](help:magit-transient) | ✅      |
 | Display & layout           | [`display`](help:display)                | ✅      |
+| Line numbers               | [`line-numbers-mode`](help:line-numbers-mode) | ✅      |
+| Relative line numbers      | [`relative-line-numbers-mode`](help:relative-line-numbers-mode) | ✅      |
+| Soft wrap                  | [`wrap-mode`](help:wrap-mode) | ✅      |
+| Read-only                  | [`read-only-mode`](help:read-only-mode) | ✅      |
+| Whitespace markers         | [`whitespace-show-mode`](help:whitespace-show-mode) | ✅      |
+| Current-line highlight     | [`current-line-highlight-mode`](help:current-line-highlight-mode) | ✅      |
 | Modeline                   | [`modeline`](help:modeline)              | ✅      |
 | Themes & colours           | [`themes`](help:themes)                  | ✅      |
 | Surround (`ds`/`cs`/`ys`)  | [`surround-mode`](help:surround-mode)    | ✅      |
@@ -103,9 +109,36 @@ same surface).
 |   — agent process log      | [`ai-log-mode`](help:ai-log-mode) | ✅      |
 | Languages                  | [`languages`](help:languages)            | ✅      |
 | Plain text (fallback)      | [`text-mode`](help:text-mode) | ✅      |
+| Rust                       | [`rust-mode`](help:rust-mode) | ✅      |
+| Python                     | [`python-mode`](help:python-mode) | ✅      |
+| JavaScript                 | [`javascript-mode`](help:javascript-mode) | ✅      |
+| TypeScript                 | [`typescript-mode`](help:typescript-mode) | ✅      |
+| TSX (TS + JSX)             | [`tsx-mode`](help:tsx-mode) | ✅      |
+| Go                         | [`go-mode`](help:go-mode) | ✅      |
+| C                          | [`c-mode`](help:c-mode) | ✅      |
+| C++                        | [`cpp-mode`](help:cpp-mode) | ✅      |
+| Java                       | [`java-mode`](help:java-mode) | ✅      |
+| Ruby                       | [`ruby-mode`](help:ruby-mode) | ✅      |
+| Lua                        | [`lua-mode`](help:lua-mode) | ✅      |
+| Bash                       | [`bash-mode`](help:bash-mode) | ✅      |
+| HTML                       | [`html-mode`](help:html-mode) | ✅      |
+| CSS                        | [`css-mode`](help:css-mode) | ✅      |
+| JSON                       | [`json-mode`](help:json-mode) | ✅      |
+| TOML                       | [`toml-mode`](help:toml-mode) | ✅      |
+| YAML                       | [`yaml-mode`](help:yaml-mode) | ✅      |
+| SQL                        | [`sql-mode`](help:sql-mode) | ✅      |
+| Markdown                   | [`markdown-mode`](help:markdown-mode) | ✅      |
 | Search and substitute      | _covered in command-line + ex-commands_  | 🟡      |
 | Registers, marks, macros   | _covered in modal-editing_               | 🟡      |
 | Help system                | [`help`](help:help)                      | ✅      |
+| Help buffers               | [`help-mode`](help:help-mode) | ✅      |
+| Completion gate            | [`completion-mode`](help:completion-mode) | ✅      |
+| Completion popup keys      | [`completion-popup-mode`](help:completion-popup-mode) | ✅      |
+|   — buffer-words source    | [`buffer-words-mode`](help:buffer-words-mode) | ✅      |
+|   — path source            | [`path-completion-mode`](help:path-completion-mode) | ✅      |
+|   — tree-sitter source     | [`tree-sitter-completion-mode`](help:tree-sitter-completion-mode) | ✅      |
+|   — LSP source             | [`lsp-completion-mode`](help:lsp-completion-mode) | ✅      |
+| Picker preview             | [`preview-mode`](help:preview-mode) | ✅      |
 | The `*messages*` log       | [`messages-mode`](help:messages-mode) | ✅      |
 | Plugins                    | [`plugins`](help:plugins)                | ✅      |
 |   — the manager buffer     | [`plugins-mode`](help:plugins-mode) | ✅      |

@@ -23,6 +23,11 @@ how to add support for a new language -- both the common case
 
 ## Currently bundled
 
+**Each language has its own page** — `:help rust-mode`,
+`:help go-mode`, and so on — covering what that mode gives you, how it
+is detected, and what it deliberately does not do. This page is the
+index and the cross-language comparison.
+
 The default `LangRegistry` ships with these tree-sitter grammars
 plus their `highlights.scm` / `injections.scm` / `folds.scm` /
 `symbols.scm` / `textobjects.scm` (and `locals.scm` for
@@ -33,25 +38,25 @@ the structural text objects (see
 
 | Language   | Extensions              | Highlights | Injections                     | Locals | Folds | Symbols | Text obj |
 |------------|-------------------------|------------|--------------------------------|--------|-------|---------|----------|
-| Rust       | `rs`                    | ✅         | ✅                             | —      | ✅    | ✅      | ✅       |
-| Python     | `py`/`pyw`              | ✅         | —                              | —      | ✅    | ✅      | ✅       |
-| JavaScript | `js`/`mjs`/`cjs`        | ✅         | ✅                             | ✅     | ✅    | ✅      | ✅       |
-| TypeScript | `ts`/`mts`/`cts`        | ✅         | —                              | ✅     | ✅    | ✅      | ✅       |
-| TSX        | `tsx`                   | ✅         | —                              | ✅     | ✅    | ✅      | ✅       |
-| Go         | `go`                    | ✅         | —                              | —      | ✅    | ✅      | ✅       |
-| C          | `c`/`h`                 | ✅         | —                              | —      | ✅    | ✅      | ✅       |
-| C++        | `cpp`/`cc`/`cxx`/`hpp`/`hh`/`hxx` | ✅ | —                    | —      | ✅    | ✅      | ✅       |
-| Java       | `java`                  | ✅         | —                              | —      | ✅    | ✅      | ✅       |
-| Ruby       | `rb`/`ruby`             | ✅         | —                              | —      | ✅    | ✅      | ✅       |
-| HTML       | `html`/`htm`/`xhtml`    | ✅         | ✅                             | —      | ✅    | ✅      | ✅       |
-| CSS        | `css`                   | ✅         | —                              | —      | ✅    | ✅      | ✅       |
-| JSON       | `json`                  | ✅         | —                              | —      | ✅    | ✅      | ✅       |
-| YAML       | `yaml`/`yml`            | ✅         | —                              | —      | ✅    | ✅      | ✅       |
-| TOML       | `toml`                  | ✅         | —                              | —      | ✅    | ✅      | ✅       |
-| Bash       | `sh`/`bash`/`zsh`/`fish` | ✅        | —                              | —      | ✅    | ✅      | ✅       |
-| SQL        | `sql`                   | ✅         | —                              | —      | ✅    | ✅      | ✅       |
-| Lua        | `lua`                   | ✅         | —                              | —      | ✅    | ✅      | ✅       |
-| Markdown   | `md`/`markdown`/`mdown`/`mkd` | ✅  | ✅ (block→inline, fenced code) | —      | ✅    | —       | —        |
+| [Rust](help:rust-mode)       | `rs`                    | ✅         | ✅                             | —      | ✅    | ✅      | ✅       |
+| [Python](help:python-mode)     | `py`/`pyw`              | ✅         | —                              | —      | ✅    | ✅      | ✅       |
+| [JavaScript](help:javascript-mode) | `js`/`mjs`/`cjs`        | ✅         | ✅                             | ✅     | ✅    | ✅      | ✅       |
+| [TypeScript](help:typescript-mode) | `ts`/`mts`/`cts`        | ✅         | —                              | ✅     | ✅    | ✅      | ✅       |
+| [TSX](help:tsx-mode)        | `tsx`                   | ✅         | —                              | ✅     | ✅    | ✅      | ✅       |
+| [Go](help:go-mode)         | `go`                    | ✅         | —                              | —      | ✅    | ✅      | ✅       |
+| [C](help:c-mode)          | `c`/`h`                 | ✅         | —                              | —      | ✅    | ✅      | ✅       |
+| [C++](help:cpp-mode)        | `cpp`/`cc`/`cxx`/`hpp`/`hh`/`hxx` | ✅ | —                    | —      | ✅    | ✅      | ✅       |
+| [Java](help:java-mode)       | `java`                  | ✅         | —                              | —      | ✅    | ✅      | ✅       |
+| [Ruby](help:ruby-mode)       | `rb`/`ruby`             | ✅         | —                              | —      | ✅    | ✅      | ✅       |
+| [HTML](help:html-mode)       | `html`/`htm`/`xhtml`    | ✅         | ✅                             | —      | ✅    | ✅      | ✅       |
+| [CSS](help:css-mode)        | `css`                   | ✅         | —                              | —      | ✅    | ✅      | ✅       |
+| [JSON](help:json-mode)       | `json`                  | ✅         | —                              | —      | ✅    | ✅      | ✅       |
+| [YAML](help:yaml-mode)       | `yaml`/`yml`            | ✅         | —                              | —      | ✅    | ✅      | ✅       |
+| [TOML](help:toml-mode)       | `toml`                  | ✅         | —                              | —      | ✅    | ✅      | ✅       |
+| [Bash](help:bash-mode)       | `sh`/`bash`/`zsh`/`fish` | ✅        | —                              | —      | ✅    | ✅      | ✅       |
+| [SQL](help:sql-mode)        | `sql`                   | ✅         | —                              | —      | ✅    | ✅      | ✅       |
+| [Lua](help:lua-mode)        | `lua`                   | ✅         | —                              | —      | ✅    | ✅      | ✅       |
+| [Markdown](help:markdown-mode)   | `md`/`markdown`/`mdown`/`mkd` | ✅  | ✅ (block→inline, fenced code) | —      | ✅    | —       | —        |
 
 Plain text and any unrecognised extension fall through to the
 `Plain` language: no parse, no styled spans. The renderer treats

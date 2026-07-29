@@ -20,6 +20,24 @@ layered resolution); this page is the deep-dive on each.
 
 ---
 
+## Per-mode pages
+
+Each display toggle is also a mode with its own page, covering its
+option, its `:set` surface, and its default:
+
+| Mode | Option |
+|---|---|
+| [`line-numbers-mode`](help:line-numbers-mode) | `number` |
+| [`relative-line-numbers-mode`](help:relative-line-numbers-mode) | `relativenumber` |
+| [`wrap-mode`](help:wrap-mode) | `wrap` |
+| [`read-only-mode`](help:read-only-mode) | `ReadOnly` |
+| [`whitespace-show-mode`](help:whitespace-show-mode) | `whitespace` |
+| [`current-line-highlight-mode`](help:current-line-highlight-mode) | `cursorline` |
+
+This page covers the display surface as a whole, including options
+that have no mode of their own (`tabstop`, `scrolloff`, `sidescroll`,
+`ui.ligatures`).
+
 ## Quick reference
 
 | Command                          | Default | Meaning                                                        |

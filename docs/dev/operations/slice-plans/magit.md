@@ -38,6 +38,7 @@ owns *what* and *why*.
 | MG.19 | magit-diff side-by-side + `do`/`dp` | MG.18, D.4 | 📝 |
 | MG.20 | Operation coverage — reset / revert / cherry-pick | MG.17a | ✅ |
 | MG.21 | Remaining operations — tag, merge beyond `m`, bisect, submodule, remotes | MG.17b | 📝 |
+| MG.22 | `magit-hunk-mode` — the mode owning diff *content* | MG.20 | 📝 |
 
 **2026-07-26 audit correction:** this table (last synced when MG.1-3 landed) had
 drifted from `implementation.md`'s per-slice status, which had marked MG.4-10 all
@@ -962,6 +963,51 @@ half-wiring now.
   only the destructive reset asks; revert never opens `$EDITOR`; the
   confirm targets its real execute half), plus the existing chord guard
   covering all five bindings.
+
+### MG.22 — `magit-hunk-mode` 📝
+
+Design fragment:
+[`../../architecture/magit-hunk-mode.md`](../../architecture/magit-hunk-mode.md).
+Decisions taken 2026-07-29; implementation not started.
+
+Five majors show unified-diff content and each reimplements the same
+three behaviours — 8 `diff_styled_spans` call sites, 3 `file_at_cursor`
+parsers, 3 `<CR>` visit handlers — while the options that should govern
+diff display have nowhere to live at all.
+
+**Decided:**
+
+- A **minor** named `magit-hunk-mode`, in `lattice-magit`. Minor
+  because the same content appears under five different majors, each
+  keeping its own chords and refresh — the relationship `help-mode`
+  has with `markdown-mode`.
+- `<CR>` resolves its target through the **`MagitView` seam**
+  (`diff_target(path)`), a third use of the MG.13 pattern rather than
+  a fourth mechanism. Rejected: re-parsing scope out of the buffer
+  name, which would make a name format load-bearing in a second place
+  — the drift that left every stash chord dead until MG.15.
+- Parse with **`tree-sitter-diff`**, deleting the hand-rolled
+  `diff_styled_spans`. It covers renames, binary changes, mode lines
+  and `index` lines that the hand-rolled styler silently misses.
+
+**Sequencing note — two independent wins, and the cheap one is not the
+parser.** The flat look of magit's diffs is because they map spans to
+`diff.add.text` / `diff.remove.text` (**foreground only**) while
+`diff.add.line` / `diff.remove.line` already exist carrying
+**background tints** and are already used by the gutter path. Applying
+the line elements is an element-mapping change that lands independently
+of tree-sitter and is worth doing first.
+
+**Unresolved before coding:** lattice attaches parsers through the
+*major* (`Lang` → `DocumentSyntax` buffer-local). A magit buffer's
+major is `magit-*`, so a minor cannot get a parser the usual way. The
+likely answer is registering `"diff"` in the `LangRegistry` and having
+the mode write `DocumentSyntax` itself, but that needs checking against
+the syntax worker's assumptions about who owns that local.
+
+**Out of scope:** inline gutter/overlay diffs on ordinary file buffers.
+That path in `lattice-diff` remains unowned by any mode — tracked in
+the help-docs slice plan as a separate design item.
 
 ## Cross-references
 

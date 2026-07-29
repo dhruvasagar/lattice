@@ -110,22 +110,46 @@ registers `"diff"` in the `LangRegistry` and sets the buffer's
 `activate_document` writes — but this needs checking against the
 syntax worker's assumptions about who owns that local.
 
-## Why the current output looks flat
+## Why the current output looked flat — fixed by MG.21a
 
-Worth separating from the parser question, because it is independent
-and cheaper to fix.
+Independent of the parser question, and landed first.
 
 Magit's diff views map their spans to `Style::DiffAdd` / `DiffRemove`,
 which resolve to `diff.add.text` / `diff.remove.text` — **foreground
-only** (`spec().fg("green")`). Meanwhile `diff.add.line` /
-`diff.remove.line` already exist and carry **background tints**
-(`spec().bg("diff.add.bg")`), and the gutter/overlay diff path already
-uses them.
+only** (`spec().fg("green")`). `diff.add.line` / `diff.remove.line`
+carry the **background tints** (`spec().bg("diff.add.bg")`).
 
-So the "emacs magit looks richer" gap is largely that the line-level
-background elements are never applied in these buffers. That is an
-element-mapping change, not a parsing change, and it lands whether or
-not tree-sitter-diff does.
+An earlier revision of this document called that gap "an
+element-mapping change". **That was wrong**, and the correction is the
+interesting part: the `diff.*.line` elements are never applied through
+a `StyledSpan` at all. Both renderers apply them as a **full-row
+background**, keyed on a `DiffSignMap` looked up by buffer id
+(`diff_tint_bg` in the TUI, the `theme_ids.diff_*_line` reads in
+GPUI's `window.rs`). Sign maps were built solely from live
+`DiffSession`s — and a buffer whose *content* is a diff has no session,
+because there is no baseline to diff it against. So those elements were
+unreachable from magit no matter how the spans were mapped.
+
+MG.21a closes it by **deriving** the sign map from the spans the mode
+already publishes: in `drain_pending_synthetic_highlights`, a row
+styled `DiffAdd` / `DiffRemove` yields an `Add` / `Remove` sign, and
+`diff_sign_maps_by_buffer` merges those into the same map both
+renderers already read. Consequences worth recording:
+
+- **No renderer change in either peer**, so the TUI/GPUI parity rule is
+  satisfied by construction rather than by a matched pair of edits.
+- **No producer change at any of the 8 span sites** — including
+  magit-status's inline `=` expansion, which splices spans mid-buffer.
+  Deriving from the post-splice spans means the tint cannot drift out
+  of alignment with the text; a parallel signs channel would have had
+  to repeat the splice arithmetic and could.
+- **Conditioned on the style, not on the mode or `BufferKind`.** Any
+  synthetic buffer that marks a row as a diff addition gets the tint.
+- Gutter `+`/`-` glyphs do *not* appear, because those come from
+  `mode.gutter_decorations` on modes active in the buffer, and
+  `diff-mode` is not active in a magit buffer. The sign map drives the
+  tint; the active mode drives the glyphs. Desirable here — the text
+  already begins with `+`/`-`.
 
 Emacs magit also does **word-level** intra-line highlighting (the
 changed span within a modified line gets a stronger tint). That needs a
@@ -140,7 +164,7 @@ None of these exist today; `lattice-magit` registers no options at all.
 |---|---|---|
 | `magit.hunk.context-lines` | int | `-U<n>` for the diffs magit generates |
 | `magit.hunk.syntax-highlight` | bool | language-aware hunk content, once it exists |
-| `magit.hunk.line-backgrounds` | bool | the `diff.*.line` tints above |
+| `magit.hunk.line-backgrounds` | bool | opt *out* of the `diff.*.line` tints above, which MG.21a made unconditional |
 
 ## Open
 

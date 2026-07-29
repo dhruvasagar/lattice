@@ -38,6 +38,7 @@ owns *what* and *why*.
 | MG.19 | magit-diff side-by-side + `do`/`dp` | MG.18, D.4 | 📝 |
 | MG.20 | Operation coverage — reset / revert / cherry-pick | MG.17a | ✅ |
 | MG.21 | Remaining operations — tag, merge beyond `m`, bisect, submodule, remotes | MG.17b | 📝 |
+| MG.21a | Diff line-background tints in magit's diff views | MG.20 | ✅ |
 | MG.22 | `magit-hunk-mode` — the mode owning diff *content* | MG.20 | 📝 |
 
 **2026-07-26 audit correction:** this table (last synced when MG.1-3 landed) had
@@ -963,6 +964,56 @@ half-wiring now.
   only the destructive reset asks; revert never opens `$EDITOR`; the
   confirm targets its real execute half), plus the existing chord guard
   covering all five bindings.
+
+### MG.21a — diff line-background tints ✅
+
+Carved out of MG.22 and landed first: it is independent of the parser
+question, and it is most of the visible "emacs magit looks richer"
+gap. Design:
+[`../../architecture/magit-hunk-mode.md`](../../architecture/magit-hunk-mode.md)
+§"Why the current output looked flat".
+
+The diagnosis in the design fragment was **wrong on first pass** and
+the correction shaped the fix. `diff.add.line` / `diff.remove.line` are
+not reachable from a `StyledSpan`; both renderers apply them as a
+full-row background keyed on a `DiffSignMap` looked up by buffer id,
+and sign maps were built only from live `DiffSession`s — which a
+buffer whose *content* is a diff never has.
+
+**Shipped:**
+
+- `Editor::diff_signs_from_spans` — derives `(line, DiffSignKind)`
+  from the spans a mode publishes: a row styled `DiffAdd` /
+  `DiffRemove` earns the matching tint. Runs in
+  `drain_pending_synthetic_highlights` on the actor thread, `O(lines)`
+  per refresh, never at paint time.
+- `Editor::provider_diff_signs`, merged into the published map by
+  `diff_sign_maps_by_buffer` (sessions win on collision).
+- `DiffSignMap::from_entries` promoted from `#[cfg(test)]` to `pub`,
+  with the ascending-order requirement `sign_at`'s binary search
+  depends on documented.
+- `lattice-magit`'s two diff stylers collapsed onto one
+  `classify_diff_line` ladder — they had carried verbatim copies, so a
+  rule fixed in one could miss the other.
+
+**Rejected — a parallel signs channel** (a `AppEffect::DiffLineSigns`
+twin of `CompilationGutterSet`, built then discarded). It would have
+had to repeat the `splice_insert` / `splice_remove` arithmetic that
+keeps magit-status's inline `=` expansion aligned, and could therefore
+drift out of sync with the text. Deriving from the post-splice spans
+cannot. It also needed no producer changes at any of the 8 span sites.
+
+**Zero renderer changes in either peer** — the cross-renderer audit is
+vacuous here by construction, which is the point.
+
+Six tests in `dispatch.rs`, all proven non-vacuous (3 fail with the
+merge disabled): the derivation, the no-diff-styling case (magit's
+log / blame / branch views share the channel and must stay untinted),
+ascending order, end-to-end reach into the published map, clearing on
+a refresh that drops the diff, and splice alignment.
+
+**Not shipped:** `magit.hunk.line-backgrounds` to opt out — the option
+lands with MG.22, which is where magit's options get an owner.
 
 ### MG.22 — `magit-hunk-mode` 📝
 

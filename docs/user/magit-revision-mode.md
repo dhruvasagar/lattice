@@ -55,3 +55,5 @@ don't have to land on the header line itself.
   from.
 - [`magit-file-revision-mode`](help:magit-file-revision-mode) — where
   `<CR>` lands.
+- [`magit-diff-mode`](help:magit-diff-mode) — how added and removed
+  lines are coloured, and the theme elements that control it.

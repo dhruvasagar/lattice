@@ -140,9 +140,15 @@ impl DiffSignMap {
     }
 
     /// Build a sign map directly from `(line, kind)` entries (revision
-    /// 0). Test-only: classified lines without a `HunkIndex` to walk.
-    #[cfg(test)]
-    pub(crate) fn from_entries(entries: Vec<(u32, DiffSignKind)>) -> Self {
+    /// 0), for producers that classify lines without a `HunkIndex` to
+    /// walk — a buffer whose *content* is already a unified diff
+    /// (magit's diff / revision / stash-show / commit views) knows each
+    /// line's kind by reading it, and has no baseline to diff against.
+    ///
+    /// `entries` MUST be sorted ascending by line: [`Self::sign_at`] is
+    /// a binary search, so an unsorted vec silently mis-reports signs
+    /// rather than failing.
+    pub fn from_entries(entries: Vec<(u32, DiffSignKind)>) -> Self {
         Self {
             entries,
             revision: 0,

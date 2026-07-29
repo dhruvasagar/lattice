@@ -463,6 +463,24 @@ pub struct Editor {
     pub compilation_location_lines: std::sync::Arc<
         std::collections::HashMap<lattice_core::BufferId, std::sync::Arc<Vec<(u32, u32, u32)>>>,
     >,
+    /// MG.21a (2026-07-29): per-buffer diff sign maps published by a
+    /// *mode*, for buffers whose content is itself a unified diff.
+    /// Written by the `AppEffect::DiffLineSigns` arm and merged into
+    /// `RenderState::diff.sign_maps` by `diff_sign_maps_by_buffer`, so
+    /// the existing line-tint path in both renderers picks them up
+    /// unchanged.
+    ///
+    /// Kept as a slot separate from the session-derived maps because the
+    /// two have different lifetimes: a session map is recomputed as the
+    /// user edits, while these are rewritten only when the mode
+    /// regenerates the buffer. Sessions win on the (currently
+    /// impossible) key collision — see `diff_sign_maps_by_buffer`.
+    pub provider_diff_signs: std::sync::Arc<
+        std::collections::HashMap<
+            lattice_core::BufferId,
+            std::sync::Arc<crate::diff::overlay::DiffSignMap>,
+        >,
+    >,
     /// CM.3d (2026-07-22): resolved `compilation.location` theme
     /// colours — published by the mode during activation so the TUI
     /// and GPUI renderers read from the theme rather than hardcoding

@@ -50,6 +50,35 @@ opens the index blob (read-only,
 that's what the diff you're reading describes. From the others it opens
 the live working-tree file.
 
+## How the diff is coloured
+
+Added and removed lines get a **full-width background tint** as well as
+a coloured foreground, so a hunk reads as a block at a glance rather
+than as text that happens to start with `+` or `-`. The tint spans the
+whole row, past the end of the text — which is what makes a run of
+added lines look like one shape.
+
+Four theme elements control it, and they apply anywhere a diff is
+shown, including magit-status's inline `=` expansions, the
+[commit](help:magit-commit-mode) buffer's staged diff, a
+[revision](help:magit-revision-mode) and a
+[stash](help:magit-stash-show-mode):
+
+| Element | What it colours |
+|---|---|
+| `diff.add.text` | foreground of an added line |
+| `diff.add.line` | **background** of an added line |
+| `diff.remove.text` | foreground of a removed line |
+| `diff.remove.line` | **background** of a removed line |
+
+Hunk headers (`@@`), file headers and `diff --git` lines are
+deliberately *not* tinted — they describe the diff's structure rather
+than changed content, so tinting them would break the blocks apart.
+
+There is no gutter `+` / `-` sign column here, unlike a file being
+edited under a diff session: the text already starts with the marker,
+so a second one would be redundant.
+
 ## Behaviour worth knowing
 
 - **Populated once on open**; `gr` re-runs the diff.

@@ -271,3 +271,10 @@ the `RepositoryWatcher`. The auto-refresh runs the same fast path as
   (no text diff to display).
 - **Merge conflicts:** files in the `Unmerged` state appear in both
   staged and unstaged sections with a `conflicted` label.
+
+## See also
+
+- [`magit-diff-mode`](help:magit-diff-mode) — how the inline `=` diffs
+  are coloured, and the theme elements that control it.
+- [`magit-core-mode`](help:magit-core-mode) — the shared navigation,
+  refresh and fold chords.

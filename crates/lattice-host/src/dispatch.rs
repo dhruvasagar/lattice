@@ -4295,6 +4295,16 @@ impl Editor {
             BufferId,
             std::sync::Arc<crate::diff::overlay::DiffSignMap>,
         > = std::collections::HashMap::new();
+        // MG.21a: mode-published maps for buffers whose *content* is a
+        // unified diff (magit's diff / revision / stash-show / commit
+        // views). Seeded first so a real session — which tracks a live
+        // rope and is therefore the authority — overwrites on collision.
+        // The two sets cannot actually collide today: a session attaches
+        // to a file buffer, these are synthetic. Ordering is here so that
+        // stays true by construction rather than by coincidence.
+        for (bid, signs) in self.provider_diff_signs.iter() {
+            map.insert(*bid, signs.clone());
+        }
         for session in self.diff_subsystem.iter_sessions() {
             let primary = session.buffer_id();
             map.insert(primary, session.sign_map());
@@ -14846,6 +14856,43 @@ impl Editor {
     /// local. Called from `run_tick_pending`; spans written by async refresh
     /// tasks (magit status, etc.) are picked up immediately on the next tick.
     /// No-op when the service is missing or the map is empty.
+    /// MG.21a (2026-07-29): derive per-line diff signs from a synthetic
+    /// buffer's `StyledSpan` rows.
+    ///
+    /// A line styled [`Style::DiffAdd`] / [`Style::DiffRemove`] *is* an
+    /// added / removed line, so it earns the matching full-row
+    /// background from `diff.add.line` / `diff.remove.line`. Those
+    /// elements are applied by the renderers' sign-map tint path and
+    /// never through a span, so before this a buffer whose content was
+    /// itself a diff — every magit diff view — could not reach them at
+    /// all: sign maps came only from real `DiffSession`s, which a
+    /// synthetic buffer never has. The result was fg-only colouring,
+    /// visibly flatter than the same diff in emacs magit.
+    ///
+    /// Conditioning on the *style* rather than on the producing mode is
+    /// deliberate: any synthetic buffer that marks a line as a diff
+    /// addition gets the tint, with no `BufferKind` branch anywhere.
+    ///
+    /// Runs on the actor thread during the tick drain — `O(lines)` per
+    /// refresh, never on the paint path (paramount #1).
+    fn diff_signs_from_spans(
+        rows: &[Vec<lattice_cells::StyledSpan>],
+    ) -> Vec<(u32, crate::diff::overlay::DiffSignKind)> {
+        use crate::diff::overlay::DiffSignKind;
+        use lattice_cells::style::Style;
+        rows.iter()
+            .enumerate()
+            .filter_map(|(i, spans)| {
+                let kind = spans.iter().find_map(|s| match s.style {
+                    Style::DiffAdd => Some(DiffSignKind::Add),
+                    Style::DiffRemove => Some(DiffSignKind::Remove),
+                    _ => None,
+                })?;
+                Some((i as u32, kind))
+            })
+            .collect()
+    }
+
     fn drain_pending_synthetic_highlights(&mut self) {
         let Some(pending) = self
             .services
@@ -14863,43 +14910,72 @@ impl Editor {
             };
             map.drain().collect()
         };
+        // MG.21a: accumulated here rather than written per-entry so the
+        // `provider_diff_signs` Arc is rebuilt once per drain, not once
+        // per buffer.
+        let mut sign_updates: Vec<(
+            lattice_core::BufferId,
+            Vec<(u32, crate::diff::overlay::DiffSignKind)>,
+        )> = Vec::new();
         for (buf_id, op) in entries {
             let locals = self.buffer_locals.entry(buf_id).or_default();
-            match op {
-                lattice_mode::pending_synthetic_highlights::HighlightsOp::Replace(spans) => {
-                    locals.insert(crate::modes::ExtraHighlights(spans));
-                }
+            let existing = || {
+                locals
+                    .get::<crate::modes::ExtraHighlights>()
+                    .map(|e| e.0.clone())
+                    .unwrap_or_default()
+            };
+            let final_spans = match op {
+                lattice_mode::pending_synthetic_highlights::HighlightsOp::Replace(spans) => spans,
                 lattice_mode::pending_synthetic_highlights::HighlightsOp::InsertAt {
                     start_line,
                     spans,
                 } => {
-                    let mut merged = locals
-                        .get::<crate::modes::ExtraHighlights>()
-                        .map(|e| e.0.clone())
-                        .unwrap_or_default();
+                    let mut merged = existing();
                     lattice_mode::pending_synthetic_highlights::splice_insert(
                         &mut merged,
                         start_line,
                         spans,
                     );
-                    locals.insert(crate::modes::ExtraHighlights(merged));
+                    merged
                 }
                 lattice_mode::pending_synthetic_highlights::HighlightsOp::RemoveAt {
                     start_line,
                     count,
                 } => {
-                    let mut merged = locals
-                        .get::<crate::modes::ExtraHighlights>()
-                        .map(|e| e.0.clone())
-                        .unwrap_or_default();
+                    let mut merged = existing();
                     lattice_mode::pending_synthetic_highlights::splice_remove(
                         &mut merged,
                         start_line,
                         count,
                     );
-                    locals.insert(crate::modes::ExtraHighlights(merged));
+                    merged
+                }
+            };
+            // MG.21a: derive the line-background signs from the SAME spans
+            // that are about to be stored, after splicing. Deriving rather
+            // than carrying signs on a parallel channel is what makes the
+            // tint impossible to desynchronise from the text: an inline
+            // diff expansion in magit-status shifts spans and signs by
+            // construction, because there is only one thing being shifted.
+            sign_updates.push((buf_id, Self::diff_signs_from_spans(&final_spans)));
+            locals.insert(crate::modes::ExtraHighlights(final_spans));
+        }
+        if !sign_updates.is_empty() {
+            let mut map = (*self.provider_diff_signs).clone();
+            for (buf_id, entries) in sign_updates {
+                if entries.is_empty() {
+                    map.remove(&buf_id);
+                } else {
+                    map.insert(
+                        buf_id,
+                        std::sync::Arc::new(crate::diff::overlay::DiffSignMap::from_entries(
+                            entries,
+                        )),
+                    );
                 }
             }
+            self.provider_diff_signs = std::sync::Arc::new(map);
         }
     }
 
@@ -43008,6 +43084,154 @@ mod tests {
             editor.visual_anchor,
             Some(Position::new(0, 4)),
             "o moves the anchor to the old head"
+        );
+    }
+
+    // ── MG.21a: diff line tints for buffers whose content IS a diff ──
+
+    use crate::diff::overlay::DiffSignKind;
+    use lattice_cells::style::{Style, StyledSpan};
+
+    /// One line's spans, whole-line, as magit's diff styler emits them.
+    fn row(style: Style) -> Vec<StyledSpan> {
+        vec![StyledSpan {
+            start: 0,
+            end: 10,
+            style,
+        }]
+    }
+
+    /// Store `spans` for `buf` through the real service, then run the real
+    /// drain — so these tests exercise the production path, not a copy of it.
+    fn drain_spans(editor: &mut Editor, buf: lattice_core::BufferId, spans: Vec<Vec<StyledSpan>>) {
+        let pending = editor
+            .services
+            .get::<lattice_mode::PendingSyntheticHighlights>()
+            .expect("PendingSyntheticHighlights registered");
+        pending.store_and_wake(buf, spans);
+        editor.drain_pending_synthetic_highlights();
+    }
+
+    fn editor_with_highlights_service() -> Editor {
+        let mut registry = lattice_mode::ServiceRegistry::new();
+        registry.register(lattice_mode::PendingSyntheticHighlights::new());
+        let mut ed = Editor::default();
+        ed.services = std::sync::Arc::new(registry);
+        ed
+    }
+
+    #[test]
+    fn a_diff_styled_line_earns_the_matching_row_tint_sign() {
+        let signs = Editor::diff_signs_from_spans(&[
+            row(Style::Keyword),  // diff --git
+            row(Style::Comment),  // @@ hunk header
+            row(Style::DiffAdd),  // +added
+            row(Style::DiffRemove), // -removed
+        ]);
+        assert_eq!(
+            signs,
+            vec![(2, DiffSignKind::Add), (3, DiffSignKind::Remove)],
+            "only the +/- content lines tint; structure lines do not"
+        );
+    }
+
+    #[test]
+    fn a_buffer_with_no_diff_styling_publishes_no_signs() {
+        // The failure mode this guards: magit's log / blame / branch views
+        // go through the SAME highlights channel. If any non-diff style
+        // leaked into a sign, those buffers would grow spurious row tints.
+        let signs = Editor::diff_signs_from_spans(&[
+            row(Style::Link),
+            row(Style::Comment),
+            row(Style::Number),
+            Vec::new(),
+        ]);
+        assert!(signs.is_empty(), "no diff styling ⇒ no tint, got {signs:?}");
+    }
+
+    #[test]
+    fn signs_stay_ascending_so_the_binary_search_holds() {
+        // `DiffSignMap::sign_at` is a binary search — unsorted entries
+        // mis-report silently rather than failing.
+        let rows: Vec<Vec<StyledSpan>> = (0..50)
+            .map(|i| {
+                if i % 3 == 0 {
+                    row(Style::DiffAdd)
+                } else {
+                    row(Style::Comment)
+                }
+            })
+            .collect();
+        let signs = Editor::diff_signs_from_spans(&rows);
+        assert!(
+            signs.windows(2).all(|w| w[0].0 < w[1].0),
+            "entries must be ascending by line"
+        );
+    }
+
+    #[test]
+    fn drained_diff_spans_reach_the_published_sign_map() {
+        // The end-to-end claim: a synthetic buffer styled as a diff shows up
+        // in the map BOTH renderers already tint from — which is what lets
+        // the `diff.*.line` theme elements reach magit's diff views with no
+        // renderer change at all.
+        let mut ed = editor_with_highlights_service();
+        let buf = lattice_core::BufferId(7);
+        drain_spans(&mut ed, buf, vec![row(Style::Comment), row(Style::DiffAdd)]);
+
+        let published = ed.diff_sign_maps_by_buffer();
+        let map = published
+            .get(&buf)
+            .expect("a diff-styled synthetic buffer is in the published sign map");
+        assert_eq!(map.sign_at(1), Some(DiffSignKind::Add));
+        assert_eq!(map.sign_at(0), None, "the @@ header line is untinted");
+    }
+
+    #[test]
+    fn a_refresh_that_drops_the_diff_clears_the_buffers_tints() {
+        // Failure mode: magit views are regenerated in place (`gr`). If a
+        // refresh whose new content has no diff left the old entry behind,
+        // the buffer would keep tinting rows that are no longer diff lines.
+        let mut ed = editor_with_highlights_service();
+        let buf = lattice_core::BufferId(7);
+        drain_spans(&mut ed, buf, vec![row(Style::DiffAdd)]);
+        assert!(ed.diff_sign_maps_by_buffer().contains_key(&buf));
+
+        drain_spans(&mut ed, buf, vec![row(Style::Comment)]);
+        assert!(
+            !ed.diff_sign_maps_by_buffer().contains_key(&buf),
+            "a refresh with no diff content clears the buffer's tints"
+        );
+    }
+
+    #[test]
+    fn an_inline_diff_expansion_shifts_tints_with_the_text() {
+        // The reason signs are DERIVED from the spans rather than shipped
+        // alongside them: magit-status's `=` expansion splices lines into
+        // the middle of the buffer. A parallel signs channel would have to
+        // repeat that shift and could drift; deriving cannot.
+        let mut ed = editor_with_highlights_service();
+        let buf = lattice_core::BufferId(9);
+        // Two file entries, no diff shown yet.
+        drain_spans(&mut ed, buf, vec![row(Style::Link), row(Style::Link)]);
+        assert!(ed.diff_sign_maps_by_buffer().get(&buf).is_none());
+
+        // Expand a diff under the first entry: two lines inserted at line 1.
+        let pending = ed
+            .services
+            .get::<lattice_mode::PendingSyntheticHighlights>()
+            .unwrap();
+        pending.insert_at_and_wake(buf, 1, vec![row(Style::DiffAdd), row(Style::DiffRemove)]);
+        ed.drain_pending_synthetic_highlights();
+
+        let published = ed.diff_sign_maps_by_buffer();
+        let map = published.get(&buf).expect("expanded diff tints");
+        assert_eq!(map.sign_at(1), Some(DiffSignKind::Add));
+        assert_eq!(map.sign_at(2), Some(DiffSignKind::Remove));
+        assert_eq!(
+            map.sign_at(3),
+            None,
+            "the file entry pushed down to line 3 is not a diff line"
         );
     }
 }

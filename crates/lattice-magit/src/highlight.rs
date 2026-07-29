@@ -12,51 +12,80 @@
 
 use lattice_cells::style::{Style, StyledSpan};
 
+/// MG.21a: what one line of a unified diff *is*. Extracted because the
+/// whole-buffer styler and the commit buffer's range-scoped styler each
+/// carried their own copy of this prefix ladder, so a rule fixed in one
+/// could silently miss the other. One ladder, two callers.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub(crate) enum DiffLineClass {
+    /// `+content` — an added line (but not the `+++` file header).
+    Added,
+    /// `-content` — a removed line (but not the `---` file header).
+    Removed,
+    /// `@@ … @@` hunk header.
+    Hunk,
+    /// `diff --git a/… b/…`.
+    FileCommand,
+    /// `---` / `+++` file path headers.
+    FilePath,
+    /// Anything else: context lines, `index …`, mode changes, blanks.
+    Context,
+}
+
+impl DiffLineClass {
+    /// The foreground style for this class, or `None` for unstyled.
+    fn style(self) -> Option<Style> {
+        match self {
+            Self::Added => Some(Style::DiffAdd),
+            Self::Removed => Some(Style::DiffRemove),
+            Self::Hunk => Some(Style::Comment),
+            Self::FileCommand => Some(Style::Keyword),
+            Self::FilePath => Some(Style::Link),
+            Self::Context => None,
+        }
+    }
+
+}
+
+/// Classify one line of a unified diff. The single prefix ladder.
+pub(crate) fn classify_diff_line(line: &str) -> DiffLineClass {
+    if line.starts_with('+') && !line.starts_with("+++") {
+        DiffLineClass::Added
+    } else if line.starts_with('-') && !line.starts_with("---") {
+        DiffLineClass::Removed
+    } else if line.starts_with("@@") {
+        DiffLineClass::Hunk
+    } else if line.starts_with("diff --git") {
+        DiffLineClass::FileCommand
+    } else if line.starts_with("---") || line.starts_with("+++") {
+        DiffLineClass::FilePath
+    } else {
+        DiffLineClass::Context
+    }
+}
+
+/// The styled spans for one classified line — the whole line, or empty.
+fn spans_for(class: DiffLineClass, line_len: usize) -> Vec<StyledSpan> {
+    match class.style() {
+        Some(style) => vec![StyledSpan {
+            start: 0,
+            end: line_len,
+            style,
+        }],
+        None => Vec::new(),
+    }
+}
+
+
 /// Color a unified diff: `+`/`-` content lines, `@@` hunk headers,
 /// `diff --git`/`---`/`+++` file headers. Used verbatim by
 /// `magit-status`'s inline-expanded diffs (`actions.rs`) and by
 /// `magit-diff-mode`'s whole-buffer `git diff` content; `commit_buffer_styled_spans`
 /// below reuses it for the staged-diff region of the commit buffer.
 pub(crate) fn diff_styled_spans(diff: &str) -> Vec<Vec<StyledSpan>> {
-    let mut result = Vec::new();
-    for line in diff.lines() {
-        let line_len = line.len();
-        let spans = if line.starts_with('+') && !line.starts_with("+++") {
-            vec![StyledSpan {
-                start: 0,
-                end: line_len,
-                style: Style::DiffAdd,
-            }]
-        } else if line.starts_with('-') && !line.starts_with("---") {
-            vec![StyledSpan {
-                start: 0,
-                end: line_len,
-                style: Style::DiffRemove,
-            }]
-        } else if line.starts_with("@@") {
-            vec![StyledSpan {
-                start: 0,
-                end: line_len,
-                style: Style::Comment,
-            }]
-        } else if line.starts_with("diff --git") {
-            vec![StyledSpan {
-                start: 0,
-                end: line_len,
-                style: Style::Keyword,
-            }]
-        } else if line.starts_with("---") || line.starts_with("+++") {
-            vec![StyledSpan {
-                start: 0,
-                end: line_len,
-                style: Style::Link,
-            }]
-        } else {
-            Vec::new()
-        };
-        result.push(spans);
-    }
-    result
+    diff.lines()
+        .map(|line| spans_for(classify_diff_line(line), line.len()))
+        .collect()
 }
 
 /// Color the staged-diff region of the commit buffer
@@ -77,42 +106,8 @@ pub(crate) fn commit_buffer_styled_spans(
         if i < diff_start_line || i >= diff_end_line {
             continue;
         }
-        let line_len = line.len();
-        let spans = if line.starts_with('+') && !line.starts_with("+++") {
-            vec![StyledSpan {
-                start: 0,
-                end: line_len,
-                style: Style::DiffAdd,
-            }]
-        } else if line.starts_with('-') && !line.starts_with("---") {
-            vec![StyledSpan {
-                start: 0,
-                end: line_len,
-                style: Style::DiffRemove,
-            }]
-        } else if line.starts_with("@@") {
-            vec![StyledSpan {
-                start: 0,
-                end: line_len,
-                style: Style::Comment,
-            }]
-        } else if line.starts_with("diff --git") {
-            vec![StyledSpan {
-                start: 0,
-                end: line_len,
-                style: Style::Keyword,
-            }]
-        } else if line.starts_with("---") || line.starts_with("+++") {
-            vec![StyledSpan {
-                start: 0,
-                end: line_len,
-                style: Style::Link,
-            }]
-        } else {
-            Vec::new()
-        };
         if let Some(slot) = result.get_mut(i) {
-            *slot = spans;
+            *slot = spans_for(classify_diff_line(line), line.len());
         }
     }
     result

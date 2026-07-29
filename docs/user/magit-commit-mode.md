@@ -93,3 +93,5 @@ which one you're in.
 - [`magit-revision-mode`](help:magit-revision-mode) — a *historical*
   commit's detail, which is a different buffer from this one despite
   the similar name.
+- [`magit-diff-mode`](help:magit-diff-mode) — how added and removed
+  lines are coloured, and the theme elements that control it.

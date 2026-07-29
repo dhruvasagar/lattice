@@ -30,3 +30,5 @@ and its subject — `stash@{2}  WIP on main: fix the thing`.
 
 - [`magit-stash-mode`](help:magit-stash-mode) — the list, and the
   apply / pop / drop chords.
+- [`magit-diff-mode`](help:magit-diff-mode) — how added and removed
+  lines are coloured, and the theme elements that control it.

@@ -932,6 +932,9 @@ impl App {
             | Effect::EchoRegisters
             | Effect::Yank { .. }
             | Effect::CursorMove(_)
+            // MG.18d: host-applied (and dropped when its target is not
+            // the focused buffer); peer no-ops it like `CursorMove`.
+            | Effect::CursorMoveIn { .. }
             | Effect::SelectionChange(_)
             | Effect::EnterMode(_)
             | Effect::SetOption { .. }
@@ -1292,6 +1295,7 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         Effect::Declined
         | Effect::None
         | Effect::CursorMove(_)
+        | Effect::CursorMoveIn { .. }
         | Effect::SelectionChange(_)
         | Effect::EnterMode(_)
         | Effect::SaveBuffer { .. }
@@ -1432,6 +1436,7 @@ fn effect_mutates(effect: &Effect) -> bool {
         Effect::Declined
         | Effect::None
         | Effect::CursorMove(_)
+        | Effect::CursorMoveIn { .. }
         | Effect::SelectionChange(_)
         | Effect::Yank { .. }
         | Effect::EnterMode(_)

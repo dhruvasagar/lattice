@@ -83,6 +83,10 @@ that cannot be wired without their safety property*:
 - `wake_on_event::<E>()` — subscribe a typed event and wake `async_landed`;
   generalizes the `MultibufferExcerptsReady` / L1c forwarder tasks.
 - `tick_callback(closure)` — register a per-tick drain (the I1 registry).
+  **Not the default choice.** A bare tick callback has no wake of its own, so
+  its results sit until something *else* fires `async_landed` — in practice the
+  user's next keystroke. Reach for it only when another producer already
+  guarantees the wake; otherwise use `inbound`, whose sender carries it.
 - `commands_mut` / `modes_mut` / `services_mut` / `register_service` /
   `service::<T>()` — the registry seams (the registration fns take
   `&mut CommandRegistry` / `&mut ModeRegistry`, so `*_mut` is the natural seam;
@@ -92,6 +96,18 @@ that cannot be wired without their safety property*:
 
 The acid test becomes **structural**: a new subsystem touches `editor_boot.rs` in
 exactly one place — its entry in the Phase-B list — and zero host internals.
+
+### Effects an inbound handler returns are *late*, and must say so
+
+The handler maps an item to existing `Effect`s, but those effects apply at a
+moment the producer did not choose — after two git calls, an LSP round-trip, a
+file walk. Any effect whose meaning depends on *which buffer is in front of the
+user* therefore needs to name its buffer, because focus may have moved since the
+work started. `Effect::ApplyEdit` carries `target` for this reason;
+`Effect::CursorMoveIn { target, position }` (MG.18d) is the cursor peer, applied
+only while `target` is focused and dropped otherwise. Returning a bare
+`Effect::CursorMove` from an inbound handler is the bug: it lands the caret at a
+position computed in one buffer, in whichever buffer the user moved to.
 
 ### The surface is a trait (`SubsystemBoot`), not the concrete bundle
 

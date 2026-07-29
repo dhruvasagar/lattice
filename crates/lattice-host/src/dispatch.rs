@@ -3115,6 +3115,25 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
                 editor.set_selections_blocking(SelectionSet::single(sel));
             }
         }
+        // MG.18d: the async peer of `CursorMove`. Applied only while
+        // `target` is the focused buffer — an async producer computed
+        // this position against a buffer that may no longer be the one
+        // in front of the user (a magit stage takes two git calls; a
+        // `q` in that window would land the jump in whatever they moved
+        // to). Dropping is the whole contract, so it is silent, not an
+        // error: "the user moved on" is the expected case, not a fault.
+        Effect::CursorMoveIn { target, position } => {
+            if target == editor.document_buffer_id {
+                editor.cursor = position;
+            } else {
+                tracing::debug!(
+                    target: "lattice_host::edit",
+                    ?target,
+                    active = ?editor.document_buffer_id,
+                    "CursorMoveIn dropped: its buffer is not focused"
+                );
+            }
+        }
         Effect::SelectionChange(set) => {
             // 5.5.E.4: motion / selection-class effects emit a
             // SelectionSet; the host syncs `editor.cursor` to the
@@ -32756,6 +32775,7 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         Effect::Declined
         | Effect::None
         | Effect::CursorMove(_)
+        | Effect::CursorMoveIn { .. }
         | Effect::SelectionChange(_)
         | Effect::EnterMode(_)
         | Effect::SaveBuffer { .. }
@@ -32895,6 +32915,7 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         Effect::Declined
         | Effect::None
         | Effect::CursorMove(_)
+        | Effect::CursorMoveIn { .. }
         | Effect::SelectionChange(_)
         // Yank is a mutation-free effect for the purpose of dot-repeat.
         | Effect::Yank { .. }
@@ -43087,6 +43108,45 @@ mod tests {
         );
     }
 
+    // ── MG.18d: Effect::CursorMoveIn — the async cursor move ──
+
+    use lattice_protocol::position::Position;
+
+    /// The whole point of the variant: an async producer names the
+    /// buffer its position belongs to, and the host honours it only
+    /// while that buffer is focused.
+    #[test]
+    fn cursor_move_in_applies_when_its_target_is_the_focused_buffer() {
+        let mut editor = Editor::default();
+        editor.cursor = Position::new(0, 0);
+        let target = editor.document_buffer_id;
+        let _ = editor.handle_effect(Effect::CursorMoveIn {
+            target,
+            position: Position::new(3, 0),
+        });
+        assert_eq!(editor.cursor, Position::new(3, 0));
+    }
+
+    /// The failure it exists to prevent: a magit stage takes two git
+    /// calls, and a `q` in that window means the position — computed
+    /// against the status buffer — would otherwise land the caret at
+    /// row 3 of whatever file the user moved to.
+    #[test]
+    fn cursor_move_in_is_dropped_when_its_target_is_not_focused() {
+        let mut editor = Editor::default();
+        editor.cursor = Position::new(1, 2);
+        let other = lattice_core::BufferId(editor.document_buffer_id.0 + 1);
+        let _ = editor.handle_effect(Effect::CursorMoveIn {
+            target: other,
+            position: Position::new(3, 0),
+        });
+        assert_eq!(
+            editor.cursor,
+            Position::new(1, 2),
+            "a position computed in another buffer must not move this one's caret"
+        );
+    }
+
     // ── MG.21a: diff line tints for buffers whose content IS a diff ──
 
     use crate::diff::overlay::DiffSignKind;
@@ -43123,9 +43183,9 @@ mod tests {
     #[test]
     fn a_diff_styled_line_earns_the_matching_row_tint_sign() {
         let signs = Editor::diff_signs_from_spans(&[
-            row(Style::Keyword),  // diff --git
-            row(Style::Comment),  // @@ hunk header
-            row(Style::DiffAdd),  // +added
+            row(Style::Keyword),    // diff --git
+            row(Style::Comment),    // @@ hunk header
+            row(Style::DiffAdd),    // +added
             row(Style::DiffRemove), // -removed
         ]);
         assert_eq!(

@@ -195,6 +195,28 @@ pub enum Effect {
     /// chords (]]/[[, ]c/[c, ]f/[f) rather than overloading SelectionChange
     /// with a collapsed cursor. The host writes `editor.cursor = target`.
     CursorMove(lattice_protocol::position::Position),
+    /// MG.18d: [`Effect::CursorMove`] addressed at a **specific buffer** —
+    /// the host moves the cursor only while `target` is the focused
+    /// buffer, and drops the effect otherwise.
+    ///
+    /// The peer of [`Effect::ApplyEdit`]'s `target` field, for the
+    /// cursor half. A chord-time `CursorMove` needs no target because the
+    /// buffer it fired in *is* the focused one; an **async** producer has
+    /// no such guarantee. Between a magit stage and the refresh that
+    /// finishes it lie two git calls, and a `q` or `C-^` in that window
+    /// would otherwise land the jump in whatever buffer the user moved
+    /// to — a caret teleporting in a file they were about to type in.
+    ///
+    /// Dropping (rather than stashing for the buffer's return) is
+    /// deliberate: the position was computed against content that will
+    /// have been rebuilt again by the time focus comes back, and a
+    /// stale jump is worse than none. Producers that want position
+    /// restored on return use marks / position history, which are
+    /// per-buffer by construction.
+    CursorMoveIn {
+        target: lattice_core::BufferId,
+        position: lattice_protocol::position::Position,
+    },
     Yank {
         register: Register,
         content: String,

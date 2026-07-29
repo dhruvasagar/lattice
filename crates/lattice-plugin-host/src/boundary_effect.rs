@@ -530,6 +530,19 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
                 .to_wit()?,
             )
         }
+        // MG.18d: no WIT mirror yet, and the `CursorMove` fallback above
+        // is NOT available to it — collapsing it to a selection would
+        // drop the `target` buffer, which is the entire point of the
+        // variant (an async producer's position is only meaningful in
+        // the buffer it was computed in). A typed error keeps that
+        // loud; the mirror lands with the WIT buffer-handle work.
+        NativeEffect::CursorMoveIn { .. } => {
+            return Err(
+                "Effect::CursorMoveIn addresses a BufferId; it crosses with the buffer-handle \
+                 mirror, and must not degrade to a target-less cursor move"
+                    .to_string(),
+            );
+        }
         NativeEffect::SelectionChange(set) => WitEffect::SelectionChange(set.to_wit()?),
         NativeEffect::Yank {
             register,

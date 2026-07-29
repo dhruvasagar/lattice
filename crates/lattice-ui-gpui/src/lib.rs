@@ -1133,6 +1133,10 @@ impl GpuiApp {
             // with the TUI peer per [[feedback_tui_gpui_parity]]).
             | Effect::ApplyEdit { .. }
             | Effect::CursorMove(_)
+            // MG.18d: the host applies (or drops) the targeted cursor
+            // move in `handle_effect`; nothing for the renderer to do,
+            // parity with `CursorMove` above.
+            | Effect::CursorMoveIn { .. }
             | Effect::SelectionChange(_)
             | Effect::EnterMode(_)
             | Effect::Yank { .. }

@@ -270,7 +270,15 @@ impl Mode for MagitCoreMode {
             // editor's pane count at all.
             lattice_mode::ActionHandlerContribution {
                 action_name: "action:magit-close",
-                handler: Arc::new(|_ctx: &ActionContext<'_>| Some(Effect::DismissPopup)),
+                // `Effect::BuryBuffer`, not `DismissPopup`: a magit view
+                // is a full-pane buffer, not a popup. Opening one swaps
+                // the pane AND the editor's active-document handle;
+                // dismissing a popup only drops an overlay, so it left
+                // the document pointing at magit while the pane pointed
+                // at the file — the pane named one buffer and the screen
+                // painted another, and no redraw could fix it because
+                // the data was stale, not the paint.
+                handler: Arc::new(|_ctx: &ActionContext<'_>| Some(Effect::BuryBuffer)),
             },
             // ── navigation: ]] [[ ]f [f ]c [c ────────────
             nav!("action:magit-next-section", section_headers, next_item),

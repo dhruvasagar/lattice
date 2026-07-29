@@ -6511,6 +6511,47 @@ impl Editor {
     /// from the registry, clears placement / back-stack state, and
     /// restores any pre-popup focus captured at open. Idempotent --
     /// closing when no popup is open is a no-op.
+    /// `Effect::BuryBuffer` — return the active pane to the buffer it
+    /// was showing before a full-pane synthetic buffer took it over.
+    ///
+    /// The counterpart to [`Self::open_synthetic_buffer`], and
+    /// deliberately NOT [`Self::dismiss_popup`]: opening went through
+    /// [`Self::activate_buffer`], which swaps the pane, the
+    /// active-document handle (`Editor::document`), the snapshot
+    /// cache, and the syntax state together. Returning has to swap the
+    /// same set back, so it goes through the same function rather than
+    /// hand-restoring a subset.
+    ///
+    /// That subset is exactly what the bug was: `dismiss_popup`
+    /// restored `pane.buffer_id` / `active_buffer` / cursor / scroll /
+    /// modal and left `Editor::document` pointing at magit. The pane
+    /// named the file, the active render path painted magit, and a
+    /// redraw could not help because the data — not the paint — was
+    /// stale. `document_buffer_id == pane_tree.active().buffer_id` is
+    /// an invariant, and hand-restoring one side of it broke the
+    /// cache it keys.
+    ///
+    /// Returns `false` when there is nothing buried, so a mode can
+    /// bind `q` to this unconditionally.
+    pub fn bury_buffer(&mut self) -> bool {
+        let Some(prev) = self.prev_pane_for_popup.take() else {
+            return false;
+        };
+        // Full swap first — this is what moves `Editor::document`.
+        self.activate_buffer(prev.buffer_id);
+        // Then the view state the pane had when it was displaced.
+        // After `activate_buffer`, not before: activation resets the
+        // cursor/scroll for the destination.
+        self.cursor = prev.cursor;
+        self.scroll = prev.scroll;
+        let pane = self.pane_tree.active_mut();
+        pane.buffer = prev.buffer;
+        pane.buffer_id = prev.buffer_id;
+        self.active_buffer = prev.buffer;
+        self.modal = prev.modal;
+        true
+    }
+
     pub fn dismiss_popup(&mut self) {
         self.dismiss_stale_popup_registry();
         self.popup_buffer = None;
@@ -32663,6 +32704,7 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         | Effect::ExportPluginApi { .. }
         | Effect::OpenHover { .. }
         | Effect::DismissPopup
+        | Effect::BuryBuffer
         | Effect::OpenPopup { .. }
         | Effect::OpenHelpTopic { .. }
         | Effect::ListDiagnostics
@@ -32803,6 +32845,7 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         | Effect::ExportPluginApi { .. }
         | Effect::OpenHover { .. }
         | Effect::DismissPopup
+        | Effect::BuryBuffer
         | Effect::OpenPopup { .. }
         | Effect::OpenHelpTopic { .. }
         | Effect::ListDiagnostics

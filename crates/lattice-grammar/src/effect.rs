@@ -1033,6 +1033,25 @@ pub enum Effect {
         yes_action: String,
     },
 
+    /// Return the active pane to the buffer it was displaying before a
+    /// full-pane synthetic buffer took it over, and drop that buffer's
+    /// hold on the pane ("bury", in vim's sense — the buffer stays in
+    /// the registry, it just stops being shown).
+    ///
+    /// Distinct from [`Effect::DismissPopup`] on purpose. A popup
+    /// *floats over* the pane: the underlying document is never
+    /// swapped out, so dismissing one only has to drop the overlay.
+    /// A synthetic buffer opened full-pane (magit's views, oil, the
+    /// plugin manager) genuinely replaced the pane's buffer AND the
+    /// editor's active-document handle, so returning has to swap both
+    /// back. magit's `q` used `DismissPopup` for this and left the
+    /// active document pointing at magit while the pane pointed at the
+    /// file — the pane said one thing and the screen painted another.
+    ///
+    /// A no-op when nothing was buried (no origin to return to), so a
+    /// mode can bind it unconditionally.
+    BuryBuffer,
+
     /// Open a named transient picker menu. `source` is a name
     /// registered into a `TransientSourceRegistry` (`lattice-picker`)
     /// by the owning mode crate at boot — mirrors `OpenPicker`'s

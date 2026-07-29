@@ -648,6 +648,18 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
         NativeEffect::ListPlugins => WitEffect::ListPlugins,
         NativeEffect::OpenHover { markdown } => WitEffect::OpenHover(markdown.clone()),
         NativeEffect::DismissPopup => WitEffect::DismissPopup,
+        NativeEffect::BuryBuffer => {
+            // No WIT mirror yet. Adding one is a versioned plugin-API
+            // change and deserves its own slice rather than riding
+            // along with a bug fix; the native modes that need it
+            // (magit's `q`) reach it directly. Same typed-error shape
+            // `Effect::Global` uses while its mirror is pending.
+            return Err(
+                "Effect::BuryBuffer has no WIT mirror yet — native-only until the \
+                 plugin-API slice adds it"
+                    .to_string(),
+            );
+        }
         NativeEffect::OpenPopup {
             name,
             mode_id,

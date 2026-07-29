@@ -1324,6 +1324,17 @@ impl GpuiApp {
                 // popup_content covers it directly.
                 self.dismiss_popup();
             }
+            Effect::BuryBuffer => {
+                // Distinct from DismissPopup: a full-pane synthetic
+                // buffer swapped the active document, so returning has
+                // to swap it back — which `bury_buffer` does through
+                // `activate_buffer`. Dismissing a popup would leave the
+                // active document pointing at the buried buffer and
+                // paint it over the file.
+                self.mutate_editor(|e| {
+                    e.bury_buffer();
+                });
+            }
             Effect::OpenPopup {
                 name,
                 mode_id,

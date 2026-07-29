@@ -265,6 +265,102 @@ mod tests {
         );
     }
 
+    /// Live bug (2026-07-29): closing a magit buffer returned to the
+    /// previous buffer but the screen kept showing magit's content.
+    ///
+    /// `open_synthetic_buffer` opens through `activate_buffer`, which
+    /// swaps the active-document hot slot (`Editor::document`) along
+    /// with the pane. The close path — `dismiss_popup`, which magit's
+    /// `q` reaches via `Effect::DismissPopup` — hand-restored only the
+    /// pane fields (`pane.buffer_id`, `active_buffer`, cursor, scroll,
+    /// modal). It was written for real popups, where the document is
+    /// never swapped out because a popup floats over the pane. For a
+    /// full-pane synthetic buffer the document WAS swapped, and
+    /// nothing swapped it back.
+    ///
+    /// The invariant: the pane and the active document must name the
+    /// same buffer. When they disagree the active render path paints
+    /// the stale document while inactive panes (which read registry
+    /// snapshots) paint the right one — exactly the reported "correct
+    /// while a command line is open, stale again on Esc, and a redraw
+    /// doesn't help".
+    ///
+    /// Drives the host primitives directly rather than pressing `q`:
+    /// the chord routes through `magit-core-mode`, and this test is
+    /// about the bury path, not about chord delivery.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn burying_a_synthetic_buffer_restores_the_active_document() {
+        let mut app = app_with("the original file content\n", 20);
+        let origin = app.editor.document_buffer_id;
+
+        app.editor
+            .open_synthetic_buffer("*magit:status*", "magit-status-mode");
+        assert_ne!(
+            app.editor.document_buffer_id, origin,
+            "opening must actually take over the active document"
+        );
+
+        app.editor.bury_buffer();
+
+        assert_eq!(
+            app.editor.pane_tree.active().buffer_id,
+            origin,
+            "the pane must return to the buffer it was opened over"
+        );
+        assert_eq!(
+            app.editor.document_buffer_id, origin,
+            "the ACTIVE DOCUMENT must return too — a pane pointing at one \
+             buffer while `Editor::document` holds another is what paints \
+             stale magit content over the file"
+        );
+        assert!(
+            app.editor
+                .document
+                .snapshot()
+                .text()
+                .contains("the original file content"),
+            "the active document must hold the file's text, not magit's"
+        );
+    }
+
+    /// The invariant behind the bug above, asserted directly.
+    ///
+    /// `Editor::document` is a live handle cached so the keystroke path
+    /// never does a registry lookup (paramount goal #1), and
+    /// `document_buffer_id` is its key. Panes are many; the active
+    /// document is one. So `document_buffer_id` must always equal
+    /// `pane_tree.active().buffer_id` — they are not independent state,
+    /// they are a cache and its key, and any path that moves one
+    /// without the other paints a stale buffer over the real one.
+    ///
+    /// Walked across a full open/bury cycle because the failure only
+    /// appears on the return leg.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_active_document_tracks_the_active_pane_across_open_and_bury() {
+        let mut app = app_with("file\n", 20);
+
+        let check = |app: &crate::app::App, when: &str| {
+            assert_eq!(
+                app.editor.document_buffer_id,
+                app.editor.pane_tree.active().buffer_id,
+                "{when}: the active document and the active pane must name \
+                 the same buffer"
+            );
+        };
+
+        check(&app, "at rest");
+        app.editor
+            .open_synthetic_buffer("*magit:status*", "magit-status-mode");
+        check(&app, "after opening a full-pane synthetic buffer");
+        app.editor.bury_buffer();
+        check(&app, "after burying it");
+
+        // And burying with nothing buried is a no-op, so a mode can
+        // bind `q` unconditionally without a guard.
+        assert!(!app.editor.bury_buffer(), "second bury has nothing to do");
+        check(&app, "after a no-op bury");
+    }
+
     /// MG.16: the remote/stash ex-commands reach the *booted* registry.
     ///
     /// The unit tests in `lattice-magit` build their own

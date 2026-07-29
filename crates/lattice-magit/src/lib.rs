@@ -11,6 +11,9 @@
 pub mod actions;
 pub mod buffer_state;
 mod confirm;
+// MG.18d: `pub` because `MagitView::refresh_restoring` (a public
+// trait) names `HunkRestore` in its signature.
+pub mod cursor_restore;
 pub mod fold_source;
 pub mod headerline;
 mod highlight;
@@ -128,6 +131,9 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     // keys on `TypeId` (`feedback_servicesregistry_arc_typeid`).
     // See `buffer_state`'s module docs.
     register_buffer_state_services(boot);
+
+    // ── MG.18d: the cursor's way back after an async refresh ───
+    cursor_restore::install_cursor_bus(boot);
 
     // ── Ex-commands ────────────────────────────────────────
 

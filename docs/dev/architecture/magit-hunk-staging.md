@@ -1,8 +1,9 @@
 # Hunk-level staging
 
 **Status:** designed 2026-07-29. MG.18a (patch-shaped write API),
-MG.18b (hunk parser) and MG.18c (`s`/`u`/`x` on the hunk at the cursor)
-landed; MG.18d–e open. Slice plan:
+MG.18b (hunk parser), MG.18c (`s`/`u`/`x` on the hunk at the cursor)
+and MG.18d (the buffer and cursor survive the refresh) landed; MG.18e
+(region staging) open. Slice plan:
 [`../operations/slice-plans/magit.md`](../operations/slice-plans/magit.md)
 §MG.18.
 
@@ -369,17 +370,67 @@ direction flag, not two, so the two can't drift.
 ## Refresh and the cursor
 
 Every mutation triggers the existing refresh, which replaces the whole
-buffer and collapses expansions (`expanded.clear()`). After staging one
-hunk of a five-hunk file the user is looking at a collapsed file entry,
-having lost their place — tolerable at file granularity, actively bad
-at hunk granularity, where the whole point is to stage several hunks in
-sequence.
-
-**Required:** re-expand the entry the action fired in and restore the
-cursor to the next remaining hunk (magit's behaviour). This is the
+buffer. Before MG.18d that also collapsed every expansion
+(`expanded.clear()`), so after staging one hunk of a five-hunk file the
+user was looking at a collapsed file entry, having lost their place —
+tolerable at file granularity, actively bad at hunk granularity, where
+the whole point is to stage several hunks in sequence. This is the
 scenario the "eventual consistency is acceptable, losing the user's
-place is not" clause of the UX contract exists for, and it is part of
-MG.18's deliverable — not a follow-up.
+place is not" clause of the UX contract exists for, and it was part of
+MG.18's deliverable, not a follow-up.
+
+### The rebuild carries the expansions
+
+`build_and_format` takes the set of open entry keys and **inlines their
+diffs into the text it builds**, so the expansion arrives with the
+rebuild rather than being re-applied afterwards. One edit, one span
+vector, no splice arithmetic against a buffer that is being replaced
+underneath it, and no collapse-then-expand flicker. The line counts in
+`expanded` are recomputed from the text that was actually written —
+carrying them over would collapse the wrong rows, since staging a hunk
+makes the diff shorter.
+
+A `gr` gets the same treatment, which is the same wart one size up: a
+manual refresh no longer throws away every diff you had open.
+
+### The cursor is restored by identity, not by row
+
+A rebuilt buffer invalidates rows — files move between sections, counts
+change, the staged hunk is gone. So a mutation records *what* the user
+was working on: the file, which side of the index, and the **ordinal**
+of the hunk within that file. Staging hunk *k* removes it, so ordinal
+*k* then names the next remaining hunk; magit's behaviour and the
+restore rule are the same arithmetic. Clamping to the last hunk covers
+staging the final one; an anchor that has vanished entirely (the file
+left the section) sends no cursor at all, leaving the user where the
+refresh put them rather than guessing.
+
+Naming the *anchor* is per-view and stays behind `MagitView`:
+magit-status looks for an entry row under the matching section header,
+a diff buffer for a `diff --git` line. The shared staging path names
+the work (`HunkSite`); each view names the landmark.
+
+### Why the cursor cannot just be an `Effect::CursorMove`
+
+Two things had to be true, and neither is automatic:
+
+1. **It must not wait for a keypress.** `run_tick_pending` is reached
+   from `App::apply`'s tail *and* from the editor actor's
+   `async_landed` arm. A drain registered as a bare `tick_callback` has
+   no wake of its own, so its results sit until the user presses
+   something — "staging works, but the cursor only catches up when I
+   touch a key". The position therefore travels on a
+   `SubsystemBoot::inbound` bus, whose `send` fires `async_landed` from
+   inside the sender (`boot-composition.md` §3).
+2. **It must name its buffer.** By the time the position is resolved,
+   two git calls have run; a `q` in that window means a bare
+   `CursorMove` would land the caret in whatever the user moved to. It
+   is an `Effect::CursorMoveIn { target, position }`, which the host
+   applies only while `target` is focused.
+
+Both are tested by their failure mode: reverting the bus to a
+`tick_callback` fails `magits_cursor_bus_wakes_the_editor_without_a_keypress`
+with exactly that message.
 
 ## Ownership and sequencing
 

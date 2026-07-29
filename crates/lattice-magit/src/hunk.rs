@@ -71,6 +71,24 @@ impl HunkPatch {
         }
     }
 
+    /// The file this hunk belongs to, for finding it again after the
+    /// buffer is rebuilt (MG.18d).
+    ///
+    /// Prefers the `+++ b/` side and falls back to `--- a/`, so a
+    /// deletion — whose `+++` is `/dev/null` — still names its file.
+    /// [`Self::display_path`] deliberately does not: a prompt saying
+    /// "discard hunk at /dev/null" would be worse than one that omits
+    /// the path, while a cursor restore that skipped deletions would
+    /// silently lose the user's place on exactly the rows that are
+    /// hardest to find again.
+    pub fn file_path(&self) -> Option<&str> {
+        self.display_path().or_else(|| {
+            let minus = self.header.iter().find(|l| l.starts_with("--- "))?;
+            let rest = minus[4..].trim_end();
+            (rest != "/dev/null").then(|| rest.strip_prefix("a/").unwrap_or(rest))
+        })
+    }
+
     /// The path from the `+++ b/…` line, for prompts and messages.
     /// `None` for a deletion (`+++ /dev/null`) or a malformed header.
     ///
@@ -255,6 +273,27 @@ pub fn hunk_at_with(read: impl Fn(usize) -> Option<String>, cursor: usize) -> Op
         header_line,
         end_line: idx,
     })
+}
+
+/// MG.18d: the 0-based index of the hunk whose header sits at
+/// `header_row`, among the hunks of the file it belongs to.
+///
+/// The ordinal is what survives a rebuild: staging hunk *k* removes it,
+/// so ordinal *k* then names the hunk that took its place. Counted
+/// backwards from the hunk to its `diff --git` line, so it is the same
+/// walk [`hunk_at_with`] already does and cannot disagree with it about
+/// where the file starts.
+pub fn hunk_ordinal_at(read: impl Fn(usize) -> Option<String>, header_row: usize) -> usize {
+    let mut ordinal = 0usize;
+    for row in (0..header_row).rev() {
+        let Some(line) = read(row) else { break };
+        match classify_diff_line(&line) {
+            DiffLineClass::Hunk => ordinal += 1,
+            DiffLineClass::FileCommand => break,
+            _ => {}
+        }
+    }
+    ordinal
 }
 
 /// The `@@` line at or above `cursor`, without crossing into a
@@ -477,6 +516,59 @@ diff --git a/a.txt b/a.txt
             h.hunk
         );
         assert_eq!(h.end_line, 7, "and be counted as part of the hunk");
+    }
+
+    /// MG.18d: the ordinal is what survives a rebuild, so it must be
+    /// counted within the file — not from the top of the buffer.
+    #[test]
+    fn a_hunks_ordinal_counts_within_its_own_file() {
+        let l = lines(TWO_HUNKS);
+        let read = |i: usize| l.get(i).map(|s| (*s).to_string());
+        assert_eq!(hunk_ordinal_at(read, 4), 0, "the first `@@`");
+        assert_eq!(hunk_ordinal_at(read, 9), 1, "the second");
+    }
+
+    #[test]
+    fn the_ordinal_restarts_at_each_files_header() {
+        let text = "\
+diff --git a/a.txt b/a.txt
+@@ -1,1 +1,1 @@
+-a
+diff --git a/b.txt b/b.txt
+@@ -1,1 +1,1 @@
+-b
+@@ -9,1 +9,1 @@
+-c
+";
+        let l = lines(text);
+        let read = |i: usize| l.get(i).map(|s| (*s).to_string());
+        assert_eq!(
+            hunk_ordinal_at(read, 4),
+            0,
+            "b.txt's first hunk is ordinal 0, not 1 — the count stops at its own `diff --git`"
+        );
+        assert_eq!(hunk_ordinal_at(read, 6), 1);
+    }
+
+    /// A deletion's `+++` is `/dev/null`, so the display path is `None`
+    /// — but the cursor restore still has to find the file again.
+    #[test]
+    fn file_path_falls_back_to_the_minus_side_for_a_deletion() {
+        let text = "\
+diff --git a/gone.txt b/gone.txt
+--- a/gone.txt
++++ /dev/null
+@@ -1 +0,0 @@
+-was here
+";
+        let l = lines(text);
+        let h = hunk_at(&l, 4).expect("inside the hunk");
+        assert_eq!(h.display_path(), None, "prompts omit /dev/null");
+        assert_eq!(
+            h.file_path(),
+            Some("gone.txt"),
+            "but the restore must still name the file"
+        );
     }
 
     #[test]

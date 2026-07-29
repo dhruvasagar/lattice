@@ -70,8 +70,36 @@ impl SectionIndex {
     }
 
     pub fn format_buffer_styled(&self) -> (String, Vec<Vec<lattice_cells::style::StyledSpan>>) {
+        let (text, spans, _) = self.format_buffer_styled_with(|_, _| None);
+        (text, spans)
+    }
+
+    /// MG.18d: format the buffer with each entry's diff **inlined**
+    /// where `inline` supplies one.
+    ///
+    /// A refresh replaces the whole buffer, so any expansion the user
+    /// had open dies with it — which at hunk granularity means losing
+    /// your place after every single `s`. Rebuilding *with* the
+    /// expansions is what lets the entry survive: one edit, one span
+    /// vector, no splice arithmetic against a buffer that is being
+    /// replaced underneath it, and no collapse-then-expand flicker.
+    ///
+    /// `inline(entry, kind)` returns `(key, diff_text)` for an entry
+    /// that should come back expanded. The returned
+    /// `Vec<(key, line_count)>` is the rebuilt expansion bookkeeping —
+    /// counts are recomputed rather than carried, because staging a
+    /// hunk makes the diff shorter.
+    pub fn format_buffer_styled_with(
+        &self,
+        inline: impl Fn(&SectionEntry, SectionKind) -> Option<(String, String)>,
+    ) -> (
+        String,
+        Vec<Vec<lattice_cells::style::StyledSpan>>,
+        Vec<(String, usize)>,
+    ) {
         let mut out = String::new();
         let mut spans: Vec<Vec<lattice_cells::style::StyledSpan>> = Vec::new();
+        let mut expanded: Vec<(String, usize)> = Vec::new();
 
         for section in &self.sections {
             if section.entries.is_empty() {
@@ -223,6 +251,30 @@ impl SectionIndex {
                         ];
                     }
                 }
+                // MG.18d: the entry's own diff, if it was open before
+                // the refresh. Highlighted through the same
+                // `diff_styled_spans` the `=` toggle uses, so an
+                // expansion looks identical however it got there.
+                if let Some((key, diff)) = inline(entry, section.kind) {
+                    let diff = diff.trim_end();
+                    if !diff.is_empty() {
+                        let diff_spans = crate::highlight::diff_styled_spans(diff);
+                        let mut count = 0usize;
+                        for (i, line) in diff.lines().enumerate() {
+                            let line_idx = out.matches('\n').count();
+                            while spans.len() <= line_idx {
+                                spans.push(Vec::new());
+                            }
+                            out.push_str(line);
+                            out.push('\n');
+                            if let Some(row) = diff_spans.get(i) {
+                                spans[line_idx] = row.clone();
+                            }
+                            count += 1;
+                        }
+                        expanded.push((key, count));
+                    }
+                }
             }
             // blank separator line
             let line_idx = out.matches('\n').count();
@@ -232,7 +284,7 @@ impl SectionIndex {
             out.push('\n');
         }
 
-        (out, spans)
+        (out, spans, expanded)
     }
 
     // MG.14 removed `branch_status_line()`. It formatted branch +

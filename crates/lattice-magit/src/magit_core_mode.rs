@@ -306,7 +306,34 @@ pub(crate) enum HunkResolution {
         view: Arc<dyn crate::buffer_state::MagitView>,
         workdir: std::path::PathBuf,
         patch: crate::hunk::HunkPatch,
+        /// MG.18d: where to put the cursor once the rebuild lands.
+        /// `None` when the hunk's own header names no file — nothing to
+        /// find again, so the refresh leaves the cursor alone.
+        site: Option<crate::cursor_restore::HunkSite>,
     },
+}
+
+/// MG.18d: name the work this hunk is, so the rebuilt buffer can be
+/// searched for it. File + side + ordinal — deliberately not a row,
+/// which the rebuild invalidates.
+fn hunk_site(
+    store: &BufferStoreHandle,
+    buffer_id: BufferId,
+    patch: &crate::hunk::HunkPatch,
+    source: DiffSource,
+) -> Option<crate::cursor_restore::HunkSite> {
+    let path = std::path::PathBuf::from(patch.file_path()?);
+    let handle = store.handle_for(buffer_id)?;
+    let snap = handle.snapshot();
+    let ordinal = crate::hunk::hunk_ordinal_at(
+        |i| u32::try_from(i).ok().and_then(|l| snap.buffer.line(l)),
+        patch.header_line,
+    );
+    Some(crate::cursor_restore::HunkSite {
+        path,
+        staged: source == DiffSource::Staged,
+        ordinal,
+    })
 }
 
 /// Resolve the hunk at the cursor for `op`, per magit-hunk-staging.md
@@ -318,14 +345,15 @@ pub(crate) fn resolve_hunk(ctx: &ActionContext<'_>, op: HunkOp) -> HunkResolutio
     ) else {
         return HunkResolution::FileLevel;
     };
-    let Some(patch) = hunk_at_cursor(&store, BufferId(ctx.buffer_id.0 as u32), ctx.cursor.line)
-    else {
+    let buffer_id = BufferId(ctx.buffer_id.0 as u32);
+    let Some(patch) = hunk_at_cursor(&store, buffer_id, ctx.cursor.line) else {
         return HunkResolution::FileLevel;
     };
     let hint = match view.diff_source(ctx.cursor) {
         Some(source) if source == op.requires() => {
             return match view.workdir() {
                 Some(workdir) => HunkResolution::Ready {
+                    site: hunk_site(&store, buffer_id, &patch, source),
                     view,
                     workdir,
                     patch,
@@ -361,6 +389,7 @@ pub(crate) fn spawn_hunk_apply(
     workdir: std::path::PathBuf,
     patch: crate::hunk::HunkPatch,
     op: HunkOp,
+    site: Option<crate::cursor_restore::HunkSite>,
 ) -> Effect {
     let location = patch.display_location();
     let text = patch.to_patch();
@@ -386,7 +415,14 @@ pub(crate) fn spawn_hunk_apply(
         }
         // Both views drive their own async rebuild and return `None`;
         // there is no effect to propagate from inside a spawned task.
-        let _ = view.refresh();
+        //
+        // MG.18d: the rebuild is also what puts the cursor back — it is
+        // the only thing that knows the new text, so the restore rides
+        // with it rather than racing it from here.
+        let _ = match site {
+            Some(site) => view.refresh_restoring(site),
+            None => view.refresh(),
+        };
     });
     Effect::Echo {
         level: lattice_grammar::EchoLevel::Info,
@@ -403,7 +439,8 @@ fn stage_or_unstage(ctx: &ActionContext<'_>, op: HunkOp) -> Option<Effect> {
             view,
             workdir,
             patch,
-        } => Some(spawn_hunk_apply(view, workdir, patch, op)),
+            site,
+        } => Some(spawn_hunk_apply(view, workdir, patch, op, site)),
         HunkResolution::Refused(effect) => Some(effect),
         HunkResolution::FileLevel => {
             let view = crate::buffer_state::view_for(ctx)?;

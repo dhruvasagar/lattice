@@ -99,6 +99,10 @@ so a second one would be redundant.
 - **`s` / `u` stage a hunk in the scoped views, a file in the HEAD
   view** — see the note above. The same rule holds in magit-status.
 - **`x` (discard) isn't bound here**, only in magit-status.
+- **Staging keeps your place.** After `s` or `u` the buffer re-runs its
+  diff and the cursor lands on the hunk that took the staged one's
+  place, so you can work down a file hunk by hunk without hunting for
+  where you were.
 - **Not yet implemented:** no side-by-side pane layout, no
   `do` / `dp` hunk transfer between panes, no visual-mode partial-hunk
   staging (stage a *selection* of lines within a hunk). For

@@ -886,7 +886,7 @@ Design fragment:
 | MG.18a | Delete the `stage_hunk` / `unstage_hunk` stubs; add `Index::apply_patch` + `Repository::run_git_stdin` | — | ✅ |
 | MG.18b | Hunk parser + patch synthesizer as pure functions, round-trip tested | MG.18a | ✅ |
 | MG.18c | `s`/`u`/`x` resolve hunk-at-cursor, file-level fallback preserved | MG.18b | ✅ |
-| MG.18d | Re-expand the entry + restore cursor to the next hunk after a mutation | MG.18c | 📝 |
+| MG.18d | Re-expand the entry + restore cursor to the next hunk after a mutation | MG.18c | ✅ |
 | MG.18e | Region (visual-mode) staging — the hunk-splitting rewrite | MG.18c | 📝 |
 
 MG.18a is independent of the hunk-identity choice and removes a
@@ -961,6 +961,60 @@ an O(document) copy on the actor thread for one keypress.
   (MG.18d), and region staging is MG.18e. `x` on a staged hunk refuses
   rather than discarding from index + worktree; that wants
   `apply_patch --index`, which MG.18e's rewrite is the right time for.
+
+#### MG.18d — the buffer and the cursor survive a mutation ✅ (2026-07-29)
+
+Stage a hunk and the file's diff is still open, with the cursor on the
+hunk that took the staged one's place. Staging four of a file's six
+hunks is now four keypresses, not four keypresses and four searches for
+your place.
+
+**The rebuild carries the expansions.** `build_and_format` takes the
+open entry keys and inlines their diffs into the text it builds, rather
+than letting the refresh collapse everything and re-expanding
+afterwards. One edit, one span vector, no splice arithmetic against a
+buffer being replaced underneath it, and no collapse-then-expand
+flicker. Counts are recomputed from the text actually written — a
+carried-over count would collapse the wrong rows once the diff got
+shorter. `gr` benefits identically: a manual refresh no longer throws
+away every diff you had open.
+
+**The cursor is restored by identity, not by row.** A mutation records
+the file, the side, and the hunk's **ordinal** within that file.
+Staging hunk *k* removes it, so ordinal *k* then names the next
+remaining hunk — magit's behaviour and the restore rule are the same
+arithmetic. Clamped to the last hunk when the final one was staged;
+silent when the anchor is gone entirely (the file left its section),
+because leaving the cursor where the refresh put it beats guessing at a
+row. Naming the anchor stays per-view behind `MagitView`
+(`refresh_restoring`): an entry row in magit-status, a `diff --git`
+header in a diff buffer.
+
+**Two host-side facts this needed, and one new effect.**
+
+- **It must not wait for a keypress.** `run_tick_pending` runs from
+  `App::apply`'s tail *and* from the actor's `async_landed` arm; a bare
+  `tick_callback` has no wake of its own, so its results sit until the
+  user presses something. The position travels on
+  `SubsystemBoot::inbound`, whose `send` fires the wake from inside the
+  sender. Now a standing rule in CLAUDE.md — it has been re-introduced
+  enough times to earn one.
+- **It must name its buffer.** Two git calls run before the position
+  exists; a `q` in that window would land a bare `CursorMove` in
+  whatever the user moved to. `Effect::CursorMoveIn { target, position }`
+  (its own commit) is applied only while `target` is focused.
+
+- **Tests:** 8 pure cases for the restore rule (next-hunk, clamp,
+  collapsed entry, an entry not adopting its neighbour's diff, vanished
+  anchor, the staged/unstaged split for one path, diff-buffer anchoring,
+  hunk lists not running into the next file), 3 ordinal/`file_path`
+  cases, 3 git round-trips proving an expansion survives a rebuild with
+  a count equal to exactly the rows it added, and the wake test —
+  verified non-vacuous by reverting the bus to a `tick_callback` and
+  watching it fail on the message that names the bug.
+- **Not shipped:** region staging (MG.18e). The cursor is not restored
+  after a *file-level* stage — the entry is gone from its section by
+  definition, and the anchor rule correctly declines.
 
 #### Original scoping notes
 

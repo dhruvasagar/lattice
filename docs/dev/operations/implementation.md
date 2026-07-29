@@ -4244,7 +4244,14 @@ Installs through `SubsystemBoot` seam. Inverted out of
   with a sentence instead of git's "patch does not apply" — and so `x`
   on a staged hunk cannot reverse it out of the worktree while leaving
   it staged.
-- **MG.18d/e, MG.19, MG.21 remain open** — per-slice status and sequencing
+- ✅ **MG.18d** — the buffer and cursor survive a mutation (2026-07-29).
+  A refresh rebuilds *with* the open entries' diffs inlined instead of
+  collapsing them, and the cursor is restored by identity (file + side +
+  hunk ordinal) rather than by row, landing on the hunk that took the
+  staged one's place. The position travels on a `SubsystemBoot::inbound`
+  bus so it reaches the screen without a keypress, as
+  `Effect::CursorMoveIn` so it cannot land in a buffer the user moved to.
+- **MG.18e, MG.19, MG.21 remain open** — per-slice status and sequencing
   live in
   [`slice-plans/magit.md`](slice-plans/magit.md), which is
   authoritative for this subsystem. (The 2026-07-26 audit found

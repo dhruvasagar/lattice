@@ -31,15 +31,24 @@ pub struct StatusBufferState {
     pub pending_highlights: Option<std::sync::Arc<PendingSyntheticHighlights>>,
     /// Entries currently inline-expanded (file diff / stash show /
     /// commit show), keyed by [`entry_key`], value = number of buffer
-    /// lines the expansion occupies. A full refresh replaces the whole
-    /// buffer (see `refresh::apply_full_replace`), which collapses any
-    /// inline expansion, so this map is cleared whenever a refresh
-    /// lands — see `trigger_refresh`.
+    /// lines the expansion occupies.
+    ///
+    /// MG.18d: a refresh no longer clears this. The rebuild *carries*
+    /// the open entries' diffs (`refresh::build_and_format`), so the
+    /// map is replaced with counts recomputed from the text that was
+    /// actually written — staging a hunk makes a diff shorter, and a
+    /// carried-over count would then collapse the wrong rows.
     pub expanded: HashMap<String, usize>,
     /// MG.14: the buffer's headerline — branch, ahead/behind, repo
     /// name, dirty counts. Re-set by every refresh from the same
     /// `SectionIndex` the body is built from.
     pub headerline: Option<crate::headerline::MagitHeaderlineHandle>,
+    /// MG.18d: where the cursor should land once the next refresh's
+    /// text exists. Set by a mutation, consumed by the refresh it was
+    /// queued for — a later `gr` must not re-apply a stale jump.
+    pub pending_cursor: Option<crate::cursor_restore::HunkRestore>,
+    /// MG.18d: the wake-baked bus the resolved position goes back on.
+    pub cursor_bus: Option<crate::cursor_restore::CursorBusHandle>,
 }
 
 // ── line classification ─────────────────────────────────
@@ -93,7 +102,7 @@ pub(crate) fn classify_line(state: &StatusBufferState, line: u32) -> Option<Stat
 /// testable without a live buffer/store. `header_above` is called lazily
 /// (only when a candidate match needs to know its enclosing section) so
 /// callers with a real buffer don't pay for an unnecessary backward scan.
-fn classify_line_text(
+pub(crate) fn classify_line_text(
     text: &str,
     header_above: impl FnOnce() -> Option<String>,
 ) -> Option<StatusLine> {
@@ -184,7 +193,7 @@ pub(crate) fn diff_source_for_header(header: &str) -> Option<DiffSource> {
 
 /// Run the git command that shows `sl`'s content: a file's diff
 /// (staged-aware), a stash's patch, or a commit's patch.
-fn run_show(workdir: &Path, sl: &StatusLine) -> Option<String> {
+pub(crate) fn run_show(workdir: &Path, sl: &StatusLine) -> Option<String> {
     let mut cmd = std::process::Command::new("git");
     cmd.current_dir(workdir);
     match sl {
@@ -444,11 +453,13 @@ pub fn status_action_handlers() -> Vec<ActionHandlerContribution> {
                         view,
                         workdir,
                         patch,
+                        site,
                     } => Some(crate::magit_core_mode::spawn_hunk_apply(
                         view,
                         workdir,
                         patch,
                         crate::magit_core_mode::HunkOp::Discard,
+                        site,
                     )),
                     crate::magit_core_mode::HunkResolution::Refused(effect) => Some(effect),
                     crate::magit_core_mode::HunkResolution::FileLevel => {
@@ -645,50 +656,122 @@ fn spawn_mutation_and_refresh(
     s: Arc<Mutex<StatusBufferState>>,
     mutate: impl FnOnce() + Send + 'static,
 ) -> Option<Effect> {
-    let (handle, wd, pending, bid, hl) = {
-        let mut g = s.lock().ok()?;
-        let h = g.store.handle_for(g.buffer_id)?;
-        g.expanded.clear();
-        (
-            h,
-            g.workdir.clone(),
-            g.pending_highlights.clone(),
-            g.buffer_id,
-            g.headerline.clone(),
-        )
-    };
+    let ctx = refresh_context(&s)?;
     tokio::task::spawn(async move {
         let _ = tokio::task::spawn_blocking(mutate).await;
-        do_refresh(handle, wd, pending, bid, hl).await;
+        run_refresh(ctx).await;
     });
     None
 }
 
+/// Everything a refresh needs, read out of the state in one lock.
+///
+/// MG.18d: gathered into a struct because the list stopped fitting a
+/// tuple once the refresh had to carry the open entries, the cursor
+/// restore and the bus to answer on.
+struct RefreshContext {
+    handle: Arc<dyn lattice_runtime::Document>,
+    wd: PathBuf,
+    pending: Option<Arc<PendingSyntheticHighlights>>,
+    bid: BufferId,
+    headerline: Option<crate::headerline::MagitHeaderlineHandle>,
+    /// Entry keys whose diffs must come back expanded.
+    open: std::collections::HashSet<String>,
+    restore: Option<crate::cursor_restore::HunkRestore>,
+    cursor_bus: Option<crate::cursor_restore::CursorBusHandle>,
+    state: Arc<Mutex<StatusBufferState>>,
+}
+
+/// Snapshot the refresh inputs. Takes `pending_cursor` — a restore is
+/// consumed by the refresh it was queued for, so a later `gr` does not
+/// re-apply a stale jump.
+fn refresh_context(s: &Arc<Mutex<StatusBufferState>>) -> Option<RefreshContext> {
+    let mut g = s.lock().ok()?;
+    let handle = g.store.handle_for(g.buffer_id)?;
+    let restore = g.pending_cursor.take();
+    Some(RefreshContext {
+        handle,
+        wd: g.workdir.clone(),
+        pending: g.pending_highlights.clone(),
+        bid: g.buffer_id,
+        headerline: g.headerline.clone(),
+        // MG.18d: the keys survive the rebuild — `build_and_format`
+        // re-runs their diffs and inlines them, rather than the buffer
+        // coming back collapsed and the map being cleared to match.
+        open: g.expanded.keys().cloned().collect(),
+        restore,
+        cursor_bus: g.cursor_bus.clone(),
+        state: Arc::clone(s),
+    })
+}
+
+async fn run_refresh(ctx: RefreshContext) {
+    do_refresh(
+        ctx.handle,
+        ctx.wd,
+        ctx.pending,
+        ctx.bid,
+        ctx.headerline,
+        ctx.open,
+        ctx.restore,
+        ctx.cursor_bus,
+        ctx.state,
+    )
+    .await;
+}
+
 /// Refresh the status buffer: blocking `git status`/`stash
 /// list`/`log` on `spawn_blocking`, then apply the formatted text +
-/// highlights on the current task. Clears `expanded` — a
-/// full-buffer replace collapses any inline expansion, so stale
-/// entries there would desync `toggle_expand`'s "already expanded"
-/// check from what's actually on screen.
+/// highlights on the current task.
 ///
 /// MG.13: lifted to module scope (was nested in
 /// `register_action_handlers`) so [`trigger_refresh`] can reach it
 /// from the boot-registered `gr` path.
+///
+/// MG.18d: `open` names the entries whose diffs must come back
+/// expanded, and the rebuilt text carries them — a refresh no longer
+/// throws away what you had open. `restore` (set only by a mutation)
+/// then resolves the cursor against that same text, so the entry and
+/// the position agree by construction rather than by two lookups
+/// against a buffer in motion.
+#[allow(clippy::too_many_arguments)]
 async fn do_refresh(
     handle: Arc<dyn lattice_runtime::Document>,
     wd: PathBuf,
     pending: Option<Arc<PendingSyntheticHighlights>>,
     bid: BufferId,
     headerline: Option<crate::headerline::MagitHeaderlineHandle>,
+    open: std::collections::HashSet<String>,
+    restore: Option<crate::cursor_restore::HunkRestore>,
+    cursor_bus: Option<crate::cursor_restore::CursorBusHandle>,
+    state: Arc<Mutex<StatusBufferState>>,
 ) {
-    let (text, spans, header) = tokio::task::spawn_blocking(move || refresh::build_and_format(&wd))
-        .await
-        .expect("spawn_blocking");
+    let (text, spans, header, reopened) =
+        tokio::task::spawn_blocking(move || refresh::build_and_format(&wd, &open))
+            .await
+            .expect("spawn_blocking");
     // MG.14: publish before the edit — the header describes the state
     // the body is about to show, and `set` is a comparison plus (at
     // most) one atomic, nowhere near the edit's cost.
     crate::headerline::publish(&headerline, header);
+    // The expansion bookkeeping describes the text about to be written,
+    // so it is replaced (not merged): an entry that vanished from the
+    // status output has no rows to collapse later.
+    if let Ok(mut g) = state.lock() {
+        g.expanded = reopened;
+    }
+    // Resolved against the text rather than the buffer — the buffer is
+    // about to become this text, and reading it back would race the
+    // very edit being applied.
+    let position = restore.and_then(|r| crate::cursor_restore::restore_position(&text, &r));
     refresh::apply_and_highlight(handle, text, spans, pending, bid).await;
+    // Sent AFTER the replace lands: a cursor delivered first would be
+    // clamped against the outgoing content. The send wakes the editor,
+    // so the cursor arrives without the user touching a key
+    // (`boot-composition.md` §3).
+    if let Some(position) = position {
+        crate::cursor_restore::send_cursor(&cursor_bus, bid, position);
+    }
 }
 
 /// `gr` — bare refresh of the status buffer, no prior mutation.
@@ -698,19 +781,8 @@ async fn do_refresh(
 /// registered once at boot by `magit-core-mode` and reaches this
 /// through [`StatusView`]; see `buffer_state::MagitView`.
 pub fn trigger_refresh(s: Arc<Mutex<StatusBufferState>>) -> Option<Effect> {
-    let (handle, wd, pending, bid, hl) = {
-        let mut g = s.lock().ok()?;
-        let h = g.store.handle_for(g.buffer_id)?;
-        g.expanded.clear();
-        (
-            h,
-            g.workdir.clone(),
-            g.pending_highlights.clone(),
-            g.buffer_id,
-            g.headerline.clone(),
-        )
-    };
-    tokio::task::spawn(do_refresh(handle, wd, pending, bid, hl));
+    let ctx = refresh_context(&s)?;
+    tokio::task::spawn(run_refresh(ctx));
     None::<Effect>
 }
 
@@ -753,6 +825,18 @@ impl crate::buffer_state::MagitView for StatusView {
     }
 
     fn refresh(&self) -> Option<Effect> {
+        trigger_refresh(self.0.clone())
+    }
+
+    /// MG.18d: queue the restore, then refresh. The refresh consumes it
+    /// once it holds the rebuilt text — see [`refresh_context`].
+    fn refresh_restoring(&self, site: crate::cursor_restore::HunkSite) -> Option<Effect> {
+        if let Ok(mut g) = self.0.lock() {
+            // A status buffer's landmark is the entry row; its section
+            // is what `staged` selects between, since one path can be
+            // listed under both.
+            g.pending_cursor = Some(site.as_status_entry());
+        }
         trigger_refresh(self.0.clone())
     }
 

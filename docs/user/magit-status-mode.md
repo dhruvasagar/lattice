@@ -180,9 +180,15 @@ refuses the patch outright rather than applying it somewhere
 plausible-looking. The failure is reported in `*messages*` and the view
 refreshes; press `gr` and try again.
 
-**After a stage the view collapses back to the file entry.** Restoring
-your place at the next remaining hunk is coming (MG.18d), as is
-staging a *selection* of lines within a hunk (MG.18e).
+**The view keeps your place.** After staging a hunk the file's diff is
+still open and the cursor is on the hunk that took the staged one's
+place — so staging four of a file's six hunks is four keypresses, not
+four keypresses and four searches. Staging the last one leaves you on
+the new last hunk; staging a file's only remaining hunk moves it to
+another section, and the cursor stays where the refresh put it rather
+than jumping somewhere arbitrary.
+
+Staging a *selection* of lines within a hunk is still to come (MG.18e).
 
 `p` (interactively stage via `git add -p`) is disabled outright: it
 shows `magit: interactive git add -p isn't supported yet` rather than
@@ -273,17 +279,23 @@ There are no branch entries in the status buffer, so there's no
 ### Manual refresh (`gr`)
 
 Press `gr` to re-run `git status`, `git stash list`, and `git log` and
-rebuild the buffer content. This is the fast path — only file statuses
-are re-fetched (no diffs). Cached diffs for files whose status hasn't
-changed are preserved.
+rebuild the buffer content.
+
+**Expanded diffs stay expanded.** A refresh rebuilds the buffer, and it
+rebuilds the diffs you had open along with it — re-running `git diff`
+for those entries only, so a refresh with nothing open costs nothing
+extra. An entry that has since left its section simply doesn't come
+back. Every staging action refreshes too, which is why staging one hunk
+leaves you looking at the rest of the file's diff rather than at a
+collapsed entry.
 
 ### Auto-refresh
 
 When `magit.auto-refresh` is `true` (default), the status buffer
 automatically refreshes in response to `RepositoryEvent` — index
 changes, HEAD changes, ref changes, and filesystem events detected by
-the `RepositoryWatcher`. The auto-refresh runs the same fast path as
-`gr` (status only, no diffs).
+the `RepositoryWatcher`. The auto-refresh runs the same path as `gr`,
+expanded diffs included.
 
 ---
 

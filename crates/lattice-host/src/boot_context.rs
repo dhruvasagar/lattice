@@ -403,6 +403,60 @@ mod tests {
         assert_eq!(registry.registered_count(), 0);
     }
 
+    /// MG.18d — magit's post-refresh cursor must reach the screen with
+    /// NO keypress.
+    ///
+    /// The mechanism is easy to get subtly wrong: a bare
+    /// `tick_callback` would look identical in code review and pass any
+    /// test that dispatches an action first, because `run_tick_pending`
+    /// is also reached from `App::apply`'s tail. It would then sit
+    /// until the user pressed something — "staging works but the cursor
+    /// only catches up when I touch a key".
+    ///
+    /// So this asserts the wake specifically: send on magit's cursor
+    /// bus, and `async_landed` (the actor's off-keystroke arm) must
+    /// fire, with the drain producing the targeted cursor move.
+    #[tokio::test]
+    async fn magits_cursor_bus_wakes_the_editor_without_a_keypress() {
+        use lattice_magit::cursor_restore::{CursorBusHandle, CursorRequest};
+        use lattice_protocol::position::Position;
+
+        let mut ctx = ctx();
+        lattice_magit::install(&mut ctx);
+
+        let bus = ctx
+            .service::<CursorBusHandle>()
+            .expect("magit installs a cursor bus");
+        let target = lattice_core::BufferId(7);
+        (*bus)
+            .send(CursorRequest {
+                buffer: target,
+                position: Position::new(4, 0),
+            })
+            .map_err(|_| "send")
+            .expect("bus accepts the request");
+
+        let woke =
+            tokio::time::timeout(Duration::from_millis(200), ctx.async_landed().notified()).await;
+        assert!(
+            woke.is_ok(),
+            "the send must wake the editor — otherwise the cursor waits for a keypress"
+        );
+
+        let effects = ctx.tick_callbacks().run_all();
+        let moved = effects.iter().any(|e| {
+            matches!(
+                e,
+                Effect::CursorMoveIn { target: t, position }
+                    if *t == target && *position == Position::new(4, 0)
+            )
+        });
+        assert!(
+            moved,
+            "the drain must yield a buffer-targeted cursor move, got {effects:?}"
+        );
+    }
+
     #[tokio::test]
     async fn wake_on_event_fires_the_wake() {
         // `LspInlayHintRefresh` is just a convenient concrete `TypedEvent +

@@ -100,6 +100,8 @@ pub struct DiffState {
     /// `*magit:diff*` (`:magit-diff`) view.
     path: Option<PathBuf>,
     pending_highlights: Option<lattice_mode::PendingSyntheticHighlightsHandle>,
+    /// MG.18d: the wake-baked bus a post-mutation cursor goes back on.
+    cursor_bus: Option<crate::cursor_restore::CursorBusHandle>,
 }
 
 /// Parse `"*magit:diff[:staged|:unstaged]:<path>*"` (or the bare
@@ -264,6 +266,9 @@ impl Mode for MagitDiffMode {
                     scope,
                     path: path.clone(),
                     pending_highlights: pending_highlights.clone(),
+                    cursor_bus: ctx
+                        .service::<crate::cursor_restore::CursorBusHandle>()
+                        .map(|outer| (*outer).clone()),
                 },
             );
             let mut guard = BufferStateGuard::new((*states).clone(), buffer_id)
@@ -301,7 +306,22 @@ async fn apply_full_replace(handle: &Arc<dyn lattice_runtime::Document>, text: S
 }
 
 fn refresh(s: Arc<Mutex<DiffState>>) -> Option<Effect> {
-    let (handle, wd, scope, path, pending, buffer_id) = {
+    refresh_with(s, None)
+}
+
+/// Rebuild the diff, and — when a mutation supplied one — put the
+/// cursor back on the hunk that took the staged one's place.
+///
+/// MG.18d: the position is resolved against the text this rebuild is
+/// about to write and sent afterwards, so it can neither race the
+/// replace nor be clamped against the outgoing content. The send wakes
+/// the editor, so it lands without the user pressing anything
+/// (`boot-composition.md` §3).
+fn refresh_with(
+    s: Arc<Mutex<DiffState>>,
+    restore: Option<crate::cursor_restore::HunkRestore>,
+) -> Option<Effect> {
+    let (handle, wd, scope, path, pending, buffer_id, cursor_bus) = {
         let g = s.lock().ok()?;
         (
             g.store.handle_for(g.buffer_id)?,
@@ -310,6 +330,7 @@ fn refresh(s: Arc<Mutex<DiffState>>) -> Option<Effect> {
             g.path.clone(),
             g.pending_highlights.clone(),
             g.buffer_id,
+            g.cursor_bus.clone(),
         )
     };
     tokio::task::spawn(async move {
@@ -317,9 +338,13 @@ fn refresh(s: Arc<Mutex<DiffState>>) -> Option<Effect> {
             .await
             .unwrap_or_default();
         let spans = crate::highlight::diff_styled_spans(&text);
+        let position = restore.and_then(|r| crate::cursor_restore::restore_position(&text, &r));
         apply_full_replace(&handle, text).await;
         if let Some(ph) = pending {
             ph.store_and_wake(buffer_id, spans);
+        }
+        if let Some(position) = position {
+            crate::cursor_restore::send_cursor(&cursor_bus, buffer_id, position);
         }
     });
     None
@@ -437,6 +462,13 @@ impl MagitView for DiffView {
     /// scoped views where the question has an answer.
     fn diff_source(&self, _cursor: Position) -> Option<DiffSource> {
         source_for_scope(self.0.lock().ok()?.scope)
+    }
+
+    /// MG.18d: a diff buffer's landmark is the `diff --git` header —
+    /// it has no entry rows, and its staged/unstaged identity belongs
+    /// to the whole buffer rather than to a section within it.
+    fn refresh_restoring(&self, site: crate::cursor_restore::HunkSite) -> Option<Effect> {
+        refresh_with(self.0.clone(), Some(site.as_diff_header()))
     }
 
     fn workdir(&self) -> Option<PathBuf> {

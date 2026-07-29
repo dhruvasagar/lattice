@@ -177,6 +177,14 @@ impl Mode for MagitStatusMode {
                     pending_highlights: pending.clone(),
                     expanded: std::collections::HashMap::new(),
                     headerline: hl.clone(),
+                    pending_cursor: None,
+                    // MG.18d: the wake-baked bus a post-mutation cursor
+                    // goes back on. `None` in a harness without the
+                    // service — the refresh still works, it just does
+                    // not move the cursor.
+                    cursor_bus: ctx
+                        .service::<crate::cursor_restore::CursorBusHandle>()
+                        .map(|outer| (*outer).clone()),
                 }));
             if let Some(states) = ctx.service::<actions::StatusStatesHandle>() {
                 states.publish_shared(buffer_id, shared_state.clone());
@@ -186,10 +194,14 @@ impl Mode for MagitStatusMode {
             // edit apply + highlights on the current task.
             {
                 let wd = workdir.clone();
-                let (text, spans, header) =
-                    tokio::task::spawn_blocking(move || refresh::build_and_format(&wd))
-                        .await
-                        .expect("spawn_blocking");
+                // Nothing is expanded on a fresh buffer, so the
+                // open-entry set is empty and the rebuilt bookkeeping
+                // it returns is too.
+                let (text, spans, header, _) = tokio::task::spawn_blocking(move || {
+                    refresh::build_and_format(&wd, &std::collections::HashSet::new())
+                })
+                .await
+                .expect("spawn_blocking");
                 crate::headerline::publish(&hl, header);
                 refresh::apply_and_highlight(
                     handle.clone(),

@@ -116,6 +116,18 @@ pub fn state_for<S: Send + Sync + 'static>(ctx: &ActionContext<'_>) -> Option<Ar
     states.get(BufferId(ctx.buffer_id.0 as u32))
 }
 
+/// Which tree a stretch of diff text was produced against — the
+/// answer [`MagitView::diff_source`] gives, and the only thing
+/// hunk-level `s` / `u` / `x` need to know beyond the hunk itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffSource {
+    /// `git diff --cached` — HEAD vs the index. `u` reverses it out.
+    Staged,
+    /// `git diff` — the index vs the working tree. `s` applies it in,
+    /// `x` reverses it out of the worktree.
+    Unstaged,
+}
+
 /// A magit buffer's view behaviour, published per buffer alongside
 /// its state.
 ///
@@ -141,21 +153,29 @@ pub fn state_for<S: Send + Sync + 'static>(ctx: &ActionContext<'_>) -> Option<Ar
 /// on deactivation, remove the boot-registered handler too and break
 /// `gr` everywhere. Any action reachable from more than one mode must
 /// be boot-registered exactly once and dispatched through here.
-/// Which tree a stretch of diff text was produced against — the
-/// answer [`MagitView::diff_source`] gives, and the only thing
-/// hunk-level `s` / `u` / `x` need to know beyond the hunk itself.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DiffSource {
-    /// `git diff --cached` — HEAD vs the index. `u` reverses it out.
-    Staged,
-    /// `git diff` — the index vs the working tree. `s` applies it in,
-    /// `x` reverses it out of the worktree.
-    Unstaged,
-}
-
 pub trait MagitView: Send + Sync + 'static {
     /// `gr` — rebuild this view's content in place.
     fn refresh(&self) -> Option<lattice_grammar::Effect>;
+
+    /// MG.18d: rebuild after a mutation, then put the cursor back on
+    /// the work `restore` describes.
+    ///
+    /// Separate from [`Self::refresh`] because only a *mutation* has
+    /// something to restore to: a bare `gr` leaves the cursor where the
+    /// user parked it. The view resolves it because only the view knows
+    /// its buffer's shape — magit-status looks for an entry row, a diff
+    /// buffer for a `diff --git` header.
+    ///
+    /// The default is a plain refresh: a view that cannot say where the
+    /// work went rebuilds and leaves the cursor alone, which is the
+    /// pre-MG.18d behaviour.
+    fn refresh_restoring(
+        &self,
+        site: crate::cursor_restore::HunkSite,
+    ) -> Option<lattice_grammar::Effect> {
+        let _ = site;
+        self.refresh()
+    }
 
     /// `s` — stage the entry at `cursor`.
     ///

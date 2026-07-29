@@ -37,6 +37,7 @@ exist, trust the live spec + the source over the archive.
 | [`virtual-rows.md`](virtual-rows.md) | 2026-05-28 | D.0a.1 (2026-05-28) | D.0a virtual-row data layer in `lattice-cells` — D.0a and D.0a.1 ✅ |
 | [`pane-groups.md`](pane-groups.md) | D.4 plan | D.4.e | D.4 pane-group primitive (diff side-by-side, scrollbind) — D.4.a–D.4.e ✅ |
 | [`ui-tui-refactor.md`](ui-tui-refactor.md) | Phase 5 | R.1.98 | `lattice-ui-tui` decomposition into per-feature App submodules — primary goal achieved |
+| [`vcs-and-magit.md`](vcs-and-magit.md) | 2026-05-31 sketch | Superseded 2026-07-25 by [`../architecture/magit.md`](../architecture/magit.md) | The original three-layer VCS model (lattice-vcs data layer / host subsystem / magit UX). Superseded rather than completed: magit.md reverses its write-API-stubbed, WASM-first and `spawn-process`-gated decisions. Its `Index::stage_hunk(path, HunkSpec)` sketch was retired by MG.18a — see [`../architecture/magit-hunk-staging.md`](../architecture/magit-hunk-staging.md) |
 
 | [`diff-system.md`](diff-system.md) | D-series plan | D.8 (2026-05-30) | Diff system 18 slices: inline overlay, hunk map, side-by-side, hunk transfer, diffthis grouping ✅ |
 | [`multibuffer-views.md`](multibuffer-views.md) | M-series plan | M.8 (2026-06-03) | Multibuffer views 26 slices: excerpt rendering, fold providers, search provider, event subscriptions, mode audit ✅. Forward-looking N.1 + providers catalog extracted 2026-06-10 to active slice-plans. |

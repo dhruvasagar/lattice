@@ -1,6 +1,7 @@
 # Hunk-level staging
 
-**Status:** designed 2026-07-29, not implemented. Slice plan:
+**Status:** designed 2026-07-29. MG.18a (patch-shaped write API) and
+MG.18b (hunk parser) landed; MG.18c–e open. Slice plan:
 [`../operations/slice-plans/magit.md`](../operations/slice-plans/magit.md)
 §MG.18.
 
@@ -29,10 +30,9 @@ exists, and never has. A caller who trusts the signature silently
 stages everything, which in a staging UI is data loss in the sense that
 matters: the commit contains changes the user deliberately excluded.
 
-**These two functions are deleted, not fixed.** Hunk staging does not
-have the shape `(path, hunk_index)` — see "Mechanism" — so keeping the
-names would preserve a misleading API. Removing them is part of MG.18's
-first slice, and is worth doing even if the rest slips.
+**These two functions were deleted, not fixed** (MG.18a). Hunk staging
+does not have the shape `(path, hunk_index)` — see "Mechanism" — so
+keeping the names would have preserved a misleading API.
 
 ## Mechanism: synthesize a patch, `git apply --cached`
 
@@ -70,7 +70,7 @@ silent no-op.
 ### Retiring the `HunkSpec` sketch
 
 The `(path, HunkSpec)` shape comes from
-[`vcs-and-magit.md`](vcs-and-magit.md), which
+[`vcs-and-magit.md`](../archive/vcs-and-magit.md), which
 [`magit.md`](magit.md) §3.2 already supersedes — it is the *early
 sketch*, and magit.md records several of its decisions as reversed
 (write-API no longer stubbed, native crate over WASM, no
@@ -108,7 +108,8 @@ impl Index {
 
 Per heuristic #1 a locked sketch is a starting point, not authority —
 it is re-evaluated when the slice executes, and this one loses on
-merit. `vcs-and-magit.md`'s Write-API block is updated with MG.18a.
+merit. The sketch itself is left as written: it is archived history,
+not a document to maintain forward.
 
 ### `lattice-vcs` needs stdin
 
@@ -346,5 +347,5 @@ Also:
 
 - [`magit-hunk-mode.md`](magit-hunk-mode.md) — the eventual owner (MG.22)
 - [`mode-architecture.md`](mode-architecture.md) — mode ownership rules
-- [`vcs-and-magit.md`](vcs-and-magit.md) — the superseded early sketch,
+- [`vcs-and-magit.md`](../archive/vcs-and-magit.md) — the superseded early sketch,
   kept for history; prefer magit.md

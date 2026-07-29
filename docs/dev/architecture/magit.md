@@ -2,7 +2,7 @@
 
 **Status:** design fragment. Contracts, data model, mode decomposition, keymap
 surface, performance posture, WIT-gap analysis, slice plan. Supersedes
-[`vcs-and-magit.md`](vcs-and-magit.md) (2026-05-31 sketch; archived 2026-07-25
+[`vcs-and-magit.md`](../archive/vcs-and-magit.md) (2026-05-31 sketch; archived 2026-07-25
 — see header in that file). This fragment owns *what* and *why*. Slice
 sequencing + per-slice status lives in
 [`../operations/slice-plans/magit.md`](../operations/slice-plans/magit.md).
@@ -2239,7 +2239,7 @@ for per-slice status, test counts, and commit references as slices land.
 
 ## 21. Cross-references
 
-- [`vcs-and-magit.md`](vcs-and-magit.md) — superseded 2026-05-31 sketch (see
+- [`vcs-and-magit.md`](../archive/vcs-and-magit.md) — superseded 2026-05-31 sketch (see
   header in that file).
 - [`diff-system.md`](diff-system.md) — diff subsystem Magit consumes.
 - [`diff-extraction.md`](diff-extraction.md) — `SubsystemBoot` pattern Magit's

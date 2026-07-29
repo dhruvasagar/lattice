@@ -3913,7 +3913,7 @@ Slice plan:
 Design fragment:
 [`../architecture/magit.md`](../architecture/magit.md).
 Supersedes the 2026-05-31 sketch at
-[`../architecture/vcs-and-magit.md`](../architecture/vcs-and-magit.md).
+[`../archive/vcs-and-magit.md`](../archive/vcs-and-magit.md).
 
 Three layers: (1) `lattice-vcs` pure data crate over `gix` —
 `Repository`, `GitBlob`, `Reference`, `WorkingTree`, `Index`,

@@ -1,7 +1,7 @@
 # VCS and Magit-style Integration
 
 **Status: SUPERSEDED 2026-07-25** — this 2026-05-31 sketch is replaced by the
-detailed design fragment [`magit.md`](magit.md), which owns the authoritative
+detailed design fragment [`magit.md`](../architecture/magit.md), which owns the authoritative
 contracts, mode decomposition, keymap surface, performance posture, and slice
 plan. The three-layer model survives; everything else (mode decomposition,
 deliverable path as native crate through `SubsystemBoot`, WIT-gap analysis,

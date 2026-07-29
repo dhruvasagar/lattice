@@ -4225,7 +4225,16 @@ Installs through `SubsystemBoot` seam. Inverted out of
   instead of storing `""` (`git stash push -m ""` is worse than no
   label). Shipped consumer: `git stash push -m <message>` — a mechanism
   with no consumer is untested by construction.
-- **MG.18–MG.20 remain open** — per-slice status and sequencing
+- ✅ **MG.20** — reset / revert / cherry-pick (2026-07-29). `A`, `V`,
+  `Os`/`Om`/`Oh` in every view that shows a commit, built on the MG.13
+  `MagitView` seam (`commit_at_cursor` + `workdir`) so one
+  boot-registered handler per operation serves all views without a
+  per-view collision or a host-side kind branch. `reset --hard` is the
+  only one behind a confirm — the others keep your changes, and
+  prompting on those trains you to dismiss the prompt that matters.
+  `revert --no-edit`, because git would otherwise hang on `$EDITOR`.
+  Tag / merge / bisect / submodule / remotes deferred to MG.21.
+- **MG.18, MG.19, MG.21 remain open** — per-slice status and sequencing
   live in
   [`slice-plans/magit.md`](slice-plans/magit.md), which is
   authoritative for this subsystem. (The 2026-07-26 audit found

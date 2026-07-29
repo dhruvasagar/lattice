@@ -36,7 +36,8 @@ owns *what* and *why*.
 | MG.17b | Transient `Argument` items (prompt → back to the menu) | MG.17a | ✅ |
 | MG.18 | Hunk-level staging | MG.5, MG.13 | 📝 |
 | MG.19 | magit-diff side-by-side + `do`/`dp` | MG.18, D.4 | 📝 |
-| MG.20 | Operation coverage — merge / tag / reset / revert / cherry-pick | MG.17a | 📝 |
+| MG.20 | Operation coverage — reset / revert / cherry-pick | MG.17a | ✅ |
+| MG.21 | Remaining operations — tag, merge beyond `m`, bisect, submodule, remotes | MG.17b | 📝 |
 
 **2026-07-26 audit correction:** this table (last synced when MG.1-3 landed) had
 drifted from `implementation.md`'s per-slice status, which had marked MG.4-10 all
@@ -913,6 +914,54 @@ than an absent one — they appear only as they gain real implementations.
   the rest. Each lands with its transient entry and ex-command together.
 - **Tests:** per operation, plus a transient-completeness check that the
   menu lists exactly the implemented set.
+
+### MG.20 — reset / revert / cherry-pick ✅ (2026-07-29)
+
+`A` (cherry-pick), `V` (revert), `Os` / `Om` / `Oh` (reset
+soft/mixed/hard) — Emacs magit's own keys — working in **every view
+that shows a commit**: the log, magit-status's Recent commits, the
+revision view, the rebase todo.
+
+**Reuses the MG.13 seam rather than adding a fifth special case.**
+These operations all mean "act on the commit under the cursor", and
+each view answers that differently (a log row, a `--stat` header, a
+Recent-commits entry). `MagitView` gained `commit_at_cursor` +
+`workdir`, so `magit-core-mode` owns one boot-registered handler per
+operation and dispatches through the view. No per-view handler (which
+MG.13 proved collides), no `match buffer_kind` in the host (which the
+everything-is-a-buffer rule forbids). A row with no commit declines, so
+`V` on a staged file or a `--graph` connector does nothing rather than
+acting on a neighbour.
+
+- **`Oh` is the only one that asks.** `reset --hard` discards
+  uncommitted work irrecoverably; `--soft` and `--mixed` keep it.
+  Prompting on the safe two would train the user to dismiss the prompt
+  that matters. Registered in `confirm::DESTRUCTIVE_ACTIONS`, so the
+  ask half performs no git call at all.
+- **`revert` passes `--no-edit`.** git would otherwise open `$EDITOR`
+  for the message — inside lattice that is a hang on a prompt the user
+  cannot answer, not a UI.
+- The five new chords were validated automatically by MG.15's
+  cross-cutting guard (every chord resolves to a registered action AND
+  a handler) without any new bespoke test.
+
+**Not shipped, deferred to MG.21:** tag (needs a name prompt — the
+MG.17b `Argument` machinery now exists for it), merge beyond
+magit-branch's `m`, bisect, submodule, remote management. The plan's
+own rule holds: a menu row that does nothing is worse than an absent
+one, so none of these appear in a transient yet.
+
+**Also not shipped:** transient entries for the three that DID land.
+They are reachable by chord in every commit-showing view, which is the
+primary path; a `C-c g` entry needs a commit target and the root
+dispatch is context-free, so it wants the same "act on the current
+buffer" resolution `C-c f` uses. Worth doing with MG.21 rather than
+half-wiring now.
+
+- **Tests:** 4 in `lattice-magit` (argv appends the target;
+  only the destructive reset asks; revert never opens `$EDITOR`; the
+  confirm targets its real execute half), plus the existing chord guard
+  covering all five bindings.
 
 ## Cross-references
 

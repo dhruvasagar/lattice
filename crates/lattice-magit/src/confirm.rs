@@ -46,6 +46,10 @@ pub(crate) const DESTRUCTIVE_ACTIONS: &[(&str, &str)] = &[
         "action:magit-rebase-abort",
         "action:magit-rebase-abort-execute",
     ),
+    // MG.20: `reset --hard` discards uncommitted work irrecoverably —
+    // the same bar `x` / branch-delete / stash-drop are held to.
+    // `--soft` and `--mixed` keep your changes, so they act directly.
+    ("action:magit-reset-hard", "action:magit-reset-hard-execute"),
 ];
 
 /// Build the two-step confirm for a destructive action.

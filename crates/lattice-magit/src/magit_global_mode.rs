@@ -657,6 +657,97 @@ pub fn spawn_remote_op(op: RemoteOp, args: &lattice_grammar::Args) -> Effect {
     }
 }
 
+/// MG.20: an operation that acts on ONE commit.
+///
+/// Reset, revert and cherry-pick share a shape the [`RemoteOp`]s above
+/// do not: they need a target — the commit under the cursor — so they
+/// cannot be fired from a context-free global handler. The target is
+/// resolved through [`crate::buffer_state::MagitView::commit_at_cursor`],
+/// which every view answers for its own row format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CommitOp {
+    /// Verb for the echo + logs.
+    pub what: &'static str,
+    /// argv template; the resolved commit is appended.
+    pub args: &'static [&'static str],
+    /// When set, the operation asks before running and this is the
+    /// `-execute` half it fires on "yes". Reset --hard is the only one
+    /// today: it discards working-tree changes irrecoverably, which is
+    /// the same bar `x` / branch-delete / stash-drop are held to.
+    pub confirm_action: Option<&'static str>,
+}
+
+impl CommitOp {
+    pub const REVERT: Self = Self {
+        what: "revert",
+        // `--no-edit` keeps the generated message: lattice has no
+        // commit-message UI wired into this path, so opening $EDITOR
+        // inside the editor would hang the operation on a prompt the
+        // user cannot answer.
+        args: &["revert", "--no-edit"],
+        confirm_action: None,
+    };
+    pub const CHERRY_PICK: Self = Self {
+        what: "cherry-pick",
+        args: &["cherry-pick"],
+        confirm_action: None,
+    };
+    pub const RESET_SOFT: Self = Self {
+        what: "reset --soft",
+        args: &["reset", "--soft"],
+        confirm_action: None,
+    };
+    pub const RESET_MIXED: Self = Self {
+        what: "reset --mixed",
+        args: &["reset", "--mixed"],
+        confirm_action: None,
+    };
+    pub const RESET_HARD: Self = Self {
+        what: "reset --hard",
+        args: &["reset", "--hard"],
+        // The only one that destroys uncommitted work.
+        confirm_action: Some("action:magit-reset-hard-execute"),
+    };
+
+    /// Full argv for `commit`.
+    pub fn argv(&self, commit: &str) -> Vec<String> {
+        let mut argv: Vec<String> = self.args.iter().map(|s| (*s).to_string()).collect();
+        argv.push(commit.to_string());
+        argv
+    }
+}
+
+/// Run a [`CommitOp`] against `commit`, off the actor thread.
+///
+/// Same detached shape as [`spawn_remote_op`]: optimistic echo now,
+/// real outcome through `tracing`, because nothing can carry a result
+/// back to an echo area from a task that outlives the handler call.
+pub fn spawn_commit_op(op: CommitOp, workdir: std::path::PathBuf, commit: &str) -> Effect {
+    let argv = op.argv(commit);
+    let shown = argv.join(" ");
+    let logged = shown.clone();
+    tokio::task::spawn(async move {
+        let result = tokio::task::spawn_blocking(move || run_remote_op(&workdir, &argv))
+            .await
+            .unwrap_or_else(|e| Err(e.to_string()));
+        match result {
+            Ok(out) => tracing::info!(
+                target: "lattice_magit", "magit: git {logged} succeeded: {out}"
+            ),
+            Err(err) => tracing::error!(
+                target: "lattice_magit", "magit: git {logged} failed: {err}"
+            ),
+        }
+    });
+    Effect::Echo {
+        level: lattice_grammar::EchoLevel::Info,
+        // Name the commit: these operations are indistinguishable from
+        // each other in the echo area otherwise, and two of them
+        // rewrite history.
+        text: format!("magit: git {shown}"),
+    }
+}
+
 /// Run a git subcommand for a remote operation (pull/push), with
 /// `GIT_TERMINAL_PROMPT=0` so a missing credential fails fast instead
 /// of hanging. `git push`'s human-readable progress goes to stderr
@@ -682,6 +773,54 @@ fn run_remote_op(workdir: &std::path::Path, args: &[String]) -> Result<String, S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// MG.20 — a commit operation appends its target.
+    #[test]
+    fn a_commit_op_appends_the_commit_to_its_argv() {
+        assert_eq!(
+            CommitOp::CHERRY_PICK.argv("a1b2c3d"),
+            vec!["cherry-pick", "a1b2c3d"]
+        );
+        assert_eq!(
+            CommitOp::RESET_HARD.argv("a1b2c3d"),
+            vec!["reset", "--hard", "a1b2c3d"]
+        );
+    }
+
+    /// Only `--hard` asks. `--soft` and `--mixed` keep your changes —
+    /// a prompt on those would be noise that trains you to dismiss the
+    /// one that matters.
+    #[test]
+    fn only_the_destructive_reset_asks_first() {
+        assert!(CommitOp::RESET_HARD.confirm_action.is_some());
+        assert!(CommitOp::RESET_SOFT.confirm_action.is_none());
+        assert!(CommitOp::RESET_MIXED.confirm_action.is_none());
+        assert!(CommitOp::REVERT.confirm_action.is_none());
+        assert!(CommitOp::CHERRY_PICK.confirm_action.is_none());
+    }
+
+    /// Revert passes `--no-edit`. Without it git opens `$EDITOR` for
+    /// the message, which inside lattice means the operation hangs on
+    /// a prompt the user has no way to answer.
+    #[test]
+    fn revert_does_not_open_an_editor() {
+        assert!(
+            CommitOp::REVERT.args.contains(&"--no-edit"),
+            "revert must not block on $EDITOR"
+        );
+    }
+
+    /// Every destructive commit op's confirm target must be a real
+    /// registered `-execute` action — `confirm::ask` debug-asserts the
+    /// pairing, so a typo here fails loudly for the author instead of
+    /// quietly for the user.
+    #[test]
+    fn the_hard_reset_confirm_targets_its_execute_half() {
+        assert_eq!(
+            CommitOp::RESET_HARD.confirm_action,
+            Some("action:magit-reset-hard-execute")
+        );
+    }
 
     /// MG.17a — the flag table drives argv, and only when enabled.
     #[test]

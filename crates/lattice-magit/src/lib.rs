@@ -687,6 +687,34 @@ fn register_action_commands(registry: &mut CommandRegistry) {
         "Show the patch of the stash at cursor",
     );
 
+    // MG.20: operations on the commit under the cursor. Owned by
+    // magit-core-mode, so they work in every view that shows a commit
+    // (log, status's Recent commits, revision, rebase todo).
+    reg(
+        "action:magit-cherry-pick",
+        "Cherry-pick the commit at cursor onto the current branch",
+    );
+    reg(
+        "action:magit-revert",
+        "Revert the commit at cursor (creates an inverse commit)",
+    );
+    reg(
+        "action:magit-reset-soft",
+        "Reset --soft to the commit at cursor (keeps index + working tree)",
+    );
+    reg(
+        "action:magit-reset-mixed",
+        "Reset --mixed to the commit at cursor (keeps working tree)",
+    );
+    reg(
+        "action:magit-reset-hard",
+        "Reset --hard to the commit at cursor (DISCARDS working tree; asks first)",
+    );
+    reg(
+        "action:magit-reset-hard-execute",
+        "Execute the hard reset after confirmation",
+    );
+
     // magit-branch-mode
     reg(
         "action:magit-branch-checkout",

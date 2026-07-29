@@ -290,4 +290,20 @@ impl MagitView for LogView {
     fn refresh(&self) -> Option<Effect> {
         refresh(self.0.clone())
     }
+
+    /// MG.20: the commit on the row under the cursor. `--graph`
+    /// connector rows carry no sha and correctly yield `None`, so
+    /// pressing `V` on one does nothing rather than acting on a
+    /// neighbouring commit.
+    fn commit_at_cursor(&self, cursor: Position) -> Option<String> {
+        let g = self.0.lock().ok()?;
+        let handle = g.store.handle_for(g.buffer_id)?;
+        let snap = handle.snapshot();
+        let line = snap.buffer.line(cursor.line)?;
+        extract_sha(&line).map(|s| s.to_string())
+    }
+
+    fn workdir(&self) -> Option<std::path::PathBuf> {
+        Some(self.0.lock().ok()?.workdir.clone())
+    }
 }

@@ -168,6 +168,29 @@ pub trait MagitView: Send + Sync + 'static {
         let _ = cursor;
         None
     }
+
+    /// MG.20: the commit this view describes at `cursor`, if any.
+    ///
+    /// Reset, revert and cherry-pick all mean "act on the commit under
+    /// the cursor", and every view that shows commits answers that
+    /// question differently — a log row, a `--stat` header, a rebase
+    /// todo line, a Recent-commits entry. Rather than a handler per
+    /// view (which the shared-action collision in MG.13 showed does not
+    /// work) or a `match buffer_kind` in the host (which the
+    /// everything-is-a-buffer rule forbids), each view answers here and
+    /// `magit-core-mode` owns one handler per operation.
+    ///
+    /// Views with no commits decline, which is what the default does.
+    fn commit_at_cursor(&self, cursor: lattice_protocol::position::Position) -> Option<String> {
+        let _ = cursor;
+        None
+    }
+
+    /// The workdir this view's repository lives in — needed to run an
+    /// operation against it from a handler that holds only the view.
+    fn workdir(&self) -> Option<std::path::PathBuf> {
+        None
+    }
 }
 
 /// Per-buffer [`MagitView`] registry — the shared-action peer of

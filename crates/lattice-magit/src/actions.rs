@@ -653,6 +653,25 @@ pub fn trigger_refresh(s: Arc<Mutex<StatusBufferState>>) -> Option<Effect> {
 pub struct StatusView(pub Arc<Mutex<StatusBufferState>>);
 
 impl crate::buffer_state::MagitView for StatusView {
+    /// MG.20: the commit on the Recent-commits row under the cursor.
+    /// File and stash rows correctly yield `None`, so `V` on a staged
+    /// file does nothing rather than reverting an unrelated commit.
+    fn commit_at_cursor(&self, cursor: lattice_protocol::position::Position) -> Option<String> {
+        let g = self.0.lock().ok()?;
+        let handle = g.store.handle_for(g.buffer_id)?;
+        let snap = handle.snapshot();
+        let line = snap.buffer.line(cursor.line)?;
+        // A Recent-commits row is `"  <sha> <subject>"`; every other
+        // row kind (file entries carry a status label, stashes carry
+        // `stash@{`) fails the hex test.
+        let tok = line.trim().split_whitespace().next()?;
+        (tok.len() >= 4 && tok.chars().all(|c| c.is_ascii_hexdigit())).then(|| tok.to_string())
+    }
+
+    fn workdir(&self) -> Option<std::path::PathBuf> {
+        Some(self.0.lock().ok()?.workdir.clone())
+    }
+
     fn refresh(&self) -> Option<Effect> {
         trigger_refresh(self.0.clone())
     }

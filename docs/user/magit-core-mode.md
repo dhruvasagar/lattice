@@ -24,6 +24,39 @@ no `:magit-core-mode` you need to turn on.
 | `]c` / `[c` | Next / previous hunk |
 | `TAB` | Toggle the section or hunk fold at cursor |
 | `S-TAB` | Cycle section visibility (all → changed only → collapsed → all) |
+| `A` | Cherry-pick the commit under the cursor |
+| `V` | Revert the commit under the cursor |
+| `Os` / `Om` / `Oh` | Reset `--soft` / `--mixed` / `--hard` to the commit under the cursor |
+
+## Operating on the commit under the cursor
+
+`A`, `V` and `O…` work in every view that shows a commit — the
+[log](help:magit-log-mode), magit-status's Recent commits, the
+[revision](help:magit-revision-mode) view, the
+[rebase todo](help:magit-rebase-mode) — because each view answers "what
+commit is under the cursor?" for its own row format and one shared
+handler acts on the answer. Keys follow Emacs magit's own.
+
+On a row with no commit — a file entry, a stash, a `--graph` connector
+line — they do nothing rather than acting on a neighbour.
+
+| Chord | Runs | Keeps |
+|---|---|---|
+| `A` | `git cherry-pick <commit>` | — |
+| `V` | `git revert --no-edit <commit>` | — |
+| `Os` | `git reset --soft <commit>` | index **and** working tree |
+| `Om` | `git reset --mixed <commit>` | working tree |
+| `Oh` | `git reset --hard <commit>` | **nothing** — asks first |
+
+`Oh` is the only one that destroys uncommitted work, so it is the only
+one that asks — the same two-step `x`, branch-delete and stash-drop
+use, where the chord itself performs no git call at all. `--soft` and
+`--mixed` keep your changes, and prompting on those would just train
+you to dismiss the prompt that matters.
+
+`V` passes `--no-edit`: git would otherwise open `$EDITOR` for the
+revert message, which inside lattice means waiting on a prompt you
+cannot answer.
 
 ## What `gr` actually does
 

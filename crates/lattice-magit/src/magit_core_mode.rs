@@ -68,8 +68,65 @@ fn magit_core_keymap_entries() -> &'static [KeymapEntry] {
             keymap_entry! { mode: Normal, chord: "[c", doc: "Previous hunk", cmd: "action:magit-prev-hunk" },
             keymap_entry! { mode: Normal, chord: "<Tab>", doc: "Toggle fold", cmd: "action:magit-toggle-fold" },
             keymap_entry! { mode: Normal, chord: "<S-Tab>", doc: "Cycle sections", cmd: "action:magit-cycle-sections" },
+            // MG.20: operations on the commit under the cursor. Keys
+            // follow Emacs magit's own (`A` apply/cherry-pick, `V`
+            // revert, `O` reset) so the muscle memory transfers.
+            keymap_entry! { mode: Normal, chord: "A", doc: "Cherry-pick the commit at cursor", cmd: "action:magit-cherry-pick" },
+            keymap_entry! { mode: Normal, chord: "V", doc: "Revert the commit at cursor", cmd: "action:magit-revert" },
+            keymap_entry! { mode: Normal, chord: "Os", doc: "Reset --soft to the commit at cursor", cmd: "action:magit-reset-soft" },
+            keymap_entry! { mode: Normal, chord: "Om", doc: "Reset --mixed to the commit at cursor", cmd: "action:magit-reset-mixed" },
+            keymap_entry! { mode: Normal, chord: "Oh", doc: "Reset --hard to the commit at cursor (asks first)", cmd: "action:magit-reset-hard" },
         ]
     })
+}
+
+/// MG.20: build the handler for a commit operation.
+///
+/// Resolves the commit under the cursor through the buffer's
+/// [`MagitView`], then either asks (destructive) or runs.
+fn commit_op(
+    action_name: &'static str,
+    op: crate::magit_global_mode::CommitOp,
+) -> lattice_mode::ActionHandlerContribution {
+    lattice_mode::ActionHandlerContribution {
+        action_name,
+        handler: Arc::new(move |ctx: &ActionContext<'_>| {
+            let view = crate::buffer_state::view_for(ctx)?;
+            let commit = view.commit_at_cursor(ctx.cursor)?;
+            match op.confirm_action {
+                // Destructive: the ask half performs no git call at
+                // all, so answering `n` cannot mutate — MG.12's rule.
+                Some(yes) => Some(crate::confirm::ask(
+                    format!("git {} {commit} — discard uncommitted changes?", op.what),
+                    yes,
+                )),
+                None => {
+                    let workdir = view.workdir()?;
+                    Some(crate::magit_global_mode::spawn_commit_op(
+                        op, workdir, &commit,
+                    ))
+                }
+            }
+        }),
+    }
+}
+
+/// The post-confirmation half of a destructive [`commit_op`].
+fn commit_op_execute(
+    action_name: &'static str,
+    op: crate::magit_global_mode::CommitOp,
+) -> lattice_mode::ActionHandlerContribution {
+    lattice_mode::ActionHandlerContribution {
+        action_name,
+        handler: Arc::new(move |ctx: &ActionContext<'_>| {
+            let view = crate::buffer_state::view_for(ctx)?;
+            let commit = view.commit_at_cursor(ctx.cursor)?;
+            let workdir = view.workdir()?;
+            Some(crate::magit_global_mode::spawn_commit_op(
+                op, workdir, &commit,
+            ))
+        }),
+    }
 }
 
 /// Move cursor to `target_row`. Returns `Effect::CursorMove` —
@@ -247,6 +304,40 @@ impl Mode for MagitCoreMode {
                 action_name: "action:magit-refresh",
                 handler: Arc::new(|ctx: &ActionContext<'_>| view_for(ctx)?.refresh()),
             },
+            // MG.20: one handler per operation, each resolving its
+            // target through the view — the same shape `gr` / `s` / `u`
+            // use. A view with no commit under the cursor declines, so
+            // pressing `V` in a branch list does nothing rather than
+            // acting on something arbitrary.
+            commit_op(
+                "action:magit-cherry-pick",
+                crate::magit_global_mode::CommitOp::CHERRY_PICK,
+            ),
+            commit_op(
+                "action:magit-revert",
+                crate::magit_global_mode::CommitOp::REVERT,
+            ),
+            commit_op(
+                "action:magit-reset-soft",
+                crate::magit_global_mode::CommitOp::RESET_SOFT,
+            ),
+            commit_op(
+                "action:magit-reset-mixed",
+                crate::magit_global_mode::CommitOp::RESET_MIXED,
+            ),
+            commit_op(
+                "action:magit-reset-hard",
+                crate::magit_global_mode::CommitOp::RESET_HARD,
+            ),
+            // The execute half of reset --hard, reached only through
+            // its confirm. Re-resolves the commit at the cursor rather
+            // than carrying it through the prompt: the confirm
+            // transient owns every keystroke while open, so the cursor
+            // cannot have moved (same argument as branch-delete).
+            commit_op_execute(
+                "action:magit-reset-hard-execute",
+                crate::magit_global_mode::CommitOp::RESET_HARD,
+            ),
             lattice_mode::ActionHandlerContribution {
                 action_name: "action:magit-stage",
                 handler: Arc::new(|ctx: &ActionContext<'_>| view_for(ctx)?.stage(ctx.cursor)),

@@ -1717,16 +1717,28 @@ fn picker_display_is_minibuffer(app: &App) -> bool {
 /// painted on top of [`Clear`] so buffer content underneath
 /// doesn't bleed through.
 
-/// Rows a transient's group+item list occupies — one row per group
-/// header, one per item, EXCLUDING preview/footer (those only apply
-/// to the popup layout; the minibuffer candidate band has no room
-/// for them, mirroring how the regular picker's minibuffer strip
-/// only ever shows the candidate list, not a preview pane). Shared
-/// by `chrome_rows`' row-budget accounting and both minibuffer draw
-/// functions below, so they can't drift out of sync with each other.
+/// Rows a transient's group+item list occupies — per group, one
+/// header row, one row per item and one blank separator row;
+/// EXCLUDING preview/footer (those only apply to the popup layout;
+/// the minibuffer candidate band has no room for them, mirroring how
+/// the regular picker's minibuffer strip only ever shows the
+/// candidate list, not a preview pane). Shared by `chrome_rows`'
+/// row-budget accounting and both minibuffer draw functions below, so
+/// they can't drift out of sync with each other.
+///
+/// **The separator counts.** It is a line `transient_group_item_lines`
+/// actually emits, and this number is used for two things that both
+/// break when it is short: the popup's height, and the *scroll clamp*
+/// (`transient_scroll.min(row_count - visible)`). Undercounting by one
+/// row per group made the box that many rows too short AND capped the
+/// scroll before the bottom rows, so the last items of a multi-group
+/// menu were both off-screen and unreachable with `<C-n>` — reported
+/// against magit's file dispatch, whose last group ends in the blame
+/// row.
 fn transient_row_count(spec: &lattice_picker::TransientSpec) -> usize {
     let total_items: usize = spec.groups.iter().map(|g| g.items.len()).sum();
-    total_items + spec.groups.len()
+    // header + separator per group
+    total_items + spec.groups.len() * 2
 }
 
 /// The scroll-windowed group/item lines a transient renders — the
@@ -1810,7 +1822,13 @@ fn draw_transient_overlay(frame: &mut Frame, buffer_area: Rect, app: &App) {
     let preview_rows = if spec.preview.is_some() { 2 } else { 0 };
     let footer_rows = if spec.footer.is_some() { 1 } else { 0 };
     let row_count = transient_row_count(spec) + preview_rows + footer_rows;
-    let height = (row_count as u16 + 3).min(35).max(8);
+    // Clamped to the area as well as to 35: a box taller than the
+    // terminal is clipped by whoever paints last, which loses rows
+    // with no scroll position that can bring them back.
+    let height = (row_count as u16 + 3)
+        .min(35)
+        .max(8)
+        .min(buffer_area.height.max(3));
     let width = buffer_area.width.saturating_sub(4).min(80).max(40);
     let x = buffer_area.x + buffer_area.width.saturating_sub(width) / 2;
     let y = buffer_area.y + buffer_area.height.saturating_sub(height) / 3;
@@ -6841,6 +6859,77 @@ mod tests {
     use super::*;
     use crate::app::App;
     use lattice_core::Document;
+
+    /// The row budget must equal the rows actually emitted.
+    ///
+    /// Live-reported against magit's file dispatch: the last group's
+    /// items were off-screen and `<C-n>` would not bring them back.
+    /// `transient_row_count` counted a header and the items per group
+    /// but not the blank separator the walker emits, and BOTH the popup
+    /// height and the scroll clamp
+    /// (`transient_scroll.min(row_count - visible)`) come off that
+    /// number — so the box was short by one row per group and the
+    /// scroll stopped before the bottom.
+    ///
+    /// Pinned as an identity rather than an arithmetic expectation:
+    /// whatever the walker emits, the budget must say so, including
+    /// when either side gains a row.
+    #[test]
+    fn a_transients_row_budget_matches_the_rows_it_emits() {
+        use lattice_picker::{TransientGroup, TransientItem, TransientItemKind, TransientSpec};
+
+        fn item(key: &str) -> TransientItem {
+            TransientItem {
+                key: vec![key.to_string()],
+                label: key.to_string(),
+                description: String::new(),
+                kind: TransientItemKind::Dismiss,
+            }
+        }
+        let spec = TransientSpec {
+            title: "t".into(),
+            groups: vec![
+                TransientGroup {
+                    label: "one".into(),
+                    items: vec![item("a"), item("b")],
+                },
+                TransientGroup {
+                    label: "two".into(),
+                    items: vec![item("c")],
+                },
+                TransientGroup {
+                    label: "three".into(),
+                    items: vec![item("d"), item("e"), item("f")],
+                },
+            ],
+            preview: None,
+            footer: None,
+        };
+
+        let state = lattice_picker::TransientState::default();
+        // A visible budget far past the end, so the walker emits
+        // everything it has.
+        let (lines, _) = transient_group_item_lines(&spec, &state, 0, 1000);
+        assert_eq!(
+            transient_row_count(&spec),
+            lines.len(),
+            "the budget and the walker must agree, or the popup is sized \
+             and scrolled against a number of rows that do not exist"
+        );
+
+        // And the consequence the user actually sees: with a window
+        // shorter than the menu, the clamp must still reach the last
+        // row.
+        let visible = 5;
+        let max_scroll = transient_row_count(&spec).saturating_sub(visible);
+        let (tail, _) = transient_group_item_lines(&spec, &state, max_scroll, visible);
+        assert_eq!(
+            tail.len(),
+            visible,
+            "scrolled to the clamp, the window must still be full — a \
+             short count leaves rows below it unreachable"
+        );
+    }
 
     /// PU.1b-3 regression (link styling): the FLOATING help popup must
     /// render its markdown/link styling end-to-end. `:describe-command`

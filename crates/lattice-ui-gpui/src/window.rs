@@ -5080,7 +5080,11 @@ fn transient_rows_gpui(
     theme: &GpuiTheme,
 ) -> Vec<gpui::Div> {
     let total_items: usize = spec.groups.iter().map(|g| g.items.len()).sum();
-    let row_count = total_items + spec.groups.len();
+    // Header + blank separator per group, matching the TUI peer's
+    // `transient_row_count`. Counting only the header made the scroll
+    // clamp stop short of the bottom rows — the same bug, since both
+    // peers derive `scroll` from this number.
+    let row_count = total_items + spec.groups.len() * 2;
     let scroll = picker
         .transient_scroll
         .min(row_count.saturating_sub(TRANSIENT_MAX_VISIBLE_ROWS.max(1)));
@@ -5145,10 +5149,13 @@ fn transient_rows_gpui(
             );
         }
 
-        // Blank line between groups.
-        if rendered < TRANSIENT_MAX_VISIBLE_ROWS {
+        // Blank line between groups — windowed like any other row, or
+        // scrolling drifts against the TUI peer, which counts it.
+        if ln >= scroll && rendered < TRANSIENT_MAX_VISIBLE_ROWS {
             rows.push(div().h_1());
+            rendered += 1;
         }
+        ln += 1;
     }
     rows
 }

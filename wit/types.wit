@@ -363,6 +363,30 @@ interface types {
         placement: popup-placement,
         focus: popup-focus,
     }
+    /// IX.3: the payload of `effect.confirm`.
+    ///
+    /// `yes-action` names an action the guest (or host) registered; the
+    /// host resolves it through the command registry when the user
+    /// answers `y`. A **name**, not a command id — a guest cannot hold a
+    /// host-internal id, and names are what a plugin registers under.
+    ///
+    /// `args` is what the yes-action receives when it fires, so the
+    /// confirmed target and the executed target are the same thing.
+    /// Without it the yes-half must re-derive its target at answer time
+    /// from context that may have changed while the dialog was open.
+    record confirm-payload {
+        /// Shown as the dialog's title. Name the target in it — a
+        /// question has to be answerable without dismissing it to go
+        /// look.
+        prompt: string,
+        /// Action name dispatched on `y`. `n` / `q` / Esc dismiss and
+        /// dispatch nothing.
+        yes-action: string,
+        /// Arguments handed to `yes-action`, positional against its
+        /// declared `args-schema`.
+        args: args,
+    }
+
     record apply-edit-payload {
         /// The target `BufferId` (its inner `u32`).
         target: u32,
@@ -452,6 +476,10 @@ interface types {
         apply-edit(apply-edit-payload),
         selection-change(selection-set),
         cursor-move(position),
+        /// IX.3: ask the user a yes/no question, then dispatch an action.
+        /// Available to plugins because asking the user something is
+        /// table stakes, not an advanced capability.
+        confirm(confirm-payload),
         yank(yank-payload),
         enter-mode(modal-state),
         save-buffer(option<string>),

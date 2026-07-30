@@ -108,7 +108,7 @@ added after (K.3.2); an effect that cannot cross must say so.
 |---|---|---|---|
 | IX.1 | `Effect::Confirm` carries `args`; the confirm transient seeds its state from them so the yes-action receives them | — | ✅ |
 | IX.2 | Amend §12.13 to the confirmed-equals-executed invariant; migrate magit's confirm pairs to carry their payload | IX.1 | 📝 |
-| IX.3 | WIT mirror for `confirm` — `.wit` variant, both conversion directions, round-trip test | IX.1 | 📝 |
+| IX.3 | WIT mirror for `confirm` — `.wit` variant, both conversion directions, round-trip test | IX.1 | ✅ |
 | IX.4 | Unmirrored effects fail with a typed error instead of `WitEffect::None` | — | 📝 |
 | IX.5 | `open-prompt` across the seam, following IX.3's pattern | IX.3, IX.4 | 📝 |
 | IX.6 | `open-transient` across the seam | IX.3, IX.4 | 📝 |
@@ -158,6 +158,24 @@ Both renderer peers wired in the same patch per the parity rule.
   compatibility guarantee); values beyond the schema are dropped rather
   than bound to the wrong name; and `ask` / `ask_with` carrying nothing
   vs. carrying a target.
+
+## IX.3 — landed 2026-07-30
+
+`confirm` has a WIT mirror: a `confirm-payload` record (prompt,
+yes-action, args) and an `effect.confirm` arm in `wit/types.wit`.
+Bindings regenerate from the `.wit`, so adding the variant made both
+boundary matches fail to compile until handled — the exhaustiveness
+guarantee doing its job.
+
+`Confirm` is out of the silently-dropped group. A plugin can now ask the
+user a yes/no question and dispatch its own registered action by name,
+carrying that action's arguments, exactly as a native mode does.
+
+- **Tests:** round trip in both directions with a carried target, and
+  with no args — the two shapes a plugin will actually produce.
+
+The remaining silent drops (`change-dir`, `print-working-dir`,
+`list-errors`, `open-transient`, `open-prompt`) are IX.4/5/6.
 
 ## Cross-references
 

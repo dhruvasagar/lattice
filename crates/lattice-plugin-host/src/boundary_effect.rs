@@ -17,7 +17,7 @@ use crate::WitBoundary;
 use crate::boundary::path_to_wit;
 use crate::lattice::plugin_host::types::{
     AppliedEdit as WitAppliedEdit, ApplyEditPayload as WitApplyEditPayload,
-    CloseSessionDiffsPayload as WitCloseSessionDiffsPayload,
+    CloseSessionDiffsPayload as WitCloseSessionDiffsPayload, ConfirmPayload as WitConfirmPayload,
     DescribeCommandPayload as WitDescribeCommandPayload, DiffsplitPayload as WitDiffsplitPayload,
     EchoLevel as WitEchoLevel, EchoPayload as WitEchoPayload, Edit as WitEdit,
     EditDelta as WitEditDelta, EditKind as WitEditKind, Effect as WitEffect,
@@ -40,6 +40,7 @@ use lattice_core::ui::popup::{
     PopupFocus as NativePopupFocus, PopupPlacement as NativePopupPlacement,
 };
 use lattice_grammar::app_effect::AppEffect as NativeAppEffect;
+use lattice_grammar::args::Args as NativeArgs;
 use lattice_grammar::effect::{
     EchoLevel as NativeEchoLevel, Effect as NativeEffect, LspRequest as NativeLspRequest,
     QuitScope as NativeQuitScope, SubstituteScope as NativeSubstituteScope,
@@ -777,10 +778,20 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
         NativeEffect::RecordJump => WitEffect::RecordJump,
         // Host-only ex-commands (no WIT mirror; plugins never see them).
         // CM.8: `:clist` — the error picker is a host-only surface.
+        // IX.3: `confirm` has a mirror now — it no longer joins the
+        // silently-dropped group below.
+        NativeEffect::Confirm {
+            prompt,
+            yes_action,
+            args,
+        } => WitEffect::Confirm(WitConfirmPayload {
+            prompt: prompt.clone(),
+            yes_action: yes_action.clone(),
+            args: args.to_wit()?,
+        }),
         NativeEffect::ChangeDir(_)
         | NativeEffect::PrintWorkingDir
         | NativeEffect::ListErrors
-        | NativeEffect::Confirm { .. }
         | NativeEffect::OpenTransient { .. }
         | NativeEffect::OpenPrompt { .. } => WitEffect::None,
         NativeEffect::OpenAiLog { session } => WitEffect::OpenAiLog(session.clone()),
@@ -821,6 +832,15 @@ fn effect_from_wit(w: WitEffect) -> Result<NativeEffect, String> {
             NativeEffect::SelectionChange(NativeSelectionSet::from_wit(set)?)
         }
         WitEffect::CursorMove(pos) => NativeEffect::CursorMove(NativePosition::from_wit(pos)?),
+        // IX.3: a guest asks the user a yes/no question. The host
+        // resolves `yes_action` through the command registry when the
+        // answer comes back, so a plugin confirms its own registered
+        // action by name exactly as a native mode does.
+        WitEffect::Confirm(p) => NativeEffect::Confirm {
+            prompt: p.prompt,
+            yes_action: p.yes_action,
+            args: NativeArgs::from_wit(p.args)?,
+        },
         WitEffect::Yank(p) => NativeEffect::Yank {
             register: NativeRegister::from_wit(p.register)?,
             content: p.content,
@@ -1013,6 +1033,62 @@ mod tests {
 
     fn pos(line: u32, byte: u32) -> NativePosition {
         NativePosition { line, byte }
+    }
+
+    /// IX.3: a plugin can ask the user a yes/no question.
+    ///
+    /// Before this, `confirm` was mapped to `WitEffect::None` — a plugin
+    /// returning one got no dialog and no error, which is the silent
+    /// swallow the boundary is supposed to make impossible. The round
+    /// trip is what proves the mirror is real in both directions.
+    #[test]
+    fn confirm_crosses_the_boundary_in_both_directions() {
+        let native = NativeEffect::Confirm {
+            prompt: "Delete src/main.rs?".to_string(),
+            yes_action: "action:my-plugin-delete".to_string(),
+            args: NativeArgs::List(vec![lattice_grammar::args::ArgValue::String(
+                "src/main.rs".to_string(),
+            )]),
+        };
+        let back = effect_from_wit(effect_to_wit(&native).unwrap()).unwrap();
+        match back {
+            NativeEffect::Confirm {
+                prompt,
+                yes_action,
+                args,
+            } => {
+                assert_eq!(prompt, "Delete src/main.rs?");
+                assert_eq!(yes_action, "action:my-plugin-delete");
+                // The carried target is the whole point: a confirm that
+                // lost its args on the way across would ask about one
+                // thing and act on another.
+                let list = args.as_list().expect("the target survived");
+                assert!(matches!(
+                    &list[0],
+                    lattice_grammar::args::ArgValue::String(p) if p == "src/main.rs"
+                ));
+            }
+            other => panic!("expected Confirm, got {other:?}"),
+        }
+    }
+
+    /// A confirm carrying nothing is still a confirm — the common case
+    /// for a plugin that re-derives its own target.
+    #[test]
+    fn a_confirm_with_no_args_crosses_too() {
+        let native = NativeEffect::Confirm {
+            prompt: "Proceed?".to_string(),
+            yes_action: "action:my-plugin-go".to_string(),
+            args: NativeArgs::None,
+        };
+        let back = effect_from_wit(effect_to_wit(&native).unwrap()).unwrap();
+        assert!(matches!(
+            back,
+            NativeEffect::Confirm {
+                args: NativeArgs::None,
+                ..
+            }
+        ));
     }
 
     #[test]

@@ -40,6 +40,7 @@ owns *what* and *why*.
 | MG.21 | Remaining operations — tag, merge beyond `m`, bisect, submodule, remotes | MG.17b | 📝 |
 | MG.21a | Diff line-background tints in magit's diff views | MG.20 | ✅ |
 | MG.22 | `magit-hunk-mode` — the mode owning diff *content* | MG.20 | 📝 |
+| MG.23 | magit-dispatch / file-dispatch parity (sliced a–i) | MG.17b | 📝 |
 
 **2026-07-26 audit correction:** this table (last synced when MG.1-3 landed) had
 drifted from `implementation.md`'s per-slice status, which had marked MG.4-10 all
@@ -1080,6 +1081,97 @@ region ends Visual, like any vim operator on a selection.
   `apply_patch --index` so `x` on a *staged* hunk could discard from
   index and worktree atomically instead of refusing (MG.18c's note).
   Both are additive and neither blocks MG.19.
+
+### MG.23 — magit-dispatch / file-dispatch parity (planned 2026-07-30)
+
+Goal: every `magit-dispatch` and `magit-file-dispatch` entry that means
+something in lattice, reachable from `C-c g` / `C-c f`. Pulled from
+magit's own source (`lisp/magit.el`, `lisp/magit-files.el`), not from
+memory.
+
+**Scale, honestly.** ~39 entries across the two menus. ~30 need an
+operation written. That is comparable in surface area to everything
+MG.1–MG.21 shipped, so this is a phase, not a slice.
+
+#### Policy decisions (2026-07-30)
+
+1. **No inert rows.** A row appears only once its operation exists —
+   the rule already in `transients.rs`, reaffirmed. Not greyed
+   "coming soon" entries: that needs a `TransientItemKind::Unavailable`
+   plus renderer support in both peers, and becomes dead weight the
+   moment the last operation lands. Magit itself hides entries by
+   predicate rather than disabling them, which is the same shape.
+   **Keys still follow magit / evil-collection-magit from day one**, so
+   a row landing later lands in the slot muscle memory already expects.
+2. **`C-c f` always acts on the visited file.** No "which file?"
+   prompt, which is magit's behaviour and the one deliberate deviation
+   here. Destructive actions still **confirm** (`Delete src/foo.rs?`) —
+   that is MG.12's ask/execute contract and a different axis from
+   choosing a target.
+3. **`magit-other-file-dispatch` is the explicit-target variant** — the
+   same rows, but the file is chosen rather than assumed. **Not bound by
+   default**; a user who prefers magit's prompting binds it. This
+   supersedes the sketched `<C-u>`-prefix idea for now, and the seam is
+   the same one a prefix would use.
+
+#### The target seam
+
+File actions resolve their target as **`ctx.arg_str(0)` if set, else
+`active_file(ctx)`**. `C-c f` passes no argument, so it keeps acting on
+the visited file; `magit-other-file-dispatch` fills the argument. Both
+reuse MG.17a/b's transient argument machinery unchanged, and a future
+universal-prefix would set the same argument rather than needing its own
+mechanism.
+
+#### Inventory
+
+**Backed by an operation today, row missing.** `S` stage-all,
+`U` unstage-all. (`A` cherry-pick / `_` revert / `O` reset are NOT free
+despite MG.20 landing them: they act on the commit at the cursor, and
+the root dispatch has no cursor context — see MG.20's own note. They
+need either a commit picker or magit's `:if-derived` predicate.)
+
+**Maps to an existing lattice surface — wire, do not reimplement.**
+`h` / `C-x i` → `:help`; `C-x m` → `:describe-mode`; `H` → the
+`:describe-*` family; `e` / `E` ediff → lattice's own `diff-mode`
+(D.4 / MG.19), not a reimplementation; `J` / `G` → `:ls` / `:b`;
+`j` → `:magit-status`.
+
+**Cheap-to-medium on machinery that exists.** `a` apply / `v` reverse
+(MG.18's `apply_patch`); `t` tag, `i` gitignore, `I` init, `m` merge,
+`Q` git-command (MG.17b's `Argument` prompt); file `untrack` / `rename`
+/ `delete` / `checkout`; blame variants (`r` removal, `f` reverse,
+`m` echo, `q` quit); blob `p` / `n` / `v` / `V` (magit-file-revision-mode
+already exists); `D` / `L` diff- and log-arg refresh; `M` log-merged;
+`e` edit-line-commit.
+
+**Genuinely new subsystems.** `B` bisect, `M` remote management,
+`o` submodule, `O` subtree, `Z` worktree, `T` notes, `w` am /
+`W` format-patch, `y` show-refs, `Y` cherries, `C` clone.
+
+#### Known key collision, deferred with it
+
+Our dispatch uses `s` for status; magit uses `s` for **stage** and
+reaches status via `j`. Magit can afford that because its `s` / `u` /
+`S` / `U` rows are `:if-derived magit-mode` — they appear only inside a
+magit buffer, where a section is at point. `C-c g` here is global and
+`TransientSourceRegistry` builds specs from a zero-arg closure, so there
+is no context to predicate on yet. `S` / `U` land now (both keys are
+free); resolving `s` waits for context-dependent menu content, and
+moving status off `s` is a breaking change to make deliberately, not
+incidentally.
+
+| Slice | Scope | Depends | Status |
+|---|---|---|---|
+| MG.23a | File-target seam + `magit-other-file-dispatch` (unbound) | MG.17b | 📝 |
+| MG.23b | Repo rows with no target: `S` stage-all, `U` unstage-all, `I` init, `i` gitignore | — | 📝 |
+| MG.23c | Prompt-backed repo rows: `t` tag, `m` merge, `Q` git-command | MG.17b | 📝 |
+| MG.23d | File ops: untrack, rename, delete, checkout — each with its confirm | MG.23a | 📝 |
+| MG.23e | Surface-mapping rows (`h`, `C-x m`, `H`, `J`, `j`, `e`/`E`) | — | 📝 |
+| MG.23f | Blame variants + blob navigation | — | 📝 |
+| MG.23g | `a` apply / `v` reverse on a hunk | MG.18 | 📝 |
+| MG.23h | Context-dependent menu content (magit's `:if-derived`), then `s`/`u` rows + the `s` collision | — | 📝 |
+| MG.23i+ | The new subsystems, one slice each, prioritised by daily use | — | 📝 |
 
 #### Original scoping notes
 

@@ -18,8 +18,8 @@ Open it with **`C-x g`** or **`:magit-status`** from any buffer.
 > buffer via `d` (opens against the file's own section baseline —
 > `--cached` for Staged, working-tree-vs-index for Unstaged — useful
 > for diffs too large to read comfortably inline), staging
-> (`s`/`u`/`x` — on the hunk under the cursor inside an expanded diff,
-> on the whole file otherwise), commit (`cc`/`ca`), context-aware
+> (`s`/`u`/`x` — on the lines you select, else the hunk under the
+> cursor, else the whole file), commit (`cc`/`ca`), context-aware
 > visit (`<CR>`, opens the
 > dedicated [commit buffer](help:magit-commit-mode) for a
 > commit entry), manual refresh (`gr`), and close (`q`) are shipped.
@@ -58,6 +58,8 @@ Open it with **`C-x g`** or **`:magit-status`** from any buffer.
 | `]f` / `[f` | Next / previous file or entry within the current section |
 | `]c` / `[c` | Next / previous hunk (within expanded diffs) |
 | `s` / `u` / `x` in Visual | Act on the selected lines only |
+| `A` / `_` | Cherry-pick / revert the commit at cursor |
+| `Os` / `Om` / `Oh` | Reset `--soft` / `--mixed` / `--hard` to the commit at cursor |
 | `TAB` | Toggle section or hunk fold at cursor |
 | `S-TAB` | Cycle section visibility |
 
@@ -134,6 +136,12 @@ same mechanism `=` uses for files) — changed for consistency with
 those other views, which all treat `<CR>` on a SHA as "go to the
 commit", not "preview inline".
 
+The commit operations from
+[`magit-core-mode`](help:magit-core-mode) act on the row under the
+cursor here: `A` cherry-pick, `_` revert, `Os` / `Om` / `Oh` reset
+`--soft` / `--mixed` / `--hard`. On a row that isn't a commit — a file
+entry, a stash — they do nothing rather than acting on a neighbour.
+
 ---
 
 ## Staging and unstaging
@@ -191,8 +199,8 @@ than jumping somewhere arbitrary.
 
 ### A selection of lines
 
-Enter Visual mode (`V` for lines) inside a hunk, select the lines you
-want, and press the same chord:
+Select the lines inside a hunk — `V` for linewise, extended with
+`j` / `k` — then press the same chord:
 
 | Chord | Action |
 |---|---|

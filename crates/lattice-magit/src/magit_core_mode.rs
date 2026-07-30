@@ -69,11 +69,32 @@ fn magit_core_keymap_entries() -> &'static [KeymapEntry] {
             keymap_entry! { mode: Normal, chord: "[c", doc: "Previous hunk", cmd: "action:magit-prev-hunk" },
             keymap_entry! { mode: Normal, chord: "<Tab>", doc: "Toggle fold", cmd: "action:magit-toggle-fold" },
             keymap_entry! { mode: Normal, chord: "<S-Tab>", doc: "Cycle sections", cmd: "action:magit-cycle-sections" },
-            // MG.20: operations on the commit under the cursor. Keys
-            // follow Emacs magit's own (`A` apply/cherry-pick, `V`
-            // revert, `O` reset) so the muscle memory transfers.
+            // Operations on the commit under the cursor. Keys follow
+            // **evil-collection-magit**, not raw magit — the reference
+            // set for a modal editor, because it is the one that already
+            // resolved magit-vs-vim collisions:
+            //
+            //   revert  magit `V` → evil `_`   ("subtracting a commit")
+            //   reset   magit `X` → evil `O`
+            //   discard magit `k` → evil `x`
+            //   apply   `A` in both
+            //
+            // MG.20 originally took `V` for revert, citing "Emacs
+            // magit's own keys". Magit does bind `V` — but magit is not
+            // modal, so it costs magit nothing. Here it cost linewise
+            // Visual in every magit buffer: the chord is consumed even
+            // on a row with no commit, so `V` could not start a
+            // selection at all, which MG.18e's region staging needs.
+            // evil-magit frees `V` for `evil-visual-line` for exactly
+            // that reason, and vim-fugitive likewise keeps `V` unbound
+            // so its visual-mode staging works. `_` is free here (not
+            // even a builtin motion yet), so this costs nothing.
+            //
+            // (The same commit also mis-attributed `O` to magit, which
+            // uses `X`. `O` is evil-magit's remap — the binding was
+            // right, the reason was not.)
             keymap_entry! { mode: Normal, chord: "A", doc: "Cherry-pick the commit at cursor", cmd: "action:magit-cherry-pick" },
-            keymap_entry! { mode: Normal, chord: "V", doc: "Revert the commit at cursor", cmd: "action:magit-revert" },
+            keymap_entry! { mode: Normal, chord: "_", doc: "Revert the commit at cursor", cmd: "action:magit-revert" },
             keymap_entry! { mode: Normal, chord: "Os", doc: "Reset --soft to the commit at cursor", cmd: "action:magit-reset-soft" },
             keymap_entry! { mode: Normal, chord: "Om", doc: "Reset --mixed to the commit at cursor", cmd: "action:magit-reset-mixed" },
             keymap_entry! { mode: Normal, chord: "Oh", doc: "Reset --hard to the commit at cursor (asks first)", cmd: "action:magit-reset-hard" },

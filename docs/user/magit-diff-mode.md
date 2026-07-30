@@ -38,10 +38,10 @@ file's others alone. With the cursor on a file header — or anywhere
 outside a hunk body — they fall back to the whole file, resolved from
 the nearest `diff --git a/<path> b/<path>` header above.
 
-In Visual mode they act on the **selected lines** rather than the whole
-hunk — select, press `s`, and only those lines are staged. See
-[`magit-status-mode`](help:magit-status-mode) for the details; the rules
-are identical here.
+With a selection up they act on the **selected lines** rather than the
+whole hunk — `V`, extend with `j` / `k`, then `s`, and only those lines
+are staged. The rules are identical to magit-status's;
+[that page](help:magit-status-mode) has the details.
 
 Which chord applies depends on the buffer's scope. A
 `*magit:diff:unstaged:*` buffer stages with `s`; a `*magit:diff:staged:*`

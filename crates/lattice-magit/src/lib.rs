@@ -978,6 +978,58 @@ mod tests {
         );
     }
 
+    /// No magit chord may shadow a Visual-mode entry key.
+    ///
+    /// Region staging needs a selection, so `v` / `V` / `C-v` have to
+    /// keep meaning what vim says they mean in every magit buffer. A
+    /// mode action that binds one of them takes it *unconditionally* —
+    /// the chord is consumed even when the action has no target, because
+    /// a handler returning `None` counts as handled. That is how revert
+    /// on `V` made region staging unreachable before it moved to `_`
+    /// (evil-collection-magit's key).
+    ///
+    /// The failure is silent from the code's side: the binding looks
+    /// fine, the action works on the rows it applies to, and only the
+    /// selection gesture quietly stops existing.
+    #[test]
+    fn no_magit_mode_binds_a_visual_entry_key() {
+        use lattice_mode::Mode;
+
+        const VISUAL_ENTRY: &[&str] = &["v", "V", "<C-v>"];
+        let mut stolen: Vec<String> = Vec::new();
+        macro_rules! check {
+            ($($mode:expr => $label:literal),* $(,)?) => {
+                $(for entry in $mode.keymap().entries {
+                    if VISUAL_ENTRY.contains(&entry.chord)
+                        && entry.modes.contains(&lattice_keymap::BindingMode::Normal)
+                    {
+                        stolen.push(format!(
+                            "{}: binds `{}`, which is how you ENTER Visual mode — \
+                             region staging becomes unreachable in this buffer",
+                            $label, entry.chord
+                        ));
+                    }
+                })*
+            };
+        }
+        check!(
+            MagitCoreMode => "magit-core-mode",
+            MagitGlobalMode => "magit-global-mode",
+            MagitStatusMode => "magit-status-mode",
+            MagitCommitMode => "magit-commit-mode",
+            MagitDiffMode => "magit-diff-mode",
+            MagitLogMode => "magit-log-mode",
+            MagitBlameMode => "magit-blame-mode",
+            MagitStashMode => "magit-stash-mode",
+            MagitBranchMode => "magit-branch-mode",
+            MagitRebaseMode => "magit-rebase-mode",
+            MagitRevisionMode => "magit-revision-mode",
+            MagitFileRevisionMode => "magit-file-revision-mode",
+            magit_stash_show_mode::MagitStashShowMode => "magit-stash-show-mode",
+        );
+        assert!(stolen.is_empty(), "{}", stolen.join("\n"));
+    }
+
     /// MG.18e — a view that stages in Normal mode must also stage in
     /// Visual mode.
     ///

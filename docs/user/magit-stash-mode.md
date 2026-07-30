@@ -23,7 +23,7 @@ The headerline carries the count.
 | `a` | Apply the stash at cursor (keeps it in the list) |
 | `p` | Pop the stash at cursor (apply, then drop) |
 | `d` | Drop the stash at cursor — **asks first** |
-| `z` | Create a stash from the working tree |
+| `z` | Create a stash from the working tree (so `z` is not the fold prefix in this buffer — use `TAB` / `S-TAB`) |
 | `<CR>` | Show this stash's patch in [`magit-stash-show-mode`](help:magit-stash-show-mode) |
 | `gr` | Refresh (re-run `git stash list`) |
 

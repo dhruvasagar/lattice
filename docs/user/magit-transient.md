@@ -119,7 +119,7 @@ task back to a transient that's already dismissed. Check the
 ### Magit entries that aren't here
 
 `C-c g` covers what lattice implements. Emacs magit's dispatch also
-offers bisect (`B`), merge (`m`), tag (`t`), revert (`V`), reset
+offers bisect (`B`), merge (`m`), tag (`t`), revert (`_`), reset
 (`X`), cherry-pick (`A`), submodule (`o`), remote (`M`), and patch
 (`w`/`W`) — none of which lattice has behind them, so none appears in
 the menu. Branch *merge* specifically does exist, but only as the `m`

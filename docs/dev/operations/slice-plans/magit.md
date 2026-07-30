@@ -1126,8 +1126,8 @@ than an absent one — they appear only as they gain real implementations.
 
 ### MG.20 — reset / revert / cherry-pick ✅ (2026-07-29)
 
-`A` (cherry-pick), `V` (revert), `Os` / `Om` / `Oh` (reset
-soft/mixed/hard) — Emacs magit's own keys — working in **every view
+`A` (cherry-pick), `_` (revert), `Os` / `Om` / `Oh` (reset
+soft/mixed/hard) — **evil-collection-magit's** keys — working in **every view
 that shows a commit**: the log, magit-status's Recent commits, the
 revision view, the rebase todo.
 
@@ -1139,7 +1139,7 @@ Recent-commits entry). `MagitView` gained `commit_at_cursor` +
 operation and dispatches through the view. No per-view handler (which
 MG.13 proved collides), no `match buffer_kind` in the host (which the
 everything-is-a-buffer rule forbids). A row with no commit declines, so
-`V` on a staged file or a `--graph` connector does nothing rather than
+`_` on a staged file or a `--graph` connector does nothing rather than
 acting on a neighbour.
 
 - **`Oh` is the only one that asks.** `reset --hard` discards
@@ -1147,6 +1147,21 @@ acting on a neighbour.
   Prompting on the safe two would train the user to dismiss the prompt
   that matters. Registered in `confirm::DESTRUCTIVE_ACTIONS`, so the
   ask half performs no git call at all.
+- **The keys are evil-collection-magit's, not raw magit's** — a
+  correction made when MG.18e needed `V`. Magit binds revert to `V` and
+  reset to `X`, but magit is not modal, so those cost it nothing; here
+  `V` is grammar. evil-magit already resolved exactly these collisions
+  (revert `V`→`_`, reset `X`→`O`, discard `k`→`x`, apply `A`
+  unchanged) and deliberately leaves `V` as `evil-visual-line`;
+  vim-fugitive keeps it free for the same reason — its visual-mode
+  mappings stage partial hunks. The original commit message claimed
+  "Emacs magit's own keys", which was doubly wrong: it copied `V`'s
+  binding without its tradeoff, and mis-attributed `O` to magit. A
+  Normal-mode chord bound by a mode is consumed *unconditionally* (a
+  handler returning `None` counts as handled), so `V` for revert meant
+  linewise Visual did not exist in any magit buffer — which is what
+  made region staging unreachable. Guarded now by
+  `no_magit_mode_binds_a_visual_entry_key`.
 - **`revert` passes `--no-edit`.** git would otherwise open `$EDITOR`
   for the message — inside lattice that is a hang on a prompt the user
   cannot answer, not a UI.

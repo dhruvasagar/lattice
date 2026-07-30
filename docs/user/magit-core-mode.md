@@ -1,5 +1,5 @@
 ---
-summary: "magit-core-mode: the shared minor mode active in every magit buffer — gr to refresh, q to close, ]]/[[ and ]f/[f and ]c/[c to navigate, TAB to fold."
+summary: "magit-core-mode: the shared minor mode active in every magit buffer — gr to refresh, q to close, ]]/[[ and ]f/[f and ]c/[c to navigate, TAB to fold, and A/_/O to act on the commit under the cursor."
 related: [magit, magit-core]
 ---
 
@@ -25,12 +25,12 @@ no `:magit-core-mode` you need to turn on.
 | `TAB` | Toggle the section or hunk fold at cursor |
 | `S-TAB` | Cycle section visibility (all → changed only → collapsed → all) |
 | `A` | Cherry-pick the commit under the cursor |
-| `V` | Revert the commit under the cursor |
+| `_` | Revert the commit under the cursor |
 | `Os` / `Om` / `Oh` | Reset `--soft` / `--mixed` / `--hard` to the commit under the cursor |
 
 ## Operating on the commit under the cursor
 
-`A`, `V` and `O…` work in every view that shows a commit — the
+`A`, `_` and `O…` work in every view that shows a commit — the
 [log](help:magit-log-mode), magit-status's Recent commits, the
 [revision](help:magit-revision-mode) view, the
 [rebase todo](help:magit-rebase-mode) — because each view answers "what
@@ -43,7 +43,7 @@ line — they do nothing rather than acting on a neighbour.
 | Chord | Runs | Keeps |
 |---|---|---|
 | `A` | `git cherry-pick <commit>` | — |
-| `V` | `git revert --no-edit <commit>` | — |
+| `_` | `git revert --no-edit <commit>` | — |
 | `Os` | `git reset --soft <commit>` | index **and** working tree |
 | `Om` | `git reset --mixed <commit>` | working tree |
 | `Oh` | `git reset --hard <commit>` | **nothing** — asks first |
@@ -54,9 +54,32 @@ use, where the chord itself performs no git call at all. `--soft` and
 `--mixed` keep your changes, and prompting on those would just train
 you to dismiss the prompt that matters.
 
-`V` passes `--no-edit`: git would otherwise open `$EDITOR` for the
+`_` passes `--no-edit`: git would otherwise open `$EDITOR` for the
 revert message, which inside lattice means waiting on a prompt you
 cannot answer.
+
+### Why these keys, and not magit's
+
+They are **evil-collection-magit's**, not raw magit's. Magit is not a
+modal editor, so it can afford `V` for revert and `X` for reset; in a
+vim-modal editor those are grammar. evil-magit is the reference set
+because it already resolved exactly these collisions:
+
+| Command | Magit | Here (evil-magit) |
+|---|---|---|
+| Revert | `V` | `_` — "you are subtracting a commit" |
+| Reset | `X` | `O` |
+| Discard | `k` | `x` |
+| Apply / cherry-pick | `A` | `A` |
+
+`V` is deliberately left alone so it still means linewise Visual, which
+is what [region staging](help:magit-status-mode) needs — select lines
+inside a hunk, stage only those. vim-fugitive keeps `V` free for the
+same reason.
+
+(An earlier revision bound revert to `V`, which swallowed the chord in
+every magit buffer and made region staging unreachable. If you have
+muscle memory for `V`, it is `_` now.)
 
 ## What `gr` actually does
 
@@ -89,6 +112,10 @@ whatever rows that buffer does have rather than erroring.
 `TAB` and `S-TAB` route through the ordinary fold engine, not a
 magit-specific one, so `za` / `zM` / `zR` and every other fold chord
 work here too. See [`folding`](help:folding).
+
+One exception: in [`magit-stash-mode`](help:magit-stash-mode) `z`
+creates a stash, so it is not available as the fold prefix there — use
+`TAB` / `S-TAB` in that buffer.
 
 In [`magit-status-mode`](help:magit-status-mode) folds nest: closing a
 file's fold hides its inline diff, and each `@@` hunk inside that diff

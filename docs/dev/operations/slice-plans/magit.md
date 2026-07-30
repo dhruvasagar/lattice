@@ -1203,7 +1203,7 @@ incidentally.
 | MG.23c1 | The prompt-backed row shape + `t` tag, `i` gitignore | MG.17b, IX.5 | ✅ |
 | MG.23c2 | `I` init, `m` merge (`Q` dropped — see below) | MG.23c1 | ✅ |
 | MG.23d | File ops: untrack, delete, rename | MG.23a, IX.2 | ✅ |
-| MG.23d2 | `,c` checkout a file from a revision | MG.23d | 📝 |
+| MG.23d2 | `,c` checkout a file from a revision | MG.23d | ✅ |
 | MG.23e | Surface-mapping rows — **dropped**, see below | — | ⛔ |
 | MG.23f | Blob navigation (blame variants evaluated out, one deferred) | — | ✅ |
 | MG.23f2 | Reverse blame (`git blame --reverse`) from a blob buffer — needs a rev-carrying blame buffer name | MG.23f | 📝 |
@@ -1319,6 +1319,36 @@ what it does, which is better than a menu row and already exists.
 Dropped rather than deferred, on the policy this plan already carries: a
 row that does nothing is worse than absent, and a row that duplicates
 another row is not much better.
+
+#### MG.23d2 — `,c` check a file out from a revision ✅ (2026-07-31)
+
+Completes magit's `File` group. Prompt for the revision (seeded `HEAD`,
+because "put back what I committed" is the common case and the one
+revision you can name without looking anything up), then confirm naming
+both the file and the revision.
+
+**Why this one confirms where `,k` barely needs to.** `,k` is a plain
+`git rm`, so git itself refuses a file with uncommitted changes — the
+confirm there is a second line of defence. `git checkout <rev> -- <path>`
+refuses nothing: it overwrites the working-tree file whatever state it
+is in and keeps no copy of what it replaced. That is §12.13's bar
+exactly, and it is the reason the flow is prompt → confirm → execute
+rather than prompt → execute.
+
+**Both halves are carried, and there is no re-derivation fallback.**
+The other execute halves fall back to re-deriving their target, which is
+safe because the fallback is "the file you are looking at". There is no
+such guess for a revision, and checking out from the wrong one is
+precisely the damage the confirm exists to prevent — so a missing slot
+produces no git call at all. The path rides in the prompt buffer's name
+(`*magit:checkout:<path>*`), the same carrier `,r` uses, because by
+submit time the prompt buffer is the active one.
+
+`--` before the path is load-bearing rather than tidy: without it a path
+matching a ref name is ambiguous, and git resolves the ambiguity by
+checking out the *branch* — a wrong action rather than an error. Pinned
+by a test, along with the two carriers refusing to read each other's
+buffer names and the execute half declining a half-carried confirm.
 
 #### MG.23f — `gj` / `gk` walk a file's history ✅ (2026-07-31)
 

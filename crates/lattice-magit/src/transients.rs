@@ -440,6 +440,8 @@ pub struct FileDispatchActionIds {
     pub untrack: Option<CommandId>,
     pub delete: Option<CommandId>,
     pub rename: Option<CommandId>,
+    /// MG.23d2: check the file out from a revision.
+    pub checkout: Option<CommandId>,
 }
 
 /// Build the file-level dispatch transient (`C-c f`).
@@ -628,6 +630,13 @@ pub fn file_dispatch_transient(ids: &FileDispatchActionIds) -> TransientSpec {
                         "delete",
                         "Delete this file (asks first)",
                         "delete_file",
+                    ),
+                    action_or_placeholder(
+                        ids.checkout,
+                        ",c",
+                        "checkout",
+                        "Replace this file with its content at a revision (asks, then confirms)",
+                        "checkout_file",
                     ),
                 ],
             },

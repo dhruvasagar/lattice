@@ -336,6 +336,68 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         }),
     });
 
+    // MG.23d2: `,c` — this file as it was at some revision, written
+    // over the working-tree copy. Prompt for the revision, then confirm,
+    // because the write is over uncommitted work and git keeps no copy
+    // of what it replaced.
+    contributions.push(ActionHandlerContribution {
+        action_name: "action:magit-global-file-checkout",
+        handler: Arc::new(|ctx: &ActionContext<'_>| {
+            let (_workdir, rel) = active_target(ctx)?;
+            let path = rel.to_string_lossy().into_owned();
+            Some(Effect::OpenPrompt {
+                prompt: format!("Checkout {path} from revision: "),
+                // `HEAD` is the overwhelmingly common intent — "put
+                // back what I committed" — and it is also the one
+                // revision you can name without looking anything up.
+                initial: "HEAD".to_string(),
+                on_submit_action: "action:magit-global-file-checkout-finish".to_string(),
+                // Same carrier as rename: by submit time the prompt
+                // buffer is the active one, so nothing else still knows
+                // which file this was.
+                buffer_name: Some(format!("*magit:checkout:{path}*")),
+            })
+        }),
+    });
+    contributions.push(ActionHandlerContribution {
+        action_name: "action:magit-global-file-checkout-finish",
+        handler: Arc::new(|ctx: &ActionContext<'_>| {
+            let rev = ctx.prompt_value?.trim().to_string();
+            if rev.is_empty() {
+                return None;
+            }
+            let buffer_id = lattice_core::BufferId(ctx.buffer_id.0 as u32);
+            let path = ctx
+                .services
+                .get::<BufferStoreHandle>()?
+                .name_for(buffer_id)
+                .and_then(|n| checkout_target_from_prompt_buffer_name(&n))?;
+            // Carries both halves (IX.1): by execute time the prompt
+            // buffer is gone and the confirm dialog is what is active,
+            // so neither the revision nor the path is re-derivable.
+            Some(crate::confirm::ask_with(
+                format!("Checkout {path} from {rev}, discarding its uncommitted changes?"),
+                "action:magit-global-file-checkout-execute",
+                lattice_grammar::Args::List(vec![
+                    lattice_grammar::ArgValue::String(rev),
+                    lattice_grammar::ArgValue::String(path),
+                ]),
+            ))
+        }),
+    });
+    contributions.push(ActionHandlerContribution {
+        action_name: "action:magit-global-file-checkout-execute",
+        handler: Arc::new(|ctx: &ActionContext<'_>| {
+            // No re-derivation fallback, unlike the other execute
+            // halves: there is no sensible guess for a revision, and
+            // checking out from the wrong one is the exact damage the
+            // confirm exists to prevent. Both slots or nothing.
+            let rev = ctx.arg_str(0)?;
+            let path = ctx.arg_str(1)?;
+            Some(spawn_git(checkout_file_argv(rev, path), "checkout file"))
+        }),
+    });
+
     // MG.23c2: `I` init and `m` merge, on c1's prompt shape.
     contributions.push(ActionHandlerContribution {
         action_name: "action:magit-global-init",
@@ -963,6 +1025,21 @@ pub(crate) fn rename_argv(from: &str, to: &str) -> Vec<String> {
     vec!["mv".into(), "--".into(), from.to_string(), to.to_string()]
 }
 
+/// MG.23d2: `git checkout <rev> -- <path>` — the file as it was at
+/// `rev`, written over the working-tree copy.
+///
+/// `--` is load-bearing rather than decorative: without it a path that
+/// happens to match a ref name is ambiguous, and git resolves the
+/// ambiguity by checking out the *branch*.
+pub(crate) fn checkout_file_argv(rev: &str, path: &str) -> Vec<String> {
+    vec![
+        "checkout".into(),
+        rev.to_string(),
+        "--".into(),
+        path.to_string(),
+    ]
+}
+
 /// The path a rename prompt is carrying, from its buffer name.
 ///
 /// The prompt buffer is the active one by the time the user submits, so
@@ -970,7 +1047,16 @@ pub(crate) fn rename_argv(from: &str, to: &str) -> Vec<String> {
 /// renamed. The name is the carrier — the same trick the branch-create
 /// wizard uses for its base branch.
 pub(crate) fn rename_source_from_prompt_buffer_name(buffer_name: &str) -> Option<String> {
-    let s = buffer_name.strip_prefix("*magit:rename:")?;
+    path_from_prompt_buffer_name(buffer_name, "*magit:rename:")
+}
+
+/// MG.23d2: the same carrier, for the checkout prompt.
+pub(crate) fn checkout_target_from_prompt_buffer_name(buffer_name: &str) -> Option<String> {
+    path_from_prompt_buffer_name(buffer_name, "*magit:checkout:")
+}
+
+fn path_from_prompt_buffer_name(buffer_name: &str, prefix: &str) -> Option<String> {
+    let s = buffer_name.strip_prefix(prefix)?;
     let s = s.strip_suffix('*')?;
     (!s.is_empty()).then(|| s.to_string())
 }
@@ -1258,6 +1344,86 @@ mod tests {
             rename_source_from_prompt_buffer_name("*magit:rename:*").is_none(),
             "an empty source is not a path"
         );
+    }
+
+    /// MG.23d2 — the checkout argv, where `--` is not cosmetic.
+    ///
+    /// `git checkout <rev> <path>` without it is ambiguous when the path
+    /// matches a ref name, and git resolves the ambiguity by checking
+    /// out the *branch* — a wrong action, not an error.
+    #[test]
+    fn checkout_file_names_the_revision_then_separates_the_path() {
+        let argv = checkout_file_argv("HEAD~2", "main");
+        assert_eq!(argv, vec!["checkout", "HEAD~2", "--", "main"]);
+        let sep = argv.iter().position(|a| a == "--").expect("a separator");
+        assert!(
+            sep < argv.len() - 1 && argv.iter().position(|a| a == "HEAD~2").unwrap() < sep,
+            "the revision goes before the separator and the path after: {argv:?}"
+        );
+    }
+
+    /// MG.23d2 — the checkout prompt carries its path the same way the
+    /// rename prompt does, and the two carriers must not read each
+    /// other's buffers: a checkout finish that accepted a rename prompt's
+    /// name would overwrite a file the user was only renaming.
+    #[test]
+    fn the_checkout_prompt_carries_its_path_and_only_its_own() {
+        assert_eq!(
+            checkout_target_from_prompt_buffer_name("*magit:checkout:src/main.rs*").as_deref(),
+            Some("src/main.rs")
+        );
+        assert!(checkout_target_from_prompt_buffer_name("*magit:rename:src/main.rs*").is_none());
+        assert!(rename_source_from_prompt_buffer_name("*magit:checkout:src/main.rs*").is_none());
+        assert!(
+            checkout_target_from_prompt_buffer_name("*magit:checkout:*").is_none(),
+            "an empty target is not a path"
+        );
+    }
+
+    /// MG.23d2 — the execute half acts on both carried slots or on
+    /// nothing.
+    ///
+    /// The other execute halves fall back to re-deriving their target,
+    /// which is safe because the fallback is "the file you are looking
+    /// at". There is no such guess for a revision, and checking out from
+    /// the wrong one is exactly the damage the confirm exists to
+    /// prevent — so a missing slot must produce no git call at all.
+    #[test]
+    fn checkout_execute_declines_when_a_slot_is_missing() {
+        use lattice_mode::Mode as _;
+
+        let handlers = MagitGlobalMode.action_handlers();
+        let handler = handlers
+            .iter()
+            .find(|c| c.action_name == "action:magit-global-file-checkout-execute")
+            .expect("contributed")
+            .handler
+            .clone();
+        let services = lattice_mode::ServiceRegistry::new();
+        let events = lattice_runtime::EventBus::new();
+
+        for args in [
+            lattice_grammar::Args::None,
+            // A revision and no path — the shape a confirm raised by a
+            // path that carries less than it should would produce.
+            lattice_grammar::Args::List(vec![lattice_grammar::ArgValue::String(
+                "HEAD".to_string(),
+            )]),
+        ] {
+            let ctx = ActionContext {
+                buffer_id: lattice_protocol::ids::BufferId::new(1),
+                cursor: lattice_protocol::position::Position::new(0, 0),
+                selection: None,
+                services: &services,
+                events: &events,
+                prompt_value: None,
+                args,
+            };
+            assert!(
+                handler(&ctx).is_none(),
+                "a half-carried confirm must run no git command"
+            );
+        }
     }
 
     /// MG.23c2 — merge passes `--no-edit`, and nothing else opens an

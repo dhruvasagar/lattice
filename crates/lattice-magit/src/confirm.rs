@@ -42,6 +42,10 @@ pub(crate) const DESTRUCTIVE_ACTIONS: &[(&str, &str)] = &[
         "action:magit-global-file-delete-execute",
     ),
     (
+        "action:magit-global-file-checkout",
+        "action:magit-global-file-checkout-execute",
+    ),
+    (
         "action:magit-branch-delete",
         "action:magit-branch-delete-execute",
     ),

@@ -314,6 +314,14 @@ const CONFIRM_TARGET_ACTIONS: &[(&str, &str, &[(&str, &str)])] = &[
         &[("file", "Repo-relative path the prompt named")],
     ),
     (
+        "action:magit-global-file-checkout-execute",
+        "Check the file out from the named revision after confirmation",
+        &[
+            ("rev", "Revision the prompt named"),
+            ("file", "Repo-relative path the prompt named"),
+        ],
+    ),
+    (
         "action:magit-branch-delete-execute",
         "Delete the branch after confirmation",
         &[("branch", "Branch the prompt named")],
@@ -385,6 +393,11 @@ const FILE_TARGET_ACTIONS: &[(&str, &str)] = &[
         "action:magit-global-file-rename",
         "Rename the file (asks for the new name)",
     ),
+    // MG.23d2
+    (
+        "action:magit-global-file-checkout",
+        "Check the file out from a revision (asks for it, then confirms)",
+    ),
 ];
 
 /// Resolve the file dispatch transient's action ids — same
@@ -400,6 +413,7 @@ fn resolve_file_dispatch_ids(registry: &CommandRegistry) -> transients::FileDisp
         untrack: registry.id_by_name("action:magit-global-file-untrack"),
         delete: registry.id_by_name("action:magit-global-file-delete"),
         rename: registry.id_by_name("action:magit-global-file-rename"),
+        checkout: registry.id_by_name("action:magit-global-file-checkout"),
     }
 }
 
@@ -1045,6 +1059,15 @@ fn register_action_commands(registry: &mut CommandRegistry) {
     reg(
         "action:magit-global-file-rename",
         "Rename the file (asks for the new name)",
+    );
+    // MG.23d2
+    reg(
+        "action:magit-global-file-checkout",
+        "Check the file out from a revision (asks for it, then confirms)",
+    );
+    reg(
+        "action:magit-global-file-checkout-finish",
+        "Confirm checking the file out from the typed revision",
     );
     reg(
         "action:magit-global-file-rename-finish",
@@ -1938,15 +1961,15 @@ mod tests {
     /// would pass the two tests above vacuously.
     #[test]
     fn unresolved_ids_do_produce_inert_items_so_the_guard_is_not_vacuous() {
-        // 9 file-dispatch items: stage/unstage/discard, diff/log/blame,
-        // and MG.23d's untrack/rename/delete.
+        // 10 file-dispatch items: stage/unstage/discard, diff/log/blame,
+        // MG.23d's untrack/rename/delete and MG.23d2's checkout.
         let file = inert_items(
             &transients::file_dispatch_transient(&Default::default()),
             "",
         );
         assert_eq!(
             file.len(),
-            9,
+            10,
             "expected every file-dispatch leaf to report inert, got: {file:?}"
         );
         // Root dispatch: 18 ACTION leaves — status, diff, log,

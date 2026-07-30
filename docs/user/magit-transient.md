@@ -224,6 +224,10 @@ Opens from any buffer via `C-c f`:
 │    [,r] rename          Rename this file       │
 │    [,k] delete          Delete this file       │
 │                          (asks first)          │
+│    [,c] checkout        Replace this file with │
+│                          its content at a      │
+│                          revision (asks, then  │
+│                          confirms)             │
 │                                                │
 │  ▸ Inspect                                     │
 │    [d]  diff            Show diff for this file│
@@ -252,13 +256,14 @@ path to resolve and the key does nothing.
 | `,x` | `git rm --cached` — stop tracking, **file stays on disk** |
 | `,r` | `git mv` — asks for the new name, pre-filled with the current one |
 | `,k` | `git rm` — **destructive**, asks `Delete <path>?` first |
+| `,c` | `git checkout <rev> -- <file>` — asks which revision, then **confirms**: this overwrites the file |
 
-`x` and `,k` are the destructive items, and the ones that confirm
+`x`, `,k` and `,c` are the destructive items, and the ones that confirm
 first — the same `y`/`n` dialog magit-status's own `x` uses. `s`/`u`
 report optimistically ("magit: staged <path>") and log the real
 outcome; they don't block on git.
 
-**The `,` prefix is deliberate**, and magit's own. Those three change
+**The `,` prefix is deliberate**, and magit's own. Those four change
 what the file *is* rather than what is staged of it, so they take an
 extra keystroke. Two of them are gentler than they look: `,x` untrack
 leaves the file on disk (only the index forgets it, and `s` puts it
@@ -269,6 +274,14 @@ the confirmation is the second line of defence, not the only one.
 `,r` rename pre-fills the prompt with the current path, so renaming
 within a directory is an edit rather than a retype. Submitting it
 unchanged cancels.
+
+`,c` checkout asks for a revision, pre-filled with `HEAD` — "put back
+what I committed" is the common case. Then it confirms, naming both:
+`Checkout src/main.rs from HEAD, discarding its uncommitted changes?`
+Unlike `,k`, git will *not* refuse this one; it overwrites the file
+whatever state it is in, and keeps no copy of what it replaced. That is
+why the revision prompt and the confirmation are both there, and why
+answering `n` runs nothing at all.
 
 **No "which file?" prompt.** This is the one deliberate deviation from
 Emacs magit, which asks you to confirm the file even though the default

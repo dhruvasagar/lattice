@@ -226,6 +226,12 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
     // fail-fast + log-the-outcome shape fits any one-shot git
     // invocation whose result can't come back synchronously.
     remote_op!("action:magit-global-stash-create", RemoteOp::STASH);
+    // MG.23b: the two repo-wide index rows magit puts on `S` / `U`.
+    // Both need no target — they act on the whole index — which is why
+    // they land before the commit-acting rows (`A` / `_` / `O`), whose
+    // root-dispatch entries still want a commit picker.
+    remote_op!("action:magit-global-stage-all", RemoteOp::STAGE_ALL);
+    remote_op!("action:magit-global-unstage-all", RemoteOp::UNSTAGE_ALL);
 
     // file-dispatch (`C-c f`) — every item acts on the file in
     // whatever buffer was active when the transient was opened,
@@ -506,6 +512,32 @@ impl RemoteOp {
             },
         ],
     };
+    /// MG.23b: magit's `S` — stage every tracked modification at once.
+    ///
+    /// `add --update`, matching `magit-stage-modified`: tracked changes
+    /// only. Untracked files are deliberately NOT swept in — "stage
+    /// everything" quietly adding a file you never told git about is
+    /// how build artefacts and secrets get committed. Magit reaches
+    /// that behaviour behind a prefix argument, which is exactly the
+    /// deferred `<C-u>` work; until then `s` on the Untracked entry in
+    /// magit-status is the explicit path.
+    pub const STAGE_ALL: Self = Self {
+        what: "stage all",
+        args: &["add", "--update"],
+        flags: &[],
+    };
+    /// MG.23b: magit's `U` — unstage everything.
+    ///
+    /// A bare `git reset`: the index goes back to HEAD and the working
+    /// tree is untouched, so nothing is lost and every change is still
+    /// there to re-stage. That is why it does not ask, per §12.13's
+    /// no-confirm set for index-only work — the blast radius is wider
+    /// than one file but it is still fully reversible.
+    pub const UNSTAGE_ALL: Self = Self {
+        what: "unstage all",
+        args: &["reset", "--quiet"],
+        flags: &[],
+    };
     pub const STASH: Self = Self {
         what: "stash",
         args: &["stash", "push"],
@@ -773,6 +805,46 @@ fn run_remote_op(workdir: &std::path::Path, args: &[String]) -> Result<String, S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// MG.23b — `S` stages tracked modifications ONLY.
+    ///
+    /// `add --update` and not `add --all`: "stage everything" quietly
+    /// adding a file git was never told about is how build artefacts and
+    /// secrets get committed. Magit reaches the include-untracked
+    /// behaviour behind a prefix argument; until that exists the
+    /// explicit path is `s` on the Untracked entry.
+    #[test]
+    fn stage_all_stages_tracked_modifications_not_untracked_files() {
+        let argv = RemoteOp::STAGE_ALL.argv(&lattice_grammar::Args::None);
+        assert_eq!(argv, vec!["add", "--update"]);
+        assert!(
+            !argv.iter().any(|a| a == "--all" || a == "-A"),
+            "an untracked sweep must be opt-in, never the default: {argv:?}"
+        );
+    }
+
+    /// `U` is a bare `git reset`: index back to HEAD, working tree
+    /// untouched. That is what makes it safe to fire without asking —
+    /// nothing is lost and every change is still there to re-stage.
+    #[test]
+    fn unstage_all_resets_the_index_and_leaves_the_working_tree() {
+        let argv = RemoteOp::UNSTAGE_ALL.argv(&lattice_grammar::Args::None);
+        assert_eq!(argv, vec!["reset", "--quiet"]);
+        assert!(
+            !argv.iter().any(|a| a == "--hard" || a == "--merge"),
+            "a reset that touches the working tree would need MG.12's \
+             confirm, and would not belong on an unprompted key: {argv:?}"
+        );
+    }
+
+    /// Neither takes a target, which is precisely why they could land
+    /// ahead of `A` / `_` / `O` — those act on the commit at the cursor,
+    /// and the root dispatch has no cursor context.
+    #[test]
+    fn the_repo_wide_index_ops_take_no_arguments() {
+        assert!(RemoteOp::STAGE_ALL.arg_specs().is_empty());
+        assert!(RemoteOp::UNSTAGE_ALL.arg_specs().is_empty());
+    }
 
     /// MG.20 — a commit operation appends its target.
     #[test]

@@ -33,7 +33,7 @@ no hidden state.
 | Key / command | Meaning |
 |---|---|
 | `C-x g` | Open [magit-status](help:magit-status-mode) for the current repo |
-| `C-c g` | Open the [repo dispatch transient](help:magit-transient) — flat menu, one entry point per view (status/commit/log/branch/stash/rebase), plus `F` (pull) / `P` (push), both real git operations run in the background |
+| `C-c g` | Open the [repo dispatch transient](help:magit-transient) — one entry point per view (status/commit/log/branch/stash/rebase), plus `S` (stage all) / `U` (unstage all) and `f` (fetch) / `F` (pull) / `P` (push), all real git operations run in the background |
 | `C-c f` | Open the [file dispatch transient](help:magit-transient) — `s` stages / `d` diffs the file in your *current* buffer (not an entry under the cursor elsewhere) |
 | `:magit-status` | Same as `C-x g` — open the status buffer |
 | `:magit-commit` | Open the commit message buffer |
@@ -144,15 +144,19 @@ status, commit, log, branch, stash, rebase all genuinely open their
 buffer, from wherever you happen to be. `F` (pull) and `P` (push) are
 also real: `F` runs `git fetch` + a fast-forward-only merge (it will
 never create a merge commit — if your branch has diverged it fails
-cleanly instead of merging), `P` runs `git push`. Both run in the
-background and fail fast if git needs credentials it doesn't have;
-the result shows up in the `*messages*` buffer / debug log, not as an
-immediate on-screen confirmation. It's a flat list today — pressing
-`s`, `l`, `b`, `z`, `r`, `F`, or `P` just fires the corresponding
-buffer-open or git operation (the same thing `:magit-status` /
-`:magit-log` / … does for the buffer-opening ones); there are no
-nested branch/stash/push submenus with their own actions yet. See
-[transient menus](help:magit-transient).
+cleanly instead of merging), `P` runs `git push`. `S` stages every
+tracked modification (`git add --update`, untracked files deliberately
+left out) and `U` unstages everything while leaving your working tree
+alone. These all run in the background and fail fast if git needs
+credentials it doesn't have; the result shows up in the `*messages*`
+buffer / debug log, not as an immediate on-screen confirmation.
+
+Four entries are submenus rather than direct actions — `c` (commit /
+amend), `z` (stash push / list), and `f` / `P`, whose menus hold the
+[toggleable flags](help:magit-transient) their git operation accepts.
+`BS` returns from a submenu to the parent. See
+[transient menus](help:magit-transient) for the full rendered menu and
+for which magit entries are deliberately absent.
 
 ### `C-c f` — file dispatch transient
 

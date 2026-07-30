@@ -59,6 +59,12 @@ Opens from any buffer. Groups, as they actually render today:
 │                          against HEAD          │
 │    [c]  commit        ▸ Commit changes         │
 │                                                │
+│  ▸ Applying changes                            │
+│    [S]  stage all       Stage every tracked    │
+│                          modification          │
+│    [U]  unstage all     Unstage everything,    │
+│                          keeping your tree     │
+│                                                │
 │  ▸ History                                     │
 │    [l]  log             Show commit history    │
 │                                                │
@@ -105,6 +111,17 @@ file. Stash apply/pop/drop are **not** in the `z` submenu — they need
 a stash selected, which only the stash-list buffer provides; `z l`
 then `a`/`p`/`d` there.
 
+`S` and `U` act on the whole index. `S` runs `git add --update`:
+every **tracked** modification, staged. Untracked files are
+deliberately left out — "stage everything" quietly adding a file git
+was never told about is how build artefacts and secrets get committed;
+stage those explicitly with `s` on the Untracked entry in
+[magit-status](help:magit-status-mode). `U` runs a bare `git reset`:
+the index goes back to HEAD and your working tree is untouched, so
+nothing is lost and everything is still there to re-stage. That is why
+`U` doesn't ask, even though it undoes more than one file's worth of
+staging.
+
 `f` (fetch), `F` (pull), `P` (push), and `z z` (stash push) run git
 directly rather than opening a buffer. `f` runs plain `git fetch`
 (updates your remote-tracking refs, touches nothing else); `F` runs
@@ -118,13 +135,29 @@ task back to a transient that's already dismissed. Check the
 
 ### Magit entries that aren't here
 
-`C-c g` covers what lattice implements. Emacs magit's dispatch also
-offers bisect (`B`), merge (`m`), tag (`t`), revert (`_`), reset
-(`X`), cherry-pick (`A`), submodule (`o`), remote (`M`), and patch
-(`w`/`W`) — none of which lattice has behind them, so none appears in
-the menu. Branch *merge* specifically does exist, but only as the `m`
-chord inside the branch-list buffer (it needs a branch selected);
+`C-c g` shows only what it can actually run — a row that does nothing
+when pressed is worse than a row that isn't there. Two different
+reasons keep a magit entry out:
+
+**No operation behind it yet.** Magit's dispatch also offers bisect
+(`B`), tag (`t`), submodule (`o`), remote (`M`), patch (`w`/`W`),
+worktree (`Z`), notes (`T`), clone (`C`) and more. These are planned,
+and each appears the moment its operation exists.
+
+**Implemented, but the menu has no context to aim it at.** Revert,
+reset and cherry-pick all work — as `_`, `Os`/`Om`/`Oh` and `A` in any
+magit buffer that shows a commit (see
+[`magit-core-mode`](help:magit-core-mode)). They act on *the commit
+under the cursor*, and `C-c g` opens from anywhere, including buffers
+with no commit anywhere in them. Until the menu can either ask you for
+a commit or hide the rows outside magit buffers, they stay chords.
+Branch *merge* is the same story one level down: it exists as `m`
+inside the branch-list buffer because it needs a branch selected, so
 `b` then `m` gets you there.
+
+(Magit's own keys for those differ from ours — it uses `V` for revert
+and `X` for reset. Ours follow **evil-collection-magit**, which remaps
+them for a modal editor; `magit-core-mode` explains why.)
 
 ### How submenus work (mechanism)
 

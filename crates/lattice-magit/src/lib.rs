@@ -266,6 +266,8 @@ fn resolve_dispatch_ids(registry: &CommandRegistry) -> transients::DispatchActio
         stash: registry.id_by_name("action:magit-global-stash"),
         stash_create: registry.id_by_name("action:magit-global-stash-create"),
         rebase: registry.id_by_name("action:magit-global-rebase"),
+        stage_all: registry.id_by_name("action:magit-global-stage-all"),
+        unstage_all: registry.id_by_name("action:magit-global-unstage-all"),
         fetch: registry.id_by_name("action:magit-global-fetch"),
         pull: registry.id_by_name("action:magit-global-pull"),
         push: registry.id_by_name("action:magit-global-push"),
@@ -786,6 +788,13 @@ fn register_action_commands(registry: &mut CommandRegistry) {
         "Fetch + fast-forward merge from the remote",
     );
     reg("action:magit-global-push", "Push to the remote");
+
+    // MG.23b: repo-wide index operations (magit's `S` / `U`).
+    reg(
+        "action:magit-global-stage-all",
+        "Stage every tracked modification",
+    );
+    reg("action:magit-global-unstage-all", "Unstage everything");
 
     // File-dispatch (`C-c f`) — file-level operations scoped to the
     // buffer active when the transient was opened.
@@ -1444,17 +1453,24 @@ mod tests {
             6,
             "expected every file-dispatch leaf to report inert, got: {file:?}"
         );
-        // Root dispatch: 12 ACTION leaves — status, diff, log,
-        // branch, pull, rebase directly, plus the commit submenu's 2
-        // (c/a), the stash submenu's 2 (z/l), and one each inside the
-        // fetch and push submenus MG.17a introduced to hold their
-        // flags. Recursion is what makes the submenu leaves visible.
-        // The flag items themselves are NOT counted — they are real
-        // toggles, not placeholders; see `declared_flag_names`.
+        // Root dispatch: 14 ACTION leaves — status, diff, log,
+        // branch, pull, rebase directly, MG.23b's stage-all /
+        // unstage-all, plus the commit submenu's 2 (c/a), the stash
+        // submenu's 2 (z/l), and one each inside the fetch and push
+        // submenus MG.17a introduced to hold their flags. Recursion is
+        // what makes the submenu leaves visible. The flag items
+        // themselves are NOT counted — they are real toggles, not
+        // placeholders; see `declared_flag_names`.
+        //
+        // This count is deliberately hardcoded: a row added without a
+        // resolvable action id would otherwise slip in as a
+        // permanently-inert placeholder, which is the "menu row that
+        // does nothing" the no-inert-rows policy forbids. Bump it only
+        // together with a real action.
         let root = inert_items(&transients::dispatch_transient(&Default::default()), "");
         assert_eq!(
             root.len(),
-            12,
+            14,
             "expected every root-dispatch leaf (incl. both submenus') to \
              report inert, got: {root:?}"
         );

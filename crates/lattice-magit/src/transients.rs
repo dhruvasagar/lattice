@@ -119,6 +119,9 @@ pub struct DispatchActionIds {
     pub fetch: Option<CommandId>,
     pub pull: Option<CommandId>,
     pub push: Option<CommandId>,
+    /// MG.23b: magit's `S` / `U` — repo-wide index operations.
+    pub stage_all: Option<CommandId>,
+    pub unstage_all: Option<CommandId>,
 }
 
 /// An item that fires `id` if resolved, or falls back to a `Flag`
@@ -187,6 +190,31 @@ pub fn dispatch_transient(ids: &DispatchActionIds) -> TransientSpec {
                         description: "Commit changes".into(),
                         kind: TransientItemKind::Submenu(Arc::new(commit_transient(ids))),
                     },
+                ],
+            },
+            // MG.23b: magit's own "Applying changes" group. Magit shows
+            // its per-file `s` / `u` rows here too, but gates the whole
+            // group on `:if-derived magit-mode` — they need a section at
+            // point. `C-c g` is context-free, so only the two repo-wide
+            // rows appear (see MG.23h for the context work and the
+            // `s`-means-status collision it has to resolve).
+            TransientGroup {
+                label: "Applying changes".into(),
+                items: vec![
+                    action_or_placeholder(
+                        ids.stage_all,
+                        "S",
+                        "stage all",
+                        "Stage every tracked modification (git add --update)",
+                        "stage_all_op",
+                    ),
+                    action_or_placeholder(
+                        ids.unstage_all,
+                        "U",
+                        "unstage all",
+                        "Unstage everything, keeping your working tree (git reset)",
+                        "unstage_all_op",
+                    ),
                 ],
             },
             TransientGroup {

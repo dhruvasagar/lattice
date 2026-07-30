@@ -1108,11 +1108,46 @@ MG.1–MG.21 shipped, so this is a phase, not a slice.
    here. Destructive actions still **confirm** (`Delete src/foo.rs?`) —
    that is MG.12's ask/execute contract and a different axis from
    choosing a target.
-3. **`magit-other-file-dispatch` is the explicit-target variant** — the
-   same rows, but the file is chosen rather than assumed. **Not bound by
-   default**; a user who prefers magit's prompting binds it. This
-   supersedes the sketched `<C-u>`-prefix idea for now, and the seam is
-   the same one a prefix would use.
+3. **An explicit-target variant exists, surface still open.** Either
+   `magit-other-file-dispatch` (a second menu whose rows ask for the
+   file, unbound by default) or magit's own convention — the **capital
+   of the same key in the same menu**, which is what magit-file-dispatch
+   actually does: `d` "Diff" on the visited file vs `D` "Diff..." which
+   asks; likewise `l`/`L` and `b`/`B` (the `...` is magit's mark for
+   "prompts"). The capital-pair version needs no second menu and no new
+   machinery. Not decided; **MG.23a is unblocked either way** because the
+   seam is the same.
+
+#### Deferred: a global `<C-u>` prefix mechanism (2026-07-30)
+
+Wanted as a core feature, not a magit one — deferred, because magit does
+not need it (the capital-pair or argument spellings cover the
+explicit-target case). What the investigation established, so it is not
+re-derived:
+
+- **`<C-u>` is already bound in all three modes**: Normal scroll
+  half-page up, Insert delete-to-line-start (readline/vim), Command
+  clear the command line. All three are muscle memory.
+- **A key with a standalone meaning cannot also be a zero-latency
+  prefix.** Vim lives with this via `timeoutlen`; here it would mean
+  half-page scroll waits on a timer. There is currently **no
+  ambiguous-chord timeout at all** — `Action::AbsorbPartialChord` pushes
+  onto `Editor::partial_chord` and waits for the next keystroke
+  indefinitely, so a chord that is *both* terminal and a prefix has no
+  resolution mechanism to hang the feature on. That machinery would have
+  to be built first.
+- **Emacs `C-u` ≈ vim's count.** `C-u` means "numeric argument 4"; the
+  count is already plumbed (`pending_count` / `op_count`) and the
+  grammar's `ActionContext` already carries one. The gap is that
+  `lattice_mode::ActionContext` — the one mode handlers see — does not
+  expose it. Whatever this becomes, it should be *one* prefix-argument
+  concept and not a second one alongside counts.
+- Likely shape when picked up: the mechanism core (a prefix-argument
+  state, an `action:universal-argument` that sets it, exposure on both
+  `ActionContext`s, cleared after the next command), with the **key a
+  user choice** rather than one imposed — so `<C-u>` is available to
+  anyone willing to accept the scroll latency without charging it to
+  everyone.
 
 #### The target seam
 
@@ -1163,15 +1198,56 @@ incidentally.
 
 | Slice | Scope | Depends | Status |
 |---|---|---|---|
-| MG.23a | File-target seam + `magit-other-file-dispatch` (unbound) | MG.17b | 📝 |
-| MG.23b | Repo rows with no target: `S` stage-all, `U` unstage-all, `I` init, `i` gitignore | — | 📝 |
-| MG.23c | Prompt-backed repo rows: `t` tag, `m` merge, `Q` git-command | MG.17b | 📝 |
+| MG.23a | File-target seam (`prompt_value` → `arg_str(0)` → `active_file`) + the explicit-target surface | MG.17b | 📝 |
+| MG.23b | Repo rows with no target: `S` stage-all, `U` unstage-all | — | ✅ |
+| MG.23c | Prompt-backed repo rows: `t` tag, `m` merge, `Q` git-command, `I` init (which directory), `i` gitignore (which pattern) | MG.17b | 📝 |
 | MG.23d | File ops: untrack, rename, delete, checkout — each with its confirm | MG.23a | 📝 |
 | MG.23e | Surface-mapping rows (`h`, `C-x m`, `H`, `J`, `j`, `e`/`E`) | — | 📝 |
 | MG.23f | Blame variants + blob navigation | — | 📝 |
 | MG.23g | `a` apply / `v` reverse on a hunk | MG.18 | 📝 |
 | MG.23h | Context-dependent menu content (magit's `:if-derived`), then `s`/`u` rows + the `s` collision | — | 📝 |
 | MG.23i+ | The new subsystems, one slice each, prioritised by daily use | — | 📝 |
+
+#### MG.23b — `S` stage-all, `U` unstage-all ✅ (2026-07-30)
+
+The two repo-wide index rows, in magit's own "Applying changes" group
+and on magit's own keys. Both reuse `RemoteOp` — already the one-shot-git
+abstraction, not a remotes-only one (stash-push rides it too) — so this
+is a table entry, a handler line, a menu row and its tests.
+
+**`S` is `add --update`, not `add --all`.** Tracked modifications only.
+"Stage everything" quietly adding a file git was never told about is how
+build artefacts and secrets get committed; magit reaches the
+include-untracked behaviour behind a prefix argument, which is the
+deferred `<C-u>` work. Guarded by a test asserting `--all` / `-A` never
+appear.
+
+**`U` is a bare `git reset`,** so it does not ask: the index returns to
+HEAD, the working tree is untouched, and every change is still there to
+re-stage. Wider blast radius than one file, but fully reversible — which
+is the actual test in §12.13's no-confirm set. Guarded by a test
+asserting `--hard` / `--merge` never appear.
+
+**Why these two and not `A` / `_` / `O`:** stage-all and unstage-all need
+no target. The commit operations act on the commit under the cursor, and
+`C-c g` opens from anywhere — including buffers with no commit in them.
+They stay chords until the menu can either ask for a commit or hide rows
+outside magit buffers (MG.23h). `I` init and `i` gitignore turned out to
+need targets too — a directory and a pattern — so they moved to MG.23c.
+
+- **Tests:** 3 (argv for each op, plus both taking no arguments). The
+  pinned root-dispatch leaf count in
+  `unresolved_ids_do_produce_inert_items_so_the_guard_is_not_vacuous`
+  went 12 → 14; it is hardcoded deliberately, so a row added without a
+  resolvable action id shows up as a permanently-inert placeholder
+  instead of slipping in.
+- **Docs, including two errors this pass caught:** `magit-transient.md`
+  claimed revert / reset / cherry-pick had "no implementation behind
+  them" — false since MG.20; they are absent for lack of *context*, a
+  different reason now stated. And an earlier blanket `V`→`_` edit had
+  corrupted the sentence describing *magit's own* keys, where revert
+  really is `V`. `magit.md` also still claimed the dispatch had "no
+  nested submenus yet", stale since MG.17a.
 
 #### Original scoping notes
 

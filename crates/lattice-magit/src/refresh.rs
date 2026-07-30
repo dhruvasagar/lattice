@@ -65,7 +65,7 @@ pub fn build_and_format(
             return None;
         }
         let diff = crate::actions::run_show(workdir, &line)?;
-        (!diff.trim().is_empty()).then(|| (key, diff))
+        (!diff.trim().is_empty()).then_some((key, diff))
     });
     if text.is_empty() {
         (

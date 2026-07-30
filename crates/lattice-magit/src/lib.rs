@@ -154,12 +154,20 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     // captured by value rather than looked up again on every press.
     let dispatch_ids = resolve_dispatch_ids(boot.commands_mut());
     let file_dispatch_ids = resolve_file_dispatch_ids(boot.commands_mut());
+    let other_file_dispatch_ids = resolve_file_dispatch_ids(boot.commands_mut());
     let transient_registry = lattice_picker::TransientSourceRegistry::new();
     transient_registry.register("magit-dispatch", move || {
         transients::dispatch_transient(&dispatch_ids)
     });
     transient_registry.register("magit-file-dispatch", move || {
         transients::file_dispatch_transient(&file_dispatch_ids)
+    });
+    // MG.23a: the same rows for a file you are not visiting. Registered
+    // as a source + an ex-command and bound to NO chord — `C-c f` is the
+    // common case; a user who wants magit's always-ask behaviour binds
+    // this instead.
+    transient_registry.register("magit-other-file-dispatch", move || {
+        transients::other_file_dispatch_transient(&other_file_dispatch_ids)
     });
     boot.register_service::<lattice_picker::TransientSourceRegistryHandle>(Arc::new(
         transient_registry,
@@ -274,6 +282,40 @@ fn resolve_dispatch_ids(registry: &CommandRegistry) -> transients::DispatchActio
     }
 }
 
+/// MG.23a: the actions that take an optional `file` target — every
+/// `C-c f` row. Listed once so the schema pass, the
+/// `magit-other-file-dispatch` rows and the tests cannot drift apart.
+///
+/// `…-discard-execute` is deliberately NOT here: see
+/// [`transients::other_file_dispatch_transient`] for why an
+/// explicit target cannot survive a confirm today.
+const FILE_TARGET_ACTIONS: &[(&str, &str)] = &[
+    (
+        "action:magit-global-file-stage",
+        "Stage the file in the current buffer",
+    ),
+    (
+        "action:magit-global-file-unstage",
+        "Unstage the file in the current buffer",
+    ),
+    (
+        "action:magit-global-file-discard",
+        "Discard changes to the file in the current buffer",
+    ),
+    (
+        "action:magit-global-file-diff",
+        "Show diff for the file in the current buffer",
+    ),
+    (
+        "action:magit-global-file-log",
+        "Show commit history for the file in the current buffer",
+    ),
+    (
+        "action:magit-global-file-blame",
+        "Blame the file in the current buffer",
+    ),
+];
+
 /// Resolve the file dispatch transient's action ids — same
 /// shared-with-tests rationale as [`resolve_dispatch_ids`].
 fn resolve_file_dispatch_ids(registry: &CommandRegistry) -> transients::FileDispatchActionIds {
@@ -385,6 +427,12 @@ fn register_ex_commands(registry: &mut CommandRegistry) {
         "magit-file-dispatch",
         "Open the Magit file-level dispatch transient.",
         "magit-file-dispatch",
+    );
+    mk_transient(
+        "magit-other-file-dispatch",
+        "Open the Magit file-level dispatch transient for a file you name, \
+         rather than the one you are visiting.",
+        "magit-other-file-dispatch",
     );
     drop(mk_transient);
 
@@ -789,6 +837,14 @@ fn register_action_commands(registry: &mut CommandRegistry) {
     );
     reg("action:magit-global-push", "Push to the remote");
 
+    // MG.23a: the six file-dispatch actions declare an optional
+    // `file` argument. `C-c f` leaves it unset and they act on the
+    // visited file; `:magit-other-file-dispatch` sets it, which is how
+    // a stand-alone invocation names a file it is not visiting. The
+    // name must match the transient `Argument`'s name — the host maps
+    // transient state onto the schema BY NAME
+    // (`project_transient_state`), so a typo here degrades silently to
+    // "always the current file".
     // MG.23b: repo-wide index operations (magit's `S` / `U`).
     reg(
         "action:magit-global-stage-all",
@@ -836,6 +892,36 @@ fn register_action_commands(registry: &mut CommandRegistry) {
         "action:magit-branch-create-finish",
         "Create the new branch (from the picked base) with the typed name",
     );
+    drop(reg);
+
+    // MG.23a: the six file-dispatch actions gain an optional `file`
+    // argument, re-registered here (rather than at their `reg` above)
+    // because `reg` holds `registry` for its own lifetime and two
+    // closures cannot both borrow it.
+    //
+    // `C-c f` leaves the argument unset and the action falls back to the
+    // visited file — the one deliberate deviation from magit, which
+    // prompts. `:magit-other-file-dispatch` sets it, which is how a
+    // stand-alone invocation names a file it is not visiting.
+    //
+    // The name must match the transient `Argument`'s name: the host maps
+    // transient state onto the schema BY NAME
+    // (`project_transient_state`), so a mismatch degrades silently to
+    // "always the current file" rather than failing.
+    for (name, doc) in FILE_TARGET_ACTIONS {
+        registry.register_action(
+            name,
+            doc,
+            ActionSpec {
+                apply: none.clone().unwrap(),
+                args_schema: vec![ArgSpec::optional(
+                    "file",
+                    lattice_grammar::ArgKind::String,
+                    "Repo-relative path to act on; the visited file when unset",
+                )],
+            },
+        );
+    }
 }
 
 #[cfg(test)]
@@ -985,6 +1071,90 @@ mod tests {
             "duplicate boot action handlers:\n  {}",
             collisions.join("\n  ")
         );
+    }
+
+    /// MG.23a — every `C-c f` action declares the optional `file`
+    /// target, and declares it under the name the transient uses.
+    ///
+    /// The host maps transient state onto an action's schema **by name**
+    /// (`project_transient_state`), so a mismatch here does not fail —
+    /// it silently degrades `:magit-other-file-dispatch` to "always the
+    /// visited file", which looks like the feature working on the wrong
+    /// file rather than like a bug.
+    #[test]
+    fn every_file_dispatch_action_takes_the_file_target_under_that_name() {
+        let mut registry = CommandRegistry::new();
+        register_action_commands(&mut registry);
+        for (name, _) in FILE_TARGET_ACTIONS {
+            let spec = registry
+                .lookup_by_name(name)
+                .unwrap_or_else(|| panic!("`{name}` is registered"));
+            let schema = &spec.args_schema;
+            assert_eq!(
+                schema.len(),
+                1,
+                "`{name}` should declare exactly the file target, got {schema:?}"
+            );
+            assert_eq!(
+                schema[0].name.as_ref(),
+                "file",
+                "`{name}`'s target arg must be named `file` — the transient \
+                 Argument is matched by name, and a mismatch silently means \
+                 'always the visited file'"
+            );
+        }
+    }
+
+    /// The target argument the menu offers must be the one the actions
+    /// read. Both halves are checked against the literal `"file"` above
+    /// and here, so neither can be renamed alone.
+    #[test]
+    fn the_other_file_menu_offers_the_file_argument_the_actions_read() {
+        let spec = transients::other_file_dispatch_transient(&Default::default());
+        let named_file = spec.groups.iter().flat_map(|g| &g.items).any(|item| {
+            matches!(
+                &item.kind,
+                lattice_picker::TransientItemKind::Argument { name, .. } if name == "file"
+            )
+        });
+        assert!(
+            named_file,
+            "the menu must expose an `Argument` named `file`, or no row can \
+             ever act on anything but the visited file"
+        );
+    }
+
+    /// MG.23a — no destructive row in the other-file menu.
+    ///
+    /// `Effect::Confirm` opens a transient of its own, replacing this
+    /// menu and its state, so a destructive action's execute half would
+    /// find no `file` argument and fall back to the visited file: it
+    /// would ask about one file and act on another. Until
+    /// `Effect::Confirm` can carry arguments to its yes-action, this
+    /// menu must stay non-destructive — and this test is what stops a
+    /// later row from quietly reintroducing the hazard.
+    #[test]
+    fn the_other_file_menu_has_no_destructive_row() {
+        let mut registry = CommandRegistry::new();
+        register_action_commands(&mut registry);
+        let destructive: Vec<lattice_protocol::ids::CommandId> = confirm::DESTRUCTIVE_ACTIONS
+            .iter()
+            .filter_map(|(ask, _)| registry.id_by_name(ask))
+            .collect();
+        let spec = transients::other_file_dispatch_transient(&resolve_file_dispatch_ids(&registry));
+        for group in &spec.groups {
+            for item in &group.items {
+                if let lattice_picker::TransientItemKind::Action(id) = &item.kind {
+                    assert!(
+                        !destructive.contains(id),
+                        "`{}` asks for confirmation, and the confirm transient \
+                         replaces this menu's state — its execute half would \
+                         act on the visited file, not the target",
+                        item.label
+                    );
+                }
+            }
+        }
     }
 
     /// No magit chord may shadow a Visual-mode entry key.

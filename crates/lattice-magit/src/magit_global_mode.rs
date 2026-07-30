@@ -244,7 +244,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
             contributions.push(ActionHandlerContribution {
                 action_name: $action_name,
                 handler: Arc::new(|ctx: &ActionContext<'_>| {
-                    let (_workdir, rel) = active_file(ctx)?;
+                    let (_workdir, rel) = active_target(ctx)?;
                     Some(Effect::OpenSyntheticBuffer {
                         name: format!(concat!($prefix, "{}*"), rel.display()),
                         mode_id: $mode_id.to_string(),
@@ -263,7 +263,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
             contributions.push(ActionHandlerContribution {
                 action_name: $action_name,
                 handler: Arc::new(|ctx: &ActionContext<'_>| {
-                    let (workdir, rel) = active_file(ctx)?;
+                    let (workdir, rel) = active_target(ctx)?;
                     let shown = rel.clone();
                     tokio::task::spawn(async move {
                         let _ = tokio::task::spawn_blocking(move || {
@@ -302,7 +302,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
     contributions.push(ActionHandlerContribution {
         action_name: "action:magit-global-file-discard",
         handler: Arc::new(|ctx: &ActionContext<'_>| {
-            let (_workdir, rel) = active_file(ctx)?;
+            let (_workdir, rel) = active_target(ctx)?;
             Some(Effect::Confirm {
                 prompt: format!("Discard changes to {}?", rel.display()),
                 yes_action: "action:magit-global-file-discard-execute".to_string(),
@@ -380,6 +380,38 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
 /// buffer, `*messages*`, a scratch buffer) or isn't inside a git
 /// repository; the item then silently does nothing, which is the
 /// right outcome for "stage the file" with no file to stage.
+/// MG.23a: the file a `C-c f` item acts on — **the argument if one was
+/// supplied, else the visited file**.
+///
+/// `C-c f` supplies none, so it keeps acting on the buffer you were in
+/// when you opened it: no "which file?" prompt, which is the one
+/// deliberate deviation from magit (magit prompts, defaulting to the
+/// current file). `:magit-other-file-dispatch` supplies one, which is
+/// how a stand-alone invocation names a file it is not visiting.
+///
+/// The argument is repo-relative and the repository is discovered from
+/// the working directory — the same resolution every other repo-level
+/// magit action uses. An empty argument counts as absent, because a
+/// transient argument left at its default renders as an empty string.
+///
+/// This is also the seam a future universal-prefix would use: it would
+/// set the same argument rather than needing a mechanism of its own.
+fn active_target(ctx: &ActionContext<'_>) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+    match ctx.arg_str(FILE_TARGET_SLOT) {
+        Some(rel) => {
+            let repo = Repository::discover(".").ok()?;
+            let workdir = repo.workdir()?.to_path_buf();
+            Some((workdir, std::path::PathBuf::from(rel)))
+        }
+        None => active_file(ctx),
+    }
+}
+
+/// Slot of the optional `file` argument in every `C-c f` action's
+/// `args_schema`. One constant so the schema and the reader cannot
+/// disagree about which slot carries the target.
+pub(crate) const FILE_TARGET_SLOT: usize = 0;
+
 fn active_file(ctx: &ActionContext<'_>) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
     let buffer_id = lattice_core::BufferId(ctx.buffer_id.0 as u32);
     let path = ctx

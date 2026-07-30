@@ -167,7 +167,14 @@ on the file belonging to whatever buffer was active when you pressed
 `C-c f` while inside `magit-status`, for instance, does not act on
 the entry under the cursor there). If the active buffer has no file
 (a synthetic buffer, an empty scratch buffer, …) there's no path to
-resolve and the action does nothing. See [transient
+resolve and the action does nothing.
+
+There is **no "which file?" prompt** — the one deliberate deviation
+from Emacs magit, which asks even though the default is always the file
+you're visiting. For a file you are *not* visiting there is a separate
+stand-alone command, `:magit-other-file-dispatch`, which offers the
+same rows plus a target you set with `=f`. It is bound to no chord;
+bind it if you prefer always being asked. See [transient
 menus](help:magit-transient).
 
 All three chords follow Emacs convention and are unused in default vim

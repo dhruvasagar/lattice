@@ -412,6 +412,108 @@ pub struct FileDispatchActionIds {
 /// entries with no lattice implementation (stage-all/unstage-all,
 /// edit-blob, trace-definition, commit-fixup) are absent rather than
 /// inert.
+/// MG.23a: `:magit-other-file-dispatch` — the file menu for a file you
+/// are **not** visiting.
+///
+/// A stand-alone command, tied to no buffer: invoke it from anywhere,
+/// set the target with `=f`, then act. Deliberately bound to no chord —
+/// `C-c f` is the common case (act on what you are looking at) and this
+/// is the occasional one; bind it yourself if you prefer magit's
+/// always-ask behaviour.
+///
+/// Same rows and the same actions as [`file_dispatch_transient`]; the
+/// only difference is the `file` argument, which those actions read in
+/// preference to the visited file. With the argument unset every row
+/// falls back to the visited file, so an unset menu is a superset of
+/// `C-c f` rather than something that acts wrongly — and the preview
+/// line always names the target that will be used.
+///
+/// **Discard is absent, and that is a real limitation, not an
+/// oversight.** `x` is destructive, so it goes through §12.13's
+/// ask/execute pair — and `Effect::Confirm` opens a *transient* of its
+/// own, which replaces this one and its state. The execute half would
+/// therefore find no `file` argument and fall back to the visited file:
+/// it would ask about one file and delete another's changes. Offering
+/// destructive rows here needs `Effect::Confirm` to carry arguments
+/// through to its yes-action, which is its own slice.
+pub fn other_file_dispatch_transient(ids: &FileDispatchActionIds) -> TransientSpec {
+    TransientSpec {
+        title: "File dispatch (other file)".into(),
+        groups: vec![
+            TransientGroup {
+                label: "Target".into(),
+                items: vec![TransientItem {
+                    key: vec!["=f".into()],
+                    label: "file".into(),
+                    description: "Repo-relative path to act on".into(),
+                    kind: TransientItemKind::Argument {
+                        name: "file".to_string(),
+                        prompt: "File (repo-relative): ".to_string(),
+                        default: None,
+                    },
+                }],
+            },
+            TransientGroup {
+                label: "Stage".into(),
+                items: vec![
+                    action_or_placeholder(
+                        ids.stage,
+                        "s",
+                        "stage",
+                        "Stage the target file",
+                        "stage_other_file",
+                    ),
+                    action_or_placeholder(
+                        ids.unstage,
+                        "u",
+                        "unstage",
+                        "Unstage the target file",
+                        "unstage_other_file",
+                    ),
+                ],
+            },
+            TransientGroup {
+                label: "Inspect".into(),
+                items: vec![
+                    action_or_placeholder(
+                        ids.diff,
+                        "d",
+                        "diff",
+                        "Show the target file's diff",
+                        "diff_other_file",
+                    ),
+                    action_or_placeholder(
+                        ids.log,
+                        "l",
+                        "log",
+                        "Show the target file's history",
+                        "log_other_file",
+                    ),
+                    action_or_placeholder(
+                        ids.blame,
+                        "b",
+                        "blame",
+                        "Blame the target file",
+                        "blame_other_file",
+                    ),
+                ],
+            },
+        ],
+        // The target is the whole point of this menu, so it is always on
+        // screen — including when unset, where saying so beats leaving
+        // the user to guess which file a row will hit.
+        preview: Some(Box::new(
+            |state: &lattice_picker::TransientState| match state.get("file") {
+                Some(lattice_picker::TransientValue::String(p)) if !p.is_empty() => {
+                    format!("target: {p}")
+                }
+                _ => "target: (none set — rows act on the visited file)".to_string(),
+            },
+        )),
+        footer: Some("=f set target  q dismiss".into()),
+    }
+}
+
 pub fn file_dispatch_transient(ids: &FileDispatchActionIds) -> TransientSpec {
     TransientSpec {
         title: "File dispatch".into(),

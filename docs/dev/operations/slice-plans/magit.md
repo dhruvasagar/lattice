@@ -1198,7 +1198,7 @@ incidentally.
 
 | Slice | Scope | Depends | Status |
 |---|---|---|---|
-| MG.23a | File-target seam (`prompt_value` → `arg_str(0)` → `active_file`) + the explicit-target surface | MG.17b | 📝 |
+| MG.23a | File-target seam (`arg_str(0)` → `active_file`) + `:magit-other-file-dispatch` | MG.17b | ✅ |
 | MG.23b | Repo rows with no target: `S` stage-all, `U` unstage-all | — | ✅ |
 | MG.23c | Prompt-backed repo rows: `t` tag, `m` merge, `Q` git-command, `I` init (which directory), `i` gitignore (which pattern) | MG.17b | 📝 |
 | MG.23d | File ops: untrack, rename, delete, checkout — each with its confirm | MG.23a | 📝 |
@@ -1207,6 +1207,45 @@ incidentally.
 | MG.23g | `a` apply / `v` reverse on a hunk | MG.18 | 📝 |
 | MG.23h | Context-dependent menu content (magit's `:if-derived`), then `s`/`u` rows + the `s` collision | — | 📝 |
 | MG.23i+ | The new subsystems, one slice each, prioritised by daily use | — | 📝 |
+
+#### MG.23a — the file target seam + `:magit-other-file-dispatch` ✅ (2026-07-30)
+
+`C-c f` acts on the visited file with no prompt — magit's one deliberate
+deviation here — and `:magit-other-file-dispatch` is the stand-alone
+command for a file you are *not* visiting. Tied to no buffer, bound to no
+chord.
+
+**The seam.** Every `C-c f` action declares an optional `file` argument
+and resolves `ctx.arg_str(FILE_TARGET_SLOT)` before falling back to
+`active_file(ctx)`. `C-c f` sets nothing, so its behaviour is byte-for-byte
+what it was. The other-file menu carries an `Argument` row (`=f`) that
+fills the slot. No new machinery: the host already projects transient
+state onto an action's `args_schema`, and it does so **by name**
+(`project_transient_state`) — so the schema's `"file"` and the
+`Argument`'s `"file"` must match, and a mismatch would degrade silently
+to "always the visited file" rather than failing. Two tests pin both
+halves against that literal. This is also the seam a universal-prefix
+would use if the deferred `<C-u>` work lands: set the same argument.
+
+**Discard is absent from the other-file menu, and that is a limitation
+worth naming.** `x` is destructive, so §12.13 routes it through
+ask/execute — and `Effect::Confirm` opens a transient of its *own*,
+replacing this menu and the target with it. The execute half would find
+no `file` argument and fall back to the visited file: it would ask about
+one file and act on another. Offering destructive rows for an explicit
+target needs `Effect::Confirm` to carry arguments to its yes-action,
+which is its own slice. Guarded by
+`the_other_file_menu_has_no_destructive_row` — verified non-vacuous by
+adding the row and watching it fail with that reasoning — so the hazard
+cannot be reintroduced quietly.
+
+The target is on the menu's preview line at all times, including when
+unset ("target: (none set — rows act on the visited file)"), so a row
+never fires at a file the user cannot see named.
+
+- **Tests:** 3 — every file action declares the target under the name the
+  menu uses; the menu offers an `Argument` by that name; no destructive
+  row.
 
 #### MG.23b — `S` stage-all, `U` unstage-all ✅ (2026-07-30)
 

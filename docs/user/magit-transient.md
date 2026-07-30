@@ -211,6 +211,56 @@ first — same `y`/`n` confirmation dialog magit-status's own `x` uses.
 `s`/`u` report optimistically ("magit: staged <path>") and log the
 real outcome; they don't block on git.
 
+**No "which file?" prompt.** This is the one deliberate deviation from
+Emacs magit, which asks you to confirm the file even though the default
+is always the one you're visiting. Here the visited file is simply the
+target. When you want a different one, that is what
+`:magit-other-file-dispatch` is for.
+
+### `:magit-other-file-dispatch` — a file you aren't visiting
+
+A stand-alone command, tied to no buffer and **bound to no chord**.
+Invoke it by name; bind it yourself if you'd rather have magit's
+always-ask behaviour on a key.
+
+```
+┌─ File dispatch (other file) ───────────────────┐
+│                                                │
+│  ▸ Target                                      │
+│    [=f] file            Repo-relative path to  │
+│                          act on                │
+│                                                │
+│  ▸ Stage                                       │
+│    [s]  stage           Stage the target file  │
+│    [u]  unstage         Unstage the target file│
+│                                                │
+│  ▸ Inspect                                     │
+│    [d]  diff            Show the target's diff │
+│    [l]  log             Show the target's      │
+│                          history               │
+│    [b]  blame           Blame the target file  │
+│                                                │
+│  target: src/main.rs                           │
+│  =f set target  q dismiss                      │
+└────────────────────────────────────────────────┘
+```
+
+Press `=f`, type a repo-relative path, and the rows act on it. The
+target is always shown on the preview line — including when it is
+unset, where it says so rather than leaving you to guess. With no
+target set the rows fall back to the visited file, so an unset menu
+behaves exactly like `C-c f`.
+
+**Discard is deliberately absent here.** `x` is destructive, so it goes
+through a confirmation — and a confirmation dialog is itself a
+transient, which replaces this menu and the target you set. The
+follow-up step would find no target and fall back to the visited file:
+it would ask about one file and act on another. Discarding a file you
+are not visiting has to wait until a confirmation can carry its target
+along. Until then, open the file (or use
+[magit-status](help:magit-status-mode), where `x` acts on the entry at
+your cursor).
+
 This transient still can't do what its name in Emacs magit implies —
 "act on the entry at cursor in magit-status" — because the ex-command
 that opens it has no buffer/cursor context from any *other* buffer to

@@ -84,6 +84,10 @@ Opens from any buffer. Groups, as they actually render today:
 │  ▸ Misc                                        │
 │    [r]  rebase          Start an interactive   │
 │                          rebase                │
+│    [t]  tag             Tag HEAD with a name   │
+│                          you type              │
+│    [i]  gitignore       Add a pattern to       │
+│                          .gitignore            │
 │                                                │
 │  q dismiss  BS back                            │
 └────────────────────────────────────────────────┘
@@ -122,6 +126,16 @@ nothing is lost and everything is still there to re-stage. That is why
 `U` doesn't ask, even though it undoes more than one file's worth of
 staging.
 
+`t` and `i` **ask for their one value** — a menu opened from anywhere has
+no cursor to read a tag name off. `t` prompts for a name and tags HEAD;
+`i` prompts for a pattern and appends it to `.gitignore`, skipping it if
+that pattern is already there. Submitting an empty prompt cancels.
+
+Both are also ex-commands, which is how you script them or skip the
+prompt: `:magit-tag v1.2.0` and `:magit-gitignore target/` act
+immediately, while a bare `:magit-tag` asks exactly as the menu row
+does — same operation, two ways in.
+
 `f` (fetch), `F` (pull), `P` (push), and `z z` (stash push) run git
 directly rather than opening a buffer. `f` runs plain `git fetch`
 (updates your remote-tracking refs, touches nothing else); `F` runs
@@ -140,9 +154,9 @@ when pressed is worse than a row that isn't there. Two different
 reasons keep a magit entry out:
 
 **No operation behind it yet.** Magit's dispatch also offers bisect
-(`B`), tag (`t`), submodule (`o`), remote (`M`), patch (`w`/`W`),
-worktree (`Z`), notes (`T`), clone (`C`) and more. These are planned,
-and each appears the moment its operation exists.
+(`B`), submodule (`o`), remote (`M`), patch (`w`/`W`), worktree (`Z`),
+notes (`T`), clone (`C`) and more. These are planned, and each appears
+the moment its operation exists.
 
 **Implemented, but the menu has no context to aim it at.** Revert,
 reset and cherry-pick all work — as `_`, `Os`/`Om`/`Oh` and `A` in any

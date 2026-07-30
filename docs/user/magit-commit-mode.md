@@ -83,8 +83,9 @@ which one you're in.
   subject line reports an error rather than silently doing nothing.
 - **The buffer closes when the commit is *kicked off*,** not when git
   confirms it landed. A failure is logged rather than reported back
-  into a buffer that has already gone. magit-status auto-refreshes
-  behind it.
+  into a buffer that has already gone. The commit action refreshes
+  magit-status behind it as part of its own completion — not a
+  background watcher, of which there is none.
 
 ## See also
 

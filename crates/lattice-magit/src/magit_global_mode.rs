@@ -230,6 +230,40 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
     // Both need no target — they act on the whole index — which is why
     // they land before the commit-acting rows (`A` / `_` / `O`), whose
     // root-dispatch entries still want a commit picker.
+    // MG.23c1: prompt-backed rows. The first action opens the prompt;
+    // the `-finish` half does the work with what was typed.
+    contributions.push(ActionHandlerContribution {
+        action_name: "action:magit-global-tag",
+        handler: Arc::new(|_ctx: &ActionContext<'_>| {
+            Some(prompt_for("Tag name: ", "action:magit-global-tag-finish"))
+        }),
+    });
+    contributions.push(ActionHandlerContribution {
+        action_name: "action:magit-global-tag-finish",
+        handler: Arc::new(|ctx: &ActionContext<'_>| {
+            let name = ctx.prompt_value?.trim();
+            // An empty prompt is a cancel, not a request to tag HEAD
+            // with the empty string (which git would reject anyway,
+            // loudly and confusingly).
+            (!name.is_empty()).then(|| spawn_git(vec!["tag".into(), name.to_string()], "tag"))
+        }),
+    });
+    contributions.push(ActionHandlerContribution {
+        action_name: "action:magit-global-gitignore",
+        handler: Arc::new(|_ctx: &ActionContext<'_>| {
+            Some(prompt_for(
+                "Ignore pattern: ",
+                "action:magit-global-gitignore-finish",
+            ))
+        }),
+    });
+    contributions.push(ActionHandlerContribution {
+        action_name: "action:magit-global-gitignore-finish",
+        handler: Arc::new(|ctx: &ActionContext<'_>| {
+            let pattern = ctx.prompt_value?.trim();
+            (!pattern.is_empty()).then(|| spawn_gitignore(pattern.to_string()))
+        }),
+    });
     remote_op!("action:magit-global-stage-all", RemoteOp::STAGE_ALL);
     remote_op!("action:magit-global-unstage-all", RemoteOp::UNSTAGE_ALL);
 
@@ -687,6 +721,118 @@ impl RemoteOp {
     }
 }
 
+/// MG.23c1: a repo-level operation whose single argument the user
+/// types.
+///
+/// The shape is the branch-create wizard's, generalised: the menu row
+/// (or chord) returns [`Effect::OpenPrompt`], and the `-finish` action
+/// named as its submit target does the work with `ctx.prompt_value`.
+/// Two actions per operation, no transient state, and the ex-command
+/// form skips the prompt entirely by taking the value as an argument —
+/// which is what makes these scriptable rather than menu-only.
+fn prompt_for(prompt: &str, finish_action: &str) -> Effect {
+    Effect::OpenPrompt {
+        prompt: prompt.to_string(),
+        initial: String::new(),
+        on_submit_action: finish_action.to_string(),
+        buffer_name: None,
+    }
+}
+
+/// Run a one-shot git command off the actor thread, echoing what was
+/// asked for and logging what happened.
+///
+/// The dynamic-argv peer of [`spawn_remote_op`], whose `RemoteOp` argv
+/// is static. Same discipline: the echo returns synchronously and the
+/// real outcome lands in `*messages*` via `tracing`, because there is
+/// no synchronous path back from a detached task.
+pub fn spawn_git(argv: Vec<String>, what: &str) -> Effect {
+    let workdir = Repository::discover(".")
+        .ok()
+        .and_then(|r| r.workdir().map(|p| p.to_path_buf()))
+        .unwrap_or_default();
+    let shown = format!("git {}", argv.join(" "));
+    let logged = shown.clone();
+    let what = what.to_string();
+    tokio::task::spawn(async move {
+        let result = tokio::task::spawn_blocking(move || run_remote_op(&workdir, &argv))
+            .await
+            .unwrap_or_else(|e| Err(e.to_string()));
+        match result {
+            Ok(out) => {
+                tracing::info!(target: "lattice_magit", "magit: {logged} succeeded: {out}")
+            }
+            Err(err) => tracing::error!(target: "lattice_magit", "magit: {what} failed: {err}"),
+        }
+    });
+    Effect::Echo {
+        level: lattice_grammar::EchoLevel::Info,
+        text: format!("magit: {shown}"),
+    }
+}
+
+/// MG.23c1: append `pattern` to the repository's `.gitignore`.
+///
+/// Not a git command — git has no "add to gitignore" subcommand, so
+/// this is a file append, done on `spawn_blocking` like every other
+/// blocking call in this crate.
+///
+/// **Skips a pattern already present**, comparing whole trimmed lines.
+/// Ignoring the same path twice is harmless to git but grows the file
+/// and makes it harder to read, and the user pressing `i` twice on the
+/// same build artefact is an ordinary mistake rather than an intent to
+/// duplicate.
+pub fn spawn_gitignore(pattern: String) -> Effect {
+    let shown = pattern.clone();
+    tokio::task::spawn(async move {
+        let result = tokio::task::spawn_blocking(move || -> Result<String, String> {
+            let repo = Repository::discover(".").map_err(|e| e.to_string())?;
+            let workdir = repo.workdir().ok_or("bare repository")?.to_path_buf();
+            let path = workdir.join(".gitignore");
+            let existing = std::fs::read_to_string(&path).unwrap_or_default();
+            let Some(out) = gitignore_append(&existing, &pattern) else {
+                return Ok(format!("{pattern} was already ignored"));
+            };
+            std::fs::write(&path, out).map_err(|e| e.to_string())?;
+            Ok(format!("ignoring {pattern}"))
+        })
+        .await
+        .unwrap_or_else(|e| Err(e.to_string()));
+        match result {
+            Ok(out) => tracing::info!(target: "lattice_magit", "magit: {out}"),
+            Err(err) => {
+                tracing::error!(target: "lattice_magit", "magit: could not update .gitignore: {err}")
+            }
+        }
+    });
+    Effect::Echo {
+        level: lattice_grammar::EchoLevel::Info,
+        text: format!("magit: ignoring {shown}"),
+    }
+}
+
+/// The `.gitignore` content after adding `pattern`, or `None` when it
+/// is already ignored.
+///
+/// Split from [`spawn_gitignore`] so the rule is testable without a
+/// repository or a runtime — the same split `classify_line` /
+/// `classify_line_text` uses, and the reason the test exercises this
+/// rather than a copy of it.
+pub(crate) fn gitignore_append(existing: &str, pattern: &str) -> Option<String> {
+    if existing.lines().any(|l| l.trim() == pattern.trim()) {
+        return None;
+    }
+    let mut out = existing.to_string();
+    // A file not ending in a newline would otherwise glue the new
+    // pattern onto the last one, silently ignoring neither.
+    if !out.is_empty() && !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str(pattern.trim());
+    out.push('\n');
+    Some(out)
+}
+
 /// Run `op` off the actor thread and return the optimistic echo.
 ///
 /// `GIT_TERMINAL_PROMPT=0` (in [`run_remote_op`]) makes a missing or
@@ -845,6 +991,118 @@ fn run_remote_op(workdir: &std::path::Path, args: &[String]) -> Result<String, S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// MG.23c1 — the `.gitignore` append, against a real file.
+    ///
+    /// Not a git subcommand (git has none for this), so the file
+    /// handling is ours to get right and worth testing directly.
+    #[test]
+    fn appending_to_gitignore_is_idempotent_and_newline_safe() {
+        use super::gitignore_append as append;
+
+        // A file with no trailing newline would otherwise glue the new
+        // pattern onto the last one, ignoring neither.
+        assert_eq!(
+            append("target", "*.log").as_deref(),
+            Some("target\n*.log\n"),
+            "a missing trailing newline must not fuse two patterns"
+        );
+        assert_eq!(append("", "*.log").as_deref(), Some("*.log\n"));
+        assert_eq!(
+            append("target\n", "*.log").as_deref(),
+            Some("target\n*.log\n")
+        );
+        // Pressing `i` twice on the same artefact is an ordinary
+        // mistake, not a request for two identical lines.
+        assert!(
+            append("target\n*.log\n", "*.log").is_none(),
+            "an already-ignored pattern is skipped"
+        );
+        assert!(
+            append("target\n", " target ").is_none(),
+            "compared as trimmed whole lines"
+        );
+    }
+
+    /// MG.23c1 — an empty prompt is a cancel, not an empty-named tag.
+    ///
+    /// Submitting nothing is how you back out of a prompt, and `git tag
+    /// ""` would fail with a message about refs rather than about what
+    /// the user did.
+    #[test]
+    fn an_empty_prompt_cancels_rather_than_running_the_operation() {
+        use lattice_mode::Mode as _;
+
+        let handlers = MagitGlobalMode.action_handlers();
+        for (action, blank) in [
+            ("action:magit-global-tag-finish", "   "),
+            ("action:magit-global-gitignore-finish", ""),
+        ] {
+            let handler = handlers
+                .iter()
+                .find(|c| c.action_name == action)
+                .unwrap_or_else(|| panic!("`{action}` is contributed"))
+                .handler
+                .clone();
+            let services = lattice_mode::ServiceRegistry::new();
+            let events = lattice_runtime::EventBus::new();
+            let ctx = ActionContext {
+                buffer_id: lattice_protocol::ids::BufferId::new(1),
+                cursor: lattice_protocol::position::Position::new(0, 0),
+                selection: None,
+                services: &services,
+                events: &events,
+                prompt_value: Some(blank),
+                args: lattice_grammar::Args::None,
+            };
+            assert!(
+                handler(&ctx).is_none(),
+                "`{action}` must decline a blank submission rather than run \
+                 git with an empty argument"
+            );
+        }
+    }
+
+    /// The prompt row and its finish half must name each other, or
+    /// pressing the key opens a prompt whose submit goes nowhere.
+    #[test]
+    fn each_prompt_row_targets_a_finish_action_that_exists() {
+        use lattice_mode::Mode as _;
+
+        let handlers = MagitGlobalMode.action_handlers();
+        let names: Vec<&str> = handlers.iter().map(|c| c.action_name).collect();
+        let services = lattice_mode::ServiceRegistry::new();
+        let events = lattice_runtime::EventBus::new();
+
+        for action in ["action:magit-global-tag", "action:magit-global-gitignore"] {
+            let handler = handlers
+                .iter()
+                .find(|c| c.action_name == action)
+                .unwrap_or_else(|| panic!("`{action}` is contributed"))
+                .handler
+                .clone();
+            let ctx = ActionContext {
+                buffer_id: lattice_protocol::ids::BufferId::new(1),
+                cursor: lattice_protocol::position::Position::new(0, 0),
+                selection: None,
+                services: &services,
+                events: &events,
+                prompt_value: None,
+                args: lattice_grammar::Args::None,
+            };
+            match handler(&ctx) {
+                Some(Effect::OpenPrompt {
+                    on_submit_action, ..
+                }) => assert!(
+                    names.contains(&on_submit_action.as_str()),
+                    "`{action}` opens a prompt submitting to `{on_submit_action}`, \
+                     which no mode contributes — the prompt would accept input \
+                     and do nothing with it"
+                ),
+                other => panic!("`{action}` should open a prompt, got {other:?}"),
+            }
+        }
+    }
 
     /// MG.23b — `S` stages tracked modifications ONLY.
     ///

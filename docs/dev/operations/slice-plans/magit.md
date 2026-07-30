@@ -1200,7 +1200,8 @@ incidentally.
 |---|---|---|---|
 | MG.23a | File-target seam (`arg_str(0)` → `active_file`) + `:magit-other-file-dispatch` | MG.17b | ✅ |
 | MG.23b | Repo rows with no target: `S` stage-all, `U` unstage-all | — | ✅ |
-| MG.23c | Prompt-backed repo rows: `t` tag, `m` merge, `Q` git-command, `I` init (which directory), `i` gitignore (which pattern) | MG.17b | 📝 |
+| MG.23c1 | The prompt-backed row shape + `t` tag, `i` gitignore | MG.17b, IX.5 | ✅ |
+| MG.23c2 | `I` init, `m` merge, `Q` git-command (needs the editor-hang guard) | MG.23c1 | 📝 |
 | MG.23d | File ops: untrack, rename, delete, checkout — each with its confirm | MG.23a | 📝 |
 | MG.23e | Surface-mapping rows (`h`, `C-x m`, `H`, `J`, `j`, `e`/`E`) | — | 📝 |
 | MG.23f | Blame variants + blob navigation | — | 📝 |
@@ -1246,6 +1247,64 @@ never fires at a file the user cannot see named.
 - **Tests:** 3 — every file action declares the target under the name the
   menu uses; the menu offers an `Argument` by that name; no destructive
   row.
+
+#### MG.23c1 — `t` tag, `i` gitignore ✅ (2026-07-30)
+
+The prompt-backed shape, established on the two rows that need no
+decisions: a menu opened from anywhere has no cursor to read a tag name
+off, so both ask for their one value.
+
+**The shape is the branch-create wizard's, generalised.** The row (or
+chord) returns `Effect::OpenPrompt`; the `-finish` action named as its
+submit target does the work with `ctx.prompt_value`. Two actions per
+operation, no transient state to lose. A blank submission declines —
+submitting nothing is how you back out, and `git tag ""` would fail
+with a message about refs rather than about what the user did.
+
+**One operation, two ways in.** `:magit-tag v1.2.0` acts immediately;
+bare `:magit-tag` opens the same prompt targeting the same finish
+action the menu row uses. The ex-command is the scriptable surface the
+standing rule asks for, not a second implementation.
+
+`i` is not a git subcommand — git has none for this — so the
+`.gitignore` append is ours: skip a pattern already present (compared
+as trimmed whole lines; pressing `i` twice on the same artefact is an
+ordinary mistake), and add a newline first when the file lacks a
+trailing one, or the new pattern fuses onto the last and neither is
+ignored. `gitignore_append` is split out pure so the test exercises it
+rather than a copy — the first draft of that test mirrored the logic,
+which would have drifted.
+
+- **Tests:** the append rules (idempotent, newline-safe, trimmed
+  comparison), a blank prompt declining for both operations, and every
+  prompt row targeting a finish action some mode actually contributes —
+  without which the prompt accepts input and does nothing with it. Leaf
+  count 14 → 16.
+- **Docs:** both rows and their ex-commands. Also fixed the false
+  auto-refresh section flagged earlier — `magit.auto-refresh`, the
+  `RepositoryEvent` path and the `RepositoryWatcher` were all described
+  as shipped and none exists. Two other pages called the
+  action-triggered refresh "auto-refresh", which read as that same
+  absent feature; both now say what actually refreshes.
+
+#### MG.23c split into c1 / c2 (2026-07-30)
+
+Amended rather than deviated from. The five rows share one mechanism
+(prompt → finish), so coupling is not the reason; slice size is, plus
+one hazard worth isolating:
+
+- **`Q` git-command can hang the editor.** It runs whatever the user
+  types, and `run_remote_op` uses `Command::output()`, which waits. A
+  `rebase -i` or any editor-spawning subcommand would block on an
+  `$EDITOR` that never opens — the same trap `git add -p` set (§7.3) and
+  that `revert --no-edit` sidesteps. It needs `GIT_EDITOR` /
+  `GIT_SEQUENCE_EDITOR` neutralised before it can ship, which is its own
+  thing to get right and test.
+- **`I` init and `m` merge carry target questions** (which directory,
+  which branch) that `t` and `i` do not.
+
+So c1 establishes the shape on the two unambiguous, high-daily-value
+rows; c2 takes the three that each need a decision.
 
 #### MG.23b — `S` stage-all, `U` unstage-all ✅ (2026-07-30)
 

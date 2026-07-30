@@ -275,6 +275,8 @@ fn resolve_dispatch_ids(registry: &CommandRegistry) -> transients::DispatchActio
         stash_create: registry.id_by_name("action:magit-global-stash-create"),
         rebase: registry.id_by_name("action:magit-global-rebase"),
         stage_all: registry.id_by_name("action:magit-global-stage-all"),
+        tag: registry.id_by_name("action:magit-global-tag"),
+        gitignore: registry.id_by_name("action:magit-global-gitignore"),
         unstage_all: registry.id_by_name("action:magit-global-unstage-all"),
         fetch: registry.id_by_name("action:magit-global-fetch"),
         pull: registry.id_by_name("action:magit-global-pull"),
@@ -542,6 +544,75 @@ fn register_ex_commands(registry: &mut CommandRegistry) {
         magit_global_mode::RemoteOp::STASH,
     );
     drop(mk_op);
+    // MG.23c1: the scriptable half of the prompt-backed operations.
+    // With an argument they act directly; without one they open the
+    // same prompt the menu row does, so `:magit-tag` and `C-c g t` are
+    // the same operation reached two ways rather than two operations.
+    {
+        let mut mk_prompted = |name: &'static str,
+                               doc: &'static str,
+                               arg: &'static str,
+                               arg_doc: &'static str,
+                               prompt_action: &'static str,
+                               run: fn(String) -> Effect| {
+            registry.register_ex_command(
+                name,
+                doc,
+                ExCommandSpec {
+                    latency_class: LatencyClass::Reflex,
+                    accepts_bang: false,
+                    accepts_range: false,
+                    parse_args: Arc::new(|line: &str, _bang: bool| {
+                        let trimmed = line.trim();
+                        if trimmed.is_empty() {
+                            Ok(Args::None)
+                        } else {
+                            Ok(Args::String(trimmed.to_string()))
+                        }
+                    }),
+                    apply: Arc::new(move |ctx| {
+                        Ok(match ctx.args {
+                            Args::String(ref v) if !v.trim().is_empty() => {
+                                run(v.trim().to_string())
+                            }
+                            // No argument: ask, through the same action
+                            // the menu row fires, so there is one prompt
+                            // and one finish handler for both surfaces.
+                            _ => Effect::OpenPrompt {
+                                prompt: format!("{arg_doc}: "),
+                                initial: String::new(),
+                                on_submit_action: prompt_action.to_string(),
+                                buffer_name: None,
+                            },
+                        })
+                    }),
+                    args_schema: vec![ArgSpec::optional(
+                        arg,
+                        lattice_grammar::ArgKind::String,
+                        arg_doc,
+                    )],
+                    surface_form: SurfaceForm::Keyword,
+                },
+            );
+        };
+        mk_prompted(
+            "magit-tag",
+            "Tag HEAD. With arg: the tag name; without, asks for it.",
+            "name",
+            "Tag name",
+            "action:magit-global-tag-finish",
+            |name| magit_global_mode::spawn_git(vec!["tag".into(), name], "tag"),
+        );
+        mk_prompted(
+            "magit-gitignore",
+            "Add a pattern to .gitignore. With arg: the pattern; without, asks for it.",
+            "pattern",
+            "Ignore pattern",
+            "action:magit-global-gitignore-finish",
+            magit_global_mode::spawn_gitignore,
+        );
+    }
+
     {
         registry.register_ex_command(
             "magit-blame",
@@ -894,6 +965,21 @@ fn register_action_commands(registry: &mut CommandRegistry) {
     // transient state onto the schema BY NAME
     // (`project_transient_state`), so a typo here degrades silently to
     // "always the current file".
+    // MG.23c1: prompt-backed repo operations.
+    reg("action:magit-global-tag", "Tag HEAD (asks for the name)");
+    reg(
+        "action:magit-global-tag-finish",
+        "Create the tag with the typed name",
+    );
+    reg(
+        "action:magit-global-gitignore",
+        "Add a pattern to .gitignore (asks for it)",
+    );
+    reg(
+        "action:magit-global-gitignore-finish",
+        "Append the typed pattern to .gitignore",
+    );
+
     // MG.23b: repo-wide index operations (magit's `S` / `U`).
     reg(
         "action:magit-global-stage-all",
@@ -1776,11 +1862,12 @@ mod tests {
             6,
             "expected every file-dispatch leaf to report inert, got: {file:?}"
         );
-        // Root dispatch: 14 ACTION leaves — status, diff, log,
+        // Root dispatch: 16 ACTION leaves — status, diff, log,
         // branch, pull, rebase directly, MG.23b's stage-all /
-        // unstage-all, plus the commit submenu's 2 (c/a), the stash
-        // submenu's 2 (z/l), and one each inside the fetch and push
-        // submenus MG.17a introduced to hold their flags. Recursion is
+        // unstage-all, MG.23c1's tag / gitignore, plus the commit
+        // submenu's 2 (c/a), the stash submenu's 2 (z/l), and one each
+        // inside the fetch and push submenus MG.17a introduced to hold
+        // their flags. Recursion is
         // what makes the submenu leaves visible. The flag items
         // themselves are NOT counted — they are real toggles, not
         // placeholders; see `declared_flag_names`.
@@ -1793,7 +1880,7 @@ mod tests {
         let root = inert_items(&transients::dispatch_transient(&Default::default()), "");
         assert_eq!(
             root.len(),
-            14,
+            16,
             "expected every root-dispatch leaf (incl. both submenus') to \
              report inert, got: {root:?}"
         );

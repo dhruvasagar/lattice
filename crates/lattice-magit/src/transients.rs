@@ -122,6 +122,9 @@ pub struct DispatchActionIds {
     /// MG.23b: magit's `S` / `U` — repo-wide index operations.
     pub stage_all: Option<CommandId>,
     pub unstage_all: Option<CommandId>,
+    /// MG.23c1: prompt-backed rows, on magit's own keys.
+    pub tag: Option<CommandId>,
+    pub gitignore: Option<CommandId>,
 }
 
 /// An item that fires `id` if resolved, or falls back to a `Flag`
@@ -293,13 +296,33 @@ pub fn dispatch_transient(ids: &DispatchActionIds) -> TransientSpec {
             },
             TransientGroup {
                 label: "Misc".into(),
-                items: vec![action_or_placeholder(
-                    ids.rebase,
-                    "r",
-                    "rebase",
-                    "Start an interactive rebase",
-                    "rebase_op",
-                )],
+                items: vec![
+                    action_or_placeholder(
+                        ids.rebase,
+                        "r",
+                        "rebase",
+                        "Start an interactive rebase",
+                        "rebase_op",
+                    ),
+                    // MG.23c1: magit's own keys. Both ask for their one
+                    // value rather than taking it from context — there
+                    // is nothing at a cursor to read from a menu opened
+                    // anywhere.
+                    action_or_placeholder(
+                        ids.tag,
+                        "t",
+                        "tag",
+                        "Tag HEAD with a name you type",
+                        "tag_op",
+                    ),
+                    action_or_placeholder(
+                        ids.gitignore,
+                        "i",
+                        "gitignore",
+                        "Add a pattern to .gitignore",
+                        "gitignore_op",
+                    ),
+                ],
             },
         ],
         preview: None,

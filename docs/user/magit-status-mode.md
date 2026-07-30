@@ -271,8 +271,8 @@ Press `cc` to open the [commit buffer](help:magit-commit-mode)
 only preview and provides an editable message region. `C-c C-c` creates
 the commit; `C-c C-k` aborts.
 
-After committing, the status buffer auto-refreshes — the staged section
-clears and the recent-commits section updates.
+After committing, the buffer refreshes as part of the commit action —
+the staged section clears and the recent-commits section updates.
 
 ### Amend (`ca`)
 
@@ -327,13 +327,17 @@ back. Every staging action refreshes too, which is why staging one hunk
 leaves you looking at the rest of the file's diff rather than at a
 collapsed entry.
 
-### Auto-refresh
+### Auto-refresh — not built
 
-When `magit.auto-refresh` is `true` (default), the status buffer
-automatically refreshes in response to `RepositoryEvent` — index
-changes, HEAD changes, ref changes, and filesystem events detected by
-the `RepositoryWatcher`. The auto-refresh runs the same path as `gr`,
-expanded diffs included.
+Earlier revisions of this page described an automatic refresh driven by
+a repository watcher, controlled by `magit.auto-refresh`. **None of it
+exists** — there is no such option, no repository watcher, and no
+filesystem-event path into the status buffer. `:set magit.auto-refresh`
+fails with `unknown option`, as the Options section below says of every
+`magit.*` name.
+
+What does refresh the buffer: `gr`, and every staging action, which
+refreshes as part of its own completion.
 
 ---
 

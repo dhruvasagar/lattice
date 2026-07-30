@@ -789,11 +789,37 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
             yes_action: yes_action.clone(),
             args: args.to_wit()?,
         }),
-        NativeEffect::ChangeDir(_)
-        | NativeEffect::PrintWorkingDir
-        | NativeEffect::ListErrors
-        | NativeEffect::OpenTransient { .. }
-        | NativeEffect::OpenPrompt { .. } => WitEffect::None,
+        // IX.4: no WIT mirror yet — a **typed error**, not `None`.
+        //
+        // `None` is a lie with the same shape as success: the effect
+        // arrives as "do nothing" and no one is told. `Effect::Global`
+        // set the precedent of failing loudly instead, and these follow
+        // it. `open-transient` and `open-prompt` are the two that most
+        // want mirrors (a plugin that cannot prompt cannot collect
+        // input at all) — IX.5 / IX.6.
+        NativeEffect::OpenPrompt { .. } => {
+            return Err("Effect::OpenPrompt has no WIT mirror yet (IX.5)".to_string());
+        }
+        NativeEffect::OpenTransient { .. } => {
+            return Err("Effect::OpenTransient has no WIT mirror yet (IX.6)".to_string());
+        }
+        // Host-only surfaces: `:cd` / `:pwd` act on the editor process,
+        // and `:clist`'s error picker is a host-owned view. They are not
+        // blocked on a mirror so much as unmapped by intent; the error
+        // still names them rather than pretending they crossed.
+        NativeEffect::ChangeDir(_) => {
+            return Err(
+                "Effect::ChangeDir is host-only (`:cd` acts on the editor process)".to_string(),
+            );
+        }
+        NativeEffect::PrintWorkingDir => {
+            return Err("Effect::PrintWorkingDir is host-only (`:pwd`)".to_string());
+        }
+        NativeEffect::ListErrors => {
+            return Err(
+                "Effect::ListErrors is host-only (`:clist` opens a host-owned picker)".to_string(),
+            );
+        }
         NativeEffect::OpenAiLog { session } => WitEffect::OpenAiLog(session.clone()),
         NativeEffect::OpenSyntheticBuffer { name, mode_id } => {
             WitEffect::OpenSyntheticBuffer(WitOpenSyntheticBufferPayload {
@@ -1033,6 +1059,43 @@ mod tests {
 
     fn pos(line: u32, byte: u32) -> NativePosition {
         NativePosition { line, byte }
+    }
+
+    /// IX.4: an effect with no mirror fails loudly, naming itself.
+    ///
+    /// `WitEffect::None` was the previous answer, and it is a lie with
+    /// the same shape as success — the effect arrives as "do nothing"
+    /// and nobody is told. The error text has to name the culprit,
+    /// because the reader is a plugin author with no view of host
+    /// internals.
+    #[test]
+    fn an_effect_with_no_mirror_fails_loudly_instead_of_becoming_none() {
+        let unmirrored = vec![
+            (
+                NativeEffect::OpenPrompt {
+                    prompt: "x".into(),
+                    initial: String::new(),
+                    on_submit_action: "a".into(),
+                    buffer_name: None,
+                },
+                "OpenPrompt",
+            ),
+            (
+                NativeEffect::OpenTransient { source: "s".into() },
+                "OpenTransient",
+            ),
+            (NativeEffect::PrintWorkingDir, "PrintWorkingDir"),
+            (NativeEffect::ListErrors, "ListErrors"),
+        ];
+        for (effect, name) in unmirrored {
+            let err = effect_to_wit(&effect)
+                .expect_err("an unmirrored effect must not silently become `none`");
+            assert!(
+                err.contains(name),
+                "the error must name the culprit for a plugin author who \
+                 cannot see host internals: got {err:?}"
+            );
+        }
     }
 
     /// IX.3: a plugin can ask the user a yes/no question.

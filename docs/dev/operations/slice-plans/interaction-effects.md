@@ -8,9 +8,9 @@ problem seen from two sides:
    re-derive its target — and the context it re-derives from can change
    between the question and the answer.
 2. **Plugins cannot ask the user anything.** `Confirm`, `OpenPrompt` and
-   `OpenTransient` are all mapped to `WitEffect::None` at the plugin
-   boundary — silently. A plugin that returns one gets no dialog and no
-   error.
+   `OpenTransient` have no WIT variant, so a guest cannot name them —
+   and the host→guest mapping turns them into `WitEffect::None`, which
+   is a silent drop waiting for the first forwarding path.
 
 Design context lives here rather than in a separate fragment: the
 confirm contract itself is `magit.md` §12.13, which this work amends.
@@ -97,10 +97,20 @@ NativeEffect::ChangeDir(_) | NativeEffect::PrintWorkingDir | NativeEffect::ListE
 ```
 
 So a plugin cannot confirm, prompt, or open a menu — paramount goal #2
-with a hole in it. And the drop is **silent**: `Effect::Global` at least
-fails with a typed error naming why. Silently swallowing a plugin's
-effect is the failure class the heuristic-mapping rule in CLAUDE.md was
-added after (K.3.2); an effect that cannot cross must say so.
+with a hole in it.
+
+**Precisely, because the first framing of this was sloppy:** the block
+above is the *host→guest* direction, and nothing in production converts
+a native effect to WIT today (only the round-trip tests do). The
+user-facing gap was simpler — the WIT `effect` variant had no `confirm`
+/ `open-prompt` / `open-transient` arms at all, so a guest could not
+express them in the first place. IX.3 fixes that by adding the arm.
+
+The `=> WitEffect::None` mapping is still wrong, just not yet load
+bearing: it is a lie with the same shape as success, waiting for the
+first host→guest forwarding path to become a real silent drop.
+`Effect::Global` already fails loudly instead, and IX.4 makes the rest
+follow it.
 
 ## Slices
 
@@ -109,7 +119,7 @@ added after (K.3.2); an effect that cannot cross must say so.
 | IX.1 | `Effect::Confirm` carries `args`; the confirm transient seeds its state from them so the yes-action receives them | — | ✅ |
 | IX.2 | Amend §12.13 to the confirmed-equals-executed invariant; migrate magit's confirm pairs to carry their payload | IX.1 | ✅ |
 | IX.3 | WIT mirror for `confirm` — `.wit` variant, both conversion directions, round-trip test | IX.1 | ✅ |
-| IX.4 | Unmirrored effects fail with a typed error instead of `WitEffect::None` | — | 📝 |
+| IX.4 | Unmirrored effects fail with a typed error instead of `WitEffect::None` | — | ✅ |
 | IX.5 | `open-prompt` across the seam, following IX.3's pattern | IX.3, IX.4 | 📝 |
 | IX.6 | `open-transient` across the seam | IX.3, IX.4 | 📝 |
 | IX.7 | magit-other-file-dispatch gains its destructive rows | IX.1, IX.2 | 📝 |
@@ -210,6 +220,25 @@ re-derives. `magit-global-file-discard-execute` had no slot, so IX.1's
 proof migration never actually worked. Two guards now pin both halves —
 one on the slot names and order, one requiring every destructive execute
 to declare somewhere for its target to land.
+
+## IX.4 — landed 2026-07-30
+
+The five remaining unmirrored effects (`open-prompt`, `open-transient`,
+`change-dir`, `print-working-dir`, `list-errors`) return a typed error
+naming themselves instead of `WitEffect::None`. The error text names the
+culprit because its reader is a plugin author with no view of host
+internals.
+
+Two groups, and the error says which: `open-prompt` / `open-transient`
+are *blocked on a mirror* (IX.5 / IX.6), while `:cd` / `:pwd` /
+`:clist` are host-only by intent — they act on the editor process or a
+host-owned view.
+
+Safe to do now precisely because nothing in production converts a native
+effect to WIT; this is the guard rail going in before the road, not a
+behaviour change.
+
+- **Tests:** each unmirrored variant errors, and the message names it.
 
 ## Cross-references
 

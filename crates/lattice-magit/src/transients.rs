@@ -125,6 +125,9 @@ pub struct DispatchActionIds {
     /// MG.23c1: prompt-backed rows, on magit's own keys.
     pub tag: Option<CommandId>,
     pub gitignore: Option<CommandId>,
+    /// MG.23c2.
+    pub init: Option<CommandId>,
+    pub merge: Option<CommandId>,
 }
 
 /// An item that fires `id` if resolved, or falls back to a `Flag`
@@ -321,6 +324,24 @@ pub fn dispatch_transient(ids: &DispatchActionIds) -> TransientSpec {
                         "gitignore",
                         "Add a pattern to .gitignore",
                         "gitignore_op",
+                    ),
+                    // MG.23c2. `m` is the repo-level convenience for
+                    // when you know the branch name; picking from a
+                    // list is already served one level down, by `m` in
+                    // the branch buffer.
+                    action_or_placeholder(
+                        ids.merge,
+                        "m",
+                        "merge",
+                        "Merge a branch you name into the current one",
+                        "merge_op",
+                    ),
+                    action_or_placeholder(
+                        ids.init,
+                        "I",
+                        "init",
+                        "Initialize a git repository",
+                        "init_op",
                     ),
                 ],
             },

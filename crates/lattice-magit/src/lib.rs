@@ -277,6 +277,8 @@ fn resolve_dispatch_ids(registry: &CommandRegistry) -> transients::DispatchActio
         stage_all: registry.id_by_name("action:magit-global-stage-all"),
         tag: registry.id_by_name("action:magit-global-tag"),
         gitignore: registry.id_by_name("action:magit-global-gitignore"),
+        init: registry.id_by_name("action:magit-global-init"),
+        merge: registry.id_by_name("action:magit-global-merge"),
         unstage_all: registry.id_by_name("action:magit-global-unstage-all"),
         fetch: registry.id_by_name("action:magit-global-fetch"),
         pull: registry.id_by_name("action:magit-global-pull"),
@@ -601,7 +603,23 @@ fn register_ex_commands(registry: &mut CommandRegistry) {
             "name",
             "Tag name",
             "action:magit-global-tag-finish",
-            |name| magit_global_mode::spawn_git(vec!["tag".into(), name], "tag"),
+            |name| magit_global_mode::spawn_git(magit_global_mode::tag_argv(&name), "tag"),
+        );
+        mk_prompted(
+            "magit-merge",
+            "Merge a branch into the current one. With arg: the branch; without, asks.",
+            "branch",
+            "Merge branch",
+            "action:magit-global-merge-finish",
+            |branch| magit_global_mode::spawn_git(magit_global_mode::merge_argv(&branch), "merge"),
+        );
+        mk_prompted(
+            "magit-init",
+            "Initialize a git repository. With arg: the directory; without, asks.",
+            "directory",
+            "Initialize repository in",
+            "action:magit-global-init-finish",
+            |dir| magit_global_mode::spawn_git(magit_global_mode::init_argv(&dir), "init"),
         );
         mk_prompted(
             "magit-gitignore",
@@ -978,6 +996,21 @@ fn register_action_commands(registry: &mut CommandRegistry) {
     reg(
         "action:magit-global-gitignore-finish",
         "Append the typed pattern to .gitignore",
+    );
+
+    // MG.23c2
+    reg(
+        "action:magit-global-init",
+        "Initialize a git repository (asks for the directory)",
+    );
+    reg(
+        "action:magit-global-init-finish",
+        "Run git init in the typed directory",
+    );
+    reg("action:magit-global-merge", "Merge a branch (asks which)");
+    reg(
+        "action:magit-global-merge-finish",
+        "Merge the typed branch into the current one",
     );
 
     // MG.23b: repo-wide index operations (magit's `S` / `U`).
@@ -1862,9 +1895,10 @@ mod tests {
             6,
             "expected every file-dispatch leaf to report inert, got: {file:?}"
         );
-        // Root dispatch: 16 ACTION leaves — status, diff, log,
+        // Root dispatch: 18 ACTION leaves — status, diff, log,
         // branch, pull, rebase directly, MG.23b's stage-all /
-        // unstage-all, MG.23c1's tag / gitignore, plus the commit
+        // unstage-all, MG.23c1's tag / gitignore, MG.23c2's merge /
+        // init, plus the commit
         // submenu's 2 (c/a), the stash submenu's 2 (z/l), and one each
         // inside the fetch and push submenus MG.17a introduced to hold
         // their flags. Recursion is
@@ -1880,7 +1914,7 @@ mod tests {
         let root = inert_items(&transients::dispatch_transient(&Default::default()), "");
         assert_eq!(
             root.len(),
-            16,
+            18,
             "expected every root-dispatch leaf (incl. both submenus') to \
              report inert, got: {root:?}"
         );

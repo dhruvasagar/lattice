@@ -1201,7 +1201,7 @@ incidentally.
 | MG.23a | File-target seam (`arg_str(0)` → `active_file`) + `:magit-other-file-dispatch` | MG.17b | ✅ |
 | MG.23b | Repo rows with no target: `S` stage-all, `U` unstage-all | — | ✅ |
 | MG.23c1 | The prompt-backed row shape + `t` tag, `i` gitignore | MG.17b, IX.5 | ✅ |
-| MG.23c2 | `I` init, `m` merge, `Q` git-command (needs the editor-hang guard) | MG.23c1 | 📝 |
+| MG.23c2 | `I` init, `m` merge (`Q` dropped — see below) | MG.23c1 | ✅ |
 | MG.23d | File ops: untrack, rename, delete, checkout — each with its confirm | MG.23a | 📝 |
 | MG.23e | Surface-mapping rows (`h`, `C-x m`, `H`, `J`, `j`, `e`/`E`) | — | 📝 |
 | MG.23f | Blame variants + blob navigation | — | 📝 |
@@ -1286,6 +1286,63 @@ which would have drifted.
   as shipped and none exists. Two other pages called the
   action-triggered refresh "auto-refresh", which read as that same
   absent feature; both now say what actually refreshes.
+
+#### MG.23c2 — `m` merge, `I` init ✅ (2026-07-30)
+
+Both on c1's prompt shape. `m` passes `--no-edit`, for the reason
+`revert` does — git would otherwise open an `$EDITOR` that never
+appears, and `run_remote_op`'s `Command::output()` cannot recover from
+that wait. `I`'s prompt is **pre-filled with the working directory**:
+that is the answer nearly every time, and a `.git` created in the wrong
+place is annoying enough to be worth showing the path before it happens.
+
+`m` prompts rather than picking, because picking already exists one
+level down — `b` then `m` in the branch buffer, where the list is. The
+repo-level row is the convenience for when you know the name.
+
+**The argv builders are pure and separate from `spawn_git`.** The first
+draft of the merge test reached the flags through the spawning path,
+which needed a runtime — and would have run **real `git merge` against
+the repository the tests live in**. `merge_argv` / `tag_argv` /
+`init_argv` are the single copy the handlers, the ex-commands and the
+test all use.
+
+- **Tests:** no prompted operation can request an editor (argv-level, so
+  nothing is executed); and the empty-prompt and prompt-target guards
+  now iterate a `PROMPTED_OPS` table rather than a hand-kept list, so
+  the next prompt-backed row is covered without anyone remembering.
+  Leaf count 16 → 18.
+
+#### `Q` git-command — dropped, not deferred (2026-07-30)
+
+Magit's `Q` is `magit-git-command`: a minibuffer prompt pre-seeded with
+`git ` (deletable, so really "async shell command"), run through the
+shell, output into the process buffer, with `GIT_PAGER=cat` and
+`magit-with-editor` so pagers and `$EDITOR`-spawning subcommands behave.
+
+**We are not building it.** Anyone who wants to run a custom git command
+can open a terminal and run it — `:terminal` is a real PTY, so it
+already covers every case `Q` does, including the interactive ones, with
+no new surface and no guard to get right. A `Q` row would be a second,
+worse way to do something the editor already does well.
+
+Recorded here rather than left as an open row so it does not get added
+back as an oversight. The design question it raised — `:compile`
+(captures output, has error navigation, no TTY) versus `:terminal`
+(real TTY, unstructured output) — is answered for any future
+command-running feature: they cover different halves, which half a
+command needs is a property the user knows and we cannot infer, and
+magit itself resolves this with an explicit menu rather than a guess.
+
+#### A stale premise this uncovered: `p` (`git add -p`) is no longer blocked
+
+§7.3 and the `p` handler say interactive staging is unsupported because
+`git add -p` "is genuinely interactive over stdin, which the TUI's
+raw-mode input loop already owns" and there is "no terminal-suspend
+mechanism to route through". **`Effect::SpawnTerminal` is a real PTY**,
+so the stated blocker no longer holds — `p` could spawn a terminal
+running `git add -p`. Not scheduled; recorded because the reason
+currently written in the code and the design doc is out of date.
 
 #### MG.23c split into c1 / c2 (2026-07-30)
 

@@ -245,7 +245,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
             // An empty prompt is a cancel, not a request to tag HEAD
             // with the empty string (which git would reject anyway,
             // loudly and confusingly).
-            (!name.is_empty()).then(|| spawn_git(vec!["tag".into(), name.to_string()], "tag"))
+            (!name.is_empty()).then(|| spawn_git(tag_argv(name), "tag"))
         }),
     });
     contributions.push(ActionHandlerContribution {
@@ -262,6 +262,51 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         handler: Arc::new(|ctx: &ActionContext<'_>| {
             let pattern = ctx.prompt_value?.trim();
             (!pattern.is_empty()).then(|| spawn_gitignore(pattern.to_string()))
+        }),
+    });
+    // MG.23c2: `I` init and `m` merge, on c1's prompt shape.
+    contributions.push(ActionHandlerContribution {
+        action_name: "action:magit-global-init",
+        handler: Arc::new(|_ctx: &ActionContext<'_>| {
+            // Seeded with the working directory: initialising *here* is
+            // the overwhelmingly common intent, and creating a `.git`
+            // in the wrong place is annoying enough to be worth showing
+            // the path before it happens rather than after.
+            let cwd = std::env::current_dir()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|_| ".".to_string());
+            Some(prompt_seeded(
+                "Initialize repository in: ",
+                "action:magit-global-init-finish",
+                cwd,
+            ))
+        }),
+    });
+    contributions.push(ActionHandlerContribution {
+        action_name: "action:magit-global-init-finish",
+        handler: Arc::new(|ctx: &ActionContext<'_>| {
+            let dir = ctx.prompt_value?.trim();
+            (!dir.is_empty()).then(|| spawn_git(init_argv(dir), "init"))
+        }),
+    });
+    contributions.push(ActionHandlerContribution {
+        action_name: "action:magit-global-merge",
+        handler: Arc::new(|_ctx: &ActionContext<'_>| {
+            Some(prompt_for(
+                "Merge branch: ",
+                "action:magit-global-merge-finish",
+            ))
+        }),
+    });
+    contributions.push(ActionHandlerContribution {
+        action_name: "action:magit-global-merge-finish",
+        handler: Arc::new(|ctx: &ActionContext<'_>| {
+            let branch = ctx.prompt_value?.trim();
+            // `--no-edit` for the same reason `revert` passes it: git
+            // would otherwise open `$EDITOR` for the merge message,
+            // which inside lattice is a wait on a prompt that never
+            // appears.
+            (!branch.is_empty()).then(|| spawn_git(merge_argv(branch), "merge"))
         }),
     });
     remote_op!("action:magit-global-stage-all", RemoteOp::STAGE_ALL);
@@ -731,9 +776,16 @@ impl RemoteOp {
 /// form skips the prompt entirely by taking the value as an argument —
 /// which is what makes these scriptable rather than menu-only.
 fn prompt_for(prompt: &str, finish_action: &str) -> Effect {
+    prompt_seeded(prompt, finish_action, String::new())
+}
+
+/// [`prompt_for`] with the input pre-filled — for a value that has an
+/// obvious default the user will usually accept and occasionally edit,
+/// which is what magit does for `init`'s directory.
+fn prompt_seeded(prompt: &str, finish_action: &str, initial: String) -> Effect {
     Effect::OpenPrompt {
         prompt: prompt.to_string(),
-        initial: String::new(),
+        initial,
         on_submit_action: finish_action.to_string(),
         buffer_name: None,
     }
@@ -810,6 +862,53 @@ pub fn spawn_gitignore(pattern: String) -> Effect {
         text: format!("magit: ignoring {shown}"),
     }
 }
+
+/// MG.23c: the argv each prompt-backed operation runs.
+///
+/// Pure, and separate from [`spawn_git`], for two reasons. The flags
+/// are the part worth testing — `--no-edit` on merge is what stops git
+/// opening an `$EDITOR` that never appears — and a test that reached
+/// them through the spawning path would run **real git against the
+/// repository the tests live in**. It would also be the only copy: the
+/// action handler and the ex-command both build their argv here rather
+/// than each inline.
+pub(crate) fn tag_argv(name: &str) -> Vec<String> {
+    vec!["tag".into(), name.to_string()]
+}
+
+pub(crate) fn init_argv(dir: &str) -> Vec<String> {
+    vec!["init".into(), dir.to_string()]
+}
+
+/// `--no-edit` for the same reason `revert` passes it: git would open
+/// `$EDITOR` for the merge message, and inside lattice that is a wait
+/// on a prompt that never appears — a hang `Command::output()` cannot
+/// recover from.
+pub(crate) fn merge_argv(branch: &str) -> Vec<String> {
+    vec!["merge".into(), "--no-edit".into(), branch.to_string()]
+}
+
+/// MG.23c: every prompt-backed operation, as (row, finish) pairs.
+///
+/// Both halves are listed once so the tests iterate them rather than a
+/// hand-kept copy — a row added without its finish action, or with a
+/// typo in the name, opens a prompt that accepts input and does nothing
+/// with it, which is silent from the code's side.
+pub(crate) const PROMPTED_OPS: &[(&str, &str)] = &[
+    ("action:magit-global-tag", "action:magit-global-tag-finish"),
+    (
+        "action:magit-global-gitignore",
+        "action:magit-global-gitignore-finish",
+    ),
+    (
+        "action:magit-global-init",
+        "action:magit-global-init-finish",
+    ),
+    (
+        "action:magit-global-merge",
+        "action:magit-global-merge-finish",
+    ),
+];
 
 /// The `.gitignore` content after adding `pattern`, or `None` when it
 /// is already ignored.
@@ -992,6 +1091,32 @@ fn run_remote_op(workdir: &std::path::Path, args: &[String]) -> Result<String, S
 mod tests {
     use super::*;
 
+    /// MG.23c2 — merge passes `--no-edit`, and nothing else opens an
+    /// editor either.
+    ///
+    /// Asserted on the argv rather than by running it: git would
+    /// otherwise open `$EDITOR` for the merge message and hang on a
+    /// prompt that never appears — and a test that spawned it would run
+    /// real git against the repository the tests live in.
+    #[test]
+    fn no_prompted_operation_can_open_an_editor() {
+        assert_eq!(
+            merge_argv("feature/x"),
+            vec!["merge", "--no-edit", "feature/x"],
+            "merge must never be able to open an editor"
+        );
+        // The other two have no editor-spawning form, but pin their
+        // argv so a later flag cannot introduce one unnoticed.
+        assert_eq!(tag_argv("v1.2.0"), vec!["tag", "v1.2.0"]);
+        assert_eq!(init_argv("/tmp/x"), vec!["init", "/tmp/x"]);
+        for argv in [merge_argv("b"), tag_argv("t"), init_argv("d")] {
+            assert!(
+                !argv.iter().any(|a| a == "--edit" || a == "-e"),
+                "no prompted operation may request an editor: {argv:?}"
+            );
+        }
+    }
+
     /// MG.23c1 — the `.gitignore` append, against a real file.
     ///
     /// Not a git subcommand (git has none for this), so the file
@@ -1034,13 +1159,13 @@ mod tests {
         use lattice_mode::Mode as _;
 
         let handlers = MagitGlobalMode.action_handlers();
-        for (action, blank) in [
-            ("action:magit-global-tag-finish", "   "),
-            ("action:magit-global-gitignore-finish", ""),
-        ] {
+        // Alternating blank shapes, so neither "empty" nor "whitespace"
+        // is the only one ever exercised.
+        for (i, (_, action)) in PROMPTED_OPS.iter().enumerate() {
+            let blank = if i % 2 == 0 { "   " } else { "" };
             let handler = handlers
                 .iter()
-                .find(|c| c.action_name == action)
+                .find(|c| c.action_name == *action)
                 .unwrap_or_else(|| panic!("`{action}` is contributed"))
                 .handler
                 .clone();
@@ -1074,10 +1199,10 @@ mod tests {
         let services = lattice_mode::ServiceRegistry::new();
         let events = lattice_runtime::EventBus::new();
 
-        for action in ["action:magit-global-tag", "action:magit-global-gitignore"] {
+        for (action, expected_finish) in PROMPTED_OPS {
             let handler = handlers
                 .iter()
-                .find(|c| c.action_name == action)
+                .find(|c| c.action_name == *action)
                 .unwrap_or_else(|| panic!("`{action}` is contributed"))
                 .handler
                 .clone();
@@ -1093,12 +1218,19 @@ mod tests {
             match handler(&ctx) {
                 Some(Effect::OpenPrompt {
                     on_submit_action, ..
-                }) => assert!(
-                    names.contains(&on_submit_action.as_str()),
-                    "`{action}` opens a prompt submitting to `{on_submit_action}`, \
-                     which no mode contributes — the prompt would accept input \
-                     and do nothing with it"
-                ),
+                }) => {
+                    assert_eq!(
+                        &on_submit_action.as_str(),
+                        expected_finish,
+                        "`{action}` must submit to its own finish half"
+                    );
+                    assert!(
+                        names.contains(&on_submit_action.as_str()),
+                        "`{action}` opens a prompt submitting to \
+                         `{on_submit_action}`, which no mode contributes — the \
+                         prompt would accept input and do nothing with it"
+                    );
+                }
                 other => panic!("`{action}` should open a prompt, got {other:?}"),
             }
         }

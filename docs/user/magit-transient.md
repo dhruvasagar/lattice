@@ -88,6 +88,10 @@ Opens from any buffer. Groups, as they actually render today:
 │                          you type              │
 │    [i]  gitignore       Add a pattern to       │
 │                          .gitignore            │
+│    [m]  merge           Merge a branch you     │
+│                          name                  │
+│    [I]  init            Initialize a git       │
+│                          repository            │
 │                                                │
 │  q dismiss  BS back                            │
 └────────────────────────────────────────────────┘
@@ -131,10 +135,19 @@ no cursor to read a tag name off. `t` prompts for a name and tags HEAD;
 `i` prompts for a pattern and appends it to `.gitignore`, skipping it if
 that pattern is already there. Submitting an empty prompt cancels.
 
-Both are also ex-commands, which is how you script them or skip the
-prompt: `:magit-tag v1.2.0` and `:magit-gitignore target/` act
-immediately, while a bare `:magit-tag` asks exactly as the menu row
-does — same operation, two ways in.
+`m` and `I` ask the same way. `m` merges a branch you name into the
+current one, passing `--no-edit` so git cannot stop to open an editor
+for the merge message; when you would rather *pick* the branch from a
+list, that is `b` then `m` in the [branch buffer](help:magit-branch-mode),
+which is where the list already lives. `I` runs `git init`, its prompt
+pre-filled with your working directory — the usual answer, shown before
+it happens rather than after.
+
+All four are also ex-commands, which is how you script them or skip the
+prompt: `:magit-tag v1.2.0`, `:magit-gitignore target/`,
+`:magit-merge feature/x` and `:magit-init ~/src/thing` act immediately,
+while the bare form asks exactly as the menu row does — same operation,
+two ways in.
 
 `f` (fetch), `F` (pull), `P` (push), and `z z` (stash push) run git
 directly rather than opening a buffer. `f` runs plain `git fetch`
@@ -158,6 +171,15 @@ reasons keep a magit entry out:
 notes (`T`), clone (`C`) and more. These are planned, and each appears
 the moment its operation exists.
 
+**Deliberately not coming.** Magit's `Q` runs an arbitrary git or shell
+command and shows its output. Lattice has no row for it and will not
+get one: [`:terminal`](help:terminal-mode) already gives you a real
+shell in the repository, which does everything `Q` does — including the
+interactive commands (`rebase -i`, anything that opens an editor or a
+pager) that a captured-output version could not handle without extra
+machinery. A menu row would be a second, worse way to do something the
+editor already does well.
+
 **Implemented, but the menu has no context to aim it at.** Revert,
 reset and cherry-pick all work — as `_`, `Os`/`Om`/`Oh` and `A` in any
 magit buffer that shows a commit (see
@@ -167,7 +189,8 @@ with no commit anywhere in them. Until the menu can either ask you for
 a commit or hide the rows outside magit buffers, they stay chords.
 Branch *merge* is the same story one level down: it exists as `m`
 inside the branch-list buffer because it needs a branch selected, so
-`b` then `m` gets you there.
+`b` then `m` gets you there — and `m` in this menu merges a branch you
+type, for when you already know the name.
 
 (Magit's own keys for those differ from ours — it uses `V` for revert
 and `X` for reset. Ours follow **evil-collection-magit**, which remaps

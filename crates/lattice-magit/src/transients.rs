@@ -428,14 +428,14 @@ pub struct FileDispatchActionIds {
 /// `C-c f` rather than something that acts wrongly — and the preview
 /// line always names the target that will be used.
 ///
-/// **Discard is absent, and that is a real limitation, not an
-/// oversight.** `x` is destructive, so it goes through §12.13's
-/// ask/execute pair — and `Effect::Confirm` opens a *transient* of its
-/// own, which replaces this one and its state. The execute half would
-/// therefore find no `file` argument and fall back to the visited file:
-/// it would ask about one file and delete another's changes. Offering
-/// destructive rows here needs `Effect::Confirm` to carry arguments
-/// through to its yes-action, which is its own slice.
+/// **Discard works here as of IX.7.** It is destructive, so it goes
+/// through §12.13's ask/execute pair — and `Effect::Confirm` opens a
+/// transient of its own, which replaces this menu and its state. That
+/// used to lose the target: the execute half found no `file` argument
+/// and fell back to the visited file, asking about one file and
+/// deleting another's changes. IX.1 made the confirm carry its target
+/// and IX.2 made the execute half read it, so the dialog replacing this
+/// menu no longer matters.
 pub fn other_file_dispatch_transient(ids: &FileDispatchActionIds) -> TransientSpec {
     TransientSpec {
         title: "File dispatch (other file)".into(),
@@ -469,6 +469,19 @@ pub fn other_file_dispatch_transient(ids: &FileDispatchActionIds) -> TransientSp
                         "unstage",
                         "Unstage the target file",
                         "unstage_other_file",
+                    ),
+                    // IX.7: destructive, and safe here now. Its confirm
+                    // carries the target (IX.1/IX.2), so the dialog
+                    // replacing this menu no longer loses it — before
+                    // that, the execute half would have fallen back to
+                    // the visited file and acted on something the prompt
+                    // never named.
+                    action_or_placeholder(
+                        ids.discard,
+                        "x",
+                        "discard",
+                        "Discard the target file's changes (asks first)",
+                        "discard_other_file",
                     ),
                 ],
             },

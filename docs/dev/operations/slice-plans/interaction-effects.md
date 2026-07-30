@@ -122,7 +122,7 @@ follow it.
 | IX.4 | Unmirrored effects fail with a typed error instead of `WitEffect::None` | — | ✅ |
 | IX.5 | `open-prompt` across the seam, following IX.3's pattern | IX.3, IX.4 | ✅ |
 | IX.6 | `open-transient` across the seam | IX.3, IX.4 | ✅ |
-| IX.7 | magit-other-file-dispatch gains its destructive rows | IX.1, IX.2 | 📝 |
+| IX.7 | magit-other-file-dispatch gains its destructive rows | IX.1, IX.2 | ✅ |
 
 IX.1 is backward compatible by construction: every existing confirm
 passes `Args::None` and keeps re-resolving exactly as it does now, so
@@ -261,6 +261,23 @@ With these, a plugin can ask a yes/no question, collect a line of text,
 or open its own menu — the three interaction shapes anything
 non-trivial needs. IX.4's unmirrored list is down to the three that are
 host-only by intent (`:cd`, `:pwd`, `:clist`).
+
+## IX.7 — landed 2026-07-30
+
+`:magit-other-file-dispatch` has its `x` row. The confirmation names the
+target and carries it, so the dialog replacing the menu no longer loses
+it.
+
+MG.23a's `the_other_file_menu_has_no_destructive_row` is **replaced**,
+not deleted: `the_other_file_menus_discard_carries_the_file_it_names`
+asserts the carrying rather than the absence, driving the whole chain —
+an argument on the context reaches the ask half, which puts it in the
+`Confirm` the host seeds the dialog from. Verified non-vacuous by
+reverting the ask half to the non-carrying form and watching it fail.
+
+**IX is complete.** A confirmation acts on what it confirmed, in magit
+and for any future caller; and a plugin can confirm, prompt, or open a
+menu.
 
 ## Cross-references
 

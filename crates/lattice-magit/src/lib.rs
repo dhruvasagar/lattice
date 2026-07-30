@@ -1251,36 +1251,62 @@ mod tests {
         );
     }
 
-    /// MG.23a — no destructive row in the other-file menu.
+    /// IX.7 — the other-file menu's destructive row carries its target.
     ///
-    /// `Effect::Confirm` opens a transient of its own, replacing this
-    /// menu and its state, so a destructive action's execute half would
-    /// find no `file` argument and fall back to the visited file: it
-    /// would ask about one file and act on another. Until
-    /// `Effect::Confirm` can carry arguments to its yes-action, this
-    /// menu must stay non-destructive — and this test is what stops a
-    /// later row from quietly reintroducing the hazard.
+    /// Replaces MG.23a's "no destructive row here" guard, which existed
+    /// because `Effect::Confirm` opened a transient of its own and lost
+    /// the target with it: the execute half fell back to the visited
+    /// file and acted on something the prompt never named. IX.1/IX.2
+    /// made the confirm carry its target, so the row is safe — and this
+    /// test is what keeps it safe, by asserting the carrying rather than
+    /// the absence.
+    ///
+    /// Exercises the whole chain: an argument on the context reaches the
+    /// ask half, which puts it in the `Confirm` the host will seed the
+    /// dialog from.
     #[test]
-    fn the_other_file_menu_has_no_destructive_row() {
-        let mut registry = CommandRegistry::new();
-        register_action_commands(&mut registry);
-        let destructive: Vec<lattice_protocol::ids::CommandId> = confirm::DESTRUCTIVE_ACTIONS
-            .iter()
-            .filter_map(|(ask, _)| registry.id_by_name(ask))
-            .collect();
-        let spec = transients::other_file_dispatch_transient(&resolve_file_dispatch_ids(&registry));
-        for group in &spec.groups {
-            for item in &group.items {
-                if let lattice_picker::TransientItemKind::Action(id) = &item.kind {
-                    assert!(
-                        !destructive.contains(id),
-                        "`{}` asks for confirmation, and the confirm transient \
-                         replaces this menu's state — its execute half would \
-                         act on the visited file, not the target",
-                        item.label
-                    );
-                }
+    fn the_other_file_menus_discard_carries_the_file_it_names() {
+        use lattice_mode::Mode;
+
+        let handler = MagitGlobalMode
+            .action_handlers()
+            .into_iter()
+            .find(|c| c.action_name == "action:magit-global-file-discard")
+            .expect("the ask half is contributed")
+            .handler;
+
+        let services = lattice_mode::ServiceRegistry::new();
+        let events = lattice_runtime::EventBus::new();
+        let ctx = lattice_mode::ActionContext {
+            buffer_id: lattice_protocol::ids::BufferId::new(1),
+            cursor: lattice_protocol::position::Position::new(0, 0),
+            selection: None,
+            services: &services,
+            events: &events,
+            prompt_value: None,
+            // What `:magit-other-file-dispatch`'s `=f` row supplies.
+            args: lattice_grammar::Args::List(vec![lattice_grammar::ArgValue::String(
+                "Cargo.toml".to_string(),
+            )]),
+        };
+
+        match handler(&ctx) {
+            Some(lattice_grammar::Effect::Confirm { prompt, args, .. }) => {
+                assert!(
+                    prompt.contains("Cargo.toml"),
+                    "the prompt names the target it will act on: {prompt}"
+                );
+                let carried = args.as_list().expect("the target is carried");
+                assert!(
+                    matches!(
+                        &carried[0],
+                        lattice_grammar::ArgValue::String(p) if p == "Cargo.toml"
+                    ),
+                    "and the execute half receives that same target, rather \
+                     than re-deriving the visited file: {carried:?}"
+                );
             }
+            other => panic!("expected a Confirm carrying its target, got {other:?}"),
         }
     }
 

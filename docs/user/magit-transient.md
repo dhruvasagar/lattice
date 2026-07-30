@@ -233,6 +233,9 @@ always-ask behaviour on a key.
 │  ▸ Stage                                       │
 │    [s]  stage           Stage the target file  │
 │    [u]  unstage         Unstage the target file│
+│    [x]  discard         Discard the target     │
+│                          file's changes        │
+│                          (asks first)          │
 │                                                │
 │  ▸ Inspect                                     │
 │    [d]  diff            Show the target's diff │
@@ -251,15 +254,15 @@ unset, where it says so rather than leaving you to guess. With no
 target set the rows fall back to the visited file, so an unset menu
 behaves exactly like `C-c f`.
 
-**Discard is deliberately absent here.** `x` is destructive, so it goes
-through a confirmation — and a confirmation dialog is itself a
-transient, which replaces this menu and the target you set. The
-follow-up step would find no target and fall back to the visited file:
-it would ask about one file and act on another. Discarding a file you
-are not visiting has to wait until a confirmation can carry its target
-along. Until then, open the file (or use
-[magit-status](help:magit-status-mode), where `x` acts on the entry at
-your cursor).
+`x` asks first, as it does everywhere, and the question names the target
+you set — `Discard changes to src/main.rs?`. What you confirm is what
+happens: the confirmation carries the file with it rather than
+re-reading where your cursor happens to be when you answer.
+
+(That was not always true. An earlier revision left `x` out of this menu
+entirely, because a confirmation dialog is itself a transient and
+replaced the target you had set — the follow-up step would fall back to
+the visited file and discard something the prompt never named.)
 
 This transient still can't do what its name in Emacs magit implies —
 "act on the entry at cursor in magit-status" — because the ex-command

@@ -277,28 +277,214 @@ fn run_blame(workdir: &std::path::Path, rev: &str, path: &str) -> String {
         .output()
         .ok()
         .and_then(|o| String::from_utf8(o.stdout).ok())
-        .unwrap_or_else(|| format!("Could not blame {}\n", path));
+        .unwrap_or_else(|| format!("Could not blame {path}\n"));
 
-    // Format blame output: extract author + SHA per line
-    let mut result = String::new();
-    for line in output.lines() {
-        if line.len() < 40 {
-            continue;
-        }
-        let sha: String = line.chars().take(8).collect();
-        // porcelain format — the interesting lines are author, committer-time, filename
-        if line.starts_with("author ") {
-            let author = line.strip_prefix("author ").unwrap_or("?");
-            result.push_str(&format!("{} {:>12}  ", sha, author));
-        } else if line.starts_with("\t") {
-            result.push_str(line.strip_prefix("\t").unwrap_or(""));
-            result.push('\n');
-        }
-    }
-
+    let result = format_blame_porcelain(&output);
     if result.is_empty() {
-        format!("No blame data for {}\n", path)
+        format!("No blame data for {path}\n")
     } else {
         result
+    }
+}
+
+/// Width of the author column. The styler colours a fixed span
+/// (`highlight::blame_styled_spans`), so the column is padded *and*
+/// truncated to this — a longer name would otherwise push the code
+/// right and leave the rest of the name uncoloured.
+const AUTHOR_WIDTH: usize = 12;
+
+/// `git blame --line-porcelain` → one `<sha8> <author>  <code>` row per
+/// source line.
+///
+/// Porcelain is a *stanza* format, not a line format: a header line
+/// (`<40-hex-sha> <orig> <final>[ <count>]`) opens a group, key/value
+/// lines follow, and the source line itself is the one prefixed with a
+/// TAB. The sha, the author and the code therefore arrive on three
+/// different lines and have to be carried forward to be emitted
+/// together.
+///
+/// The version this replaces did not carry anything: it read the sha
+/// from whichever line it happened to be on (`"author D"` for an author
+/// line) and dropped every line shorter than 40 characters — which is
+/// most `author …` lines and most source lines. What reached the buffer
+/// was source lines over 40 characters with no blame prefix at all, so
+/// the blame buffer opened, said nothing, and looked like a key that
+/// did nothing.
+///
+/// Pure, so the shape is testable without a repository — and it is the
+/// shape that matters, because `highlight::blame_styled_spans` colours
+/// by column position and silently colours the wrong text if the
+/// columns move.
+pub(crate) fn format_blame_porcelain(porcelain: &str) -> String {
+    let mut out = String::new();
+    let mut sha = String::new();
+    let mut author = String::new();
+
+    for line in porcelain.lines() {
+        if let Some(code) = line.strip_prefix('\t') {
+            // The one line per stanza that carries the file's own text.
+            let short: String = sha.chars().take(8).collect();
+            let name: String = author.chars().take(AUTHOR_WIDTH).collect();
+            out.push_str(&format!("{short:8} {name:>AUTHOR_WIDTH$}  {code}\n"));
+        } else if let Some(rest) = line.strip_prefix("author ") {
+            author = rest.to_string();
+        } else if let Some(header_sha) = porcelain_header_sha(line) {
+            // A new stanza: the author lines that follow belong to it.
+            sha = header_sha;
+        }
+    }
+    out
+}
+
+/// The sha of a porcelain stanza header, or `None` for any other line.
+///
+/// Checked rather than assumed: `author-mail`, `summary` and friends are
+/// also space-separated key/value lines, and a summary that happened to
+/// begin with a hex word would otherwise be read as a new commit.
+fn porcelain_header_sha(line: &str) -> Option<String> {
+    let first = line.split(' ').next()?;
+    (first.len() >= 8 && first.chars().all(|c| c.is_ascii_hexdigit()))
+        .then(|| first.to_string())
+}
+
+
+#[cfg(test)]
+mod blame_format {
+    use super::*;
+
+    /// One stanza of real `--line-porcelain` output. The header, the
+    /// author and the code are on three different lines, which is the
+    /// whole reason the parser has to carry state.
+    const ONE_STANZA: &str = "\
+9a17f8e18e0e5e2b3c4d5e6f708192a3b4c5d6e7 1 1 1
+author Jane Doe
+author-mail <jane@example.com>
+author-time 1700000000
+author-tz +0530
+committer Jane Doe
+summary a1b2c3d4 looks like a sha but is a summary
+filename src/main.rs
+\tuse std::fs;
+";
+
+    #[test]
+    fn a_stanza_becomes_one_row_of_sha_author_and_code() {
+        let out = format_blame_porcelain(ONE_STANZA);
+        assert_eq!(out, format!("9a17f8e1 {:>12}  use std::fs;\n", "Jane Doe"));
+    }
+
+    /// The bug this replaces: `author …` lines and short source lines
+    /// were both dropped for being under 40 characters, so a normal
+    /// repo's blame buffer came out with no blame in it.
+    #[test]
+    fn short_lines_are_not_dropped() {
+        let out = format_blame_porcelain(ONE_STANZA);
+        assert!(
+            out.contains("use std::fs;"),
+            "a 12-character source line must survive: {out:?}"
+        );
+        assert!(
+            out.starts_with("9a17f8e1"),
+            "the row must carry the commit, not the text of whatever \
+             line the parser was on: {out:?}"
+        );
+        assert!(
+            !out.contains("author D") && !out.contains("author "),
+            "the sha column must never be the literal text `author …`: {out:?}"
+        );
+    }
+
+    /// `summary` and `author-mail` are space-separated key/value lines
+    /// too, so a summary beginning with a hex word must not be read as
+    /// the start of a new commit — the following lines would then be
+    /// blamed on it.
+    #[test]
+    fn a_hex_looking_summary_is_not_mistaken_for_a_stanza_header() {
+        let out = format_blame_porcelain(ONE_STANZA);
+        assert!(
+            out.starts_with("9a17f8e1"),
+            "the summary's `a1b2c3d4` must not have replaced the sha: {out:?}"
+        );
+    }
+
+    /// The styler colours by column, so the columns must not move.
+    #[test]
+    fn the_author_column_is_padded_and_truncated_to_a_fixed_width() {
+        let long = ONE_STANZA.replace("author Jane Doe", "author Bartholomew Featherstonehaugh");
+        let out = format_blame_porcelain(&long);
+        let row = out.lines().next().expect("a row");
+        assert_eq!(
+            row.find("  use std::fs;"),
+            Some(9 + AUTHOR_WIDTH),
+            "a long name must be truncated rather than pushing the code \
+             right, or the highlight spans land on the wrong text: {row:?}"
+        );
+    }
+
+    /// Two stanzas, two commits: the second must not inherit the
+    /// first's sha or author.
+    #[test]
+    fn each_stanza_carries_its_own_commit() {
+        let two = format!(
+            "{ONE_STANZA}\
+ffffffffffffffffffffffffffffffffffffffff 2 2 1
+author Sam Patel
+filename src/main.rs
+\tfn main() {{}}
+"
+        );
+        let out = format_blame_porcelain(&two);
+        let rows: Vec<&str> = out.lines().collect();
+        assert_eq!(rows.len(), 2);
+        assert!(rows[0].starts_with("9a17f8e1") && rows[0].ends_with("use std::fs;"));
+        assert!(rows[1].starts_with("ffffffff") && rows[1].ends_with("fn main() {}"));
+        assert!(rows[1].contains("Sam Patel"));
+    }
+}
+
+/// The parser against real `git blame` output, because the stanza
+/// format is git's to define and a fixture only proves we parse our own
+/// idea of it.
+#[cfg(test)]
+mod blame_round_trip {
+    use super::*;
+    use std::process::Command;
+
+    fn git_ok(dir: &std::path::Path, args: &[&str]) {
+        let st = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .status()
+            .expect("git");
+        assert!(st.success(), "git {args:?} failed");
+    }
+
+    #[test]
+    fn every_source_line_reaches_the_blame_buffer_with_its_commit() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let p = dir.path();
+        git_ok(p, &["init"]);
+        git_ok(p, &["config", "user.email", "t@lattice.dev"]);
+        git_ok(p, &["config", "user.name", "lattice-test"]);
+        // Deliberately short lines — the length threshold that broke
+        // this is invisible against long ones.
+        std::fs::write(p.join("a.txt"), "one\ntwo\nthree\n").unwrap();
+        git_ok(p, &["add", "a.txt"]);
+        git_ok(p, &["commit", "-m", "base"]);
+
+        let out = run_blame(p, "HEAD", "a.txt");
+        let rows: Vec<&str> = out.lines().collect();
+        assert_eq!(rows.len(), 3, "one row per source line: {out:?}");
+        for (row, text) in rows.iter().zip(["one", "two", "three"]) {
+            assert!(row.ends_with(text), "{row:?} must end with {text:?}");
+            assert!(
+                row[..8].chars().all(|c| c.is_ascii_hexdigit()),
+                "{row:?} must start with a commit sha"
+            );
+            assert!(
+                row.contains("lattice-test"),
+                "{row:?} must name the author"
+            );
+        }
     }
 }

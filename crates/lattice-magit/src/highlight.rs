@@ -202,7 +202,18 @@ pub(crate) fn blame_styled_spans(text: &str) -> Vec<Vec<StyledSpan>> {
                 style: Style::MagitSha,
             }];
             let author_start = 9;
-            let author_end = (author_start + 12).min(line.len());
+            // Counted in CHARACTERS, not bytes: `format!("{:>12}")`
+            // pads to twelve *characters*, so a name with any
+            // multi-byte character in it would end the span mid-name —
+            // and mid-character, which is a panic in a slicing consumer
+            // rather than a cosmetic miss.
+            let author_end = line
+                .char_indices()
+                .map(|(i, _)| i)
+                .chain(std::iter::once(line.len()))
+                .filter(|i| *i >= author_start)
+                .nth(12)
+                .unwrap_or(line.len());
             if author_end > author_start {
                 spans.push(StyledSpan {
                     start: author_start,

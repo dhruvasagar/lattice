@@ -1204,8 +1204,9 @@ incidentally.
 | MG.23c2 | `I` init, `m` merge (`Q` dropped — see below) | MG.23c1 | ✅ |
 | MG.23d | File ops: untrack, delete, rename | MG.23a, IX.2 | ✅ |
 | MG.23d2 | `,c` checkout a file from a revision | MG.23d | 📝 |
-| MG.23e | Surface-mapping rows (`h`, `C-x m`, `H`, `J`, `j`, `e`/`E`) | — | 📝 |
-| MG.23f | Blame variants + blob navigation | — | 📝 |
+| MG.23e | Surface-mapping rows — **dropped**, see below | — | ⛔ |
+| MG.23f | Blob navigation (blame variants evaluated out, one deferred) | — | ✅ |
+| MG.23f2 | Reverse blame (`git blame --reverse`) from a blob buffer — needs a rev-carrying blame buffer name | MG.23f | 📝 |
 | MG.23g | `a` apply / `v` reverse on a hunk | MG.18 | 📝 |
 | MG.23h | Context-dependent menu content (magit's `:if-derived`), then `s`/`u` rows + the `s` collision | — | 📝 |
 | MG.23i+ | The new subsystems, one slice each, prioritised by daily use | — | 📝 |
@@ -1287,6 +1288,89 @@ which would have drifted.
   as shipped and none exists. Two other pages called the
   action-triggered refresh "auto-refresh", which read as that same
   absent feature; both now say what actually refreshes.
+
+#### MG.23e — dropped after evaluating the rows (2026-07-30)
+
+The slice was "wire magit's entries that map onto lattice surfaces
+rather than reimplementing them". Evaluated row by row, almost none of
+them earns a place:
+
+| magit | what it does | here | verdict |
+|---|---|---|---|
+| `j` Display status | opens the status buffer | our `s` row already does | **duplicate of a row we have** |
+| `e` / `E` Ediff | diffs the thing at point | our `d` row opens magit-diff | overlapping, and "thing at point" does not exist in a menu opened from anywhere |
+| `J` Display repo buffer | switch among magit buffers | `:ls` / `:b` / the buffer picker | duplicate of a general surface |
+| `H` Section info | describes the section at point | *nothing* | nothing to map onto |
+| `h` / `C-x i` Help | opens magit's manual | `:help magit` | one keystroke over an already-global command |
+| `C-x m` describe-mode | the live keymap | `:describe-mode` | same |
+
+Two are duplicates of rows already in our menu, two duplicate general
+editor surfaces, one has no equivalent at all, and the rest save a
+keystroke over commands that are already bound globally — each needing a
+new action to wrap an ex-command, since transient rows resolve through
+the action registry and never the ex-command path.
+
+**And the framing was wrong.** Magit shows most of these in an
+"Essential commands" group gated on `:if-derived magit-mode` — a
+**contextual cheat-sheet**, not functionality. Our equivalent is
+`:help magit-core-mode`, a full searchable page with every chord and
+what it does, which is better than a menu row and already exists.
+
+Dropped rather than deferred, on the policy this plan already carries: a
+row that does nothing is worse than absent, and a row that duplicates
+another row is not much better.
+
+#### MG.23f — `gj` / `gk` walk a file's history ✅ (2026-07-31)
+
+Scoped "blame variants + blob navigation". Blob navigation was the half
+that earned its place, and it lands here; the blame variants were
+evaluated row by row like MG.23e's.
+
+**Blob navigation.** `magit-file-revision-mode` could be opened but not
+walked — every step through a file's history meant going back to the
+log and pressing `<CR>` again, which is a poor answer to the one
+question that buffer exists for. `gk` / `gj` step older / newer through
+`git log -- <path>`, so only commits that touched *this file* are in the
+walk.
+
+Three deliberate refusals, each an echo rather than a jump:
+
+- **at either end** — the history has two ends, and wrapping from the
+  first commit round to `HEAD` would read as a glitch;
+- **from a `staged` blob** — the index is not a commit and has no place
+  in the walk, which falls out of the same lookup rather than needing a
+  special case;
+- **across renames** — `--follow` is deliberately absent: the buffer
+  name carries one path, and a step that silently changed which file you
+  were reading is worse than stopping.
+
+`blob_step` is pure (a slice, a ref, a direction), so the walk is
+testable without a repository; a round-trip test against a real repo
+covers the part that is not pure — that `git log -- <path>` skips the
+unrelated commit and that stepping back shows the *earlier* content.
+
+**On the keys.** magit uses `n` / `p`. Lattice follows
+evil-collection-magit's `gj` / `gk` remap, and the reason the remap
+exists is exactly the standing rule from MG.20's `V` mistake: a
+read-only view of a file is where you search, so `n` is not free. `p`
+alone would have been (paste is dead in a read-only buffer), but a
+navigation pair split across two conventions is worse than either.
+
+**The blame variants, evaluated:**
+
+| magit | what it does | here | verdict |
+|---|---|---|---|
+| `b e` blame echo | blame for the current line, in the echo area | our blame is its own buffer, not an overlay on the file | **no surface to map onto** — needs inline virtual-text blame first |
+| `b q` quit blaming | removes the blame overlay from the file buffer | `q` closes the blame buffer already | **duplicate** |
+| `b r` removal / `b f` reverse | `git blame --reverse` — when a line *disappeared* | nothing | **real, and deferred** |
+
+Reverse blame is the one that is genuinely absent rather than
+duplicated, and it is now newly implementable: it needs a starting
+revision, and the blob buffer this slice made navigable is exactly where
+one is in hand ("when did each of these lines go away"). It is a slice
+of its own, though — `*magit:blame:<path>*` carries no revision, so the
+buffer name, the argv and the headerline all move together. Filed as
+MG.23f2 rather than smuggled in here.
 
 #### MG.23d — `,x` untrack, `,r` rename, `,k` delete ✅ (2026-07-30)
 

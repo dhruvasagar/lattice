@@ -833,6 +833,16 @@ fn register_action_commands(registry: &mut CommandRegistry) {
         "Visit the file at cursor (working tree, or the index blob for a Staged-scoped diff)",
     );
 
+    // magit-file-revision-mode
+    reg(
+        "action:magit-blob-previous",
+        "Visit this file at the previous revision",
+    );
+    reg(
+        "action:magit-blob-next",
+        "Visit this file at the next revision",
+    );
+
     // magit-core-mode
     reg("action:magit-refresh", "Refresh the current magit buffer");
     reg("action:magit-close", "Close the magit buffer (bury)");

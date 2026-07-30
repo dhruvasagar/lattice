@@ -35,11 +35,37 @@ The rule behind the table: when the buffer you came from describes a
 When it describes current state, `<CR>` opens the live working-tree
 file instead.
 
+## Walking the file's history
+
+| Key | Does |
+|---|---|
+| `gk` | this file at the **previous** revision (older) |
+| `gj` | this file at the **next** revision (newer) |
+
+Both step through the commits that touched *this file*, newest first —
+commits that changed something else are skipped, so `gk` always lands
+somewhere the content actually differs.
+
+At either end you get a message rather than a jump: the history has two
+ends, and wrapping silently from the first commit round to `HEAD` would
+read as a glitch. You also get the message from a `staged` blob, because
+the index is not a commit and has no place in the walk — open the file
+at a real revision first.
+
+Renames are not followed. The buffer name carries one path, and a step
+that silently changed which file you were reading would be worse than
+stopping.
+
+magit binds these to `n` / `p`; lattice follows evil-collection-magit's
+`gj` / `gk` remap, for the reason the remap exists — `n` is
+search-repeat, and a read-only view of a file is exactly where you want
+to search.
+
 ## Behaviour worth knowing
 
-- **No mode-specific chords.** `q` / `gr` / navigation come from
-  [`magit-core-mode`](help:magit-core-mode); this is a plain read-only
-  view, not an interactive one.
+- **Everything else** — `q` / `gr` / section navigation — comes from
+  [`magit-core-mode`](help:magit-core-mode); apart from the two history
+  steps this is a plain read-only view, not an interactive one.
 - **`gr` is a deliberate no-op** — a fixed ref's blob never changes.
 - **No syntax highlighting for the file's own language yet.** Synthetic
   buffers have no filename-based language detection wired up. A known

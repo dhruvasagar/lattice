@@ -1060,7 +1060,11 @@ impl App {
             // no-op above.
             Effect::OpenBufferPicker => self.open_buffer_picker(),
             Effect::OpenPicker { source, args } => self.open_picker(source, args),
-            Effect::Confirm { prompt, yes_action } => self.do_confirm(prompt, yes_action),
+            Effect::Confirm {
+                prompt,
+                yes_action,
+                args,
+            } => self.do_confirm(prompt, yes_action, args),
             Effect::OpenTransient { source } => self.do_open_transient(source),
             Effect::OpenPrompt {
                 prompt,

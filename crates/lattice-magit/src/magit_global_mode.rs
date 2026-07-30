@@ -303,10 +303,18 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         action_name: "action:magit-global-file-discard",
         handler: Arc::new(|ctx: &ActionContext<'_>| {
             let (_workdir, rel) = active_target(ctx)?;
-            Some(Effect::Confirm {
-                prompt: format!("Discard changes to {}?", rel.display()),
-                yes_action: "action:magit-global-file-discard-execute".to_string(),
-            })
+            // IX.1: carry the path the prompt names, so the execute half
+            // acts on exactly what was confirmed. It needs no change to
+            // read it — `active_target` already prefers the `file`
+            // argument over the visited file, which is the same seam
+            // `:magit-other-file-dispatch` uses.
+            Some(crate::confirm::ask_with(
+                format!("Discard changes to {}?", rel.display()),
+                "action:magit-global-file-discard-execute",
+                lattice_grammar::Args::List(vec![lattice_grammar::ArgValue::String(
+                    rel.to_string_lossy().into_owned(),
+                )]),
+            ))
         }),
     });
     file_mutate!(

@@ -469,7 +469,11 @@ mod tests {
     #[test]
     fn abort_confirm_points_at_the_execute_action() {
         match abort_rebase_confirm() {
-            Effect::Confirm { prompt, yes_action } => {
+            Effect::Confirm {
+                prompt,
+                yes_action,
+                args,
+            } => {
                 assert_eq!(prompt, "Abort this rebase?");
                 assert_eq!(yes_action, "action:magit-rebase-abort-execute");
             }

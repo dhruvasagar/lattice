@@ -27698,6 +27698,28 @@ impl Editor {
         project_transient_state(&spec.args_schema, state)
     }
 
+    /// IX.1: spread a confirmed action's arguments across its schema's
+    /// names, ready to seed the confirm dialog's transient state.
+    /// Thin wrapper so both renderer peers reach the same projection.
+    pub fn seed_confirm_args(
+        &self,
+        schema: &[lattice_grammar::ArgSpec],
+        args: &lattice_grammar::Args,
+    ) -> lattice_picker::TransientState {
+        seed_transient_state(schema, args)
+    }
+
+    /// IX.1: merge `seed` into the open transient's state.
+    ///
+    /// Applied *after* `open_transient`, which computes the spec's own
+    /// defaults — the seed carries the caller's real arguments and must
+    /// win over a default of the same name.
+    pub fn extend_transient_state(&mut self, seed: lattice_picker::TransientState) {
+        if let Some(picker) = &mut self.picker {
+            picker.transient_state.extend(seed);
+        }
+    }
+
     /// PICK.1: toggle a boolean flag in the transient state by name.
     pub fn do_transient_toggle_flag(&mut self, name: String) -> Vec<RendererSignal> {
         let Some(ref mut picker) = self.picker else {
@@ -34808,6 +34830,48 @@ fn should_adopt_owner_write(
 /// transient never set falls back to the spec's declared default, so a
 /// handler always receives a full, correctly-ordered list and never has
 /// to distinguish "absent" from "false".
+/// IX.1: the inverse of [`project_transient_state`] — spread positional
+/// `Args` back across a schema's names so a transient's state carries
+/// them.
+///
+/// `Effect::Confirm` names its yes-action and carries that action's
+/// arguments; the confirm dialog is itself a transient, and a transient
+/// item resolves its args from transient *state* when it fires. So the
+/// carried args are seeded here at open time and
+/// `project_transient_state` reconstructs them identically at fire
+/// time. The two are inverses by construction, which is what makes the
+/// round trip exact rather than approximate.
+///
+/// Extra values beyond the schema are dropped rather than positioned
+/// arbitrarily: a caller passing more than the action declares has a
+/// bug, and silently binding them to the wrong names would be worse
+/// than losing them.
+pub(crate) fn seed_transient_state(
+    schema: &[lattice_grammar::ArgSpec],
+    args: &lattice_grammar::Args,
+) -> lattice_picker::TransientState {
+    use lattice_grammar::ArgValue;
+
+    let mut state = lattice_picker::TransientState::new();
+    let Some(list) = args.as_list() else {
+        return state;
+    };
+    for (spec, value) in schema.iter().zip(list.iter()) {
+        let carried = match value {
+            ArgValue::Bool(b) => lattice_picker::TransientValue::Bool(*b),
+            ArgValue::String(s) | ArgValue::Raw(s) => {
+                lattice_picker::TransientValue::String(s.clone())
+            }
+            // Numeric and any future kinds render as their display form:
+            // `project_transient_state` reads String back out for every
+            // non-Bool slot, so this survives the round trip.
+            other => lattice_picker::TransientValue::String(format!("{other:?}")),
+        };
+        state.insert(spec.name.to_string(), carried);
+    }
+    state
+}
+
 fn project_transient_state(
     schema: &[lattice_grammar::ArgSpec],
     state: &lattice_picker::TransientState,
@@ -43152,6 +43216,69 @@ mod tests {
             Some(Position::new(0, 4)),
             "o moves the anchor to the old head"
         );
+    }
+
+    // ── IX.1: a confirm carries its action's arguments ──
+
+    /// The two projections must be exact inverses: what a caller puts in
+    /// `Effect::Confirm`'s `args` is what the yes-action receives when
+    /// the dialog fires. Anything less and the prompt and the action can
+    /// name different things, which is the bug this slice exists for.
+    #[test]
+    fn confirm_args_survive_the_round_trip_through_transient_state() {
+        use lattice_grammar::{ArgKind, ArgSpec, ArgValue, Args};
+
+        let schema = vec![
+            ArgSpec::optional("file", ArgKind::String, "path"),
+            ArgSpec::optional("force", ArgKind::Bool, "force"),
+        ];
+        let carried = Args::List(vec![
+            ArgValue::String("src/main.rs".to_string()),
+            ArgValue::Bool(true),
+        ]);
+
+        let seeded = seed_transient_state(&schema, &carried);
+        let round_tripped = project_transient_state(&schema, &seeded);
+
+        assert_eq!(
+            format!("{round_tripped:?}"),
+            format!("{carried:?}"),
+            "the yes-action must receive exactly what the confirm carried"
+        );
+    }
+
+    /// The pre-IX.1 shape stays the pre-IX.1 behaviour: no args carried
+    /// means empty state, so the yes-half re-derives exactly as before
+    /// and every unmigrated confirm is unaffected.
+    #[test]
+    fn a_confirm_carrying_no_args_seeds_nothing() {
+        use lattice_grammar::{ArgKind, ArgSpec, Args};
+
+        let schema = vec![ArgSpec::optional("file", ArgKind::String, "path")];
+        assert!(seed_transient_state(&schema, &Args::None).is_empty());
+    }
+
+    /// Values beyond the schema are dropped rather than bound to
+    /// whatever name happens to be next: a caller passing more than the
+    /// action declares has a bug, and guessing would act on the wrong
+    /// thing rather than on nothing.
+    #[test]
+    fn extra_values_beyond_the_schema_are_dropped_not_misbound() {
+        use lattice_grammar::{ArgKind, ArgSpec, ArgValue, Args};
+
+        let schema = vec![ArgSpec::optional("file", ArgKind::String, "path")];
+        let seeded = seed_transient_state(
+            &schema,
+            &Args::List(vec![
+                ArgValue::String("a.rs".to_string()),
+                ArgValue::String("b.rs".to_string()),
+            ]),
+        );
+        assert_eq!(seeded.len(), 1);
+        assert!(matches!(
+            seeded.get("file"),
+            Some(lattice_picker::TransientValue::String(s)) if s == "a.rs"
+        ));
     }
 
     // ── MG.18e: the active region handed to mode action handlers ──

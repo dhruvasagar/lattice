@@ -148,7 +148,12 @@ impl App {
     }
 
     /// Open a y/n confirmation transient dialog.
-    pub(crate) fn do_confirm(&mut self, prompt: String, yes_action: String) {
+    pub(crate) fn do_confirm(
+        &mut self,
+        prompt: String,
+        yes_action: String,
+        args: lattice_grammar::Args,
+    ) {
         let signals = self.mutate_editor_with(move |e| {
             let Some(cmd_reg) = e.services.get::<lattice_grammar::CommandRegistryHandle>() else {
                 e.set_message(
@@ -165,7 +170,18 @@ impl App {
                 return Vec::new();
             };
             let spec = lattice_picker::confirm_transient_spec(&prompt, cmd_id);
-            e.open_transient(spec)
+            // IX.1: seed the dialog's state with the yes-action's
+            // arguments, so what fires on `y` is what the prompt named.
+            // Without this the yes-half would re-derive its target when
+            // it runs, and the context it derives from can change while
+            // the dialog is open.
+            let seed = match cmd_reg.load().lookup(cmd_id) {
+                Some(spec) => e.seed_confirm_args(&spec.args_schema, &args),
+                None => Default::default(),
+            };
+            let signals = e.open_transient(spec);
+            e.extend_transient_state(seed);
+            signals
         });
         for s in signals {
             self.handle_renderer_signal(s);

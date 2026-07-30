@@ -404,7 +404,11 @@ mod tests {
     #[test]
     fn delete_asks_before_deleting_and_names_the_branch() {
         match delete_branch_confirm("feature/foo") {
-            Effect::Confirm { prompt, yes_action } => {
+            Effect::Confirm {
+                prompt,
+                yes_action,
+                args,
+            } => {
                 assert_eq!(prompt, "Delete branch feature/foo?");
                 assert_eq!(yes_action, "action:magit-branch-delete-execute");
             }

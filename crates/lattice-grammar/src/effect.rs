@@ -1048,11 +1048,37 @@ pub enum Effect {
     RecordJump,
 
     /// Open a yes/no confirmation dialog. The host shows a transient
-    /// picker with `prompt` as the title; `y` dispatches `yes_action`,
-    /// `n` / `q` / Esc dismisses.
+    /// picker with `prompt` as the title; `y` dispatches `yes_action`
+    /// with `args`, `n` / `q` / Esc dismisses.
+    ///
+    /// **IX.1: `args` is what makes the confirmed thing and the executed
+    /// thing the same thing.** Without it a yes-half has to re-derive
+    /// its target when it fires, and the context it derives from is not
+    /// stable across the wait — a background refresh can rebuild the
+    /// buffer and move the cursor while the dialog is up, so the action
+    /// lands on a different target than the prompt named. Carrying the
+    /// target closes that window by construction.
+    ///
+    /// Carry the **payload, not a pointer to it**: a path, a SHA, a
+    /// synthesized patch — not a cursor row or a row span, which a
+    /// rebuild invalidates. For patch-shaped payloads this also makes
+    /// `git apply`'s context check refuse a stale one loudly instead of
+    /// applying it somewhere plausible.
+    ///
+    /// `Args::None` keeps the pre-IX.1 behaviour (the yes-half
+    /// re-derives), so existing confirms are unaffected until migrated.
+    ///
+    /// **Why a name + `Args` rather than a `CommandInvocation`,** which
+    /// is otherwise the canonical "thing to execute" (design §5.2.1):
+    /// this effect has to cross the plugin seam, and `CommandInvocation`
+    /// has no WIT mirror — it is exactly why [`Effect::Global`] fails at
+    /// the boundary. `Args` is mirrored and a name is a string, so this
+    /// payload crosses. A name is also the plugin-native form: plugins
+    /// register actions by name and cannot hold a host `CommandId`.
     Confirm {
         prompt: String,
         yes_action: String,
+        args: crate::Args,
     },
 
     /// Return the active pane to the buffer it was displaying before a

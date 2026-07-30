@@ -1413,7 +1413,7 @@ impl GpuiApp {
             }
             // PU.6: confirmation dialog opens a transient picker for
             // y/n/q dismissal (TUI/GPUI parity per `do_confirm`).
-            Effect::Confirm { prompt, yes_action } => {
+            Effect::Confirm { prompt, yes_action, args } => {
                 let signals = self.mutate_editor_with(move |e| {
                     let Some(cmd_reg) = e.services.get::<lattice_grammar::CommandRegistryHandle>()
                     else {
@@ -1431,7 +1431,17 @@ impl GpuiApp {
                         return Vec::new();
                     };
                     let spec = lattice_picker::confirm_transient_spec(&prompt, cmd_id);
-                    e.open_transient(spec)
+                    // IX.1: seed the dialog's state with the
+                    // yes-action's arguments so what fires on `y` is
+                    // what the prompt named (parity with the TUI peer's
+                    // `do_confirm`).
+                    let seed = match cmd_reg.load().lookup(cmd_id) {
+                        Some(spec) => e.seed_confirm_args(&spec.args_schema, &args),
+                        None => Default::default(),
+                    };
+                    let signals = e.open_transient(spec);
+                    e.extend_transient_state(seed);
+                    signals
                 });
                 for s in signals {
                     self.handle_renderer_signal(s);

@@ -466,7 +466,11 @@ mod tests {
     #[test]
     fn drop_asks_before_dropping_and_names_the_stash() {
         match drop_stash_confirm(2) {
-            Effect::Confirm { prompt, yes_action } => {
+            Effect::Confirm {
+                prompt,
+                yes_action,
+                args,
+            } => {
                 assert_eq!(prompt, "Drop stash@{2}?");
                 assert_eq!(yes_action, "action:magit-stash-drop-execute");
             }

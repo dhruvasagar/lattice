@@ -60,6 +60,22 @@ pub(crate) const DESTRUCTIVE_ACTIONS: &[(&str, &str)] = &[
 /// the registration guard below) fails loudly for the author rather
 /// than quietly for the user.
 pub(crate) fn ask(prompt: String, yes_action: &str) -> Effect {
+    ask_with(prompt, yes_action, lattice_grammar::Args::None)
+}
+
+/// IX.1: the same two-step, with the execute half's **target carried
+/// along** instead of re-derived when it fires.
+///
+/// Prefer this wherever the target can be named. A yes-half that
+/// re-derives reads context that is not stable across the wait — a
+/// background refresh can rebuild the buffer and move the cursor while
+/// the dialog is open, so the action lands somewhere the prompt did not
+/// name. Carrying closes that window by construction.
+///
+/// Carry the payload, not a pointer to it: a path, a SHA, a synthesized
+/// patch — never a cursor row or a row span, which a rebuild
+/// invalidates.
+pub(crate) fn ask_with(prompt: String, yes_action: &str, args: lattice_grammar::Args) -> Effect {
     debug_assert!(
         DESTRUCTIVE_ACTIONS.iter().any(|(_, e)| *e == yes_action),
         "`{yes_action}` is not listed in confirm::DESTRUCTIVE_ACTIONS — \
@@ -68,6 +84,7 @@ pub(crate) fn ask(prompt: String, yes_action: &str) -> Effect {
     Effect::Confirm {
         prompt,
         yes_action: yes_action.to_string(),
+        args,
     }
 }
 
@@ -104,9 +121,41 @@ mod tests {
             "action:magit-branch-delete-execute",
         );
         match effect {
-            Effect::Confirm { prompt, yes_action } => {
+            Effect::Confirm {
+                prompt,
+                yes_action,
+                args,
+            } => {
                 assert_eq!(prompt, "Delete branch feature/foo?");
                 assert_eq!(yes_action, "action:magit-branch-delete-execute");
+                assert!(
+                    matches!(args, lattice_grammar::Args::None),
+                    "`ask` carries nothing — the yes-half re-derives, which is \
+                     the pre-IX.1 behaviour `ask_with` exists to replace"
+                );
+            }
+            other => panic!("expected Confirm, got {other:?}"),
+        }
+    }
+
+    /// IX.1: `ask_with` carries the target, so the execute half acts on
+    /// what the prompt named rather than re-deriving it.
+    #[test]
+    fn ask_with_carries_its_target_to_the_yes_action() {
+        let effect = ask_with(
+            "Discard changes to src/main.rs?".to_string(),
+            "action:magit-global-file-discard-execute",
+            lattice_grammar::Args::List(vec![lattice_grammar::ArgValue::String(
+                "src/main.rs".to_string(),
+            )]),
+        );
+        match effect {
+            Effect::Confirm { args, .. } => {
+                let list = args.as_list().expect("a carried target");
+                assert!(matches!(
+                    &list[0],
+                    lattice_grammar::ArgValue::String(p) if p == "src/main.rs"
+                ));
             }
             other => panic!("expected Confirm, got {other:?}"),
         }

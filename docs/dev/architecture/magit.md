@@ -1922,17 +1922,50 @@ and only that shape:
 
 - The chord's own action (`action:magit-<x>`) performs **no git call at
   all**. It reads the target off the buffer and returns
-  `Effect::Confirm { prompt, yes_action }`.
+  `Effect::Confirm { prompt, yes_action, args }`.
 - The git call lives in a separate `action:magit-<x>-execute`, named as
   that confirm's `yes_action`.
+- The confirm **carries its target** in `args`, and the execute half
+  acts on what it carried.
 
 Answering `n` therefore cannot mutate anything — not by a guard that
 could be forgotten, but because the code that mutates was never
-reached. The execute half re-reads its target at the cursor rather than
-carrying it through the prompt: the confirm transient owns every
-keystroke while it is open, and `do_transient_trigger` hands the
-yes-action the *document* cursor, so the cursor is provably where the
-prompt was built from.
+reached.
+
+**The confirmed target and the executed target are the same thing**
+(IX.1/IX.2). An earlier revision of this section said the execute half
+"re-reads its target at the cursor rather than carrying it through the
+prompt", on the grounds that the confirm transient owns every keystroke
+while it is open. It owns keystroke*s*, not the buffer — and that was
+enough to be wrong:
+
+1. `s` on a hunk; the mutation and its refresh run async.
+2. Before it lands, `x` on a file row: the ask half returns `Confirm`.
+3. The refresh lands *while the dialog is up*, rebuilding the buffer and
+   moving the cursor (`Effect::CursorMoveIn` applies — a transient does
+   not change the active document).
+4. `y`. Re-reading the cursor row names a different file.
+
+So the target is carried. **Carry the payload, not a pointer to it:** a
+path, a SHA, a stash index, a synthesized patch — never a cursor row or
+a row span, which a rebuild invalidates. For patch-shaped payloads this
+also means `git apply`'s exact-context check refuses a stale one loudly
+instead of applying it at a plausible offset.
+
+Mechanically, the dialog is itself a transient and a transient item
+resolves its arguments from transient *state*, so the host seeds that
+state from the carried `args` at open time and projects it back at fire
+time (`seed_transient_state` / `project_transient_state`, exact
+inverses). An execute half must therefore **declare the slots its ask
+half fills** — the projection is by name, so an undeclared slot means
+the value lands nowhere and the handler silently falls back to
+re-deriving. `every_destructive_execute_declares_the_slots_its_confirm_carries`
+and `every_destructive_pair_carries_a_target_except_the_one_with_none`
+pin both halves; the latter is what caught exactly that omission on
+`magit-global-file-discard-execute`.
+
+`magit-rebase-abort-execute` carries nothing, deliberately: there is one
+in-progress rebase, so it has no target to name.
 
 The prompt always names its target (`Delete branch feature/foo?`,
 `Drop stash@{2}?`) — the transient covers the buffer the target was

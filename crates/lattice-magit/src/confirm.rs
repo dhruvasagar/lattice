@@ -75,6 +75,28 @@ pub(crate) fn ask(prompt: String, yes_action: &str) -> Effect {
 /// Carry the payload, not a pointer to it: a path, a SHA, a synthesized
 /// patch — never a cursor row or a row span, which a rebuild
 /// invalidates.
+/// IX.2: the common case — one string target, carried in slot 0.
+///
+/// Every execute half migrated to this reads it back with
+/// [`carried_target`], falling back to re-derivation when absent, so a
+/// path that carries nothing still works.
+pub(crate) fn ask_target(prompt: String, yes_action: &str, target: impl Into<String>) -> Effect {
+    ask_with(
+        prompt,
+        yes_action,
+        lattice_grammar::Args::List(vec![lattice_grammar::ArgValue::String(target.into())]),
+    )
+}
+
+/// The target an [`ask_target`] confirm carried, if it did.
+///
+/// `None` means the confirm was raised by a path that carries nothing,
+/// and the caller re-derives — the pre-IX.1 behaviour, kept so
+/// migration is per-action rather than all-or-nothing.
+pub(crate) fn carried_target(ctx: &lattice_mode::ActionContext<'_>) -> Option<String> {
+    ctx.arg_str(0).map(str::to_string)
+}
+
 pub(crate) fn ask_with(prompt: String, yes_action: &str, args: lattice_grammar::Args) -> Effect {
     debug_assert!(
         DESTRUCTIVE_ACTIONS.iter().any(|(_, e)| *e == yes_action),

@@ -118,9 +118,14 @@ fn commit_op(
             match op.confirm_action {
                 // Destructive: the ask half performs no git call at
                 // all, so answering `n` cannot mutate — MG.12's rule.
-                Some(yes) => Some(crate::confirm::ask(
+                // IX.2: carry the SHA. `reset --hard` is the most
+                // destructive thing magit does, so the commit it lands
+                // on must be the one the prompt named — not whatever
+                // row the cursor points at once the answer arrives.
+                Some(yes) => Some(crate::confirm::ask_target(
                     format!("git {} {commit} — discard uncommitted changes?", op.what),
                     yes,
+                    commit.clone(),
                 )),
                 None => {
                     let workdir = view.workdir()?;
@@ -142,7 +147,12 @@ fn commit_op_execute(
         action_name,
         handler: Arc::new(move |ctx: &ActionContext<'_>| {
             let view = crate::buffer_state::view_for(ctx)?;
-            let commit = view.commit_at_cursor(ctx.cursor)?;
+            // IX.2: the commit the prompt named, falling back to the
+            // cursor only when nothing was carried.
+            let commit = match crate::confirm::carried_target(ctx) {
+                Some(carried) => carried,
+                None => view.commit_at_cursor(ctx.cursor)?,
+            };
             let workdir = view.workdir()?;
             Some(crate::magit_global_mode::spawn_commit_op(
                 op, workdir, &commit,
@@ -491,6 +501,49 @@ pub(crate) fn resolve_hunk(ctx: &ActionContext<'_>, op: HunkOp) -> HunkResolutio
 /// the `MessagesLayer` fans into `*messages*` — and the refresh runs
 /// either way, so a refused patch leaves the buffer showing the truth
 /// rather than a state the user may believe they changed.
+/// IX.2: discard a patch a confirmation carried.
+///
+/// The peer of [`spawn_hunk_apply`] for the confirmed path, where the
+/// patch arrives as text rather than as a freshly-parsed `HunkPatch` —
+/// there is deliberately nothing to re-parse, because re-parsing would
+/// read a buffer that may have been rebuilt since the question was
+/// asked.
+///
+/// `view` refreshes afterwards when there is one; a confirm fired from
+/// a buffer whose view has since gone still applies, it just does not
+/// repaint anything.
+pub(crate) fn spawn_patch_discard(
+    workdir: std::path::PathBuf,
+    patch: String,
+    view: Option<Arc<dyn crate::buffer_state::MagitView>>,
+) -> Effect {
+    tokio::task::spawn(async move {
+        let result = tokio::task::spawn_blocking(move || {
+            let repo = lattice_vcs::Repository::discover(&workdir)
+                .map_err(|e| format!("not a git repository: {e}"))?;
+            // `(cached = false, reverse = true)` — the worktree, matching
+            // file-level `x`, which is `git checkout --` and likewise
+            // leaves the index alone.
+            lattice_vcs::Index::apply_patch(&repo, &patch, false, true).map_err(|e| e.to_string())
+        })
+        .await
+        .unwrap_or_else(|e| Err(e.to_string()));
+        if let Err(err) = result {
+            tracing::error!(
+                target: "lattice_magit",
+                "magit: could not discard the confirmed hunk: {err}"
+            );
+        }
+        if let Some(view) = view {
+            let _ = view.refresh();
+        }
+    });
+    Effect::Echo {
+        level: lattice_grammar::EchoLevel::Info,
+        text: "magit: discarded".to_string(),
+    }
+}
+
 pub(crate) fn spawn_hunk_apply(
     view: Arc<dyn crate::buffer_state::MagitView>,
     workdir: std::path::PathBuf,

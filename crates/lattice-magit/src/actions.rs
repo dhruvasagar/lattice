@@ -415,6 +415,7 @@ pub fn status_action_handlers() -> Vec<ActionHandlerContribution> {
                 crate::magit_core_mode::HunkResolution::Ready {
                     patch,
                     region_lines,
+                    workdir,
                     ..
                 } => {
                     // MG.18e: the prompt names what will actually go.
@@ -427,9 +428,24 @@ pub fn status_action_handlers() -> Vec<ActionHandlerContribution> {
                         Some(n) => format!("{n} lines of {}", patch.display_location()),
                         None => format!("hunk at {}", patch.display_location()),
                     };
-                    Some(crate::confirm::ask(
+                    // IX.2: carry the PATCH, not the rows it came
+                    // from. A row span is a coordinate a rebuild
+                    // invalidates — a refresh landing while the dialog
+                    // is open would make the same span mean different
+                    // lines. The patch is content, so it still means
+                    // what it meant; and if the tree moved under it,
+                    // `git apply`'s context check refuses it loudly
+                    // rather than discarding somewhere plausible.
+                    Some(crate::confirm::ask_with(
                         format!("Discard {target}?"),
                         "action:magit-discard-execute",
+                        lattice_grammar::Args::List(vec![
+                            lattice_grammar::ArgValue::String(String::new()),
+                            lattice_grammar::ArgValue::String(patch.to_patch()),
+                            lattice_grammar::ArgValue::String(
+                                workdir.to_string_lossy().into_owned(),
+                            ),
+                        ]),
                     ))
                 }
                 crate::magit_core_mode::HunkResolution::Refused(effect) => Some(effect),
@@ -440,9 +456,10 @@ pub fn status_action_handlers() -> Vec<ActionHandlerContribution> {
                         return None;
                     };
                     drop(g);
-                    Some(crate::confirm::ask(
+                    Some(crate::confirm::ask_target(
                         format!("Discard changes to {}?", path.display()),
                         "action:magit-discard-execute",
+                        path.to_string_lossy().into_owned(),
                     ))
                 }
             }
@@ -450,15 +467,42 @@ pub fn status_action_handlers() -> Vec<ActionHandlerContribution> {
     }
     // PU.6: actual discard, dispatched by Confirm's yes-action.
     //
-    // Re-resolves at the cursor rather than carrying the target
-    // through the prompt (§12.13). For a hunk that matters more than
-    // for a file: the patch must be built from what is on screen NOW,
-    // so a tree that moved under the buffer makes `git apply` refuse
-    // rather than discard some other lines.
+    // IX.2: acts on what the prompt named. The ask half carries either
+    // the synthesized patch (hunk / region) or the path (file), and
+    // this half prefers that over anything it could re-derive — a
+    // refresh landing while the dialog is open rebuilds the buffer and
+    // moves the cursor, so re-derivation is how you discard a file you
+    // never confirmed.
+    //
+    // A patch is content, not coordinates, so it still means what it
+    // meant; and if the working tree moved under it, `git apply`'s
+    // exact-context check refuses it loudly instead of applying it at a
+    // plausible-looking offset.
     {
         handler!(
             "action:magit-discard-execute",
             move |ctx: &ActionContext<'_>| {
+                // Slot 1 is the carried patch, slot 2 its workdir.
+                if let (Some(patch), Some(workdir)) = (ctx.arg_str(1), ctx.arg_str(2))
+                    && !patch.is_empty()
+                {
+                    return Some(crate::magit_core_mode::spawn_patch_discard(
+                        std::path::PathBuf::from(workdir),
+                        patch.to_string(),
+                        crate::buffer_state::view_for(ctx),
+                    ));
+                }
+                if let Some(path) = crate::confirm::carried_target(ctx)
+                    && !path.is_empty()
+                {
+                    let s = status_state(ctx)?;
+                    let workdir = s.lock().ok()?.workdir.clone();
+                    return spawn_mutation_and_refresh(s.clone(), move || {
+                        if let Ok(repo) = Repository::discover(&workdir) {
+                            let _ = repo.run_git(["checkout", "--", &path]);
+                        }
+                    });
+                }
                 match crate::magit_core_mode::resolve_hunk(
                     ctx,
                     crate::magit_core_mode::HunkOp::Discard,

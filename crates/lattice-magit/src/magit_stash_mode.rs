@@ -154,9 +154,19 @@ impl Mode for MagitStashMode {
                 action_name: "action:magit-stash-drop-execute",
                 handler: Arc::new(|ctx: &ActionContext<'_>| {
                     let s = state(ctx)?;
+                    // IX.2: drop the stash the prompt named. Stash
+                    // indices RENUMBER — dropping or creating one
+                    // shifts every later index — so re-reading the row
+                    // after a refresh is how you drop the wrong stash.
                     let (idx, workdir) = {
                         let g = s.lock().ok()?;
-                        (stash_index_at_cursor(&g, ctx.cursor)?, g.workdir.clone())
+                        let idx = match crate::confirm::carried_target(ctx)
+                            .and_then(|t| t.parse::<usize>().ok())
+                        {
+                            Some(carried) => carried,
+                            None => stash_index_at_cursor(&g, ctx.cursor)?,
+                        };
+                        (idx, g.workdir.clone())
                     };
                     spawn_mutation_and_refresh(s, move || {
                         if let Ok(repo) = Repository::discover(&workdir) {
@@ -335,9 +345,10 @@ fn spawn_mutation_and_refresh(
 /// `stash@{N}` ref the list row shows, so the prompt and the row it
 /// came from read identically.
 fn drop_stash_confirm(index: usize) -> Effect {
-    crate::confirm::ask(
+    crate::confirm::ask_target(
         format!("Drop stash@{{{index}}}?"),
         "action:magit-stash-drop-execute",
+        index.to_string(),
     )
 }
 

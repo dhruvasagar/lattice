@@ -107,7 +107,7 @@ added after (K.3.2); an effect that cannot cross must say so.
 | Slice | Scope | Depends | Status |
 |---|---|---|---|
 | IX.1 | `Effect::Confirm` carries `args`; the confirm transient seeds its state from them so the yes-action receives them | — | ✅ |
-| IX.2 | Amend §12.13 to the confirmed-equals-executed invariant; migrate magit's confirm pairs to carry their payload | IX.1 | 📝 |
+| IX.2 | Amend §12.13 to the confirmed-equals-executed invariant; migrate magit's confirm pairs to carry their payload | IX.1 | ✅ |
 | IX.3 | WIT mirror for `confirm` — `.wit` variant, both conversion directions, round-trip test | IX.1 | ✅ |
 | IX.4 | Unmirrored effects fail with a typed error instead of `WitEffect::None` | — | 📝 |
 | IX.5 | `open-prompt` across the seam, following IX.3's pattern | IX.3, IX.4 | 📝 |
@@ -145,12 +145,17 @@ which seeds nothing, so every unmigrated confirm re-derives exactly as
 before. `confirm::ask_with` is the carrying form.
 
 **One pair migrated as the proof:** `magit-global-file-discard` carries
-the path it names. Its execute half needed **no change at all** —
-MG.23a's `active_target` already prefers the `file` argument over the
-visited file, so the same seam that lets
-`:magit-other-file-dispatch` name a target lets a confirm carry one.
-That is what makes IX.7 a menu-row change rather than a mechanism
-change.
+the path it names, read back through MG.23a's `active_target`, which
+already prefers the `file` argument over the visited file. That shared
+seam is what makes IX.7 a menu-row change rather than a mechanism one.
+
+**Correction (IX.2):** this slice originally claimed the execute half
+"needed no change at all". It needed one — it never declared a `file`
+slot, and the projection is by name, so the carried path landed nowhere
+and the handler silently fell back to the visited file. The migration
+did not actually work. IX.2's
+`every_destructive_pair_carries_a_target_except_the_one_with_none`
+found it.
 
 Both renderer peers wired in the same patch per the parity rule.
 
@@ -176,6 +181,35 @@ carrying that action's arguments, exactly as a native mode does.
 
 The remaining silent drops (`change-dir`, `print-working-dir`,
 `list-errors`, `open-transient`, `open-prompt`) are IX.4/5/6.
+
+## IX.2 — landed 2026-07-30
+
+§12.13 amended: the contract is now **the confirmed target and the
+executed target are the same thing**, with the old "re-reads its target
+at the cursor" recorded as the mistake it was and the reachable sequence
+that disproves it written out.
+
+Migrated, each carrying its payload rather than a pointer to it:
+
+| Pair | Carries |
+|---|---|
+| magit-status `x` | the synthesized **patch** (hunk / region) or the path (file) |
+| `C-c f` `x` | the path |
+| branch delete | the branch name |
+| stash drop | the stash index — these **renumber**, so a re-read after a refresh drops a different stash |
+| `reset --hard` | the commit SHA |
+| rebase abort | nothing, deliberately — one in-progress rebase, no target to name |
+
+Each execute half prefers what it was given and re-derives only when
+given nothing, so paths that carry nothing behave exactly as before.
+
+**A bug this slice found in IX.1.** An execute half must *declare* the
+slots its ask half fills, because the projection is by name; an
+undeclared slot means the value lands nowhere and the handler silently
+re-derives. `magit-global-file-discard-execute` had no slot, so IX.1's
+proof migration never actually worked. Two guards now pin both halves —
+one on the slot names and order, one requiring every destructive execute
+to declare somewhere for its target to land.
 
 ## Cross-references
 

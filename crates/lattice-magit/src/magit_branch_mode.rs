@@ -149,9 +149,17 @@ impl Mode for MagitBranchMode {
                 action_name: "action:magit-branch-delete-execute",
                 handler: Arc::new(|ctx: &ActionContext<'_>| {
                     let s = state(ctx)?;
+                    // IX.2: act on the branch the prompt named. The
+                    // cursor is only consulted when nothing was carried
+                    // — a refresh can rebuild the list while the dialog
+                    // is open, and then the row means a different branch.
                     let (name, workdir) = {
                         let g = s.lock().ok()?;
-                        (branch_name_at_cursor(&g, ctx.cursor)?, g.workdir.clone())
+                        let name = match crate::confirm::carried_target(ctx) {
+                            Some(carried) => carried,
+                            None => branch_name_at_cursor(&g, ctx.cursor)?,
+                        };
+                        (name, g.workdir.clone())
                     };
                     spawn_mutation_and_refresh(s, move || {
                         if let Ok(repo) = Repository::discover(&workdir) {
@@ -344,9 +352,10 @@ fn spawn_mutation_and_refresh(
 /// MG.12: the ask half of `d`. Names the branch so the question is
 /// answerable while the confirm transient covers the branch list.
 fn delete_branch_confirm(name: &str) -> Effect {
-    crate::confirm::ask(
+    crate::confirm::ask_target(
         format!("Delete branch {name}?"),
         "action:magit-branch-delete-execute",
+        name,
     )
 }
 

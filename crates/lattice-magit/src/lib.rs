@@ -282,6 +282,45 @@ fn resolve_dispatch_ids(registry: &CommandRegistry) -> transients::DispatchActio
     }
 }
 
+/// IX.2: the execute half of each destructive pair, and the slots its
+/// confirmation carries.
+///
+/// Every slot is optional: a confirm raised by a path that carries
+/// nothing leaves them unset and the handler re-derives, which is the
+/// pre-IX.1 behaviour. Names matter — the host projects the dialog's
+/// state onto this schema **by name**, so a rename here without one at
+/// the `ask` site silently reverts that action to re-deriving.
+///
+/// `magit-rebase-abort-execute` is absent deliberately: it aborts *the*
+/// in-progress rebase, of which there is exactly one, so it has no
+/// target to carry and nothing to get wrong.
+const CONFIRM_TARGET_ACTIONS: &[(&str, &str, &[(&str, &str)])] = &[
+    (
+        "action:magit-discard-execute",
+        "Execute the discard after confirmation",
+        &[
+            ("path", "Repo-relative path, for a file-level discard"),
+            ("patch", "The synthesized patch, for a hunk or region"),
+            ("workdir", "Repository the patch applies in"),
+        ],
+    ),
+    (
+        "action:magit-branch-delete-execute",
+        "Delete the branch after confirmation",
+        &[("branch", "Branch the prompt named")],
+    ),
+    (
+        "action:magit-stash-drop-execute",
+        "Drop the stash after confirmation",
+        &[("stash", "Stash index the prompt named")],
+    ),
+    (
+        "action:magit-reset-hard-execute",
+        "Reset --hard after confirmation",
+        &[("commit", "Commit the prompt named")],
+    ),
+];
+
 /// MG.23a: the actions that take an optional `file` target — every
 /// `C-c f` row. Listed once so the schema pass, the
 /// `magit-other-file-dispatch` rows and the tests cannot drift apart.
@@ -313,6 +352,16 @@ const FILE_TARGET_ACTIONS: &[(&str, &str)] = &[
     (
         "action:magit-global-file-blame",
         "Blame the file in the current buffer",
+    ),
+    // The execute half needs the slot too, not just the ask half that
+    // fills it: the host projects the confirm dialog's state onto THIS
+    // action's schema, so without a `file` slot the carried path lands
+    // nowhere and the handler silently falls back to the visited file.
+    // IX.1 migrated the ask half and missed this; the destructive-pair
+    // guard is what found it.
+    (
+        "action:magit-global-file-discard-execute",
+        "Execute the file discard after confirmation",
     ),
 ];
 
@@ -908,6 +957,25 @@ fn register_action_commands(registry: &mut CommandRegistry) {
     // transient state onto the schema BY NAME
     // (`project_transient_state`), so a mismatch degrades silently to
     // "always the current file" rather than failing.
+    // IX.2: the execute half of every destructive pair declares the
+    // slots its ask half carries, so the confirm dialog's state
+    // projects onto them by name.
+    for (name, doc, slots) in CONFIRM_TARGET_ACTIONS {
+        registry.register_action(
+            name,
+            doc,
+            ActionSpec {
+                apply: none.clone().unwrap(),
+                args_schema: slots
+                    .iter()
+                    .map(|(slot, slot_doc)| {
+                        ArgSpec::optional(*slot, lattice_grammar::ArgKind::String, *slot_doc)
+                    })
+                    .collect(),
+            },
+        );
+    }
+
     for (name, doc) in FILE_TARGET_ACTIONS {
         registry.register_action(
             name,
@@ -1071,6 +1139,65 @@ mod tests {
             "duplicate boot action handlers:\n  {}",
             collisions.join("\n  ")
         );
+    }
+
+    /// IX.2 — every destructive pair's execute half declares the slots
+    /// its ask half carries.
+    ///
+    /// The projection is **by name**, so an ask that carries `"branch"`
+    /// against an execute declaring `"ref"` does not fail — the value
+    /// lands nowhere and the handler silently falls back to re-deriving
+    /// from the cursor, which is precisely the bug IX.1 removed. This
+    /// pins the two halves to one table.
+    #[test]
+    fn every_destructive_execute_declares_the_slots_its_confirm_carries() {
+        let mut registry = CommandRegistry::new();
+        register_action_commands(&mut registry);
+        for (name, _, slots) in CONFIRM_TARGET_ACTIONS {
+            let spec = registry
+                .lookup_by_name(name)
+                .unwrap_or_else(|| panic!("`{name}` is registered"));
+            let declared: Vec<&str> = spec.args_schema.iter().map(|a| a.name.as_ref()).collect();
+            let expected: Vec<&str> = slots.iter().map(|(s, _)| *s).collect();
+            assert_eq!(
+                declared, expected,
+                "`{name}`'s schema must match the slots its confirm carries, \
+                 in order — the host projects positionally into these names"
+            );
+        }
+    }
+
+    /// Every execute half in the destructive table is one, and every
+    /// destructive pair that *can* carry a target does.
+    ///
+    /// `magit-rebase-abort-execute` is the deliberate exception: there
+    /// is exactly one in-progress rebase, so it has no target to name.
+    #[test]
+    fn every_destructive_pair_carries_a_target_except_the_one_with_none() {
+        let mut registry = CommandRegistry::new();
+        register_action_commands(&mut registry);
+        for (_, execute) in confirm::DESTRUCTIVE_ACTIONS {
+            if *execute == "action:magit-rebase-abort-execute" {
+                continue;
+            }
+            // Checked against the registry rather than one table: an
+            // execute half may declare its slots via
+            // `CONFIRM_TARGET_ACTIONS` or, for the `C-c f` family, via
+            // `FILE_TARGET_ACTIONS`. What matters is that it declares
+            // somewhere to *receive* a target — an empty schema means
+            // the carried value has nowhere to land and the handler
+            // silently re-derives.
+            let spec = registry
+                .lookup_by_name(execute)
+                .unwrap_or_else(|| panic!("`{execute}` is registered"));
+            assert!(
+                !spec.args_schema.is_empty(),
+                "`{execute}` is destructive but declares no argument slot — a \
+                 carried target would have nowhere to land, so it would \
+                 re-derive at answer time, and a refresh landing while the \
+                 dialog is open makes that a different target"
+            );
+        }
     }
 
     /// MG.23a — every `C-c f` action declares the optional `file`

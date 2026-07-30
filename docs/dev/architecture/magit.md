@@ -826,6 +826,12 @@ would remove the change from the working tree while leaving it in the
 index. Design:
 [`magit-hunk-staging.md`](magit-hunk-staging.md).
 
+A Visual-mode **region** narrows the hunk to the selected lines
+(MG.18e): the body is rewritten so unselected additions are dropped and
+unselected removals become context, with both counts recounted. `s` /
+`u` / `x` are bound in Visual mode in the views that offer them, and
+`ActionContext::selection` is how the handler sees the region.
+
 `git add -p`-equivalent *interactive* staging remains unsupported
 (§12.2's `p` chord explains why: it's genuinely interactive over
 stdin, which the TUI's raw-mode input loop already owns — running it

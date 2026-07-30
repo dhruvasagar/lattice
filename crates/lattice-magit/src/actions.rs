@@ -412,9 +412,23 @@ pub fn status_action_handlers() -> Vec<ActionHandlerContribution> {
         handler!("action:magit-discard", move |ctx: &ActionContext<'_>| {
             match crate::magit_core_mode::resolve_hunk(ctx, crate::magit_core_mode::HunkOp::Discard)
             {
-                crate::magit_core_mode::HunkResolution::Ready { patch, .. } => {
+                crate::magit_core_mode::HunkResolution::Ready {
+                    patch,
+                    region_lines,
+                    ..
+                } => {
+                    // MG.18e: the prompt names what will actually go.
+                    // "Discard hunk" over a 2-line selection would be a
+                    // question about something the user did not ask for
+                    // — and §12.13 requires the question to be
+                    // answerable without dismissing it.
+                    let target = match region_lines {
+                        Some(1) => format!("1 line of {}", patch.display_location()),
+                        Some(n) => format!("{n} lines of {}", patch.display_location()),
+                        None => format!("hunk at {}", patch.display_location()),
+                    };
                     Some(crate::confirm::ask(
-                        format!("Discard hunk at {}?", patch.display_location()),
+                        format!("Discard {target}?"),
                         "action:magit-discard-execute",
                     ))
                 }
@@ -454,12 +468,14 @@ pub fn status_action_handlers() -> Vec<ActionHandlerContribution> {
                         workdir,
                         patch,
                         site,
+                        region_lines,
                     } => Some(crate::magit_core_mode::spawn_hunk_apply(
                         view,
                         workdir,
                         patch,
                         crate::magit_core_mode::HunkOp::Discard,
                         site,
+                        region_lines,
                     )),
                     crate::magit_core_mode::HunkResolution::Refused(effect) => Some(effect),
                     crate::magit_core_mode::HunkResolution::FileLevel => {

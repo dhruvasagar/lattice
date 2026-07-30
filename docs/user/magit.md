@@ -9,9 +9,9 @@ Magit is Lattice's git porcelain — a complete, modal, keyboard-driven
 interface for git that lives inside the editor. It is modeled on Emacs
 magit's section-collapsible status buffer and transient prefix menus,
 adapted to Lattice's vim-normal-mode conventions and
-everything-is-a-buffer architecture. Staging works at both **file and
-hunk** granularity; staging a *selection of lines* within a hunk (Emacs
-magit's visual-mode partial stage) is not built yet.
+everything-is-a-buffer architecture. Staging works at **file, hunk and
+line** granularity — including Emacs magit's visual-mode partial stage,
+where you select lines inside a hunk and move only those.
 
 Every magit view is a buffer-backed Document with a major mode. You
 open, close, navigate, and search them the same way you do any other

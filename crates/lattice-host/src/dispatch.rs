@@ -7576,6 +7576,10 @@ impl Editor {
         let ctx = lattice_mode::ActionContext {
             buffer_id: lattice_protocol::ids::BufferId::new(prompt_buffer_id.0 as u64),
             cursor: prompt_cursor,
+            // A prompt submit carries no region: the cursor described
+            // here is the PROMPT's, and any selection the user had in
+            // the buffer they came from is not what this action acts on.
+            selection: None,
             services: &self.services,
             events: &self.event_bus,
             prompt_value: Some(text.as_str()),
@@ -17502,6 +17506,30 @@ impl Editor {
             version: snap.version,
             selections: (*snap.selections).clone(),
         });
+    }
+
+    /// MG.18e: the active region for a mode action handler — the
+    /// Visual/Select selection extent, normalised so `start <= end`.
+    ///
+    /// `None` outside Visual/Select: `visual_anchor` is cleared on exit,
+    /// but the modal state is checked too, so a stale anchor can never
+    /// present itself as a live region.
+    ///
+    /// Normalised because the anchor is wherever the user *started* —
+    /// selecting upward puts it after the cursor — and every consumer
+    /// wants the span, not the gesture.
+    pub(crate) fn active_region(&self) -> Option<lattice_protocol::position::Range> {
+        let anchor = self.visual_anchor?;
+        match self.modal {
+            ModalState::Visual(_) | ModalState::Select(_) => {}
+            _ => return None,
+        }
+        let (start, end) = if anchor <= self.cursor {
+            (anchor, self.cursor)
+        } else {
+            (self.cursor, anchor)
+        };
+        Some(lattice_protocol::position::Range::new(start, end))
     }
 
     /// OWC: write `Editor::cursor` (and, in Visual/Select mode, the full
@@ -27541,6 +27569,21 @@ impl Editor {
                             self.document_buffer_id.0 as u64,
                         ),
                         cursor: self.cursor,
+                        // MG.18e: the region IS carried here, and it has
+                        // to be. A `Confirm` becomes a transient, so a
+                        // destructive action's execute half fires through
+                        // this path — magit's region `x` among them. With
+                        // `None` it would re-resolve to the whole hunk
+                        // and discard lines the user did not select: a
+                        // silent escalation of the one action that asks
+                        // first.
+                        //
+                        // Safe for the same reason the cursor above is:
+                        // `open_transient` does not touch the modal state
+                        // or the anchor, and the transient owns every
+                        // keystroke while open, so neither can have moved
+                        // since the chord fired.
+                        selection: self.active_region(),
                         services: &self.services,
                         events: &self.event_bus,
                         prompt_value: None,
@@ -34044,6 +34087,9 @@ impl Editor {
                 let ctx = lattice_mode::ActionContext {
                     buffer_id: lattice_protocol::ids::BufferId::new(buf_id.0 as u64),
                     cursor: self.cursor,
+                    // MG.18e: the chord-dispatch path is the one that
+                    // can have a live region — a Visual-mode chord.
+                    selection: self.active_region(),
                     services: &self.services,
                     events: &self.event_bus,
                     prompt_value: None,
@@ -43106,6 +43152,50 @@ mod tests {
             Some(Position::new(0, 4)),
             "o moves the anchor to the old head"
         );
+    }
+
+    // ── MG.18e: the active region handed to mode action handlers ──
+
+    /// Normalised, because the anchor is wherever the gesture STARTED:
+    /// selecting upward puts it after the cursor, and every consumer
+    /// wants the span.
+    #[test]
+    fn the_active_region_is_normalised_whichever_way_it_was_drawn() {
+        let mut editor = Editor::default();
+        editor.modal = ModalState::Visual(lattice_grammar::VisualKind::Linewise);
+
+        editor.visual_anchor = Some(Position::new(2, 0));
+        editor.cursor = Position::new(5, 0);
+        let down = editor.active_region().expect("a region is live");
+        editor.visual_anchor = Some(Position::new(5, 0));
+        editor.cursor = Position::new(2, 0);
+        let up = editor.active_region().expect("a region is live");
+        assert_eq!(down, up, "dragging up and dragging down describe one span");
+        assert_eq!(down.start, Position::new(2, 0));
+        assert_eq!(down.end, Position::new(5, 0));
+    }
+
+    /// A stale anchor must not present itself as a live region — the
+    /// modal state is checked too, so a Normal-mode chord never sees one.
+    #[test]
+    fn no_region_outside_visual_even_with_an_anchor_left_behind() {
+        let mut editor = Editor::default();
+        editor.visual_anchor = Some(Position::new(2, 0));
+        editor.cursor = Position::new(5, 0);
+        editor.modal = ModalState::Normal;
+        assert!(
+            editor.active_region().is_none(),
+            "a Normal-mode press acts on the cursor, never on a leftover anchor"
+        );
+    }
+
+    #[test]
+    fn select_mode_has_a_region_too() {
+        let mut editor = Editor::default();
+        editor.modal = ModalState::Select(lattice_grammar::VisualKind::Charwise);
+        editor.visual_anchor = Some(Position::new(1, 0));
+        editor.cursor = Position::new(1, 4);
+        assert!(editor.active_region().is_some());
     }
 
     // ── MG.18d: Effect::CursorMoveIn — the async cursor move ──

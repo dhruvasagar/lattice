@@ -922,6 +922,7 @@ mod tests {
         let ctx = ActionContext {
             buffer_id: lattice_protocol::ids::BufferId::new(1),
             cursor: Position::new(0, 3),
+            selection: None,
             services: &services,
             events: &events,
             prompt_value: None,
@@ -1152,6 +1153,7 @@ mod tests {
         let ctx = ActionContext {
             buffer_id: buffer,
             cursor: Position::new(0, 0),
+            selection: None,
             services,
             events: &events,
             prompt_value: None,

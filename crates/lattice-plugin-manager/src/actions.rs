@@ -249,6 +249,7 @@ mod tests {
         let ctx = ActionContext {
             buffer_id: BufferId::new(0),
             cursor: Position { line: 5, byte: 0 },
+            selection: None,
             services: &services,
             events: &events,
             prompt_value: None,

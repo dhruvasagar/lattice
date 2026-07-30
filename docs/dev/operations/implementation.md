@@ -4251,7 +4251,16 @@ Installs through `SubsystemBoot` seam. Inverted out of
   staged one's place. The position travels on a `SubsystemBoot::inbound`
   bus so it reaches the screen without a keypress, as
   `Effect::CursorMoveIn` so it cannot land in a buffer the user moved to.
-- **MG.18e, MG.19, MG.21 remain open** — per-slice status and sequencing
+- ✅ **MG.18e** — region (visual-mode) staging (2026-07-30). Select
+  lines inside a hunk and `s` / `u` / `x` move only those: the body is
+  rewritten (unselected `+` dropped, unselected `-` contextualised,
+  counts recounted), mirrored for the reverse direction by one direction
+  flag. `ActionContext` gained `selection` — design §5.2's "Visual mode
+  IS the active region" reaching mode action handlers — and the
+  transient-item path carries it too, without which a region `x` would
+  ask about the selection and discard the whole hunk. **MG.18 (hunk
+  staging) is complete.**
+- **MG.19, MG.21 remain open** — per-slice status and sequencing
   live in
   [`slice-plans/magit.md`](slice-plans/magit.md), which is
   authoritative for this subsystem. (The 2026-07-26 audit found

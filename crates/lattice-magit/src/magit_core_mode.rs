@@ -244,6 +244,17 @@ pub(crate) enum HunkOp {
 }
 
 impl HunkOp {
+    /// MG.18e: which side of the patch the target already holds, which
+    /// is what the region rewrite needs to know. The same fact
+    /// [`Self::apply_flags`]' `reverse` encodes, named for the rewrite
+    /// rather than for git's argv so the two cannot drift apart.
+    fn direction(self) -> crate::hunk::ApplyDirection {
+        match self {
+            HunkOp::Stage => crate::hunk::ApplyDirection::Forward,
+            HunkOp::Unstage | HunkOp::Discard => crate::hunk::ApplyDirection::Reverse,
+        }
+    }
+
     /// `(cached, reverse)` for `Index::apply_patch`.
     fn apply_flags(self) -> (bool, bool) {
         match self {
@@ -310,7 +321,56 @@ pub(crate) enum HunkResolution {
         /// `None` when the hunk's own header names no file — nothing to
         /// find again, so the refresh leaves the cursor alone.
         site: Option<crate::cursor_restore::HunkSite>,
+        /// MG.18e: how many changed lines a Visual-mode region selected,
+        /// or `None` for a whole hunk. Named in the echo and the discard
+        /// prompt so a selection that reached past this hunk reads as
+        /// what it did, not as what the user drew.
+        region_lines: Option<usize>,
     },
+}
+
+/// MG.18e: what the active region did to the hunk under the cursor.
+enum RegionOutcome {
+    /// No region, or one that covers the whole hunk — the unrestricted
+    /// patch, byte-identical to what a Normal-mode press produces.
+    Whole,
+    /// The region selected some of the hunk's changes.
+    Restricted(crate::hunk::HunkPatch),
+    /// The region is inside the hunk but holds no `+`/`-` line, so
+    /// there is nothing to move.
+    Empty,
+}
+
+/// Narrow `whole` to the active region, if there is one.
+///
+/// The region is intersected with the hunk under the cursor: rows
+/// outside it belong to other hunks or other entries, and a selection
+/// that reaches past this hunk acts on the part inside it. That is a
+/// deliberate one-hunk-at-a-time limit — magit's own region can span
+/// hunks, which needs a multi-hunk patch builder, so the echo names the
+/// hunk it acted on rather than implying it did more.
+fn region_of(whole: &crate::hunk::HunkPatch, ctx: &ActionContext<'_>, op: HunkOp) -> RegionOutcome {
+    let Some(region) = ctx.selection else {
+        return RegionOutcome::Whole;
+    };
+    let rows = region.start.line as usize..=region.end.line as usize;
+    // A region covering the hunk end-to-end is not a special case: the
+    // rewrite reproduces the whole patch. Short-circuiting it keeps the
+    // verbatim header (and its round-trip proof) on the common path.
+    if *rows.start() <= whole.header_line + 1 && *rows.end() >= whole.end_line.saturating_sub(1) {
+        return RegionOutcome::Whole;
+    }
+    match whole.restrict_to_rows(rows, op.direction()) {
+        Some(patch) => RegionOutcome::Restricted(patch),
+        None => RegionOutcome::Empty,
+    }
+}
+
+fn echo(text: String) -> Effect {
+    Effect::Echo {
+        level: lattice_grammar::EchoLevel::Info,
+        text,
+    }
 }
 
 /// MG.18d: name the work this hunk is, so the rebuilt buffer can be
@@ -346,8 +406,33 @@ pub(crate) fn resolve_hunk(ctx: &ActionContext<'_>, op: HunkOp) -> HunkResolutio
         return HunkResolution::FileLevel;
     };
     let buffer_id = BufferId(ctx.buffer_id.0 as u32);
-    let Some(patch) = hunk_at_cursor(&store, buffer_id, ctx.cursor.line) else {
+    let Some(whole) = hunk_at_cursor(&store, buffer_id, ctx.cursor.line) else {
         return HunkResolution::FileLevel;
+    };
+    // MG.18e: a Visual-mode selection narrows the hunk to the lines it
+    // covers. Resolved BEFORE the source gate so "nothing selectable
+    // there" is answered ahead of "wrong side" — the user picked those
+    // rows deliberately, and telling them the selection was empty is
+    // more useful than a staged/unstaged lecture.
+    let (patch, region_lines) = match region_of(&whole, ctx, op) {
+        RegionOutcome::Whole => (whole, None),
+        RegionOutcome::Restricted(patch) => {
+            // Every `+`/`-` still carrying its marker is a selected
+            // change: the rewrite contextualised or dropped the rest.
+            let lines = patch
+                .hunk
+                .iter()
+                .skip(1)
+                .filter(|l| l.starts_with('+') || l.starts_with('-'))
+                .count();
+            (patch, Some(lines))
+        }
+        RegionOutcome::Empty => {
+            return HunkResolution::Refused(echo(format!(
+                "magit: nothing to {} in the selection — it holds no added or removed lines",
+                op.present()
+            )));
+        }
     };
     let hint = match view.diff_source(ctx.cursor) {
         Some(source) if source == op.requires() => {
@@ -357,6 +442,7 @@ pub(crate) fn resolve_hunk(ctx: &ActionContext<'_>, op: HunkOp) -> HunkResolutio
                     view,
                     workdir,
                     patch,
+                    region_lines,
                 },
                 // A view that stages but cannot name its repository is
                 // a wiring bug, not a user error; decline rather than
@@ -390,6 +476,7 @@ pub(crate) fn spawn_hunk_apply(
     patch: crate::hunk::HunkPatch,
     op: HunkOp,
     site: Option<crate::cursor_restore::HunkSite>,
+    region_lines: Option<usize>,
 ) -> Effect {
     let location = patch.display_location();
     let text = patch.to_patch();
@@ -424,9 +511,34 @@ pub(crate) fn spawn_hunk_apply(
             None => view.refresh(),
         };
     });
-    Effect::Echo {
+    announce(op, &location, region_lines)
+}
+
+/// What the user is told, and whether Visual mode ends.
+///
+/// Split out so both are testable without spawning the git call the
+/// caller has already started.
+fn announce(op: HunkOp, location: &str, region_lines: Option<usize>) -> Effect {
+    let echo = Effect::Echo {
         level: lattice_grammar::EchoLevel::Info,
-        text: format!("magit: {} hunk at {location}", op.past()),
+        text: match region_lines {
+            // Name the count, not "the selection": a region that reached
+            // past this hunk acted on the part inside it, and "3 lines"
+            // says so where "the selection" would not.
+            Some(1) => format!("magit: {} 1 line of {location}", op.past()),
+            Some(n) => format!("magit: {} {n} lines of {location}", op.past()),
+            None => format!("magit: {} hunk at {location}", op.past()),
+        },
+    };
+    match region_lines {
+        // Acting on a region consumes it, the way a Visual-mode operator
+        // does in vim — staying selected would invite a second `s` over
+        // rows whose meaning just changed under the refresh.
+        Some(_) => Effect::Many(vec![
+            Effect::EnterMode(lattice_grammar::ModalState::Normal),
+            echo,
+        ]),
+        None => echo,
     }
 }
 
@@ -440,7 +552,15 @@ fn stage_or_unstage(ctx: &ActionContext<'_>, op: HunkOp) -> Option<Effect> {
             workdir,
             patch,
             site,
-        } => Some(spawn_hunk_apply(view, workdir, patch, op, site)),
+            region_lines,
+        } => Some(spawn_hunk_apply(
+            view,
+            workdir,
+            patch,
+            op,
+            site,
+            region_lines,
+        )),
         HunkResolution::Refused(effect) => Some(effect),
         HunkResolution::FileLevel => {
             let view = crate::buffer_state::view_for(ctx)?;
@@ -760,11 +880,25 @@ index 111..222 100644
 
     /// Run the ladder the way a chord press does.
     fn resolve(cursor_line: u32, source: Option<DiffSource>, op: HunkOp) -> HunkResolution {
+        resolve_with_region(cursor_line, None, source, op)
+    }
+
+    /// MG.18e: the same, with a Visual-mode region live — `rows` is the
+    /// inclusive buffer-row span the selection covers.
+    fn resolve_with_region(
+        cursor_line: u32,
+        rows: Option<(u32, u32)>,
+        source: Option<DiffSource>,
+        op: HunkOp,
+    ) -> HunkResolution {
         let (services, id) = services_for(DIFF, source);
         let events = lattice_runtime::EventBus::new();
         let ctx = ActionContext {
             buffer_id: lattice_protocol::ids::BufferId::new(id.0 as u64),
             cursor: Position::new(cursor_line, 0),
+            selection: rows.map(|(a, b)| {
+                lattice_protocol::position::Range::new(Position::new(a, 0), Position::new(b, 0))
+            }),
             services: &services,
             events: &events,
             prompt_value: None,
@@ -847,6 +981,159 @@ index 111..222 100644
             text.contains("file header"),
             "and must point at the way to stage the file deliberately: {text}"
         );
+    }
+
+    // ── MG.18e: the region path through a real buffer ──
+    //
+    // `DIFF`'s body is row 5 ` keep`, row 6 `-old`, row 7 `+new`.
+
+    /// A region over one changed line narrows the patch to it and
+    /// reports the count, so the echo cannot imply more than happened.
+    #[test]
+    fn a_region_over_one_line_narrows_the_patch_and_counts_it() {
+        match resolve_with_region(7, Some((7, 7)), Some(DiffSource::Unstaged), HunkOp::Stage) {
+            HunkResolution::Ready {
+                patch,
+                region_lines,
+                ..
+            } => {
+                assert_eq!(region_lines, Some(1), "one changed line selected");
+                let text = patch.to_patch();
+                assert!(text.contains("+new"), "{text}");
+                assert!(
+                    text.contains(" old"),
+                    "the unselected removal became context, not a deletion:\n{text}"
+                );
+                assert!(
+                    !text.contains("-old"),
+                    "and must NOT still be a removal:\n{text}"
+                );
+            }
+            other => panic!("expected Ready, got {}", label(&other)),
+        }
+    }
+
+    /// A region covering the whole body is not a special case — it must
+    /// produce the identical whole-hunk patch, with no region reported,
+    /// so `V` over a hunk and a bare `s` on it cannot diverge.
+    #[test]
+    fn a_region_covering_the_whole_hunk_is_the_whole_hunk() {
+        let whole = match resolve(6, Some(DiffSource::Unstaged), HunkOp::Stage) {
+            HunkResolution::Ready { patch, .. } => patch.to_patch(),
+            other => panic!("expected Ready, got {}", label(&other)),
+        };
+        match resolve_with_region(6, Some((5, 7)), Some(DiffSource::Unstaged), HunkOp::Stage) {
+            HunkResolution::Ready {
+                patch,
+                region_lines,
+                ..
+            } => {
+                assert_eq!(patch.to_patch(), whole);
+                assert_eq!(
+                    region_lines, None,
+                    "no region to announce — this IS the hunk"
+                );
+            }
+            other => panic!("expected Ready, got {}", label(&other)),
+        }
+    }
+
+    /// Selecting only context is refused with a reason, not handed to
+    /// git as a patch that does nothing.
+    #[test]
+    fn a_region_holding_only_context_is_refused() {
+        let text = refusal_text(resolve_with_region(
+            5,
+            Some((5, 5)),
+            Some(DiffSource::Unstaged),
+            HunkOp::Stage,
+        ));
+        assert!(text.contains("nothing to stage in the selection"), "{text}");
+    }
+
+    /// The refusal for an empty selection comes BEFORE the staged/unstaged
+    /// gate: the user picked those rows deliberately, and "there is
+    /// nothing there" is more useful than a lecture about which side of
+    /// the index they are on.
+    #[test]
+    fn an_empty_region_is_answered_before_the_source_gate() {
+        let text = refusal_text(resolve_with_region(
+            5,
+            Some((5, 5)),
+            // Wrong side for `s` — which would normally refuse first.
+            Some(DiffSource::Staged),
+            HunkOp::Stage,
+        ));
+        assert!(
+            text.contains("nothing to stage in the selection"),
+            "the selection is answered first: {text}"
+        );
+    }
+
+    /// A region outside the hunk entirely leaves nothing selected inside
+    /// it, so the operation declines rather than silently acting on the
+    /// whole hunk.
+    #[test]
+    fn a_region_that_misses_the_hunk_body_is_refused() {
+        let text = refusal_text(resolve_with_region(
+            6,
+            // Rows 0..=2 are the `diff --git` / `index` / `---` header.
+            Some((0, 2)),
+            Some(DiffSource::Unstaged),
+            HunkOp::Stage,
+        ));
+        assert!(text.contains("nothing to stage in the selection"), "{text}");
+    }
+
+    /// A region action ends Visual mode, like any vim operator on a
+    /// selection — and the echo says how many lines moved.
+    #[test]
+    fn acting_on_a_region_leaves_visual_mode_and_names_the_count() {
+        match announce(HunkOp::Stage, "a.txt:1", Some(2)) {
+            Effect::Many(parts) => {
+                assert!(
+                    matches!(
+                        parts.first(),
+                        Some(Effect::EnterMode(lattice_grammar::ModalState::Normal))
+                    ),
+                    "Visual ends first, so the echo is what the user is left looking at"
+                );
+                match parts.get(1) {
+                    Some(Effect::Echo { text, .. }) => {
+                        assert!(text.contains("staged 2 lines of a.txt:1"), "{text}")
+                    }
+                    other => panic!("expected an Echo, got {other:?}"),
+                }
+            }
+            other => panic!("expected Many, got {other:?}"),
+        }
+    }
+
+    /// A whole-hunk press was never in Visual mode, so it must not emit
+    /// a mode change — that would exit Visual for an unrelated reason if
+    /// the user happened to be in it.
+    #[test]
+    fn a_whole_hunk_action_only_echoes() {
+        match announce(HunkOp::Unstage, "a.txt:1", None) {
+            Effect::Echo { text, .. } => {
+                assert!(text.contains("unstaged hunk at a.txt:1"), "{text}")
+            }
+            other => panic!("expected a bare Echo, got {other:?}"),
+        }
+    }
+
+    /// One line reads as "1 line", not "1 lines".
+    #[test]
+    fn a_single_line_region_is_announced_in_the_singular() {
+        match announce(HunkOp::Discard, "a.txt:9", Some(1)) {
+            Effect::Many(parts) => match parts.get(1) {
+                Some(Effect::Echo { text, .. }) => {
+                    assert!(text.contains("discarded 1 line of"), "{text}")
+                }
+                other => panic!("expected an Echo, got {other:?}"),
+            },
+            other => panic!("expected Many, got {other:?}"),
+        }
     }
 
     fn label(r: &HunkResolution) -> &'static str {

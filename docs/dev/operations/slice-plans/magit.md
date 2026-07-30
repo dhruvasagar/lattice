@@ -34,7 +34,7 @@ owns *what* and *why*.
 | MG.16 | Remote/stash ex-command parity (`:magit-push` etc.) | MG.8 | ✅ |
 | MG.17a | Transient flags (`--force-with-lease`, `--prune`, …) + preview | MG.8 | ✅ |
 | MG.17b | Transient `Argument` items (prompt → back to the menu) | MG.17a | ✅ |
-| MG.18 | Hunk-level staging (sliced a–e) | MG.5, MG.13 | 📝 |
+| MG.18 | Hunk-level staging (sliced a–e) | MG.5, MG.13 | ✅ |
 | MG.19 | magit-diff side-by-side + `do`/`dp` | MG.18, D.4 | 📝 |
 | MG.20 | Operation coverage — reset / revert / cherry-pick | MG.17a | ✅ |
 | MG.21 | Remaining operations — tag, merge beyond `m`, bisect, submodule, remotes | MG.17b | 📝 |
@@ -887,13 +887,18 @@ Design fragment:
 | MG.18b | Hunk parser + patch synthesizer as pure functions, round-trip tested | MG.18a | ✅ |
 | MG.18c | `s`/`u`/`x` resolve hunk-at-cursor, file-level fallback preserved | MG.18b | ✅ |
 | MG.18d | Re-expand the entry + restore cursor to the next hunk after a mutation | MG.18c | ✅ |
-| MG.18e | Region (visual-mode) staging — the hunk-splitting rewrite | MG.18c | 📝 |
+| MG.18e | Region (visual-mode) staging — the hunk-splitting rewrite | MG.18c | ✅ |
 
 MG.18a is independent of the hunk-identity choice and removes a
 live landmine (the stubs silently stage whole files), so it lands
 first regardless. Value arrives at MG.18c; MG.18d is not optional
 polish — at hunk granularity, losing the user's place after every
 stage defeats the feature.
+
+**All five landed (2026-07-29 / 30).** Two follow-ups were left out
+deliberately and are recorded in MG.18e: a region spanning several
+hunks, and `apply_patch --index` so `x` on a staged hunk can discard
+from index and worktree atomically instead of refusing.
 
 #### MG.18c — `s` / `u` / `x` on the hunk at the cursor ✅ (2026-07-29)
 
@@ -960,7 +965,7 @@ an O(document) copy on the actor thread for one keypress.
 - **Not shipped:** the cursor lands wherever the refresh puts it
   (MG.18d), and region staging is MG.18e. `x` on a staged hunk refuses
   rather than discarding from index + worktree; that wants
-  `apply_patch --index`, which MG.18e's rewrite is the right time for.
+  `apply_patch --index`; MG.18e shipped without it (see there).
 
 #### MG.18d — the buffer and the cursor survive a mutation ✅ (2026-07-29)
 
@@ -1012,9 +1017,69 @@ header in a diff buffer.
   a count equal to exactly the rows it added, and the wake test —
   verified non-vacuous by reverting the bus to a `tick_callback` and
   watching it fail on the message that names the bug.
-- **Not shipped:** region staging (MG.18e). The cursor is not restored
-  after a *file-level* stage — the entry is gone from its section by
-  definition, and the anchor rule correctly declines.
+- **Not shipped here:** region staging, which landed as MG.18e below.
+  The cursor is not restored after a *file-level* stage — the entry is
+  gone from its section by definition, and the anchor rule correctly
+  declines.
+
+#### MG.18e — region staging ✅ (2026-07-30)
+
+Select lines inside a hunk, press `s` / `u` / `x`, and only those lines
+move. Emacs magit's most-used partial-stage path, and the last piece of
+MG.18.
+
+**The rewrite is the slice.** A region is not a smaller hunk — the body
+is rewritten so the patch still describes a complete transformation:
+selected `+`/`-` stay, unselected `+` are **dropped**, unselected `-`
+become **context**, and both counts are recounted from the result.
+Reversed (`u` / `x`) the roles swap exactly, so it is one function with a
+direction flag. The asymmetry is not a convention: applying forward the
+target holds the old side, so an unselected `+` is not there and must
+not appear, while an unselected `-` is there and survives.
+
+Both `@@` **start** lines are kept verbatim — whichever side the target
+matches is preserved line-for-line by those rules, and the other side's
+start is not something git checks. The counts are what git validates
+("corrupt patch"), which is why two round-trips against real git carry
+the proof rather than the unit table alone.
+
+**`ActionContext::selection`** is how the handler sees the region: the
+Visual/Select extent, normalised, on the host-built context object.
+Design §5.2 already says "Visual mode IS the active region" and makes
+`Range::Selection` the default range argument for ex-commands; this is
+that reaching mode action handlers. No visual kind — a diff line is the
+unit of every consumer so far. No WIT impact: the mirrored
+`ActionContext` is `lattice_grammar`'s, a different type.
+
+**The transient path had to carry it too**, and this is the bit worth
+remembering: `Effect::Confirm` opens a transient, so a destructive
+action's execute half re-resolves through the transient-item context.
+With `selection: None` there, a region `x` would have asked about 2
+lines and then discarded the whole hunk — a silent escalation of the one
+action that asks first. Safe to carry because `open_transient` touches
+neither the modal state nor the anchor, and the transient owns every
+keystroke while open (the same argument §12.13's cursor re-resolution
+already rests on).
+
+**Scoped to one hunk.** The region is intersected with the hunk under
+the cursor; magit's multi-hunk region needs a multi-hunk patch builder,
+so the echo names the count (`staged 3 lines of src/main.rs:42`) instead
+of implying more. An empty selection is refused *before* the
+staged/unstaged gate — the rows were picked deliberately. Acting on a
+region ends Visual, like any vim operator on a selection.
+
+- **Tests:** 9 pure rewrite cases (all-selected byte-identical to the
+  whole hunk, context-only refused, adds-only, removes-only,
+  interleaved, the reverse mirror, over-wide clamp, header suffix
+  preserved, a `\ No newline` marker dropped with its line), 2 git
+  round-trips (stage and unstage a single line of a two-change hunk),
+  5 wiring cases through a real buffer, 3 for the echo/Visual-exit
+  shape, and 3 for the host's `active_region` (normalised either way,
+  none outside Visual, Select counts).
+- **Deferred, deliberately:** a region spanning several hunks; and
+  `apply_patch --index` so `x` on a *staged* hunk could discard from
+  index and worktree atomically instead of refusing (MG.18c's note).
+  Both are additive and neither blocks MG.19.
 
 #### Original scoping notes
 

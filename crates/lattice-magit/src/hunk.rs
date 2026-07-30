@@ -116,6 +116,147 @@ impl HunkPatch {
     }
 }
 
+/// Which way a patch will be handed to `git apply`, and therefore
+/// which side of it the target already matches.
+///
+/// MG.18e: this is the only thing that distinguishes staging a region
+/// from unstaging one. The two are mirror images — one function with a
+/// flag, not two that can drift.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApplyDirection {
+    /// `s` — the target holds the hunk's **old** side.
+    Forward,
+    /// `u` / `x` — the target holds the hunk's **new** side.
+    Reverse,
+}
+
+impl HunkPatch {
+    /// MG.18e: rewrite this hunk to carry only the changes on the buffer
+    /// rows in `selected`.
+    ///
+    /// Region staging is not "a smaller hunk" — the body has to be
+    /// *rewritten*, because a patch must still describe a complete
+    /// transformation of the region it covers:
+    ///
+    /// | Line | Selected | Unselected (`Forward`) | Unselected (`Reverse`) |
+    /// |---|---|---|---|
+    /// | `+added` | stays `+` | **dropped** | becomes context |
+    /// | `-removed` | stays `-` | becomes context | **dropped** |
+    /// | context | context | context | context |
+    ///
+    /// The asymmetry is not a convention, it is what the target
+    /// contains. Applying forward, the target holds the old side: an
+    /// unselected `+` is not there and must not appear at all, while an
+    /// unselected `-` *is* there and survives — i.e. context. Reversed,
+    /// the target holds the new side and the roles swap exactly.
+    ///
+    /// Both counts are recounted from the rewritten body; `git apply`
+    /// validates them against it and rejects the patch outright if they
+    /// disagree ("corrupt patch"). The two **start** lines are kept
+    /// verbatim: whichever side the target matches is preserved
+    /// line-for-line by the rules above, so its start is still correct,
+    /// and the other side's start is not something git checks.
+    ///
+    /// `None` when the selection contains no `+`/`-` line at all — a
+    /// body of pure context is a patch that does nothing, and telling
+    /// the user "nothing to stage there" beats handing git a no-op.
+    pub fn restrict_to_rows(
+        &self,
+        selected: std::ops::RangeInclusive<usize>,
+        direction: ApplyDirection,
+    ) -> Option<HunkPatch> {
+        let mut body: Vec<String> = Vec::new();
+        let mut selected_changes = 0usize;
+        // `\ No newline at end of file` annotates the line above it, so
+        // it rides along only if that line survived. Dropping the line
+        // and keeping its marker would attach it to whatever came
+        // before, silently changing THAT line's trailing newline.
+        let mut kept_previous = false;
+
+        for (k, line) in self.hunk.iter().enumerate().skip(1) {
+            // The parser consumed the body contiguously, markers
+            // included, so `hunk[k]` is buffer row `header_line + k`.
+            let row = self.header_line + k;
+            if line.starts_with('\\') {
+                if kept_previous {
+                    body.push(line.clone());
+                }
+                continue;
+            }
+            let marker = line.chars().next();
+            let is_change = matches!(marker, Some('+') | Some('-'));
+            if !is_change {
+                body.push(line.clone());
+                kept_previous = true;
+                continue;
+            }
+            let is_add = marker == Some('+');
+            if selected.contains(&row) {
+                body.push(line.clone());
+                kept_previous = true;
+                selected_changes += 1;
+                continue;
+            }
+            let dropped = match direction {
+                ApplyDirection::Forward => is_add,
+                ApplyDirection::Reverse => !is_add,
+            };
+            if dropped {
+                kept_previous = false;
+            } else {
+                // Contextualise: same content, no marker. `+`/`-` are
+                // one byte, so the slice is char-boundary safe.
+                body.push(format!(" {}", &line[1..]));
+                kept_previous = true;
+            }
+        }
+
+        if selected_changes == 0 {
+            return None;
+        }
+
+        let old = body
+            .iter()
+            .filter(|l| !l.starts_with('\\') && !l.starts_with('+'))
+            .count();
+        let new = body
+            .iter()
+            .filter(|l| !l.starts_with('\\') && !l.starts_with('-'))
+            .count();
+        let header = rewrite_hunk_header(self.hunk.first()?, old, new)?;
+
+        let mut hunk = Vec::with_capacity(body.len() + 1);
+        hunk.push(header);
+        hunk.extend(body);
+        Some(HunkPatch {
+            header: self.header.clone(),
+            hunk,
+            header_line: self.header_line,
+            end_line: self.end_line,
+        })
+    }
+}
+
+/// Rebuild an `@@` header with new counts, keeping both starts and any
+/// trailing function-context suffix git emitted.
+fn rewrite_hunk_header(original: &str, old: usize, new: usize) -> Option<String> {
+    let trimmed = original.trim_end();
+    let starts = parse_hunk_starts(trimmed)?;
+    // Everything after the closing `@@` — git's function-context hint.
+    // Carried through rather than recomputed: it is a display aid, and
+    // deriving it would mean guessing at the language's idea of an
+    // enclosing definition.
+    let suffix = trimmed
+        .strip_prefix("@@ ")
+        .and_then(|rest| rest.split_once(" @@"))
+        .map(|(_, after)| after)
+        .unwrap_or("");
+    Some(format!(
+        "@@ -{},{} +{},{} @@{}",
+        starts.old, old, starts.new, new, suffix
+    ))
+}
+
 /// The `-old,count +new,count` line counts declared by an `@@` header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct HunkCounts {
@@ -147,7 +288,6 @@ fn parse_range_count(range: &str) -> Option<usize> {
 /// The `-old +new` **start lines** declared by an `@@` header — the
 /// file positions, used only to name the hunk in prompts.
 struct HunkStarts {
-    #[allow(dead_code)]
     old: usize,
     new: usize,
 }
@@ -720,6 +860,201 @@ diff --git a/gone.txt b/gone.txt
     }
 }
 
+/// MG.18e: the region rewrite, as a table.
+///
+/// Rows 5–8 of `REGION` are the body: ` keep`, `-old-a`, `-old-b`,
+/// `+new-a`, `+new-b` — enough to select adds only, removes only, an
+/// interleaved slice, the first change, and the last.
+#[cfg(test)]
+mod region {
+    use super::*;
+
+    const REGION: &str = "\
+diff --git a/a.txt b/a.txt
+index 111..222 100644
+--- a/a.txt
++++ b/a.txt
+@@ -1,3 +1,3 @@
+ keep
+-old-a
+-old-b
++new-a
++new-b
+";
+    /// Body rows, by name, so the tests read as intent not arithmetic.
+    const KEEP: usize = 5;
+    const OLD_A: usize = 6;
+    const OLD_B: usize = 7;
+    const NEW_A: usize = 8;
+    const NEW_B: usize = 9;
+
+    fn whole() -> HunkPatch {
+        let lines: Vec<&str> = REGION.lines().collect();
+        hunk_at(&lines, OLD_A).expect("the fixture parses")
+    }
+
+    fn body(p: &HunkPatch) -> Vec<&str> {
+        p.hunk.iter().map(String::as_str).collect()
+    }
+
+    /// The boundary case that keeps the two paths honest: selecting
+    /// every line must produce exactly what whole-hunk staging does.
+    #[test]
+    fn selecting_the_whole_body_reproduces_the_whole_hunk_patch() {
+        let whole = whole();
+        let restricted = whole
+            .restrict_to_rows(KEEP..=NEW_B, ApplyDirection::Forward)
+            .expect("changes are selected");
+        assert_eq!(
+            restricted.to_patch(),
+            whole.to_patch(),
+            "an all-selected region is not a special case, it IS the hunk"
+        );
+    }
+
+    /// Selecting nothing changeable is not an empty patch — it is a
+    /// refusal, so the caller can say "nothing to stage there".
+    #[test]
+    fn a_selection_with_no_change_in_it_is_refused() {
+        assert!(
+            whole()
+                .restrict_to_rows(KEEP..=KEEP, ApplyDirection::Forward)
+                .is_none(),
+            "a context-only selection would be a patch that does nothing"
+        );
+    }
+
+    /// Staging one added line: the other addition is DROPPED (it is not
+    /// in the index yet, so it cannot appear at all), and both removals
+    /// become context (they are still in the index).
+    #[test]
+    fn staging_one_addition_drops_the_other_and_contextualises_removals() {
+        let p = whole()
+            .restrict_to_rows(NEW_A..=NEW_A, ApplyDirection::Forward)
+            .expect("one addition selected");
+        assert_eq!(
+            body(&p),
+            vec!["@@ -1,3 +1,4 @@", " keep", " old-a", " old-b", "+new-a"],
+            "old side unchanged (3 lines), new side gains exactly the one addition"
+        );
+    }
+
+    /// Staging one removal: it stays `-`, the other removal becomes
+    /// context, and BOTH additions vanish.
+    #[test]
+    fn staging_one_removal_keeps_it_and_drops_every_addition() {
+        let p = whole()
+            .restrict_to_rows(OLD_B..=OLD_B, ApplyDirection::Forward)
+            .expect("one removal selected");
+        assert_eq!(
+            body(&p),
+            vec!["@@ -1,3 +1,2 @@", " keep", " old-a", "-old-b"],
+        );
+    }
+
+    /// The mirror image. Unstaging reverses the roles: an unselected
+    /// addition is in the index and survives as context; an unselected
+    /// removal is not, and goes.
+    #[test]
+    fn unstaging_mirrors_the_rules_exactly() {
+        let p = whole()
+            .restrict_to_rows(OLD_A..=OLD_A, ApplyDirection::Reverse)
+            .expect("one removal selected");
+        assert_eq!(
+            body(&p),
+            vec!["@@ -1,4 +1,3 @@", " keep", "-old-a", " new-a", " new-b"],
+            "new side unchanged at 3 — it is what a reverse apply matches. The old \
+             side is 4 because un-removing `old-a` puts it back ALONGSIDE the \
+             additions that stay staged."
+        );
+    }
+
+    /// An interleaved selection exercises both rules in one body.
+    #[test]
+    fn an_interleaved_selection_applies_both_rules() {
+        let p = whole()
+            .restrict_to_rows(OLD_B..=NEW_A, ApplyDirection::Forward)
+            .expect("one removal and one addition selected");
+        assert_eq!(
+            body(&p),
+            vec!["@@ -1,3 +1,3 @@", " keep", " old-a", "-old-b", "+new-a"],
+        );
+    }
+
+    /// A selection reaching past the hunk in either direction clamps to
+    /// the body — the cursor's hunk is the unit, and rows outside it
+    /// belong to other entries.
+    #[test]
+    fn a_selection_wider_than_the_hunk_clamps_to_its_body() {
+        let p = whole()
+            .restrict_to_rows(0..=999, ApplyDirection::Forward)
+            .expect("everything selected");
+        assert_eq!(p.to_patch(), whole().to_patch());
+    }
+
+    /// The header's function-context suffix is a display hint git
+    /// emitted; recomputing it would mean guessing at the language's
+    /// idea of an enclosing definition, so it rides through.
+    #[test]
+    fn the_headers_function_context_suffix_survives_the_rewrite() {
+        let text = "\
+diff --git a/a.rs b/a.rs
+--- a/a.rs
++++ b/a.rs
+@@ -10,1 +10,1 @@ fn main() {
+-old
++new
+";
+        let lines: Vec<&str> = text.lines().collect();
+        let p = hunk_at(&lines, 4)
+            .expect("parses")
+            .restrict_to_rows(4..=4, ApplyDirection::Forward)
+            .expect("the removal is selected");
+        assert_eq!(
+            p.hunk[0], "@@ -10,1 +10,0 @@ fn main() {",
+            "starts and suffix kept, counts recomputed"
+        );
+    }
+
+    /// A `\ No newline` marker annotates the line above it. If that line
+    /// is dropped the marker must go too, or it re-attaches to whatever
+    /// came before and silently changes THAT line's trailing newline.
+    #[test]
+    fn a_marker_whose_line_was_dropped_is_dropped_with_it() {
+        let text = "\
+diff --git a/a.txt b/a.txt
+--- a/a.txt
++++ b/a.txt
+@@ -1,2 +1,2 @@
+ keep
+-old
++new
+\\ No newline at end of file
+";
+        let lines: Vec<&str> = text.lines().collect();
+        let whole = hunk_at(&lines, 5).expect("parses");
+        // Select the removal only: the addition (row 6) is dropped, and
+        // its marker (row 7) must not survive it.
+        let p = whole
+            .restrict_to_rows(5..=5, ApplyDirection::Forward)
+            .expect("the removal is selected");
+        assert!(
+            !p.hunk.iter().any(|l| l.starts_with('\\')),
+            "the marker belonged to the dropped line: {:?}",
+            p.hunk
+        );
+        // Selecting the addition keeps both.
+        let p = whole
+            .restrict_to_rows(6..=6, ApplyDirection::Forward)
+            .expect("the addition is selected");
+        assert!(
+            p.hunk.last().is_some_and(|l| l.starts_with('\\')),
+            "kept with the line it annotates: {:?}",
+            p.hunk
+        );
+    }
+}
+
 /// MG.18b round-trip: the parser's output must be a patch **git
 /// accepts**. Unit tests above prove the parse is self-consistent;
 /// only git can prove it is correct.
@@ -846,6 +1181,110 @@ mod git_round_trip {
         let still = git(p, &["diff", "--cached", "--", "a.txt"]);
         assert!(!still.contains("line 2 CHANGED"), "{still}");
         assert!(still.contains("line 19 CHANGED"), "{still}");
+    }
+
+    /// MG.18e: a repo whose edit produces ONE hunk containing two
+    /// removals and two additions — the shape region staging exists
+    /// for.
+    fn one_hunk_two_changes_repo() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let p = dir.path();
+        git_ok(p, &["init"]);
+        git_ok(p, &["config", "user.email", "t@lattice.dev"]);
+        git_ok(p, &["config", "user.name", "lattice-test"]);
+        let base: String = (1..=10).map(|i| format!("line {i}\n")).collect();
+        std::fs::write(p.join("a.txt"), &base).unwrap();
+        git_ok(p, &["add", "a.txt"]);
+        git_ok(p, &["commit", "-m", "base"]);
+        let edited: String = (1..=10)
+            .map(|i| match i {
+                4 => "line 4 EDITED\n".to_string(),
+                5 => "line 5 EDITED\n".to_string(),
+                _ => format!("line {i}\n"),
+            })
+            .collect();
+        std::fs::write(p.join("a.txt"), &edited).unwrap();
+        dir
+    }
+
+    /// The row of the body line whose text contains `needle`.
+    fn row_containing(text: &str, needle: &str) -> usize {
+        text.lines()
+            .position(|l| l.contains(needle))
+            .unwrap_or_else(|| panic!("no line containing {needle:?} in:\n{text}"))
+    }
+
+    /// The counts are the part `git apply` validates — a rewritten body
+    /// with a stale header is rejected as "corrupt patch". Only git can
+    /// prove the arithmetic.
+    #[test]
+    fn a_region_patch_stages_only_the_selected_line() {
+        let dir = one_hunk_two_changes_repo();
+        let p = dir.path();
+        let diff = git(p, &["diff", "--", "a.txt"]);
+        let lines: Vec<&str> = diff.lines().collect();
+
+        let removal = row_containing(&diff, "-line 4");
+        let whole = hunk_at(&lines, removal).expect("cursor inside the hunk");
+        let region = whole
+            .restrict_to_rows(removal..=removal, ApplyDirection::Forward)
+            .expect("one removal selected");
+
+        let repo = lattice_vcs::Repository::discover(p).expect("discover");
+        lattice_vcs::Index::apply_patch(&repo, &region.to_patch(), true, false)
+            .expect("git must accept the rewritten hunk");
+
+        let staged = git(p, &["diff", "--cached", "--", "a.txt"]);
+        assert!(
+            staged.contains("-line 4") && !staged.contains("line 4 EDITED"),
+            "only the removal of line 4 reached the index:\n{staged}"
+        );
+        // ` line 5` appears as CONTEXT in the index diff, which is the
+        // point — it is unchanged there. What must be absent is either
+        // changed form of it.
+        assert!(
+            !staged.contains("-line 5") && !staged.contains("line 5 EDITED"),
+            "line 5's change stayed out of the index entirely:\n{staged}"
+        );
+        assert!(
+            std::fs::read_to_string(p.join("a.txt"))
+                .unwrap()
+                .contains("line 4 EDITED"),
+            "the worktree is untouched — staging is an index operation"
+        );
+    }
+
+    /// The reverse direction, against real git: stage everything, then
+    /// unstage one line of it. Proves the mirrored rules produce a
+    /// patch git accepts REVERSED, which is a different validation path
+    /// (it matches the new side, not the old).
+    #[test]
+    fn a_region_patch_unstages_only_the_selected_line() {
+        let dir = one_hunk_two_changes_repo();
+        let p = dir.path();
+        git_ok(p, &["add", "a.txt"]);
+        let staged_diff = git(p, &["diff", "--cached", "--", "a.txt"]);
+        let lines: Vec<&str> = staged_diff.lines().collect();
+
+        let addition = row_containing(&staged_diff, "+line 4 EDITED");
+        let whole = hunk_at(&lines, addition).expect("cursor inside the staged hunk");
+        let region = whole
+            .restrict_to_rows(addition..=addition, ApplyDirection::Reverse)
+            .expect("one addition selected");
+
+        let repo = lattice_vcs::Repository::discover(p).expect("discover");
+        lattice_vcs::Index::apply_patch(&repo, &region.to_patch(), true, true)
+            .expect("git must accept the rewritten hunk reversed");
+
+        let still = git(p, &["diff", "--cached", "--", "a.txt"]);
+        assert!(
+            !still.contains("line 4 EDITED"),
+            "line 4's change left the index:\n{still}"
+        );
+        assert!(
+            still.contains("line 5 EDITED"),
+            "line 5's change is still staged:\n{still}"
+        );
     }
 
     #[test]

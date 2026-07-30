@@ -1,5 +1,5 @@
 ---
-summary: "magit-diff-mode: a read-only diff buffer with hunk- and file-level stage/unstage (s/u) — repo-wide against HEAD, or scoped to one file and one baseline."
+summary: "magit-diff-mode: a read-only diff buffer with line-, hunk- and file-level stage/unstage (s/u) — repo-wide against HEAD, or scoped to one file and one baseline."
 related: [magit, magit-diff, ex:magit-diff]
 ---
 
@@ -23,6 +23,7 @@ list.
 |---|---|
 | `s` | Stage the hunk or file at cursor |
 | `u` | Unstage the hunk or file at cursor |
+| `s` / `u` in Visual | Stage / unstage the selected lines only |
 | `<CR>` | Visit the file at cursor |
 | `gr` | Refresh (re-run the underlying `git diff`) |
 
@@ -36,6 +37,11 @@ use most here.
 file's others alone. With the cursor on a file header — or anywhere
 outside a hunk body — they fall back to the whole file, resolved from
 the nearest `diff --git a/<path> b/<path>` header above.
+
+In Visual mode they act on the **selected lines** rather than the whole
+hunk — select, press `s`, and only those lines are staged. See
+[`magit-status-mode`](help:magit-status-mode) for the details; the rules
+are identical here.
 
 Which chord applies depends on the buffer's scope. A
 `*magit:diff:unstaged:*` buffer stages with `s`; a `*magit:diff:staged:*`
@@ -105,7 +111,8 @@ so a second one would be redundant.
   where you were.
 - **Not yet implemented:** no side-by-side pane layout, no
   `do` / `dp` hunk transfer between panes, no visual-mode partial-hunk
-  staging (stage a *selection* of lines within a hunk). For
+  staging across MORE than one hunk (within one hunk it works — see
+  above). For
   side-by-side diffing of two *files* (as opposed to reviewing git
   state), see [`diff-mode`](help:diff-mode), which is a separate
   feature.

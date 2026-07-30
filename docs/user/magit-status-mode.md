@@ -1,5 +1,5 @@
 ---
-summary: "magit-status: the primary magit workhorse — staged / unstaged / untracked sections, stashes, recent commits, lazy inline diffs (via = for files, <CR> for stashes), a dedicated per-file diff buffer (d), hunk- and file-level staging (s/u/x), commit (cc/ca), and context-aware visit (<CR>, opens the commit buffer for a commit entry)."
+summary: "magit-status: the primary magit workhorse — staged / unstaged / untracked sections, stashes, recent commits, lazy inline diffs (via = for files, <CR> for stashes), a dedicated per-file diff buffer (d), line-, hunk- and file-level staging (s/u/x), commit (cc/ca), and context-aware visit (<CR>, opens the commit buffer for a commit entry)."
 related: [magit, magit-transient, ex:magit-status]
 ---
 
@@ -8,8 +8,8 @@ related: [magit, magit-transient, ex:magit-status]
 The `*magit:status*` buffer is the primary workhorse — a section-
 collapsible view of your repository's current state. It shows every
 changed file organised into sections, lets you stage and unstage a
-whole file or a single hunk, commit, amend, open diffs on demand, and
-navigate between sections, files, and hunks.
+whole file, a single hunk, or just the lines you select, commit, amend,
+open diffs on demand, and navigate between sections, files, and hunks.
 
 Open it with **`C-x g`** or **`:magit-status`** from any buffer.
 
@@ -57,6 +57,7 @@ Open it with **`C-x g`** or **`:magit-status`** from any buffer.
 | `]]` / `[[` | Next / previous top-level section |
 | `]f` / `[f` | Next / previous file or entry within the current section |
 | `]c` / `[c` | Next / previous hunk (within expanded diffs) |
+| `s` / `u` / `x` in Visual | Act on the selected lines only |
 | `TAB` | Toggle section or hunk fold at cursor |
 | `S-TAB` | Cycle section visibility |
 
@@ -188,7 +189,36 @@ the new last hunk; staging a file's only remaining hunk moves it to
 another section, and the cursor stays where the refresh put it rather
 than jumping somewhere arbitrary.
 
-Staging a *selection* of lines within a hunk is still to come (MG.18e).
+### A selection of lines
+
+Enter Visual mode (`V` for lines) inside a hunk, select the lines you
+want, and press the same chord:
+
+| Chord | Action |
+|---|---|
+| `s` | Stage only the selected lines |
+| `u` | Unstage only the selected lines |
+| `x` | Discard only the selected lines — asks first, naming the count |
+
+This is the finest granularity magit offers, and the usual way to split
+one edit across two commits. The echo names what moved (`magit: staged
+3 lines of src/main.rs:42`), and Visual mode ends, as it does after any
+operator on a selection.
+
+Two things worth knowing:
+
+- **One hunk at a time.** The selection is intersected with the hunk
+  your cursor is in; lines outside it are ignored. The echo's count is
+  what actually moved, so a selection drawn across two hunks reads as
+  the smaller number.
+- **A selection with no `+`/`-` line in it does nothing**, and says so —
+  selecting only context lines is not a change to move.
+
+Because of how git formats a diff, a modified line appears as a removal
+*and* an addition, usually with all the removals grouped above all the
+additions. Selecting one line's removal without its addition stages the
+deletion alone, which is valid and occasionally what you want; to move a
+whole modification, select both rows.
 
 `p` (interactively stage via `git add -p`) is disabled outright: it
 shows `magit: interactive git add -p isn't supported yet` rather than

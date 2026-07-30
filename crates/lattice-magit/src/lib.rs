@@ -978,6 +978,44 @@ mod tests {
         );
     }
 
+    /// MG.18e — a view that stages in Normal mode must also stage in
+    /// Visual mode.
+    ///
+    /// The two halves are independent keymap rows, so dropping the
+    /// Visual one is a silent regression: `s` over a selection would
+    /// fall through to vim's substitute, hit the read-only gate, and
+    /// report "buffer is read-only" — which reads as a bug in staging
+    /// rather than a missing binding. Pinning the pairing means the next
+    /// view that gains `s` cannot ship half of it.
+    #[test]
+    fn every_view_that_stages_in_normal_mode_also_stages_over_a_selection() {
+        use lattice_mode::Mode;
+
+        for (label, keymap) in [
+            ("magit-status-mode", MagitStatusMode.keymap()),
+            ("magit-diff-mode", MagitDiffMode.keymap()),
+        ] {
+            let bound = |mode: lattice_keymap::BindingMode, chord: &str| -> Option<&'static str> {
+                keymap
+                    .entries
+                    .iter()
+                    .find(|e| e.modes.contains(&mode) && e.chord == chord)
+                    .and_then(|e| e.command)
+            };
+            for chord in ["s", "u", "x"] {
+                let Some(normal) = bound(lattice_keymap::BindingMode::Normal, chord) else {
+                    continue; // this view does not offer the chord at all
+                };
+                assert_eq!(
+                    bound(lattice_keymap::BindingMode::Visual, chord),
+                    Some(normal),
+                    "{label}: `{chord}` acts in Normal mode but not over a \
+                     selection — region staging is unreachable there"
+                );
+            }
+        }
+    }
+
     /// MG.15 — every chord every magit mode binds must reach a real
     /// handler. Three links, each of which has broken in production:
     ///

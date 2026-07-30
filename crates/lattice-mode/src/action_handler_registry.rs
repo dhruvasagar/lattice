@@ -57,6 +57,23 @@ pub struct ActionContext<'a> {
     pub buffer_id: BufferId,
     /// Active document cursor at the moment the chord fired.
     pub cursor: Position,
+    /// MG.18e: the **active region** — the Visual/Select-mode selection
+    /// extent, normalised so `start <= end`. `None` in Normal mode and
+    /// on every non-chord firing path (prompt submit, transient item,
+    /// a `Confirm` yes-action).
+    ///
+    /// Design §5.2's "Visual mode IS the active region" applied to mode
+    /// action handlers: a chord that fires with a selection up should
+    /// be able to act on it, the same way `Range::Selection` is the
+    /// default range argument for an ex-command. magit's region staging
+    /// is the first consumer — select some lines inside a hunk, press
+    /// `s`, stage only those.
+    ///
+    /// **Carries no visual kind.** A diff line is the unit of every
+    /// consumer so far, and the row span is all they read; adding
+    /// charwise/blockwise distinctions before something needs them
+    /// would be inventing a contract nobody is holding.
+    pub selection: Option<lattice_protocol::position::Range>,
     /// Typed service registry. Handlers look up subsystem
     /// handles they need (`MultibufferRegistryHandle`,
     /// `ProjectSearchServiceHandle`, etc.) via
@@ -360,6 +377,7 @@ mod tests {
         let ctx = ActionContext {
             buffer_id: BufferId::new(0),
             cursor: Position::ZERO,
+            selection: None,
             services: &services,
             events: &events,
             prompt_value: None,

@@ -1,19 +1,20 @@
 # Hunk-level staging
 
-**Status:** designed 2026-07-29. MG.18a (patch-shaped write API),
-MG.18b (hunk parser), MG.18c (`s`/`u`/`x` on the hunk at the cursor)
-and MG.18d (the buffer and cursor survive the refresh) landed; MG.18e
-(region staging) open. Slice plan:
+**Status:** designed 2026-07-29, **complete 2026-07-30**. MG.18a
+(patch-shaped write API), MG.18b (hunk parser), MG.18c (`s`/`u`/`x` on
+the hunk at the cursor), MG.18d (the buffer and cursor survive the
+refresh) and MG.18e (region staging) all landed. Slice plan:
 [`../operations/slice-plans/magit.md`](../operations/slice-plans/magit.md)
 §MG.18.
 
 ## Why
 
-Every `s` / `u` / `x` in every magit view is file-level. `p`
-(`git add -p`) is deliberately disabled — it needs terminal suspend —
-so **there is currently no path to partial staging at all**. That is
-the largest single divergence from Emacs magit, where staging a hunk
-(or a selected region of one) is the ordinary way to build a commit.
+*(Written before the work; kept as the problem statement.)* Every
+`s` / `u` / `x` in every magit view is file-level. `p` (`git add -p`) is
+deliberately disabled — it needs terminal suspend — so **there is
+currently no path to partial staging at all**. That is the largest
+single divergence from Emacs magit, where staging a hunk (or a selected
+region of one) is the ordinary way to build a commit.
 
 ### The stubs are worse than absent
 
@@ -356,16 +357,71 @@ hunk" — the patch must be *rewritten*:
 - The `@@ -old_start,old_count +new_start,new_count @@` counts are
   recomputed from the rewritten body.
 
+The asymmetry is not a convention: it is what the target contains.
+Applying forward, the target holds the old side, so an unselected `+`
+is not there and must not appear at all, while an unselected `-` *is*
+there and survives — i.e. context.
+
 Getting the counts wrong produces a patch git rejects (loud, fine) or
 one that applies at the wrong offset (silent, not fine). The rewrite is
-a pure function over `(hunk, selected_line_set)` and is tested as one,
-independent of git, with a table of cases:
-all-selected (≡ whole hunk), none-selected (≡ no-op, not an empty
-patch), adds-only, removes-only, interleaved, first line, last line.
+a pure function over `(hunk, selected_rows, direction)` and is tested as
+one, independent of git, with a table of cases: all-selected (≡ whole
+hunk, byte-identical), none-selected (a refusal, not an empty patch),
+adds-only, removes-only, interleaved, the header's function-context
+suffix, and a `\ No newline` marker whose line was dropped. Two git
+round-trips then prove both directions produce patches git *accepts* —
+the counts are what git validates, and only git can settle the
+arithmetic.
+
+**The two start lines are kept verbatim.** Whichever side the target
+matches is preserved line-for-line by the rules above, so its start is
+still correct; the other side's start is not something git checks.
 
 **Reverse direction:** unstaging a region reverses the roles — dropping
 unselected `-` and contextualising unselected `+`. One function with a
 direction flag, not two, so the two can't drift.
+
+### How the handler sees the region
+
+`ActionContext` gained `selection: Option<Range>` — the Visual/Select
+extent, normalised. This is design §5.2's "Visual mode IS the active
+region" reaching mode action handlers, the same way `Range::Selection`
+is the default range argument for an ex-command; magit is the first
+consumer, not the reason. It carries no visual *kind*: a diff line is
+the unit of every consumer so far.
+
+Three firing paths build an `ActionContext`, and only two carry a
+region:
+
+| Path | Region | Why |
+|---|---|---|
+| chord dispatch | yes | the Visual-mode press itself |
+| transient item | **yes** | a `Confirm` becomes a transient, so `x`'s execute half fires here |
+| prompt submit | no | the cursor described is the *prompt's* |
+
+The transient row is load-bearing. `Effect::Confirm` opens a transient,
+so a destructive action's execute half re-resolves through that path —
+with `None` there, a region `x` would ask about 2 lines and then discard
+the whole hunk. It is safe to carry because `open_transient` touches
+neither the modal state nor the anchor, and the transient owns every
+keystroke while open, so the region cannot have moved since the chord
+fired — the same argument §12.13's cursor re-resolution already relies
+on.
+
+### Scope: one hunk at a time
+
+The region is intersected with the hunk under the cursor. A selection
+reaching past it acts on the part inside — magit's own region can span
+hunks, which needs a multi-hunk patch builder, so the echo names the
+count (`staged 3 lines of src/main.rs:42`) rather than implying it did
+more. A selection holding no `+`/`-` line at all is refused with a
+reason, *before* the staged/unstaged gate: the user picked those rows
+deliberately, and "there is nothing there" is more useful than a lecture
+about which side of the index they are on.
+
+Acting on a region ends Visual mode, like any vim operator on a
+selection — staying selected would invite a second `s` over rows whose
+meaning just changed under the refresh.
 
 ## Refresh and the cursor
 

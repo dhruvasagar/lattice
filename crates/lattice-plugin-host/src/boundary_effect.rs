@@ -25,6 +25,7 @@ use crate::lattice::plugin_host::types::{
     OpenBufferAtColumnPayload as WitOpenBufferAtColumnPayload,
     OpenBufferAtPayload as WitOpenBufferAtPayload, OpenBufferPayload as WitOpenBufferPayload,
     OpenPickerPayload as WitOpenPickerPayload, OpenPopupPayload as WitOpenPopupPayload,
+    OpenPromptPayload as WitOpenPromptPayload,
     OpenSyntheticBufferPayload as WitOpenSyntheticBufferPayload, PopupFocus as WitPopupFocus,
     PopupPlacement as WitPopupPlacement, Position as WitPosition, QuitPayload as WitQuitPayload,
     QuitScope as WitQuitScope, Range as WitRange, Register as WitRegister,
@@ -797,12 +798,18 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
         // it. `open-transient` and `open-prompt` are the two that most
         // want mirrors (a plugin that cannot prompt cannot collect
         // input at all) — IX.5 / IX.6.
-        NativeEffect::OpenPrompt { .. } => {
-            return Err("Effect::OpenPrompt has no WIT mirror yet (IX.5)".to_string());
-        }
-        NativeEffect::OpenTransient { .. } => {
-            return Err("Effect::OpenTransient has no WIT mirror yet (IX.6)".to_string());
-        }
+        NativeEffect::OpenPrompt {
+            prompt,
+            initial,
+            on_submit_action,
+            buffer_name,
+        } => WitEffect::OpenPrompt(WitOpenPromptPayload {
+            prompt: prompt.clone(),
+            initial: initial.clone(),
+            on_submit_action: on_submit_action.clone(),
+            buffer_name: buffer_name.clone(),
+        }),
+        NativeEffect::OpenTransient { source } => WitEffect::OpenTransient(source.clone()),
         // Host-only surfaces: `:cd` / `:pwd` act on the editor process,
         // and `:clist`'s error picker is a host-owned view. They are not
         // blocked on a mirror so much as unmapped by intent; the error
@@ -866,6 +873,16 @@ fn effect_from_wit(w: WitEffect) -> Result<NativeEffect, String> {
             prompt: p.prompt,
             yes_action: p.yes_action,
             args: NativeArgs::from_wit(p.args)?,
+        },
+        // IX.5: a guest asks for a line of text. The submitted value
+        // reaches the action through its context's `prompt_value`, so
+        // nothing about the payload needs to carry it back.
+        WitEffect::OpenTransient(source) => NativeEffect::OpenTransient { source },
+        WitEffect::OpenPrompt(p) => NativeEffect::OpenPrompt {
+            prompt: p.prompt,
+            initial: p.initial,
+            on_submit_action: p.on_submit_action,
+            buffer_name: p.buffer_name,
         },
         WitEffect::Yank(p) => NativeEffect::Yank {
             register: NativeRegister::from_wit(p.register)?,
@@ -1070,22 +1087,16 @@ mod tests {
     /// internals.
     #[test]
     fn an_effect_with_no_mirror_fails_loudly_instead_of_becoming_none() {
+        // `OpenPrompt` / `OpenTransient` were here until IX.5 / IX.6
+        // gave them mirrors — the remaining three are host-only by
+        // intent rather than pending one.
         let unmirrored = vec![
-            (
-                NativeEffect::OpenPrompt {
-                    prompt: "x".into(),
-                    initial: String::new(),
-                    on_submit_action: "a".into(),
-                    buffer_name: None,
-                },
-                "OpenPrompt",
-            ),
-            (
-                NativeEffect::OpenTransient { source: "s".into() },
-                "OpenTransient",
-            ),
             (NativeEffect::PrintWorkingDir, "PrintWorkingDir"),
             (NativeEffect::ListErrors, "ListErrors"),
+            (
+                NativeEffect::ChangeDir(Some("/tmp".to_string())),
+                "ChangeDir",
+            ),
         ];
         for (effect, name) in unmirrored {
             let err = effect_to_wit(&effect)

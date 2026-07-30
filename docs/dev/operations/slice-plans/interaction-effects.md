@@ -120,8 +120,8 @@ follow it.
 | IX.2 | Amend §12.13 to the confirmed-equals-executed invariant; migrate magit's confirm pairs to carry their payload | IX.1 | ✅ |
 | IX.3 | WIT mirror for `confirm` — `.wit` variant, both conversion directions, round-trip test | IX.1 | ✅ |
 | IX.4 | Unmirrored effects fail with a typed error instead of `WitEffect::None` | — | ✅ |
-| IX.5 | `open-prompt` across the seam, following IX.3's pattern | IX.3, IX.4 | 📝 |
-| IX.6 | `open-transient` across the seam | IX.3, IX.4 | 📝 |
+| IX.5 | `open-prompt` across the seam, following IX.3's pattern | IX.3, IX.4 | ✅ |
+| IX.6 | `open-transient` across the seam | IX.3, IX.4 | ✅ |
 | IX.7 | magit-other-file-dispatch gains its destructive rows | IX.1, IX.2 | 📝 |
 
 IX.1 is backward compatible by construction: every existing confirm
@@ -239,6 +239,28 @@ effect to WIT; this is the guard rail going in before the road, not a
 behaviour change.
 
 - **Tests:** each unmirrored variant errors, and the message names it.
+
+## IX.5 / IX.6 — landed 2026-07-30
+
+`open-prompt` and `open-transient` have mirrors, completing the
+"a plugin can ask the user something" family:
+
+- **`open-prompt`** carries prompt / initial / on-submit-action /
+  buffer-name. The submitted text reaches the action through its
+  context's `prompt-value` rather than the payload, because the value
+  is what the *user* typed, not what the caller chose. `buffer-name` is
+  how a multi-step flow smuggles state between prompts (magit's
+  branch-create wizard is the native precedent), so the round-trip test
+  covers `Some` as well as `None`.
+- **`open-transient`** carries the *source name*, not a menu structure.
+  The menu is built host-side from the owning crate's
+  `TransientSourceRegistry` registration, so a guest names its menu
+  rather than shipping a spec across on every press.
+
+With these, a plugin can ask a yes/no question, collect a line of text,
+or open its own menu — the three interaction shapes anything
+non-trivial needs. IX.4's unmirrored list is down to the three that are
+host-only by intent (`:cd`, `:pwd`, `:clist`).
 
 ## Cross-references
 

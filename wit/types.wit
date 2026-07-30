@@ -387,6 +387,27 @@ interface types {
         args: args,
     }
 
+    /// IX.5: the payload of `effect.open-prompt`.
+    ///
+    /// A one-line minibuffer prompt. On submit the host dispatches
+    /// `on-submit-action`, handing it the typed text — the action reads
+    /// it from its context's `prompt-value`, not from `args`, because
+    /// the value is what the *user* typed rather than what the caller
+    /// chose.
+    record open-prompt-payload {
+        /// Shown before the input area.
+        prompt: string,
+        /// Pre-filled text; empty for a blank prompt.
+        initial: string,
+        /// Action dispatched on submit. Escape dismisses and dispatches
+        /// nothing.
+        on-submit-action: string,
+        /// Optional synthetic name for the prompt buffer. Callers that
+        /// need to smuggle state through a multi-step flow encode it
+        /// here; `none` gets the default name.
+        buffer-name: option<string>,
+    }
+
     record apply-edit-payload {
         /// The target `BufferId` (its inner `u32`).
         target: u32,
@@ -480,6 +501,17 @@ interface types {
         /// Available to plugins because asking the user something is
         /// table stakes, not an advanced capability.
         confirm(confirm-payload),
+        /// IX.5: ask the user for a line of text, then dispatch an
+        /// action with it. The other half of "a plugin can collect
+        /// input" — without it a guest can only ask yes/no questions.
+        open-prompt(open-prompt-payload),
+        /// IX.6: open a named transient menu. The payload is the
+        /// *source name* the owning crate registered with the
+        /// `TransientSourceRegistry`, not a menu structure — the menu is
+        /// built host-side from that registration, so a guest opens its
+        /// own menu by naming it rather than by shipping a spec across
+        /// on every press.
+        open-transient(string),
         yank(yank-payload),
         enter-mode(modal-state),
         save-buffer(option<string>),

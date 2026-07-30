@@ -436,6 +436,10 @@ pub struct FileDispatchActionIds {
     pub diff: Option<CommandId>,
     pub log: Option<CommandId>,
     pub blame: Option<CommandId>,
+    /// MG.23d: the file operations.
+    pub untrack: Option<CommandId>,
+    pub delete: Option<CommandId>,
+    pub rename: Option<CommandId>,
 }
 
 /// Build the file-level dispatch transient (`C-c f`).
@@ -592,6 +596,38 @@ pub fn file_dispatch_transient(ids: &FileDispatchActionIds) -> TransientSpec {
                         "discard",
                         "Discard this file's working-tree changes (asks first)",
                         "discard_file",
+                    ),
+                ],
+            },
+            // MG.23d. Magit puts these behind a `,` prefix in its own
+            // file-dispatch, which is a deliberate signal rather than a
+            // key shortage: they change what the file IS, not just what
+            // is staged of it. Keeping the prefix keeps that signal —
+            // and keeps `r` free for the blame-removal row magit also
+            // has at this level.
+            TransientGroup {
+                label: "File".into(),
+                items: vec![
+                    action_or_placeholder(
+                        ids.untrack,
+                        ",x",
+                        "untrack",
+                        "Stop tracking this file, keeping it on disk",
+                        "untrack_file",
+                    ),
+                    action_or_placeholder(
+                        ids.rename,
+                        ",r",
+                        "rename",
+                        "Rename this file (asks for the new name)",
+                        "rename_file",
+                    ),
+                    action_or_placeholder(
+                        ids.delete,
+                        ",k",
+                        "delete",
+                        "Delete this file (asks first)",
+                        "delete_file",
                     ),
                 ],
             },

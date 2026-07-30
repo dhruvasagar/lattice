@@ -218,6 +218,13 @@ Opens from any buffer via `C-c f`:
 │                          working-tree changes  │
 │                          (asks first)          │
 │                                                │
+│  ▸ File                                        │
+│    [,x] untrack         Stop tracking, keeping │
+│                          the file on disk      │
+│    [,r] rename          Rename this file       │
+│    [,k] delete          Delete this file       │
+│                          (asks first)          │
+│                                                │
 │  ▸ Inspect                                     │
 │    [d]  diff            Show diff for this file│
 │    [l]  log             Show commit history    │
@@ -242,11 +249,26 @@ path to resolve and the key does nothing.
 | `d` | Opens `*magit:diff:<path>*` ([diff buffer](help:magit-diff-mode)) |
 | `l` | Opens `*magit:log:<path>*` — the [log buffer](help:magit-log-mode) scoped to this file's history |
 | `b` | Opens `*magit:blame:<path>*` ([blame buffer](help:magit-blame-mode)) |
+| `,x` | `git rm --cached` — stop tracking, **file stays on disk** |
+| `,r` | `git mv` — asks for the new name, pre-filled with the current one |
+| `,k` | `git rm` — **destructive**, asks `Delete <path>?` first |
 
-`x` is the only destructive item, and the only one that confirms
-first — same `y`/`n` confirmation dialog magit-status's own `x` uses.
-`s`/`u` report optimistically ("magit: staged <path>") and log the
-real outcome; they don't block on git.
+`x` and `,k` are the destructive items, and the ones that confirm
+first — the same `y`/`n` dialog magit-status's own `x` uses. `s`/`u`
+report optimistically ("magit: staged <path>") and log the real
+outcome; they don't block on git.
+
+**The `,` prefix is deliberate**, and magit's own. Those three change
+what the file *is* rather than what is staged of it, so they take an
+extra keystroke. Two of them are gentler than they look: `,x` untrack
+leaves the file on disk (only the index forgets it, and `s` puts it
+back), which is why it doesn't ask; and `,k` delete runs a plain
+`git rm`, so git itself refuses when the file has uncommitted changes —
+the confirmation is the second line of defence, not the only one.
+
+`,r` rename pre-fills the prompt with the current path, so renaming
+within a directory is an edit rather than a retype. Submitting it
+unchanged cancels.
 
 **No "which file?" prompt.** This is the one deliberate deviation from
 Emacs magit, which asks you to confirm the file even though the default

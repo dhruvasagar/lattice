@@ -309,6 +309,11 @@ const CONFIRM_TARGET_ACTIONS: &[(&str, &str, &[(&str, &str)])] = &[
         ],
     ),
     (
+        "action:magit-global-file-delete-execute",
+        "Delete the file after confirmation",
+        &[("file", "Repo-relative path the prompt named")],
+    ),
+    (
         "action:magit-branch-delete-execute",
         "Delete the branch after confirmation",
         &[("branch", "Branch the prompt named")],
@@ -367,6 +372,19 @@ const FILE_TARGET_ACTIONS: &[(&str, &str)] = &[
         "action:magit-global-file-discard-execute",
         "Execute the file discard after confirmation",
     ),
+    // MG.23d
+    (
+        "action:magit-global-file-untrack",
+        "Stop tracking the file, keeping it on disk",
+    ),
+    (
+        "action:magit-global-file-delete",
+        "Delete the file (asks first)",
+    ),
+    (
+        "action:magit-global-file-rename",
+        "Rename the file (asks for the new name)",
+    ),
 ];
 
 /// Resolve the file dispatch transient's action ids — same
@@ -379,6 +397,9 @@ fn resolve_file_dispatch_ids(registry: &CommandRegistry) -> transients::FileDisp
         diff: registry.id_by_name("action:magit-global-file-diff"),
         log: registry.id_by_name("action:magit-global-file-log"),
         blame: registry.id_by_name("action:magit-global-file-blame"),
+        untrack: registry.id_by_name("action:magit-global-file-untrack"),
+        delete: registry.id_by_name("action:magit-global-file-delete"),
+        rename: registry.id_by_name("action:magit-global-file-rename"),
     }
 }
 
@@ -996,6 +1017,28 @@ fn register_action_commands(registry: &mut CommandRegistry) {
     reg(
         "action:magit-global-gitignore-finish",
         "Append the typed pattern to .gitignore",
+    );
+
+    // MG.23d: file operations.
+    reg(
+        "action:magit-global-file-untrack",
+        "Stop tracking the file, keeping it on disk",
+    );
+    reg(
+        "action:magit-global-file-delete",
+        "Delete the file (asks first)",
+    );
+    reg(
+        "action:magit-global-file-delete-execute",
+        "Delete the file after confirmation",
+    );
+    reg(
+        "action:magit-global-file-rename",
+        "Rename the file (asks for the new name)",
+    );
+    reg(
+        "action:magit-global-file-rename-finish",
+        "Rename the file to the typed name",
     );
 
     // MG.23c2
@@ -1885,14 +1928,15 @@ mod tests {
     /// would pass the two tests above vacuously.
     #[test]
     fn unresolved_ids_do_produce_inert_items_so_the_guard_is_not_vacuous() {
-        // 6 file-dispatch items: stage/unstage/discard + diff/log/blame.
+        // 9 file-dispatch items: stage/unstage/discard, diff/log/blame,
+        // and MG.23d's untrack/rename/delete.
         let file = inert_items(
             &transients::file_dispatch_transient(&Default::default()),
             "",
         );
         assert_eq!(
             file.len(),
-            6,
+            9,
             "expected every file-dispatch leaf to report inert, got: {file:?}"
         );
         // Root dispatch: 18 ACTION leaves — status, diff, log,

@@ -38,6 +38,10 @@ pub(crate) const DESTRUCTIVE_ACTIONS: &[(&str, &str)] = &[
         "action:magit-global-file-discard-execute",
     ),
     (
+        "action:magit-global-file-delete",
+        "action:magit-global-file-delete-execute",
+    ),
+    (
         "action:magit-branch-delete",
         "action:magit-branch-delete-execute",
     ),
@@ -63,18 +67,6 @@ pub(crate) fn ask(prompt: String, yes_action: &str) -> Effect {
     ask_with(prompt, yes_action, lattice_grammar::Args::None)
 }
 
-/// IX.1: the same two-step, with the execute half's **target carried
-/// along** instead of re-derived when it fires.
-///
-/// Prefer this wherever the target can be named. A yes-half that
-/// re-derives reads context that is not stable across the wait — a
-/// background refresh can rebuild the buffer and move the cursor while
-/// the dialog is open, so the action lands somewhere the prompt did not
-/// name. Carrying closes that window by construction.
-///
-/// Carry the payload, not a pointer to it: a path, a SHA, a synthesized
-/// patch — never a cursor row or a row span, which a rebuild
-/// invalidates.
 /// IX.2: the common case — one string target, carried in slot 0.
 ///
 /// Every execute half migrated to this reads it back with
@@ -97,6 +89,18 @@ pub(crate) fn carried_target(ctx: &lattice_mode::ActionContext<'_>) -> Option<St
     ctx.arg_str(0).map(str::to_string)
 }
 
+/// IX.1: the two-step with the execute half's **target carried along**
+/// instead of re-derived when it fires.
+///
+/// Prefer this wherever the target can be named. A yes-half that
+/// re-derives reads context that is not stable across the wait — a
+/// background refresh can rebuild the buffer and move the cursor while
+/// the dialog is open, so the action lands somewhere the prompt did not
+/// name. Carrying closes that window by construction.
+///
+/// Carry the payload, not a pointer to it: a path, a SHA, a synthesized
+/// patch — never a cursor row or a row span, which a rebuild
+/// invalidates.
 pub(crate) fn ask_with(prompt: String, yes_action: &str, args: lattice_grammar::Args) -> Effect {
     debug_assert!(
         DESTRUCTIVE_ACTIONS.iter().any(|(_, e)| *e == yes_action),

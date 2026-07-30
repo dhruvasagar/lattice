@@ -264,6 +264,78 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
             (!pattern.is_empty()).then(|| spawn_gitignore(pattern.to_string()))
         }),
     });
+    // MG.23d: file operations. Each reads `active_target`, so they act
+    // on the visited file from `C-c f` and on the named one from
+    // `:magit-other-file-dispatch`.
+    contributions.push(ActionHandlerContribution {
+        action_name: "action:magit-global-file-untrack",
+        handler: Arc::new(|ctx: &ActionContext<'_>| {
+            let (_workdir, rel) = active_target(ctx)?;
+            // No confirm: the file stays on disk and only leaves the
+            // index, which `git add` puts back. §12.13's bar is work
+            // git cannot hand back.
+            Some(spawn_git(untrack_argv(&rel.to_string_lossy()), "untrack"))
+        }),
+    });
+    contributions.push(ActionHandlerContribution {
+        action_name: "action:magit-global-file-delete",
+        handler: Arc::new(|ctx: &ActionContext<'_>| {
+            let (_workdir, rel) = active_target(ctx)?;
+            // Carries the path (IX.1): the execute half acts on what
+            // this prompt names, not on wherever the cursor ends up.
+            Some(crate::confirm::ask_target(
+                format!("Delete {}?", rel.display()),
+                "action:magit-global-file-delete-execute",
+                rel.to_string_lossy().into_owned(),
+            ))
+        }),
+    });
+    contributions.push(ActionHandlerContribution {
+        action_name: "action:magit-global-file-delete-execute",
+        handler: Arc::new(|ctx: &ActionContext<'_>| {
+            let path = match crate::confirm::carried_target(ctx) {
+                Some(carried) => carried,
+                None => active_target(ctx)?.1.to_string_lossy().into_owned(),
+            };
+            Some(spawn_git(delete_argv(&path), "delete"))
+        }),
+    });
+    contributions.push(ActionHandlerContribution {
+        action_name: "action:magit-global-file-rename",
+        handler: Arc::new(|ctx: &ActionContext<'_>| {
+            let (_workdir, rel) = active_target(ctx)?;
+            let from = rel.to_string_lossy().into_owned();
+            Some(Effect::OpenPrompt {
+                prompt: "Rename to: ".to_string(),
+                // Seeded with the current path so a rename within the
+                // same directory is an edit rather than a retype.
+                initial: from.clone(),
+                on_submit_action: "action:magit-global-file-rename-finish".to_string(),
+                // The source rides in the buffer name: by submit time
+                // the prompt buffer is the active one, so nothing else
+                // still knows which file this was.
+                buffer_name: Some(format!("*magit:rename:{from}*")),
+            })
+        }),
+    });
+    contributions.push(ActionHandlerContribution {
+        action_name: "action:magit-global-file-rename-finish",
+        handler: Arc::new(|ctx: &ActionContext<'_>| {
+            let to = ctx.prompt_value?.trim().to_string();
+            let buffer_id = lattice_core::BufferId(ctx.buffer_id.0 as u32);
+            let from = ctx
+                .services
+                .get::<BufferStoreHandle>()?
+                .name_for(buffer_id)
+                .and_then(|n| rename_source_from_prompt_buffer_name(&n))?;
+            // Renaming a file to its own name is what submitting the
+            // seeded value unchanged means — a cancel, not a git call
+            // that would fail with "source and destination are the
+            // same".
+            (!to.is_empty() && to != from).then(|| spawn_git(rename_argv(&from, &to), "rename"))
+        }),
+    });
+
     // MG.23c2: `I` init and `m` merge, on c1's prompt shape.
     contributions.push(ActionHandlerContribution {
         action_name: "action:magit-global-init",
@@ -863,6 +935,46 @@ pub fn spawn_gitignore(pattern: String) -> Effect {
     }
 }
 
+/// MG.23d: the argv for each file operation.
+///
+/// Pure and shared, for the reason the MG.23c builders are — the flags
+/// are what matters and a test must not have to run git in the
+/// repository it lives in.
+///
+/// `untrack` is `rm --cached`: the file **stays on disk** and only
+/// leaves the index, which is why it does not ask. `delete` is a plain
+/// `rm` with no `-f`, so git itself refuses to remove a file with
+/// uncommitted changes — the confirm is the second line of defence, not
+/// the only one.
+pub(crate) fn untrack_argv(path: &str) -> Vec<String> {
+    vec![
+        "rm".into(),
+        "--cached".into(),
+        "--".into(),
+        path.to_string(),
+    ]
+}
+
+pub(crate) fn delete_argv(path: &str) -> Vec<String> {
+    vec!["rm".into(), "--".into(), path.to_string()]
+}
+
+pub(crate) fn rename_argv(from: &str, to: &str) -> Vec<String> {
+    vec!["mv".into(), "--".into(), from.to_string(), to.to_string()]
+}
+
+/// The path a rename prompt is carrying, from its buffer name.
+///
+/// The prompt buffer is the active one by the time the user submits, so
+/// `active_target` would resolve *it* rather than the file being
+/// renamed. The name is the carrier — the same trick the branch-create
+/// wizard uses for its base branch.
+pub(crate) fn rename_source_from_prompt_buffer_name(buffer_name: &str) -> Option<String> {
+    let s = buffer_name.strip_prefix("*magit:rename:")?;
+    let s = s.strip_suffix('*')?;
+    (!s.is_empty()).then(|| s.to_string())
+}
+
 /// MG.23c: the argv each prompt-backed operation runs.
 ///
 /// Pure, and separate from [`spawn_git`], for two reasons. The flags
@@ -890,10 +1002,18 @@ pub(crate) fn merge_argv(branch: &str) -> Vec<String> {
 
 /// MG.23c: every prompt-backed operation, as (row, finish) pairs.
 ///
-/// Both halves are listed once so the tests iterate them rather than a
-/// hand-kept copy — a row added without its finish action, or with a
-/// typo in the name, opens a prompt that accepts input and does nothing
-/// with it, which is silent from the code's side.
+/// **Hand-kept, and honest about it.** A row added here is checked
+/// against production — its prompt must target the finish action named,
+/// and that action must exist — but a row added to production and *not*
+/// here is simply unchecked. Deriving it would mean invoking every
+/// contributed handler to see which return `OpenPrompt`, and some of
+/// those handlers spawn git; a test that called them would run real
+/// commands against the repository it lives in.
+///
+/// The pairing check below is the compensation: it is what catches the
+/// failure that is otherwise silent from the code's side, where a
+/// prompt accepts input and does nothing with it.
+#[cfg(test)]
 pub(crate) const PROMPTED_OPS: &[(&str, &str)] = &[
     ("action:magit-global-tag", "action:magit-global-tag-finish"),
     (
@@ -1090,6 +1210,55 @@ fn run_remote_op(workdir: &std::path::Path, args: &[String]) -> Result<String, S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// MG.23d — untrack keeps the file, delete does not force.
+    ///
+    /// The distinction is the whole reason untrack does not ask and
+    /// delete does. `--cached` leaves the file on disk; a plain `rm`
+    /// with no `-f` makes git itself refuse to remove a file with
+    /// uncommitted changes, so the confirm is the second line of
+    /// defence rather than the only one.
+    #[test]
+    fn untrack_keeps_the_file_and_delete_never_forces() {
+        let untrack = untrack_argv("src/main.rs");
+        assert!(
+            untrack.contains(&"--cached".to_string()),
+            "untrack must leave the file on disk — without `--cached` it \
+             would delete it, and it does not ask: {untrack:?}"
+        );
+        let delete = delete_argv("src/main.rs");
+        assert!(
+            !delete.iter().any(|a| a == "-f" || a == "--force"),
+            "delete must let git refuse a modified file rather than \
+             overriding that refusal: {delete:?}"
+        );
+        // `--` before the path, or a file named like a flag is read as
+        // one.
+        for argv in [untrack, delete, rename_argv("a", "b")] {
+            assert!(
+                argv.contains(&"--".to_string()),
+                "paths must be separated from flags: {argv:?}"
+            );
+        }
+    }
+
+    /// MG.23d — the rename prompt carries its source in the buffer
+    /// name, because by submit time the prompt buffer is the active one
+    /// and nothing else still knows which file this was.
+    #[test]
+    fn a_rename_prompt_carries_its_source_in_its_buffer_name() {
+        assert_eq!(
+            rename_source_from_prompt_buffer_name("*magit:rename:src/main.rs*").as_deref(),
+            Some("src/main.rs")
+        );
+        // Another buffer's name must not be read as a rename source —
+        // the finish handler would otherwise rename something arbitrary.
+        assert!(rename_source_from_prompt_buffer_name("*magit:status*").is_none());
+        assert!(
+            rename_source_from_prompt_buffer_name("*magit:rename:*").is_none(),
+            "an empty source is not a path"
+        );
+    }
 
     /// MG.23c2 — merge passes `--no-edit`, and nothing else opens an
     /// editor either.

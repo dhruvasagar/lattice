@@ -1202,7 +1202,8 @@ incidentally.
 | MG.23b | Repo rows with no target: `S` stage-all, `U` unstage-all | — | ✅ |
 | MG.23c1 | The prompt-backed row shape + `t` tag, `i` gitignore | MG.17b, IX.5 | ✅ |
 | MG.23c2 | `I` init, `m` merge (`Q` dropped — see below) | MG.23c1 | ✅ |
-| MG.23d | File ops: untrack, rename, delete, checkout — each with its confirm | MG.23a | 📝 |
+| MG.23d | File ops: untrack, delete, rename | MG.23a, IX.2 | ✅ |
+| MG.23d2 | `,c` checkout a file from a revision | MG.23d | 📝 |
 | MG.23e | Surface-mapping rows (`h`, `C-x m`, `H`, `J`, `j`, `e`/`E`) | — | 📝 |
 | MG.23f | Blame variants + blob navigation | — | 📝 |
 | MG.23g | `a` apply / `v` reverse on a hunk | MG.18 | 📝 |
@@ -1287,6 +1288,50 @@ which would have drifted.
   action-triggered refresh "auto-refresh", which read as that same
   absent feature; both now say what actually refreshes.
 
+#### MG.23d — `,x` untrack, `,r` rename, `,k` delete ✅ (2026-07-30)
+
+On magit's own `,` prefix, which is a signal rather than a key
+shortage: these change what the file *is*, not what is staged of it.
+
+**Two are gentler than they look, and the safety is in the argv rather
+than in a prompt.** `,x` is `rm --cached`, so the file stays on disk and
+only the index forgets it — `s` puts it back, which is why it does not
+ask. `,k` is a plain `rm` with no `-f`, so git itself refuses a file
+with uncommitted changes; the confirm is the second line of defence.
+Both pinned by a test, along with `--` before every path so a file named
+like a flag is not read as one.
+
+**`,r` carries its source in the prompt buffer's name.** By submit time
+the prompt buffer is the active one, so `active_target` would resolve
+*it* rather than the file being renamed — the same problem the
+branch-create wizard solved the same way. The prompt is pre-filled with
+the current path (a rename within a directory is an edit, not a
+retype), and submitting it unchanged cancels rather than asking git to
+rename a file to itself.
+
+All three read `active_target`, so they work from `C-c f` on the visited
+file and from `:magit-other-file-dispatch` on a named one — and `,k`'s
+confirm carries its path (IX.1), which is what makes the second of those
+safe.
+
+- **Tests:** untrack keeps the file / delete never forces / paths are
+  `--`-separated; and the rename buffer-name carrier round-trips,
+  rejecting both another buffer's name and an empty source. Leaf counts
+  6 → 9 (file) and 16 → 18 (root).
+
+#### MG.23d split: checkout-from-revision separated (2026-07-30)
+
+Magit's `, c` is `magit-file-checkout` — restore a file's content **from
+a chosen revision**, which needs a revision prompt on top of the file
+target and a destructive confirm on top of that. It is also the one that
+overlaps something we already have: `magit-file-revision-mode` shows a
+file at a revision, and "restore what I am looking at" may be the better
+shape than a second prompt chain. That deserves thinking about rather
+than bolting on, so it is its own slice.
+
+Note it is *not* the same as our `x` discard, which restores from the
+index — same git verb, different question.
+
 #### MG.23c2 — `m` merge, `I` init ✅ (2026-07-30)
 
 Both on c1's prompt shape. `m` passes `--no-edit`, for the reason
@@ -1309,8 +1354,12 @@ test all use.
 
 - **Tests:** no prompted operation can request an editor (argv-level, so
   nothing is executed); and the empty-prompt and prompt-target guards
-  now iterate a `PROMPTED_OPS` table rather than a hand-kept list, so
-  the next prompt-backed row is covered without anyone remembering.
+  now iterate a `PROMPTED_OPS` table. That table is **hand-kept** — an
+  earlier draft of this note claimed it covered new rows automatically,
+  which is not true: a row added to production and not to the table is
+  unchecked. Deriving it would mean invoking every contributed handler
+  to see which return `OpenPrompt`, and some of them spawn git, so the
+  test would run real commands against the repository it lives in.
   Leaf count 16 → 18.
 
 #### `Q` git-command — dropped, not deferred (2026-07-30)

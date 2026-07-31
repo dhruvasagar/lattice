@@ -54,7 +54,9 @@ somewhere visible for `<CR>` to land.
 
 ## Repo dispatch transient (`C-c g`)
 
-Opens from any buffer. Groups, as they actually render today:
+Opens from any buffer. Groups, as they render **outside** a magit
+buffer (see [below](#what-changes-inside-a-magit-buffer) for what it
+adds inside one):
 
 ```
 ┌─ Magit dispatch ───────────────────────────────┐
@@ -108,6 +110,62 @@ thing `:magit-status`/`:magit-diff`/`:magit-log`/`:magit-branch`/
 `:magit-rebase` do. Once you're in that buffer, use its own direct
 chords (`s`/`u`/`x`/`<CR>`/… — see
 [`magit`](help:magit)) for the actual operations.
+
+### What changes inside a magit buffer
+
+The menu is built for the place you opened it, so two things differ
+when you press `C-c g` from inside a magit buffer. Emacs magit does the
+same, with `:if-derived` and `:if-mode` predicates on its own rows.
+
+**Applying changes gains three rows** — in any magit buffer:
+
+```
+│  ▸ Applying changes                            │
+│    [a]  apply           Apply the hunk at      │
+│                          cursor to the tree    │
+│    [-]  reverse         Reverse the hunk at    │
+│                          cursor out of it      │
+│    [x]  discard         Discard the hunk or    │
+│                          file at cursor        │
+│    [S]  stage all       …                      │
+│    [U]  unstage all     …                      │
+```
+
+They act on the hunk under the cursor, so outside a magit buffer there
+is no diff text to find one in and they are absent rather than present
+and complaining. `S` and `U` are always there — `git add --update` and
+`git reset` need no target.
+
+Magit's `s` / `u` rows are deliberately not among them. They would
+collide with the `s` row above, and unlike `a`/`-`/`x` their chords are
+the first thing anyone reaches for in a magit buffer — a menu path to
+them earns nothing and costs the status key.
+
+**The `s` row becomes a section jump** — in magit-status only:
+
+```
+│  ▸ Working tree                                │
+│    [s]  jump          ▸ Jump to a section      │
+```
+
+"Open the status buffer" is a no-op on the buffer you are already in,
+so `s` opens a submenu instead:
+
+| Key | Jumps to |
+|---|---|
+| `s` | Staged changes |
+| `u` | Unstaged changes |
+| `n` | Untracked files |
+| `z` | Stashes |
+| `c` | Recent commits |
+
+Magit's own keys where the sections coincide; `c` is ours, since its
+status buffer shows unpushed/unpulled where ours shows recent commits.
+A section with no entries isn't rendered at all, so jumping to it says
+so rather than leaving the cursor put.
+
+In any *other* magit buffer — a diff, a log, a revision — `s` still
+opens the status buffer, which is the useful thing to want there.
 
 Two submenus drill down:
 

@@ -38,10 +38,10 @@ owns *what* and *why*.
 | MG.18 | Hunk-level staging (sliced a–e) | MG.5, MG.13 | ✅ |
 | MG.19 | magit-diff side-by-side + `do`/`dp` | MG.18, D.4 | 📝 |
 | MG.20 | Operation coverage — reset / revert / cherry-pick | MG.17a | ✅ |
-| MG.21 | Remaining operations — tag, merge beyond `m`, bisect, submodule, remotes | MG.17b | 📝 |
+| MG.21 | Remaining operations — bisect, submodule, remotes (tag + merge landed in MG.23c) | MG.17b | 📝 |
 | MG.21a | Diff line-background tints in magit's diff views | MG.20 | ✅ |
 | MG.22 | `magit-hunk-mode` — the mode owning diff *content* | MG.20 | 📝 |
-| MG.23 | magit-dispatch / file-dispatch parity (sliced a–i) | MG.17b | 📝 |
+| MG.23 | magit-dispatch / file-dispatch parity (a–h done; j and i+ open) | MG.17b | 📝 |
 
 **2026-07-26 audit correction:** this table (last synced when MG.1-3 landed) had
 drifted from `implementation.md`'s per-slice status, which had marked MG.4-10 all
@@ -1215,6 +1215,11 @@ despite MG.20 landing them: they act on the commit at the cursor, and
 the root dispatch has no cursor context — see MG.20's own note. They
 need either a commit picker or magit's `:if-derived` predicate.)
 
+> **2026-07-31:** `S` / `U` landed in MG.23b. The parenthetical's
+> either/or was resolved by checking magit rather than by choosing:
+> magit puts these three in its **ungated** group because they prompt
+> for a commit, so the answer is the picker, not the predicate. MG.23j.
+
 **Maps to an existing lattice surface — wire, do not reimplement.**
 `h` / `C-x i` → `:help`; `C-x m` → `:describe-mode`; `H` → the
 `:describe-*` family; `e` / `E` ediff → lattice's own `diff-mode`
@@ -1229,21 +1234,37 @@ need either a commit picker or magit's `:if-derived` predicate.)
 already exists); `D` / `L` diff- and log-arg refresh; `M` log-merged;
 `e` edit-line-commit.
 
+> **2026-07-31 — what is left of this bucket.** Landed: apply /
+> reverse (MG.23g, as `a` / `-`), tag + gitignore (MG.23c1), init +
+> merge (MG.23c2), the four file ops (MG.23d / MG.23d2), blob nav
+> (MG.23f) and reverse blame (MG.23f2). Dropped after evaluation:
+> `Q` git-command (`:terminal` covers it), and the `m` echo / `q` quit
+> blame variants (no surface / duplicate). Still open: `r` blame
+> removal, `D` / `L` diff- and log-arg refresh, `M` log-merged,
+> `e` edit-line-commit.
+
 **Genuinely new subsystems.** `B` bisect, `M` remote management,
 `o` submodule, `O` subtree, `Z` worktree, `T` notes, `w` am /
 `W` format-patch, `y` show-refs, `Y` cherries, `C` clone.
 
-#### Known key collision, deferred with it
+#### Known key collision — resolved by MG.23h, and it was mis-stated
 
-Our dispatch uses `s` for status; magit uses `s` for **stage** and
-reaches status via `j`. Magit can afford that because its `s` / `u` /
-`S` / `U` rows are `:if-derived magit-mode` — they appear only inside a
-magit buffer, where a section is at point. `C-c g` here is global and
-`TransientSourceRegistry` builds specs from a zero-arg closure, so there
-is no context to predicate on yet. `S` / `U` land now (both keys are
-free); resolving `s` waits for context-dependent menu content, and
-moving status off `s` is a breaking change to make deliberately, not
-incidentally.
+This section used to read: "Our dispatch uses `s` for status; magit
+uses `s` for **stage** and reaches status via `j`", framing it as a
+collision to resolve once context-dependent menus existed.
+
+**Checked against magit's source, that was wrong in both halves.**
+`magit-dispatch`'s ungated group has no `s` at all — magit.el:328
+carries `;; s ↓` as a placeholder comment pointing at the *gated*
+"Applying changes" group below it. So magit's `s` = stage exists only
+inside a magit buffer, and at the repo-wide level `s` is a slot magit
+leaves empty. There was never a collision there to resolve.
+
+MG.23h settled it by keeping `s` = status everywhere and declining to
+import magit's `s` / `u` rows at all (their chords are what anyone
+reaches for, so a menu path earns nothing and costs the key), while
+swapping `s` to the section jump inside magit-status — where opening
+the buffer you are already in is the actual no-op. See MG.23h's note.
 
 | Slice | Scope | Depends | Status |
 |---|---|---|---|
@@ -1257,8 +1278,9 @@ incidentally.
 | MG.23f | Blob navigation (blame variants evaluated out, one deferred) | — | ✅ |
 | MG.23f2 | Reverse blame (`git blame --reverse`) from a blob buffer | MG.23f | ✅ |
 | MG.23g | `a` apply / `-` reverse on a hunk of a commit | MG.18 | ✅ |
-| MG.23h | Context-dependent menu content (magit's `:if-derived`), then `s`/`u` rows + the `s` collision | — | 📝 |
-| MG.23i+ | The new subsystems, one slice each, prioritised by daily use | — | 📝 |
+| MG.23h | Context-dependent menu content (magit's `:if-derived` / `:if-mode`) | — | ✅ |
+| MG.23j | Repo-level `A` / `_` / `O` rows, via a commit picker (NOT the predicate — see MG.20's corrected note) | MG.20 | 📝 |
+| MG.23i+ | The new subsystems, one slice each, prioritised by daily use — the same set MG.21 still names | — | 📝 |
 
 #### MG.23a — the file target seam + `:magit-other-file-dispatch` ✅ (2026-07-30)
 
@@ -1450,6 +1472,100 @@ one is in hand ("when did each of these lines go away"). It is a slice
 of its own, though — `*magit:blame:<path>*` carries no revision, so the
 buffer name, the argv and the headerline all move together. Filed as
 MG.23f2 rather than smuggled in here.
+
+#### MG.23h — the dispatch is built for where it was opened ✅ (2026-07-31)
+
+**This slice was nearly dropped on a false premise, which is worth
+recording.** The assessment claimed magit never binds `magit-dispatch`
+globally, making its `:if-derived` groups an artifact of the menu
+normally already being in a magit buffer. That is wrong:
+`magit-define-global-key-bindings` (magit.el:248) binds
+`C-x g` / `C-c g` / `C-c f` under `'recommended` — **our binding set,
+key for key**. The predicates are not an artifact; they exist precisely
+*because* the menu is globally bound and has to degrade. Verified
+against source after Dhruva corrected it.
+
+**What magit's dispatch actually contains,** checked row by row
+(magit.el:328): one ungated group of repo-wide transients, plus
+"Applying changes" (`a`/`v`/`k`, `s`/`u`, `S`/`U`) and "Essential
+commands" (`g`/`q`/`TAB`/`RET`/`C-x m`/`C-x i`), both
+`:if-derived magit-mode`. The ungated group has **no `s`** — the source
+carries `;; s ↓` as a placeholder pointing at the gated group. So our
+`s` = status occupies a slot magit leaves empty at that level, and
+there was never a collision to resolve there; magit reaches status via
+`j` in the same ungated group.
+
+**The mechanism: builders take a `TransientContext`.** See
+`picker.md` §4bis.5ter for the design. Two axes as separate fields
+because magit asks two different questions (`:if-mode` vs
+`:if-derived`) about the same key, and a flat mode list answers only
+one. Resolved at *build* time by each renderer rather than at *emit*
+time by whatever produced the effect — otherwise `:magit-dispatch` on
+the `:` line stays blind (`ExCommandContext` has no buffer), while in
+Emacs `M-x magit-dispatch` is context-aware.
+
+The rejected alternative was an action handler naming one of N
+pre-registered specs, which needs no substrate change. It was rejected
+on merit: it covers only the chord path, and N contexts multiply specs.
+The objection that a context type would be "magit-shaped substrate" was
+a strawman — `{ major_mode, minor_modes }` is exactly as generic as
+`ActionContext`, and its consumer (the renderer, reading the Editor) is
+generic host machinery, which is the side of the
+substrate-vs-mode-helper rule that says it belongs there.
+
+**What varies, and what does not:**
+
+- **"Applying changes" gains `a` / `-` / `x` in any magit buffer.**
+  They resolve the hunk under the cursor, so outside one there is no
+  diff text to find it in. `S` / `U` stay unconditional — `add
+  --update` and `reset` need no target, so gating them as magit does
+  would be strictly less useful.
+- **Magit's `s` / `u` rows are deliberately absent.** They would
+  collide with the `s` row, and unlike `a`/`-`/`x` their chords are the
+  first thing anyone reaches for in a magit buffer: a menu path earns
+  nothing and costs the status key.
+- **`s` becomes a section jump in magit-status only.** "Open the status
+  buffer" is a no-op on the buffer you are in — magit swaps its `j` the
+  same way (`magit-status-jump :if-mode` vs `magit-status-quick
+  :if-not-mode`). The submenu has one row per section we render, on
+  magit's keys where they coincide (`s`/`u`/`n`/`z`) plus `c` for
+  Recent commits, which magit's status buffer has no counterpart for.
+  In any other magit buffer `s` still opens status, which is useful
+  there.
+- **The file dispatch does not vary.** Its rows all act on the visited
+  file, which is the same question wherever `C-c f` is pressed.
+
+**The jump handlers scan for header text** rather than consulting the
+`SectionIndex`, because `]]` / `[[` already locate sections that way
+and two mechanisms for "where does this section start" is one more than
+can stay in agreement. The prefixes come from
+`sections::SECTION_HEADER_PREFIXES`, which is also what renders them —
+so a test can assert the submenu covers every section rather than
+whichever the author remembered. An empty section is not rendered at
+all, so jumping to it echoes instead of leaving the cursor put.
+
+**Rows reuse the chords' own actions** (`action:magit-apply-hunk`,
+`action:magit-reverse-hunk`, `action:magit-discard`) rather than
+declaring menu-only twins: a second action for "discard the thing at
+cursor" is a second place for its confirm contract to drift. Verified
+that this is safe — `do_transient_trigger` builds its `ActionContext`
+from `self.document_buffer_id` / `self.cursor` / `self.active_region()`,
+i.e. the underlying buffer, and the transient owns every keystroke
+while open, so a Visual region even carries through to a menu-fired
+`x`.
+
+- **Tests:** 4 in magit, 2 in picker — the section-acting rows appear
+  in a magit buffer and *not* outside one (both directions, since a
+  gate that never opens and one that never closes each pass a one-sided
+  test); `s` swaps only in magit-status, checked against a magit-log
+  context so the two predicates cannot be conflated; no context
+  produces a duplicate key at any level; the jump submenu has exactly
+  one row per `SECTION_HEADER_PREFIXES` entry and none inert; the
+  context reaches the builder and reaches it per build; and the two
+  mode tests are independent. The existing no-inert-rows guard now runs
+  over both shapes.
+- **Renderer parity:** both peers in the same patch, per the lockstep
+  rule.
 
 #### MG.23g — `a` apply / `-` reverse one hunk of a commit ✅ (2026-07-31)
 
@@ -1843,11 +1959,15 @@ acting on a neighbour.
   cross-cutting guard (every chord resolves to a registered action AND
   a handler) without any new bespoke test.
 
-**Not shipped, deferred to MG.21:** tag (needs a name prompt — the
-MG.17b `Argument` machinery now exists for it), merge beyond
-magit-branch's `m`, bisect, submodule, remote management. The plan's
-own rule holds: a menu row that does nothing is worse than an absent
-one, so none of these appear in a transient yet.
+**Not shipped, deferred to MG.21:** tag, merge beyond magit-branch's
+`m`, bisect, submodule, remote management. The plan's own rule holds:
+a menu row that does nothing is worse than an absent one, so none of
+these appear in a transient yet.
+
+> **2026-07-31:** tag and merge landed early, in MG.23c1 / MG.23c2, on
+> the prompt shape those slices established. MG.21's remaining scope is
+> bisect, submodule and remote management — the genuinely-new
+> subsystems, which is the same set MG.23i+ names.
 
 **Also not shipped:** transient entries for the three that DID land.
 They are reachable by chord in every commit-showing view, which is the
@@ -1855,6 +1975,16 @@ primary path; a `C-c g` entry needs a commit target and the root
 dispatch is context-free, so it wants the same "act on the current
 buffer" resolution `C-c f` uses. Worth doing with MG.21 rather than
 half-wiring now.
+
+> **2026-07-31, corrected by MG.23h:** "the root dispatch is
+> context-free" is no longer true — it now receives a
+> `TransientContext`. But the predicate is **not** the answer for these
+> three, and magit says so: it puts `A` Apply, `V` Revert and `X` Reset
+> in its *ungated* group, because `magit-cherry-pick` / `magit-revert` /
+> `magit-reset` are transients that **prompt for a commit** rather than
+> reading point. So what these rows want is a commit picker, not
+> `:if-derived` — and that needs no substrate work at all. Filed as
+> MG.23j below.
 
 - **Tests:** 4 in `lattice-magit` (argv appends the target;
   only the destructive reset asks; revert never opens `$EDITOR`; the

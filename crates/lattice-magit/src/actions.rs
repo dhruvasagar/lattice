@@ -703,7 +703,62 @@ pub fn status_action_handlers() -> Vec<ActionHandlerContribution> {
     // test; whenever it won the race the guarantee was simply not in
     // force. Removing it makes the tested behaviour deterministic.
 
+    // ── MG.23h: jump to a section (the `s` row's submenu) ──
+    //
+    // Fired from the dispatch menu, which by then owns the keystrokes —
+    // so the handler reads the buffer that was active when it opened
+    // (`ActionContext::buffer_id`), the same seam every other menu row
+    // resolves through.
+    //
+    // The section is found by scanning for its header text rather than
+    // by consulting the `SectionIndex`: `]]` / `[[` already locate
+    // sections that way, and two mechanisms for "where does this
+    // section start" is one more than can stay in agreement. The
+    // prefixes come from `sections::SECTION_HEADER_PREFIXES`, which is
+    // also what renders them.
+    for (action_name, prefix) in [
+        ("action:magit-jump-staged", "Staged changes"),
+        ("action:magit-jump-unstaged", "Unstaged changes"),
+        ("action:magit-jump-untracked", "Untracked files"),
+        ("action:magit-jump-stashes", "Stashes"),
+        ("action:magit-jump-commits", "Recent commits"),
+    ] {
+        contributions.push(ActionHandlerContribution {
+            action_name,
+            handler: Arc::new(move |ctx: &ActionContext<'_>| Some(jump_to_section(ctx, prefix))),
+        });
+    }
+
     contributions
+}
+
+/// MG.23h: move the cursor to the section whose header starts with
+/// `prefix`, or say it isn't there.
+///
+/// A section with no entries is not rendered at all, so "jump to
+/// Stashes" in a repo with no stashes has nothing to land on. Echoing
+/// beats leaving the cursor where it was with no explanation — from
+/// inside a menu, a row that appears to do nothing reads as broken.
+fn jump_to_section(ctx: &ActionContext<'_>, prefix: &str) -> Effect {
+    let found = ctx
+        .services
+        .get::<lattice_mode::BufferStoreHandle>()
+        .and_then(|store| store.handle_for(lattice_core::BufferId(ctx.buffer_id.0 as u32)))
+        .and_then(|handle| {
+            let snap = handle.snapshot();
+            (0..snap.buffer.line_count() as u32).find(|l| {
+                snap.buffer
+                    .line(*l)
+                    .is_some_and(|t| t.trim_start().starts_with(prefix))
+            })
+        });
+    match found {
+        Some(row) => Effect::CursorMove(lattice_protocol::position::Position::new(row, 0)),
+        None => Effect::Echo {
+            level: lattice_grammar::EchoLevel::Info,
+            text: format!("magit: no {prefix} section here"),
+        },
+    }
 }
 
 /// Run `mutate` (a blocking git call) on `spawn_blocking`, off the

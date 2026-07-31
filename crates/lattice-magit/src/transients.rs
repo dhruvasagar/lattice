@@ -8,7 +8,8 @@
 use std::sync::Arc;
 
 use lattice_picker::{
-    TransientGroup, TransientItem, TransientItemKind, TransientSpec, TransientState, TransientValue,
+    TransientContext, TransientGroup, TransientItem, TransientItemKind, TransientSpec,
+    TransientState, TransientValue,
 };
 use lattice_protocol::ids::CommandId;
 
@@ -102,8 +103,8 @@ fn remote_op_transient(
 /// needs are registered earlier in the same call, by
 /// `register_action_commands`) and captured by the
 /// `TransientSourceRegistry` builder closure — the registry's
-/// `Fn() -> TransientSpec` builders take no arguments, so this is
-/// how a boot-time-resolved id reaches a spec built long after boot,
+/// builders take only a [`TransientContext`], so capture is how a
+/// boot-time-resolved id reaches a spec built long after boot,
 /// possibly many times (once per `C-c g` press).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct DispatchActionIds {
@@ -128,6 +129,18 @@ pub struct DispatchActionIds {
     /// MG.23c2.
     pub init: Option<CommandId>,
     pub merge: Option<CommandId>,
+    /// MG.23h: the section-acting rows, shown only inside a magit
+    /// buffer. `discard` is magit-status's own `x` action, reused
+    /// rather than duplicated.
+    pub apply_hunk: Option<CommandId>,
+    pub reverse_hunk: Option<CommandId>,
+    pub discard: Option<CommandId>,
+    /// MG.23h: `magit-status-jump`'s rows, one per section we render.
+    pub jump_staged: Option<CommandId>,
+    pub jump_unstaged: Option<CommandId>,
+    pub jump_untracked: Option<CommandId>,
+    pub jump_stashes: Option<CommandId>,
+    pub jump_commits: Option<CommandId>,
 }
 
 /// An item that fires `id` if resolved, or falls back to a `Flag`
@@ -157,6 +170,129 @@ fn action_or_placeholder(
     }
 }
 
+/// MG.23h: the "Applying changes" rows, gated per magit's own
+/// `:if-derived magit-mode` — see the call site for the reasoning and
+/// for why `s` / `u` are not among them.
+fn applying_changes_items(ids: &DispatchActionIds, ctx: &TransientContext) -> Vec<TransientItem> {
+    let mut items = Vec::new();
+    if ctx.has_minor(crate::MagitCoreMode::mode_id().as_str()) {
+        items.push(action_or_placeholder(
+            ids.apply_hunk,
+            "a",
+            "apply",
+            "Apply the hunk at cursor to the working tree",
+            "apply_hunk",
+        ));
+        items.push(action_or_placeholder(
+            ids.reverse_hunk,
+            "-",
+            "reverse",
+            "Reverse the hunk at cursor out of the working tree",
+            "reverse_hunk",
+        ));
+        items.push(action_or_placeholder(
+            ids.discard,
+            "x",
+            "discard",
+            "Discard the hunk or file at cursor (asks first)",
+            "discard_at_cursor",
+        ));
+    }
+    items.push(action_or_placeholder(
+        ids.stage_all,
+        "S",
+        "stage all",
+        "Stage every tracked modification (git add --update)",
+        "stage_all_op",
+    ));
+    items.push(action_or_placeholder(
+        ids.unstage_all,
+        "U",
+        "unstage all",
+        "Unstage everything, keeping your working tree (git reset)",
+        "unstage_all_op",
+    ));
+    items
+}
+
+/// MG.23h: the `s` row, which means two different things.
+///
+/// In magit-status, "open the status buffer" is a no-op on the buffer
+/// you are already looking at — so the row becomes the section jump,
+/// which is the useful thing to want from a menu there. Everywhere
+/// else it opens the buffer.
+///
+/// This is magit's own shape, on magit's own predicate: its dispatch
+/// carries two `j` rows, `magit-status-jump :if-mode magit-status-mode`
+/// and `magit-status-quick :if-not-mode magit-status-mode`. Ours keeps
+/// the key on `s` (magit leaves `s` empty at this level, so there is
+/// nothing to collide with) and swaps the meaning the same way.
+fn status_row(ids: &DispatchActionIds, ctx: &TransientContext) -> TransientItem {
+    if ctx.is_major(crate::MagitStatusMode::mode_id().as_str()) {
+        return TransientItem {
+            key: vec!["s".into()],
+            label: "jump".into(),
+            description: "Jump to a section of this buffer".into(),
+            kind: TransientItemKind::Submenu(Arc::new(jump_transient(ids))),
+        };
+    }
+    action_or_placeholder(
+        ids.status,
+        "s",
+        "status",
+        "Open the status buffer",
+        "status_op",
+    )
+}
+
+/// MG.23h: magit's `magit-status-jump`, over the sections we render.
+///
+/// Keys are magit's where the sections coincide (`s` staged, `u`
+/// unstaged, `n` untracked, `z` stashes). Recent commits has no magit
+/// counterpart — its status buffer reaches unpushed/unpulled instead —
+/// so `c` is ours, free at this level and mnemonic.
+fn jump_transient(ids: &DispatchActionIds) -> TransientSpec {
+    TransientSpec {
+        title: "Jump to section".into(),
+        groups: vec![TransientGroup {
+            label: "Jump to".into(),
+            items: vec![
+                action_or_placeholder(
+                    ids.jump_staged,
+                    "s",
+                    "staged",
+                    "Staged changes",
+                    "jump_staged",
+                ),
+                action_or_placeholder(
+                    ids.jump_unstaged,
+                    "u",
+                    "unstaged",
+                    "Unstaged changes",
+                    "jump_unstaged",
+                ),
+                action_or_placeholder(
+                    ids.jump_untracked,
+                    "n",
+                    "untracked",
+                    "Untracked files",
+                    "jump_untracked",
+                ),
+                action_or_placeholder(ids.jump_stashes, "z", "stashes", "Stashes", "jump_stashes"),
+                action_or_placeholder(
+                    ids.jump_commits,
+                    "c",
+                    "commits",
+                    "Recent commits",
+                    "jump_commits",
+                ),
+            ],
+        }],
+        preview: None,
+        footer: Some("q dismiss  BS back".into()),
+    }
+}
+
 /// Build the repo-level dispatch transient (`C-c g`).
 ///
 /// Key assignments follow Emacs magit's own `magit-dispatch` where a
@@ -165,24 +301,22 @@ fn action_or_placeholder(
 /// `F` pull, `P` push) — muscle memory carries across editors for a
 /// menu this central, and every one of these keys means the same
 /// thing in magit. Magit entries with no lattice implementation
-/// behind them (bisect, merge, tag, revert, reset, cherry-pick,
-/// submodule, patch) are deliberately ABSENT rather than present-
-/// and-inert: a menu row that does nothing when pressed is worse
-/// than a row that isn't there.
-pub fn dispatch_transient(ids: &DispatchActionIds) -> TransientSpec {
+/// behind them (bisect, submodule, patch) are deliberately ABSENT
+/// rather than present-and-inert: a menu row that does nothing when
+/// pressed is worse than a row that isn't there.
+///
+/// MG.23h: `ctx` is where the menu was opened from. Two things vary on
+/// it, both mirroring a predicate magit puts on its own dispatch — the
+/// `s` row's meaning ([`status_row`]) and the section-acting rows
+/// ([`applying_changes_items`]).
+pub fn dispatch_transient(ids: &DispatchActionIds, ctx: &TransientContext) -> TransientSpec {
     TransientSpec {
         title: "Magit dispatch".into(),
         groups: vec![
             TransientGroup {
                 label: "Working tree".into(),
                 items: vec![
-                    action_or_placeholder(
-                        ids.status,
-                        "s",
-                        "status",
-                        "Open the status buffer",
-                        "stage_all",
-                    ),
+                    status_row(ids, ctx),
                     action_or_placeholder(
                         ids.diff,
                         "d",
@@ -198,30 +332,23 @@ pub fn dispatch_transient(ids: &DispatchActionIds) -> TransientSpec {
                     },
                 ],
             },
-            // MG.23b: magit's own "Applying changes" group. Magit shows
-            // its per-file `s` / `u` rows here too, but gates the whole
-            // group on `:if-derived magit-mode` — they need a section at
-            // point. `C-c g` is context-free, so only the two repo-wide
-            // rows appear (see MG.23h for the context work and the
-            // `s`-means-status collision it has to resolve).
+            // MG.23b/MG.23h: magit's own "Applying changes" group.
+            //
+            // The two repo-wide rows are unconditional — `add --update`
+            // and `reset` need no target and work from anywhere, so
+            // gating them (as magit does) would be strictly less useful.
+            // The section-acting rows ARE gated, on the same test
+            // magit's `:if-derived magit-mode` makes: they resolve the
+            // hunk under the cursor, and outside a magit buffer there is
+            // no diff text to find one in.
+            //
+            // Magit's `s` / `u` rows are deliberately absent. They would
+            // collide with the `s` row above, and unlike `a` / `-` / `x`
+            // their chords are the first thing anyone reaches for — a
+            // menu path to them earns nothing and costs the status key.
             TransientGroup {
                 label: "Applying changes".into(),
-                items: vec![
-                    action_or_placeholder(
-                        ids.stage_all,
-                        "S",
-                        "stage all",
-                        "Stage every tracked modification (git add --update)",
-                        "stage_all_op",
-                    ),
-                    action_or_placeholder(
-                        ids.unstage_all,
-                        "U",
-                        "unstage all",
-                        "Unstage everything, keeping your working tree (git reset)",
-                        "unstage_all_op",
-                    ),
-                ],
+                items: applying_changes_items(ids, ctx),
             },
             TransientGroup {
                 label: "History".into(),

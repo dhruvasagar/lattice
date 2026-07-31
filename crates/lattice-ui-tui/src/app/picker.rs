@@ -205,7 +205,13 @@ impl App {
                 );
                 return Vec::new();
             };
-            let Some(spec) = registry.build(&source) else {
+            // MG.23h: the menu is built for the place it was opened
+            // from. Resolved here rather than by whatever emitted the
+            // effect, so the chord, the ex-command (whose context
+            // carries no buffer) and any future plugin-emitted open are
+            // uniformly context-aware.
+            let ctx = e.transient_open_context();
+            let Some(spec) = registry.build(&source, &ctx) else {
                 e.set_message(
                     crate::app::EchoLevel::Error,
                     format!("transient: unknown source `{source}`"),

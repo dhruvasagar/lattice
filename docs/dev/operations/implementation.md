@@ -4260,12 +4260,15 @@ Installs through `SubsystemBoot` seam. Inverted out of
   transient-item path carries it too, without which a region `x` would
   ask about the selection and discard the whole hunk. **MG.18 (hunk
   staging) is complete.**
-- **MG.19, MG.21 remain open** — per-slice status and sequencing
-  live in
+- **MG.19, MG.21, MG.22 and the tail of MG.23 remain open** —
+  per-slice status and sequencing live in
   [`slice-plans/magit.md`](slice-plans/magit.md), which is
   authoritative for this subsystem. (The 2026-07-26 audit found
   this ledger and that plan had drifted apart *and* from source;
-  magit status is tracked in one place now.)
+  magit status is tracked in one place now.) As of 2026-07-31 that
+  tail is MG.23j (repo-level cherry-pick / revert / reset rows via a
+  commit picker) and MG.23i+ (bisect, submodule, remote management —
+  the same set MG.21 names).
 
 ## multibuffer-views (in design, 2026-05-28)
 

@@ -148,25 +148,30 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     // Fold audit fix: resolve the root dispatch's action ids now,
     // while `boot.commands_mut()` still gives direct access to the
     // registry `register_action_commands` just populated above —
-    // `TransientSourceRegistry`'s builders are zero-arg `Fn()`
-    // closures (see its doc comment for why: `Effect::OpenTransient`
-    // can only carry a name, not a `TransientSpec`), so this is
-    // captured by value rather than looked up again on every press.
+    // `TransientSourceRegistry`'s builders receive only a
+    // `TransientContext` (see its doc comment for why
+    // `Effect::OpenTransient` can only carry a name, not a
+    // `TransientSpec`), so this is captured by value rather than
+    // looked up again on every press.
     let dispatch_ids = resolve_dispatch_ids(boot.commands_mut());
     let file_dispatch_ids = resolve_file_dispatch_ids(boot.commands_mut());
     let other_file_dispatch_ids = resolve_file_dispatch_ids(boot.commands_mut());
     let transient_registry = lattice_picker::TransientSourceRegistry::new();
-    transient_registry.register("magit-dispatch", move || {
-        transients::dispatch_transient(&dispatch_ids)
+    // MG.23h: the root dispatch varies with where it was opened — see
+    // `transients::dispatch_transient`. The file dispatch does not: its
+    // rows all act on the visited file, which is the same question
+    // wherever you press `C-c f`.
+    transient_registry.register("magit-dispatch", move |ctx| {
+        transients::dispatch_transient(&dispatch_ids, ctx)
     });
-    transient_registry.register("magit-file-dispatch", move || {
+    transient_registry.register("magit-file-dispatch", move |_| {
         transients::file_dispatch_transient(&file_dispatch_ids)
     });
     // MG.23a: the same rows for a file you are not visiting. Registered
     // as a source + an ex-command and bound to NO chord — `C-c f` is the
     // common case; a user who wants magit's always-ask behaviour binds
     // this instead.
-    transient_registry.register("magit-other-file-dispatch", move || {
+    transient_registry.register("magit-other-file-dispatch", move |_| {
         transients::other_file_dispatch_transient(&other_file_dispatch_ids)
     });
     boot.register_service::<lattice_picker::TransientSourceRegistryHandle>(Arc::new(
@@ -288,6 +293,18 @@ fn resolve_dispatch_ids(registry: &CommandRegistry) -> transients::DispatchActio
         fetch: registry.id_by_name("action:magit-global-fetch"),
         pull: registry.id_by_name("action:magit-global-pull"),
         push: registry.id_by_name("action:magit-global-push"),
+        // MG.23h: the section-acting rows reuse the chords' own
+        // actions rather than declaring menu-only twins — a second
+        // action for "discard the thing at cursor" is a second place
+        // for its confirm contract to drift.
+        apply_hunk: registry.id_by_name("action:magit-apply-hunk"),
+        reverse_hunk: registry.id_by_name("action:magit-reverse-hunk"),
+        discard: registry.id_by_name("action:magit-discard"),
+        jump_staged: registry.id_by_name("action:magit-jump-staged"),
+        jump_unstaged: registry.id_by_name("action:magit-jump-unstaged"),
+        jump_untracked: registry.id_by_name("action:magit-jump-untracked"),
+        jump_stashes: registry.id_by_name("action:magit-jump-stashes"),
+        jump_commits: registry.id_by_name("action:magit-jump-commits"),
     }
 }
 
@@ -910,6 +927,26 @@ fn register_action_commands(registry: &mut CommandRegistry) {
         "action:magit-reverse-hunk",
         "Reverse the hunk at cursor out of the working tree",
     );
+    // MG.23h: magit's `magit-status-jump`, one action per section we
+    // render. Owned by magit-status-mode — it is the only view with
+    // sections to jump between.
+    reg(
+        "action:magit-jump-staged",
+        "Jump to the Staged changes section",
+    );
+    reg(
+        "action:magit-jump-unstaged",
+        "Jump to the Unstaged changes section",
+    );
+    reg(
+        "action:magit-jump-untracked",
+        "Jump to the Untracked files section",
+    );
+    reg("action:magit-jump-stashes", "Jump to the Stashes section");
+    reg(
+        "action:magit-jump-commits",
+        "Jump to the Recent commits section",
+    );
 
     // magit-diff-mode
     reg(
@@ -1343,6 +1380,37 @@ mod tests {
         found
     }
 
+    /// MG.23h: `C-c g` pressed in an ordinary file buffer.
+    fn outside_magit() -> lattice_picker::TransientContext {
+        lattice_picker::TransientContext::default()
+    }
+
+    /// `C-c g` pressed in the status buffer — both predicates true.
+    fn in_magit_status() -> lattice_picker::TransientContext {
+        lattice_picker::TransientContext {
+            major_mode: Some(MagitStatusMode::mode_id().as_str().to_string()),
+            minor_modes: vec![MagitCoreMode::mode_id().as_str().to_string()],
+        }
+    }
+
+    /// `C-c g` pressed in a magit buffer that is NOT the status buffer
+    /// — the family predicate true, the exact-major one false.
+    fn in_magit_log() -> lattice_picker::TransientContext {
+        lattice_picker::TransientContext {
+            major_mode: Some(MagitLogMode::mode_id().as_str().to_string()),
+            minor_modes: vec![MagitCoreMode::mode_id().as_str().to_string()],
+        }
+    }
+
+    /// Every key at the top level of `spec`, in order.
+    fn top_level_keys(spec: &lattice_picker::TransientSpec) -> Vec<String> {
+        spec.groups
+            .iter()
+            .flat_map(|g| &g.items)
+            .flat_map(|i| i.key.clone())
+            .collect()
+    }
+
     fn assert_no_inert_items(spec: &lattice_picker::TransientSpec) {
         let found = inert_items(spec, "");
         assert!(
@@ -1472,6 +1540,139 @@ mod tests {
                  dialog is open makes that a different target"
             );
         }
+    }
+
+    // ── MG.23h: the menu varies with where it was opened ──
+
+    /// The section-acting rows appear in any magit buffer and nowhere
+    /// else — the `:if-derived magit-mode` half.
+    ///
+    /// They resolve the hunk under the cursor, so outside a magit
+    /// buffer there is no diff text for them to find one in and the row
+    /// would be a key that explains why it did nothing. Both directions
+    /// are asserted: a gate that never opens and a gate that never
+    /// closes both pass a one-sided test.
+    #[test]
+    fn the_section_acting_rows_appear_only_inside_a_magit_buffer() {
+        let mut registry = CommandRegistry::new();
+        register_action_commands(&mut registry);
+        let ids = resolve_dispatch_ids(&registry);
+
+        for ctx in [in_magit_status(), in_magit_log()] {
+            let keys = top_level_keys(&transients::dispatch_transient(&ids, &ctx));
+            for k in ["a", "-", "x"] {
+                assert!(
+                    keys.contains(&k.to_string()),
+                    "`{k}` must be offered in a magit buffer: {keys:?}"
+                );
+            }
+        }
+
+        let keys = top_level_keys(&transients::dispatch_transient(&ids, &outside_magit()));
+        for k in ["a", "-", "x"] {
+            assert!(
+                !keys.contains(&k.to_string()),
+                "`{k}` acts on the hunk at cursor — it must not appear \
+                 outside a magit buffer: {keys:?}"
+            );
+        }
+        // ...while the repo-wide pair is there in every context, which
+        // is where we are deliberately more permissive than magit.
+        for ctx in [in_magit_status(), in_magit_log(), outside_magit()] {
+            let keys = top_level_keys(&transients::dispatch_transient(&ids, &ctx));
+            assert!(keys.contains(&"S".to_string()) && keys.contains(&"U".to_string()));
+        }
+    }
+
+    /// The `s` row swaps meaning in magit-status and only there — the
+    /// `:if-mode` half, which is a different predicate from the one
+    /// above and would be indistinguishable from it if only the status
+    /// buffer were tested.
+    #[test]
+    fn the_status_row_becomes_a_section_jump_only_in_the_status_buffer() {
+        let mut registry = CommandRegistry::new();
+        register_action_commands(&mut registry);
+        let ids = resolve_dispatch_ids(&registry);
+
+        let row = |ctx: &lattice_picker::TransientContext| {
+            transients::dispatch_transient(&ids, ctx)
+                .groups
+                .iter()
+                .flat_map(|g| &g.items)
+                .find(|i| i.key.iter().any(|k| k == "s"))
+                .map(|i| {
+                    (
+                        i.label.clone(),
+                        matches!(i.kind, lattice_picker::TransientItemKind::Submenu(_)),
+                    )
+                })
+                .expect("`s` is always offered")
+        };
+
+        assert_eq!(
+            row(&in_magit_status()),
+            ("jump".to_string(), true),
+            "in the status buffer, `s` must be the section-jump submenu \
+             — opening the buffer you are already in is a no-op"
+        );
+        for ctx in [in_magit_log(), outside_magit()] {
+            let (label, is_submenu) = row(&ctx);
+            assert_eq!(label, "status");
+            assert!(
+                !is_submenu,
+                "outside the status buffer, `s` opens it — a magit-log \
+                 buffer has no sections to jump between"
+            );
+        }
+    }
+
+    /// Whatever the context, no two rows at one level share a key.
+    ///
+    /// This is the guard the gating actually needs: the added rows land
+    /// in an existing menu, and `-`/`x`/`a` colliding with something
+    /// already there would make one of them unreachable with no error.
+    #[test]
+    fn no_context_produces_a_duplicate_key_in_the_dispatch() {
+        let mut registry = CommandRegistry::new();
+        register_action_commands(&mut registry);
+        let ids = resolve_dispatch_ids(&registry);
+        for ctx in [in_magit_status(), in_magit_log(), outside_magit()] {
+            let keys = top_level_keys(&transients::dispatch_transient(&ids, &ctx));
+            let mut seen = std::collections::HashSet::new();
+            for k in &keys {
+                assert!(seen.insert(k.clone()), "duplicate key `{k}` in {keys:?}");
+            }
+        }
+    }
+
+    /// Every jump row resolves, and every section we render has one.
+    ///
+    /// The prefixes the handlers scan for are the same constants that
+    /// render the headers, so this pins that the submenu covers all of
+    /// them rather than whichever the author remembered.
+    #[test]
+    fn the_jump_submenu_covers_every_section_we_render() {
+        let mut registry = CommandRegistry::new();
+        register_action_commands(&mut registry);
+        let ids = resolve_dispatch_ids(&registry);
+        let spec = transients::dispatch_transient(&ids, &in_magit_status());
+        let jump = spec
+            .groups
+            .iter()
+            .flat_map(|g| &g.items)
+            .find_map(|i| match &i.kind {
+                lattice_picker::TransientItemKind::Submenu(sub) if i.label == "jump" => {
+                    Some(std::sync::Arc::clone(sub))
+                }
+                _ => None,
+            })
+            .expect("the jump submenu");
+        assert_eq!(
+            jump.selectable_count(),
+            sections::SECTION_HEADER_PREFIXES.len(),
+            "one row per rendered section, no more and no fewer"
+        );
+        assert_no_inert_items(&jump);
     }
 
     /// MG.23a — every `C-c f` action declares the optional `file`
@@ -2084,8 +2285,12 @@ mod tests {
         // field added later is covered automatically rather than
         // needing this test to be remembered and updated.
         let ids = resolve_dispatch_ids(&registry);
-        let spec = transients::dispatch_transient(&ids);
-        assert_no_inert_items(&spec);
+        // MG.23h: BOTH shapes the menu can take. The gated rows only
+        // exist in the magit-buffer one, so checking a single context
+        // would leave whichever rows the other adds unverified.
+        for ctx in [&outside_magit(), &in_magit_status()] {
+            assert_no_inert_items(&transients::dispatch_transient(&ids, ctx));
+        }
     }
 
     #[test]
@@ -2127,7 +2332,7 @@ mod tests {
         let mut registry = CommandRegistry::new();
         register_action_commands(&mut registry);
         check(
-            &transients::dispatch_transient(&resolve_dispatch_ids(&registry)),
+            &transients::dispatch_transient(&resolve_dispatch_ids(&registry), &in_magit_status()),
             "dispatch",
         );
         check(
@@ -2171,7 +2376,10 @@ mod tests {
         // permanently-inert placeholder, which is the "menu row that
         // does nothing" the no-inert-rows policy forbids. Bump it only
         // together with a real action.
-        let root = inert_items(&transients::dispatch_transient(&Default::default()), "");
+        let root = inert_items(
+            &transients::dispatch_transient(&Default::default(), &outside_magit()),
+            "",
+        );
         assert_eq!(
             root.len(),
             18,

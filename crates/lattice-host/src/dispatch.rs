@@ -27481,6 +27481,34 @@ impl Editor {
         signals
     }
 
+    /// MG.23h: where a transient is being opened from, for
+    /// `TransientSourceRegistry::build`.
+    ///
+    /// A generic host primitive rather than anything magit-shaped: it
+    /// reports the two mode axes of the buffer that is active right
+    /// now, which is the question `:if-mode` and `:if-derived` ask in
+    /// Emacs and the question any context-varying menu will ask here.
+    /// Deliberately not the cursor or the selection — a builder
+    /// produces rows, and the row's own action already receives those
+    /// at fire time, when they are current.
+    ///
+    /// Empty when the active buffer has no `ActiveModes` entry yet
+    /// (mid-boot), which degrades to the ungated menu — the same
+    /// direction `keymap_gated_ids` degrades in.
+    pub fn transient_open_context(&self) -> lattice_picker::TransientContext {
+        let Some(active) = self.active_modes.get(&self.document_buffer_id) else {
+            return lattice_picker::TransientContext::default();
+        };
+        lattice_picker::TransientContext {
+            major_mode: active.major().map(|m| m.as_str().to_string()),
+            minor_modes: active
+                .minors()
+                .iter()
+                .map(|m| m.as_str().to_string())
+                .collect(),
+        }
+    }
+
     /// PICK.1: open a transient menu. Seats a picker in transient mode
     /// with the given spec, state, and preview function.
     pub fn open_transient(&mut self, spec: lattice_picker::TransientSpec) -> Vec<RendererSignal> {

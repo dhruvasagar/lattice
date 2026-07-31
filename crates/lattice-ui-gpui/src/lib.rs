@@ -1462,7 +1462,11 @@ impl GpuiApp {
                         );
                         return Vec::new();
                     };
-                    let Some(spec) = registry.build(&source) else {
+                    // MG.23h: same context resolution as the TUI peer —
+                    // see `App::do_open_transient` there for why it
+                    // happens at build time rather than at emit time.
+                    let ctx = e.transient_open_context();
+                    let Some(spec) = registry.build(&source, &ctx) else {
                         e.set_message(
                             lattice_host::action::EchoLevel::Error,
                             format!("transient: unknown source `{source}`"),

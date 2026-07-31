@@ -198,9 +198,60 @@ pub enum TransientItemKind {
 /// populates it once), so this stays a plain mutex-guarded map
 /// rather than an `ArcSwap` RCU registry like `PickerRegistry` —
 /// there's no runtime plugin-load use case for it yet.
+/// MG.23h: where a transient was opened from, so a builder can vary
+/// its rows.
+///
+/// A dispatch menu bound globally has to degrade: rows that act on the
+/// thing under the cursor are meaningless in a buffer that has no such
+/// thing, and a row whose only useful reading depends on which buffer
+/// you are in should say the useful thing. Emacs magit answers both
+/// with predicates on its prefix definitions — `:if-derived` for "any
+/// buffer of this family" and `:if-mode` for "exactly this major" —
+/// and this is the same question, asked of the two mode axes.
+///
+/// **Major and minors are separate fields on purpose.** A flat list of
+/// active mode ids can only answer one of those two questions; magit's
+/// dispatch asks both of them about the same key (`j` is "jump to
+/// section" in magit-status and "display status" everywhere else,
+/// while its whole "Applying changes" group is gated on the looser
+/// family test).
+///
+/// **What is deliberately absent:** the buffer id, the cursor, and the
+/// selection. A builder produces rows; it does not act. The row's
+/// action receives its own `ActionContext`, which already carries the
+/// underlying buffer, its cursor and any Visual region — resolved at
+/// fire time, when they are current. Duplicating them here would be
+/// speculative surface that could also go stale between build and fire.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TransientContext {
+    /// The active major mode's id, if the buffer has one. The
+    /// `:if-mode` question.
+    pub major_mode: Option<String>,
+    /// The active minor mode ids. The `:if-derived` question is asked
+    /// here: a magit buffer is one where `magit-core-mode` is active,
+    /// whatever its major happens to be.
+    pub minor_modes: Vec<String>,
+}
+
+impl TransientContext {
+    /// True iff `id` is the active major — `:if-mode`.
+    pub fn is_major(&self, id: &str) -> bool {
+        self.major_mode.as_deref() == Some(id)
+    }
+
+    /// True iff `id` is an active minor — the family test a mode's
+    /// shared minor answers, standing in for `:if-derived`.
+    pub fn has_minor(&self, id: &str) -> bool {
+        self.minor_modes.iter().any(|m| m == id)
+    }
+}
+
 #[derive(Default)]
 pub struct TransientSourceRegistry {
-    sources: std::sync::Mutex<HashMap<String, Arc<dyn Fn() -> TransientSpec + Send + Sync>>>,
+    #[allow(clippy::type_complexity)]
+    sources: std::sync::Mutex<
+        HashMap<String, Arc<dyn Fn(&TransientContext) -> TransientSpec + Send + Sync>>,
+    >,
 }
 
 /// Service handle registered via `SubsystemBoot::register_service` —
@@ -219,18 +270,25 @@ impl TransientSourceRegistry {
     pub fn register(
         &self,
         name: impl Into<String>,
-        builder: impl Fn() -> TransientSpec + Send + Sync + 'static,
+        builder: impl Fn(&TransientContext) -> TransientSpec + Send + Sync + 'static,
     ) {
         if let Ok(mut sources) = self.sources.lock() {
             sources.insert(name.into(), Arc::new(builder));
         }
     }
 
-    /// Build the named transient's spec, or `None` if no builder is
-    /// registered under `name`.
-    pub fn build(&self, name: &str) -> Option<TransientSpec> {
+    /// Build the named transient's spec for the place it was opened
+    /// from, or `None` if no builder is registered under `name`.
+    ///
+    /// MG.23h: `ctx` is supplied by the renderer at open time rather
+    /// than by whatever emitted `Effect::OpenTransient`. That is what
+    /// makes every path uniformly context-aware — the chord, the
+    /// ex-command (whose `ExCommandContext` carries no buffer), and any
+    /// future plugin-emitted open. Resolving it at emit time instead
+    /// would leave all but the chord looking at nothing.
+    pub fn build(&self, name: &str, ctx: &TransientContext) -> Option<TransientSpec> {
         let builder = self.sources.lock().ok()?.get(name)?.clone();
-        Some(builder())
+        Some(builder(ctx))
     }
 }
 
@@ -283,15 +341,19 @@ mod tests {
     #[test]
     fn build_returns_none_for_an_unregistered_name() {
         let registry = TransientSourceRegistry::new();
-        assert!(registry.build("nope").is_none());
+        assert!(
+            registry
+                .build("nope", &TransientContext::default())
+                .is_none()
+        );
     }
 
     #[test]
     fn register_then_build_round_trips() {
         let registry = TransientSourceRegistry::new();
-        registry.register("magit-dispatch", || spec_titled("Magit dispatch"));
+        registry.register("magit-dispatch", |_| spec_titled("Magit dispatch"));
         let spec = registry
-            .build("magit-dispatch")
+            .build("magit-dispatch", &TransientContext::default())
             .expect("registered name builds");
         assert_eq!(spec.title, "Magit dispatch");
     }
@@ -306,36 +368,108 @@ mod tests {
         let registry = TransientSourceRegistry::new();
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let calls2 = calls.clone();
-        registry.register("counted", move || {
+        registry.register("counted", move |_| {
             calls2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             spec_titled("counted")
         });
-        registry.build("counted");
-        registry.build("counted");
-        registry.build("counted");
+        registry.build("counted", &TransientContext::default());
+        registry.build("counted", &TransientContext::default());
+        registry.build("counted", &TransientContext::default());
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 3);
     }
 
     #[test]
     fn re_registering_a_name_overwrites_the_previous_builder() {
         let registry = TransientSourceRegistry::new();
-        registry.register("magit-dispatch", || spec_titled("first"));
-        registry.register("magit-dispatch", || spec_titled("second"));
-        let spec = registry.build("magit-dispatch").expect("still registered");
+        registry.register("magit-dispatch", |_| spec_titled("first"));
+        registry.register("magit-dispatch", |_| spec_titled("second"));
+        let spec = registry
+            .build("magit-dispatch", &TransientContext::default())
+            .expect("still registered");
         assert_eq!(
             spec.title, "second",
             "last writer wins, matching PickerRegistry"
         );
     }
 
+    /// MG.23h: the context reaches the builder, and reaches it on
+    /// every build rather than being captured once.
+    ///
+    /// Without this the signature could be satisfied by a builder that
+    /// ignores its argument and the whole mechanism would look wired
+    /// while gating nothing.
+    #[test]
+    fn the_open_context_reaches_the_builder() {
+        let registry = TransientSourceRegistry::new();
+        registry.register("ctx", |ctx: &TransientContext| {
+            spec_titled(ctx.major_mode.as_deref().unwrap_or("none"))
+        });
+        let in_status = TransientContext {
+            major_mode: Some("magit-status-mode".into()),
+            minor_modes: vec!["magit-core-mode".into()],
+        };
+        assert_eq!(
+            registry.build("ctx", &in_status).unwrap().title,
+            "magit-status-mode"
+        );
+        assert_eq!(
+            registry
+                .build("ctx", &TransientContext::default())
+                .unwrap()
+                .title,
+            "none",
+            "a second build with a different context must rebuild, not \
+             replay the first"
+        );
+    }
+
+    /// The two questions magit's prefixes ask are different questions,
+    /// which is why the two axes are separate fields: a flat list of
+    /// active mode ids could answer only one of them.
+    #[test]
+    fn the_major_and_minor_tests_are_independent() {
+        let ctx = TransientContext {
+            major_mode: Some("magit-status-mode".into()),
+            minor_modes: vec!["magit-core-mode".into()],
+        };
+        assert!(ctx.is_major("magit-status-mode"));
+        assert!(!ctx.is_major("magit-core-mode"), "a minor is not the major");
+        assert!(ctx.has_minor("magit-core-mode"));
+        assert!(
+            !ctx.has_minor("magit-status-mode"),
+            "the major is not among the minors"
+        );
+
+        // A magit buffer that is not the status buffer: the family
+        // test still passes, the exact-major test does not.
+        let in_log = TransientContext {
+            major_mode: Some("magit-log-mode".into()),
+            minor_modes: vec!["magit-core-mode".into()],
+        };
+        assert!(in_log.has_minor("magit-core-mode"));
+        assert!(!in_log.is_major("magit-status-mode"));
+
+        // And no magit at all.
+        assert!(!TransientContext::default().has_minor("magit-core-mode"));
+    }
+
     #[test]
     fn distinct_names_stay_independent() {
         let registry = TransientSourceRegistry::new();
-        registry.register("magit-dispatch", || spec_titled("dispatch"));
-        registry.register("magit-file-dispatch", || spec_titled("file-dispatch"));
-        assert_eq!(registry.build("magit-dispatch").unwrap().title, "dispatch");
+        registry.register("magit-dispatch", |_| spec_titled("dispatch"));
+        registry.register("magit-file-dispatch", |_| spec_titled("file-dispatch"));
         assert_eq!(
-            registry.build("magit-file-dispatch").unwrap().title,
+            registry
+                .build("magit-dispatch", &TransientContext::default())
+                .unwrap()
+                .title,
+            "dispatch"
+        );
+        assert_eq!(
+            registry
+                .build("magit-file-dispatch", &TransientContext::default())
+                .unwrap()
+                .title,
             "file-dispatch"
         );
     }

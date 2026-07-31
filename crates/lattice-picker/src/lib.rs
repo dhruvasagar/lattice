@@ -66,7 +66,7 @@ pub use source::{
     PickerRegistry, PickerRegistryHandle, PickerSourceGenerator, PickerSourceSpec, SourceResult,
 };
 pub use transient::{
-    TransientGroup, TransientItem, TransientItemKind, TransientSourceRegistry,
+    TransientContext, TransientGroup, TransientItem, TransientItemKind, TransientSourceRegistry,
     TransientSourceRegistryHandle, TransientSpec, TransientState, TransientValue,
     confirm_transient_spec, transient_initial_state,
 };

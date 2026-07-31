@@ -541,6 +541,48 @@ instead of the candidate-list actions:
 | `q` / `Esc` / `C-g` | `Action::TransientDismiss` → the same `do_picker_dismiss` every picker surface uses |
 | `DEL` / `BS` | Pops `transient_stack`, restoring the parent's spec, state, AND selection (§4bis.5) |
 
+#### 4bis.5ter A transient is built for where it was opened
+
+`TransientSourceRegistry`'s builders take a `TransientContext`:
+
+```rust
+pub struct TransientContext {
+    pub major_mode: Option<String>,   // the `:if-mode` question
+    pub minor_modes: Vec<String>,     // the `:if-derived` question
+}
+```
+
+A menu bound globally has to degrade. Rows that act on the thing under
+the cursor are meaningless in a buffer that has no such thing, and a
+row whose useful reading depends on which buffer you are in should say
+the useful thing. Emacs magit answers both with predicates on its
+prefix definitions, and `magit-dispatch` — which under
+`magit-define-global-key-bindings 'recommended` is bound to `C-c g`,
+exactly our binding — carries three groups gated that way.
+
+**The two mode axes are separate fields on purpose.** A flat list of
+active mode ids can only answer one of the two questions, and magit's
+dispatch asks both about the same key: `j` is "jump to section" in
+`magit-status-mode` and "display status" everywhere else, while its
+whole "Applying changes" group is gated on the looser family test.
+
+**Resolved at build time, by the renderer.** Each peer fills the
+context from the Editor in its `Effect::OpenTransient` arm
+(`Editor::transient_open_context`). The alternative — having whatever
+*emits* the effect resolve it — would leave all but the chord path
+blind: `ExCommandContext` carries no buffer, so `:magit-dispatch` typed
+on the `:` line would always get the ungated menu, whereas in Emacs
+`M-x magit-dispatch` is context-aware because `:if-derived` tests the
+current mode regardless of how you arrived. Any future plugin-emitted
+open gets the same treatment for free.
+
+**What the context deliberately omits:** the buffer id, the cursor and
+the selection. A builder produces rows; it does not act. The row's
+action receives its own `ActionContext`, which already carries the
+underlying buffer, its cursor and any Visual region, resolved at fire
+time when they are current — duplicating them here would be
+speculative surface that could also go stale between build and fire.
+
 #### 4bis.5bis Why a selection and not a scroll offset
 
 `<C-n>` / `<C-p>` move an **item index**, not a row offset. The

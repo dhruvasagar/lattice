@@ -135,6 +135,14 @@ pub struct DispatchActionIds {
     pub apply_hunk: Option<CommandId>,
     pub reverse_hunk: Option<CommandId>,
     pub discard: Option<CommandId>,
+    /// MG.23j: the commit operations, in magit's ungated group. The
+    /// same actions the chords fire — they ask for a commit when there
+    /// is none under the cursor.
+    pub cherry_pick: Option<CommandId>,
+    pub revert: Option<CommandId>,
+    pub reset_soft: Option<CommandId>,
+    pub reset_mixed: Option<CommandId>,
+    pub reset_hard: Option<CommandId>,
     /// MG.23h: `magit-status-jump`'s rows, one per section we render.
     pub jump_staged: Option<CommandId>,
     pub jump_unstaged: Option<CommandId>,
@@ -213,6 +221,48 @@ fn applying_changes_items(ids: &DispatchActionIds, ctx: &TransientContext) -> Ve
         "unstage_all_op",
     ));
     items
+}
+
+/// MG.23j: the three resets, on the chords' own `s` / `m` / `h`
+/// suffixes so `C-c g O h` and the `Oh` chord read the same.
+///
+/// A submenu rather than three top-level rows because `O` is one
+/// concept with three strengths, and because the destructive one wants
+/// to sit next to the two that are not — seeing `--soft` and `--mixed`
+/// beside it is what makes "keeps your changes" legible at the moment
+/// of choosing.
+fn reset_transient(ids: &DispatchActionIds) -> TransientSpec {
+    TransientSpec {
+        title: "Reset".into(),
+        groups: vec![TransientGroup {
+            label: "Reset to a commit".into(),
+            items: vec![
+                action_or_placeholder(
+                    ids.reset_soft,
+                    "s",
+                    "soft",
+                    "Keep the index and the working tree",
+                    "reset_soft_op",
+                ),
+                action_or_placeholder(
+                    ids.reset_mixed,
+                    "m",
+                    "mixed",
+                    "Keep the working tree, reset the index",
+                    "reset_mixed_op",
+                ),
+                action_or_placeholder(
+                    ids.reset_hard,
+                    "h",
+                    "hard",
+                    "Discard everything uncommitted (asks first)",
+                    "reset_hard_op",
+                ),
+            ],
+        }],
+        preview: None,
+        footer: Some("q dismiss  BS back".into()),
+    }
 }
 
 /// MG.23h: the `s` row, which means two different things.
@@ -352,13 +402,39 @@ pub fn dispatch_transient(ids: &DispatchActionIds, ctx: &TransientContext) -> Tr
             },
             TransientGroup {
                 label: "History".into(),
-                items: vec![action_or_placeholder(
-                    ids.log,
-                    "l",
-                    "log",
-                    "Show commit history",
-                    "show_log",
-                )],
+                items: vec![
+                    action_or_placeholder(ids.log, "l", "log", "Show commit history", "show_log"),
+                    // MG.23j: magit's own keys, in magit's own ungated
+                    // group. They need a commit and this menu has no
+                    // cursor on one — so the action they fire asks,
+                    // which is exactly what magit's `A` / `V` / `X`
+                    // transients do and why magit does NOT gate them.
+                    //
+                    // The same actions the chords fire: in a magit
+                    // buffer they take the commit under the cursor, and
+                    // everywhere else they open the commit picker. One
+                    // action, both surfaces.
+                    action_or_placeholder(
+                        ids.cherry_pick,
+                        "A",
+                        "cherry-pick",
+                        "Cherry-pick a commit onto this branch",
+                        "cherry_pick_op",
+                    ),
+                    action_or_placeholder(
+                        ids.revert,
+                        "_",
+                        "revert",
+                        "Revert a commit",
+                        "revert_op",
+                    ),
+                    TransientItem {
+                        key: vec!["O".into()],
+                        label: "reset".into(),
+                        description: "Reset this branch to a commit".into(),
+                        kind: TransientItemKind::Submenu(Arc::new(reset_transient(ids))),
+                    },
+                ],
             },
             TransientGroup {
                 label: "Branches".into(),

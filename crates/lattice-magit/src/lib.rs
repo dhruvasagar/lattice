@@ -300,6 +300,11 @@ fn resolve_dispatch_ids(registry: &CommandRegistry) -> transients::DispatchActio
         apply_hunk: registry.id_by_name("action:magit-apply-hunk"),
         reverse_hunk: registry.id_by_name("action:magit-reverse-hunk"),
         discard: registry.id_by_name("action:magit-discard"),
+        cherry_pick: registry.id_by_name("action:magit-cherry-pick"),
+        revert: registry.id_by_name("action:magit-revert"),
+        reset_soft: registry.id_by_name("action:magit-reset-soft"),
+        reset_mixed: registry.id_by_name("action:magit-reset-mixed"),
+        reset_hard: registry.id_by_name("action:magit-reset-hard"),
         jump_staged: registry.id_by_name("action:magit-jump-staged"),
         jump_unstaged: registry.id_by_name("action:magit-jump-unstaged"),
         jump_untracked: registry.id_by_name("action:magit-jump-untracked"),
@@ -732,6 +737,84 @@ fn register_ex_commands(registry: &mut CommandRegistry) {
                 surface_form: SurfaceForm::Keyword,
             },
         );
+    }
+    {
+        // MG.23j: the scriptable surface for MG.20's three operations,
+        // which shipped as chords and nothing else.
+        //
+        // Two ways in, the shape MG.23c1 established: `:magit-revert
+        // <sha>` acts immediately; bare `:magit-revert` opens the
+        // commit picker, which then fires *this same command* with the
+        // picked sha appended. That round trip is why the picker takes
+        // an ex-command name rather than an action name — see
+        // `picker_sources::CommitPickSource`.
+        //
+        // `reset --hard` returns its confirm here exactly as the chord
+        // does: `spawn_commit_op` is not reached until the `-execute`
+        // half runs, so answering `n` performs no git call (§12.13).
+        for op in [
+            magit_global_mode::CommitOp::CHERRY_PICK,
+            magit_global_mode::CommitOp::REVERT,
+            magit_global_mode::CommitOp::RESET_SOFT,
+            magit_global_mode::CommitOp::RESET_MIXED,
+            magit_global_mode::CommitOp::RESET_HARD,
+        ] {
+            registry.register_ex_command(
+                op.ex_command,
+                // Leaked once at boot, from a `&'static` table — the
+                // registry wants `&'static str` docs and these are
+                // per-op. Five allocations for the process lifetime.
+                Box::leak(
+                    format!(
+                        "git {} the named commit. With no argument: pick one.",
+                        op.what
+                    )
+                    .into_boxed_str(),
+                ),
+                ExCommandSpec {
+                    latency_class: LatencyClass::Reflex,
+                    accepts_bang: false,
+                    accepts_range: false,
+                    parse_args: Arc::new(|line: &str, _bang: bool| {
+                        Ok(Args::String(line.trim().to_string()))
+                    }),
+                    apply: Arc::new(move |ctx| {
+                        let commit = match ctx.args {
+                            Args::String(ref s) if !s.trim().is_empty() => s.trim().to_string(),
+                            _ => {
+                                return Ok(Effect::OpenPicker {
+                                    source: picker_sources::COMMIT_PICK_SOURCE.to_string(),
+                                    args: vec![op.ex_command.to_string()],
+                                });
+                            }
+                        };
+                        Ok(match op.confirm_action {
+                            Some(yes) => confirm::ask_target(
+                                format!(
+                                    "git {} {commit} — discard uncommitted changes?",
+                                    op.what
+                                ),
+                                yes,
+                                commit,
+                            ),
+                            None => {
+                                let workdir = lattice_vcs::Repository::discover(".")
+                                    .ok()
+                                    .and_then(|r| r.workdir().map(|p| p.to_path_buf()))
+                                    .unwrap_or_default();
+                                magit_global_mode::spawn_commit_op(op, workdir, &commit)
+                            }
+                        })
+                    }),
+                    args_schema: vec![ArgSpec::optional(
+                        "commit",
+                        lattice_grammar::ArgKind::String,
+                        "commit to act on; omit to pick one",
+                    )],
+                    surface_form: SurfaceForm::Keyword,
+                },
+            );
+        }
     }
     {
         // MG.23f2: the scriptable half of reverse blame. `C-c f`'s `f`
@@ -1675,6 +1758,63 @@ mod tests {
         assert_no_inert_items(&jump);
     }
 
+    /// MG.23j — every commit op is reachable by its ex-command name,
+    /// which is what the picker fires.
+    ///
+    /// The picker builds the ex line `"<ex_command> <sha>"` and hands
+    /// it to the host, which runs it as typed. A name that no command
+    /// answers produces a picker that lists commits, accepts one, and
+    /// does nothing — with no error, because an unknown ex-command
+    /// inside an accept path is not the same as one typed on the `:`
+    /// line.
+    #[test]
+    fn every_commit_ops_ex_command_is_registered() {
+        let mut registry = CommandRegistry::new();
+        register_ex_commands(&mut registry);
+        for op in [
+            magit_global_mode::CommitOp::CHERRY_PICK,
+            magit_global_mode::CommitOp::REVERT,
+            magit_global_mode::CommitOp::RESET_SOFT,
+            magit_global_mode::CommitOp::RESET_MIXED,
+            magit_global_mode::CommitOp::RESET_HARD,
+        ] {
+            let id = registry.id_by_name(op.ex_command).unwrap_or_else(|| {
+                panic!(
+                    "`:{}` must exist — the commit picker fires it by name",
+                    op.ex_command
+                )
+            });
+            assert!(
+                registry.ex_command_spec(id).is_some(),
+                "`:{}` must be an EX command, not an action of the same name",
+                op.ex_command
+            );
+        }
+    }
+
+    /// The repo-level rows fire the SAME actions the chords fire, so a
+    /// row cannot drift onto a second handler with its own idea of the
+    /// confirm contract.
+    #[test]
+    fn the_commit_rows_reuse_the_chords_actions() {
+        let mut registry = CommandRegistry::new();
+        register_action_commands(&mut registry);
+        let ids = resolve_dispatch_ids(&registry);
+        for (row, action) in [
+            (ids.cherry_pick, "action:magit-cherry-pick"),
+            (ids.revert, "action:magit-revert"),
+            (ids.reset_soft, "action:magit-reset-soft"),
+            (ids.reset_mixed, "action:magit-reset-mixed"),
+            (ids.reset_hard, "action:magit-reset-hard"),
+        ] {
+            assert_eq!(
+                row,
+                registry.id_by_name(action),
+                "the `{action}` row must fire that action, not a twin"
+            );
+        }
+    }
+
     /// MG.23a — every `C-c f` action declares the optional `file`
     /// target, and declares it under the name the transient uses.
     ///
@@ -2382,7 +2522,7 @@ mod tests {
         );
         assert_eq!(
             root.len(),
-            18,
+            23,
             "expected every root-dispatch leaf (incl. both submenus') to \
              report inert, got: {root:?}"
         );

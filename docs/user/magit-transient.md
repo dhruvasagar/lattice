@@ -75,6 +75,11 @@ adds inside one):
 │                                                │
 │  ▸ History                                     │
 │    [l]  log             Show commit history    │
+│    [A]  cherry-pick     Cherry-pick a commit   │
+│                          onto this branch      │
+│    [_]  revert          Revert a commit        │
+│    [O]  reset         ▸ Reset this branch to   │
+│                          a commit              │
 │                                                │
 │  ▸ Branches                                    │
 │    [b]  branch          Open the branch list   │
@@ -110,6 +115,14 @@ thing `:magit-status`/`:magit-diff`/`:magit-log`/`:magit-branch`/
 `:magit-rebase` do. Once you're in that buffer, use its own direct
 chords (`s`/`u`/`x`/`<CR>`/… — see
 [`magit`](help:magit)) for the actual operations.
+
+`A` / `_` / `O` need a commit and this menu has no cursor on one, so
+they **ask** — a picker of recent commits, then the operation runs on
+what you pick. They fire the same actions the `A` / `_` / `O…` chords
+do, so in a magit buffer with a commit under the cursor those chords
+still act on it directly; only the menu path asks. `O` opens a submenu
+for `s` soft / `m` mixed / `h` hard, matching the `Os` / `Om` / `Oh`
+chords, and `h` confirms before discarding anything.
 
 ### What changes inside a magit buffer
 

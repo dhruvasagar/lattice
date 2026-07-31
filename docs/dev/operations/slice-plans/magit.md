@@ -1280,7 +1280,7 @@ the buffer you are already in is the actual no-op. See MG.23h's note.
 | MG.23f2 | Reverse blame (`git blame --reverse`) from a blob buffer | MG.23f | ✅ |
 | MG.23g | `a` apply / `-` reverse on a hunk of a commit | MG.18 | ✅ |
 | MG.23h | Context-dependent menu content (magit's `:if-derived` / `:if-mode`) | — | ✅ |
-| MG.23j | Repo-level `A` / `_` / `O` rows, via a commit picker (NOT the predicate — see MG.20's corrected note) | MG.20 | 📝 |
+| MG.23j | Repo-level `A` / `_` / `O` rows, via a commit picker (NOT the predicate — see MG.20's corrected note) | MG.20 | ✅ |
 | MG.23i+ | The new subsystems, one slice each, prioritised by daily use — the same set MG.21 still names | — | 📝 |
 
 #### MG.23a — the file target seam + `:magit-other-file-dispatch` ✅ (2026-07-30)

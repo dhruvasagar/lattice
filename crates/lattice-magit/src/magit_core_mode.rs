@@ -134,8 +134,29 @@ fn commit_op(
     lattice_mode::ActionHandlerContribution {
         action_name,
         handler: Arc::new(move |ctx: &ActionContext<'_>| {
-            let view = crate::buffer_state::view_for(ctx)?;
-            let commit = view.commit_at_cursor(ctx.cursor)?;
+            // MG.23j: no commit under the cursor — ask for one.
+            //
+            // This is the same action the root dispatch's `A` / `_` /
+            // `O` rows fire, and the menu can be opened from a buffer
+            // with no commits in it at all. Rather than a second action
+            // for the menu, the one action answers both: the cursor
+            // when there is something under it, a picker when there is
+            // not. Magit reaches the same place — its `A` / `V` / `X`
+            // are transients that prompt, which is why they sit in the
+            // *ungated* group of its dispatch.
+            //
+            // It also retires a dead key: `A` on a `--graph` connector
+            // line used to return `None`, and a Normal-mode chord a
+            // mode binds is consumed unconditionally, so it read as
+            // broken.
+            let resolved = crate::buffer_state::view_for(ctx)
+                .and_then(|view| view.commit_at_cursor(ctx.cursor).map(|c| (view, c)));
+            let Some((view, commit)) = resolved else {
+                return Some(Effect::OpenPicker {
+                    source: crate::picker_sources::COMMIT_PICK_SOURCE.to_string(),
+                    args: vec![op.ex_command.to_string()],
+                });
+            };
             match op.confirm_action {
                 // Destructive: the ask half performs no git call at
                 // all, so answering `n` cannot mutate — MG.12's rule.

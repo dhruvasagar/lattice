@@ -40,7 +40,18 @@ commit is under the cursor?" for its own row format and one shared
 handler acts on the answer. Keys follow Emacs magit's own.
 
 On a row with no commit — a file entry, a stash, a `--graph` connector
-line — they do nothing rather than acting on a neighbour.
+line — they **ask which commit** rather than acting on a neighbour, by
+opening a picker of recent commits. Same when they are fired from the
+[dispatch menu](help:magit-transient), which has no cursor on a commit
+at all. Magit reaches the same place: its `A` / `V` / `X` are
+transients that prompt, which is why they are *not* gated to magit
+buffers there.
+
+Each also has an ex-command taking the commit directly —
+`:magit-cherry-pick <sha>`, `:magit-revert <sha>`,
+`:magit-reset-soft` / `-mixed` / `-hard` `<sha>`. With no argument they
+open the same picker, so `:magit-revert` and the `_` chord on a
+non-commit row end up in the same place.
 
 | Chord | Runs | Keeps |
 |---|---|---|

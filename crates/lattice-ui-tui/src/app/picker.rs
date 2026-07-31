@@ -933,6 +933,9 @@ mod tests {
                 // (editor_boot.rs), so it appears here like any other
                 // first-party source.
                 "magit-branch-pick-base",
+                // MG.23j: the repo dispatch's `A` / `_` / `O` rows need
+                // a commit and have no cursor on one, so they open this.
+                "magit-commit",
                 "marks",
                 "outline",
                 "recent",

@@ -1239,6 +1239,17 @@ pub fn spawn_remote_op(op: RemoteOp, args: &lattice_grammar::Args) -> Effect {
 pub struct CommitOp {
     /// Verb for the echo + logs.
     pub what: &'static str,
+    /// MG.23j: this op's ex-command name, without the `:`.
+    ///
+    /// Load-bearing in two places beyond documentation. It is the
+    /// scriptable surface (`:magit-cherry-pick <sha>`), and it is what
+    /// the commit picker fires: a picked candidate resolves to the ex
+    /// line `"<ex_command> <sha>"`, which is the only route from a
+    /// picker to an operation that carries a value —
+    /// `RoutingPayload::InvokeCommand` declares an `args` field but the
+    /// host's arm destructures it away (`InvokeCommand { id, .. }`) and
+    /// runs `id` as an ex line, so the value has to be *in* the line.
+    pub ex_command: &'static str,
     /// argv template; the resolved commit is appended.
     pub args: &'static [&'static str],
     /// When set, the operation asks before running and this is the
@@ -1251,6 +1262,7 @@ pub struct CommitOp {
 impl CommitOp {
     pub const REVERT: Self = Self {
         what: "revert",
+        ex_command: "magit-revert",
         // `--no-edit` keeps the generated message: lattice has no
         // commit-message UI wired into this path, so opening $EDITOR
         // inside the editor would hang the operation on a prompt the
@@ -1260,21 +1272,25 @@ impl CommitOp {
     };
     pub const CHERRY_PICK: Self = Self {
         what: "cherry-pick",
+        ex_command: "magit-cherry-pick",
         args: &["cherry-pick"],
         confirm_action: None,
     };
     pub const RESET_SOFT: Self = Self {
         what: "reset --soft",
+        ex_command: "magit-reset-soft",
         args: &["reset", "--soft"],
         confirm_action: None,
     };
     pub const RESET_MIXED: Self = Self {
         what: "reset --mixed",
+        ex_command: "magit-reset-mixed",
         args: &["reset", "--mixed"],
         confirm_action: None,
     };
     pub const RESET_HARD: Self = Self {
         what: "reset --hard",
+        ex_command: "magit-reset-hard",
         args: &["reset", "--hard"],
         // The only one that destroys uncommitted work.
         confirm_action: Some("action:magit-reset-hard-execute"),

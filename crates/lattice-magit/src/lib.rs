@@ -9,6 +9,7 @@
 //! [`docs/dev/operations/slice-plans/magit.md`].
 
 pub mod actions;
+pub mod buffer_io;
 pub mod buffer_state;
 mod confirm;
 // MG.18d: `pub` because `MagitView::refresh_restoring` (a public
@@ -39,6 +40,7 @@ pub mod picker_sources;
 pub mod refresh;
 pub mod sections;
 pub mod transients;
+pub mod workdir;
 
 use std::sync::Arc;
 
@@ -790,18 +792,12 @@ fn register_ex_commands(registry: &mut CommandRegistry) {
                         };
                         Ok(match op.confirm_action {
                             Some(yes) => confirm::ask_target(
-                                format!(
-                                    "git {} {commit} — discard uncommitted changes?",
-                                    op.what
-                                ),
+                                format!("git {} {commit} — discard uncommitted changes?", op.what),
                                 yes,
                                 commit,
                             ),
                             None => {
-                                let workdir = lattice_vcs::Repository::discover(".")
-                                    .ok()
-                                    .and_then(|r| r.workdir().map(|p| p.to_path_buf()))
-                                    .unwrap_or_default();
+                                let workdir = workdir::magit_workdir().unwrap_or_default();
                                 magit_global_mode::spawn_commit_op(op, workdir, &commit)
                             }
                         })

@@ -24,9 +24,7 @@ use lattice_mode::{
     BufferStoreHandle, CapabilitySet, Keymap, KeymapEntry, LifecycleFuture, Mode, ModeContext,
     ModeId, ModeKind, OptionOverrideSet,
 };
-use lattice_protocol::edit::Edit;
-use lattice_protocol::position::{Position, Range};
-use lattice_vcs::Repository;
+use lattice_protocol::position::Position;
 
 use crate::buffer_state::{BufferStateGuard, BufferStates};
 use crate::headerline;
@@ -127,10 +125,7 @@ impl Mode for MagitStashShowMode {
             let Some(handle) = store.handle_for(buffer_id) else {
                 return Ok(orphan());
             };
-            let workdir = Repository::discover(".")
-                .ok()
-                .and_then(|r| r.workdir().map(|p| p.to_path_buf()))
-                .unwrap_or_default();
+            let workdir = crate::workdir::magit_workdir().unwrap_or_default();
 
             let index = store
                 .name_for(buffer_id)
@@ -183,13 +178,7 @@ impl Mode for MagitStashShowMode {
             // whole-buffer styler applies directly — the same reuse
             // `magit-diff-mode` and `magit-revision-mode` make.
             let spans = crate::highlight::diff_styled_spans(&text);
-            let snap = handle.snapshot();
-            let last = snap.buffer.line_count().saturating_sub(1);
-            let last_line = snap.buffer.line(last).unwrap_or_default();
-            let end = Position::new(last, last_line.len() as u32);
-            let _ = handle
-                .apply_edit_batch(vec![Edit::replace(Range::new(Position::ZERO, end), text)])
-                .await;
+            crate::buffer_io::replace_buffer_text(&handle, text).await;
             if let Some(ph) = ctx.service::<lattice_mode::PendingSyntheticHighlights>() {
                 ph.store_and_wake(buffer_id, spans);
             }

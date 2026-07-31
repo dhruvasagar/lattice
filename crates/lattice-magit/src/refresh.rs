@@ -12,8 +12,6 @@ use std::sync::Arc;
 use lattice_cells::StyledSpan;
 use lattice_core::BufferId;
 use lattice_mode::PendingSyntheticHighlightsHandle;
-use lattice_protocol::edit::Edit;
-use lattice_protocol::position::{Position, Range};
 use lattice_runtime::Document;
 use lattice_vcs::{PathStatus, Repository, Stash, WorkingTree};
 
@@ -241,15 +239,6 @@ fn recent_commits(repo: &Repository) -> Vec<(String, String)> {
         .collect()
 }
 
-async fn apply_full_replace(handle: &Arc<dyn Document>, text: String) {
-    let snap = handle.snapshot();
-    let last = snap.buffer.line_count().saturating_sub(1);
-    let last_line = snap.buffer.line(last).unwrap_or_default();
-    let end = Position::new(last, last_line.len() as u32);
-    let edit = Edit::replace(Range::new(Position::ZERO, end), text);
-    let _ = handle.apply_edit_batch(vec![edit]).await;
-}
-
 /// Apply a full buffer replacement, then store highlights and fire the
 /// waker so the Editor repaints immediately. Async — call from a tokio
 /// task (NOT spawn_blocking). The blocking I/O phase
@@ -261,7 +250,7 @@ pub async fn apply_and_highlight(
     pending_highlights: Option<PendingSyntheticHighlightsHandle>,
     buffer_id: BufferId,
 ) {
-    apply_full_replace(&handle, text).await;
+    crate::buffer_io::replace_buffer_text(&handle, text).await;
     if let Some(ref ph) = pending_highlights {
         ph.store_and_wake(buffer_id, spans);
     }

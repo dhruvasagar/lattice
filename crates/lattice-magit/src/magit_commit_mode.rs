@@ -12,8 +12,6 @@ use lattice_mode::{
     KeymapEntry, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, OptionOverrideSet,
     keymap_entry,
 };
-use lattice_protocol::edit::Edit;
-use lattice_protocol::position::{Position, Range};
 use lattice_vcs::{Commit, Repository};
 
 use crate::buffer_state::{BufferStateGuard, BufferStates};
@@ -221,10 +219,7 @@ impl Mode for MagitCommitMode {
                 return Ok(orphan());
             };
 
-            let workdir = Repository::discover(".")
-                .ok()
-                .and_then(|r| r.workdir().map(|p| p.to_path_buf()))
-                .unwrap_or_default();
+            let workdir = crate::workdir::magit_workdir().unwrap_or_default();
 
             // Detect amend: opened via `ca` → buffer name is "*magit:amend*"
             let amend = store
@@ -316,16 +311,7 @@ impl Mode for MagitCommitMode {
                 diff_start_line + 1,
                 line_count,
             );
-            let snap = handle.snapshot();
-            let last = snap.buffer.line_count().saturating_sub(1);
-            let last_line = snap.buffer.line(last).unwrap_or_default();
-            let end = Position::new(last, last_line.len() as u32);
-            let _ = handle
-                .apply_edit_batch(vec![Edit::replace(
-                    Range::new(Position::ZERO, end),
-                    initial,
-                )])
-                .await;
+            crate::buffer_io::replace_buffer_text(&handle, initial).await;
             if let Some(ph) = ctx.service::<lattice_mode::PendingSyntheticHighlights>() {
                 ph.store_and_wake(buffer_id, spans);
             }

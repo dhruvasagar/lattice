@@ -33,8 +33,7 @@ use lattice_mode::{
     KeymapEntry, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, OptionOverrideSet,
     keymap_entry,
 };
-use lattice_protocol::edit::Edit;
-use lattice_protocol::position::{Position, Range};
+use lattice_protocol::position::Position;
 use lattice_vcs::{Index, Repository};
 
 use crate::buffer_state::{
@@ -223,10 +222,7 @@ impl Mode for MagitDiffMode {
             let Some(handle) = store.handle_for(buffer_id) else {
                 return Ok(orphan());
             };
-            let workdir = Repository::discover(".")
-                .ok()
-                .and_then(|r| r.workdir().map(|p| p.to_path_buf()))
-                .unwrap_or_default();
+            let workdir = crate::workdir::magit_workdir().unwrap_or_default();
 
             // "*magit:diff[:staged|:unstaged]:<path>*" scopes the view
             // to one file and (optionally) one baseline (mirrors
@@ -288,7 +284,7 @@ impl Mode for MagitDiffMode {
                     .await
                     .unwrap_or_default();
             let spans = crate::highlight::diff_styled_spans(&text);
-            apply_full_replace(&handle, text).await;
+            crate::buffer_io::replace_buffer_text(&handle, text).await;
             if let Some(ref ph) = pending_highlights {
                 ph.store_and_wake(buffer_id, spans);
             }
@@ -296,16 +292,6 @@ impl Mode for MagitDiffMode {
             Ok(guard)
         })
     }
-}
-
-async fn apply_full_replace(handle: &Arc<dyn lattice_runtime::Document>, text: String) {
-    let snap = handle.snapshot();
-    let last = snap.buffer.line_count().saturating_sub(1);
-    let last_line = snap.buffer.line(last).unwrap_or_default();
-    let end = Position::new(last, last_line.len() as u32);
-    let _ = handle
-        .apply_edit_batch(vec![Edit::replace(Range::new(Position::ZERO, end), text)])
-        .await;
 }
 
 fn refresh(s: Arc<Mutex<DiffState>>) -> Option<Effect> {
@@ -342,7 +328,7 @@ fn refresh_with(
             .unwrap_or_default();
         let spans = crate::highlight::diff_styled_spans(&text);
         let position = restore.and_then(|r| crate::cursor_restore::restore_position(&text, &r));
-        apply_full_replace(&handle, text).await;
+        crate::buffer_io::replace_buffer_text(&handle, text).await;
         if let Some(ph) = pending {
             ph.store_and_wake(buffer_id, spans);
         }
@@ -374,7 +360,7 @@ fn spawn_mutation_and_refresh(
             .await
             .unwrap_or_default();
         let spans = crate::highlight::diff_styled_spans(&text);
-        apply_full_replace(&handle, text).await;
+        crate::buffer_io::replace_buffer_text(&handle, text).await;
         if let Some(ph) = pending {
             ph.store_and_wake(buffer_id, spans);
         }

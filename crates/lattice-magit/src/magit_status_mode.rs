@@ -11,7 +11,6 @@ use lattice_mode::{
     BufferStoreHandle, CapabilitySet, Keymap, KeymapEntry, LifecycleFuture, Mode, ModeContext,
     ModeId, ModeKind, OptionOverrideSet, keymap_entry,
 };
-use lattice_vcs::Repository;
 
 use crate::actions;
 use crate::fold_source::MagitStatusFoldSource;
@@ -136,10 +135,7 @@ impl Mode for MagitStatusMode {
                 return Ok(MagitStatusGuard::default());
             };
 
-            let workdir = match Repository::discover(".")
-                .ok()
-                .and_then(|r| r.workdir().map(|p| p.to_path_buf()))
-            {
+            let workdir = match crate::workdir::magit_workdir() {
                 Some(w) => w,
                 None => {
                     let _ = handle

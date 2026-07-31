@@ -1281,6 +1281,9 @@ the buffer you are already in is the actual no-op. See MG.23h's note.
 | MG.23g | `a` apply / `-` reverse on a hunk of a commit | MG.18 | ✅ |
 | MG.23h | Context-dependent menu content (magit's `:if-derived` / `:if-mode`) | — | ✅ |
 | MG.23j | Repo-level `A` / `_` / `O` rows, via a commit picker (NOT the predicate — see MG.20's corrected note) | MG.20 | ✅ |
+| MG.24b | Audit finding B: one `replace_buffer_text`, one `magit_workdir` | — | ✅ |
+| MG.24c | Audit finding C2: `A`/`_`/`O` in the views the docs already claim | — | 📝 |
+| MG.24a | Audit finding A1: `magit-hunk-mode` owns the diff-content chords | MG.22 | 📝 |
 | MG.23i+ | The new subsystems, one slice each, prioritised by daily use — the same set MG.21 still names | — | 📝 |
 
 #### MG.23a — the file target seam + `:magit-other-file-dispatch` ✅ (2026-07-30)
@@ -1473,6 +1476,81 @@ one is in hand ("when did each of these lines go away"). It is a slice
 of its own, though — `*magit:blame:<path>*` carries no revision, so the
 buffer name, the argv and the headerline all move together. Filed as
 MG.23f2 rather than smuggled in here.
+
+### MG.24 — the duplication audit (2026-07-31)
+
+Prompted by the `magit-diff-mode` missing-`x` report and Dhruva's rule
+that shared behaviour belongs on a minor mode. Audited every chord,
+handler and lifecycle across the 12 magit modes. Findings, sorted by
+what each actually wants — which is **not** a minor mode in every case,
+and the distinction is the point:
+
+- **A1 → MG.24a. Wants a minor.** Five majors render unified diff;
+  `s`/`u`/`x` are declared per-major and the set has drifted — status
+  has all three, diff has two, and commit / revision / stash-show have
+  none. 8 declarations covering 3 actions, 11 of 15 cells empty. Plus
+  `]c`/`[c`/`a`/`-` sit on `magit-core-mode`, which activates on all
+  **11** majors, so they are consumed dead keys in the six with no
+  hunks.
+- **A2. Wants a minor, later.** `<C-c><C-c>` / `<C-c><C-k>` declared
+  four times each across magit-commit and magit-rebase — magit's own
+  `with-editor-mode`. Two majors today; earns its keep when a third
+  `$EDITOR` buffer lands (annotated `tag -a`, `config --edit`).
+- **B → MG.24b. Wants helpers, not modes.** Below.
+- **C1. Not duplication.** `<CR>` is nine majors and nine actions
+  because each resolves a genuinely different target — a branch name,
+  a stash index, a sha, a path. The *shape* repeats; the bodies do not.
+  A view-seam question (MG.22's `diff_target`), not a mode question.
+- **C2 → MG.24c. A live bug.** `A`/`_`/`O` resolve through
+  `MagitView::commit_at_cursor`, implemented in exactly **two** places
+  (status, log) — but `magit-core-mode.md` claims they work in four,
+  naming the revision view and the rebase todo. magit-rebase publishes
+  no `MagitView` at all; magit-revision's does not override
+  `commit_at_cursor`. Two of four documented views have never worked.
+  magit-blame and magit-commit publish no view either, which is also
+  why hunk staging is refused in the commit buffer's staged region.
+
+#### MG.24b — one buffer write, one workdir lookup ✅ (2026-07-31)
+
+**`replace_buffer_text` — 12 sites → 1.** Five private
+`apply_full_replace` copies identical to the byte (md5 `ddbec26b…`
+across blame/branch/diff/log/stash), a sixth near-copy in `refresh.rs`,
+and six more inlined into `on_activate` without even a name. Now
+`buffer_io::replace_buffer_text`. No behaviour change; −213 lines.
+
+**`magit_workdir` — 11 sites → 5, and the 5 are a different
+question.** What remains all wants the `Repository` *object* (for
+`Branch::create`, `run_git`, gitignore's path join, rebase's `gitdir`),
+not "where is the working tree" — factoring those would be `discover`
+with extra steps, so the sweep stops there deliberately rather than
+being driven to zero.
+
+**Why this one is not tidying.** `gix::discover` takes a *directory*,
+and a file path fails **silently**: `discover` returns `Err`, `.ok()`
+swallows it, the caller takes its default. MG.11 found three sites
+doing exactly that — one in `lattice-host`'s auto-head-diff subsystem,
+which meant gutter diff signs had never worked for any file since they
+landed. Two functions split by question (`magit_workdir()` vs
+`workdir_for_file(path)`) make it unrepresentable: a caller holding a
+file path cannot reach the directory-taking one.
+
+**What was deliberately NOT done: a lifecycle framework.** The audit
+also found all 11 `on_activate`s running the same nine steps — but they
+*alternate* shared and mode-specific (boilerplate, parse the buffer
+name, headerline, publish state, run git, apply text), so it is a
+sandwich rather than a block. More importantly, step 7 carries MG.13's
+**"publish BEFORE the first `.await`"** rule, commented at **9 of the
+11 sites**, at the exact line it constrains. A builder or trait owning
+that sequence would bury the one ordering constraint that has already
+caused a real bug and make re-introducing it invisible. Extracting the
+identical *leaves* captures most of the duplication and keeps the
+invariant where it can be seen; the skeleton stays.
+
+- **Tests:** 3 — `gix` discovery genuinely rejects a file path
+  (asserted against `gix` itself, so a future version that accepts one
+  says so rather than letting the split quietly become pointless);
+  `workdir_for_file` resolves repo-relative; a parentless path is
+  declined rather than silently discovering from the process's cwd.
 
 #### PICK.1b — multi-key transient rows fire on their keys ✅ (2026-07-31)
 

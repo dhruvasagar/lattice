@@ -26,9 +26,6 @@ use lattice_mode::{
     CapabilitySet, Keymap, KeymapEntry, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind,
     OptionOverrideSet, keymap_entry,
 };
-use lattice_protocol::edit::Edit;
-use lattice_protocol::position::{Position, Range};
-use lattice_vcs::Repository;
 
 use crate::headerline;
 
@@ -114,9 +111,7 @@ fn blob_step_handlers() -> Vec<lattice_mode::ActionHandlerContribution> {
         let (git_ref, path) = store
             .name_for(buffer_id)
             .and_then(|name| parse_buffer_name(&name))?;
-        let workdir = Repository::discover(".")
-            .ok()
-            .and_then(|r| r.workdir().map(|p| p.to_path_buf()))?;
+        let workdir = crate::workdir::magit_workdir()?;
         let revisions = file_revisions(&workdir, &path);
         match blob_step(&revisions, &git_ref, step) {
             Some(next) => Some(Effect::OpenSyntheticBuffer {
@@ -195,10 +190,7 @@ impl Mode for MagitFileRevisionMode {
             let Some(handle) = store.handle_for(buffer_id) else {
                 return Ok(None);
             };
-            let workdir = Repository::discover(".")
-                .ok()
-                .and_then(|r| r.workdir().map(|p| p.to_path_buf()))
-                .unwrap_or_default();
+            let workdir = crate::workdir::magit_workdir().unwrap_or_default();
 
             let parsed = store
                 .name_for(buffer_id)
@@ -225,13 +217,7 @@ impl Mode for MagitFileRevisionMode {
             })
             .await
             .unwrap_or_default();
-            let snap = handle.snapshot();
-            let last = snap.buffer.line_count().saturating_sub(1);
-            let last_line = snap.buffer.line(last).unwrap_or_default();
-            let end = Position::new(last, last_line.len() as u32);
-            let _ = handle
-                .apply_edit_batch(vec![Edit::replace(Range::new(Position::ZERO, end), text)])
-                .await;
+            crate::buffer_io::replace_buffer_text(&handle, text).await;
             if let Some(ph) = ctx.service::<lattice_mode::PendingSyntheticHighlights>() {
                 ph.wake();
             }

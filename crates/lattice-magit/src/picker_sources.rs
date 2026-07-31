@@ -246,8 +246,7 @@ pub(crate) fn parse_commit_rows(raw: &str) -> Vec<(String, String)> {
     raw.lines()
         .filter_map(|line| {
             let (sha, display) = line.split_once('\0')?;
-            (!sha.is_empty() && !display.is_empty())
-                .then(|| (sha.to_string(), display.to_string()))
+            (!sha.is_empty() && !display.is_empty()).then(|| (sha.to_string(), display.to_string()))
         })
         .collect()
 }
@@ -289,9 +288,7 @@ mod commit_pick {
     /// perfectly readable list that cherry-picks the wrong thing.
     #[test]
     fn rows_keep_the_sha_and_the_display_on_their_own_sides() {
-        let rows = parse_commit_rows(
-            "1111111111\01111111 first\n2222222222\02222222 second\n",
-        );
+        let rows = parse_commit_rows("1111111111\01111111 first\n2222222222\02222222 second\n");
         assert_eq!(rows[0].0, "1111111111");
         assert!(rows[0].1.ends_with("first"));
         assert_eq!(rows[1].0, "2222222222");

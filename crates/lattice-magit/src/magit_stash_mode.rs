@@ -11,8 +11,7 @@ use lattice_mode::{
     KeymapEntry, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, OptionOverrideSet,
     keymap_entry,
 };
-use lattice_protocol::edit::Edit;
-use lattice_protocol::position::{Position, Range};
+use lattice_protocol::position::Position;
 use lattice_vcs::{Repository, Stash};
 
 use crate::buffer_state::{BufferStateGuard, BufferStates, MagitView, MagitViewsHandle};
@@ -219,10 +218,7 @@ impl Mode for MagitStashMode {
             let Some(handle) = store.handle_for(buffer_id) else {
                 return Ok(orphan());
             };
-            let workdir = Repository::discover(".")
-                .ok()
-                .and_then(|r| r.workdir().map(|p| p.to_path_buf()))
-                .unwrap_or_default();
+            let workdir = crate::workdir::magit_workdir().unwrap_or_default();
             let pending_highlights = ctx.service::<lattice_mode::PendingSyntheticHighlights>();
 
             // MG.14: install the headerline in the same synchronous
@@ -263,7 +259,7 @@ impl Mode for MagitStashMode {
                 .unwrap();
             headerline::publish(&hl, header);
             let spans = crate::highlight::stash_styled_spans(&text);
-            apply_full_replace(&handle, text).await;
+            crate::buffer_io::replace_buffer_text(&handle, text).await;
             if let Some(ref ph) = pending_highlights {
                 ph.store_and_wake(buffer_id, spans);
             }
@@ -271,16 +267,6 @@ impl Mode for MagitStashMode {
             Ok(guard)
         })
     }
-}
-
-async fn apply_full_replace(handle: &Arc<dyn lattice_runtime::Document>, text: String) {
-    let snap = handle.snapshot();
-    let last = snap.buffer.line_count().saturating_sub(1);
-    let last_line = snap.buffer.line(last).unwrap_or_default();
-    let end = Position::new(last, last_line.len() as u32);
-    let _ = handle
-        .apply_edit_batch(vec![Edit::replace(Range::new(Position::ZERO, end), text)])
-        .await;
 }
 
 /// `gr` — re-list stashes without a prior mutation.
@@ -301,7 +287,7 @@ fn refresh(s: Arc<Mutex<StashState>>) -> Option<Effect> {
             .unwrap_or_default();
         headerline::publish(&hl, header);
         let spans = crate::highlight::stash_styled_spans(&text);
-        apply_full_replace(&handle, text).await;
+        crate::buffer_io::replace_buffer_text(&handle, text).await;
         if let Some(ph) = pending {
             ph.store_and_wake(buffer_id, spans);
         }
@@ -333,7 +319,7 @@ fn spawn_mutation_and_refresh(
             .unwrap_or_default();
         headerline::publish(&hl, header);
         let spans = crate::highlight::stash_styled_spans(&text);
-        apply_full_replace(&handle, text).await;
+        crate::buffer_io::replace_buffer_text(&handle, text).await;
         if let Some(ph) = pending {
             ph.store_and_wake(buffer_id, spans);
         }

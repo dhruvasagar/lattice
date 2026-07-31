@@ -668,8 +668,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
 fn active_target(ctx: &ActionContext<'_>) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
     match ctx.arg_str(FILE_TARGET_SLOT) {
         Some(rel) => {
-            let repo = Repository::discover(".").ok()?;
-            let workdir = repo.workdir()?.to_path_buf();
+            let workdir = crate::workdir::magit_workdir()?;
             Some((workdir, std::path::PathBuf::from(rel)))
         }
         None => active_file(ctx),
@@ -687,12 +686,9 @@ fn active_file(ctx: &ActionContext<'_>) -> Option<(std::path::PathBuf, std::path
         .services
         .get::<BufferStoreHandle>()?
         .path_for(buffer_id)?;
-    // `gix::discover` requires a directory — `path` is the file
-    // itself, so start from its parent.
-    let repo = Repository::discover(path.parent()?).ok()?;
-    let workdir = repo.workdir()?.to_path_buf();
-    let rel = path.strip_prefix(&workdir).unwrap_or(&path).to_path_buf();
-    Some((workdir, rel))
+    // B3: `gix::discover` requires a directory, and `path` is the file
+    // — `workdir_for_file` is the form that knows that.
+    crate::workdir::workdir_for_file(&path)
 }
 
 /// Parse the base branch name stashed in a branch-create prompt
@@ -981,10 +977,7 @@ fn prompt_seeded(prompt: &str, finish_action: &str, initial: String) -> Effect {
 /// real outcome lands in `*messages*` via `tracing`, because there is
 /// no synchronous path back from a detached task.
 pub fn spawn_git(argv: Vec<String>, what: &str) -> Effect {
-    let workdir = Repository::discover(".")
-        .ok()
-        .and_then(|r| r.workdir().map(|p| p.to_path_buf()))
-        .unwrap_or_default();
+    let workdir = crate::workdir::magit_workdir().unwrap_or_default();
     let shown = format!("git {}", argv.join(" "));
     let logged = shown.clone();
     let what = what.to_string();
@@ -1197,10 +1190,7 @@ pub(crate) fn gitignore_append(existing: &str, pattern: &str) -> Option<String> 
 /// outlives the call, so success and failure are logged rather than
 /// silently dropped (never both silent AND absent).
 pub fn spawn_remote_op(op: RemoteOp, args: &lattice_grammar::Args) -> Effect {
-    let workdir = Repository::discover(".")
-        .ok()
-        .and_then(|r| r.workdir().map(|p| p.to_path_buf()))
-        .unwrap_or_default();
+    let workdir = crate::workdir::magit_workdir().unwrap_or_default();
     let argv = op.argv(args);
     let shown = argv.join(" ");
     let logged = shown.clone();

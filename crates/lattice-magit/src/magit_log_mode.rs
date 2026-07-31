@@ -17,9 +17,7 @@ use lattice_mode::{
     KeymapEntry, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, OptionOverrideSet,
     keymap_entry,
 };
-use lattice_protocol::edit::Edit;
-use lattice_protocol::position::{Position, Range};
-use lattice_vcs::Repository;
+use lattice_protocol::position::Position;
 
 use crate::buffer_state::{BufferStateGuard, BufferStates, MagitView, MagitViewsHandle};
 use crate::headerline::{self, MagitHeaderlineHandle};
@@ -125,10 +123,7 @@ impl Mode for MagitLogMode {
             let Some(handle) = store.handle_for(buffer_id) else {
                 return Ok(orphan());
             };
-            let workdir = Repository::discover(".")
-                .ok()
-                .and_then(|r| r.workdir().map(|p| p.to_path_buf()))
-                .unwrap_or_default();
+            let workdir = crate::workdir::magit_workdir().unwrap_or_default();
 
             // "*magit:log:<path>*" scopes the history to one file
             // (mirrors magit-blame/magit-diff's file-in-buffer-name
@@ -183,7 +178,7 @@ impl Mode for MagitLogMode {
                 .unwrap();
             headerline::publish(&hl, log_header_fields(&text, path.as_deref()));
             let spans = crate::highlight::log_styled_spans(&text);
-            apply_full_replace(&handle, text).await;
+            crate::buffer_io::replace_buffer_text(&handle, text).await;
             if let Some(ref ph) = pending_highlights {
                 ph.store_and_wake(buffer_id, spans);
             }
@@ -191,16 +186,6 @@ impl Mode for MagitLogMode {
             Ok(guard)
         })
     }
-}
-
-async fn apply_full_replace(handle: &Arc<dyn lattice_runtime::Document>, text: String) {
-    let snap = handle.snapshot();
-    let last = snap.buffer.line_count().saturating_sub(1);
-    let last_line = snap.buffer.line(last).unwrap_or_default();
-    let end = Position::new(last, last_line.len() as u32);
-    let _ = handle
-        .apply_edit_batch(vec![Edit::replace(Range::new(Position::ZERO, end), text)])
-        .await;
 }
 
 fn refresh(s: Arc<Mutex<LogState>>) -> Option<Effect> {
@@ -222,7 +207,7 @@ fn refresh(s: Arc<Mutex<LogState>>) -> Option<Effect> {
             .unwrap_or_default();
         headerline::publish(&hl, log_header_fields(&text, path.as_deref()));
         let spans = crate::highlight::log_styled_spans(&text);
-        apply_full_replace(&handle, text).await;
+        crate::buffer_io::replace_buffer_text(&handle, text).await;
         if let Some(ph) = pending {
             ph.store_and_wake(buffer_id, spans);
         }

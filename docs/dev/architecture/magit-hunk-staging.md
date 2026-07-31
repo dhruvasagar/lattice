@@ -301,13 +301,15 @@ handler, not generic host machinery.
 
 A hunk's patch is only meaningful against the tree it was diffed from,
 so `MagitView::diff_source(cursor)` answers `Staged` / `Unstaged` /
-`None`, and the operation is gated on it:
+`Committed` / `None`, and the operation is gated on it:
 
 | Chord | Acts on | Applies |
 |---|---|---|
 | `s` | an `Unstaged` hunk | `git apply --cached` |
 | `u` | a `Staged` hunk | `git apply --cached --reverse` |
 | `x` | an `Unstaged` hunk | `git apply --reverse` (worktree) |
+| `a` | a `Committed` hunk | `git apply` (worktree) |
+| `-` | a `Committed` hunk | `git apply --reverse` (worktree) |
 
 Every view answers from what it already knows — magit-status from the
 section header above the cursor, magit-diff from the scope in its
@@ -328,19 +330,58 @@ Two reasons, and the second is the load-bearing one:
    MG.18e's territory.
 
 `None` means "not classifiable here" and refuses hunk-level staging
-rather than guessing. Two views land there: `*magit:diff*` against HEAD
-mixes staged and unstaged changes into single hunks, and a commit's or
-stash's inline patch in magit-status belongs to neither tree. **The
-refusal does not fall through to file-level** — falling through would
-turn a keypress aimed at one hunk into staging the whole file, which is
-the same class of silent over-staging MG.18a deleted the stubs over.
-The message points at the file header, where file-level staging is
-still one deliberate press away.
+rather than guessing. `*magit:diff*` against HEAD lands there: it mixes
+staged and unstaged changes into single hunks, so a hunk from it is a
+patch against neither tree. **The refusal does not fall through to
+file-level** — falling through would turn a keypress aimed at one hunk
+into staging the whole file, which is the same class of silent
+over-staging MG.18a deleted the stubs over. The message points at the
+file header, where file-level staging is still one deliberate press
+away.
 
 Emacs magit reaches the same place by a different road: it computes a
 diff type per buffer and refuses to stage from a `committed` or
 `undefined` one. Ours is strictly more permissive (file-level staging
 survives in the HEAD view).
+
+### `Committed` — MG.23g
+
+The third source is a patch **already in history**: a revision view's
+`git show`, a stash detail's `git stash show -p`. Neither `s` nor `u`
+can act on it, because the change is not sitting between two of this
+checkout's trees — it is a description of something that already
+happened. What it supports is `a` (put this one hunk into my working
+tree) and `-` (take it back out): cherry-picking or reverting one hunk
+of a commit rather than the whole thing, where `A` and `_` take all of
+it.
+
+Three properties fall out of the gate rather than being added to it:
+
+- **Both write the working tree, never the index.** The question `a`
+  answers is about the file you would edit, not about what is queued
+  for the next commit. The result is an ordinary unstaged change that
+  `s` then stages normally. A `cached` slip here would stage a
+  commit's hunk invisibly, which is why the round-trip test asserts an
+  empty `git diff --cached` rather than only asserting the file.
+- **Neither confirms.** Each is the other's exact inverse — `a` adds a
+  change `-` removes, `-` removes one still held by the commit it came
+  from — so both are recoverable without consulting anything the user
+  cannot see, which is §12.13's actual test. `git apply` also refuses
+  outright on drifted context, so neither can damage an edit in
+  progress.
+- **No file-level fallback.** `s`/`u` fall through to the view's
+  whole-file path when the cursor is not in a hunk. For `a`/`-` the
+  file-scale meaning is cherry-pick and revert, so falling through
+  would turn a missed cursor into a far larger action than the key
+  promises. They echo instead — a bare `None` would be worse still,
+  since a Normal-mode chord a mode binds is consumed unconditionally
+  and would read as a dead key.
+
+The views that answer `Committed` (`magit-revision-mode`,
+`magit-stash-show-mode`) both return `None` from `MagitView::refresh`,
+and correctly: applying a hunk to the working tree does not change the
+commit being shown. The buffer that *did* change is the one the user is
+not looking at.
 
 ## Region staging: the hard part
 

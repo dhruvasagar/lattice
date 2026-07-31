@@ -27,6 +27,8 @@ no `:magit-core-mode` you need to turn on.
 | `A` | Cherry-pick the commit under the cursor |
 | `_` | Revert the commit under the cursor |
 | `Os` / `Om` / `Oh` | Reset `--soft` / `--mixed` / `--hard` to the commit under the cursor |
+| `a` | Apply the hunk under the cursor to the working tree |
+| `-` | Reverse the hunk under the cursor out of the working tree |
 
 ## Operating on the commit under the cursor
 
@@ -58,6 +60,43 @@ you to dismiss the prompt that matters.
 revert message, which inside lattice means waiting on a prompt you
 cannot answer.
 
+## Operating on one hunk of a commit
+
+`a` and `-` are the hunk-scale versions of `A` and `_`. Where `A`
+cherry-picks a whole commit, `a` takes the **one hunk under the
+cursor** and applies it to your working tree; where `_` reverts a whole
+commit, `-` takes that one hunk back out.
+
+| Chord | Takes | Scale |
+|---|---|---|
+| `A` | the commit into a new commit | whole commit |
+| `a` | the hunk into your working tree | one hunk |
+| `_` | the commit out, as a new commit | whole commit |
+| `-` | the hunk out of your working tree | one hunk |
+
+They work wherever a *committed* patch is shown — the
+[revision view](help:magit-revision-mode) (`<CR>` on a log entry) and
+the [stash detail](help:magit-stash-show-mode) view. In magit-status
+and magit-diff, where the patch describes your current changes rather
+than history, `a` says the change is already in the working tree and
+`-` points you at `x`.
+
+A Visual-mode selection narrows them the same way it narrows `s` — pick
+the lines you want out of a commit's hunk and only those move.
+
+Both write the **working tree only**, never the index: what you get is
+an ordinary unstaged change, which `s` then stages in the usual way.
+Neither asks first, because each is the other's exact inverse — `a`
+puts a change in that `-` takes straight back out, and `-` removes one
+that is still in the commit it came from. And `git apply` refuses
+outright when the surrounding lines have drifted, so neither can
+quietly damage an edit in progress.
+
+Put the cursor inside a hunk. There is no whole-file fallback here on
+purpose: the file-scale meaning of these keys is cherry-pick and
+revert, and doing that because the cursor missed a hunk would be a much
+larger action than the key promises. Outside a hunk they say so.
+
 ### Why these keys, and not magit's
 
 They are **evil-collection-magit's**, not raw magit's. Magit is not a
@@ -68,9 +107,19 @@ because it already resolved exactly these collisions:
 | Command | Magit | Here (evil-magit) |
 |---|---|---|
 | Revert | `V` | `_` — "you are subtracting a commit" |
+| Reverse one hunk | `v` | `-` — the same category, one scale down |
 | Reset | `X` | `O` |
 | Discard | `k` | `x` |
 | Apply / cherry-pick | `A` | `A` |
+| Apply one hunk | `a` | `a` |
+
+`a` and `-` are magit's own pair too, reached the same way magit
+reaches them: `magit-mode-map` binds `a` to cherry-apply and `v` to
+revert-no-commit, and inside a diff section
+`magit-diff-section-base-map` remaps *both* to their hunk-level
+versions. So the hunk pair genuinely rides on the commit-level keys —
+which is why `-` sits next to `_` here, `v` being unavailable for the
+same reason `V` is.
 
 `V` is deliberately left alone so it still means linewise Visual, which
 is what [region staging](help:magit-status-mode) needs — select lines

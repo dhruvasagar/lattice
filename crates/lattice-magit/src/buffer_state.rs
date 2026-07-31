@@ -126,6 +126,16 @@ pub enum DiffSource {
     /// `git diff` — the index vs the working tree. `s` applies it in,
     /// `x` reverses it out of the worktree.
     Unstaged,
+    /// MG.23g: a patch already in history — a commit's `git show`, a
+    /// stash's `git stash show -p`.
+    ///
+    /// Neither `s` nor `u` can act on it: the change is not sitting
+    /// between two of *this* checkout's trees, it is a description of
+    /// something that already happened. What it supports instead is
+    /// `a` — apply this one hunk to the working tree — and `-` —
+    /// reverse it back out. Cherry-picking or reverting one hunk of a
+    /// commit rather than the whole thing.
+    Committed,
 }
 
 /// A magit buffer's view behaviour, published per buffer alongside

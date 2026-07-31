@@ -98,6 +98,27 @@ fn magit_core_keymap_entries() -> &'static [KeymapEntry] {
             keymap_entry! { mode: Normal, chord: "Os", doc: "Reset --soft to the commit at cursor", cmd: "action:magit-reset-soft" },
             keymap_entry! { mode: Normal, chord: "Om", doc: "Reset --mixed to the commit at cursor", cmd: "action:magit-reset-mixed" },
             keymap_entry! { mode: Normal, chord: "Oh", doc: "Reset --hard to the commit at cursor (asks first)", cmd: "action:magit-reset-hard" },
+            // MG.23g: one hunk of a commit, where `A` / `_` take the
+            // whole commit. Magit binds these in `magit-mode-map` as
+            // `a` (`magit-cherry-apply`) and `v`
+            // (`magit-revert-no-commit`), and remaps BOTH inside a diff
+            // section — `magit-diff-section-base-map` carries
+            // `<remap> <magit-cherry-apply> -> magit-apply` and
+            // `<remap> <magit-revert-no-commit> -> magit-reverse`. So
+            // the hunk-level pair genuinely rides on the commit-level
+            // keys, and `a`/`_`'s sibling is the right place for it.
+            //
+            // `a` is magit's own and free here. `v` is not available —
+            // it is Visual-mode entry, which MG.18e's region staging
+            // needs — so this takes evil-collection-magit's remap for
+            // the whole revert category (`v`/`V` -> `-`/`_`), which is
+            // where `_` already came from. Vim has `-` as a motion
+            // (previous line, first non-blank), but like `_` it is not
+            // a builtin here yet, so this costs nothing today; if it
+            // lands, `k` and `^` cover it and the `-`/`_` pair reading
+            // reverse-one / revert-all is worth more in these buffers.
+            keymap_entry! { mode: Normal, chord: "a", doc: "Apply the hunk at cursor to the working tree", cmd: "action:magit-apply-hunk" },
+            keymap_entry! { mode: Normal, chord: "-", doc: "Reverse the hunk at cursor out of the working tree", cmd: "action:magit-reverse-hunk" },
         ]
     })
 }
@@ -263,7 +284,7 @@ pub(crate) fn hunk_at_cursor(
     )
 }
 
-/// What `s` / `u` / `x` do to a resolved hunk.
+/// What `s` / `u` / `x` / `a` / `-` do to a resolved hunk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum HunkOp {
     /// `s` — apply the unstaged hunk forward into the index.
@@ -272,6 +293,12 @@ pub(crate) enum HunkOp {
     Unstage,
     /// `x` — reverse the unstaged hunk out of the working tree.
     Discard,
+    /// MG.23g: `a` — apply a committed hunk forward into the working
+    /// tree. One hunk of a commit, where `A` cherry-picks all of it.
+    Apply,
+    /// MG.23g: `-` — reverse a committed hunk out of the working tree.
+    /// One hunk of a commit, where `_` reverts all of it.
+    Reverse,
 }
 
 impl HunkOp {
@@ -281,8 +308,10 @@ impl HunkOp {
     /// rather than for git's argv so the two cannot drift apart.
     fn direction(self) -> crate::hunk::ApplyDirection {
         match self {
-            HunkOp::Stage => crate::hunk::ApplyDirection::Forward,
-            HunkOp::Unstage | HunkOp::Discard => crate::hunk::ApplyDirection::Reverse,
+            HunkOp::Stage | HunkOp::Apply => crate::hunk::ApplyDirection::Forward,
+            HunkOp::Unstage | HunkOp::Discard | HunkOp::Reverse => {
+                crate::hunk::ApplyDirection::Reverse
+            }
         }
     }
 
@@ -295,6 +324,14 @@ impl HunkOp {
             // which is `git checkout -- <path>` and likewise leaves
             // the index alone.
             HunkOp::Discard => (false, true),
+            // MG.23g: also the worktree, and for the same reason —
+            // `a` and `-` answer "put this change here" / "take it
+            // back out", which is a question about the file you would
+            // edit, not about what is queued for the next commit. The
+            // result shows up as an ordinary unstaged change, which
+            // `s` can then stage in the usual way.
+            HunkOp::Apply => (false, false),
+            HunkOp::Reverse => (false, true),
         }
     }
 
@@ -305,6 +342,7 @@ impl HunkOp {
         match self {
             HunkOp::Stage | HunkOp::Discard => DiffSource::Unstaged,
             HunkOp::Unstage => DiffSource::Staged,
+            HunkOp::Apply | HunkOp::Reverse => DiffSource::Committed,
         }
     }
 
@@ -313,6 +351,8 @@ impl HunkOp {
             HunkOp::Stage => "stage",
             HunkOp::Unstage => "unstage",
             HunkOp::Discard => "discard",
+            HunkOp::Apply => "apply",
+            HunkOp::Reverse => "reverse",
         }
     }
 
@@ -321,6 +361,8 @@ impl HunkOp {
             HunkOp::Stage => "staged",
             HunkOp::Unstage => "unstaged",
             HunkOp::Discard => "discarded",
+            HunkOp::Apply => "applied",
+            HunkOp::Reverse => "reversed",
         }
     }
 
@@ -331,6 +373,11 @@ impl HunkOp {
             HunkOp::Stage => "that hunk is already staged",
             HunkOp::Unstage => "that hunk isn't staged",
             HunkOp::Discard => "that hunk is staged — unstage it with `u` first",
+            // MG.23g: the two directions of "act on history from here",
+            // so the hint names the key that does the same thing to a
+            // hunk of the current checkout instead.
+            HunkOp::Apply => "that change is already in the working tree",
+            HunkOp::Reverse => "that hunk isn't from a commit — `x` discards a working-tree change",
         }
     }
 }
@@ -641,9 +688,58 @@ fn stage_or_unstage(ctx: &ActionContext<'_>, op: HunkOp) -> Option<Effect> {
             match op {
                 HunkOp::Stage => view.stage(ctx.cursor),
                 HunkOp::Unstage => view.unstage(ctx.cursor),
-                HunkOp::Discard => None,
+                // MG.23g: `a` / `-` have no file-level fallback, which
+                // is deliberate rather than missing. The file-level
+                // meaning of "apply this commit" is a cherry-pick and
+                // of "reverse it" a revert — `A` and `_` already do
+                // both, at a scale far larger than these keys promise.
+                // Doing it because the cursor missed a hunk would be
+                // the worst kind of surprise.
+                HunkOp::Discard | HunkOp::Apply | HunkOp::Reverse => None,
             }
         }
+    }
+}
+
+/// MG.23g: the `a` / `-` handler body.
+///
+/// Shares [`resolve_hunk`] with `s`/`u`/`x` — the resolution, the
+/// region rewrite and the source gate are the same question asked of a
+/// different [`DiffSource`] — and differs only in having no
+/// file-level path to fall back to (see [`stage_or_unstage`]'s
+/// `FileLevel` arm for why).
+///
+/// Neither op confirms. `a` adds a change to the working tree, which
+/// `-` takes straight back out; `-` removes one that is still in the
+/// commit it came from, so `a` restores it. Both are recoverable
+/// without consulting anything the user cannot see, which is §12.13's
+/// actual test — and `git apply` refuses outright when the context
+/// does not match, so neither can quietly damage an edit in progress.
+fn apply_or_reverse(ctx: &ActionContext<'_>, op: HunkOp) -> Option<Effect> {
+    match resolve_hunk(ctx, op) {
+        HunkResolution::Ready {
+            view,
+            workdir,
+            patch,
+            site,
+            region_lines,
+        } => Some(spawn_hunk_apply(
+            view,
+            workdir,
+            patch,
+            op,
+            site,
+            region_lines,
+        )),
+        HunkResolution::Refused(effect) => Some(effect),
+        // Not inside a hunk at all. Say so rather than returning
+        // `None`: a Normal-mode chord a mode binds is consumed
+        // unconditionally, so a bare `None` is a key that visibly does
+        // nothing.
+        HunkResolution::FileLevel => Some(echo(format!(
+            "magit: put the cursor inside a hunk to {} it",
+            op.present()
+        ))),
     }
 }
 
@@ -796,6 +892,20 @@ impl Mode for MagitCoreMode {
             lattice_mode::ActionHandlerContribution {
                 action_name: "action:magit-unstage",
                 handler: Arc::new(|ctx: &ActionContext<'_>| stage_or_unstage(ctx, HunkOp::Unstage)),
+            },
+            // MG.23g: the committed-hunk pair, through the same
+            // resolution. They live here rather than on the revision
+            // and stash-show modes for the reason `]c` / `[c` do: a
+            // hunk is a property of diff text, identical wherever it
+            // is shown, and two modes contributing one action id would
+            // leave one of them dead (MG.13's collision class).
+            lattice_mode::ActionHandlerContribution {
+                action_name: "action:magit-apply-hunk",
+                handler: Arc::new(|ctx: &ActionContext<'_>| apply_or_reverse(ctx, HunkOp::Apply)),
+            },
+            lattice_mode::ActionHandlerContribution {
+                action_name: "action:magit-reverse-hunk",
+                handler: Arc::new(|ctx: &ActionContext<'_>| apply_or_reverse(ctx, HunkOp::Reverse)),
             },
             // ── close (q) ─────────────────────────────────
             // Bug fix: this used to return `Effect::QuitEditor { scope:
@@ -1055,6 +1165,88 @@ index 111..222 100644
             text.contains("file header"),
             "and must point at the way to stage the file deliberately: {text}"
         );
+    }
+
+    // ── MG.23g: the committed-hunk pair ──
+
+    /// `a` / `-` are the only ops a committed patch accepts, and the
+    /// only ops that accept one. Both directions of the gate, because
+    /// getting either wrong hands git a patch it refuses.
+    #[test]
+    fn only_apply_and_reverse_act_on_a_committed_hunk() {
+        for op in [HunkOp::Apply, HunkOp::Reverse] {
+            assert!(
+                matches!(
+                    resolve(IN_HUNK, Some(DiffSource::Committed), op),
+                    HunkResolution::Ready { .. }
+                ),
+                "{op:?} must act on a committed hunk"
+            );
+        }
+        for op in [HunkOp::Stage, HunkOp::Unstage, HunkOp::Discard] {
+            let text = refusal_text(resolve(IN_HUNK, Some(DiffSource::Committed), op));
+            assert!(
+                !text.is_empty(),
+                "{op:?} on a commit's patch must refuse with a reason"
+            );
+        }
+    }
+
+    /// And the mirror: pressing `a` at a working-tree hunk says the
+    /// change is already there rather than applying it twice.
+    #[test]
+    fn apply_on_a_working_tree_hunk_says_the_change_is_already_there() {
+        let text = refusal_text(resolve(IN_HUNK, Some(DiffSource::Unstaged), HunkOp::Apply));
+        assert!(text.contains("already in the working tree"), "{text}");
+        let text = refusal_text(resolve(
+            IN_HUNK,
+            Some(DiffSource::Unstaged),
+            HunkOp::Reverse,
+        ));
+        assert!(
+            text.contains("`x` discards"),
+            "the refusal must name the key that does this to a \
+             working-tree change: {text}"
+        );
+    }
+
+    /// Both write to the working tree and neither touches the index —
+    /// the whole point of `a` being different from `s`. A `cached`
+    /// slip would stage a commit's hunk invisibly.
+    #[test]
+    fn neither_committed_op_touches_the_index() {
+        assert_eq!(HunkOp::Apply.apply_flags(), (false, false));
+        assert_eq!(HunkOp::Reverse.apply_flags(), (false, true));
+    }
+
+    /// `a` / `-` have no file-level fallback, and must SAY so rather
+    /// than returning `None`: a Normal-mode chord a mode binds is
+    /// consumed unconditionally, so a bare `None` is a key that
+    /// visibly does nothing.
+    ///
+    /// The alternative — falling through — would turn a missed cursor
+    /// into a whole-commit cherry-pick or revert.
+    #[test]
+    fn apply_outside_a_hunk_explains_itself_rather_than_doing_nothing() {
+        for (op, word) in [(HunkOp::Apply, "apply"), (HunkOp::Reverse, "reverse")] {
+            let (services, id) = services_for(DIFF, Some(DiffSource::Committed));
+            let events = lattice_runtime::EventBus::new();
+            let ctx = ActionContext {
+                buffer_id: lattice_protocol::ids::BufferId::new(id.0 as u64),
+                cursor: Position::new(BELOW_HUNK, 0),
+                selection: None,
+                services: &services,
+                events: &events,
+                prompt_value: None,
+                args: lattice_grammar::Args::None,
+            };
+            match apply_or_reverse(&ctx, op) {
+                Some(Effect::Echo { text, .. }) => {
+                    assert!(text.contains(word) && text.contains("hunk"), "{text}")
+                }
+                other => panic!("expected an explained refusal, got {other:?}"),
+            }
+        }
     }
 
     // ── MG.18e: the region path through a real buffer ──

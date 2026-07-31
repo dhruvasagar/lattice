@@ -49,6 +49,46 @@ pub struct RevisionState {
     buffer_id: lattice_core::BufferId,
     store: Arc<BufferStoreHandle>,
     sha: String,
+    /// MG.23g: where `a` / `-` apply the hunk under the cursor. Read
+    /// from the repository at activation, because a `git apply` needs a
+    /// directory and this buffer has no file of its own.
+    workdir: PathBuf,
+}
+
+/// MG.23g: this buffer's [`MagitView`], so `a` / `-` can act on a hunk
+/// of the commit it shows.
+///
+/// The view exists for `diff_source` and `workdir`; the rest of the
+/// trait declines. Publishing it is what turns `magit-core-mode`'s
+/// generic hunk resolution loose in here — nothing about `a` / `-` is
+/// specific to this mode, which is exactly why the handler is not.
+struct RevisionView(Arc<Mutex<RevisionState>>);
+
+impl crate::buffer_state::MagitView for RevisionView {
+    /// A fixed sha's `git show` cannot change, so `gr` has nothing to
+    /// rebuild. `None` rather than a re-run: repainting identical text
+    /// would move the cursor for no reason.
+    ///
+    /// This is also what `a` / `-` get after applying — correctly. The
+    /// commit is unchanged by putting one of its hunks in the working
+    /// tree; what changed is the tree, which this buffer does not show.
+    fn refresh(&self) -> Option<Effect> {
+        None
+    }
+
+    /// Everything here came out of a commit, so a hunk under the cursor
+    /// is history — `a` applies it to the working tree, `-` reverses it
+    /// back out, and `s` / `u` are refused with a sentence saying so.
+    fn diff_source(
+        &self,
+        _cursor: lattice_protocol::position::Position,
+    ) -> Option<crate::buffer_state::DiffSource> {
+        Some(crate::buffer_state::DiffSource::Committed)
+    }
+
+    fn workdir(&self) -> Option<PathBuf> {
+        self.0.lock().ok().map(|g| g.workdir.clone())
+    }
 }
 
 /// MG.13: service alias for this mode's per-buffer state
@@ -153,16 +193,23 @@ impl Mode for MagitRevisionMode {
             let Some(states) = ctx.service::<RevisionStatesHandle>() else {
                 return Ok(orphan());
             };
-            states.publish(
+            let state = states.publish(
                 buffer_id,
                 RevisionState {
                     buffer_id,
                     store: store.clone(),
                     sha: sha.clone(),
+                    workdir: workdir.clone(),
                 },
             );
-            let guard = BufferStateGuard::new((*states).clone(), buffer_id)
+            let mut guard = BufferStateGuard::new((*states).clone(), buffer_id)
                 .with_headerline(hl_registration);
+            // MG.23g: publish the view, or `a` / `-` have nothing to
+            // ask about this buffer and refuse in it.
+            if let Some(views) = ctx.service::<crate::buffer_state::MagitViewsHandle>() {
+                views.publish(buffer_id, Arc::new(RevisionView(state.clone())));
+                guard = guard.with_views((*views).clone());
+            }
 
             let wd = workdir.clone();
             let sha_for_task = sha.clone();

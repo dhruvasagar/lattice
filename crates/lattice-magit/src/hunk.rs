@@ -1183,6 +1183,78 @@ mod git_round_trip {
         assert!(still.contains("line 19 CHANGED"), "{still}");
     }
 
+    /// MG.23g: `a` puts one hunk of a commit into the **working
+    /// tree** and leaves the index alone, and `-` takes it back out.
+    ///
+    /// Against a real repository, because what is being asserted is
+    /// git's behaviour under `(cached = false)`: a `cached` slip would
+    /// stage a commit's hunk invisibly, which no argv-shaped test
+    /// would notice.
+    #[test]
+    fn a_committed_hunk_applies_to_the_worktree_and_reverses_back_out() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let p = dir.path();
+        git_ok(p, &["init"]);
+        git_ok(p, &["config", "user.email", "t@lattice.dev"]);
+        git_ok(p, &["config", "user.name", "lattice-test"]);
+        let base: String = (1..=20).map(|i| format!("line {i}\n")).collect();
+        std::fs::write(p.join("a.txt"), &base).unwrap();
+        git_ok(p, &["add", "a.txt"]);
+        git_ok(p, &["commit", "-m", "base"]);
+
+        // A commit that changes two distant lines — two hunks, so
+        // applying one must not drag the other along.
+        let edited: String = (1..=20)
+            .map(|i| match i {
+                2 => "line 2 FROM COMMIT\n".to_string(),
+                19 => "line 19 FROM COMMIT\n".to_string(),
+                _ => format!("line {i}\n"),
+            })
+            .collect();
+        std::fs::write(p.join("a.txt"), &edited).unwrap();
+        git_ok(p, &["add", "a.txt"]);
+        git_ok(p, &["commit", "-m", "the change"]);
+        // ...then rewind the working tree and the index to before it,
+        // which is the situation `a` exists for: the change is in
+        // history but not here.
+        git_ok(p, &["reset", "--hard", "HEAD~1"]);
+
+        let show = git(p, &["show", "HEAD@{1}", "--", "a.txt"]);
+        let lines: Vec<&str> = show.lines().collect();
+        let cursor = nth_hunk_line(&show, 0) + 1;
+        let h = hunk_at(&lines, cursor).expect("cursor inside the commit's first hunk");
+
+        let repo = lattice_vcs::Repository::discover(p).expect("discover");
+        lattice_vcs::Index::apply_patch(&repo, &h.to_patch(), false, false)
+            .expect("`a` applies a committed hunk to the working tree");
+
+        let on_disk = std::fs::read_to_string(p.join("a.txt")).unwrap();
+        assert!(
+            on_disk.contains("line 2 FROM COMMIT"),
+            "the hunk must land in the file:\n{on_disk}"
+        );
+        assert!(
+            !on_disk.contains("line 19 FROM COMMIT"),
+            "and only that hunk — the commit's other change stays out:\n{on_disk}"
+        );
+        assert_eq!(
+            git(p, &["diff", "--cached", "--", "a.txt"]).trim(),
+            "",
+            "`a` writes the working tree, never the index — a staged \
+             hunk here would be a `cached` slip nobody would see"
+        );
+
+        // `-` is the exact inverse, which is what makes neither of
+        // them need a confirm.
+        lattice_vcs::Index::apply_patch(&repo, &h.to_patch(), false, true)
+            .expect("`-` reverses it back out");
+        assert_eq!(
+            std::fs::read_to_string(p.join("a.txt")).unwrap(),
+            base,
+            "reversing must restore the file exactly"
+        );
+    }
+
     /// MG.18e: a repo whose edit produces ONE hunk containing two
     /// removals and two additions — the shape region staging exists
     /// for.

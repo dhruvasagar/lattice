@@ -1256,7 +1256,7 @@ incidentally.
 | MG.23e | Surface-mapping rows — **dropped**, see below | — | ⛔ |
 | MG.23f | Blob navigation (blame variants evaluated out, one deferred) | — | ✅ |
 | MG.23f2 | Reverse blame (`git blame --reverse`) from a blob buffer | MG.23f | ✅ |
-| MG.23g | `a` apply / `v` reverse on a hunk | MG.18 | 📝 |
+| MG.23g | `a` apply / `-` reverse on a hunk of a commit | MG.18 | ✅ |
 | MG.23h | Context-dependent menu content (magit's `:if-derived`), then `s`/`u` rows + the `s` collision | — | 📝 |
 | MG.23i+ | The new subsystems, one slice each, prioritised by daily use | — | 📝 |
 
@@ -1450,6 +1450,76 @@ one is in hand ("when did each of these lines go away"). It is a slice
 of its own, though — `*magit:blame:<path>*` carries no revision, so the
 buffer name, the argv and the headerline all move together. Filed as
 MG.23f2 rather than smuggled in here.
+
+#### MG.23g — `a` apply / `-` reverse one hunk of a commit ✅ (2026-07-31)
+
+The hunk-scale peers of `A` cherry-pick and `_` revert: take the one
+hunk under the cursor out of a commit and put it in the working tree,
+or take it back out.
+
+**It is a third `DiffSource`, not a new mechanism.** MG.18's gate
+already asked "which tree was this hunk diffed from" and refused
+anything it could not classify. `Committed` is the answer for a patch
+already in history — a revision view's `git show`, a stash detail's
+`git stash show -p` — and once the views answer it, `resolve_hunk`,
+the region rewrite, the patch synthesis, the cursor restore and the
+echo all work unchanged. The slice is one enum variant, two `HunkOp`
+variants, two view impls and two chords.
+
+**Both write the working tree and never the index**, which is what
+makes `a` different from `s`: the question is about the file you would
+edit, not about what is queued for the next commit. The result is an
+ordinary unstaged change `s` then stages normally. Pinned against a
+real repository by asserting `git diff --cached` is *empty* after `a`
+— a `cached` slip would stage a commit's hunk invisibly and no
+argv-shaped test would see it.
+
+**Neither confirms, and that is the rule rather than an exception.**
+Each is the other's exact inverse — `a` adds a change `-` removes, `-`
+removes one the commit still holds — so both are recoverable without
+consulting anything the user cannot see, which is §12.13's actual
+test. `git apply` also refuses outright on drifted context.
+
+**No file-level fallback, said out loud.** `s`/`u` fall through to the
+view's whole-file path outside a hunk. Here the file-scale meaning is
+cherry-pick and revert, so falling through would turn a missed cursor
+into a far larger action than the key promises — and a bare `None`
+would be worse, since a Normal-mode chord a mode binds is consumed
+unconditionally and reads as a dead key. They echo.
+
+**On the keys, checked against source rather than recall.** Magit's
+`magit-mode-map` binds `a` to `magit-cherry-apply` and `v` to
+`magit-revert-no-commit`; `magit-diff-section-base-map` then carries
+`<remap> <magit-cherry-apply> → magit-apply` and
+`<remap> <magit-revert-no-commit> → magit-reverse`. So the hunk pair
+genuinely rides on the commit-level keys, which is why it belongs
+beside `A` and `_`. `a` is magit's own and free here. `v` is not
+available — Visual entry, which MG.18e needs — so this takes
+evil-collection-magit's remap of the whole revert category
+(`v`/`V` → `-`/`_`), verified against its README.org table, which is
+where `_` already came from. Neither `-` nor `_` is a builtin motion
+here yet, so the shadowing costs nothing today.
+
+**Two modes gained a `MagitView`.** `magit-revision-mode` had state but
+published no view; `magit-stash-show-mode` had neither, so it gained
+`StashShowState` (just the workdir — the index is already in the buffer
+name) and its `Guard` moved from a bare headerline registration to a
+`BufferStateGuard`. Both return `None` from `refresh`, correctly: a
+commit does not change because one of its hunks landed in the working
+tree, and the buffer that did change is not the one on screen.
+
+- **Tests:** 5 — `a`/`-` are the only ops a `Committed` hunk accepts
+  and the only ops that accept one (both directions of the gate);
+  `a` on a working-tree hunk says the change is already there and `-`
+  names `x` instead; neither op's `apply_flags` touches the index; and
+  against a real repo, applying one hunk of a two-hunk commit lands
+  that hunk in the file, leaves the commit's other change out, leaves
+  `git diff --cached` empty, and reverses back to a byte-identical
+  file.
+- **Docs:** `magit-hunk-staging.md` gains the `Committed` section and
+  two rows in the gate table; `magit-core-mode.md` gains the chords,
+  an "operating on one hunk of a commit" section, and two rows in the
+  evil-magit key table.
 
 #### MG.23f2 — `f` reverse blame ✅ (2026-07-31)
 

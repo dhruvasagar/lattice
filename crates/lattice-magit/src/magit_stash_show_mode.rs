@@ -17,7 +17,7 @@
 //! which is why the buffer name carries the index it was opened at,
 //! and why the stash list is the place that refreshes, not this.)
 
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use lattice_config;
 use lattice_mode::{
@@ -28,6 +28,7 @@ use lattice_protocol::edit::Edit;
 use lattice_protocol::position::{Position, Range};
 use lattice_vcs::Repository;
 
+use crate::buffer_state::{BufferStateGuard, BufferStates};
 use crate::headerline;
 
 pub struct MagitStashShowMode;
@@ -46,10 +47,50 @@ fn magit_stash_show_keymap_entries() -> &'static [KeymapEntry] {
     ENTRIES.get_or_init(Vec::new)
 }
 
+/// MG.23g: what `a` / `-` need to know about this buffer — where the
+/// repository is. The stash index is already in the buffer name; the
+/// working directory is not, and a `git apply` needs one.
+pub struct StashShowState {
+    workdir: std::path::PathBuf,
+}
+
+/// Service alias for this mode's per-buffer state
+/// (`feedback_servicesregistry_arc_typeid`).
+pub type StashShowStatesHandle = Arc<BufferStates<StashShowState>>;
+
+/// MG.23g: this buffer's [`MagitView`] — the stash peer of
+/// `magit-revision-mode`'s, and identical for the same reason: a
+/// stash's patch describes a change that is not sitting between two of
+/// this checkout's trees, so `s` / `u` cannot move it and `a` / `-`
+/// can put it into the working tree or take it back out.
+///
+/// This is hunk-level, which is what makes it different from the stash
+/// list's own `a` (apply the *whole* stash): one hunk of a stash,
+/// where the list's key takes all of it.
+struct StashShowView(Arc<Mutex<StashShowState>>);
+
+impl crate::buffer_state::MagitView for StashShowView {
+    /// `stash@{n}`'s patch does not change under a fixed index, so
+    /// there is nothing for `gr` to rebuild — see this module's header
+    /// for why the stash *list* is the thing that refreshes.
+    fn refresh(&self) -> Option<lattice_grammar::Effect> {
+        None
+    }
+
+    fn diff_source(&self, _cursor: Position) -> Option<crate::buffer_state::DiffSource> {
+        Some(crate::buffer_state::DiffSource::Committed)
+    }
+
+    fn workdir(&self) -> Option<std::path::PathBuf> {
+        self.0.lock().ok().map(|g| g.workdir.clone())
+    }
+}
+
 impl Mode for MagitStashShowMode {
-    /// MG.14: the headerline registration — this mode's only
-    /// per-activation resource, like `magit-file-revision-mode`.
-    type Guard = Option<crate::headerline::HeaderlineRegistration>;
+    /// MG.23g: was `Option<HeaderlineRegistration>` — the per-buffer
+    /// state and the view registration join it now that `a` / `-` need
+    /// somewhere to read this buffer's workdir from.
+    type Guard = BufferStateGuard<StashShowState>;
 
     fn id(&self) -> ModeId {
         Self::mode_id()
@@ -79,11 +120,12 @@ impl Mode for MagitStashShowMode {
     fn on_activate(&self, ctx: ModeContext) -> LifecycleFuture<'_, Self::Guard> {
         Box::pin(async move {
             let buffer_id = lattice_core::BufferId(ctx.buffer_id().0 as u32);
+            let orphan = || BufferStateGuard::new(Arc::new(BufferStates::default()), buffer_id);
             let Some(store) = ctx.service::<BufferStoreHandle>() else {
-                return Ok(None);
+                return Ok(orphan());
             };
             let Some(handle) = store.handle_for(buffer_id) else {
-                return Ok(None);
+                return Ok(orphan());
             };
             let workdir = Repository::discover(".")
                 .ok()
@@ -104,6 +146,26 @@ impl Mode for MagitStashShowMode {
                 };
             if let Some(idx) = index {
                 headerline::publish(&hl, headerline::stash_show_fields(idx, ""));
+            }
+
+            // MG.13: publish BEFORE the first `.await` — see the note
+            // in `magit_branch_mode::on_activate`.
+            let Some(states) = ctx.service::<StashShowStatesHandle>() else {
+                return Ok(orphan());
+            };
+            let state = states.publish(
+                buffer_id,
+                StashShowState {
+                    workdir: workdir.clone(),
+                },
+            );
+            let mut guard = BufferStateGuard::new((*states).clone(), buffer_id)
+                .with_headerline(hl_registration);
+            // MG.23g: without the view, `a` / `-` have nothing to ask
+            // about this buffer and refuse in it.
+            if let Some(views) = ctx.service::<crate::buffer_state::MagitViewsHandle>() {
+                views.publish(buffer_id, Arc::new(StashShowView(state.clone())));
+                guard = guard.with_views((*views).clone());
             }
 
             let wd = workdir.clone();
@@ -132,7 +194,7 @@ impl Mode for MagitStashShowMode {
                 ph.store_and_wake(buffer_id, spans);
             }
 
-            Ok(hl_registration)
+            Ok(guard)
         })
     }
 }

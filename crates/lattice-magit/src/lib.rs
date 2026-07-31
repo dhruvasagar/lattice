@@ -248,6 +248,11 @@ fn register_buffer_state_services(boot: &mut impl SubsystemBoot) {
     boot.register_service::<actions::StatusStatesHandle>(Arc::new(
         buffer_state::BufferStates::default(),
     ));
+    // MG.23g: stash-show gained per-buffer state when `a` / `-` needed
+    // somewhere to read its workdir from.
+    boot.register_service::<magit_stash_show_mode::StashShowStatesHandle>(Arc::new(
+        buffer_state::BufferStates::default(),
+    ));
     // Shared-action dispatch: `gr` is bound by `magit-core-mode` and
     // registered exactly once at boot; each view publishes its own
     // refresh body here. See `buffer_state::MagitView` for why a
@@ -895,6 +900,16 @@ fn register_action_commands(registry: &mut CommandRegistry) {
         "Stage hunk interactively (git add -p)",
     );
     reg("action:magit-visit", "Context-aware open/visit at cursor");
+    // MG.23g: owned by magit-core-mode, so they work in every view that
+    // shows a committed patch (revision, stash detail).
+    reg(
+        "action:magit-apply-hunk",
+        "Apply the hunk at cursor to the working tree",
+    );
+    reg(
+        "action:magit-reverse-hunk",
+        "Reverse the hunk at cursor out of the working tree",
+    );
 
     // magit-diff-mode
     reg(

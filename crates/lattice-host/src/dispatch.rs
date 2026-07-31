@@ -2524,10 +2524,40 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         Action::PickerAppend(c) => {
             // PICK.1: if in transient mode, route through transient dispatch
             if let Some(ref picker) = editor.picker
-                && picker.transient.is_some()
+                && let Some(ref spec) = picker.transient
             {
-                let key = c.to_string();
-                editor.do_transient_trigger(key, _out);
+                // Transient keys are STRINGS, not characters — magit
+                // binds `, k` delete, `, r` rename, `= f` set-target.
+                // This used to be `c.to_string()` compared against each
+                // row's key, so every multi-key row was unreachable by
+                // keypress: it rendered, `<C-n>` reached it and `<CR>`
+                // fired it, but its own keys did nothing.
+                let typed = format!("{}{c}", picker.transient_prefix);
+                match spec.resolve_key(&typed) {
+                    lattice_picker::KeyResolution::Fire(item) => {
+                        // Clone before dispatch: `do_transient_trigger`
+                        // dismisses the picker, taking the prefix with
+                        // it, and may re-seat one for a submenu.
+                        let key = item.key.first().cloned().unwrap_or(typed);
+                        if let Some(p) = editor.picker.as_mut() {
+                            p.transient_prefix.clear();
+                        }
+                        editor.do_transient_trigger(key, _out);
+                    }
+                    lattice_picker::KeyResolution::Prefix => {
+                        if let Some(p) = editor.picker.as_mut() {
+                            p.transient_prefix = typed;
+                        }
+                    }
+                    // Nothing here starts with this. Drop what was
+                    // accumulated rather than holding it — a stuck
+                    // prefix would make every later keystroke miss too.
+                    lattice_picker::KeyResolution::NoMatch => {
+                        if let Some(p) = editor.picker.as_mut() {
+                            p.transient_prefix.clear();
+                        }
+                    }
+                }
             } else {
                 if let Some(p) = editor.picker.as_mut() {
                     p.append_query(c);
@@ -2542,7 +2572,13 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
             if let Some(ref mut picker) = editor.picker
                 && picker.transient.is_some()
             {
-                if let Some((parent_spec, parent_state, parent_selected)) =
+                // A half-typed multi-key row is what `BS` most likely
+                // means to undo, so it clears that first and only pops
+                // the submenu stack once nothing is pending — the same
+                // precedence vim gives `<Esc>` over a partial chord.
+                if !picker.transient_prefix.is_empty() {
+                    picker.transient_prefix.clear();
+                } else if let Some((parent_spec, parent_state, parent_selected)) =
                     picker.transient_stack.pop()
                 {
                     picker.transient = Some(parent_spec);
@@ -27672,6 +27708,10 @@ impl Editor {
                     .push((parent_spec, parent_state, parent_selected));
                 picker.transient = Some(sub_spec.clone());
                 picker.transient_state = lattice_picker::transient_initial_state(&sub_spec);
+                // The prefix belongs to the level that was showing;
+                // carrying it into a submenu would filter the new
+                // menu's rows by keys the user typed at the old one.
+                picker.transient_prefix.clear();
             }
             lattice_picker::TransientItemKind::Flag { name, .. } => {
                 // Toggle the flag

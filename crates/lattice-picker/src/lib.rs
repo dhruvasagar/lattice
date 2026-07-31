@@ -66,7 +66,8 @@ pub use source::{
     PickerRegistry, PickerRegistryHandle, PickerSourceGenerator, PickerSourceSpec, SourceResult,
 };
 pub use transient::{
-    TransientContext, TransientGroup, TransientItem, TransientItemKind, TransientSourceRegistry,
+    KeyResolution, TransientContext, TransientGroup, TransientItem, TransientItemKind,
+    TransientSourceRegistry,
     TransientSourceRegistryHandle, TransientSpec, TransientState, TransientValue,
     confirm_transient_spec, transient_initial_state,
 };
@@ -453,6 +454,15 @@ pub struct Picker {
     /// ([`TransientSpec::scroll_for`]), leaving no scroll state to
     /// drift.
     pub transient_selected: usize,
+    /// Keys typed at this level that begin some row's key but do not
+    /// complete one yet — magit's `, k` / `, r` / `= f` rows.
+    ///
+    /// Empty whenever no multi-key row is part-way typed, which is
+    /// almost always. The host used to compare a single typed `char`
+    /// against each row's key string, so a multi-key row rendered,
+    /// could be walked to with `<C-n>` and fired with `<CR>`, and did
+    /// nothing at all when its own keys were pressed.
+    pub transient_prefix: String,
 }
 
 impl Picker {
@@ -475,6 +485,7 @@ impl Picker {
             transient_state: TransientState::new(),
             transient_stack: Vec::new(),
             transient_selected: 0,
+            transient_prefix: String::new(),
         }
     }
 

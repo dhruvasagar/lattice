@@ -1758,6 +1758,7 @@ fn transient_group_item_lines(
     scroll: usize,
     visible: usize,
     selected: usize,
+    prefix: &str,
 ) -> (Vec<Line<'static>>, usize) {
     let mut lines: Vec<Line> = Vec::new();
     let mut ln: usize = 0;
@@ -1803,16 +1804,26 @@ fn transient_group_item_lines(
                 } else {
                     ("    ", TuiStyle::default())
                 };
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        format!("{marker}{:<6}", key),
+                // With a multi-key row part-way typed, rows that can no
+                // longer match go dull — magit's own behaviour, and the
+                // only thing that says "`,` was received, keep going"
+                // rather than leaving the menu looking inert.
+                let reachable =
+                    lattice_picker::TransientSpec::item_matches_prefix(item, prefix);
+                let (key_style, label_style, desc_style) = if reachable {
+                    (
                         TuiStyle::default().fg(Color::Yellow),
-                    ),
-                    Span::styled(format!("{:<20}", item.label), label_style),
-                    Span::styled(
-                        item.description.clone(),
+                        label_style,
                         TuiStyle::default().fg(Color::DarkGray),
-                    ),
+                    )
+                } else {
+                    let dull = TuiStyle::default().fg(Color::DarkGray);
+                    (dull, dull, dull)
+                };
+                lines.push(Line::from(vec![
+                    Span::styled(format!("{marker}{:<6}", key), key_style),
+                    Span::styled(format!("{:<20}", item.label), label_style),
+                    Span::styled(item.description.clone(), desc_style),
                     Span::styled(format!("  {}", flag), TuiStyle::default().fg(Color::Green)),
                 ]));
             }
@@ -1879,6 +1890,7 @@ fn draw_transient_overlay(frame: &mut Frame, buffer_area: Rect, app: &App) {
         scroll,
         visible,
         p.transient_selected,
+        &p.transient_prefix,
     );
 
     if let Some(ref preview_fn) = spec.preview {
@@ -1964,6 +1976,7 @@ fn draw_transient_minibuffer_candidates(frame: &mut Frame, area: Rect, app: &App
         scroll,
         visible,
         p.transient_selected,
+        &p.transient_prefix,
     );
     frame.render_widget(Paragraph::new(lines), area);
 }
@@ -6934,7 +6947,7 @@ mod tests {
         let state = lattice_picker::TransientState::default();
         // A visible budget far past the end, so the walker emits
         // everything it has.
-        let (lines, _) = transient_group_item_lines(&spec, &state, 0, 1000, 0);
+        let (lines, _) = transient_group_item_lines(&spec, &state, 0, 1000, 0, "");
         assert_eq!(
             transient_row_count(&spec),
             lines.len(),
@@ -6947,7 +6960,7 @@ mod tests {
         // row.
         let visible = 5;
         let max_scroll = transient_row_count(&spec).saturating_sub(visible);
-        let (tail, _) = transient_group_item_lines(&spec, &state, max_scroll, visible, 0);
+        let (tail, _) = transient_group_item_lines(&spec, &state, max_scroll, visible, 0, "");
         assert_eq!(
             tail.len(),
             visible,
@@ -7001,7 +7014,7 @@ mod tests {
             for (selected, key) in labels.iter().enumerate() {
                 let scroll = spec.scroll_for(selected, visible);
                 let (lines, _) =
-                    transient_group_item_lines(&spec, &state, scroll, visible, selected);
+                    transient_group_item_lines(&spec, &state, scroll, visible, selected, "");
                 let rendered: Vec<String> = lines
                     .iter()
                     .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())

@@ -5130,22 +5130,37 @@ fn transient_rows_gpui(
             // a transient stays key-driven, so the marker says where
             // `<CR>` would land without competing with the key column.
             let marker = if is_selected { "❯ " } else { "  " };
+            // ...and the same dimming for rows a part-typed multi-key
+            // row has ruled out. Both peers, per the lockstep rule.
+            let reachable = lattice_picker::TransientSpec::item_matches_prefix(
+                item,
+                &picker.transient_prefix,
+            );
+            let key_color = if reachable {
+                theme.cursor_background
+            } else {
+                theme.popup_border
+            };
             let label = div().child(format!("{:<16}", item.label));
             let label = if is_selected {
                 label.font_weight(gpui::FontWeight::BOLD)
             } else {
                 label
             };
+            let label = if reachable {
+                label
+            } else {
+                label.text_color(rgb(theme.popup_border))
+            };
             rows.push(
                 div()
                     .flex()
                     .flex_row()
                     .pl_4()
-                    .child(
-                        div()
-                            .text_color(rgb(theme.cursor_background))
-                            .child(format!("{marker}{:<6}", key)),
-                    )
+                    .child(div().text_color(rgb(key_color)).child(format!(
+                        "{marker}{:<6}",
+                        key
+                    )))
                     .child(label)
                     .child(
                         div()

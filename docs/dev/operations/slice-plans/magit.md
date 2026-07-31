@@ -17,6 +17,7 @@ owns *what* and *why*.
 | VCS.2 | Layer 2 auto-inline-diff subsystem | VCS.1 | ✅ |
 | PICK.1 | Picker transient-mode extension | None (picker subsystem) | ✅ |
 | PICK.1a | Transient navigation as a selection, not a scroll offset | PICK.1 | ✅ |
+| PICK.1b | Multi-key transient rows (`,k`, `=f`) reachable by keypress | PICK.1 | ✅ |
 | MG.1 | `lattice-magit` crate scaffolding | VCS.2, mode-architecture | ✅ |
 | MG.2 | magit-status buffer rendering | MG.1 | ✅ |
 | MG.3 | magit-status actions (s/u/x, cc/ca, =, p, <CR>) | MG.2 | ✅ |
@@ -1472,6 +1473,46 @@ one is in hand ("when did each of these lines go away"). It is a slice
 of its own, though — `*magit:blame:<path>*` carries no revision, so the
 buffer name, the argv and the headerline all move together. Filed as
 MG.23f2 rather than smuggled in here.
+
+#### PICK.1b — multi-key transient rows fire on their keys ✅ (2026-07-31)
+
+Reported in use: `,k` (delete) in the file dispatch did nothing. The
+row rendered, `<C-n>` reached it and `<CR>` fired it — its own keys did
+not.
+
+**Transient keys are strings; the host was comparing a char.**
+`Action::PickerAppend(c)` did `let key = c.to_string()` and handed that
+to `do_transient_trigger`, whose lookup is an exact match against each
+row's key. So every multi-key row magit binds — `,x` untrack, `,r`
+rename, `,k` delete, `,c` checkout, `=f` set-target — was unreachable
+by keypress since the day it landed. Five rows across two menus, and
+nothing failed loudly: the menu simply ignored the keystroke.
+
+Keys now accumulate. `TransientSpec::resolve_key` answers `Fire` /
+`Prefix` / `NoMatch` and the host holds a `transient_prefix` between
+presses; `NoMatch` drops what was accumulated, because a stuck prefix
+would make every later keystroke miss too — a menu gone quietly deaf.
+`BS` clears a pending prefix before popping a submenu (a half-typed row
+is what it most likely means to undo), and entering a submenu clears
+it, since a prefix belongs to the level that was showing.
+
+**Rows that can no longer match go dull** — magit's own behaviour, and
+the only thing that says "`,` was received, keep going" rather than
+leaving the menu looking inert. Both renderers.
+
+**An exact match beats a prefix**, decided here rather than left
+implicit. A key that both completes one row and begins another is
+ambiguous, and vim resolves that with `timeoutlen` — machinery this
+editor does not have: there is no ambiguous-chord timeout anywhere,
+and `Action::AbsorbPartialChord` waits indefinitely. Firing the exact
+match is the resolution that never hangs a key on a timer that does not
+exist. No spec has such a pair today; this decides it if one appears.
+
+- **Tests:** 4 — a multi-key row resolves one keystroke at a time and
+  fires on the second; single-key rows still fire on the first; a key
+  that begins nothing is a miss rather than a prefix (including a valid
+  prefix followed by a wrong key); and the dim filter matches exactly
+  the rows still reachable at each stage.
 
 #### MG.23h — the dispatch is built for where it was opened ✅ (2026-07-31)
 

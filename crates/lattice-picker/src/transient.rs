@@ -117,6 +117,50 @@ impl TransientSpec {
         self.groups.iter().flat_map(|g| &g.items).nth(index)
     }
 
+    /// What the keys typed so far mean at this level.
+    ///
+    /// Transient keys are **strings, not characters** — magit binds
+    /// multi-key rows (`, k` delete, `, r` rename, `= f` set target)
+    /// and lattice follows it. The host used to compare one typed
+    /// `char` against them, so every multi-key row was unreachable by
+    /// keypress: it rendered, `<C-n>` reached it, `<CR>` fired it, and
+    /// its own key did nothing at all.
+    ///
+    /// **An exact match wins over a prefix.** A key that both completes
+    /// one row and begins another is ambiguous, and vim resolves that
+    /// with `timeoutlen` — machinery this editor does not have (there
+    /// is no ambiguous-chord timeout anywhere; `AbsorbPartialChord`
+    /// waits indefinitely). Firing the exact match is the resolution
+    /// that never leaves a key hanging on a timer that does not exist.
+    /// No spec has such a pair today; this decides it if one appears.
+    pub fn resolve_key(&self, typed: &str) -> KeyResolution<'_> {
+        let mut prefix_seen = false;
+        for item in self.groups.iter().flat_map(|g| &g.items) {
+            for key in &item.key {
+                if key == typed {
+                    return KeyResolution::Fire(item);
+                }
+                if key.starts_with(typed) {
+                    prefix_seen = true;
+                }
+            }
+        }
+        if prefix_seen {
+            KeyResolution::Prefix
+        } else {
+            KeyResolution::NoMatch
+        }
+    }
+
+    /// True when `item` is still reachable by typing more after
+    /// `typed` — what the renderers dim on.
+    ///
+    /// An empty `typed` matches everything, so a menu with no prefix
+    /// pending renders exactly as it always did.
+    pub fn item_matches_prefix(item: &TransientItem, typed: &str) -> bool {
+        typed.is_empty() || item.key.iter().any(|k| k.starts_with(typed))
+    }
+
     /// The scroll offset that keeps `selected`'s row inside a window
     /// `visible` rows tall, clamped so the list never scrolls past its
     /// own end.
@@ -140,6 +184,21 @@ impl std::fmt::Debug for TransientSpec {
             .field("footer", &self.footer)
             .finish()
     }
+}
+
+/// What [`TransientSpec::resolve_key`] made of the keys typed so far.
+#[derive(Debug)]
+pub enum KeyResolution<'a> {
+    /// Exactly one row's key — fire it.
+    Fire(&'a TransientItem),
+    /// No row's key yet, but at least one begins with what was typed.
+    /// Hold the keys and wait for more; the renderers dim everything
+    /// that can no longer match.
+    Prefix,
+    /// Nothing here begins with this. The accumulated keys are
+    /// discarded — holding them would leave the menu silently unable
+    /// to accept the next keystroke.
+    NoMatch,
 }
 
 /// A named group of transient items.
@@ -390,6 +449,91 @@ mod tests {
             spec.title, "second",
             "last writer wins, matching PickerRegistry"
         );
+    }
+
+    /// A menu with a multi-key row, the shape magit's file dispatch
+    /// has (`, k` delete beside single-key `s` / `u`).
+    fn multi_key_spec() -> TransientSpec {
+        fn item(keys: &[&str]) -> TransientItem {
+            TransientItem {
+                key: keys.iter().map(|k| k.to_string()).collect(),
+                label: keys[0].to_string(),
+                description: String::new(),
+                kind: TransientItemKind::Dismiss,
+            }
+        }
+        TransientSpec {
+            title: "t".into(),
+            groups: vec![TransientGroup {
+                label: "g".into(),
+                items: vec![item(&["s"]), item(&[",k"]), item(&[",r"]), item(&["=f"])],
+            }],
+            preview: None,
+            footer: None,
+        }
+    }
+
+    /// The reported bug: `, k` rendered, `<C-n>` reached it and `<CR>`
+    /// fired it, but pressing `,` then `k` did nothing — the host
+    /// compared a single typed char against the whole key string.
+    #[test]
+    fn a_multi_key_row_resolves_one_keystroke_at_a_time() {
+        let spec = multi_key_spec();
+        assert!(
+            matches!(spec.resolve_key(","), KeyResolution::Prefix),
+            "`,` completes nothing but begins two rows — it must be held"
+        );
+        match spec.resolve_key(",k") {
+            KeyResolution::Fire(item) => assert_eq!(item.label, ",k"),
+            other => panic!("`,k` must fire the delete row, got {other:?}"),
+        }
+        match spec.resolve_key("=f") {
+            KeyResolution::Fire(item) => assert_eq!(item.label, "=f"),
+            other => panic!("`=f` must fire, got {other:?}"),
+        }
+    }
+
+    /// Single-key rows are unaffected — they fire on the first press,
+    /// never wait for a second.
+    #[test]
+    fn a_single_key_row_still_fires_immediately() {
+        match multi_key_spec().resolve_key("s") {
+            KeyResolution::Fire(item) => assert_eq!(item.label, "s"),
+            other => panic!("`s` must fire at once, got {other:?}"),
+        }
+    }
+
+    /// A key that begins nothing here is reported as such, so the host
+    /// can drop what it accumulated. Holding it would make every later
+    /// keystroke miss too — a menu that has gone quietly deaf.
+    #[test]
+    fn a_key_that_begins_nothing_is_a_miss_rather_than_a_prefix() {
+        let spec = multi_key_spec();
+        assert!(matches!(spec.resolve_key("q"), KeyResolution::NoMatch));
+        assert!(
+            matches!(spec.resolve_key(",z"), KeyResolution::NoMatch),
+            "a valid prefix followed by a wrong key is a miss, not a \
+             longer prefix"
+        );
+    }
+
+    /// What the renderers dim on: with `,` pending, only the `,`-rows
+    /// are still reachable; with nothing pending, everything is.
+    #[test]
+    fn the_prefix_filter_matches_exactly_the_rows_still_reachable() {
+        let spec = multi_key_spec();
+        let reachable = |typed: &str| {
+            spec.groups[0]
+                .items
+                .iter()
+                .filter(|i| TransientSpec::item_matches_prefix(i, typed))
+                .map(|i| i.label.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(reachable(""), vec!["s", ",k", ",r", "=f"]);
+        assert_eq!(reachable(","), vec![",k", ",r"]);
+        assert_eq!(reachable(",k"), vec![",k"]);
+        assert!(reachable("q").is_empty());
     }
 
     /// MG.23h: the context reaches the builder, and reaches it on

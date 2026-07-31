@@ -434,13 +434,25 @@ pub struct Picker {
     pub transient_state: TransientState,
     /// Stack of parent transient specs for `BS`/`DEL` back
     /// navigation through nested submenus. The `usize` is the
-    /// parent's `transient_scroll` at the moment its submenu opened —
-    /// popping restores it instead of leaving the parent scrolled
+    /// parent's `transient_selected` at the moment its submenu opened —
+    /// popping restores it instead of leaving the parent's selection
     /// wherever the submenu happened to leave the shared field.
     pub transient_stack: Vec<(std::sync::Arc<TransientSpec>, TransientState, usize)>,
-    /// Scroll offset for transient group rendering when groups
-    /// overflow the viewport. Incremented by `j`, decremented by `k`.
-    pub transient_scroll: usize,
+    /// Which of the transient's items `<C-n>` / `<C-p>` have walked to
+    /// — an index over [`TransientSpec::selectable_count`], NOT a
+    /// scroll offset.
+    ///
+    /// The distinction is the whole fix: the host can bound an item
+    /// index from the spec alone, whereas a scroll offset's true
+    /// maximum depends on a viewport height only the renderer knows.
+    /// The offset version grew unbounded and each renderer clamped it
+    /// privately at paint time, so the stored value drifted tens of
+    /// rows past anything renderable and `<C-p>` did nothing visible
+    /// until the overshoot had been walked back off. Renderers now
+    /// derive their scroll from this every frame
+    /// ([`TransientSpec::scroll_for`]), leaving no scroll state to
+    /// drift.
+    pub transient_selected: usize,
 }
 
 impl Picker {
@@ -462,8 +474,50 @@ impl Picker {
             transient: None,
             transient_state: TransientState::new(),
             transient_stack: Vec::new(),
-            transient_scroll: 0,
+            transient_selected: 0,
         }
+    }
+
+    /// Walk the transient's selection one item forward, wrapping at the
+    /// end — the same wrap [`Self::select_next`] gives the candidate
+    /// list, and the reason `<C-n>` can no longer overshoot: the index
+    /// is taken modulo the item count, so there is no out-of-range
+    /// value to represent.
+    ///
+    /// No-op when no transient is open or it has no items.
+    pub fn transient_select_next(&mut self) {
+        if let Some(count) = self.transient_item_count() {
+            self.transient_selected = (self.transient_selected + 1) % count;
+        }
+    }
+
+    /// The peer of [`Self::transient_select_next`], wrapping the other
+    /// way.
+    pub fn transient_select_prev(&mut self) {
+        if let Some(count) = self.transient_item_count() {
+            self.transient_selected = if self.transient_selected == 0 {
+                count - 1
+            } else {
+                self.transient_selected - 1
+            };
+        }
+    }
+
+    /// The open transient's item count, or `None` when there is no
+    /// transient or it is empty — the guard both walkers share so
+    /// neither can divide by zero or index an empty menu.
+    fn transient_item_count(&self) -> Option<usize> {
+        self.transient
+            .as_ref()
+            .map(|spec| spec.selectable_count())
+            .filter(|c| *c > 0)
+    }
+
+    /// The item `<CR>` would fire — the selection resolved against the
+    /// open transient. `None` when there is no transient, it is empty,
+    /// or the selection is somehow past its end.
+    pub fn transient_selected_item(&self) -> Option<&TransientItem> {
+        self.transient.as_ref()?.item_at(self.transient_selected)
     }
 
     /// Toggle live-source mode (`spec().live == true`). When

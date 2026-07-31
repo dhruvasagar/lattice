@@ -296,7 +296,7 @@ flags, or open nested submenus. Rather than building a parallel
 rendering + input system, a transient is carried as sibling state on
 the existing `Picker` struct: `picker.transient: Option<Arc<TransientSpec>>`,
 plus `transient_state` (flag/argument values), `transient_stack`
-(submenu back-stack), and `transient_scroll`. There is no `PickerMode`
+(submenu back-stack), and `transient_selected`. There is no `PickerMode`
 enum — the picker's candidate-list fields (`candidates`, `query`, ...)
 simply sit unused while `transient.is_some()`, and every call site that
 needs to tell the two apart checks that field directly.
@@ -501,7 +501,8 @@ Now the split is exact:
 - **Transient's job — what.** Both placements call the SAME
   row-windowing function to get the visible group/item lines: TUI
   `transient_group_item_lines`, GPUI `transient_rows_gpui`. Each walks
-  `spec.groups`, applies `transient_scroll`, and stops once its visible
+  `spec.groups`, applies the scroll offset `TransientSpec::scroll_for`
+  derives from the current selection, and stops once its visible
   budget is reached (GPUI bounds this at a fixed
   `TRANSIENT_MAX_VISIBLE_ROWS = 24`, since it has no cheap "how many
   rows fit" query the way the TUI can measure its actual terminal
@@ -514,13 +515,12 @@ Now the split is exact:
 Two smaller fixes landed alongside the split:
 
 - `transient_stack` is now `Vec<(Arc<TransientSpec>, TransientState, usize)>`
-  (was a 2-tuple) — entering a submenu pushes the parent's
-  `transient_scroll` alongside its spec + state and resets scroll to
-  0; backing out (`BS`/`DEL`) restores it. Previously scroll leaked
-  across submenu navigation: entering a submenu from partway down a
-  scrolled parent opened the submenu already scrolled, and backing out
-  left the parent scrolled wherever the submenu happened to leave the
-  shared field.
+  (was a 2-tuple) — entering a submenu pushes the parent's position
+  alongside its spec + state and resets it to 0; backing out
+  (`BS`/`DEL`) restores it. Previously it leaked across submenu
+  navigation: entering a submenu from partway down a parent opened the
+  submenu already positioned, and backing out left the parent wherever
+  the submenu happened to leave the shared field.
 - GPUI's popup container (`build_transient_gpui`) now has
   `.overflow_hidden()` — every sibling popup in that file already
   clips its content; this one didn't, so a transient with enough items
@@ -536,9 +536,44 @@ instead of the candidate-list actions:
 | Key | Action |
 |---|---|
 | A key matching one of an item's `key` strings | `do_transient_trigger` fires the item: dispatches the action and dismisses (`Action`), toggles the flag in place (`Flag`), pushes the stack and opens the submenu (`Submenu`), or dismisses without acting (`Dismiss`) |
-| Scroll-next / scroll-prev (same chords the candidate list uses) | Adjusts `transient_scroll` by ±1 instead of moving a candidate cursor |
+| Select-next / select-prev (same chords the candidate list uses) | Moves `transient_selected` by ±1 over the spec's items, wrapping — the renderer derives its scroll from that (§4bis.5bis) |
+| `<CR>` | Fires the selected item, routed through `do_transient_trigger` by the item's own key — one activation path, so submenus / flags / arguments behave identically however the item was reached |
 | `q` / `Esc` / `C-g` | `Action::TransientDismiss` → the same `do_picker_dismiss` every picker surface uses |
-| `DEL` / `BS` | Pops `transient_stack`, restoring the parent's spec, state, AND scroll (§4bis.5) |
+| `DEL` / `BS` | Pops `transient_stack`, restoring the parent's spec, state, AND selection (§4bis.5) |
+
+#### 4bis.5bis Why a selection and not a scroll offset
+
+`<C-n>` / `<C-p>` move an **item index**, not a row offset. The
+distinction is load-bearing rather than stylistic.
+
+A scroll offset's true maximum is `row_count - visible`, and `visible`
+is renderer geometry — the TUI measures its terminal area, GPUI uses a
+fixed budget. The host, which owns the state, cannot compute it. The
+first shape stored the offset and grew it with `saturating_add`, with
+each renderer clamping privately at paint time: the stored value ran
+arbitrarily far past anything renderable while the view sat still, and
+`<C-p>` then had to walk every phantom step back before anything moved.
+Reported in use against magit's file dispatch.
+
+An item index is bounded by `TransientSpec::selectable_count()`, which
+the host has. It wraps at both ends, so no out-of-range value is
+representable, and each renderer turns it into the scroll offset its
+own geometry needs (`TransientSpec::scroll_for`) fresh every frame —
+there is no stored scroll left to drift. This is the same reason the
+candidate list, which bounds `selected` by `candidates.len()`, never
+had the problem.
+
+The row arithmetic (`row_count`, `row_of_item`, `selectable_count`,
+`scroll_for`) lives on `TransientSpec` rather than in each renderer:
+both peers previously kept their own copy and both undercounted the
+per-group separator the same way, which made every multi-group popup
+a row per group too short.
+
+The selection is rendered — a `❯` and a bold label, BMP-block so no
+patched font is required and one cell wide so no column shifts. Key
+presses remain the primary interaction; the selection exists so a menu
+taller than its popup can be walked at all, and so `<CR>` has somewhere
+visible to land.
 
 There is no reserved `-`-prefix convention for flags — a `Flag` item
 fires by pressing its own assigned key, exactly like an `Action` item;

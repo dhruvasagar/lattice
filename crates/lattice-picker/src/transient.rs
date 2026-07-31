@@ -62,6 +62,75 @@ pub struct TransientSpec {
     pub footer: Option<String>,
 }
 
+impl TransientSpec {
+    /// How many items can be selected — every item in every group,
+    /// counted in group order.
+    ///
+    /// This is the number `<C-n>` / `<C-p>` wrap on, and the reason
+    /// they can no longer run off the end: it is derived from the spec
+    /// alone, so the host clamps on data it owns rather than on a
+    /// viewport height only the renderer knows. The previous shape
+    /// stored a raw scroll offset and grew it unbounded, leaving the
+    /// stored value tens of rows past anything renderable — pressing
+    /// `<C-p>` then did nothing visible until the overshoot was walked
+    /// back off.
+    pub fn selectable_count(&self) -> usize {
+        self.groups.iter().map(|g| g.items.len()).sum()
+    }
+
+    /// Rows the group+item list occupies — per group one header, one
+    /// row per item and one trailing blank separator. EXCLUDES
+    /// preview/footer, which only exist in the popup layout.
+    ///
+    /// Lives here rather than in each renderer because both peers need
+    /// it and both had their own copy: undercounting the separator in
+    /// both made every multi-group menu's box too short *and* capped
+    /// its scroll before the last rows.
+    pub fn row_count(&self) -> usize {
+        self.selectable_count() + self.groups.len() * 2
+    }
+
+    /// Which row the `index`-th selectable item is painted on, in the
+    /// same row stream [`Self::row_count`] measures. `None` when
+    /// `index` is past the last item.
+    ///
+    /// The mapping is what lets a renderer window on a *selection*: the
+    /// host moves an item index, and each peer turns it into the scroll
+    /// offset its own geometry needs.
+    pub fn row_of_item(&self, index: usize) -> Option<usize> {
+        let mut row = 0;
+        let mut seen = 0;
+        for group in &self.groups {
+            row += 1; // the group header
+            if index < seen + group.items.len() {
+                return Some(row + (index - seen));
+            }
+            row += group.items.len() + 1; // items + the separator
+            seen += group.items.len();
+        }
+        None
+    }
+
+    /// The `index`-th selectable item, in the same order
+    /// [`Self::selectable_count`] counts.
+    pub fn item_at(&self, index: usize) -> Option<&TransientItem> {
+        self.groups.iter().flat_map(|g| &g.items).nth(index)
+    }
+
+    /// The scroll offset that keeps `selected`'s row inside a window
+    /// `visible` rows tall, clamped so the list never scrolls past its
+    /// own end.
+    ///
+    /// Derived fresh from the selection every frame rather than stored,
+    /// which is what makes the overshoot unrepresentable: there is no
+    /// scroll state left to drift out of range.
+    pub fn scroll_for(&self, selected: usize, visible: usize) -> usize {
+        let row = self.row_of_item(selected).unwrap_or(0);
+        let max = self.row_count().saturating_sub(visible.max(1));
+        (row + 1).saturating_sub(visible.max(1)).min(max)
+    }
+}
+
 impl std::fmt::Debug for TransientSpec {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TransientSpec")
@@ -269,6 +338,151 @@ mod tests {
             registry.build("magit-file-dispatch").unwrap().title,
             "file-dispatch"
         );
+    }
+
+    /// A three-group menu whose groups are different sizes, so an
+    /// off-by-one in the header/separator accounting cannot hide.
+    fn geometry_spec() -> TransientSpec {
+        fn item(key: &str) -> TransientItem {
+            TransientItem {
+                key: vec![key.to_string()],
+                label: key.to_string(),
+                description: String::new(),
+                kind: TransientItemKind::Dismiss,
+            }
+        }
+        TransientSpec {
+            title: "t".into(),
+            groups: vec![
+                TransientGroup {
+                    label: "one".into(),
+                    items: vec![item("a"), item("b")],
+                },
+                TransientGroup {
+                    label: "two".into(),
+                    items: vec![item("c")],
+                },
+                TransientGroup {
+                    label: "three".into(),
+                    items: vec![item("d"), item("e"), item("f")],
+                },
+            ],
+            preview: None,
+            footer: None,
+        }
+    }
+
+    #[test]
+    fn row_of_item_skips_the_headers_and_separators_between_groups() {
+        let spec = geometry_spec();
+        assert_eq!(spec.selectable_count(), 6);
+        // header a b sep | header c sep | header d e f sep
+        // 0      1 2 3   | 4      5 6   | 7      8 9 10 11
+        assert_eq!(spec.row_count(), 12);
+        assert_eq!(spec.row_of_item(0), Some(1));
+        assert_eq!(spec.row_of_item(1), Some(2));
+        assert_eq!(spec.row_of_item(2), Some(5));
+        assert_eq!(spec.row_of_item(3), Some(8));
+        assert_eq!(spec.row_of_item(5), Some(10));
+        assert_eq!(spec.row_of_item(6), None, "past the last item");
+    }
+
+    /// The property the whole redesign exists for: whatever the
+    /// selection and however tall the window, the selected item's row
+    /// is inside `[scroll, scroll + visible)`.
+    #[test]
+    fn scroll_for_always_keeps_the_selection_in_view() {
+        let spec = geometry_spec();
+        for visible in [1usize, 2, 4, 7, 12, 40] {
+            for selected in 0..spec.selectable_count() {
+                let scroll = spec.scroll_for(selected, visible);
+                let row = spec.row_of_item(selected).expect("a row");
+                assert!(
+                    row >= scroll && row < scroll + visible.max(1),
+                    "selection {selected} (row {row}) fell outside the \
+                     window [{scroll}, {}) at visible={visible}",
+                    scroll + visible.max(1)
+                );
+                assert!(
+                    scroll <= spec.row_count().saturating_sub(visible.max(1)),
+                    "the list must never scroll past its own end"
+                );
+            }
+        }
+    }
+
+    /// `<C-n>` past the last item wraps instead of running away.
+    ///
+    /// The bug this replaces: the host grew a raw scroll offset with
+    /// `saturating_add`, so extra presses accumulated far past anything
+    /// renderable and `<C-p>` had to walk every phantom step back
+    /// before the view moved.
+    #[test]
+    fn walking_off_either_end_of_a_transient_wraps() {
+        use crate::{Picker, PickerAction, PickerSource};
+
+        let mut picker = Picker::new("t", PickerSource::Files, PickerAction::OpenFile);
+        picker.transient = Some(std::sync::Arc::new(geometry_spec()));
+
+        for expected in [1, 2, 3, 4, 5, 0, 1] {
+            picker.transient_select_next();
+            assert_eq!(picker.transient_selected, expected);
+        }
+        picker.transient_selected = 0;
+        picker.transient_select_prev();
+        assert_eq!(
+            picker.transient_selected, 5,
+            "backwards off the top wraps to the last item"
+        );
+    }
+
+    /// Ten extra `<C-n>`s must leave the selection where one `<C-p>`
+    /// undoes them — the user-visible symptom, stated directly.
+    #[test]
+    fn overshooting_leaves_no_phantom_steps_to_walk_back() {
+        use crate::{Picker, PickerAction, PickerSource};
+
+        let mut picker = Picker::new("t", PickerSource::Files, PickerAction::OpenFile);
+        picker.transient = Some(std::sync::Arc::new(geometry_spec()));
+        for _ in 0..6 {
+            picker.transient_select_next();
+        }
+        assert_eq!(picker.transient_selected, 0, "six items, back to the top");
+        picker.transient_select_prev();
+        assert_eq!(
+            picker.transient_selected, 5,
+            "one press back moves one item — not one of N accumulated \
+             out-of-range steps"
+        );
+    }
+
+    /// With no transient open the walkers are inert rather than
+    /// scribbling on a field the picker is not using.
+    #[test]
+    fn the_transient_walkers_are_inert_without_a_transient() {
+        use crate::{Picker, PickerAction, PickerSource};
+
+        let mut picker = Picker::new("t", PickerSource::Files, PickerAction::OpenFile);
+        picker.transient_select_next();
+        picker.transient_select_prev();
+        assert_eq!(picker.transient_selected, 0);
+        assert!(picker.transient_selected_item().is_none());
+    }
+
+    /// `<CR>` fires the item the marker is on — the selection index and
+    /// `item_at` must agree with `row_of_item`'s ordering, or the menu
+    /// highlights one row and runs another.
+    #[test]
+    fn the_selected_item_is_the_one_the_index_names() {
+        let spec = geometry_spec();
+        for (index, key) in ["a", "b", "c", "d", "e", "f"].iter().enumerate() {
+            assert_eq!(
+                spec.item_at(index).map(|i| i.label.as_str()),
+                Some(*key),
+                "item {index}"
+            );
+        }
+        assert!(spec.item_at(6).is_none());
     }
 
     #[test]

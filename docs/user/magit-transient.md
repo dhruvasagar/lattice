@@ -40,9 +40,15 @@ module doc) is meant to power future plugin transients too.
 | Key | Action |
 |---|---|
 | Single letter / chord | Fire the action, toggle the flag, or open the submenu |
-| `j` / `k` / `C-n` / `C-p` | Scroll through groups (if they overflow the viewport) |
+| `j` / `k` / `C-n` / `C-p` | Move the selection one item, wrapping at either end; the view scrolls to follow when the menu overflows |
+| `<CR>` | Fire the selected item — the same thing its key does |
 | `q` / `Esc` / `C-g` | Dismiss the transient |
 | `BS` / `DEL` | Return to parent transient (if in a nested submenu) |
+
+The selected row is marked with a `❯` and a bold label. Pressing an
+item's key is still the primary way to use a transient — the selection
+exists so a menu taller than the popup can be walked, and so there is
+somewhere visible for `<CR>` to land.
 
 ---
 

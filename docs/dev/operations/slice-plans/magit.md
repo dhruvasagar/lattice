@@ -16,6 +16,7 @@ owns *what* and *why*.
 | VCS.1 | `lattice-vcs` crate — Layer 1 data API | None | ✅ |
 | VCS.2 | Layer 2 auto-inline-diff subsystem | VCS.1 | ✅ |
 | PICK.1 | Picker transient-mode extension | None (picker subsystem) | ✅ |
+| PICK.1a | Transient navigation as a selection, not a scroll offset | PICK.1 | ✅ |
 | MG.1 | `lattice-magit` crate scaffolding | VCS.2, mode-architecture | ✅ |
 | MG.2 | magit-status buffer rendering | MG.1 | ✅ |
 | MG.3 | magit-status actions (s/u/x, cc/ca, =, p, <CR>) | MG.2 | ✅ |
@@ -179,6 +180,54 @@ MG.4/MG.5/MG.6/MG.7 can run in parallel after MG.1 lands.
   - TUI + GPUI render parity
 - **Tests:** single-group transient opens/closes; multi-group with scroll; flag toggle updates preview line; nested submenu opens → back; argument value entry → back to transient; dismiss with q/Esc/C-g; TUI + GPUI parity
 - **Stretch (deferred):** WIT mirror for plugin-accessible transient
+
+#### PICK.1a — navigation is a selection, not a scroll offset ✅ (2026-07-31)
+
+Reported in use: `<C-n>` past the last row kept going, and `<C-p>` then
+took a run of presses before anything moved.
+
+**The shape was wrong, not the arithmetic.** `transient_scroll` was a
+raw row offset grown with `saturating_add`, and each renderer clamped
+it *privately at paint time* — so the stored value drifted arbitrarily
+far past anything renderable while the view sat still, and every
+phantom step had to be walked back before `<C-p>` did anything visible.
+A host-side clamp could not have fixed it: the true maximum is
+`row_count - visible`, and `visible` is renderer geometry (the TUI
+derives it from the terminal area, GPUI from a fixed budget).
+
+The state is now `transient_selected`, an index over the spec's own
+items — a bound the host *can* compute, which is exactly why the
+regular picker (`selected` over `candidates`) never had this bug. It
+wraps at both ends like `Picker::select_next`, so there is no
+out-of-range value to represent. Renderers derive their scroll from the
+selection every frame (`TransientSpec::scroll_for`), leaving no scroll
+state to drift.
+
+Two things came with it rather than as extras. The selection is
+**visible** — a `❯` and a bold label, BMP-block so it works without a
+patched font and one cell wide so the columns do not shift; a menu you
+navigate but cannot see your position in was the other half of the
+report. And `<CR>` fires the selected item, routed through
+`do_transient_trigger` by the item's own key rather than a second
+activation path, so submenus, flag toggles and argument prompts behave
+identically however the item was reached.
+
+`row_count` moved onto `TransientSpec` alongside `scroll_for` /
+`row_of_item` / `selectable_count`: both peers had their own copy of
+the row arithmetic and both got the group separator wrong the same way
+(the bug fixed one commit earlier). One copy now.
+
+- **Tests:** 9 — `row_of_item` skips headers and separators across
+  uneven groups; `scroll_for` keeps the selection in view at every
+  position × six window sizes and never scrolls past the end; walking
+  off either end wraps; six `<C-n>`s on a six-item menu return to the
+  top and one `<C-p>` then moves exactly one item (the reported
+  symptom, stated directly); the walkers are inert with no transient
+  open; `item_at` agrees with `row_of_item`'s ordering, so the marker
+  and `<CR>` cannot disagree; and in the TUI, exactly one row is marked
+  and it is the selected item, at every selection × four window sizes.
+- **Renderer parity:** both peers in the same patch, per the
+  lockstep rule.
 
 ### MG.1 — `lattice-magit` crate scaffolding
 

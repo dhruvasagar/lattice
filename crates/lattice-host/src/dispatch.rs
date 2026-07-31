@@ -2542,12 +2542,12 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
             if let Some(ref mut picker) = editor.picker
                 && picker.transient.is_some()
             {
-                if let Some((parent_spec, parent_state, parent_scroll)) =
+                if let Some((parent_spec, parent_state, parent_selected)) =
                     picker.transient_stack.pop()
                 {
                     picker.transient = Some(parent_spec);
                     picker.transient_state = parent_state;
-                    picker.transient_scroll = parent_scroll;
+                    picker.transient_selected = parent_selected;
                 }
             } else {
                 if let Some(p) = editor.picker.as_mut() {
@@ -2559,11 +2559,17 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
             }
         }
         Action::PickerSelectNext => {
-            // PICK.1: in transient mode, scroll group view down
+            // PICK.1: in transient mode, walk the item selection —
+            // wrapping, and bounded by the spec's own item count. It
+            // used to grow a raw scroll offset with `saturating_add`,
+            // which each renderer then clamped privately at paint time:
+            // the stored value ran arbitrarily far past the last row,
+            // and `<C-p>` had to walk every one of those phantom steps
+            // back before anything moved.
             if let Some(ref mut picker) = editor.picker
                 && picker.transient.is_some()
             {
-                picker.transient_scroll = picker.transient_scroll.saturating_add(1);
+                picker.transient_select_next();
             } else if let Some(p) = editor.picker.as_mut() {
                 p.select_next();
             }
@@ -2574,7 +2580,7 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
             if let Some(ref mut picker) = editor.picker
                 && picker.transient.is_some()
             {
-                picker.transient_scroll = picker.transient_scroll.saturating_sub(1);
+                picker.transient_select_prev();
             } else if let Some(p) = editor.picker.as_mut() {
                 p.select_prev();
             }
@@ -2811,7 +2817,23 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
             _out.merge(editor.do_picker_accept());
         }
         Action::PickerAccept => {
-            _out.merge(editor.do_picker_accept());
+            // In transient mode `<CR>` fires whatever `<C-n>` / `<C-p>`
+            // walked to. Routed through `do_transient_trigger` by the
+            // item's own key rather than reimplementing activation, so
+            // submenus, flag toggles and argument prompts behave
+            // identically however the item was reached — and a
+            // selection with no key (there are none today) falls
+            // through to the ordinary accept rather than doing nothing.
+            let transient_key = editor
+                .picker
+                .as_ref()
+                .filter(|p| p.transient.is_some())
+                .and_then(|p| p.transient_selected_item())
+                .and_then(|item| item.key.first().cloned());
+            match transient_key {
+                Some(key) => editor.do_transient_trigger(key, _out),
+                None => _out.merge(editor.do_picker_accept()),
+            }
         }
         Action::PickerDismiss => {
             let signals = editor.do_picker_dismiss();
@@ -27607,19 +27629,19 @@ impl Editor {
             }
             lattice_picker::TransientItemKind::Submenu(sub_spec) => {
                 // Push current onto stack, open submenu.
-                // Fold audit fix: also push/reset `transient_scroll` —
-                // it used to carry over unchanged, so entering a
-                // submenu from partway down a scrolled parent opened
-                // it already scrolled past its own top, and backing
-                // back out left the parent scrolled wherever the
-                // submenu happened to leave it instead of where the
-                // user had actually left it.
+                // Fold audit fix: also push/reset the parent's
+                // selection — it used to carry over unchanged, so
+                // entering a submenu from partway down a parent opened
+                // it already positioned past its own top, and backing
+                // back out left the parent wherever the submenu
+                // happened to leave it instead of where the user had
+                // actually left it.
                 let parent_spec = spec;
                 let parent_state = std::mem::take(&mut picker.transient_state);
-                let parent_scroll = std::mem::take(&mut picker.transient_scroll);
+                let parent_selected = std::mem::take(&mut picker.transient_selected);
                 picker
                     .transient_stack
-                    .push((parent_spec, parent_state, parent_scroll));
+                    .push((parent_spec, parent_state, parent_selected));
                 picker.transient = Some(sub_spec.clone());
                 picker.transient_state = lattice_picker::transient_initial_state(&sub_spec);
             }

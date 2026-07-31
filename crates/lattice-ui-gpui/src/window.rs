@@ -5057,12 +5057,13 @@ pub fn document_from_path(path: &std::path::Path) -> Result<Document> {
 /// comparably cheap "how many rows fit" query at this call site, so
 /// this is a fixed, generous budget instead. What matters for
 /// parity is that BOTH peers stop rendering once a bounded number of
-/// rows is reached and respect `transient_scroll` — not that the
+/// rows is reached and window on the same selection — not that the
 /// exact row count matches to the pixel.
 const TRANSIENT_MAX_VISIBLE_ROWS: usize = 24;
 
 /// The scroll-windowed group/item rows a transient renders — the
-/// ONE place that walks `spec.groups`, applies `transient_scroll`,
+/// ONE place that walks `spec.groups`, applies the offset
+/// `TransientSpec::scroll_for` derives from `transient_selected`,
 /// and stops at `TRANSIENT_MAX_VISIBLE_ROWS`. Deciding *where* these
 /// rows go (a floating popup vs. a bottom strip) is `picker.display`'s
 /// call, made once by the caller in `render()` — a transient's own
@@ -5079,17 +5080,15 @@ fn transient_rows_gpui(
     picker: &lattice_picker::Picker,
     theme: &GpuiTheme,
 ) -> Vec<gpui::Div> {
-    let total_items: usize = spec.groups.iter().map(|g| g.items.len()).sum();
-    // Header + blank separator per group, matching the TUI peer's
-    // `transient_row_count`. Counting only the header made the scroll
-    // clamp stop short of the bottom rows — the same bug, since both
-    // peers derive `scroll` from this number.
-    let row_count = total_items + spec.groups.len() * 2;
-    let scroll = picker
-        .transient_scroll
-        .min(row_count.saturating_sub(TRANSIENT_MAX_VISIBLE_ROWS.max(1)));
+    // Derived from the selection every frame rather than from a stored
+    // offset — the shared `scroll_for` on `TransientSpec` also counts
+    // the per-group header and separator, which both peers previously
+    // did by hand and both got wrong the same way.
+    let selected = picker.transient_selected;
+    let scroll = spec.scroll_for(selected, TRANSIENT_MAX_VISIBLE_ROWS);
     let mut ln: usize = 0;
     let mut rendered: usize = 0;
+    let mut item_index: usize = 0;
     let mut rows: Vec<gpui::Div> = Vec::new();
 
     for group in &spec.groups {
@@ -5105,7 +5104,9 @@ fn transient_rows_gpui(
 
         for item in &group.items {
             let show = ln >= scroll && rendered < TRANSIENT_MAX_VISIBLE_ROWS;
+            let is_selected = item_index == selected;
             ln += 1;
+            item_index += 1;
             if !show {
                 continue;
             }
@@ -5125,6 +5126,16 @@ fn transient_rows_gpui(
                 }
                 _ => "",
             };
+            // The same caret + bold-label marker the TUI peer paints —
+            // a transient stays key-driven, so the marker says where
+            // `<CR>` would land without competing with the key column.
+            let marker = if is_selected { "❯ " } else { "  " };
+            let label = div().child(format!("{:<16}", item.label));
+            let label = if is_selected {
+                label.font_weight(gpui::FontWeight::BOLD)
+            } else {
+                label
+            };
             rows.push(
                 div()
                     .flex()
@@ -5133,9 +5144,9 @@ fn transient_rows_gpui(
                     .child(
                         div()
                             .text_color(rgb(theme.cursor_background))
-                            .child(format!("{:<6}", key)),
+                            .child(format!("{marker}{:<6}", key)),
                     )
-                    .child(div().child(format!("{:<16}", item.label)))
+                    .child(label)
                     .child(
                         div()
                             .text_color(rgb(theme.popup_border))

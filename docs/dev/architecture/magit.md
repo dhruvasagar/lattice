@@ -1265,6 +1265,28 @@ slice before MG.8 builds the magit transient definitions.
 MG.8 then builds magit-specific transient definitions (dispatch, branch,
 merge, rebase, stash, file-dispatch) on top of this picker mode.
 
+**Navigation is a selection, not a scroll offset.** A transient's
+`<C-n>` / `<C-p>` move `Picker::transient_selected` — an index over the
+spec's items, wrapping at both ends — and each renderer derives its
+scroll from that every frame via `TransientSpec::scroll_for`. The
+alternative, storing a row offset, is not workable here: its true
+maximum is `row_count - visible`, and `visible` is renderer geometry
+(the TUI derives it from the terminal area, GPUI from a fixed budget),
+so the host cannot bound it. The offset version grew unbounded while
+each peer clamped it privately at paint time, which is the same reason
+the regular picker — bounding `selected` by `candidates.len()` — never
+had the problem. The row arithmetic (`row_count`, `row_of_item`,
+`selectable_count`, `scroll_for`) lives on `TransientSpec` so the two
+peers cannot disagree about it; they previously each held a copy and
+each got the group separator wrong.
+
+The selection is rendered (`❯` plus a bold label, BMP-block and one
+cell wide so no patched font is needed and no column shifts), and
+`<CR>` fires it — routed through the item's own key so submenus, flags
+and argument prompts behave identically however the item was reached.
+Key presses remain the primary interaction; the selection exists so a
+menu taller than its popup can be walked at all.
+
 ### 8.8 Current implementation — dispatch, discovery, and display
 
 This is the largest gap between this fragment's original design and what

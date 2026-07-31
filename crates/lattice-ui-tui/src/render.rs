@@ -1722,23 +1722,21 @@ fn picker_display_is_minibuffer(app: &App) -> bool {
 /// EXCLUDING preview/footer (those only apply to the popup layout;
 /// the minibuffer candidate band has no room for them, mirroring how
 /// the regular picker's minibuffer strip only ever shows the
-/// candidate list, not a preview pane). Shared by `chrome_rows`'
-/// row-budget accounting and both minibuffer draw functions below, so
-/// they can't drift out of sync with each other.
+/// candidate list, not a preview pane).
 ///
 /// **The separator counts.** It is a line `transient_group_item_lines`
-/// actually emits, and this number is used for two things that both
-/// break when it is short: the popup's height, and the *scroll clamp*
-/// (`transient_scroll.min(row_count - visible)`). Undercounting by one
-/// row per group made the box that many rows too short AND capped the
-/// scroll before the bottom rows, so the last items of a multi-group
-/// menu were both off-screen and unreachable with `<C-n>` — reported
-/// against magit's file dispatch, whose last group ends in the blame
-/// row.
+/// actually emits, and this number sets the popup's height and bounds
+/// the scroll. Undercounting by one row per group made the box that
+/// many rows too short AND capped the scroll before the bottom rows,
+/// so the last items of a multi-group menu were both off-screen and
+/// unreachable — reported against magit's file dispatch, whose last
+/// group ends in the blame row.
+///
+/// The count itself now lives on `TransientSpec` so both renderers and
+/// the host share one copy; this stays as the local name
+/// `chrome_rows`' row-budget accounting already uses.
 fn transient_row_count(spec: &lattice_picker::TransientSpec) -> usize {
-    let total_items: usize = spec.groups.iter().map(|g| g.items.len()).sum();
-    // header + separator per group
-    total_items + spec.groups.len() * 2
+    spec.row_count()
 }
 
 /// The scroll-windowed group/item lines a transient renders — the
@@ -1759,9 +1757,15 @@ fn transient_group_item_lines(
     transient_state: &lattice_picker::TransientState,
     scroll: usize,
     visible: usize,
+    selected: usize,
 ) -> (Vec<Line<'static>>, usize) {
     let mut lines: Vec<Line> = Vec::new();
     let mut ln: usize = 0;
+    // Which item we are on, counted across groups the same way
+    // `TransientSpec::selectable_count` counts — the highlight and the
+    // host's selection index have to mean the same thing or `<CR>`
+    // fires a row other than the one that looks chosen.
+    let mut item_index: usize = 0;
 
     for group in &spec.groups {
         if ln >= scroll && lines.len() < visible {
@@ -1774,6 +1778,7 @@ fn transient_group_item_lines(
 
         for item in &group.items {
             if ln >= scroll && lines.len() < visible {
+                let is_selected = item_index == selected;
                 let key = format!("[{}]", item.key.join("/"));
                 let flag = match &item.kind {
                     lattice_picker::TransientItemKind::Flag { name, .. } => {
@@ -1788,12 +1793,22 @@ fn transient_group_item_lines(
                     }
                     _ => "",
                 };
+                // The selection is marked with a leading caret and a
+                // bold label rather than a reversed row: a transient is
+                // primarily key-driven, so the marker has to say
+                // "this is where <CR> would land" without competing
+                // with the key column for attention.
+                let (marker, label_style) = if is_selected {
+                    ("  ❯ ", TuiStyle::default().add_modifier(Modifier::BOLD))
+                } else {
+                    ("    ", TuiStyle::default())
+                };
                 lines.push(Line::from(vec![
                     Span::styled(
-                        format!("    {:<6}", key),
+                        format!("{marker}{:<6}", key),
                         TuiStyle::default().fg(Color::Yellow),
                     ),
-                    Span::raw(format!("{:<20}", item.label)),
+                    Span::styled(format!("{:<20}", item.label), label_style),
                     Span::styled(
                         item.description.clone(),
                         TuiStyle::default().fg(Color::DarkGray),
@@ -1802,6 +1817,7 @@ fn transient_group_item_lines(
                 ]));
             }
             ln += 1;
+            item_index += 1;
         }
 
         if ln >= scroll && lines.len() < visible {
@@ -1852,11 +1868,18 @@ fn draw_transient_overlay(frame: &mut Frame, buffer_area: Rect, app: &App) {
     frame.render_widget(block, area);
 
     let visible = inner.height as usize;
-    let scroll = p
-        .transient_scroll
-        .min(row_count.saturating_sub(visible.max(1)));
+    // Derived from the selection every frame rather than stored: there
+    // is no scroll state left to drift past the end, which is what made
+    // `<C-n>` overshoot and `<C-p>` feel stuck.
+    let scroll = spec.scroll_for(p.transient_selected, visible);
 
-    let (mut lines, mut ln) = transient_group_item_lines(spec, &p.transient_state, scroll, visible);
+    let (mut lines, mut ln) = transient_group_item_lines(
+        spec,
+        &p.transient_state,
+        scroll,
+        visible,
+        p.transient_selected,
+    );
 
     if let Some(ref preview_fn) = spec.preview {
         if ln >= scroll && lines.len() < visible {
@@ -1912,7 +1935,7 @@ fn draw_transient_minibuffer_prompt(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 /// Minibuffer-mode candidate band for a transient — the group/item
-/// list, windowed to `area`'s height via `transient_scroll` (the
+/// list, windowed to `area`'s height around `transient_selected` (the
 /// SAME field + the same "skip until scroll, stop once the band is
 /// full" shape `draw_transient_overlay` uses for its popup box, just
 /// flowed into a bottom strip instead of a bordered floating area;
@@ -1933,12 +1956,15 @@ fn draw_transient_minibuffer_candidates(frame: &mut Frame, area: Rect, app: &App
     if visible == 0 {
         return;
     }
-    let row_count = transient_row_count(spec);
-    let scroll = p
-        .transient_scroll
-        .min(row_count.saturating_sub(visible.max(1)));
+    let scroll = spec.scroll_for(p.transient_selected, visible);
 
-    let (lines, _) = transient_group_item_lines(spec, &p.transient_state, scroll, visible);
+    let (lines, _) = transient_group_item_lines(
+        spec,
+        &p.transient_state,
+        scroll,
+        visible,
+        p.transient_selected,
+    );
     frame.render_widget(Paragraph::new(lines), area);
 }
 
@@ -6866,10 +6892,9 @@ mod tests {
     /// items were off-screen and `<C-n>` would not bring them back.
     /// `transient_row_count` counted a header and the items per group
     /// but not the blank separator the walker emits, and BOTH the popup
-    /// height and the scroll clamp
-    /// (`transient_scroll.min(row_count - visible)`) come off that
-    /// number — so the box was short by one row per group and the
-    /// scroll stopped before the bottom.
+    /// height and the scroll bound come off that number — so the box
+    /// was short by one row per group and the scroll stopped before the
+    /// bottom.
     ///
     /// Pinned as an identity rather than an arithmetic expectation:
     /// whatever the walker emits, the budget must say so, including
@@ -6909,7 +6934,7 @@ mod tests {
         let state = lattice_picker::TransientState::default();
         // A visible budget far past the end, so the walker emits
         // everything it has.
-        let (lines, _) = transient_group_item_lines(&spec, &state, 0, 1000);
+        let (lines, _) = transient_group_item_lines(&spec, &state, 0, 1000, 0);
         assert_eq!(
             transient_row_count(&spec),
             lines.len(),
@@ -6922,13 +6947,78 @@ mod tests {
         // row.
         let visible = 5;
         let max_scroll = transient_row_count(&spec).saturating_sub(visible);
-        let (tail, _) = transient_group_item_lines(&spec, &state, max_scroll, visible);
+        let (tail, _) = transient_group_item_lines(&spec, &state, max_scroll, visible, 0);
         assert_eq!(
             tail.len(),
             visible,
             "scrolled to the clamp, the window must still be full — a \
              short count leaves rows below it unreachable"
         );
+    }
+
+    /// The selection must always be on screen, at every position and
+    /// every window size — including the last item, which is what the
+    /// overshoot bug made unreachable in practice.
+    ///
+    /// Asserted through the walker rather than against `scroll_for`'s
+    /// arithmetic: what matters is that the marked row is among the
+    /// emitted lines, which is what the user sees.
+    #[test]
+    fn the_selected_transient_row_is_always_inside_the_window() {
+        use lattice_picker::{TransientGroup, TransientItem, TransientItemKind, TransientSpec};
+
+        fn item(key: &str) -> TransientItem {
+            TransientItem {
+                key: vec![key.to_string()],
+                label: format!("label-{key}"),
+                description: String::new(),
+                kind: TransientItemKind::Dismiss,
+            }
+        }
+        let spec = TransientSpec {
+            title: "t".into(),
+            groups: vec![
+                TransientGroup {
+                    label: "one".into(),
+                    items: vec![item("a"), item("b"), item("c")],
+                },
+                TransientGroup {
+                    label: "two".into(),
+                    items: vec![item("d"), item("e")],
+                },
+                TransientGroup {
+                    label: "three".into(),
+                    items: vec![item("f"), item("g")],
+                },
+            ],
+            preview: None,
+            footer: None,
+        };
+        let state = lattice_picker::TransientState::default();
+        let labels = ["a", "b", "c", "d", "e", "f", "g"];
+
+        for visible in [3usize, 5, 8, 40] {
+            for (selected, key) in labels.iter().enumerate() {
+                let scroll = spec.scroll_for(selected, visible);
+                let (lines, _) =
+                    transient_group_item_lines(&spec, &state, scroll, visible, selected);
+                let rendered: Vec<String> = lines
+                    .iter()
+                    .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+                    .collect();
+                let marked: Vec<&String> = rendered.iter().filter(|r| r.contains('❯')).collect();
+                assert_eq!(
+                    marked.len(),
+                    1,
+                    "exactly one row must be marked at selection {selected} \
+                     with {visible} visible rows, got {rendered:?}"
+                );
+                assert!(
+                    marked[0].contains(&format!("label-{key}")),
+                    "the marked row must be the selected item ({key}): {marked:?}"
+                );
+            }
+        }
     }
 
     /// PU.1b-3 regression (link styling): the FLOATING help popup must

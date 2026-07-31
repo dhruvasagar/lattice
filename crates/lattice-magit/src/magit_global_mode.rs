@@ -554,6 +554,54 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         "magit-blame-mode"
     );
 
+    // MG.23f2: reverse blame — "when did each of these lines go away",
+    // the one blame variant magit has that we had no answer for.
+    //
+    // It does NOT go through `active_target`, and that is the whole
+    // shape of it: reverse blame needs a *revision* as well as a path,
+    // and its output is the file **as it was at that revision**. Run
+    // from a working-tree file it would replace what you are looking at
+    // with an older version of it, annotated with shas that mean the
+    // opposite of the ones next door in a normal blame. So it is
+    // reachable only from a buffer that is already showing a revision —
+    // a blob buffer — which is magit's own rule ("Only blob buffers can
+    // be blamed in reverse") reached from the same reasoning rather
+    // than copied.
+    //
+    // `staged` is refused with it: the index is not a commit, so there
+    // is no range to walk forward from. Same exclusion `gj`/`gk` make,
+    // for the same reason.
+    contributions.push(ActionHandlerContribution {
+        action_name: "action:magit-global-file-blame-reverse",
+        handler: Arc::new(|ctx: &ActionContext<'_>| {
+            let buffer_id = lattice_core::BufferId(ctx.buffer_id.0 as u32);
+            let parsed = ctx
+                .services
+                .get::<BufferStoreHandle>()?
+                .name_for(buffer_id)
+                .and_then(|n| crate::magit_file_revision_mode::parse_buffer_name(&n))
+                .filter(|(git_ref, _)| git_ref != "staged");
+            Some(match parsed {
+                Some((git_ref, path)) => Effect::OpenSyntheticBuffer {
+                    name: crate::magit_blame_mode::reverse_buffer_name(
+                        &git_ref,
+                        &path.to_string_lossy(),
+                    ),
+                    mode_id: crate::MagitBlameMode::mode_id().to_string(),
+                },
+                // Naming what is missing and where to get it beats a
+                // row that appears to do nothing: the answer is one
+                // `<CR>` on a log entry away.
+                None => Effect::Echo {
+                    level: lattice_grammar::EchoLevel::Error,
+                    text: "magit: reverse blame needs a revision — open the file at one first \
+                           (<CR> on a log entry, then gj/gk to walk)"
+                        .to_string(),
+                },
+            })
+        }),
+    });
+
     // Branch-create wizard's second step — fired by the prompt
     // opened after `magit-branch-pick-base`'s accept. `ctx.buffer_id`
     // is the PROMPT buffer (see `Editor::do_prompt_line_submit`'s

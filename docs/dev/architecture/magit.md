@@ -250,6 +250,35 @@ Per-line git blame annotations alongside the current file.
 - `<CR>` on a blame line opens `*magit:commit:<sha>*`.
 - Blame data cached in a per-file `BlameLineMap`; invalidated on file changes.
 
+**Reverse blame (`*magit:blame-reverse:<rev>:<path>*`, MG.23f2).** The
+same mode, the same renderer and the same porcelain parser, run with
+`git blame --reverse <rev>..HEAD -- <path>`: for each line of `<rev>`'s
+version of the file, the last commit in which the line still existed.
+
+Two directions rather than two modes, because only the argv and the
+header differ — the direction is carried by the buffer name, so a
+buffer can never be in one direction and be labelled the other. The
+header says "reverse" for the same reason: a reverse body is
+indistinguishable from a forward one and every sha means the opposite
+thing, so an unlabelled buffer silently invites the wrong reading.
+
+The entry point is `C-c f`'s `f`, and it is reachable **only from a
+blob buffer**. Reverse blame needs a revision as well as a path, and
+its output is the file as it was at that revision — run from a
+working-tree file it would replace what the user is looking at with an
+older version of it, annotated with shas that mean the opposite of a
+normal blame's. That is magit's own rule ("Only blob buffers can be
+blamed in reverse") reached from the same reasoning. `staged` is
+refused with it: the index is not a commit, so there is no range. The
+refusal is echoed and names what is missing, never a silent no-op.
+
+`p` in a reverse buffer opens the parent revision's *own* reverse
+buffer rather than re-blaming in place, so the name and the content
+never disagree — the shape `gj`/`gk` use to walk a blob's history.
+`:magit-blame-reverse <rev> <path>` is the scriptable form; both
+arguments are required, since `HEAD..HEAD` is empty and would report
+every line as still present.
+
 ### 4.5 magit-diff (`*magit:diff*`, or path-scoped `*magit:diff:<path>*`)
 
 Target design: a two-pane side-by-side diff (reuses D.4 pane group

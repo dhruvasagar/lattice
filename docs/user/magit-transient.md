@@ -253,6 +253,7 @@ path to resolve and the key does nothing.
 | `d` | Opens `*magit:diff:<path>*` ([diff buffer](help:magit-diff-mode)) |
 | `l` | Opens `*magit:log:<path>*` — the [log buffer](help:magit-log-mode) scoped to this file's history |
 | `b` | Opens `*magit:blame:<path>*` ([blame buffer](help:magit-blame-mode)) |
+| `f` | Reverse blame — only from a blob buffer, see below |
 | `,x` | `git rm --cached` — stop tracking, **file stays on disk** |
 | `,r` | `git mv` — asks for the new name, pre-filled with the current one |
 | `,k` | `git rm` — **destructive**, asks `Delete <path>?` first |
@@ -262,6 +263,29 @@ path to resolve and the key does nothing.
 first — the same `y`/`n` dialog magit-status's own `x` uses. `s`/`u`
 report optimistically ("magit: staged <path>") and log the real
 outcome; they don't block on git.
+
+#### `f` — reverse blame
+
+Ordinary blame answers "which commit added this line". `f` answers the
+opposite: **for each line, the last commit in which it still existed**.
+Lines that name something other than `HEAD` are the ones that have
+since gone away, and the commit named is the last one they survived in.
+
+It needs a revision to walk forward from, and it shows the file *as it
+was at that revision* — so it only works from a buffer that is already
+showing one: a `*magit:file:<rev>:<path>*` blob buffer, opened with
+`<CR>` on a log entry or a commit's file list, and walked with `gj` /
+`gk`. Press `f` anywhere else and it says so rather than guessing.
+The index (`*magit:file:staged:…*`) is refused too — it is not a
+commit, so there is no range.
+
+`p` in the resulting buffer walks the starting revision back one
+commit, opening that revision's own reverse blame.
+
+The scriptable form is `:magit-blame-reverse <rev> <path>`, which takes
+both halves explicitly and so works from anywhere. Both arguments are
+required: there is no sensible default revision, since `HEAD..HEAD` is
+empty and would report every line as still present.
 
 **The `,` prefix is deliberate**, and magit's own. Those four change
 what the file *is* rather than what is staged of it, so they take an

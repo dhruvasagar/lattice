@@ -436,6 +436,10 @@ pub struct FileDispatchActionIds {
     pub diff: Option<CommandId>,
     pub log: Option<CommandId>,
     pub blame: Option<CommandId>,
+    /// MG.23f2: reverse blame. Only in `C-c f`, not in the other-file
+    /// menu — that menu names a target by *path*, and reverse blame
+    /// needs a revision the path cannot carry.
+    pub blame_reverse: Option<CommandId>,
     /// MG.23d: the file operations.
     pub untrack: Option<CommandId>,
     pub delete: Option<CommandId>,
@@ -658,6 +662,19 @@ pub fn file_dispatch_transient(ids: &FileDispatchActionIds) -> TransientSpec {
                         "log_file",
                     ),
                     action_or_placeholder(ids.blame, "b", "blame", "Blame this file", "blame_file"),
+                    // MG.23f2, on magit's own key for it (`f`
+                    // "...reverse" in magit-file-dispatch's Blame
+                    // group). Only meaningful from a blob buffer; the
+                    // handler says so rather than the row hiding, since
+                    // there is no per-context menu content yet
+                    // (MG.23h).
+                    action_or_placeholder(
+                        ids.blame_reverse,
+                        "f",
+                        "reverse blame",
+                        "For each line of this revision, the last commit it existed in",
+                        "blame_reverse_file",
+                    ),
                 ],
             },
         ],

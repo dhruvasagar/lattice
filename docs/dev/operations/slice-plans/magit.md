@@ -1206,7 +1206,7 @@ incidentally.
 | MG.23d2 | `,c` checkout a file from a revision | MG.23d | ✅ |
 | MG.23e | Surface-mapping rows — **dropped**, see below | — | ⛔ |
 | MG.23f | Blob navigation (blame variants evaluated out, one deferred) | — | ✅ |
-| MG.23f2 | Reverse blame (`git blame --reverse`) from a blob buffer — needs a rev-carrying blame buffer name | MG.23f | 📝 |
+| MG.23f2 | Reverse blame (`git blame --reverse`) from a blob buffer | MG.23f | ✅ |
 | MG.23g | `a` apply / `v` reverse on a hunk | MG.18 | 📝 |
 | MG.23h | Context-dependent menu content (magit's `:if-derived`), then `s`/`u` rows + the `s` collision | — | 📝 |
 | MG.23i+ | The new subsystems, one slice each, prioritised by daily use | — | 📝 |
@@ -1401,6 +1401,75 @@ one is in hand ("when did each of these lines go away"). It is a slice
 of its own, though — `*magit:blame:<path>*` carries no revision, so the
 buffer name, the argv and the headerline all move together. Filed as
 MG.23f2 rather than smuggled in here.
+
+#### MG.23f2 — `f` reverse blame ✅ (2026-07-31)
+
+The one blame variant MG.23f found genuinely absent rather than
+duplicated. `git blame --reverse <rev>..HEAD -- <path>`: for each line
+of `<rev>`'s version of the file, the last commit it still existed in.
+On magit's own key (`f`, "...reverse" in its file-dispatch Blame
+group), with `:magit-blame-reverse <rev> <path>` as the scriptable
+half.
+
+**Two directions, one mode.** Only the argv and the header differ — the
+rendering, the chords and the porcelain parser are identical — so a
+second mode would have been a copy with a flag. The direction rides in
+the buffer name (`*magit:blame-reverse:<rev>:<path>*`), which is what
+makes it impossible for a buffer to be in one direction and labelled
+the other. The two prefixes are distinct rather than one optional
+field because the forward name's path runs to the closing `*` and may
+itself contain `:` — no boundary rule could tell `*magit:blame:a:b.rs*`
+from a rev-carrying name, and guessing wrong means blaming a file that
+does not exist.
+
+**The header says "reverse", and that is not decoration.** A reverse
+body is indistinguishable from a forward one and every sha means the
+opposite thing. Unlabelled, the buffer silently invites the wrong
+reading of every row.
+
+**Blob buffers only — arrived at, not copied.** Reverse blame needs a
+revision as well as a path, and its output is the file *as it was at
+that revision*. From a working-tree file it would replace what you are
+reading with an older version of it, annotated with inverted shas. So
+it resolves both halves from a `*magit:file:<rev>:<path>*` buffer and
+refuses elsewhere — which turns out to be magit's own rule ("Only blob
+buffers can be blamed in reverse"). `staged` is refused with it: the
+index is not a commit, so there is no range to walk forward from, the
+same exclusion `gj`/`gk` make. **The refusal is echoed and names what
+is missing**, never a `None` — a menu row that silently does nothing
+is the same failure the no-inert-rows policy forbids, reached from the
+other direction.
+
+Deliberately **not** in `FILE_TARGET_ACTIONS` and **not** on
+`:magit-other-file-dispatch`: that seam names a target by *path*, and
+a path cannot carry a revision. Equally, the ex-command requires both
+arguments — `HEAD` is the one default that suggests itself and it is
+wrong, since `HEAD..HEAD` is empty and would report every line as
+still present: a plausible-looking answer that says nothing.
+
+**`p` opens rather than re-blames.** In a forward buffer `p` walks the
+revision back in place, which is fine because the name carries no
+revision. In a reverse buffer it would make the name lie, so `p` opens
+the parent's own reverse buffer instead — the shape `gj`/`gk` already
+use. The `rev-parse` runs inline: the effect it returns *is* the
+answer, and it is a cheaper call than the `git log` `gj`/`gk` already
+run synchronously.
+
+- **Tests:** 11 — the reverse argv walks forward from the named
+  revision and the forward argv never reverses; `--` separates the path
+  in both directions; the two buffer names parse to their own
+  direction, a forward path containing `:` stays a path, and a
+  half-formed reverse name is rejected; the built name round-trips;
+  against a real repo, a line deleted in a later commit is annotated
+  with the commit it last existed in while a surviving line names HEAD,
+  and the *same* repo blamed forward says something different (without
+  which the flag never taking would pass); and the handler resolves
+  both halves from a blob buffer while refusing `staged`, a magit
+  buffer and a plain file with an *echoed* reason. The pinned
+  file-dispatch leaf count went 10 → 11.
+- **Docs:** `magit.md` §4.4 gains the reverse section,
+  `magit-transient.md` the `f` row and its own subsection,
+  `docs/user/magit.md` the buffer row.
 
 #### MG.23d — `,x` untrack, `,r` rename, `,k` delete ✅ (2026-07-30)
 

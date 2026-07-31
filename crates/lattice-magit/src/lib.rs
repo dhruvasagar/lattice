@@ -400,6 +400,16 @@ const FILE_TARGET_ACTIONS: &[(&str, &str)] = &[
     ),
 ];
 
+/// MG.23f2: what `:magit-blame-reverse` says when it is not given both
+/// halves. An error rather than a best guess — see the registration for
+/// why there is no defensible default revision.
+fn reverse_blame_usage() -> Effect {
+    Effect::Echo {
+        level: lattice_grammar::EchoLevel::Error,
+        text: "magit: usage — :magit-blame-reverse <rev> <path>".to_string(),
+    }
+}
+
 /// Resolve the file dispatch transient's action ids — same
 /// shared-with-tests rationale as [`resolve_dispatch_ids`].
 fn resolve_file_dispatch_ids(registry: &CommandRegistry) -> transients::FileDispatchActionIds {
@@ -410,6 +420,7 @@ fn resolve_file_dispatch_ids(registry: &CommandRegistry) -> transients::FileDisp
         diff: registry.id_by_name("action:magit-global-file-diff"),
         log: registry.id_by_name("action:magit-global-file-log"),
         blame: registry.id_by_name("action:magit-global-file-blame"),
+        blame_reverse: registry.id_by_name("action:magit-global-file-blame-reverse"),
         untrack: registry.id_by_name("action:magit-global-file-untrack"),
         delete: registry.id_by_name("action:magit-global-file-delete"),
         rename: registry.id_by_name("action:magit-global-file-rename"),
@@ -701,6 +712,50 @@ fn register_ex_commands(registry: &mut CommandRegistry) {
         );
     }
     {
+        // MG.23f2: the scriptable half of reverse blame. `C-c f`'s `f`
+        // takes both arguments from the blob buffer it is pressed in;
+        // this one is told them, which is also the only way to reverse
+        // blame a file you are not currently reading at a revision.
+        //
+        // Both arguments are required — a default revision is exactly
+        // what reverse blame cannot have. `HEAD` would make the range
+        // `HEAD..HEAD`, i.e. empty, and report every line as still
+        // present: a plausible-looking answer that says nothing.
+        registry.register_ex_command(
+            "magit-blame-reverse",
+            "Reverse-blame a file: for each line as of <rev>, the last commit it existed in. \
+             Takes `<rev> <path>`.",
+            ExCommandSpec {
+                latency_class: LatencyClass::Reflex,
+                accepts_bang: false,
+                accepts_range: false,
+                parse_args: Arc::new(|line: &str, _bang: bool| {
+                    Ok(Args::String(line.trim().to_string()))
+                }),
+                apply: Arc::new(|ctx| {
+                    let Args::String(ref spec) = ctx.args else {
+                        return Ok(reverse_blame_usage());
+                    };
+                    match spec.split_once(char::is_whitespace) {
+                        Some((rev, path)) if !rev.is_empty() && !path.trim().is_empty() => {
+                            Ok(Effect::OpenSyntheticBuffer {
+                                name: magit_blame_mode::reverse_buffer_name(rev, path.trim()),
+                                mode_id: "magit-blame-mode".to_string(),
+                            })
+                        }
+                        _ => Ok(reverse_blame_usage()),
+                    }
+                }),
+                args_schema: vec![ArgSpec::required(
+                    "spec",
+                    lattice_grammar::ArgKind::String,
+                    "<rev> <path> — the revision to walk forward from, and the file",
+                )],
+                surface_form: SurfaceForm::Keyword,
+            },
+        );
+    }
+    {
         // Fold audit fix: the upstream to rebase onto is encoded into
         // the buffer name (`*magit:rebase:<upstream>*`), mirroring
         // `magit-blame`'s file-in-buffer-name pattern — `on_activate`
@@ -913,6 +968,15 @@ fn register_action_commands(registry: &mut CommandRegistry) {
         "Show the commit for the blamed line",
     );
     reg("action:magit-blame-parent", "Re-blame at the parent commit");
+    // MG.23f2. Deliberately NOT in `FILE_TARGET_ACTIONS`: it needs a
+    // revision as well as a path, and takes both from the blob buffer
+    // it is invoked in — a `file` argument alone could not say which
+    // revision to walk forward from. See its handler for why that
+    // restricts it to blob buffers.
+    reg(
+        "action:magit-global-file-blame-reverse",
+        "For each line of this revision of the file, the last commit it existed in",
+    );
 
     // magit-stash-mode
     reg("action:magit-stash-apply", "Apply the stash at cursor");
@@ -1505,6 +1569,109 @@ mod tests {
         }
     }
 
+    /// MG.23f2 — a `BufferStore` that knows one thing: what a buffer is
+    /// called. That is the only method reverse blame reads, and stubbing
+    /// the rest keeps the test about the resolution rather than about
+    /// standing up a registry.
+    struct NamedBuffer(&'static str);
+
+    impl lattice_mode::BufferStore for NamedBuffer {
+        fn find_by_name(&self, _name: &str) -> Option<lattice_core::BufferId> {
+            None
+        }
+        fn handle_for(
+            &self,
+            _id: lattice_core::BufferId,
+        ) -> Option<std::sync::Arc<dyn lattice_runtime::Document>> {
+            None
+        }
+        fn name_for(&self, _id: lattice_core::BufferId) -> Option<String> {
+            Some(self.0.to_string())
+        }
+        fn insert_document_buffer(
+            &self,
+            _id: lattice_core::BufferId,
+            _kind: lattice_core::BufferKind,
+            _handle: std::sync::Arc<dyn lattice_runtime::Document>,
+            _flags: lattice_core::BufferFlags,
+            _name: Option<String>,
+        ) {
+        }
+    }
+
+    /// Fire `action:magit-global-file-blame-reverse` as if `C-c f`'s
+    /// `f` were pressed in a buffer called `buffer_name`.
+    fn fire_reverse_blame_in(buffer_name: &'static str) -> Option<Effect> {
+        use lattice_mode::Mode;
+
+        let handler = MagitGlobalMode
+            .action_handlers()
+            .into_iter()
+            .find(|c| c.action_name == "action:magit-global-file-blame-reverse")
+            .expect("reverse blame is contributed")
+            .handler;
+
+        let mut services = lattice_mode::ServiceRegistry::new();
+        // Registered as `BufferStoreHandle`, NOT `Arc<BufferStoreHandle>`
+        // — `register` keys on `TypeId::of::<T>()` and the handler looks
+        // up `get::<BufferStoreHandle>()`, so the wrapped form would be
+        // filed under a type nobody asks for and every case would come
+        // back as the refusal (`feedback_servicesregistry_arc_typeid`).
+        services.register(lattice_mode::BufferStoreHandle::new(std::sync::Arc::new(
+            NamedBuffer(buffer_name),
+        )));
+        let events = lattice_runtime::EventBus::new();
+        handler(&lattice_mode::ActionContext {
+            buffer_id: lattice_protocol::ids::BufferId::new(1),
+            cursor: lattice_protocol::position::Position::new(0, 0),
+            selection: None,
+            services: &services,
+            events: &events,
+            prompt_value: None,
+            args: lattice_grammar::Args::None,
+        })
+    }
+
+    /// MG.23f2 — both halves come out of the blob buffer's name.
+    #[test]
+    fn reverse_blame_takes_its_revision_from_the_blob_buffer_it_runs_in() {
+        match fire_reverse_blame_in("*magit:file:a1b2c3d:src/main.rs*") {
+            Some(Effect::OpenSyntheticBuffer { name, mode_id }) => {
+                assert_eq!(name, "*magit:blame-reverse:a1b2c3d:src/main.rs*");
+                assert_eq!(mode_id, "magit-blame-mode");
+            }
+            other => panic!("expected the reverse-blame buffer, got {other:?}"),
+        }
+    }
+
+    /// Refusals are echoed, never silent. A handler returning `None`
+    /// here would leave the menu row looking like a key that does
+    /// nothing — the exact failure the no-inert-rows policy exists to
+    /// prevent, arrived at from the other direction.
+    ///
+    /// `staged` is in the list deliberately: the index is not a commit,
+    /// so there is no range to walk forward from — the same exclusion
+    /// `gj`/`gk` make.
+    #[test]
+    fn reverse_blame_says_why_when_there_is_no_revision_to_walk_from() {
+        for name in [
+            "*magit:file:staged:src/main.rs*",
+            "*magit:status*",
+            "src/main.rs",
+        ] {
+            match fire_reverse_blame_in(name) {
+                Some(Effect::Echo { level, text }) => {
+                    assert_eq!(level, lattice_grammar::EchoLevel::Error);
+                    assert!(
+                        text.contains("revision"),
+                        "the message must name what is missing: {text}"
+                    );
+                }
+                other => panic!("expected an explained refusal in {name}, got {other:?}"),
+            }
+        }
+    }
+
     /// No magit chord may shadow a Visual-mode entry key.
     ///
     /// Region staging needs a selection, so `v` / `V` / `C-v` have to
@@ -1961,15 +2128,16 @@ mod tests {
     /// would pass the two tests above vacuously.
     #[test]
     fn unresolved_ids_do_produce_inert_items_so_the_guard_is_not_vacuous() {
-        // 10 file-dispatch items: stage/unstage/discard, diff/log/blame,
-        // MG.23d's untrack/rename/delete and MG.23d2's checkout.
+        // 11 file-dispatch items: stage/unstage/discard,
+        // diff/log/blame, MG.23f2's reverse blame, MG.23d's
+        // untrack/rename/delete and MG.23d2's checkout.
         let file = inert_items(
             &transients::file_dispatch_transient(&Default::default()),
             "",
         );
         assert_eq!(
             file.len(),
-            10,
+            11,
             "expected every file-dispatch leaf to report inert, got: {file:?}"
         );
         // Root dispatch: 18 ACTION leaves — status, diff, log,

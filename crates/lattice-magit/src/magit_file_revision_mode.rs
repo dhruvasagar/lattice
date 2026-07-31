@@ -129,9 +129,7 @@ fn blob_step_handlers() -> Vec<lattice_mode::ActionHandlerContribution> {
             None => Some(Effect::Echo {
                 level: lattice_grammar::EchoLevel::Info,
                 text: match step {
-                    BlobStep::Previous => {
-                        "magit: no earlier revision of this file".to_string()
-                    }
+                    BlobStep::Previous => "magit: no earlier revision of this file".to_string(),
                     BlobStep::Next => "magit: already at the newest revision".to_string(),
                 },
             }),
@@ -249,7 +247,7 @@ impl Mode for MagitFileRevisionMode {
 /// boundary — everything after it is the path, even if the path
 /// itself contains further `:` characters (rare on POSIX, but not
 /// disallowed).
-fn parse_buffer_name(name: &str) -> Option<(String, PathBuf)> {
+pub(crate) fn parse_buffer_name(name: &str) -> Option<(String, PathBuf)> {
     let rest = name.strip_prefix("*magit:file:")?;
     let rest = rest.strip_suffix('*')?;
     let (git_ref, path) = rest.split_once(':')?;

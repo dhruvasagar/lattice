@@ -589,6 +589,22 @@ pub(crate) fn blame_fields(path: &str, rev: &str) -> Vec<Field> {
     ]
 }
 
+/// MG.23f2 — magit-blame in reverse: the path, and the revision the
+/// walk *starts* from.
+///
+/// The word "reverse" is not decoration. A reverse blame's body is
+/// indistinguishable from a forward one, and the shas mean the
+/// opposite thing — the last commit a line survived in, not the commit
+/// that added it. Without the label the buffer silently invites the
+/// wrong reading of every row.
+pub(crate) fn blame_reverse_fields(path: &str, rev: &str) -> Vec<Field> {
+    vec![
+        Field::label(path.to_string()),
+        Field::label("reverse from"),
+        Field::git_ref(rev.to_string()),
+    ]
+}
+
 /// magit-branch: the checked-out branch and how many exist.
 pub(crate) fn branch_fields(current: &str, total: usize) -> Vec<Field> {
     let mut fields = Vec::new();

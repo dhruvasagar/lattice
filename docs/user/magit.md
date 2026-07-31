@@ -106,7 +106,8 @@ Expensive operations — diffs, blame data, commit details — are
 | `*magit:status*` | File paths + status labels (fast list view) | `=` loads `git diff --cached <path>` / `git diff <path>` per-file |
 | `*magit:diff*` | Diff loaded on open (the view IS the diff) | — |
 | `*magit:log*` | `git log --oneline --graph --decorate -50` (count is currently hardcoded) | `<CR>` opens `*magit:commit:<sha>*`, a `git show <sha>` view, for the commit at cursor |
-| `*magit:blame*` | Blame loaded on open (the view IS the blame) | `<CR>` shows the commit for the blamed line; `p` re-blames at parent |
+| `*magit:blame*` | Blame loaded on open (the view IS the blame) | `<CR>` shows the commit for the blamed line; `p` blames back one commit |
+| `*magit:blame-reverse:<rev>:<path>*` | Reverse blame loaded on open — for each line of `<rev>`'s version, the last commit it existed in | Same chords; `p` walks the starting revision back |
 | `*magit:commit*` | Staged diff loaded on open (the purpose of this view) | — |
 
 This is the single most important performance decision in the magit

@@ -255,6 +255,51 @@ pub trait MagitView: Send + Sync + 'static {
         None
     }
 
+    /// MG.22: **which version** of `path` `<CR>` should open, for a
+    /// cursor sitting in this view's diff content.
+    ///
+    /// The split is the point. *Finding* the path is diff-text parsing
+    /// and identical everywhere, so it belongs to `magit-hunk-mode`
+    /// ([`crate::hunk::path_at_cursor`]) — three modes had a copy, and
+    /// one of them had a bug the other two did not. *Choosing the
+    /// version* is genuinely per-view and cannot be shared:
+    ///
+    /// | View | `<CR>` opens |
+    /// |---|---|
+    /// | magit-diff, staged scope | the index blob |
+    /// | magit-diff, unstaged / HEAD scope | the working-tree file |
+    /// | magit-commit | the index blob (its diff IS the index) |
+    /// | magit-revision | the file at that sha |
+    /// | magit-stash-show | the file as the stash left it |
+    ///
+    /// `None` means "this view has no answer for that path", and the
+    /// caller says so rather than guessing at a version — opening the
+    /// working-tree copy when the user asked for a historical one is
+    /// the mistake `magit-file-revision-mode` exists to prevent.
+    fn diff_target(&self, path: &std::path::Path) -> Option<lattice_grammar::Effect> {
+        let _ = path;
+        None
+    }
+
+    /// MG.22: what `<CR>` does when the cursor is **not** in diff
+    /// content.
+    ///
+    /// Only magit-status needs this, and it is why `<CR>` could not
+    /// simply move to `magit-hunk-mode` wholesale: there the chord is
+    /// context-aware over rows that are not diffs at all — a file
+    /// entry, a stash, a commit — and a minor's binding wins over a
+    /// major's, so taking the chord without carrying that behaviour
+    /// would have silently replaced it with a diff-only handler.
+    ///
+    /// Views whose buffer is entirely diff content never reach this.
+    fn visit_at_cursor(
+        &self,
+        cursor: lattice_protocol::position::Position,
+    ) -> Option<lattice_grammar::Effect> {
+        let _ = cursor;
+        None
+    }
+
     /// The workdir this view's repository lives in — needed to run an
     /// operation against it from a handler that holds only the view.
     fn workdir(&self) -> Option<std::path::PathBuf> {

@@ -12,14 +12,13 @@
 //! see `magit_file_revision_mode`'s doc comment for why.
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 
 use lattice_config;
 use lattice_grammar::Effect;
 use lattice_mode::{
-    ActionContext, ActionHandlerContribution, BufferStoreHandle, CapabilitySet, Keymap,
-    KeymapEntry, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, OptionOverrideSet,
-    keymap_entry,
+    BufferStoreHandle, CapabilitySet, Keymap, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind,
+    OptionOverrideSet,
 };
 
 use crate::buffer_state::{BufferStateGuard, BufferStates};
@@ -33,18 +32,7 @@ impl MagitRevisionMode {
     }
 }
 
-fn magit_revision_keymap_entries() -> &'static [KeymapEntry] {
-    static ENTRIES: OnceLock<Vec<KeymapEntry>> = OnceLock::new();
-    ENTRIES.get_or_init(|| {
-        vec![
-            keymap_entry! { mode: Normal, chord: "<CR>", doc: "Visit file at this commit", cmd: "action:magit-revision-visit-file" },
-        ]
-    })
-}
-
 pub struct RevisionState {
-    buffer_id: lattice_core::BufferId,
-    store: Arc<BufferStoreHandle>,
     sha: String,
     /// MG.23g: where `a` / `-` apply the hunk under the cursor. Read
     /// from the repository at activation, because a `git apply` needs a
@@ -83,6 +71,15 @@ impl crate::buffer_state::MagitView for RevisionView {
         Some(crate::buffer_state::DiffSource::Committed)
     }
 
+    /// MG.22: this commit's version of the file.
+    fn diff_target(&self, path: &std::path::Path) -> Option<Effect> {
+        let sha = self.0.lock().ok()?.sha.clone();
+        (!sha.is_empty()).then(|| Effect::OpenSyntheticBuffer {
+            name: format!("*magit:file:{sha}:{}*", path.display()),
+            mode_id: "magit-file-revision-mode".to_string(),
+        })
+    }
+
     /// MG.24c: this buffer IS one commit, so the answer does not depend
     /// on the cursor — every line of a `git show` belongs to the sha in
     /// the buffer's name.
@@ -109,10 +106,6 @@ impl crate::buffer_state::MagitView for RevisionView {
 /// (`feedback_servicesregistry_arc_typeid`).
 pub type RevisionStatesHandle = Arc<BufferStates<RevisionState>>;
 
-fn state(ctx: &ActionContext<'_>) -> Option<Arc<Mutex<RevisionState>>> {
-    crate::buffer_state::state_for::<RevisionState>(ctx)
-}
-
 impl Mode for MagitRevisionMode {
     type Guard = BufferStateGuard<RevisionState>;
 
@@ -137,35 +130,14 @@ impl Mode for MagitRevisionMode {
     fn required_capabilities(&self) -> CapabilitySet {
         CapabilitySet::empty()
     }
+    /// MG.22: no chords of its own any more. `q` / `gr` / navigation
+    /// come from `magit-core-mode`, and `<CR>` / `s` / `u` / `a` / `-`
+    /// from `magit-hunk-mode` — this buffer is entirely diff content,
+    /// so everything that acts on it belongs to the mode that owns
+    /// diff content. What stays here is the `MagitView` telling those
+    /// modes *which commit* they are looking at.
     fn keymap(&self) -> Keymap {
-        // `q`/`gr`/nav come from magit-core (this mode is in its
-        // `ActivationPolicy::Majors` list). `gr` is a harmless no-op
-        // here (no refresh handler registered); a commit's content
-        // doesn't change under a fixed sha.
-        Keymap::from_entries(magit_revision_keymap_entries())
-    }
-
-    /// MG.13: boot-registered — see `buffer_state`'s module docs.
-    fn action_handlers(&self) -> Vec<ActionHandlerContribution> {
-        vec![
-            // <CR> — visit the file at cursor as of this commit.
-            ActionHandlerContribution {
-                action_name: "action:magit-revision-visit-file",
-                handler: Arc::new(|ctx: &ActionContext<'_>| {
-                    let s = state(ctx)?;
-                    let g = s.lock().ok()?;
-                    if g.sha.is_empty() {
-                        return None;
-                    }
-                    let handle = g.store.handle_for(g.buffer_id)?;
-                    let path = file_at_cursor(&handle, ctx.cursor.line)?;
-                    Some(Effect::OpenSyntheticBuffer {
-                        name: format!("*magit:file:{}:{}*", g.sha, path.display()),
-                        mode_id: "magit-file-revision-mode".to_string(),
-                    })
-                }),
-            },
-        ]
+        Keymap::default()
     }
 
     fn on_activate(&self, ctx: ModeContext) -> LifecycleFuture<'_, Self::Guard> {
@@ -207,8 +179,6 @@ impl Mode for MagitRevisionMode {
             let state = states.publish(
                 buffer_id,
                 RevisionState {
-                    buffer_id,
-                    store: store.clone(),
                     sha: sha.clone(),
                     workdir: workdir.clone(),
                 },
@@ -250,36 +220,6 @@ impl Mode for MagitRevisionMode {
     }
 }
 
-/// Resolve the file at `line`: either `line` IS a `--stat` summary
-/// row (`" path/to/x.rs | 12 +++++-----"`), or we walk upward to the
-/// nearest `diff --git a/<path> b/<path>` header — same two shapes
-/// `git show --stat -p` ever produces a path in.
-fn file_at_cursor(handle: &Arc<dyn lattice_runtime::Document>, line: u32) -> Option<PathBuf> {
-    let snap = handle.snapshot();
-    if let Some(text) = snap.buffer.line(line) {
-        if let Some(path) = parse_stat_line(&text) {
-            return Some(path);
-        }
-    }
-    for l in (0..=line).rev() {
-        let text = snap.buffer.line(l)?;
-        if let Some(rest) = text.strip_prefix("diff --git a/") {
-            let path = rest.split(" b/").next()?;
-            return Some(PathBuf::from(path));
-        }
-    }
-    None
-}
-
-/// `git show --stat`'s summary line: `" <path> | <N> <bar-chart>"`.
-/// Rejected if there's no ` | ` separator (commit/author/date/subject
-/// lines never contain one).
-fn parse_stat_line(line: &str) -> Option<PathBuf> {
-    let trimmed = line.trim_start();
-    let (path, _rest) = trimmed.split_once(" | ")?;
-    (!path.is_empty()).then(|| PathBuf::from(path.trim()))
-}
-
 /// MG.14 header data: the commit's short sha, author, relative date
 /// and subject. A separate `git show -s --format=…` rather than
 /// scraping `run_show`'s header, because that output is locale- and
@@ -315,22 +255,10 @@ fn run_show(workdir: &std::path::Path, sha: &str) -> String {
         .unwrap_or_else(|| format!("Could not show commit {sha}\n"))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parse_stat_line_extracts_path() {
-        assert_eq!(
-            parse_stat_line(" src/main.rs | 12 +++++-----"),
-            Some(PathBuf::from("src/main.rs"))
-        );
-    }
-
-    #[test]
-    fn parse_stat_line_rejects_non_stat_lines() {
-        assert_eq!(parse_stat_line("commit a1b2c3d"), None);
-        assert_eq!(parse_stat_line("    fix the thing"), None);
-        assert_eq!(parse_stat_line(""), None);
-    }
-}
+// MG.22: this mode's `parse_stat_line` / `file_at_cursor` tests moved
+// with the functions, to `hunk::path_at_cursor_tests`. They gained a
+// case in the move — the one that matters here, and the one this
+// module's copy could never have caught, because it tested the stat
+// parser in isolation rather than in the order the caller used it: a
+// diff body line containing ` | ` used to resolve to the text left of
+// the pipe, because the stat check ran first.

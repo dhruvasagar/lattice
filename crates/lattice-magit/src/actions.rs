@@ -556,45 +556,67 @@ pub fn status_action_handlers() -> Vec<ActionHandlerContribution> {
     {
         handler!("action:magit-visit", move |ctx: &ActionContext<'_>| {
             let s = status_state(ctx)?;
-            let sl = {
-                let g = s.lock().ok()?;
-                classify_line(&g, ctx.cursor.line)?
-            };
-            match sl {
-                StatusLine::File { path, staged: true } => Some(Effect::OpenSyntheticBuffer {
-                    name: format!("*magit:file:staged:{}*", path.display()),
-                    mode_id: "magit-file-revision-mode".to_string(),
-                }),
-                StatusLine::File {
-                    path,
-                    staged: false,
-                } => {
-                    let g = s.lock().ok()?;
-                    let full = g.workdir.join(&path);
-                    if full.exists() {
-                        Some(Effect::OpenBuffer {
-                            path: Some(full),
-                            force: false,
-                        })
-                    } else {
-                        None
-                    }
-                }
-                StatusLine::Stash { .. } => toggle_expand(&s, sl, ctx.cursor.line),
-                // Bug fix: `<CR>` on a commit SHA used to toggle the
-                // inline diff (same as `=`) — but every other magit
-                // view that shows a SHA (log, blame, rebase) treats
-                // `<CR>` as "open the dedicated commit buffer", so
-                // status was the one inconsistent surface. `=` still
-                // does the inline toggle for a quick look without
-                // leaving the status buffer; `<CR>` now matches log/
-                // blame/rebase's convention.
-                StatusLine::Commit { sha } => Some(Effect::OpenSyntheticBuffer {
-                    name: format!("*magit:commit:{sha}*"),
-                    mode_id: "magit-revision-mode".to_string(),
-                }),
-            }
+            visit_status_line(&s, ctx.cursor.line)
         });
+    }
+
+    status_action_handlers_rest(&mut contributions);
+    contributions
+}
+
+/// MG.22: magit-status's `<CR>` body, lifted out of the handler so the
+/// `MagitView` can answer with it too.
+///
+/// `magit-hunk-mode` owns the chord; this stays the status buffer's
+/// answer for rows that are not diff content, reached through
+/// `MagitView::visit_at_cursor`. The `action:magit-visit` id is kept
+/// so an ex-command or a user keymap can still reach it directly.
+fn visit_status_line(s: &Arc<Mutex<StatusBufferState>>, line: u32) -> Option<Effect> {
+    let sl = {
+        let g = s.lock().ok()?;
+        classify_line(&g, line)?
+    };
+    match sl {
+        StatusLine::File { path, staged: true } => Some(Effect::OpenSyntheticBuffer {
+            name: format!("*magit:file:staged:{}*", path.display()),
+            mode_id: "magit-file-revision-mode".to_string(),
+        }),
+        StatusLine::File {
+            path,
+            staged: false,
+        } => {
+            let g = s.lock().ok()?;
+            let full = g.workdir.join(&path);
+            full.exists().then_some(Effect::OpenBuffer {
+                path: Some(full),
+                force: false,
+            })
+        }
+        StatusLine::Stash { .. } => toggle_expand(s, sl, line),
+        // Bug fix: `<CR>` on a commit SHA used to toggle the inline
+        // diff (same as `=`) — but every other magit view that shows a
+        // SHA (log, blame, rebase) treats `<CR>` as "open the dedicated
+        // commit buffer", so status was the one inconsistent surface.
+        // `=` still does the inline toggle for a quick look without
+        // leaving the status buffer.
+        StatusLine::Commit { sha } => Some(Effect::OpenSyntheticBuffer {
+            name: format!("*magit:commit:{sha}*"),
+            mode_id: "magit-revision-mode".to_string(),
+        }),
+    }
+}
+
+/// The remaining status handlers, split from
+/// [`status_action_handlers`] only because `visit_status_line` had to
+/// be lifted to module scope between them.
+fn status_action_handlers_rest(contributions: &mut Vec<ActionHandlerContribution>) {
+    macro_rules! handler {
+        ($name:expr, $body:expr) => {
+            contributions.push(ActionHandlerContribution {
+                action_name: $name,
+                handler: Arc::new($body),
+            });
+        };
     }
 
     // ── commit (cc) ───────────────────────────────────
@@ -728,8 +750,6 @@ pub fn status_action_handlers() -> Vec<ActionHandlerContribution> {
             handler: Arc::new(move |ctx: &ActionContext<'_>| Some(jump_to_section(ctx, prefix))),
         });
     }
-
-    contributions
 }
 
 /// MG.23h: move the cursor to the section whose header starts with
@@ -906,6 +926,21 @@ pub fn trigger_refresh(s: Arc<Mutex<StatusBufferState>>) -> Option<Effect> {
 pub struct StatusView(pub Arc<Mutex<StatusBufferState>>);
 
 impl crate::buffer_state::MagitView for StatusView {
+    /// MG.22: magit-status's `<CR>` — the reason `visit_at_cursor`
+    /// exists on the trait at all.
+    ///
+    /// `magit-hunk-mode` owns the chord now, but here it must keep
+    /// resolving rows that are not diff content: a staged file opens
+    /// its index blob, an unstaged one the live file, a stash toggles
+    /// its inline patch, a commit opens its buffer. Returning `None`
+    /// for anything `classify_line` does not recognise is what lets
+    /// the caller fall through to diff-path resolution — and what
+    /// keeps it from resolving a row against a *previous* entry's
+    /// expanded diff.
+    fn visit_at_cursor(&self, cursor: lattice_protocol::position::Position) -> Option<Effect> {
+        visit_status_line(&self.0, cursor.line)
+    }
+
     /// MG.20: the commit on the Recent-commits row under the cursor.
     /// File and stash rows correctly yield `None`, so `V` on a staged
     /// file does nothing rather than reverting an unrelated commit.

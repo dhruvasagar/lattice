@@ -42,7 +42,6 @@ fn magit_status_keymap_entries() -> &'static [KeymapEntry] {
             keymap_entry! { mode: Normal, chord: "=", doc: "Toggle inline diff at cursor", cmd: "action:magit-toggle-diff" },
             keymap_entry! { mode: Normal, chord: "d", doc: "Open file diff in a dedicated buffer", cmd: "action:magit-diff-file" },
             keymap_entry! { mode: Normal, chord: "p", doc: "Stage hunk interactively", cmd: "action:magit-stage-patch" },
-            keymap_entry! { mode: Normal, chord: "<CR>", doc: "Context-aware open/visit at cursor", cmd: "action:magit-visit" },
         ]
     })
 }

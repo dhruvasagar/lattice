@@ -37,7 +37,7 @@ previous commit rather than add one.
 |---|---|
 | `C-c C-c` | Create the commit with the entered message |
 | `C-c C-k` | Abort (close the buffer without committing) |
-| `<CR>` | Visit the file at cursor, **as staged** — only below the diff marker; in the message it does nothing rather than jumping away mid-sentence |
+| `<CR>` | Visit the file at cursor, **as staged** — only below the diff marker; in the message it does nothing rather than jumping away mid-sentence. From [`magit-hunk-mode`](help:magit-hunk-mode) |
 
 `gr` / `q` / `]]` / `[[` and the rest come from
 [`magit-core-mode`](help:magit-core-mode).

@@ -21,13 +21,18 @@
 //! bindings and the handlers that call them. Only the bindings were in
 //! the wrong place.
 //!
-//! **`<CR>` is deliberately absent.** In magit-status it is
-//! `magit-visit`, which dispatches on whatever is under the cursor —
-//! a file entry, a stash, a commit row — not only on diff content. A
-//! minor's binding wins over a major's, so taking `<CR>` here before
-//! the `diff_target` seam exists would replace status's context-aware
-//! visit with a diff-only one. It moves with that seam, not with these
-//! chords.
+//! **`<CR>` moved here once the seam existed.** The chord and the
+//! diff-path parsing belong to the mode; *which version of the file to
+//! open* belongs to the view, because it genuinely differs — the index
+//! blob for a staged diff, the live file for an unstaged one, the file
+//! at a sha for a revision, the stash's copy for a stash. That is
+//! `MagitView::diff_target`.
+//!
+//! Magit-status's `<CR>` is context-aware over rows that are not diffs
+//! at all (a file entry, a stash, a commit), and a minor's binding
+//! wins over a major's — so that behaviour is reached through
+//! `MagitView::visit_at_cursor` rather than being replaced by a
+//! diff-only handler.
 
 use std::sync::OnceLock;
 
@@ -77,8 +82,50 @@ fn magit_hunk_keymap_entries() -> &'static [KeymapEntry] {
             // unconditionally.
             keymap_entry! { mode: Normal, chord: "]c", doc: "Next hunk", cmd: "action:magit-next-hunk" },
             keymap_entry! { mode: Normal, chord: "[c", doc: "Previous hunk", cmd: "action:magit-prev-hunk" },
+            keymap_entry! { mode: Normal, chord: "<CR>", doc: "Visit the file at cursor", cmd: "action:magit-visit-diff-target" },
         ]
     })
+}
+
+/// MG.22: the one `<CR>` handler.
+///
+/// **The view is asked first, and that order is a correctness
+/// requirement rather than a preference.**
+///
+/// The obvious order — resolve the diff path, then ask the view which
+/// version — is wrong in magit-status, where an expanded inline diff
+/// is rendered *below* the file entry it belongs to:
+///
+/// ```text
+///   modified a.txt
+///     diff --git a/a.txt b/a.txt     ← a.txt's expansion
+///     @@ …
+///   modified b.txt                   ← cursor here
+/// ```
+///
+/// `path_at_cursor` scans **upward** for the nearest `diff --git`, so
+/// on `modified b.txt` it would find *a.txt's* header and `<CR>` would
+/// open the wrong file — silently, and only in the case where some
+/// earlier entry happens to be expanded.
+///
+/// Asking the view first removes that: magit-status classifies the row
+/// (file entry, stash, commit) and answers, and only rows it does not
+/// recognise — which is exactly the diff content — fall through to
+/// path resolution. Views whose buffer is entirely diff decline the
+/// first question and take the second.
+fn visit_diff_target(ctx: &lattice_mode::ActionContext<'_>) -> Option<lattice_grammar::Effect> {
+    let view = crate::buffer_state::view_for(ctx)?;
+    if let Some(effect) = view.visit_at_cursor(ctx.cursor) {
+        return Some(effect);
+    }
+    let store = ctx.services.get::<lattice_mode::BufferStoreHandle>()?;
+    let handle = store.handle_for(lattice_core::BufferId(ctx.buffer_id.0 as u32))?;
+    let snap = handle.snapshot();
+    let path = crate::hunk::path_at_cursor(
+        |i| u32::try_from(i).ok().and_then(|l| snap.buffer.line(l)),
+        ctx.cursor.line as usize,
+    )?;
+    view.diff_target(&path)
 }
 
 impl Mode for MagitHunkMode {
@@ -125,6 +172,13 @@ impl Mode for MagitHunkMode {
 
     fn keymap(&self) -> Keymap {
         Keymap::from_entries(magit_hunk_keymap_entries())
+    }
+
+    fn action_handlers(&self) -> Vec<lattice_mode::ActionHandlerContribution> {
+        vec![lattice_mode::ActionHandlerContribution {
+            action_name: "action:magit-visit-diff-target",
+            handler: std::sync::Arc::new(visit_diff_target),
+        }]
     }
 
     fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, Self::Guard> {
@@ -193,18 +247,32 @@ mod tests {
         }
     }
 
-    /// `<CR>` stays with the majors until the `diff_target` seam lands
-    /// — a minor's binding wins, so taking it here would replace
-    /// magit-status's context-aware `magit-visit` (file / stash /
-    /// commit) with a diff-only handler.
+    /// `<CR>` is here now that `diff_target` exists — and the handler
+    /// must ask the **view first**.
+    ///
+    /// A minor's binding wins over a major's, so without the fallback
+    /// magit-status's context-aware visit (file entry / stash /
+    /// commit rows) is silently replaced by a diff-only handler. Worse,
+    /// resolving the diff path first would scan upward past a
+    /// *previous* entry's expanded inline diff and open the wrong
+    /// file — see this module's header for the layout that makes that
+    /// happen.
     #[test]
-    fn cr_is_not_taken_before_the_view_seam_exists() {
+    fn cr_is_bound_and_asks_the_view_before_the_diff_text() {
         assert!(
-            !magit_hunk_keymap_entries()
+            magit_hunk_keymap_entries()
                 .iter()
                 .any(|e| e.chord == "<CR>"),
-            "see this module's header: `<CR>` moves with the seam, not \
-             with the chords"
+            "`<CR>` belongs to the mode that owns diff content"
+        );
+        let src = include_str!("magit_hunk_mode.rs");
+        let view_first = src.find("view.visit_at_cursor(ctx.cursor)");
+        let path_after = src.find("path_at_cursor(");
+        assert!(
+            matches!((view_first, path_after), (Some(v), Some(p)) if v < p),
+            "the handler must consult `visit_at_cursor` BEFORE resolving \
+             a diff path — the other order opens the wrong file in \
+             magit-status whenever an earlier entry is expanded"
         );
     }
 }

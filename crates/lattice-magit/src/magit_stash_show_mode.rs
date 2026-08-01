@@ -20,6 +20,7 @@
 use std::sync::{Arc, Mutex, OnceLock};
 
 use lattice_config;
+use lattice_grammar::Effect;
 use lattice_mode::{
     BufferStoreHandle, CapabilitySet, Keymap, KeymapEntry, LifecycleFuture, Mode, ModeContext,
     ModeId, ModeKind, OptionOverrideSet,
@@ -50,6 +51,12 @@ fn magit_stash_show_keymap_entries() -> &'static [KeymapEntry] {
 /// working directory is not, and a `git apply` needs one.
 pub struct StashShowState {
     workdir: std::path::PathBuf,
+    /// MG.22: which stash, so `<CR>` can name the ref it opens the
+    /// file from. The buffer name carries it too, but a view that had
+    /// to re-parse the name would make that format load-bearing in a
+    /// second place — the drift that left every stash chord dead until
+    /// MG.15.
+    index: Option<usize>,
 }
 
 /// Service alias for this mode's per-buffer state
@@ -71,12 +78,24 @@ impl crate::buffer_state::MagitView for StashShowView {
     /// `stash@{n}`'s patch does not change under a fixed index, so
     /// there is nothing for `gr` to rebuild — see this module's header
     /// for why the stash *list* is the thing that refreshes.
-    fn refresh(&self) -> Option<lattice_grammar::Effect> {
+    fn refresh(&self) -> Option<Effect> {
         None
     }
 
     fn diff_source(&self, _cursor: Position) -> Option<crate::buffer_state::DiffSource> {
         Some(crate::buffer_state::DiffSource::Committed)
+    }
+
+    /// MG.22: the file as this stash left it. `git show
+    /// stash@{n}:<path>` is a real revspec, so the existing
+    /// `magit-file-revision-mode` opens it with no new machinery — the
+    /// ref simply is not a sha.
+    fn diff_target(&self, path: &std::path::Path) -> Option<Effect> {
+        let idx = self.0.lock().ok()?.index?;
+        Some(Effect::OpenSyntheticBuffer {
+            name: format!("*magit:file:stash@{{{idx}}}:{}*", path.display()),
+            mode_id: "magit-file-revision-mode".to_string(),
+        })
     }
 
     fn workdir(&self) -> Option<std::path::PathBuf> {
@@ -152,6 +171,7 @@ impl Mode for MagitStashShowMode {
                 buffer_id,
                 StashShowState {
                     workdir: workdir.clone(),
+                    index,
                 },
             );
             let mut guard = BufferStateGuard::new((*states).clone(), buffer_id)

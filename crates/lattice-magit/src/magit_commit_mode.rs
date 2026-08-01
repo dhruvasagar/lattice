@@ -43,7 +43,6 @@ fn magit_commit_keymap_entries() -> &'static [KeymapEntry] {
             keymap_entry! { mode: Insert, chord: "<C-c><C-k>", doc: "Abort commit", cmd: "action:magit-commit-abort" },
             keymap_entry! { mode: Normal, chord: "<C-c><C-c>", doc: "Confirm commit", cmd: "action:magit-commit-confirm" },
             keymap_entry! { mode: Normal, chord: "<C-c><C-k>", doc: "Abort commit", cmd: "action:magit-commit-abort" },
-            keymap_entry! { mode: Normal, chord: "<CR>", doc: "Visit staged file at cursor", cmd: "action:magit-commit-visit-file" },
         ]
     })
 }
@@ -58,6 +57,51 @@ pub struct CommitState {
     /// file-visit handler only fires BELOW it, so pressing it while
     /// writing the message does nothing rather than jumping away.
     diff_start_line: u32,
+}
+
+/// MG.22: this buffer's [`MagitView`].
+///
+/// The commit buffer had none, which cost it twice: `<CR>` needed its
+/// own handler and its own diff-path parser, and hunk staging was
+/// **refused outright** in the staged region below the message,
+/// because `diff_source` fell through to the trait default (`None` =
+/// "not classifiable here").
+///
+/// Its diff is `git diff --cached` — the index, by construction. So
+/// `u` unstages a hunk from the commit you are composing, and `s` is
+/// correctly refused with "already staged".
+struct CommitView(Arc<Mutex<CommitState>>);
+
+impl crate::buffer_state::MagitView for CommitView {
+    /// The staged diff is rebuilt by the mode's own lifecycle, not by
+    /// `gr` — re-running it here would race the message the user is
+    /// typing above it.
+    fn refresh(&self) -> Option<Effect> {
+        None
+    }
+
+    /// Only *below* the marker. Above it is the message being written,
+    /// which is not diff content at all — the same boundary `<CR>`
+    /// respected before this view existed.
+    fn diff_source(
+        &self,
+        cursor: lattice_protocol::position::Position,
+    ) -> Option<crate::buffer_state::DiffSource> {
+        let g = self.0.lock().ok()?;
+        (cursor.line > g.diff_start_line).then_some(crate::buffer_state::DiffSource::Staged)
+    }
+
+    /// The index's blob — this buffer's diff is the index.
+    fn diff_target(&self, path: &std::path::Path) -> Option<Effect> {
+        Some(Effect::OpenSyntheticBuffer {
+            name: format!("*magit:file:staged:{}*", path.display()),
+            mode_id: "magit-file-revision-mode".to_string(),
+        })
+    }
+
+    fn workdir(&self) -> Option<std::path::PathBuf> {
+        Some(self.0.lock().ok()?.workdir.clone())
+    }
 }
 
 /// MG.13: service alias for this mode's per-buffer state
@@ -189,22 +233,6 @@ impl Mode for MagitCommitMode {
             // the STAGED diff specifically, which may already differ
             // from a since-edited working copy. Same target
             // magit-diff-mode's Staged-scoped `<CR>` opens.
-            ActionHandlerContribution {
-                action_name: "action:magit-commit-visit-file",
-                handler: Arc::new(|ctx: &ActionContext<'_>| {
-                    let s = state(ctx)?;
-                    let g = s.lock().ok()?;
-                    if ctx.cursor.line <= g.diff_start_line {
-                        return None;
-                    }
-                    let handle = g.store.handle_for(g.buffer_id)?;
-                    let path = file_at_cursor(&handle, ctx.cursor.line)?;
-                    Some(Effect::OpenSyntheticBuffer {
-                        name: format!("*magit:file:staged:{}*", path.display()),
-                        mode_id: "magit-file-revision-mode".to_string(),
-                    })
-                }),
-            },
         ]
     }
 
@@ -256,8 +284,15 @@ impl Mode for MagitCommitMode {
                     diff_start_line: u32::MAX,
                 },
             );
-            let guard = BufferStateGuard::new((*states).clone(), buffer_id)
+            let mut guard = BufferStateGuard::new((*states).clone(), buffer_id)
                 .with_headerline(hl_registration);
+            // MG.22: publish the view. Without it `<CR>` has no target
+            // to resolve here, and hunk staging in the staged region
+            // stays refused for want of a `diff_source`.
+            if let Some(views) = ctx.service::<crate::buffer_state::MagitViewsHandle>() {
+                views.publish(buffer_id, Arc::new(CommitView(state.clone())));
+                guard = guard.with_views((*views).clone());
+            }
 
             // Populate the buffer: staged diff + message area. Amend
             // pre-populates the previous commit's message instead of a
@@ -324,24 +359,6 @@ impl Mode for MagitCommitMode {
             Ok(guard)
         })
     }
-}
-
-/// Walk upward from `line` to the nearest `diff --git a/<path>
-/// b/<path>` header — same shape `magit_diff_mode::file_at_cursor`
-/// uses, duplicated here since this buffer's state type differs.
-fn file_at_cursor(
-    handle: &Arc<dyn lattice_runtime::Document>,
-    line: u32,
-) -> Option<std::path::PathBuf> {
-    let snap = handle.snapshot();
-    for l in (0..=line).rev() {
-        let text = snap.buffer.line(l)?;
-        if let Some(rest) = text.strip_prefix("diff --git a/") {
-            let path = rest.split(" b/").next()?;
-            return Some(std::path::PathBuf::from(path));
-        }
-    }
-    None
 }
 
 fn run_staged_diff(workdir: &std::path::Path) -> String {

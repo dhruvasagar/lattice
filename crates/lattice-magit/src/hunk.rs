@@ -34,6 +34,7 @@
 //! rename and mode metadata. Copying cannot get any of that wrong.
 
 use std::fmt::Write as _;
+use std::path::PathBuf;
 
 use crate::highlight::{DiffLineClass, classify_diff_line};
 
@@ -332,6 +333,57 @@ pub(crate) fn hunk_at(lines: &[&str], cursor: usize) -> Option<HunkPatch> {
 /// `---`/`+++` header lines, or anywhere *after* the last body line of
 /// the hunk above. Callers fall back to file-level staging, which is
 /// what keeps every pre-MG.18 behaviour intact.
+/// MG.22: the file a diff line belongs to — the one diff-path parser.
+///
+/// Three modes had a copy of this (magit-diff, magit-commit,
+/// magit-revision), each scanning upward for `diff --git a/<path>`,
+/// and magit-revision additionally checking the cursor line for a
+/// `git show --stat` summary row (`" src/main.rs | 12 +++++-----"`).
+///
+/// **The order of those two checks is load-bearing, and the copy that
+/// had both got it wrong.** magit-revision tried the stat row *first*,
+/// and `parse_stat_line` splits on `" | "` — so `<CR>` on any diff
+/// body line containing that sequence (` let x = a | b;`, a markdown
+/// table, a doc comment) resolved to the text left of the pipe and
+/// opened a buffer named after it.
+///
+/// Scanning for the `diff --git` header first removes the ambiguity
+/// structurally rather than by tightening the stat pattern: a diff
+/// body line **always** has a header above it, and a stat row never
+/// does, because `git show --stat -p` prints the summary before the
+/// first diff. So reaching the stat check at all means the cursor is
+/// above every diff, which is exactly where stat rows live.
+///
+/// Reads through an accessor rather than a materialised buffer, for
+/// the reason [`hunk_at_with`] does: a large `git show` is tens of
+/// thousands of lines and resolving one path must not copy them.
+pub fn path_at_cursor(read: impl Fn(usize) -> Option<String>, cursor: usize) -> Option<PathBuf> {
+    for l in (0..=cursor).rev() {
+        let text = read(l)?;
+        if let Some(rest) = text.strip_prefix("diff --git a/") {
+            // `a/<path> b/<path>` — take the first. They differ only
+            // for renames, which file-level resolution does not
+            // special-case.
+            return rest.split(" b/").next().map(PathBuf::from);
+        }
+    }
+    // Above every diff header: a `--stat` summary row, if this buffer
+    // has one.
+    parse_stat_line(&read(cursor)?)
+}
+
+/// `git show --stat`'s summary row: `" <path> | <N> <bar>"`.
+///
+/// Only ever reached from above the first `diff --git` header — see
+/// [`path_at_cursor`] for why that ordering is what makes splitting on
+/// `" | "` safe.
+fn parse_stat_line(line: &str) -> Option<PathBuf> {
+    let trimmed = line.trim_start();
+    let (path, _rest) = trimmed.split_once(" | ")?;
+    let path = path.trim();
+    (!path.is_empty()).then(|| PathBuf::from(path))
+}
+
 pub fn hunk_at_with(read: impl Fn(usize) -> Option<String>, cursor: usize) -> Option<HunkPatch> {
     let header_line = enclosing_hunk_header(&read, cursor)?;
     let header_text = read(header_line)?;
@@ -479,6 +531,105 @@ fn file_header_above(
         header.push(line);
     }
     Some(header)
+}
+
+/// MG.22: the one diff-path parser, and the misfire it retires.
+#[cfg(test)]
+mod path_at_cursor_tests {
+    use super::*;
+
+    fn reader(lines: &'static [&'static str]) -> impl Fn(usize) -> Option<String> {
+        move |i: usize| lines.get(i).map(|s| s.to_string())
+    }
+
+    /// `git show --stat -p`: header, stat summary, then the diff.
+    const SHOW: &[&str] = &[
+        "commit a1b2c3d4",
+        "Author: Jane Doe <jane@example.com>",
+        "",
+        "    do the thing",
+        "",
+        " src/main.rs | 12 +++++-----",
+        " 1 file changed",
+        "",
+        "diff --git a/src/main.rs b/src/main.rs",
+        "index 111..222 100644",
+        "--- a/src/main.rs",
+        "+++ b/src/main.rs",
+        "@@ -1,3 +1,3 @@",
+        " fn main() {",
+        "-    let x = a | b;",
+        "+    let x = a & b;",
+        " }",
+    ];
+
+    /// The bug this ordering removes: `parse_stat_line` splits on
+    /// `\" | \"`, so a diff body line containing that sequence used to
+    /// resolve to the text left of the pipe. magit-revision checked the
+    /// stat row FIRST, so `<CR>` on this line opened a buffer named
+    /// `"    let x = a"`.
+    #[test]
+    fn a_diff_line_containing_a_pipe_resolves_to_its_file_not_to_itself() {
+        let got = path_at_cursor(reader(SHOW), 14);
+        assert_eq!(
+            got,
+            Some(PathBuf::from("src/main.rs")),
+            "a body line with ` | ` in it must resolve through the \
+             `diff --git` header above it"
+        );
+    }
+
+    /// And the stat row still works — it is reached precisely because
+    /// there is no diff header above it.
+    #[test]
+    fn a_stat_summary_row_resolves_to_the_file_it_names() {
+        assert_eq!(
+            path_at_cursor(reader(SHOW), 5),
+            Some(PathBuf::from("src/main.rs"))
+        );
+    }
+
+    /// The common case, in a buffer with no stat section at all.
+    #[test]
+    fn a_plain_diff_resolves_from_the_header_above_the_cursor() {
+        const DIFF: &[&str] = &[
+            "diff --git a/src/lib.rs b/src/lib.rs",
+            "--- a/src/lib.rs",
+            "+++ b/src/lib.rs",
+            "@@ -1 +1 @@",
+            "-old",
+            "+new",
+        ];
+        assert_eq!(
+            path_at_cursor(reader(DIFF), 5),
+            Some(PathBuf::from("src/lib.rs"))
+        );
+    }
+
+    /// The second file's lines must resolve to the second file — an
+    /// upward scan that stopped at the first header ever seen would
+    /// name the wrong one.
+    #[test]
+    fn a_multi_file_diff_resolves_to_the_nearest_header_above() {
+        const TWO: &[&str] = &[
+            "diff --git a/a.txt b/a.txt",
+            "@@ -1 +1 @@",
+            "-a",
+            "diff --git a/b.txt b/b.txt",
+            "@@ -1 +1 @@",
+            "-b",
+        ];
+        assert_eq!(path_at_cursor(reader(TWO), 2), Some(PathBuf::from("a.txt")));
+        assert_eq!(path_at_cursor(reader(TWO), 5), Some(PathBuf::from("b.txt")));
+    }
+
+    /// Nothing above and nothing stat-shaped on the line: no answer,
+    /// rather than a guess.
+    #[test]
+    fn prose_with_no_diff_above_it_resolves_to_nothing() {
+        const HEADER_ONLY: &[&str] = &["commit a1b2c3d4", "Author: Jane", "", "    subject"];
+        assert_eq!(path_at_cursor(reader(HEADER_ONLY), 3), None);
+    }
 }
 
 #[cfg(test)]

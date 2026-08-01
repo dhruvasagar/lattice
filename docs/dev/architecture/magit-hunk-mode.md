@@ -1,6 +1,9 @@
 # magit-hunk-mode — the mode that owns diff *content*
 
-**Status:** designed 2026-07-29, not implemented. Slice plan:
+**Status:** designed 2026-07-29; **partly implemented**. The mode
+exists and owns the hunk chords, `]c`/`[c` and `<CR>` (MG.24a +
+MG.22's seam, 2026-08-01). Still open: `tree-sitter-diff` parsing and
+`magit.hunk.*` options. Slice plan:
 [`../operations/slice-plans/magit.md`](../operations/slice-plans/magit.md)
 §MG.22.
 
@@ -97,7 +100,10 @@ the parser wrinkle below; it is chords, an `ActivationPolicy` naming
 the five majors, and deletions from the majors that had them. It can
 land first and alone.
 
-**`<CR>` is NOT in that first half**, and the reason is worth naming
+> **Landed 2026-08-01.** `<CR>` now belongs to this mode, resolving
+> through `MagitView::diff_target`. See "the seam, as built" below.
+
+**`<CR>` was NOT in the first half**, and the reason is worth naming
 because it looks like it should be. In magit-status `<CR>` is
 `magit-visit`, which dispatches on what is under the cursor — a file
 entry, a stash, a commit row — not only on diff content. A minor's
@@ -138,6 +144,48 @@ Rejected: parsing the scope back out of the buffer name
 (`*magit:diff:staged:<path>*`). It needs no new plumbing, but it makes
 a name format load-bearing in a second place — precisely the
 writer/reader drift that left every magit-stash chord dead until MG.15.
+
+### The seam, as built
+
+Two trait methods, because the question splits cleanly:
+
+- **`MagitView::diff_target(path)`** — *which version* of the file to
+  open. Genuinely per-view: the index blob for a staged diff, the live
+  file for an unstaged one, the file at a sha for a revision, the
+  stash's copy for a stash detail.
+- **`MagitView::visit_at_cursor(cursor)`** — what `<CR>` does when the
+  cursor is **not** in diff content. Only magit-status implements it,
+  and it is why the chord could not simply move: there `<CR>` resolves
+  file entries, stashes and commit rows, and a minor's binding wins
+  over a major's.
+
+**The handler asks the view first, and that order is a correctness
+requirement.** The obvious order — resolve the diff path, then ask
+which version — is wrong in magit-status, because an expanded inline
+diff renders *below* the entry it belongs to:
+
+```text
+  modified a.txt
+    diff --git a/a.txt b/a.txt     ← a.txt's expansion
+    @@ …
+  modified b.txt                   ← cursor here
+```
+
+`path_at_cursor` scans upward, so on `modified b.txt` it finds
+*a.txt's* header and `<CR>` opens the wrong file — silently, and only
+when some earlier entry happens to be expanded. Asking the view first
+means only rows it does not recognise (i.e. diff content) reach path
+resolution.
+
+**One parser replaced three, and the merge fixed a bug.**
+`hunk::path_at_cursor` is now the only diff-path parser.
+magit-revision's copy checked `git show --stat` rows *before* scanning
+for the `diff --git` header, and `parse_stat_line` splits on `" | "` —
+so `<CR>` on any diff body line containing that sequence (`a | b`, a
+markdown table) resolved to the text left of the pipe and opened a
+buffer named after it. Scanning for the header first removes the
+ambiguity structurally: a diff body line always has one above it, and
+a stat row never does.
 
 ## Parsing: `tree-sitter-diff`, not the hand-rolled styler
 

@@ -28,7 +28,7 @@ the header lines.
 
 | Chord | Action |
 |---|---|
-| `<CR>` | Visit the file at cursor **as of this commit** |
+| `<CR>` | Visit the file at cursor **as of this commit** — from [`magit-hunk-mode`](help:magit-hunk-mode) |
 
 `<CR>` works on either shape a path appears in: a `--stat` summary row
 (`" src/main.rs | 12 +++---"`) or a `diff --git a/… b/…` header. From

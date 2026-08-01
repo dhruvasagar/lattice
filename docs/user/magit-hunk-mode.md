@@ -41,6 +41,7 @@ do nothing.
 | `a` | Apply a committed hunk to the working tree |
 | `-` | Reverse a committed hunk out of the working tree |
 | `]c` / `[c` | Next / previous hunk |
+| `<CR>` | Visit the file at cursor — in the version this buffer describes |
 
 `]c` then `s` stages exactly the hunk you landed on. In Visual mode,
 select lines inside a hunk and only those move — see
@@ -79,7 +80,21 @@ The rule that came out of it: behaviour wanted in more than one buffer
 belongs to a mode that carries it, not to each buffer separately. A gap
 in a copied set doesn't announce itself.
 
-`<CR>` is deliberately **not** here. In magit-status it opens whatever
-is under the cursor — a file, a stash, a commit — not only diff
-content, so it stays with each buffer until that resolution is shared
-too.
+## What `<CR>` opens
+
+The same key, but the *version* differs — because what you are looking
+at differs:
+
+| Buffer | `<CR>` opens |
+|---|---|
+| magit-diff, staged | the file as staged (the index blob) |
+| magit-diff, unstaged or HEAD | the live working-tree file |
+| magit-commit | the index blob — its diff *is* the index |
+| magit-revision | the file as of that commit |
+| magit-stash-show | the file as that stash left it |
+| magit-status | on a diff line, as above; on a file, stash or commit row, that row's own target |
+
+Opening the working-tree copy when you asked about a historical one is
+the mistake [`magit-file-revision-mode`](help:magit-file-revision-mode)
+exists to prevent, so a buffer with no sensible answer declines rather
+than guessing.

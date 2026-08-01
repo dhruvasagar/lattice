@@ -41,7 +41,7 @@ owns *what* and *why*.
 | MG.20 | Operation coverage — reset / revert / cherry-pick | MG.17a | ✅ |
 | MG.21 | Remaining operations — bisect, submodule, remotes (tag + merge landed in MG.23c) | MG.17b | 📝 |
 | MG.21a | Diff line-background tints in magit's diff views | MG.20 | ✅ |
-| MG.22 | `magit-hunk-mode` — the mode owning diff *content* (chords ✅ via MG.24a; parser / `<CR>` / options open) | MG.20 | 🚧 |
+| MG.22 | `magit-hunk-mode` — the mode owning diff *content* (chords + `<CR>` ✅; parser / options open) | MG.20 | 🚧 |
 | MG.23 | magit-dispatch / file-dispatch parity (a–h done; j and i+ open) | MG.17b | 📝 |
 
 **2026-07-26 audit correction:** this table (last synced when MG.1-3 landed) had
@@ -2320,7 +2320,7 @@ lands with MG.22, which is where magit's options get an owner.
 > | chords that act on a hunk (`s`/`u`/`x`, `a`/`-`) | ✅ MG.24a |
 > | navigation within diff content (`]c`/`[c`) | ✅ MG.24a |
 > | structural highlighting (`tree-sitter-diff`) | 📝 — `diff_styled_spans` still hand-rolled |
-> | `<CR>` via the `diff_target` seam | 📝 — the seam does not exist |
+> | `<CR>` via the `diff_target` seam | ✅ 2026-08-01 |
 > | `magit.hunk.*` options | 📝 — no occurrences in source |
 >
 > The drift this corrects was self-inflicted: half of MG.22 landed

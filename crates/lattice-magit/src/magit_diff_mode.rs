@@ -29,9 +29,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use lattice_config;
 use lattice_grammar::Effect;
 use lattice_mode::{
-    ActionContext, ActionHandlerContribution, BufferStoreHandle, CapabilitySet, Keymap,
-    KeymapEntry, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, OptionOverrideSet,
-    keymap_entry,
+    ActionHandlerContribution, BufferStoreHandle, CapabilitySet, Keymap, KeymapEntry,
+    LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, OptionOverrideSet,
 };
 use lattice_protocol::position::Position;
 use lattice_vcs::{Index, Repository};
@@ -54,7 +53,6 @@ fn magit_diff_keymap_entries() -> &'static [KeymapEntry] {
     ENTRIES.get_or_init(|| {
         vec![
             // MG.18e: region staging, same chords on the selection.
-            keymap_entry! { mode: Normal, chord: "<CR>", doc: "Visit file at cursor", cmd: "action:magit-diff-visit-file" },
         ]
     })
 }
@@ -136,10 +134,6 @@ fn parse_buffer_name(name: &str) -> (DiffScope, Option<PathBuf>) {
 /// (`feedback_servicesregistry_arc_typeid`).
 pub type DiffStatesHandle = Arc<BufferStates<DiffState>>;
 
-fn state(ctx: &ActionContext<'_>) -> Option<Arc<Mutex<DiffState>>> {
-    crate::buffer_state::state_for::<DiffState>(ctx)
-}
-
 impl Mode for MagitDiffMode {
     type Guard = BufferStateGuard<DiffState>;
 
@@ -180,31 +174,6 @@ impl Mode for MagitDiffMode {
             // working tree, and Head combines both (no single frozen
             // blob to show), so both open the real editable file — same
             // target magit-status's Unstaged section opens.
-            ActionHandlerContribution {
-                action_name: "action:magit-diff-visit-file",
-                handler: Arc::new(|ctx: &ActionContext<'_>| {
-                    let s = state(ctx)?;
-                    let g = s.lock().ok()?;
-                    let path = file_at_cursor(&g, ctx.cursor.line)?;
-                    match g.scope {
-                        DiffScope::Staged => Some(Effect::OpenSyntheticBuffer {
-                            name: format!("*magit:file:staged:{}*", path.display()),
-                            mode_id: "magit-file-revision-mode".to_string(),
-                        }),
-                        DiffScope::Head | DiffScope::Unstaged => {
-                            let full = g.workdir.join(&path);
-                            if full.exists() {
-                                Some(Effect::OpenBuffer {
-                                    path: Some(full),
-                                    force: false,
-                                })
-                            } else {
-                                None
-                            }
-                        }
-                    }
-                }),
-            },
         ]
     }
 
@@ -366,20 +335,16 @@ fn spawn_mutation_and_refresh(
 
 /// Walk upward from `line` to the nearest `diff --git a/<path> b/<path>`
 /// header and extract `<path>` (the `b/` side — the current-tree path).
+/// MG.22: the shared diff-path parser, read through this view's own
+/// buffer. The scan itself lives in `hunk` — three modes had a copy of
+/// it and one of them had a bug the other two did not.
 fn file_at_cursor(state: &DiffState, line: u32) -> Option<PathBuf> {
     let handle = state.store.handle_for(state.buffer_id)?;
     let snap = handle.snapshot();
-    for l in (0..=line).rev() {
-        let text = snap.buffer.line(l)?;
-        if let Some(rest) = text.strip_prefix("diff --git a/") {
-            // "a/<path> b/<path>" — split on " b/" to isolate the
-            // first path (identical to the second except for renames,
-            // which this coarse file-level staging doesn't special-case).
-            let path = rest.split(" b/").next()?;
-            return Some(PathBuf::from(path));
-        }
-    }
-    None
+    crate::hunk::path_at_cursor(
+        |i| u32::try_from(i).ok().and_then(|l| snap.buffer.line(l)),
+        line as usize,
+    )
 }
 
 fn run_diff(workdir: &Path, scope: DiffScope, path: Option<&Path>) -> String {
@@ -433,6 +398,28 @@ fn source_for_scope(scope: DiffScope) -> Option<DiffSource> {
 struct DiffView(Arc<Mutex<DiffState>>);
 
 impl MagitView for DiffView {
+    /// MG.22: the scope this buffer was opened at decides which
+    /// version `<CR>` opens — the index blob for a staged diff, the
+    /// live file otherwise. The `Head` scope combines both sides, so
+    /// the working-tree copy is the only version that is definitely
+    /// what the user is looking at.
+    fn diff_target(&self, path: &std::path::Path) -> Option<Effect> {
+        let g = self.0.lock().ok()?;
+        match g.scope {
+            DiffScope::Staged => Some(Effect::OpenSyntheticBuffer {
+                name: format!("*magit:file:staged:{}*", path.display()),
+                mode_id: "magit-file-revision-mode".to_string(),
+            }),
+            DiffScope::Head | DiffScope::Unstaged => {
+                let full = g.workdir.join(path);
+                full.exists().then_some(Effect::OpenBuffer {
+                    path: Some(full),
+                    force: false,
+                })
+            }
+        }
+    }
+
     fn refresh(&self) -> Option<Effect> {
         refresh(self.0.clone())
     }

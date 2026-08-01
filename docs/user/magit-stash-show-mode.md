@@ -15,7 +15,12 @@ and its subject — `stash@{2}  WIP on main: fix the thing`.
 ## Behaviour worth knowing
 
 - **No mode-specific chords.** `q` / navigation come from
-  [`magit-core-mode`](help:magit-core-mode); this is a read-only view.
+  [`magit-core-mode`](help:magit-core-mode), and everything that acts
+  on the patch — `s` / `u` / `x`, `a` / `-`, `]c` / `[c` and `<CR>` —
+  from [`magit-hunk-mode`](help:magit-hunk-mode), which is active in
+  every buffer that renders a diff. This view had *none* of them before
+  that mode existed; `<CR>` here now opens the file as the stash left
+  it (`git show stash@{n}:<path>`).
 - **`gr` is a deliberate no-op** — `stash@{n}`'s patch does not change
   under a fixed index.
 - **Indices renumber.** Dropping or popping a stash shifts the *others*

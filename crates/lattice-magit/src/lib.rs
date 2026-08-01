@@ -1003,6 +1003,14 @@ fn register_action_commands(registry: &mut CommandRegistry) {
         "Stage hunk interactively (git add -p)",
     );
     reg("action:magit-visit", "Context-aware open/visit at cursor");
+    // MG.22: magit-hunk-mode's `<CR>` — one action for the five buffers
+    // that render a diff, replacing magit-diff / magit-commit /
+    // magit-revision's own visit actions, each of which carried its own
+    // copy of the diff-path parser.
+    reg(
+        "action:magit-visit-diff-target",
+        "Visit the file at cursor, in the version this view describes",
+    );
     // MG.23g: owned by magit-core-mode, so they work in every view that
     // shows a committed patch (revision, stash detail).
     reg(
@@ -1032,12 +1040,6 @@ fn register_action_commands(registry: &mut CommandRegistry) {
     reg(
         "action:magit-jump-commits",
         "Jump to the Recent commits section",
-    );
-
-    // magit-diff-mode
-    reg(
-        "action:magit-diff-visit-file",
-        "Visit the file at cursor (working tree, or the index blob for a Staged-scoped diff)",
     );
 
     // magit-file-revision-mode
@@ -1083,21 +1085,11 @@ fn register_action_commands(registry: &mut CommandRegistry) {
         "Create the commit with the entered message",
     );
     reg("action:magit-commit-abort", "Abort the commit");
-    reg(
-        "action:magit-commit-visit-file",
-        "Visit the staged file at cursor (index blob, not the working tree)",
-    );
 
     // magit-log-mode
     reg(
         "action:magit-log-show-commit",
         "Show the commit detail at cursor",
-    );
-
-    // magit-revision-mode
-    reg(
-        "action:magit-revision-visit-file",
-        "Visit the file at cursor as of this commit",
     );
 
     // magit-blame-mode
@@ -2120,6 +2112,11 @@ mod tests {
             };
         }
         check!(
+            // Its chords are all `ex:` (`<C-x>g`, `<C-c>g`, `<C-c>f`),
+            // so the `action:` filter below skips every one — included
+            // anyway so the count check covers all fourteen registered
+            // modes rather than thirteen plus an exception.
+            MagitGlobalMode => "magit-global-mode",
             MagitCoreMode => "magit-core-mode",
             MagitGlobalMode => "magit-global-mode",
             MagitStatusMode => "magit-status-mode",
@@ -2150,10 +2147,10 @@ mod tests {
     fn every_view_that_stages_in_normal_mode_also_stages_over_a_selection() {
         use lattice_mode::Mode;
 
-        for (label, keymap) in [
-            ("magit-status-mode", MagitStatusMode.keymap()),
-            ("magit-diff-mode", MagitDiffMode.keymap()),
-        ] {
+        // MG.22: `s`/`u`/`x` moved to `magit-hunk-mode`, so checking
+        // the majors here would pass vacuously — they bind none of
+        // them now. The pairing claim moved with the chords.
+        for (label, keymap) in [("magit-hunk-mode", magit_hunk_mode::MagitHunkMode.keymap())] {
             let bound = |mode: lattice_keymap::BindingMode, chord: &str| -> Option<&'static str> {
                 keymap
                     .entries
@@ -2218,6 +2215,7 @@ mod tests {
             MagitRevisionMode,
             MagitFileRevisionMode,
             magit_stash_show_mode::MagitStashShowMode,
+            magit_hunk_mode::MagitHunkMode,
         );
 
         let mut dead: Vec<String> = Vec::new();
@@ -2262,6 +2260,30 @@ mod tests {
             MagitRevisionMode => "magit-revision-mode",
             MagitFileRevisionMode => "magit-file-revision-mode",
             magit_stash_show_mode::MagitStashShowMode => "magit-stash-show-mode",
+            magit_hunk_mode::MagitHunkMode => "magit-hunk-mode",
+        );
+
+        // MG.22: the two lists above are HAND-KEPT, and a mode missing
+        // from them is not covered — which is not hypothetical. This
+        // slice added `magit-hunk-mode`, bound `<CR>` on it, and forgot
+        // to register the action; the guard said nothing, because the
+        // mode was in neither list. `<CR>` would have been inert in all
+        // five diff buffers.
+        //
+        // Cross-checked against `install`'s own registrations so the
+        // omission cannot recur silently: every `.register(` there must
+        // appear here.
+        let installed = include_str!("lib.rs")
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix(".register("))
+            .filter_map(|l| l.strip_suffix(")"))
+            .filter(|m| m.contains("Magit"))
+            .count();
+        assert_eq!(
+            installed, 14,
+            "`install` registers {installed} magit modes but this guard \
+             checks 14 — a mode registered at boot and absent from the \
+             lists above has its chords unverified"
         );
 
         assert!(

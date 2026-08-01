@@ -237,10 +237,32 @@ pub(super) fn submit_ex(a: &mut App, line: &str) {
 /// draining each round.
 ///
 /// Returns whether `until` held before the deadline.
+/// The budget is a **deadline, not an iteration count**, and it is
+/// generous on purpose.
+///
+/// The cascade is a spawned task. Under `cargo test --workspace` every
+/// test gets its own multi-thread runtime, so a full run oversubscribes
+/// the machine by orders of magnitude and that task can wait seconds
+/// for a core. The previous form — 200 iterations of a 10ms sleep —
+/// read as "2 seconds" but was really "200 scheduler round trips",
+/// which under that load is neither 2 seconds nor enough. Two magit
+/// tests flaked on it, passing in isolation and in subsets and failing
+/// only in the full run, which is the signature of a starved task
+/// rather than a broken one.
+///
+/// Ten seconds costs nothing when the condition holds — the loop exits
+/// on the first check — and is only paid in full by a genuine failure,
+/// which is the case where being sure is worth ten seconds.
+const SETTLE_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
+
 pub(super) async fn settle(app: &mut App, mut until: impl FnMut(&App) -> bool) -> bool {
-    for _ in 0..200 {
+    let deadline = std::time::Instant::now() + SETTLE_BUDGET;
+    loop {
         if until(app) {
             return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return until(app);
         }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         let signals = app.editor.run_tick_pending();
@@ -248,7 +270,6 @@ pub(super) async fn settle(app: &mut App, mut until: impl FnMut(&App) -> bool) -
             app.handle_renderer_signal(s);
         }
     }
-    until(app)
 }
 
 /// [`settle`] specialised to "this mode is active on the active

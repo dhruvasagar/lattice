@@ -438,6 +438,14 @@ pub(crate) fn status_fields(index: &SectionIndex, workdir: &Path) -> Vec<Field> 
             .map(|s| s.entries.len())
             .unwrap_or(0)
     };
+    // MG.21f: the bisect alert goes in BEFORE the clean-tree early
+    // return. Bisecting a clean tree is the normal case — git checks
+    // out each candidate for you — so putting it after would hide the
+    // alert exactly when it is always true, and the user would be
+    // testing a detached HEAD with nothing on screen saying why.
+    if let Some(bisect) = &index.bisect {
+        fields.push(Field::alert(bisect_label(bisect)));
+    }
     let (staged, unstaged, untracked) = (
         count(SectionKind::Staged),
         count(SectionKind::Unstaged),
@@ -616,6 +624,22 @@ pub(crate) fn branch_fields(current: &str, total: usize) -> Vec<Field> {
     fields
 }
 
+/// MG.21f — the bisect alert's text.
+///
+/// Mirrors git's own "Bisecting: N revisions left to test after this
+/// (roughly M steps)" rather than inventing a phrasing, because the
+/// user is reading git's line in a terminal at the same time. Degrades
+/// to the bare word when git has no numbers to give (a bad end marked
+/// but no good one yet) — an alert with a missing count still says the
+/// thing that matters, which is that HEAD is not where you left it.
+pub(crate) fn bisect_label(state: &lattice_vcs::BisectState) -> String {
+    match (state.revisions_left, state.steps) {
+        (Some(left), Some(steps)) => format!("BISECTING {left} left, ~{steps} steps"),
+        (Some(left), None) => format!("BISECTING {left} left"),
+        _ => "BISECTING".to_string(),
+    }
+}
+
 /// MG.21c — magit-remote: how many remotes are configured.
 pub(crate) fn remote_fields(total: usize) -> Vec<Field> {
     let plural = if total == 1 { "remote" } else { "remotes" };
@@ -789,7 +813,81 @@ mod tests {
             branch: branch.to_string(),
             ahead,
             behind,
+            bisect: None,
         }
+    }
+
+    fn bisecting(
+        mut index: SectionIndex,
+        revisions_left: Option<usize>,
+        steps: Option<usize>,
+    ) -> SectionIndex {
+        index.bisect = Some(lattice_vcs::BisectState {
+            revisions_left,
+            steps,
+            start_ref: "main".into(),
+        });
+        index
+    }
+
+    /// MG.21f: bisecting a CLEAN tree is the normal case — git checks
+    /// out each candidate for you — so the alert must survive the
+    /// clean-tree early return. It did not, in the first draft.
+    #[test]
+    fn the_bisect_alert_shows_on_a_clean_tree() {
+        let row = rendered(status_fields(
+            &bisecting(status_index("main", 0, 0), Some(3), Some(2)),
+            Path::new("/src/lattice"),
+        ));
+        assert!(
+            row.contains("BISECTING 3 left, ~2 steps"),
+            "clean-tree row lost the alert: {row}"
+        );
+        assert!(
+            row.contains("clean"),
+            "and still says the tree is clean: {row}"
+        );
+    }
+
+    #[test]
+    fn the_bisect_alert_shows_alongside_dirty_counts() {
+        let index = with_section(
+            bisecting(status_index("main", 0, 0), Some(1), Some(1)),
+            SectionKind::Unstaged,
+            2,
+        );
+        let row = rendered(status_fields(&index, Path::new("/src/lattice")));
+        assert!(row.contains("BISECTING"), "{row}");
+        assert!(row.contains("2 unstaged"), "{row}");
+    }
+
+    /// The numbers are git's, so when git has none the label degrades
+    /// rather than inventing a zero — "0 left" would read as finished.
+    #[test]
+    fn the_bisect_alert_degrades_when_git_has_no_numbers() {
+        let state = lattice_vcs::BisectState {
+            revisions_left: None,
+            steps: None,
+            start_ref: "main".into(),
+        };
+        assert_eq!(bisect_label(&state), "BISECTING");
+        assert_eq!(
+            bisect_label(&lattice_vcs::BisectState {
+                revisions_left: Some(4),
+                steps: None,
+                start_ref: "main".into(),
+            }),
+            "BISECTING 4 left"
+        );
+    }
+
+    #[test]
+    fn no_bisect_means_no_alert() {
+        let row = rendered(status_fields(
+            &status_index("main", 0, 0),
+            Path::new("/src/lattice"),
+        ));
+        assert!(!row.contains("BISECT"), "{row}");
     }
 
     fn with_section(mut index: SectionIndex, kind: SectionKind, entries: usize) -> SectionIndex {

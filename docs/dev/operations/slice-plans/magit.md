@@ -43,6 +43,9 @@ owns *what* and *why*.
 | MG.21b | `lattice_vcs::Remote` — list/add/rename/remove/set-url/prune | — | ✅ |
 | MG.21c | `magit-remote-mode` — the remote list buffer + its chords | MG.21b | ✅ |
 | MG.21d | `M` on the root dispatch opens it | MG.21c | ✅ |
+| MG.21e | `lattice_vcs::Bisect` — start/good/bad/skip/reset + state | — | ✅ |
+| MG.21f | `BISECTING N left` on magit-status's headerline | MG.21e | ✅ |
+| MG.21g | `B` sub-transient, gated on whether a bisect is running | MG.21e | ✅ |
 | MG.21a | Diff line-background tints in magit's diff views | MG.20 | ✅ |
 | MG.22 | `magit-hunk-mode` — the mode owning diff *content* (chords + `<CR>` ✅; parser / options open) | MG.20 | 🚧 |
 | MG.23 | magit-dispatch / file-dispatch parity (a–h done; j and i+ open) | MG.17b | 📝 |
@@ -1247,8 +1250,8 @@ already exists); `D` / `L` diff- and log-arg refresh; `M` log-merged;
 > removal, `D` / `L` diff- and log-arg refresh, `M` log-merged,
 > `e` edit-line-commit.
 
-**Genuinely new subsystems.** `B` bisect, ~~`M` remote management~~
-(landed as MG.21b/c/d), `o` submodule, `O` subtree, `Z` worktree, `T` notes, `w` am /
+**Genuinely new subsystems.** ~~`B` bisect~~ (MG.21e/f/g), ~~`M` remote
+management~~ (MG.21b/c/d), `o` submodule, `O` subtree, `Z` worktree, `T` notes, `w` am /
 `W` format-patch, `y` show-refs, `Y` cherries, `C` clone.
 
 #### Known key collision — resolved by MG.23h, and it was mis-stated
@@ -2239,8 +2242,9 @@ these appear in a transient yet.
 > subsystems, which is the same set MG.23i+ names.
 >
 > **2026-08-01:** remote management landed as MG.21b/c/d — as a buffer
-> (`magit-remote-mode`), not the transient magit uses; see that
-> section. MG.21's remaining scope is bisect and submodule.
+> (`magit-remote-mode`), not the transient magit uses — and bisect as
+> MG.21e/f/g, as headerline state plus a gated `B` menu rather than
+> either. MG.21's remaining scope is submodule.
 
 **Also not shipped:** transient entries for the three that DID land.
 They are reachable by chord in every commit-showing view, which is the
@@ -2310,6 +2314,63 @@ chord for the push side. `M`'s remaining magit rows (`C` configure, `P`
 prune-refspecs, `z` unshallow, `d u` update-default-branch) are also not
 here — none is daily-use, and a row that does nothing is worse than an
 absent one.
+
+### MG.21e/f/g — bisect ✅ (2026-08-01)
+
+Design: [`../../architecture/magit.md`](../../architecture/magit.md)
+§8.9. The second of MG.21's three new subsystems.
+
+**Shape: state + a gated menu, no buffer.** magit-status is already a
+buffer, so a `magit-bisect-mode` wins no paramount-goal ground
+(heuristic #1), and bisect state *is* repo state — `SectionIndex`
+already carries `branch` / `ahead` / `behind` for the same reason. The
+headerline is where lattice answers "what state is this repo in"; it
+already carries `REBASE IN PROGRESS`. A `SectionKind` was rejected on
+merit rather than cost: every `SectionEntry` variant carries
+diff-bearing-file invariants a bisect status cannot satisfy.
+
+| Slice | Scope | Tests |
+|---|---|---|
+| MG.21e | `lattice_vcs::Bisect` + `BisectState` + `parse_bisect_vars` | 4 unit + 8 integration driving a real bisect |
+| MG.21f | `SectionIndex::bisect`, `headerline::bisect_label`, the alert | 4 |
+| MG.21g | `B` sub-transient, the gate, `MagitViews::all` | 4 (both gate directions, no inert row, `B`/`M` chord-freedom) |
+
+**Two bugs the tests caught rather than shipped.**
+
+*The count was wrong and self-consistently so.* `revisions_left` was
+`count(rev-list bad ^good) - 1`, which reported 6 where `git bisect`
+prints 3 — git reports the worst-case half after the midpoint it chose,
+not the range size. It passed its first test because that test asserted
+my reading against my own hand-computed constant. Fixed by using `git
+rev-list --bisect-vars` (the plumbing that exists for this), and the
+test now parses the number out of git's own printed message and
+compares, so the two can no longer agree with each other and disagree
+with git.
+
+*The alert was hidden exactly when it is always true.* It was pushed
+after `status_fields`' clean-tree early return — and bisecting a clean
+tree is the normal case, since git checks out each candidate for you.
+Guarded by `the_bisect_alert_shows_on_a_clean_tree`.
+
+**A purity seam, added because the guard would otherwise have been
+flaky:** `dispatch_transient_with(ids, ctx, bisect_in_progress)` is
+pure and `dispatch_transient` is the thin impure wrapper. Probing
+inside the builder would have made the root menu's inert-row count
+depend on whether the developer's own checkout was mid-bisect while the
+suite ran.
+
+**Substrate added: `MagitViews::all()`**, peer of `BufferStates::all()`.
+A mark moves HEAD, so an open log and diff are as stale as the status
+buffer; refreshing only the firing buffer would leave the others
+confidently showing the previous HEAD.
+
+**No bench:** the gate is a `stat`, the progress git calls run only
+while a bisect is actually in flight, and nothing lands on the UI
+thread.
+
+**Deferred, named:** `git bisect run <script>` (magit's `s`), the
+bisect log as a buffer, and marking a revision other than the one git
+checked out.
 
 ### MG.21a — diff line-background tints ✅
 

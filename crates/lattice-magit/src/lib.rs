@@ -301,6 +301,11 @@ fn resolve_dispatch_ids(registry: &CommandRegistry) -> transients::DispatchActio
         diff: registry.id_by_name("action:magit-global-diff"),
         branch: registry.id_by_name("action:magit-global-branch"),
         remote: registry.id_by_name("action:magit-global-remote"),
+        bisect_start: registry.id_by_name("action:magit-global-bisect-start"),
+        bisect_good: registry.id_by_name("action:magit-global-bisect-good"),
+        bisect_bad: registry.id_by_name("action:magit-global-bisect-bad"),
+        bisect_skip: registry.id_by_name("action:magit-global-bisect-skip"),
+        bisect_reset: registry.id_by_name("action:magit-global-bisect-reset"),
         stash: registry.id_by_name("action:magit-global-stash"),
         stash_create: registry.id_by_name("action:magit-global-stash-create"),
         rebase: registry.id_by_name("action:magit-global-rebase"),
@@ -1199,6 +1204,38 @@ fn register_action_commands(registry: &mut CommandRegistry) {
         "action:magit-global-remote",
         "Open the Magit remote list buffer",
     );
+    // MG.21g: bisect. The `-start-good` / `-start-finish` halves are
+    // fired by a prompt submit rather than a chord, but must still be
+    // registered — `do_prompt_line_submit` resolves `on_submit_action`
+    // through the command registry.
+    reg(
+        "action:magit-global-bisect-start",
+        "Start a bisect (asks for a bad then a good revision)",
+    );
+    reg(
+        "action:magit-global-bisect-start-good",
+        "Ask for the good revision after the bad one",
+    );
+    reg(
+        "action:magit-global-bisect-start-finish",
+        "Start the bisect once both ends are known",
+    );
+    reg(
+        "action:magit-global-bisect-good",
+        "Mark the revision git checked out as good",
+    );
+    reg(
+        "action:magit-global-bisect-bad",
+        "Mark the revision git checked out as bad",
+    );
+    reg(
+        "action:magit-global-bisect-skip",
+        "Skip a revision that cannot be tested",
+    );
+    reg(
+        "action:magit-global-bisect-reset",
+        "End the bisect and return to where it started",
+    );
     reg("action:magit-remote-add", "Add a remote");
     reg(
         "action:magit-remote-add-url",
@@ -1750,22 +1787,111 @@ mod tests {
         }
     }
 
-    /// The chord half of the same claim, from the other direction: `M`
-    /// is a *transient* key only. Binding it as a chord inside a magit
-    /// buffer would shadow vim's middle-of-screen motion — the same
-    /// reasoning that keeps `V` free
-    /// (`feedback_magit_keys_follow_evil_magit`).
+    /// MG.21g: the bisect menu shows the operations that can actually
+    /// run, and only those.
+    ///
+    /// Outside a bisect, `good` / `bad` / `skip` / `reset` are not
+    /// merely useless — git errors on them, so they would be rows that
+    /// look actionable and produce a log line. `start` during a bisect
+    /// is the same in reverse. Both directions are asserted: a gate
+    /// that never opens and a gate that never closes both pass a
+    /// one-sided test.
     #[test]
-    fn no_magit_mode_binds_m_as_a_chord() {
+    fn the_bisect_menu_offers_start_or_the_marks_but_never_both() {
+        use lattice_picker::{TransientItemKind, TransientSpec};
+
+        let mut registry = CommandRegistry::new();
+        register_action_commands(&mut registry);
+        let ids = resolve_dispatch_ids(&registry);
+
+        let bisect_keys = |in_progress: bool| -> Vec<String> {
+            let root = transients::dispatch_transient_with(&ids, &outside_magit(), in_progress);
+            let item = root
+                .groups
+                .iter()
+                .flat_map(|g| &g.items)
+                .find(|i| i.key.iter().any(|k| k == "B"))
+                .expect("the dispatch offers `B`");
+            let TransientItemKind::Submenu(spec) = &item.kind else {
+                panic!("`B` must open a submenu, got {:?}", item.label);
+            };
+            let spec: &TransientSpec = spec;
+            spec.groups
+                .iter()
+                .flat_map(|g| &g.items)
+                .flat_map(|i| i.key.clone())
+                .collect()
+        };
+
+        let idle = bisect_keys(false);
+        assert_eq!(idle, vec!["B"], "idle offers only start: {idle:?}");
+
+        let running = bisect_keys(true);
+        for k in ["g", "b", "k", "r"] {
+            assert!(
+                running.contains(&k.to_string()),
+                "`{k}` must be offered during a bisect: {running:?}"
+            );
+        }
+        assert!(
+            !running.contains(&"B".to_string()),
+            "start must NOT be offered during a bisect: {running:?}"
+        );
+    }
+
+    /// Every bisect row must resolve to a real action in both states —
+    /// an inert `Flag` here would be a row that looks like it marks a
+    /// revision and does nothing.
+    #[test]
+    fn every_bisect_row_resolves_to_a_real_action() {
+        use lattice_picker::{TransientItemKind, TransientSpec};
+
+        let mut registry = CommandRegistry::new();
+        register_action_commands(&mut registry);
+        let ids = resolve_dispatch_ids(&registry);
+
+        for in_progress in [false, true] {
+            let root = transients::dispatch_transient_with(&ids, &outside_magit(), in_progress);
+            let item = root
+                .groups
+                .iter()
+                .flat_map(|g| &g.items)
+                .find(|i| i.key.iter().any(|k| k == "B"))
+                .expect("`B` row");
+            let TransientItemKind::Submenu(spec) = &item.kind else {
+                panic!("`B` must open a submenu");
+            };
+            let spec: &TransientSpec = spec;
+            for row in spec.groups.iter().flat_map(|g| &g.items) {
+                assert!(
+                    matches!(row.kind, TransientItemKind::Action(_)),
+                    "bisect row {:?} is inert (in_progress={in_progress})",
+                    row.label
+                );
+            }
+        }
+    }
+
+    /// The chord half of the same claim, from the other direction: `M`
+    /// (remote) and `B` (bisect) are *transient* keys only. Binding
+    /// either as a chord inside a magit buffer would shadow a vim
+    /// motion — middle-of-screen and back-WORD — which is the same
+    /// reasoning that keeps `V` free
+    /// (`feedback_magit_keys_follow_evil_magit`). Magit binds both in
+    /// its own buffers; it can, because it is not modal.
+    #[test]
+    fn no_magit_mode_binds_m_or_b_as_a_chord() {
         use lattice_mode::Mode;
         macro_rules! check {
             ($($mode:expr => $label:literal),* $(,)?) => {
                 $(for entry in $mode.keymap().entries {
-                    assert!(
-                        entry.chord != "M",
-                        "`{}` binds `M`, shadowing the vim motion — put it \
-                         on the dispatch transient instead", $label
-                    );
+                    for taken in ["M", "B"] {
+                        assert!(
+                            entry.chord != taken,
+                            "`{}` binds `{taken}`, shadowing the vim motion — \
+                             put it on the dispatch transient instead", $label
+                        );
+                    }
                 })*
             };
         }
@@ -2759,15 +2885,31 @@ mod tests {
         // permanently-inert placeholder, which is the "menu row that
         // does nothing" the no-inert-rows policy forbids. Bump it only
         // together with a real action.
+        // MG.21g: the gate is passed in, not probed. Probing would make
+        // this count depend on whether the developer's own checkout is
+        // mid-bisect while the suite runs — a flake, and one that would
+        // have looked like a real regression.
         let root = inert_items(
-            &transients::dispatch_transient(&Default::default(), &outside_magit()),
+            &transients::dispatch_transient_with(&Default::default(), &outside_magit(), false),
             "",
         );
         assert_eq!(
             root.len(),
-            24,
+            25,
             "expected every root-dispatch leaf (incl. both submenus') to \
              report inert, got: {root:?}"
+        );
+
+        // The in-progress branch of the bisect menu is a different set
+        // of rows, and an unresolved id there would be just as inert.
+        let bisecting = inert_items(
+            &transients::dispatch_transient_with(&Default::default(), &outside_magit(), true),
+            "",
+        );
+        assert_eq!(
+            bisecting.len(),
+            28,
+            "the in-progress bisect menu trades `start` for good/bad/skip/reset: {bisecting:?}"
         );
     }
 }

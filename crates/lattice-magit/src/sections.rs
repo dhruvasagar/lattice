@@ -62,6 +62,16 @@ pub struct SectionIndex {
     pub branch: String,
     pub ahead: usize,
     pub behind: usize,
+    /// MG.21f: the bisect in progress, if any.
+    ///
+    /// Repo state rather than a section — this struct already carries
+    /// `branch` / `ahead` / `behind` for the same reason, and the
+    /// headerline is where lattice answers "what state is this repo
+    /// in" (it already carries `REBASE IN PROGRESS`). A `SectionKind`
+    /// would have been the wrong home: every `SectionEntry` variant
+    /// carries diff-bearing-file invariants — a path, a stage
+    /// operation, an expandable patch — and a bisect has none of them.
+    pub bisect: Option<lattice_vcs::BisectState>,
 }
 
 impl SectionIndex {

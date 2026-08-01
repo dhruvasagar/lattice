@@ -350,6 +350,38 @@ impl MagitViews {
             map.remove(&buffer);
         }
     }
+
+    /// Every live magit view, in no particular order.
+    ///
+    /// MG.21g: for repo-wide operations that invalidate *every* magit
+    /// buffer rather than one. A bisect mark checks out a different
+    /// commit, so the status buffer, any open log, and any open diff
+    /// are all stale at once — refreshing only the buffer the chord
+    /// fired in would leave the others confidently showing the previous
+    /// HEAD. The peer of [`BufferStates::all`], and reachable the same
+    /// way: through the service, so a handler with no buffer of its own
+    /// (a transient row, a prompt submit) can still use it.
+    pub fn all(&self) -> Vec<Arc<dyn MagitView>> {
+        match self.map.lock() {
+            Ok(map) => map.values().cloned().collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+}
+
+/// Refresh every live magit view.
+///
+/// See [`MagitViews::all`] for why repo-wide operations need this
+/// rather than `view_for`.
+pub fn refresh_all_views(ctx: &ActionContext<'_>) {
+    let Some(views) = ctx.services.get::<MagitViewsHandle>() else {
+        return;
+    };
+    for view in views.all() {
+        // Each `refresh` spawns its own task and returns `None`; the
+        // effect channel is not how these land.
+        let _ = view.refresh();
+    }
 }
 
 /// The view for the buffer an action fired in.

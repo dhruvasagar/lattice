@@ -34,7 +34,7 @@ no hidden state.
 | Key / command | Meaning |
 |---|---|
 | `C-x g` | Open [magit-status](help:magit-status-mode) for the current repo |
-| `C-c g` | Open the [repo dispatch transient](help:magit-transient) — one entry point per view (status/commit/log/branch/stash/rebase), plus `S` (stage all) / `U` (unstage all) and `f` (fetch) / `F` (pull) / `P` (push), all real git operations run in the background |
+| `C-c g` | Open the [repo dispatch transient](help:magit-transient) — one entry point per view (status/commit/log/branch/remote/stash/rebase), plus `S` (stage all) / `U` (unstage all), `B` (bisect) and `f` (fetch) / `F` (pull) / `P` (push), all real git operations run in the background |
 | `C-c f` | Open the [file dispatch transient](help:magit-transient) — `s` stages / `d` diffs the file in your *current* buffer (not an entry under the cursor elsewhere) |
 | `:magit-status` | Same as `C-x g` — open the status buffer |
 | `:magit-commit` | Open the commit message buffer |
@@ -195,7 +195,7 @@ exactly like the live file. The row answers that:
 
 | Buffer | Headerline |
 |---|---|
-| [`magit-status-mode`](help:magit-status-mode) | `lattice  main ↑2 ↓1  3 staged  5 unstaged` |
+| [`magit-status-mode`](help:magit-status-mode) | `lattice  main ↑2 ↓1  3 staged  5 unstaged` — plus `BISECTING 3 left, ~2 steps` while bisecting |
 | [`magit-commit-mode`](help:magit-commit-mode) | `main  3 files +120 −18` — plus `AMEND` |
 | [`magit-revision-mode`](help:magit-revision-mode) | `a1b2c3d  Jane Doe  3 days ago  Fix the thing` |
 | [`magit-file-revision-mode`](help:magit-file-revision-mode) | `src/main.rs  @  a1b2c3d`, or `@  index` |

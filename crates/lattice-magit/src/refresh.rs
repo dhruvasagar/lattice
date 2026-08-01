@@ -110,6 +110,16 @@ fn build_section_index(repo: &Repository) -> SectionIndex {
     let mut index = SectionIndex::default();
     index.branch = current_branch(repo);
     populate_ahead_behind(repo, &mut index);
+    // MG.21f. Costs a stat in the overwhelmingly common case — the
+    // git calls behind the progress numbers run only once a bisect is
+    // actually in flight, which is why `in_progress` gates `state`.
+    index.bisect = match lattice_vcs::Bisect::state(repo) {
+        Ok(state) => state,
+        Err(e) => {
+            tracing::debug!("magit-status: bisect state unreadable: {e}");
+            None
+        }
+    };
 
     let statuses = match WorkingTree::statuses(repo) {
         Ok(s) => s,

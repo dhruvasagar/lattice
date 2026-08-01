@@ -465,6 +465,7 @@ magit's in-body `Head:` / `Merge:` lines.
 | magit-blame | `src/main.rs  @  a1b2c3d` |
 | magit-branch | `main  12 branches` |
 | magit-remote | `2 remotes` |
+| magit-status, bisecting | `lattice  a1b2c3d  BISECTING 3 left, ~2 steps  clean` |
 | magit-stash | `3 stashes` |
 | magit-stash-show | `stash@{2}  WIP on main: fix the thing` |
 | magit-rebase | `onto  origin/main  4 commits  REBASE IN PROGRESS` |
@@ -1510,6 +1511,72 @@ computation cannot drift between the two. **The separation of concerns:
 the picker owns placement, the transient owns content + interaction** —
 worth stating explicitly since it's easy to reintroduce the bug by having
 transient code make its own placement decision again.
+
+### 8.9 Bisect — repo state, not a view (MG.21e/f/g)
+
+Bisect has no buffer. It contributes two things: an **alert on
+magit-status's headerline** while one is running, and a **`B`
+sub-transient** whose rows depend on whether one is.
+
+**Why not a `magit-bisect-mode` buffer.** magit-status is already a
+buffer, so a second one wins no paramount-goal ground — and bisect
+state *is* repo state, in the same class as `branch` / `ahead` /
+`behind`, which is why `SectionIndex` carries it. The headerline is
+where lattice already answers "what state is this repo in": it carries
+`AMEND` and `REBASE IN PROGRESS` for exactly this reason. Between marks
+you are compiling and testing, not reading a bisect buffer; what you
+need is an indicator that survives you being somewhere else.
+
+**Why not a `SectionKind`.** Every `SectionEntry` variant carries
+diff-bearing-file invariants — a path, a stage operation, an expandable
+patch. A bisect status has none of them, and adding a variant that can
+never satisfy any of them would push a dead arm through thirteen match
+sites in `refresh.rs`. The deferred bisect *log* is a list of commits
+with verdicts; if it earns a home it is a read-only buffer (we already
+render logs), not a `SectionEntry`.
+
+**The numbers are git's, obtained from git's own plumbing.** `git
+rev-list --bisect-vars` reports `bisect_nr` and `bisect_steps` — the
+two halves of the "Bisecting: N revisions left to test after this
+(roughly M steps)" line git prints. The first implementation computed
+`count(rev-list bad ^good) - 1` instead and was wrong by a factor that
+grows with the range (6 where git says 3): git reports the worst-case
+half *after* the midpoint it chose, which is the bisection algorithm,
+not a subtraction. A number that disagrees with what git prints in the
+same terminal is worse than no number, so the honest fallback when git
+gives nothing is `BISECTING` with no count — never `0 left`, which
+reads as finished.
+
+**The menu is gated, and the gate is a `stat`.** Outside a bisect,
+`good` / `bad` / `skip` / `reset` error in git; `start` during one does
+too. Magit gates for the same reason, and so does the no-inert-rows
+policy. `Bisect::in_progress` reads `.git/BISECT_LOG` — the file git
+creates on start and removes on reset — because the spec is built on
+the actor thread when `C-c g` is pressed, and spawning `git` to answer
+a yes/no question on a keystroke path is latency the gate does not need
+(paramount goal #1).
+
+**The gate is passed in, not probed, at the seam that matters.**
+`dispatch_transient_with(ids, ctx, bisect_in_progress)` is pure;
+`dispatch_transient` is the thin impure wrapper. Without the split,
+every guard over the root menu's shape would silently depend on whether
+the *developer's* checkout happened to be mid-bisect while the suite
+ran.
+
+**Every mark refreshes every magit view, not one.** A bisect mark moves
+HEAD, so an open log and an open diff are exactly as stale as the
+status buffer. `MagitViews::all()` — the peer of `BufferStates::all()`
+added for the remote prompts — is how a handler with no buffer of its
+own reaches them.
+
+**`B` is a transient key only**, never a chord: it is vim's back-WORD
+motion. Same rule as `M` (§4.6b) and `V`. Guarded by
+`no_magit_mode_binds_m_or_b_as_a_chord`.
+
+**Deferred and named:** `git bisect run <script>` (magit's `s`), the
+bisect log as a buffer, and marking a revision other than the one git
+checked out. None is needed for the core loop, and the no-inert-rows
+policy applies.
 
 ## 9. Commit buffer design
 

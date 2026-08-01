@@ -47,7 +47,7 @@
 
 use std::sync::{Arc, OnceLock};
 
-use lattice_grammar::Effect;
+use lattice_grammar::{EchoLevel, Effect};
 use lattice_mode::{
     ActionContext, ActionHandlerContribution, ActivationPolicy, BufferStoreHandle, CapabilitySet,
     Keymap, KeymapEntry, LifecycleFuture, Mode, ModeContext, ModeId, ModeKind, OptionOverrideSet,
@@ -239,6 +239,88 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
     // Both need no target — they act on the whole index — which is why
     // they land before the commit-acting rows (`A` / `_` / `O`), whose
     // root-dispatch entries still want a commit picker.
+    // MG.21g: bisect. Every mark checks out a different commit, so
+    // each of these refreshes EVERY live magit view rather than one —
+    // an open log or diff is just as stale as the status buffer after
+    // a `good`. See `buffer_state::refresh_all_views`.
+    //
+    // Start asks for its two ends. `HEAD` seeds the bad one because
+    // "the bug is here now" is why you are starting a bisect at all;
+    // the good end has no defensible default and is left empty.
+    contributions.push(ActionHandlerContribution {
+        action_name: "action:magit-global-bisect-start",
+        handler: Arc::new(|_ctx: &ActionContext<'_>| {
+            Some(prompt_seeded(
+                "Bisect — known BAD revision: ",
+                "action:magit-global-bisect-start-good",
+                "HEAD".to_string(),
+            ))
+        }),
+    });
+    contributions.push(ActionHandlerContribution {
+        action_name: "action:magit-global-bisect-start-good",
+        handler: Arc::new(|ctx: &ActionContext<'_>| {
+            let bad = ctx.prompt_value?.trim().to_string();
+            if bad.is_empty() {
+                return None;
+            }
+            Some(Effect::OpenPrompt {
+                prompt: format!("Bisect {bad} back to — known GOOD revision: "),
+                initial: String::new(),
+                on_submit_action: "action:magit-global-bisect-start-finish".to_string(),
+                buffer_name: Some(bisect_start_buffer_name(&bad)),
+            })
+        }),
+    });
+    contributions.push(ActionHandlerContribution {
+        action_name: "action:magit-global-bisect-start-finish",
+        handler: Arc::new(|ctx: &ActionContext<'_>| {
+            let good = ctx.prompt_value?.trim().to_string();
+            let bad = ctx
+                .services
+                .get::<BufferStoreHandle>()?
+                .name_for(lattice_core::BufferId(ctx.buffer_id.0 as u32))
+                .and_then(|n| bad_from_bisect_start_buffer_name(&n))?;
+            if good.is_empty() {
+                return None;
+            }
+            spawn_bisect(ctx, "start", move |repo| {
+                lattice_vcs::Bisect::start(repo, Some(&bad), Some(&good))
+            });
+            Some(Effect::Echo {
+                level: EchoLevel::Info,
+                text: "bisecting\u{2026}".to_string(),
+            })
+        }),
+    });
+
+    macro_rules! bisect_mark {
+        ($action_name:expr, $verb:literal, $call:expr) => {
+            contributions.push(ActionHandlerContribution {
+                action_name: $action_name,
+                handler: Arc::new(|ctx: &ActionContext<'_>| {
+                    // `None` = the revision git checked out for you.
+                    // Naming one would mean reading a cursor, and this
+                    // fires from a menu that has none.
+                    spawn_bisect(ctx, $verb, $call);
+                    None
+                }),
+            });
+        };
+    }
+    bisect_mark!("action:magit-global-bisect-good", "good", |repo| {
+        lattice_vcs::Bisect::good(repo, None)
+    });
+    bisect_mark!("action:magit-global-bisect-bad", "bad", |repo| {
+        lattice_vcs::Bisect::bad(repo, None)
+    });
+    bisect_mark!("action:magit-global-bisect-skip", "skip", |repo| {
+        lattice_vcs::Bisect::skip(repo, None)
+    });
+    bisect_mark!("action:magit-global-bisect-reset", "reset", |repo| {
+        lattice_vcs::Bisect::reset(repo)
+    });
+
     // MG.23c1: prompt-backed rows. The first action opens the prompt;
     // the `-finish` half does the work with what was typed.
     contributions.push(ActionHandlerContribution {
@@ -1103,6 +1185,57 @@ pub(crate) fn rename_source_from_prompt_buffer_name(buffer_name: &str) -> Option
 /// MG.23d2: the same carrier, for the checkout prompt.
 pub(crate) fn checkout_target_from_prompt_buffer_name(buffer_name: &str) -> Option<String> {
     path_from_prompt_buffer_name(buffer_name, "*magit:checkout:")
+}
+
+/// MG.21g: the bad end of a bisect, carried from the first prompt to
+/// the second. Same carrier as rename/checkout — by submit time the
+/// prompt buffer is the active one, so nothing else still knows it.
+pub(crate) const BISECT_START_PREFIX: &str = "*magit:bisect-start:";
+
+pub(crate) fn bisect_start_buffer_name(bad: &str) -> String {
+    format!("{BISECT_START_PREFIX}{bad}*")
+}
+
+pub(crate) fn bad_from_bisect_start_buffer_name(buffer_name: &str) -> Option<String> {
+    path_from_prompt_buffer_name(buffer_name, BISECT_START_PREFIX)
+}
+
+/// Run a bisect operation off the actor thread, then refresh every
+/// live magit view.
+///
+/// A bisect mark moves HEAD, so nothing that reads HEAD is still
+/// accurate — the status buffer, an open log, an open diff. There is no
+/// synchronous path back from the detached task (§4.6), so the log is
+/// the report and the refresh is what the user sees.
+fn spawn_bisect(
+    ctx: &ActionContext<'_>,
+    what: &'static str,
+    op: impl FnOnce(&lattice_vcs::Repository) -> lattice_vcs::Result<()> + Send + 'static,
+) {
+    let Some(views) = ctx.services.get::<crate::buffer_state::MagitViewsHandle>() else {
+        return;
+    };
+    let workdir = crate::workdir::magit_workdir().unwrap_or_default();
+    tokio::task::spawn(async move {
+        let wd = workdir.clone();
+        let outcome =
+            tokio::task::spawn_blocking(move || match lattice_vcs::Repository::discover(&wd) {
+                Ok(repo) => op(&repo),
+                Err(e) => Err(lattice_vcs::VcsError::Bisect(format!(
+                    "no repository at {}: {e}",
+                    wd.display()
+                ))),
+            })
+            .await;
+        match outcome {
+            Ok(Ok(())) => tracing::info!("magit-bisect: {what}"),
+            Ok(Err(e)) => tracing::error!("magit-bisect: {what} failed: {e}"),
+            Err(e) => tracing::error!("magit-bisect: {what} panicked: {e}"),
+        }
+        for view in views.all() {
+            let _ = view.refresh();
+        }
+    });
 }
 
 fn path_from_prompt_buffer_name(buffer_name: &str, prefix: &str) -> Option<String> {

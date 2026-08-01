@@ -116,6 +116,13 @@ pub struct DispatchActionIds {
     pub branch: Option<CommandId>,
     /// MG.21d: `M` — remote management, magit's own key.
     pub remote: Option<CommandId>,
+    /// MG.21g: `B` — bisect. Start is shown only when none is running;
+    /// the marks only when one is.
+    pub bisect_start: Option<CommandId>,
+    pub bisect_good: Option<CommandId>,
+    pub bisect_bad: Option<CommandId>,
+    pub bisect_skip: Option<CommandId>,
+    pub bisect_reset: Option<CommandId>,
     pub stash: Option<CommandId>,
     pub stash_create: Option<CommandId>,
     pub rebase: Option<CommandId>,
@@ -267,6 +274,94 @@ fn reset_transient(ids: &DispatchActionIds) -> TransientSpec {
     }
 }
 
+/// MG.21g: the `B` bisect submenu, gated on whether a bisect is
+/// running.
+///
+/// **Why the menu is gated rather than showing everything.** `good` /
+/// `bad` / `skip` / `reset` outside a bisect are not merely useless —
+/// git errors on them, so they would be rows that look actionable and
+/// produce a log line. `start` *during* a bisect is the same in
+/// reverse. Magit gates this menu for exactly these reasons, and the
+/// no-inert-rows policy says the same thing from our side.
+///
+/// **The gate is a `stat`, not a git call.** This spec is built when
+/// `C-c g` is pressed — on the actor thread — so answering "is a
+/// bisect running" by spawning `git` would be process-spawn latency on
+/// a keystroke path (paramount goal #1). `Bisect::in_progress` reads
+/// `.git/BISECT_LOG`, which is the file git itself creates and removes.
+/// Discovering the repository is the same `magit_workdir` lookup every
+/// magit chord already does.
+/// Whether a bisect is running in the current repository.
+///
+/// The one impure part of building this menu, isolated here so
+/// [`bisect_transient`] and [`dispatch_transient_with`] stay pure — and
+/// so the guards over them cannot depend on whether the *developer's*
+/// checkout happens to be mid-bisect while the suite runs, which is
+/// exactly the flake a stat inside the builder would have introduced.
+pub fn bisect_in_progress() -> bool {
+    crate::workdir::magit_workdir()
+        .and_then(|wd| lattice_vcs::Repository::discover(wd).ok())
+        .map(|repo| lattice_vcs::Bisect::in_progress(&repo))
+        .unwrap_or(false)
+}
+
+fn bisect_transient(ids: &DispatchActionIds, in_progress: bool) -> TransientSpec {
+    let items = if in_progress {
+        vec![
+            action_or_placeholder(
+                ids.bisect_good,
+                "g",
+                "good",
+                "Mark the revision git checked out as good",
+                "bisect_good_op",
+            ),
+            action_or_placeholder(
+                ids.bisect_bad,
+                "b",
+                "bad",
+                "Mark the revision git checked out as bad",
+                "bisect_bad_op",
+            ),
+            action_or_placeholder(
+                ids.bisect_skip,
+                "k",
+                "skip",
+                "Skip this revision — it cannot be tested",
+                "bisect_skip_op",
+            ),
+            action_or_placeholder(
+                ids.bisect_reset,
+                "r",
+                "reset",
+                "End the bisect and return to where it started",
+                "bisect_reset_op",
+            ),
+        ]
+    } else {
+        vec![action_or_placeholder(
+            ids.bisect_start,
+            "B",
+            "start",
+            "Start a bisect — asks for a bad then a good revision",
+            "bisect_start_op",
+        )]
+    };
+
+    TransientSpec {
+        title: if in_progress {
+            "Bisect (in progress)".into()
+        } else {
+            "Bisect".into()
+        },
+        groups: vec![TransientGroup {
+            label: "Actions".into(),
+            items,
+        }],
+        preview: None,
+        footer: Some("q dismiss  BS back".into()),
+    }
+}
+
 /// MG.23h: the `s` row, which means two different things.
 ///
 /// In magit-status, "open the status buffer" is a no-op on the buffer
@@ -362,6 +457,16 @@ fn jump_transient(ids: &DispatchActionIds) -> TransientSpec {
 /// `s` row's meaning ([`status_row`]) and the section-acting rows
 /// ([`applying_changes_items`]).
 pub fn dispatch_transient(ids: &DispatchActionIds, ctx: &TransientContext) -> TransientSpec {
+    dispatch_transient_with(ids, ctx, bisect_in_progress())
+}
+
+/// [`dispatch_transient`] with the bisect gate supplied rather than
+/// probed — pure, and the form every guard over this menu uses.
+pub fn dispatch_transient_with(
+    ids: &DispatchActionIds,
+    ctx: &TransientContext,
+    bisect_in_progress: bool,
+) -> TransientSpec {
     TransientSpec {
         title: "Magit dispatch".into(),
         groups: vec![
@@ -435,6 +540,18 @@ pub fn dispatch_transient(ids: &DispatchActionIds, ctx: &TransientContext) -> Tr
                         label: "reset".into(),
                         description: "Reset this branch to a commit".into(),
                         kind: TransientItemKind::Submenu(Arc::new(reset_transient(ids))),
+                    },
+                    // MG.21g: magit's own key, in magit's own group.
+                    // The submenu's contents depend on whether a
+                    // bisect is running — see `bisect_transient`.
+                    TransientItem {
+                        key: vec!["B".into()],
+                        label: "bisect".into(),
+                        description: "Find the commit that introduced a bug".into(),
+                        kind: TransientItemKind::Submenu(Arc::new(bisect_transient(
+                            ids,
+                            bisect_in_progress,
+                        ))),
                     },
                 ],
             },

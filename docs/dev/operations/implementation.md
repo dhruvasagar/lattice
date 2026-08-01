@@ -4274,7 +4274,10 @@ Installs through `SubsystemBoot` seam. Inverted out of
   remote management shipped as **MG.21b/c/d** —
   `magit-remote-mode` (`:magit-remote`, `M` on the dispatch), a buffer
   rather than magit's transient because our transients cannot render
-  the URLs. Bisect and submodule are what is left of MG.21.
+  the URLs — and bisect as **MG.21e/f/g**: a `BISECTING N left` alert
+  on magit-status's headerline plus a `B` sub-transient gated on
+  whether one is running, with no buffer of its own. Submodule is what
+  is left of MG.21.
 
 ## multibuffer-views (in design, 2026-05-28)
 

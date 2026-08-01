@@ -80,6 +80,8 @@ adds inside one):
 │    [_]  revert          Revert a commit        │
 │    [O]  reset         ▸ Reset this branch to   │
 │                          a commit              │
+│    [B]  bisect        ▸ Find the commit that   │
+│                          introduced a bug      │
 │                                                │
 │  ▸ Branches                                    │
 │    [b]  branch          Open the branch list   │
@@ -246,10 +248,28 @@ task back to a transient that's already dismissed. Check the
 when pressed is worse than a row that isn't there. Two different
 reasons keep a magit entry out:
 
-**No operation behind it yet.** Magit's dispatch also offers bisect
-(`B`), submodule (`o`), patch (`w`/`W`), worktree (`Z`), notes (`T`),
-clone (`C`) and more. These are planned, and each appears the moment
-its operation exists.
+**No operation behind it yet.** Magit's dispatch also offers submodule
+(`o`), patch (`w`/`W`), worktree (`Z`), notes (`T`), clone (`C`) and
+more. These are planned, and each appears the moment its operation
+exists.
+
+**Here, and it changes with the repo.** `B` (bisect) opens a submenu
+whose rows depend on whether a bisect is running. Idle, it offers only
+`B` start — which asks for a known-bad revision (seeded `HEAD`, because
+"the bug is here now" is why you are starting) and then a known-good
+one. Running, it drops `start` and offers `g` good, `b` bad, `k` skip
+and `r` reset, all acting on the revision git checked out for you.
+
+The reason for the split is that git *errors* on the marks outside a
+bisect and on `start` inside one — those rows would look actionable and
+do nothing but log. While a bisect runs, magit-status's headerline
+carries `BISECTING 3 left, ~2 steps`, which are git's own numbers from
+its own plumbing, so they agree with what `git bisect` prints in a
+terminal. Every mark refreshes every open magit buffer, because a
+bisect moves HEAD and an open log or diff goes stale with it.
+
+`git bisect run <script>` is not here yet, nor is marking a revision
+other than the one checked out.
 
 **Here, but as a buffer rather than a menu.** `M` (remote management)
 is one deliberate divergence. Magit makes it a transient that renders
@@ -258,9 +278,10 @@ transients have no variable rows, so a straight port would hide the
 URLs — the thing you open remote management to look at. `M` therefore
 opens [`magit-remote-mode`](help:magit-remote-mode), a buffer listing
 every remote with its URL, where `a` / `r` / `d` / `u` / `p` act on the
-row under the cursor. `M` is a transient key only: it stays unbound as
-a chord inside magit buffers so vim's middle-of-screen motion survives,
-the same reasoning that keeps `V` free.
+row under the cursor. `M` — like `B` — is a transient key only: both stay unbound as chords
+inside magit buffers so vim's middle-of-screen and back-WORD motions
+survive, the same reasoning that keeps `V` free. Magit binds both in
+its own buffers; it can, because it is not modal.
 
 **Deliberately not coming.** Magit's `Q` runs an arbitrary git or shell
 command and shows its output. Lattice has no row for it and will not

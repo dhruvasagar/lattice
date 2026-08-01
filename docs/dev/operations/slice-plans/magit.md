@@ -1284,6 +1284,7 @@ the buffer you are already in is the actual no-op. See MG.23h's note.
 | MG.24b | Audit finding B: one `replace_buffer_text`, one `magit_workdir` | — | ✅ |
 | MG.24c | Audit finding C2: `A`/`_`/`O` in the views the docs already claim | — | 📝 |
 | MG.24a | Audit finding A1: `magit-hunk-mode` owns the diff-content chords | MG.22 | 📝 |
+| MG.26 | `magit-blame-mode` as a minor on the file — retires the blame buffer | MG.7, MG.23f2 | 📝 |
 | MG.23i+ | The new subsystems, one slice each, prioritised by daily use — the same set MG.21 still names | — | 📝 |
 
 #### MG.23a — the file target seam + `:magit-other-file-dispatch` ✅ (2026-07-30)
@@ -1476,6 +1477,50 @@ one is in hand ("when did each of these lines go away"). It is a slice
 of its own, though — `*magit:blame:<path>*` carries no revision, so the
 buffer name, the argv and the headerline all move together. Filed as
 MG.23f2 rather than smuggled in here.
+
+### MG.26 — magit-blame as a minor on the file 📝 (2026-07-31)
+
+Design fragment:
+[`../../architecture/magit-blame.md`](../../architecture/magit-blame.md).
+Shape decided 2026-07-31; implementation not started.
+
+Prompted by "blame loses syntax highlighting". The highlighting is the
+symptom — `blame_styled_spans` returns `Vec::new()` for the code
+column, so the code is unstyled *by construction* and no work on that
+function fixes it. The cause is the shape: `*magit:blame:<path>*`
+replaces the file with a text rendering of the file.
+
+**Cross-editor check was unanimous** and is recorded in the fragment:
+magit (chunk headings, minor mode on the file buffer), fugitive
+(scroll-bound split), Zed (column + inline), GitLens, JetBrains — every
+one annotates the real buffer, and highlighting survives *because* the
+file was never replaced. Helix has no blame. We are the only one that
+builds a blame buffer.
+
+**Decided:** a `magit-blame-mode` **minor**, chunk headings on
+`VirtualRow` (the primitive `DiffOverlayVirtualRowProvider` already
+drives), direction as mode state, buffer read-only while blaming so
+the edit chords are free. Retires `*magit:blame:<path>*`,
+`*magit:blame-reverse:<rev>:<path>*`, the blame *major*, and
+`blame_styled_spans`; keeps `format_blame_porcelain`, whose extracted
+fields are exactly what a heading needs.
+
+**Reverse blame folds into the blob buffer** — `magit-file-revision-mode`
+already shows a file at a revision, so reverse blame is that buffer
+with this minor active in the reverse direction. Composes two existing
+things instead of adding a third, and `gj`/`gk` keep working while
+blaming. MG.23f2's dedicated buffer is superseded a day after landing;
+its porcelain and argv work is not.
+
+**Not blocked on a parser question, contrary to a first reading.** The
+blob buffer has no highlighting today either (`wake()` with no spans),
+which looked like MG.22's "a minor cannot get a parser" wrinkle. It is
+not: `lattice-multibuffer` already gives a pathless synthetic buffer a
+parser via `Lang::detect_from_path` on a path it knows *about*, and
+`grep_highlight.rs` does the same. The blob buffer carries its path in
+its name. MG.22's wrinkle — a minor supplying a *diff* parser for
+content whose language is not the buffer's identity — stays open and
+is a different problem.
 
 ### MG.24 — the duplication audit (2026-07-31)
 

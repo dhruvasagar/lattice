@@ -71,6 +71,7 @@ same surface).
 | magit — branch list        | [`magit-branch-mode`](help:magit-branch-mode) | ✅      |
 | magit — rebase todo        | [`magit-rebase-mode`](help:magit-rebase-mode) | ✅      |
 | magit — shared chords      | [`magit-core-mode`](help:magit-core-mode) | ✅      |
+| magit — hunk chords        | [`magit-hunk-mode`](help:magit-hunk-mode) | ✅      |
 | magit — entry chords       | [`magit-global-mode`](help:magit-global-mode) | ✅      |
 | Magit transient menus      | [`magit-transient`](help:magit-transient) | ✅      |
 | Display & layout           | [`display`](help:display)                | ✅      |

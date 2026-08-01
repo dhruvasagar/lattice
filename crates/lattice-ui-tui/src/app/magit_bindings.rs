@@ -148,6 +148,63 @@ mod tests {
         );
     }
 
+    /// MG.24a — the diff-content chords reach the buffers that render
+    /// a diff, and only those.
+    ///
+    /// `s` / `u` / `x` / `a` / `-` / `]c` / `[c` moved off the majors
+    /// (and off `magit-core-mode`) onto `magit-hunk-mode`. That is a
+    /// binding relocation, so the thing worth asserting is not that the
+    /// handlers exist — they never moved — but that the mode carrying
+    /// them **activates where it should and nowhere else**.
+    ///
+    /// Both directions. Missing a major leaves that buffer without the
+    /// staging chords, which is the bug that prompted the slice
+    /// (magit-diff had no `x`). Adding one that renders no diff puts
+    /// the keys back where a mode consumes them to do nothing, which is
+    /// the state `]c` and `a`/`-` were in on `magit-core-mode`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_hunk_minor_activates_on_diff_buffers_and_not_on_lists() {
+        for (ex_command, major, wants_hunks) in [
+            ("magit-status", "magit-status-mode", true),
+            ("magit-diff", "magit-diff-mode", true),
+            ("magit-log", "magit-log-mode", false),
+            ("magit-branch", "magit-branch-mode", false),
+        ] {
+            let mut app = app_with("", 20);
+            run_ex(&mut app, ex_command);
+            assert!(
+                settle_mode(&mut app, major).await,
+                "`{major}` must activate — without it this case proves nothing"
+            );
+            // Absence is proved against a SENTINEL, not against a
+            // timeout. `magit-core-mode` activates on every magit
+            // major, so once it is present the minor cascade for this
+            // buffer has been applied — anything not there is not
+            // coming. Waiting for `settle_mode` to time out instead
+            // would be both slow (a full budget per negative case) and
+            // unsound: a timeout cannot tell "not active" from "not
+            // active *yet*", which made the first version of this test
+            // fail under full-suite load.
+            assert!(
+                settle_mode(&mut app, "magit-core-mode").await,
+                "magit-core-mode is the cascade sentinel — it activates \
+                 on every magit major, so without it we cannot tell \
+                 absence from lateness"
+            );
+            let active = app
+                .editor
+                .active_modes
+                .get(&app.editor.document_buffer_id)
+                .is_some_and(|m| m.is_active(lattice_mode::ModeId::new("magit-hunk-mode")));
+            assert_eq!(
+                active, wants_hunks,
+                "magit-hunk-mode active={active} in `{major}`, expected \
+                 {wants_hunks} — it carries `s`/`u`/`x`/`a`/`-`/`]c`/`[c`, \
+                 which need diff content under the cursor"
+            );
+        }
+    }
+
     /// Every migrated mode must have its `BufferStates` service
     /// registered at boot. A missing registration is silent: the mode's
     /// handlers resolve `state(ctx)` to `None` and no-op, which from

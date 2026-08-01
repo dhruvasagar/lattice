@@ -140,7 +140,8 @@ The commit operations from
 [`magit-core-mode`](help:magit-core-mode) act on the row under the
 cursor here: `A` cherry-pick, `_` revert, `Os` / `Om` / `Oh` reset
 `--soft` / `--mixed` / `--hard`. On a row that isn't a commit — a file
-entry, a stash — they do nothing rather than acting on a neighbour.
+entry, a stash — they **ask which commit**, opening a picker of recent
+commits rather than acting on a neighbour.
 
 ---
 

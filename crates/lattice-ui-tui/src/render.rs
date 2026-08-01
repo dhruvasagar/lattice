@@ -1808,8 +1808,7 @@ fn transient_group_item_lines(
                 // longer match go dull — magit's own behaviour, and the
                 // only thing that says "`,` was received, keep going"
                 // rather than leaving the menu looking inert.
-                let reachable =
-                    lattice_picker::TransientSpec::item_matches_prefix(item, prefix);
+                let reachable = lattice_picker::TransientSpec::item_matches_prefix(item, prefix);
                 let (key_style, label_style, desc_style) = if reachable {
                     (
                         TuiStyle::default().fg(Color::Yellow),

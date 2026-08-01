@@ -30,6 +30,7 @@ pub mod magit_core_mode;
 pub mod magit_diff_mode;
 pub mod magit_file_revision_mode;
 pub mod magit_global_mode;
+pub mod magit_hunk_mode;
 pub mod magit_log_mode;
 pub mod magit_rebase_mode;
 pub mod magit_revision_mode;
@@ -76,6 +77,12 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     boot.modes_mut()
         .register(MagitCoreMode)
         .expect("magit-core-mode registers without conflict");
+
+    // MG.24a: the second shared minor. `magit-core-mode` is every magit
+    // buffer; this one is every magit buffer that renders a diff.
+    boot.modes_mut()
+        .register(magit_hunk_mode::MagitHunkMode)
+        .expect("magit-hunk-mode registers without conflict");
 
     boot.modes_mut()
         .register(MagitStatusMode)

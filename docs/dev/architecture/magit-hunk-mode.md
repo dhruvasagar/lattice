@@ -37,11 +37,74 @@ inline `=` expansions).
 
 ## What it owns
 
-1. **Structural highlighting** of the diff — see "Parsing" below.
-2. **`<CR>`** — one handler, one diff-path parser.
-3. **Options** — `magit.hunk.*`, which today do not exist anywhere.
-4. **Navigation within diff content**, eventually — `]c` / `[c` already
-   come from `magit-core-mode`; hunk-scoped folds could move here.
+1. **The chords that act on a hunk** — `s` / `u` / `x` in Normal and
+   Visual, plus `a` / `-`. See "Acting on the hunk" below.
+2. **Navigation within diff content** — `]c` / `[c`; hunk-scoped folds
+   could join later.
+3. **Structural highlighting** of the diff — see "Parsing" below.
+4. **`<CR>`** — one handler, one diff-path parser.
+5. **Options** — `magit.hunk.*`, which today do not exist anywhere.
+
+### Acting on the hunk (amended 2026-08-01)
+
+**The original list omitted `s` / `u` / `x`, and that was an
+oversight rather than a decision.** This fragment and MG.18's hunk
+staging were designed the same week and neither folded in the other:
+MG.18 centralised the *machinery* (`resolve_hunk`, `HunkOp`, the
+`DiffSource` gate all live in `magit_core_mode`) while leaving the
+**chords** declared per-major, and this fragment listed only what it
+had noticed being duplicated — the parsers and `<CR>`.
+
+The omission had a cost. A live report found `x` missing from
+`magit-diff-mode`, and the audit behind it found the set had drifted
+everywhere:
+
+| Major | shows diff | `s` | `u` | `x` |
+|---|---|---|---|---|
+| magit-status | inline via `=` | ✓ | ✓ | ✓ |
+| magit-diff | yes | ✓ | ✓ | **✗** |
+| magit-commit | staged region | ✗ | ✗ | ✗ |
+| magit-revision | `git show` | ✗ | ✗ | ✗ |
+| magit-stash-show | `stash show -p` | ✗ | ✗ | ✗ |
+
+Eight declarations covering three actions, eleven of fifteen cells
+empty, and nobody noticed the missing `x` because there was no single
+place it should have been. That is the failure mode a copied set has:
+**a gap in it does not announce itself.**
+
+So the chords belong here, by this fragment's own principle — *the
+major says what the buffer is, the minor says what its content is.*
+`s` / `u` / `x` / `a` / `-` act on the hunk under the cursor, which is
+diff content by definition.
+
+**`]c` / `[c` and `a` / `-` move here too**, and item 2's "eventually"
+becomes now. They sit on `magit-core-mode`, which activates on **all
+eleven** magit majors — so they are consumed dead keys in magit-branch,
+magit-log, magit-stash, magit-rebase, magit-blame and
+magit-file-revision, none of which have hunks. `magit-core-mode` should
+mean "every magit buffer" (`gr`, `q`, `]]`, `[[`, `TAB`, and the commit
+operations), not "every magit buffer, and these four work in five of
+them".
+
+**What does not move: the machinery.** `resolve_hunk`, `HunkOp`, the
+`DiffSource` gate and the region rewrite stay where MG.18 put them.
+This mode contributes the chords and the handler bodies that call
+them — the seam is already correct, only the bindings were in the
+wrong place.
+
+**Sequencing.** This half needs no `tree-sitter-diff` and no answer to
+the parser wrinkle below; it is chords, an `ActivationPolicy` naming
+the five majors, and deletions from the majors that had them. It can
+land first and alone.
+
+**`<CR>` is NOT in that first half**, and the reason is worth naming
+because it looks like it should be. In magit-status `<CR>` is
+`magit-visit`, which dispatches on what is under the cursor — a file
+entry, a stash, a commit row — not only on diff content. A minor's
+binding wins over a major's, so moving `<CR>` here before the
+`diff_target` seam exists would replace status's context-aware visit
+with a diff-only one. It moves with the seam below, not with the
+chords.
 
 ### `<CR>`: one chord, per-view target
 

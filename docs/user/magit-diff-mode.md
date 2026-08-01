@@ -23,14 +23,26 @@ list.
 |---|---|
 | `s` | Stage the hunk or file at cursor |
 | `u` | Unstage the hunk or file at cursor |
-| `s` / `u` in Visual | Stage / unstage the selected lines only |
+| `x` | Discard the hunk or file at cursor (asks first) |
+| `s` / `u` / `x` in Visual | Act on the selected lines only |
+| `a` | Apply a committed hunk to the working tree |
+| `-` | Reverse a committed hunk out of the working tree |
+| `]c` / `[c` | Next / previous hunk |
 | `<CR>` | Visit the file at cursor |
 | `gr` | Refresh (re-run the underlying `git diff`) |
 
-`]]` / `[[` / `]f` / `[f` / `]c` / `[c` / `TAB` / `q` come from
-[`magit-core-mode`](help:magit-core-mode), the same as every other
-magit buffer — `]c` / `[c` for hunk-to-hunk movement is the one you'll
-use most here.
+Everything above except `<CR>` and `gr` comes from
+[`magit-hunk-mode`](help:magit-hunk-mode) — the minor mode that owns
+diff *content*, active in every magit buffer that renders a diff. So
+the same keys work identically here, in magit-status's inline
+expansions, in a commit's staged region, in a revision and in a stash's
+patch. (`x` used to be missing here specifically, because these chords
+were once declared separately by each buffer and this one's set had
+drifted.)
+
+`]]` / `[[` / `]f` / `[f` / `TAB` / `q` come from
+[`magit-core-mode`](help:magit-core-mode), which is every magit buffer
+whether or not it shows a diff.
 
 `s` and `u` act on the **hunk under the cursor** when there is one, so
 `]c` then `s` stages exactly the hunk you landed on and leaves the

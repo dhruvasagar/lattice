@@ -1,9 +1,15 @@
 //! MG.1: magit-core shared minor mode.
 //!
-//! Activates on magit buffers. Provides shared keymap with real
-//! navigation handlers: ]]/[[ (sections), ]f/[f (files/entries),
-//! ]c/[c (hunks). Each returns Effect::SelectionChange — the same
-//! cursor-move primitive diff-mode uses for hunk navigation.
+//! Activates on EVERY magit buffer. Provides the chords that mean
+//! something in all of them: `gr` refresh, `q` close, `]]`/`[[`
+//! (sections), `]f`/`[f` (files/entries), folds, and the commit
+//! operations. Each navigation chord returns Effect::SelectionChange.
+//!
+//! MG.24a: `]c`/`[c`, `s`/`u`/`x` and `a`/`-` are NOT here. They act on
+//! diff content, which only five of the eleven majors have, so they
+//! live on `magit-hunk-mode` — a chord bound by a mode is consumed
+//! unconditionally, so binding them here made them dead keys in a
+//! branch list, a log, a stash list, a rebase todo and a blame.
 
 use std::sync::{Arc, OnceLock};
 
@@ -65,8 +71,6 @@ fn magit_core_keymap_entries() -> &'static [KeymapEntry] {
             keymap_entry! { mode: Normal, chord: "[[", doc: "Previous section", cmd: "action:magit-prev-section" },
             keymap_entry! { mode: Normal, chord: "]f", doc: "Next file", cmd: "action:magit-next-file" },
             keymap_entry! { mode: Normal, chord: "[f", doc: "Previous file", cmd: "action:magit-prev-file" },
-            keymap_entry! { mode: Normal, chord: "]c", doc: "Next hunk", cmd: "action:magit-next-hunk" },
-            keymap_entry! { mode: Normal, chord: "[c", doc: "Previous hunk", cmd: "action:magit-prev-hunk" },
             keymap_entry! { mode: Normal, chord: "<Tab>", doc: "Toggle fold", cmd: "action:magit-toggle-fold" },
             keymap_entry! { mode: Normal, chord: "<S-Tab>", doc: "Cycle sections", cmd: "action:magit-cycle-sections" },
             // Operations on the commit under the cursor. Keys follow
@@ -98,27 +102,6 @@ fn magit_core_keymap_entries() -> &'static [KeymapEntry] {
             keymap_entry! { mode: Normal, chord: "Os", doc: "Reset --soft to the commit at cursor", cmd: "action:magit-reset-soft" },
             keymap_entry! { mode: Normal, chord: "Om", doc: "Reset --mixed to the commit at cursor", cmd: "action:magit-reset-mixed" },
             keymap_entry! { mode: Normal, chord: "Oh", doc: "Reset --hard to the commit at cursor (asks first)", cmd: "action:magit-reset-hard" },
-            // MG.23g: one hunk of a commit, where `A` / `_` take the
-            // whole commit. Magit binds these in `magit-mode-map` as
-            // `a` (`magit-cherry-apply`) and `v`
-            // (`magit-revert-no-commit`), and remaps BOTH inside a diff
-            // section — `magit-diff-section-base-map` carries
-            // `<remap> <magit-cherry-apply> -> magit-apply` and
-            // `<remap> <magit-revert-no-commit> -> magit-reverse`. So
-            // the hunk-level pair genuinely rides on the commit-level
-            // keys, and `a`/`_`'s sibling is the right place for it.
-            //
-            // `a` is magit's own and free here. `v` is not available —
-            // it is Visual-mode entry, which MG.18e's region staging
-            // needs — so this takes evil-collection-magit's remap for
-            // the whole revert category (`v`/`V` -> `-`/`_`), which is
-            // where `_` already came from. Vim has `-` as a motion
-            // (previous line, first non-blank), but like `_` it is not
-            // a builtin here yet, so this costs nothing today; if it
-            // lands, `k` and `^` cover it and the `-`/`_` pair reading
-            // reverse-one / revert-all is worth more in these buffers.
-            keymap_entry! { mode: Normal, chord: "a", doc: "Apply the hunk at cursor to the working tree", cmd: "action:magit-apply-hunk" },
-            keymap_entry! { mode: Normal, chord: "-", doc: "Reverse the hunk at cursor out of the working tree", cmd: "action:magit-reverse-hunk" },
         ]
     })
 }

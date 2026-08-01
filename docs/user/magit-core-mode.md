@@ -1,5 +1,5 @@
 ---
-summary: "magit-core-mode: the shared minor mode active in every magit buffer — gr to refresh, q to close, ]]/[[ and ]f/[f and ]c/[c to navigate, TAB to fold, and A/_/O to act on the commit under the cursor."
+summary: "magit-core-mode: the shared minor mode active in every magit buffer — gr to refresh, q to close, ]]/[[ and ]f/[f to navigate, TAB to fold, and A/_/O to act on the commit under the cursor. Diff-content chords live on magit-hunk-mode."
 related: [magit, magit-core]
 ---
 
@@ -21,23 +21,31 @@ no `:magit-core-mode` you need to turn on.
 | `q` | Close the buffer (bury — return to previous) |
 | `]]` / `[[` | Next / previous top-level section |
 | `]f` / `[f` | Next / previous file or entry within the current section |
-| `]c` / `[c` | Next / previous hunk |
 | `TAB` | Toggle the section or hunk fold at cursor |
 | `S-TAB` | Cycle section visibility (all → changed only → collapsed → all) |
 | `A` | Cherry-pick the commit under the cursor |
 | `_` | Revert the commit under the cursor |
 | `Os` / `Om` / `Oh` | Reset `--soft` / `--mixed` / `--hard` to the commit under the cursor |
-| `a` | Apply the hunk under the cursor to the working tree |
-| `-` | Reverse the hunk under the cursor out of the working tree |
+
+These work in **every** magit buffer, which is what this mode is for.
+The chords that act on diff content — `s` / `u` / `x`, `a` / `-`,
+`]c` / `[c` — live on [`magit-hunk-mode`](help:magit-hunk-mode)
+instead, and are active only in the buffers that render a diff. They
+used to be here, which meant they were bound (and did nothing) in a
+branch list, a log, a stash list, a rebase todo and a blame.
 
 ## Operating on the commit under the cursor
 
-`A`, `_` and `O…` work in every view that shows a commit — the
-[log](help:magit-log-mode), magit-status's Recent commits, the
-[revision](help:magit-revision-mode) view, the
-[rebase todo](help:magit-rebase-mode) — because each view answers "what
-commit is under the cursor?" for its own row format and one shared
-handler acts on the answer. Keys follow Emacs magit's own.
+`A`, `_` and `O…` work in every view that shows a commit, because each
+answers "what commit is under the cursor?" for its own row format and
+one shared handler acts on the answer. Keys follow Emacs magit's own.
+
+| View | What it reads |
+|---|---|
+| [log](help:magit-log-mode) | the sha on the row under the cursor |
+| magit-status | the sha on a Recent-commits row |
+| [revision](help:magit-revision-mode) | the commit the buffer *is* — every line of it, since a `git show` is one commit |
+| [rebase todo](help:magit-rebase-mode) | the sha on the todo line under the cursor |
 
 On a row with no commit — a file entry, a stash, a `--graph` connector
 line — they **ask which commit** rather than acting on a neighbour, by

@@ -1282,8 +1282,8 @@ the buffer you are already in is the actual no-op. See MG.23h's note.
 | MG.23h | Context-dependent menu content (magit's `:if-derived` / `:if-mode`) | — | ✅ |
 | MG.23j | Repo-level `A` / `_` / `O` rows, via a commit picker (NOT the predicate — see MG.20's corrected note) | MG.20 | ✅ |
 | MG.24b | Audit finding B: one `replace_buffer_text`, one `magit_workdir` | — | ✅ |
-| MG.24c | Audit finding C2: `A`/`_`/`O` in the views the docs already claim | — | 📝 |
-| MG.24a | Audit finding A1: `magit-hunk-mode` owns the diff-content chords | MG.22 | 📝 |
+| MG.24c | Audit finding C2: `A`/`_`/`O` in the views the docs already claim | — | ✅ |
+| MG.24a | Audit finding A1: `magit-hunk-mode` owns the diff-content chords | MG.22 | ✅ |
 | MG.26 | `magit-blame-mode` as a minor on the file — retires the blame buffer | MG.7, MG.23f2 | 📝 |
 | MG.23i+ | The new subsystems, one slice each, prioritised by daily use — the same set MG.21 still names | — | 📝 |
 
@@ -1554,6 +1554,100 @@ and the distinction is the point:
   `commit_at_cursor`. Two of four documented views have never worked.
   magit-blame and magit-commit publish no view either, which is also
   why hunk staging is refused in the commit buffer's staged region.
+
+#### MG.24a — magit-hunk-mode owns the diff-content chords ✅ (2026-08-01)
+
+Design fragment:
+[`../../architecture/magit-hunk-mode.md`](../../architecture/magit-hunk-mode.md),
+**amended** by this slice — its "What it owns" list did not include
+`s` / `u` / `x`, which was an oversight rather than a decision. That
+fragment and MG.18's hunk staging were designed the same week and
+neither folded in the other: MG.18 centralised the machinery and left
+the chords declared per-major; the fragment listed only the duplication
+it had noticed (parsers, `<CR>`).
+
+The omission had a cost. A live report found `x` missing from
+magit-diff, and the audit found the whole set had drifted: 8
+declarations covering 3 actions with 11 of 15 cells empty, and three
+majors (commit, revision, stash-show) with no staging chords at all.
+Nobody noticed, because a gap in a copied set does not announce itself.
+
+**What moved:** `s` / `u` / `x` in Normal and Visual off magit-status
+and magit-diff; `a` / `-` and `]c` / `[c` off **magit-core-mode**. The
+last of those matters as much as the first — magit-core activates on
+all eleven magit majors, so those four were consumed dead keys in the
+six with no diff content (branch, log, stash list, rebase, blame,
+blob).
+
+**What did not move:** the machinery. `resolve_hunk`, `HunkOp`, the
+`DiffSource` gate and MG.18e's region rewrite stay in
+`magit_core_mode`; this mode contributes bindings and the handlers that
+call them. The seam was already right — only the bindings were in the
+wrong place.
+
+**`<CR>` deliberately stayed.** In magit-status it is `magit-visit`,
+dispatching on file / stash / commit rows, not only on diff content. A
+minor's binding wins over a major's, so taking it before the
+`diff_target` seam exists would replace status's context-aware visit
+with a diff-only one. It moves with that seam.
+
+**`magit-core-mode` now means what its name says** — every magit
+buffer: `gr`, `q`, `]]`/`[[`, `]f`/`[f`, folds, and the commit
+operations. Its module header said "]c/[c (hunks)" and no longer does.
+
+- **Tests:** 4 — activation is exactly the five diff-rendering majors,
+  asserted in both directions (a missing one leaves that buffer without
+  staging; an extra one puts the keys back where they are consumed to
+  do nothing); every staging chord is bound in Normal *and* Visual,
+  without which MG.18e's region staging is unreachable by its own
+  gesture in some majors; `<CR>` is not taken. Plus an end-to-end
+  binding test in `lattice-ui-tui` asserting the minor activates in
+  magit-status and magit-diff and **not** in magit-log or magit-branch
+  — the relocation is a binding change, so what needs proving is that
+  the mode carrying them lands where it should and nowhere else.
+
+#### MG.24c — the two views the docs promised and never had ✅ (2026-08-01)
+
+`A` / `_` / `O` resolve the commit through
+`MagitView::commit_at_cursor`. It was overridden in exactly **two**
+places — magit-status and magit-log — while `magit-core-mode.md` named
+**four**, adding the revision view and the rebase todo. Those two were
+consumed dead keys for as long as the doc has claimed otherwise:
+magit-rebase published no `MagitView` at all, and magit-revision's
+(added by MG.23g for `a` / `-`) never overrode the method.
+
+Nothing failed loudly. The trait default answers `None`, the handler
+returns `None`, and a Normal-mode chord a mode binds is consumed
+either way — so the keys did nothing, silently, in half the places the
+documentation pointed at.
+
+**The rebase todo already had the data.** `<CR>` reads the sha off the
+same line with the same `extract_sha` the view now calls. Only the
+seam was missing.
+
+**The revision view ignores the cursor, deliberately.** A `git show`
+buffer *is* one commit, so every line belongs to the sha in the
+buffer's name. Reading a sha off the line under the cursor would have
+been the wrong fix — the `--stat` rows and the diff body carry no sha,
+so it would have worked on the header lines and nowhere else.
+
+**`RebaseView::refresh` returns `None`, and that is load-bearing.**
+`gr` means "rebuild this view from git" everywhere else; a rebase todo
+is a file the user is part-way through editing, so rebuilding it would
+silently discard their reordering. There is no refresh safe to offer
+here.
+
+- **Tests:** 1, structural. Every view the docs name must carry a
+  `commit_at_cursor` override, with the trait default's `None` asserted
+  first so the premise is explicit. Structural rather than
+  chord-driven because what went wrong was a *missing override* —
+  an override that exists and returns `None` for some cursor is a
+  different and legitimate thing. Verified discriminating: the four
+  named views have it, the three that show no commits (branch, diff,
+  stash) do not.
+- **Docs:** `magit-core-mode.md`'s claim is now a table naming what
+  each view actually reads, rather than a prose list that outran the
+  code.
 
 #### MG.24b — one buffer write, one workdir lookup ✅ (2026-07-31)
 

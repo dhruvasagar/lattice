@@ -53,11 +53,7 @@ fn magit_diff_keymap_entries() -> &'static [KeymapEntry] {
     static ENTRIES: OnceLock<Vec<KeymapEntry>> = OnceLock::new();
     ENTRIES.get_or_init(|| {
         vec![
-            keymap_entry! { mode: Normal, chord: "s", doc: "Stage hunk or file at cursor", cmd: "action:magit-stage" },
-            keymap_entry! { mode: Normal, chord: "u", doc: "Unstage hunk or file at cursor", cmd: "action:magit-unstage" },
             // MG.18e: region staging, same chords on the selection.
-            keymap_entry! { mode: Visual, chord: "s", doc: "Stage the selected lines", cmd: "action:magit-stage" },
-            keymap_entry! { mode: Visual, chord: "u", doc: "Unstage the selected lines", cmd: "action:magit-unstage" },
             keymap_entry! { mode: Normal, chord: "<CR>", doc: "Visit file at cursor", cmd: "action:magit-diff-visit-file" },
         ]
     })

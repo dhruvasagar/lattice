@@ -28,9 +28,6 @@ fn magit_status_keymap_entries() -> &'static [KeymapEntry] {
     static ENTRIES: OnceLock<Vec<KeymapEntry>> = OnceLock::new();
     ENTRIES.get_or_init(|| {
         vec![
-            keymap_entry! { mode: Normal, chord: "s", doc: "Stage hunk or file at cursor", cmd: "action:magit-stage" },
-            keymap_entry! { mode: Normal, chord: "u", doc: "Unstage hunk or file at cursor", cmd: "action:magit-unstage" },
-            keymap_entry! { mode: Normal, chord: "x", doc: "Discard hunk or file at cursor", cmd: "action:magit-discard" },
             // MG.18e: the same three actions on the selected lines.
             // Emacs magit's most-used partial-stage path, and vim's own
             // Visual-mode operator convention — the region is the
@@ -40,9 +37,6 @@ fn magit_status_keymap_entries() -> &'static [KeymapEntry] {
             // In an editable buffer Visual `s` would be substitute and
             // `x` delete; a magit buffer is read-only, so both slots are
             // free and the muscle memory transfers from Normal mode.
-            keymap_entry! { mode: Visual, chord: "s", doc: "Stage the selected lines", cmd: "action:magit-stage" },
-            keymap_entry! { mode: Visual, chord: "u", doc: "Unstage the selected lines", cmd: "action:magit-unstage" },
-            keymap_entry! { mode: Visual, chord: "x", doc: "Discard the selected lines", cmd: "action:magit-discard" },
             keymap_entry! { mode: Normal, chord: "cc", doc: "Open commit buffer", cmd: "action:magit-commit" },
             keymap_entry! { mode: Normal, chord: "ca", doc: "Amend previous commit", cmd: "action:magit-commit-amend" },
             keymap_entry! { mode: Normal, chord: "=", doc: "Toggle inline diff at cursor", cmd: "action:magit-toggle-diff" },

@@ -5132,10 +5132,8 @@ fn transient_rows_gpui(
             let marker = if is_selected { "❯ " } else { "  " };
             // ...and the same dimming for rows a part-typed multi-key
             // row has ruled out. Both peers, per the lockstep rule.
-            let reachable = lattice_picker::TransientSpec::item_matches_prefix(
-                item,
-                &picker.transient_prefix,
-            );
+            let reachable =
+                lattice_picker::TransientSpec::item_matches_prefix(item, &picker.transient_prefix);
             let key_color = if reachable {
                 theme.cursor_background
             } else {
@@ -5157,10 +5155,11 @@ fn transient_rows_gpui(
                     .flex()
                     .flex_row()
                     .pl_4()
-                    .child(div().text_color(rgb(key_color)).child(format!(
-                        "{marker}{:<6}",
-                        key
-                    )))
+                    .child(
+                        div()
+                            .text_color(rgb(key_color))
+                            .child(format!("{marker}{:<6}", key)),
+                    )
                     .child(label)
                     .child(
                         div()

@@ -67,9 +67,8 @@ pub use source::{
 };
 pub use transient::{
     KeyResolution, TransientContext, TransientGroup, TransientItem, TransientItemKind,
-    TransientSourceRegistry,
-    TransientSourceRegistryHandle, TransientSpec, TransientState, TransientValue,
-    confirm_transient_spec, transient_initial_state,
+    TransientSourceRegistry, TransientSourceRegistryHandle, TransientSpec, TransientState,
+    TransientValue, confirm_transient_spec, transient_initial_state,
 };
 
 use std::path::PathBuf;

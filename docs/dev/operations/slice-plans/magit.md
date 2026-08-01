@@ -41,7 +41,7 @@ owns *what* and *why*.
 | MG.20 | Operation coverage — reset / revert / cherry-pick | MG.17a | ✅ |
 | MG.21 | Remaining operations — bisect, submodule, remotes (tag + merge landed in MG.23c) | MG.17b | 📝 |
 | MG.21a | Diff line-background tints in magit's diff views | MG.20 | ✅ |
-| MG.22 | `magit-hunk-mode` — the mode owning diff *content* | MG.20 | 📝 |
+| MG.22 | `magit-hunk-mode` — the mode owning diff *content* (chords ✅ via MG.24a; parser / `<CR>` / options open) | MG.20 | 🚧 |
 | MG.23 | magit-dispatch / file-dispatch parity (a–h done; j and i+ open) | MG.17b | 📝 |
 
 **2026-07-26 audit correction:** this table (last synced when MG.1-3 landed) had
@@ -1597,6 +1597,12 @@ with a diff-only one. It moves with that seam.
 buffer: `gr`, `q`, `]]`/`[[`, `]f`/`[f`, folds, and the commit
 operations. Its module header said "]c/[c (hunks)" and no longer does.
 
+**This completes items 1–2 of MG.22, not MG.22.** The mode it builds
+is MG.22's mode; the parser, the `<CR>` seam and the `magit.hunk.*`
+options remain. MG.22 moves 📝 → 🚧 rather than ✅ — recorded here
+because building half a slice under a different id is exactly how a
+status drifts without anyone noticing.
+
 - **Tests:** 4 — activation is exactly the five diff-rendering majors,
   asserted in both directions (a missing one leaves that buffer without
   staging; an extra one puts the keys back where they are consumed to
@@ -2301,7 +2307,29 @@ a refresh that drops the diff, and splice alignment.
 **Not shipped:** `magit.hunk.line-backgrounds` to opt out — the option
 lands with MG.22, which is where magit's options get an owner.
 
-### MG.22 — `magit-hunk-mode` 📝
+### MG.22 — `magit-hunk-mode` 🚧
+
+> **Status corrected 2026-08-01** (verified against source, not icons).
+> The mode **exists** and owns its chords — MG.24a built it, moving
+> `s`/`u`/`x` off magit-status and magit-diff and `a`/`-`/`]c`/`[c` off
+> `magit-core-mode`, and amending this fragment's ownership list, which
+> had omitted the staging chords. That is items 1–2 of the list below.
+>
+> | Owns | State |
+> |---|---|
+> | chords that act on a hunk (`s`/`u`/`x`, `a`/`-`) | ✅ MG.24a |
+> | navigation within diff content (`]c`/`[c`) | ✅ MG.24a |
+> | structural highlighting (`tree-sitter-diff`) | 📝 — `diff_styled_spans` still hand-rolled |
+> | `<CR>` via the `diff_target` seam | 📝 — the seam does not exist |
+> | `magit.hunk.*` options | 📝 — no occurrences in source |
+>
+> The drift this corrects was self-inflicted: half of MG.22 landed
+> under a different slice id (MG.24a, from the duplication audit)
+> without reconciling the parent, so a slice that was 40% done still
+> read 📝. The remaining three items need no chord work and are
+> independent of each other; the parser one still carries the open
+> question below about a *minor* supplying a parser.
+
 
 Design fragment:
 [`../../architecture/magit-hunk-mode.md`](../../architecture/magit-hunk-mode.md).

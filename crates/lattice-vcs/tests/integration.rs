@@ -9,7 +9,7 @@ use std::path::Path;
 use std::process::Command;
 
 use lattice_vcs::{
-    Branch, Commit, GitBlob, Index, PathStatus, Reference, Repository, Stash, WorkingTree,
+    Branch, Commit, GitBlob, Index, PathStatus, Reference, Remote, Repository, Stash, WorkingTree,
 };
 
 /// Create a temporary directory, initialise a git repo in it, and
@@ -590,6 +590,123 @@ fn apply_patch_without_cached_touches_the_worktree() {
     assert!(
         on_disk.contains("line 19 CHANGED"),
         "the other hunk survives in the worktree"
+    );
+}
+
+// MG.21b — remote management. Every read is checked against the `git`
+// CLI on the same repo, per this file's own rule.
+
+#[test]
+fn a_fresh_repo_has_no_remotes() {
+    let (_dir, repo) = init_temp_repo();
+    assert!(
+        Remote::list(&repo)
+            .expect("list on a repo with no remotes")
+            .is_empty(),
+        "no remotes configured is an empty list, not an error"
+    );
+}
+
+#[test]
+fn add_then_list_round_trips_through_git() {
+    let (_dir, repo) = init_temp_repo();
+    Remote::add(&repo, "origin", "https://example.com/a.git").expect("add origin");
+    Remote::add(&repo, "upstream", "https://example.com/b.git").expect("add upstream");
+
+    let listed = Remote::list(&repo).expect("list");
+    let names: Vec<&str> = listed.iter().map(|r| r.name.as_str()).collect();
+    assert_eq!(names, vec!["origin", "upstream"]);
+    assert_eq!(listed[0].fetch_url, "https://example.com/a.git");
+    assert_eq!(
+        listed[0].push_url, listed[0].fetch_url,
+        "no separate pushurl configured, so both columns match"
+    );
+
+    // Cross-check against the CLI, not just against ourselves.
+    let cli = git(&repo, &["remote"]);
+    assert_eq!(cli.lines().collect::<Vec<_>>(), names);
+}
+
+#[test]
+fn rename_moves_the_remote_and_keeps_its_url() {
+    let (_dir, repo) = init_temp_repo();
+    Remote::add(&repo, "origin", "https://example.com/a.git").expect("add");
+    Remote::rename(&repo, "origin", "upstream").expect("rename");
+
+    let listed = Remote::list(&repo).expect("list");
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].name, "upstream");
+    assert_eq!(listed[0].fetch_url, "https://example.com/a.git");
+}
+
+#[test]
+fn set_url_repoints_the_remote() {
+    let (_dir, repo) = init_temp_repo();
+    Remote::add(&repo, "origin", "https://example.com/a.git").expect("add");
+    Remote::set_url(&repo, "origin", "git@example.com:c.git").expect("set-url");
+
+    let listed = Remote::list(&repo).expect("list");
+    assert_eq!(listed[0].fetch_url, "git@example.com:c.git");
+    assert_eq!(
+        git(&repo, &["remote", "get-url", "origin"]).trim(),
+        "git@example.com:c.git"
+    );
+}
+
+#[test]
+fn a_separate_pushurl_shows_in_the_push_column() {
+    // The one case where the two columns differ — the reason
+    // `RemoteEntry` carries both rather than a single URL. `set_url`
+    // touches only the fetch side, which is what leaves them split.
+    let (_dir, repo) = init_temp_repo();
+    Remote::add(&repo, "origin", "https://example.com/read.git").expect("add");
+    git(
+        &repo,
+        &[
+            "remote",
+            "set-url",
+            "--push",
+            "origin",
+            "git@example.com:write.git",
+        ],
+    );
+
+    let listed = Remote::list(&repo).expect("list");
+    assert_eq!(listed[0].fetch_url, "https://example.com/read.git");
+    assert_eq!(listed[0].push_url, "git@example.com:write.git");
+}
+
+#[test]
+fn remove_deletes_the_remote() {
+    let (_dir, repo) = init_temp_repo();
+    Remote::add(&repo, "origin", "https://example.com/a.git").expect("add");
+    Remote::remove(&repo, "origin").expect("remove");
+
+    assert!(Remote::list(&repo).expect("list").is_empty());
+    assert!(git(&repo, &["remote"]).trim().is_empty());
+}
+
+#[test]
+fn operating_on_an_unknown_remote_is_an_error_not_a_silent_no_op() {
+    // The buffer's handlers surface this to the user; swallowing it
+    // would leave a row that looks acted-on and is not.
+    let (_dir, repo) = init_temp_repo();
+    let err = Remote::remove(&repo, "nope").expect_err("no such remote");
+    assert!(
+        format!("{err}").contains("remote remove nope"),
+        "the error names the operation and the remote: {err}"
+    );
+    assert!(Remote::rename(&repo, "nope", "other").is_err());
+    assert!(Remote::set_url(&repo, "nope", "https://example.com/x.git").is_err());
+}
+
+#[test]
+fn adding_a_duplicate_remote_is_an_error() {
+    let (_dir, repo) = init_temp_repo();
+    Remote::add(&repo, "origin", "https://example.com/a.git").expect("add");
+    assert!(
+        Remote::add(&repo, "origin", "https://example.com/b.git").is_err(),
+        "git refuses the duplicate and so do we"
     );
 }
 

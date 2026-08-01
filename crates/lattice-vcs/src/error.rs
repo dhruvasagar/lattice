@@ -49,6 +49,10 @@ pub enum VcsError {
     #[error("stash operation failed: {0}")]
     Stash(String),
 
+    /// Remote management operation failed.
+    #[error("remote operation failed: {0}")]
+    Remote(String),
+
     /// A working-tree status entry could not be parsed.
     #[error("status parse error: {0}")]
     StatusParse(String),

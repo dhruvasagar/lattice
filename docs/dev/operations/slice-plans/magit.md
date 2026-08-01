@@ -1285,6 +1285,8 @@ the buffer you are already in is the actual no-op. See MG.23h's note.
 | MG.24c | Audit finding C2: `A`/`_`/`O` in the views the docs already claim | — | ✅ |
 | MG.24a | Audit finding A1: `magit-hunk-mode` owns the diff-content chords | MG.22 | ✅ |
 | MG.26 | `magit-blame-mode` as a minor on the file — retires the blame buffer | MG.7, MG.23f2 | 📝 |
+| MG.27 | `⟳` in magit-status's headerline while a refresh is in flight | — | 📝 |
+| NOTIF.1 | Notification subsystem (design.md §5.9.9) — magit remote ops as first consumer | — | 📝 |
 | MG.23i+ | The new subsystems, one slice each, prioritised by daily use — the same set MG.21 still names | — | 📝 |
 
 #### MG.23a — the file target seam + `:magit-other-file-dispatch` ✅ (2026-07-30)

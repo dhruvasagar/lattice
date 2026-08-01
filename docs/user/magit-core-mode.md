@@ -73,6 +73,10 @@ cannot answer.
 
 ## Operating on one hunk of a commit
 
+> `a` and `-` are [`magit-hunk-mode`](help:magit-hunk-mode)'s, not this
+> mode's — they are described here because they are the hunk-scale
+> counterparts of `A` and `_` above.
+
 `a` and `-` are the hunk-scale versions of `A` and `_`. Where `A`
 cherry-picks a whole commit, `a` takes the **one hunk under the
 cursor** and applies it to your working tree; where `_` reverts a whole

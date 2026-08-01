@@ -1754,6 +1754,60 @@ mod tests {
         assert_no_inert_items(&jump);
     }
 
+    /// MG.24c — every view the docs say answers "what commit is under
+    /// the cursor" actually overrides the method that answers it.
+    ///
+    /// `magit-core-mode.md` names four views for `A` / `_` / `O`. Two
+    /// of them — the revision view and the rebase todo — never
+    /// implemented `commit_at_cursor`, so the trait default returned
+    /// `None` and the chords were consumed dead keys for two of the
+    /// four documented cases. Nothing failed loudly; the doc simply
+    /// described behaviour no code provided.
+    ///
+    /// Asserted structurally rather than by driving the chords: what
+    /// went wrong was a *missing override*, and an override that exists
+    /// but returns `None` for a given buffer is a different (and
+    /// legitimate) thing. This catches the class that actually bit.
+    #[test]
+    fn every_commit_showing_view_overrides_commit_at_cursor() {
+        use crate::buffer_state::MagitView;
+        use lattice_protocol::position::Position;
+
+        // A view whose `commit_at_cursor` is the trait DEFAULT answers
+        // `None` for every cursor. That is what the revision and rebase
+        // views did before this slice.
+        struct DefaultOnly;
+        impl MagitView for DefaultOnly {
+            fn refresh(&self) -> Option<Effect> {
+                None
+            }
+        }
+        assert!(
+            DefaultOnly.commit_at_cursor(Position::new(0, 0)).is_none(),
+            "the trait default must answer None — this test's premise"
+        );
+
+        // The guard: the source files for the views the docs name must
+        // each carry an override. A structural check, because
+        // constructing these views needs a live buffer store and a
+        // published state, which is a fixture per mode rather than a
+        // fact about the code.
+        for (module, file) in [
+            ("magit-status", include_str!("actions.rs")),
+            ("magit-log", include_str!("magit_log_mode.rs")),
+            ("magit-revision", include_str!("magit_revision_mode.rs")),
+            ("magit-rebase", include_str!("magit_rebase_mode.rs")),
+        ] {
+            assert!(
+                file.contains("fn commit_at_cursor"),
+                "`{module}` is named in magit-core-mode.md as a view where \
+                 `A` / `_` / `O` act on the commit at the cursor, so its \
+                 MagitView must override `commit_at_cursor` — without it \
+                 the trait default answers None and the chords are dead"
+            );
+        }
+    }
+
     /// MG.23j — every commit op is reachable by its ex-command name,
     /// which is what the picker fires.
     ///

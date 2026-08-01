@@ -83,6 +83,23 @@ impl crate::buffer_state::MagitView for RevisionView {
         Some(crate::buffer_state::DiffSource::Committed)
     }
 
+    /// MG.24c: this buffer IS one commit, so the answer does not depend
+    /// on the cursor — every line of a `git show` belongs to the sha in
+    /// the buffer's name.
+    ///
+    /// `magit-core-mode.md` has claimed since MG.20 that `A` / `_` /
+    /// `O` work in "the revision view". They did not: this view was
+    /// added by MG.23g for `a` / `-` and never overrode
+    /// `commit_at_cursor`, so the trait default returned `None` and the
+    /// chords were consumed dead keys. Reading a sha off the line under
+    /// the cursor would have been the wrong fix — the `--stat` rows and
+    /// the diff body carry no sha at all, so it would work on the
+    /// header lines and nowhere else.
+    fn commit_at_cursor(&self, _cursor: lattice_protocol::position::Position) -> Option<String> {
+        let sha = self.0.lock().ok()?.sha.clone();
+        (!sha.is_empty()).then_some(sha)
+    }
+
     fn workdir(&self) -> Option<PathBuf> {
         self.0.lock().ok().map(|g| g.workdir.clone())
     }

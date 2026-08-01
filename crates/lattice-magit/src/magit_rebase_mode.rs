@@ -23,6 +23,8 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 
+use lattice_protocol::position::Position;
+
 use lattice_config;
 use lattice_grammar::{Effect, QuitScope};
 use lattice_mode::{
@@ -72,6 +74,40 @@ pub struct RebaseState {
 /// MG.13: service alias for this mode's per-buffer state
 /// (`feedback_servicesregistry_arc_typeid`).
 pub type RebaseStatesHandle = Arc<BufferStates<RebaseState>>;
+
+/// MG.24c: this buffer's [`MagitView`], so `A` / `_` / `O` act on the
+/// commit under the cursor.
+///
+/// `magit-core-mode.md` has claimed since MG.20 that those chords work
+/// on "the rebase todo". They never have: they resolve through
+/// `MagitView::commit_at_cursor`, and this mode published no view at
+/// all, so the trait default returned `None` and every press was a
+/// consumed dead key. The data was always here — `<CR>` reads the same
+/// sha off the same line with the same parser.
+struct RebaseView(Arc<Mutex<RebaseState>>);
+
+impl crate::buffer_state::MagitView for RebaseView {
+    /// **Deliberately nothing.** A rebase todo is a file the user is
+    /// part-way through editing, and `gr` means "rebuild this view from
+    /// git" everywhere else — here that would re-read the todo from
+    /// disk and silently discard the reordering they were in the middle
+    /// of. There is no refresh that is safe to offer.
+    fn refresh(&self) -> Option<Effect> {
+        None
+    }
+
+    fn commit_at_cursor(&self, cursor: Position) -> Option<String> {
+        let g = self.0.lock().ok()?;
+        let handle = g.store.handle_for(g.buffer_id)?;
+        let snap = handle.snapshot();
+        let line = snap.buffer.line(cursor.line)?;
+        extract_sha(&line).map(str::to_string)
+    }
+
+    fn workdir(&self) -> Option<std::path::PathBuf> {
+        Some(self.0.lock().ok()?.workdir.clone())
+    }
+}
 
 fn state(ctx: &ActionContext<'_>) -> Option<Arc<Mutex<RebaseState>>> {
     crate::buffer_state::state_for::<RebaseState>(ctx)
@@ -280,8 +316,14 @@ impl Mode for MagitRebaseMode {
                     gitdir,
                 },
             );
-            let guard = BufferStateGuard::new((*states).clone(), buffer_id)
+            let mut guard = BufferStateGuard::new((*states).clone(), buffer_id)
                 .with_headerline(hl_registration);
+            // MG.24c: publish the view, or `A` / `_` / `O` resolve no
+            // commit here and stay the dead keys they have been.
+            if let Some(views) = ctx.service::<crate::buffer_state::MagitViewsHandle>() {
+                views.publish(buffer_id, Arc::new(RebaseView(state.clone())));
+                guard = guard.with_views((*views).clone());
+            }
 
             let wd = workdir.clone();
             let (upstream, initial) = tokio::task::spawn_blocking(move || {

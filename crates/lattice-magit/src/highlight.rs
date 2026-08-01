@@ -247,6 +247,49 @@ pub(crate) fn branch_styled_spans(text: &str) -> Vec<Vec<StyledSpan>> {
         .collect()
 }
 
+/// Color `magit_remote_mode::render_remote_list` output — `  <name>
+/// <padding>  <url>` per remote. The name gets `Style::Keyword` and the
+/// URL `Style::Comment`, the same split `stash_styled_spans` gives
+/// `stash@{N}` vs. its message, so "the identifier, then the detail"
+/// reads the same across every magit list buffer.
+///
+/// The `Remotes (N)` heading and the trailing blank get no spans: they
+/// do not start with the two-space row prefix.
+pub(crate) fn remote_styled_spans(text: &str) -> Vec<Vec<StyledSpan>> {
+    text.lines()
+        .map(|line| {
+            // Byte offsets. The prefix and the padding are ASCII
+            // spaces, so the only non-ASCII a row can carry is inside
+            // the name or the URL — and both boundaries below are
+            // computed from byte positions found in `line` itself.
+            let Some(rest) = line.strip_prefix("  ") else {
+                return Vec::new();
+            };
+            let Some(name_len) = rest.find(' ') else {
+                return Vec::new();
+            };
+            let after_name = &rest[name_len..];
+            let gap = after_name.len() - after_name.trim_start().len();
+            let url_start = 2 + name_len + gap;
+            if url_start >= line.len() {
+                return Vec::new();
+            }
+            vec![
+                StyledSpan {
+                    start: 2,
+                    end: 2 + name_len,
+                    style: Style::Keyword,
+                },
+                StyledSpan {
+                    start: url_start,
+                    end: line.len(),
+                    style: Style::Comment,
+                },
+            ]
+        })
+        .collect()
+}
+
 /// Color `magit_stash_mode::build_stash_list` output — `  stash@{N}
 /// <message>` per stash. MG.15 gave the list the `stash@{N}` label
 /// (fixing the dead-chord bug where the index parser read a label the
@@ -358,6 +401,55 @@ mod tests {
         assert_eq!(spans[4][0].style, Style::DiffAdd); // +added
         assert_eq!(spans[5][0].style, Style::DiffRemove); // -removed
         assert!(spans[6].is_empty()); // plain context line
+    }
+
+    /// MG.21c: the styler reads the layout `render_remote_list` writes,
+    /// so its offsets are checked against that renderer's real output
+    /// rather than a hand-typed line that could drift away from it.
+    #[test]
+    fn remote_styled_spans_color_the_name_and_the_url_of_each_row() {
+        use lattice_vcs::RemoteEntry;
+        let entries = vec![
+            RemoteEntry {
+                name: "origin".into(),
+                fetch_url: "https://a.git".into(),
+                push_url: "https://a.git".into(),
+            },
+            RemoteEntry {
+                name: "up".into(),
+                fetch_url: "https://b.git".into(),
+                push_url: "git@b.git".into(),
+            },
+        ];
+        let text = crate::magit_remote_mode::render_remote_list(&entries);
+        let lines: Vec<&str> = text.lines().collect();
+        let spans = remote_styled_spans(&text);
+
+        assert!(spans[0].is_empty(), "the `Remotes (N)` heading is unstyled");
+        for (row, entry) in entries.iter().enumerate() {
+            let i = row + 1;
+            let s = &spans[i];
+            assert_eq!(s.len(), 2, "row {i} wants a name span and a url span");
+            assert_eq!(
+                &lines[i][s[0].start..s[0].end],
+                entry.name,
+                "the name span must cover exactly the name, padding excluded"
+            );
+            assert_eq!(s[0].style, Style::Keyword);
+            assert!(
+                lines[i][s[1].start..s[1].end].starts_with(&entry.fetch_url),
+                "the url span starts at the url, not in the padding"
+            );
+            assert_eq!(s[1].style, Style::Comment);
+        }
+        // The trailing blank line carries nothing.
+        assert!(spans[spans.len() - 1].is_empty());
+    }
+
+    #[test]
+    fn remote_styled_spans_leave_the_empty_list_sentence_alone() {
+        let spans = remote_styled_spans("No remotes.\n");
+        assert!(spans.iter().all(|s| s.is_empty()));
     }
 
     #[test]

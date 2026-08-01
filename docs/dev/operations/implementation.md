@@ -4235,6 +4235,8 @@ Installs through `SubsystemBoot` seam. Inverted out of
   prompting on those trains you to dismiss the prompt that matters.
   `revert --no-edit`, because git would otherwise hang on `$EDITOR`.
   Tag / merge / bisect / submodule / remotes deferred to MG.21.
+  (Tag and merge landed in MG.23c1/c2; remote management in
+  MG.21b/c/d — see the slice plan.)
 - ✅ **MG.18c** — hunk-level `s` / `u` / `x` (2026-07-29). The hunk
   under the cursor is parsed out of the buffer's own text and applied
   as a synthesized patch; the file-level path is untouched for a cursor
@@ -4268,7 +4270,11 @@ Installs through `SubsystemBoot` seam. Inverted out of
   magit status is tracked in one place now.) As of 2026-07-31 that
   tail is MG.23j (repo-level cherry-pick / revert / reset rows via a
   commit picker) and MG.23i+ (bisect, submodule, remote management —
-  the same set MG.21 names).
+  the same set MG.21 names). As of 2026-08-01, MG.23j has landed and
+  remote management shipped as **MG.21b/c/d** —
+  `magit-remote-mode` (`:magit-remote`, `M` on the dispatch), a buffer
+  rather than magit's transient because our transients cannot render
+  the URLs. Bisect and submodule are what is left of MG.21.
 
 ## multibuffer-views (in design, 2026-05-28)
 

@@ -69,6 +69,7 @@ same surface).
 | magit — stash list         | [`magit-stash-mode`](help:magit-stash-mode) | ✅      |
 | magit — stash detail       | [`magit-stash-show-mode`](help:magit-stash-show-mode) | ✅      |
 | magit — branch list        | [`magit-branch-mode`](help:magit-branch-mode) | ✅      |
+| magit — remote list        | [`magit-remote-mode`](help:magit-remote-mode) | ✅      |
 | magit — rebase todo        | [`magit-rebase-mode`](help:magit-rebase-mode) | ✅      |
 | magit — shared chords      | [`magit-core-mode`](help:magit-core-mode) | ✅      |
 | magit — hunk chords        | [`magit-hunk-mode`](help:magit-hunk-mode) | ✅      |

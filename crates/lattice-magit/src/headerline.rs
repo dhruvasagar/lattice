@@ -616,6 +616,12 @@ pub(crate) fn branch_fields(current: &str, total: usize) -> Vec<Field> {
     fields
 }
 
+/// MG.21c — magit-remote: how many remotes are configured.
+pub(crate) fn remote_fields(total: usize) -> Vec<Field> {
+    let plural = if total == 1 { "remote" } else { "remotes" };
+    vec![Field::label(format!("{total} {plural}"))]
+}
+
 /// magit-stash: how many stashes are held.
 pub(crate) fn stash_fields(total: usize) -> Vec<Field> {
     let plural = if total == 1 { "stash" } else { "stashes" };
@@ -923,6 +929,13 @@ mod tests {
     fn branch_row_carries_current_branch_and_total() {
         assert_eq!(rendered(branch_fields("main", 12)), "main  12 branches");
         assert_eq!(rendered(branch_fields("main", 1)), "main  1 branch");
+    }
+
+    #[test]
+    fn remote_row_carries_the_count() {
+        assert_eq!(rendered(remote_fields(2)), "2 remotes");
+        assert_eq!(rendered(remote_fields(1)), "1 remote");
+        assert_eq!(rendered(remote_fields(0)), "0 remotes");
     }
 
     #[test]

@@ -103,6 +103,22 @@ impl<S> BufferStates<S> {
             map.remove(&buffer);
         }
     }
+
+    /// Every live state of this type, in no particular order.
+    ///
+    /// MG.21c: for handlers that must reach their mode's buffers
+    /// *without* being able to name one. A prompt's `-finish` action
+    /// fires with the PROMPT buffer's `buffer_id` (see
+    /// `Editor::do_prompt_line_submit`), so [`Self::get`] and
+    /// [`state_for`] both return `None` there — but the work it just
+    /// did still has to show up. Services are reachable from any
+    /// context, so the finish handler refreshes through this instead.
+    pub fn all(&self) -> Vec<Arc<Mutex<S>>> {
+        match self.map.lock() {
+            Ok(map) => map.values().cloned().collect(),
+            Err(_) => Vec::new(),
+        }
+    }
 }
 
 /// Look up this mode's state for the buffer the action fired in.

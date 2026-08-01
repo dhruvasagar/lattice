@@ -20,7 +20,8 @@ no hidden state.
 
 > **Status:** magit-status (the primary workhorse — staged, unstaged,
 > untracked, stashes, recent commits), magit-commit, magit-diff,
-> magit-log, magit-blame, magit-stash, magit-branch, magit-rebase,
+> magit-log, magit-blame, magit-stash, magit-branch, magit-remote,
+> magit-rebase,
 > and the transient dispatch menus (`C-c g` / `C-c f`) are shipped.
 > Auto-gutter-diff against HEAD is on by default (`git.auto-head-diff`).
 > See [magit-status-mode](help:magit-status-mode) for the workhorse
@@ -42,6 +43,7 @@ no hidden state.
 | `:magit-blame` | Open blame annotations for the current file |
 | `:magit-stash-list` | Open the stash list |
 | `:magit-branch` | Open the branch list |
+| `:magit-remote` | Open the [remote list](help:magit-remote-mode) — add / rename / remove / set-url / prune |
 | `:magit-rebase` | Start interactive rebase |
 | `:magit-fetch` | Fetch from the default remote (`--all`, `--prune`) |
 | `:magit-pull` | Pull from the upstream branch (fast-forward only) |
@@ -201,6 +203,7 @@ exactly like the live file. The row answers that:
 | [`magit-log-mode`](help:magit-log-mode) | `HEAD  50 commits  src/main.rs` |
 | [`magit-blame-mode`](help:magit-blame-mode) | `src/main.rs  @  a1b2c3d` — updates as `p` walks back |
 | [`magit-branch-mode`](help:magit-branch-mode) | `main  12 branches` |
+| [`magit-remote-mode`](help:magit-remote-mode) | `2 remotes` |
 | [`magit-stash-mode`](help:magit-stash-mode) | `3 stashes` |
 | [`magit-stash-show-mode`](help:magit-stash-show-mode) | `stash@{2}  WIP on main: fix the thing` |
 | [`magit-rebase-mode`](help:magit-rebase-mode) | `onto  origin/main  4 commits` — plus `REBASE IN PROGRESS` |
@@ -262,6 +265,7 @@ exist, not ones that do.
   [`magit-stash-mode`](help:magit-stash-mode),
   [`magit-stash-show-mode`](help:magit-stash-show-mode),
   [`magit-branch-mode`](help:magit-branch-mode),
+  [`magit-remote-mode`](help:magit-remote-mode),
   [`magit-rebase-mode`](help:magit-rebase-mode)
 - `:help magit-core-mode` — the [shared chords](help:magit-core-mode)
   every magit buffer inherits

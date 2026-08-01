@@ -93,6 +93,9 @@ adds inside one):
 │    [F]  pull            Fetch + fast-forward   │
 │                          merge from the remote │
 │    [P]  push            Push to the remote     │
+│    [M]  remote          Manage remotes — add,  │
+│                          rename, remove, set   │
+│                          URL, prune            │
 │                                                │
 │  ▸ Misc                                        │
 │    [r]  rebase          Start an interactive   │
@@ -110,9 +113,9 @@ adds inside one):
 └────────────────────────────────────────────────┘
 ```
 
-`s`/`d`/`l`/`b`/`r` open the corresponding buffer directly — the same
-thing `:magit-status`/`:magit-diff`/`:magit-log`/`:magit-branch`/
-`:magit-rebase` do. Once you're in that buffer, use its own direct
+`s`/`d`/`l`/`b`/`M`/`r` open the corresponding buffer directly — the
+same thing `:magit-status`/`:magit-diff`/`:magit-log`/`:magit-branch`/
+`:magit-remote`/`:magit-rebase` do. Once you're in that buffer, use its own direct
 chords (`s`/`u`/`x`/`<CR>`/… — see
 [`magit`](help:magit)) for the actual operations.
 
@@ -244,9 +247,20 @@ when pressed is worse than a row that isn't there. Two different
 reasons keep a magit entry out:
 
 **No operation behind it yet.** Magit's dispatch also offers bisect
-(`B`), submodule (`o`), remote (`M`), patch (`w`/`W`), worktree (`Z`),
-notes (`T`), clone (`C`) and more. These are planned, and each appears
-the moment its operation exists.
+(`B`), submodule (`o`), patch (`w`/`W`), worktree (`Z`), notes (`T`),
+clone (`C`) and more. These are planned, and each appears the moment
+its operation exists.
+
+**Here, but as a buffer rather than a menu.** `M` (remote management)
+is one deliberate divergence. Magit makes it a transient that renders
+`remote.<name>.url` as *variable rows* inside the menu; Lattice's
+transients have no variable rows, so a straight port would hide the
+URLs — the thing you open remote management to look at. `M` therefore
+opens [`magit-remote-mode`](help:magit-remote-mode), a buffer listing
+every remote with its URL, where `a` / `r` / `d` / `u` / `p` act on the
+row under the cursor. `M` is a transient key only: it stays unbound as
+a chord inside magit buffers so vim's middle-of-screen motion survives,
+the same reasoning that keeps `V` free.
 
 **Deliberately not coming.** Magit's `Q` runs an arbitrary git or shell
 command and shows its output. Lattice has no row for it and will not

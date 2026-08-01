@@ -33,6 +33,7 @@ pub mod magit_global_mode;
 pub mod magit_hunk_mode;
 pub mod magit_log_mode;
 pub mod magit_rebase_mode;
+pub mod magit_remote_mode;
 pub mod magit_revision_mode;
 pub mod magit_stash_mode;
 pub mod magit_stash_show_mode;
@@ -60,6 +61,7 @@ use magit_file_revision_mode::MagitFileRevisionMode;
 use magit_global_mode::MagitGlobalMode;
 use magit_log_mode::MagitLogMode;
 use magit_rebase_mode::MagitRebaseMode;
+use magit_remote_mode::MagitRemoteMode;
 use magit_revision_mode::MagitRevisionMode;
 use magit_stash_mode::MagitStashMode;
 use magit_status_mode::MagitStatusMode;
@@ -111,6 +113,10 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     boot.modes_mut()
         .register(MagitBranchMode)
         .expect("magit-branch-mode registers without conflict");
+
+    boot.modes_mut()
+        .register(MagitRemoteMode)
+        .expect("magit-remote-mode registers without conflict");
 
     boot.modes_mut()
         .register(MagitRebaseMode)
@@ -253,6 +259,10 @@ fn register_buffer_state_services(boot: &mut impl SubsystemBoot) {
     boot.register_service::<magit_rebase_mode::RebaseStatesHandle>(Arc::new(
         buffer_state::BufferStates::default(),
     ));
+    // MG.21c
+    boot.register_service::<magit_remote_mode::RemoteStatesHandle>(Arc::new(
+        buffer_state::BufferStates::default(),
+    ));
     boot.register_service::<magit_log_mode::LogStatesHandle>(Arc::new(
         buffer_state::BufferStates::default(),
     ));
@@ -290,6 +300,7 @@ fn resolve_dispatch_ids(registry: &CommandRegistry) -> transients::DispatchActio
         log: registry.id_by_name("action:magit-global-log"),
         diff: registry.id_by_name("action:magit-global-diff"),
         branch: registry.id_by_name("action:magit-global-branch"),
+        remote: registry.id_by_name("action:magit-global-remote"),
         stash: registry.id_by_name("action:magit-global-stash"),
         stash_create: registry.id_by_name("action:magit-global-stash-create"),
         rebase: registry.id_by_name("action:magit-global-rebase"),
@@ -526,6 +537,13 @@ fn register_ex_commands(registry: &mut CommandRegistry) {
         "Open the Magit branch list buffer.",
         "*magit:branch*",
         "magit-branch-mode",
+    );
+    // MG.21c
+    mk(
+        "magit-remote",
+        "Open the Magit remote list buffer.",
+        "*magit:remote*",
+        "magit-remote-mode",
     );
     // Drop the mk closure to release mutable borrow
     drop(mk);
@@ -1172,6 +1190,43 @@ fn register_action_commands(registry: &mut CommandRegistry) {
         "Merge the branch at cursor into current",
     );
 
+    // MG.21c: magit-remote-mode. The `-url` / `-finish` halves are
+    // fired by a prompt submit, never by a chord, but they are real
+    // registered actions all the same — `do_prompt_line_submit`
+    // resolves `on_submit_action` through the command registry and
+    // reports "unknown action" if it is missing.
+    reg(
+        "action:magit-global-remote",
+        "Open the Magit remote list buffer",
+    );
+    reg("action:magit-remote-add", "Add a remote");
+    reg(
+        "action:magit-remote-add-url",
+        "Ask for the new remote's URL after its name",
+    );
+    reg(
+        "action:magit-remote-add-finish",
+        "Add the remote once its name and URL are known",
+    );
+    reg("action:magit-remote-rename", "Rename the remote at cursor");
+    reg(
+        "action:magit-remote-rename-finish",
+        "Rename the remote to the typed name",
+    );
+    reg("action:magit-remote-remove", "Remove the remote at cursor");
+    reg(
+        "action:magit-remote-set-url",
+        "Set the URL of the remote at cursor",
+    );
+    reg(
+        "action:magit-remote-set-url-finish",
+        "Point the remote at the typed URL",
+    );
+    reg(
+        "action:magit-remote-prune",
+        "Delete local refs whose branch is gone from the remote at cursor",
+    );
+
     // magit-rebase-mode
     reg("action:magit-rebase-confirm", "Execute the rebase");
     reg("action:magit-rebase-abort", "Abort the rebase");
@@ -1550,6 +1605,7 @@ mod tests {
         collect!(MagitBlameMode, "magit-blame-mode");
         collect!(MagitStashMode, "magit-stash-mode");
         collect!(MagitBranchMode, "magit-branch-mode");
+        collect!(MagitRemoteMode, "magit-remote-mode");
         collect!(MagitRebaseMode, "magit-rebase-mode");
         collect!(MagitRevisionMode, "magit-revision-mode");
         collect!(MagitFileRevisionMode, "magit-file-revision-mode");
@@ -1660,6 +1716,74 @@ mod tests {
             let keys = top_level_keys(&transients::dispatch_transient(&ids, &ctx));
             assert!(keys.contains(&"S".to_string()) && keys.contains(&"U".to_string()));
         }
+    }
+
+    /// MG.21d: `M` opens remote management, in every context.
+    ///
+    /// It reads nothing from the cursor — the buffer it opens lists the
+    /// remotes itself — so unlike the section-acting rows above it must
+    /// NOT be gated on being inside a magit buffer. And it must be a
+    /// real `Action`: an `M` that fell back to a `Flag` would look
+    /// present and do nothing, which is the failure the no-inert-rows
+    /// policy exists to stop.
+    #[test]
+    fn remote_management_is_offered_everywhere_and_is_not_an_inert_row() {
+        use lattice_picker::TransientItemKind;
+
+        let mut registry = CommandRegistry::new();
+        register_action_commands(&mut registry);
+        let ids = resolve_dispatch_ids(&registry);
+
+        for ctx in [in_magit_status(), in_magit_log(), outside_magit()] {
+            let item = transients::dispatch_transient(&ids, &ctx)
+                .groups
+                .iter()
+                .flat_map(|g| &g.items)
+                .find(|i| i.key.iter().any(|k| k == "M"))
+                .cloned()
+                .expect("the dispatch offers `M` in every context");
+            assert!(
+                matches!(item.kind, TransientItemKind::Action(_)),
+                "`M` resolved to {:?}, not a real action",
+                item.label
+            );
+        }
+    }
+
+    /// The chord half of the same claim, from the other direction: `M`
+    /// is a *transient* key only. Binding it as a chord inside a magit
+    /// buffer would shadow vim's middle-of-screen motion — the same
+    /// reasoning that keeps `V` free
+    /// (`feedback_magit_keys_follow_evil_magit`).
+    #[test]
+    fn no_magit_mode_binds_m_as_a_chord() {
+        use lattice_mode::Mode;
+        macro_rules! check {
+            ($($mode:expr => $label:literal),* $(,)?) => {
+                $(for entry in $mode.keymap().entries {
+                    assert!(
+                        entry.chord != "M",
+                        "`{}` binds `M`, shadowing the vim motion — put it \
+                         on the dispatch transient instead", $label
+                    );
+                })*
+            };
+        }
+        check!(
+            MagitCoreMode => "magit-core-mode",
+            MagitStatusMode => "magit-status-mode",
+            MagitBranchMode => "magit-branch-mode",
+            MagitRemoteMode => "magit-remote-mode",
+            MagitStashMode => "magit-stash-mode",
+            MagitLogMode => "magit-log-mode",
+            MagitDiffMode => "magit-diff-mode",
+            MagitBlameMode => "magit-blame-mode",
+            MagitRebaseMode => "magit-rebase-mode",
+            MagitRevisionMode => "magit-revision-mode",
+            MagitFileRevisionMode => "magit-file-revision-mode",
+            magit_stash_show_mode::MagitStashShowMode => "magit-stash-show-mode",
+            magit_hunk_mode::MagitHunkMode => "magit-hunk-mode",
+        );
     }
 
     /// The `s` row swaps meaning in magit-status and only there — the
@@ -1839,6 +1963,42 @@ mod tests {
                 op.ex_command
             );
         }
+    }
+
+    /// MG.21c: `:magit-remote` exists and is an ex-command.
+    ///
+    /// Two independent registrations open `*magit:remote*` with
+    /// `magit-remote-mode` — this one and `M`'s
+    /// `action:magit-global-remote`. Both are asserted here, because a
+    /// drift between them is silent: the buffer would open with no
+    /// mode, so every chord on it would be inert while the buffer
+    /// itself looked fine.
+    #[test]
+    fn the_remote_buffer_is_reachable_by_ex_command_and_by_action() {
+        let mut registry = CommandRegistry::new();
+        register_ex_commands(&mut registry);
+        let id = registry
+            .id_by_name("magit-remote")
+            .expect("`:magit-remote` must exist");
+        assert!(
+            registry.ex_command_spec(id).is_some(),
+            "`:magit-remote` must be an EX command, not an action of the same name"
+        );
+
+        let mut actions = CommandRegistry::new();
+        register_action_commands(&mut actions);
+        assert!(
+            actions.id_by_name("action:magit-global-remote").is_some(),
+            "`M` fires `action:magit-global-remote` — it must be registered"
+        );
+
+        // The mode both paths name has to be the one that is actually
+        // installed, or the buffer opens without its keymap.
+        assert_eq!(
+            MagitRemoteMode::mode_id().as_str(),
+            "magit-remote-mode",
+            "the mode id both open paths hardcode"
+        );
     }
 
     /// The repo-level rows fire the SAME actions the chords fire, so a
@@ -2126,6 +2286,7 @@ mod tests {
             MagitBlameMode => "magit-blame-mode",
             MagitStashMode => "magit-stash-mode",
             MagitBranchMode => "magit-branch-mode",
+            MagitRemoteMode => "magit-remote-mode",
             MagitRebaseMode => "magit-rebase-mode",
             MagitRevisionMode => "magit-revision-mode",
             MagitFileRevisionMode => "magit-file-revision-mode",
@@ -2211,6 +2372,7 @@ mod tests {
             MagitBlameMode,
             MagitStashMode,
             MagitBranchMode,
+            MagitRemoteMode,
             MagitRebaseMode,
             MagitRevisionMode,
             MagitFileRevisionMode,
@@ -2256,6 +2418,7 @@ mod tests {
             MagitBlameMode => "magit-blame-mode",
             MagitStashMode => "magit-stash-mode",
             MagitBranchMode => "magit-branch-mode",
+            MagitRemoteMode => "magit-remote-mode",
             MagitRebaseMode => "magit-rebase-mode",
             MagitRevisionMode => "magit-revision-mode",
             MagitFileRevisionMode => "magit-file-revision-mode",
@@ -2280,9 +2443,9 @@ mod tests {
             .filter(|m| m.contains("Magit"))
             .count();
         assert_eq!(
-            installed, 14,
+            installed, 15,
             "`install` registers {installed} magit modes but this guard \
-             checks 14 — a mode registered at boot and absent from the \
+             checks 15 — a mode registered at boot and absent from the \
              lists above has its chords unverified"
         );
 
@@ -2475,6 +2638,7 @@ mod tests {
         }
         for (label, contributions) in [
             ("magit-branch-mode", MagitBranchMode.action_handlers()),
+            ("magit-remote-mode", MagitRemoteMode.action_handlers()),
             ("magit-stash-mode", MagitStashMode.action_handlers()),
             ("magit-diff-mode", MagitDiffMode.action_handlers()),
             ("magit-log-mode", MagitLogMode.action_handlers()),
@@ -2601,7 +2765,7 @@ mod tests {
         );
         assert_eq!(
             root.len(),
-            23,
+            24,
             "expected every root-dispatch leaf (incl. both submenus') to \
              report inert, got: {root:?}"
         );

@@ -342,6 +342,67 @@ Each is a synthetic Document with its own major mode:
   `.git/rebase-merge` or `.git/rebase-apply` actually exists, so it can't
   fail against a rebase that was never started.
 
+### 4.6b magit-remote (`*magit:remote*`)
+
+The configured remotes, one row per remote: `  <name><pad>  <fetch-url>`,
+with `  (push: <url>)` appended **only when the push URL differs**. `a`
+add, `r` rename, `d` remove, `u` set-url, `p` prune. `:magit-remote`, or
+`M` on the root dispatch. Chord table: §12.9b.
+
+**Why a buffer and not a transient — the one deliberate divergence from
+magit here.** Magit puts remote management on the `M` transient and
+renders `remote.<name>.url` / `.pushurl` as *variable rows* inside the
+menu. Lattice's transient substrate has no variable-row concept, so a
+straight port would leave the URLs invisible and make every operation a
+name typed blind — and "what is origin actually pointing at?" is the
+most common reason to open remote management at all. Rendering the list
+into a Document is what makes it readable, `/`-searchable, `y`-yankable
+and `gr`-refreshable: paramount goal #3's everything-is-a-buffer claim
+doing real work rather than being observed. It also removes machinery —
+because the rows are on screen, `r` / `d` / `u` need no picker to choose
+a target, unlike the transient shape which would need one for each.
+
+**Cursor→remote mapping goes through stored state, not the rendered
+line.** `RemoteState::entries` holds the `Vec<RemoteEntry>` the last
+render was built from, and row `i` is entry `i - 1` (line 0 is the
+`Remotes (N)` heading). Re-parsing the line under the cursor — which is
+what magit-branch does — would decode the heading as a remote named
+`Remotes` and hand it to `git remote remove`. Guarded by
+`the_heading_row_maps_to_no_remote` plus a test asserting the renderer's
+row order and the mapping agree.
+
+**`a` / `r` / `u` are prompt-backed, and the target rides in the prompt
+buffer's name.** A prompt submit fires its `on_submit_action` with the
+PROMPT buffer's `buffer_id` (`Editor::do_prompt_line_submit`), so
+`state_for` returns `None` there and the finish handler cannot reach the
+remote buffer by id. Two consequences, both handled the way
+`magit_global_mode`'s file-rename prompt already does: the remote name
+is carried in `*magit:remote-{add,rename,set-url}:<name>*`, and the
+refresh afterwards goes through `BufferStates::all()` — a service
+lookup, which is context-free — rather than through the buffer id. `a`
+chains two prompts (name, then URL) in magit's own order.
+
+**`d` does not confirm.** §12.13 reserves ask/execute for
+*irrecoverable* operations. Removing a remote drops config and tracking
+refs that `a` restores in two prompts, and the URL is on the row in
+front of the user at press time; asking here would dilute the prompt
+that matters (`Oh`). Magit does not confirm it either.
+
+**`p` is the only network row.** It echoes `pruning <name>…`
+synchronously and refreshes when the detached task returns — the same
+optimistic-echo shape §9 describes, because there is no synchronous path
+back from a detached task. The others are local config edits.
+
+**Fetch / pull / push are deliberately elsewhere.** They are
+`magit_global_mode`'s `RemoteOp` — long-running network operations with
+their own flag sub-transients on `f` / `F` / `P`. This mode manages
+*which remotes exist and where they point*; the split is by lifetime and
+by whether flags apply, not by subject matter.
+
+**Known gap:** `u` sets the fetch URL only (`git remote set-url`). A
+separately-configured push URL is *shown* but has no editing chord. The
+list carrying both columns is what keeps that honest rather than hidden.
+
 ### 4.7 magit-revision (`*magit:commit:<sha>*`)
 
 A read-only `git show --stat -p <sha>` view of a single commit. Opened by
@@ -403,6 +464,7 @@ magit's in-body `Head:` / `Merge:` lines.
 | magit-log | `HEAD  50 commits  src/main.rs` |
 | magit-blame | `src/main.rs  @  a1b2c3d` |
 | magit-branch | `main  12 branches` |
+| magit-remote | `2 remotes` |
 | magit-stash | `3 stashes` |
 | magit-stash-show | `stash@{2}  WIP on main: fix the thing` |
 | magit-rebase | `onto  origin/main  4 commits  REBASE IN PROGRESS` |
@@ -1814,6 +1876,35 @@ no base choice — `Branch::create(repo, name, true, None)`), is still
 registered unchanged for the scriptable/quick path; the wizard is the
 interactive path when a non-HEAD base is wanted.
 
+### 12.9b `magit-remote-mode`
+
+| Chord | Action | Command |
+|---|---|---|
+| `a` | Add a remote (asks name, then URL) | `magit-remote-add` |
+| `r` | Rename the remote at cursor | `magit-remote-rename` |
+| `d` | Remove the remote at cursor (does NOT ask — §4.6b) | `magit-remote-remove` |
+| `u` | Set the fetch URL of the remote at cursor | `magit-remote-set-url` |
+| `p` | Prune the remote at cursor | `magit-remote-prune` |
+
+Magit's own keys are `a` / `r` / `k` / `p` plus `u` as a url variable
+row. Four carry over; **`k` does not** — it is the up-motion, and
+evil-collection-magit moves every magit `k` off it. Removal lands on
+`d`, which is what magit-stash's drop (§12.8) and magit-branch's delete
+(§12.9) already mean, so one rule covers all three list buffers.
+
+`<CR>` is unbound: there is nothing to open a remote *into*, and an
+inert chord is worse than an absent one.
+
+`M` is a **transient key only** (§4.6b) — never a chord, so vim's
+middle-of-screen motion survives in every magit buffer. Guarded by
+`no_magit_mode_binds_m_as_a_chord`, the peer of the `V` guard.
+
+Each of `a` / `r` / `u` returns `Effect::OpenPrompt` and finishes in a
+`-finish` action. Because a prompt submit fires with the *prompt*
+buffer's id, those handlers carry their target in the prompt buffer's
+name and refresh through `BufferStates::all()` rather than by buffer id
+— see §4.6b.
+
 ### 12.10 `magit-rebase-mode`
 
 | Chord | Action | Command |
@@ -1843,6 +1934,7 @@ That same check decides whether it asks: nothing in progress means
 | `:magit-stash-list` | Open stash list buffer |
 | `:magit-branch` | Open branch list buffer |
 | `:magit-branch-create <name>` | Create a branch from HEAD and check it out (no base choice — the interactive `c` wizard in `*magit:branch*` lets you pick a base, §12.9) |
+| `:magit-remote` | Open the remote list buffer (§4.6b, §12.9b) — the same buffer `M` on the dispatch opens |
 | `:magit-rebase [upstream]` | Start interactive rebase; no arg resolves `@{upstream}` |
 | `:magit-dispatch` | Open the repo-level dispatch transient (`Effect::OpenTransient`) |
 | `:magit-file-dispatch` | Open the file-dispatch transient — its items are real (stage/diff the active buffer's file, §8.8) |

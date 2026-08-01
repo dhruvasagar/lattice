@@ -176,6 +176,15 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         "*magit:stash*",
         "magit-stash-mode"
     );
+    // MG.21d: `M` on the root dispatch, magit's own key for remote
+    // management. It opens the remote BUFFER rather than a submenu —
+    // see `magit_remote_mode`'s header for why the list needs a
+    // surface that can show URLs.
+    open!(
+        "action:magit-global-remote",
+        "*magit:remote*",
+        "magit-remote-mode"
+    );
     open!(
         "action:magit-global-rebase",
         "*magit:rebase*",

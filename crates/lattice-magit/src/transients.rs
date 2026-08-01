@@ -114,6 +114,8 @@ pub struct DispatchActionIds {
     pub log: Option<CommandId>,
     pub diff: Option<CommandId>,
     pub branch: Option<CommandId>,
+    /// MG.21d: `M` — remote management, magit's own key.
+    pub remote: Option<CommandId>,
     pub stash: Option<CommandId>,
     pub stash_create: Option<CommandId>,
     pub rebase: Option<CommandId>,
@@ -498,6 +500,19 @@ pub fn dispatch_transient(ids: &DispatchActionIds, ctx: &TransientContext) -> Tr
                             "push_op",
                         ))),
                     },
+                    // MG.21d: magit's `M`. Not a submenu — the row
+                    // opens the remote list buffer, because the URLs
+                    // are the point and a menu cannot show them. `M`
+                    // costs nothing here: transient keys do not shadow
+                    // the vim grammar, which is also why `M` stays
+                    // unbound as a chord inside magit buffers.
+                    action_or_placeholder(
+                        ids.remote,
+                        "M",
+                        "remote",
+                        "Manage remotes — add, rename, remove, set URL, prune",
+                        "remote_manage_op",
+                    ),
                 ],
             },
             TransientGroup {

@@ -53,6 +53,10 @@ pub enum VcsError {
     #[error("remote operation failed: {0}")]
     Remote(String),
 
+    /// Bisect operation failed.
+    #[error("bisect operation failed: {0}")]
+    Bisect(String),
+
     /// A working-tree status entry could not be parsed.
     #[error("status parse error: {0}")]
     StatusParse(String),

@@ -20,6 +20,7 @@
 
 #![deny(unsafe_code)]
 
+mod bisect;
 mod blob;
 mod branch;
 mod commit;
@@ -31,6 +32,7 @@ mod repository;
 mod stash;
 mod working_tree;
 
+pub use bisect::{Bisect, BisectState, parse_bisect_vars};
 pub use blob::GitBlob;
 pub use branch::Branch;
 pub use commit::Commit;

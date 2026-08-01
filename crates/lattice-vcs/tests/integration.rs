@@ -9,7 +9,8 @@ use std::path::Path;
 use std::process::Command;
 
 use lattice_vcs::{
-    Branch, Commit, GitBlob, Index, PathStatus, Reference, Remote, Repository, Stash, WorkingTree,
+    Bisect, Branch, Commit, GitBlob, Index, PathStatus, Reference, Remote, Repository, Stash,
+    WorkingTree,
 };
 
 /// Create a temporary directory, initialise a git repo in it, and
@@ -721,4 +722,154 @@ fn run_git_stdin_round_trips_input() {
     let oid = String::from_utf8(out).expect("utf-8");
     let back = git(&repo, &["cat-file", "-p", oid.trim()]);
     assert_eq!(back, "hello lattice\n", "the bytes we piped came back");
+}
+
+// MG.21e — bisect. These drive a REAL `git bisect` in a temp repo:
+// the state read is derived from git's own refs, so a test that faked
+// them would pass against a reading that git would never produce.
+
+/// A repo with `n` commits on one file, oldest first. Returns their
+/// SHAs in commit order.
+fn repo_with_linear_history(n: usize) -> (tempfile::TempDir, Repository, Vec<String>) {
+    let (dir, repo) = init_temp_repo();
+    let mut shas = Vec::new();
+    for i in 0..n {
+        write_file(repo.workdir().unwrap(), "a.txt", &format!("line {i}\n"));
+        git_add(&repo, "a.txt");
+        git_commit(&repo, &format!("commit {i}"));
+        shas.push(git(&repo, &["rev-parse", "HEAD"]).trim().to_string());
+    }
+    (dir, repo, shas)
+}
+
+#[test]
+fn no_bisect_running_reads_as_none() {
+    let (_dir, repo, _) = repo_with_linear_history(3);
+    assert!(!Bisect::in_progress(&repo));
+    assert_eq!(Bisect::state(&repo).expect("state"), None);
+}
+
+#[test]
+fn starting_a_bisect_makes_it_in_progress_and_reset_ends_it() {
+    let (_dir, repo, shas) = repo_with_linear_history(5);
+    Bisect::start(&repo, Some(&shas[4]), Some(&shas[0])).expect("start");
+    assert!(
+        Bisect::in_progress(&repo),
+        "`in_progress` reads .git/BISECT_LOG — git must have created it"
+    );
+
+    Bisect::reset(&repo).expect("reset");
+    assert!(!Bisect::in_progress(&repo));
+    assert_eq!(Bisect::state(&repo).expect("state"), None);
+}
+
+#[test]
+fn the_state_reports_the_revisions_git_itself_would() {
+    // Eight commits, oldest good, newest bad: six candidates remain
+    // between them, so five are left after the one checked out.
+    let (_dir, repo, shas) = repo_with_linear_history(8);
+    Bisect::start(&repo, Some(&shas[7]), Some(&shas[0])).expect("start");
+
+    let state = Bisect::state(&repo).expect("state").expect("in progress");
+    assert_eq!(
+        state.revisions_left,
+        Some(3),
+        "must match `git bisect`'s own \"3 revisions left\" for this repo: {state:?}"
+    );
+    assert_eq!(
+        state.steps,
+        Some(2),
+        "and its \"roughly 2 steps\": {state:?}"
+    );
+    assert!(
+        !state.start_ref.is_empty(),
+        "reset needs a ref to return to: {state:?}"
+    );
+}
+
+/// The number we render must be the number `git bisect` prints in the
+/// same terminal. Asserting our own reading against a hand-computed
+/// constant is what let a wrong formula (`count - 1`) pass once; this
+/// parses git's message and compares.
+#[test]
+fn the_reported_count_agrees_with_gits_own_message() {
+    let (_dir, repo, shas) = repo_with_linear_history(8);
+    let output = Command::new("git")
+        .args(["bisect", "start", &shas[7], &shas[0]])
+        .current_dir(repo.workdir().unwrap())
+        .output()
+        .expect("git bisect start");
+    let printed = String::from_utf8_lossy(&output.stdout).to_string()
+        + &String::from_utf8_lossy(&output.stderr);
+    // "Bisecting: 3 revisions left to test after this (roughly 2 steps)"
+    let from_git: usize = printed
+        .split("Bisecting: ")
+        .nth(1)
+        .and_then(|rest| rest.split_whitespace().next())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or_else(|| panic!("git did not print a count: {printed}"));
+
+    let state = Bisect::state(&repo).expect("state").expect("in progress");
+    assert_eq!(
+        state.revisions_left,
+        Some(from_git),
+        "we report {:?}, git printed {from_git}",
+        state.revisions_left
+    );
+}
+
+#[test]
+fn marking_narrows_the_range() {
+    let (_dir, repo, shas) = repo_with_linear_history(8);
+    Bisect::start(&repo, Some(&shas[7]), Some(&shas[0])).expect("start");
+    let before = Bisect::state(&repo).unwrap().unwrap().revisions_left;
+
+    Bisect::good(&repo, None).expect("mark the checked-out revision good");
+    let after = Bisect::state(&repo).unwrap().unwrap().revisions_left;
+
+    assert!(
+        after < before,
+        "a mark must narrow the search: {before:?} -> {after:?}"
+    );
+}
+
+#[test]
+fn a_bisect_with_no_good_ref_yet_reports_no_count_rather_than_zero() {
+    // Only the bad end is known, so nothing has been narrowed.
+    // Reporting `0` here would read as "finished".
+    let (_dir, repo, shas) = repo_with_linear_history(5);
+    Bisect::start(&repo, None, None).expect("start unbounded");
+    Bisect::bad(&repo, Some(&shas[4])).expect("mark bad");
+
+    let state = Bisect::state(&repo).expect("state").expect("in progress");
+    assert_eq!(state.revisions_left, None, "no range yet: {state:?}");
+}
+
+#[test]
+fn skip_is_accepted_and_keeps_the_bisect_running() {
+    let (_dir, repo, shas) = repo_with_linear_history(8);
+    Bisect::start(&repo, Some(&shas[7]), Some(&shas[0])).expect("start");
+    Bisect::skip(&repo, None).expect("skip the checked-out revision");
+    assert!(Bisect::in_progress(&repo));
+}
+
+#[test]
+fn the_log_records_every_mark() {
+    let (_dir, repo, shas) = repo_with_linear_history(6);
+    Bisect::start(&repo, Some(&shas[5]), Some(&shas[0])).expect("start");
+    Bisect::good(&repo, None).expect("good");
+
+    let log = Bisect::log(&repo).expect("log");
+    assert!(log.contains("bisect start"), "log: {log}");
+    assert!(log.contains("good"), "log: {log}");
+}
+
+#[test]
+fn marking_outside_a_bisect_is_an_error_not_a_silent_no_op() {
+    let (_dir, repo, _) = repo_with_linear_history(3);
+    let err = Bisect::good(&repo, None).expect_err("no bisect running");
+    assert!(
+        format!("{err}").contains("bisect good"),
+        "the error names the operation: {err}"
+    );
 }

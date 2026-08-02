@@ -67,9 +67,12 @@ to search.
   [`magit-core-mode`](help:magit-core-mode); apart from the two history
   steps this is a plain read-only view, not an interactive one.
 - **`gr` is a deliberate no-op** — a fixed ref's blob never changes.
-- **No syntax highlighting for the file's own language yet.** Synthetic
-  buffers have no filename-based language detection wired up. A known
-  limitation, not a silent failure.
+- **Syntax highlighting works**, with the same grammar the file would
+  get in your working tree — the language comes from the path in the
+  buffer's name. A file type with no grammar shows as plain text,
+  exactly as it would anywhere else. (Earlier versions of this page
+  listed the absence of highlighting as a known limitation; it was
+  fixed in MG.26c.)
 
 ## See also
 

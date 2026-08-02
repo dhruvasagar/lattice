@@ -159,6 +159,27 @@ fn lsp_services_present_at_boot() {
     );
 }
 
+/// MG.26c: the language registry is a *service* so a mode that owns a
+/// pathless synthetic buffer can highlight it from the same grammar
+/// set every other buffer uses.
+///
+/// Pinned under the exact type the register site uses. A mismatch here
+/// is the `ServiceRegistry` Arc/TypeId trap in its worst form: the
+/// lookup returns `None`, the mode silently falls back to plain text,
+/// and the only symptom is a buffer that is not coloured — which looks
+/// like a missing grammar rather than a missing service.
+#[test]
+fn lang_registry_service_present_at_boot() {
+    assert!(
+        boot()
+            .services
+            .get::<Arc<lattice_syntax::LangRegistry>>()
+            .is_some(),
+        "Arc<LangRegistry> must be registered — magit's blob buffer reads it \
+         to highlight a file shown at a revision"
+    );
+}
+
 #[test]
 fn terminal_service_present_at_boot() {
     assert!(

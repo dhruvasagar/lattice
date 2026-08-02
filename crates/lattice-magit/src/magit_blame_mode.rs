@@ -281,7 +281,6 @@ impl Drop for BlameRegistration {
 // ── Per-buffer state ─────────────────────────────────────────────────
 
 pub struct BlameState {
-    buffer_id: lattice_core::BufferId,
     workdir: std::path::PathBuf,
     /// Repo-relative path being blamed.
     path: String,
@@ -484,7 +483,6 @@ impl Mode for MagitBlameMode {
             let state = states.publish(
                 buffer_id,
                 BlameState {
-                    buffer_id,
                     workdir: workdir.clone(),
                     path: path.clone(),
                     rev: rev.clone(),

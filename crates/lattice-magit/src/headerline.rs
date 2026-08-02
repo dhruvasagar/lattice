@@ -684,30 +684,6 @@ pub(crate) fn log_fields(git_ref: &str, commits: usize, path: Option<&Path>) -> 
 
 /// magit-blame: the path and the revision currently blamed — `p`
 /// walks the revision back, and without this the buffer gives no clue
-/// how far back you have walked.
-pub(crate) fn blame_fields(path: &str, rev: &str) -> Vec<Field> {
-    vec![
-        Field::label(path.to_string()),
-        Field::label("@"),
-        Field::git_ref(rev.to_string()),
-    ]
-}
-
-/// MG.23f2 — magit-blame in reverse: the path, and the revision the
-/// walk *starts* from.
-///
-/// The word "reverse" is not decoration. A reverse blame's body is
-/// indistinguishable from a forward one, and the shas mean the
-/// opposite thing — the last commit a line survived in, not the commit
-/// that added it. Without the label the buffer silently invites the
-/// wrong reading of every row.
-pub(crate) fn blame_reverse_fields(path: &str, rev: &str) -> Vec<Field> {
-    vec![
-        Field::label(path.to_string()),
-        Field::label("reverse from"),
-        Field::git_ref(rev.to_string()),
-    ]
-}
 
 /// magit-branch: the checked-out branch and how many exist.
 pub(crate) fn branch_fields(current: &str, total: usize) -> Vec<Field> {
@@ -1146,14 +1122,6 @@ mod tests {
         assert_eq!(
             rendered(log_fields("HEAD", 1, Some(Path::new("src/main.rs")))),
             "HEAD  1 commit  src/main.rs"
-        );
-    }
-
-    #[test]
-    fn blame_row_carries_path_and_the_revision_walked_to() {
-        assert_eq!(
-            rendered(blame_fields("src/main.rs", "a1b2c3d")),
-            "src/main.rs  @  a1b2c3d"
         );
     }
 

@@ -210,16 +210,36 @@ impl Mode for MagitFileRevisionMode {
                 headerline::publish(&hl, headerline::file_revision_fields(git_ref, path));
             }
 
+            // MG.26c: the content and its highlighting come out of the
+            // SAME blocking task. Parsing a whole file is exactly the
+            // work paramount goal #1 keeps off the actor thread, and
+            // splitting it into a second task would mean reading the
+            // text back out of the buffer to parse it.
             let wd = workdir.clone();
-            let text = tokio::task::spawn_blocking(move || match parsed {
-                Some((git_ref, path)) => run_show_file(&wd, &git_ref, &path),
-                None => "No file/ref given.\n".to_string(),
+            let registry = ctx
+                .service::<std::sync::Arc<lattice_syntax::LangRegistry>>()
+                .map(|outer| (*outer).clone());
+            let (text, spans) = tokio::task::spawn_blocking(move || match parsed {
+                Some((git_ref, path)) => {
+                    let text = run_show_file(&wd, &git_ref, &path);
+                    let spans = registry
+                        .as_ref()
+                        .and_then(|r| crate::highlight::file_syntax_spans(&path, &text, r));
+                    (text, spans)
+                }
+                None => ("No file/ref given.\n".to_string(), None),
             })
             .await
-            .unwrap_or_default();
+            .unwrap_or_else(|_| (String::new(), None));
             crate::buffer_io::replace_buffer_text(&handle, text).await;
             if let Some(ph) = ctx.service::<lattice_mode::PendingSyntheticHighlights>() {
-                ph.wake();
+                match spans {
+                    // An unrecognised extension or a missing grammar
+                    // leaves the buffer plain, which is what it was
+                    // before — never a failure.
+                    Some(spans) => ph.store_and_wake(buffer_id, spans),
+                    None => ph.wake(),
+                }
             }
 
             Ok(hl_registration)

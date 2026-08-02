@@ -306,6 +306,31 @@ registered action and a handler.
 `magit-blame-mode` also left `magit-core-mode`'s `Majors` allowlist —
 naming a minor there is an entry that can never match.
 
+**The blob buffer is highlighted (MG.26c).** `*magit:file:<rev>:<path>*`
+had no highlighting at all — it called
+`PendingSyntheticHighlights::wake()` with no spans, so a file opened at
+a revision was plain text while the same file in the working tree was
+coloured. `highlight::file_syntax_spans` derives `Lang` from the path
+in the buffer's name and parses in the same `spawn_blocking` that ran
+`git show`, so the content and its colours land together and neither
+touches the actor thread. An unrecognised extension or a missing
+grammar leaves the buffer plain — what it was before — rather than
+failing it.
+
+**This is not MG.22's parser wrinkle**, which stays open. There a
+*minor* wants to supply a **diff** parser for content whose language is
+not the buffer's identity. Here the content IS the file and its name
+says which one — the same derivation `lattice-multibuffer` and
+`grep_highlight.rs` already make.
+
+**`Arc<LangRegistry>` became a service for this.** The host already
+owned one; a mode building its own `LangRegistry::standard()` would
+load every grammar a second time and drift from whatever the host is
+configured with. Pinned by `lang_registry_service_present_at_boot`,
+because a `TypeId` mismatch here fails in the worst way available: the
+lookup returns `None`, the mode falls back to plain text, and the only
+symptom is an uncoloured buffer that looks like a missing *grammar*.
+
 **Retired with it:** `*magit:blame:<path>*`,
 `*magit:blame-reverse:<rev>:<path>*`, the blame *major*,
 `blame_styled_spans` and `format_blame_porcelain`'s row formatter. The

@@ -916,6 +916,12 @@ impl Editor {
         // line on the grep blocking task (off the render thread; the
         // picker crate has no syntax dep). See picker-preview-highlight.md §7.
         let lang_registry = LangRegistry::standard().expect("standard lang registry");
+        // MG.26c: expose the SAME registry every buffer's grammar comes
+        // from, so a mode that owns a pathless synthetic buffer can
+        // highlight it. Building a second `LangRegistry::standard()`
+        // inside such a mode would load every grammar twice and would
+        // drift from whatever the host is actually configured with.
+        boot.register_service::<Arc<LangRegistry>>(lang_registry.clone());
         let grep_highlighter: Option<
             Arc<dyn lattice_picker::picker_sources::GrepPreviewHighlighter>,
         > = Some(crate::grep_highlight::SyntaxGrepHighlighter::new(

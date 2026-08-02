@@ -1301,7 +1301,7 @@ the buffer you are already in is the actual no-op. See MG.23h's note.
 | MG.27 | in-flight indicator in magit headerlines (a word, not `⟳` — see below) | — | ✅ |
 | MG.26a | The blame model — porcelain → chunks → heading text (pure) | — | ✅ |
 | MG.26b | `magit-blame-mode` as a minor + the chunk-heading provider; retires the major and both blame buffers | MG.26a | ✅ |
-| MG.26c | Syntax highlighting for the blob buffer (reverse blame's content) | MG.26b | 📝 |
+| MG.26c | Syntax highlighting for the blob buffer (reverse blame's content) | MG.26b | ✅ |
 | NOTIF.1 | Notification subsystem (design.md §5.9.9) — magit remote ops as first consumer | — | 📝 |
 | MG.23i+ | The new subsystems, one slice each, prioritised by daily use — the same set MG.21 still names | — | 📝 |
 
@@ -1496,7 +1496,7 @@ of its own, though — `*magit:blame:<path>*` carries no revision, so the
 buffer name, the argv and the headerline all move together. Filed as
 MG.23f2 rather than smuggled in here.
 
-### MG.26 — magit-blame as a minor on the file 🚧 (2026-07-31; MG.26a/b landed 2026-08-02, MG.26c open)
+### MG.26 — magit-blame as a minor on the file ✅ (designed 2026-07-31; MG.26a/b/c landed 2026-08-02)
 
 Design fragment:
 [`../../architecture/magit-blame.md`](../../architecture/magit-blame.md).
@@ -2182,6 +2182,47 @@ did not land, and there is no `do`/`dp` hunk transfer.
 - **Deliverables:** two-pane layout via D.4's pane-group machinery,
   scroll-bound; `do`/`dp` on top of MG.18's hunk identity.
 - **Tests:** panes stay scroll-synced; `do`/`dp` move exactly one hunk.
+
+### MG.26c — the blob buffer gets its highlighting ✅ (2026-08-02)
+
+Design: [`../../architecture/magit.md`](../../architecture/magit.md)
+§4.4. **MG.26 is complete with this.**
+
+`*magit:file:<rev>:<path>*` had no highlighting at all — it called
+`PendingSyntheticHighlights::wake()` with no spans, so a file opened at
+a revision was plain text while the same file in the working tree was
+coloured. MG.26b's reverse blame annotates that buffer, which is what
+made it worth closing.
+
+`highlight::file_syntax_spans` derives `Lang` from the path in the
+buffer's name and parses in the **same `spawn_blocking` that ran `git
+show`** — so the content and its colours land together, and splitting
+them would have meant reading the text back out of the buffer to parse
+it. An unrecognised extension or a missing grammar leaves the buffer
+plain (what it was before), never fails it.
+
+**`Arc<LangRegistry>` is now a service.** The host already owned one;
+a mode building its own `LangRegistry::standard()` would load every
+grammar twice and drift from the host's configured set. Pinned in
+`boot_regression_pins` under the exact registration type, because this
+is the `ServiceRegistry` Arc/TypeId trap in its worst form — the lookup
+returns `None`, the mode falls back to plain text, and the symptom is
+an uncoloured buffer that reads as a missing *grammar*.
+
+**Not MG.22's parser wrinkle**, which stays open: there a *minor* wants
+a **diff** parser for content whose language is not the buffer's
+identity. "This blob is Rust because its name ends `.rs`" is not that.
+
+**Dead code from MG.26b cleared in the same pass:**
+`headerline::blame_fields` / `blame_reverse_fields` and
+`BlameState::buffer_id` — all reachable only from the retired blame
+buffer.
+
+- **Tests:** 4 magit (real Rust gets spans, unknown extension declines,
+  row count matches line count for the trailing-newline cases, empty
+  blob declines) + 1 boot pin.
+- **No bench:** the parse is on `spawn_blocking` inside activation,
+  once per buffer open; nothing per frame or per keystroke.
 
 ### MG.26b — blame as a minor ✅ (2026-08-02)
 

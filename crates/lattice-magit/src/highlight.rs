@@ -12,6 +12,51 @@
 
 use lattice_cells::style::{Style, StyledSpan};
 
+/// MG.26c: real tree-sitter highlighting for a synthetic buffer whose
+/// content is a *file*, derived from the path in its name.
+///
+/// **The blob buffer (`*magit:file:<rev>:<path>*`) had none at all** —
+/// it called `PendingSyntheticHighlights::wake()` with no spans, so a
+/// file opened at a revision was plain text while the same file in the
+/// working tree was highlighted. Reverse blame (MG.26b) annotates that
+/// buffer, which is what made it worth fixing.
+///
+/// **This is not MG.22's parser wrinkle.** There, a *minor* wants to
+/// supply a **diff** parser for content whose language is not the
+/// buffer's identity, and that stays open. Here the content IS the
+/// file and its name says which one — the same derivation
+/// `lattice-multibuffer` and `grep_highlight.rs` already make.
+///
+/// `None` when the language is unrecognised or no grammar is
+/// available: the caller then leaves the buffer plain, which is what
+/// it was before. Never an error — a missing grammar must degrade to
+/// plain text, not to a failed buffer.
+///
+/// **Runs on `spawn_blocking`**, never the actor thread: parsing a
+/// whole file is exactly the work paramount goal #1 keeps off it.
+pub(crate) fn file_syntax_spans(
+    path: &std::path::Path,
+    text: &str,
+    registry: &std::sync::Arc<lattice_syntax::LangRegistry>,
+) -> Option<Vec<Vec<StyledSpan>>> {
+    let lang = lattice_syntax::Lang::detect_from_path(Some(path));
+    if lang == lattice_syntax::Lang::Plain {
+        return None;
+    }
+    let mut syntax = lattice_syntax::Syntax::for_language_with_registry(lang, registry.clone())
+        .ok()
+        .flatten()?;
+    syntax.parse(text);
+    // `highlight_lines` is end-exclusive, and a trailing newline does
+    // not make a line — asking for one line too many is an error, not
+    // an empty row.
+    let lines = text.lines().count() as u32;
+    if lines == 0 {
+        return None;
+    }
+    syntax.highlight_lines(0, lines).ok()
+}
+
 /// MG.21a: what one line of a unified diff *is*. Extracted because the
 /// whole-buffer styler and the commit buffer's range-scoped styler each
 /// carried their own copy of this prefix ladder, so a rule fixed in one
@@ -421,6 +466,77 @@ mod tests {
         assert_eq!(spans[4][0].style, Style::DiffAdd); // +added
         assert_eq!(spans[5][0].style, Style::DiffRemove); // -removed
         assert!(spans[6].is_empty()); // plain context line
+    }
+
+    // ── MG.26c: real highlighting for the blob buffer ─────────────
+
+    fn standard_registry() -> std::sync::Arc<lattice_syntax::LangRegistry> {
+        lattice_syntax::LangRegistry::standard().expect("standard lang registry")
+    }
+
+    /// The gap this closes: a file opened at a revision was plain text
+    /// while the same file in the working tree was highlighted.
+    #[test]
+    fn a_rust_blob_gets_real_syntax_spans() {
+        let text = "fn main() {\n    let x = 1;\n}\n";
+        let spans = file_syntax_spans(
+            std::path::Path::new("src/main.rs"),
+            text,
+            &standard_registry(),
+        )
+        .expect("rust is a known language");
+        assert_eq!(spans.len(), 3, "one row per line: {spans:?}");
+        assert!(
+            spans.iter().any(|line| !line.is_empty()),
+            "tree-sitter found nothing to colour in real Rust: {spans:?}"
+        );
+    }
+
+    /// An unrecognised extension leaves the buffer plain — which is
+    /// what it was before. Never an error: a missing grammar must not
+    /// fail the buffer.
+    #[test]
+    fn an_unknown_extension_declines_rather_than_failing() {
+        assert!(
+            file_syntax_spans(
+                std::path::Path::new("notes.zzzz"),
+                "some text\n",
+                &standard_registry(),
+            )
+            .is_none()
+        );
+        assert!(
+            file_syntax_spans(
+                std::path::Path::new("LICENSE"),
+                "text with no extension\n",
+                &standard_registry(),
+            )
+            .is_none()
+        );
+    }
+
+    /// `highlight_lines` is end-exclusive and a trailing newline does
+    /// not make a line — asking for one line too many is an error, not
+    /// an empty row, so the count has to be right.
+    #[test]
+    fn the_span_rows_match_the_lines_of_text() {
+        let registry = standard_registry();
+        for text in ["fn a() {}\n", "fn a() {}", "fn a() {}\nfn b() {}\n"] {
+            let spans = file_syntax_spans(std::path::Path::new("a.rs"), text, &registry)
+                .unwrap_or_else(|| panic!("rust highlights: {text:?}"));
+            assert_eq!(
+                spans.len(),
+                text.lines().count(),
+                "row count must match line count for {text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_empty_blob_declines_instead_of_asking_for_zero_lines() {
+        assert!(
+            file_syntax_spans(std::path::Path::new("a.rs"), "", &standard_registry()).is_none()
+        );
     }
 
     /// MG.21c: the styler reads the layout `render_remote_list` writes,

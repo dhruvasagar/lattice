@@ -1255,8 +1255,21 @@ already exists); `D` / `L` diff- and log-arg refresh; `M` log-merged;
 > `e` edit-line-commit.
 >
 > **2026-08-02:** `D` / `L` landed as **MG.23k**, merged into a single
-> `D` (§8.10) because `L` is a motion we protect. Still open: `r` blame
-> removal, `M` log-merged, `e` edit-line-commit.
+> `D` (§8.10) because `L` is a motion we protect.
+>
+> **`r` blame removal is now most of the way there for free.** MG.26b
+> gave the blame minor a reverse direction, and magit's
+> `magit-blame-removal` and `magit-blame-reverse` run the *same* `git
+> blame --reverse` — they differ only in how the result is presented
+> ("the commit that removed this line" vs "the last commit it survived
+> in", which are adjacent commits). What is left is heading text, not
+> machinery.
+>
+> **The other two are blocked on the same question `L` was**, and it is
+> a decision rather than work: magit's `M` (log-merged) and `e`
+> (edit-line-commit) are both vim motions here — middle-of-screen and
+> end-of-word. Each needs either a fold into an existing chord (the
+> answer `D` got), a `g`-prefixed deviation, or a dispatch row.
 
 **Genuinely new subsystems.** ~~`B` bisect~~ (MG.21e/f/g), ~~`M` remote
 management~~ (MG.21b/c/d), ~~`o` submodule~~ (MG.21h/i), `O` subtree, `Z` worktree, `T` notes, `w` am /

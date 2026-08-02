@@ -51,6 +51,9 @@ pub struct LogState {
     /// MG.14: the buffer's headerline. Re-set on every refresh from
     /// the same `run_log` output that produced the text.
     headerline: Option<MagitHeaderlineHandle>,
+    /// MG.23k: extra git arguments the `D` menu set, replayed on every
+    /// refresh so `gr` does not silently revert to the default log.
+    extra_args: Vec<String>,
 }
 
 /// MG.13: service alias for this mode's per-buffer state
@@ -160,6 +163,7 @@ impl Mode for MagitLogMode {
                     workdir: workdir.clone(),
                     pending_highlights: pending_highlights.clone(),
                     headerline: hl.clone(),
+                    extra_args: Vec::new(),
                 },
             );
             let mut guard = BufferStateGuard::new((*states).clone(), buffer_id)
@@ -173,9 +177,10 @@ impl Mode for MagitLogMode {
             // edit on the current task (no Runtime::new()).
             let wd = workdir.clone();
             let path_for_task = path.clone();
-            let text = tokio::task::spawn_blocking(move || run_log(&wd, path_for_task.as_deref()))
-                .await
-                .unwrap();
+            let text =
+                tokio::task::spawn_blocking(move || run_log(&wd, path_for_task.as_deref(), &[]))
+                    .await
+                    .unwrap();
             headerline::publish(&hl, log_header_fields(&text, path.as_deref()));
             let spans = crate::highlight::log_styled_spans(&text);
             crate::buffer_io::replace_buffer_text(&handle, text).await;
@@ -189,7 +194,7 @@ impl Mode for MagitLogMode {
 }
 
 fn refresh(s: Arc<Mutex<LogState>>) -> Option<Effect> {
-    let (handle, wd, path, pending, buffer_id, hl) = {
+    let (handle, wd, path, pending, buffer_id, hl, extra) = {
         let g = s.lock().ok()?;
         (
             g.store.handle_for(g.buffer_id)?,
@@ -198,11 +203,12 @@ fn refresh(s: Arc<Mutex<LogState>>) -> Option<Effect> {
             g.pending_highlights.clone(),
             g.buffer_id,
             g.headerline.clone(),
+            g.extra_args.clone(),
         )
     };
     tokio::task::spawn(async move {
         let for_task = path.clone();
-        let text = tokio::task::spawn_blocking(move || run_log(&wd, for_task.as_deref()))
+        let text = tokio::task::spawn_blocking(move || run_log(&wd, for_task.as_deref(), &extra))
             .await
             .unwrap_or_default();
         headerline::publish(&hl, log_header_fields(&text, path.as_deref()));
@@ -235,14 +241,54 @@ fn extract_sha(line: &str) -> Option<&str> {
         .find(|tok| tok.len() >= 4 && tok.chars().all(|c| c.is_ascii_hexdigit()))
 }
 
-fn run_log(workdir: &std::path::Path, path: Option<&std::path::Path>) -> String {
+/// MG.23k: the arguments `D` offers in a log buffer.
+///
+/// magit's own `L` transient set, minus what this view already does by
+/// default (`--graph`, `--decorate`, `--oneline` are always on — a
+/// toggle for something already enabled does nothing visible, which is
+/// the inert-row failure in a different costume).
+pub(crate) const LOG_ARGS: &[crate::magit_global_mode::RemoteFlag] = &[
+    crate::magit_global_mode::RemoteFlag {
+        name: "all",
+        arg: "--all",
+        key: "-a",
+        doc: "Every ref, not just the current branch",
+        kind: crate::magit_global_mode::RemoteArgKind::Flag,
+    },
+    crate::magit_global_mode::RemoteFlag {
+        name: "count",
+        arg: "-n",
+        key: "-n",
+        doc: "How many commits to show (default 50)",
+        // Separated is correct here — `git log -n 200` is valid, and
+        // this is exactly why the joined/separated distinction is per
+        // argument rather than global.
+        kind: crate::magit_global_mode::RemoteArgKind::Value { prompt: "Commits" },
+    },
+    crate::magit_global_mode::RemoteFlag {
+        name: "author",
+        arg: "--author",
+        key: "-A",
+        doc: "Only commits by an author matching this pattern",
+        kind: crate::magit_global_mode::RemoteArgKind::Value { prompt: "Author" },
+    },
+];
+
+fn run_log(workdir: &std::path::Path, path: Option<&std::path::Path>, extra: &[String]) -> String {
     let mut args = vec![
         "log".to_string(),
         "--oneline".to_string(),
         "--graph".to_string(),
         "--decorate".to_string(),
-        "-50".to_string(),
     ];
+    // The default count is only applied when the `D` menu did not set
+    // one. Appending both and letting git take the last would work,
+    // but it puts two contradictory `-n`s in the argv — and the next
+    // person to read it cannot tell which wins without knowing git.
+    if !extra.iter().any(|a| a == "-n") {
+        args.push("-50".to_string());
+    }
+    args.extend(extra.iter().cloned());
     if let Some(p) = path {
         args.push("--".to_string());
         args.push(p.to_string_lossy().into_owned());
@@ -273,6 +319,19 @@ struct LogView(Arc<Mutex<LogState>>);
 
 impl MagitView for LogView {
     fn refresh(&self) -> Option<Effect> {
+        refresh(self.0.clone())
+    }
+
+    /// MG.23k: `D`'s rows for a log buffer. Magit puts these on `L`;
+    /// see `MagitView::argument_flags` for why one chord serves both.
+    fn argument_flags(&self) -> &'static [crate::magit_global_mode::RemoteFlag] {
+        LOG_ARGS
+    }
+
+    fn refresh_with_args(&self, extra: Vec<String>) -> Option<Effect> {
+        if let Ok(mut g) = self.0.lock() {
+            g.extra_args = extra;
+        }
         refresh(self.0.clone())
     }
 

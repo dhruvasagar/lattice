@@ -18,8 +18,14 @@ use crate::magit_global_mode::RemoteOp;
 /// MG.17a: the `Flag` items for a [`RemoteOp`], built from the op's own
 /// flag table so the menu can't offer a toggle the argv builder ignores.
 fn flag_items(op: RemoteOp) -> Vec<TransientItem> {
+    flag_items_from(op.flags)
+}
+
+/// MG.23k: the same translation for any flag table, not only a
+/// [`RemoteOp`]'s — the view-arguments menu has flags but no operation.
+fn flag_items_from(flags: &'static [crate::magit_global_mode::RemoteFlag]) -> Vec<TransientItem> {
     use crate::magit_global_mode::RemoteArgKind;
-    op.flags
+    flags
         .iter()
         .map(|f| TransientItem {
             key: vec![f.key.to_string()],
@@ -32,11 +38,13 @@ fn flag_items(op: RemoteOp) -> Vec<TransientItem> {
                 },
                 // MG.17b: a value argument opens a prompt and comes
                 // back to this menu with the value filled in.
-                RemoteArgKind::Value { prompt } => TransientItemKind::Argument {
-                    name: f.name.to_string(),
-                    default: None,
-                    prompt: prompt.to_string(),
-                },
+                RemoteArgKind::Value { prompt } | RemoteArgKind::ValueJoined { prompt } => {
+                    TransientItemKind::Argument {
+                        name: f.name.to_string(),
+                        default: None,
+                        prompt: prompt.to_string(),
+                    }
+                }
             },
         })
         .collect()
@@ -116,6 +124,8 @@ pub struct DispatchActionIds {
     pub branch: Option<CommandId>,
     /// MG.21d: `M` — remote management, magit's own key.
     pub remote: Option<CommandId>,
+    /// MG.23k: `D` — re-run this view with different git arguments.
+    pub view_args: Option<CommandId>,
     /// MG.21i: `o` — the submodule list, magit's own key.
     pub submodule: Option<CommandId>,
     /// MG.21g: `B` — bisect. Start is shown only when none is running;
@@ -293,6 +303,60 @@ fn reset_transient(ids: &DispatchActionIds) -> TransientSpec {
 /// `.git/BISECT_LOG`, which is the file git itself creates and removes.
 /// Discovering the repository is the same `magit_workdir` lookup every
 /// magit chord already does.
+/// MG.23k: `D` — the arguments the view you are in can be re-run with.
+///
+/// One menu, whose *content* is chosen by the major mode, because one
+/// chord serves what magit splits across `D` (diff) and `L` (log) —
+/// `L` is the bottom-of-screen motion here and stays off chords. See
+/// `MagitView::argument_flags`.
+///
+/// A buffer with no arguments gets a menu that says so rather than an
+/// empty one: the chord is bound on `magit-core-mode`, so it fires in
+/// every magit buffer, and silence would read as a broken key.
+pub fn view_arguments_transient(ids: &DispatchActionIds, ctx: &TransientContext) -> TransientSpec {
+    let (title, flags) = if ctx.is_major(crate::MagitDiffMode::mode_id().as_str()) {
+        ("Diff arguments", crate::magit_diff_mode::DIFF_ARGS)
+    } else if ctx.is_major(crate::MagitLogMode::mode_id().as_str()) {
+        ("Log arguments", crate::magit_log_mode::LOG_ARGS)
+    } else {
+        ("Arguments", &[] as &[crate::magit_global_mode::RemoteFlag])
+    };
+
+    if flags.is_empty() {
+        return TransientSpec {
+            title: title.into(),
+            groups: vec![TransientGroup {
+                label: "This buffer takes no arguments".into(),
+                items: Vec::new(),
+            }],
+            preview: None,
+            footer: Some("q dismiss".into()),
+        };
+    }
+
+    TransientSpec {
+        title: title.into(),
+        groups: vec![
+            TransientGroup {
+                label: "Arguments".into(),
+                items: flag_items_from(flags),
+            },
+            TransientGroup {
+                label: "Actions".into(),
+                items: vec![action_or_placeholder(
+                    ids.view_args,
+                    "g",
+                    "refresh",
+                    "Re-run with these arguments",
+                    "view_args_op",
+                )],
+            },
+        ],
+        preview: None,
+        footer: Some("q dismiss  BS back".into()),
+    }
+}
+
 /// Whether a bisect is running in the current repository.
 ///
 /// The one impure part of building this menu, isolated here so

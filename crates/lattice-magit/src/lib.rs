@@ -195,6 +195,13 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     transient_registry.register("magit-other-file-dispatch", move |_| {
         transients::other_file_dispatch_transient(&other_file_dispatch_ids)
     });
+    // MG.23k: `D`. The rows depend on which magit view you are in, so
+    // this is the second context-varying source after the root
+    // dispatch — the builder reads `ctx.major_mode`.
+    let view_args_ids = resolve_dispatch_ids(boot.commands_mut());
+    transient_registry.register("magit-view-arguments", move |ctx| {
+        transients::view_arguments_transient(&view_args_ids, ctx)
+    });
     boot.register_service::<lattice_picker::TransientSourceRegistryHandle>(Arc::new(
         transient_registry,
     ));
@@ -227,6 +234,17 @@ fn parse_remote_flags(op: magit_global_mode::RemoteOp, line: &str) -> Args {
                 // argument must come last on the line, which is stated
                 // in the ex-command's doc; the transient has no such
                 // constraint.
+                // MG.23k: the joined form is one token, `--unified=3`,
+                // so it is found by prefix and the value is what
+                // follows. No "must come last" constraint, because
+                // there is nothing after it to swallow.
+                RemoteArgKind::ValueJoined { .. } => lattice_grammar::ArgValue::String(
+                    given
+                        .iter()
+                        .find_map(|t| t.strip_prefix(f.arg))
+                        .unwrap_or_default()
+                        .to_string(),
+                ),
                 RemoteArgKind::Value { .. } => lattice_grammar::ArgValue::String(
                     given
                         .iter()
@@ -312,6 +330,7 @@ fn resolve_dispatch_ids(registry: &CommandRegistry) -> transients::DispatchActio
         branch: registry.id_by_name("action:magit-global-branch"),
         remote: registry.id_by_name("action:magit-global-remote"),
         submodule: registry.id_by_name("action:magit-global-submodule"),
+        view_args: registry.id_by_name("action:magit-view-refresh-args"),
         bisect_start: registry.id_by_name("action:magit-global-bisect-start"),
         bisect_good: registry.id_by_name("action:magit-global-bisect-good"),
         bisect_bad: registry.id_by_name("action:magit-global-bisect-bad"),
@@ -1290,6 +1309,10 @@ fn register_action_commands(registry: &mut CommandRegistry) {
         "Open the Magit submodule list buffer",
     );
 
+    reg(
+        "action:magit-view-arguments",
+        "Re-run this view with different git arguments",
+    );
     reg("action:magit-remote-add", "Add a remote");
     reg(
         "action:magit-remote-add-url",
@@ -1477,6 +1500,31 @@ fn register_action_commands(registry: &mut CommandRegistry) {
         "Create the new branch (from the picked base) with the typed name",
     );
     drop(reg);
+
+    // MG.23k: `D` — re-run the current view with different git
+    // arguments. ONE action for both flag tables: the schema is their
+    // union (the names are disjoint), and the argv is built from the
+    // VIEW's own table, so a diff buffer can never be handed a log
+    // flag. `project_transient_state` matches by name, so a slot the
+    // open menu did not offer simply stays unset.
+    registry.register_action(
+        "action:magit-view-refresh-args",
+        "Re-run the current magit view with the chosen git arguments",
+        ActionSpec {
+            apply: none.clone().unwrap(),
+            args_schema: magit_diff_mode::DIFF_ARGS
+                .iter()
+                .chain(magit_log_mode::LOG_ARGS.iter())
+                .map(|f| {
+                    let kind = match f.kind {
+                        magit_global_mode::RemoteArgKind::Flag => lattice_grammar::ArgKind::Bool,
+                        _ => lattice_grammar::ArgKind::String,
+                    };
+                    lattice_grammar::ArgSpec::optional(f.name, kind, f.doc)
+                })
+                .collect(),
+        },
+    );
 
     // MG.23a: the six file-dispatch actions gain an optional `file`
     // argument, re-registered here (rather than at their `reg` above)
@@ -1840,6 +1888,163 @@ mod tests {
                 item.label
             );
         }
+    }
+
+    /// MG.23k: the union schema and the tables it is built from must
+    /// stay in lockstep.
+    ///
+    /// The action receives a POSITIONAL list, so a slot that shifts
+    /// means a toggle lands in a neighbour's slot and the wrong git
+    /// flag runs — silently, with a diff that looks merely surprising.
+    #[test]
+    fn the_view_argument_schema_matches_the_tables_it_is_built_from() {
+        let mut registry = CommandRegistry::new();
+        register_action_commands(&mut registry);
+        let spec = registry
+            .lookup_by_name("action:magit-view-refresh-args")
+            .expect("registered");
+        let declared: Vec<&str> = spec.args_schema.iter().map(|a| a.name.as_ref()).collect();
+        let expected: Vec<&str> = magit_core_mode::VIEW_ARG_TABLES
+            .iter()
+            .flat_map(|t| t.iter())
+            .map(|f| f.name)
+            .collect();
+        assert_eq!(declared, expected);
+    }
+
+    /// Flag names must be unique across the tables, or `view_argv`'s
+    /// position lookup resolves the wrong slot.
+    #[test]
+    fn no_two_view_arguments_share_a_name() {
+        let mut seen = std::collections::HashSet::new();
+        for f in magit_core_mode::VIEW_ARG_TABLES
+            .iter()
+            .flat_map(|t| t.iter())
+        {
+            assert!(
+                seen.insert(f.name),
+                "`{}` appears in more than one view-argument table — \
+                 `view_argv` resolves slots by name",
+                f.name
+            );
+        }
+    }
+
+    /// A view only ever gets its OWN arguments, even though the action
+    /// carries the union of both tables.
+    #[test]
+    fn a_view_never_receives_the_other_views_arguments() {
+        use lattice_grammar::{ArgValue, Args};
+        // Every slot set: diff's three, then log's three.
+        let all_set = Args::List(vec![
+            ArgValue::Bool(true),              // ignore-space
+            ArgValue::Bool(true),              // stat
+            ArgValue::String("3".into()),      // unified
+            ArgValue::Bool(true),              // all
+            ArgValue::String("200".into()),    // count
+            ArgValue::String("dhruva".into()), // author
+        ]);
+
+        let diff = magit_core_mode::view_argv(magit_diff_mode::DIFF_ARGS, &all_set);
+        assert_eq!(diff, vec!["-w", "--stat", "--unified=3"]);
+        assert!(
+            !diff.iter().any(|a| a.contains("author") || a == "--all"),
+            "a diff must not receive log arguments: {diff:?}"
+        );
+
+        let log = magit_core_mode::view_argv(magit_log_mode::LOG_ARGS, &all_set);
+        assert_eq!(log, vec!["--all", "-n", "200", "--author", "dhruva"]);
+        assert!(
+            !log.iter().any(|a| a == "-w" || a.starts_with("--unified")),
+            "a log must not receive diff arguments: {log:?}"
+        );
+    }
+
+    /// The joined form is not cosmetic: `git diff -U 3` and
+    /// `--unified 3` are both errors, so the value has to arrive glued
+    /// to its argument as a single token.
+    #[test]
+    fn the_context_argument_is_one_joined_token() {
+        use lattice_grammar::{ArgValue, Args};
+        let args = Args::List(vec![
+            ArgValue::Bool(false),
+            ArgValue::Bool(false),
+            ArgValue::String("5".into()),
+        ]);
+        assert_eq!(
+            magit_core_mode::view_argv(magit_diff_mode::DIFF_ARGS, &args),
+            vec!["--unified=5"]
+        );
+    }
+
+    /// An unset value contributes nothing — not an empty string, which
+    /// git reads as a real (empty) argument and rejects.
+    #[test]
+    fn unset_view_arguments_contribute_nothing() {
+        use lattice_grammar::{ArgValue, Args};
+        let none = Args::List(vec![
+            ArgValue::Bool(false),
+            ArgValue::Bool(false),
+            ArgValue::String(String::new()),
+        ]);
+        assert!(magit_core_mode::view_argv(magit_diff_mode::DIFF_ARGS, &none).is_empty());
+        assert!(
+            magit_core_mode::view_argv(magit_diff_mode::DIFF_ARGS, &Args::None).is_empty(),
+            "no state at all is the same as nothing set"
+        );
+    }
+
+    /// `D`'s menu shows the arguments of the view it was opened in,
+    /// and says so plainly where there are none — the chord is on
+    /// `magit-core-mode`, so it fires in every magit buffer.
+    #[test]
+    fn the_argument_menu_follows_the_view_it_was_opened_in() {
+        let mut registry = CommandRegistry::new();
+        register_action_commands(&mut registry);
+        let ids = resolve_dispatch_ids(&registry);
+
+        let keys = |ctx: &lattice_picker::TransientContext| -> Vec<String> {
+            transients::view_arguments_transient(&ids, ctx)
+                .groups
+                .iter()
+                .flat_map(|g| &g.items)
+                .flat_map(|i| i.key.clone())
+                .collect()
+        };
+
+        let in_diff = lattice_picker::TransientContext {
+            major_mode: Some("magit-diff-mode".into()),
+            minor_modes: vec!["magit-core-mode".into()],
+        };
+        let diff_keys = keys(&in_diff);
+        for k in ["-w", "-s", "-U", "g"] {
+            assert!(diff_keys.contains(&k.to_string()), "diff: {diff_keys:?}");
+        }
+        assert!(
+            !diff_keys.contains(&"-A".to_string()),
+            "diff: {diff_keys:?}"
+        );
+
+        let in_log = lattice_picker::TransientContext {
+            major_mode: Some("magit-log-mode".into()),
+            minor_modes: vec!["magit-core-mode".into()],
+        };
+        let log_keys = keys(&in_log);
+        for k in ["-a", "-n", "-A", "g"] {
+            assert!(log_keys.contains(&k.to_string()), "log: {log_keys:?}");
+        }
+        assert!(!log_keys.contains(&"-w".to_string()), "log: {log_keys:?}");
+
+        // A view with no arguments: a menu that says so, not an empty
+        // one and not a missing key.
+        let elsewhere = in_magit_status();
+        assert!(keys(&elsewhere).is_empty());
+        assert!(
+            transients::view_arguments_transient(&ids, &elsewhere).groups[0]
+                .label
+                .contains("no arguments"),
+            "a view without arguments must say so"
+        );
     }
 
     /// MG.21i: `o` opens the submodule list, in every context.

@@ -73,6 +73,15 @@ fn magit_core_keymap_entries() -> &'static [KeymapEntry] {
             keymap_entry! { mode: Normal, chord: "[f", doc: "Previous file", cmd: "action:magit-prev-file" },
             keymap_entry! { mode: Normal, chord: "<Tab>", doc: "Toggle fold", cmd: "action:magit-toggle-fold" },
             keymap_entry! { mode: Normal, chord: "<S-Tab>", doc: "Cycle sections", cmd: "action:magit-cycle-sections" },
+            // MG.23k: magit's `D`. Bound here rather than per-view for
+            // the same reason `gr` is — the chord is one question
+            // ("re-run this with different arguments") and the view
+            // answers it. `D` is an editing operator, so it is inert
+            // in a read-only magit buffer and free to take; magit's
+            // `L` for log arguments is NOT free, being the
+            // bottom-of-screen motion, which is why one chord covers
+            // both here.
+            keymap_entry! { mode: Normal, chord: "D", doc: "Re-run this view with different git arguments", cmd: "action:magit-view-arguments" },
             // Operations on the commit under the cursor. Keys follow
             // **evil-collection-magit**, not raw magit — the reference
             // set for a modal editor, because it is the one that already
@@ -851,6 +860,29 @@ impl Mode for MagitCoreMode {
                 action_name: "action:magit-refresh",
                 handler: Arc::new(|ctx: &ActionContext<'_>| view_for(ctx)?.refresh()),
             },
+            // MG.23k: `D` opens the menu; the menu's run row fires
+            // `action:magit-view-refresh-args` below.
+            lattice_mode::ActionHandlerContribution {
+                action_name: "action:magit-view-arguments",
+                handler: Arc::new(|ctx: &ActionContext<'_>| {
+                    // Gated on there being a view at all, so `D` in a
+                    // non-magit buffer stays the vim operator.
+                    let _ = view_for(ctx)?;
+                    Some(Effect::OpenTransient {
+                        source: "magit-view-arguments".to_string(),
+                    })
+                }),
+            },
+            // The run row. Builds argv from the VIEW's own flag table,
+            // so a slot belonging to the other table cannot leak in
+            // even though the action's schema is the union of both.
+            lattice_mode::ActionHandlerContribution {
+                action_name: "action:magit-view-refresh-args",
+                handler: Arc::new(|ctx: &ActionContext<'_>| {
+                    let view = view_for(ctx)?;
+                    view.refresh_with_args(view_argv(view.argument_flags(), &ctx.args))
+                }),
+            },
             // MG.20: one handler per operation, each resolving its
             // target through the view — the same shape `gr` / `s` / `u`
             // use. A view with no commit under the cursor declines, so
@@ -972,6 +1004,71 @@ impl Mode for MagitCoreMode {
 }
 
 /// MG.18c — the `s` / `u` / `x` resolution ladder, exercised through a
+/// MG.23k: every flag table `D` can offer, in the order they
+/// contribute to `action:magit-view-refresh-args`'s schema.
+///
+/// **One list, two consumers.** The action's `args_schema` is built
+/// from this, and [`view_argv`] resolves each of a view's flags back to
+/// its slot through it. Two hand-kept lists would drift, and the
+/// failure would be silent in the worst way: the action receives a
+/// POSITIONAL list, so a mismatch means a toggle lands in a
+/// neighbour's slot and the wrong git flag runs.
+pub(crate) const VIEW_ARG_TABLES: &[&[crate::magit_global_mode::RemoteFlag]] = &[
+    crate::magit_diff_mode::DIFF_ARGS,
+    crate::magit_log_mode::LOG_ARGS,
+];
+
+/// Build the git arguments for `flags` out of a projected transient
+/// state.
+///
+/// `args` is positional over the *union* schema ([`VIEW_ARG_TABLES`]),
+/// while `flags` is the one table the current view understands — so
+/// each flag is looked up by its position in the union, not in its own
+/// table. A view therefore cannot be handed the other view's arguments
+/// even though both share one action.
+pub(crate) fn view_argv(
+    flags: &[crate::magit_global_mode::RemoteFlag],
+    args: &lattice_grammar::Args,
+) -> Vec<String> {
+    use crate::magit_global_mode::RemoteArgKind;
+    let slot_of = |name: &str| -> Option<usize> {
+        VIEW_ARG_TABLES
+            .iter()
+            .flat_map(|t| t.iter())
+            .position(|f| f.name == name)
+    };
+    let mut argv = Vec::new();
+    for flag in flags {
+        let Some(i) = slot_of(flag.name) else {
+            continue;
+        };
+        let slot = args.as_list().and_then(|l| l.get(i));
+        match flag.kind {
+            RemoteArgKind::Flag => {
+                if matches!(slot, Some(lattice_grammar::ArgValue::Bool(true))) {
+                    argv.push(flag.arg.to_string());
+                }
+            }
+            RemoteArgKind::Value { .. } => {
+                if let Some(lattice_grammar::ArgValue::String(v)) = slot
+                    && !v.is_empty()
+                {
+                    argv.push(flag.arg.to_string());
+                    argv.push(v.clone());
+                }
+            }
+            RemoteArgKind::ValueJoined { .. } => {
+                if let Some(lattice_grammar::ArgValue::String(v)) = slot
+                    && !v.is_empty()
+                {
+                    argv.push(format!("{}{v}", flag.arg));
+                }
+            }
+        }
+    }
+    argv
+}
+
 /// real buffer and a published view.
 ///
 /// The unit tests in `hunk.rs` prove the parser; these prove the

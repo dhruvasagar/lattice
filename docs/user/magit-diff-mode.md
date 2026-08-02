@@ -30,6 +30,7 @@ list.
 | `]c` / `[c` | Next / previous hunk |
 | `<CR>` | Visit the file at cursor |
 | `gr` | Refresh (re-run the underlying `git diff`) |
+| `D` | Diff arguments — `-w` ignore whitespace, `-s` file summary, `-U` context lines |
 
 Everything above except `<CR>` and `gr` comes from
 [`magit-hunk-mode`](help:magit-hunk-mode) — the minor mode that owns

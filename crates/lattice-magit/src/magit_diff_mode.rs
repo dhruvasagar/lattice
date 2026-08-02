@@ -98,6 +98,10 @@ pub struct DiffState {
     pending_highlights: Option<lattice_mode::PendingSyntheticHighlightsHandle>,
     /// MG.18d: the wake-baked bus a post-mutation cursor goes back on.
     cursor_bus: Option<crate::cursor_restore::CursorBusHandle>,
+    /// MG.23k: extra git arguments the `D` menu set, replayed on every
+    /// subsequent refresh so `gr` does not silently revert to the
+    /// default diff.
+    extra_args: Vec<String>,
 }
 
 /// Parse `"*magit:diff[:staged|:unstaged]:<path>*"` (or the bare
@@ -233,6 +237,7 @@ impl Mode for MagitDiffMode {
                     cursor_bus: ctx
                         .service::<crate::cursor_restore::CursorBusHandle>()
                         .map(|outer| (*outer).clone()),
+                    extra_args: Vec::new(),
                 },
             );
             let mut guard = BufferStateGuard::new((*states).clone(), buffer_id)
@@ -244,10 +249,11 @@ impl Mode for MagitDiffMode {
 
             let wd = workdir.clone();
             let path_for_task = path.clone();
-            let text =
-                tokio::task::spawn_blocking(move || run_diff(&wd, scope, path_for_task.as_deref()))
-                    .await
-                    .unwrap_or_default();
+            let text = tokio::task::spawn_blocking(move || {
+                run_diff(&wd, scope, path_for_task.as_deref(), &[])
+            })
+            .await
+            .unwrap_or_default();
             let spans = crate::highlight::diff_styled_spans(&text);
             crate::buffer_io::replace_buffer_text(&handle, text).await;
             if let Some(ref ph) = pending_highlights {
@@ -275,7 +281,7 @@ fn refresh_with(
     s: Arc<Mutex<DiffState>>,
     restore: Option<crate::cursor_restore::HunkRestore>,
 ) -> Option<Effect> {
-    let (handle, wd, scope, path, pending, buffer_id, cursor_bus) = {
+    let (handle, wd, scope, path, pending, buffer_id, cursor_bus, extra) = {
         let g = s.lock().ok()?;
         (
             g.store.handle_for(g.buffer_id)?,
@@ -285,12 +291,14 @@ fn refresh_with(
             g.pending_highlights.clone(),
             g.buffer_id,
             g.cursor_bus.clone(),
+            g.extra_args.clone(),
         )
     };
     tokio::task::spawn(async move {
-        let text = tokio::task::spawn_blocking(move || run_diff(&wd, scope, path.as_deref()))
-            .await
-            .unwrap_or_default();
+        let text =
+            tokio::task::spawn_blocking(move || run_diff(&wd, scope, path.as_deref(), &extra))
+                .await
+                .unwrap_or_default();
         let spans = crate::highlight::diff_styled_spans(&text);
         let position = restore.and_then(|r| crate::cursor_restore::restore_position(&text, &r));
         crate::buffer_io::replace_buffer_text(&handle, text).await;
@@ -308,7 +316,7 @@ fn spawn_mutation_and_refresh(
     s: Arc<Mutex<DiffState>>,
     mutate: impl FnOnce() + Send + 'static,
 ) -> Option<Effect> {
-    let (handle, wd, scope, path, pending, buffer_id) = {
+    let (handle, wd, scope, path, pending, buffer_id, extra) = {
         let g = s.lock().ok()?;
         (
             g.store.handle_for(g.buffer_id)?,
@@ -317,13 +325,15 @@ fn spawn_mutation_and_refresh(
             g.path.clone(),
             g.pending_highlights.clone(),
             g.buffer_id,
+            g.extra_args.clone(),
         )
     };
     tokio::task::spawn(async move {
         let _ = tokio::task::spawn_blocking(mutate).await;
-        let text = tokio::task::spawn_blocking(move || run_diff(&wd, scope, path.as_deref()))
-            .await
-            .unwrap_or_default();
+        let text =
+            tokio::task::spawn_blocking(move || run_diff(&wd, scope, path.as_deref(), &extra))
+                .await
+                .unwrap_or_default();
         let spans = crate::highlight::diff_styled_spans(&text);
         crate::buffer_io::replace_buffer_text(&handle, text).await;
         if let Some(ph) = pending {
@@ -347,7 +357,43 @@ fn file_at_cursor(state: &DiffState, line: u32) -> Option<PathBuf> {
     )
 }
 
-fn run_diff(workdir: &Path, scope: DiffScope, path: Option<&Path>) -> String {
+/// MG.23k: the arguments `D` offers in a diff buffer.
+///
+/// magit's `magit-diff` transient carries many more; these are the
+/// three that change how the SAME diff reads. Arguments that change
+/// *which* diff it is (`--cached`, a revision range) are deliberately
+/// absent — the buffer's scope is in its name, so a menu row that
+/// silently made `*magit:diff:staged:x*` show unstaged content would
+/// leave the headerline and the buffer name both lying.
+pub(crate) const DIFF_ARGS: &[crate::magit_global_mode::RemoteFlag] = &[
+    crate::magit_global_mode::RemoteFlag {
+        name: "ignore-space",
+        arg: "-w",
+        key: "-w",
+        doc: "Ignore whitespace-only changes",
+        kind: crate::magit_global_mode::RemoteArgKind::Flag,
+    },
+    crate::magit_global_mode::RemoteFlag {
+        name: "stat",
+        arg: "--stat",
+        key: "-s",
+        doc: "Show a summary of changed files instead of the patch",
+        kind: crate::magit_global_mode::RemoteArgKind::Flag,
+    },
+    crate::magit_global_mode::RemoteFlag {
+        // Joined, not separated: `git diff -U 3` and `--unified 3` are
+        // both errors. See `RemoteArgKind::ValueJoined`.
+        name: "unified",
+        arg: "--unified=",
+        key: "-U",
+        doc: "Lines of context around each hunk",
+        kind: crate::magit_global_mode::RemoteArgKind::ValueJoined {
+            prompt: "Context lines",
+        },
+    },
+];
+
+fn run_diff(workdir: &Path, scope: DiffScope, path: Option<&Path>, extra: &[String]) -> String {
     let mut args = vec!["diff".to_string()];
     match scope {
         DiffScope::Head => args.push("HEAD".to_string()),
@@ -356,6 +402,9 @@ fn run_diff(workdir: &Path, scope: DiffScope, path: Option<&Path>) -> String {
         // the index — exactly the Unstaged section's semantics.
         DiffScope::Unstaged => {}
     }
+    // MG.23k: the `D` menu's arguments go before the `--` separator,
+    // or git reads them as pathspecs.
+    args.extend(extra.iter().cloned());
     if let Some(p) = path {
         args.push("--".to_string());
         args.push(p.to_string_lossy().into_owned());
@@ -421,6 +470,20 @@ impl MagitView for DiffView {
     }
 
     fn refresh(&self) -> Option<Effect> {
+        refresh(self.0.clone())
+    }
+
+    /// MG.23k: `D`'s rows for a diff buffer — magit's own diff
+    /// arguments, minus the ones that would change what this buffer
+    /// *is* rather than how it renders.
+    fn argument_flags(&self) -> &'static [crate::magit_global_mode::RemoteFlag] {
+        DIFF_ARGS
+    }
+
+    fn refresh_with_args(&self, extra: Vec<String>) -> Option<Effect> {
+        if let Ok(mut g) = self.0.lock() {
+            g.extra_args = extra;
+        }
         refresh(self.0.clone())
     }
 

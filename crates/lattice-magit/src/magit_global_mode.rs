@@ -811,6 +811,21 @@ pub enum RemoteArgKind {
         /// Label shown in the minibuffer while typing.
         prompt: &'static str,
     },
+    /// MG.23k: a value that must be **joined** to its argument rather
+    /// than passed as a separate token.
+    ///
+    /// Not a stylistic variant — git rejects the separated form for
+    /// some options and accepts it for others. `git log --author x`
+    /// works; `git diff -U 3` and `git diff --unified 3` are both
+    /// errors, because a long option's value needs `=` and `-U`'s
+    /// needs gluing on. So the argument carries its own joiner
+    /// (`"--unified="`) and the value is appended to it. Verified
+    /// against real git rather than assumed — the separated form was
+    /// tried first and rejected.
+    ValueJoined {
+        /// Label shown in the minibuffer while typing.
+        prompt: &'static str,
+    },
 }
 
 /// MG.17a: one argument on a [`RemoteOp`].
@@ -984,6 +999,13 @@ impl RemoteOp {
                         argv.push(v.clone());
                     }
                 }
+                RemoteArgKind::ValueJoined { .. } => {
+                    if let Some(lattice_grammar::ArgValue::String(v)) = slot
+                        && !v.is_empty()
+                    {
+                        argv.push(format!("{}{v}", flag.arg));
+                    }
+                }
             }
         }
         argv
@@ -1020,6 +1042,13 @@ impl RemoteOp {
                         out.push_str(&format!(" {v:?}"));
                     }
                 }
+                RemoteArgKind::ValueJoined { .. } => {
+                    if !v.is_empty() {
+                        out.push(' ');
+                        out.push_str(flag.arg);
+                        out.push_str(&v);
+                    }
+                }
             }
         }
         out
@@ -1033,7 +1062,9 @@ impl RemoteOp {
             .map(|f| {
                 let kind = match f.kind {
                     RemoteArgKind::Flag => lattice_grammar::ArgKind::Bool,
-                    RemoteArgKind::Value { .. } => lattice_grammar::ArgKind::String,
+                    RemoteArgKind::Value { .. } | RemoteArgKind::ValueJoined { .. } => {
+                        lattice_grammar::ArgKind::String
+                    }
                 };
                 lattice_grammar::ArgSpec::optional(f.name, kind, f.doc)
             })
@@ -2020,7 +2051,9 @@ mod tests {
                 assert_eq!(spec.name.as_ref(), flag.name);
                 let expected = match flag.kind {
                     RemoteArgKind::Flag => lattice_grammar::ArgKind::Bool,
-                    RemoteArgKind::Value { .. } => lattice_grammar::ArgKind::String,
+                    RemoteArgKind::Value { .. } | RemoteArgKind::ValueJoined { .. } => {
+                        lattice_grammar::ArgKind::String
+                    }
                 };
                 assert_eq!(spec.kind, expected, "`{}` slot `{}`", op.what, flag.name);
             }

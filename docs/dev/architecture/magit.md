@@ -1565,6 +1565,54 @@ the picker owns placement, the transient owns content + interaction** —
 worth stating explicitly since it's easy to reintroduce the bug by having
 transient code make its own placement decision again.
 
+### 8.10 `D` — one chord for what magit splits across `D` and `L` (MG.23k)
+
+Magit binds `D` to a diff-arguments transient and `L` to a
+log-arguments one. `D` carries over unchanged: it is an editing
+*operator*, so it is inert in a read-only magit buffer, exactly like
+the `d` / `u` / `x` / `s` magit already shadows. **`L` does not** — it
+is the bottom-of-screen motion, the same class as `M` (§4.6b) and `B`
+(§8.9), which stay off chords entirely.
+
+Rather than invent a second key, `D` asks the view what arguments *it*
+has: `MagitView::argument_flags()` and `refresh_with_args()`, the same
+polymorphism the trait already provides for `gr`. The transient's
+*content* is chosen by `ctx.major_mode`, making it the second
+context-varying source after the root dispatch. A view with no
+arguments gets a menu that says so — the chord is on `magit-core-mode`
+and therefore fires in every magit buffer, so silence would read as a
+broken key.
+
+**The arguments are per-view and stored per-buffer**, replayed on every
+subsequent refresh so `gr` does not silently revert to the default.
+They REPLACE rather than accumulate: the menu always opens with its
+toggles clear, and "what the menu shows is what runs" is the only
+reading that stays true after a refresh.
+
+**One action, two tables, and a positional hazard.** Both views' run
+rows fire `action:magit-view-refresh-args`, whose `args_schema` is the
+union of `DIFF_ARGS` and `LOG_ARGS`. The action receives a
+**positional** list, so a slot that shifts means a toggle lands in a
+neighbour's slot and the wrong git flag runs — silently, producing a
+diff that merely looks surprising. `VIEW_ARG_TABLES` is therefore the
+single list both the schema builder and `view_argv`'s slot lookup read,
+and two guards pin it: the schema equals the tables in order, and no
+two flags share a name.
+
+**`RemoteArgKind::ValueJoined` exists because git's CLI is not
+uniform.** `git log --author x` accepts a separated value; `git diff -U
+3` and `git diff --unified 3` are both errors — a long option's value
+needs `=` and `-U`'s needs gluing. So the joiner rides on the argument
+(`"--unified="`) and the value is appended. This was verified against
+real git rather than assumed: the separated form was tried first and
+rejected.
+
+**Arguments that change *which* diff it is are deliberately absent.**
+`--cached` and revision ranges would make `*magit:diff:staged:x*` show
+unstaged content, leaving both the buffer name and the headerline
+lying. The scope is in the name; the menu only changes how the same
+diff reads.
+
 ### 8.9 Bisect — repo state, not a view (MG.21e/f/g)
 
 Bisect has no buffer. It contributes two things: an **alert on
@@ -1814,6 +1862,11 @@ since magit also uses folds) are never overridden.
 - `q` semantics changed: was `magit-kill-buffer`, now `magit-close`. The
   buffer is buried, not deleted — it stays in the buffer list and retains
   its content as a cache. `:bd` still kills it explicitly.
+
+> **MG.23k** adds `D` to this set — "re-run this view with different
+> git arguments", resolved through `MagitView::argument_flags` (§8.10).
+> It fires in every magit buffer because the chord is one question; the
+> views that have no answer say so.
 
 ### 12.2 `magit-status-mode`
 

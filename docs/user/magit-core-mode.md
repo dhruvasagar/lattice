@@ -26,8 +26,33 @@ no `:magit-core-mode` you need to turn on.
 | `A` | Cherry-pick the commit under the cursor |
 | `_` | Revert the commit under the cursor |
 | `Os` / `Om` / `Oh` | Reset `--soft` / `--mixed` / `--hard` to the commit under the cursor |
+| `D` | Re-run this view with different git arguments |
 
 These work in **every** magit buffer, which is what this mode is for.
+
+## `D` — arguments for the view you are in
+
+`D` opens a menu of git arguments for whatever magit buffer you are
+in, then re-runs it with what you picked:
+
+- in a [diff](help:magit-diff-mode): `-w` ignore whitespace-only
+  changes, `-s` show a file summary instead of the patch, `-U` set the
+  lines of context around each hunk;
+- in a [log](help:magit-log-mode): `-a` every ref rather than the
+  current branch, `-n` how many commits, `-A` only commits by a
+  matching author.
+
+The arguments stick — a later `gr` re-runs with them rather than
+reverting to the default. Opening `D` again always starts with the
+toggles clear, so what the menu shows is what will run.
+
+A buffer with no arguments (status, branch, stash, …) gets a menu
+saying so rather than nothing happening.
+
+**Emacs magit splits this across two keys**, `D` for diffs and `L` for
+logs. `D` carries over unchanged, but `L` is vim's move-to-bottom-of-
+screen motion and stays yours — so one key asks the question and the
+buffer decides what the answer looks like.
 The chords that act on diff content — `s` / `u` / `x`, `a` / `-`,
 `]c` / `[c` — live on [`magit-hunk-mode`](help:magit-hunk-mode)
 instead, and are active only in the buffers that render a diff. They

@@ -321,6 +321,35 @@ pub trait MagitView: Send + Sync + 'static {
     fn workdir(&self) -> Option<std::path::PathBuf> {
         None
     }
+
+    /// MG.23k: the git arguments this view can be re-run with — the
+    /// rows `D` offers.
+    ///
+    /// Empty (the default) means the view takes no arguments, and `D`
+    /// says so rather than opening a menu with nothing in it.
+    ///
+    /// **Why this is one chord and not magit's two.** Magit binds `D`
+    /// for diff arguments and `L` for log arguments. `D` is an editing
+    /// operator and therefore inert in a read-only magit buffer, so it
+    /// carries over unchanged — but `L` is the bottom-of-screen
+    /// *motion*, the same class as `M` and `B` that stay off chords
+    /// entirely. Rather than invent a second key, `D` asks the view
+    /// what arguments *it* has: the polymorphism this trait already
+    /// provides for `gr` is exactly the same shape.
+    fn argument_flags(&self) -> &'static [crate::magit_global_mode::RemoteFlag] {
+        &[]
+    }
+
+    /// Re-run this view with `extra` appended to its git invocation.
+    ///
+    /// The values come from the `D` menu, so they REPLACE whatever the
+    /// last run used rather than accumulating — the menu always opens
+    /// with its toggles clear, and "what the menu shows is what runs"
+    /// is the only reading that stays true after a refresh.
+    fn refresh_with_args(&self, extra: Vec<String>) -> Option<lattice_grammar::Effect> {
+        let _ = extra;
+        None
+    }
 }
 
 /// Per-buffer [`MagitView`] registry — the shared-action peer of

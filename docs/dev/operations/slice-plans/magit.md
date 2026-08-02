@@ -48,6 +48,7 @@ owns *what* and *why*.
 | MG.21g | `B` sub-transient, gated on whether a bisect is running | MG.21e | ✅ |
 | MG.21h | `lattice_vcs::Submodule` — list/add/update/sync/remove | — | ✅ |
 | MG.21i | `magit-submodule-mode` + `o` on the root dispatch | MG.21h | ✅ |
+| MG.23k | `D` — re-run a diff/log view with different git arguments | MG.17a | ✅ |
 | MG.21a | Diff line-background tints in magit's diff views | MG.20 | ✅ |
 | MG.22 | `magit-hunk-mode` — the mode owning diff *content* (chords + `<CR>` ✅; parser / options open) | MG.20 | 🚧 |
 | MG.23 | magit-dispatch / file-dispatch parity (a–h done; j and i+ open) | MG.17b | 📝 |
@@ -1251,6 +1252,10 @@ already exists); `D` / `L` diff- and log-arg refresh; `M` log-merged;
 > blame variants (no surface / duplicate). Still open: `r` blame
 > removal, `D` / `L` diff- and log-arg refresh, `M` log-merged,
 > `e` edit-line-commit.
+>
+> **2026-08-02:** `D` / `L` landed as **MG.23k**, merged into a single
+> `D` (§8.10) because `L` is a motion we protect. Still open: `r` blame
+> removal, `M` log-merged, `e` edit-line-commit.
 
 **Genuinely new subsystems.** ~~`B` bisect~~ (MG.21e/f/g), ~~`M` remote
 management~~ (MG.21b/c/d), ~~`o` submodule~~ (MG.21h/i), `O` subtree, `Z` worktree, `T` notes, `w` am /
@@ -2373,6 +2378,43 @@ thread.
 **Deferred, named:** `git bisect run <script>` (magit's `s`), the
 bisect log as a buffer, and marking a revision other than the one git
 checked out.
+
+### MG.23k — `D`, view arguments ✅ (2026-08-02)
+
+Design: [`../../architecture/magit.md`](../../architecture/magit.md)
+§8.10. The daily-use item of MG.23's tail.
+
+**One chord, not magit's two — decided, not defaulted.** Magit uses `D`
+for diff args and `L` for log args. `D` is an editing operator, inert
+in a read-only buffer, so it carries over; `L` is the bottom-of-screen
+motion and stays off chords like `M` and `B`. Options were (a) one
+polymorphic `D` through the `MagitView` seam, (b) `D` + a `gl`
+deviation, (c) dispatch rows only. **(a)** on heuristic #1 — the seam
+already exists for `gr`, and "arguments for the view I am in" is one
+question, so one key answering it is the better long-term shape than
+two keys and a learned deviation. Cost, stated: a magit user's `L`
+muscle memory gets nothing.
+
+**Two things verified against real git rather than assumed.**
+`--unified 3` and `-U 3` are both rejected, so a joined form was needed
+(`RemoteArgKind::ValueJoined`) — the separated form was tried first and
+failed. `--author x` and `-n 200` are accepted separated, which is why
+the joined/separated distinction is per argument and not global.
+
+**The positional hazard, and the guards for it.** One action carries
+the union of both flag tables and receives a *positional* list, so a
+shifted slot means the wrong flag runs — silently. `VIEW_ARG_TABLES` is
+the one list the schema builder and the slot lookup both read, guarded
+by "schema equals the tables in order" and "no two flags share a name",
+plus a test that a diff view handed a fully-populated union still gets
+only diff arguments.
+
+- **Tests:** 6.
+- **No bench:** the git call was already off-thread; this changes its
+  argv, not where it runs.
+- **Deferred, named:** MG.23's other tail items — `r` blame removal,
+  `M` log-merged (whose magit key is a motion we protect, so it needs
+  its own answer) and `e` edit-line-commit.
 
 ### MG.21h/i — submodules ✅ (2026-08-02)
 

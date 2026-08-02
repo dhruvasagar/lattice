@@ -17,6 +17,7 @@ and the path filter when there is one: `HEAD  50 commits  src/main.rs`.
 |---|---|
 | `<CR>` | Show the commit at cursor in [`magit-revision-mode`](help:magit-revision-mode) |
 | `gr` | Refresh (re-run `git log`) |
+| `D` | Log arguments — `-a` all refs, `-n` commit count, `-A` filter by author |
 
 `q` / `]]` / `[[` / `]f` / `[f` come from
 [`magit-core-mode`](help:magit-core-mode).

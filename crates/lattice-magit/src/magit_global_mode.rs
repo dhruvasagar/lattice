@@ -645,11 +645,17 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         "*magit:log:",
         "magit-log-mode"
     );
-    file_open!(
-        "action:magit-global-file-blame",
-        "*magit:blame:",
-        "magit-blame-mode"
-    );
+    // MG.26b: blame no longer opens a buffer — it activates a minor on
+    // the buffer you are already reading, so the file keeps its own
+    // major, its parser and therefore its highlighting.
+    contributions.push(ActionHandlerContribution {
+        action_name: "action:magit-global-file-blame",
+        handler: Arc::new(|_ctx: &ActionContext<'_>| {
+            Some(Effect::ToggleMode {
+                mode_name: crate::MagitBlameMode::mode_id().as_str().to_string(),
+            })
+        }),
+    });
 
     // MG.23f2: reverse blame — "when did each of these lines go away",
     // the one blame variant magit has that we had no answer for.
@@ -679,13 +685,30 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                 .and_then(|n| crate::magit_file_revision_mode::parse_buffer_name(&n))
                 .filter(|(git_ref, _)| git_ref != "staged");
             Some(match parsed {
-                Some((git_ref, path)) => Effect::OpenSyntheticBuffer {
-                    name: crate::magit_blame_mode::reverse_buffer_name(
-                        &git_ref,
-                        &path.to_string_lossy(),
-                    ),
-                    mode_id: crate::MagitBlameMode::mode_id().to_string(),
-                },
+                // MG.26b: the blob buffer this was opened from IS the
+                // content reverse blame wants to annotate, so the mode
+                // activates on it in place. The direction and revision
+                // cannot ride on `ToggleMode` — it carries a mode name
+                // and nothing else, which is right, since the grammar
+                // crate must not learn what a blame direction is — so
+                // they are left as a request keyed by the buffer's
+                // name and consumed by `on_activate`.
+                Some((git_ref, path)) => {
+                    let name = format!("*magit:file:{git_ref}:{}*", path.display());
+                    if let Some(requests) = ctx
+                        .services
+                        .get::<crate::magit_blame_mode::BlameRequestsHandle>()
+                    {
+                        requests.put(
+                            name,
+                            crate::magit_blame_mode::BlameDirection::Reverse,
+                            git_ref.clone(),
+                        );
+                    }
+                    Effect::ToggleMode {
+                        mode_name: crate::MagitBlameMode::mode_id().as_str().to_string(),
+                    }
+                }
                 // Naming what is missing and where to get it beats a
                 // row that appears to do nothing: the answer is one
                 // `<CR>` on a log entry away.

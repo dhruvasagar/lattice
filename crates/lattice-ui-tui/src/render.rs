@@ -5877,6 +5877,9 @@ fn render_virtual_row(
             // mark); no full-row backdrop behind them.
             lattice_cells::VirtualRowKind::Filler
             | lattice_cells::VirtualRowKind::Sticky
+            // MG.26b: an annotation carries no backdrop of its own —
+            // a blame heading tinted like a deletion would read as one.
+            | lattice_cells::VirtualRowKind::Annotation
             | lattice_cells::VirtualRowKind::BrandingBlock => None,
         });
     let mut spans: Vec<Span<'static>> = Vec::new();

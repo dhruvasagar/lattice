@@ -240,44 +240,78 @@ The commit-message editor. Opens from magit-status `c c` or directly via
 - Amend support: `c a` pre-populates the previous commit message and uses
   `Commit::amend`.
 
-### 4.4 magit-blame (`*magit:blame:<path>*`)
+### 4.4 magit-blame — a minor mode, not a view (MG.26b)
 
-Per-line git blame annotations alongside the current file.
+**No buffer.** `magit-blame-mode` is a `ModeKind::Minor` with
+`ActivationPolicy::Manual`, activated on the buffer already showing the
+content being blamed. It contributes one virtual row above each *chunk*
+— a run of consecutive lines sharing a commit — carrying
+`<sha> <author> <relative-date> <summary>`, magit's `headings` style.
 
-- Data from `git blame --line-porcelain <path>` via `spawn_blocking`.
-- Annotation per line: abbreviated SHA (8 chars, colored by author), author
-  name (truncated to N chars), relative date — rendered as gutter decorations.
-- `<CR>` on a blame line opens `*magit:commit:<sha>*`.
-- Blame data cached in a per-file `BlameLineMap`; invalidated on file changes.
+Design:
+[`magit-blame.md`](magit-blame.md). What this replaced rendered the
+file as text, one `<sha> <author>  <code>` row per line, and that is
+precisely why blame lost syntax highlighting: the buffer stopped being
+the file, so it had no language and no parser. Every editor checked —
+magit, fugitive, Zed, GitLens, JetBrains — annotates the real buffer,
+and highlighting survives *because* the file was never replaced.
 
-**Reverse blame (`*magit:blame-reverse:<rev>:<path>*`, MG.23f2).** The
-same mode, the same renderer and the same porcelain parser, run with
-`git blame --reverse <rev>..HEAD -- <path>`: for each line of `<rev>`'s
-version of the file, the last commit in which the line still existed.
+**Read-only for the duration**, which is what re-frees `<CR>` and `p`;
+a minor on an editable buffer cannot take grammar keys. The override
+reverts on deactivation, so the file is editable the moment blame
+stops. Read-only is per-buffer state any kind can carry, so this needs
+no kind-specific branch.
 
-Two directions rather than two modes, because only the argv and the
-header differ — the direction is carried by the buffer name, so a
-buffer can never be in one direction and be labelled the other. The
-header says "reverse" for the same reason: a reverse body is
-indistinguishable from a forward one and every sha means the opposite
-thing, so an unlabelled buffer silently invites the wrong reading.
+**Direction is mode state, not a buffer name.** Forward and reverse
+blame are the same annotations from a different `git blame` invocation.
+The old shape carried direction in the buffer's name because a buffer
+was the only carrier available, and that forced `p` in a reverse view
+to open a *new* buffer rather than walk in place. State has no such
+constraint.
 
-The entry point is `C-c f`'s `f`, and it is reachable **only from a
-blob buffer**. Reverse blame needs a revision as well as a path, and
-its output is the file as it was at that revision — run from a
-working-tree file it would replace what the user is looking at with an
-older version of it, annotated with shas that mean the opposite of a
-normal blame's. That is magit's own rule ("Only blob buffers can be
-blamed in reverse") reached from the same reasoning. `staged` is
-refused with it: the index is not a commit, so there is no range. The
-refusal is echoed and names what is missing, never a silent no-op.
+**`Effect::ToggleMode` is the activation seam**, and it deliberately
+carries only a mode name — the grammar crate must not learn what a
+blame direction is. A non-default blame (reverse, a specific revision)
+therefore leaves a `BlameRequests` entry keyed by the *buffer name* it
+will land on, which `on_activate` consumes. Keyed by name rather than
+`BufferId` because the buffer may not exist yet: the reverse path opens
+a blob buffer and activates the mode on it in one `Effect::Many`. The
+entry is removed on read — leaving it would make the next plain
+`:magit-blame` on that buffer silently reverse.
 
-`p` in a reverse buffer opens the parent revision's *own* reverse
-buffer rather than re-blaming in place, so the name and the content
-never disagree — the shape `gj`/`gk` use to walk a blob's history.
-`:magit-blame-reverse <rev> <path>` is the scriptable form; both
-arguments are required, since `HEAD..HEAD` is empty and would report
-every line as still present.
+**The result reaches the screen with no keypress, and needs no
+`inbound` wiring.** The cells worker polls
+`VirtualRowProvider::version()` every tick, so bumping it *is* the
+wake. `collect()` hands back rows built once when a blame landed —
+re-chunking there would be exactly the UI-thread work paramount goal #1
+forbids. Colours *are* resolved in `collect`, one read-lock plus an
+`ArcSwap` load, which is what `MagitHeaderline::render` already does
+and is what makes `:colorscheme` repaint the headings.
+
+**`VirtualRowKind::Annotation` was added for this** and both renderers
+were wired in the same patch. `Generic` carries the diff deletion-block
+backdrop in TUI and GPUI alike, so a heading painted with it would read
+as a removed line; `Filler` is blank alignment padding; `Sticky` pins
+to the top of the pane, and an annotation has to scroll away with the
+lines it describes.
+
+**No `q`, though magit binds it.** This mode can be active on a blob
+buffer, where `magit-core-mode` is also active and already binds `q` —
+two minors binding one chord on one buffer resolves by registration
+order, which is not a contract. Blame toggles off the way it toggled
+on. Guarded by `the_blame_minor_shares_no_chord_with_magit_core`, which
+the ordinary chord guard would not have caught: both chords reach a
+registered action and a handler.
+
+`magit-blame-mode` also left `magit-core-mode`'s `Majors` allowlist —
+naming a minor there is an entry that can never match.
+
+**Retired with it:** `*magit:blame:<path>*`,
+`*magit:blame-reverse:<rev>:<path>*`, the blame *major*,
+`blame_styled_spans` and `format_blame_porcelain`'s row formatter. The
+porcelain *parser* stays, rewritten in `blame.rs` (MG.26a) to produce
+chunks — headings need exactly the (sha, author, time, summary,
+line-range) it extracts.
 
 ### 4.5 magit-diff (`*magit:diff*`, or path-scoped `*magit:diff:<path>*`)
 

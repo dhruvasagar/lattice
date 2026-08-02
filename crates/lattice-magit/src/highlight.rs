@@ -182,50 +182,6 @@ pub(crate) fn log_styled_spans(text: &str) -> Vec<Vec<StyledSpan>> {
         .collect()
 }
 
-/// Color `git blame` output (as formatted by `magit_blame_mode::run_blame`
-/// — `<sha> <author padded to 12>  <code>`): SHA → `Style::MagitSha`,
-/// author → `Style::MagitAuthor`, code left unstyled (it's the file's own
-/// content — this buffer has no language context to highlight it
-/// with, and guessing one would be misleading, not helpful).
-pub(crate) fn blame_styled_spans(text: &str) -> Vec<Vec<StyledSpan>> {
-    text.lines()
-        .map(|line| {
-            // Matches `run_blame`'s `format!("{} {:>12}  ", sha, author)`
-            // exactly: 8-char sha, one space, 12-char right-aligned
-            // author, two spaces, then code.
-            if line.len() < 8 || !line.as_bytes()[..8].iter().all(u8::is_ascii_hexdigit) {
-                return Vec::new();
-            }
-            let mut spans = vec![StyledSpan {
-                start: 0,
-                end: 8,
-                style: Style::MagitSha,
-            }];
-            let author_start = 9;
-            // Counted in CHARACTERS, not bytes: `format!("{:>12}")`
-            // pads to twelve *characters*, so a name with any
-            // multi-byte character in it would end the span mid-name —
-            // and mid-character, which is a panic in a slicing consumer
-            // rather than a cosmetic miss.
-            let author_end = line
-                .char_indices()
-                .map(|(i, _)| i)
-                .chain(std::iter::once(line.len()))
-                .filter(|i| *i >= author_start)
-                .nth(12)
-                .unwrap_or(line.len());
-            if author_end > author_start {
-                spans.push(StyledSpan {
-                    start: author_start,
-                    end: author_end,
-                    style: Style::MagitAuthor,
-                });
-            }
-            spans
-        })
-        .collect()
-}
-
 /// Color `git branch --format=%(refname:short)`-derived branch list
 /// output (`magit_branch_mode::build_branch_list`): the current
 /// branch's `* ` marker + name → `Style::MagitBranchCurrent` (the same visual
@@ -612,22 +568,6 @@ mod tests {
     fn log_styled_spans_graph_only_line_has_no_spans() {
         let text = "|\\  \n";
         let spans = log_styled_spans(text);
-        assert!(spans[0].is_empty());
-    }
-
-    #[test]
-    fn blame_styled_spans_colors_sha_and_author_columns() {
-        let line = format!("{} {:>12}  some code here\n", "a1b2c3d8", "Jane Doe");
-        let spans = blame_styled_spans(&line);
-        assert_eq!(spans[0][0].style, Style::MagitSha);
-        assert_eq!(spans[0][0].start, 0);
-        assert_eq!(spans[0][0].end, 8);
-        assert_eq!(spans[0][1].style, Style::MagitAuthor);
-    }
-
-    #[test]
-    fn blame_styled_spans_ignores_non_blame_lines() {
-        let spans = blame_styled_spans("No file to blame\n");
         assert!(spans[0].is_empty());
     }
 

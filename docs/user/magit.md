@@ -40,7 +40,7 @@ no hidden state.
 | `:magit-commit` | Open the commit message buffer |
 | `:magit-diff` | Open a read-only `git diff HEAD` view with file-level stage/unstage |
 | `:magit-log` | Open the commit history log |
-| `:magit-blame` | Open blame annotations for the current file |
+| `:magit-blame` | Toggle [blame annotations](help:magit-blame-mode) on the current file |
 | `:magit-stash-list` | Open the stash list |
 | `:magit-branch` | Open the branch list |
 | `:magit-remote` | Open the [remote list](help:magit-remote-mode) — add / rename / remove / set-url / prune |
@@ -202,7 +202,6 @@ exactly like the live file. The row answers that:
 | [`magit-file-revision-mode`](help:magit-file-revision-mode) | `src/main.rs  @  a1b2c3d`, or `@  index` |
 | [`magit-diff-mode`](help:magit-diff-mode) | `staged  src/main.rs` |
 | [`magit-log-mode`](help:magit-log-mode) | `HEAD  50 commits  src/main.rs` |
-| [`magit-blame-mode`](help:magit-blame-mode) | `src/main.rs  @  a1b2c3d` — updates as `p` walks back |
 | [`magit-branch-mode`](help:magit-branch-mode) | `main  12 branches` |
 | [`magit-remote-mode`](help:magit-remote-mode) | `2 remotes` |
 | [`magit-submodule-mode`](help:magit-submodule-mode) | `3 submodules  1 uninitialised` |

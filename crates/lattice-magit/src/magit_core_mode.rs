@@ -22,7 +22,6 @@ use lattice_mode::{
 use lattice_protocol::position::Position;
 
 use crate::buffer_state::DiffSource;
-use crate::magit_blame_mode::MagitBlameMode;
 use crate::magit_branch_mode::MagitBranchMode;
 use crate::magit_commit_mode::MagitCommitMode;
 use crate::magit_diff_mode::MagitDiffMode;
@@ -793,7 +792,10 @@ impl Mode for MagitCoreMode {
             MagitCommitMode::mode_id(),
             MagitDiffMode::mode_id(),
             MagitLogMode::mode_id(),
-            MagitBlameMode::mode_id(),
+            // MG.26b: `magit-blame-mode` is gone from this list because
+            // it is no longer a major. It annotates a file buffer,
+            // whose chords are the file's own — `gr` (re-run git) and
+            // `]]` (next section) have nothing to act on there.
             MagitStashMode::mode_id(),
             MagitBranchMode::mode_id(),
             MagitRebaseMode::mode_id(),

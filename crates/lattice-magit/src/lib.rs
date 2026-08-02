@@ -159,7 +159,10 @@ pub fn install(boot: &mut impl SubsystemBoot) {
 
     // ── Ex-commands ────────────────────────────────────────
 
-    register_ex_commands(boot.commands_mut());
+    let blame_requests: magit_blame_mode::BlameRequestsHandle =
+        Arc::new(magit_blame_mode::BlameRequests::default());
+    boot.register_service::<magit_blame_mode::BlameRequestsHandle>(blame_requests.clone());
+    register_ex_commands(boot.commands_mut(), blame_requests);
 
     // ── Action commands (keymap resolution targets) ──────
 
@@ -521,7 +524,16 @@ fn resolve_file_dispatch_ids(registry: &CommandRegistry) -> transients::FileDisp
 }
 
 /// Register all magit ex-commands in the command registry.
-fn register_ex_commands(registry: &mut CommandRegistry) {
+/// MG.26b: `blame_requests` is threaded in rather than looked up,
+/// because an ex-command's `apply` receives `lattice_grammar`'s
+/// `ActionContext`, which carries no service registry — by design, the
+/// grammar crate knows nothing about magit's services. Capturing the
+/// same `Arc` the mode's handlers get as a service means both surfaces
+/// write to one map instead of two.
+fn register_ex_commands(
+    registry: &mut CommandRegistry,
+    blame_requests: magit_blame_mode::BlameRequestsHandle,
+) {
     let mut mk = |name: &'static str,
                   doc: &'static str,
                   buffer_name: &'static str,
@@ -799,14 +811,25 @@ fn register_ex_commands(registry: &mut CommandRegistry) {
                         Ok(Args::String(trimmed.to_string()))
                     }
                 }),
+                // MG.26b: blame annotates the buffer you are reading
+                // rather than opening one of its own. With no argument
+                // that is a plain toggle; with a path, open the file
+                // first and toggle on it — the same composition `dv`
+                // uses, and the reason the argument stays useful.
                 apply: Arc::new(|ctx| {
-                    let name = if let Args::String(ref path) = ctx.args {
-                        format!("*magit:blame:{}*", path)
-                    } else {
-                        "*magit:blame*".to_string()
+                    let toggle = Effect::ToggleMode {
+                        mode_name: "magit-blame-mode".to_string(),
                     };
-                    let mode_id = "magit-blame-mode".to_string();
-                    Ok(Effect::OpenSyntheticBuffer { name, mode_id })
+                    Ok(match ctx.args {
+                        Args::String(ref path) if !path.trim().is_empty() => Effect::Many(vec![
+                            Effect::OpenBuffer {
+                                path: Some(std::path::PathBuf::from(path.trim())),
+                                force: false,
+                            },
+                            toggle,
+                        ]),
+                        _ => toggle,
+                    })
                 }),
                 args_schema: vec![ArgSpec::optional(
                     "file",
@@ -910,20 +933,40 @@ fn register_ex_commands(registry: &mut CommandRegistry) {
                 parse_args: Arc::new(|line: &str, _bang: bool| {
                     Ok(Args::String(line.trim().to_string()))
                 }),
-                apply: Arc::new(|ctx| {
-                    let Args::String(ref spec) = ctx.args else {
-                        return Ok(reverse_blame_usage());
-                    };
-                    match spec.split_once(char::is_whitespace) {
-                        Some((rev, path)) if !rev.is_empty() && !path.trim().is_empty() => {
-                            Ok(Effect::OpenSyntheticBuffer {
-                                name: magit_blame_mode::reverse_buffer_name(rev, path.trim()),
-                                mode_id: "magit-blame-mode".to_string(),
-                            })
+                // MG.26b: reverse blame annotates the blob buffer —
+                // the file at that revision, which is the content
+                // reverse blame is about. The direction and revision
+                // are left as a request keyed by that buffer's name,
+                // because `ToggleMode` carries a mode name and nothing
+                // else.
+                apply: {
+                    let requests = blame_requests.clone();
+                    Arc::new(move |ctx| {
+                        let Args::String(ref spec) = ctx.args else {
+                            return Ok(reverse_blame_usage());
+                        };
+                        match spec.split_once(char::is_whitespace) {
+                            Some((rev, path)) if !rev.is_empty() && !path.trim().is_empty() => {
+                                let name = format!("*magit:file:{rev}:{}*", path.trim());
+                                requests.put(
+                                    name.clone(),
+                                    magit_blame_mode::BlameDirection::Reverse,
+                                    rev.to_string(),
+                                );
+                                Ok(Effect::Many(vec![
+                                    Effect::OpenSyntheticBuffer {
+                                        name,
+                                        mode_id: "magit-file-revision-mode".to_string(),
+                                    },
+                                    Effect::ToggleMode {
+                                        mode_name: "magit-blame-mode".to_string(),
+                                    },
+                                ]))
+                            }
+                            _ => Ok(reverse_blame_usage()),
                         }
-                        _ => Ok(reverse_blame_usage()),
-                    }
-                }),
+                    })
+                },
                 args_schema: vec![ArgSpec::required(
                     "spec",
                     lattice_grammar::ArgKind::String,
@@ -2055,6 +2098,52 @@ mod tests {
         );
     }
 
+    /// MG.26b: two minors that can be active on the SAME buffer must
+    /// not bind the same chord.
+    ///
+    /// `magit-blame-mode` annotates blob buffers, where
+    /// `magit-core-mode` is also active. Both binding `q` — which the
+    /// first draft did, since `q` is magit's own key for stopping a
+    /// blame — resolves by registration order, which is not a contract
+    /// anything should depend on. The chord guard would not have caught
+    /// it: both chords reach a registered action and a handler.
+    #[test]
+    fn the_blame_minor_shares_no_chord_with_magit_core() {
+        use lattice_mode::Mode;
+        let core: Vec<&str> = MagitCoreMode
+            .keymap()
+            .entries
+            .iter()
+            .map(|e| e.chord)
+            .collect();
+        for entry in MagitBlameMode.keymap().entries {
+            assert!(
+                !core.contains(&entry.chord),
+                "`{}` is bound by BOTH magit-blame-mode and magit-core-mode, and \
+                 both are active on a blob buffer — which one wins is registration \
+                 order, not a contract",
+                entry.chord
+            );
+        }
+    }
+
+    /// `magit-core-mode` activates by major, so naming a *minor* in
+    /// its allowlist is an entry that can never match — dead config
+    /// that reads as intent.
+    #[test]
+    fn magit_core_activates_only_on_real_majors() {
+        use lattice_mode::{ActivationPolicy, Mode};
+        let ActivationPolicy::Majors(majors) = MagitCoreMode.activation_policy() else {
+            panic!("magit-core-mode activates by major");
+        };
+        assert!(
+            !majors.contains(&MagitBlameMode::mode_id()),
+            "magit-blame-mode is a minor — it can never be an active MAJOR, so \
+             this entry never matches"
+        );
+        assert_eq!(MagitBlameMode.kind(), lattice_mode::ModeKind::Minor);
+    }
+
     /// MG.21i: `o` opens the submodule list, in every context.
     ///
     /// Same claim as `M`'s, for the same reason — the buffer lists the
@@ -2090,7 +2179,7 @@ mod tests {
     #[test]
     fn the_submodule_buffer_is_reachable_by_ex_command_and_by_action() {
         let mut registry = CommandRegistry::new();
-        register_ex_commands(&mut registry);
+        register_ex_commands(&mut registry, Default::default());
         let id = registry
             .id_by_name("magit-submodule")
             .expect("`:magit-submodule` must exist");
@@ -2397,7 +2486,7 @@ mod tests {
     #[test]
     fn every_commit_ops_ex_command_is_registered() {
         let mut registry = CommandRegistry::new();
-        register_ex_commands(&mut registry);
+        register_ex_commands(&mut registry, Default::default());
         for op in [
             magit_global_mode::CommitOp::CHERRY_PICK,
             magit_global_mode::CommitOp::REVERT,
@@ -2430,7 +2519,7 @@ mod tests {
     #[test]
     fn the_remote_buffer_is_reachable_by_ex_command_and_by_action() {
         let mut registry = CommandRegistry::new();
-        register_ex_commands(&mut registry);
+        register_ex_commands(&mut registry, Default::default());
         let id = registry
             .id_by_name("magit-remote")
             .expect("`:magit-remote` must exist");
@@ -2651,15 +2740,17 @@ mod tests {
         })
     }
 
-    /// MG.23f2 — both halves come out of the blob buffer's name.
+    /// MG.26b — reverse blame annotates the blob buffer it was run in,
+    /// rather than opening a buffer of its own. Both halves still come
+    /// out of that buffer's name; they now go into the request map,
+    /// because `ToggleMode` carries only a mode name.
     #[test]
-    fn reverse_blame_takes_its_revision_from_the_blob_buffer_it_runs_in() {
+    fn reverse_blame_toggles_the_minor_on_the_blob_buffer_it_runs_in() {
         match fire_reverse_blame_in("*magit:file:a1b2c3d:src/main.rs*") {
-            Some(Effect::OpenSyntheticBuffer { name, mode_id }) => {
-                assert_eq!(name, "*magit:blame-reverse:a1b2c3d:src/main.rs*");
-                assert_eq!(mode_id, "magit-blame-mode");
+            Some(Effect::ToggleMode { mode_name }) => {
+                assert_eq!(mode_name, "magit-blame-mode");
             }
-            other => panic!("expected the reverse-blame buffer, got {other:?}"),
+            other => panic!("expected the blame minor to be toggled, got {other:?}"),
         }
     }
 
@@ -2991,7 +3082,7 @@ mod tests {
         use lattice_mode::Mode;
 
         let mut registry = CommandRegistry::new();
-        register_ex_commands(&mut registry);
+        register_ex_commands(&mut registry, Default::default());
         register_action_commands(&mut registry);
         let handlers = MagitGlobalMode.action_handlers();
 
@@ -3055,7 +3146,7 @@ mod tests {
     #[test]
     fn magit_stash_and_magit_stash_list_are_distinct_commands() {
         let mut registry = CommandRegistry::new();
-        register_ex_commands(&mut registry);
+        register_ex_commands(&mut registry, Default::default());
         let create = registry
             .lookup_by_name("magit-stash")
             .expect("`:magit-stash` registered");

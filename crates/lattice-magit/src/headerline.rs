@@ -429,6 +429,25 @@ fn resolve_elements(theme: ThemeRegistryHandle, mode_id: &str) -> FieldElements 
     }
 }
 
+/// MG.26b: the two element ids a blame chunk-heading paints with.
+///
+/// Reuses the same interning `resolve_elements` does — `register` is
+/// idempotent by name — so a heading's sha is the same colour as a
+/// sha anywhere else in magit, and a `:colorscheme` moves both.
+pub(crate) fn intern_blame_heading_elements(
+    theme: &ThemeRegistryHandle,
+    mode_id: &str,
+) -> (ElementId, ElementId) {
+    let e = resolve_elements(theme.clone(), mode_id);
+    (e.sha, e.label)
+}
+
+/// MG.26b: the fallback colours for those two, for a harness with no
+/// theme registry. Same table the headerline falls back to.
+pub(crate) fn blame_heading_fallback() -> (u32, u32) {
+    (fallback_fg(FieldStyle::Sha), fallback_fg(FieldStyle::Label))
+}
+
 /// Push `fields` into an optional handle — the shape every mode's
 /// refresh path uses, since `install` yields `None` in a stripped
 /// harness.

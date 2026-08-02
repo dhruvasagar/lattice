@@ -65,7 +65,7 @@ same surface).
 | magit — file at revision   | [`magit-file-revision-mode`](help:magit-file-revision-mode) | ✅      |
 | magit — diff buffer        | [`magit-diff-mode`](help:magit-diff-mode) | ✅      |
 | magit — log buffer         | [`magit-log-mode`](help:magit-log-mode)  | ✅      |
-| magit — blame buffer       | [`magit-blame-mode`](help:magit-blame-mode) | ✅      |
+| magit — blame annotations  | [`magit-blame-mode`](help:magit-blame-mode) | ✅      |
 | magit — stash list         | [`magit-stash-mode`](help:magit-stash-mode) | ✅      |
 | magit — stash detail       | [`magit-stash-show-mode`](help:magit-stash-show-mode) | ✅      |
 | magit — branch list        | [`magit-branch-mode`](help:magit-branch-mode) | ✅      |

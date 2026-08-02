@@ -1,58 +1,100 @@
 ---
-summary: "magit-blame-mode: per-line git blame annotations — <CR> opens the commit for a line, p walks the blame back to the parent commit."
-related: [magit, magit-blame, ex:magit-blame]
+summary: "magit-blame-mode: a minor mode that annotates the file you are reading with a heading above each run of lines sharing a commit — your code keeps its syntax highlighting."
+related: [magit, magit-core-mode, magit-file-revision-mode, ex:magit-blame]
 ---
 
 # magit-blame-mode
 
-Per-line authorship: who last touched each line, and in which commit.
-`:magit-blame` blames the current file, `:magit-blame <path>` a
-specific one, and `b` in the [file dispatch
-transient](help:magit-transient) (`C-c f`) blames the file you're
-editing.
+Who last touched each part of the file, shown **on the file itself**.
+`:magit-blame`, or `b` in the [file dispatch
+transient](help:magit-transient) (`C-c f`). Both are toggles — press
+again to stop blaming.
 
-Each row is `<sha> <author>  <the line itself>` — SHA coloured as a
-SHA, author in its own colour, the code left unstyled (this buffer has
-no language context to highlight it with, and guessing one would
-mislead).
+```
+  a1b2c3d4  Jane Doe  3 days ago  extract the parser
+fn parse(input: &str) -> Result<Ast> {
+    let tokens = lex(input)?;
 
-The headerline reads `src/main.rs  @  a1b2c3d` and **updates as `p`
-walks back**. That is the only place the walked-to revision is visible
-— the annotations themselves look identical at every step, so without
-the header you'd lose track of how far back you are.
+  9f8e7d6c  Sam Roe  2 months ago  handle empty input
+    if tokens.is_empty() {
+        return Ok(Ast::default());
+    }
+```
+
+One heading above each **chunk** — a run of consecutive lines sharing a
+commit — carrying the short SHA, the author, a relative date and the
+commit summary. The SHA is coloured apart from the rest so chunk
+boundaries are scannable without reading.
+
+**Your code keeps its syntax highlighting**, because the buffer is
+still your file. That is the whole point of the shape: blame is an
+annotation *over* the file, not a rendering *of* it.
 
 ## Chords
 
 | Chord | Action |
 |---|---|
-| `<CR>` | Show the commit for the blamed line in [`magit-revision-mode`](help:magit-revision-mode) |
+| `<CR>` | Show the commit for the chunk at cursor in [`magit-revision-mode`](help:magit-revision-mode) |
 | `p` | Re-blame at the **parent** of the current revision |
 
-`q` / `gr` / navigation come from
-[`magit-core-mode`](help:magit-core-mode).
+The buffer is **read-only while blaming**, which is what frees `<CR>`
+and `p` — they are ordinary editing keys otherwise. Stop blaming and
+the file is editable again immediately.
+
+There is no `q`. Blame can be active on a [file at a
+revision](help:magit-file-revision-mode), where `q` already closes the
+buffer, and one key meaning two things depending on where you are is
+worse than no key. Toggle blame off the way you turned it on.
 
 ## Walking history with `p`
 
-`p` is the reason to stay in this buffer rather than jumping straight
-to a commit. It re-blames the same file at the parent of the revision
-currently shown — so pressing it repeatedly peels back one commit at a
-time, letting you find the change *before* the one that currently
-claims a line. This is how you get past a reformat, a rename, or a
-mass-update commit that owns every line but explains none of them.
+`p` re-blames the same file at the parent of the revision currently
+blamed, **in place** — press it repeatedly to peel back one commit at
+a time and find the change *before* the one that currently claims a
+line. This is how you get past a reformat, a rename, or a mass-update
+commit that owns every line and explains none of them.
 
-At the root commit `p` has nowhere left to go and reports that rather
-than appearing to do nothing.
+At the root commit `p` has nowhere left to go and says so rather than
+appearing to do nothing.
+
+## Reverse blame — "when did this line go away?"
+
+`:magit-blame-reverse <rev> <path>`, or `r` in the file dispatch when
+you are already looking at a [file at a
+revision](help:magit-file-revision-mode).
+
+It answers the opposite question: for each line as it was at `<rev>`,
+the last commit in which that line still existed. Lines annotated with
+anything other than HEAD are the ones that have since disappeared.
+
+It annotates the *blob* buffer — the file as it was at that revision —
+because that is the content the question is about. Your working-tree
+copy is untouched, and `gj` / `gk` keep walking the file's history
+while the annotations are up.
+
+Both arguments are required. A default revision is exactly what
+reverse blame cannot have: `HEAD` would make the range empty and
+report every line as still present, which is a plausible-looking
+answer that says nothing.
+
+## Uncommitted lines
+
+Lines you have not committed yet get a heading reading `Uncommitted
+changes` rather than git's internal all-zero SHA.
 
 ## Behaviour worth knowing
 
-- Blame data loads on a background thread, so a large file doesn't
-  block the editor while git works.
-- **Column widths are hardcoded** — an 8-character SHA and a
-  12-character author column. `magit.blame.author-width` and
-  `magit.blame.date-format` read like options but are **not
-  registered**: `:set` on either fails with `unknown option`.
-  `lattice-magit` registers no options of its own today. See
-  [`magit`](help:magit#options).
+- Blame runs on a background thread and the headings appear when it
+  lands — a large file never blocks the editor, and you do not have to
+  press anything to see the result.
+- Headings cost **vertical** space, one row per chunk. A file where
+  every line has a different commit nearly doubles in height. The trade
+  is deliberate: a per-line column would shift all your code sideways
+  and repeat a truncated SHA on every line, where a heading states the
+  commit once, legibly.
+- `magit.blame.author-width` and `magit.blame.date-format` read like
+  options but are **not registered**: `:set` on either fails with
+  `unknown option`. See [`magit`](help:magit#options).
 
 ## See also
 

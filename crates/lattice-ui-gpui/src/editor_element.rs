@@ -3201,9 +3201,11 @@ fn push_virtual_row(
         // Filler: no backdrop (blank padding). BrandingBlock: no cell
         // backdrop either — the GPUI branding pass (DB.4-gpui) paints the
         // 2-D composition over these rows itself.
-        lattice_cells::VirtualRowKind::Filler | lattice_cells::VirtualRowKind::BrandingBlock => {
-            Vec::new()
-        }
+        // MG.26b: an annotation carries no backdrop of its own — a
+        // blame heading tinted like a deletion would read as one.
+        lattice_cells::VirtualRowKind::Annotation
+        | lattice_cells::VirtualRowKind::Filler
+        | lattice_cells::VirtualRowKind::BrandingBlock => Vec::new(),
     };
     shaped_text.push(shaped_body);
     shaped_gutter.push(shaped_g);

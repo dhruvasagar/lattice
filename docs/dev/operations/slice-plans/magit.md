@@ -1300,8 +1300,8 @@ the buffer you are already in is the actual no-op. See MG.23h's note.
 | MG.26 | `magit-blame-mode` as a minor on the file — retires the blame buffer | MG.7, MG.23f2 | 📝 |
 | MG.27 | in-flight indicator in magit headerlines (a word, not `⟳` — see below) | — | ✅ |
 | MG.26a | The blame model — porcelain → chunks → heading text (pure) | — | ✅ |
-| MG.26b | `magit-blame-mode` as a minor + the chunk-heading provider | MG.26a | 📝 |
-| MG.26c | Retire the blame major, both blame buffers, `blame_styled_spans`; reverse blame on the blob buffer | MG.26b | 📝 |
+| MG.26b | `magit-blame-mode` as a minor + the chunk-heading provider; retires the major and both blame buffers | MG.26a | ✅ |
+| MG.26c | Syntax highlighting for the blob buffer (reverse blame's content) | MG.26b | 📝 |
 | NOTIF.1 | Notification subsystem (design.md §5.9.9) — magit remote ops as first consumer | — | 📝 |
 | MG.23i+ | The new subsystems, one slice each, prioritised by daily use — the same set MG.21 still names | — | 📝 |
 
@@ -1496,7 +1496,7 @@ of its own, though — `*magit:blame:<path>*` carries no revision, so the
 buffer name, the argv and the headerline all move together. Filed as
 MG.23f2 rather than smuggled in here.
 
-### MG.26 — magit-blame as a minor on the file 🚧 (2026-07-31; MG.26a landed 2026-08-02)
+### MG.26 — magit-blame as a minor on the file 🚧 (2026-07-31; MG.26a/b landed 2026-08-02, MG.26c open)
 
 Design fragment:
 [`../../architecture/magit-blame.md`](../../architecture/magit-blame.md).
@@ -2182,6 +2182,68 @@ did not land, and there is no `do`/`dp` hunk transfer.
 - **Deliverables:** two-pane layout via D.4's pane-group machinery,
   scroll-bound; `do`/`dp` on top of MG.18's hunk identity.
 - **Tests:** panes stay scroll-synced; `do`/`dp` move exactly one hunk.
+
+### MG.26b — blame as a minor ✅ (2026-08-02)
+
+Design: [`../../architecture/magit.md`](../../architecture/magit.md)
+§4.4 and
+[`../../architecture/magit-blame.md`](../../architecture/magit-blame.md).
+**The blame buffer is gone.** `magit-blame-mode` is a minor that
+annotates the buffer you are already reading, so your code keeps its
+own major, its parser and therefore its highlighting — which was the
+whole complaint that started MG.26.
+
+**Retired in this slice, as designed:** `*magit:blame:<path>*`,
+`*magit:blame-reverse:<rev>:<path>*`, the blame *major*,
+`blame_styled_spans`, and `format_blame_porcelain`'s row formatter.
+
+**Three things worth keeping.**
+
+*`Effect::ToggleMode` is the activation seam*, and it carries only a
+mode name — correctly, since the grammar crate must not learn what a
+blame direction is. Reverse blame therefore leaves a `BlameRequests`
+entry keyed by the *buffer name* it will land on, consumed by
+`on_activate` and removed on read. Keyed by name rather than
+`BufferId` because the buffer may not exist yet: the reverse path opens
+a blob buffer and activates the mode on it in one `Effect::Many`. The
+ex-command captures the same `Arc` the handlers get as a service,
+because an ex-command's `apply` receives the *grammar's*
+`ActionContext`, which has no service registry.
+
+*No `inbound` wiring was needed.* The cells worker polls
+`VirtualRowProvider::version()` every tick, so bumping it **is** the
+wake — blame results appear with no keypress, which is the rule
+`feedback_async_results_need_the_inbound_primitive` exists to enforce,
+satisfied here by the polling primitive rather than around it.
+
+*`VirtualRowKind::Annotation` was added*, and both renderers wired in
+the same patch. `Generic` carries the diff deletion-block backdrop in
+TUI and GPUI alike, so a heading painted with it would read as a
+removed line; `Filler` is blank padding; `Sticky` pins to the top of
+the pane, and an annotation must scroll away with the lines it
+describes.
+
+**A collision the ordinary chord guard could not catch.** The first
+draft bound `q` (magit's own key for stopping a blame). But this mode
+can be active on a blob buffer, where `magit-core-mode` is *also*
+active and already binds `q` — two minors, one chord, one buffer,
+resolved by registration order. Both chords reach a registered action
+and a handler, so the existing guard was silent. Dropped `q`; blame
+toggles off the way it toggled on. Two new guards: no shared chord with
+magit-core, and `magit-core`'s `Majors` allowlist names no minors — it
+still listed `magit-blame-mode`, an entry that could never match again.
+
+- **Tests:** 12 (argv incl. the `--` separator, provider anchoring and
+  colouring, the uncommitted case, version bumps, chunk-at-cursor,
+  request consumption, the two collision guards).
+- **No bench:** `collect` returns rows built once per blame run; the
+  git call is on `spawn_blocking` behind a detached task.
+- **Deferred to MG.26c:** the blob buffer still has no syntax
+  highlighting of its own (it calls `wake()` with no spans), so reverse
+  blame annotates unhighlighted content. The fix is known and not a
+  parser question — `Lang::detect_from_path` on the path in the
+  buffer's name, exactly what `lattice-multibuffer` and
+  `grep_highlight.rs` already do.
 
 ### MG.26a — the blame model ✅ (2026-08-02)
 

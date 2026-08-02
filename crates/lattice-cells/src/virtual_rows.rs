@@ -84,6 +84,19 @@ pub enum VirtualRowKind {
     /// anchor line is in the viewport. Use `VirtualRow::bg` to supply
     /// a background colour; falls back to no backdrop if `bg` is `None`.
     Sticky,
+    /// MG.26b: an annotation row — content that scrolls with its
+    /// anchor and paints **no backdrop** of its own.
+    ///
+    /// Distinct from [`Generic`](Self::Generic), which carries the
+    /// diff deletion-block backdrop: a blame chunk heading painted
+    /// with that would read as a removed line. Distinct from
+    /// [`Filler`](Self::Filler), which is blank alignment padding
+    /// rather than something to read, and from
+    /// [`Sticky`](Self::Sticky), which pins to the top of the pane —
+    /// an annotation belongs *with* the lines it describes and has to
+    /// scroll away with them. `VirtualRow::bg` still supplies a
+    /// background where one is wanted.
+    Annotation,
     /// Dashboard branding block (DB.4-gpui). A contiguous group of
     /// these rows carries the mark's block cells + the wordmark/tagline
     /// text; the **GPUI peer** intercepts the group and paints a 2-D

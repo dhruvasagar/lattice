@@ -57,7 +57,8 @@ Open it with **`C-x g`** or **`:magit-status`** from any buffer.
 | `]]` / `[[` | Next / previous top-level section |
 | `]f` / `[f` | Next / previous file or entry within the current section |
 | `]c` / `[c` | Next / previous hunk (within expanded diffs) |
-| `s` / `u` / `x` in Visual | Act on the selected lines only |
+| `s` / `u` in Visual over file rows | Stage / unstage **every file** the selection covers |
+| `s` / `u` / `x` in Visual inside a diff | Act on the selected lines only |
 | `A` / `_` | Cherry-pick / revert the commit at cursor |
 | `Os` / `Om` / `Oh` | Reset `--soft` / `--mixed` / `--hard` to the commit at cursor |
 | `TAB` | Toggle section or hunk fold at cursor |
@@ -245,6 +246,26 @@ A file with changes in both the index AND the working tree shows as
 the staged row target the index; on the unstaged row they target the
 working tree. This matches git's two-staging-area model, at the
 file level.
+
+---
+
+## Visual mode over several files
+
+Select a run of file entries and press `s` or `u` — every file in the
+selection is staged or unstaged, in one go.
+
+The same keys inside an *expanded diff* still act on the selected
+**lines**, which is the finer-grained thing you want there. Which one
+you get depends on what the selection covers, not on a different key.
+
+An entry and its expanded diff are rows of the same file, so a
+selection spanning both stages it once. A file that is partly staged
+appears in two sections, and selecting across them is still one file.
+
+`x` (discard) is deliberately **not** ranged yet: it is destructive and
+goes through a confirmation that names its target, and a confirmation
+that named several would need to carry the whole list to its execute
+half. Until it does, `x` acts on the file at the cursor.
 
 ---
 

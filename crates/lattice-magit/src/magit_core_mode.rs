@@ -768,9 +768,22 @@ fn stage_or_unstage(ctx: &ActionContext<'_>, op: HunkOp) -> Option<Effect> {
         HunkResolution::Refused(effect) => Some(effect),
         HunkResolution::FileLevel => {
             let view = crate::buffer_state::view_for(ctx)?;
+            // A Visual selection over ENTRY rows means "these files",
+            // not "this file". Asked of the view because what an entry
+            // is differs per view; a view with no range answer falls
+            // through to the cursor's single entry, so nothing that
+            // worked before changes.
+            let rows = ctx
+                .selection
+                .map(|r| r.start.line.min(r.end.line)..=r.start.line.max(r.end.line));
             match op {
-                HunkOp::Stage => view.stage(ctx.cursor),
-                HunkOp::Unstage => view.unstage(ctx.cursor),
+                HunkOp::Stage => rows
+                    .clone()
+                    .and_then(|r| view.stage_rows(r))
+                    .or_else(|| view.stage(ctx.cursor)),
+                HunkOp::Unstage => rows
+                    .and_then(|r| view.unstage_rows(r))
+                    .or_else(|| view.unstage(ctx.cursor)),
                 // MG.23g: `a` / `-` have no file-level fallback, which
                 // is deliberate rather than missing. The file-level
                 // meaning of "apply this commit" is a cherry-pick and

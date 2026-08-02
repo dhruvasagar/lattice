@@ -218,6 +218,28 @@ pub trait MagitView: Send + Sync + 'static {
         None
     }
 
+    /// `s` in Visual mode — stage every entry the selection covers.
+    ///
+    /// `None` (the default) means this view has no range answer and the
+    /// caller falls back to the single-entry path at the cursor.
+    ///
+    /// **One call, not one per row.** Iterating [`Self::stage`] over
+    /// the selection would spawn a git process and a buffer refresh per
+    /// file, and those refreshes race each other — the last to land
+    /// wins, so the buffer can end up showing a state from the middle
+    /// of the batch. A view that answers this stages the whole set in
+    /// one task and refreshes once.
+    fn stage_rows(&self, rows: std::ops::RangeInclusive<u32>) -> Option<lattice_grammar::Effect> {
+        let _ = rows;
+        None
+    }
+
+    /// `u` in Visual mode. Peer of [`Self::stage_rows`].
+    fn unstage_rows(&self, rows: std::ops::RangeInclusive<u32>) -> Option<lattice_grammar::Effect> {
+        let _ = rows;
+        None
+    }
+
     /// `u` — unstage the entry at `cursor`. Peer of [`Self::stage`].
     fn unstage(
         &self,

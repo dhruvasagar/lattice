@@ -798,6 +798,46 @@ fn jump_to_section(ctx: &ActionContext<'_>, prefix: &str) -> Effect {
     }
 }
 
+/// The distinct files the buffer rows `rows` cover, plus the workdir.
+///
+/// `None` when the selection holds no file entry at all — a range over
+/// section headers or commit rows, where staging means nothing. The
+/// caller then falls through to the cursor's own entry, which declines
+/// the same way it always did.
+fn files_in_rows(
+    s: &Arc<Mutex<StatusBufferState>>,
+    rows: std::ops::RangeInclusive<u32>,
+) -> Option<(Vec<PathBuf>, PathBuf)> {
+    let g = s.lock().ok()?;
+    let paths = distinct_files(rows.map(|line| classify_line(&g, line)));
+    if paths.is_empty() {
+        return None;
+    }
+    Some((paths, g.workdir.clone()))
+}
+
+/// The distinct file paths in a run of classified rows, in buffer
+/// order.
+///
+/// Pure, because the decisions are here rather than in the lookup
+/// around it. **Distinct** matters twice: a file entry and its expanded
+/// inline diff are separate rows of the same file, so a selection
+/// covering both must not stage it twice; and the same path can appear
+/// in the staged *and* unstaged sections at once. **Buffer order**
+/// matters because a batch reported in a different order than it is
+/// shown is harder to check.
+pub(crate) fn distinct_files(lines: impl Iterator<Item = Option<StatusLine>>) -> Vec<PathBuf> {
+    let mut paths: Vec<PathBuf> = Vec::new();
+    for line in lines.flatten() {
+        if let StatusLine::File { path, .. } = line {
+            if !paths.contains(&path) {
+                paths.push(path);
+            }
+        }
+    }
+    paths
+}
+
 /// Run `mutate` (a blocking git call) on `spawn_blocking`, off the
 /// actor thread entirely, then refresh.
 ///
@@ -1044,6 +1084,44 @@ impl crate::buffer_state::MagitView for StatusView {
         })
     }
 
+    /// Every distinct file the selected rows cover, staged in ONE task
+    /// with ONE refresh.
+    ///
+    /// Distinct because a file entry and its expanded inline diff are
+    /// separate rows of the same file — a selection over both must not
+    /// stage it twice — and because the same path can appear in both
+    /// the staged and unstaged sections.
+    fn stage_rows(&self, rows: std::ops::RangeInclusive<u32>) -> Option<Effect> {
+        let s = self.0.clone();
+        let (paths, workdir) = files_in_rows(&s, rows)?;
+        spawn_mutation_and_refresh(s, move || {
+            if let Ok(repo) = Repository::discover(&workdir) {
+                for path in &paths {
+                    // One failure does not abandon the rest: a batch
+                    // that stopped halfway would leave the user to work
+                    // out which half.
+                    if let Err(e) = Index::stage_path(&repo, path) {
+                        tracing::error!(target: "lattice_magit", "stage {path:?}: {e}");
+                    }
+                }
+            }
+        })
+    }
+
+    fn unstage_rows(&self, rows: std::ops::RangeInclusive<u32>) -> Option<Effect> {
+        let s = self.0.clone();
+        let (paths, workdir) = files_in_rows(&s, rows)?;
+        spawn_mutation_and_refresh(s, move || {
+            if let Ok(repo) = Repository::discover(&workdir) {
+                for path in &paths {
+                    if let Err(e) = Index::unstage_path(&repo, path) {
+                        tracing::error!(target: "lattice_magit", "unstage {path:?}: {e}");
+                    }
+                }
+            }
+        })
+    }
+
     fn unstage(&self, cursor: Position) -> Option<Effect> {
         let s = self.0.clone();
         let (path, workdir) = {
@@ -1067,6 +1145,76 @@ mod tests {
 
     fn header(s: &str) -> impl FnOnce() -> Option<String> + '_ {
         move || Some(s.to_string())
+    }
+
+    fn file(path: &str, staged: bool) -> Option<StatusLine> {
+        Some(StatusLine::File {
+            path: PathBuf::from(path),
+            staged,
+        })
+    }
+
+    /// A Visual selection over several entries stages all of them, in
+    /// the order the buffer shows.
+    #[test]
+    fn a_selection_collects_every_file_it_covers_in_buffer_order() {
+        let rows = [
+            file("src/a.rs", false),
+            file("src/b.rs", false),
+            file("src/c.rs", false),
+        ];
+        assert_eq!(
+            distinct_files(rows.into_iter()),
+            vec![
+                PathBuf::from("src/a.rs"),
+                PathBuf::from("src/b.rs"),
+                PathBuf::from("src/c.rs")
+            ]
+        );
+    }
+
+    /// A file entry and its expanded inline diff are separate rows of
+    /// the SAME file. A selection over both must stage it once — twice
+    /// is not harmless when the second call runs against a tree the
+    /// first already changed.
+    #[test]
+    fn an_expanded_entry_is_not_staged_twice() {
+        let rows = [
+            file("src/a.rs", false),
+            file("src/a.rs", false),
+            file("src/b.rs", false),
+        ];
+        assert_eq!(
+            distinct_files(rows.into_iter()),
+            vec![PathBuf::from("src/a.rs"), PathBuf::from("src/b.rs")]
+        );
+    }
+
+    /// The same path can sit in the staged AND unstaged sections at
+    /// once — a partially-staged file. A selection spanning both is
+    /// still one path.
+    #[test]
+    fn a_partially_staged_file_appearing_twice_is_still_one_path() {
+        let rows = [file("src/a.rs", true), file("src/a.rs", false)];
+        assert_eq!(
+            distinct_files(rows.into_iter()),
+            vec![PathBuf::from("src/a.rs")]
+        );
+    }
+
+    /// Rows that are not files — section headers, commit rows, blanks —
+    /// contribute nothing, so a selection over them declines and the
+    /// caller falls back to the cursor's own entry.
+    #[test]
+    fn non_file_rows_contribute_nothing() {
+        let rows = [
+            None,
+            Some(StatusLine::Commit {
+                sha: "a1b2c3d".into(),
+            }),
+            Some(StatusLine::Stash { index: 0 }),
+        ];
+        assert!(distinct_files(rows.into_iter()).is_empty());
     }
 
     /// MG.18c — the header a hunk sits under decides which tree its

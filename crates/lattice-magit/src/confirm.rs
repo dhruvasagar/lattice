@@ -54,6 +54,12 @@ pub(crate) const DESTRUCTIVE_ACTIONS: &[(&str, &str)] = &[
         "action:magit-rebase-abort",
         "action:magit-rebase-abort-execute",
     ),
+    // MG.21i: removing a submodule deletes its whole working tree,
+    // including anything uncommitted inside it, and git keeps no copy.
+    (
+        "action:magit-submodule-remove",
+        "action:magit-submodule-remove-execute",
+    ),
     // MG.20: `reset --hard` discards uncommitted work irrecoverably —
     // the same bar `x` / branch-delete / stash-drop are held to.
     // `--soft` and `--mixed` keep your changes, so they act directly.

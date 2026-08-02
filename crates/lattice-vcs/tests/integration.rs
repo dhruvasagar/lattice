@@ -10,7 +10,7 @@ use std::process::Command;
 
 use lattice_vcs::{
     Bisect, Branch, Commit, GitBlob, Index, PathStatus, Reference, Remote, Repository, Stash,
-    WorkingTree,
+    Submodule, SubmoduleState, WorkingTree,
 };
 
 /// Create a temporary directory, initialise a git repo in it, and
@@ -871,5 +871,121 @@ fn marking_outside_a_bisect_is_an_error_not_a_silent_no_op() {
     assert!(
         format!("{err}").contains("bisect good"),
         "the error names the operation: {err}"
+    );
+}
+
+// MG.21h — submodules. Driven against real `git submodule`, because
+// the status format is the whole contract and a hand-written fixture
+// would only prove the parser agrees with itself.
+
+/// A superproject with one submodule cloned from a local repo.
+fn repo_with_submodule() -> (tempfile::TempDir, tempfile::TempDir, Repository, String) {
+    let (child_dir, child) = init_temp_repo();
+    write_file(child.workdir().unwrap(), "lib.txt", "child\n");
+    git_add(&child, "lib.txt");
+    git_commit(&child, "child initial");
+
+    let (super_dir, superproject) = init_temp_repo();
+    write_file(superproject.workdir().unwrap(), "top.txt", "top\n");
+    git_add(&superproject, "top.txt");
+    git_commit(&superproject, "super initial");
+
+    let url = child_dir.path().to_string_lossy().to_string();
+    // Local-path submodules need this since git 2.38 (CVE-2022-39253).
+    // It has to ride on the command — a repo-local `git config` is not
+    // consulted for the submodule's own clone.
+    let out = Command::new("git")
+        .args([
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            &url,
+            "vendor/child",
+        ])
+        .current_dir(superproject.workdir().unwrap())
+        .output()
+        .expect("git submodule add");
+    assert!(
+        out.status.success(),
+        "submodule add failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    git_commit(&superproject, "add submodule");
+
+    (
+        child_dir,
+        super_dir,
+        superproject,
+        "vendor/child".to_string(),
+    )
+}
+
+#[test]
+fn a_repo_without_submodules_lists_none() {
+    let (_dir, repo) = init_temp_repo();
+    assert!(Submodule::list(&repo).expect("list").is_empty());
+}
+
+#[test]
+fn a_freshly_added_submodule_lists_as_in_sync() {
+    let (_child, _sup, repo, path) = repo_with_submodule();
+    let listed = Submodule::list(&repo).expect("list");
+    assert_eq!(listed.len(), 1, "{listed:?}");
+    assert_eq!(listed[0].path, path);
+    assert_eq!(listed[0].state, SubmoduleState::InSync, "{listed:?}");
+    assert!(
+        !listed[0].sha.is_empty(),
+        "the recorded commit is what `update` checks out: {listed:?}"
+    );
+}
+
+/// Cross-check the marker against git's own line rather than trusting
+/// our reading of it — the same discipline the bisect count needed.
+#[test]
+fn the_parsed_submodule_state_is_the_marker_git_printed() {
+    let (_child, _sup, repo, _path) = repo_with_submodule();
+    let raw = git(&repo, &["submodule", "status"]);
+    let marker = raw.chars().next().expect("a status line");
+    let listed = Submodule::list(&repo).expect("list");
+    assert_eq!(
+        listed[0].state.marker(),
+        marker,
+        "we read {:?} where git printed {marker:?}: {raw:?}",
+        listed[0].state.marker()
+    );
+}
+
+#[test]
+fn sync_and_update_succeed_on_a_populated_submodule() {
+    let (_child, _sup, repo, path) = repo_with_submodule();
+    Submodule::sync(&repo, Some(&path)).expect("sync");
+    // Already populated by `add`, so `update` needs no clone and no
+    // file-protocol exemption.
+    Submodule::update(&repo, Some(&path)).expect("update");
+    assert_eq!(Submodule::list(&repo).expect("list").len(), 1);
+}
+
+#[test]
+fn removing_a_submodule_deinits_and_drops_it() {
+    let (_child, _sup, repo, path) = repo_with_submodule();
+    Submodule::remove(&repo, &path).expect("remove");
+    assert!(
+        Submodule::list(&repo).expect("list").is_empty(),
+        "the submodule is gone from git's own status"
+    );
+    assert!(
+        !repo.workdir().unwrap().join(&path).exists(),
+        "and its working tree with it"
+    );
+}
+
+#[test]
+fn removing_an_unknown_submodule_is_an_error_not_a_silent_no_op() {
+    let (_dir, repo) = init_temp_repo();
+    let err = Submodule::remove(&repo, "vendor/nope").expect_err("no such submodule");
+    assert!(
+        format!("{err}").contains("vendor/nope"),
+        "the error names the path: {err}"
     );
 }

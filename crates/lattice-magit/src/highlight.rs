@@ -290,6 +290,70 @@ pub(crate) fn remote_styled_spans(text: &str) -> Vec<Vec<StyledSpan>> {
         .collect()
 }
 
+/// Color `magit_submodule_mode::render_submodule_list` output —
+/// `  <marker> <sha>  <path>[  (<describe>)]`.
+///
+/// The marker takes `Style::DiffAdd` / `DiffRemove` / `Keyword` by what
+/// it means rather than one flat colour: an uninitialised (`-`) or
+/// conflicted (`U`) submodule is the one you opened the buffer to deal
+/// with, and it has to be findable by scanning the column. The SHA
+/// takes `Style::MagitSha` — the same colour it has in the log and the
+/// revision views, so a SHA reads as a SHA everywhere — and the
+/// describe suffix `Style::Comment`.
+pub(crate) fn submodule_styled_spans(text: &str) -> Vec<Vec<StyledSpan>> {
+    text.lines()
+        .map(|line| {
+            // `  <marker> ` is five ASCII bytes before the SHA, which
+            // is itself ASCII hex — so every boundary below is a byte
+            // boundary regardless of what the path contains.
+            let Some(rest) = line.strip_prefix("  ") else {
+                return Vec::new();
+            };
+            let mut chars = rest.chars();
+            let marker = chars.next();
+            let marker_style = match marker {
+                // `-` not initialised, `U` conflicted: needs action.
+                Some('-') | Some('U') => Style::DiffRemove,
+                // `+` moved off the recorded commit.
+                Some('+') => Style::DiffAdd,
+                Some(' ') => Style::Comment,
+                _ => return Vec::new(),
+            };
+            let after_marker = &rest[1..];
+            let Some(space) = after_marker.strip_prefix(' ') else {
+                return Vec::new();
+            };
+            let Some(sha_len) = space.find(' ') else {
+                return Vec::new();
+            };
+            let sha_start = 2 + 1 + 1;
+            let mut spans = vec![
+                StyledSpan {
+                    start: 2,
+                    end: 3,
+                    style: marker_style,
+                },
+                StyledSpan {
+                    start: sha_start,
+                    end: sha_start + sha_len,
+                    style: Style::MagitSha,
+                },
+            ];
+            // The parenthesised describe, when there is one.
+            if line.ends_with(')') {
+                if let Some(i) = line.rfind(" (") {
+                    spans.push(StyledSpan {
+                        start: i + 1,
+                        end: line.len(),
+                        style: Style::Comment,
+                    });
+                }
+            }
+            spans
+        })
+        .collect()
+}
+
 /// Color `magit_stash_mode::build_stash_list` output — `  stash@{N}
 /// <message>` per stash. MG.15 gave the list the `stash@{N}` label
 /// (fixing the dead-chord bug where the index parser read a label the
@@ -444,6 +508,58 @@ mod tests {
         }
         // The trailing blank line carries nothing.
         assert!(spans[spans.len() - 1].is_empty());
+    }
+
+    /// MG.21i: checked against the real renderer's output, so the
+    /// offsets cannot drift away from the layout they describe.
+    #[test]
+    fn submodule_styled_spans_color_the_marker_the_sha_and_the_describe() {
+        use lattice_vcs::{SubmoduleEntry, SubmoduleState as St};
+        let entries = vec![
+            SubmoduleEntry {
+                state: St::Uninitialised,
+                sha: "abc1234567".into(),
+                path: "vendor/a".into(),
+                describe: String::new(),
+            },
+            SubmoduleEntry {
+                state: St::InSync,
+                sha: "def1234567".into(),
+                path: "vendor/bb".into(),
+                describe: "v1.2.3".into(),
+            },
+        ];
+        let text = crate::magit_submodule_mode::render_submodule_list(&entries);
+        let lines: Vec<&str> = text.lines().collect();
+        let spans = submodule_styled_spans(&text);
+
+        assert!(spans[0].is_empty(), "the heading is unstyled");
+
+        // Row 1: uninitialised, no describe.
+        assert_eq!(&lines[1][spans[1][0].start..spans[1][0].end], "-");
+        assert_eq!(
+            spans[1][0].style,
+            Style::DiffRemove,
+            "an uninitialised submodule must stand out in the marker column"
+        );
+        assert_eq!(&lines[1][spans[1][1].start..spans[1][1].end], "abc1234");
+        assert_eq!(spans[1][1].style, Style::MagitSha);
+        assert_eq!(spans[1].len(), 2, "no describe on this row");
+
+        // Row 2: in sync, with a describe.
+        assert_eq!(&lines[2][spans[2][1].start..spans[2][1].end], "def1234");
+        assert_eq!(
+            &lines[2][spans[2][2].start..spans[2][2].end],
+            "(v1.2.3)",
+            "the describe span covers exactly the parenthesised part"
+        );
+        assert_eq!(spans[2][2].style, Style::Comment);
+    }
+
+    #[test]
+    fn submodule_styled_spans_leave_the_empty_list_sentence_alone() {
+        let spans = submodule_styled_spans("No submodules.\n");
+        assert!(spans.iter().all(|s| s.is_empty()));
     }
 
     #[test]

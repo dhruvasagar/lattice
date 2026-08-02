@@ -185,6 +185,12 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         "*magit:remote*",
         "magit-remote-mode"
     );
+    // MG.21i: `o` on the root dispatch, magit's own key.
+    open!(
+        "action:magit-global-submodule",
+        "*magit:submodule*",
+        "magit-submodule-mode"
+    );
     open!(
         "action:magit-global-rebase",
         "*magit:rebase*",

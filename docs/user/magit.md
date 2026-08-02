@@ -44,6 +44,7 @@ no hidden state.
 | `:magit-stash-list` | Open the stash list |
 | `:magit-branch` | Open the branch list |
 | `:magit-remote` | Open the [remote list](help:magit-remote-mode) — add / rename / remove / set-url / prune |
+| `:magit-submodule` | Open the [submodule list](help:magit-submodule-mode) — add / update / sync / remove |
 | `:magit-rebase` | Start interactive rebase |
 | `:magit-fetch` | Fetch from the default remote (`--all`, `--prune`) |
 | `:magit-pull` | Pull from the upstream branch (fast-forward only) |
@@ -204,6 +205,7 @@ exactly like the live file. The row answers that:
 | [`magit-blame-mode`](help:magit-blame-mode) | `src/main.rs  @  a1b2c3d` — updates as `p` walks back |
 | [`magit-branch-mode`](help:magit-branch-mode) | `main  12 branches` |
 | [`magit-remote-mode`](help:magit-remote-mode) | `2 remotes` |
+| [`magit-submodule-mode`](help:magit-submodule-mode) | `3 submodules  1 uninitialised` |
 | [`magit-stash-mode`](help:magit-stash-mode) | `3 stashes` |
 | [`magit-stash-show-mode`](help:magit-stash-show-mode) | `stash@{2}  WIP on main: fix the thing` |
 | [`magit-rebase-mode`](help:magit-rebase-mode) | `onto  origin/main  4 commits` — plus `REBASE IN PROGRESS` |
@@ -266,6 +268,7 @@ exist, not ones that do.
   [`magit-stash-show-mode`](help:magit-stash-show-mode),
   [`magit-branch-mode`](help:magit-branch-mode),
   [`magit-remote-mode`](help:magit-remote-mode),
+  [`magit-submodule-mode`](help:magit-submodule-mode),
   [`magit-rebase-mode`](help:magit-rebase-mode)
 - `:help magit-core-mode` — the [shared chords](help:magit-core-mode)
   every magit buffer inherits

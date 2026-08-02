@@ -57,6 +57,10 @@ pub enum VcsError {
     #[error("bisect operation failed: {0}")]
     Bisect(String),
 
+    /// Submodule operation failed.
+    #[error("submodule operation failed: {0}")]
+    Submodule(String),
+
     /// A working-tree status entry could not be parsed.
     #[error("status parse error: {0}")]
     StatusParse(String),

@@ -403,6 +403,58 @@ by whether flags apply, not by subject matter.
 separately-configured push URL is *shown* but has no editing chord. The
 list carrying both columns is what keeps that honest rather than hidden.
 
+### 4.6d magit-submodule (`*magit:submodule*`)
+
+The configured submodules, one row per module:
+`  <marker> <short-sha>  <path>[  (<describe>)]`. `a` add, `u` update,
+`s` sync, `d` remove. `:magit-submodule`, or `o` on the root dispatch.
+
+**Here magit agrees with us on the shape**, unlike §4.6b:
+`magit-list-submodules` opens a `*Modules*` buffer there too, and the
+`o` transient carries the *operations* rather than the list. So the
+UX-convention rule and paramount goal #3 point the same way, and the
+implementation is `magit-remote-mode`'s — stored `entries` for the
+cursor mapping, `BufferStates::all()` for the prompt-finish refresh,
+prompt-name carriers for the two-step add.
+
+**The marker column is git's, verbatim.** `-` uninitialised, ` ` in
+sync, `+` moved off the recorded commit, `U` conflicted — the same
+characters `git submodule status` prints, so a row reads identically in
+both places. The styler colours `-` and `U` as removals and `+` as an
+addition rather than giving the column one flat colour: the ones
+needing attention have to be findable by scanning, which is the whole
+reason to open this buffer. The headerline says the same thing in
+words (`3 submodules  1 uninitialised`) because a bare total would not
+convey that any of them need anything.
+
+**`d` asks; §4.6b's `d` does not.** The difference is the §12.13 line
+exactly: removing a submodule runs `deinit -f` then `rm -f`, deleting a
+working tree that may hold uncommitted work git has no copy of.
+Removing a remote drops config you can retype. The confirm carries the
+path in a declared argument slot (`CONFIRM_TARGET_ACTIONS`), so the
+answer acts on the submodule the *question* named — without the slot
+the value lands nowhere and the handler re-derives from the cursor,
+which a refresh landing mid-dialog can have moved.
+
+**Magit keys not carried over, and why.** `k` remove is the up-motion,
+so removal is `d` — matching branch/stash/remote, where `d` already
+means "remove the row under the cursor". Magit's own `d` (unpopulate)
+is not offered at all: it is `u`'s inverse, rarely wanted, and putting
+it adjacent to a destructive `d` would make the dangerous one easy to
+mis-hit. `p` populate and `r` register fold into `u`, which runs
+`submodule update --init --recursive` — the command that subsumes both.
+
+**No `<CR>`, and the blocker is architectural rather than an
+oversight.** The obvious binding is "open this submodule's own
+magit-status", but `workdir::magit_workdir` discovers from the
+**process's** current directory: every magit buffer in the editor is
+bound to one repository, and there is no way to point a status buffer
+at a subdirectory. A chord that opened the superproject's status while
+claiming to open the submodule's is worse than no chord. Per-buffer
+workdir is its own slice — and the same thing magit's `Z` worktree rows
+will need, so it is a shared prerequisite rather than a submodule
+detail.
+
 ### 4.7 magit-revision (`*magit:commit:<sha>*`)
 
 A read-only `git show --stat -p <sha>` view of a single commit. Opened by
@@ -465,6 +517,7 @@ magit's in-body `Head:` / `Merge:` lines.
 | magit-blame | `src/main.rs  @  a1b2c3d` |
 | magit-branch | `main  12 branches` |
 | magit-remote | `2 remotes` |
+| magit-submodule | `3 submodules  1 uninitialised` |
 | magit-status, bisecting | `lattice  a1b2c3d  BISECTING 3 left, ~2 steps  clean` |
 | magit-stash | `3 stashes` |
 | magit-stash-show | `stash@{2}  WIP on main: fix the thing` |
@@ -1972,6 +2025,18 @@ buffer's id, those handlers carry their target in the prompt buffer's
 name and refresh through `BufferStates::all()` rather than by buffer id
 — see §4.6b.
 
+### 12.9c `magit-submodule-mode`
+
+| Chord | Action | Command |
+|---|---|---|
+| `a` | Add a submodule (asks URL, then path) | `magit-submodule-add` |
+| `u` | Update the submodule at cursor (`--init --recursive`) | `magit-submodule-update` |
+| `s` | Sync the submodule at cursor's URL | `magit-submodule-sync` |
+| `d` | Remove the submodule at cursor (asks first — §12.13) | `magit-submodule-remove` |
+
+No `<CR>`: see §4.6d for the process-wide-workdir blocker. `o` on the
+root dispatch opens this buffer and, like `M`, is a transient key only.
+
 ### 12.10 `magit-rebase-mode`
 
 | Chord | Action | Command |
@@ -2002,6 +2067,7 @@ That same check decides whether it asks: nothing in progress means
 | `:magit-branch` | Open branch list buffer |
 | `:magit-branch-create <name>` | Create a branch from HEAD and check it out (no base choice — the interactive `c` wizard in `*magit:branch*` lets you pick a base, §12.9) |
 | `:magit-remote` | Open the remote list buffer (§4.6b, §12.9b) — the same buffer `M` on the dispatch opens |
+| `:magit-submodule` | Open the submodule list buffer (§4.6d, §12.9c) — the same buffer `o` opens |
 | `:magit-rebase [upstream]` | Start interactive rebase; no arg resolves `@{upstream}` |
 | `:magit-dispatch` | Open the repo-level dispatch transient (`Effect::OpenTransient`) |
 | `:magit-file-dispatch` | Open the file-dispatch transient — its items are real (stage/diff the active buffer's file, §8.8) |

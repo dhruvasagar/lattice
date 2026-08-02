@@ -95,6 +95,7 @@ adds inside one):
 │    [F]  pull            Fetch + fast-forward   │
 │                          merge from the remote │
 │    [P]  push            Push to the remote     │
+│    [o]  submodule       Manage submodules      │
 │    [M]  remote          Manage remotes — add,  │
 │                          rename, remove, set   │
 │                          URL, prune            │
@@ -248,10 +249,9 @@ task back to a transient that's already dismissed. Check the
 when pressed is worse than a row that isn't there. Two different
 reasons keep a magit entry out:
 
-**No operation behind it yet.** Magit's dispatch also offers submodule
-(`o`), patch (`w`/`W`), worktree (`Z`), notes (`T`), clone (`C`) and
-more. These are planned, and each appears the moment its operation
-exists.
+**No operation behind it yet.** Magit's dispatch also offers patch
+(`w`/`W`), worktree (`Z`), notes (`T`), clone (`C`) and more. These are
+planned, and each appears the moment its operation exists.
 
 **Here, and it changes with the repo.** `B` (bisect) opens a submenu
 whose rows depend on whether a bisect is running. Idle, it offers only
@@ -270,6 +270,13 @@ bisect moves HEAD and an open log or diff goes stale with it.
 
 `git bisect run <script>` is not here yet, nor is marking a revision
 other than the one checked out.
+
+**Here, and both as buffers.** `o` (submodule management) opens
+[`magit-submodule-mode`](help:magit-submodule-mode), listing every
+submodule with git's own status marker — `a` add, `u` update, `s` sync,
+`d` remove. Magit agrees on the shape here: `magit-list-submodules` is
+a buffer there too. Its `p` populate and `r` register are folded into
+`u`, which runs the command that subsumes both.
 
 **Here, but as a buffer rather than a menu.** `M` (remote management)
 is one deliberate divergence. Magit makes it a transient that renders

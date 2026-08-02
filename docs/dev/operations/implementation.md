@@ -4276,8 +4276,12 @@ Installs through `SubsystemBoot` seam. Inverted out of
   rather than magit's transient because our transients cannot render
   the URLs — and bisect as **MG.21e/f/g**: a `BISECTING N left` alert
   on magit-status's headerline plus a `B` sub-transient gated on
-  whether one is running, with no buffer of its own. Submodule is what
-  is left of MG.21.
+  whether one is running, with no buffer of its own — and submodules as
+  **MG.21h/i** (`magit-submodule-mode`, `:magit-submodule`, `o` on the
+  dispatch). **MG.21 is complete.** It surfaced one architectural gap
+  worth naming: magit's working directory is process-wide, so a
+  submodule's own status buffer cannot be opened, and per-buffer
+  workdir is a prerequisite for worktree support too.
 
 ## multibuffer-views (in design, 2026-05-28)
 

@@ -116,6 +116,8 @@ pub struct DispatchActionIds {
     pub branch: Option<CommandId>,
     /// MG.21d: `M` — remote management, magit's own key.
     pub remote: Option<CommandId>,
+    /// MG.21i: `o` — the submodule list, magit's own key.
+    pub submodule: Option<CommandId>,
     /// MG.21g: `B` — bisect. Start is shown only when none is running;
     /// the marks only when one is.
     pub bisect_start: Option<CommandId>,
@@ -629,6 +631,16 @@ pub fn dispatch_transient_with(
                         "remote",
                         "Manage remotes — add, rename, remove, set URL, prune",
                         "remote_manage_op",
+                    ),
+                    // MG.21i: magit's `o`. Like `M`, a buffer rather
+                    // than a submenu — and here magit agrees, since
+                    // `magit-list-submodules` is a buffer there too.
+                    action_or_placeholder(
+                        ids.submodule,
+                        "o",
+                        "submodule",
+                        "Manage submodules — add, update, sync, remove",
+                        "submodule_op",
                     ),
                 ],
             },

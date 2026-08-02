@@ -38,6 +38,7 @@ pub mod magit_revision_mode;
 pub mod magit_stash_mode;
 pub mod magit_stash_show_mode;
 pub mod magit_status_mode;
+pub mod magit_submodule_mode;
 pub mod picker_sources;
 pub mod refresh;
 pub mod sections;
@@ -65,6 +66,7 @@ use magit_remote_mode::MagitRemoteMode;
 use magit_revision_mode::MagitRevisionMode;
 use magit_stash_mode::MagitStashMode;
 use magit_status_mode::MagitStatusMode;
+use magit_submodule_mode::MagitSubmoduleMode;
 
 /// Register all magit modes, commands, and keymaps via the generic
 /// `SubsystemBoot` seam. Called once from `editor_boot.rs` during
@@ -117,6 +119,10 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     boot.modes_mut()
         .register(MagitRemoteMode)
         .expect("magit-remote-mode registers without conflict");
+
+    boot.modes_mut()
+        .register(MagitSubmoduleMode)
+        .expect("magit-submodule-mode registers without conflict");
 
     boot.modes_mut()
         .register(MagitRebaseMode)
@@ -263,6 +269,10 @@ fn register_buffer_state_services(boot: &mut impl SubsystemBoot) {
     boot.register_service::<magit_remote_mode::RemoteStatesHandle>(Arc::new(
         buffer_state::BufferStates::default(),
     ));
+    // MG.21i
+    boot.register_service::<magit_submodule_mode::SubmoduleStatesHandle>(Arc::new(
+        buffer_state::BufferStates::default(),
+    ));
     boot.register_service::<magit_log_mode::LogStatesHandle>(Arc::new(
         buffer_state::BufferStates::default(),
     ));
@@ -301,6 +311,7 @@ fn resolve_dispatch_ids(registry: &CommandRegistry) -> transients::DispatchActio
         diff: registry.id_by_name("action:magit-global-diff"),
         branch: registry.id_by_name("action:magit-global-branch"),
         remote: registry.id_by_name("action:magit-global-remote"),
+        submodule: registry.id_by_name("action:magit-global-submodule"),
         bisect_start: registry.id_by_name("action:magit-global-bisect-start"),
         bisect_good: registry.id_by_name("action:magit-global-bisect-good"),
         bisect_bad: registry.id_by_name("action:magit-global-bisect-bad"),
@@ -377,6 +388,15 @@ const CONFIRM_TARGET_ACTIONS: &[(&str, &str, &[(&str, &str)])] = &[
         "action:magit-branch-delete-execute",
         "Delete the branch after confirmation",
         &[("branch", "Branch the prompt named")],
+    ),
+    // MG.21i. The slot is what makes the answer act on the submodule
+    // the QUESTION named rather than whatever is under the cursor when
+    // it is answered — a refresh landing while the dialog is open would
+    // otherwise re-point a working-tree deletion at a different one.
+    (
+        "action:magit-submodule-remove-execute",
+        "Remove the submodule after confirmation",
+        &[("path", "Submodule path the prompt named")],
     ),
     (
         "action:magit-stash-drop-execute",
@@ -549,6 +569,13 @@ fn register_ex_commands(registry: &mut CommandRegistry) {
         "Open the Magit remote list buffer.",
         "*magit:remote*",
         "magit-remote-mode",
+    );
+    // MG.21i
+    mk(
+        "magit-submodule",
+        "Open the Magit submodule list buffer.",
+        "*magit:submodule*",
+        "magit-submodule-mode",
     );
     // Drop the mk closure to release mutable borrow
     drop(mk);
@@ -1236,6 +1263,33 @@ fn register_action_commands(registry: &mut CommandRegistry) {
         "action:magit-global-bisect-reset",
         "End the bisect and return to where it started",
     );
+    // MG.21i: magit-submodule-mode.
+    reg("action:magit-submodule-add", "Add a submodule");
+    reg(
+        "action:magit-submodule-add-path",
+        "Ask where to put the submodule after its URL",
+    );
+    reg(
+        "action:magit-submodule-add-finish",
+        "Add the submodule once its URL and path are known",
+    );
+    reg(
+        "action:magit-submodule-update",
+        "Initialise and check out the submodule at cursor",
+    );
+    reg(
+        "action:magit-submodule-sync",
+        "Re-copy the configured URL into the submodule at cursor",
+    );
+    reg(
+        "action:magit-submodule-remove",
+        "Remove the submodule at cursor (asks first)",
+    );
+    reg(
+        "action:magit-global-submodule",
+        "Open the Magit submodule list buffer",
+    );
+
     reg("action:magit-remote-add", "Add a remote");
     reg(
         "action:magit-remote-add-url",
@@ -1643,6 +1697,7 @@ mod tests {
         collect!(MagitStashMode, "magit-stash-mode");
         collect!(MagitBranchMode, "magit-branch-mode");
         collect!(MagitRemoteMode, "magit-remote-mode");
+        collect!(MagitSubmoduleMode, "magit-submodule-mode");
         collect!(MagitRebaseMode, "magit-rebase-mode");
         collect!(MagitRevisionMode, "magit-revision-mode");
         collect!(MagitFileRevisionMode, "magit-file-revision-mode");
@@ -1787,6 +1842,65 @@ mod tests {
         }
     }
 
+    /// MG.21i: `o` opens the submodule list, in every context.
+    ///
+    /// Same claim as `M`'s, for the same reason — the buffer lists the
+    /// submodules itself, so there is nothing to read from a cursor
+    /// and nothing to gate on.
+    #[test]
+    fn submodule_management_is_offered_everywhere_and_is_not_an_inert_row() {
+        use lattice_picker::TransientItemKind;
+
+        let mut registry = CommandRegistry::new();
+        register_action_commands(&mut registry);
+        let ids = resolve_dispatch_ids(&registry);
+
+        for ctx in [in_magit_status(), in_magit_log(), outside_magit()] {
+            let item = transients::dispatch_transient(&ids, &ctx)
+                .groups
+                .iter()
+                .flat_map(|g| &g.items)
+                .find(|i| i.key.iter().any(|k| k == "o"))
+                .cloned()
+                .expect("the dispatch offers `o` in every context");
+            assert!(
+                matches!(item.kind, TransientItemKind::Action(_)),
+                "`o` resolved to {:?}, not a real action",
+                item.label
+            );
+        }
+    }
+
+    /// Both list buffers are reachable two ways, and the two must name
+    /// the same mode — a drift is silent, since the buffer would open
+    /// with no mode and every chord on it would be inert.
+    #[test]
+    fn the_submodule_buffer_is_reachable_by_ex_command_and_by_action() {
+        let mut registry = CommandRegistry::new();
+        register_ex_commands(&mut registry);
+        let id = registry
+            .id_by_name("magit-submodule")
+            .expect("`:magit-submodule` must exist");
+        assert!(
+            registry.ex_command_spec(id).is_some(),
+            "`:magit-submodule` must be an EX command, not an action of the same name"
+        );
+
+        let mut actions = CommandRegistry::new();
+        register_action_commands(&mut actions);
+        assert!(
+            actions
+                .id_by_name("action:magit-global-submodule")
+                .is_some(),
+            "`o` fires `action:magit-global-submodule` — it must be registered"
+        );
+        assert_eq!(
+            MagitSubmoduleMode::mode_id().as_str(),
+            "magit-submodule-mode",
+            "the mode id both open paths hardcode"
+        );
+    }
+
     /// MG.21g: the bisect menu shows the operations that can actually
     /// run, and only those.
     ///
@@ -1900,6 +2014,7 @@ mod tests {
             MagitStatusMode => "magit-status-mode",
             MagitBranchMode => "magit-branch-mode",
             MagitRemoteMode => "magit-remote-mode",
+            MagitSubmoduleMode => "magit-submodule-mode",
             MagitStashMode => "magit-stash-mode",
             MagitLogMode => "magit-log-mode",
             MagitDiffMode => "magit-diff-mode",
@@ -2413,6 +2528,7 @@ mod tests {
             MagitStashMode => "magit-stash-mode",
             MagitBranchMode => "magit-branch-mode",
             MagitRemoteMode => "magit-remote-mode",
+            MagitSubmoduleMode => "magit-submodule-mode",
             MagitRebaseMode => "magit-rebase-mode",
             MagitRevisionMode => "magit-revision-mode",
             MagitFileRevisionMode => "magit-file-revision-mode",
@@ -2499,6 +2615,7 @@ mod tests {
             MagitStashMode,
             MagitBranchMode,
             MagitRemoteMode,
+            MagitSubmoduleMode,
             MagitRebaseMode,
             MagitRevisionMode,
             MagitFileRevisionMode,
@@ -2545,6 +2662,7 @@ mod tests {
             MagitStashMode => "magit-stash-mode",
             MagitBranchMode => "magit-branch-mode",
             MagitRemoteMode => "magit-remote-mode",
+            MagitSubmoduleMode => "magit-submodule-mode",
             MagitRebaseMode => "magit-rebase-mode",
             MagitRevisionMode => "magit-revision-mode",
             MagitFileRevisionMode => "magit-file-revision-mode",
@@ -2569,9 +2687,9 @@ mod tests {
             .filter(|m| m.contains("Magit"))
             .count();
         assert_eq!(
-            installed, 15,
+            installed, 16,
             "`install` registers {installed} magit modes but this guard \
-             checks 15 — a mode registered at boot and absent from the \
+             checks 16 — a mode registered at boot and absent from the \
              lists above has its chords unverified"
         );
 
@@ -2765,6 +2883,7 @@ mod tests {
         for (label, contributions) in [
             ("magit-branch-mode", MagitBranchMode.action_handlers()),
             ("magit-remote-mode", MagitRemoteMode.action_handlers()),
+            ("magit-submodule-mode", MagitSubmoduleMode.action_handlers()),
             ("magit-stash-mode", MagitStashMode.action_handlers()),
             ("magit-diff-mode", MagitDiffMode.action_handlers()),
             ("magit-log-mode", MagitLogMode.action_handlers()),
@@ -2895,7 +3014,7 @@ mod tests {
         );
         assert_eq!(
             root.len(),
-            25,
+            26,
             "expected every root-dispatch leaf (incl. both submenus') to \
              report inert, got: {root:?}"
         );
@@ -2908,7 +3027,7 @@ mod tests {
         );
         assert_eq!(
             bisecting.len(),
-            28,
+            29,
             "the in-progress bisect menu trades `start` for good/bad/skip/reset: {bisecting:?}"
         );
     }

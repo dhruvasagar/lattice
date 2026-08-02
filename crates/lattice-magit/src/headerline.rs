@@ -640,6 +640,44 @@ pub(crate) fn bisect_label(state: &lattice_vcs::BisectState) -> String {
     }
 }
 
+/// MG.21i — magit-submodule: how many, and how many need attention.
+///
+/// The second half is the reason this is not just a count: an
+/// uninitialised or modified submodule is the thing you opened the
+/// buffer to deal with, and a bare "4 submodules" would not say that
+/// any of them need anything.
+pub(crate) fn submodule_fields(entries: &[lattice_vcs::SubmoduleEntry]) -> Vec<Field> {
+    use lattice_vcs::SubmoduleState;
+    let plural = if entries.len() == 1 {
+        "submodule"
+    } else {
+        "submodules"
+    };
+    let mut fields = vec![Field::label(format!("{} {plural}", entries.len()))];
+    let uninit = entries
+        .iter()
+        .filter(|e| e.state == SubmoduleState::Uninitialised)
+        .count();
+    if uninit > 0 {
+        fields.push(Field::alert(format!("{uninit} uninitialised")));
+    }
+    let modified = entries
+        .iter()
+        .filter(|e| e.state == SubmoduleState::Modified)
+        .count();
+    if modified > 0 {
+        fields.push(Field::label(format!("{modified} modified")));
+    }
+    let conflicted = entries
+        .iter()
+        .filter(|e| e.state == SubmoduleState::Conflicted)
+        .count();
+    if conflicted > 0 {
+        fields.push(Field::alert(format!("{conflicted} conflicted")));
+    }
+    fields
+}
+
 /// MG.21c — magit-remote: how many remotes are configured.
 pub(crate) fn remote_fields(total: usize) -> Vec<Field> {
     let plural = if total == 1 { "remote" } else { "remotes" };
@@ -1027,6 +1065,41 @@ mod tests {
     fn branch_row_carries_current_branch_and_total() {
         assert_eq!(rendered(branch_fields("main", 12)), "main  12 branches");
         assert_eq!(rendered(branch_fields("main", 1)), "main  1 branch");
+    }
+
+    #[test]
+    fn submodule_row_counts_and_flags_the_ones_needing_attention() {
+        use lattice_vcs::{SubmoduleEntry, SubmoduleState as St};
+        let e = |state| SubmoduleEntry {
+            state,
+            sha: "abc".into(),
+            path: "vendor/x".into(),
+            describe: String::new(),
+        };
+        assert_eq!(rendered(submodule_fields(&[e(St::InSync)])), "1 submodule");
+        let row = rendered(submodule_fields(&[
+            e(St::InSync),
+            e(St::Uninitialised),
+            e(St::Modified),
+            e(St::Conflicted),
+        ]));
+        assert!(row.contains("4 submodules"), "{row}");
+        assert!(row.contains("1 uninitialised"), "{row}");
+        assert!(row.contains("1 modified"), "{row}");
+        assert!(row.contains("1 conflicted"), "{row}");
+    }
+
+    #[test]
+    fn an_all_clean_submodule_row_says_nothing_more_than_the_count() {
+        use lattice_vcs::{SubmoduleEntry, SubmoduleState as St};
+        let e = SubmoduleEntry {
+            state: St::InSync,
+            sha: "abc".into(),
+            path: "vendor/x".into(),
+            describe: String::new(),
+        };
+        let row = rendered(submodule_fields(&[e.clone(), e]));
+        assert_eq!(row, "2 submodules", "no zero-counts padding the row: {row}");
     }
 
     #[test]

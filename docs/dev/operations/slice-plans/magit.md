@@ -39,13 +39,15 @@ owns *what* and *why*.
 | MG.18 | Hunk-level staging (sliced a–e) | MG.5, MG.13 | ✅ |
 | MG.19 | magit-diff side-by-side + `do`/`dp` | MG.18, D.4 | 📝 |
 | MG.20 | Operation coverage — reset / revert / cherry-pick | MG.17a | ✅ |
-| MG.21 | Remaining operations — bisect, submodule, remotes (tag + merge landed in MG.23c) | MG.17b | 🚧 |
+| MG.21 | Remaining operations — bisect, submodule, remotes (tag + merge landed in MG.23c) | MG.17b | ✅ |
 | MG.21b | `lattice_vcs::Remote` — list/add/rename/remove/set-url/prune | — | ✅ |
 | MG.21c | `magit-remote-mode` — the remote list buffer + its chords | MG.21b | ✅ |
 | MG.21d | `M` on the root dispatch opens it | MG.21c | ✅ |
 | MG.21e | `lattice_vcs::Bisect` — start/good/bad/skip/reset + state | — | ✅ |
 | MG.21f | `BISECTING N left` on magit-status's headerline | MG.21e | ✅ |
 | MG.21g | `B` sub-transient, gated on whether a bisect is running | MG.21e | ✅ |
+| MG.21h | `lattice_vcs::Submodule` — list/add/update/sync/remove | — | ✅ |
+| MG.21i | `magit-submodule-mode` + `o` on the root dispatch | MG.21h | ✅ |
 | MG.21a | Diff line-background tints in magit's diff views | MG.20 | ✅ |
 | MG.22 | `magit-hunk-mode` — the mode owning diff *content* (chords + `<CR>` ✅; parser / options open) | MG.20 | 🚧 |
 | MG.23 | magit-dispatch / file-dispatch parity (a–h done; j and i+ open) | MG.17b | 📝 |
@@ -1251,7 +1253,7 @@ already exists); `D` / `L` diff- and log-arg refresh; `M` log-merged;
 > `e` edit-line-commit.
 
 **Genuinely new subsystems.** ~~`B` bisect~~ (MG.21e/f/g), ~~`M` remote
-management~~ (MG.21b/c/d), `o` submodule, `O` subtree, `Z` worktree, `T` notes, `w` am /
+management~~ (MG.21b/c/d), ~~`o` submodule~~ (MG.21h/i), `O` subtree, `Z` worktree, `T` notes, `w` am /
 `W` format-patch, `y` show-refs, `Y` cherries, `C` clone.
 
 #### Known key collision — resolved by MG.23h, and it was mis-stated
@@ -2244,7 +2246,7 @@ these appear in a transient yet.
 > **2026-08-01:** remote management landed as MG.21b/c/d — as a buffer
 > (`magit-remote-mode`), not the transient magit uses — and bisect as
 > MG.21e/f/g, as headerline state plus a gated `B` menu rather than
-> either. MG.21's remaining scope is submodule.
+> either, and submodules as MG.21h/i. **MG.21 is complete.**
 
 **Also not shipped:** transient entries for the three that DID land.
 They are reachable by chord in every commit-showing view, which is the
@@ -2371,6 +2373,54 @@ thread.
 **Deferred, named:** `git bisect run <script>` (magit's `s`), the
 bisect log as a buffer, and marking a revision other than the one git
 checked out.
+
+### MG.21h/i — submodules ✅ (2026-08-02)
+
+Design: [`../../architecture/magit.md`](../../architecture/magit.md)
+§4.6d, §12.9c. **MG.21 is complete with this.**
+
+**Shape: a buffer, and here magit agrees** — `magit-list-submodules` is
+a buffer there too, so the UX-convention rule and paramount goal #3
+point the same way rather than trading off. Implementation is
+MG.21b/c/d's, reused wholesale: stored `entries` for the cursor
+mapping, `BufferStates::all()` for the prompt-finish refresh,
+prompt-name carriers for the two-step add.
+
+| Slice | Scope | Tests |
+|---|---|---|
+| MG.21h | `lattice_vcs::Submodule` + `SubmoduleEntry` + `parse_submodule_status` | 7 unit + 6 integration against real submodules |
+| MG.21i | the mode, styler, headerline fields, `o` row, ex-command | 12 |
+
+**Three guards caught real defects before they shipped:**
+
+*The confirm's execute half declared no argument slot.* `d` carries the
+submodule path, but without a `CONFIRM_TARGET_ACTIONS` entry the value
+lands nowhere and `carried_target` falls through to re-deriving from
+the cursor — so a refresh landing while the dialog is open would point
+a working-tree deletion at a different submodule.
+`every_destructive_pair_carries_a_target_except_the_one_with_none`
+caught it.
+
+*The mode-count and inert-row guards* caught the mode missing from the
+handler-collection list (15→16, 26, 29).
+
+*The renderer/test spacing disagreed* — caught by asserting the styler
+against `render_submodule_list`'s actual output rather than a
+hand-typed line.
+
+**A limitation found rather than invented: magit's workdir is
+process-wide.** `<CR>` should open the submodule's own magit-status,
+and cannot: `workdir::magit_workdir` discovers from the process CWD, so
+every magit buffer is bound to one repository. The chord is absent
+rather than lying. Per-buffer workdir is its own slice and is also what
+magit's `Z` worktree rows will need — a shared prerequisite, not a
+submodule detail. **Worth filing before worktree work starts.**
+
+**No bench:** git runs on `spawn_blocking` behind a detached task; the
+render is O(submodules).
+
+**Deferred, named:** magit's `d` unpopulate (`u`'s inverse, and
+adjacent-to-destructive), and per-submodule fetch.
 
 ### MG.21a — diff line-background tints ✅
 

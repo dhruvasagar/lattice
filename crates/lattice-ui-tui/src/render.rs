@@ -1870,10 +1870,21 @@ fn draw_notifications(frame: &mut Frame, area: Rect, app: &App) {
     let extra = usize::from(n.queued > 0);
     let rows = (n.visible.len() + extra) as u16;
     let width = (area.width / 3).clamp(24, 60).min(area.width);
-    let height = (rows + 2).min(area.height);
+    // Every pane reserves its BOTTOM row for the per-pane status line
+    // (see `draw_panes`), so the usable area stops one row short of
+    // `area`. Anchoring to `area` itself covers the modeline — which is
+    // the row telling you which buffer and mode you are in, and the one
+    // surface that must never be occluded, since a notification is
+    // transient and the modeline is how you stay oriented while it is
+    // up.
+    let usable_h = area.height.saturating_sub(1);
+    let height = (rows + 2).min(usable_h);
+    if height == 0 {
+        return;
+    }
     let block_area = Rect {
         x: area.x + area.width.saturating_sub(width),
-        y: area.y + area.height.saturating_sub(height),
+        y: area.y + usable_h.saturating_sub(height),
         width,
         height,
     };

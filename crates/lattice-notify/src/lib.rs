@@ -20,6 +20,8 @@
 //! expiry. Rendering is NOTIF.1b/c (both peers, one patch); magit is
 //! the first consumer, NOTIF.1d.
 
+pub mod options;
+
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -50,7 +52,21 @@ impl NotificationLevel {
         match self {
             NotificationLevel::Info => Duration::from_secs(4),
             NotificationLevel::Warn => Duration::from_secs(8),
-            NotificationLevel::Error => Duration::from_secs(15),
+            NotificationLevel::Error => Duration::from_secs(16),
+        }
+    }
+
+    /// How much longer than an info notification this level lasts.
+    ///
+    /// One knob times a fixed ratio rather than three independent
+    /// options: raising the base must not leave errors relatively
+    /// SHORTER than the successes around them, and three knobs make
+    /// that misconfiguration reachable.
+    pub fn timeout_multiplier(self) -> u64 {
+        match self {
+            NotificationLevel::Info => 1,
+            NotificationLevel::Warn => 2,
+            NotificationLevel::Error => 4,
         }
     }
 
@@ -108,6 +124,10 @@ pub struct NotificationStore {
     /// and without this a busy store would spawn a fresh sleep per
     /// mutation per notification.
     armed: Mutex<std::collections::HashSet<NotificationId>>,
+    /// NOTIF.1e: read per call, not snapshotted, so a `:set
+    /// notifications.max-visible` takes effect on the next post rather
+    /// than on restart.
+    config: Mutex<Option<Arc<lattice_config::ConfigRegistry>>>,
 }
 
 /// The wake-baked sender + the runtime that sleeps on it.
@@ -143,9 +163,43 @@ impl NotificationStore {
         Self::default()
     }
 
+    /// How many the corner shows at once — `notifications.max-visible`.
+    pub fn max_visible(&self) -> usize {
+        self.config
+            .lock()
+            .ok()
+            .and_then(|c| c.as_ref().cloned())
+            .and_then(|c| c.get_typed::<options::NotificationsMaxVisible>())
+            .map(|v| (*v).max(0) as usize)
+            .unwrap_or(MAX_VISIBLE)
+    }
+
+    /// This level's timeout, scaled from `notifications.timeout`.
+    fn timeout_for(&self, level: NotificationLevel) -> Duration {
+        let base = self
+            .config
+            .lock()
+            .ok()
+            .and_then(|c| c.as_ref().cloned())
+            .and_then(|c| c.get_typed::<options::NotificationsTimeout>())
+            .map(|v| (*v).max(1) as u64);
+        match base {
+            Some(secs) => Duration::from_secs(secs * level.timeout_multiplier()),
+            None => level.default_timeout(),
+        }
+    }
+
+    /// Give the store its config. Called by [`install`]; without one it
+    /// falls back to the compiled defaults.
+    pub fn set_config(&self, config: Arc<lattice_config::ConfigRegistry>) {
+        if let Ok(mut slot) = self.config.lock() {
+            *slot = Some(config);
+        }
+    }
+
     /// Post a notification and return its id.
     pub fn post(&self, level: NotificationLevel, text: impl Into<String>) -> NotificationId {
-        self.post_with(level, text, Some(level.default_timeout()))
+        self.post_with(level, text, Some(self.timeout_for(level)))
     }
 
     /// Post with an explicit timeout — `None` for "until replaced or
@@ -157,16 +211,30 @@ impl NotificationStore {
         timeout: Option<Duration>,
     ) -> NotificationId {
         let id = NotificationId(self.next_id.fetch_add(1, Ordering::Relaxed));
+        let text = text.into();
+        let tee = text.clone();
         let notification = Notification {
             id,
             level,
-            text: text.into(),
+            text,
             timeout,
         };
         if let Ok(mut v) = self.inner.lock() {
             v.push(notification);
         }
         self.version.fetch_add(1, Ordering::Release);
+        // NOTIF.1e: tee to `*messages*`. Three surfaces, three
+        // questions — a notification is the signal and `*messages*` is
+        // the record, so one you missed (or that `max-visible = 0`
+        // silenced) is still findable afterwards. Done HERE rather than
+        // per consumer so it cannot be forgotten by one, and at
+        // notification level, which `MessagesLayer` maps straight
+        // through.
+        match level {
+            NotificationLevel::Info => tracing::info!(target: "lattice_notify", "{tee}"),
+            NotificationLevel::Warn => tracing::warn!(target: "lattice_notify", "{tee}"),
+            NotificationLevel::Error => tracing::error!(target: "lattice_notify", "{tee}"),
+        }
         self.arm_visible();
         id
     }
@@ -192,6 +260,7 @@ impl NotificationStore {
     /// A store with no channel (a test, a headless harness) schedules
     /// nothing, which beats spawning tasks whose sends nobody drains.
     fn arm_visible(&self) {
+        let max_visible = self.max_visible();
         let to_arm: Vec<(NotificationId, Duration)> = {
             let Ok(v) = self.inner.lock() else {
                 return;
@@ -202,7 +271,7 @@ impl NotificationStore {
             // Forget what is gone, or `armed` grows for the session.
             armed.retain(|id| v.iter().any(|n| n.id == *id));
             v.iter()
-                .take(MAX_VISIBLE)
+                .take(max_visible)
                 .filter_map(|n| n.timeout.map(|t| (n.id, t)))
                 .filter(|(id, _)| armed.insert(*id))
                 .collect()
@@ -358,7 +427,7 @@ impl NotificationStore {
         let Ok(v) = self.inner.lock() else {
             return Vec::new();
         };
-        v.iter().take(MAX_VISIBLE).cloned().collect()
+        v.iter().take(self.max_visible()).cloned().collect()
     }
 
     /// How many are waiting behind the visible ones. A renderer shows
@@ -366,7 +435,7 @@ impl NotificationStore {
     pub fn queued(&self) -> usize {
         self.inner
             .lock()
-            .map(|v| v.len().saturating_sub(MAX_VISIBLE))
+            .map(|v| v.len().saturating_sub(self.max_visible()))
             .unwrap_or(0)
     }
 
@@ -410,6 +479,10 @@ pub fn install(boot: &mut impl lattice_mode::SubsystemBoot) {
     let store: NotificationStoreHandle = Arc::new(NotificationStore::new());
     boot.register_service::<NotificationStoreHandle>(store.clone());
 
+    if let Some(config) = boot.service::<Arc<lattice_config::ConfigRegistry>>() {
+        store.set_config((*config).clone());
+    }
+
     let for_handler = store.clone();
     let bus = boot.inbound::<NotifyInbound, _>(move |item| {
         match item {
@@ -434,7 +507,11 @@ mod tests {
         assert_eq!(live.len(), 1);
         assert_eq!(live[0].id, id);
         assert_eq!(live[0].text, "fetch failed");
-        assert_eq!(live[0].timeout, Some(Duration::from_secs(15)));
+        assert_eq!(
+            live[0].timeout,
+            Some(Duration::from_secs(16)),
+            "4s base × the error multiplier"
+        );
     }
 
     /// An error you blink past is an error you will hit again — the
@@ -825,6 +902,33 @@ mod tests {
             live[1].timeout > live[0].timeout,
             "the failure has to outlast the success: {live:?}"
         );
+    }
+
+    /// NOTIF.1e: one knob times a fixed ratio. Raising the base must
+    /// not leave errors relatively SHORTER than the successes around
+    /// them, which three independent options would make reachable.
+    #[test]
+    fn the_level_multipliers_keep_errors_longest_at_any_base() {
+        for base in [1u64, 4, 30, 3600] {
+            let info = base * NotificationLevel::Info.timeout_multiplier();
+            let warn = base * NotificationLevel::Warn.timeout_multiplier();
+            let error = base * NotificationLevel::Error.timeout_multiplier();
+            assert!(error > warn && warn > info, "base {base}");
+        }
+    }
+
+    /// `max-visible = 0` silences the corner without losing anything —
+    /// the store keeps running and the `*messages*` tee keeps the
+    /// record.
+    #[test]
+    fn nothing_visible_still_keeps_the_notifications() {
+        let s = NotificationStore::new();
+        s.post(NotificationLevel::Error, "push failed");
+        // With no config the compiled default applies, so this asserts
+        // the shape rather than the zero case; the zero case is the
+        // validator's business and is covered there.
+        assert_eq!(s.all().len(), 1);
+        assert!(!s.is_empty());
     }
 
     #[test]

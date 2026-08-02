@@ -9,6 +9,8 @@ license.workspace = true
 # `time` for expiry — this is the editor's first timer-driven UI.
 tokio = { workspace = true, features = ["time"] }
 tracing = { workspace = true }
+linkme = { workspace = true }
+lattice-config = { path = "../lattice-config" }
 lattice-grammar = { path = "../lattice-grammar" }
 lattice-mode = { path = "../lattice-mode" }
 

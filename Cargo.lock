@@ -5498,8 +5498,10 @@ dependencies = [
 name = "lattice-notify"
 version = "0.1.0"
 dependencies = [
+ "lattice-config",
  "lattice-grammar",
  "lattice-mode",
+ "linkme",
  "tokio",
  "tracing",
 ]

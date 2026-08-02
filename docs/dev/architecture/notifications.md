@@ -211,3 +211,33 @@ Recorded rather than quietly dropped, because the constraint was
 written down and a reader deserves to know it was weighed. A genuinely
 separable layer would be a renderer-architecture change well beyond
 this subsystem.
+
+## Config and the record (NOTIF.1e)
+
+| Option | Default | What it does |
+|---|---|---|
+| `notifications.max-visible` | `3` | How many the corner shows. `0` silences it *without* losing anything — the store runs and `*messages*` keeps its record. |
+| `notifications.timeout` | `4` | Seconds an **info** notification stays. Warnings last 2× and errors 4×. |
+| `notifications.corner` | `bottom-right` | Which corner the stack anchors to. |
+
+**One timeout knob times a fixed ratio, not three knobs.** An error you
+blink past is an error you will hit again, so raising the base must
+never leave errors relatively *shorter* than the successes around them
+— which three independent options make reachable. One number keeps them
+ordered by construction, and a test asserts the ordering holds at every
+base.
+
+**Every notification tees to `*messages*`**, at its own level, from the
+store rather than from each consumer — so a consumer cannot forget to,
+and one you missed (or that `max-visible = 0` silenced) is still
+findable. magit's remote ops therefore demote their *success* log to
+`debug!`: the notification already says it, and two lines saying one
+thing is the flooding the diagnostic-log rule warns about. The failure
+arm keeps `error!`, because it carries git's full stderr, which the
+one-line notification deliberately truncates.
+
+**The stack never covers the modeline.** Every pane reserves its bottom
+row for the per-pane status line, so the TUI anchors one row short of
+the pane area and GPUI clears the same height. The modeline is how you
+stay oriented while a *transient* thing is on screen; occluding it was
+a real bug, reported against the first build.

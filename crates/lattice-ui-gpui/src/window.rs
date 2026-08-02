@@ -4839,6 +4839,10 @@ impl Render for EditorView {
         // the user is busy is the case it exists for. Peer of the TUI's
         // `draw_notifications`; §5.9.9's corner and ordering.
         if let Some(stack) = notifications_overlay {
+            // `bottom_8` clears the status row the same way the TUI
+            // peer reserves one — the modeline is how you stay oriented
+            // while a transient notification is up, so it must never be
+            // occluded.
             root = root.child(div().absolute().bottom_8().right_4().child(stack));
         }
         // PU.5d: docs popup to the LEFT of the candidate popup. The

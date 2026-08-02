@@ -246,7 +246,6 @@ fn entry_lines(store: &BufferStoreHandle, buffer_id: BufferId) -> Vec<u32> {
 
 #[cfg(test)]
 mod file_nav {
-    use super::*;
 
     /// The bug this scanner exists to remove: in a diff, the generic
     /// indented-row scan matches every CONTEXT line, so `]f` walked

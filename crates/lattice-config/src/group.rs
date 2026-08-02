@@ -226,6 +226,14 @@ impl OptionGroup for Magit {
     const DOC: &'static str = "Magit git porcelain buffers.";
 }
 
+/// Notification options (§5.9.9) — corner, how many show at once, how
+/// long they stay.
+pub struct Notifications;
+impl OptionGroup for Notifications {
+    const NAME: &'static str = "notifications";
+    const DOC: &'static str = "Corner-anchored notifications.";
+}
+
 /// Terminal-mode (PTY-backed shell buffer) options. Added with
 /// T2.b.0 (`terminal.esc-exits`); T2.b/T4 grow the group with
 /// `terminal.shell`, `terminal.scrollback-lines`, etc.

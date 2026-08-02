@@ -1421,7 +1421,13 @@ pub fn spawn_remote_op(
         // case that opened the notification gate.
         match result {
             Ok(out) => {
-                tracing::info!(
+                // `debug!`, not `info!`: the notification below tees
+                // itself to `*messages*`, and two lines saying the same
+                // thing is the flooding `feedback_diagnostic_logs_go_to_debug`
+                // warns about. The failure arm keeps `error!` because
+                // it carries git's FULL stderr, which the one-line
+                // notification deliberately truncates.
+                tracing::debug!(
                     target: "lattice_magit",
                     "magit: git {logged} succeeded: {out}"
                 );

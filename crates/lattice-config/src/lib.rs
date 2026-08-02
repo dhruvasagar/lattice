@@ -139,8 +139,8 @@ pub use core_options::{
 pub use erased::ErasedOption;
 pub use group::{
     Ai, Appearance, Completion, Diagnostics, Display, Editing, Editor, Filetree, GROUP_DECLS, Help,
-    Lsp, Magit, Messages, Modeline, Oil, OptionGroup, OptionGroupMetadata, Picker, Plugin, Search,
-    Snippet, Tabline, Terminal, Window, ends_with_mode_suffix,
+    Lsp, Magit, Messages, Modeline, Notifications, Oil, OptionGroup, OptionGroupMetadata, Picker,
+    Plugin, Search, Snippet, Tabline, Terminal, Window, ends_with_mode_suffix,
 };
 pub use loader::{
     LoadMessage, LoadMessageLevel, LoadOutcome, config_home, default_user_config_path,

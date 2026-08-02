@@ -83,6 +83,8 @@ pub struct RenderState {
     pub completion: Arc<CompletionRenderState>,
     pub popup: Arc<PopupRenderState>,
     pub messages: Arc<MessagesRenderState>,
+    /// NOTIF.1b: corner-anchored notifications.
+    pub notifications: Arc<NotificationsRenderState>,
     pub modeline: Arc<ModelineRenderState>,
     /// ML.0b-2: published snapshot of the configurable-modeline element
     /// system (descriptors + content, both `Arc`-backed so this clone is
@@ -240,6 +242,7 @@ impl Default for RenderState {
             completion: Arc::new(CompletionRenderState::default()),
             popup: Arc::new(PopupRenderState::default()),
             messages: Arc::new(MessagesRenderState::default()),
+            notifications: Arc::new(NotificationsRenderState::default()),
             modeline: Arc::new(ModelineRenderState::default()),
             modeline_elements: lattice_mode::ModelineSnapshot::default(),
             current_dir: None,
@@ -2080,6 +2083,24 @@ pub struct MessagesRenderState {
     /// Wrapped in `Arc` so the per-publish clone is one Arc bump
     /// regardless of how long the text is.
     pub last: Option<std::sync::Arc<crate::action::EchoMessage>>,
+}
+
+/// NOTIF.1b: corner-anchored notifications, as the renderers see them.
+///
+/// Published into [`RenderState`] the way every other per-frame surface
+/// is, rather than read back through the editor — and that is not
+/// stylistic. In production the renderer holds an `EditorActorHandle`
+/// and reaching the editor is a blocking RPC; a per-frame round-trip
+/// asking "any notifications?" would sit on the paint path, which is
+/// what paramount goal #1 forbids.
+#[derive(Debug, Default, Clone)]
+pub struct NotificationsRenderState {
+    /// What to paint, oldest first, already limited to
+    /// `lattice_notify::MAX_VISIBLE`.
+    pub visible: Vec<lattice_notify::Notification>,
+    /// How many are waiting behind them — painted as a "+N more" line
+    /// rather than dropped silently.
+    pub queued: usize,
 }
 
 /// Modeline status (cmdline text, search indicator, mode hints).

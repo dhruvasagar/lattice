@@ -36,6 +36,7 @@ lattice-terminal = { path = "../lattice-terminal" }
 # from `lattice_ui_tui::*` while the crate re-exports from
 # lattice-host). See docs/dev/architecture/phase-5-extraction.md.
 lattice-host = { path = "../lattice-host" }
+lattice-notify = { path = "../lattice-notify" }
 # S3.b (2026-05-26): cell-grid substrate. The
 # `cells_render` module converts `lattice_cells::Cell` payloads
 # into ratatui spans for the TUI body. See

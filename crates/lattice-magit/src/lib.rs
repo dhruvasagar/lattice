@@ -163,7 +163,13 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     let blame_requests: magit_blame_mode::BlameRequestsHandle =
         Arc::new(magit_blame_mode::BlameRequests::default());
     boot.register_service::<magit_blame_mode::BlameRequestsHandle>(blame_requests.clone());
-    register_ex_commands(boot.commands_mut(), blame_requests);
+    // NOTIF.1d: the same handle the action handlers get as a service —
+    // an ex-command's `apply` receives the grammar's `ActionContext`,
+    // which has no registry, so it is captured rather than looked up.
+    let notifications = boot
+        .service::<lattice_notify::NotificationStoreHandle>()
+        .map(|outer| (*outer).clone());
+    register_ex_commands(boot.commands_mut(), blame_requests, notifications);
 
     // ── Action commands (keymap resolution targets) ──────
 
@@ -534,6 +540,7 @@ fn resolve_file_dispatch_ids(registry: &CommandRegistry) -> transients::FileDisp
 fn register_ex_commands(
     registry: &mut CommandRegistry,
     blame_requests: magit_blame_mode::BlameRequestsHandle,
+    notifications: Option<lattice_notify::NotificationStoreHandle>,
 ) {
     let mut mk = |name: &'static str,
                   doc: &'static str,
@@ -681,7 +688,16 @@ fn register_ex_commands(
                 parse_args: Arc::new(move |line: &str, _bang: bool| {
                     Ok(parse_remote_flags(op, line))
                 }),
-                apply: Arc::new(move |ctx| Ok(magit_global_mode::spawn_remote_op(op, &ctx.args))),
+                apply: {
+                    let notifications = notifications.clone();
+                    Arc::new(move |ctx| {
+                        Ok(magit_global_mode::spawn_remote_op(
+                            op,
+                            &ctx.args,
+                            notifications.clone(),
+                        ))
+                    })
+                },
                 args_schema: op.arg_specs(),
                 surface_form: SurfaceForm::Keyword,
             },
@@ -2184,7 +2200,7 @@ mod tests {
     #[test]
     fn the_submodule_buffer_is_reachable_by_ex_command_and_by_action() {
         let mut registry = CommandRegistry::new();
-        register_ex_commands(&mut registry, Default::default());
+        register_ex_commands(&mut registry, Default::default(), None);
         let id = registry
             .id_by_name("magit-submodule")
             .expect("`:magit-submodule` must exist");
@@ -2491,7 +2507,7 @@ mod tests {
     #[test]
     fn every_commit_ops_ex_command_is_registered() {
         let mut registry = CommandRegistry::new();
-        register_ex_commands(&mut registry, Default::default());
+        register_ex_commands(&mut registry, Default::default(), None);
         for op in [
             magit_global_mode::CommitOp::CHERRY_PICK,
             magit_global_mode::CommitOp::REVERT,
@@ -2524,7 +2540,7 @@ mod tests {
     #[test]
     fn the_remote_buffer_is_reachable_by_ex_command_and_by_action() {
         let mut registry = CommandRegistry::new();
-        register_ex_commands(&mut registry, Default::default());
+        register_ex_commands(&mut registry, Default::default(), None);
         let id = registry
             .id_by_name("magit-remote")
             .expect("`:magit-remote` must exist");
@@ -3087,7 +3103,7 @@ mod tests {
         use lattice_mode::Mode;
 
         let mut registry = CommandRegistry::new();
-        register_ex_commands(&mut registry, Default::default());
+        register_ex_commands(&mut registry, Default::default(), None);
         register_action_commands(&mut registry);
         let handlers = MagitGlobalMode.action_handlers();
 
@@ -3151,7 +3167,7 @@ mod tests {
     #[test]
     fn magit_stash_and_magit_stash_list_are_distinct_commands() {
         let mut registry = CommandRegistry::new();
-        register_ex_commands(&mut registry, Default::default());
+        register_ex_commands(&mut registry, Default::default(), None);
         let create = registry
             .lookup_by_name("magit-stash")
             .expect("`:magit-stash` registered");

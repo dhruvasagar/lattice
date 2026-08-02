@@ -4771,6 +4771,44 @@ impl Render for EditorView {
             root = root.child(strip);
         }
 
+        // NOTIF.1c: built from the SAME `RenderState` field the TUI
+        // reads, so the two peers cannot disagree about what is up.
+        let notifications_overlay: Option<gpui::Div> = {
+            let n = &render_state.notifications;
+            if n.visible.is_empty() {
+                None
+            } else {
+                let mut stack = div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .p_2()
+                    .rounded_md()
+                    .bg(rgb(theme.background))
+                    .border_1()
+                    .border_color(rgb(theme.cursor_background));
+                for item in &n.visible {
+                    let colour = match item.level {
+                        lattice_notify::NotificationLevel::Info => theme.cursor_background,
+                        lattice_notify::NotificationLevel::Warn => theme.diff_change_line_bg,
+                        lattice_notify::NotificationLevel::Error => theme.diff_remove_line_bg,
+                    };
+                    stack = stack.child(div().text_color(rgb(colour)).child(item.text.clone()));
+                }
+                if n.queued > 0 {
+                    // Named rather than dropped: a burst that silently
+                    // discarded its tail would be the invisible-work
+                    // bug again.
+                    stack = stack.child(
+                        div()
+                            .text_color(rgb(theme.foreground))
+                            .child(format!("+{} more", n.queued)),
+                    );
+                }
+                Some(stack)
+            }
+        };
+
         if let Some(overlay) = transient_overlay.or(picker_overlay) {
             root = root.child(
                 div()
@@ -4795,6 +4833,13 @@ impl Render for EditorView {
         }
         if let Some(overlay) = completion_overlay {
             root = root.child(div().absolute().top_8().right_4().child(overlay));
+        }
+        // NOTIF.1c: the notification stack, bottom-right, attached LAST
+        // so nothing can cover it — a notification hidden exactly when
+        // the user is busy is the case it exists for. Peer of the TUI's
+        // `draw_notifications`; §5.9.9's corner and ordering.
+        if let Some(stack) = notifications_overlay {
+            root = root.child(div().absolute().bottom_8().right_4().child(stack));
         }
         // PU.5d: docs popup to the LEFT of the candidate popup. The
         // candidate box is `.right_4()` (16px) wide up to 360px, so the docs

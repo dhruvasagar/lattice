@@ -807,6 +807,26 @@ mod tests {
         );
     }
 
+    /// NOTIF.1d's shape, end to end at the store: a remote op that
+    /// finishes posts Info, one that fails posts Error and lingers
+    /// longer. Before this, success was invisible and failure reached
+    /// `*messages*` only — the case that opened the gate.
+    #[test]
+    fn a_completed_operation_and_a_failed_one_read_differently() {
+        let s = NotificationStore::new();
+        s.post(NotificationLevel::Info, "fetch finished");
+        s.post(NotificationLevel::Error, "push failed: rejected");
+
+        let live = s.visible();
+        assert_eq!(live.len(), 2);
+        assert_eq!(live[0].level, NotificationLevel::Info);
+        assert_eq!(live[1].level, NotificationLevel::Error);
+        assert!(
+            live[1].timeout > live[0].timeout,
+            "the failure has to outlast the success: {live:?}"
+        );
+    }
+
     #[test]
     fn an_empty_store_is_empty_and_versionless() {
         let s = NotificationStore::new();

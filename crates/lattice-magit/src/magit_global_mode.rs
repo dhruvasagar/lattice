@@ -227,7 +227,17 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         ($action_name:expr, $op:expr) => {
             contributions.push(ActionHandlerContribution {
                 action_name: $action_name,
-                handler: Arc::new(|ctx: &ActionContext<'_>| Some(spawn_remote_op($op, &ctx.args))),
+                handler: Arc::new(|ctx: &ActionContext<'_>| {
+                    Some(spawn_remote_op(
+                        $op,
+                        &ctx.args,
+                        // `get::<Arc<X>>` yields `Arc<Arc<X>>`; unwrap
+                        // one layer per the ServiceRegistry convention.
+                        ctx.services
+                            .get::<lattice_notify::NotificationStoreHandle>()
+                            .map(|outer| (*outer).clone()),
+                    ))
+                }),
             });
         };
     }
@@ -1391,24 +1401,53 @@ pub(crate) fn gitignore_append(existing: &str, pattern: &str) -> Option<String> 
 /// no synchronous path exists back to the echo area from a task that
 /// outlives the call, so success and failure are logged rather than
 /// silently dropped (never both silent AND absent).
-pub fn spawn_remote_op(op: RemoteOp, args: &lattice_grammar::Args) -> Effect {
+pub fn spawn_remote_op(
+    op: RemoteOp,
+    args: &lattice_grammar::Args,
+    notify: Option<lattice_notify::NotificationStoreHandle>,
+) -> Effect {
     let workdir = crate::workdir::magit_workdir().unwrap_or_default();
     let argv = op.argv(args);
     let shown = argv.join(" ");
     let logged = shown.clone();
+    let what = op.what;
     tokio::task::spawn(async move {
         let result = tokio::task::spawn_blocking(move || run_remote_op(&workdir, &argv))
             .await
             .unwrap_or_else(|e| Err(e.to_string()));
+        // NOTIF.1d: the completion the echo could never carry. The echo
+        // is written at *fire* time, so before this the operation
+        // succeeded invisibly and failed only into `*messages*` — the
+        // case that opened the notification gate.
         match result {
-            Ok(out) => tracing::info!(
-                target: "lattice_magit",
-                "magit: git {logged} succeeded: {out}"
-            ),
-            Err(err) => tracing::error!(
-                target: "lattice_magit",
-                "magit: git {logged} failed: {err}"
-            ),
+            Ok(out) => {
+                tracing::info!(
+                    target: "lattice_magit",
+                    "magit: git {logged} succeeded: {out}"
+                );
+                if let Some(n) = notify {
+                    n.post(
+                        lattice_notify::NotificationLevel::Info,
+                        format!("{what} finished"),
+                    );
+                }
+            }
+            Err(err) => {
+                tracing::error!(
+                    target: "lattice_magit",
+                    "magit: git {logged} failed: {err}"
+                );
+                if let Some(n) = notify {
+                    // The first line only: a notification is one line,
+                    // and git's full stderr is already in `*messages*`,
+                    // which is the surface for detail.
+                    let first = err.lines().next().unwrap_or("failed").to_string();
+                    n.post(
+                        lattice_notify::NotificationLevel::Error,
+                        format!("{what} failed: {first}"),
+                    );
+                }
+            }
         }
     });
     Effect::Echo {

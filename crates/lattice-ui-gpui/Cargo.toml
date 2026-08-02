@@ -14,6 +14,7 @@ description = "Peer GPUI renderer for lattice — host-neutral substrate driving
 # transitive deps, the build below fails and the regression is
 # loud.
 lattice-host = { path = "../lattice-host" }
+lattice-notify = { path = "../lattice-notify" }
 # S4.0 (2026-05-26): cell-grid substrate. The `cells_paint`
 # module converts `lattice_cells::Cell` payloads into GPUI's
 # `(combined_text, Vec<TextRun>, inlay_offsets)` shape for the

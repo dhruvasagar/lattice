@@ -476,6 +476,10 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) -> Opti
             draw_picker_overlay(frame, chunks[1], app);
         }
     }
+    // NOTIF.1b: painted after every other overlay so a picker or a
+    // transient cannot cover it — a notification hidden exactly when
+    // the user is busy is the case it exists for.
+    draw_notifications(frame, chunks[1], app);
     // Slice 3c.gpui-cmdline-completion: cmdline-completion popup
     // overlay. Mutually exclusive with the picker (picker doesn't
     // open during `:` typing).
@@ -1836,6 +1840,75 @@ fn transient_group_item_lines(
         ln += 1;
     }
     (lines, ln)
+}
+
+/// NOTIF.1b: the notification stack, anchored bottom-right.
+///
+/// §5.9.9's corner and order: they stack in a corner, newest **below**
+/// older ones here because the stack grows upward from the bottom edge
+/// — `visible` arrives oldest-first, so painting it in order down the
+/// block puts the newest nearest the corner, which is where the eye
+/// lands.
+///
+/// **Drawn last, over everything.** A notification that a picker or a
+/// transient could cover would be invisible exactly when the user is
+/// busy, which is when it matters most.
+///
+/// Nothing here is timer-driven: expiry happens in the store and
+/// arrives as an ordinary repaint. This function only ever paints what
+/// it is given.
+fn draw_notifications(frame: &mut Frame, area: Rect, app: &App) {
+    let rs = app.render_state.load_full();
+    let n = &rs.notifications;
+    if n.visible.is_empty() {
+        return;
+    }
+
+    // One row per notification, plus the "+N more" line when some are
+    // queued. Width is a third of the screen, clamped so it stays
+    // readable on a narrow split and does not swallow a wide one.
+    let extra = usize::from(n.queued > 0);
+    let rows = (n.visible.len() + extra) as u16;
+    let width = (area.width / 3).clamp(24, 60).min(area.width);
+    let height = (rows + 2).min(area.height);
+    let block_area = Rect {
+        x: area.x + area.width.saturating_sub(width),
+        y: area.y + area.height.saturating_sub(height),
+        width,
+        height,
+    };
+
+    frame.render_widget(Clear, block_area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(TuiStyle::default().fg(Color::DarkGray));
+    let inner = block.inner(block_area);
+    frame.render_widget(block, block_area);
+
+    let mut lines: Vec<Line> = n
+        .visible
+        .iter()
+        .map(|item| {
+            let colour = match item.level {
+                lattice_notify::NotificationLevel::Info => Color::Cyan,
+                lattice_notify::NotificationLevel::Warn => Color::Yellow,
+                lattice_notify::NotificationLevel::Error => Color::Red,
+            };
+            Line::from(vec![Span::styled(
+                clip_to_width(&item.text, inner.width),
+                TuiStyle::default().fg(colour),
+            )])
+        })
+        .collect();
+    if n.queued > 0 {
+        // Named rather than dropped: a burst that silently discarded
+        // the tail would be the invisible-work bug again.
+        lines.push(Line::from(vec![Span::styled(
+            format!("+{} more", n.queued),
+            TuiStyle::default().fg(Color::DarkGray),
+        )]));
+    }
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 fn draw_transient_overlay(frame: &mut Frame, buffer_area: Rect, app: &App) {

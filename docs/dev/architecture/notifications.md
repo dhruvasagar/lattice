@@ -1,8 +1,8 @@
 # Notifications — telling the user about work with no buffer
 
-> **Status: being built.** NOTIF.1a (the data layer — notification,
-> store, expiry through the inbound primitive) landed 2026-08-02; see
-> the slice plan. Rendering (both peers) and the magit consumer follow.
+> **Status: built.** NOTIF.1a (data layer), 1b/c (both renderers) and
+> 1d (magit's remote ops as first consumer) landed 2026-08-02; see the
+> slice plan. Actions, config and the `*messages*` tee remain.
 > The original note is kept below because the *reasoning* is what this
 > fragment is for.
 >
@@ -175,3 +175,39 @@ This is a subsystem, not a slice:
 - [`design.md`](design.md) §5.9.4 — the headerline status convention
 - `lattice-compilation`'s `CompilationHeaderline` — the shipped
   in-repo precedent for buffer-scoped progress
+
+## How it reaches the screen (NOTIF.1b/c)
+
+Notifications are published into `RenderState` like every other
+per-frame surface, **not** read back through the editor. That is
+structural rather than stylistic: in production the renderer holds an
+`EditorActorHandle`, so reaching the editor is a blocking RPC, and a
+per-frame round-trip asking "any notifications?" would sit on the paint
+path — exactly what paramount goal #1 forbids. Both peers read the same
+`NotificationsRenderState`, so they cannot disagree about what is up.
+
+Both attach the stack **last**, bottom-right, over every other overlay.
+A notification a picker or transient could cover would be invisible
+precisely when the user is busy, which is when it matters most.
+
+Queued notifications are named (`+N more`) rather than dropped — a
+burst that silently discarded its tail would be the invisible-work bug
+again, one level up.
+
+### The "must not repaint the document" constraint, honestly
+
+This fragment asked that expiry redraw the notification layer only. **It
+does not, and cannot today**, in either peer: the TUI is immediate-mode
+(ratatui rebuilds the frame) and GPUI re-renders the element tree.
+
+What makes that acceptable is where the cost actually lands. Ratatui
+diffs its double buffer, so only the *changed cells* are written to the
+terminal — a notification appearing or expiring does not rewrite the
+document's cells. And the rebuild happens on notification *events*
+(post, replace, expire), which are a handful per operation, not per
+frame. An idle notification costs one version comparison.
+
+Recorded rather than quietly dropped, because the constraint was
+written down and a reader deserves to know it was weighed. A genuinely
+separable layer would be a renderer-architecture change well beyond
+this subsystem.

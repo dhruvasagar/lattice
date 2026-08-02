@@ -1069,6 +1069,20 @@ impl Editor {
             messages: std::sync::Arc::new(crate::render_state::MessagesRenderState {
                 last: self.last_message.clone().map(std::sync::Arc::new),
             }),
+            // NOTIF.1b: read from the store here, on the actor thread,
+            // so the renderers never round-trip for it.
+            notifications: std::sync::Arc::new(
+                self.services
+                    .get::<lattice_notify::NotificationStoreHandle>()
+                    .map(|store| crate::render_state::NotificationsRenderState {
+                        visible: store.visible(),
+                        queued: store.queued(),
+                    })
+                    .unwrap_or(crate::render_state::NotificationsRenderState {
+                        visible: Vec::new(),
+                        queued: 0,
+                    }),
+            ),
             modeline: std::sync::Arc::new(crate::render_state::ModelineRenderState {
                 cmdline_text: std::sync::Arc::from(self.command_line()),
                 auto_submit_hint: self.auto_submit_after_chord,

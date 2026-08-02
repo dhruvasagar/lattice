@@ -1257,13 +1257,24 @@ already exists); `D` / `L` diff- and log-arg refresh; `M` log-merged;
 > **2026-08-02:** `D` / `L` landed as **MG.23k**, merged into a single
 > `D` (§8.10) because `L` is a motion we protect.
 >
-> **`r` blame removal is now most of the way there for free.** MG.26b
-> gave the blame minor a reverse direction, and magit's
-> `magit-blame-removal` and `magit-blame-reverse` run the *same* `git
-> blame --reverse` — they differ only in how the result is presented
-> ("the commit that removed this line" vs "the last commit it survived
-> in", which are adjacent commits). What is left is heading text, not
-> machinery.
+> **`r` blame removal — dropped as a separate feature (2026-08-02).**
+> Magit's `magit-blame-removal` and `magit-blame-reverse` run the
+> *same* `git blame --reverse`; they differ only in how the answer is
+> worded — "the commit that removed this line" versus "the last commit
+> it survived in", which are adjacent commits. MG.26b shipped the
+> reverse direction, so a second direction would be a **third mode for
+> a wording difference**, which is surface for its own sake.
+>
+> Worth separating from a nearby confusion: `gq` is
+> `magit-blame-quit` — it turns the blame display OFF. `removal` is a
+> *query*, not an off-switch, so `gq` never covered it.
+>
+> What is left, and is a real (small) improvement rather than a
+> feature: reverse blame's heading says which commit last *contained*
+> the line, where "which commit removed it" is usually what you wanted.
+> Saying that needs the child commit, which is a `rev-list` walk per
+> chunk — a genuine cost for a wording change, so it waits until
+> someone reads the current wording and finds it wrong.
 >
 > **The other two are blocked on the same question `L` was**, and it is
 > a decision rather than work: magit's `M` (log-merged) and `e`
@@ -2703,9 +2714,10 @@ only diff arguments.
 - **Tests:** 6.
 - **No bench:** the git call was already off-thread; this changes its
   argv, not where it runs.
-- **Deferred, named:** MG.23's other tail items — `r` blame removal,
-  `M` log-merged (whose magit key is a motion we protect, so it needs
-  its own answer) and `e` edit-line-commit.
+- **Deferred, named:** MG.23's other tail items — `M` log-merged (whose
+  magit key is a motion we protect, so it needs its own answer) and `e`
+  edit-line-commit. `r` blame removal was dropped; see the tail note
+  above.
 
 ### MG.21h/i — submodules ✅ (2026-08-02)
 

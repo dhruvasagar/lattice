@@ -60,13 +60,15 @@ fn magit_blame_keymap_entries() -> &'static [KeymapEntry] {
         vec![
             keymap_entry! { mode: Normal, chord: "<CR>", doc: "Show the commit for the chunk at cursor", cmd: "action:magit-blame-show-commit" },
             keymap_entry! { mode: Normal, chord: "p", doc: "Blame back one commit", cmd: "action:magit-blame-parent" },
-            // NO `q`, though magit binds it and it is the obvious key.
-            // This mode can be active on a *blob* buffer, where
-            // `magit-core-mode` is also active and already binds `q` to
-            // close the buffer — two minors binding one chord on one
-            // buffer resolves by registration order, which is not a
-            // contract anyone should depend on. Blame turns off the way
-            // it turned on: `C-c f b` and `:magit-blame` are toggles.
+            // `gq`, not magit's bare `q`. This mode can be active on a
+            // *blob* buffer, where `magit-core-mode` is also active and
+            // already binds `q` to close the buffer — two minors
+            // binding one chord on one buffer resolves by registration
+            // order, which is not a contract anyone should depend on.
+            // `g` is a prefix, so `gq` shadows nothing (vim's `gq` is
+            // the format operator, inert in a read-only buffer) and it
+            // sits beside `gr` in the same namespace.
+            keymap_entry! { mode: Normal, chord: "gq", doc: "Stop blaming (the buffer becomes editable again)", cmd: "action:magit-blame-quit" },
         ]
     })
 }
@@ -289,6 +291,17 @@ pub struct BlameState {
     rev: String,
     direction: BlameDirection,
     provider: Arc<BlameProvider>,
+    /// How a finished blame reaches the screen.
+    ///
+    /// **Bumping the provider's version is NOT a wake**, which is what
+    /// the first version of this mode assumed. The cells worker
+    /// re-reads providers when the editor is already redrawing; nothing
+    /// *starts* a redraw. So the headings sat there until the user
+    /// happened to press a key — "it works, but only after I hit
+    /// something", the exact symptom `CLAUDE.md` describes and which a
+    /// user reported here. `wake()` fires the waker without storing
+    /// anything, which is the idiom for precisely this.
+    pending_highlights: Option<lattice_mode::PendingSyntheticHighlightsHandle>,
     /// Kept so the guard's drop tears the heading lane down.
     _registration: Option<BlameRegistration>,
 }
@@ -393,6 +406,18 @@ impl Mode for MagitBlameMode {
                     })
                 }),
             },
+            // gq — stop blaming. Deactivating the mode is what removes
+            // the headings and gives the buffer back its editability;
+            // there is no buffer to close any more.
+            ActionHandlerContribution {
+                action_name: "action:magit-blame-quit",
+                handler: Arc::new(|ctx: &ActionContext<'_>| {
+                    let _ = state(ctx)?;
+                    Some(Effect::ToggleMode {
+                        mode_name: MagitBlameMode::mode_id().as_str().to_string(),
+                    })
+                }),
+            },
             // p — re-blame at the parent of the revision currently
             // blamed, IN PLACE. The old shape had to open a new buffer
             // in the reverse direction because the direction lived in
@@ -488,6 +513,7 @@ impl Mode for MagitBlameMode {
                     rev: rev.clone(),
                     direction,
                     provider: provider.clone(),
+                    pending_highlights: ctx.service::<lattice_mode::PendingSyntheticHighlights>(),
                     _registration: registration,
                 },
             );
@@ -523,11 +549,12 @@ fn blame_target(
 /// provider.
 ///
 /// Off the actor thread on `spawn_blocking`, and the result reaches the
-/// screen with no keypress: the cells worker polls
-/// `VirtualRowProvider::version` every tick, so bumping it *is* the
-/// wake. Nothing here touches the buffer's text.
+/// screen with no keypress — but **only because of the explicit wake at
+/// the end**. Bumping the provider's version is not a wake: the cells
+/// worker re-reads providers when a redraw is already happening, and
+/// nothing starts one. Nothing here touches the buffer's text.
 async fn rerun_blame(s: Arc<Mutex<BlameState>>) {
-    let Some((wd, direction, rev, path, provider)) = ({
+    let Some((wd, direction, rev, path, provider, wake)) = ({
         let g = s.lock().ok();
         g.map(|g| {
             (
@@ -536,6 +563,7 @@ async fn rerun_blame(s: Arc<Mutex<BlameState>>) {
                 g.rev.clone(),
                 g.path.clone(),
                 g.provider.clone(),
+                g.pending_highlights.clone(),
             )
         })
     }) else {
@@ -549,6 +577,11 @@ async fn rerun_blame(s: Arc<Mutex<BlameState>>) {
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
     provider.set_chunks(parse_blame_chunks(&porcelain), now);
+    // The headings exist now; ask for a frame. Without this they appear
+    // on the next keystroke instead of when the blame lands.
+    if let Some(wake) = wake {
+        wake.wake();
+    }
 }
 
 /// `git blame --line-porcelain`'s raw output, or empty on failure.
@@ -764,6 +797,66 @@ mod tests {
     fn an_unrequested_buffer_takes_nothing() {
         let r = BlameRequests::default();
         assert_eq!(r.take("src/main.rs"), None);
+    }
+
+    /// `gq` turns blame off, and it must stay `g`-prefixed.
+    ///
+    /// Bare `q` is `magit-core-mode`'s (close the buffer), and this
+    /// mode can be active on a blob buffer where that mode is also
+    /// active — two minors on one chord resolves by registration order,
+    /// which is not a contract.
+    #[test]
+    fn quitting_blame_is_g_prefixed_and_shares_no_chord_with_magit_core() {
+        use lattice_mode::Mode;
+        let chords: Vec<&str> = MagitBlameMode
+            .keymap()
+            .entries
+            .iter()
+            .map(|e| e.chord)
+            .collect();
+        assert!(chords.contains(&"gq"), "{chords:?}");
+        assert!(
+            !chords.contains(&"q"),
+            "bare `q` belongs to magit-core-mode: {chords:?}"
+        );
+        let core: Vec<&str> = crate::MagitCoreMode
+            .keymap()
+            .entries
+            .iter()
+            .map(|e| e.chord)
+            .collect();
+        for c in &chords {
+            assert!(
+                !core.contains(c),
+                "`{c}` is bound by both magit-blame-mode and magit-core-mode"
+            );
+        }
+    }
+
+    /// The regression a user reported: the headings appeared only after
+    /// an unrelated redraw.
+    ///
+    /// Bumping the provider's version is NOT a wake — the cells worker
+    /// re-reads providers when a redraw is already happening, and
+    /// nothing starts one. `rerun_blame` must therefore fire the waker
+    /// itself, and this pins that the state carries the handle it needs
+    /// to. A `None` here is exactly the shipped bug.
+    #[test]
+    fn the_state_carries_the_handle_the_finished_blame_wakes_with() {
+        // A structural pin: the field exists and is the wake-capable
+        // handle, not a bare marker. The behavioural half lives in the
+        // host's async-wake tests, which need a live editor.
+        fn assert_wakeable(_: &Option<lattice_mode::PendingSyntheticHighlightsHandle>) {}
+        let s = BlameState {
+            workdir: std::path::PathBuf::new(),
+            path: String::new(),
+            rev: String::new(),
+            direction: BlameDirection::Addition,
+            provider: BlameProvider::new(None, "magit-blame-mode"),
+            pending_highlights: None,
+            _registration: None,
+        };
+        assert_wakeable(&s.pending_highlights);
     }
 
     /// The mode must stay Manual: an auto-activating blame would make

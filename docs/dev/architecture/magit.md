@@ -295,13 +295,24 @@ as a removed line; `Filler` is blank alignment padding; `Sticky` pins
 to the top of the pane, and an annotation has to scroll away with the
 lines it describes.
 
-**No `q`, though magit binds it.** This mode can be active on a blob
-buffer, where `magit-core-mode` is also active and already binds `q` —
-two minors binding one chord on one buffer resolves by registration
-order, which is not a contract. Blame toggles off the way it toggled
-on. Guarded by `the_blame_minor_shares_no_chord_with_magit_core`, which
-the ordinary chord guard would not have caught: both chords reach a
-registered action and a handler.
+**`gq` turns it off, not magit's bare `q`.** This mode can be active on
+a blob buffer, where `magit-core-mode` is also active and already binds
+`q` — two minors binding one chord on one buffer resolves by
+registration order, which is not a contract. `g` is a prefix, so `gq`
+shadows nothing and sits beside `gr`. Guarded by
+`the_blame_minor_shares_no_chord_with_magit_core`, which the ordinary
+chord guard would not have caught: both chords reach a registered
+action and a handler.
+
+**A finished blame fires the waker explicitly, and that is not
+optional.** MG.26b shipped assuming a `VirtualRowProvider` version bump
+*was* the wake. It is not: the cells worker re-reads providers when a
+redraw is already happening, and nothing starts one — so the headings
+appeared only on the next keystroke ("it works, but only after I hit
+something", the symptom `CLAUDE.md` names, reported by a user against
+the shipped build). `rerun_blame` now calls
+`PendingSyntheticHighlights::wake()`, the existing idiom for "repaint,
+nothing stored".
 
 `magit-blame-mode` also left `magit-core-mode`'s `Majors` allowlist —
 naming a minor there is an entry that can never match.

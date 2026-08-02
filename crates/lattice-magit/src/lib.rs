@@ -1212,6 +1212,10 @@ fn register_action_commands(registry: &mut CommandRegistry) {
         "Show the commit for the blamed line",
     );
     reg("action:magit-blame-parent", "Re-blame at the parent commit");
+    reg(
+        "action:magit-blame-quit",
+        "Stop blaming — the buffer becomes editable again",
+    );
     // MG.23f2. Deliberately NOT in `FILE_TARGET_ACTIONS`: it needs a
     // revision as well as a path, and takes both from the blob buffer
     // it is invoked in — a `file` argument alone could not say which

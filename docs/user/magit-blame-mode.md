@@ -36,15 +36,19 @@ annotation *over* the file, not a rendering *of* it.
 |---|---|
 | `<CR>` | Show the commit for the chunk at cursor in [`magit-revision-mode`](help:magit-revision-mode) |
 | `p` | Re-blame at the **parent** of the current revision |
+| `gq` | Stop blaming — the buffer becomes editable again |
 
 The buffer is **read-only while blaming**, which is what frees `<CR>`
 and `p` — they are ordinary editing keys otherwise. Stop blaming and
 the file is editable again immediately.
 
-There is no `q`. Blame can be active on a [file at a
-revision](help:magit-file-revision-mode), where `q` already closes the
-buffer, and one key meaning two things depending on where you are is
-worse than no key. Toggle blame off the way you turned it on.
+`gq` stops blaming, and `C-c f b` / `:magit-blame` toggle it off too.
+Bare `q` is deliberately **not** it: blame can be active on a [file at
+a revision](help:magit-file-revision-mode), where `q` already closes
+the buffer, and one key meaning two different things depending on where
+you are is worse than a `g`-prefixed one. `gq` sits beside `gr` in the
+same namespace and shadows nothing (vim's `gq` reformats, which a
+read-only buffer cannot do).
 
 ## Walking history with `p`
 

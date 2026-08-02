@@ -1299,6 +1299,9 @@ the buffer you are already in is the actual no-op. See MG.23h's note.
 | MG.24a | Audit finding A1: `magit-hunk-mode` owns the diff-content chords | MG.22 | ✅ |
 | MG.26 | `magit-blame-mode` as a minor on the file — retires the blame buffer | MG.7, MG.23f2 | 📝 |
 | MG.27 | in-flight indicator in magit headerlines (a word, not `⟳` — see below) | — | ✅ |
+| MG.26a | The blame model — porcelain → chunks → heading text (pure) | — | ✅ |
+| MG.26b | `magit-blame-mode` as a minor + the chunk-heading provider | MG.26a | 📝 |
+| MG.26c | Retire the blame major, both blame buffers, `blame_styled_spans`; reverse blame on the blob buffer | MG.26b | 📝 |
 | NOTIF.1 | Notification subsystem (design.md §5.9.9) — magit remote ops as first consumer | — | 📝 |
 | MG.23i+ | The new subsystems, one slice each, prioritised by daily use — the same set MG.21 still names | — | 📝 |
 
@@ -1493,7 +1496,7 @@ of its own, though — `*magit:blame:<path>*` carries no revision, so the
 buffer name, the argv and the headerline all move together. Filed as
 MG.23f2 rather than smuggled in here.
 
-### MG.26 — magit-blame as a minor on the file 📝 (2026-07-31)
+### MG.26 — magit-blame as a minor on the file 🚧 (2026-07-31; MG.26a landed 2026-08-02)
 
 Design fragment:
 [`../../architecture/magit-blame.md`](../../architecture/magit-blame.md).
@@ -2179,6 +2182,51 @@ did not land, and there is no `do`/`dp` hunk transfer.
 - **Deliverables:** two-pane layout via D.4's pane-group machinery,
   scroll-bound; `do`/`dp` on top of MG.18's hunk identity.
 - **Tests:** panes stay scroll-synced; `do`/`dp` move exactly one hunk.
+
+### MG.26a — the blame model ✅ (2026-08-02)
+
+Design:
+[`../../architecture/magit-blame.md`](../../architecture/magit-blame.md).
+The pure core of MG.26, landed first — the same shape MG.21 used three
+times (`lattice_vcs::Remote` / `Bisect` / `Submodule` before their
+modes): the layer with the decisions in it, testable without a buffer.
+
+`crates/lattice-magit/src/blame.rs` — `parse_blame_chunks`,
+`BlameChunk`, `heading_text`, `relative_date`.
+
+**Chunks, not rows.** The retired shape rendered one row per source
+line, which is *why* blame lost highlighting: the buffer stopped being
+the file. Headings need one entry per run of lines sharing a commit,
+which is what this produces.
+
+**Commit metadata is cached by sha, and that is the load-bearing
+part.** Porcelain emits a full stanza the first time it sees a commit
+and header-plus-content after that. Reading only the current stanza —
+which the retired `format_blame_porcelain` effectively did, carrying
+just `sha` and `author` forward — leaves every later occurrence with an
+empty author. Guarded by
+`a_repeated_commit_keeps_the_metadata_from_its_first_stanza`.
+
+**A commit appearing twice in a file yields two chunks**, not one:
+they are two runs and each wants its own heading.
+
+**No date crate.** The units a relative date needs (minute, hour, day,
+week) are fixed-length, so this is arithmetic; months and years are
+approximated, which is what "relative" means. `now` is a parameter —
+a function that reads the clock cannot be asserted against — and a
+commit stamped in the future (ordinary clock skew in a shared repo)
+reads as "just now" rather than a negative age.
+
+**Uncommitted lines say so in words.** git attributes them to an
+all-zero sha; rendering `00000000  Not Committed Yet` would put git's
+internals in a row whose whole job is to be read at a glance.
+
+- **Tests:** 11.
+- **Next:** MG.26b wires this to a `magit-blame-mode` **minor** with a
+  chunk-heading virtual-row provider; MG.26c retires the major, both
+  blame buffers and `blame_styled_spans`, and folds reverse blame onto
+  the blob buffer. Until MG.26b lands the existing blame *major* is
+  untouched and still the only blame surface.
 
 ### MG.27 — the in-flight indicator ✅ (2026-08-02)
 

@@ -9,6 +9,7 @@
 //! [`docs/dev/operations/slice-plans/magit.md`].
 
 pub mod actions;
+pub mod blame;
 pub mod buffer_io;
 pub mod buffer_state;
 mod confirm;

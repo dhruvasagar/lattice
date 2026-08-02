@@ -19,6 +19,7 @@ pub mod cursor_restore;
 pub mod fold_source;
 pub mod headerline;
 mod highlight;
+pub mod options;
 // MG.18c: public so the bench can measure the parser directly — the
 // accessor shape it pins (read the hunk, not the document) is the
 // paramount-#1 claim staging rests on, and MG.22 relocates this module

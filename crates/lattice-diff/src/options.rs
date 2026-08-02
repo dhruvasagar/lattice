@@ -58,4 +58,24 @@ lattice_config::options! {
     #[name("ui.diff.context")]
     #[validate(validate_diff_context)]
     pub UiDiffContext: i64 = 6;
+
+    /// Tint whole rows by what the diff did to them — added rows on an
+    /// add background, removed rows on a remove background — rather
+    /// than colouring only the leading `+` / `-`.
+    ///
+    /// `true` (default) — what MG.21a made unconditional, and what
+    /// every diff-showing surface has looked like since.
+    ///
+    /// `false` — foreground colouring only. For low-contrast themes
+    /// where a full-row wash fights the syntax colours underneath, and
+    /// for terminals whose background handling makes the tint muddy.
+    ///
+    /// **Lives here rather than under `magit.*`, which is where
+    /// MG.22's design fragment first put it.** The mechanism turned out
+    /// to be generic: `Editor::diff_signs_from_spans` derives the tint
+    /// from whatever spans a mode publishes, so every diff-showing
+    /// buffer shares it, magit's among them. An option named for one
+    /// consumer would have understated what it turns off.
+    #[name("ui.diff.line-backgrounds")]
+    pub UiDiffLineBackgrounds: bool = true;
 }

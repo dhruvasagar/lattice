@@ -14975,6 +14975,11 @@ impl Editor {
     }
 
     fn drain_pending_synthetic_highlights(&mut self) {
+        let line_backgrounds = self
+            .config
+            .get_typed::<lattice_diff::options::UiDiffLineBackgrounds>()
+            .map(|v| *v)
+            .unwrap_or(true);
         let Some(pending) = self
             .services
             .get::<lattice_mode::PendingSyntheticHighlights>()
@@ -15039,7 +15044,19 @@ impl Editor {
             // tint impossible to desynchronise from the text: an inline
             // diff expansion in magit-status shifts spans and signs by
             // construction, because there is only one thing being shifted.
-            sign_updates.push((buf_id, Self::diff_signs_from_spans(&final_spans)));
+            // MG.22b: `ui.diff.line-backgrounds` turns the tint off.
+            // Read here, at the DERIVATION, rather than at paint time —
+            // an empty entry clears the buffer's map, so turning the
+            // option off removes existing tints on the next refresh
+            // instead of leaving stale ones behind a renderer branch.
+            sign_updates.push((
+                buf_id,
+                if line_backgrounds {
+                    Self::diff_signs_from_spans(&final_spans)
+                } else {
+                    Vec::new()
+                },
+            ));
             locals.insert(crate::modes::ExtraHighlights(final_spans));
         }
         if !sign_updates.is_empty() {

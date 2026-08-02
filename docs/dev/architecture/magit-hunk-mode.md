@@ -2,8 +2,8 @@
 
 **Status:** designed 2026-07-29; **partly implemented**. The mode
 exists and owns the hunk chords, `]c`/`[c` and `<CR>` (MG.24a +
-MG.22's seam, 2026-08-01). Still open: `tree-sitter-diff` parsing and
-`magit.hunk.*` options. Slice plan:
+MG.22's seam, 2026-08-01), and its options landed in MG.22b
+(2026-08-02). Still open: `tree-sitter-diff` parsing. Slice plan:
 [`../operations/slice-plans/magit.md`](../operations/slice-plans/magit.md)
 §MG.22.
 
@@ -269,13 +269,13 @@ produces — see "Open".
 
 ## Options this mode should own
 
-None of these exist today; `lattice-magit` registers no options at all.
+MG.22b registered the first options `lattice-magit` has ever had; before it, the crate had none.
 
-| Option | Type | Purpose |
-|---|---|---|
-| `magit.hunk.context-lines` | int | `-U<n>` for the diffs magit generates |
-| `magit.hunk.syntax-highlight` | bool | language-aware hunk content, once it exists |
-| `magit.hunk.line-backgrounds` | bool | opt *out* of the `diff.*.line` tints above, which MG.21a made unconditional |
+| Option | Type | Purpose | State |
+|---|---|---|---|
+| `magit.hunk.context-lines` | int | `-U<n>` for the diffs magit generates | ✅ MG.22b, default 3 |
+| `magit.hunk.syntax-highlight` | bool | language-aware hunk content, once it exists | ⛔ **not registered** — the feature does not exist, and an option that changes nothing is a menu row that does nothing with a quieter failure mode (`:set` reports success). Lands with the feature. |
+| ~~`magit.hunk.line-backgrounds`~~ | bool | opt *out* of the `diff.*.line` tints | ✅ MG.22b, but as **`ui.diff.line-backgrounds`** in `lattice-diff`. MG.21a found the mechanism generic — `Editor::diff_signs_from_spans` derives the tint from any mode's spans — so naming it for magit would understate what it turns off. |
 
 ## Open
 

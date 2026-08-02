@@ -94,7 +94,8 @@ changes` rather than git's internal all-zero SHA.
   commit once, legibly.
 - `magit.blame.author-width` and `magit.blame.date-format` read like
   options but are **not registered**: `:set` on either fails with
-  `unknown option`. See [`magit`](help:magit#options).
+  `unknown option`. See [`magit`](help:magit#options) for the ones that
+  are.
 
 ## See also
 

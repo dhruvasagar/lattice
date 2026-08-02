@@ -50,7 +50,8 @@ owns *what* and *why*.
 | MG.21i | `magit-submodule-mode` + `o` on the root dispatch | MG.21h | ✅ |
 | MG.23k | `D` — re-run a diff/log view with different git arguments | MG.17a | ✅ |
 | MG.21a | Diff line-background tints in magit's diff views | MG.20 | ✅ |
-| MG.22 | `magit-hunk-mode` — the mode owning diff *content* (chords + `<CR>` ✅; parser / options open) | MG.20 | 🚧 |
+| MG.22 | `magit-hunk-mode` — the mode owning diff *content* (chords + `<CR>` + options ✅; tree-sitter-diff parser open) | MG.20 | 🚧 |
+| MG.22b | The options magit-hunk-mode owns — `magit.hunk.context-lines`, `ui.diff.line-backgrounds` | MG.21a, MG.23k | ✅ |
 | MG.23 | magit-dispatch / file-dispatch parity (a–h done; j and i+ open) | MG.17b | 📝 |
 
 **2026-07-26 audit correction:** this table (last synced when MG.1-3 landed) had
@@ -2182,6 +2183,60 @@ did not land, and there is no `do`/`dp` hunk transfer.
 - **Deliverables:** two-pane layout via D.4's pane-group machinery,
   scroll-bound; `do`/`dp` on top of MG.18's hunk identity.
 - **Tests:** panes stay scroll-synced; `do`/`dp` move exactly one hunk.
+
+### MG.22b — the first options magit registers ✅ (2026-08-02)
+
+Design:
+[`../../architecture/magit-hunk-mode.md`](../../architecture/magit-hunk-mode.md)
+§"Options this mode should own". Until this slice `lattice-magit`
+registered **no** options at all — a fact several user-doc pages had to
+state out loud, because every `magit.*` name a user reached for failed
+with `unknown option`.
+
+**Two of the three designed options shipped, and the third is
+deliberately absent.**
+
+`magit.hunk.context-lines` (i64, default 3 = git's own) feeds **every**
+patch magit generates — magit-status's inline `=`, `:magit-diff`, and a
+commit's detail view. Honouring it in the dedicated diff view but not
+in the status buffer's expansion would have been the more confusing
+half of a half-migration, so `run_show` and `build_and_format` take it
+too. `D`'s `--unified` wins where set: the option is the default, not a
+floor, and the precedence is the one `run_log` already gives its `-n` —
+emitting both and letting git take the last would work but leaves two
+contradictory `-U`s in the argv.
+
+`magit.hunk.line-backgrounds` shipped **as `ui.diff.line-backgrounds`
+in `lattice-diff`**, which is a deliberate departure from the fragment.
+MG.21a discovered the mechanism is generic —
+`Editor::diff_signs_from_spans` derives the tint from whatever spans a
+mode publishes, so every diff-showing buffer shares it — and the
+fragment's name predates that finding. An option named for one consumer
+would have understated what it turns off. Read at the *derivation*, not
+at paint time, so turning it off clears existing tints on the next
+refresh instead of leaving stale ones behind a renderer branch.
+
+`magit.hunk.syntax-highlight` is **not registered**, though the
+fragment lists it. It would gate language-aware hunk content, and that
+feature does not exist. An option that changes nothing is the same
+failure as a menu row that does nothing, only quieter — `:set` reports
+success. It lands with the feature.
+
+**Also added:** a `Magit` option group (the crate had none), and
+`run_diff_argv` extracted as a pure builder — the same shape
+`blame_argv` and `tag_argv` already have, so the flags and their order
+are testable without a repository.
+
+- **Tests:** 4 (validator bounds incl. `0` being meaningful, the
+  rejection naming the option and the value, `D` overriding the option
+  with exactly one `--unified` reaching git, every argument preceding
+  the `--` separator).
+- **Docs corrected, not just extended:** `magit.md`, `magit-log-mode.md`
+  and `magit-blame-mode.md` each claimed magit registers no options.
+  That is now false, so they say what changed.
+- **Still open on MG.22:** `tree-sitter-diff` structural highlighting,
+  which carries the unresolved question of a *minor* supplying a
+  parser.
 
 ### MG.26c — the blob buffer gets its highlighting ✅ (2026-08-02)
 

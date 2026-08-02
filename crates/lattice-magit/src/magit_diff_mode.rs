@@ -102,6 +102,20 @@ pub struct DiffState {
     /// subsequent refresh so `gr` does not silently revert to the
     /// default diff.
     extra_args: Vec<String>,
+    /// MG.22b: the config, not the value. Read per refresh so a
+    /// `:set magit.hunk.context-lines` takes effect on the next `gr`
+    /// rather than only on reopen.
+    config: Option<std::sync::Arc<lattice_config::ConfigRegistry>>,
+}
+
+/// `magit.hunk.context-lines`, or git's own default when there is no
+/// config registry (a stripped harness).
+fn context_lines(config: &Option<std::sync::Arc<lattice_config::ConfigRegistry>>) -> i64 {
+    config
+        .as_ref()
+        .and_then(|c| c.get_typed::<crate::options::MagitHunkContextLines>())
+        .map(|v| *v)
+        .unwrap_or(3)
 }
 
 /// Parse `"*magit:diff[:staged|:unstaged]:<path>*"` (or the bare
@@ -238,6 +252,9 @@ impl Mode for MagitDiffMode {
                         .service::<crate::cursor_restore::CursorBusHandle>()
                         .map(|outer| (*outer).clone()),
                     extra_args: Vec::new(),
+                    config: ctx
+                        .service::<std::sync::Arc<lattice_config::ConfigRegistry>>()
+                        .map(|outer| (*outer).clone()),
                 },
             );
             let mut guard = BufferStateGuard::new((*states).clone(), buffer_id)
@@ -249,8 +266,12 @@ impl Mode for MagitDiffMode {
 
             let wd = workdir.clone();
             let path_for_task = path.clone();
+            let context = context_lines(
+                &ctx.service::<std::sync::Arc<lattice_config::ConfigRegistry>>()
+                    .map(|outer| (*outer).clone()),
+            );
             let text = tokio::task::spawn_blocking(move || {
-                run_diff(&wd, scope, path_for_task.as_deref(), &[])
+                run_diff(&wd, scope, path_for_task.as_deref(), &[], context)
             })
             .await
             .unwrap_or_default();
@@ -281,7 +302,7 @@ fn refresh_with(
     s: Arc<Mutex<DiffState>>,
     restore: Option<crate::cursor_restore::HunkRestore>,
 ) -> Option<Effect> {
-    let (handle, wd, scope, path, pending, buffer_id, cursor_bus, extra) = {
+    let (handle, wd, scope, path, pending, buffer_id, cursor_bus, extra, context) = {
         let g = s.lock().ok()?;
         (
             g.store.handle_for(g.buffer_id)?,
@@ -292,13 +313,15 @@ fn refresh_with(
             g.buffer_id,
             g.cursor_bus.clone(),
             g.extra_args.clone(),
+            context_lines(&g.config),
         )
     };
     tokio::task::spawn(async move {
-        let text =
-            tokio::task::spawn_blocking(move || run_diff(&wd, scope, path.as_deref(), &extra))
-                .await
-                .unwrap_or_default();
+        let text = tokio::task::spawn_blocking(move || {
+            run_diff(&wd, scope, path.as_deref(), &extra, context)
+        })
+        .await
+        .unwrap_or_default();
         let spans = crate::highlight::diff_styled_spans(&text);
         let position = restore.and_then(|r| crate::cursor_restore::restore_position(&text, &r));
         crate::buffer_io::replace_buffer_text(&handle, text).await;
@@ -316,7 +339,7 @@ fn spawn_mutation_and_refresh(
     s: Arc<Mutex<DiffState>>,
     mutate: impl FnOnce() + Send + 'static,
 ) -> Option<Effect> {
-    let (handle, wd, scope, path, pending, buffer_id, extra) = {
+    let (handle, wd, scope, path, pending, buffer_id, extra, context) = {
         let g = s.lock().ok()?;
         (
             g.store.handle_for(g.buffer_id)?,
@@ -326,14 +349,16 @@ fn spawn_mutation_and_refresh(
             g.pending_highlights.clone(),
             g.buffer_id,
             g.extra_args.clone(),
+            context_lines(&g.config),
         )
     };
     tokio::task::spawn(async move {
         let _ = tokio::task::spawn_blocking(mutate).await;
-        let text =
-            tokio::task::spawn_blocking(move || run_diff(&wd, scope, path.as_deref(), &extra))
-                .await
-                .unwrap_or_default();
+        let text = tokio::task::spawn_blocking(move || {
+            run_diff(&wd, scope, path.as_deref(), &extra, context)
+        })
+        .await
+        .unwrap_or_default();
         let spans = crate::highlight::diff_styled_spans(&text);
         crate::buffer_io::replace_buffer_text(&handle, text).await;
         if let Some(ph) = pending {
@@ -393,7 +418,18 @@ pub(crate) const DIFF_ARGS: &[crate::magit_global_mode::RemoteFlag] = &[
     },
 ];
 
-fn run_diff(workdir: &Path, scope: DiffScope, path: Option<&Path>, extra: &[String]) -> String {
+/// The `git` argv for one diff run.
+///
+/// Pure and separate from the spawning path, for the reason
+/// `blame_argv` and `tag_argv` already are: the flags and their ORDER
+/// are the part worth testing, and reaching them through the runner
+/// would mean every test needed a repository.
+fn run_diff_argv(
+    scope: DiffScope,
+    path: Option<&Path>,
+    extra: &[String],
+    context: i64,
+) -> Vec<String> {
     let mut args = vec!["diff".to_string()];
     match scope {
         DiffScope::Head => args.push("HEAD".to_string()),
@@ -402,6 +438,14 @@ fn run_diff(workdir: &Path, scope: DiffScope, path: Option<&Path>, extra: &[Stri
         // the index — exactly the Unstaged section's semantics.
         DiffScope::Unstaged => {}
     }
+    // MG.22b: `magit.hunk.context-lines` is the DEFAULT, so it only
+    // applies when `D` did not set one — the same precedence
+    // `run_log` gives its `-n`. Appending both and letting git take
+    // the last would work, but it puts two contradictory `-U`s in the
+    // argv and the next reader cannot tell which wins.
+    if !extra.iter().any(|a| a.starts_with("--unified")) {
+        args.push(format!("--unified={context}"));
+    }
     // MG.23k: the `D` menu's arguments go before the `--` separator,
     // or git reads them as pathspecs.
     args.extend(extra.iter().cloned());
@@ -409,6 +453,17 @@ fn run_diff(workdir: &Path, scope: DiffScope, path: Option<&Path>, extra: &[Stri
         args.push("--".to_string());
         args.push(p.to_string_lossy().into_owned());
     }
+    args
+}
+
+fn run_diff(
+    workdir: &Path,
+    scope: DiffScope,
+    path: Option<&Path>,
+    extra: &[String],
+    context: i64,
+) -> String {
+    let args = run_diff_argv(scope, path, extra, context);
     let output = std::process::Command::new("git")
         .args(&args)
         .current_dir(workdir)
@@ -542,6 +597,53 @@ impl MagitView for DiffView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// MG.22b: the option is the DEFAULT, so `D`'s `--unified` wins.
+    /// Emitting both and letting git take the last would work, but it
+    /// puts two contradictory `-U`s in the argv and the next reader
+    /// cannot tell which one applies.
+    #[test]
+    fn the_context_option_yields_to_the_menus_override() {
+        let with_default = run_diff_argv(DiffScope::Unstaged, None, &[], 7);
+        assert!(
+            with_default.contains(&"--unified=7".to_string()),
+            "the option supplies the context when the menu did not: {with_default:?}"
+        );
+
+        let overridden = run_diff_argv(DiffScope::Unstaged, None, &["--unified=1".to_string()], 7);
+        assert!(
+            overridden.contains(&"--unified=1".to_string()),
+            "the menu's value must be there: {overridden:?}"
+        );
+        assert_eq!(
+            overridden
+                .iter()
+                .filter(|a| a.starts_with("--unified"))
+                .count(),
+            1,
+            "exactly one `--unified` reaches git: {overridden:?}"
+        );
+    }
+
+    /// The arguments must land before `--`, or git reads them as
+    /// pathspecs and the diff silently comes back empty.
+    #[test]
+    fn every_argument_precedes_the_path_separator() {
+        let argv = run_diff_argv(
+            DiffScope::Staged,
+            Some(std::path::Path::new("src/main.rs")),
+            &["-w".to_string()],
+            3,
+        );
+        let sep = argv.iter().position(|a| a == "--").expect("a separator");
+        for flag in ["--cached", "-w", "--unified=3"] {
+            let at = argv
+                .iter()
+                .position(|a| a == flag)
+                .unwrap_or_else(|| panic!("`{flag}` missing from {argv:?}"));
+            assert!(at < sep, "`{flag}` must precede `--`: {argv:?}");
+        }
+    }
 
     /// MG.18c — `*magit:diff*` compares against HEAD, so one hunk can
     /// contain both staged and unstaged lines. It is not a patch

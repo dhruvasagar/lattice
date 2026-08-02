@@ -43,6 +43,10 @@ pub struct StatusBufferState {
     /// name, dirty counts. Re-set by every refresh from the same
     /// `SectionIndex` the body is built from.
     pub headerline: Option<crate::headerline::MagitHeaderlineHandle>,
+    /// MG.22b: the config, not the value — read per refresh so a
+    /// `:set magit.hunk.context-lines` takes effect on the next `gr`
+    /// rather than only on reopen.
+    pub config: Option<Arc<lattice_config::ConfigRegistry>>,
     /// MG.18d: where the cursor should land once the next refresh's
     /// text exists. Set by a mutation, consumed by the refresh it was
     /// queued for — a later `gr` must not re-apply a stale jump.
@@ -193,22 +197,33 @@ pub(crate) fn diff_source_for_header(header: &str) -> Option<DiffSource> {
 
 /// Run the git command that shows `sl`'s content: a file's diff
 /// (staged-aware), a stash's patch, or a commit's patch.
-pub(crate) fn run_show(workdir: &Path, sl: &StatusLine) -> Option<String> {
+pub(crate) fn run_show(workdir: &Path, sl: &StatusLine, context: i64) -> Option<String> {
     let mut cmd = std::process::Command::new("git");
     cmd.current_dir(workdir);
+    // MG.22b: `magit.hunk.context-lines` applies to every patch magit
+    // generates, not only the dedicated diff view — a value honoured in
+    // `:magit-diff` but ignored by magit-status's inline `=` would be
+    // the more confusing half of a half-migration.
+    let unified = format!("--unified={context}");
     match sl {
         StatusLine::File { path, staged } => {
             cmd.arg("diff");
             if *staged {
                 cmd.arg("--cached");
             }
-            cmd.arg("--").arg(path);
+            cmd.arg(&unified).arg("--").arg(path);
         }
         StatusLine::Stash { index } => {
-            cmd.args(["stash", "show", "-p", &format!("stash@{{{index}}}")]);
+            cmd.args([
+                "stash",
+                "show",
+                "-p",
+                &unified,
+                &format!("stash@{{{index}}}"),
+            ]);
         }
         StatusLine::Commit { sha } => {
-            cmd.args(["show", sha]);
+            cmd.args(["show", &unified, sha]);
         }
     }
     let output = cmd.output().ok()?;
@@ -267,9 +282,10 @@ fn toggle_expand(
     cursor_line: u32,
 ) -> Option<Effect> {
     let key = entry_key(&sl);
-    let (handle, wd, rt, existing_count, pending, bid) = {
+    let (handle, wd, rt, existing_count, pending, bid, context) = {
         let g = s.lock().ok()?;
         let h = g.store.handle_for(g.buffer_id)?;
+        let context = context_lines(&g.config);
         (
             h,
             g.workdir.clone(),
@@ -277,6 +293,7 @@ fn toggle_expand(
             g.expanded.get(&key).copied(),
             g.pending_highlights.clone(),
             g.buffer_id,
+            context,
         )
     };
 
@@ -318,7 +335,7 @@ fn toggle_expand(
             g.expanded.remove(&key);
         }
     } else {
-        let diff = run_show(&wd, &sl).unwrap_or_default();
+        let diff = run_show(&wd, &sl, context).unwrap_or_default();
         if !diff.trim().is_empty() {
             let text = diff.trim().to_string();
             let line_count = text.lines().count();
@@ -814,12 +831,25 @@ struct RefreshContext {
     open: std::collections::HashSet<String>,
     restore: Option<crate::cursor_restore::HunkRestore>,
     cursor_bus: Option<crate::cursor_restore::CursorBusHandle>,
+    /// MG.22b: `magit.hunk.context-lines`, snapshotted with the rest of
+    /// the refresh inputs.
+    context: i64,
     state: Arc<Mutex<StatusBufferState>>,
 }
 
 /// Snapshot the refresh inputs. Takes `pending_cursor` — a restore is
 /// consumed by the refresh it was queued for, so a later `gr` does not
 /// re-apply a stale jump.
+/// `magit.hunk.context-lines`, or git's own default when there is no
+/// config registry (a stripped harness).
+pub(crate) fn context_lines(config: &Option<Arc<lattice_config::ConfigRegistry>>) -> i64 {
+    config
+        .as_ref()
+        .and_then(|c| c.get_typed::<crate::options::MagitHunkContextLines>())
+        .map(|v| *v)
+        .unwrap_or(3)
+}
+
 fn refresh_context(s: &Arc<Mutex<StatusBufferState>>) -> Option<RefreshContext> {
     let mut g = s.lock().ok()?;
     let handle = g.store.handle_for(g.buffer_id)?;
@@ -836,6 +866,7 @@ fn refresh_context(s: &Arc<Mutex<StatusBufferState>>) -> Option<RefreshContext> 
         open: g.expanded.keys().cloned().collect(),
         restore,
         cursor_bus: g.cursor_bus.clone(),
+        context: context_lines(&g.config),
         state: Arc::clone(s),
     })
 }
@@ -850,6 +881,7 @@ async fn run_refresh(ctx: RefreshContext) {
         ctx.open,
         ctx.restore,
         ctx.cursor_bus,
+        ctx.context,
         ctx.state,
     )
     .await;
@@ -879,6 +911,7 @@ async fn do_refresh(
     open: std::collections::HashSet<String>,
     restore: Option<crate::cursor_restore::HunkRestore>,
     cursor_bus: Option<crate::cursor_restore::CursorBusHandle>,
+    context: i64,
     state: Arc<Mutex<StatusBufferState>>,
 ) {
     // MG.27: the row says "refreshing" for the whole of this function,
@@ -886,7 +919,7 @@ async fn do_refresh(
     // below panics or the task is cancelled when the buffer closes.
     let _busy = crate::headerline::busy(&headerline);
     let (text, spans, header, reopened) =
-        tokio::task::spawn_blocking(move || refresh::build_and_format(&wd, &open))
+        tokio::task::spawn_blocking(move || refresh::build_and_format(&wd, &open, context))
             .await
             .expect("spawn_blocking");
     // MG.14: publish before the edit — the header describes the state

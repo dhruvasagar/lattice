@@ -30,6 +30,7 @@ use crate::sections::{Section, SectionEntry, SectionIndex, SectionKind};
 pub fn build_and_format(
     workdir: &PathBuf,
     expanded: &HashSet<String>,
+    context: i64,
 ) -> (
     String,
     Vec<Vec<StyledSpan>>,
@@ -62,7 +63,7 @@ pub fn build_and_format(
         if !expanded.contains(&key) {
             return None;
         }
-        let diff = crate::actions::run_show(workdir, &line)?;
+        let diff = crate::actions::run_show(workdir, &line, context)?;
         (!diff.trim().is_empty()).then_some((key, diff))
     });
     if text.is_empty() {
@@ -320,7 +321,7 @@ mod expansion_survives_refresh {
         let dir = repo_with_an_unstaged_change();
         let wd = dir.path().to_path_buf();
 
-        let collapsed = build_and_format(&wd, &HashSet::new());
+        let collapsed = build_and_format(&wd, &HashSet::new(), 3);
         assert!(
             !collapsed.0.contains("@@"),
             "nothing was open, so no diff is inlined:\n{}",
@@ -329,7 +330,7 @@ mod expansion_survives_refresh {
         assert!(collapsed.3.is_empty());
 
         let open: HashSet<String> = [open_key()].into_iter().collect();
-        let (text, spans, _, reopened) = build_and_format(&wd, &open);
+        let (text, spans, _, reopened) = build_and_format(&wd, &open, 3);
         assert!(
             text.contains("line 2 EDITED"),
             "the open entry's diff is inlined:\n{text}"
@@ -357,7 +358,7 @@ mod expansion_survives_refresh {
     fn the_rebuilt_key_is_the_one_the_toggle_uses() {
         let dir = repo_with_an_unstaged_change();
         let open: HashSet<String> = [open_key()].into_iter().collect();
-        let (_, _, _, reopened) = build_and_format(&dir.path().to_path_buf(), &open);
+        let (_, _, _, reopened) = build_and_format(&dir.path().to_path_buf(), &open, 3);
         assert!(
             reopened.contains_key(&open_key()),
             "keyed as `f:false:a.txt`, the same as `classify_line` derives from the row"
@@ -370,7 +371,7 @@ mod expansion_survives_refresh {
     fn a_stale_key_expands_nothing_and_does_not_survive() {
         let dir = repo_with_an_unstaged_change();
         let stale: HashSet<String> = ["f:false:gone.txt".to_string()].into_iter().collect();
-        let (text, _, _, reopened) = build_and_format(&dir.path().to_path_buf(), &stale);
+        let (text, _, _, reopened) = build_and_format(&dir.path().to_path_buf(), &stale, 3);
         assert!(!text.contains("@@"), "nothing inlined:\n{text}");
         assert!(reopened.is_empty(), "the stale key is dropped, not carried");
     }

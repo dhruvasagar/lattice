@@ -178,6 +178,9 @@ impl Mode for MagitStatusMode {
                     pending_highlights: pending.clone(),
                     expanded: std::collections::HashMap::new(),
                     headerline: hl.clone(),
+                    config: ctx
+                        .service::<std::sync::Arc<lattice_config::ConfigRegistry>>()
+                        .map(|outer| (*outer).clone()),
                     pending_cursor: None,
                     // MG.18d: the wake-baked bus a post-mutation cursor
                     // goes back on. `None` in a harness without the
@@ -198,8 +201,12 @@ impl Mode for MagitStatusMode {
                 // Nothing is expanded on a fresh buffer, so the
                 // open-entry set is empty and the rebuilt bookkeeping
                 // it returns is too.
+                let context = actions::context_lines(
+                    &ctx.service::<std::sync::Arc<lattice_config::ConfigRegistry>>()
+                        .map(|outer| (*outer).clone()),
+                );
                 let (text, spans, header, _) = tokio::task::spawn_blocking(move || {
-                    refresh::build_and_format(&wd, &std::collections::HashSet::new())
+                    refresh::build_and_format(&wd, &std::collections::HashSet::new(), context)
                 })
                 .await
                 .expect("spawn_blocking");

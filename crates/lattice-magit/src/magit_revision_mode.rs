@@ -193,10 +193,14 @@ impl Mode for MagitRevisionMode {
             }
 
             let wd = workdir.clone();
+            let context = crate::actions::context_lines(
+                &ctx.service::<std::sync::Arc<lattice_config::ConfigRegistry>>()
+                    .map(|outer| (*outer).clone()),
+            );
             let sha_for_task = sha.clone();
             let (text, meta) = tokio::task::spawn_blocking(move || {
                 (
-                    run_show(&wd, &sha_for_task),
+                    run_show(&wd, &sha_for_task, context),
                     run_show_meta(&wd, &sha_for_task),
                 )
             })
@@ -241,12 +245,12 @@ fn run_show_meta(workdir: &std::path::Path, sha: &str) -> headerline::RevisionMe
     headerline::parse_revision_meta(&raw)
 }
 
-fn run_show(workdir: &std::path::Path, sha: &str) -> String {
+fn run_show(workdir: &std::path::Path, sha: &str, context: i64) -> String {
     if sha.is_empty() {
         return "No commit sha given.\n".to_string();
     }
     std::process::Command::new("git")
-        .args(["show", "--stat", "-p", sha])
+        .args(["show", "--stat", "-p", &format!("--unified={context}"), sha])
         .current_dir(workdir)
         .output()
         .ok()

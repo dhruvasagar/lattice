@@ -50,8 +50,9 @@ untracked or brand-new file is a common and legitimate case.
 - **The count, graph, and decoration are hardcoded** — `-50`,
   `--graph`, `--decorate`. `magit.log.count` and friends read like
   options but are **not registered**: `:set magit.log.count=100` fails
-  with `unknown option`. `lattice-magit` registers no options of its
-  own today. See [`magit`](help:magit#options).
+  with `unknown option`. Use `D` to change them for this view. See
+  [`magit`](help:magit#options) for the two magit options that *are*
+  registered.
 - **Log arguments aren't interactively configurable either.** There is
   no Log submenu inside `C-c g` — it's a flat menu, and `l` just opens
   this buffer.

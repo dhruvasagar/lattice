@@ -217,6 +217,15 @@ impl OptionGroup for Tabline {
     const DOC: &'static str = "Tabline (vim-style tab strip).";
 }
 
+/// Magit (git porcelain) options. MG.22b — the first options
+/// `lattice-magit` owns; before this it registered none at all, so
+/// every `magit.*` name a user tried failed with `unknown option`.
+pub struct Magit;
+impl OptionGroup for Magit {
+    const NAME: &'static str = "magit";
+    const DOC: &'static str = "Magit git porcelain buffers.";
+}
+
 /// Terminal-mode (PTY-backed shell buffer) options. Added with
 /// T2.b.0 (`terminal.esc-exits`); T2.b/T4 grow the group with
 /// `terminal.shell`, `terminal.scrollback-lines`, etc.

@@ -242,16 +242,30 @@ Everything else that earlier revisions of this page listed here
 `magit.status.show-untracked`, `magit.status.show-stashes`,
 `magit.status.recent-commits-count`, `magit.log.count`,
 `magit.log.graph`, `magit.log.decorate`, `magit.blame.author-width`,
-`magit.blame.date-format`, `magit.commit.show-diff`,
-`magit.diff.context-lines`) is **not currently a registered option** —
-`lattice-magit` doesn't register any options of its own, and none of
-these names appear in the typed-options registry. `:set` on any of them
-fails loudly with `unknown option` rather than silently accepting and
-ignoring the value. The behavior each name implies is often real
-(untracked files do show by default, the log does default to `-50`
-entries, blame dates are relative, …) but today it's hardcoded, not a
-live knob — treat this whole list as a roadmap for options that should
-exist, not ones that do.
+`magit.blame.date-format`, `magit.commit.show-diff`) is **not currently
+a registered option**. `:set` on any of them fails loudly with `unknown
+option` rather than silently accepting and ignoring the value. The
+behaviour each name implies is often real (untracked files do show by
+default, the log does default to `-50` entries, blame dates are
+relative, …) but today it's hardcoded — treat that list as a roadmap
+for options that should exist, not ones that do.
+
+**Two are real**, and they are the first magit registers:
+
+| Option | Default | What it does |
+|---|---|---|
+| `magit.hunk.context-lines` | `3` | Unchanged lines of context around each hunk in every patch magit generates — the status buffer's inline `=`, `:magit-diff`, and a commit's detail view. `D` overrides it for one view. |
+| `ui.diff.line-backgrounds` | `true` | Tint whole rows by what the diff did to them. `false` leaves foreground colouring only, for themes where a full-row wash fights the syntax colours underneath. |
+
+`ui.diff.line-backgrounds` is **not** under `magit.*` on purpose: the
+mechanism is shared by every diff-showing buffer in the editor, not
+just magit's, and naming it for one consumer would understate what it
+turns off. It sits beside `ui.diff.context` and `ui.diff.fold-unchanged`.
+
+Note `magit.hunk.context-lines` and `ui.diff.context` are different
+things: the first decides how much context git puts *into* a patch, the
+second how much an unchanged-region fold leaves visible inside a
+two-pane diff session.
 
 ---
 

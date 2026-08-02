@@ -20,6 +20,7 @@
 //! expiry. Rendering is NOTIF.1b/c (both peers, one patch); magit is
 //! the first consumer, NOTIF.1d.
 
+pub mod mode;
 pub mod options;
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -84,8 +85,29 @@ impl NotificationLevel {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct NotificationId(pub u64);
 
+/// Something a notification offers to do about itself.
+///
+/// §5.9.9 specifies buttons; there is no focusable widget here and one
+/// is not wanted — the corner stays a pure *signal*, and
+/// `:notifications` is where you act (see `notifications-mode`). So an
+/// action is a label plus the [`lattice_grammar::Effect`] `<CR>`
+/// applies there.
+///
+/// A typed effect rather than an action *name*: a name has to resolve
+/// at fire time and can fail then — silently, on a key the user pressed
+/// deliberately. There is nothing here to resolve.
+#[derive(Debug, Clone)]
+pub struct NotificationAction {
+    /// Shown under the notification in the buffer.
+    pub label: String,
+    pub effect: lattice_grammar::Effect,
+}
+
 /// One notification.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Not `PartialEq`: it carries an [`Effect`], which is not. Tests
+/// compare the fields they care about, which is sharper anyway.
+#[derive(Debug, Clone)]
 pub struct Notification {
     pub id: NotificationId,
     pub level: NotificationLevel,
@@ -96,6 +118,10 @@ pub struct Notification {
     /// is still running: it posts with no timeout and *replaces* itself
     /// on completion with one that has a timeout.
     pub timeout: Option<Duration>,
+    /// What `<CR>` on this row in `*notifications*` runs. The first is
+    /// the default; the corner shows none of them, because a corner
+    /// popup you have to aim at is worse than one you read.
+    pub actions: Vec<NotificationAction>,
 }
 
 /// The live notifications, newest last.
@@ -218,6 +244,7 @@ impl NotificationStore {
             level,
             text,
             timeout,
+            actions: Vec::new(),
         };
         if let Ok(mut v) = self.inner.lock() {
             v.push(notification);
@@ -295,6 +322,28 @@ impl NotificationStore {
                 let _ = bus.send(NotifyInbound::Expire(id));
             });
         }
+    }
+
+    /// Post with an action attached — what `<CR>` runs on that row in
+    /// `*notifications*`.
+    ///
+    /// The failure case is the one that needs it: a notification is one
+    /// line and git's stderr is not, so the notification says what
+    /// broke and the action goes to where the rest is.
+    pub fn post_with_action(
+        &self,
+        level: NotificationLevel,
+        text: impl Into<String>,
+        action: NotificationAction,
+    ) -> NotificationId {
+        let id = self.post(level, text);
+        if let Ok(mut v) = self.inner.lock() {
+            if let Some(slot) = v.iter_mut().find(|n| n.id == id) {
+                slot.actions.push(action);
+            }
+        }
+        self.version.fetch_add(1, Ordering::Release);
+        id
     }
 
     /// Replace `id`'s content **in place**, keeping its position in the
@@ -463,6 +512,56 @@ impl NotificationStore {
     }
 }
 
+/// NOTIF.1f: the `*notifications*` buffer's text, and the row→id map
+/// that goes with it.
+///
+/// **The corner is a signal; this buffer is where you act.** A
+/// notification is not focusable and never will be — aiming at a corner
+/// popup is worse than reading one — so `<CR>` on a row here is what
+/// runs an action, and everything-is-a-buffer means that needs no
+/// bespoke widget and no new global chord.
+///
+/// Returns the text and, parallel to its rows, which notification each
+/// line belongs to. The map is returned rather than re-parsed for the
+/// reason `magit-remote-mode` learned: re-reading the rendered line
+/// makes a heading decode as a record.
+pub fn render_buffer(store: &NotificationStore) -> (String, Vec<Option<NotificationId>>) {
+    let all = store.all();
+    if all.is_empty() {
+        return ("No notifications.\n".to_string(), vec![None]);
+    }
+    let visible = store.max_visible();
+    let mut out = String::new();
+    let mut rows: Vec<Option<NotificationId>> = Vec::new();
+    for (i, n) in all.iter().enumerate() {
+        // The marker is the level, not a bullet: scanning for the one
+        // that failed is the reason to open this buffer.
+        let marker = match n.level {
+            NotificationLevel::Info => "\u{2713}",
+            NotificationLevel::Warn => "!",
+            NotificationLevel::Error => "\u{2717}",
+        };
+        // Queued ones are shown, dimmed by a marker rather than hidden:
+        // "+N more" in the corner tells you they exist, and this is
+        // where you find out what they are.
+        let queued = if i >= visible { " (queued)" } else { "" };
+        out.push_str(&format!("  {marker} {}{queued}\n", n.text));
+        rows.push(Some(n.id));
+        for action in &n.actions {
+            out.push_str(&format!("      <CR>  {}\n", action.label));
+            // An action row belongs to its notification, so `<CR>`
+            // works whether the cursor is on the text or the action.
+            rows.push(Some(n.id));
+        }
+    }
+    (out, rows)
+}
+
+/// Which notification the cursor is on, from [`render_buffer`]'s map.
+pub fn notification_at(rows: &[Option<NotificationId>], line: u32) -> Option<NotificationId> {
+    rows.get(line as usize).copied().flatten()
+}
+
 /// Wire the subsystem: register the store as a service, and give it the
 /// inbound bus expiry rides on.
 ///
@@ -482,6 +581,28 @@ pub fn install(boot: &mut impl lattice_mode::SubsystemBoot) {
     if let Some(config) = boot.service::<Arc<lattice_config::ConfigRegistry>>() {
         store.set_config((*config).clone());
     }
+
+    boot.register_service::<mode::RowMapHandle>(Arc::new(mode::RowMap::default()));
+    boot.commands_mut().register_ex_command(
+        "notifications",
+        "Open the `*notifications*` buffer — live and queued notifications, \
+         where <CR> runs a notification's action and `d` dismisses it.",
+        lattice_grammar::ExCommandSpec {
+            latency_class: lattice_grammar::LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Arc::new(|_line: &str, _bang: bool| Ok(lattice_grammar::Args::None)),
+            apply: Arc::new(|_ctx| {
+                Ok(lattice_grammar::Effect::OpenSyntheticBuffer {
+                    name: mode::BUFFER_NAME.to_string(),
+                    mode_id: mode::NotificationsMode::mode_id().as_str().to_string(),
+                })
+            }),
+            args_schema: Vec::new(),
+            surface_form: lattice_grammar::SurfaceForm::Keyword,
+        },
+    );
+    let _ = boot.modes_mut().register(mode::NotificationsMode);
 
     let for_handler = store.clone();
     let bus = boot.inbound::<NotifyInbound, _>(move |item| {
@@ -882,6 +1003,103 @@ mod tests {
             s.visible().iter().any(|n| n.id == ids[3]),
             "the one that was queued is now shown"
         );
+    }
+
+    #[test]
+    fn an_empty_buffer_says_so_rather_than_rendering_nothing() {
+        let s = NotificationStore::new();
+        let (text, rows) = render_buffer(&s);
+        assert_eq!(text, "No notifications.\n");
+        assert!(notification_at(&rows, 0).is_none());
+    }
+
+    #[test]
+    fn every_row_including_an_action_row_maps_to_its_notification() {
+        let s = NotificationStore::new();
+        let a = s.post(NotificationLevel::Info, "fetch finished");
+        let b = s.post_with_action(
+            NotificationLevel::Error,
+            "push failed",
+            NotificationAction {
+                label: "show output".into(),
+                effect: lattice_grammar::Effect::OpenMessages,
+            },
+        );
+        let (text, rows) = render_buffer(&s);
+        let lines: Vec<&str> = text.lines().collect();
+
+        assert!(lines[0].contains("fetch finished"));
+        assert!(lines[1].contains("push failed"));
+        assert!(lines[2].contains("show output"), "the action is listed");
+
+        assert_eq!(notification_at(&rows, 0), Some(a));
+        assert_eq!(notification_at(&rows, 1), Some(b));
+        assert_eq!(
+            notification_at(&rows, 2),
+            Some(b),
+            "an action row belongs to its notification, so `<CR>` works \
+             from either line"
+        );
+    }
+
+    /// The corner says "+N more"; this is where you find out what they
+    /// are. Hiding them here would leave no surface that shows them at
+    /// all.
+    #[test]
+    fn queued_notifications_are_listed_and_marked() {
+        let s = NotificationStore::new();
+        for i in 0..5 {
+            s.post(NotificationLevel::Info, format!("n{i}"));
+        }
+        let (text, _) = render_buffer(&s);
+        assert_eq!(text.lines().count(), 5, "all of them, not just visible");
+        assert_eq!(
+            text.lines().filter(|l| l.contains("(queued)")).count(),
+            2,
+            "and the ones behind the limit say so"
+        );
+    }
+
+    #[test]
+    fn the_level_marker_is_what_you_scan_for() {
+        let s = NotificationStore::new();
+        s.post(NotificationLevel::Error, "boom");
+        let (text, _) = render_buffer(&s);
+        assert!(text.contains('\u{2717}'), "{text}");
+    }
+
+    /// NOTIF.1f: the action is a typed effect, not a name to resolve.
+    /// A name can fail to resolve at fire time — silently, on a key the
+    /// user pressed deliberately.
+    #[test]
+    fn a_notifications_action_is_carried_as_an_effect() {
+        let s = NotificationStore::new();
+        let id = s.post_with_action(
+            NotificationLevel::Error,
+            "push failed",
+            NotificationAction {
+                label: "show output".into(),
+                effect: lattice_grammar::Effect::OpenMessages,
+            },
+        );
+        let n = s.all().into_iter().find(|n| n.id == id).expect("posted");
+        assert_eq!(n.actions.len(), 1);
+        assert_eq!(n.actions[0].label, "show output");
+        assert!(matches!(
+            n.actions[0].effect,
+            lattice_grammar::Effect::OpenMessages
+        ));
+    }
+
+    /// Most notifications have nothing to do, and `<CR>` on one must
+    /// decline rather than complain — a key that errors in the common
+    /// case trains you to stop pressing it.
+    #[test]
+    fn a_notification_without_an_action_carries_none() {
+        let s = NotificationStore::new();
+        let id = s.post(NotificationLevel::Info, "fetch finished");
+        let n = s.all().into_iter().find(|n| n.id == id).expect("posted");
+        assert!(n.actions.is_empty());
     }
 
     /// NOTIF.1d's shape, end to end at the store: a remote op that

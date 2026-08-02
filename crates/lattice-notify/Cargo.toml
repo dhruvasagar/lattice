@@ -11,6 +11,9 @@ tokio = { workspace = true, features = ["time"] }
 tracing = { workspace = true }
 linkme = { workspace = true }
 lattice-config = { path = "../lattice-config" }
+lattice-core = { path = "../lattice-core" }
+lattice-runtime = { path = "../lattice-runtime" }
+lattice-protocol = { path = "../lattice-protocol" }
 lattice-grammar = { path = "../lattice-grammar" }
 lattice-mode = { path = "../lattice-mode" }
 

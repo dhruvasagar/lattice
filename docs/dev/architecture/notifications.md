@@ -1,8 +1,9 @@
 # Notifications — telling the user about work with no buffer
 
-> **Status: built.** NOTIF.1a (data layer), 1b/c (both renderers) and
-> 1d (magit's remote ops as first consumer) landed 2026-08-02; see the
-> slice plan. Actions, config and the `*messages*` tee remain.
+> **Status: built.** NOTIF.1a (data layer), 1b/c (both renderers), 1d
+> (magit's remote ops as first consumer), 1e (config + the `*messages*`
+> tee) and 1f (actions, via the `*notifications*` buffer) landed
+> 2026-08-02.
 > The original note is kept below because the *reasoning* is what this
 > fragment is for.
 >
@@ -123,10 +124,25 @@ This is a subsystem, not a slice:
 
 ## Open — resolved by NOTIF.1a
 
-- **Do notifications need actions in v1?** ⛔ **No.** Deferred as this
-  section proposed; the magit consumer needs none, and display +
-  expiry is enough to close the reported gap. `NotificationAction`
-  lands with a consumer that wants it.
+- **Do notifications need actions in v1?** ✅ **Yes, and the deferral
+  expired.** This section deferred them because "the magit consumer
+  needs none" — written before display and expiry existed. Once they
+  did, the consumer was obvious: a failed remote op truncates git's
+  stderr to one line, and "show me the rest" is exactly an action. What
+  actually remained was an interaction model, not effort.
+
+  **They are not buttons.** A corner popup you have to *aim at* is
+  worse than one you merely read, and making it focusable means a
+  bespoke widget plus a way to move focus in and out. So the corner
+  stays a pure signal and `:notifications` — an ordinary buffer with
+  ordinary chords — is where you act. It costs no new global key and
+  doubles as the queue view. `<CR>` works from a notification's row or
+  its action row; a notification with no action declines rather than
+  complaining, because most have none.
+
+  The action carries a typed `Effect`, not an action *name*: a name has
+  to resolve at fire time and can fail then — silently, on a key the
+  user pressed deliberately.
 - **What replaces the optimistic echo?** ✅ **Nothing — the echo
   stays.** It is the immediate feedback at *fire* time and costs
   nothing; the notification carries *completion*, which is the part

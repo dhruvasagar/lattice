@@ -1448,9 +1448,19 @@ pub fn spawn_remote_op(
                     // and git's full stderr is already in `*messages*`,
                     // which is the surface for detail.
                     let first = err.lines().next().unwrap_or("failed").to_string();
-                    n.post(
+                    // NOTIF.1f: the notification says WHAT broke; the
+                    // action goes to where the rest is. This is the
+                    // consumer that made deferring actions stop making
+                    // sense — a one-line failure whose detail is
+                    // elsewhere is exactly a notification with somewhere
+                    // to go.
+                    n.post_with_action(
                         lattice_notify::NotificationLevel::Error,
                         format!("{what} failed: {first}"),
+                        lattice_notify::NotificationAction {
+                            label: "show output in *messages*".to_string(),
+                            effect: Effect::OpenMessages,
+                        },
                     );
                 }
             }

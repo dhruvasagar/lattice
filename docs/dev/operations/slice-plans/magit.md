@@ -1319,6 +1319,8 @@ the buffer you are already in is the actual no-op. See MG.23h's note.
 | NOTIF.1a | Notification data layer — store + expiry via the inbound primitive | — | ✅ |
 | NOTIF.1b/c | Corner-anchored rendering, both peers, one patch | NOTIF.1a | ✅ |
 | NOTIF.1d | magit's remote ops as the first consumer | NOTIF.1b/c | ✅ |
+| NOTIF.1e | Config (`notifications.*`) + the `*messages*` tee | NOTIF.1a | ✅ |
+| NOTIF.1f | Actions, via the `*notifications*` buffer | NOTIF.1e | ✅ |
 | MG.23i+ | The new subsystems, one slice each, prioritised by daily use — the same set MG.21 still names | — | 📝 |
 
 #### MG.23a — the file target seam + `:magit-other-file-dispatch` ✅ (2026-07-30)

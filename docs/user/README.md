@@ -58,6 +58,8 @@ same surface).
 | Narrow mode                | [`narrow-mode`](help:narrow-mode)        | ✅      |
 | Diff & merge               | [`diff-mode`](help:diff-mode)            | ✅      |
 |   — conflict resolution    | [`diff-conflict-mode`](help:diff-conflict-mode) | ✅      |
+| Notifications              | [`notifications`](help:notifications)    | ✅      |
+| Notifications buffer       | [`notifications-mode`](help:notifications-mode) | ✅      |
 | Magit                      | [`magit`](help:magit)                    | ✅      |
 | Magit status buffer        | [`magit-status-mode`](help:magit-status-mode) | ✅      |
 | magit — commit buffer      | [`magit-commit-mode`](help:magit-commit-mode) | ✅      |

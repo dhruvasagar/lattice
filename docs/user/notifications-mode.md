@@ -15,9 +15,10 @@ Every notification, live and queued. `:notifications`.
   ✓ pull finished (queued)
 ```
 
-The corner popup is a **signal** — it tells you something happened. This
-buffer is where you **act** on it, and where you find the ones the
-corner said were queued.
+The corner popup is a **signal** — it tells you something happened.
+This buffer is where you find the ones the corner counted as `+N more`,
+dismiss the ones you are done with, and act on any that offer an
+action.
 
 ## Chords
 
@@ -47,10 +48,18 @@ global key and it doubles as the queue view.
 
 ## What posts an action today
 
-A failed git remote operation. The notification is one line and git's
-stderr is not, so it says *what* broke and the action goes to where the
-rest is — [`*messages*`](help:messages-mode), which receives every
-notification anyway.
+**Nothing.** The mechanism exists; no notification currently carries an
+action.
+
+The first one tried was "show output in `*messages*`" on a failed git
+operation — and it was removed, because the output is in `*messages*`
+*unconditionally* already. The row bought a keystroke over `:messages`
+and nothing else, and by that standard every notification would carry
+"go look at the thing".
+
+An action earns its place when it does something you could not
+otherwise do from where you are. Navigating to a buffer that already
+has the information is not that.
 
 ## See also
 

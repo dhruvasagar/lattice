@@ -7,14 +7,14 @@
 - [X] Narrow mode
 - [ ] digraphs & emoji's with picker
 - [X] Theme System (also with a theme picker with preview)
-- [ ] Quickfix / Location lists
+- [-] Quickfix / Location lists
 - [ ] :! shell execution
 - [ ] ! filter operator
 - [ ] :.! shell execution and replace range
 - [X] enhanced mini-buffer
 - [X] enhanced, configurable mode-line
 - [X] language support
-- [ ] transient like menu
+- [X] transient like menu
 - [X] compilation-mode
 - [X] surround operator
 - [X] argument operator

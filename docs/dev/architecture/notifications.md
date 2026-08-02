@@ -143,6 +143,25 @@ This is a subsystem, not a slice:
   The action carries a typed `Effect`, not an action *name*: a name has
   to resolve at fire time and can fail then — silently, on a key the
   user pressed deliberately.
+
+  **Correction, same day.** The consumer that justified un-deferring
+  this — "show output in `*messages*`" on a failed remote op — did not
+  survive review, and was removed. The output is in `*messages*`
+  unconditionally (NOTIF.1e tees every notification, and magit's
+  failure arm logs git's full stderr besides), so the row bought a
+  keystroke over `:messages` and nothing else. By that standard every
+  notification would carry "go look at the thing".
+
+  So **actions currently have no consumer.** The mechanism is a field
+  and one handler, and stays because the `*notifications*` buffer earns
+  its keep independently — it is the queue view the corner's `+N more`
+  refers to, and the place to dismiss. But the deferral criterion the
+  section originally set ("lands with a consumer that wants it") turned
+  out to be the right one, and it was overridden on a bad example.
+
+  An action earns its place when it does something the user could not
+  otherwise do from where they are. Navigating to a buffer that already
+  holds the information is not that.
 - **What replaces the optimistic echo?** ✅ **Nothing — the echo
   stays.** It is the immediate feedback at *fire* time and costs
   nothing; the notification carries *completion*, which is the part

@@ -595,7 +595,7 @@ fn visit_status_line(s: &Arc<Mutex<StatusBufferState>>, line: u32) -> Option<Eff
     };
     match sl {
         StatusLine::File { path, staged: true } => Some(Effect::OpenSyntheticBuffer {
-            name: format!("*magit:file:staged:{}*", path.display()),
+            name: crate::magit_file_revision_mode::blob_buffer_name("staged", &path),
             mode_id: "magit-file-revision-mode".to_string(),
         }),
         StatusLine::File {

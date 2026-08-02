@@ -41,6 +41,7 @@ no hidden state.
 | `:magit-diff` | Open a read-only `git diff HEAD` view with file-level stage/unstage |
 | `:magit-log` | Open the commit history log |
 | `:magit-blame` | Toggle [blame annotations](help:magit-blame-mode) on the current file |
+| `:magit-find-file <rev> <path>` | Open a file [as it was at a revision](help:magit-file-revision-mode) |
 | `:magit-stash-list` | Open the stash list |
 | `:magit-branch` | Open the branch list |
 | `:magit-remote` | Open the [remote list](help:magit-remote-mode) — add / rename / remove / set-url / prune |

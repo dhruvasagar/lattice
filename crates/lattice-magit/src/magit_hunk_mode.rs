@@ -261,7 +261,7 @@ pub(crate) fn side_by_side_effects(
     use lattice_grammar::Effect;
     Effect::Many(vec![
         Effect::OpenSyntheticBuffer {
-            name: format!("*magit:file:{git_ref}:{}*", path.display()),
+            name: crate::magit_file_revision_mode::blob_buffer_name(&git_ref, path),
             mode_id: crate::magit_file_revision_mode::MagitFileRevisionMode::mode_id().to_string(),
         },
         Effect::Diffsplit {

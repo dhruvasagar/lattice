@@ -5,6 +5,15 @@ related: [magit, magit-file-revision]
 
 # magit-file-revision-mode
 
+## Getting here
+
+| How | What |
+|---|---|
+| `C-c f` then `v` | The file you are visiting, at a revision you type |
+| `:magit-find-file <rev> <path>` | Any file, at any revision |
+| `<CR>` on a file in a diff / revision view | That file at that view's revision |
+| `gj` / `gk` once here | Walk to the next / previous revision of it |
+
 One file, as it was at one fixed point: `*magit:file:<ref>:<path>*`,
 read-only.
 

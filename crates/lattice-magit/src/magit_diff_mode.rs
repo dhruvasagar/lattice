@@ -523,7 +523,7 @@ impl MagitView for DiffView {
         let g = self.0.lock().ok()?;
         match g.scope {
             DiffScope::Staged => Some(Effect::OpenSyntheticBuffer {
-                name: format!("*magit:file:staged:{}*", path.display()),
+                name: crate::magit_file_revision_mode::blob_buffer_name("staged", path),
                 mode_id: "magit-file-revision-mode".to_string(),
             }),
             DiffScope::Head | DiffScope::Unstaged => {

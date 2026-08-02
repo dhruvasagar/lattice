@@ -115,7 +115,7 @@ fn blob_step_handlers() -> Vec<lattice_mode::ActionHandlerContribution> {
         let revisions = file_revisions(&workdir, &path);
         match blob_step(&revisions, &git_ref, step) {
             Some(next) => Some(Effect::OpenSyntheticBuffer {
-                name: format!("*magit:file:{next}:{}*", path.display()),
+                name: blob_buffer_name(&next, &path),
                 mode_id: MagitFileRevisionMode::mode_id().to_string(),
             }),
             // Saying which end you are at beats a key that appears
@@ -247,6 +247,22 @@ impl Mode for MagitFileRevisionMode {
     }
 }
 
+/// `(ref, path)` → `"*magit:file:<ref>:<path>*"`.
+///
+/// **One producer, one parser.** Nine sites used to build this string
+/// by hand while [`parse_buffer_name`] read it, and the pairing is
+/// load-bearing in a way that fails silently: MG.26b's reverse blame
+/// leaves a request keyed by this exact name for `on_activate` to
+/// consume, so a single formatting difference means the request is
+/// never found and the buffer forward-blames instead — the wrong
+/// answer, with no error. MG.15 lost every stash chord to the same
+/// producer/parser split.
+///
+/// `git_ref` is a commit-ish, the literal `staged`, or a `stash@{N}`.
+pub(crate) fn blob_buffer_name(git_ref: &str, path: &std::path::Path) -> String {
+    format!("*magit:file:{git_ref}:{}*", path.display())
+}
+
 /// `"*magit:file:<ref>:<path>*"` → `(ref, path)`. `ref` never
 /// contains `:` (it's a sha/branch name or the literal `staged`
 /// token), so the FIRST `:` in the stripped name is the ref/path
@@ -280,6 +296,46 @@ fn run_show_file(workdir: &Path, git_ref: &str, path: &Path) -> String {
         .filter(|o| o.status.success())
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .unwrap_or_else(|| format!("Could not show {spec}\n"))
+}
+
+#[cfg(test)]
+mod blob_name {
+    use super::*;
+
+    /// Producer and parser are one pair, and every caller uses the
+    /// producer.
+    ///
+    /// The failure this prevents is silent: MG.26b's reverse blame
+    /// leaves a request keyed by this exact string for `on_activate` to
+    /// consume, so one formatting difference means the request is never
+    /// found and the buffer forward-blames instead — the wrong answer
+    /// with no error. Nine sites used to build it by hand.
+    #[test]
+    fn every_ref_form_round_trips_through_the_parser() {
+        for (git_ref, path) in [
+            ("a1b2c3d", "src/main.rs"),
+            ("staged", "src/main.rs"),
+            ("stash@{2}", "src/main.rs"),
+            ("HEAD", "a.txt"),
+            ("feature/branch-name", "deep/nested/path.rs"),
+        ] {
+            let name = blob_buffer_name(git_ref, std::path::Path::new(path));
+            let (back_ref, back_path) =
+                parse_buffer_name(&name).unwrap_or_else(|| panic!("`{name}` must parse back"));
+            assert_eq!(back_ref, git_ref, "ref lost in {name}");
+            assert_eq!(back_path, std::path::Path::new(path), "path lost in {name}");
+        }
+    }
+
+    /// A path containing `:` is rare but legal on POSIX, and the parser
+    /// splits on the FIRST colon precisely so it survives.
+    #[test]
+    fn a_path_containing_a_colon_survives_the_round_trip() {
+        let name = blob_buffer_name("HEAD", std::path::Path::new("weird:name.rs"));
+        let (r, p) = parse_buffer_name(&name).expect("parses");
+        assert_eq!(r, "HEAD");
+        assert_eq!(p, std::path::Path::new("weird:name.rs"));
+    }
 }
 
 #[cfg(test)]

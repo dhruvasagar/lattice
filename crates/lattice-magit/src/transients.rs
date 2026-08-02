@@ -851,6 +851,8 @@ pub struct FileDispatchActionIds {
     /// menu — that menu names a target by *path*, and reverse blame
     /// needs a revision the path cannot carry.
     pub blame_reverse: Option<CommandId>,
+    /// MG.28: `v` — this file at a revision you name.
+    pub at_revision: Option<CommandId>,
     /// MG.23d: the file operations.
     pub untrack: Option<CommandId>,
     pub delete: Option<CommandId>,
@@ -1079,6 +1081,14 @@ pub fn file_dispatch_transient(ids: &FileDispatchActionIds) -> TransientSpec {
                     // handler says so rather than the row hiding, since
                     // there is no per-context menu content yet
                     // (MG.23h).
+                    // MG.28: magit's own key for this.
+                    action_or_placeholder(
+                        ids.at_revision,
+                        "v",
+                        "view at revision",
+                        "Open this file as it was at a revision you name",
+                        "file_at_revision",
+                    ),
                     action_or_placeholder(
                         ids.blame_reverse,
                         "f",

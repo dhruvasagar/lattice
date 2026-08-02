@@ -105,7 +105,10 @@ impl crate::buffer_state::MagitView for StashShowView {
     fn diff_target(&self, path: &std::path::Path) -> Option<Effect> {
         let idx = self.0.lock().ok()?.index?;
         Some(Effect::OpenSyntheticBuffer {
-            name: format!("*magit:file:stash@{{{idx}}}:{}*", path.display()),
+            name: crate::magit_file_revision_mode::blob_buffer_name(
+                &format!("stash@{{{idx}}}"),
+                path,
+            ),
             mode_id: "magit-file-revision-mode".to_string(),
         })
     }

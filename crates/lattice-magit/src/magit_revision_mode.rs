@@ -87,7 +87,7 @@ impl crate::buffer_state::MagitView for RevisionView {
     fn diff_target(&self, path: &std::path::Path) -> Option<Effect> {
         let sha = self.0.lock().ok()?.sha.clone();
         (!sha.is_empty()).then(|| Effect::OpenSyntheticBuffer {
-            name: format!("*magit:file:{sha}:{}*", path.display()),
+            name: crate::magit_file_revision_mode::blob_buffer_name(&sha, path),
             mode_id: "magit-file-revision-mode".to_string(),
         })
     }

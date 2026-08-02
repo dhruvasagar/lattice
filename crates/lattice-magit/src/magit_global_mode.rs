@@ -667,6 +667,58 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         }),
     });
 
+    // MG.28: `v` — this file at a revision you name.
+    //
+    // The gap it fills: `magit-file-revision-mode` has existed since
+    // MG.11, but the only ways in were `<CR>` on a file inside a
+    // revision/diff view and `gj`/`gk` to walk from there. There was no
+    // way to say "this file, at that revision" directly.
+    //
+    // Magit prompts for a revision AND a file. Here only the revision
+    // is asked, because `C-c f` already means "the file I am visiting"
+    // (MG.23a) — asking for something the menu already knows is the
+    // deviation magit's own file-dispatch makes for the same reason.
+    // `:magit-find-file <rev> [<path>]` is the explicit form.
+    contributions.push(ActionHandlerContribution {
+        action_name: "action:magit-global-file-at-revision",
+        handler: Arc::new(|ctx: &ActionContext<'_>| {
+            let (_workdir, rel) = active_target(ctx)?;
+            let path = rel.to_string_lossy().into_owned();
+            Some(Effect::OpenPrompt {
+                prompt: format!("Show {path} at revision: "),
+                // `HEAD` is the one revision you can name without
+                // looking anything up, and "what did this look like
+                // before my edits" is the common ask.
+                initial: "HEAD".to_string(),
+                on_submit_action: "action:magit-global-file-at-revision-finish".to_string(),
+                buffer_name: Some(format!("*magit:show-at:{path}*")),
+            })
+        }),
+    });
+    contributions.push(ActionHandlerContribution {
+        action_name: "action:magit-global-file-at-revision-finish",
+        handler: Arc::new(|ctx: &ActionContext<'_>| {
+            let rev = ctx.prompt_value?.trim().to_string();
+            let buffer_id = lattice_core::BufferId(ctx.buffer_id.0 as u32);
+            let path = ctx
+                .services
+                .get::<BufferStoreHandle>()?
+                .name_for(buffer_id)
+                .and_then(|n| path_from_prompt_buffer_name(&n, "*magit:show-at:"))?;
+            if rev.is_empty() {
+                return None;
+            }
+            Some(Effect::OpenSyntheticBuffer {
+                name: crate::magit_file_revision_mode::blob_buffer_name(
+                    &rev,
+                    std::path::Path::new(&path),
+                ),
+                mode_id: crate::magit_file_revision_mode::MagitFileRevisionMode::mode_id()
+                    .to_string(),
+            })
+        }),
+    });
+
     // MG.23f2: reverse blame — "when did each of these lines go away",
     // the one blame variant magit has that we had no answer for.
     //
@@ -704,7 +756,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                 // they are left as a request keyed by the buffer's
                 // name and consumed by `on_activate`.
                 Some((git_ref, path)) => {
-                    let name = format!("*magit:file:{git_ref}:{}*", path.display());
+                    let name = crate::magit_file_revision_mode::blob_buffer_name(&git_ref, &path);
                     if let Some(requests) = ctx
                         .services
                         .get::<crate::magit_blame_mode::BlameRequestsHandle>()

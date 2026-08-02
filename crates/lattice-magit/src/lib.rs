@@ -502,6 +502,19 @@ const FILE_TARGET_ACTIONS: &[(&str, &str)] = &[
     ),
 ];
 
+/// MG.28: what `:magit-find-file` says when it is not given both
+/// halves. Both are required — there is no defensible default file,
+/// and a default revision would silently show you HEAD when you asked
+/// for something else.
+fn find_file_usage() -> Effect {
+    Effect::Echo {
+        level: lattice_grammar::EchoLevel::Error,
+        text: "magit: usage — :magit-find-file <rev> <path> \
+               (or `C-c f v` for the file you are visiting)"
+            .to_string(),
+    }
+}
+
 /// MG.23f2: what `:magit-blame-reverse` says when it is not given both
 /// halves. An error rather than a best guess — see the registration for
 /// why there is no defensible default revision.
@@ -523,6 +536,7 @@ fn resolve_file_dispatch_ids(registry: &CommandRegistry) -> transients::FileDisp
         log: registry.id_by_name("action:magit-global-file-log"),
         blame: registry.id_by_name("action:magit-global-file-blame"),
         blame_reverse: registry.id_by_name("action:magit-global-file-blame-reverse"),
+        at_revision: registry.id_by_name("action:magit-global-file-at-revision"),
         untrack: registry.id_by_name("action:magit-global-file-untrack"),
         delete: registry.id_by_name("action:magit-global-file-delete"),
         rename: registry.id_by_name("action:magit-global-file-rename"),
@@ -939,6 +953,44 @@ fn register_ex_commands(
         // what reverse blame cannot have. `HEAD` would make the range
         // `HEAD..HEAD`, i.e. empty, and report every line as still
         // present: a plausible-looking answer that says nothing.
+        // MG.28: the explicit form of `C-c f v` — a file you are not
+        // visiting. `<rev>` alone shows the file you ARE visiting,
+        // which is what the chord does.
+        registry.register_ex_command(
+            "magit-find-file",
+            "Open a file as it was at a revision: `<rev> <path>`.",
+            ExCommandSpec {
+                latency_class: LatencyClass::Reflex,
+                accepts_bang: false,
+                accepts_range: false,
+                parse_args: Arc::new(|line: &str, _bang: bool| {
+                    Ok(Args::String(line.trim().to_string()))
+                }),
+                apply: Arc::new(|ctx| {
+                    let Args::String(ref spec) = ctx.args else {
+                        return Ok(find_file_usage());
+                    };
+                    match spec.split_once(char::is_whitespace) {
+                        Some((rev, path)) if !rev.is_empty() && !path.trim().is_empty() => {
+                            Ok(Effect::OpenSyntheticBuffer {
+                                name: magit_file_revision_mode::blob_buffer_name(
+                                    rev,
+                                    std::path::Path::new(path.trim()),
+                                ),
+                                mode_id: "magit-file-revision-mode".to_string(),
+                            })
+                        }
+                        _ => Ok(find_file_usage()),
+                    }
+                }),
+                args_schema: vec![ArgSpec::required(
+                    "spec",
+                    lattice_grammar::ArgKind::String,
+                    "<rev> <path> — the revision, and the file to show at it",
+                )],
+                surface_form: SurfaceForm::Keyword,
+            },
+        );
         registry.register_ex_command(
             "magit-blame-reverse",
             "Reverse-blame a file: for each line as of <rev>, the last commit it existed in. \
@@ -964,7 +1016,10 @@ fn register_ex_commands(
                         };
                         match spec.split_once(char::is_whitespace) {
                             Some((rev, path)) if !rev.is_empty() && !path.trim().is_empty() => {
-                                let name = format!("*magit:file:{rev}:{}*", path.trim());
+                                let name = magit_file_revision_mode::blob_buffer_name(
+                                    rev,
+                                    std::path::Path::new(path.trim()),
+                                );
                                 requests.put(
                                     name.clone(),
                                     magit_blame_mode::BlameDirection::Reverse,
@@ -1556,6 +1611,17 @@ fn register_action_commands(registry: &mut CommandRegistry) {
     reg(
         "action:magit-global-file-log",
         "Show commit history for the file in the current buffer",
+    );
+    // MG.28: `v` on the file dispatch — the direct way into
+    // `magit-file-revision-mode`, which until now was reachable only by
+    // `<CR>` inside a revision view and `gj`/`gk` from there.
+    reg(
+        "action:magit-global-file-at-revision",
+        "Open the current file as it was at a revision you name",
+    );
+    reg(
+        "action:magit-global-file-at-revision-finish",
+        "Open the file once the revision is known",
     );
     reg(
         "action:magit-global-file-blame",
@@ -2163,6 +2229,45 @@ mod tests {
              this entry never matches"
         );
         assert_eq!(MagitBlameMode.kind(), lattice_mode::ModeKind::Minor);
+    }
+
+    /// MG.28: `v` on the file dispatch, and `:magit-find-file`, are the
+    /// direct ways into `magit-file-revision-mode`.
+    ///
+    /// The mode has existed since MG.11 with no direct entry point —
+    /// reachable only by `<CR>` inside a revision view and `gj`/`gk`
+    /// from there — so "show me this file at that revision" had no
+    /// answer. Both must resolve, or the row is inert and the command
+    /// is missing.
+    #[test]
+    fn a_file_at_a_revision_is_reachable_directly() {
+        use lattice_picker::TransientItemKind;
+
+        let mut actions = CommandRegistry::new();
+        register_action_commands(&mut actions);
+        let ids = resolve_file_dispatch_ids(&actions);
+        let row = transients::file_dispatch_transient(&ids)
+            .groups
+            .iter()
+            .flat_map(|g| &g.items)
+            .find(|i| i.key.iter().any(|k| k == "v"))
+            .cloned()
+            .expect("`C-c f v` must exist");
+        assert!(
+            matches!(row.kind, TransientItemKind::Action(_)),
+            "`v` resolved to {:?}, not a real action",
+            row.label
+        );
+
+        let mut ex = CommandRegistry::new();
+        register_ex_commands(&mut ex, Default::default(), None);
+        let id = ex
+            .id_by_name("magit-find-file")
+            .expect("`:magit-find-file` must exist");
+        assert!(
+            ex.ex_command_spec(id).is_some(),
+            "`:magit-find-file` must be an EX command"
+        );
     }
 
     /// MG.21i: `o` opens the submodule list, in every context.
@@ -3310,7 +3415,7 @@ mod tests {
         );
         assert_eq!(
             file.len(),
-            11,
+            12,
             "expected every file-dispatch leaf to report inert, got: {file:?}"
         );
         // Root dispatch: 18 ACTION leaves — status, diff, log,

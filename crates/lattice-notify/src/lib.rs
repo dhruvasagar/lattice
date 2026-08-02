@@ -103,6 +103,11 @@ pub struct NotificationStore {
     /// notification but never fires — which is what a headless store
     /// should do rather than silently spawning tasks nobody drains.
     expiry: Mutex<Option<ExpiryChannel>>,
+    /// Notifications whose clock is already running. Keeps
+    /// [`Self::arm_visible`] idempotent — it runs after every mutation,
+    /// and without this a busy store would spawn a fresh sleep per
+    /// mutation per notification.
+    armed: Mutex<std::collections::HashSet<NotificationId>>,
 }
 
 /// The wake-baked sender + the runtime that sleeps on it.
@@ -128,6 +133,10 @@ pub enum NotifyInbound {
 }
 
 pub type NotificationStoreHandle = Arc<NotificationStore>;
+
+/// How many notifications a corner shows at once (§5.9.9's default).
+/// The rest queue; [`NotificationStore::queued`] reports how many.
+pub const MAX_VISIBLE: usize = 3;
 
 impl NotificationStore {
     pub fn new() -> Self {
@@ -158,31 +167,65 @@ impl NotificationStore {
             v.push(notification);
         }
         self.version.fetch_add(1, Ordering::Release);
-        self.schedule_expiry(id, timeout);
+        self.arm_visible();
         id
     }
 
-    /// Sleep for `timeout`, then ask the editor to drop `id`.
+    /// Start the clock on every **visible** notification that has a
+    /// timeout and is not already counting down.
     ///
-    /// The sleep is a detached task, never a blocking wait: expiry must
-    /// not hold the actor thread, and there may be several notifications
-    /// counting down at once. A store with no channel (a test, a
-    /// headless harness) simply does not schedule — better than
-    /// spawning tasks whose sends nobody drains.
-    fn schedule_expiry(&self, id: NotificationId, timeout: Option<Duration>) {
-        let Some(timeout) = timeout else { return };
+    /// **A queued notification's clock does not start until it becomes
+    /// visible**, and that is a correctness requirement rather than a
+    /// refinement: without it, an early notification in a burst runs
+    /// out its timeout while sitting behind [`MAX_VISIBLE`] and is
+    /// dismissed having never been seen. A notification nobody saw is
+    /// the bug this subsystem exists to remove, reached from the other
+    /// end.
+    ///
+    /// Called after every mutation, so a removal promotes the next one
+    /// and arms it in the same step.
+    ///
+    /// `armed` is what keeps this idempotent — it runs on every
+    /// mutation, and without it a busy store would spawn a fresh sleep
+    /// per mutation per notification.
+    ///
+    /// A store with no channel (a test, a headless harness) schedules
+    /// nothing, which beats spawning tasks whose sends nobody drains.
+    fn arm_visible(&self) {
+        let to_arm: Vec<(NotificationId, Duration)> = {
+            let Ok(v) = self.inner.lock() else {
+                return;
+            };
+            let Ok(mut armed) = self.armed.lock() else {
+                return;
+            };
+            // Forget what is gone, or `armed` grows for the session.
+            armed.retain(|id| v.iter().any(|n| n.id == *id));
+            v.iter()
+                .take(MAX_VISIBLE)
+                .filter_map(|n| n.timeout.map(|t| (n.id, t)))
+                .filter(|(id, _)| armed.insert(*id))
+                .collect()
+        };
+        if to_arm.is_empty() {
+            return;
+        }
         let Ok(guard) = self.expiry.lock() else {
             return;
         };
         let Some(channel) = guard.as_ref() else {
             return;
         };
-        let bus = channel.bus.clone();
-        channel.runtime.spawn(async move {
-            tokio::time::sleep(timeout).await;
-            // A closed bus means the editor is gone; nothing to wake.
-            let _ = bus.send(NotifyInbound::Expire(id));
-        });
+        for (id, timeout) in to_arm {
+            let bus = channel.bus.clone();
+            // Detached, never a blocking wait: expiry must not hold the
+            // actor thread, and several may count down at once.
+            channel.runtime.spawn(async move {
+                tokio::time::sleep(timeout).await;
+                // A closed bus means the editor is gone; nothing to wake.
+                let _ = bus.send(NotifyInbound::Expire(id));
+            });
+        }
     }
 
     /// Replace `id`'s content **in place**, keeping its position in the
@@ -220,8 +263,12 @@ impl NotificationStore {
         // and replaced by one that has a timeout ("fetched") must
         // actually expire. Without this it would stay up forever, which
         // is the failure the no-timeout state exists to avoid in the
-        // other direction.
-        self.schedule_expiry(id, timeout);
+        // other direction. The `armed` entry is cleared first, or the
+        // idempotence check would refuse the new clock.
+        if let Ok(mut armed) = self.armed.lock() {
+            armed.remove(&id);
+        }
+        self.arm_visible();
         true
     }
 
@@ -260,6 +307,9 @@ impl NotificationStore {
         drop(v);
         if removed {
             self.version.fetch_add(1, Ordering::Release);
+            // A removal frees a slot — promote whatever was queued and
+            // start its clock in the same step.
+            self.arm_visible();
         }
         removed
     }
@@ -274,13 +324,50 @@ impl NotificationStore {
         drop(v);
         if n > 0 {
             self.version.fetch_add(1, Ordering::Release);
+            // Nothing left to promote, but `armed` must be cleared or
+            // it would hold ids that no longer exist.
+            self.arm_visible();
         }
         n
     }
 
-    /// The live notifications, oldest first.
-    pub fn visible(&self) -> Vec<Notification> {
+    /// Every live notification, oldest first — including ones queued
+    /// behind [`MAX_VISIBLE`].
+    ///
+    /// Renderers want [`Self::visible`]; this is for tests and for
+    /// `:notifications`, which should show what is waiting.
+    pub fn all(&self) -> Vec<Notification> {
         self.inner.lock().map(|v| v.clone()).unwrap_or_default()
+    }
+
+    /// The notifications a renderer should paint, **oldest first**, at
+    /// most [`MAX_VISIBLE`] of them.
+    ///
+    /// §5.9.9: "excess queued". The ones shown are the **oldest**, and
+    /// that ordering is a correctness requirement rather than a
+    /// preference. Showing the newest instead — which this did on its
+    /// first pass — means an early notification in a burst can run out
+    /// its timeout while invisible and be dismissed having never been
+    /// seen. A notification nobody saw is the bug this subsystem
+    /// exists to remove, arrived at from the other end.
+    ///
+    /// Its companion guarantee is in [`Self::schedule_expiry`]: a
+    /// queued notification's clock does not start until it becomes
+    /// visible.
+    pub fn visible(&self) -> Vec<Notification> {
+        let Ok(v) = self.inner.lock() else {
+            return Vec::new();
+        };
+        v.iter().take(MAX_VISIBLE).cloned().collect()
+    }
+
+    /// How many are waiting behind the visible ones. A renderer shows
+    /// this as a "+N more" line rather than dropping them silently.
+    pub fn queued(&self) -> usize {
+        self.inner
+            .lock()
+            .map(|v| v.len().saturating_sub(MAX_VISIBLE))
+            .unwrap_or(0)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -580,6 +667,77 @@ mod tests {
         );
     }
 
+    /// The property the first version of this got wrong: a queued
+    /// notification must NOT run its clock while invisible, or it is
+    /// dismissed having never been seen — the very bug the subsystem
+    /// removes, arrived at from the other end.
+    #[tokio::test(start_paused = true)]
+    async fn a_queued_notification_does_not_expire_before_it_is_seen() {
+        let store: NotificationStoreHandle = Arc::new(NotificationStore::new());
+        let (bus, mut rx) = lattice_mode::inbound::make_inbound_raw::<NotifyInbound>(Arc::new(
+            tokio::sync::Notify::new(),
+        ));
+        store.set_expiry_channel(bus, tokio::runtime::Handle::current());
+
+        // Four at once: three visible, the fourth queued.
+        let ids: Vec<_> = (0..4)
+            .map(|i| store.post(NotificationLevel::Info, format!("n{i}")))
+            .collect();
+        assert_eq!(store.queued(), 1);
+
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(5)).await;
+        // Let the woken sleeps actually send before draining.
+        tokio::task::yield_now().await;
+
+        // Exactly the three that were VISIBLE expire. The queued one's
+        // clock never started.
+        let mut expired = Vec::new();
+        while let Ok(NotifyInbound::Expire(id)) = rx.try_recv() {
+            expired.push(id);
+        }
+        expired.sort();
+        assert_eq!(
+            expired,
+            ids[..MAX_VISIBLE].to_vec(),
+            "only the visible ones expired: {expired:?}"
+        );
+        assert!(
+            !expired.contains(&ids[3]),
+            "the queued notification must not expire unseen"
+        );
+    }
+
+    /// …and once promoted, it starts counting.
+    #[tokio::test(start_paused = true)]
+    async fn a_promoted_notification_starts_its_clock() {
+        let store: NotificationStoreHandle = Arc::new(NotificationStore::new());
+        let (bus, mut rx) = lattice_mode::inbound::make_inbound_raw::<NotifyInbound>(Arc::new(
+            tokio::sync::Notify::new(),
+        ));
+        store.set_expiry_channel(bus, tokio::runtime::Handle::current());
+
+        let ids: Vec<_> = (0..4)
+            .map(|i| store.post(NotificationLevel::Info, format!("n{i}")))
+            .collect();
+        // Free a slot, which promotes the fourth.
+        store.dismiss(ids[0]);
+        assert!(store.visible().iter().any(|n| n.id == ids[3]));
+
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(5)).await;
+        tokio::task::yield_now().await;
+
+        let mut expired = Vec::new();
+        while let Ok(NotifyInbound::Expire(id)) = rx.try_recv() {
+            expired.push(id);
+        }
+        assert!(
+            expired.contains(&ids[3]),
+            "the promoted notification must now expire: {expired:?}"
+        );
+    }
+
     /// A store with no channel — a test fixture, a headless harness —
     /// records the timeout but schedules nothing. Better than spawning
     /// tasks whose sends nobody drains.
@@ -592,6 +750,61 @@ mod tests {
             Some(NotificationLevel::Info.default_timeout())
         );
         assert!(s.visible().iter().any(|n| n.id == id));
+    }
+
+    /// §5.9.9: at most three show, the rest queue. The three kept are
+    /// the NEWEST — a burst of five must not leave you reading the
+    /// first three while the two that matter wait behind them.
+    #[test]
+    fn a_burst_shows_the_newest_and_queues_the_rest() {
+        let s = NotificationStore::new();
+        let ids: Vec<_> = (0..5)
+            .map(|i| s.post(NotificationLevel::Info, format!("n{i}")))
+            .collect();
+
+        let shown = s.visible();
+        assert_eq!(shown.len(), MAX_VISIBLE);
+        assert_eq!(
+            shown.iter().map(|n| n.id).collect::<Vec<_>>(),
+            ids[..MAX_VISIBLE].to_vec(),
+            "the OLDEST three — showing the newest instead lets an early \
+             notification expire while invisible, which is the bug this \
+             subsystem exists to remove, from the other end"
+        );
+        assert_eq!(s.queued(), 2);
+        assert_eq!(s.all().len(), 5, "the queued ones are still live");
+    }
+
+    #[test]
+    fn nothing_queues_below_the_limit() {
+        let s = NotificationStore::new();
+        s.post(NotificationLevel::Info, "a");
+        s.post(NotificationLevel::Info, "b");
+        assert_eq!(s.visible().len(), 2);
+        assert_eq!(s.queued(), 0);
+    }
+
+    /// A queued notification becomes visible when one in front of it
+    /// expires — otherwise a burst would leave rows permanently
+    /// stranded.
+    #[test]
+    fn dismissing_a_visible_one_promotes_a_queued_one() {
+        let s = NotificationStore::new();
+        let ids: Vec<_> = (0..4)
+            .map(|i| s.post(NotificationLevel::Info, format!("n{i}")))
+            .collect();
+        assert_eq!(s.queued(), 1);
+        assert!(
+            !s.visible().iter().any(|n| n.id == ids[3]),
+            "the newest is the one waiting"
+        );
+
+        s.dismiss(ids[0]);
+        assert_eq!(s.queued(), 0);
+        assert!(
+            s.visible().iter().any(|n| n.id == ids[3]),
+            "the one that was queued is now shown"
+        );
     }
 
     #[test]

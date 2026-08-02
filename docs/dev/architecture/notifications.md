@@ -156,6 +156,15 @@ This is a subsystem, not a slice:
 - **A `replace` re-arms the timer.** "fetching…" (no timeout) replaced
   by "fetched" (timeout) has to start counting down, or the completion
   stays up forever — the same invisibility, inverted.
+- **The visible ones are the OLDEST, and a queued notification's clock
+  does not start until it becomes visible.** §5.9.9 says "maximum
+  visible count (default 3); excess queued" without saying which end
+  queues. Showing the *newest* three — which NOTIF.1a did on its first
+  pass — lets an early notification in a burst run out its timeout
+  while invisible and be dismissed having never been seen. That is the
+  bug this whole subsystem exists to remove, reached from the other
+  end. Pinned by
+  `a_queued_notification_does_not_expire_before_it_is_seen`.
 - **A completion whose start already expired posts fresh.** A long
   fetch can outlive its own "started" notification, and dropping the
   completion there would restore exactly the invisible-success bug.

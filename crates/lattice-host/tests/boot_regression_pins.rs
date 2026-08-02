@@ -180,6 +180,25 @@ fn lang_registry_service_present_at_boot() {
     );
 }
 
+/// NOTIF.1a: the notification store is a service, so any subsystem
+/// with work that has no buffer can post to it.
+///
+/// Pinned under the exact registration type — the `ServiceRegistry`
+/// Arc/TypeId rule. A mismatch would make every `post` a silent no-op
+/// for the consumer, whose symptom is the *original* bug (an operation
+/// that finishes invisibly), so the fix would look like it had never
+/// been applied.
+#[test]
+fn notification_store_service_present_at_boot() {
+    assert!(
+        boot()
+            .services
+            .get::<lattice_notify::NotificationStoreHandle>()
+            .is_some(),
+        "NotificationStoreHandle must be registered"
+    );
+}
+
 #[test]
 fn terminal_service_present_at_boot() {
     assert!(

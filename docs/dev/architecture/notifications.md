@@ -1,6 +1,12 @@
 # Notifications — telling the user about work with no buffer
 
-> **Status: designed, not built.** The subsystem's shape is already
+> **Status: being built.** NOTIF.1a (the data layer — notification,
+> store, expiry through the inbound primitive) landed 2026-08-02; see
+> the slice plan. Rendering (both peers) and the magit consumer follow.
+> The original note is kept below because the *reasoning* is what this
+> fragment is for.
+>
+> **Status when written: designed, not built.** The subsystem's shape is already
 > specified in [`design.md`](design.md) §5.9.9 (`Notification`,
 > `NotificationLevel`, `NotificationAction`, corner anchoring,
 > stacking, timeouts) and its config in §12. **This fragment does not
@@ -115,18 +121,44 @@ This is a subsystem, not a slice:
   should redraw the notification layer only; if that is not separable
   today, that constraint decides the first slice.
 
-## Open
+## Open — resolved by NOTIF.1a
 
-- **Do notifications need actions in v1?** §5.9.9 specifies
-  `NotificationAction` buttons. The magit consumer needs none. Deferring
-  them keeps the first build to display + expiry.
-- **What replaces the optimistic echo?** If a fetch posts a "started"
-  notification, the echo is redundant — or the echo stays for
-  immediate feedback and only completion notifies. The latter is
-  cheaper and probably right.
-- **Does a notification survive a buffer switch?** It must (that is
-  the point), which means the layer is window-scoped, not
-  buffer-scoped.
+- **Do notifications need actions in v1?** ⛔ **No.** Deferred as this
+  section proposed; the magit consumer needs none, and display +
+  expiry is enough to close the reported gap. `NotificationAction`
+  lands with a consumer that wants it.
+- **What replaces the optimistic echo?** ✅ **Nothing — the echo
+  stays.** It is the immediate feedback at *fire* time and costs
+  nothing; the notification carries *completion*, which is the part
+  that was missing. `NotificationStore::replace_or_post` is shaped for
+  the variant where a caller does want one row for the whole
+  operation: post "fetching…" with no timeout, replace it with the
+  outcome.
+- **Does a notification survive a buffer switch?** ✅ **Yes** — the
+  store is window-scoped, holding no `BufferId` at all. A notification
+  exists precisely because you have moved on from whatever started the
+  work.
+
+## Decided while building NOTIF.1a
+
+- **Levels are `EchoLevel`'s three, not a new vocabulary.** Two
+  scales for "how bad is this" would drift, and a consumer mapping
+  between them is a bug waiting to happen.
+- **Errors linger longer than info** (15s / 8s / 4s). An error you
+  blink past is an error you will hit again, which is the whole reason
+  the gate opened.
+- **Expiry goes through `SubsystemBoot::inbound`, not a tick
+  callback.** This is the textbook case of the bug `CLAUDE.md` names:
+  a bare tick callback would remove the notification and then wait for
+  the user to press a key, so a popup would linger past its timeout
+  and vanish the instant you typed — which reads as a rendering bug
+  rather than a missing wake. `InboundBus::send` bakes the wake in.
+- **A `replace` re-arms the timer.** "fetching…" (no timeout) replaced
+  by "fetched" (timeout) has to start counting down, or the completion
+  stays up forever — the same invisibility, inverted.
+- **A completion whose start already expired posts fresh.** A long
+  fetch can outlive its own "started" notification, and dropping the
+  completion there would restore exactly the invisible-success bug.
 
 ## Cross-references
 

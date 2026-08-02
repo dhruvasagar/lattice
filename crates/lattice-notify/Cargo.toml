@@ -1,0 +1,16 @@
+[package]
+name = "lattice-notify"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+# `time` for expiry — this is the editor's first timer-driven UI.
+tokio = { workspace = true, features = ["time"] }
+tracing = { workspace = true }
+lattice-grammar = { path = "../lattice-grammar" }
+lattice-mode = { path = "../lattice-mode" }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "time", "macros", "rt"] }

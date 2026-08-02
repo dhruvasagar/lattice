@@ -1316,7 +1316,9 @@ the buffer you are already in is the actual no-op. See MG.23h's note.
 | MG.26a | The blame model — porcelain → chunks → heading text (pure) | — | ✅ |
 | MG.26b | `magit-blame-mode` as a minor + the chunk-heading provider; retires the major and both blame buffers | MG.26a | ✅ |
 | MG.26c | Syntax highlighting for the blob buffer (reverse blame's content) | MG.26b | ✅ |
-| NOTIF.1 | Notification subsystem (design.md §5.9.9) — magit remote ops as first consumer | — | 📝 |
+| NOTIF.1a | Notification data layer — store + expiry via the inbound primitive | — | ✅ |
+| NOTIF.1b/c | Corner-anchored rendering, both peers, one patch | NOTIF.1a | 📝 |
+| NOTIF.1d | magit's remote ops as the first consumer | NOTIF.1b/c | 📝 |
 | MG.23i+ | The new subsystems, one slice each, prioritised by daily use — the same set MG.21 still names | — | 📝 |
 
 #### MG.23a — the file target seam + `:magit-other-file-dispatch` ✅ (2026-07-30)

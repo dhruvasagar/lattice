@@ -5353,6 +5353,7 @@ dependencies = [
  "lattice-magit",
  "lattice-mode",
  "lattice-multibuffer",
+ "lattice-notify",
  "lattice-oil",
  "lattice-picker",
  "lattice-plugin-api",
@@ -5488,6 +5489,16 @@ dependencies = [
  "lattice-theme",
  "linkme",
  "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "lattice-notify"
+version = "0.1.0"
+dependencies = [
+ "lattice-grammar",
+ "lattice-mode",
  "tokio",
  "tracing",
 ]

@@ -136,6 +136,7 @@ lattice-runtime = { path = "../lattice-runtime" }
 # boot-wiring registration only (every multibuffer-specific
 # concern lives in that crate).
 lattice-multibuffer = { path = "../lattice-multibuffer" }
+lattice-notify = { path = "../lattice-notify" }
 # CM.1: native compilation subsystem — the streaming `*compilation*`
 # buffer + `:compile`/`:recompile`/`:make`. Wired via the generic
 # `SubsystemBoot` install seam (one Phase-B line); the host's

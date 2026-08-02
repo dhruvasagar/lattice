@@ -550,6 +550,11 @@ impl Editor {
             vrp.clone() as Arc<dyn lattice_mode::VirtualRowRegistrar>
         );
         lattice_ai::install(&mut boot);
+        // NOTIF.1a: the notification store + the inbound bus expiry
+        // rides on. Installed early because it owns no modes and no
+        // buffers — later subsystems (magit's remote ops first) look up
+        // `NotificationStoreHandle` to post.
+        lattice_notify::install(&mut boot);
         // terminal (BC.4): `terminal-mode` (+ Normal / Insert) registration. Its
         // `TerminalStoreHandle` service is a host-published primitive (in the
         // service block below) and its invocation runner stays host-side (the

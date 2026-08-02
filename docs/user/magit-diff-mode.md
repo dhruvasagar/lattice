@@ -31,6 +31,7 @@ list.
 | `<CR>` | Visit the file at cursor |
 | `gr` | Refresh (re-run the underlying `git diff`) |
 | `D` | Diff arguments — `-w` ignore whitespace, `-s` file summary, `-U` context lines |
+| `dv` | Open the file at cursor side-by-side against its baseline |
 
 Everything above except `<CR>` and `gr` comes from
 [`magit-hunk-mode`](help:magit-hunk-mode) — the minor mode that owns

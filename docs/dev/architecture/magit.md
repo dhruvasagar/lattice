@@ -1565,6 +1565,46 @@ the picker owns placement, the transient owns content + interaction** —
 worth stating explicitly since it's easy to reintroduce the bug by having
 transient code make its own placement decision again.
 
+### 8.11 `dv` — side-by-side, by composing the diff subsystem (MG.19)
+
+`dv` on a diff row opens that file's baseline and its working-tree copy
+in two scroll-bound panes. **Nothing about the diff is reimplemented**:
+scroll binding, filler rows, `]c` / `[c`, and `do` / `dp` are all
+consequences of a registered `PaneGroup`, which `lattice-diff` owns.
+The whole slice is two effects in order:
+
+1. `Effect::OpenSyntheticBuffer` — the baseline
+   (`*magit:file:<ref>:<path>*`, §4.x's file-revision view) into the
+   **current** pane;
+2. `Effect::Diffsplit { path: <working-tree file> }` — the editable
+   copy into a new vsplit, registering the session between them.
+
+**The order is a correctness requirement, not a style.** `Diffsplit`
+diffs its new pane against whatever pane is *active*. Reversed, the
+editable copy would land on the left and `do` / `dp` would silently
+mean the opposite of what the user intends. Guarded by
+`the_baseline_pane_is_opened_before_the_split`.
+
+**This path is where "synthetic buffers are Documents" stops being
+decorative.** `do_diffsplit` refuses a non-`Document` active pane, so a
+magit buffer that were its own `BufferKind` could not be one side of a
+diff at all.
+
+**Which version is the baseline** comes from `MagitView::diff_source` —
+the same seam `s` / `u` / `x` use — but with one deliberate asymmetry.
+`diff_source` yields `None` for the unscoped `*magit:diff*`, and
+hunk staging *refuses* there, because a diff against HEAD mixes staged
+with unstaged and there is no single tree to apply a hunk to. Showing
+two versions has no such ambiguity: the question is "which version",
+not "which tree do I write to". So `None` resolves to `HEAD` rather
+than declining.
+
+**The key is vim-fugitive's**, not magit's — magit has no side-by-side
+view to have a key for. `dv` also lands in the `d`-prefixed family
+`diff-mode` already owns (`do` / `dp` / `d2o`), and is inert in a
+read-only buffer (`v` forces characterwise on a `d` that never
+completes).
+
 ### 8.10 `D` — one chord for what magit splits across `D` and `L` (MG.23k)
 
 Magit binds `D` to a diff-arguments transient and `L` to a

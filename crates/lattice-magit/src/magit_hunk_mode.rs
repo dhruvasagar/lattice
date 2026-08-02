@@ -83,6 +83,12 @@ fn magit_hunk_keymap_entries() -> &'static [KeymapEntry] {
             keymap_entry! { mode: Normal, chord: "]c", doc: "Next hunk", cmd: "action:magit-next-hunk" },
             keymap_entry! { mode: Normal, chord: "[c", doc: "Previous hunk", cmd: "action:magit-prev-hunk" },
             keymap_entry! { mode: Normal, chord: "<CR>", doc: "Visit the file at cursor", cmd: "action:magit-visit-diff-target" },
+            // MG.19: vim-fugitive's key for exactly this, and it lands
+            // in the `d`-prefixed family `diff-mode` already owns
+            // (`do` / `dp` / `d2o`). `dv` is not an operator+motion —
+            // `v` forces characterwise on a `d` that never completes —
+            // so it is inert in a read-only magit buffer.
+            keymap_entry! { mode: Normal, chord: "dv", doc: "Open the file at cursor side-by-side against its baseline", cmd: "action:magit-diff-side-by-side" },
         ]
     })
 }
@@ -126,6 +132,127 @@ fn visit_diff_target(ctx: &lattice_mode::ActionContext<'_>) -> Option<lattice_gr
         ctx.cursor.line as usize,
     )?;
     view.diff_target(&path)
+}
+
+/// MG.19: `dv` — the file at cursor, side by side against its baseline.
+///
+/// **This composes what already exists rather than building a second
+/// diff.** `lattice-diff` owns two-pane sessions: scroll binding,
+/// filler rows, `]c` / `[c`, and `do` / `dp` are all consequences of a
+/// registered `PaneGroup`, not of anything magit does. So the whole
+/// slice is two effects in order:
+///
+/// 1. open the baseline — the file as it exists at the version this
+///    diff was taken against — in the CURRENT pane;
+/// 2. `Effect::Diffsplit` the working-tree file into a new vsplit,
+///    which registers the session between the two.
+///
+/// The baseline goes first because `Diffsplit` diffs the new pane
+/// against whatever pane is active. Getting that order backwards would
+/// put the editable side on the left and silently invert what `do` and
+/// `dp` mean.
+///
+/// The baseline is `*magit:file:<ref>:<path>*`
+/// ([`crate::magit_file_revision_mode`]) — a synthetic buffer, which
+/// works here only because synthetic magit buffers really are
+/// `BufferKind::Document`. `do_diffsplit` refuses a non-Document
+/// active pane, so "everything is a buffer" is load-bearing rather
+/// than decorative in this path.
+fn diff_side_by_side(ctx: &lattice_mode::ActionContext<'_>) -> Option<lattice_grammar::Effect> {
+    use lattice_grammar::Effect;
+
+    let view = crate::buffer_state::view_for(ctx)?;
+    let store = ctx.services.get::<lattice_mode::BufferStoreHandle>()?;
+    let handle = store.handle_for(lattice_core::BufferId(ctx.buffer_id.0 as u32))?;
+    let snap = handle.snapshot();
+    let path = crate::hunk::path_at_cursor(
+        |i| u32::try_from(i).ok().and_then(|l| snap.buffer.line(l)),
+        ctx.cursor.line as usize,
+    )?;
+
+    // Which version is "the other side" depends on what this buffer's
+    // diff was taken against — the same question `s` / `u` / `x` ask,
+    // answered by the same seam.
+    //
+    // Note this succeeds in a case where `s` / `u` / `x` deliberately
+    // refuse: `diff_source` yields `None` for the unscoped
+    // `*magit:diff*`, because a diff against HEAD mixes staged and
+    // unstaged changes and there is no single tree to apply a hunk to.
+    // *Showing* two versions has no such ambiguity — the question is
+    // "which version", not "which tree do I write to" — so `None`
+    // resolves to HEAD rather than declining.
+    let git_ref = baseline_ref(view.diff_source(ctx.cursor), || {
+        view.commit_at_cursor(ctx.cursor)
+    })?;
+
+    let workdir = view.workdir()?;
+    let absolute = workdir.join(&path);
+    // A file the commit deleted, or one not yet written, has no
+    // working-tree side to put in the right-hand pane. Saying so beats
+    // opening an empty split that reads as a broken diff.
+    if !absolute.exists() {
+        return Some(Effect::Echo {
+            level: lattice_grammar::EchoLevel::Warn,
+            text: format!(
+                "{} has no working-tree copy to diff against",
+                path.display()
+            ),
+        });
+    }
+
+    Some(side_by_side_effects(&git_ref, &path, absolute))
+}
+
+/// Which version is the left-hand side.
+///
+/// Pure, and separate from the handler, because this is the part with
+/// a decision in it — the handler around it is buffer plumbing.
+pub(crate) fn baseline_ref(
+    source: Option<crate::buffer_state::DiffSource>,
+    commit_at_cursor: impl FnOnce() -> Option<String>,
+) -> Option<String> {
+    use crate::buffer_state::DiffSource;
+    match source {
+        // Both index-relative: `--cached` is HEAD↔index and a plain
+        // diff is index↔worktree, so the index blob is the meaningful
+        // other side in each.
+        Some(DiffSource::Staged) | Some(DiffSource::Unstaged) => Some("staged".to_string()),
+        // A commit's or a stash's patch describes a specific version,
+        // so that is the baseline — not the index, which has nothing
+        // to do with it.
+        Some(DiffSource::Committed) => commit_at_cursor(),
+        // `None` is where this deliberately differs from `s` / `u` /
+        // `x`, which refuse here: the unscoped `*magit:diff*` is
+        // against HEAD and mixes staged with unstaged, so there is no
+        // single tree to apply a hunk TO. Showing two versions has no
+        // such ambiguity — the question is "which version", not "which
+        // tree do I write to" — so HEAD is the answer, not a refusal.
+        None => Some("HEAD".to_string()),
+    }
+}
+
+/// The two effects, in the order that matters.
+///
+/// `Diffsplit` diffs its new pane against whatever pane is ACTIVE, so
+/// the baseline must be opened first. Reversed, the editable
+/// working-tree copy would end up on the left and `do` / `dp` would
+/// silently mean the opposite of what the user intends.
+pub(crate) fn side_by_side_effects(
+    git_ref: &str,
+    path: &std::path::Path,
+    absolute: std::path::PathBuf,
+) -> lattice_grammar::Effect {
+    use lattice_grammar::Effect;
+    Effect::Many(vec![
+        Effect::OpenSyntheticBuffer {
+            name: format!("*magit:file:{git_ref}:{}*", path.display()),
+            mode_id: crate::magit_file_revision_mode::MagitFileRevisionMode::mode_id().to_string(),
+        },
+        Effect::Diffsplit {
+            path: absolute,
+            remote: None,
+        },
+    ])
 }
 
 impl Mode for MagitHunkMode {
@@ -175,10 +302,16 @@ impl Mode for MagitHunkMode {
     }
 
     fn action_handlers(&self) -> Vec<lattice_mode::ActionHandlerContribution> {
-        vec![lattice_mode::ActionHandlerContribution {
-            action_name: "action:magit-visit-diff-target",
-            handler: std::sync::Arc::new(visit_diff_target),
-        }]
+        vec![
+            lattice_mode::ActionHandlerContribution {
+                action_name: "action:magit-visit-diff-target",
+                handler: std::sync::Arc::new(visit_diff_target),
+            },
+            lattice_mode::ActionHandlerContribution {
+                action_name: "action:magit-diff-side-by-side",
+                handler: std::sync::Arc::new(diff_side_by_side),
+            },
+        ]
     }
 
     fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, Self::Guard> {
@@ -189,6 +322,98 @@ impl Mode for MagitHunkMode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// MG.19: the baseline is the version the diff was taken against,
+    /// per source.
+    #[test]
+    fn the_baseline_is_the_version_this_diff_describes() {
+        use crate::buffer_state::DiffSource;
+        let no_commit = || None;
+        assert_eq!(
+            baseline_ref(Some(DiffSource::Staged), no_commit).as_deref(),
+            Some("staged")
+        );
+        assert_eq!(
+            baseline_ref(Some(DiffSource::Unstaged), no_commit).as_deref(),
+            Some("staged"),
+            "index↔worktree: the index is still the other side"
+        );
+        assert_eq!(
+            baseline_ref(Some(DiffSource::Committed), || Some("a1b2c3d".into())).as_deref(),
+            Some("a1b2c3d"),
+            "a commit's patch describes that commit, not the index"
+        );
+    }
+
+    /// Where `s` / `u` / `x` refuse, `dv` answers — and that asymmetry
+    /// is deliberate rather than an oversight.
+    #[test]
+    fn an_unclassifiable_diff_still_has_a_baseline() {
+        assert_eq!(
+            baseline_ref(None, || None).as_deref(),
+            Some("HEAD"),
+            "the unscoped `*magit:diff*` is against HEAD; showing two \
+             versions needs no tree to write to"
+        );
+    }
+
+    /// A committed diff with no commit under the cursor (a `--graph`
+    /// connector, a stat header) declines rather than guessing.
+    #[test]
+    fn a_committed_diff_with_no_commit_at_cursor_declines() {
+        use crate::buffer_state::DiffSource;
+        assert!(baseline_ref(Some(DiffSource::Committed), || None).is_none());
+    }
+
+    /// The order is the correctness requirement: `Diffsplit` diffs
+    /// against the ACTIVE pane, so the baseline has to be opened
+    /// first. Reversed, `do` and `dp` would mean the opposite.
+    #[test]
+    fn the_baseline_pane_is_opened_before_the_split() {
+        use lattice_grammar::Effect;
+        let effect = side_by_side_effects(
+            "staged",
+            std::path::Path::new("src/main.rs"),
+            std::path::PathBuf::from("/repo/src/main.rs"),
+        );
+        let Effect::Many(effects) = effect else {
+            panic!("expected a two-effect sequence, got {effect:?}");
+        };
+        assert_eq!(effects.len(), 2);
+        match &effects[0] {
+            Effect::OpenSyntheticBuffer { name, mode_id } => {
+                assert_eq!(name, "*magit:file:staged:src/main.rs*");
+                assert_eq!(mode_id, "magit-file-revision-mode");
+            }
+            other => panic!("the baseline must be opened first, got {other:?}"),
+        }
+        match &effects[1] {
+            Effect::Diffsplit { path, remote } => {
+                assert_eq!(path, std::path::Path::new("/repo/src/main.rs"));
+                assert!(remote.is_none(), "two-way, not a three-way merge");
+            }
+            other => panic!("the split must come second, got {other:?}"),
+        }
+    }
+
+    /// `dv` is bound, and in the `d`-prefixed family `diff-mode`
+    /// already owns — so it cannot collide with `do` / `dp`, which the
+    /// same buffer gets once the session is live.
+    #[test]
+    fn dv_is_bound_and_does_not_shadow_the_diff_mode_chords() {
+        let chords: Vec<&str> = magit_hunk_keymap_entries()
+            .iter()
+            .map(|e| e.chord)
+            .collect();
+        assert!(chords.contains(&"dv"), "{chords:?}");
+        for owned_by_diff_mode in ["do", "dp"] {
+            assert!(
+                !chords.contains(&owned_by_diff_mode),
+                "`{owned_by_diff_mode}` belongs to diff-mode; magit must not \
+                 rebind it: {chords:?}"
+            );
+        }
+    }
 
     /// The five majors that show diff content, and no others.
     ///

@@ -37,7 +37,7 @@ owns *what* and *why*.
 | MG.17a | Transient flags (`--force-with-lease`, `--prune`, …) + preview | MG.8 | ✅ |
 | MG.17b | Transient `Argument` items (prompt → back to the menu) | MG.17a | ✅ |
 | MG.18 | Hunk-level staging (sliced a–e) | MG.5, MG.13 | ✅ |
-| MG.19 | magit-diff side-by-side + `do`/`dp` | MG.18, D.4 | 📝 |
+| MG.19 | magit-diff side-by-side + `do`/`dp` | MG.18, D.4 | ✅ |
 | MG.20 | Operation coverage — reset / revert / cherry-pick | MG.17a | ✅ |
 | MG.21 | Remaining operations — bisect, submodule, remotes (tag + merge landed in MG.23c) | MG.17b | ✅ |
 | MG.21b | `lattice_vcs::Remote` — list/add/rename/remove/set-url/prune | — | ✅ |
@@ -2179,6 +2179,43 @@ did not land, and there is no `do`/`dp` hunk transfer.
 - **Deliverables:** two-pane layout via D.4's pane-group machinery,
   scroll-bound; `do`/`dp` on top of MG.18's hunk identity.
 - **Tests:** panes stay scroll-synced; `do`/`dp` move exactly one hunk.
+
+### MG.19 — side-by-side ✅ (2026-08-02)
+
+Design: [`../../architecture/magit.md`](../../architecture/magit.md)
+§8.11.
+
+**The slice turned out to be far smaller than the plan assumed, and
+finding that out was the work.** The plan said "two-pane layout via
+D.4's pane-group machinery, scroll-bound; `do`/`dp` on top of MG.18's
+hunk identity" — implying magit builds both. It builds neither.
+`lattice-diff` already binds `do` / `dp` on `diff-mode` (they were
+never magit's to add), and scroll binding, filler rows and `]c` / `[c`
+all fall out of a registered `PaneGroup`. So MG.19 is: open the
+baseline in the current pane, then `Effect::Diffsplit` the working-tree
+file. Two existing effects, zero new API, and therefore no GPUI parity
+work owed.
+
+**Order is the correctness requirement.** `Diffsplit` diffs against the
+*active* pane, so the baseline must be opened first — reversed, the
+editable copy lands on the left and `do` / `dp` invert. Guarded.
+
+**One deliberate asymmetry with hunk staging**, written up in §8.11:
+`dv` succeeds on the unscoped `*magit:diff*` where `s` / `u` / `x`
+refuse, because "which version do I show" is answerable where "which
+tree do I write to" is not.
+
+**`dv` is vim-fugitive's key** — magit has none, having no side-by-side
+view. It joins the `d`-prefixed family `diff-mode` already owns.
+
+- **Tests:** 5 (baseline per source, the `None`→HEAD asymmetry, a
+  committed diff with no commit at cursor declining, effect order, and
+  that magit does not rebind `do`/`dp`).
+- **No bench:** no new work per frame or per keystroke; the session is
+  the diff subsystem's existing one.
+- **Deferred, named:** a deleted file has no working-tree side, so `dv`
+  echoes instead of opening an empty pane. Three-way (`Diffsplit`'s
+  `remote`) is unused — magit's conflict views would be its consumer.
 
 ### MG.20 — Operation coverage
 

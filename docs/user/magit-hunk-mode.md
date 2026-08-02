@@ -41,6 +41,7 @@ do nothing.
 | `a` | Apply a committed hunk to the working tree |
 | `-` | Reverse a committed hunk out of the working tree |
 | `]c` / `[c` | Next / previous hunk |
+| `dv` | Open the file at cursor side-by-side against its baseline |
 | `<CR>` | Visit the file at cursor — in the version this buffer describes |
 
 `]c` then `s` stages exactly the hunk you landed on. In Visual mode,
@@ -98,3 +99,29 @@ Opening the working-tree copy when you asked about a historical one is
 the mistake [`magit-file-revision-mode`](help:magit-file-revision-mode)
 exists to prevent, so a buffer with no sensible answer declines rather
 than guessing.
+
+## `dv` — side by side
+
+`dv` on a diff row opens two scroll-bound panes: the file as it was at
+the version this diff describes on the left, your working-tree copy on
+the right. Once they are open, everything the
+[diff subsystem](help:diff-mode) provides applies — `]c` / `[c` to move
+between hunks, and **`do` / `dp` to pull a hunk in or push it across**,
+exactly as in vim's diff mode. Magit has no side-by-side view; the key
+is vim-fugitive's.
+
+Which version ends up on the left depends on what you are looking at:
+
+| You are in | Left-hand side |
+|---|---|
+| A staged or unstaged diff | The file as the index has it |
+| A commit's or a stash's diff | The file at that commit |
+| `:magit-diff` (against HEAD) | The file at HEAD |
+
+That last row is the one place `dv` works where `s` / `u` / `x` will
+not. A diff against HEAD mixes staged and unstaged changes, so there is
+no single place to *apply* a hunk — but there is no ambiguity at all
+about which version to *show*.
+
+A file with no working-tree copy (deleted in the commit you are
+looking at) says so rather than opening an empty pane.

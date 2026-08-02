@@ -1313,6 +1313,13 @@ fn register_action_commands(registry: &mut CommandRegistry) {
         "action:magit-view-arguments",
         "Re-run this view with different git arguments",
     );
+    // MG.19: `dv`. The session it opens is `lattice-diff`'s, so
+    // `do` / `dp` / `]c` / `[c` and the scroll binding are that
+    // subsystem's — nothing is reimplemented here.
+    reg(
+        "action:magit-diff-side-by-side",
+        "Open the file at cursor side-by-side against its baseline",
+    );
     reg("action:magit-remote-add", "Add a remote");
     reg(
         "action:magit-remote-add-url",

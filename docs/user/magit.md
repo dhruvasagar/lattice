@@ -21,7 +21,7 @@ no hidden state.
 > **Status:** magit-status (the primary workhorse — staged, unstaged,
 > untracked, stashes, recent commits), magit-commit, magit-diff,
 > magit-log, magit-blame, magit-stash, magit-branch, magit-remote,
-> magit-rebase,
+> magit-submodule, magit-rebase, bisect, side-by-side diffs (`dv`),
 > and the transient dispatch menus (`C-c g` / `C-c f`) are shipped.
 > Auto-gutter-diff against HEAD is on by default (`git.auto-head-diff`).
 > See [magit-status-mode](help:magit-status-mode) for the workhorse

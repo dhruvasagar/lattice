@@ -62,6 +62,8 @@ Open it with **`C-x g`** or **`:magit-status`** from any buffer.
 | `Os` / `Om` / `Oh` | Reset `--soft` / `--mixed` / `--hard` to the commit at cursor |
 | `TAB` | Toggle section or hunk fold at cursor |
 | `S-TAB` | Cycle section visibility |
+| `dv` | Open the file at cursor [side-by-side](help:magit-hunk-mode) against its baseline |
+| `D` | [Arguments](help:magit-core-mode) — this buffer has none, so it says so |
 
 ---
 
@@ -320,6 +322,11 @@ There are no branch entries in the status buffer, so there's no
 Press `gr` to re-run `git status`, `git stash list`, and `git log` and
 rebuild the buffer content.
 
+**The headerline says `refreshing` while it runs.** A `gr` in a large
+repository is several git calls; the row shows that it is working
+rather than looking frozen, and the marker clears when the new content
+lands. Every staging action shows it too.
+
 **Expanded diffs stay expanded.** A refresh rebuilds the buffer, and it
 rebuilds the diffs you had open along with it — re-running `git diff`
 for those entries only, so a refresh with nothing open costs nothing
@@ -339,6 +346,19 @@ fails with `unknown option`, as the Options section below says of every
 
 What does refresh the buffer: `gr`, and every staging action, which
 refreshes as part of its own completion.
+
+---
+
+## While a bisect is running
+
+The headerline gains `BISECTING 3 left, ~2 steps` — git's own numbers,
+from git's own plumbing, so they agree with what `git bisect` prints in
+a terminal. It appears on a clean tree too, which is the normal case
+during a bisect since git checks out each candidate for you.
+
+Start, mark and end a bisect from `B` on the [dispatch
+transient](help:magit-transient); the menu offers `start` when none is
+running and `good` / `bad` / `skip` / `reset` when one is.
 
 ---
 

@@ -1,6 +1,6 @@
 ---
 summary: "magit-hunk-mode: the shared minor mode active in every magit buffer that renders a diff — s/u/x to stage, unstage and discard the hunk at cursor, a/- to move one hunk of a commit, ]c/[c to navigate."
-related: [magit, magit-core-mode, magit-status-mode, magit-diff-mode]
+related: [magit, magit-core-mode, magit-status-mode, magit-diff-mode, diff-mode]
 ---
 
 # magit-hunk-mode

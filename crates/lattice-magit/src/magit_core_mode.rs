@@ -68,8 +68,6 @@ fn magit_core_keymap_entries() -> &'static [KeymapEntry] {
             keymap_entry! { mode: Normal, chord: "q", doc: "Close magit buffer", cmd: "action:magit-close" },
             keymap_entry! { mode: Normal, chord: "]]", doc: "Next section", cmd: "action:magit-next-section" },
             keymap_entry! { mode: Normal, chord: "[[", doc: "Previous section", cmd: "action:magit-prev-section" },
-            keymap_entry! { mode: Normal, chord: "]f", doc: "Next file", cmd: "action:magit-next-file" },
-            keymap_entry! { mode: Normal, chord: "[f", doc: "Previous file", cmd: "action:magit-prev-file" },
             keymap_entry! { mode: Normal, chord: "<Tab>", doc: "Toggle fold", cmd: "action:magit-toggle-fold" },
             keymap_entry! { mode: Normal, chord: "<S-Tab>", doc: "Cycle sections", cmd: "action:magit-cycle-sections" },
             // MG.23k: magit's `D`. Bound here rather than per-view for
@@ -244,6 +242,80 @@ fn entry_lines(store: &BufferStoreHandle, buffer_id: BufferId) -> Vec<u32> {
         }
     }
     lines
+}
+
+#[cfg(test)]
+mod file_nav {
+    use super::*;
+
+    /// The bug this scanner exists to remove: in a diff, the generic
+    /// indented-row scan matches every CONTEXT line, so `]f` walked
+    /// through arbitrary code claiming to move between files.
+    ///
+    /// Both scanners are run over the same realistic diff so the
+    /// difference is visible rather than asserted in the abstract.
+    #[test]
+    fn a_diff_has_file_headers_where_the_generic_scan_sees_context_lines() {
+        // The context lines here are INDENTED CODE, which is the
+        // realistic case and the whole hazard: a diff's leading space
+        // plus the code's own indent starts the row with two spaces,
+        // exactly what the generic entry scan looks for.
+        let diff = "\
+diff --git a/src/a.rs b/src/a.rs
+@@ -1,4 +1,4 @@
+ fn a() {
+     let keep = 1;
+-    let old = 2;
++    let new = 2;
+ }
+diff --git a/src/b.rs b/src/b.rs
+@@ -1,2 +1,2 @@
+ fn b() {
+     let also_indented = 3;
+";
+        let indented: Vec<u32> = diff
+            .lines()
+            .enumerate()
+            .filter(|(_, l)| l.starts_with("  ") && !l.trim().is_empty())
+            .map(|(i, _)| i as u32)
+            .collect();
+        let headers: Vec<u32> = diff
+            .lines()
+            .enumerate()
+            .filter(|(_, l)| l.starts_with("diff --git"))
+            .map(|(i, _)| i as u32)
+            .collect();
+
+        assert_eq!(headers, vec![0, 7], "two files in this diff");
+        assert!(
+            !indented.is_empty(),
+            "the generic scan matches context lines here — which is the bug"
+        );
+        assert_ne!(
+            indented, headers,
+            "if these agreed there would have been nothing to fix"
+        );
+    }
+}
+
+/// The `diff --git` header rows — what "a file" means in a buffer
+/// whose content is a unified diff.
+///
+/// Column 0 only. A `diff --git` inside an inline expansion in
+/// magit-status is indented, and that view answers `file_lines` with
+/// its own entry rows anyway.
+pub(crate) fn diff_file_lines(store: &BufferStoreHandle, buffer_id: BufferId) -> Vec<u32> {
+    let Some(h) = store.handle_for(buffer_id) else {
+        return vec![];
+    };
+    let snap = h.snapshot();
+    (0..snap.buffer.line_count() as u32)
+        .filter(|l| {
+            snap.buffer
+                .line(*l)
+                .is_some_and(|raw| raw.starts_with("diff --git"))
+        })
+        .collect()
 }
 
 /// Scan for hunk-start lines (@@ or diff --git) and return their
@@ -856,6 +928,21 @@ impl Mode for MagitCoreMode {
             };
         }
 
+        macro_rules! file_nav {
+            ($name:literal, $step:ident) => {
+                lattice_mode::ActionHandlerContribution {
+                    action_name: $name,
+                    handler: Arc::new(|ctx: &ActionContext<'_>| {
+                        let (store, buffer_id) = store_and_buffer(ctx)?;
+                        let items = view_for(ctx)
+                            .and_then(|v| v.file_lines(&store, buffer_id))
+                            .unwrap_or_else(|| entry_lines(&store, buffer_id));
+                        Some(cursor_at($step(&items, ctx.cursor.line)?))
+                    }),
+                }
+            };
+        }
+
         vec![
             // ── shared actions: one handler, per-view body ──────
             lattice_mode::ActionHandlerContribution {
@@ -973,8 +1060,14 @@ impl Mode for MagitCoreMode {
             // ── navigation: ]] [[ ]f [f ]c [c ────────────
             nav!("action:magit-next-section", section_headers, next_item),
             nav!("action:magit-prev-section", section_headers, prev_item),
-            nav!("action:magit-next-file", entry_lines, next_item),
-            nav!("action:magit-prev-file", entry_lines, prev_item),
+            // `]f` / `[f` ask the VIEW first: "a file" is an indented
+            // entry row in magit-status and a `diff --git` header in a
+            // buffer whose content is a diff. The generic scan matches
+            // any two-space-indented line, so in a diff it walked
+            // through context lines while claiming to move between
+            // files.
+            file_nav!("action:magit-next-file", next_item),
+            file_nav!("action:magit-prev-file", prev_item),
             nav!("action:magit-next-hunk", hunk_lines, next_item),
             nav!("action:magit-prev-hunk", hunk_lines, prev_item),
             // TAB — toggle the fold at cursor (per-entry/per-hunk,

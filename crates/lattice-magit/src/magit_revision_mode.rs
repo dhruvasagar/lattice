@@ -50,6 +50,18 @@ pub struct RevisionState {
 struct RevisionView(Arc<Mutex<RevisionState>>);
 
 impl crate::buffer_state::MagitView for RevisionView {
+    /// This buffer's content is a unified diff, so "a file" is a
+    /// `diff --git` header — not the generic indented-row scan, which
+    /// here matches every indented CONTEXT line and would walk `]f`
+    /// through arbitrary code.
+    fn file_lines(
+        &self,
+        store: &lattice_mode::BufferStoreHandle,
+        buffer: lattice_core::BufferId,
+    ) -> Option<Vec<u32>> {
+        Some(crate::magit_core_mode::diff_file_lines(store, buffer))
+    }
+
     /// A fixed sha's `git show` cannot change, so `gr` has nothing to
     /// rebuild. `None` rather than a re-run: repainting identical text
     /// would move the cursor for no reason.

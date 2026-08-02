@@ -75,6 +75,18 @@ pub type StashShowStatesHandle = Arc<BufferStates<StashShowState>>;
 struct StashShowView(Arc<Mutex<StashShowState>>);
 
 impl crate::buffer_state::MagitView for StashShowView {
+    /// This buffer's content is a unified diff, so "a file" is a
+    /// `diff --git` header — not the generic indented-row scan, which
+    /// here matches every indented CONTEXT line and would walk `]f`
+    /// through arbitrary code.
+    fn file_lines(
+        &self,
+        store: &lattice_mode::BufferStoreHandle,
+        buffer: lattice_core::BufferId,
+    ) -> Option<Vec<u32>> {
+        Some(crate::magit_core_mode::diff_file_lines(store, buffer))
+    }
+
     /// `stash@{n}`'s patch does not change under a fixed index, so
     /// there is nothing for `gr` to rebuild — see this module's header
     /// for why the stash *list* is the thing that refreshes.

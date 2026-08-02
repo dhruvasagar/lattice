@@ -1,5 +1,5 @@
 ---
-summary: "magit-core-mode: the shared minor mode active in every magit buffer — gr to refresh, q to close, ]]/[[ and ]f/[f to navigate, TAB to fold, and A/_/O to act on the commit under the cursor. Diff-content chords live on magit-hunk-mode."
+summary: "magit-core-mode: the shared minor mode active in every magit buffer — gr to refresh, q to close, ]]/[[ to move between sections, TAB to fold, and A/_/O to act on the commit under the cursor. Diff-content chords, including ]f/[f, live on magit-hunk-mode."
 related: [magit, magit-core]
 ---
 
@@ -20,7 +20,6 @@ no `:magit-core-mode` you need to turn on.
 | `gr` | Refresh the current magit buffer |
 | `q` | Close the buffer (bury — return to previous) |
 | `]]` / `[[` | Next / previous top-level section |
-| `]f` / `[f` | Next / previous file or entry within the current section |
 | `TAB` | Toggle the section or hunk fold at cursor |
 | `S-TAB` | Cycle section visibility (all → changed only → collapsed → all) |
 | `A` | Cherry-pick the commit under the cursor |
@@ -192,17 +191,28 @@ sha or a fixed stash index cannot change under you.
 
 ## Navigation granularity
 
-The three pairs step at three different scales, so you can move at
-whichever one matches what you're doing:
+This mode owns the coarsest step:
 
 - `]]` / `[[` — section headers (`Staged changes`, `Unstaged changes`,
-  `Recent commits`). The coarsest jump.
-- `]f` / `[f` — entries within a section: one file, one stash, one
-  commit row.
-- `]c` / `[c` — hunks (`@@` headers) inside an expanded diff.
+  `Recent commits`).
 
-In views without sections — a log, a blame — `]]` and `]f` degrade to
-whatever rows that buffer does have rather than erroring.
+The finer two belong to [`magit-hunk-mode`](help:magit-hunk-mode),
+because they only mean something where there is diff content:
+
+- `]f` / `[f` — files.
+- `]c` / `[c` — hunks (`@@` headers).
+
+`]f` / `[f` used to be here, and were bound in every magit buffer as a
+result. That was wrong in most of them: in a branch or stash list they
+stepped between rows while calling it "next file" (which `j` already
+does), and in a diff they matched indented *context lines*, walking
+through arbitrary code. They now live where files exist, and what
+counts as one is per-view — a file entry in
+[magit-status](help:magit-status-mode), a `diff --git` header in a
+diff.
+
+In views without sections — a log, a blame — `]]` degrades to whatever
+rows that buffer does have rather than erroring.
 
 ## Folding
 

@@ -83,6 +83,22 @@ fn magit_hunk_keymap_entries() -> &'static [KeymapEntry] {
             keymap_entry! { mode: Normal, chord: "]c", doc: "Next hunk", cmd: "action:magit-next-hunk" },
             keymap_entry! { mode: Normal, chord: "[c", doc: "Previous hunk", cmd: "action:magit-prev-hunk" },
             keymap_entry! { mode: Normal, chord: "<CR>", doc: "Visit the file at cursor", cmd: "action:magit-visit-diff-target" },
+            // `]f` / `[f` moved here from `magit-core-mode`, where they
+            // were bound on all ten majors and meant something in one.
+            // In a branch / stash / remote / log list they jumped
+            // between *rows* while claiming to move between files (a
+            // job `j` and `]]` already do); in the diff-content views
+            // they matched indented CONTEXT lines, so they walked
+            // through arbitrary code; in the rebase todo, whose rows
+            // sit at column 0, they matched nothing at all.
+            //
+            // This mode's five majors are exactly the file-bearing
+            // ones. Which rows count as "a file" still differs between
+            // them — entries in magit-status, `diff --git` headers in a
+            // pure diff — and that is what `MagitView::file_lines`
+            // answers. Same shape MG.24a gave `]c` / `[c`.
+            keymap_entry! { mode: Normal, chord: "]f", doc: "Next file", cmd: "action:magit-next-file" },
+            keymap_entry! { mode: Normal, chord: "[f", doc: "Previous file", cmd: "action:magit-prev-file" },
             // MG.19: vim-fugitive's key for exactly this, and it lands
             // in the `d`-prefixed family `diff-mode` already owns
             // (`do` / `dp` / `d2o`). `dv` is not an operator+motion —
@@ -411,6 +427,39 @@ mod tests {
                 !chords.contains(&owned_by_diff_mode),
                 "`{owned_by_diff_mode}` belongs to diff-mode; magit must not \
                  rebind it: {chords:?}"
+            );
+        }
+    }
+
+    /// `]f` / `[f` live here, not on `magit-core-mode`.
+    ///
+    /// On core they were bound across all ten majors and meant
+    /// something in one. In the list views they jumped between rows
+    /// while claiming to move between files — a job `j` and `]]`
+    /// already do. In the diff views they matched indented CONTEXT
+    /// lines, so they walked through arbitrary code. In the rebase
+    /// todo, whose rows sit at column 0, they matched nothing.
+    #[test]
+    fn file_navigation_is_bound_here_and_not_on_magit_core() {
+        use lattice_mode::Mode;
+        let hunk: Vec<&str> = magit_hunk_keymap_entries()
+            .iter()
+            .map(|e| e.chord)
+            .collect();
+        for c in ["]f", "[f"] {
+            assert!(hunk.contains(&c), "`{c}` must be bound here: {hunk:?}");
+        }
+        let core: Vec<&str> = crate::MagitCoreMode
+            .keymap()
+            .entries
+            .iter()
+            .map(|e| e.chord)
+            .collect();
+        for c in ["]f", "[f"] {
+            assert!(
+                !core.contains(&c),
+                "`{c}` must NOT still be on magit-core-mode, where it is bound \
+                 on majors that have no files: {core:?}"
             );
         }
     }

@@ -41,6 +41,7 @@ do nothing.
 | `a` | Apply a committed hunk to the working tree |
 | `-` | Reverse a committed hunk out of the working tree |
 | `]c` / `[c` | Next / previous hunk |
+| `]f` / `[f` | Next / previous file |
 | `dv` | Open the file at cursor side-by-side against its baseline |
 | `<CR>` | Visit the file at cursor — in the version this buffer describes |
 

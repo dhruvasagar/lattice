@@ -73,6 +73,18 @@ pub struct CommitState {
 struct CommitView(Arc<Mutex<CommitState>>);
 
 impl crate::buffer_state::MagitView for CommitView {
+    /// This buffer's content is a unified diff, so "a file" is a
+    /// `diff --git` header — not the generic indented-row scan, which
+    /// here matches every indented CONTEXT line and would walk `]f`
+    /// through arbitrary code.
+    fn file_lines(
+        &self,
+        store: &lattice_mode::BufferStoreHandle,
+        buffer: lattice_core::BufferId,
+    ) -> Option<Vec<u32>> {
+        Some(crate::magit_core_mode::diff_file_lines(store, buffer))
+    }
+
     /// The staged diff is rebuilt by the mode's own lifecycle, not by
     /// `gr` — re-running it here would race the message the user is
     /// typing above it.

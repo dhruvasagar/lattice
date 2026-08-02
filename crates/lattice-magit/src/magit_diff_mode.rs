@@ -502,6 +502,18 @@ fn source_for_scope(scope: DiffScope) -> Option<DiffSource> {
 struct DiffView(Arc<Mutex<DiffState>>);
 
 impl MagitView for DiffView {
+    /// This buffer's content is a unified diff, so "a file" is a
+    /// `diff --git` header — not the generic indented-row scan, which
+    /// here matches every indented CONTEXT line and would walk `]f`
+    /// through arbitrary code.
+    fn file_lines(
+        &self,
+        store: &lattice_mode::BufferStoreHandle,
+        buffer: lattice_core::BufferId,
+    ) -> Option<Vec<u32>> {
+        Some(crate::magit_core_mode::diff_file_lines(store, buffer))
+    }
+
     /// MG.22: the scope this buffer was opened at decides which
     /// version `<CR>` opens — the index blob for a staged diff, the
     /// live file otherwise. The `Head` scope combines both sides, so

@@ -322,6 +322,34 @@ pub trait MagitView: Send + Sync + 'static {
         None
     }
 
+    /// The rows `]f` / `[f` treat as "a file", when this view's answer
+    /// differs from magit-status's.
+    ///
+    /// `None` (the default) means the generic scan — indented entry
+    /// rows, which is magit-status's shape and was the ONLY shape until
+    /// now. In a buffer whose content is a unified diff that scan is
+    /// not merely useless, it is wrong: every indented *context* line
+    /// starts with two spaces too, so `]f` walked through arbitrary
+    /// lines of code while claiming to move between files. The same
+    /// class of bug MG.24a found in `]c` / `[c`, which were bound
+    /// universally and dead in the six majors with no hunks.
+    ///
+    /// Views whose content is a diff return the `diff --git` header
+    /// rows instead.
+    ///
+    /// The store and buffer are passed in rather than read off the
+    /// view: two of the diff views keep no store in their state, and
+    /// adding one just to answer this would be state carried for the
+    /// caller's convenience.
+    fn file_lines(
+        &self,
+        store: &lattice_mode::BufferStoreHandle,
+        buffer: BufferId,
+    ) -> Option<Vec<u32>> {
+        let _ = (store, buffer);
+        None
+    }
+
     /// MG.23k: the git arguments this view can be re-run with — the
     /// rows `D` offers.
     ///

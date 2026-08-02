@@ -42,8 +42,18 @@ inline `=` expansions).
 
 1. **The chords that act on a hunk** — `s` / `u` / `x` in Normal and
    Visual, plus `a` / `-`. See "Acting on the hunk" below.
-2. **Navigation within diff content** — `]c` / `[c`; hunk-scoped folds
-   could join later.
+2. **Navigation within diff content** — `]c` / `[c`, and (2026-08-02)
+   `]f` / `[f`. The file pair moved here from `magit-core-mode`, which
+   bound it on all ten majors and where it meant something in one: in
+   the list views it stepped between rows while calling itself "next
+   file" (a job `j` and `]]` already do), in the diff views it matched
+   indented *context* lines and walked through arbitrary code, and in
+   the rebase todo — whose rows sit at column 0 — it matched nothing.
+   This mode's five majors are exactly the file-bearing ones. Which
+   rows count as a file still differs between them, and
+   `MagitView::file_lines` answers that: entries in magit-status,
+   `diff --git` headers in a pure diff. Hunk-scoped folds could join
+   later.
 3. **Structural highlighting** of the diff — see "Parsing" below.
 4. **`<CR>`** — one handler, one diff-path parser.
 5. **Options** — `magit.hunk.*`, which today do not exist anywhere.

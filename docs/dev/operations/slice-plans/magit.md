@@ -1311,7 +1311,7 @@ the buffer you are already in is the actual no-op. See MG.23h's note.
 | MG.24b | Audit finding B: one `replace_buffer_text`, one `magit_workdir` | — | ✅ |
 | MG.24c | Audit finding C2: `A`/`_`/`O` in the views the docs already claim | — | ✅ |
 | MG.24a | Audit finding A1: `magit-hunk-mode` owns the diff-content chords | MG.22 | ✅ |
-| MG.26 | `magit-blame-mode` as a minor on the file — retires the blame buffer | MG.7, MG.23f2 | 📝 |
+| MG.26 | `magit-blame-mode` as a minor on the file — retires the blame buffer | MG.7, MG.23f2 | ✅ |
 | MG.27 | in-flight indicator in magit headerlines (a word, not `⟳` — see below) | — | ✅ |
 | MG.26a | The blame model — porcelain → chunks → heading text (pure) | — | ✅ |
 | MG.26b | `magit-blame-mode` as a minor + the chunk-heading provider; retires the major and both blame buffers | MG.26a | ✅ |

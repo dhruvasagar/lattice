@@ -10,7 +10,6 @@ Every notification, live and queued. `:notifications`.
 ```
 *notifications*
   ✗ push failed: rejected (non-fast-forward)
-      <CR>  show output in *messages*
   ✓ fetch finished
   ✓ pull finished (queued)
 ```

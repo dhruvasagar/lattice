@@ -53,6 +53,19 @@ pub const MAGIT_HEADERLINE_PROVIDER_ID: ProviderId = 0x6d61_6769_745f_686c; // "
 /// noise at this density.
 const SEP: &str = "  ";
 
+/// MG.27: what the row says while a refresh is running.
+///
+/// A word rather than a `⟳` glyph, which the slice title proposed.
+/// The icon-degradation rule wants a BMP fallback for every glyph
+/// surface, and `⟳` (U+27F3, Miscellaneous Symbols and Arrows) is not
+/// in the fallback set — while the toggle that would select between
+/// them, `ui.nerd-fonts`, is buffer-local to the file tree today, not a
+/// global option this row could read. A word costs three more columns
+/// on a row already full of words (`clean`, `3 staged`, `AMEND`) and
+/// works in every terminal font. The glyph is the natural upgrade once
+/// that toggle is global.
+const BUSY_TEXT: &str = "refreshing";
+
 // ── Fields ───────────────────────────────────────────────────────────
 
 /// The git role a header field plays. Maps to a theme element, which
@@ -157,6 +170,9 @@ pub struct MagitHeaderline {
     fields: RwLock<Vec<Field>>,
     /// Bumped by [`Self::set`] only when the fields actually changed.
     version: AtomicU64,
+    /// MG.27: a refresh is running. Orthogonal to `fields` — see
+    /// [`Self::set_busy`].
+    busy: std::sync::atomic::AtomicBool,
     /// `None` in a harness without a theme registry.
     elements: Option<FieldElements>,
 }
@@ -179,6 +195,7 @@ impl MagitHeaderline {
         Arc::new(Self {
             fields: RwLock::new(Vec::new()),
             version: AtomicU64::new(0),
+            busy: std::sync::atomic::AtomicBool::new(false),
             elements: theme.map(|t| resolve_elements(t, mode_id)),
         })
     }
@@ -198,6 +215,32 @@ impl MagitHeaderline {
         true
     }
 
+    /// MG.27: mark a refresh as in flight (or finished).
+    ///
+    /// Kept OUT of `fields` deliberately. Every refresh path ends by
+    /// calling [`Self::set`] with freshly-computed fields, so a busy
+    /// marker living in that vector would be wiped by the very
+    /// completion it is supposed to survive until — and worse, would
+    /// have to be re-added by each builder, which is a rule every new
+    /// view could forget. A separate flag composes instead: builders
+    /// stay ignorant of it and cannot drop it.
+    ///
+    /// Returns `true` when the state actually changed, matching
+    /// [`Self::set`]'s contract — the version is only bumped then, so
+    /// a refresh that starts and finishes between two ticks costs no
+    /// repaint.
+    pub fn set_busy(&self, busy: bool) -> bool {
+        if self.busy.swap(busy, Ordering::AcqRel) == busy {
+            return false;
+        }
+        self.version.fetch_add(1, Ordering::Release);
+        true
+    }
+
+    pub fn is_busy(&self) -> bool {
+        self.busy.load(Ordering::Acquire)
+    }
+
     /// The row's own content version, ignoring the theme. Test seam —
     /// [`Headerline::version`] folds the theme's version in, which
     /// would make "did the content change?" unobservable on its own.
@@ -214,6 +257,7 @@ impl MagitHeaderline {
             .map(|f| {
                 f.iter()
                     .map(|f| f.text.as_str())
+                    .chain(self.is_busy().then_some(BUSY_TEXT))
                     .collect::<Vec<_>>()
                     .join(SEP)
             })
@@ -264,7 +308,10 @@ impl Headerline for MagitHeaderline {
         let mut cells: Vec<Cell> = Vec::new();
         let label_fg = fg(FieldStyle::Label);
         cells.push(Cell::new(' ' as u32, label_fg, 0, 0));
-        for (i, field) in fields.iter().enumerate() {
+        // MG.27: appended, not woven in, so it never displaces a field
+        // and a view that gains fields later needs no change here.
+        let busy = self.is_busy().then_some(Field::label(BUSY_TEXT));
+        for (i, field) in fields.iter().chain(busy.iter()).enumerate() {
             if i > 0 {
                 cells.extend(SEP.chars().map(|c| Cell::new(c as u32, label_fg, 0, 0)));
             }
@@ -388,6 +435,36 @@ fn resolve_elements(theme: ThemeRegistryHandle, mode_id: &str) -> FieldElements 
 pub(crate) fn publish(handle: &Option<MagitHeaderlineHandle>, fields: Vec<Field>) {
     if let Some(h) = handle {
         h.set(fields);
+    }
+}
+
+/// MG.27: mark this view busy until the returned guard drops.
+///
+/// **A guard rather than a matching pair of calls**, because a refresh
+/// has several ways out — an early `return` when the buffer handle is
+/// gone, a `spawn_blocking` that panics, a task cancelled when the
+/// buffer closes — and every one of them would leave the row saying
+/// "refreshing" forever. `Drop` runs on all of them. The one thing it
+/// cannot survive is the whole process going away, which takes the row
+/// with it.
+///
+/// Cheap when there is no headerline (a harness without a registry):
+/// the guard holds `None` and does nothing.
+#[must_use = "the row stays busy until this guard drops"]
+pub(crate) fn busy(handle: &Option<MagitHeaderlineHandle>) -> BusyGuard {
+    if let Some(h) = handle {
+        h.set_busy(true);
+    }
+    BusyGuard(handle.clone())
+}
+
+pub(crate) struct BusyGuard(Option<MagitHeaderlineHandle>);
+
+impl Drop for BusyGuard {
+    fn drop(&mut self) {
+        if let Some(h) = &self.0 {
+            h.set_busy(false);
+        }
     }
 }
 
@@ -1100,6 +1177,82 @@ mod tests {
         };
         let row = rendered(submodule_fields(&[e.clone(), e]));
         assert_eq!(row, "2 submodules", "no zero-counts padding the row: {row}");
+    }
+
+    // ── MG.27: the in-flight indicator ───────────────────────────
+
+    #[test]
+    fn a_busy_row_says_so_after_its_fields() {
+        let hl = bare(vec![Field::branch("main"), Field::label("clean")]);
+        assert_eq!(hl.text(), "main  clean");
+        assert!(hl.set_busy(true));
+        assert_eq!(hl.text(), "main  clean  refreshing");
+        assert!(hl.set_busy(false));
+        assert_eq!(hl.text(), "main  clean");
+    }
+
+    /// The whole reason the flag is not a `Field`: every refresh ends
+    /// by REPLACING the field vector, so a marker living in it would be
+    /// wiped by the very completion it must outlive.
+    #[test]
+    fn publishing_fields_does_not_clear_the_busy_marker() {
+        let hl = bare(vec![Field::label("clean")]);
+        hl.set_busy(true);
+        hl.set(vec![Field::branch("main"), Field::label("2 staged")]);
+        assert!(hl.is_busy(), "a field publish must not clear busy");
+        assert!(hl.text().ends_with("refreshing"), "{}", hl.text());
+    }
+
+    /// Only a real change repaints — a refresh that starts and finishes
+    /// between two ticks must cost nothing.
+    #[test]
+    fn setting_busy_to_what_it_already_is_bumps_no_version() {
+        let hl = bare(vec![Field::label("clean")]);
+        let before = hl.content_version();
+        assert!(hl.set_busy(true));
+        let after_set = hl.content_version();
+        assert!(after_set > before);
+        assert!(!hl.set_busy(true), "no change, no bump");
+        assert_eq!(hl.content_version(), after_set);
+    }
+
+    /// The guard is what survives an early return or a panic inside a
+    /// refresh — the failure mode being a row stuck on "refreshing".
+    #[test]
+    fn the_busy_guard_clears_on_drop() {
+        let hl = Some(bare(vec![Field::label("clean")]));
+        {
+            let _guard = busy(&hl);
+            assert!(hl.as_ref().unwrap().is_busy());
+        }
+        assert!(
+            !hl.as_ref().unwrap().is_busy(),
+            "dropping the guard must clear it, however the scope was left"
+        );
+    }
+
+    #[test]
+    fn the_busy_guard_is_harmless_without_a_headerline() {
+        // A harness with no theme/registry has `None` here; taking the
+        // guard must not panic or require a handle.
+        let none: Option<MagitHeaderlineHandle> = None;
+        drop(busy(&none));
+    }
+
+    /// A busy row still renders its fields — the marker is appended,
+    /// not substituted, so nothing the user was reading disappears
+    /// while a refresh runs.
+    #[test]
+    fn a_busy_row_still_renders_every_field() {
+        let hl = bare(vec![Field::branch("main"), Field::label("3 staged")]);
+        hl.set_busy(true);
+        let row = hl.render().expect("non-empty fields render");
+        let text: String = row
+            .cells
+            .iter()
+            .map(|c| char::from_u32(c.codepoint).unwrap_or(' '))
+            .collect();
+        assert_eq!(text, " main  3 staged  refreshing ");
     }
 
     #[test]

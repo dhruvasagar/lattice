@@ -1298,7 +1298,7 @@ the buffer you are already in is the actual no-op. See MG.23h's note.
 | MG.24c | Audit finding C2: `A`/`_`/`O` in the views the docs already claim | — | ✅ |
 | MG.24a | Audit finding A1: `magit-hunk-mode` owns the diff-content chords | MG.22 | ✅ |
 | MG.26 | `magit-blame-mode` as a minor on the file — retires the blame buffer | MG.7, MG.23f2 | 📝 |
-| MG.27 | `⟳` in magit-status's headerline while a refresh is in flight | — | 📝 |
+| MG.27 | in-flight indicator in magit headerlines (a word, not `⟳` — see below) | — | ✅ |
 | NOTIF.1 | Notification subsystem (design.md §5.9.9) — magit remote ops as first consumer | — | 📝 |
 | MG.23i+ | The new subsystems, one slice each, prioritised by daily use — the same set MG.21 still names | — | 📝 |
 
@@ -2179,6 +2179,37 @@ did not land, and there is no `do`/`dp` hunk transfer.
 - **Deliverables:** two-pane layout via D.4's pane-group machinery,
   scroll-bound; `do`/`dp` on top of MG.18's hunk identity.
 - **Tests:** panes stay scroll-synced; `do`/`dp` move exactly one hunk.
+
+### MG.27 — the in-flight indicator ✅ (2026-08-02)
+
+Design: [`../../architecture/magit.md`](../../architecture/magit.md)
+§8.12.
+
+**Deliverable changed from the slice title, deliberately.** The title
+said `⟳`. The icon-degradation rule wants a BMP fallback for every
+glyph surface, `⟳` (U+27F3) is not in the fallback set, and
+`ui.nerd-fonts` — the toggle that would pick between glyph and
+fallback — is buffer-local to the file tree, not a global option a
+headerline can read. So the row says `refreshing`, which needs no
+toggle and renders everywhere. Building the global toggle is a
+different slice; shipping an unguarded glyph would have quietly
+violated a standing rule.
+
+**Two decisions worth keeping:** the flag is separate from `fields`,
+because every refresh replaces that vector and would wipe a marker
+stored in it; and it is raised by an RAII guard, because a refresh can
+exit early, panic, or be cancelled and each would strand the row on
+`refreshing`.
+
+Applied to magit-status (the slice's subject) and to every list view
+whose refresh spawns — branch, stash, log, remote, submodule. The
+mutation spawners deliberately take no guard: their per-target
+`refresh` calls raise and clear the flag on their own rows.
+
+- **Tests:** 6.
+- **No bench:** `set_busy` is one atomic swap and bumps the version
+  only on a real change, so a refresh entirely between two ticks costs
+  no repaint.
 
 ### MG.19 — side-by-side ✅ (2026-08-02)
 

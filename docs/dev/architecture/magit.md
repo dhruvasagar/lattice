@@ -1565,6 +1565,40 @@ the picker owns placement, the transient owns content + interaction** —
 worth stating explicitly since it's easy to reintroduce the bug by having
 transient code make its own placement decision again.
 
+### 8.12 The in-flight indicator (MG.27)
+
+While a refresh is running, the headerline appends `refreshing` after
+the view's own fields.
+
+**It is a flag, not a `Field`, and that is the whole design.** Every
+refresh path ends by calling `MagitHeaderline::set` with freshly
+computed fields — so a marker living in that vector would be wiped by
+the very completion it is supposed to survive until, and each per-view
+builder would have to re-add it, which is a rule a new view can forget.
+A separate `AtomicBool` composes: builders stay ignorant of it and
+cannot drop it. Guarded by
+`publishing_fields_does_not_clear_the_busy_marker`.
+
+**Raised and cleared by an RAII guard**, not a matching pair of calls.
+A refresh has several ways out — an early return when the buffer handle
+is gone, a `spawn_blocking` that panics, a task cancelled because the
+buffer closed — and each one would otherwise leave the row stuck on
+`refreshing` forever. `Drop` covers all of them.
+
+**Only a real change bumps the version**, so a refresh that begins and
+ends between two cells-worker ticks costs no repaint at all (paramount
+goal #1). No wake is needed: the worker already polls
+`Headerline::version` every tick.
+
+**A word, not the `⟳` the slice title proposed.** The
+icon-degradation rule wants a BMP fallback for every glyph surface, and
+`⟳` (U+27F3) is not in the fallback set — while `ui.nerd-fonts`, the
+toggle that would choose between them, is buffer-local to the file tree
+today rather than a global option this row can read. `refreshing` costs
+a few columns on a row already made of words (`clean`, `3 staged`,
+`AMEND`) and renders in every terminal font. The glyph is the natural
+upgrade once that toggle is global.
+
 ### 8.11 `dv` — side-by-side, by composing the diff subsystem (MG.19)
 
 `dv` on a diff row opens that file's baseline and its working-tree copy

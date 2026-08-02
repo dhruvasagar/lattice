@@ -354,7 +354,12 @@ fn refresh(s: Arc<Mutex<RemoteState>>) -> Option<Effect> {
             g.headerline.clone(),
         )
     };
+    // MG.27: the row says "refreshing" from here until the
+    // guard drops — including on every early exit inside the
+    // task, which is why it is a guard and not a matching pair.
+    let busy = headerline::busy(&hl);
     tokio::task::spawn(async move {
+        let _busy = busy;
         let (text, header, entries) = tokio::task::spawn_blocking(move || build_remote_list(&wd))
             .await
             .unwrap_or_else(|_| (String::new(), Vec::new(), Vec::new()));
@@ -389,6 +394,11 @@ fn spawn_remote_mutation(
     let states = ctx.services.get::<RemoteStatesHandle>()?;
     let targets = states.all();
     let workdir = crate::workdir::magit_workdir().unwrap_or_default();
+    // No guard here: this task's own refreshes are what the
+    // user sees, and each `refresh(target)` below raises and
+    // clears the busy flag on its OWN row. Marking busy here
+    // too would need a second guard per target and would clear
+    // on a different schedule.
     tokio::task::spawn(async move {
         let wd = workdir.clone();
         let outcome = tokio::task::spawn_blocking(move || match Repository::discover(&wd) {

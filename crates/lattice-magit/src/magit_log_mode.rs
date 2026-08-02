@@ -206,7 +206,12 @@ fn refresh(s: Arc<Mutex<LogState>>) -> Option<Effect> {
             g.extra_args.clone(),
         )
     };
+    // MG.27: the row says "refreshing" from here until the
+    // guard drops — including on every early exit inside the
+    // task, which is why it is a guard and not a matching pair.
+    let busy = headerline::busy(&hl);
     tokio::task::spawn(async move {
+        let _busy = busy;
         let for_task = path.clone();
         let text = tokio::task::spawn_blocking(move || run_log(&wd, for_task.as_deref(), &extra))
             .await

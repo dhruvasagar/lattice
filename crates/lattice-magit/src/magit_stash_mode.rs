@@ -281,7 +281,12 @@ fn refresh(s: Arc<Mutex<StashState>>) -> Option<Effect> {
             g.headerline.clone(),
         )
     };
+    // MG.27: the row says "refreshing" from here until the
+    // guard drops — including on every early exit inside the
+    // task, which is why it is a guard and not a matching pair.
+    let busy = headerline::busy(&hl);
     tokio::task::spawn(async move {
+        let _busy = busy;
         let (text, header) = tokio::task::spawn_blocking(move || build_stash_list(&wd))
             .await
             .unwrap_or_default();
@@ -312,7 +317,12 @@ fn spawn_mutation_and_refresh(
             g.headerline.clone(),
         )
     };
+    // MG.27: the row says "refreshing" from here until the
+    // guard drops — including on every early exit inside the
+    // task, which is why it is a guard and not a matching pair.
+    let busy = headerline::busy(&hl);
     tokio::task::spawn(async move {
+        let _busy = busy;
         let _ = tokio::task::spawn_blocking(mutate).await;
         let (text, header) = tokio::task::spawn_blocking(move || build_stash_list(&wd))
             .await

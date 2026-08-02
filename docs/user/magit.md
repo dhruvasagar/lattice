@@ -210,6 +210,11 @@ exactly like the live file. The row answers that:
 | [`magit-stash-show-mode`](help:magit-stash-show-mode) | `stash@{2}  WIP on main: fix the thing` |
 | [`magit-rebase-mode`](help:magit-rebase-mode) | `onto  origin/main  4 commits` — plus `REBASE IN PROGRESS` |
 
+While a refresh is running, the row appends **`refreshing`** after its
+own fields — a `gr`, a stage, or anything else that re-reads git. It
+disappears when the new content lands, so a slow git call in a large
+repository looks busy rather than frozen.
+
 Fields are coloured by what they are — SHAs, branches, refs, and
 authors each take their own theme colour — rather than labelled, so the
 row stays short on a narrow split. Two theme elements are magit's own:

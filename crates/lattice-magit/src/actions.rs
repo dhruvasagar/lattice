@@ -881,6 +881,10 @@ async fn do_refresh(
     cursor_bus: Option<crate::cursor_restore::CursorBusHandle>,
     state: Arc<Mutex<StatusBufferState>>,
 ) {
+    // MG.27: the row says "refreshing" for the whole of this function,
+    // cleared by the guard's drop — including if the `spawn_blocking`
+    // below panics or the task is cancelled when the buffer closes.
+    let _busy = crate::headerline::busy(&headerline);
     let (text, spans, header, reopened) =
         tokio::task::spawn_blocking(move || refresh::build_and_format(&wd, &open))
             .await

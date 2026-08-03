@@ -1351,7 +1351,14 @@ the buffer you are already in is the actual no-op. See MG.23h's note.
 | NOTIF.1d | magit's remote ops as the first consumer | NOTIF.1b/c | ✅ |
 | NOTIF.1e | Config (`notifications.*`) + the `*messages*` tee | NOTIF.1a | ✅ |
 | NOTIF.1f | Actions, via the `*notifications*` buffer | NOTIF.1e | ✅ |
-| MG.23i+ | The new subsystems, one slice each, prioritised by daily use — `O` subtree, `T` notes, `w`/`W` am + format-patch, `y` show-refs, `Y` cherries, `C` clone (`Z` worktree is blocked, see below) | — | 📝 |
+| MG.23i+ | The new subsystems, one slice each — **sliced out as MG.35–MG.40 (2026-08-03)** | — | 📝 |
+| MG.34 | `gM` log-merged, `ge` edit-line-commit — the two rows that were blocked on a key decision | — | 📝 |
+| MG.35 | `y` show-refs | — | 📝 |
+| MG.36 | `C` clone | — | 📝 |
+| MG.37 | `T` notes | — | 📝 |
+| MG.38 | `O` subtree | — | 📝 |
+| MG.39 | `w` am / `W` format-patch | — | 📝 |
+| MG.40 | `Y` cherries | — | 📝 |
 
 #### MG.23a — the file target seam + `:magit-other-file-dispatch` ✅ (2026-07-30)
 
@@ -2928,6 +2935,57 @@ a refresh that drops the diff, and splice alignment.
 
 **Not shipped:** `magit.hunk.line-backgrounds` to opt out — the option
 lands with MG.22, which is where magit's options get an owner.
+
+### MG.34–MG.40 — closing magit-dispatch parity 📝 (scoped 2026-08-03)
+
+**Decision: the full MG.23i+ tail ships before this branch lands.** The
+alternative offered was v1 = current state, deferring all six on the
+grounds that none is a daily-driver surface and the branch is 132
+commits ahead of `origin/main` — which is itself a risk, since every
+day widens the merge and lengthens any bisect through it. That cost was
+put explicitly and the call was to complete parity anyway. Recorded
+here so the trade is visible rather than implied.
+
+Ordered by daily use, which is what MG.23i+ always said the order
+should be:
+
+| Slice | Key | Notes |
+|---|---|---|
+| MG.35 | `y` show-refs | the most defensible of the six — "what refs point here" has no equivalent in what shipped |
+| MG.36 | `C` clone | one-time op; `:terminal` covers it today, so the row is convenience |
+| MG.37 | `T` notes | needs a notes buffer + edit flow |
+| MG.38 | `O` subtree | `O` is free on the dispatch (reset moved to `Os`/`Om`/`Oh` inside a submenu) — confirm before binding |
+| MG.39 | `w` am / `W` format-patch | email-patch workflow; two ops, one slice |
+| MG.40 | `Y` cherries | rarest; last |
+
+`Z` worktree stays **blocked**, and not on work: magit's workdir is
+process-wide (§MG.21h/i's note), and the 2026-08-03 decision was to
+keep it that way. It is unblocked by reopening that decision, not by
+this tail.
+
+#### MG.34 — the two rows that were blocked on a key decision
+
+`M` log-merged and `e` edit-line-commit sat open because both of
+magit's keys are vim motions here (middle-of-screen, end-of-word) and
+`M` is additionally taken by remote management on the dispatch
+(MG.21d). Resolved as **`g`-prefixed chords**: `gM` and `ge`.
+
+Both are free — verified against every `chord: "g…"` in the workspace
+(`gD gI gJ gT gU gd gg gh gj gk gl gq gr gt gu gv gx gy` are taken;
+`gM` and `ge` are not).
+
+**`ge` is a real vim motion we have not implemented**, and taking it
+here does not foreclose it. Feature keymaps live at
+`KeymapLayer::MajorMode` / `MinorMode`, never `Builtin` — so `ge` is
+bound only in the magit buffers that own it, and an ordinary buffer
+stays free to gain `ge` as end-of-previous-word later. That is the
+standing rule doing exactly the job it exists for; a `Builtin`-layer
+binding here would have foreclosed it globally.
+
+This also keeps the rule against inventing new 1–2 letter shorts: `g`
+is an existing prefix, not a new top-level slot, so the scarce
+single-letter space the plugin/user-config alias mechanism is reserved
+for is untouched.
 
 ### MG.33 — reverse blame names the removing commit ✅ (2026-08-03)
 

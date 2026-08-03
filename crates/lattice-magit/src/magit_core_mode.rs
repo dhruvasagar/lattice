@@ -1720,3 +1720,140 @@ mod discard_round_trip {
         );
     }
 }
+
+// ── MG.34: `gM` — the merge that brought a commit into HEAD ──────────
+
+/// The argv for "which merge introduced `sha` into HEAD".
+///
+/// Pure, so the flags and their order are pinned without a repository —
+/// the same shape `blame_argv` / `run_diff_argv` / `tag_argv` already
+/// have.
+///
+/// `--ancestry-path` restricts the walk to commits that are both
+/// descendants of `sha` and ancestors of HEAD, `--merges` keeps only
+/// merge commits, and `--reverse` puts the **oldest first**. The oldest
+/// merge on that path is the one that brought `sha` in; later ones
+/// merely carried it along, and reporting one of those would answer a
+/// question nobody asked.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn log_merged_argv(sha: &str) -> Vec<String> {
+    vec![
+        "log".to_string(),
+        "--merges".to_string(),
+        "--ancestry-path".to_string(),
+        "--reverse".to_string(),
+        "--format=%H".to_string(),
+        format!("{sha}..HEAD"),
+    ]
+}
+
+/// Resolve the merge commit that introduced `sha` into HEAD.
+///
+/// `None` when nothing merged it — which is the ordinary answer for a
+/// commit made directly on the current branch, not an error. The caller
+/// says so rather than showing an empty buffer.
+///
+/// Blocking; call on `spawn_blocking`.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn resolve_merge_commit(workdir: &std::path::Path, sha: &str) -> Option<String> {
+    let repo = lattice_vcs::Repository::discover(workdir).ok()?;
+    let lines = repo.run_git_lines(log_merged_argv(sha)).ok()?;
+    lines.into_iter().next()
+}
+
+/// MG.34: the log-merged walk. The handler that consumes these is not
+/// built yet — see the slice plan for why it needs an async
+/// buffer-open seam.
+#[cfg(test)]
+mod log_merged {
+    use super::*;
+    use std::path::Path;
+    use std::process::Command;
+
+    fn git(dir: &Path, args: &[&str]) -> String {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .expect("git");
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// The flags are the whole correctness argument, so they are pinned
+    /// without needing a repository — `--reverse` in particular, since
+    /// dropping it silently returns the *newest* merge instead of the
+    /// one that introduced the commit, which is a plausible-looking
+    /// wrong answer.
+    #[test]
+    fn the_argv_walks_oldest_first_along_the_ancestry_path() {
+        let argv = log_merged_argv("abc123");
+        assert_eq!(
+            argv,
+            vec![
+                "log",
+                "--merges",
+                "--ancestry-path",
+                "--reverse",
+                "--format=%H",
+                "abc123..HEAD",
+            ]
+        );
+    }
+
+    /// A commit merged in from a side branch resolves to the merge
+    /// commit, not to itself and not to HEAD.
+    #[test]
+    fn a_side_branch_commit_resolves_to_the_merge_that_brought_it_in() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let p = dir.path();
+        git(p, &["init", "-b", "main"]);
+        git(p, &["config", "user.email", "t@lattice.dev"]);
+        git(p, &["config", "user.name", "lattice-test"]);
+        std::fs::write(p.join("a.txt"), "base\n").expect("write");
+        git(p, &["add", "a.txt"]);
+        git(p, &["commit", "-m", "base"]);
+
+        git(p, &["checkout", "-b", "side"]);
+        std::fs::write(p.join("b.txt"), "side\n").expect("write");
+        git(p, &["add", "b.txt"]);
+        git(p, &["commit", "-m", "on side"]);
+        let side = git(p, &["rev-parse", "HEAD"]);
+
+        git(p, &["checkout", "main"]);
+        git(p, &["merge", "--no-ff", "side", "-m", "merge side"]);
+        let merge = git(p, &["rev-parse", "HEAD"]);
+
+        assert_eq!(
+            resolve_merge_commit(p, &side),
+            Some(merge.clone()),
+            "must name the merge commit, not the side commit or HEAD"
+        );
+        assert_ne!(resolve_merge_commit(p, &side), Some(side));
+    }
+
+    /// A commit made straight onto the branch was never merged in.
+    /// `None` is the ordinary answer, not a failure — the caller says
+    /// so rather than opening an empty buffer.
+    #[test]
+    fn a_mainline_commit_has_no_merge_and_that_is_not_an_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let p = dir.path();
+        git(p, &["init", "-b", "main"]);
+        git(p, &["config", "user.email", "t@lattice.dev"]);
+        git(p, &["config", "user.name", "lattice-test"]);
+        std::fs::write(p.join("a.txt"), "base\n").expect("write");
+        git(p, &["add", "a.txt"]);
+        git(p, &["commit", "-m", "base"]);
+        let first = git(p, &["rev-parse", "HEAD"]);
+        std::fs::write(p.join("a.txt"), "more\n").expect("write");
+        git(p, &["add", "a.txt"]);
+        git(p, &["commit", "-m", "second"]);
+
+        assert_eq!(resolve_merge_commit(p, &first), None);
+    }
+}

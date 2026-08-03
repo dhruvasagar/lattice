@@ -2987,6 +2987,50 @@ is an existing prefix, not a new top-level slot, so the scarce
 single-letter space the plugin/user-config alias mechanism is reserved
 for is untouched.
 
+##### Landed so far: the walk, not the chord (2026-08-03)
+
+`log_merged_argv` + `resolve_merge_commit` are in `magit_core_mode`,
+with three tests (the argv pinned without a repository; a side-branch
+commit resolving to the merge; a mainline commit resolving to `None`).
+
+`--reverse` is the load-bearing flag and is pinned for that reason:
+without it the walk returns the *newest* merge on the ancestry path
+rather than the one that introduced the commit — a plausible-looking
+wrong answer, which is the kind this plan tries not to ship.
+
+**What blocked the chord, and it is worth getting right rather than
+hacking.** The handler signature is synchronous
+(`&ActionContext -> Option<Effect>`), but resolving the merge needs a
+`git` call, which must not run on the actor thread — MG.31 is this
+session's reminder of what that costs. So the handler cannot return
+`Effect::OpenSyntheticBuffer` with the answer in it.
+
+Three shapes, none yet chosen:
+
+1. **Resolve in the mode's `on_activate`.** Open
+   `*magit:merged:<source-sha>*`, and let `magit-revision-mode` (whose
+   activation is already async and already uses `spawn_blocking`)
+   resolve the merge and then show it. Follows the established
+   "a magit buffer fetches its own content" pattern and needs no new
+   seam — but adds a second buffer-name form the mode must parse.
+2. **Resolve, then wake through the inbound primitive.** The shape
+   `boot-composition.md` §3 prescribes for any async result that must
+   reach the screen without a keypress. Correct, and heavier.
+3. **A picker.** Sidesteps the async-open question entirely by making
+   the result a candidate list — but a single answer presented as a
+   one-row picker is a worse surface than a buffer.
+
+(1) looks right and is what I would try first. **The same question
+gates MG.35–MG.40**: every one of them opens a buffer whose content
+comes from `git`, so whichever shape is chosen here should be the one
+they all use rather than each inventing its own.
+
+A first attempt at the handler was written and reverted rather than
+committed: it spawned the resolution and discarded the result, which
+compiles, binds a chord, and does nothing when pressed. A consumed
+Normal-mode chord that silently no-ops is precisely the dead-key
+failure MG.20's note describes, so it is better absent.
+
 ### MG.33 — reverse blame names the removing commit ✅ (2026-08-03)
 
 Design:

@@ -897,6 +897,130 @@ mod tests {
     /// plumbing is wired correctly end-to-end -- the generator
     /// can read the registry the App owns and yields the
     /// expected id-sorted set.
+    /// **The data-loss bug.** A bracketed paste with a picker open used
+    /// to fall through to the document-insert arm of `do_paste_text` —
+    /// a picker is not a `ModalState`, so nothing matched it. The query
+    /// stayed empty, the picker looked inert, and the file behind it
+    /// silently gained the clipboard's contents.
+    ///
+    /// Non-vacuous by construction: the pre-fix behaviour is asserted
+    /// against directly (the document must NOT change), so a regression
+    /// that routes paste back to the buffer fails here rather than
+    /// somewhere downstream.
+    #[test]
+    fn pasting_into_a_picker_fills_the_query_and_never_the_document() {
+        let mut app = app_with("hi\n", 24);
+        app.apply(lattice_host::action::Action::OpenCommandPicker);
+        assert!(app.editor.picker.is_some(), "picker must be open");
+
+        app.apply(lattice_host::action::Action::PasteText("edit".into()));
+
+        assert_eq!(
+            app.editor.picker.as_ref().map(|p| p.query.as_str()),
+            Some("edit"),
+            "the paste belongs to the picker that owns the keyboard"
+        );
+        assert_eq!(
+            app.editor.document.snapshot().buffer.line(0),
+            Some("hi".to_string()),
+            "the document behind the picker must be untouched — this is \
+             the data-loss bug, and it was silent"
+        );
+    }
+
+    /// A multi-line paste has to become one line, because the query is
+    /// one line. Joining with nothing would weld `foo.rs` to `bar.rs`
+    /// and match neither.
+    #[test]
+    fn a_multi_line_paste_flattens_to_spaces_rather_than_welding_words() {
+        let mut app = app_with("hi\n", 24);
+        app.apply(lattice_host::action::Action::OpenCommandPicker);
+        app.apply(lattice_host::action::Action::PasteText(
+            "foo\nbar\r\nbaz".into(),
+        ));
+        assert_eq!(
+            app.editor.picker.as_ref().map(|p| p.query.as_str()),
+            Some("foo bar  baz"),
+            "each line break becomes a space; CRLF is two of them"
+        );
+    }
+
+    /// Other control characters are dropped rather than flattened: they
+    /// cannot be typed into a query, so they cannot be meant in one, and
+    /// a stray `\0` or `ESC` surviving a terminal round-trip would make
+    /// the filter match nothing for no visible reason.
+    #[test]
+    fn a_paste_carrying_control_characters_drops_them() {
+        let mut app = app_with("hi\n", 24);
+        app.apply(lattice_host::action::Action::OpenCommandPicker);
+        app.apply(lattice_host::action::Action::PasteText(
+            "ed\u{0}it\u{1b}".into(),
+        ));
+        assert_eq!(
+            app.editor.picker.as_ref().map(|p| p.query.as_str()),
+            Some("edit")
+        );
+    }
+
+    /// A paste that is nothing but control characters must not clear the
+    /// selection or re-run the filter — it contributed no text, so the
+    /// picker should be exactly as it was.
+    #[test]
+    fn a_paste_that_contributes_nothing_leaves_the_query_alone() {
+        let mut app = app_with("hi\n", 24);
+        app.apply(lattice_host::action::Action::OpenCommandPicker);
+        app.apply(lattice_host::action::Action::PasteText("ed".into()));
+        app.apply(lattice_host::action::Action::PasteText(
+            "\u{0}\u{1b}".into(),
+        ));
+        assert_eq!(
+            app.editor.picker.as_ref().map(|p| p.query.as_str()),
+            Some("ed"),
+            "a no-op paste is a no-op"
+        );
+    }
+
+    /// A transient shows no query and takes no text, so a paste there
+    /// goes nowhere — and specifically not into the document, which is
+    /// the same bug wearing the other hat.
+    #[test]
+    fn pasting_into_a_transient_changes_neither_the_menu_nor_the_document() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        use crate::app::test_helpers::press;
+
+        let mut app = app_with("hi\n", 24);
+        press(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+        );
+        press(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE),
+        );
+        assert!(
+            app.editor
+                .picker
+                .as_ref()
+                .and_then(|p| p.transient.as_ref())
+                .is_some(),
+            "C-c g must open a transient"
+        );
+
+        app.apply(lattice_host::action::Action::PasteText("nonsense".into()));
+
+        assert_eq!(
+            app.editor.picker.as_ref().map(|p| p.query.as_str()),
+            Some(""),
+            "a transient has no query to fill"
+        );
+        assert_eq!(
+            app.editor.document.snapshot().buffer.line(0),
+            Some("hi".to_string()),
+            "and the document is still not where a paste goes"
+        );
+    }
+
     #[test]
     fn gen_picker_sources_emits_candidate_per_registered_source() {
         let app = app_with("hi\n", 5);

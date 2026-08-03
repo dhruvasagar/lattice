@@ -21434,6 +21434,35 @@ impl Editor {
         if text.is_empty() {
             return;
         }
+        // An open picker owns the keyboard, so it owns the paste.
+        //
+        // **This arm closes a data-loss bug, not a missing feature.** A
+        // picker is not a `ModalState`, so before this a bracketed paste
+        // with one open fell through to the `_` arm below and inserted
+        // into the *document behind the picker*: the query stayed empty,
+        // nothing visible happened, and the user's file silently gained
+        // the clipboard's contents. Verified by probe before the fix
+        // (`"hi"` became `"PASTEDhi"` with the query untouched).
+        //
+        // A **transient** takes no text — its rows are single-key
+        // actions and it shows no query — so a paste there is swallowed
+        // rather than routed anywhere. Filling an invisible query would
+        // be the same invisibility this arm exists to remove.
+        if self.picker.is_some() {
+            let changed = matches!(
+                self.picker.as_ref().map(|p| p.transient.is_some()),
+                Some(false)
+            ) && self
+                .picker
+                .as_mut()
+                .map(|p| p.paste_query(text))
+                .unwrap_or(false);
+            if changed {
+                self.bump_live_picker_debounce();
+                let _ = self.preview_picker_selection();
+            }
+            return;
+        }
         // CB.3 follow-up: terminal buffer paste (non-Command/Search mode) —
         // write to PTY instead of the document. Wraps in DEC-2004
         // bracketed-paste markers when the running program requested

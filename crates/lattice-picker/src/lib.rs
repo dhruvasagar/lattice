@@ -884,6 +884,39 @@ impl Picker {
         self.refilter();
     }
 
+    /// Append a whole pasted burst to the query.
+    ///
+    /// **Newlines are flattened to spaces rather than dropped or
+    /// honoured.** The query is a single line, so a multi-line paste has
+    /// to become one — and joining with nothing would weld the last word
+    /// of each line to the first of the next (`foo.rs` + `bar.rs` →
+    /// `foo.rsbar.rs`), which matches nothing and looks like the paste
+    /// was corrupted. Other control characters are dropped: they cannot
+    /// be typed into the query, so they cannot be intended in it, and a
+    /// stray `\t` or `\r` from a terminal round-trip would silently make
+    /// the filter match nothing.
+    ///
+    /// Returns `false` when the burst contributes nothing, so the caller
+    /// can skip the refilter and the preview.
+    pub fn paste_query(&mut self, text: &str) -> bool {
+        let cleaned: String = text
+            .chars()
+            .filter_map(|c| match c {
+                '\n' | '\r' | '\t' => Some(' '),
+                c if c.is_control() => None,
+                c => Some(c),
+            })
+            .collect();
+        if cleaned.is_empty() {
+            return false;
+        }
+        self.query.push_str(&cleaned);
+        self.query_cursor = self.query.len();
+        self.selected = 0;
+        self.refilter();
+        true
+    }
+
     pub fn backspace_query(&mut self) {
         if let Some(last) = self.query.chars().last() {
             let new_len = self.query.len() - last.len_utf8();

@@ -267,6 +267,31 @@ See design §7 for the full mapping.
   and `paste_text_in_terminal_normal_mode_routes_to_pty_not_document` (both PTY-free,
   matching CB.3's real-PTY testing boundary).
 
+- **Bracketed paste with a picker open edited the document (2026-08-03).** A picker is
+  not a `ModalState`, so `do_paste_text`'s dispatch had no arm for it and the burst fell
+  through to the document-insert fallback: the query stayed empty, the picker looked
+  inert, and the file *behind* it silently gained the clipboard's contents. Data loss
+  shaped like a no-op.
+
+  Fixed by a picker arm ahead of the modal match, routing to `Picker::paste_query`.
+  Transients swallow the paste (single-key rows, no query rendered — filling an
+  invisible query is the same invisibility the fix removes). Newlines flatten to spaces
+  rather than being dropped, because joining with nothing welds `foo.rs` to `bar.rs` and
+  matches neither; other control characters drop.
+
+  **Verified by probe before the fix** (`"hi"` became `"PASTEDhi"` with the query
+  untouched) and **verified non-vacuous after** — disabling the arm leaves the query
+  empty and fails the test. The first attempt at that non-vacuity check silently
+  patched the wrong `if self.picker.is_some()` in a 40k-line file and "passed", which
+  is a reminder that a disable-and-rerun check is only evidence if you confirm you
+  disabled the right thing. Tests assert the *document is unchanged*, not merely that
+  the query filled, so a re-route back to the buffer fails at the right place.
+
+  Five tests in `lattice-ui-tui`. Design: `clipboard.md` §6b.
+
+  **Not the yank picker.** `M-y`-style pick-from-history is §11's yank ring and needs a
+  picker that returns a value into its caller; that primitive does not exist yet.
+
 ---
 
 ## Risk / sequencing notes

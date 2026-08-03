@@ -118,6 +118,17 @@ opens in the active pane. `:set picker.result.display=split-h` (or
 instead; the per-accept `<C-s>` / `<C-v>` / `<C-t>` chords override
 it for one pick.
 
+**Pasting.** Your terminal's paste shortcut fills the query. A
+multi-line paste becomes one line — each line break turns into a
+space, so pasting two paths gives you `foo.rs bar.rs` rather than
+`foo.rsbar.rs`. Pasting into a *transient* menu (`C-c g` and
+friends) does nothing: those rows are single keys and there is no
+query to fill.
+
+Picking from your *yank history* rather than the system clipboard
+is a separate thing and is not built yet — see
+[Not yet](#not-yet).
+
 ---
 
 ## Marginalia
@@ -260,3 +271,10 @@ the muscle memory carries across.
   full-editor preview ships; a per-row colour chip does not).
 - **Keybinding marginalia for non-command pickers** (e.g. showing
   the open-in-split chord on file rows).
+- **A yank-history picker.** Emacs' `M-y` — pick from what you have
+  previously yanked, rather than from the system clipboard. It wants
+  a picker that *returns a value into whatever opened it* (so it can
+  fill the query of the picker you were already in), and that
+  primitive does not exist yet. The same primitive is what would let
+  any command taking a revision offer a commit picker for that
+  argument.

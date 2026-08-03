@@ -153,6 +153,41 @@ against terminal's `ModeId`), and `lattice-terminal` publishes the one primitive
 host needs (`SharedTerm::bracketed_paste()`, since the alacritty `Term` handle is
 crate-private) — not that the handler bodies live in the `lattice-terminal` crate.
 
+## 6b. Where a bracketed paste goes (2026-08-03)
+
+`Action::PasteText` is the terminal's own paste shortcut arriving as one burst, so it
+has to land wherever the keyboard is currently pointed. `do_paste_text` dispatches on
+that, in order:
+
+| Destination | When |
+|---|---|
+| PTY | a terminal buffer is active and we are not on the `:` / `/` line |
+| the open **picker's query** | `self.picker.is_some()` and it is not a transient |
+| the `*command-line*` buffer | `ModalState::Command` |
+| the `*search-line*` buffer | `ModalState::Search(_)` |
+| the document, at the cursor | otherwise |
+
+**The picker arm closes a data-loss bug rather than adding a feature.** A picker is not
+a `ModalState`, so before this nothing matched it and a paste with a picker open fell
+through to the document arm: the query stayed empty, the picker looked inert, and the
+file *behind* the picker silently gained the clipboard's contents. Verified by probe
+before the fix — `"hi"` became `"PASTEDhi"` with the query untouched — and the
+regression test asserts the document is unchanged, not merely that the query is filled,
+so a future re-route back to the buffer fails at the right place.
+
+**A transient swallows the paste.** Its rows are single-key actions and it renders no
+query, so filling one would be exactly the invisibility this arm removes.
+
+**Newlines flatten to spaces; other control characters drop.** The query is one line, so
+a multi-line paste must become one — and joining with nothing would weld `foo.rs` to
+`bar.rs` and match neither. Control characters cannot be typed into a query, so they
+cannot be meant in one, and a stray `\t` or `ESC` surviving a terminal round-trip would
+make the filter match nothing for no visible reason.
+
+**This is not the yank picker.** `M-y`-style *pick from history* is §11's yank ring and
+needs a picker that returns a value into its caller — a primitive that does not exist
+yet. This section is only about where an OS-clipboard burst lands.
+
 ## 7. Cross-renderer parity
 
 TUI and GPUI move in lockstep behind the same `ClipboardHandle`, both overriding CB.0's

@@ -17,8 +17,15 @@ operator:yank motion:word-forward  → UnnamedRegister { content: "hello ", Char
 p                                  → buffer "hello worldhello "
 ```
 
-`store_yank` (`lattice-host/src/dispatch.rs:15032`) populates the unnamed register +
-`"0`; `do_paste` (`:18210`) / `read_register` (`:18316`) read it back. Not broken.
+`store_yank` (`lattice-host/src/dispatch.rs:15032`) populates the unnamed register;
+`do_paste` (`:18210`) / `read_register` (`:18316`) read it back. Not broken.
+
+> **Corrected 2026-08-03.** This line used to read "populates the unnamed register +
+> `"0`". It does not, and never did: `store_yank`'s register arm is
+> `Register::Unnamed | Register::BlackHole => {}`, so a plain `y` writes only the
+> unnamed slot. There is no `"0`, and no `"1` → `"2` shift on delete — the numbered
+> ring is unimplemented, not merely unmirrored. Written from vim's model rather than
+> from this code. See [`yank-ring.md`](yank-ring.md), which builds the ring.
 
 **What is missing — the OS clipboard is entirely unwired:**
 
@@ -248,15 +255,26 @@ proving yank stays off the blocking path, and graceful degradation
 
 ## 11. Relationship to the yank ring
 
-The kill-ring / yank-ring picker (future `yank-ring.md`) extends the **register layer**,
-not the clipboard backend. Its picker unifies **two sources into one history view** (per
-the user's design intent):
+The kill-ring / yank-ring picker ([`yank-ring.md`](yank-ring.md), written 2026-08-03)
+extends the **register layer**, not the clipboard backend. Its picker unifies **two
+sources into one history view** (per the user's design intent):
 
-- **yank history** — a bounded, capped ring of recent yanks (vim's `"0`–`"9` numbered
-  ring grown into a longer history), and
+- **yank history** — a bounded, capped ring, and
 - **named registers** — the live `"a`–`"z` contents (and `"+` when populated),
 
 so from one list the user picks either a past yank or an explicitly-stashed register.
 This doc's `store_yank` / `read_register` seam is where the ring hooks in; the clipboard
 stays orthogonal (the ring holds internal history; under `clipboard=true` the clipboard
 mirror still applies to the newest yank at the top of the ring).
+
+> **Corrected 2026-08-03.** This section used to describe the ring as "vim's `"0`–`"9`
+> numbered ring grown into a longer history". That ring does not exist (see §1's
+> correction), so there is nothing to grow. `yank-ring.md` inverts it instead: the ring
+> becomes the source of truth and `"0`–`"9` become a *view* over it — which is what
+> vim's registers semantically are, and which removes the possibility of the two
+> disagreeing.
+>
+> It also settles a question this section left open: **deletes do enter the ring**,
+> while the clipboard mirror stays yank-only per §5. The two stores have different
+> blast radii — an accidental `x` reaching the OS clipboard destroys something the
+> editor never owned, whereas one reaching a bounded internal ring costs a slot.

@@ -914,43 +914,57 @@ mod tests {
         };
         let candidates = generator.inner.generate(&ctx);
         let ids: Vec<String> = candidates.iter().map(|c| c.text.clone()).collect();
-        // Built-in registry seeds the first-party sources;
-        // PickerRegistry::iter is id-sorted so popup order is
-        // stable. Each new source migration extends this list.
-        assert_eq!(
-            ids,
-            vec![
-                "buffers",
-                "colorscheme",
-                "commands",
-                "files",
-                "grep",
-                "history",
-                "jumps",
-                "lines",
-                // magit's branch-create wizard registers its base-branch
-                // picker via `lattice_magit::picker_sources::register`
-                // (editor_boot.rs), so it appears here like any other
-                // first-party source.
-                "magit-branch-pick-base",
-                // MG.23j: the repo dispatch's `A` / `_` / `O` rows need
-                // a commit and have no cursor on one, so they open this.
-                "magit-commit",
-                "marks",
-                "outline",
-                "recent",
-                "registers",
-                // MB.5: `q/` / `q?` / `:history search`.
-                "search-history",
-                "snippets",
-            ]
-        );
-        // Sanity: matches what the registry itself reports.
+
+        // **The invariant this test exists for**: the generator sees
+        // exactly what the App's registry holds, id-sorted so popup
+        // order is stable. That is the `Weak<PickerRegistry>` plumbing
+        // working end-to-end, which is what the doc comment above
+        // promises.
         let registry = app.editor.picker_registry.load();
-        let registry_ids: Vec<&str> = registry.ids().collect();
-        let mut expected: Vec<String> = registry_ids.iter().map(|s| s.to_string()).collect();
+        let mut expected: Vec<String> = registry.ids().map(str::to_string).collect();
         expected.sort();
-        assert_eq!(ids, expected);
+        assert_eq!(ids, expected, "generator must mirror the registry exactly");
+        assert!(
+            !ids.is_empty(),
+            "an empty registry would satisfy the equality above vacuously"
+        );
+
+        // Only the sources THIS crate is responsible for are named
+        // here. Sources contributed by feature crates
+        // (`lattice_magit::picker_sources::register`,
+        // `lattice_snippet::…`) are asserted in those crates, next to
+        // the registration — see
+        // `lattice_magit::picker_sources::tests::every_registered_source_is_the_one_its_row_names`.
+        //
+        // **Why this is not one exhaustive list any more.** It used to
+        // be, and the list rotted: MG.29 added
+        // `magit-branch-checkout-pick` without extending it, leaving
+        // this assertion failing on `main` until MG.32 found it. A
+        // global inventory pinned in the renderer's test suite taxes
+        // every crate that adds a source and cannot be owned by any of
+        // them — so each crate now owns its own, and this keeps the
+        // cross-crate invariant plus its own rows.
+        for built_in in [
+            "buffers",
+            "colorscheme",
+            "commands",
+            "files",
+            "grep",
+            "history",
+            "jumps",
+            "lines",
+            "marks",
+            "outline",
+            "recent",
+            "registers",
+            // MB.5: `q/` / `q?` / `:history search`.
+            "search-history",
+        ] {
+            assert!(
+                ids.iter().any(|id| id == built_in),
+                "first-party source `{built_in}` is missing: {ids:?}"
+            );
+        }
     }
 
     /// Slice 3c: dropping the Arc<PickerRegistry> (simulating

@@ -52,7 +52,7 @@ owns *what* and *why*.
 | MG.21a | Diff line-background tints in magit's diff views | MG.20 | ✅ |
 | MG.22 | `magit-hunk-mode` — the mode owning diff *content* (chords + `<CR>` + options ✅; tree-sitter-diff parser open) | MG.20 | 🚧 |
 | MG.22b | The options magit-hunk-mode owns — `magit.hunk.context-lines`, `ui.diff.line-backgrounds` | MG.21a, MG.23k | ✅ |
-| MG.23 | magit-dispatch / file-dispatch parity (a–h done; j and i+ open) | MG.17b | 📝 |
+| MG.23 | magit-dispatch / file-dispatch parity (a–d, f–h, j done; e dropped; i+ open) | MG.17b | 📝 |
 | MG.28 | `C-c f v` / `V` — a file at a revision, and back to the live file | MG.11 | ✅ |
 | MG.29 | `C-c g b` branch submenu + `Esc` unwinds one submenu level | MG.17b | ✅ |
 | MG.30 | Visual-range `s`/`u` over file entries in magit-status | MG.18 | ✅ |

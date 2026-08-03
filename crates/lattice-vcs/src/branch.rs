@@ -45,6 +45,23 @@ impl Branch {
             .map_err(|e| VcsError::Index(format!("branch delete {}: {}", name, e)))
     }
 
+    /// Rename a branch.
+    ///
+    /// Equivalent to `git branch -m <old> <new>`. Deliberately **not**
+    /// `-M`: the lowercase form refuses when `new` already names a
+    /// branch, and the uppercase one overwrites it. Overwriting here
+    /// destroys whatever `new` pointed at, silently, so the refusal is
+    /// the behaviour we want and the error is propagated rather than
+    /// swallowed.
+    ///
+    /// Renaming the checked-out branch carries HEAD with it (git's own
+    /// behaviour); it does not detach.
+    pub fn rename(repo: &Repository, old: &str, new: &str) -> Result<()> {
+        repo.run_git(["branch", "-m", old, new])
+            .map(|_| ())
+            .map_err(|e| VcsError::Index(format!("branch rename {} -> {}: {}", old, new, e)))
+    }
+
     /// List all local branches.
     ///
     /// Equivalent to `git branch --format=%(refname:short)`.

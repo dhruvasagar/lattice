@@ -376,6 +376,68 @@ fn branch_checkout_and_delete() {
     assert!(!branches.contains(&"topic".to_string()));
 }
 
+/// MG.32: `m` in the branch submenu. Renaming a branch you are NOT on
+/// is the ordinary case.
+#[test]
+fn branch_rename_a_branch_you_are_not_on() {
+    let (_dir, repo) = init_temp_repo();
+    write_file(repo.workdir().unwrap(), "a.txt", "a\n");
+    git_add(&repo, "a.txt");
+    git_commit(&repo, "initial");
+
+    Branch::create(&repo, "old-name", false, None).unwrap();
+    Branch::rename(&repo, "old-name", "new-name").unwrap();
+
+    let branches = Branch::list(&repo).unwrap();
+    assert!(!branches.contains(&"old-name".to_string()));
+    assert!(branches.contains(&"new-name".to_string()));
+    // Renaming another branch must not move HEAD.
+    let head = git(&repo, &["rev-parse", "--abbrev-ref", "HEAD"]);
+    assert_eq!(head.trim(), "main");
+}
+
+/// Renaming the branch you are ON is the case that must not detach
+/// HEAD — git carries the checkout across, and HEAD has to follow.
+#[test]
+fn branch_rename_the_checked_out_branch_carries_head() {
+    let (_dir, repo) = init_temp_repo();
+    write_file(repo.workdir().unwrap(), "a.txt", "a\n");
+    git_add(&repo, "a.txt");
+    git_commit(&repo, "initial");
+
+    Branch::create(&repo, "topic", true, None).unwrap();
+    Branch::rename(&repo, "topic", "topic-renamed").unwrap();
+
+    let head = git(&repo, &["rev-parse", "--abbrev-ref", "HEAD"]);
+    assert_eq!(
+        head.trim(),
+        "topic-renamed",
+        "HEAD must follow the rename, not detach"
+    );
+}
+
+/// Renaming onto a name that already exists must FAIL rather than
+/// clobber it. `git branch -m` (no `-M`) refuses, and the error has to
+/// reach the caller — a silent overwrite here destroys a branch.
+#[test]
+fn branch_rename_refuses_to_clobber_an_existing_branch() {
+    let (_dir, repo) = init_temp_repo();
+    write_file(repo.workdir().unwrap(), "a.txt", "a\n");
+    git_add(&repo, "a.txt");
+    git_commit(&repo, "initial");
+
+    Branch::create(&repo, "keep", false, None).unwrap();
+    Branch::create(&repo, "other", false, None).unwrap();
+
+    assert!(
+        Branch::rename(&repo, "other", "keep").is_err(),
+        "renaming onto an existing name must not silently clobber it"
+    );
+    let branches = Branch::list(&repo).unwrap();
+    assert!(branches.contains(&"keep".to_string()));
+    assert!(branches.contains(&"other".to_string()));
+}
+
 #[test]
 fn stash_list_apply_pop_drop() {
     let (_dir, repo) = init_temp_repo();

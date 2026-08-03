@@ -1300,6 +1300,15 @@ already exists); `D` / `L` diff- and log-arg refresh; `M` log-merged;
 > (edit-line-commit) are both vim motions here — middle-of-screen and
 > end-of-word. Each needs either a fold into an existing chord (the
 > answer `D` got), a `g`-prefixed deviation, or a dispatch row.
+>
+> > **Closed by MG.34 (2026-08-03) — and the premise was wrong.** Both
+> > are **dispatch rows**, which was the third option listed here and
+> > the one magit itself uses: `M` "Merged" and `e` "Edit line" are
+> > suffixes of `magit-file-dispatch`, not keys. Neither was ever a
+> > collision. The `g`-prefixed deviation was drafted, locked, and then
+> > reversed when `magit-global-mode` turned out to be
+> > `ActivationPolicy::Universal`, which makes any chord it binds
+> > global in practice regardless of keymap layer. See MG.34 below.
 
 **Genuinely new subsystems.** ~~`B` bisect~~ (MG.21e/f/g), ~~`M` remote
 management~~ (MG.21b/c/d), ~~`o` submodule~~ (MG.21h/i), `O` subtree, `Z` worktree, `T` notes, `w` am /
@@ -1352,7 +1361,7 @@ the buffer you are already in is the actual no-op. See MG.23h's note.
 | NOTIF.1e | Config (`notifications.*`) + the `*messages*` tee | NOTIF.1a | ✅ |
 | NOTIF.1f | Actions, via the `*notifications*` buffer | NOTIF.1e | ✅ |
 | MG.23i+ | The new subsystems, one slice each — **sliced out as MG.35–MG.40 (2026-08-03)** | — | 📝 |
-| MG.34 | `gM` log-merged, `ge` edit-line-commit — the two rows that were blocked on a key decision | — | 📝 |
+| MG.34 | `M` log-merged, `e` edit-line-commit — as file-dispatch rows, no chords | — | ✅ |
 | MG.35 | `y` show-refs | — | 📝 |
 | MG.36 | `C` clone | — | 📝 |
 | MG.37 | `T` notes | — | 📝 |
@@ -2963,73 +2972,114 @@ process-wide (§MG.21h/i's note), and the 2026-08-03 decision was to
 keep it that way. It is unblocked by reopening that decision, not by
 this tail.
 
-#### MG.34 — the two rows that were blocked on a key decision
+#### MG.34 — log-merged + edit-line-commit ✅ (2026-08-03)
 
-`M` log-merged and `e` edit-line-commit sat open because both of
-magit's keys are vim motions here (middle-of-screen, end-of-word) and
-`M` is additionally taken by remote management on the dispatch
-(MG.21d). Resolved as **`g`-prefixed chords**: `gM` and `ge`.
+**Shipped as file-dispatch rows, with no chords at all.** That reverses
+this slice's own locked decision, on two findings.
 
-Both are free — verified against every `chord: "g…"` in the workspace
-(`gD gI gJ gT gU gd gg gh gj gk gl gq gr gt gu gv gx gy` are taken;
-`gM` and `ge` are not).
+**Finding 1 — the `ge` justification was factually wrong.** The locked
+text argued that `ge` was safe because feature keymaps live at
+`KeymapLayer::MinorMode`, "so an ordinary buffer stays free to gain
+`ge` as end-of-previous-word later". Edit-line-commit acts on a *file*
+buffer's line, so the only mode that could bind it is
+`magit-global-mode` — whose `activation_policy()` is
+`ActivationPolicy::Universal` (`magit_global_mode.rs:100`). It is
+active on every buffer kind, so a `ge` there is consumed everywhere and
+forecloses the motion exactly as a `Builtin` binding would. The layer
+distinction is real and inert here. `gE` was raised as an escape and
+declined for the same reason: it is the sibling motion
+(end-of-previous-WORD), so it relocates the collision rather than
+resolving it.
 
-**`ge` is a real vim motion we have not implemented**, and taking it
-here does not foreclose it. Feature keymaps live at
-`KeymapLayer::MajorMode` / `MinorMode`, never `Builtin` — so `ge` is
-bound only in the magit buffers that own it, and an ordinary buffer
-stays free to gain `ge` as end-of-previous-word later. That is the
-standing rule doing exactly the job it exists for; a `Builtin`-layer
-binding here would have foreclosed it globally.
+**Finding 2 — magit binds neither as a key.** Read from source per
+MG.23's policy #1 rather than from the inventory's paraphrase:
 
-This also keeps the rule against inventing new 1–2 letter shorts: `g`
-is an existing prefix, not a new top-level slot, so the scarce
-single-letter space the plugin/user-config alias mechanism is reserved
-for is untouched.
+| Command | Where magit puts it |
+|---|---|
+| `magit-log-merged` | `M` "Merged" in **`magit-file-dispatch`** (`magit-files.el`, `:level 7`); also `m` in the `magit-log` transient |
+| `magit-edit-line-commit` | `e` "Edit line" in `magit-file-dispatch`'s **"More actions"** group |
 
-##### Landed so far: the walk, not the chord (2026-08-03)
+So the whole `gM`/`ge` question was solving a collision magit never
+had. Both are transient suffixes, both land on our file-dispatch on
+magit's own keys, and the vim grammar keeps `M`, `ge` and `gE`.
 
-`log_merged_argv` + `resolve_merge_commit` are in `magit_core_mode`,
-with three tests (the argv pinned without a repository; a side-branch
-commit resolving to the merge; a mainline commit resolving to `None`).
+The 2026-08-03 direction that settled it: *"lets move this ability to a
+command and magit-file-dispatch action, lets not bind it since they're
+conflicting with native vim grammar."*
 
-`--reverse` is the load-bearing flag and is pinned for that reason:
-without it the walk returns the *newest* merge on the ancestry path
-rather than the one that introduced the commit — a plausible-looking
-wrong answer, which is the kind this plan tries not to ship.
+##### The async-open shape — decided, and it gates MG.35–MG.40
 
-**What blocked the chord, and it is worth getting right rather than
-hacking.** The handler signature is synchronous
-(`&ActionContext -> Option<Effect>`), but resolving the merge needs a
-`git` call, which must not run on the actor thread — MG.31 is this
-session's reminder of what that costs. So the handler cannot return
-`Effect::OpenSyntheticBuffer` with the answer in it.
+Shape **(1)** of the three offered: **resolve in the mode's
+`on_activate`**. The buffer name carries the *question*, not the
+answer; the mode resolves it inside the `spawn_blocking` it already
+runs to fetch content. No new seam, no second paint, and the synchronous
+handler never touches `git`.
 
-Three shapes, none yet chosen:
+- `*magit:merged:<sha>*` → `magit-revision-mode` runs
+  `resolve_merge_commit` (MG.34's earlier landing) and shows the merge.
+- `*magit:rebase-edit:<line>:<path>*` → `magit-rebase-mode` runs
+  `git blame -L <line>,<line>` and builds a todo aimed at the result.
 
-1. **Resolve in the mode's `on_activate`.** Open
-   `*magit:merged:<source-sha>*`, and let `magit-revision-mode` (whose
-   activation is already async and already uses `spawn_blocking`)
-   resolve the merge and then show it. Follows the established
-   "a magit buffer fetches its own content" pattern and needs no new
-   seam — but adds a second buffer-name form the mode must parse.
-2. **Resolve, then wake through the inbound primitive.** The shape
-   `boot-composition.md` §3 prescribes for any async result that must
-   reach the screen without a keypress. Correct, and heavier.
-3. **A picker.** Sidesteps the async-open question entirely by making
-   the result a candidate list — but a single answer presented as a
-   one-row picker is a worse surface than a buffer.
+Both resolve *before* publishing text, deliberately: splitting it would
+paint the buffer and then relabel it, which the keystroke UX contract
+forbids. Both also late-update their state after the walk, so
+`commit_at_cursor` (and therefore `A` / `_` / `O` / `<CR>`) names the
+commit on screen rather than the one in the buffer name — the "same
+commit under two names" bug this form otherwise invites.
 
-(1) looks right and is what I would try first. **The same question
-gates MG.35–MG.40**: every one of them opens a buffer whose content
-comes from `git`, so whichever shape is chosen here should be the one
-they all use rather than each inventing its own.
+**This is the shape MG.35–MG.40 use.** Each opens a buffer whose
+content comes from `git`; none needs the inbound primitive, because
+none has to reach the screen without a buffer open to receive it.
 
-A first attempt at the handler was written and reverted rather than
-committed: it spawned the resolution and discarded the result, which
-compiles, binds a chord, and does nothing when pressed. A consumed
-Normal-mode chord that silently no-ops is precisely the dead-key
-failure MG.20's note describes, so it is better absent.
+##### What shipped
+
+| Surface | Form |
+|---|---|
+| `C-c f M` | row → commit at cursor, else the commit picker routed to `:magit-log-merged` |
+| `:magit-log-merged <commit>` | opens `*magit:merged:<commit>*` |
+| `C-c f e` | row → `*magit:rebase-edit:<cursor-line+1>:<path>*` |
+| `:magit-rebase-continue` / `-skip` / `-abort` | sequencer controls |
+
+**The sequencer commands are part of this slice, not scope creep.**
+`e` marks a commit `edit`, which stops the rebase — and before this the
+*only* sequencer control was `C-c C-k` inside a todo buffer, which is
+gone by the time the rebase is running. Shipping the `edit` row alone
+would have put the repository into a state the editor could not leave.
+They reuse `RemoteOp` (one bounded argv, off-thread, notify) rather
+than growing a parallel mechanism; `:magit-stash` already set that
+precedent for a non-remote op.
+
+##### Two traps found while wiring it, both pinned by tests
+
+**`<sha>^{commit}` is peel-to-commit, not first-parent.** The root-commit
+check was first written as `rev-parse --verify <sha>^{commit}`, which
+succeeds for *every* commit — so a root commit was reported as having a
+parent and the rebase would have failed on `<sha>^`. Replaced with
+`rev-list --parents -n 1`, where a single field unambiguously means no
+parents. The test caught it on the first run.
+
+**The row to mark `edit` is not row one.** `--reverse` orders the todo
+by date, so a merge in range can put a side branch's older commits
+above the blamed one. `mark_edit` matches by sha for that reason, and
+refuses (rather than emitting an all-`pick` todo) when the commit is
+not in range — an all-`pick` rebase replays history and changes
+nothing, which is a rebase the user did not ask for.
+
+- **Tests:** 14. Nine in `magit_rebase_mode` — four against real
+  repositories (blame naming the right commit per line, an uncommitted
+  line refusing, root-vs-parent, and an end-to-end todo whose single
+  `edit` row is the blamed commit with later commits still picked), plus
+  the three-name-form separation, a colon-bearing path, the
+  mark-by-sha-not-position case, and the not-in-range refusal. Five in
+  `magit_revision_mode` covering the two name forms, empty-sha
+  rejection, builder/parser agreement, and that the unmerged message
+  reads as an answer rather than an error.
+- **No renderer change in either peer:** no new `Effect` variant, no
+  new `DiffSignKind`, no `host_theme` field — both rows return existing
+  effects, so TUI/GPUI parity holds by construction.
+- **Zero `Editor::` methods and zero host `Action` variants:** rows,
+  handler bodies, ex-commands and buffer-name forms all live in
+  `lattice-magit`, which is the mode-ownership acid test.
 
 ### MG.33 — reverse blame names the removing commit ✅ (2026-08-03)
 

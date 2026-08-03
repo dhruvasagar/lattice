@@ -1,6 +1,6 @@
 ---
 summary: "magit-revision-mode: one historical commit in full — git show --stat -p, opened by <CR> on a SHA anywhere one appears. Read-only; <CR> visits a file as of that commit."
-related: [magit, magit-revision]
+related: [magit, magit-revision, ex:magit-log-merged]
 ---
 
 # magit-revision-mode
@@ -13,7 +13,25 @@ This is **not** the compose buffer — that's
 commit. This one shows a commit that already exists. The buffer names
 are similar because git's vocabulary is; the two are unrelated in use.
 
-You never open it directly. `<CR>` on a SHA reaches it from everywhere
+## The two questions it answers
+
+| Buffer | Shows |
+|---|---|
+| `*magit:commit:<sha>*` | That commit |
+| `*magit:merged:<sha>*` | The **merge** that brought that commit into `HEAD` |
+
+The second is `C-c f M` (or `:magit-log-merged <commit>`), and it is
+worth reading carefully: the SHA in the name is the *question*, and the
+commit on screen is a **different one** — the merge that landed it,
+which is usually the pull request. Everything that acts on a commit
+here (`A` cherry-pick, `_` revert, `O` reset, `<CR>`) acts on the merge
+you are looking at, not on the commit you asked about.
+
+A commit made straight onto your branch was never merged in. That is
+the ordinary case for most history, not a failure, and the buffer says
+so in those words rather than coming up empty.
+
+You never open the plain form directly. `<CR>` on a SHA reaches it from everywhere
 a SHA appears: [`magit-log-mode`](help:magit-log-mode),
 [`magit-blame-mode`](help:magit-blame-mode),
 [`magit-rebase-mode`](help:magit-rebase-mode), and magit-status's

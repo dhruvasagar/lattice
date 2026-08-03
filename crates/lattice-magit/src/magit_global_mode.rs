@@ -869,6 +869,63 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         }),
     });
 
+    // MG.34: magit's `M` "Merged" — which merge brought a commit into
+    // HEAD.
+    //
+    // One action answers from two places, the same dual shape MG.23j
+    // gave `A` / `_` / `O`: the commit under the cursor when there is
+    // one (this row is reachable from a magit log or revision buffer),
+    // and the commit picker when there is not — which is the ordinary
+    // case, since magit's own home for this row is *file*-dispatch and a
+    // file buffer has no commit under the cursor at all.
+    //
+    // No chord. `M` is mid-screen and `gM` is go-to-middle-of-line, both
+    // vim grammar we owe the user; magit binds this as a transient
+    // suffix rather than a key for its own reasons, and following that
+    // costs the grammar nothing.
+    contributions.push(ActionHandlerContribution {
+        action_name: "action:magit-global-log-merged",
+        handler: Arc::new(|ctx: &ActionContext<'_>| {
+            let at_cursor =
+                crate::buffer_state::view_for(ctx).and_then(|v| v.commit_at_cursor(ctx.cursor));
+            Some(match at_cursor {
+                Some(commit) => Effect::OpenSyntheticBuffer {
+                    name: crate::magit_revision_mode::merged_buffer_name(&commit),
+                    mode_id: "magit-revision-mode".to_string(),
+                },
+                None => Effect::OpenPicker {
+                    source: crate::picker_sources::COMMIT_PICK_SOURCE.to_string(),
+                    args: vec!["magit-log-merged".to_string()],
+                },
+            })
+        }),
+    });
+
+    // MG.34: magit's `e` "Edit line" — start a rebase that stops on the
+    // commit that wrote the line at the cursor, so it can be amended
+    // instead of fixed up in a follow-on commit.
+    //
+    // The cursor line is read here (it is the one thing only this
+    // context knows) and the blame is left to the rebase mode, because
+    // finding the commit is a `git` call and this handler runs on the
+    // actor thread — same split `M` above makes.
+    contributions.push(ActionHandlerContribution {
+        action_name: "action:magit-global-edit-line-commit",
+        handler: Arc::new(|ctx: &ActionContext<'_>| {
+            let (_workdir, rel) = active_target(ctx)?;
+            Some(Effect::OpenSyntheticBuffer {
+                // `git blame -L` counts from 1; the cursor from 0.
+                name: crate::magit_rebase_mode::edit_line_buffer_name(
+                    ctx.cursor.line + 1,
+                    &rel.to_string_lossy(),
+                ),
+                mode_id: crate::magit_rebase_mode::MagitRebaseMode::mode_id()
+                    .as_str()
+                    .to_string(),
+            })
+        }),
+    });
+
     // Branch-create wizard's second step — fired by the prompt
     // opened after `magit-branch-pick-base`'s accept. `ctx.buffer_id`
     // is the PROMPT buffer (see `Editor::do_prompt_line_submit`'s
@@ -1309,6 +1366,37 @@ impl RemoteOp {
             },
         ],
     };
+    /// MG.34: the way out of a rebase that stopped.
+    ///
+    /// `magit-edit-line-commit` marks a commit `edit`, which is only
+    /// useful if the rebase can be resumed afterwards — and until this
+    /// slice the ONLY sequencer control was `C-c C-k` inside a todo
+    /// buffer, so a stopped rebase left the repository in a state the
+    /// editor could not finish. Shipping the `edit` row without these
+    /// would have been shipping a trap.
+    ///
+    /// `GIT_EDITOR` is forced to `true` by [`run_remote_op`] for the
+    /// same reason `run_rebase` does it: `--continue` opens the commit
+    /// message in `$EDITOR`, and an editor we cannot drive would hang
+    /// the task forever.
+    pub const REBASE_CONTINUE: Self = Self {
+        what: "rebase --continue",
+        args: &["rebase", "--continue"],
+        flags: &[],
+    };
+    pub const REBASE_SKIP: Self = Self {
+        what: "rebase --skip",
+        args: &["rebase", "--skip"],
+        flags: &[],
+    };
+    /// The abort `C-c C-k` runs, reachable when there is no todo buffer
+    /// open — which is the case once the rebase has actually started.
+    pub const REBASE_ABORT: Self = Self {
+        what: "rebase --abort",
+        args: &["rebase", "--abort"],
+        flags: &[],
+    };
+
     /// MG.23b: magit's `S` — stage every tracked modification at once.
     ///
     /// `add --update`, matching `magit-stage-modified`: tracked changes
@@ -1943,6 +2031,13 @@ fn run_remote_op(workdir: &std::path::Path, args: &[String]) -> Result<String, S
     let output = std::process::Command::new("git")
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
+        // MG.34: `rebase --continue` opens `$EDITOR` on the commit
+        // message. There is no editor here that git can drive, so
+        // without this the child blocks forever holding a blocking-pool
+        // thread and the operation never reports either way. `true`
+        // accepts the message unchanged — the same limitation, and the
+        // same reason, as `run_rebase`'s `GIT_EDITOR`.
+        .env("GIT_EDITOR", "true")
         .current_dir(workdir)
         .output();
     match output {

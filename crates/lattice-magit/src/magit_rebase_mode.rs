@@ -279,16 +279,16 @@ impl Mode for MagitRebaseMode {
                 .map(|r| r.gitdir().to_path_buf())
                 .unwrap_or_default();
 
-            // Extract the upstream from the buffer name:
-            // "*magit:rebase:<upstream>*" → "<upstream>", mirroring
-            // magit-blame's file-in-buffer-name pattern. No explicit
-            // arg (bare "*magit:rebase*") falls back to resolving
-            // `@{upstream}`.
-            let explicit_upstream = store.name_for(buffer_id).and_then(|name| {
-                let s = name.strip_prefix("*magit:rebase:")?;
-                let s = s.strip_suffix("*")?;
-                (!s.is_empty()).then(|| s.to_string())
-            });
+            // Which rebase the buffer name asks for — see
+            // [`RebaseTarget`]. Mirrors magit-blame's
+            // target-in-buffer-name pattern; an unrecognised name falls
+            // back to `@{upstream}`, which is what a bare
+            // `*magit:rebase*` has always meant.
+            let target = store
+                .name_for(buffer_id)
+                .as_deref()
+                .and_then(parse_target)
+                .unwrap_or(RebaseTarget::Onto(None));
 
             // MG.14: the upstream is resolved below (it may come from
             // `@{upstream}` rather than the buffer name), so the header
@@ -326,11 +326,10 @@ impl Mode for MagitRebaseMode {
             }
 
             let wd = workdir.clone();
-            let (upstream, initial) = tokio::task::spawn_blocking(move || {
-                build_rebase_buffer(&wd, explicit_upstream.as_deref())
-            })
-            .await
-            .unwrap_or_else(|_| (String::new(), "Failed to prepare rebase.\n".to_string()));
+            let (upstream, initial) =
+                tokio::task::spawn_blocking(move || build_rebase_buffer(&wd, &target))
+                    .await
+                    .unwrap_or_else(|_| (String::new(), "Failed to prepare rebase.\n".to_string()));
 
             // Counted from the text just built, so no second
             // `rev-list`. Keyed on the leading verb rather than "has a
@@ -399,36 +398,94 @@ fn extract_sha(line: &str) -> Option<&str> {
         .find(|tok| tok.len() >= 4 && tok.chars().all(|c| c.is_ascii_hexdigit()))
 }
 
-/// Resolve the upstream (explicit arg, or `@{upstream}`) and build the
-/// todo-buffer text. Returns `(upstream, buffer_text)`; `upstream` is
-/// empty when resolution failed — `buffer_text` explains why, and the
-/// confirm handler refuses to run against an empty upstream.
-fn build_rebase_buffer(workdir: &Path, explicit_upstream: Option<&str>) -> (String, String) {
+/// MG.34: what a rebase buffer's name asks for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RebaseTarget {
+    /// `*magit:rebase*` / `*magit:rebase:<upstream>*` — rebase onto the
+    /// named ref, or onto `@{upstream}` when none is named.
+    Onto(Option<String>),
+    /// `*magit:rebase-edit:<line>:<path>*` — magit's
+    /// `magit-edit-line-commit`. Find the commit that last wrote line
+    /// `<line>` of `<path>`, and mark **that** commit `edit` so the
+    /// rebase stops on it.
+    ///
+    /// The blame is the reason this is a buffer-name form rather than a
+    /// resolved sha handed over by the action: finding the commit costs
+    /// a `git blame`, and the handler that fires the row is synchronous
+    /// and must not run `git` on the actor thread (MG.31). Same shape
+    /// `magit-revision-mode` uses for `*magit:merged:*`.
+    EditLine { line: u32, path: String },
+}
+
+/// MG.34: the buffer name that asks "amend whatever wrote this line".
+///
+/// Line first so the split is unambiguous — a path may contain `:`, a
+/// line number may not.
+pub(crate) fn edit_line_buffer_name(line: u32, path: &str) -> String {
+    format!("*magit:rebase-edit:{line}:{path}*")
+}
+
+/// Which rebase a buffer name asks for. `None` for a name this mode does
+/// not own; the caller treats that as the bare `@{upstream}` form, which
+/// is what it has always meant.
+fn parse_target(name: &str) -> Option<RebaseTarget> {
+    let body = name.strip_suffix('*')?;
+    if let Some(rest) = body.strip_prefix("*magit:rebase-edit:") {
+        let (line, path) = rest.split_once(':')?;
+        let line: u32 = line.parse().ok()?;
+        return (!path.is_empty()).then(|| RebaseTarget::EditLine {
+            line,
+            path: path.to_string(),
+        });
+    }
+    let upstream = body.strip_prefix("*magit:rebase:")?;
+    Some(RebaseTarget::Onto(
+        (!upstream.is_empty()).then(|| upstream.to_string()),
+    ))
+}
+
+/// Resolve the upstream and build the todo-buffer text. Returns
+/// `(upstream, buffer_text)`; `upstream` is empty when resolution failed
+/// — `buffer_text` explains why, and the confirm handler refuses to run
+/// against an empty upstream.
+///
+/// Blocking; call on `spawn_blocking`.
+fn build_rebase_buffer(workdir: &Path, target: &RebaseTarget) -> (String, String) {
     let repo = match Repository::discover(workdir) {
         Ok(r) => r,
         Err(_) => return (String::new(), "Not a git repository.\n".to_string()),
     };
-    let upstream = match explicit_upstream {
-        Some(u) => u.to_string(),
-        None => match repo.run_git_str(["rev-parse", "--abbrev-ref", "@{upstream}"]) {
-            Ok(s) => s.trim().to_string(),
-            Err(_) => {
-                return (
-                    String::new(),
-                    "No upstream configured for this branch.\n\
-                     Use `:magit-rebase <ref>` to rebase onto a specific ref.\n"
-                        .to_string(),
-                );
+    // MG.34: the edit-line form resolves to an ordinary upstream plus
+    // "which commit to stop on", so everything below is shared.
+    let (upstream, stop_at) = match target {
+        RebaseTarget::Onto(Some(u)) => (u.clone(), None),
+        RebaseTarget::Onto(None) => {
+            match repo.run_git_str(["rev-parse", "--abbrev-ref", "@{upstream}"]) {
+                Ok(s) => (s.trim().to_string(), None),
+                Err(_) => {
+                    return (
+                        String::new(),
+                        "No upstream configured for this branch.\n\
+                         Use `:magit-rebase <ref>` to rebase onto a specific ref.\n"
+                            .to_string(),
+                    );
+                }
             }
+        }
+        RebaseTarget::EditLine { line, path } => match blame_line_commit(&repo, *line, path) {
+            Ok(sha) => (parent_or_root(&repo, &sha), Some(sha)),
+            Err(msg) => return (String::new(), msg),
         },
     };
+    let range = if upstream == ROOT {
+        // `--root` rebases from the first commit, so the log is the
+        // whole history rather than a range.
+        "HEAD".to_string()
+    } else {
+        format!("{upstream}..HEAD")
+    };
     let log = repo
-        .run_git_str([
-            "log",
-            "--reverse",
-            "--format=pick %h %s",
-            &format!("{upstream}..HEAD"),
-        ])
+        .run_git_str(["log", "--reverse", "--format=pick %h %s", &range])
         .unwrap_or_default();
     if log.trim().is_empty() {
         return (
@@ -436,14 +493,123 @@ fn build_rebase_buffer(workdir: &Path, explicit_upstream: Option<&str>) -> (Stri
             format!("Nothing to rebase — already up to date with {upstream}.\n"),
         );
     }
+    // MG.34: mark the blamed commit `edit` so the rebase stops there.
+    //
+    // Matched by sha rather than "the first row", because the first row
+    // is only the blamed commit when history is linear: with a merge in
+    // range, `--reverse` can put a side branch's older commits ahead of
+    // it. Marking the wrong row would stop the rebase on a commit the
+    // user never named — shape-identical to the right answer, which is
+    // the failure class this slice avoids elsewhere too.
+    let (log, note) = match &stop_at {
+        None => (log, String::new()),
+        Some(sha) => {
+            let short = repo
+                .run_git_str(["log", "-1", "--format=%h", sha])
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            match mark_edit(&log, &short) {
+                Some(marked) => (
+                    marked,
+                    format!(
+                        "# {short} is marked `edit` — it is the commit that wrote that line.\n\
+                         # The rebase will stop there; amend, then `:magit-rebase-continue`.\n"
+                    ),
+                ),
+                // Unreachable in practice (the blamed commit is by
+                // construction in `<sha>^..HEAD`), but silently shipping
+                // an all-`pick` todo would replay history for no reason.
+                None => {
+                    return (
+                        String::new(),
+                        format!(
+                            "magit: {short} is not in the range being rebased — \
+                             nothing to edit.\n"
+                        ),
+                    );
+                }
+            }
+        }
+    };
     let text = format!(
         "{log}\n\
-         # Rebase onto {upstream} — edit the list above, then C-c C-c to run,\n\
+         {note}# Rebase onto {upstream} — edit the list above, then C-c C-c to run,\n\
          # or C-c C-k to abort.\n\
          # Commands: pick, reword, edit, squash, fixup, drop\n\
          # (reword keeps the original message — no message-edit UI yet)\n"
     );
     (upstream, text)
+}
+
+/// The upstream that rebases a root commit. `git rebase -i --root`
+/// takes it in the same argument position an upstream ref would, so it
+/// travels through `RebaseState::upstream` and `run_rebase` unchanged.
+const ROOT: &str = "--root";
+
+/// `<sha>^`, or [`ROOT`] when `sha` is a root commit and has no parent.
+///
+/// Asked as "how many parents does it have" rather than "does `<sha>^`
+/// resolve", because the obvious spelling of the latter is a trap:
+/// `<sha>^{commit}` is peel-to-commit syntax, not first-parent, so it
+/// succeeds for *every* commit and quietly reports a root commit as
+/// having a parent. `rev-list --parents` prints `<sha> <parent>…`, so a
+/// single field means no parents and there is nothing to misread.
+fn parent_or_root(repo: &Repository, sha: &str) -> String {
+    let parents = repo
+        .run_git_str(["rev-list", "--parents", "-n", "1", sha])
+        .unwrap_or_default();
+    if parents.split_whitespace().count() > 1 {
+        format!("{sha}^")
+    } else {
+        ROOT.to_string()
+    }
+}
+
+/// The commit that last wrote `line` (1-based) of `path`.
+///
+/// `Err` carries the buffer text explaining why there is none — an
+/// uncommitted line is the case worth naming, since it is the one a user
+/// hits by asking about code they just typed.
+fn blame_line_commit(repo: &Repository, line: u32, path: &str) -> Result<String, String> {
+    let spec = format!("{line},{line}");
+    let out = repo
+        .run_git_str(["blame", "-L", &spec, "--porcelain", "--", path])
+        .map_err(|_| {
+            format!("magit: could not blame line {line} of {path} — is it tracked?\n")
+        })?;
+    // Porcelain's first line is `<sha> <orig-line> <final-line> [<n>]`.
+    let sha = out
+        .split_whitespace()
+        .next()
+        .filter(|s| s.len() >= 7 && s.chars().all(|c| c.is_ascii_hexdigit()))
+        .ok_or_else(|| format!("magit: no blame for line {line} of {path}.\n"))?;
+    if sha.chars().all(|c| c == '0') {
+        return Err(format!(
+            "magit: line {line} of {path} is not committed yet.\n\
+             \n\
+             There is no commit to amend — commit it first.\n"
+        ));
+    }
+    Ok(sha.to_string())
+}
+
+/// Rewrite the `pick` on the row naming `short` to `edit`. `None` when
+/// no row names it.
+fn mark_edit(log: &str, short: &str) -> Option<String> {
+    let mut found = false;
+    let marked = log
+        .lines()
+        .map(|l| match l.strip_prefix("pick ") {
+            Some(rest) if !found && rest.split_whitespace().next() == Some(short) => {
+                found = true;
+                format!("edit {rest}")
+            }
+            _ => l.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    found.then_some(marked)
 }
 
 fn run_rebase(workdir: &Path, upstream: &str, todo: &str) -> Result<(), String> {
@@ -510,5 +676,219 @@ mod tests {
             }
             other => panic!("expected Confirm, got {other:?}"),
         }
+    }
+
+    // ── MG.34: `e` edit-line-commit ─────────────────────────────────
+
+    fn git(dir: &Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .expect("git");
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// A repository with three commits, each of which wrote one line of
+    /// `a.txt` — so blaming a line picks out a *specific* commit rather
+    /// than whichever one happens to be HEAD.
+    fn repo_with_a_line_per_commit() -> (tempfile::TempDir, [String; 3]) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let p = dir.path();
+        git(p, &["init", "-b", "main"]);
+        git(p, &["config", "user.email", "t@lattice.dev"]);
+        git(p, &["config", "user.name", "lattice-test"]);
+        let mut shas = Vec::new();
+        for (n, body) in [("one", "first\n"), ("two", "second\n"), ("three", "third\n")] {
+            let mut text = std::fs::read_to_string(p.join("a.txt")).unwrap_or_default();
+            text.push_str(body);
+            std::fs::write(p.join("a.txt"), text).expect("write");
+            git(p, &["add", "a.txt"]);
+            git(p, &["commit", "-m", n]);
+            shas.push(git(p, &["rev-parse", "HEAD"]));
+        }
+        let shas: [String; 3] = shas.try_into().expect("three commits");
+        (dir, shas)
+    }
+
+    /// The three name forms, and that they do not bleed into each
+    /// other. `rebase-edit:` shares a prefix with `rebase:` up to the
+    /// colon, so a naive `strip_prefix("*magit:rebase:")` ordering would
+    /// mis-parse one as the other and rebase onto a ref named
+    /// `-edit:12:src/a.rs`.
+    #[test]
+    fn the_three_buffer_name_forms_stay_distinct() {
+        assert_eq!(parse_target("*magit:rebase*"), None, "bare name is not ours");
+        assert_eq!(
+            parse_target("*magit:rebase:origin/main*"),
+            Some(RebaseTarget::Onto(Some("origin/main".into())))
+        );
+        assert_eq!(
+            parse_target("*magit:rebase:*"),
+            Some(RebaseTarget::Onto(None))
+        );
+        assert_eq!(
+            parse_target("*magit:rebase-edit:12:src/a.rs*"),
+            Some(RebaseTarget::EditLine {
+                line: 12,
+                path: "src/a.rs".into()
+            })
+        );
+    }
+
+    /// Line first, path second — because a path may contain a colon and
+    /// a line number may not. Splitting the other way round would break
+    /// on any such path, which is the reason for the ordering.
+    #[test]
+    fn a_path_containing_a_colon_still_parses() {
+        let name = edit_line_buffer_name(7, "weird:name.txt");
+        assert_eq!(
+            parse_target(&name),
+            Some(RebaseTarget::EditLine {
+                line: 7,
+                path: "weird:name.txt".into()
+            })
+        );
+    }
+
+    /// The load-bearing reason `mark_edit` matches by sha instead of
+    /// taking row one: `--reverse` orders by commit date, so a merge in
+    /// range can put a side branch's older commits ahead of the one that
+    /// was blamed. Marking row one would stop the rebase on a commit the
+    /// user never named — and the resulting todo looks perfectly
+    /// plausible, which is what makes it worth pinning.
+    #[test]
+    fn the_marked_row_is_the_named_commit_not_the_first_one() {
+        let log = "pick aaaaaaa older side commit\n\
+                   pick bbbbbbb the one that wrote the line\n\
+                   pick ccccccc later";
+        let marked = mark_edit(log, "bbbbbbb").expect("bbbbbbb is in range");
+        assert_eq!(
+            marked,
+            "pick aaaaaaa older side commit\n\
+             edit bbbbbbb the one that wrote the line\n\
+             pick ccccccc later"
+        );
+    }
+
+    /// A commit outside the range is refused rather than silently
+    /// yielding an all-`pick` todo, which would replay history and
+    /// change nothing — a rebase the user did not ask for.
+    #[test]
+    fn a_commit_not_in_range_is_refused() {
+        assert_eq!(mark_edit("pick aaaaaaa only", "bbbbbbb"), None);
+    }
+
+    /// Blame resolves the commit that wrote *that* line, not HEAD.
+    #[test]
+    fn blame_names_the_commit_that_wrote_the_line() {
+        let (dir, shas) = repo_with_a_line_per_commit();
+        let repo = Repository::discover(dir.path()).expect("discover");
+        for (line, expected) in [(1, &shas[0]), (2, &shas[1]), (3, &shas[2])] {
+            assert_eq!(
+                blame_line_commit(&repo, line, "a.txt").as_deref(),
+                Ok(expected.as_str()),
+                "line {line} must blame to its own commit"
+            );
+        }
+    }
+
+    /// An uncommitted line has no commit to amend. The message says so
+    /// rather than the buffer being empty, because "I just typed this"
+    /// is the common way to reach it.
+    #[test]
+    fn an_uncommitted_line_says_so_instead_of_blaming_zeros() {
+        let (dir, _) = repo_with_a_line_per_commit();
+        let p = dir.path();
+        let mut text = std::fs::read_to_string(p.join("a.txt")).expect("read");
+        text.push_str("fresh\n");
+        std::fs::write(p.join("a.txt"), text).expect("write");
+        let repo = Repository::discover(p).expect("discover");
+        let err = blame_line_commit(&repo, 4, "a.txt").expect_err("line 4 is uncommitted");
+        assert!(
+            err.contains("not committed yet"),
+            "must name the real reason, got: {err}"
+        );
+    }
+
+    /// `<sha>^` for a commit with a parent, `--root` for the first
+    /// commit in the repository — which has none, so `git rebase -i
+    /// <sha>^` would fail outright.
+    #[test]
+    fn the_root_commit_rebases_with_root_not_with_a_missing_parent() {
+        let (dir, shas) = repo_with_a_line_per_commit();
+        let repo = Repository::discover(dir.path()).expect("discover");
+        assert_eq!(parent_or_root(&repo, &shas[0]), ROOT);
+        assert_eq!(parent_or_root(&repo, &shas[1]), format!("{}^", shas[1]));
+    }
+
+    /// End to end: asking about line 2 produces a todo whose `edit` row
+    /// is the second commit, rebasing onto its parent.
+    #[test]
+    fn edit_line_builds_a_todo_that_stops_on_that_lines_commit() {
+        let (dir, shas) = repo_with_a_line_per_commit();
+        let p = dir.path();
+        let (upstream, text) = build_rebase_buffer(
+            p,
+            &RebaseTarget::EditLine {
+                line: 2,
+                path: "a.txt".into(),
+            },
+        );
+        assert_eq!(upstream, format!("{}^", shas[1]), "rebase onto its parent");
+
+        let short = git(p, &["log", "-1", "--format=%h", &shas[1]]);
+        let edits: Vec<&str> = text.lines().filter(|l| l.starts_with("edit ")).collect();
+        assert_eq!(edits.len(), 1, "exactly one commit is marked, got: {text}");
+        assert!(
+            edits[0].starts_with(&format!("edit {short} ")),
+            "the marked commit must be the one that wrote line 2; got {:?}",
+            edits[0]
+        );
+        // The third commit is still replayed after it, or the rebase
+        // would silently drop it.
+        let short3 = git(p, &["log", "-1", "--format=%h", &shas[2]]);
+        assert!(
+            text.contains(&format!("pick {short3} ")),
+            "later commits must still be picked; got: {text}"
+        );
+    }
+
+    /// The whole point of the `edit` row is that the rebase stops and
+    /// waits — so the buffer must say how to resume, or the user is left
+    /// in a state with no visible exit.
+    #[test]
+    fn the_todo_names_the_command_that_resumes_the_rebase() {
+        let (dir, _) = repo_with_a_line_per_commit();
+        let (_, text) = build_rebase_buffer(
+            dir.path(),
+            &RebaseTarget::EditLine {
+                line: 2,
+                path: "a.txt".into(),
+            },
+        );
+        assert!(
+            text.contains(":magit-rebase-continue"),
+            "the way out must be named in the buffer; got: {text}"
+        );
+    }
+
+    /// The pre-MG.34 path is unchanged: a named upstream still produces
+    /// an all-`pick` todo with nothing marked.
+    #[test]
+    fn an_ordinary_rebase_marks_nothing() {
+        let (dir, shas) = repo_with_a_line_per_commit();
+        let (upstream, text) =
+            build_rebase_buffer(dir.path(), &RebaseTarget::Onto(Some(shas[0].clone())));
+        assert_eq!(upstream, shas[0]);
+        assert!(
+            !text.lines().any(|l| l.starts_with("edit ")),
+            "a plain rebase must not mark any commit; got: {text}"
+        );
     }
 }

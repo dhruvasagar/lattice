@@ -1,6 +1,6 @@
 ---
 summary: "magit-rebase-mode: the interactive rebase todo — an editable pick list built from real history, C-c C-c to run it, C-c C-k to abort (asks first)."
-related: [magit, magit-rebase, ex:magit-rebase]
+related: [magit, magit-rebase, ex:magit-rebase, ex:magit-rebase-continue, ex:magit-rebase-skip, ex:magit-rebase-abort]
 ---
 
 # magit-rebase-mode
@@ -19,6 +19,32 @@ anything.
 If no upstream can be resolved (none configured, no ref given), the
 buffer explains why instead of showing a list, and `C-c C-c` refuses to
 run.
+
+## Amending the commit that wrote a line
+
+`C-c f e` from a file buffer builds the same todo, aimed: it blames the
+line at the cursor, rebases onto **that commit's parent**, and marks
+that commit `edit` so the rebase stops there for you to amend it. See
+[the file dispatch](help:magit-transient) for the full walkthrough.
+
+The marked row is found by commit, not by position — `--reverse` orders
+by date, so a merge in range can float a side branch's older commits
+above the one you asked about.
+
+If the commit is the repository's first, the rebase runs with `--root`
+rather than failing on a parent that does not exist.
+
+## Leaving a rebase that stopped
+
+`edit` (and a conflict) stops the rebase mid-flight, and by then the
+todo buffer is gone — so `C-c C-k` is not reachable. Three commands
+work from anywhere:
+
+| Command | What it does |
+|---|---|
+| `:magit-rebase-continue` | Resume, after amending or resolving |
+| `:magit-rebase-skip` | Drop the commit it stopped on and carry on |
+| `:magit-rebase-abort` | Abandon it, restoring the branch to where it started |
 
 ## Chords
 

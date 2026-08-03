@@ -1735,7 +1735,6 @@ mod discard_round_trip {
 /// merge on that path is the one that brought `sha` in; later ones
 /// merely carried it along, and reporting one of those would answer a
 /// question nobody asked.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn log_merged_argv(sha: &str) -> Vec<String> {
     vec![
         "log".to_string(),
@@ -1754,16 +1753,16 @@ pub(crate) fn log_merged_argv(sha: &str) -> Vec<String> {
 /// says so rather than showing an empty buffer.
 ///
 /// Blocking; call on `spawn_blocking`.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn resolve_merge_commit(workdir: &std::path::Path, sha: &str) -> Option<String> {
     let repo = lattice_vcs::Repository::discover(workdir).ok()?;
     let lines = repo.run_git_lines(log_merged_argv(sha)).ok()?;
     lines.into_iter().next()
 }
 
-/// MG.34: the log-merged walk. The handler that consumes these is not
-/// built yet — see the slice plan for why it needs an async
-/// buffer-open seam.
+/// MG.34: the log-merged walk. Consumed by `magit_revision_mode`'s
+/// `*magit:merged:<sha>*` name form, which runs it inside the
+/// `spawn_blocking` it already had — see that module for why the
+/// question, not the answer, goes in the buffer name.
 #[cfg(test)]
 mod log_merged {
     use super::*;

@@ -981,6 +981,12 @@ pub struct FileDispatchActionIds {
     pub rename: Option<CommandId>,
     /// MG.23d2: check the file out from a revision.
     pub checkout: Option<CommandId>,
+    /// MG.34: `M` — the merge that brought a commit into HEAD. Magit's
+    /// own key for it in `magit-file-dispatch`.
+    pub log_merged: Option<CommandId>,
+    /// MG.34: `e` — start a rebase to amend the commit that wrote the
+    /// line at the cursor. Magit's own key, in its "More actions" group.
+    pub edit_line_commit: Option<CommandId>,
 }
 
 /// Build the file-level dispatch transient (`C-c f`).
@@ -1225,7 +1231,29 @@ pub fn file_dispatch_transient(ids: &FileDispatchActionIds) -> TransientSpec {
                         "For each line of this revision, the last commit it existed in",
                         "blame_reverse_file",
                     ),
+                    // MG.34, on magit's own key for it (`M` "Merged" in
+                    // magit-file-dispatch). A row rather than a chord:
+                    // `M` and `gM` are both vim motions, and magit binds
+                    // this as a transient suffix anyway.
+                    action_or_placeholder(
+                        ids.log_merged,
+                        "M",
+                        "merged",
+                        "Show the merge commit that brought a commit into HEAD",
+                        "log_merged",
+                    ),
                 ],
+            },
+            // MG.34: magit's own group name for the row below.
+            TransientGroup {
+                label: "More actions".into(),
+                items: vec![action_or_placeholder(
+                    ids.edit_line_commit,
+                    "e",
+                    "edit line",
+                    "Start a rebase to amend the commit that wrote the line at the cursor",
+                    "edit_line_commit",
+                )],
             },
         ],
         preview: None,

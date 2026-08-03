@@ -118,6 +118,60 @@ impl crate::buffer_state::MagitView for RevisionView {
 /// (`feedback_servicesregistry_arc_typeid`).
 pub type RevisionStatesHandle = Arc<BufferStates<RevisionState>>;
 
+/// MG.34: the two buffer-name forms this mode answers to.
+///
+/// The second exists because magit's `M` "Merged" asks a question whose
+/// answer is *a different commit from the one you named*, and finding it
+/// costs a `git log` walk. The handler that fires the chord is
+/// synchronous and must not run `git` on the actor thread (MG.31), so it
+/// cannot resolve the merge and put the answer in the buffer name.
+/// Encoding the *question* in the name instead lets this mode resolve it
+/// inside the `spawn_blocking` it already runs for `git show` — no new
+/// async seam, and one buffer open rather than two.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RevisionTarget {
+    /// `*magit:commit:<sha>*` — show this commit.
+    Commit(String),
+    /// `*magit:merged:<sha>*` — show the merge that brought `<sha>` into
+    /// HEAD. The sha in the name is the **source**; the commit shown is
+    /// derived from it.
+    Merged(String),
+}
+
+/// MG.34: the buffer name that asks "which merge brought `sha` in?".
+pub(crate) fn merged_buffer_name(sha: &str) -> String {
+    format!("*magit:merged:{sha}*")
+}
+
+/// Which question a buffer name asks. `None` for a name this mode does
+/// not own — the caller shows the same "no commit sha given" text it
+/// showed before MG.34, rather than guessing.
+fn parse_target(name: &str) -> Option<RevisionTarget> {
+    let body = name.strip_suffix('*')?;
+    if let Some(sha) = body.strip_prefix("*magit:commit:") {
+        return (!sha.is_empty()).then(|| RevisionTarget::Commit(sha.to_string()));
+    }
+    let sha = body.strip_prefix("*magit:merged:")?;
+    (!sha.is_empty()).then(|| RevisionTarget::Merged(sha.to_string()))
+}
+
+/// MG.34: what a `*magit:merged:*` buffer says when nothing merged the
+/// commit in.
+///
+/// Not an error, and worded so it does not read as one: a commit made
+/// straight onto the branch you are on has no merge, which is the
+/// ordinary case for most of a repository's history. Showing an empty
+/// buffer would leave the reader unable to tell that from a failure.
+fn not_merged_text(sha: &str) -> String {
+    format!(
+        "{sha} was not merged into HEAD.\n\
+         \n\
+         No merge commit lies on the ancestry path from it to HEAD, so it\n\
+         reached this branch by a direct commit or a fast-forward rather\n\
+         than by a merge. There is nothing to show.\n"
+    )
+}
+
 impl Mode for MagitRevisionMode {
     type Guard = BufferStateGuard<RevisionState>;
 
@@ -164,15 +218,18 @@ impl Mode for MagitRevisionMode {
             };
             let workdir = crate::workdir::magit_workdir().unwrap_or_default();
 
-            // Extract the sha from the buffer name:
-            // "*magit:commit:<sha>*" → "<sha>".
-            let sha = store
-                .name_for(buffer_id)
-                .and_then(|name| {
-                    let s = name.strip_prefix("*magit:commit:")?;
-                    Some(s.strip_suffix("*")?.to_string())
-                })
-                .unwrap_or_default();
+            // MG.34: which question the buffer name asks — a commit
+            // directly, or the merge that brought one in.
+            let target = store.name_for(buffer_id).as_deref().and_then(parse_target);
+            // The sha the state starts with. For `Merged` it is not
+            // known yet (that is the whole question), so the state
+            // starts empty and is filled in below once the walk has
+            // run — the same late-resolve `magit-rebase-mode` does for
+            // its upstream.
+            let sha = match &target {
+                Some(RevisionTarget::Commit(sha)) => sha.clone(),
+                _ => String::new(),
+            };
 
             // MG.14: the commit's identity (author, date, subject) is
             // not in the buffer name, so the header is filled in below
@@ -209,12 +266,34 @@ impl Mode for MagitRevisionMode {
                 &ctx.service::<std::sync::Arc<lattice_config::ConfigRegistry>>()
                     .map(|outer| (*outer).clone()),
             );
-            let sha_for_task = sha.clone();
-            let (text, meta) = tokio::task::spawn_blocking(move || {
-                (
-                    run_show(&wd, &sha_for_task, context),
-                    run_show_meta(&wd, &sha_for_task),
-                )
+            // MG.34: the merge walk runs here, inside the
+            // `spawn_blocking` that was already fetching `git show` —
+            // so the answer and the patch land in one paint. Splitting
+            // them would show the buffer, then relabel it, which the
+            // keystroke UX contract forbids.
+            let (resolved, text, meta) = tokio::task::spawn_blocking(move || {
+                let shown = match target {
+                    Some(RevisionTarget::Commit(sha)) => Some(sha),
+                    Some(RevisionTarget::Merged(source)) => {
+                        match crate::magit_core_mode::resolve_merge_commit(&wd, &source) {
+                            Some(merge) => Some(merge),
+                            // Ordinary answer, not a failure — say so
+                            // and stop, rather than `git show ""`.
+                            None => {
+                                return (
+                                    String::new(),
+                                    not_merged_text(&source),
+                                    headerline::RevisionMeta::default(),
+                                );
+                            }
+                        }
+                    }
+                    None => None,
+                };
+                let shown = shown.unwrap_or_default();
+                let text = run_show(&wd, &shown, context);
+                let meta = run_show_meta(&wd, &shown);
+                (shown, text, meta)
             })
             .await
             .unwrap_or_default();
@@ -229,6 +308,17 @@ impl Mode for MagitRevisionMode {
             crate::buffer_io::replace_buffer_text(&handle, text).await;
             if let Some(ph) = ctx.service::<lattice_mode::PendingSyntheticHighlights>() {
                 ph.store_and_wake(buffer_id, spans);
+            }
+
+            // MG.34: late-resolved, now the walk has run. Without this
+            // the merge view's `A` / `_` / `O` / `<CR>` would act on
+            // the *source* commit the name carries rather than on the
+            // merge the buffer is showing — the same commit under two
+            // names, which is the failure mode this whole slice exists
+            // to avoid. Empty (unmerged) leaves them declining, which
+            // is right: there is no commit on screen to act on.
+            if let Ok(mut g) = state.lock() {
+                g.sha = resolved;
             }
 
             Ok(guard)
@@ -269,6 +359,65 @@ fn run_show(workdir: &std::path::Path, sha: &str, context: i64) -> String {
         .filter(|o| o.status.success())
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .unwrap_or_else(|| format!("Could not show commit {sha}\n"))
+}
+
+// ── MG.34: the `*magit:merged:*` name form ──────────────────────────
+#[cfg(test)]
+mod merged_target {
+    use super::*;
+
+    /// The two forms, and that they stay apart. Both live under
+    /// `*magit:` and both carry a bare sha, so a parser that checked one
+    /// prefix loosely would show the *source* commit where the merge was
+    /// asked for — the same commit under two names, which is exactly the
+    /// confusion this form exists to avoid.
+    #[test]
+    fn the_two_name_forms_stay_distinct() {
+        assert_eq!(
+            parse_target("*magit:commit:abc123*"),
+            Some(RevisionTarget::Commit("abc123".into()))
+        );
+        assert_eq!(
+            parse_target("*magit:merged:abc123*"),
+            Some(RevisionTarget::Merged("abc123".into()))
+        );
+    }
+
+    /// A name this mode does not own, and the two empty-sha forms. An
+    /// empty sha would reach `git show ""`, whose failure text names no
+    /// commit and reads like a bug in the editor.
+    #[test]
+    fn names_without_a_sha_are_not_targets() {
+        assert_eq!(parse_target("*magit:commit:*"), None);
+        assert_eq!(parse_target("*magit:merged:*"), None);
+        assert_eq!(parse_target("*magit:log:main*"), None);
+        assert_eq!(parse_target("a.txt"), None);
+    }
+
+    #[test]
+    fn the_builder_and_the_parser_agree() {
+        assert_eq!(
+            parse_target(&merged_buffer_name("deadbeef")),
+            Some(RevisionTarget::Merged("deadbeef".into()))
+        );
+    }
+
+    /// `None` from the walk is the ordinary answer for a commit made
+    /// straight onto the branch, so the buffer has to say that rather
+    /// than being empty — an empty buffer is indistinguishable from a
+    /// failure. The sha is named so the reader knows which commit was
+    /// asked about.
+    #[test]
+    fn the_unmerged_message_names_the_commit_and_does_not_read_as_an_error() {
+        let text = not_merged_text("abc123");
+        assert!(text.contains("abc123"), "must name the commit: {text}");
+        assert!(
+            !text.to_lowercase().contains("error")
+                && !text.to_lowercase().contains("failed")
+                && !text.to_lowercase().contains("could not"),
+            "a commit that was never merged is not a failure: {text}"
+        );
+    }
 }
 
 // MG.22: this mode's `parse_stat_line` / `file_at_cursor` tests moved

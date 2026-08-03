@@ -420,6 +420,14 @@ Opens from any buffer via `C-c f`:
 │    [l]  log             Show commit history    │
 │                          for this file         │
 │    [b]  blame           Blame this file        │
+│    [M]  merged          Show the merge commit  │
+│                          that brought a commit │
+│                          into HEAD             │
+│                                                │
+│  ▸ More actions                                │
+│    [e]  edit line       Start a rebase that    │
+│                          stops on the commit   │
+│                          that wrote this line  │
 │                                                │
 │  q dismiss                                     │
 └────────────────────────────────────────────────┘
@@ -442,6 +450,8 @@ path to resolve and the key does nothing.
 | `v` | Opens this file [as it was at a revision](help:magit-file-revision-mode) you type |
 | `V` | From a file-at-revision, back to the **live** file at the same line |
 | `f` | Reverse blame — only from a blob buffer, see below |
+| `M` | Shows the merge commit that brought a commit into `HEAD` — see below |
+| `e` | Starts a rebase that stops on the commit that wrote the line at the cursor — see below |
 | `,x` | `git rm --cached` — stop tracking, **file stays on disk** |
 | `,r` | `git mv` — asks for the new name, pre-filled with the current one |
 | `,k` | `git rm` — **destructive**, asks `Delete <path>?` first |
@@ -502,6 +512,76 @@ The scriptable form is `:magit-blame-reverse <rev> <path>`, which takes
 both halves explicitly and so works from anywhere. Both arguments are
 required: there is no sensible default revision, since `HEAD..HEAD` is
 empty and would report every line as still present.
+
+#### `M` — the merge that brought a commit in
+
+"This commit is on my branch. How did it get here?" `M` answers with
+the **merge commit** that brought it in — the pull request that landed
+it, in practice — and opens that merge in a
+[revision buffer](help:magit-revision-mode).
+
+The commit you name is the question, not the answer: the buffer shows a
+different commit from the one you picked. From a magit buffer with a
+commit under the cursor it uses that one; from an ordinary file buffer
+there is no commit at the cursor, so it opens the commit picker first.
+
+A commit made straight onto the branch you are on was never merged in.
+That is the ordinary case for most of a repository's history, not a
+failure, and the buffer says so in those words rather than coming up
+empty.
+
+The scriptable form is `:magit-log-merged <commit>`.
+
+#### `e` — amend the commit that wrote this line
+
+You find a line that's wrong, and the fix belongs in the commit that
+introduced it rather than in a new "fix typo" commit on top. `e` blames
+the line at the cursor, then opens a
+[rebase todo](help:magit-rebase-mode) that rebases onto that commit's
+parent with **that commit marked `edit`**:
+
+```
+pick a1b2c3d earlier commit
+edit e4f5g6h the commit that wrote your line
+pick i7j8k9l later commit
+# e4f5g6h is marked `edit` — it is the commit that wrote that line.
+# The rebase will stop there; amend, then `:magit-rebase-continue`.
+```
+
+`C-c C-c` runs it. The rebase stops on that commit with your working
+tree at that point in history; fix the line, `git add`, `git commit
+--amend`, then `:magit-rebase-continue` replays the rest.
+
+The row it marks is found by **commit**, not by position: `--reverse`
+orders the todo by date, so a merge in range can put a side branch's
+older commits above the one you asked about. Marking the top row would
+stop the rebase somewhere you never named, and the result would look
+perfectly ordinary.
+
+If the line isn't committed yet, there is nothing to amend and it says
+so. If the commit is the repository's first, it rebases with `--root`
+rather than failing on a parent that doesn't exist.
+
+**This rewrites history.** Everything after the amended commit gets new
+shas, so don't do it to commits you have already pushed and shared.
+
+##### Getting out of a stopped rebase
+
+A rebase that stops is a state you have to leave deliberately. Three
+commands do it, from anywhere:
+
+| Command | What it does |
+|---|---|
+| `:magit-rebase-continue` | Resume — after amending, or after resolving conflicts |
+| `:magit-rebase-skip` | Drop the commit it stopped on and carry on |
+| `:magit-rebase-abort` | Abandon the whole rebase, putting the branch back where it started |
+
+`C-c C-k` in a rebase todo buffer also aborts, but that buffer is gone
+once the rebase is actually running — which is why these exist.
+
+Commit messages are accepted unchanged during a rebase: there is no
+message-editing UI yet, so `reword` keeps the original text and
+`--continue` doesn't stop to ask.
 
 **The `,` prefix is deliberate**, and magit's own. Those four change
 what the file *is* rather than what is staged of it, so they take an

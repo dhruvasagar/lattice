@@ -530,6 +530,18 @@ fn find_file_usage() -> Effect {
     }
 }
 
+/// MG.34: what `:magit-log-merged` says with no commit. No default —
+/// "the merge that brought HEAD in" is not a question with an answer,
+/// and guessing one would show a buffer the user did not ask for.
+fn log_merged_usage() -> Effect {
+    Effect::Echo {
+        level: lattice_grammar::EchoLevel::Error,
+        text: "magit: usage — :magit-log-merged <commit> \
+               (or `C-c f M` to pick one)"
+            .to_string(),
+    }
+}
+
 /// MG.23f2: what `:magit-blame-reverse` says when it is not given both
 /// halves. An error rather than a best guess — see the registration for
 /// why there is no defensible default revision.
@@ -557,6 +569,8 @@ fn resolve_file_dispatch_ids(registry: &CommandRegistry) -> transients::FileDisp
         delete: registry.id_by_name("action:magit-global-file-delete"),
         rename: registry.id_by_name("action:magit-global-file-rename"),
         checkout: registry.id_by_name("action:magit-global-file-checkout"),
+        log_merged: registry.id_by_name("action:magit-global-log-merged"),
+        edit_line_commit: registry.id_by_name("action:magit-global-edit-line-commit"),
     }
 }
 
@@ -755,6 +769,30 @@ fn register_ex_commands(
         "magit-stash",
         "Stash the working tree's changes.",
         magit_global_mode::RemoteOp::STASH,
+    );
+    // MG.34: sequencer controls. Not remote operations, but the same
+    // shape — one bounded `git` argv, run off the actor thread, result
+    // reported by notification — so they reuse the mechanism rather
+    // than growing a parallel one. `:magit-stash` set that precedent.
+    //
+    // These exist because `C-c f e` marks a commit `edit`: a rebase that
+    // stops needs a way forward, and before this slice the only
+    // sequencer control was `C-c C-k` in a todo buffer, which is gone by
+    // the time the rebase is actually running.
+    mk_op(
+        "magit-rebase-continue",
+        "Resume a rebase that stopped (after amending, or resolving conflicts).",
+        magit_global_mode::RemoteOp::REBASE_CONTINUE,
+    );
+    mk_op(
+        "magit-rebase-skip",
+        "Skip the commit a stopped rebase is sitting on.",
+        magit_global_mode::RemoteOp::REBASE_SKIP,
+    );
+    mk_op(
+        "magit-rebase-abort",
+        "Abandon a rebase in progress, restoring the branch to where it started.",
+        magit_global_mode::RemoteOp::REBASE_ABORT,
     );
     drop(mk_op);
     // MG.23c1: the scriptable half of the prompt-backed operations.
@@ -1043,6 +1081,45 @@ fn register_ex_commands(
                     "spec",
                     lattice_grammar::ArgKind::String,
                     "<rev> <path> — the revision, and the file to show at it",
+                )],
+                surface_form: SurfaceForm::Keyword,
+            },
+        );
+        // MG.34: magit's `M` "Merged" (magit-file-dispatch, level 7).
+        //
+        // The commit you name is the *question*, not the answer: the
+        // buffer shows the merge that brought it into HEAD, which is a
+        // different commit and costs a `git log` walk to find. That walk
+        // happens in `magit-revision-mode`'s activation, which is why
+        // this hands over a `*magit:merged:*` name rather than a
+        // resolved sha — see that module for the reasoning.
+        registry.register_ex_command(
+            "magit-log-merged",
+            "Show the merge commit that brought <commit> into HEAD.",
+            ExCommandSpec {
+                latency_class: LatencyClass::Reflex,
+                accepts_bang: false,
+                accepts_range: false,
+                parse_args: Arc::new(|line: &str, _bang: bool| {
+                    Ok(Args::String(line.trim().to_string()))
+                }),
+                apply: Arc::new(|ctx| {
+                    let Args::String(ref commit) = ctx.args else {
+                        return Ok(log_merged_usage());
+                    };
+                    let commit = commit.trim();
+                    if commit.is_empty() {
+                        return Ok(log_merged_usage());
+                    }
+                    Ok(Effect::OpenSyntheticBuffer {
+                        name: magit_revision_mode::merged_buffer_name(commit),
+                        mode_id: "magit-revision-mode".to_string(),
+                    })
+                }),
+                args_schema: vec![ArgSpec::required(
+                    "commit",
+                    lattice_grammar::ArgKind::String,
+                    "the commit whose merge to find",
                 )],
                 surface_form: SurfaceForm::Keyword,
             },
@@ -1401,6 +1478,23 @@ fn register_action_commands(registry: &mut CommandRegistry) {
     reg(
         "action:magit-global-file-blame-reverse",
         "For each line of this revision of the file, the last commit it existed in",
+    );
+
+    // MG.34: magit-file-dispatch's `M` and `e`.
+    //
+    // Neither is in `FILE_TARGET_ACTIONS`. `M` takes a *commit*, not a
+    // path — it is only nominally file-scoped, and magit files it under
+    // file-dispatch because that is where you are when you wonder how a
+    // commit got here. `e` takes a path AND a cursor line, and a `file`
+    // argument alone cannot carry the line, so a target-file form would
+    // silently blame line 1 of whatever was named.
+    reg(
+        "action:magit-global-log-merged",
+        "Show the merge commit that brought a commit into HEAD",
+    );
+    reg(
+        "action:magit-global-edit-line-commit",
+        "Start a rebase that stops on the commit that wrote the line at the cursor",
     );
 
     // magit-stash-mode
@@ -3803,16 +3897,17 @@ mod tests {
     /// would pass the two tests above vacuously.
     #[test]
     fn unresolved_ids_do_produce_inert_items_so_the_guard_is_not_vacuous() {
-        // 11 file-dispatch items: stage/unstage/discard,
+        // 15 file-dispatch items: stage/unstage/discard,
         // diff/log/blame, MG.23f2's reverse blame, MG.23d's
-        // untrack/rename/delete and MG.23d2's checkout.
+        // untrack/rename/delete, MG.23d2's checkout, MG.28's
+        // at-revision/visit-live, and MG.34's merged/edit-line.
         let file = inert_items(
             &transients::file_dispatch_transient(&Default::default()),
             "",
         );
         assert_eq!(
             file.len(),
-            13,
+            15,
             "expected every file-dispatch leaf to report inert, got: {file:?}"
         );
         // Root dispatch: 18 ACTION leaves — status, diff, log,

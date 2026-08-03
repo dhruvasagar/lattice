@@ -335,33 +335,72 @@ fn toggle_expand(
             g.expanded.remove(&key);
         }
     } else {
-        let diff = run_show(&wd, &sl, context).unwrap_or_default();
-        if !diff.trim().is_empty() {
-            let text = diff.trim().to_string();
-            let line_count = text.lines().count();
-            let spans = crate::highlight::diff_styled_spans(&text);
-            let pos = Position::new(cursor_line + 1, 0);
-            let start_line = cursor_line + 1;
-            let s = s.clone();
-            rt.spawn(async move {
-                let _ = handle
-                    .apply_edit_batch(vec![Edit::insert(pos, format!("{}\n", text))])
-                    .await;
-                // Recorded only after the insert lands — see the
-                // collapse-branch comment above. Recording it
-                // beforehand let a rapid second `=`/`<CR>` press see
-                // "already expanded" and race the collapse branch
-                // against rows the insert hadn't populated yet.
-                if let Ok(mut g) = s.lock() {
-                    g.expanded.insert(key, line_count);
-                }
-                if let Some(ref ph) = pending {
-                    ph.insert_at_and_wake(bid, start_line, spans);
-                }
-            });
-        }
+        let pos = Position::new(cursor_line + 1, 0);
+        let start_line = cursor_line + 1;
+        let s = s.clone();
+        rt.spawn(async move {
+            // MG.31: the git call happens HERE, inside the spawned
+            // task, not above on the actor thread. See
+            // [`expand_payload`].
+            let Some((text, line_count, spans)) = expand_payload(wd, sl, context).await else {
+                return;
+            };
+            let _ = handle
+                .apply_edit_batch(vec![Edit::insert(pos, format!("{}\n", text))])
+                .await;
+            // Recorded only after the insert lands — see the
+            // collapse-branch comment above. Recording it
+            // beforehand let a rapid second `=`/`<CR>` press see
+            // "already expanded" and race the collapse branch
+            // against rows the insert hadn't populated yet.
+            if let Ok(mut g) = s.lock() {
+                g.expanded.insert(key, line_count);
+            }
+            if let Some(ref ph) = pending {
+                ph.insert_at_and_wake(bid, start_line, spans);
+            }
+        });
     }
     None
+}
+
+/// MG.31: the blocking half of an inline expansion — the `git` call and
+/// the styling of its output — on the blocking pool.
+///
+/// **Why this is a function and not three lines in `toggle_expand`.**
+/// `toggle_expand` is an action handler, so its body runs on the editor
+/// actor's `current_thread` runtime (`editor_actor.rs`: one task,
+/// `run_actor` processes commands one at a time). [`run_show`] ends in
+/// `Command::output()` — a fork/exec plus wait — so calling it from the
+/// handler stalled the loop that services keystrokes for the whole
+/// duration of a `git diff`, which alone exceeds paramount-goal-1's
+/// one-frame ceiling. Every other magit view already ran its git call
+/// inside `spawn_blocking`, including [`run_show`]'s two other callers;
+/// this path was the one that did not.
+///
+/// The styling moves with it deliberately: it is `O(lines)` over the
+/// diff and belongs on the same side of the boundary as the call that
+/// produced it.
+///
+/// `None` when the entry has no diff to show (git failed, or the output
+/// was blank) — the caller then inserts nothing, exactly as before.
+async fn expand_payload(
+    workdir: PathBuf,
+    sl: StatusLine,
+    context: i64,
+) -> Option<(String, usize, Vec<Vec<lattice_cells::style::StyledSpan>>)> {
+    tokio::task::spawn_blocking(move || {
+        let text = run_show(&workdir, &sl, context)?.trim().to_string();
+        if text.is_empty() {
+            return None;
+        }
+        let line_count = text.lines().count();
+        let spans = crate::highlight::diff_styled_spans(&text);
+        Some((text, line_count, spans))
+    })
+    .await
+    .ok()
+    .flatten()
 }
 
 // ── registration ────────────────────────────────────────
@@ -1416,5 +1455,155 @@ mod tests {
         let a = StatusLine::Stash { index: 3 };
         let b = StatusLine::Stash { index: 3 };
         assert_eq!(entry_key(&a), entry_key(&b));
+    }
+}
+
+/// MG.31: the inline `=` expansion's git call belongs on the blocking
+/// pool, not the actor thread.
+#[cfg(test)]
+mod expand_payload_tests {
+    use super::*;
+    use lattice_cells::style::Style;
+    use std::process::Command;
+    use std::time::{Duration, Instant};
+
+    fn git_ok(dir: &Path, args: &[&str]) {
+        let st = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .status()
+            .expect("git");
+        assert!(st.success(), "git {args:?} failed");
+    }
+
+    /// A repo with one tracked file whose working tree differs from
+    /// HEAD in `changed` lines. `changed` drives how long `git diff`
+    /// takes, which is what the responsiveness probe below needs.
+    fn repo_with_modified_file(lines: usize) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let p = dir.path();
+        git_ok(p, &["init"]);
+        git_ok(p, &["config", "user.email", "t@lattice.dev"]);
+        git_ok(p, &["config", "user.name", "lattice-test"]);
+        let base: String = (1..=lines).map(|i| format!("line {i}\n")).collect();
+        std::fs::write(p.join("a.txt"), &base).expect("write base");
+        git_ok(p, &["add", "a.txt"]);
+        git_ok(p, &["commit", "-m", "base"]);
+        // Every line differs, so the diff is proportional to `lines`.
+        let modified: String = (1..=lines).map(|i| format!("line {i} CHANGED\n")).collect();
+        std::fs::write(p.join("a.txt"), &modified).expect("write modified");
+        dir
+    }
+
+    fn unstaged(path: &str) -> StatusLine {
+        StatusLine::File {
+            path: PathBuf::from(path),
+            staged: false,
+        }
+    }
+
+    /// The relocation must not change what the caller receives: the
+    /// trimmed diff text, its line count, and one span row per line.
+    #[test]
+    fn returns_the_diff_its_line_count_and_a_span_row_per_line() {
+        let dir = repo_with_modified_file(20);
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let (text, line_count, spans) = rt
+            .block_on(expand_payload(
+                dir.path().to_path_buf(),
+                unstaged("a.txt"),
+                3,
+            ))
+            .expect("a modified tracked file has a diff");
+
+        assert!(text.starts_with("diff --git"), "got: {text:?}");
+        assert_eq!(line_count, text.lines().count());
+        assert_eq!(
+            spans.len(),
+            line_count,
+            "one span row per line, or the highlight splice misaligns"
+        );
+        assert!(
+            spans
+                .iter()
+                .any(|row| row.iter().any(|s| s.style == Style::DiffAdd)),
+            "a changed file's diff must carry added lines"
+        );
+    }
+
+    /// An entry with nothing to show declines rather than inserting a
+    /// blank expansion — the behaviour the old `!diff.trim().is_empty()`
+    /// guard had.
+    #[test]
+    fn declines_when_there_is_no_diff() {
+        let dir = repo_with_modified_file(5);
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        // `b.txt` is not in the repo at all, so `git diff -- b.txt` is
+        // empty.
+        let out = rt.block_on(expand_payload(
+            dir.path().to_path_buf(),
+            unstaged("b.txt"),
+            3,
+        ));
+        assert!(out.is_none(), "an entry with no diff inserts nothing");
+    }
+
+    /// **The MG.31 regression guard.** Mirrors
+    /// `lattice-multibuffer/tests/ui_responsive_during_scan.rs`: run on
+    /// a `current_thread` runtime (the editor actor's configuration,
+    /// `editor_actor.rs:562`) and assert a concurrent probe keeps its
+    /// sleep budget while the expansion runs.
+    ///
+    /// **Verified non-vacuous**, not assumed: dropping the
+    /// `spawn_blocking` from `expand_payload` (the pre-MG.31 shape) puts
+    /// the git call and the styling on this runtime and the measured gap
+    /// goes to **263 ms** against the 50 ms threshold — a 5× margin, so
+    /// neither CI jitter nor a fast machine can flip the verdict. The
+    /// file is sized (200k lines, every one changed) to buy exactly that
+    /// margin; at 40k it was only 74 ms, which was too close to call.
+    #[test]
+    fn the_expansion_does_not_starve_the_actor_runtime() {
+        let dir = repo_with_modified_file(200_000);
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+
+        let (max_gap, ticks, produced) = rt.block_on(async {
+            let task = tokio::task::spawn(expand_payload(
+                dir.path().to_path_buf(),
+                unstaged("a.txt"),
+                3,
+            ));
+
+            let mut max_gap = Duration::ZERO;
+            let mut ticks = 0usize;
+            let mut last = Instant::now();
+            for _ in 0..50 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+                let now = Instant::now();
+                max_gap = max_gap.max(now.duration_since(last));
+                ticks += 1;
+                last = now;
+            }
+            let produced = task.await.expect("join").is_some();
+            (max_gap, ticks, produced)
+        });
+
+        assert_eq!(ticks, 50, "all probe iterations ran");
+        assert!(produced, "the expansion still produced its diff");
+        assert!(
+            max_gap < Duration::from_millis(50),
+            "max probe gap was {max_gap:?}; expected < 50 ms — the actor's \
+             current_thread runtime is being starved by the `=` expansion \
+             (paramount-goal-1 regression, MG.31). The git call and the \
+             styling belong inside `spawn_blocking`."
+        );
     }
 }

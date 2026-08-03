@@ -1692,6 +1692,91 @@ mod prompt_line {
         );
     }
 
+    // ── OS paste (the GUI peer's Cmd+V) ─────────────────────────────
+    //
+    // The TUI gets its paste payload from the terminal as a
+    // bracketed-paste burst. GPUI has no such event — a GUI toolkit
+    // delivers the shortcut as an ordinary key and expects the
+    // application to read the clipboard itself — so the peer had no
+    // paste route at all and Cmd+V did nothing there.
+    //
+    // `do_paste_from_clipboard` is that route, and it is tested here
+    // rather than in the GPUI crate because the semantics are the host's
+    // and the renderer half is three lines of key matching.
+
+    fn with_clipboard(app: &mut App, text: &str) {
+        let cb: lattice_core::ClipboardHandle =
+            std::sync::Arc::new(lattice_core::FakeClipboard::new());
+        cb.write(text.to_string());
+        if let Some(services) = std::sync::Arc::get_mut(&mut app.editor.services) {
+            services.register(cb);
+        }
+    }
+
+    /// The clipboard's text reaches the buffer at the cursor.
+    #[test]
+    fn os_paste_inserts_the_clipboard_at_the_cursor() {
+        let mut a = app_with("hello\n", 10);
+        with_clipboard(&mut a, " world");
+        a.editor.cursor = lattice_protocol::position::Position::new(0, 5);
+        a.editor.do_paste_from_clipboard();
+        assert_eq!(
+            a.editor.document.text().lines().next().unwrap_or_default(),
+            "hello world",
+            "OS paste inserts literally at the cursor — not vim's `p` \
+             placement, which is what every other application does with \
+             this shortcut"
+        );
+    }
+
+    /// It reaches a readline surface too, which is the case that was
+    /// reported broken: Cmd+V into `:` or a prompt did nothing.
+    #[test]
+    fn os_paste_reaches_an_open_prompt() {
+        let mut a = app_with("hello\n", 10);
+        with_clipboard(&mut a, "https://host/o/r.git");
+        a.editor.open_prompt_line(
+            "Clone repository: ".to_string(),
+            String::new(),
+            "action:no-such-action".to_string(),
+            None,
+        );
+        a.editor.publish_render_state();
+        a.editor.do_paste_from_clipboard();
+        assert_eq!(
+            a.editor.document.text().lines().next().unwrap_or_default(),
+            "https://host/o/r.git",
+            "the prompt, not the document behind it"
+        );
+    }
+
+    /// And it goes through the same one-row flattening every readline
+    /// surface gets — a Cmd+V of a copied line carries its newline.
+    #[test]
+    fn os_paste_into_a_readline_surface_is_flattened() {
+        let mut a = app_with("hello\n", 10);
+        with_clipboard(&mut a, "A\nB");
+        a.apply(Action::EnterCommandLine);
+        a.editor.publish_render_state();
+        a.editor.do_paste_from_clipboard();
+        assert_eq!(
+            a.editor.command_line_full_text(),
+            "A B",
+            "the `:` line stays one row"
+        );
+    }
+
+    /// An empty clipboard is a no-op, not an empty edit — a paste that
+    /// silently cleared a selection or bumped the cursor would be worse
+    /// than nothing happening.
+    #[test]
+    fn an_empty_clipboard_does_nothing() {
+        let mut a = app_with("hello\n", 10);
+        let before = a.editor.document.text();
+        a.editor.do_paste_from_clipboard();
+        assert_eq!(a.editor.document.text(), before);
+    }
+
     /// The initial text is seeded and editable: the destination prompts
     /// (`C-c f v`'s `HEAD`, the clone wizard's derived directory) are
     /// only useful if the user can correct what was pre-filled.

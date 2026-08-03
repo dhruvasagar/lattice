@@ -469,6 +469,34 @@ Use:
 - `"ap` — paste from register `a`
 - `:reg<CR>` — list every populated register
 
+### Pasting from outside the editor
+
+`"+p` pastes the system clipboard with vim's placement (charwise or
+linewise, depending on how the text was copied). For an ordinary
+"paste what I just copied from a browser" there is also the OS
+shortcut, which inserts literally at the cursor and works in Insert
+mode, on the `:` line, on the `/` line and in any prompt:
+
+| Where | Shortcut |
+|---|---|
+| Terminal (TUI) | Your terminal's own paste — **Cmd+V** on macOS, **Ctrl+Shift+V** on most Linux terminals |
+| GUI window | **Cmd+V** on macOS, **Ctrl+Shift+V** elsewhere |
+
+**Plain `Ctrl+V` is not paste** — it is blockwise Visual, and it stays
+that way. `Cmd` is unused by the vim grammar, and `Ctrl+Shift+V` is the
+convention terminals already use for exactly this reason.
+
+The two renderers reach this differently, which is why the shortcut is
+the terminal's own in one and the editor's in the other: a terminal
+sends a paste as a single bracketed burst carrying the text, while a GUI
+toolkit delivers the shortcut as a key and leaves the application to
+read the clipboard.
+
+Pasting a copied line into the `:` line, the `/` line or a prompt
+**flattens its newlines** — those are one-row surfaces, and a newline
+would put text in the buffer that the row cannot show. The expanded
+mini-buffer band (`C-x C-e`) is multi-line on purpose and keeps them.
+
 Macros record key sequences:
 
 - `qa` — start recording into register `a`

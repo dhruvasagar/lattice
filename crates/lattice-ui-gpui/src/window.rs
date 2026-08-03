@@ -1148,6 +1148,34 @@ impl EditorView {
             cx.notify();
             return;
         }
+        // OS paste. A terminal hands the TUI a bracketed-paste burst
+        // carrying the text (`Event::Paste`); a GUI toolkit has no such
+        // event — the shortcut arrives as an ordinary key and the
+        // application reads the clipboard itself. Without this arm,
+        // Cmd+V into `:`, `/`, a prompt or Insert mode did nothing at
+        // all in this peer.
+        //
+        // **Plain `<C-v>` is deliberately NOT a paste here.** It is
+        // vim's blockwise Visual, and taking it would trade a grammar
+        // chord for a shortcut that already has a free slot. `Cmd` is
+        // that slot on macOS (nothing in the grammar binds `SUPER`), and
+        // `<C-S-v>` is the convention everywhere else — the same chord
+        // Linux terminals use, chosen for the same reason.
+        //
+        // The clipboard read itself is `do_paste_from_clipboard`'s, on
+        // the editor actor: `Clipboard::read` may block, and this is the
+        // renderer's thread.
+        let paste_chord = ks.key.eq_ignore_ascii_case("v")
+            && !ks.modifiers.alt
+            && ((ks.modifiers.platform && !ks.modifiers.control)
+                || (ks.modifiers.control && ks.modifiers.shift && !ks.modifiers.platform));
+        if paste_chord {
+            tracing::debug!("lattice-gpui: OS paste");
+            self.app.mutate_editor(|e| e.do_paste_from_clipboard());
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
         let outcome = self.app.dispatch_keystroke(
             &ks.key,
             ks.modifiers.control,

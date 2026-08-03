@@ -21688,6 +21688,45 @@ impl Editor {
         }
     }
 
+    /// Paste the system clipboard's text at the cursor — the GUI peer's
+    /// Cmd+V.
+    ///
+    /// **The TUI never needs this.** A terminal delivers its own paste
+    /// shortcut as a bracketed-paste burst (`Event::Paste`), already
+    /// carrying the text. A GUI toolkit has no such event: the shortcut
+    /// arrives as an ordinary key and the application is expected to
+    /// read the clipboard itself. So the two renderers reach
+    /// [`Self::do_paste_text`] by different routes, and GPUI had no
+    /// route at all — Cmd+V into `:`, `/`, a prompt or Insert mode did
+    /// nothing there.
+    ///
+    /// Distinct from `p` / `P`, deliberately. Register paste applies
+    /// vim's charwise/linewise placement; a GUI paste inserts literally
+    /// at the cursor, which is what every other application does with
+    /// that shortcut and therefore what the muscle memory expects.
+    ///
+    /// `ClipboardHandle::read` may block and is documented "only called
+    /// from a `spawn_blocking` context". This runs on the **editor
+    /// actor** — the same thread `read_register` already reads it on for
+    /// `"+p` — never the renderer's. That is the whole reason this is a
+    /// host method rather than a clipboard read in `on_key_down`.
+    ///
+    /// Deliberately NOT gated on the `clipboard` option. That option
+    /// governs whether yank and put reach for the system clipboard
+    /// *implicitly*; Cmd+V is the user asking for it explicitly, and
+    /// refusing an explicit gesture because an implicit-behaviour toggle
+    /// is off would read as the key being broken.
+    pub fn do_paste_from_clipboard(&mut self) {
+        let Some(text) = self
+            .services
+            .get::<lattice_core::ClipboardHandle>()
+            .and_then(|cb| cb.read())
+        else {
+            return;
+        };
+        self.do_paste_text(&text);
+    }
+
     /// Vim's `p` / `P` -- paste from the chosen register
     /// (`pending_register` if set, else unnamed). Charwise splices
     /// at cursor; linewise inserts a fresh line; blockwise paints

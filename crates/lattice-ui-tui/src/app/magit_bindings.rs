@@ -357,7 +357,7 @@ mod tests {
             "opening must actually take over the active document"
         );
 
-        let _ = app.editor.bury_buffer();
+        app.editor.bury_buffer();
 
         assert_eq!(
             app.editor.pane_tree.active().buffer_id,
@@ -409,15 +409,12 @@ mod tests {
         app.editor
             .open_synthetic_buffer("*magit:status*", "magit-status-mode");
         check(&app, "after opening a full-pane synthetic buffer");
-        let _ = app.editor.bury_buffer();
+        app.editor.bury_buffer();
         check(&app, "after burying it");
 
         // And burying with nothing buried is a no-op, so a mode can
         // bind `q` unconditionally without a guard.
-        assert!(
-            !app.editor.bury_buffer().0,
-            "second bury has nothing to do"
-        );
+        assert!(!app.editor.bury_buffer(), "second bury has nothing to do");
         check(&app, "after a no-op bury");
     }
 
@@ -516,6 +513,58 @@ mod tests {
             app.editor.option_cache.show_line_numbers,
             "the file must come back with ITS options — the magit view's \
              `Number = false` leaked through the un-rebuilt option cache"
+        );
+    }
+
+    /// The seam, not the symptom: `activate_buffer` now completes every
+    /// activation itself, so a buffer switch by ANY route lands with the
+    /// destination's own options.
+    ///
+    /// `q` (above) was the reported case. This drives `:bn`, whose
+    /// `do_buffer_next` returned `activate_buffer`'s bool straight to
+    /// its caller and never ran the completion — so cycling from a magit
+    /// view to a file carried magit's `Number = false` across. Same hole
+    /// `<C-t>` tag-pop had. Both are fixed by the seam rather than by
+    /// three separate patches, which is the point of folding it in.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn switching_buffers_by_any_route_lands_with_that_buffers_options() {
+        let mut app = app_with("the original file content\n", 20);
+        let origin = app.editor.document_buffer_id;
+        assert!(
+            app.editor.option_cache.show_line_numbers,
+            "fixture precondition: the file shows line numbers"
+        );
+
+        run_ex(&mut app, "magit-status");
+        assert!(settle_mode(&mut app, "magit-core-mode").await);
+        assert_ne!(app.editor.document_buffer_id, origin);
+        assert!(
+            !app.editor.option_cache.show_line_numbers,
+            "non-vacuous: the magit view really does turn them off"
+        );
+
+        let magit_id = app.editor.document_buffer_id;
+
+        // The seam itself, with NO mode activation behind it to rebuild
+        // the caches — which is the situation every non-`q` route is in.
+        // `q` is covered by the test above; this pins the contract the
+        // other routes (`<C-t>` tag-pop, `:bn`/`:bp`, picker
+        // switch-buffer) all depend on.
+        app.mutate_editor(move |e| {
+            let _ = e.activate_buffer(origin);
+        });
+        let landed = app.editor.document_buffer_id;
+        assert_ne!(landed, magit_id, "activation moved to another buffer");
+        assert_eq!(landed, origin, "and it is the file we started on");
+
+        // The invariant the seam guarantees, stated directly and
+        // independently of WHICH buffer `:bn` picks: the renderer's
+        // hot-path cache agrees with the destination's own resolved
+        // options. Before the fold-in it held the magit view's.
+        assert_eq!(
+            app.editor.option_cache.show_line_numbers,
+            *app.editor.resolved_option::<lattice_config::Number>(landed),
+            "option_cache must describe the buffer that is actually active"
         );
     }
 

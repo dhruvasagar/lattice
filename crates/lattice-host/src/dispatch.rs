@@ -5851,7 +5851,10 @@ impl Editor {
             response,
         } = req;
 
-        let mut signals = Vec::new();
+        // The two `activate_buffer` calls below complete their own
+        // activations and queue the resulting cascade on the editor, so
+        // nothing is collected here any more.
+        let signals = Vec::new();
 
         // Baseline = the on-disk content of `old_file_path`. A missing/unreadable
         // file degrades to an empty baseline (all-Add hunks) — the same
@@ -5880,9 +5883,7 @@ impl Editor {
         // baseline buffer has no registry path, so detect from `old_file_path`).
         // Seed BEFORE activation so `activate_buffer` promotes the handle.
         self.install_inmemory_syntax(left_id, &original, &old_file_path);
-        if self.activate_buffer(left_id) {
-            signals.extend(self.activate_buffer_state());
-        }
+        let _ = self.activate_buffer(left_id);
         let left_pane = self.pane_tree.active().id;
 
         // RIGHT (proposed): a further split to the right of the baseline,
@@ -5893,9 +5894,7 @@ impl Editor {
             self.create_inmemory_document(&new_contents, Some(new_file_path.clone()), None);
         // D-fix.2: highlight the proposed side using the new file's language.
         self.install_inmemory_syntax(right_id, &new_contents, &new_file_path);
-        if self.activate_buffer(right_id) {
-            signals.extend(self.activate_buffer_state());
-        }
+        let _ = self.activate_buffer(right_id);
         let right_pane = self.pane_tree.active().id;
 
         let left_member = crate::pane_group::PaneGroupMember {
@@ -6657,18 +6656,21 @@ impl Editor {
     /// an invariant, and hand-restoring one side of it broke the
     /// cache it keys.
     ///
-    /// Returns `(buried, signals)`. `buried` is `false` when there was
-    /// nothing to return to, so a mode can bind `q` to this
-    /// unconditionally. `signals` carries the mode-lifecycle / LSP-attach
-    /// cascade from re-activating the destination and must be routed to
-    /// the renderer — the same contract [`Self::dismiss_file_tree`] has,
-    /// and the reason this does not simply drop them.
-    pub fn bury_buffer(&mut self) -> (bool, Vec<RendererSignal>) {
+    /// Returns `false` when there is nothing buried, so a mode can bind
+    /// `q` to this unconditionally.
+    ///
+    /// The destination's option-cache rebuild and its LSP-attach cascade
+    /// are [`Self::activate_buffer`]'s job now, not this function's —
+    /// which is the whole point of folding the completion in there. The
+    /// bug this used to have (`q` out of a magit view returned the file
+    /// with magit's `Number = false` still cached, so the line numbers
+    /// vanished) is fixed at that seam rather than here.
+    pub fn bury_buffer(&mut self) -> bool {
         let Some(prev) = self.prev_pane_for_popup.take() else {
-            return (false, Vec::new());
+            return false;
         };
         // Full swap first — this is what moves `Editor::document`.
-        let needs_state = self.activate_buffer(prev.buffer_id);
+        let _ = self.activate_buffer(prev.buffer_id);
         // Then the view state the pane had when it was displaced.
         // After `activate_buffer`, not before: activation resets the
         // cursor/scroll for the destination.
@@ -6679,31 +6681,7 @@ impl Editor {
         pane.buffer_id = prev.buffer_id;
         self.active_buffer = prev.buffer;
         self.modal = prev.modal;
-        // `activate_buffer`'s bool means "now run
-        // `activate_buffer_state()`", and this discarded it — so the
-        // buried view's options stayed in `option_cache` and the file
-        // came back wearing them. Reported as "`C-c f d` then `q` and my
-        // line numbers are gone": every magit view contributes
-        // `Number = false`.
-        //
-        // Resolution itself was never wrong — `resolved_options` is
-        // per-buffer and the file's entry still said `Number = true`.
-        // What was stale is the renderer's hot-path copy, which only
-        // rebuilds for the active buffer.
-        //
-        // The asymmetry that hid it: OPENING a view rebuilds the cache
-        // through mode activation, so magit's options applied correctly
-        // on the way in. Burying activates no mode, so nothing rebuilt
-        // on the way out.
-        //
-        // Runs last, after the pane fields above are restored, because
-        // `activate_buffer_state` reads the active pane's buffer id.
-        let signals = if needs_state {
-            self.activate_buffer_state()
-        } else {
-            Vec::new()
-        };
-        (true, signals)
+        true
     }
 
     pub fn dismiss_popup(&mut self) {
@@ -8390,10 +8368,7 @@ impl Editor {
                             lr_for_search,
                         ) {
                             Some(view_id) => {
-                                if self.activate_buffer(view_id) {
-                                    let signals = self.activate_buffer_state();
-                                    self.enqueue_renderer_signals(signals);
-                                }
+                                let _ = self.activate_buffer(view_id);
                                 self.set_message(
                                     EchoLevel::Info,
                                     format!("project-search: scanning for \"{query_for_echo}\"…"),
@@ -8433,10 +8408,7 @@ impl Editor {
                 // activate the returned buffer + repaint.
                 match lattice_compilation::start_compilation(self, cmdline, cwd) {
                     Some(id) => {
-                        if self.activate_buffer(id) {
-                            let signals = self.activate_buffer_state();
-                            self.enqueue_renderer_signals(signals);
-                        }
+                        let _ = self.activate_buffer(id);
                         self.set_message(EchoLevel::Info, "compilation started".to_string());
                     }
                     None => {
@@ -8581,10 +8553,7 @@ impl Editor {
                             registry,
                             lr,
                         );
-                        if self.activate_buffer(view_id) {
-                            let signals = self.activate_buffer_state();
-                            self.enqueue_renderer_signals(signals);
-                        }
+                        let _ = self.activate_buffer(view_id);
                         self.set_message(
                             EchoLevel::Info,
                             format!("narrowed to L{}–{}", start + 1, end + 1),
@@ -8607,10 +8576,11 @@ impl Editor {
                 let active = self.active_pane_buffer_id();
                 let narrow_id = lattice_multibuffer::providers::narrow::NarrowMode::mode_id();
                 if self.minor_mode_enabled_for(active, narrow_id) {
-                    if self.do_buffer_delete(true) {
-                        let signals = self.activate_buffer_state();
-                        self.enqueue_renderer_signals(signals);
-                    }
+                    // `do_buffer_delete` activates its successor
+                    // through `activate_buffer`, which completes the
+                    // activation itself — a second pass here would
+                    // redo the work and double-emit its signals.
+                    let _ = self.do_buffer_delete(true);
                     self.set_message(EchoLevel::Info, "widened".to_string());
                 } else {
                     self.set_message(EchoLevel::Warn, ":widen: not in a narrow view".to_string());
@@ -8642,10 +8612,7 @@ impl Editor {
                             registry,
                             lr,
                         );
-                        if self.activate_buffer(view_id) {
-                            let signals = self.activate_buffer_state();
-                            self.enqueue_renderer_signals(signals);
-                        }
+                        let _ = self.activate_buffer(view_id);
                         self.set_message(
                             EchoLevel::Info,
                             format!("narrowed to L{}–{}", start + 1, end + 1),
@@ -8688,10 +8655,7 @@ impl Editor {
                         self, &entries, registry, lr,
                     ) {
                         Some(view_id) => {
-                            if self.activate_buffer(view_id) {
-                                let signals = self.activate_buffer_state();
-                                self.enqueue_renderer_signals(signals);
-                            }
+                            let _ = self.activate_buffer(view_id);
                             self.set_message(
                                 EchoLevel::Info,
                                 format!("[problems] {} items", entries.len()),
@@ -8716,10 +8680,11 @@ impl Editor {
                 let problems_id =
                     lattice_multibuffer::providers::problems::ProblemsMinorMode::mode_id();
                 if self.minor_mode_enabled_for(active, problems_id) {
-                    if self.do_buffer_delete(true) {
-                        let signals = self.activate_buffer_state();
-                        self.enqueue_renderer_signals(signals);
-                    }
+                    // `do_buffer_delete` activates its successor
+                    // through `activate_buffer`, which completes the
+                    // activation itself — a second pass here would
+                    // redo the work and double-emit its signals.
+                    let _ = self.do_buffer_delete(true);
                     self.set_message(EchoLevel::Info, "[problems] closed".to_string());
                 } else {
                     self.set_message(
@@ -19234,12 +19199,8 @@ impl Editor {
             .first()
             .copied()
             .unwrap_or(self.document_buffer_id);
-        let needs_state = self.activate_buffer(successor);
-        let signals = if needs_state {
-            self.activate_buffer_state()
-        } else {
-            Vec::new()
-        };
+        let _ = self.activate_buffer(successor);
+        let signals = self.drain_pending_renderer_signals();
         self.buffers.remove(tree_id);
         let new_kind = self.active_buffer;
         let new_id = self.active_pane_buffer_id();
@@ -24723,10 +24684,7 @@ impl Editor {
                 {
                     out.renderer_signals
                         .extend(self.prepare_open_target_pane(target));
-                    let needs_state = self.activate_buffer(id);
-                    if needs_state {
-                        out.renderer_signals.extend(self.activate_buffer_state());
-                    }
+                    let _ = self.activate_buffer(id);
                 }
             }
             JumpInBuffer {
@@ -24741,10 +24699,7 @@ impl Editor {
                 {
                     out.renderer_signals
                         .extend(self.prepare_open_target_pane(target));
-                    let needs_state = self.activate_buffer(id);
-                    if needs_state {
-                        out.renderer_signals.extend(self.activate_buffer_state());
-                    }
+                    let _ = self.activate_buffer(id);
                 }
                 let snap = self.document.snapshot();
                 let line = line.min(last_addressable_line(&snap.buffer));
@@ -28288,10 +28243,7 @@ impl Editor {
                 {
                     out.renderer_signals
                         .extend(self.prepare_open_target_pane(target));
-                    let needs_state = self.activate_buffer(id);
-                    if needs_state {
-                        out.renderer_signals.extend(self.activate_buffer_state());
-                    }
+                    let _ = self.activate_buffer(id);
                 }
             }
             lattice_picker::RoutingPayload::LspInstance { server_id, .. } => {
@@ -31509,7 +31461,46 @@ impl Editor {
     /// both still on App. The bool is the explicit-coordination
     /// signal across the migration window; it deletes when F.5+
     /// brings the tail host-side.
+    /// Activate `id` in the active pane **and complete its activation** —
+    /// mode wiring, option resolution, option-cache rebuild, syntax,
+    /// folds.
+    ///
+    /// Returns whether a full activation ran (`false` for a no-op, e.g.
+    /// the buffer was already active), which is what `:bn` / `:bp` and
+    /// the buffer-delete successor path report.
+    ///
+    /// **There is deliberately no way to do the first half without the
+    /// second.** This used to return "you must now call
+    /// `activate_buffer_state()`" and 14 of 25 call sites ignored it.
+    /// Most were safe by accident — they open synthetic buffers, where
+    /// mode activation rebuilds the caches anyway — but the ones that
+    /// switch to an *already-built* buffer were not, and the symptom is
+    /// silent: the destination renders with the previous buffer's
+    /// resolved options.
+    ///
+    /// Two were confirmed in real use before this was folded in:
+    /// `bury_buffer` (`q` out of a magit view returned the file with
+    /// magit's `Number = false` still in `option_cache`, so the line
+    /// numbers were gone) and `do_tag_stack_pop` (`<C-t>` across a
+    /// buffer boundary, same leak). `:bn` / `:bp` had it too.
+    ///
+    /// The completion's renderer signals — the mode-lifecycle and
+    /// LSP-attach cascade — are enqueued via
+    /// [`Editor::enqueue_renderer_signals`] rather than returned, so the
+    /// signature stays `bool` and no caller can drop them either.
     pub fn activate_buffer(&mut self, id: BufferId) -> bool {
+        let ran_full = self.activate_buffer_only(id);
+        if ran_full {
+            let signals = self.activate_buffer_state();
+            self.enqueue_renderer_signals(signals);
+        }
+        ran_full
+    }
+
+    /// The pane/document swap alone. Private, and it stays that way:
+    /// every caller outside this file must go through
+    /// [`Self::activate_buffer`], which cannot forget the completion.
+    fn activate_buffer_only(&mut self, id: BufferId) -> bool {
         let Some(kind) = self.buffers.kind_of(id) else {
             self.set_message(EchoLevel::Error, format!("buffer #{} not found", id.0));
             return false;

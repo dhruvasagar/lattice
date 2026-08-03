@@ -230,6 +230,16 @@ impl App {
         for effect in std::mem::take(&mut outcome.effects) {
             self.apply_effect_app_arms(effect);
         }
+        // Signals queued on the editor rather than returned. Two
+        // producers: `impl ModeActivator for Editor` (its trait surface
+        // returns `()`, so `create_multibuffer_view` and friends stash
+        // them), and `Editor::activate_buffer`, which completes every
+        // activation internally and so cannot hand its cascade back
+        // through a `bool`. Drained here, beside the outcome's own, so
+        // neither producer can be forgotten by a caller.
+        for signal in self.mutate_editor_with(|e| e.drain_pending_renderer_signals()) {
+            self.handle_renderer_signal(signal);
+        }
         for signal in std::mem::take(&mut outcome.renderer_signals) {
             self.handle_renderer_signal(signal);
         }
@@ -1085,10 +1095,9 @@ impl App {
             Effect::OpenHover { markdown } => self.do_open_hover(&markdown),
             Effect::DismissPopup => self.do_dismiss_popup(),
             Effect::BuryBuffer => {
-                let signals = self.mutate_editor_with(|e| e.bury_buffer().1);
-                for signal in signals {
-                    self.handle_renderer_signal(signal);
-                }
+                self.mutate_editor(|e| {
+                    e.bury_buffer();
+                });
             }
             Effect::OpenPopup {
                 name,

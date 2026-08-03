@@ -1069,7 +1069,14 @@ impl GpuiApp {
         // post-signal-handling editor state; the returned
         // outcome still carries the (now-handled) signal list
         // for callers that want to inspect or re-route them.
-        let signals = std::mem::take(&mut outcome.renderer_signals);
+        // Signals queued on the editor rather than returned — the
+        // `ModeActivator` trait surface and `Editor::activate_buffer`,
+        // both of which complete work whose signature cannot hand the
+        // cascade back. Folded in beside the outcome's own so neither
+        // producer depends on a caller remembering it. TUI parity:
+        // `app/dispatch.rs` drains at the same point.
+        let mut signals = self.mutate_editor_with(|e| e.drain_pending_renderer_signals());
+        signals.append(&mut std::mem::take(&mut outcome.renderer_signals));
         for signal in signals.iter().cloned() {
             self.handle_renderer_signal(signal);
         }
@@ -1335,10 +1342,9 @@ impl GpuiApp {
                 // `activate_buffer`. Dismissing a popup would leave the
                 // active document pointing at the buried buffer and
                 // paint it over the file.
-                let signals = self.mutate_editor_with(|e| e.bury_buffer().1);
-                for signal in signals {
-                    self.handle_renderer_signal(signal);
-                }
+                self.mutate_editor(|e| {
+                    e.bury_buffer();
+                });
             }
             Effect::OpenPopup {
                 name,

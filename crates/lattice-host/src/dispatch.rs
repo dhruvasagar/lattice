@@ -21421,6 +21421,40 @@ fn is_word_char_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
 
+/// Make pasted text safe for a **one-row** readline surface.
+///
+/// A copied line almost always carries its terminator, and a paste from
+/// a wrapped terminal or a browser can carry several. Inserted raw, they
+/// add lines the one-row surface cannot draw: the text is in the buffer,
+/// invisible, and the first-line read that `:`/`/`/prompt submit all do
+/// silently drops it. Nothing tells the user any of that happened.
+///
+/// - Leading and trailing line terminators are dropped. Only
+///   terminators — a paste that genuinely ends in a space keeps it.
+/// - An interior run becomes a single space, so words on either side
+///   stay separate. Joining them outright (what a browser's one-line
+///   input does) reads as a typo the user did not make.
+///
+/// Shared by all three surfaces. The expanded mini-buffer band is
+/// deliberately multi-line and does not call this.
+fn flatten_pasted_newlines(text: &str) -> String {
+    let trimmed = text.trim_matches(|c| c == '\n' || c == '\r');
+    let mut out = String::with_capacity(trimmed.len());
+    let mut in_break = false;
+    for c in trimmed.chars() {
+        if c == '\n' || c == '\r' {
+            if !in_break {
+                out.push(' ');
+                in_break = true;
+            }
+        } else {
+            out.push(c);
+            in_break = false;
+        }
+    }
+    out
+}
+
 /// 5.5.G.9: pure-editor paste cluster (`p` / `P` / bracketed-paste).
 impl Editor {
     /// Bracketed-paste handler. Routes the payload to cursor /
@@ -21480,30 +21514,57 @@ impl Editor {
             return;
         }
         match self.modal {
-            ModalState::Command => {
-                // MB.1: paste into the `:` line inserts at the cursor in
-                // the `*command-line*` buffer (the source of truth), not a
-                // projection append.
-                if self.command_line_active()
-                    && let Ok(applied) = self.apply_edit_blocking(
-                        lattice_protocol::edit::Edit::insert(self.cursor, text),
-                    )
-                {
-                    self.cursor = applied.inserted_range.end;
+            // The three buffer-backed readline surfaces — the `:` line
+            // (MB.1), the `/`·`?` line (MB.5a) and `Effect::OpenPrompt`'s
+            // generic prompt — paste **identically**: insert at the
+            // cursor in the focused line buffer, with newlines flattened
+            // while the surface is one row.
+            //
+            // One arm rather than three. They had drifted into two
+            // near-copies plus a fall-through, which is how the prompt
+            // ended up with no paste handling of its own and how all
+            // three ended up accepting a pasted newline that silently
+            // added a line the one-row surface cannot show. A surface
+            // added later gets the behaviour by being a `ModalState`
+            // here, not by remembering to copy an arm.
+            ModalState::Command | ModalState::Search(_) | ModalState::Prompt => {
+                // A prompt's buffer is focused for as long as the state
+                // is set; the other two can be in their modal state with
+                // the line not yet live, and must not then write into
+                // the document behind them.
+                let live = match self.modal {
+                    ModalState::Command => self.command_line_active(),
+                    ModalState::Search(_) => self.search_line_active(),
+                    _ => true,
+                };
+                if live {
+                    // The expanded mini-buffer band (`C-x C-e`) IS
+                    // multi-line on purpose, so a paste there keeps its
+                    // newlines. Only the one-row form flattens.
+                    let expanded = self.command_line_expanded() || self.search_line_expanded();
+                    let flattened;
+                    let payload = if expanded {
+                        text
+                    } else {
+                        flattened = flatten_pasted_newlines(text);
+                        flattened.as_str()
+                    };
+                    if let Ok(applied) = self
+                        .apply_edit_blocking(lattice_protocol::edit::Edit::insert(
+                            self.cursor,
+                            payload,
+                        ))
+                    {
+                        self.cursor = applied.inserted_range.end;
+                    }
                 }
-                self.command_history_cursor = None;
-            }
-            ModalState::Search(_) => {
-                // MB.5a: paste into the `/`·`?` search line inserts at
-                // the cursor in the `*search-line*` buffer (mirrors the
-                // `:` line's paste path directly above).
-                if self.search_line_active()
-                    && let Ok(applied) = self.apply_edit_blocking(
-                        lattice_protocol::edit::Edit::insert(self.cursor, text),
-                    )
-                {
-                    self.cursor = applied.inserted_range.end;
-                    self.preview_search();
+                // What each surface does *after* accepting text is
+                // genuinely its own — history position, incremental
+                // preview — and is not paste handling.
+                match self.modal {
+                    ModalState::Command => self.command_history_cursor = None,
+                    ModalState::Search(_) => self.preview_search(),
+                    _ => {}
                 }
             }
             _ => {

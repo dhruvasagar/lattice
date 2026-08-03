@@ -1470,7 +1470,7 @@ mod tests {
 // nothing could reach them.
 #[cfg(test)]
 mod prompt_line {
-    use crate::app::App;
+    use crate::app::{Action, App};
     use crate::app::test_helpers::{app_with, press};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use lattice_grammar::ModalState;
@@ -1551,6 +1551,144 @@ mod prompt_line {
             !matches!(a.editor.modal, ModalState::Prompt),
             "`<CR>` must close the prompt even when the submit action is \
              unknown — otherwise a typo'd action name is another trap"
+        );
+    }
+
+    /// Bracketed paste must land in the PROMPT, not in the document
+    /// behind it. `do_paste_text` routes by modal state, and a state it
+    /// does not know falls to the generic arm — which is exactly how a
+    /// paste with a picker open once silently edited the user's file
+    /// (fixed in `645b8934`). Pasting a URL into the clone prompt is
+    /// the common case, so this is pinned rather than assumed.
+    #[test]
+    fn paste_lands_in_the_prompt_not_the_document_behind_it() {
+        let mut a = app_with("hello\n", 10);
+        a.editor.open_prompt_line(
+            "Clone repository: ".to_string(),
+            String::new(),
+            "action:no-such-action".to_string(),
+            Some("*magit:clone*".to_string()),
+        );
+        a.editor.publish_render_state();
+        a.editor.do_paste_text("https://github.com/owner/repo.git");
+        assert_eq!(
+            a.editor.document.text().lines().next().unwrap_or_default(),
+            "https://github.com/owner/repo.git",
+            "the pasted URL must reach the prompt buffer"
+        );
+    }
+
+    /// Paste appends at the cursor, so it composes with a seeded value
+    /// and with typing — you can paste a URL after correcting a prefix.
+    #[test]
+    fn paste_inserts_at_the_cursor_alongside_typed_text() {
+        let mut a = app_with("hello\n", 10);
+        a.editor.open_prompt_line(
+            "Clone into: ".to_string(),
+            "/tmp/".to_string(),
+            "action:no-such-action".to_string(),
+            None,
+        );
+        a.editor.publish_render_state();
+        a.editor.do_paste_text("repo");
+        assert_eq!(
+            a.editor.document.text().lines().next().unwrap_or_default(),
+            "/tmp/repo",
+            "paste must land at the cursor, after the seeded text"
+        );
+    }
+
+    /// A copied line usually carries its newline. A one-line prompt must
+    /// not become multi-line from it — the row renders one line, so the
+    /// rest would be invisible text that `do_prompt_line_submit`'s
+    /// first-line read then silently drops.
+    #[test]
+    fn a_pasted_newline_does_not_split_a_one_line_prompt() {
+        let mut a = app_with("hello\n", 10);
+        a.editor.open_prompt_line(
+            "Clone repository: ".to_string(),
+            String::new(),
+            "action:no-such-action".to_string(),
+            None,
+        );
+        a.editor.publish_render_state();
+        a.editor.do_paste_text("https://host/o/r.git\n");
+        assert_eq!(
+            a.editor.document.text().lines().count(),
+            1,
+            "a trailing newline must not add a second line: {:?}",
+            a.editor.document.text()
+        );
+        assert_eq!(
+            a.editor.document.text().lines().next().unwrap_or_default(),
+            "https://host/o/r.git",
+            "and the value itself survives whole"
+        );
+    }
+
+    /// The three readline surfaces must agree, which is the whole point
+    /// of them sharing one arm. A pasted newline is flattened on every
+    /// one of them, not just the prompt that prompted the fix.
+    ///
+    /// Non-vacuous by construction: the payload has an INTERIOR newline,
+    /// so a `trim`-only implementation (or none at all) leaves two lines
+    /// and fails. The earlier version of this test used a trailing
+    /// newline and `trim_end_matches`, which passed against the
+    /// unflattened behaviour it was meant to catch.
+    #[test]
+    fn every_readline_surface_flattens_a_pasted_newline() {
+        let mut a = app_with("hello\n", 10);
+        a.apply(Action::EnterCommandLine);
+        a.editor.publish_render_state();
+        a.editor.do_paste_text("e A\nB");
+        assert_eq!(
+            a.editor.command_line_full_text(),
+            "e A B",
+            "the `:` line stays one row"
+        );
+
+        let mut b = app_with("hello\n", 10);
+        b.apply(Action::EnterSearch(lattice_grammar::SearchDirection::Forward));
+        b.editor.publish_render_state();
+        b.editor.do_paste_text("A\nB");
+        assert_eq!(
+            b.editor.document.text().lines().count(),
+            1,
+            "the search line stays one row: {:?}",
+            b.editor.document.text()
+        );
+
+        let mut c = app_with("hello\n", 10);
+        c.editor.open_prompt_line(
+            "P: ".to_string(),
+            String::new(),
+            "action:no-such-action".to_string(),
+            None,
+        );
+        c.editor.publish_render_state();
+        c.editor.do_paste_text("A\nB");
+        assert_eq!(
+            c.editor.document.text().lines().next().unwrap_or_default(),
+            "A B",
+            "and so does the prompt"
+        );
+    }
+
+    /// The expanded mini-buffer band (`C-x C-e`) is multi-line on
+    /// purpose — `<CR>` inserts a newline there — so a paste must keep
+    /// its newlines. This is the case that makes the flattening
+    /// conditional rather than unconditional.
+    #[test]
+    fn the_expanded_band_keeps_pasted_newlines() {
+        let mut a = app_with("hello\n", 10);
+        a.apply(Action::EnterCommandLine);
+        a.apply(Action::CommandLineToggleExpand);
+        a.editor.publish_render_state();
+        a.editor.do_paste_text("e A\nB");
+        assert!(
+            a.editor.command_line_full_text().contains('\n'),
+            "the band is multi-line by design: {:?}",
+            a.editor.command_line_full_text()
         );
     }
 

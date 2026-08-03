@@ -13,6 +13,7 @@ related: [magit, magit-file-revision]
 | `:magit-find-file <rev> <path>` | Any file, at any revision |
 | `<CR>` on a file in a diff / revision view | That file at that view's revision |
 | `gj` / `gk` once here | Walk to the next / previous revision of it |
+| `C-c f` then `V` | Back out to the **live** file, at the same line |
 
 One file, as it was at one fixed point: `*magit:file:<ref>:<path>*`,
 read-only.

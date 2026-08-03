@@ -719,6 +719,62 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         }),
     });
 
+    // MG.28: `V` — from a blob buffer, back to the LIVE file.
+    //
+    // The gap: `gj` / `gk` walk a blob's history, and nothing walked
+    // back out. From `*magit:file:<rev>:<path>*` the only way to the
+    // working-tree copy was to type `:e <path>` yourself, which means
+    // knowing the path you are already looking at.
+    //
+    // Lands on the SAME LINE, via the atomic open-and-position effect.
+    // Line numbers drift between revisions, so this is "roughly where
+    // you were" rather than a promise — but landing at the top of a
+    // file you were reading the middle of is the worse answer, and the
+    // alternative (a diff-based line map) is a different feature.
+    contributions.push(ActionHandlerContribution {
+        action_name: "action:magit-global-file-visit-live",
+        handler: Arc::new(|ctx: &ActionContext<'_>| {
+            let buffer_id = lattice_core::BufferId(ctx.buffer_id.0 as u32);
+            let parsed = ctx
+                .services
+                .get::<BufferStoreHandle>()?
+                .name_for(buffer_id)
+                .and_then(|n| crate::magit_file_revision_mode::parse_buffer_name(&n));
+            Some(match parsed {
+                Some((_git_ref, path)) => {
+                    let workdir = crate::workdir::magit_workdir().unwrap_or_default();
+                    let full = workdir.join(&path);
+                    if full.exists() {
+                        Effect::OpenBufferAt {
+                            path: Some(full),
+                            position: ctx.cursor,
+                            force: false,
+                        }
+                    } else {
+                        // The file existed at that revision and does
+                        // not now. Saying so beats opening an empty
+                        // buffer named after a deleted path.
+                        Effect::Echo {
+                            level: lattice_grammar::EchoLevel::Warn,
+                            text: format!(
+                                "magit: {} no longer exists in the working tree",
+                                path.display()
+                            ),
+                        }
+                    }
+                }
+                // Naming what is missing beats a row that appears to do
+                // nothing — the same shape reverse blame's refusal has.
+                None => Effect::Echo {
+                    level: lattice_grammar::EchoLevel::Error,
+                    text: "magit: `V` goes from a file-at-revision back to the live file — \
+                           open one first (`C-c f v`, or <CR> on a log entry)"
+                        .to_string(),
+                },
+            })
+        }),
+    });
+
     // MG.23f2: reverse blame — "when did each of these lines go away",
     // the one blame variant magit has that we had no answer for.
     //

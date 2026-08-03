@@ -373,6 +373,7 @@ path to resolve and the key does nothing.
 | `l` | Opens `*magit:log:<path>*` — the [log buffer](help:magit-log-mode) scoped to this file's history |
 | `b` | Toggles [blame annotations](help:magit-blame-mode) on the file itself |
 | `v` | Opens this file [as it was at a revision](help:magit-file-revision-mode) you type |
+| `V` | From a file-at-revision, back to the **live** file at the same line |
 | `f` | Reverse blame — only from a blob buffer, see below |
 | `,x` | `git rm --cached` — stop tracking, **file stays on disk** |
 | `,r` | `git mv` — asks for the new name, pre-filled with the current one |
@@ -395,6 +396,21 @@ asked, because `C-c f` already means "the file I am visiting" — asking
 for something the menu already knows would be a question with one
 answer. For a file you are **not** visiting, `:magit-find-file <rev>
 <path>` takes both.
+
+#### `V` — back to the live file
+
+`gj` / `gk` walk a blob's history; `V` walks back out. From
+`*magit:file:<rev>:<path>*` it opens the working-tree copy, landing on
+the same line you were reading.
+
+Same line is approximate on purpose: line numbers drift between
+revisions, so this puts you roughly where you were rather than
+promising the matching line. Landing at the top of a file you were
+reading the middle of is the worse answer, and a diff-based line map is
+a different feature.
+
+If the file existed at that revision and no longer does, it says so
+rather than opening an empty buffer named after a deleted path.
 
 #### `f` — reverse blame
 

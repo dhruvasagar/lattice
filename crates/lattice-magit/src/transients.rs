@@ -853,6 +853,8 @@ pub struct FileDispatchActionIds {
     pub blame_reverse: Option<CommandId>,
     /// MG.28: `v` — this file at a revision you name.
     pub at_revision: Option<CommandId>,
+    /// MG.28: `V` — from a blob buffer back to the live file.
+    pub visit_live: Option<CommandId>,
     /// MG.23d: the file operations.
     pub untrack: Option<CommandId>,
     pub delete: Option<CommandId>,
@@ -1088,6 +1090,13 @@ pub fn file_dispatch_transient(ids: &FileDispatchActionIds) -> TransientSpec {
                         "view at revision",
                         "Open this file as it was at a revision you name",
                         "file_at_revision",
+                    ),
+                    action_or_placeholder(
+                        ids.visit_live,
+                        "V",
+                        "back to the live file",
+                        "From a file-at-revision, open the working-tree copy at the same line",
+                        "file_visit_live",
                     ),
                     action_or_placeholder(
                         ids.blame_reverse,

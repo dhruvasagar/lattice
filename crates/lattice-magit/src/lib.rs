@@ -537,6 +537,7 @@ fn resolve_file_dispatch_ids(registry: &CommandRegistry) -> transients::FileDisp
         blame: registry.id_by_name("action:magit-global-file-blame"),
         blame_reverse: registry.id_by_name("action:magit-global-file-blame-reverse"),
         at_revision: registry.id_by_name("action:magit-global-file-at-revision"),
+        visit_live: registry.id_by_name("action:magit-global-file-visit-live"),
         untrack: registry.id_by_name("action:magit-global-file-untrack"),
         delete: registry.id_by_name("action:magit-global-file-delete"),
         rename: registry.id_by_name("action:magit-global-file-rename"),
@@ -1624,6 +1625,10 @@ fn register_action_commands(registry: &mut CommandRegistry) {
         "Open the file once the revision is known",
     );
     reg(
+        "action:magit-global-file-visit-live",
+        "From a file-at-revision, open the working-tree copy at the same line",
+    );
+    reg(
         "action:magit-global-file-blame",
         "Blame the file in the current buffer",
     );
@@ -2267,6 +2272,43 @@ mod tests {
         assert!(
             ex.ex_command_spec(id).is_some(),
             "`:magit-find-file` must be an EX command"
+        );
+    }
+
+    /// MG.28: `V` is the way back out. `gj` / `gk` walk a blob's
+    /// history and nothing walked back to the working-tree copy — you
+    /// had to type `:e <path>` for a path you were already looking at.
+    ///
+    /// `v` and `V` must be distinct rows: one goes in, the other comes
+    /// out, and a single key doing both by context would be the
+    /// mislabelled-chord problem `]f` had.
+    #[test]
+    fn the_way_into_a_revision_and_the_way_back_are_separate_rows() {
+        use lattice_picker::TransientItemKind;
+
+        let mut actions = CommandRegistry::new();
+        register_action_commands(&mut actions);
+        let ids = resolve_file_dispatch_ids(&actions);
+        let spec = transients::file_dispatch_transient(&ids);
+
+        let row = |key: &str| {
+            spec.groups
+                .iter()
+                .flat_map(|g| &g.items)
+                .find(|i| i.key.iter().any(|k| k == key))
+                .cloned()
+                .unwrap_or_else(|| panic!("`C-c f {key}` must exist"))
+        };
+        for key in ["v", "V"] {
+            assert!(
+                matches!(row(key).kind, TransientItemKind::Action(_)),
+                "`{key}` must be a real action"
+            );
+        }
+        assert_ne!(
+            resolve_file_dispatch_ids(&actions).at_revision,
+            resolve_file_dispatch_ids(&actions).visit_live,
+            "in and out are different actions, not one key guessing"
         );
     }
 
@@ -3415,7 +3457,7 @@ mod tests {
         );
         assert_eq!(
             file.len(),
-            12,
+            13,
             "expected every file-dispatch leaf to report inert, got: {file:?}"
         );
         // Root dispatch: 18 ACTION leaves — status, diff, log,

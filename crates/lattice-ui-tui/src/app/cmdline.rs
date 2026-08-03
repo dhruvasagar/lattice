@@ -1454,3 +1454,125 @@ mod tests {
         }
     }
 }
+
+// ── The generic prompt (`Effect::OpenPrompt`) key path ──────────────
+//
+// Reported 2026-08-03: an open prompt could not be cancelled — `<Esc>`
+// did nothing and the editor had to be killed. Root cause was that
+// `input::translate`'s modal dispatch table had no `ModalState::Prompt`
+// arm, so EVERY key fell to its `_ => Action::None` catch-all: not just
+// cancel, but typing and submit too.
+//
+// These drive real `KeyEvent`s through `translate` + `apply` (the
+// `press` harness), because the hole was in translate. Every prior test
+// of this feature called `do_prompt_line_submit` directly, which is why
+// a completely dead key path shipped: the handlers were right, and
+// nothing could reach them.
+#[cfg(test)]
+mod prompt_line {
+    use crate::app::App;
+    use crate::app::test_helpers::{app_with, press};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use lattice_grammar::ModalState;
+
+    fn app_with_prompt() -> App {
+        let mut a = app_with("hello\n", 10);
+        a.editor.open_prompt_line(
+            "Test prompt: ".to_string(),
+            String::new(),
+            "action:no-such-action".to_string(),
+            Some("*magit:test-prompt*".to_string()),
+        );
+        // `press` dispatches against the PUBLISHED snapshot, exactly as
+        // the real input loop does. Without this the keys would be
+        // translated in the pre-prompt mode and the test would exercise
+        // nothing — the first reproduction attempt did precisely that
+        // and misread a stale-snapshot artefact as the bug.
+        a.editor.publish_render_state();
+        assert!(
+            matches!(a.editor.modal, ModalState::Prompt),
+            "the prompt must actually be open before the key is pressed"
+        );
+        a
+    }
+
+    /// The reported bug. `<Esc>` must leave the prompt.
+    #[test]
+    fn esc_cancels_an_open_prompt() {
+        let mut a = app_with_prompt();
+        press(&mut a, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(
+            !matches!(a.editor.modal, ModalState::Prompt),
+            "`<Esc>` must cancel the prompt — with no arm in translate's \
+             modal table there was NO way out of this state"
+        );
+    }
+
+    /// `<C-c>` is the other advertised cancel, and the one a user
+    /// reaches for when Esc appears not to work.
+    #[test]
+    fn ctrl_c_cancels_an_open_prompt() {
+        let mut a = app_with_prompt();
+        press(&mut a, KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert!(
+            !matches!(a.editor.modal, ModalState::Prompt),
+            "`<C-c>` must cancel the prompt too"
+        );
+    }
+
+    /// Typing was dead for the same reason, which is worth its own test:
+    /// a prompt you cannot type into is not merely hard to leave, it
+    /// never worked at all.
+    #[test]
+    fn typing_reaches_the_prompt_buffer() {
+        let mut a = app_with_prompt();
+        for c in "v1.0".chars() {
+            press(&mut a, KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+            a.editor.publish_render_state();
+        }
+        assert_eq!(
+            a.editor.document.text().lines().next().unwrap_or_default(),
+            "v1.0",
+            "printable keys must reach the focused prompt buffer"
+        );
+    }
+
+    /// And `<CR>` must submit. Paired with the typing test so a fix that
+    /// restores one without the other cannot pass.
+    #[test]
+    fn cr_submits_and_leaves_the_prompt() {
+        let mut a = app_with_prompt();
+        for c in "abc".chars() {
+            press(&mut a, KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+            a.editor.publish_render_state();
+        }
+        press(&mut a, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(
+            !matches!(a.editor.modal, ModalState::Prompt),
+            "`<CR>` must close the prompt even when the submit action is \
+             unknown — otherwise a typo'd action name is another trap"
+        );
+    }
+
+    /// The initial text is seeded and editable: the destination prompts
+    /// (`C-c f v`'s `HEAD`, the clone wizard's derived directory) are
+    /// only useful if the user can correct what was pre-filled.
+    #[test]
+    fn seeded_text_can_be_edited() {
+        let mut a = app_with("hello\n", 10);
+        a.editor.open_prompt_line(
+            "Clone into: ".to_string(),
+            "/tmp/repo".to_string(),
+            "action:no-such-action".to_string(),
+            None,
+        );
+        a.editor.publish_render_state();
+        press(&mut a, KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        press(&mut a, KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE));
+        assert_eq!(
+            a.editor.document.text().lines().next().unwrap_or_default(),
+            "/tmp/rep2",
+            "the pre-filled value must be editable, not read-only"
+        );
+    }
+}

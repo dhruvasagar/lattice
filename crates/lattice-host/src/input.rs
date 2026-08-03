@@ -414,6 +414,30 @@ pub fn translate(ctx: TranslateContext<'_>, chord: KeyChord) -> Action {
             ctx.partial_chord,
             ctx.active_minor_modes,
         ),
+        // `Effect::OpenPrompt`'s generic one-line prompt — the third
+        // buffer-backed readline surface, and dispatched exactly like
+        // its two peers above: `prompt-line-mode`'s Insert-layer keymap
+        // supplies submit (`<CR>`) and cancel (`<Esc>` / `<C-c>`), and
+        // everything else self-inserts into the focused prompt buffer.
+        //
+        // **This arm was missing.** Every key in an open prompt fell to
+        // the `_ => Action::None` catch-all below, so the prompt could
+        // not be typed into, submitted, or cancelled — the editor had to
+        // be killed to escape it. `prompt-line-mode` bound all three
+        // chords correctly and `do_prompt_line_{submit,cancel}` were
+        // both right; nothing could reach them.
+        //
+        // It survived because no test drove a key through this path:
+        // the prompt's tests called `do_prompt_line_submit` directly,
+        // which works fine on a dispatcher that never calls it. The
+        // regression net is now `app::cmdline::prompt_line` in
+        // `lattice-ui-tui`, which presses real keys.
+        ModalState::Prompt => dispatch_insert(
+            ctx.keymap,
+            &chord,
+            ctx.partial_chord,
+            ctx.active_minor_modes,
+        ),
         // Slice 8.e: Visual mode dispatches through the layered
         // registry. The hand-rolled match table moved to
         // `keymap_visual::register_visual_bindings`; the

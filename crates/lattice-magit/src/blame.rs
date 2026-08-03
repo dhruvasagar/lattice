@@ -23,6 +23,50 @@ pub struct BlameChunk {
     /// row sits above.
     pub start_line: u32,
     pub line_count: u32,
+    /// MG.33: for a **reverse** blame, what became of this run of lines
+    /// after `sha`. `None` for a forward blame, where the question does
+    /// not arise, and for a reverse blame whose resolution has not run
+    /// yet.
+    pub removal: Option<Removal>,
+}
+
+/// MG.33: what happened to a run of lines after the last commit that
+/// still contained it.
+///
+/// **Why this exists.** `git blame --reverse` answers "the last commit
+/// in which this line still existed", and magit renders that with a
+/// heading indistinguishable from a forward-blame one — a SHA, an
+/// author, a date. So it *reads* as "this commit removed the line",
+/// when the commit that removed it is that commit's child. The feature
+/// is advertised as "when did this line go away?", and it was showing
+/// the answer's parent.
+///
+/// The three cases are kept distinct rather than collapsed because
+/// naming the wrong commit is worse than naming none: a confidently
+/// wrong attribution in a blame heading is a UX regression on the
+/// honest-but-incomplete version it replaces.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Removal {
+    /// Resolved: this commit removed the lines.
+    By(RemovalCommit),
+    /// The lines are still in the file at HEAD, so nothing removed
+    /// them. Common, and worth saying rather than leaving the reader to
+    /// infer it from the SHA happening to be HEAD's.
+    StillPresent,
+    /// History forked at the blamed commit and more than one branch
+    /// touched the file, so several commits qualify. We decline to
+    /// guess — see [`Removal::By`]'s note on wrong attributions.
+    Ambiguous,
+}
+
+/// The commit [`Removal::By`] names, with the metadata a heading shows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemovalCommit {
+    pub sha: String,
+    pub author: String,
+    /// `author-time`, seconds since the epoch.
+    pub time: i64,
+    pub summary: String,
 }
 
 impl BlameChunk {
@@ -95,6 +139,7 @@ pub fn parse_blame_chunks(porcelain: &str) -> Vec<BlameChunk> {
                     summary: m.summary,
                     start_line: final_line,
                     line_count: 1,
+                    removal: None,
                 }),
             }
             pending = Meta::default();
@@ -147,19 +192,73 @@ pub fn heading_text(chunk: &BlameChunk, now_secs: i64) -> String {
     if is_uncommitted(&chunk.sha) {
         return "Uncommitted changes".to_string();
     }
-    let short: String = chunk.sha.chars().take(8).collect();
-    let mut out = short;
-    if !chunk.author.is_empty() {
-        out.push_str("  ");
-        out.push_str(&chunk.author);
+    // MG.33: a reverse blame answers a different question, so its
+    // heading names a different commit. See [`Removal`].
+    match &chunk.removal {
+        Some(Removal::By(c)) => {
+            // The REMOVING commit is the answer, so it is what the
+            // heading shows — leading with the commit that last
+            // contained the line would be answering the question the
+            // user did not ask, in a format that looks like an answer
+            // to the one they did.
+            let mut out = commit_line(&c.sha, &c.author, c.time, &c.summary, now_secs);
+            out.push_str("  · removed");
+            out
+        }
+        // The blamed SHA is the right one to show here: these lines are
+        // still present, and that commit is what last touched them —
+        // the same fact a forward blame reports.
+        Some(Removal::StillPresent) => {
+            let mut out = commit_line(
+                &chunk.sha,
+                &chunk.author,
+                chunk.time,
+                &chunk.summary,
+                now_secs,
+            );
+            out.push_str("  · still present");
+            out
+        }
+        // Explicitly NOT claiming removal. The wording states exactly
+        // what git established and nothing beyond it.
+        Some(Removal::Ambiguous) => {
+            let mut out = commit_line(
+                &chunk.sha,
+                &chunk.author,
+                chunk.time,
+                &chunk.summary,
+                now_secs,
+            );
+            out.push_str("  · last contained here");
+            out
+        }
+        None => commit_line(
+            &chunk.sha,
+            &chunk.author,
+            chunk.time,
+            &chunk.summary,
+            now_secs,
+        ),
     }
-    if chunk.time > 0 {
+}
+
+/// `<short-sha>  <author>  <relative-date>  <summary>`, the shape every
+/// heading variant is built from. Extracted so the reverse-blame
+/// variants cannot drift from the forward one in spacing or in which
+/// fields they omit when empty.
+fn commit_line(sha: &str, author: &str, time: i64, summary: &str, now_secs: i64) -> String {
+    let mut out: String = sha.chars().take(8).collect();
+    if !author.is_empty() {
         out.push_str("  ");
-        out.push_str(&relative_date(chunk.time, now_secs));
+        out.push_str(author);
     }
-    if !chunk.summary.is_empty() {
+    if time > 0 {
         out.push_str("  ");
-        out.push_str(&chunk.summary);
+        out.push_str(&relative_date(time, now_secs));
+    }
+    if !summary.is_empty() {
+        out.push_str("  ");
+        out.push_str(summary);
     }
     out
 }
@@ -314,6 +413,7 @@ summary a1b2c3d4 looks like a sha but is a summary
             summary: "add the thing".into(),
             start_line: 0,
             line_count: 2,
+            removal: None,
         };
         assert_eq!(
             heading_text(&chunk, 1_700_000_000 + 3 * 24 * 3600),
@@ -333,6 +433,7 @@ summary a1b2c3d4 looks like a sha but is a summary
             summary: "".into(),
             start_line: 4,
             line_count: 1,
+            removal: None,
         };
         assert!(is_uncommitted(&chunk.sha));
         assert_eq!(heading_text(&chunk, 1_700_000_000), "Uncommitted changes");
@@ -347,6 +448,7 @@ summary a1b2c3d4 looks like a sha but is a summary
             summary: String::new(),
             start_line: 0,
             line_count: 1,
+            removal: None,
         };
         assert_eq!(
             heading_text(&chunk, 1_700_000_000),
@@ -373,5 +475,105 @@ summary a1b2c3d4 looks like a sha but is a summary
     fn a_commit_from_the_future_reads_as_just_now() {
         let now = 2_000_000_000;
         assert_eq!(relative_date(now + 10_000, now), "just now");
+    }
+}
+
+/// MG.33: the three reverse-blame headings.
+#[cfg(test)]
+mod removal_headings {
+    use super::*;
+
+    const NOW: i64 = 1_700_000_000;
+
+    fn chunk(removal: Option<Removal>) -> BlameChunk {
+        BlameChunk {
+            sha: "aaaa1111bbbb2222".into(),
+            author: "Jane Doe".into(),
+            time: NOW - 60 * 60 * 24 * 3,
+            summary: "add the thing".into(),
+            start_line: 0,
+            line_count: 1,
+            removal,
+        }
+    }
+
+    /// A forward blame is untouched by MG.33 — same heading, no suffix.
+    #[test]
+    fn a_forward_blame_heading_is_unchanged() {
+        let text = heading_text(&chunk(None), NOW);
+        assert_eq!(text, "aaaa1111  Jane Doe  3 days ago  add the thing");
+    }
+
+    /// **The bug MG.33 fixes.** The heading must name the commit that
+    /// removed the lines, not the one that last contained them — and it
+    /// must say which it is, because the two are indistinguishable by
+    /// shape alone.
+    #[test]
+    fn a_removed_chunk_names_the_removing_commit_and_says_so() {
+        let text = heading_text(
+            &chunk(Some(Removal::By(RemovalCommit {
+                sha: "dead9999beef8888".into(),
+                author: "Sam Patel".into(),
+                time: NOW - 60 * 60 * 24,
+                summary: "drop the legacy path".into(),
+            }))),
+            NOW,
+        );
+        assert!(
+            text.starts_with("dead9999"),
+            "the REMOVING commit leads the heading: {text}"
+        );
+        assert!(
+            !text.contains("aaaa1111"),
+            "showing the last-containing sha too invites reading it as the \
+             answer: {text}"
+        );
+        assert!(text.contains("Sam Patel"), "{text}");
+        assert!(text.contains("drop the legacy path"), "{text}");
+        assert!(
+            text.contains("removed"),
+            "a heading shaped like a forward blame must say what it means: {text}"
+        );
+    }
+
+    /// Surviving lines say so. Before MG.33 they rendered identically
+    /// to removed ones, so the reader had to notice the sha happened to
+    /// be HEAD's.
+    #[test]
+    fn a_surviving_chunk_says_still_present() {
+        let text = heading_text(&chunk(Some(Removal::StillPresent)), NOW);
+        assert!(text.starts_with("aaaa1111"), "{text}");
+        assert!(text.contains("still present"), "{text}");
+        assert!(
+            !text.contains("removed"),
+            "nothing removed these lines: {text}"
+        );
+    }
+
+    /// The honest fallback. It states what git established — this is
+    /// where the lines were last seen — and claims nothing about what
+    /// removed them.
+    #[test]
+    fn an_ambiguous_chunk_claims_only_what_git_established() {
+        let text = heading_text(&chunk(Some(Removal::Ambiguous)), NOW);
+        assert!(text.starts_with("aaaa1111"), "{text}");
+        assert!(text.contains("last contained here"), "{text}");
+        assert!(
+            !text.contains("removed"),
+            "the ambiguous case must not imply a removal it could not \
+             identify: {text}"
+        );
+    }
+
+    /// Uncommitted lines short-circuit before the removal branch —
+    /// `0000000..HEAD` is not a range, and the sentence is what the
+    /// reader needs either way.
+    #[test]
+    fn uncommitted_wins_over_every_removal_state() {
+        for removal in [None, Some(Removal::StillPresent), Some(Removal::Ambiguous)] {
+            let mut c = chunk(removal);
+            c.sha = "0".repeat(40);
+            assert_eq!(heading_text(&c, NOW), "Uncommitted changes");
+        }
     }
 }

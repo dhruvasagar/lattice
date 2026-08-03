@@ -93,6 +93,43 @@ two things that already exist instead of adding a third, the content
 shown is the blob buffer's (which is the same content reverse blame
 was reproducing), and the `gj` / `gk` walk keeps working while blaming.
 
+### What the heading names (MG.33)
+
+`git blame --reverse` reports, per line, **the last commit in which the
+line still existed**. Rendering that with the forward-blame heading
+shape — sha, author, date, subject — makes it *read* as "this commit
+removed the line", when the commit that removed it is that commit's
+child. The feature is advertised as "when did this line go away?" and
+was showing the answer's parent.
+
+So a reverse chunk carries a `Removal`, resolved in the same
+`spawn_blocking` as the blame itself:
+
+| Variant | Heading | How it is decided |
+|---|---|---|
+| `By(commit)` | the **removing** commit, `· removed` | the oldest commit in `git rev-list --ancestry-path --reverse <sha>..HEAD -- <path>` |
+| `StillPresent` | the blamed commit, `· still present` | that walk is empty |
+| `Ambiguous` | the blamed commit, `· last contained here` | two or more candidates and the second does not descend from the first |
+
+**The three cases stay distinct rather than collapsing into "best
+guess".** A wrong attribution in a blame heading is worse than an
+honest incomplete one: it is indistinguishable in shape from a correct
+one, so the reader has no signal to discount it. That is the UX rule's
+"within reason" clause doing real work — naming the removing commit is
+the UX win, and guessing it across a merge would have been a UX
+regression wearing the same clothes.
+
+**Cost is per distinct commit, not per line.** `resolve_removals`
+dedupes by sha before walking, so a file with many chunks from few
+commits pays little; the `merge-base --is-ancestor` check runs only
+when the candidate list has more than one entry, so the linear case is
+one invocation. Uncommitted chunks are skipped — `0000000..HEAD` is not
+a range.
+
+**Resolved before publishing, not after.** Publishing headings and then
+filling the answer in would relabel rows the user did not touch, which
+the keystroke UX contract forbids; the whole answer lands at once.
+
 **Retires:** `*magit:blame:<path>*`, `*magit:blame-reverse:<rev>:<path>*`,
 `MagitBlameMode` as a *major*, `blame_styled_spans`, and the
 `format_blame_porcelain` row formatter — the porcelain *parser* stays,

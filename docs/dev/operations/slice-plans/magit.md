@@ -58,6 +58,7 @@ owns *what* and *why*.
 | MG.30 | Visual-range `s`/`u` over file entries in magit-status | MG.18 | ✅ |
 | MG.31 | `=` in magit-status ran `git` on the actor thread — relocated | — | ✅ |
 | MG.32 | The branch submenu against magit's own transient — `l`/`b` corrected, four rows added | MG.29 | ✅ |
+| MG.33 | Reverse blame names the commit that *removed* the lines | MG.26b | ✅ |
 
 **2026-07-26 audit correction:** this table (last synced when MG.1-3 landed) had
 drifted from `implementation.md`'s per-slice status, which had marked MG.4-10 all
@@ -1280,6 +1281,19 @@ already exists); `D` / `L` diff- and log-arg refresh; `M` log-merged;
 > Saying that needs the child commit, which is a `rev-list` walk per
 > chunk — a genuine cost for a wording change, so it waits until
 > someone reads the current wording and finds it wrong.
+>
+> > **Corrected and closed by MG.33 (2026-08-03).** Two things above
+> > are wrong. It is **not a wording change**: the removing commit is a
+> > *different commit* from the one the heading named, so the feature
+> > was answering with the wrong one. And the presentation made that
+> > worse than incomplete — the heading used the forward-blame shape,
+> > so it read as a confident claim about removal while naming the
+> > parent. The cost objection also overstated: the walk is per
+> > distinct **commit**, not per chunk, and dedupes.
+> >
+> > What survives from this note is the judgement that a second *mode*
+> > would be surface for its own sake — MG.33 adds none. It resolves
+> > the removal inside the existing reverse direction. See MG.33 below.
 >
 > **The other two are blocked on the same question `L` was**, and it is
 > a decision rather than work: magit's `M` (log-merged) and `e`
@@ -2914,6 +2928,72 @@ a refresh that drops the diff, and splice alignment.
 
 **Not shipped:** `magit.hunk.line-backgrounds` to opt out — the option
 lands with MG.22, which is where magit's options get an owner.
+
+### MG.33 — reverse blame names the removing commit ✅ (2026-08-03)
+
+Design:
+[`../../architecture/magit-blame.md`](../../architecture/magit-blame.md)
+§"What the heading names".
+
+MG.23f2's note dropped `magit-blame-removal` as "a third mode for a
+wording difference". **That was wrong on the facts**: it is not a
+wording difference, it is a different commit. `git blame --reverse`
+reports the last commit in which a line still existed; the commit that
+removed it is that commit's child.
+
+And the presentation made it worse than merely incomplete. The heading
+used the forward-blame shape — sha, author, date, subject — so it reads
+as "this commit removed the line" while naming the parent. A section of
+the user doc titled *"when did this line go away?"* was answering with
+the wrong commit, in a format that gave the reader no reason to doubt
+it.
+
+**UX was the deciding court, and its "within reason" clause did real
+work.** Naming the removing commit is the win. But
+`rev-list --ancestry-path` does not always resolve uniquely — across a
+merge several commits qualify — and a *wrong* attribution is worse than
+an honest incomplete one, because it is shape-identical to a correct
+one and the reader has no signal to discount it. So the resolution has
+three outcomes and the heading says which it is, rather than collapsing
+into a best guess.
+
+| Variant | Heading suffix | Decided by |
+|---|---|---|
+| `By(commit)` | `· removed`, leading with the **removing** commit | oldest of `rev-list --ancestry-path --reverse <sha>..HEAD -- <path>` |
+| `StillPresent` | `· still present` | that walk is empty |
+| `Ambiguous` | `· last contained here` | ≥2 candidates and the second does not descend from the first |
+
+**Cost is per distinct commit.** `resolve_removals` dedupes by sha
+before walking; the `merge-base --is-ancestor` disambiguation runs only
+when there is more than one candidate, so the linear case — the common
+one — is a single extra invocation per commit. Uncommitted chunks are
+skipped: `0000000..HEAD` is not a range.
+
+**Resolved inside the blame's own `spawn_blocking`, before publishing.**
+Splitting it would show headings once without the answer and again with
+it — a visible relabel of rows the user did not touch, which the
+keystroke UX contract forbids. Paramount #1 is unaffected: it is more
+work, all of it already off the actor thread.
+
+**A latent trap found while wiring it.** The provider's sha colouring
+measures the leading token of the *rendered text*, not `chunk.sha` — so
+it already coloured the removing commit's sha correctly. That reads
+like an implementation detail and is in fact what keeps the two in
+step; a tidy-up to `chunk.sha.len()` would look equivalent (both shas
+are full length) and silently mis-colour. Pinned by a test that says so.
+
+- **Tests:** 10. Four drive **real repositories** because the question
+  is history topology — including a genuine fork where both branches
+  touch the file, which is the only honest way to exercise the
+  ambiguous path. Five cover the heading text (forward unchanged; each
+  of the three suffixes; uncommitted short-circuiting all of them), and
+  one pins the sha-colour trap above.
+- **No new `lattice-vcs` surface:** blame already ran its own `git` in
+  `magit_blame_mode`, so the walk sits beside it rather than inventing
+  a `Blame` module for two functions — the mode-consumer half of the
+  substrate-vs-helper rule.
+- **No renderer change in either peer:** headings are cells from an
+  existing provider, so TUI/GPUI parity holds by construction.
 
 ### MG.32 — the branch submenu, inventoried ✅ (2026-08-03)
 

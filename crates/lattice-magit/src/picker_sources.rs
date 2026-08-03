@@ -636,12 +636,12 @@ mod tests {
         assert_eq!(
             ids,
             vec![
-                BRANCH_CHECKOUT_SOURCE,          // MG.29: `b l`
+                BRANCH_CHECKOUT_SOURCE,           // MG.29: `b l`
                 BRANCH_CREATE_NO_CHECKOUT_SOURCE, // MG.32: `b n`
-                BRANCH_DELETE_SOURCE,            // MG.32: `b x`
-                "magit-branch-pick-base",        // `b c`, and `c` in the branch buffer
-                BRANCH_RENAME_SOURCE,            // MG.32: `b m`
-                COMMIT_PICK_SOURCE,              // MG.23j: `A` / `_` / `O`
+                BRANCH_DELETE_SOURCE,             // MG.32: `b x`
+                "magit-branch-pick-base",         // `b c`, and `c` in the branch buffer
+                BRANCH_RENAME_SOURCE,             // MG.32: `b m`
+                COMMIT_PICK_SOURCE,               // MG.23j: `A` / `_` / `O`
             ],
             "magit's registered picker sources changed — update this list \
              together with `register`, and check every `Effect::OpenPicker` \
@@ -768,7 +768,10 @@ mod tests {
             panic!("rename must open a prompt");
         };
         assert_eq!(initial, "feature/foo");
-        assert!(prompt.contains("feature/foo"), "the prompt names its target");
+        assert!(
+            prompt.contains("feature/foo"),
+            "the prompt names its target"
+        );
     }
 
     #[test]

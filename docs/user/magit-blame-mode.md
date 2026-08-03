@@ -68,8 +68,28 @@ you are already looking at a [file at a
 revision](help:magit-file-revision-mode).
 
 It answers the opposite question: for each line as it was at `<rev>`,
-the last commit in which that line still existed. Lines annotated with
-anything other than HEAD are the ones that have since disappeared.
+**what removed it**.
+
+Each heading is one of three things, and it says which:
+
+| Heading ends with | Means |
+|---|---|
+| `· removed` | This commit — the one named at the start of the heading — took the lines out. |
+| `· still present` | The lines are in the file at HEAD. Nothing removed them. |
+| `· last contained here` | The lines are gone, but more than one commit could have removed them, so none is named. See below. |
+
+For a `· removed` heading the sha, author, date and subject are all the
+**removing** commit's, because that is the answer to the question you
+asked. (Earlier versions showed the last commit in which the line still
+existed, formatted identically to a forward blame — so it read as "this
+commit removed the line" while naming its parent.)
+
+**Why some headings decline to name a commit.** If history forked after
+the commit being blamed and more than one branch touched the file,
+several commits qualify and git cannot say which one is *the* removal.
+Picking one would be a guess presented as a fact, in a heading that
+looks exactly like the confident ones — so those rows say only what is
+certain: the lines were last seen here.
 
 It annotates the *blob* buffer — the file as it was at that revision —
 because that is the content the question is about. Your working-tree
@@ -91,6 +111,12 @@ changes` rather than git's internal all-zero SHA.
 - Blame runs on a background thread and the headings appear when it
   lands — a large file never blocks the editor, and you do not have to
   press anything to see the result.
+- A **reverse** blame does extra history walking to work out what
+  removed each run of lines, so it takes longer to land than a forward
+  one. The work is per distinct commit rather than per line, so a file
+  with many lines from few commits costs little. The headings still
+  appear all at once when the whole answer is ready, rather than
+  appearing and then relabelling themselves.
 - Headings cost **vertical** space, one row per chunk. A file where
   every line has a different commit nearly doubles in height. The trade
   is deliberate: a per-line column would shift all your code sideways

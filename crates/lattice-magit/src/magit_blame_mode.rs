@@ -39,7 +39,9 @@ use lattice_mode::{
 use lattice_theme::{ElementId, ThemeRegistryHandle};
 use lattice_vcs::Repository;
 
-use crate::blame::{BlameChunk, heading_text, is_uncommitted, parse_blame_chunks};
+use crate::blame::{
+    BlameChunk, Removal, RemovalCommit, heading_text, is_uncommitted, parse_blame_chunks,
+};
 use crate::buffer_state::{BufferStateGuard, BufferStates};
 
 /// Provider id for the chunk-heading lane. One per buffer scope — a
@@ -569,18 +571,161 @@ async fn rerun_blame(s: Arc<Mutex<BlameState>>) {
     }) else {
         return;
     };
-    let porcelain = tokio::task::spawn_blocking(move || run_blame(&wd, direction, &rev, &path))
-        .await
-        .unwrap_or_default();
+    // MG.33: the removal walk runs in the SAME `spawn_blocking` as the
+    // blame. Splitting it would publish headings once without the
+    // answer and again with it — a visible relabel of rows the user did
+    // not touch, which the keystroke UX contract forbids.
+    let chunks = tokio::task::spawn_blocking(move || {
+        let mut chunks = parse_blame_chunks(&run_blame(&wd, direction, &rev, &path));
+        if direction == BlameDirection::Reverse {
+            resolve_removals(&wd, &path, &mut chunks);
+        }
+        chunks
+    })
+    .await
+    .unwrap_or_default();
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
-    provider.set_chunks(parse_blame_chunks(&porcelain), now);
+    provider.set_chunks(chunks, now);
     // The headings exist now; ask for a frame. Without this they appear
     // on the next keystroke instead of when the blame lands.
     if let Some(wake) = wake {
         wake.wake();
+    }
+}
+
+/// MG.33: resolve what removed the lines a reverse-blame chunk covers.
+///
+/// **Blocking — call on `spawn_blocking`.** Up to two `git` invocations
+/// per distinct blamed SHA, so callers dedupe by SHA first
+/// ([`resolve_removals`]).
+///
+/// The walk is
+/// `git rev-list --ancestry-path --reverse <sha>..HEAD -- <path>`:
+/// every commit that is a descendant of `sha`, an ancestor of HEAD, and
+/// touched the file, oldest first. The oldest is the one that removed
+/// the lines.
+///
+/// - **Empty output** — nothing after `sha` touched the file on the way
+///   to HEAD, so the lines are still there.
+/// - **Two or more, and the second is not a descendant of the first** —
+///   history forked at `sha` and parallel branches touched the file, so
+///   several commits qualify. [`Removal::Ambiguous`] rather than a
+///   guess: naming the wrong commit in a blame heading is worse than
+///   naming none.
+///
+/// The `merge-base` check is the only reason for a second invocation
+/// and it runs only when the list has more than one entry, so the
+/// linear case — overwhelmingly the common one — costs one call.
+fn resolve_removal(workdir: &std::path::Path, sha: &str, path: &str) -> Removal {
+    let candidates = git_lines(
+        workdir,
+        &[
+            "rev-list",
+            "--ancestry-path",
+            "--reverse",
+            &format!("{sha}..HEAD"),
+            "--",
+            path,
+        ],
+    );
+    let Some(first) = candidates.first() else {
+        return Removal::StillPresent;
+    };
+    if let Some(second) = candidates.get(1) {
+        // `--is-ancestor` exits 0 when it is one. If the second commit
+        // does not descend from the first, they are on parallel
+        // branches and "the first" is an artefact of traversal order.
+        let linear = std::process::Command::new("git")
+            .args(["merge-base", "--is-ancestor", first, second])
+            .current_dir(workdir)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !linear {
+            return Removal::Ambiguous;
+        }
+    }
+    match commit_meta(workdir, first) {
+        Some(c) => Removal::By(c),
+        // The rev-list named it, so a failure to describe it is a git
+        // problem rather than an absent commit. Declining beats
+        // rendering a bare SHA with empty columns.
+        None => Removal::Ambiguous,
+    }
+}
+
+/// `author-name`, `author-time` and `subject` for one commit.
+fn commit_meta(workdir: &std::path::Path, sha: &str) -> Option<RemovalCommit> {
+    // `%x1f` is the ASCII unit separator: it cannot occur in an author
+    // name or a subject, where a `|` or a tab easily can.
+    let out = git_lines(workdir, &["show", "-s", "--format=%an%x1f%at%x1f%s", sha]);
+    let line = out.first()?;
+    let mut parts = line.split('\u{1f}');
+    let author = parts.next()?.to_string();
+    let time = parts.next()?.parse::<i64>().ok()?;
+    let summary = parts.next().unwrap_or_default().to_string();
+    Some(RemovalCommit {
+        sha: sha.to_string(),
+        author,
+        time,
+        summary,
+    })
+}
+
+/// Run `git` and return stdout's non-empty lines, or nothing on
+/// failure. Blame must degrade to fewer annotations, never to an error.
+fn git_lines(workdir: &std::path::Path, args: &[&str]) -> Vec<String> {
+    match std::process::Command::new("git")
+        .args(args)
+        .current_dir(workdir)
+        .output()
+    {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(str::to_string)
+            .collect(),
+        Ok(o) => {
+            tracing::debug!(
+                target: "lattice_magit",
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&o.stderr).trim(),
+            );
+            Vec::new()
+        }
+        Err(e) => {
+            tracing::debug!(target: "lattice_magit", "git {args:?}: {e}");
+            Vec::new()
+        }
+    }
+}
+
+/// MG.33: fill in `removal` for every chunk of a reverse blame.
+///
+/// **Deduped by SHA**, which is what keeps the cost sane: a file with
+/// 200 chunks usually has far fewer distinct commits, and adjacent runs
+/// of the same commit resolve once. Uncommitted lines are skipped —
+/// they have no history to walk.
+///
+/// Blocking; runs inside the same `spawn_blocking` as the blame itself.
+fn resolve_removals(workdir: &std::path::Path, path: &str, chunks: &mut [BlameChunk]) {
+    let mut seen: std::collections::HashMap<String, Removal> = std::collections::HashMap::new();
+    for chunk in chunks.iter_mut() {
+        if is_uncommitted(&chunk.sha) {
+            continue;
+        }
+        let removal = match seen.get(&chunk.sha) {
+            Some(r) => r.clone(),
+            None => {
+                let r = resolve_removal(workdir, &chunk.sha, path);
+                seen.insert(chunk.sha.clone(), r.clone());
+                r
+            }
+        };
+        chunk.removal = Some(removal);
     }
 }
 
@@ -675,6 +820,7 @@ mod tests {
             summary: "do the thing".into(),
             start_line: start,
             line_count: count,
+            removal: None,
         }
     }
 
@@ -728,6 +874,41 @@ mod tests {
         assert_ne!(sha_fg, label_fg, "the two roles must be distinguishable");
         assert_eq!(row.cells[0].fg, sha_fg);
         assert_eq!(row.cells[7].fg, sha_fg, "…through the last sha character");
+        assert_eq!(row.cells[8].fg, label_fg, "…and not past it");
+    }
+
+    /// MG.33: on a removed chunk the leading sha is the **removing**
+    /// commit's, and it must be the one that gets the sha colour.
+    ///
+    /// This works because `sha_len` is measured from the rendered
+    /// text's leading token rather than from `chunk.sha` — which reads
+    /// like an implementation detail and is in fact the thing that
+    /// keeps the two in step. Pinned so a later "tidy-up" to
+    /// `chunk.sha.len()` (equal here only by coincidence of both shas
+    /// being full-length) is caught.
+    #[test]
+    fn a_removed_headings_sha_colour_covers_the_removing_commit() {
+        let p = BlameProvider::new(None, "magit-blame-mode");
+        let mut c = chunk("aaaa1111", 0, 1);
+        c.removal = Some(Removal::By(RemovalCommit {
+            sha: "dead9999beef".into(),
+            author: "Sam Patel".into(),
+            time: 1_700_000_000,
+            summary: "drop it".into(),
+        }));
+        p.set_chunks(vec![c], 1_700_000_000);
+        let row = &p.collect()[0];
+        let (sha_fg, label_fg) = crate::headerline::blame_heading_fallback();
+
+        let text: String = row
+            .cells
+            .iter()
+            .filter_map(|c| char::from_u32(c.codepoint))
+            .collect();
+        assert!(text.starts_with("dead9999"), "{text}");
+        for i in 0..8 {
+            assert_eq!(row.cells[i].fg, sha_fg, "char {i} of the removing sha");
+        }
         assert_eq!(row.cells[8].fg, label_fg, "…and not past it");
     }
 
@@ -868,5 +1049,154 @@ mod tests {
             ActivationPolicy::Manual
         ));
         assert_eq!(MagitBlameMode.kind(), ModeKind::Minor);
+    }
+}
+
+/// MG.33: resolving what removed a run of lines, against real git.
+///
+/// These drive actual repositories because the question is about
+/// history topology — `--ancestry-path` behaviour across a merge is
+/// exactly the thing a hand-built fixture would get wrong in the same
+/// way the implementation might.
+#[cfg(test)]
+mod removal_resolution {
+    use super::*;
+    use std::path::Path;
+    use std::process::Command;
+
+    fn git(dir: &Path, args: &[&str]) -> String {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .expect("git");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    fn init(dir: &Path) {
+        git(dir, &["init", "-b", "main"]);
+        git(dir, &["config", "user.email", "t@lattice.dev"]);
+        git(dir, &["config", "user.name", "lattice-test"]);
+    }
+
+    fn commit(dir: &Path, path: &str, body: &str, msg: &str) -> String {
+        std::fs::write(dir.join(path), body).expect("write");
+        git(dir, &["add", path]);
+        git(dir, &["commit", "-m", msg]);
+        git(dir, &["rev-parse", "HEAD"])
+    }
+
+    /// The case the feature is for: a line present at `base` and gone
+    /// by HEAD resolves to the commit that took it out — not to `base`,
+    /// which is what the heading showed before MG.33.
+    #[test]
+    fn a_removed_line_resolves_to_the_commit_that_removed_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let p = dir.path();
+        init(p);
+        let base = commit(p, "a.txt", "keep\ndoomed\n", "base");
+        let remover = commit(p, "a.txt", "keep\n", "drop the doomed line");
+
+        let Removal::By(c) = resolve_removal(p, &base, "a.txt") else {
+            panic!("a line removed before HEAD must resolve to its remover");
+        };
+        assert_eq!(c.sha, remover, "must name the REMOVING commit, not `base`");
+        assert_ne!(c.sha, base, "naming the last-containing commit is the bug");
+        assert_eq!(c.summary, "drop the doomed line");
+        assert_eq!(c.author, "lattice-test");
+        assert!(c.time > 0, "the heading shows a relative date");
+    }
+
+    /// Lines still in the file at HEAD have no removing commit, and
+    /// saying so is the point — inventing one would be the worst
+    /// outcome of the three.
+    #[test]
+    fn a_surviving_line_resolves_to_still_present() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let p = dir.path();
+        init(p);
+        let base = commit(p, "a.txt", "keep\n", "base");
+        // A later commit that does NOT touch the blamed file.
+        commit(p, "b.txt", "other\n", "unrelated");
+
+        assert_eq!(resolve_removal(p, &base, "a.txt"), Removal::StillPresent);
+    }
+
+    /// History forks at `base`, both branches touch the file, and both
+    /// merge into HEAD. Two commits qualify and neither descends from
+    /// the other, so we decline rather than pick by traversal order.
+    ///
+    /// This is the case the "within reason" clause of the UX rule is
+    /// about: a confidently wrong attribution is worse than the honest
+    /// "last contained here" it replaces.
+    #[test]
+    fn a_fork_that_both_branches_touched_is_ambiguous() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let p = dir.path();
+        init(p);
+        let base = commit(p, "a.txt", "one\ntwo\nthree\n", "base");
+
+        git(p, &["checkout", "-b", "side"]);
+        commit(p, "a.txt", "one\ntwo\n", "side drops three");
+        git(p, &["checkout", "main"]);
+        commit(p, "a.txt", "two\nthree\n", "main drops one");
+        // Merge side in, resolving to something that keeps neither.
+        let out = Command::new("git")
+            .args(["merge", "side", "-m", "merge"])
+            .current_dir(p)
+            .output()
+            .expect("git");
+        if !out.status.success() {
+            std::fs::write(p.join("a.txt"), "two\n").expect("write");
+            git(p, &["add", "a.txt"]);
+            git(p, &["commit", "-m", "merge"]);
+        }
+
+        assert_eq!(
+            resolve_removal(p, &base, "a.txt"),
+            Removal::Ambiguous,
+            "two parallel commits touched the file after `base`; naming one \
+             would be a guess presented as a fact"
+        );
+    }
+
+    /// Uncommitted lines have no history to walk, so they are skipped
+    /// rather than handed a bogus range (`0000000..HEAD` is not a rev).
+    #[test]
+    fn resolve_removals_skips_uncommitted_chunks_and_dedupes_by_sha() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let p = dir.path();
+        init(p);
+        let base = commit(p, "a.txt", "keep\ndoomed\n", "base");
+        commit(p, "a.txt", "keep\n", "drop it");
+
+        let mk = |sha: &str, start: u32| BlameChunk {
+            sha: sha.into(),
+            author: String::new(),
+            time: 0,
+            summary: String::new(),
+            start_line: start,
+            line_count: 1,
+            removal: None,
+        };
+        // Two chunks share `base` — the dedupe path — plus an
+        // uncommitted one that must be left alone.
+        let mut chunks = vec![mk(&base, 0), mk(&"0".repeat(40), 1), mk(&base, 2)];
+        resolve_removals(p, "a.txt", &mut chunks);
+
+        assert!(matches!(chunks[0].removal, Some(Removal::By(_))));
+        assert_eq!(
+            chunks[0].removal, chunks[2].removal,
+            "the same sha must resolve to the same answer, from one walk"
+        );
+        assert_eq!(
+            chunks[1].removal, None,
+            "an uncommitted chunk has no history to walk"
+        );
     }
 }

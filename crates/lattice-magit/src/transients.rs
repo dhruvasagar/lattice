@@ -125,6 +125,12 @@ pub struct DispatchActionIds {
     /// MG.29: the branch submenu's own rows.
     pub branch_checkout: Option<CommandId>,
     pub branch_create: Option<CommandId>,
+    /// MG.32: the four rows that completed the submenu against magit's
+    /// own `magit-branch` transient.
+    pub branch_checkout_rev: Option<CommandId>,
+    pub branch_create_no_checkout: Option<CommandId>,
+    pub branch_rename: Option<CommandId>,
+    pub branch_delete: Option<CommandId>,
     /// MG.21d: `M` — remote management, magit's own key.
     pub remote: Option<CommandId>,
     /// MG.23k: `D` — re-run this view with different git arguments.
@@ -289,7 +295,7 @@ fn reset_transient(ids: &DispatchActionIds) -> TransientSpec {
     }
 }
 
-/// MG.29: the `b` branch submenu.
+/// MG.29 + MG.32: the `b` branch submenu.
 ///
 /// `b` used to open the branch **list** straight away. That is one of
 /// several things you want from "branches", and it made the other ones
@@ -297,40 +303,105 @@ fn reset_transient(ids: &DispatchActionIds) -> TransientSpec {
 /// first and then finding the chord. Magit puts them in a submenu; so
 /// does this.
 ///
-/// The list is still one keystroke further in (`b l`), not removed.
+/// Every row ASKS rather than reading a cursor, because a menu opened
+/// from anywhere has none — the same answer MG.23j gave the commit rows,
+/// and the reason magit's own branch commands sit in an ungated group.
 ///
-/// Both other rows ASK rather than reading a cursor, because a menu
-/// opened from anywhere has none — the same answer MG.23j gave the
-/// commit rows.
+/// ## The keys are magit's, and MG.32 corrected two that were not
+///
+/// Pulled from `magit/lisp/magit-branch.el`'s `magit-branch` transient
+/// with `evil-collection-magit-popup-changes` applied — MG.23's policy
+/// #1 ("keys follow magit / evil-collection-magit from day one, so a row
+/// landing later lands in the slot muscle memory already expects").
+/// MG.29 shipped this submenu without doing that inventory, and two keys
+/// were wrong as a result:
+///
+/// - **`l` was "list"**, but in magit `l` is *checkout local branch*.
+///   The list is a lattice concept — magit's branch transient has no
+///   list-buffer row at all — so it had squatted on an occupied key.
+/// - **`b` was the local-branch picker**, but magit's `b` is
+///   *branch/revision*: it accepts a tag, a remote ref or a raw SHA,
+///   which a list of local branches cannot express. What MG.29 built
+///   was magit's `l` under magit's `b`.
+///
+/// So the MG.29 row moved `b` → `l` keeping its action (pinned by a
+/// test), `b` became the revision prompt it always meant, and the list
+/// took `L` — free in magit's transient, and capital-as-variant matches
+/// magit's own `d`/`D`, `l`/`L`, `b`/`B` pairs in file-dispatch.
+///
+/// Deferred, with magit's keys reserved so they stay free: `s`/`S`
+/// spin-off/spin-out, `C` configure (a sub-transient over
+/// `branch.<name>.*` that likely belongs to `:customize`, not a
+/// hand-rolled menu), `X` reset (wants MG.23j's commit picker).
 fn branch_transient(ids: &DispatchActionIds) -> TransientSpec {
     TransientSpec {
         title: "Branch".into(),
-        groups: vec![TransientGroup {
-            label: "Actions".into(),
-            items: vec![
-                action_or_placeholder(
-                    ids.branch_checkout,
-                    "b",
-                    "checkout",
-                    "Pick a branch and check it out",
-                    "branch_checkout_op",
-                ),
-                action_or_placeholder(
-                    ids.branch_create,
-                    "c",
-                    "create",
-                    "Pick a base, then name a new branch and check it out",
-                    "branch_create_op",
-                ),
-                action_or_placeholder(
-                    ids.branch,
-                    "l",
-                    "list",
-                    "Open the branch list buffer",
-                    "branch_op",
-                ),
-            ],
-        }],
+        groups: vec![
+            TransientGroup {
+                label: "Checkout".into(),
+                items: vec![
+                    action_or_placeholder(
+                        ids.branch_checkout_rev,
+                        "b",
+                        "branch/revision",
+                        "Check out anything git can: a branch, tag, remote ref or SHA",
+                        "branch_checkout_rev_op",
+                    ),
+                    action_or_placeholder(
+                        ids.branch_checkout,
+                        "l",
+                        "local branch",
+                        "Pick a local branch and check it out",
+                        "branch_checkout_op",
+                    ),
+                ],
+            },
+            TransientGroup {
+                label: "Create".into(),
+                items: vec![
+                    action_or_placeholder(
+                        ids.branch_create,
+                        "c",
+                        "new branch and checkout",
+                        "Pick a base, then name a new branch and check it out",
+                        "branch_create_op",
+                    ),
+                    action_or_placeholder(
+                        ids.branch_create_no_checkout,
+                        "n",
+                        "new branch",
+                        "Pick a base, then name a new branch — without checking it out",
+                        "branch_create_no_checkout_op",
+                    ),
+                ],
+            },
+            TransientGroup {
+                label: "Do".into(),
+                items: vec![
+                    action_or_placeholder(
+                        ids.branch_rename,
+                        "m",
+                        "rename",
+                        "Pick a branch, then type its new name",
+                        "branch_rename_op",
+                    ),
+                    action_or_placeholder(
+                        ids.branch_delete,
+                        "x",
+                        "delete",
+                        "Pick a branch to delete — asks first",
+                        "branch_delete_op",
+                    ),
+                    action_or_placeholder(
+                        ids.branch,
+                        "L",
+                        "list",
+                        "Open the branch list buffer",
+                        "branch_op",
+                    ),
+                ],
+            },
+        ],
         preview: None,
         footer: Some("q dismiss  Esc/BS back".into()),
     }

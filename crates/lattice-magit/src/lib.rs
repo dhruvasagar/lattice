@@ -341,6 +341,11 @@ fn resolve_dispatch_ids(registry: &CommandRegistry) -> transients::DispatchActio
         branch: registry.id_by_name("action:magit-global-branch"),
         branch_checkout: registry.id_by_name("action:magit-global-branch-checkout"),
         branch_create: registry.id_by_name("action:magit-global-branch-create"),
+        branch_checkout_rev: registry.id_by_name("action:magit-global-branch-checkout-rev"),
+        branch_create_no_checkout: registry
+            .id_by_name("action:magit-global-branch-create-no-checkout"),
+        branch_rename: registry.id_by_name("action:magit-global-branch-rename"),
+        branch_delete: registry.id_by_name("action:magit-global-branch-delete"),
         remote: registry.id_by_name("action:magit-global-remote"),
         submodule: registry.id_by_name("action:magit-global-submodule"),
         view_args: registry.id_by_name("action:magit-view-refresh-args"),
@@ -419,6 +424,14 @@ const CONFIRM_TARGET_ACTIONS: &[(&str, &str, &[(&str, &str)])] = &[
     (
         "action:magit-branch-delete-execute",
         "Delete the branch after confirmation",
+        &[("branch", "Branch the prompt named")],
+    ),
+    // MG.32: the branch submenu's `x`. Unlike the chord's execute half
+    // above there is NO cursor to fall back on — the menu opens from
+    // anywhere — so the carried slot is the only source of the target.
+    (
+        "action:magit-global-branch-delete-execute",
+        "Delete the branch the menu named, after confirmation",
         &[("branch", "Branch the prompt named")],
     ),
     // MG.21i. The slot is what makes the answer act on the submodule
@@ -1186,6 +1199,56 @@ fn register_ex_commands(
             },
         );
     }
+    {
+        // MG.32: `:magit-branch-delete <name>` — the ask half of the
+        // branch submenu's `x`, and the scriptable form besides.
+        //
+        // **This is an ex-command rather than an action because a
+        // picker's accept can only reach an operation through
+        // `InvokeCommand`**, which dispatches ex-commands — the same
+        // constraint that shaped MG.23j's commit picker. It does no git
+        // call at all: it raises the MG.12 confirm carrying the name,
+        // and only `action:magit-global-branch-delete-execute` deletes,
+        // so answering `n` cannot mutate anything.
+        registry.register_ex_command(
+            "magit-branch-delete",
+            "Delete a branch by name — asks first (force delete).",
+            ExCommandSpec {
+                latency_class: LatencyClass::Reflex,
+                accepts_bang: false,
+                accepts_range: false,
+                parse_args: Arc::new(|line: &str, _bang: bool| {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() {
+                        Err(lattice_grammar::error::CommandError::BadArgs(
+                            "magit-branch-delete: branch name required".to_string(),
+                        ))
+                    } else {
+                        Ok(Args::String(trimmed.to_string()))
+                    }
+                }),
+                apply: Arc::new(|ctx| {
+                    let Args::String(ref name) = ctx.args else {
+                        return Ok(Effect::Echo {
+                            level: lattice_grammar::EchoLevel::Error,
+                            text: "magit-branch-delete: branch name required".to_string(),
+                        });
+                    };
+                    Ok(confirm::ask_target(
+                        format!("Delete branch {name}?"),
+                        "action:magit-global-branch-delete-execute",
+                        name.clone(),
+                    ))
+                }),
+                args_schema: vec![ArgSpec::required(
+                    "name",
+                    lattice_grammar::ArgKind::String,
+                    "branch to delete",
+                )],
+                surface_form: SurfaceForm::Keyword,
+            },
+        );
+    }
 }
 
 /// Register every `action:magit-*` command so that mode keymap
@@ -1692,6 +1755,35 @@ fn register_action_commands(registry: &mut CommandRegistry) {
     reg(
         "action:magit-branch-create-finish",
         "Create the new branch (from the picked base) with the typed name",
+    );
+
+    // MG.32: the rest of magit's branch transient. Each row is an
+    // ask-half (opens a picker or a prompt) plus, where the flow needs
+    // one, a finish-half fired by the prompt it opened.
+    reg(
+        "action:magit-global-branch-checkout-rev",
+        "Check out a branch or revision you name",
+    );
+    reg(
+        "action:magit-global-branch-checkout-rev-finish",
+        "Check out the typed branch or revision",
+    );
+    reg(
+        "action:magit-global-branch-create-no-checkout",
+        "Create a branch without checking it out",
+    );
+    reg(
+        "action:magit-branch-create-no-checkout-finish",
+        "Create the new branch (from the picked base) without checking it out",
+    );
+    reg("action:magit-global-branch-rename", "Rename a branch");
+    reg(
+        "action:magit-branch-rename-finish",
+        "Rename the picked branch to the typed name",
+    );
+    reg(
+        "action:magit-global-branch-delete",
+        "Delete a branch — asks first",
     );
     drop(reg);
 
@@ -2398,7 +2490,9 @@ mod tests {
             })
             .collect();
 
-        for key in ["b", "c", "l"] {
+        // MG.32: the full set magit's own branch transient shows, minus
+        // the four still deferred (`s`/`S`/`C`/`X`).
+        for key in ["b", "l", "c", "n", "m", "x", "L"] {
             let (_, real) = rows
                 .iter()
                 .find(|(k, _)| k == key)
@@ -2408,9 +2502,141 @@ mod tests {
         assert_eq!(
             resolve_dispatch_ids(&registry).branch,
             registry.id_by_name("action:magit-global-branch"),
-            "`b l` fires the SAME action `b` used to — the list did not move, \
-             it went one level in"
+            "`b L` fires the SAME action `b` used to — the list did not \
+             disappear when MG.32 moved it off `l`"
         );
+    }
+
+    /// MG.32: the two keys MG.29 got wrong, pinned so they cannot drift
+    /// back.
+    ///
+    /// Both were found by inventorying magit's own `magit-branch`
+    /// transient (with `evil-collection-magit-popup-changes` applied) —
+    /// the step MG.29 skipped:
+    ///
+    /// - **`l` is checkout-local-branch in magit**, so the list buffer
+    ///   (a lattice concept magit has no row for) had squatted on an
+    ///   occupied key. The list moved to `L`.
+    /// - **`b` is branch/*revision* in magit** — it takes a tag, a
+    ///   remote ref or a raw SHA. MG.29's `b` offered a list of local
+    ///   branches, which cannot express any of those; that row *was*
+    ///   magit's `l`, and is now bound as such.
+    ///
+    /// A test on the mapping rather than on mere presence, because both
+    /// bugs were "the row exists, under the wrong letter" — the
+    /// presence check above passed throughout.
+    #[test]
+    fn the_branch_submenu_keys_mean_what_magit_means_by_them() {
+        use lattice_picker::{TransientItemKind, TransientSpec};
+
+        let mut registry = CommandRegistry::new();
+        register_action_commands(&mut registry);
+        let ids = resolve_dispatch_ids(&registry);
+
+        let item = transients::dispatch_transient(&ids, &outside_magit())
+            .groups
+            .iter()
+            .flat_map(|g| &g.items)
+            .find(|i| i.key.iter().any(|k| k == "b"))
+            .cloned()
+            .expect("`b` must exist on the dispatch");
+        let TransientItemKind::Submenu(spec) = &item.kind else {
+            panic!("`b` must open a submenu");
+        };
+        let spec: &TransientSpec = spec;
+
+        let action_for = |key: &str| -> Option<lattice_grammar::CommandId> {
+            spec.groups
+                .iter()
+                .flat_map(|g| &g.items)
+                .find(|i| i.key.iter().any(|k| k == key))
+                .and_then(|i| match i.kind {
+                    TransientItemKind::Action(id) => Some(id),
+                    _ => None,
+                })
+        };
+
+        // Both sides of every comparison below are `Option`, so
+        // `None == None` would pass vacuously — an unregistered action
+        // and an absent row would agree with each other. Pin that these
+        // resolve before comparing them.
+        for key in ["b", "l", "L"] {
+            assert!(
+                action_for(key).is_some(),
+                "`b {key}` must resolve to a real action, or the assertions \
+                 below compare None to None and prove nothing"
+            );
+        }
+
+        assert_eq!(
+            action_for("l"),
+            registry.id_by_name("action:magit-global-branch-checkout"),
+            "`l` is magit's checkout-LOCAL-branch, and that is exactly the \
+             picker MG.29 had built — it only sat on the wrong key"
+        );
+        assert_eq!(
+            action_for("b"),
+            registry.id_by_name("action:magit-global-branch-checkout-rev"),
+            "`b` is magit's branch/REVISION: it must reach the prompt that \
+             accepts a tag / remote ref / SHA, not the local-branch list"
+        );
+        assert_eq!(
+            action_for("L"),
+            registry.id_by_name("action:magit-global-branch"),
+            "the list buffer has no magit counterpart, so it takes `L` — \
+             capital-as-variant, and a key magit's transient leaves free"
+        );
+        assert_ne!(
+            action_for("b"),
+            action_for("l"),
+            "branch/revision and local-branch are different operations; one \
+             of them pointing at the other is the MG.29 bug returning"
+        );
+    }
+
+    /// MG.32: the keys magit uses for the four deferred rows stay FREE.
+    ///
+    /// The no-inert-rows policy says a row appears only once its
+    /// operation exists — but MG.23's policy #1 also says a row landing
+    /// later must land where muscle memory expects. Both hold only if
+    /// nothing else claims `s` / `S` / `C` / `X` in the meantime, which
+    /// is the kind of thing a later slice does without noticing.
+    #[test]
+    fn the_deferred_branch_rows_keep_their_magit_keys_free() {
+        use lattice_picker::{TransientItemKind, TransientSpec};
+
+        let mut registry = CommandRegistry::new();
+        register_action_commands(&mut registry);
+        let ids = resolve_dispatch_ids(&registry);
+
+        let item = transients::dispatch_transient(&ids, &outside_magit())
+            .groups
+            .iter()
+            .flat_map(|g| &g.items)
+            .find(|i| i.key.iter().any(|k| k == "b"))
+            .cloned()
+            .expect("`b` must exist on the dispatch");
+        let TransientItemKind::Submenu(spec) = &item.kind else {
+            panic!("`b` must open a submenu");
+        };
+        let spec: &TransientSpec = spec;
+        let taken: Vec<String> = spec
+            .groups
+            .iter()
+            .flat_map(|g| &g.items)
+            .flat_map(|i| i.key.iter().cloned())
+            .collect();
+
+        // s spin-off, S spin-out, C configure, X reset (magit's `x`,
+        // moved by evil-collection-magit).
+        for key in ["s", "S", "C", "X"] {
+            assert!(
+                !taken.iter().any(|k| k == key),
+                "`{key}` is magit's key for a deferred branch row — leaving it \
+                 free is what lets that row land in the slot muscle memory \
+                 expects. Taken: {taken:?}"
+            );
+        }
     }
 
     /// Every submenu tells the user `Esc` goes back, now that it does.
@@ -3615,7 +3841,7 @@ mod tests {
         );
         assert_eq!(
             root.len(),
-            28,
+            32,
             "expected every root-dispatch leaf (incl. both submenus') to \
              report inert, got: {root:?}"
         );
@@ -3628,7 +3854,7 @@ mod tests {
         );
         assert_eq!(
             bisecting.len(),
-            31,
+            35,
             "the in-progress bisect menu trades `start` for good/bad/skip/reset: {bisecting:?}"
         );
     }

@@ -907,6 +907,190 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         }),
     });
 
+    // ── MG.32: the rest of magit's branch transient ──────────────
+    //
+    // Keys follow magit with evil-collection-magit's remaps applied
+    // (`(magit-branch "k" "x" magit-branch-delete)`), so a row lands in
+    // the slot muscle memory already expects — MG.23's policy #1.
+    //
+    // `b` — checkout a branch **or revision**, magit's own wording.
+    // Distinct from `l` below, which lists local branches: this one
+    // accepts anything `git checkout` does — a tag, a remote ref, a raw
+    // SHA — so it asks for text rather than offering a list. Checking
+    // out a SHA detaches HEAD, which is git's behaviour and magit's.
+    contributions.push(ActionHandlerContribution {
+        action_name: "action:magit-global-branch-checkout-rev",
+        handler: Arc::new(|_ctx: &ActionContext<'_>| {
+            Some(Effect::OpenPrompt {
+                prompt: "Checkout branch/revision: ".to_string(),
+                initial: String::new(),
+                on_submit_action: "action:magit-global-branch-checkout-rev-finish".to_string(),
+                buffer_name: Some("*magit:branch-checkout-rev*".to_string()),
+            })
+        }),
+    });
+    contributions.push(ActionHandlerContribution {
+        action_name: "action:magit-global-branch-checkout-rev-finish",
+        handler: Arc::new(|ctx: &ActionContext<'_>| {
+            let rev = ctx.prompt_value?.trim().to_string();
+            if rev.is_empty() {
+                return Some(Effect::Echo {
+                    level: lattice_grammar::EchoLevel::Error,
+                    text: "magit: revision is empty".to_string(),
+                });
+            }
+            tokio::task::spawn(tokio::task::spawn_blocking(move || {
+                let Ok(repo) = Repository::discover(".") else {
+                    tracing::error!(target: "lattice_magit", "branch checkout: repo discover failed");
+                    return;
+                };
+                if let Err(e) = lattice_vcs::Branch::checkout(&repo, &rev) {
+                    tracing::error!(target: "lattice_magit", "checkout {rev}: {e}");
+                }
+            }));
+            Some(Effect::Echo {
+                level: lattice_grammar::EchoLevel::Info,
+                text: "magit: checking out…".to_string(),
+            })
+        }),
+    });
+
+    // `n` — new branch, NOT checked out. The picker + prompt are `c`'s;
+    // only the `checkout` flag differs, so `Branch::create` already
+    // covers it and no new vcs surface was needed.
+    contributions.push(ActionHandlerContribution {
+        action_name: "action:magit-global-branch-create-no-checkout",
+        handler: Arc::new(|_ctx: &ActionContext<'_>| {
+            Some(Effect::OpenPicker {
+                source: crate::picker_sources::BRANCH_CREATE_NO_CHECKOUT_SOURCE.to_string(),
+                args: Vec::new(),
+            })
+        }),
+    });
+    contributions.push(ActionHandlerContribution {
+        action_name: "action:magit-branch-create-no-checkout-finish",
+        handler: Arc::new(|ctx: &ActionContext<'_>| {
+            let name = ctx.prompt_value?.trim().to_string();
+            if name.is_empty() {
+                return Some(Effect::Echo {
+                    level: lattice_grammar::EchoLevel::Error,
+                    text: "magit: branch name is empty".to_string(),
+                });
+            }
+            let buffer_id = lattice_core::BufferId(ctx.buffer_id.0 as u32);
+            let base = ctx
+                .services
+                .get::<BufferStoreHandle>()?
+                .name_for(buffer_id)
+                .and_then(|n| {
+                    branch_from_prompt_buffer_name(&n, BRANCH_CREATE_NO_CHECKOUT_PROMPT_PREFIX)
+                })?;
+            tokio::task::spawn(tokio::task::spawn_blocking(move || {
+                let Ok(repo) = Repository::discover(".") else {
+                    tracing::error!(target: "lattice_magit", "branch create: repo discover failed");
+                    return;
+                };
+                if let Err(e) = lattice_vcs::Branch::create(&repo, &name, false, Some(&base)) {
+                    tracing::error!(target: "lattice_magit", "branch create {name} from {base}: {e}");
+                }
+            }));
+            Some(Effect::Echo {
+                level: lattice_grammar::EchoLevel::Info,
+                text: "magit: creating branch…".to_string(),
+            })
+        }),
+    });
+
+    // `m` — rename. Not destructive in MG.12's sense: nothing is
+    // discarded, and `Branch::rename` uses `-m` (not `-M`), which
+    // REFUSES to overwrite an existing name rather than clobbering it.
+    // So it acts directly, like checkout and merge, rather than asking.
+    contributions.push(ActionHandlerContribution {
+        action_name: "action:magit-global-branch-rename",
+        handler: Arc::new(|_ctx: &ActionContext<'_>| {
+            Some(Effect::OpenPicker {
+                source: crate::picker_sources::BRANCH_RENAME_SOURCE.to_string(),
+                args: Vec::new(),
+            })
+        }),
+    });
+    contributions.push(ActionHandlerContribution {
+        action_name: "action:magit-branch-rename-finish",
+        handler: Arc::new(|ctx: &ActionContext<'_>| {
+            let new_name = ctx.prompt_value?.trim().to_string();
+            if new_name.is_empty() {
+                return Some(Effect::Echo {
+                    level: lattice_grammar::EchoLevel::Error,
+                    text: "magit: branch name is empty".to_string(),
+                });
+            }
+            let buffer_id = lattice_core::BufferId(ctx.buffer_id.0 as u32);
+            let old = ctx
+                .services
+                .get::<BufferStoreHandle>()?
+                .name_for(buffer_id)
+                .and_then(|n| branch_from_prompt_buffer_name(&n, BRANCH_RENAME_PROMPT_PREFIX))?;
+            if old == new_name {
+                // The prompt is pre-filled with the current name, so
+                // submitting unchanged is the likeliest accident. git
+                // would error; saying nothing happened is kinder.
+                return Some(Effect::Echo {
+                    level: lattice_grammar::EchoLevel::Info,
+                    text: format!("magit: {old} unchanged"),
+                });
+            }
+            tokio::task::spawn(tokio::task::spawn_blocking(move || {
+                let Ok(repo) = Repository::discover(".") else {
+                    tracing::error!(target: "lattice_magit", "branch rename: repo discover failed");
+                    return;
+                };
+                if let Err(e) = lattice_vcs::Branch::rename(&repo, &old, &new_name) {
+                    tracing::error!(target: "lattice_magit", "branch rename {old} -> {new_name}: {e}");
+                }
+            }));
+            Some(Effect::Echo {
+                level: lattice_grammar::EchoLevel::Info,
+                text: "magit: renaming branch…".to_string(),
+            })
+        }),
+    });
+
+    // `x` — delete (magit's `k`). Opens the picker; the picker's accept
+    // routes through `:magit-branch-delete <name>`, which raises the
+    // MG.12 confirm. The git call lives only in the execute half below,
+    // so answering `n` cannot reach it.
+    contributions.push(ActionHandlerContribution {
+        action_name: "action:magit-global-branch-delete",
+        handler: Arc::new(|_ctx: &ActionContext<'_>| {
+            Some(Effect::OpenPicker {
+                source: crate::picker_sources::BRANCH_DELETE_SOURCE.to_string(),
+                args: Vec::new(),
+            })
+        }),
+    });
+    contributions.push(ActionHandlerContribution {
+        action_name: "action:magit-global-branch-delete-execute",
+        handler: Arc::new(|ctx: &ActionContext<'_>| {
+            // Always carried: this pair is only ever raised by the
+            // ex-command, which names its target. There is no cursor to
+            // fall back to — the menu opens from anywhere.
+            let name = crate::confirm::carried_target(ctx)?;
+            tokio::task::spawn(tokio::task::spawn_blocking(move || {
+                let Ok(repo) = Repository::discover(".") else {
+                    tracing::error!(target: "lattice_magit", "branch delete: repo discover failed");
+                    return;
+                };
+                if let Err(e) = lattice_vcs::Branch::delete(&repo, &name) {
+                    tracing::error!(target: "lattice_magit", "branch delete {name}: {e}");
+                }
+            }));
+            Some(Effect::Echo {
+                level: lattice_grammar::EchoLevel::Info,
+                text: "magit: deleting branch…".to_string(),
+            })
+        }),
+    });
+
     contributions
 }
 
@@ -964,9 +1148,43 @@ fn active_file(ctx: &ActionContext<'_>) -> Option<(std::path::PathBuf, std::path
 /// (`*magit:branch-create-from:*`) is also rejected since an empty
 /// base is never a valid ref.
 fn base_branch_from_prompt_buffer_name(buffer_name: &str) -> Option<String> {
-    let s = buffer_name.strip_prefix("*magit:branch-create-from:")?;
+    branch_from_prompt_buffer_name(buffer_name, BRANCH_CREATE_PROMPT_PREFIX)
+}
+
+/// The prompt-buffer-name prefixes the branch flows carry their target
+/// in. **Constants rather than literals**, because the writer
+/// (`picker_sources`) and the reader (the finish handlers) live in
+/// different files: a name format load-bearing in two places, spelled
+/// twice, is exactly the writer/reader drift that left every magit-stash
+/// chord dead until MG.15.
+pub(crate) const BRANCH_CREATE_PROMPT_PREFIX: &str = "*magit:branch-create-from:";
+pub(crate) const BRANCH_CREATE_NO_CHECKOUT_PROMPT_PREFIX: &str =
+    "*magit:branch-create-nocheckout-from:";
+pub(crate) const BRANCH_RENAME_PROMPT_PREFIX: &str = "*magit:branch-rename:";
+
+/// MG.32: one parser for every `*magit:…:<branch>*` prompt-buffer name.
+///
+/// Generalised from `base_branch_from_prompt_buffer_name` rather than
+/// copied per flow — three near-identical strip-prefix/strip-suffix
+/// parsers is the shape where a fix lands in one and misses the others.
+fn branch_from_prompt_buffer_name(buffer_name: &str, prefix: &str) -> Option<String> {
+    let s = buffer_name.strip_prefix(prefix)?;
     let s = s.strip_suffix("*")?;
     (!s.is_empty()).then(|| s.to_string())
+}
+
+/// Test-only window onto [`branch_from_prompt_buffer_name`] so
+/// `picker_sources`' round-trip guard exercises the REAL reader.
+///
+/// The point of that guard is that the writer and the reader live in
+/// different modules; asserting against a re-implementation here would
+/// prove only that the copy agrees with itself.
+#[cfg(test)]
+pub(crate) fn branch_from_prompt_buffer_name_for_test(
+    buffer_name: &str,
+    prefix: &str,
+) -> Option<String> {
+    branch_from_prompt_buffer_name(buffer_name, prefix)
 }
 
 /// MG.17b: what an argument contributes to the command line.

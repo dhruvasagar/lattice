@@ -153,7 +153,210 @@ fn branch_create_prompt_outcome(base: &str) -> PickerAcceptOutcome {
         prompt: format!("New branch name (from {base}):"),
         initial: String::new(),
         on_submit_action: "action:magit-branch-create-finish".to_string(),
-        buffer_name: Some(format!("*magit:branch-create-from:{base}*")),
+        buffer_name: Some(format!(
+            "{}{base}*",
+            crate::magit_global_mode::BRANCH_CREATE_PROMPT_PREFIX
+        )),
+    }
+}
+
+// ── MG.32: the rest of magit's branch transient ──────────────────
+//
+// Three more sources, all listing the same branches. Each reuses
+// `BranchPickBaseSource::init` rather than re-enumerating: a second
+// copy of "list the branches" drifts the moment either grows a filter,
+// which is the reason `BranchCheckoutSource` was built this way in
+// MG.29 and the reason these follow it.
+
+/// MG.32: `n` — magit's "new branch" *without* checking it out.
+///
+/// Distinct from `c` (`BranchPickBaseSource`) only in the accept: same
+/// listing, same prompt shape, and the finish action passes
+/// `checkout: false` to the same `Branch::create`. Magit keeps both
+/// because "start a branch here" and "start a branch and go there" are
+/// different intents, and the second is not always what you want when
+/// you are mid-edit.
+pub struct BranchCreateNoCheckoutSource {
+    spec: PickerSourceSpec,
+}
+
+impl BranchCreateNoCheckoutSource {
+    pub fn new() -> Self {
+        Self {
+            spec: PickerSourceSpec::no_args(
+                BRANCH_CREATE_NO_CHECKOUT_SOURCE,
+                "Pick a base, then name a new branch — without checking it out.",
+            ),
+        }
+    }
+}
+
+impl Default for BranchCreateNoCheckoutSource {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+pub const BRANCH_CREATE_NO_CHECKOUT_SOURCE: &str = "magit-branch-create-no-checkout-pick";
+
+impl PickerSourceGenerator for BranchCreateNoCheckoutSource {
+    fn spec(&self) -> &PickerSourceSpec {
+        &self.spec
+    }
+
+    fn init(&self, ctx: &PickerContext<'_>, args: &[String]) -> SourceResult<PickerInitResult> {
+        BranchPickBaseSource::new().init(ctx, args)
+    }
+
+    fn accept(
+        &self,
+        _ctx: &PickerContext<'_>,
+        routing: &RoutingPayload,
+    ) -> SourceResult<PickerAcceptOutcome> {
+        match routing {
+            RoutingPayload::BranchBase { name } => Ok(branch_create_no_checkout_outcome(name)),
+            other => Err(format!(
+                "{BRANCH_CREATE_NO_CHECKOUT_SOURCE}: unexpected routing payload {other:?}"
+            )),
+        }
+    }
+}
+
+fn branch_create_no_checkout_outcome(base: &str) -> PickerAcceptOutcome {
+    PickerAcceptOutcome::OpenPrompt {
+        prompt: format!("New branch name (from {base}, no checkout):"),
+        initial: String::new(),
+        on_submit_action: "action:magit-branch-create-no-checkout-finish".to_string(),
+        buffer_name: Some(format!(
+            "{}{base}*",
+            crate::magit_global_mode::BRANCH_CREATE_NO_CHECKOUT_PROMPT_PREFIX
+        )),
+    }
+}
+
+/// MG.32: `m` — rename a branch.
+///
+/// Pick the branch to rename, then a prompt asks for its new name.
+/// The old name rides in the prompt buffer's name, the same carry
+/// `c`'s wizard uses for its base — one mechanism, not a second.
+pub struct BranchRenameSource {
+    spec: PickerSourceSpec,
+}
+
+impl BranchRenameSource {
+    pub fn new() -> Self {
+        Self {
+            spec: PickerSourceSpec::no_args(
+                BRANCH_RENAME_SOURCE,
+                "Pick a branch, then type its new name.",
+            ),
+        }
+    }
+}
+
+impl Default for BranchRenameSource {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+pub const BRANCH_RENAME_SOURCE: &str = "magit-branch-rename-pick";
+
+impl PickerSourceGenerator for BranchRenameSource {
+    fn spec(&self) -> &PickerSourceSpec {
+        &self.spec
+    }
+
+    fn init(&self, ctx: &PickerContext<'_>, args: &[String]) -> SourceResult<PickerInitResult> {
+        BranchPickBaseSource::new().init(ctx, args)
+    }
+
+    fn accept(
+        &self,
+        _ctx: &PickerContext<'_>,
+        routing: &RoutingPayload,
+    ) -> SourceResult<PickerAcceptOutcome> {
+        match routing {
+            RoutingPayload::BranchBase { name } => Ok(branch_rename_outcome(name)),
+            other => Err(format!(
+                "{BRANCH_RENAME_SOURCE}: unexpected routing payload {other:?}"
+            )),
+        }
+    }
+}
+
+/// The rename prompt is pre-filled with the current name, because a
+/// rename is usually an edit of it (a typo, a prefix) rather than a
+/// fresh name typed from nothing.
+fn branch_rename_outcome(old: &str) -> PickerAcceptOutcome {
+    PickerAcceptOutcome::OpenPrompt {
+        prompt: format!("Rename {old} to:"),
+        initial: old.to_string(),
+        on_submit_action: "action:magit-branch-rename-finish".to_string(),
+        buffer_name: Some(format!(
+            "{}{old}*",
+            crate::magit_global_mode::BRANCH_RENAME_PROMPT_PREFIX
+        )),
+    }
+}
+
+/// MG.32: `x` — delete a branch (magit's `k`, moved by
+/// evil-collection-magit).
+///
+/// Accept routes through the **ex-command**, not straight to a git
+/// call, because deletion must ask first (MG.12) and a picker's accept
+/// cannot raise an `Effect::Confirm` itself. `:magit-branch-delete
+/// <name>` is that ask, and is the scriptable form besides.
+pub struct BranchDeleteSource {
+    spec: PickerSourceSpec,
+}
+
+impl BranchDeleteSource {
+    pub fn new() -> Self {
+        Self {
+            spec: PickerSourceSpec::no_args(
+                BRANCH_DELETE_SOURCE,
+                "Pick a branch to delete — asks before deleting.",
+            ),
+        }
+    }
+}
+
+impl Default for BranchDeleteSource {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+pub const BRANCH_DELETE_SOURCE: &str = "magit-branch-delete-pick";
+
+impl PickerSourceGenerator for BranchDeleteSource {
+    fn spec(&self) -> &PickerSourceSpec {
+        &self.spec
+    }
+
+    fn init(&self, ctx: &PickerContext<'_>, args: &[String]) -> SourceResult<PickerInitResult> {
+        BranchPickBaseSource::new().init(ctx, args)
+    }
+
+    fn accept(
+        &self,
+        _ctx: &PickerContext<'_>,
+        routing: &RoutingPayload,
+    ) -> SourceResult<PickerAcceptOutcome> {
+        match routing {
+            RoutingPayload::BranchBase { name } => Ok(branch_delete_outcome(name)),
+            other => Err(format!(
+                "{BRANCH_DELETE_SOURCE}: unexpected routing payload {other:?}"
+            )),
+        }
+    }
+}
+
+fn branch_delete_outcome(name: &str) -> PickerAcceptOutcome {
+    PickerAcceptOutcome::InvokeCommand {
+        id: "magit-branch-delete".to_string(),
+        args: lattice_grammar::Args::String(name.to_string()),
     }
 }
 
@@ -166,6 +369,10 @@ fn branch_create_prompt_outcome(base: &str) -> PickerAcceptOutcome {
 pub fn register(picker_registry: &mut lattice_picker::PickerRegistry) {
     picker_registry.register_generator(Arc::new(BranchPickBaseSource::new()));
     picker_registry.register_generator(Arc::new(BranchCheckoutSource::new()));
+    // MG.32: the rest of the branch transient's picker-backed rows.
+    picker_registry.register_generator(Arc::new(BranchCreateNoCheckoutSource::new()));
+    picker_registry.register_generator(Arc::new(BranchRenameSource::new()));
+    picker_registry.register_generator(Arc::new(BranchDeleteSource::new()));
     picker_registry.register_generator(Arc::new(CommitPickSource::new()));
 }
 
@@ -404,6 +611,44 @@ mod commit_pick {
 mod tests {
     use super::*;
 
+    /// MG.32: **magit owns the inventory of magit's picker sources.**
+    ///
+    /// This assertion used to live in `lattice-ui-tui`'s
+    /// `gen_picker_sources_emits_candidate_per_registered_source`, as
+    /// part of one hardcoded list of every first-party source. That
+    /// list taxed each crate that added a source and could be owned by
+    /// none of them, so it rotted: MG.29 registered
+    /// `magit-branch-checkout-pick` without extending it and left that
+    /// test failing on `main` until MG.32 noticed. Here, adding a
+    /// source and updating its test are the same edit in the same
+    /// crate.
+    ///
+    /// Every id is also pinned against the constant the `Effect::
+    /// OpenPicker` handler names, so a renamed source cannot leave a
+    /// menu row opening a picker that no longer exists.
+    #[test]
+    fn magit_registers_exactly_the_sources_its_rows_open() {
+        let mut registry = lattice_picker::PickerRegistry::new();
+        register(&mut registry);
+        let mut ids: Vec<&str> = registry.ids().collect();
+        ids.sort_unstable();
+
+        assert_eq!(
+            ids,
+            vec![
+                BRANCH_CHECKOUT_SOURCE,          // MG.29: `b l`
+                BRANCH_CREATE_NO_CHECKOUT_SOURCE, // MG.32: `b n`
+                BRANCH_DELETE_SOURCE,            // MG.32: `b x`
+                "magit-branch-pick-base",        // `b c`, and `c` in the branch buffer
+                BRANCH_RENAME_SOURCE,            // MG.32: `b m`
+                COMMIT_PICK_SOURCE,              // MG.23j: `A` / `_` / `O`
+            ],
+            "magit's registered picker sources changed — update this list \
+             together with `register`, and check every `Effect::OpenPicker` \
+             that names one"
+        );
+    }
+
     #[test]
     fn spec_id_matches_the_effect_openpicker_source_name() {
         // magit_branch_mode's `c` handler hardcodes this string in
@@ -412,6 +657,118 @@ mod tests {
         let source = BranchPickBaseSource::new();
         assert_eq!(source.spec().id, "magit-branch-pick-base");
         assert!(source.spec().args_schema.is_empty());
+    }
+
+    /// MG.32: every branch flow that stashes its target in a prompt
+    /// buffer's NAME must be readable back by the finish handler that
+    /// consumes it.
+    ///
+    /// This is the MG.15 failure class, and it is silent: the writer
+    /// lives here and the reader lives in `magit_global_mode`, so a
+    /// prefix changed on one side leaves the other returning `None` —
+    /// the prompt opens, you type a name, and nothing happens. Both
+    /// sides now spell the prefix through one constant, and this
+    /// round-trips through the real functions rather than through a
+    /// literal that could itself drift.
+    #[test]
+    fn every_branch_prompt_name_round_trips_to_its_reader() {
+        use lattice_picker::PickerAcceptOutcome as O;
+
+        // Names with a `/` and a `-` — both appear in real branch names
+        // and both would break a naive split-on-delimiter parser.
+        for branch in ["feature/foo", "release-1.2", "main"] {
+            let cases: Vec<(&str, PickerAcceptOutcome, &str)> = vec![
+                (
+                    "create",
+                    branch_create_prompt_outcome(branch),
+                    crate::magit_global_mode::BRANCH_CREATE_PROMPT_PREFIX,
+                ),
+                (
+                    "create-no-checkout",
+                    branch_create_no_checkout_outcome(branch),
+                    crate::magit_global_mode::BRANCH_CREATE_NO_CHECKOUT_PROMPT_PREFIX,
+                ),
+                (
+                    "rename",
+                    branch_rename_outcome(branch),
+                    crate::magit_global_mode::BRANCH_RENAME_PROMPT_PREFIX,
+                ),
+            ];
+            for (what, outcome, prefix) in cases {
+                let O::OpenPrompt { buffer_name, .. } = outcome else {
+                    panic!("{what} must open a prompt");
+                };
+                let name = buffer_name.unwrap_or_else(|| panic!("{what} must name its buffer"));
+                assert_eq!(
+                    crate::magit_global_mode::branch_from_prompt_buffer_name_for_test(
+                        &name, prefix
+                    ),
+                    Some(branch.to_string()),
+                    "{what}'s prompt-buffer name `{name}` must read back as `{branch}`"
+                );
+            }
+        }
+    }
+
+    /// The three prefixes must be mutually non-ambiguous, or a finish
+    /// handler reads a name a different flow wrote and acts on the
+    /// wrong branch with the wrong operation.
+    ///
+    /// Not hypothetical: `*magit:branch-create-from:` and
+    /// `*magit:branch-create-nocheckout-from:` are one hyphen apart, and
+    /// had the second been spelled `…create-from-nocheckout:` the
+    /// create parser would match it and silently check the branch out.
+    #[test]
+    fn the_branch_prompt_prefixes_cannot_match_each_others_names() {
+        use crate::magit_global_mode as g;
+        let prefixes = [
+            g::BRANCH_CREATE_PROMPT_PREFIX,
+            g::BRANCH_CREATE_NO_CHECKOUT_PROMPT_PREFIX,
+            g::BRANCH_RENAME_PROMPT_PREFIX,
+        ];
+        for writer in prefixes {
+            let name = format!("{writer}topic*");
+            for reader in prefixes {
+                let parsed = g::branch_from_prompt_buffer_name_for_test(&name, reader);
+                if writer == reader {
+                    assert_eq!(parsed, Some("topic".to_string()));
+                } else {
+                    assert_eq!(
+                        parsed, None,
+                        "`{reader}` must not match a name written by `{writer}`"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn branch_delete_asks_through_the_ex_command_rather_than_deleting() {
+        use lattice_picker::PickerAcceptOutcome as O;
+        let O::InvokeCommand { id, args } = branch_delete_outcome("feature/foo") else {
+            panic!("delete must route through a command");
+        };
+        assert_eq!(
+            id, "magit-branch-delete",
+            "the ex-command is what raises the MG.12 confirm; routing anywhere \
+             else would delete without asking"
+        );
+        assert_eq!(args, lattice_grammar::Args::String("feature/foo".into()));
+    }
+
+    /// The rename prompt is pre-filled with the current name — a rename
+    /// is usually an edit of it, not a fresh name typed from nothing.
+    #[test]
+    fn branch_rename_prefills_the_current_name() {
+        use lattice_picker::PickerAcceptOutcome as O;
+        let O::OpenPrompt {
+            prompt, initial, ..
+        } = branch_rename_outcome("feature/foo")
+        else {
+            panic!("rename must open a prompt");
+        };
+        assert_eq!(initial, "feature/foo");
+        assert!(prompt.contains("feature/foo"), "the prompt names its target");
     }
 
     #[test]

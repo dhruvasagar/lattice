@@ -84,8 +84,8 @@ adds inside one):
 │                          introduced a bug      │
 │                                                │
 │  ▸ Branches                                    │
-│    [b]  branch        ▸ Checkout, create, or   │
-│                          list branches         │
+│    [b]  branch        ▸ Checkout, create,      │
+│                          rename, delete, list  │
 │                                                │
 │  ▸ Stashing                                    │
 │    [z]  stash         ▸ Stash operations       │
@@ -222,8 +222,11 @@ that pattern is already there. Submitting an empty prompt cancels.
 `m` and `I` ask the same way. `m` merges a branch you name into the
 current one, passing `--no-edit` so git cannot stop to open an editor
 for the merge message; when you would rather *pick* the branch from a
-list, that is `b` then `m` in the [branch buffer](help:magit-branch-mode),
-which is where the list already lives. `I` runs `git init`, its prompt
+list, that is `b` `L` then `m` in the
+[branch buffer](help:magit-branch-mode), which is where the list already
+lives. (Note `b` `m` is a *different* thing — branch rename — so the two
+`m`s do not mean the same operation one level apart.) `I` runs
+`git init`, its prompt
 pre-filled with your working directory — the usual answer, shown before
 it happens rather than after.
 
@@ -309,19 +312,67 @@ with no commit anywhere in them. Until the menu can either ask you for
 a commit or hide the rows outside magit buffers, they stay chords.
 Branch *merge* is the same story one level down: it exists as `m`
 inside the branch-list buffer because it needs a branch selected, so
-`b` then `m` gets you there — and `m` in this menu merges a branch you
-type, for when you already know the name.
+`b` `L` then `m` gets you there — and `m` in this menu merges a branch
+you type, for when you already know the name.
 
 (Magit's own keys for those differ from ours — it uses `V` for revert
 and `X` for reset. Ours follow **evil-collection-magit**, which remaps
 them for a modal editor; `magit-core-mode` explains why.)
+
+### The branch submenu (`b`)
+
+```text
+┌ Branch ────────────────────────────────────────┐
+│  ▸ Checkout                                    │
+│    [b]  branch/revision  Anything git can take:│
+│                           branch, tag, remote  │
+│                           ref or SHA           │
+│    [l]  local branch     Pick from your local  │
+│                           branches             │
+│                                                │
+│  ▸ Create                                      │
+│    [c]  new branch and checkout                │
+│    [n]  new branch       …without checking out │
+│                                                │
+│  ▸ Do                                          │
+│    [m]  rename                                 │
+│    [x]  delete           Asks first            │
+│    [L]  list             Open the branch buffer│
+└────────────────────────────────────────────────┘
+```
+
+**`b` and `l` are not the same operation.** `l` lists your local
+branches and checks the one you pick out. `b` asks you to *type* a
+revision, and takes anything `git checkout` does — a tag, `origin/main`,
+a raw SHA. A list of local branches cannot express any of those, which
+is why magit has both and so do we. Checking out a SHA detaches HEAD,
+exactly as it would on the command line.
+
+**`c` and `n` differ only in where you end up.** Both pick a base and
+then ask for a name; `c` checks the new branch out, `n` leaves you where
+you are. `n` is what you want when you are mid-edit and only want to
+mark a starting point.
+
+**`x` asks before deleting**, because it is a force delete (`git branch
+-D`) — see [`magit-branch-mode`](help:magit-branch-mode) for why that
+bar exists. `m` does not ask: renaming discards nothing, and it *refuses*
+rather than overwrites if the new name is already taken.
+
+**`L` opens the branch buffer**, which is where per-branch chords live —
+including `m` for merge, which needs a branch selected.
+
+The keys are magit's own, with **evil-collection-magit**'s remaps
+applied (that is what moves delete from `k` to `x`). Magit's `s` / `S`
+spin-off and spin-out, `C` configure, and `X` branch-reset are not here
+yet; their keys are deliberately left free so those rows land where you
+already expect them when they arrive.
 
 ### How submenus work (mechanism)
 
 Pressing a submenu's key pushes the current transient onto a stack and
 opens the submenu.
 
-**`Esc` and `BS` both unwind one level.** From `C-c g` `b` `l`, the
+**`Esc` and `BS` both unwind one level.** From `C-c g` `b` `L`, the
 first `Esc` puts you back in the branch menu and the second back at the
 dispatch; a third closes it. Only at the top, with nothing left to
 unwind, does `Esc` dismiss.

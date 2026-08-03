@@ -6,8 +6,10 @@ related: [magit, magit-branch, ex:magit-branch, ex:magit-branch-create]
 # magit-branch-mode
 
 Your local branches, with the checked-out one marked `*` and coloured.
-`:magit-branch`, or `b` in the repo [dispatch
-transient](help:magit-transient).
+`:magit-branch`, or `b` `L` in the repo [dispatch
+transient](help:magit-transient) — the other branch operations live
+alongside it in that submenu, and several of them (checkout, create,
+rename, delete) no longer need this buffer at all.
 
 The headerline carries the current branch and the total.
 
@@ -40,6 +42,10 @@ If you want the quick path instead, `:magit-branch-create <name>`
 creates from HEAD with no base choice and no prompt — the scriptable
 one-shot. The wizard is an additional interactive path, not a
 replacement.
+
+`:magit-branch-delete <name>` is the matching one-shot for deletion. It
+still asks — the confirmation is the point of it, not a step the
+scriptable form skips.
 
 ## Why `d` asks
 

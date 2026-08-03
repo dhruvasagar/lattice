@@ -49,6 +49,16 @@ pub(crate) const DESTRUCTIVE_ACTIONS: &[(&str, &str)] = &[
         "action:magit-branch-delete",
         "action:magit-branch-delete-execute",
     ),
+    // MG.32: the branch submenu's `x`. A SEPARATE pair from the buffer
+    // chord above, and it has to be: one `CommandId` maps to one
+    // handler, and that one reads the branch under the cursor —
+    // correct for a chord in the branch list, and unreachable from a
+    // menu opened anywhere else. This half takes its target from the
+    // `:magit-branch-delete <name>` the picker routes through.
+    (
+        "magit-branch-delete",
+        "action:magit-global-branch-delete-execute",
+    ),
     ("action:magit-stash-drop", "action:magit-stash-drop-execute"),
     (
         "action:magit-rebase-abort",
@@ -133,10 +143,17 @@ mod tests {
     /// loud from the user's: `do_confirm` resolves `yes_action`
     /// through the command registry, so an unregistered execute half
     /// turns the whole destructive action into an error message.
+    /// MG.32: ex-commands are registered too, because an ask half is
+    /// not always an action. The branch submenu's `x` asks through
+    /// `:magit-branch-delete <name>` — forced, not chosen: a picker's
+    /// accept can only reach an operation via `InvokeCommand`, which
+    /// dispatches ex-commands. Registering only actions here would make
+    /// this guard reject a legitimate row.
     #[test]
     fn every_confirm_pair_resolves_in_the_command_registry() {
         let mut registry = CommandRegistry::new();
         crate::register_action_commands(&mut registry);
+        crate::register_ex_commands(&mut registry, Default::default(), None);
         for (ask_name, execute_name) in DESTRUCTIVE_ACTIONS {
             assert!(
                 registry.id_by_name(ask_name).is_some(),

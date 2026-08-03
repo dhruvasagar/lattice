@@ -53,6 +53,9 @@ owns *what* and *why*.
 | MG.22 | `magit-hunk-mode` — the mode owning diff *content* (chords + `<CR>` + options ✅; tree-sitter-diff parser open) | MG.20 | 🚧 |
 | MG.22b | The options magit-hunk-mode owns — `magit.hunk.context-lines`, `ui.diff.line-backgrounds` | MG.21a, MG.23k | ✅ |
 | MG.23 | magit-dispatch / file-dispatch parity (a–h done; j and i+ open) | MG.17b | 📝 |
+| MG.28 | `C-c f v` / `V` — a file at a revision, and back to the live file | MG.11 | ✅ |
+| MG.29 | `C-c g b` branch submenu + `Esc` unwinds one submenu level | MG.17b | ✅ |
+| MG.30 | Visual-range `s`/`u` over file entries in magit-status | MG.18 | ✅ |
 
 **2026-07-26 audit correction:** this table (last synced when MG.1-3 landed) had
 drifted from `implementation.md`'s per-slice status, which had marked MG.4-10 all
@@ -2211,6 +2214,89 @@ did not land, and there is no `do`/`dp` hunk transfer.
 - **Deliverables:** two-pane layout via D.4's pane-group machinery,
   scroll-bound; `do`/`dp` on top of MG.18's hunk identity.
 - **Tests:** panes stay scroll-synced; `do`/`dp` move exactly one hunk.
+
+### MG.28 — a file at a revision, and back ✅ (2026-08-03)
+
+`magit-file-revision-mode` had existed since MG.11 **with no entry
+point of its own** — reachable only by `<CR>` on a file inside a
+revision or diff view, then `gj`/`gk`. A whole buffer type you could
+only get to by accident. Prompted by the direct question "how do I view
+a file at a specific revision?", whose honest answer was "you can't".
+
+- `C-c f` `v` — the visited file at a revision you name (`HEAD`
+  pre-filled). Magit asks for a revision *and* a file; only the
+  revision is asked here, because `C-c f` already means "the file I am
+  visiting" (MG.23a) — asking for what the menu knows is a question
+  with one answer.
+- `:magit-find-file <rev> <path>` — the explicit form, for a file you
+  are not visiting.
+- `C-c f` `V` — back out to the live file, on the same line, via the
+  atomic open-and-position effect. Approximate by design: line numbers
+  drift between revisions, and landing at the top of a file you were
+  reading the middle of is the worse answer. A file that existed then
+  and does not now says so.
+
+**The more important half was a hazard found on the way.** Nine sites
+hand-built `*magit:file:<ref>:<path>*` while one function parsed it —
+and MG.26b's reverse blame keys its activation request on that exact
+string, so one formatting difference means the request is never found
+and the buffer silently *forward*-blames. MG.15 lost every stash chord
+to the same producer/parser split. One `blob_buffer_name` beside the
+parser now, all nine callers through it, round-trip tested across
+`staged`, `stash@{N}` and colon-bearing paths.
+
+- **Tests:** 5.
+
+### MG.29 — the branch submenu, and a stacked `Esc` ✅ (2026-08-03)
+
+`b` was a shortcut pretending to be a category: it opened the branch
+list immediately, when "branches" also means check one out and start
+one — both reachable only by opening the list first and finding the
+chord there. Now `b b` checkout, `b c` create, `b l` the list it used
+to be. `b l` fires the **same** action `b` did, pinned by a test,
+because dropping the list row while moving the key would silently
+remove the only route to the branch buffer from the menu.
+
+Both new rows ask rather than reading a cursor — a menu opened from
+anywhere has none, the answer MG.23j gave `A`/`_`/`O`. Checkout shares
+`BranchPickBaseSource`'s listing (a second "enumerate the branches"
+would drift the moment either grew a filter) and dispatches
+`:magit-checkout <branch>`, also the scriptable form.
+
+**`Esc` unwinds one level** instead of closing the stack. Exiting all
+the way out on the first press punishes the ordinary mistake — you
+opened `b`, meant `z`, and you are back in the buffer rather than the
+menu you were in. A half-typed multi-key row is undone first (`,`
+waiting for `k`), the precedence vim gives `<Esc>` over a partial
+chord. The rule moved to `Picker::transient_unwind` because `BS` needs
+it too and two copies of a precedence rule drift.
+
+- **Tests:** 5 (3 on the unwind in `lattice-picker`, 2 on the submenu's
+  rows and on every submenu footer offering `Esc`).
+- **Substrate:** `Picker::transient_unwind` is generic — any stacked
+  transient gets this, not just magit's.
+
+### MG.30 — Visual-range staging ✅ (2026-08-02)
+
+`s` / `u` over a Visual selection of file entries stage every file it
+covers, in one git call and one refresh. Iterating the single-file path
+would spawn a process and a refresh per file, and those refreshes race
+— the last to land wins, so the buffer can settle showing a state from
+the middle of the batch.
+
+Distinct paths in buffer order, and both halves are real: an entry and
+its expanded inline diff are separate rows of the same file, and a
+partially-staged file appears in the staged *and* unstaged sections at
+once. Inside an expanded diff the same keys still act on the selected
+**lines** — which behaviour you get follows from what the selection
+covers, not from a different key.
+
+**`x` is deliberately not ranged**, and that is named rather than
+omitted: it routes through a confirmation naming one target, so a
+ranged version needs `Effect::Confirm` to carry the whole list to its
+execute half. Getting that wrong destroys work.
+
+- **Tests:** 4, against the extracted pure collector.
 
 ### MG.22b — the first options magit registers ✅ (2026-08-02)
 

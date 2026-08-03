@@ -84,6 +84,8 @@ adds inside one):
 │                          introduced a bug      │
 │    [T]  notes         ▸ Edit, remove, merge or │
 │                          prune commit notes    │
+│    [Y]  cherries        Which commits are not  │
+│                          upstream yet          │
 │                                                │
 │  ▸ Branches                                    │
 │    [b]  branch        ▸ Checkout, create,      │
@@ -108,6 +110,10 @@ adds inside one):
 │    [C]  clone           Clone a repository     │
 │                                                │
 │  ▸ Misc                                        │
+│    ["]  subtree       ▸ Add, merge, pull, push │
+│                          or split a subtree    │
+│    [w]  patches       ▸ Apply or create email  │
+│                          patches               │
 │    [r]  rebase          Start an interactive   │
 │                          rebase                │
 │    [t]  tag             Tag HEAD with a name   │
@@ -313,6 +319,34 @@ notification says so. Open the editor in the new directory to work in
 it. (This is the same process-wide-working-directory limit that keeps
 `Z` worktree unimplemented — one repository per editor session, for
 now.)
+
+**`Y` cherries** opens [`magit-cherry-mode`](help:magit-cherry-mode) —
+which of your commits are not upstream yet, and which already are under
+a *different* SHA. The second half is why it beats
+`git log upstream..HEAD`; see that page.
+
+**`"` subtree, and the key is a deviation with a reason.** Magit puts
+subtree on `O`. `O` here is the reset submenu — which is
+evil-collection-magit's own remap of magit's `X` — so magit's `O` had to
+move, and evil-collection already decided where: `"`. We follow it
+rather than inventing a third answer. Every row prompts, because a
+subtree operation needs a prefix directory and usually a repository and
+a ref, none of which a menu can guess.
+
+**`w` patches** holds both halves of the email-patch workflow: `w` apply
+(`git am`) and `W` create (`git format-patch`). Magit splits these
+across two top-level keys; one submenu holds five rows between them.
+
+Applying stops on a patch that will not apply, exactly as a rebase stops
+on `edit` — and then the menu shows only the three ways out (`c`
+continue, `s` skip, `a` abort), gated the same way `B` bisect and `T`
+notes are. `-3` on the apply line falls back to a three-way merge with
+conflict markers instead of refusing; it is opt-in for the same reason
+push uses `--force-with-lease` rather than `--force`.
+
+`format-patch` writes into the **repository root**, not the editor's
+current directory — a scatter of `.patch` files somewhere unexpected is
+tedious to undo.
 
 **And `y` show-refs, for the same reason.** It opens
 [`magit-refs-mode`](help:magit-refs-mode): every local branch,

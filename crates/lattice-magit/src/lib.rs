@@ -27,6 +27,7 @@ pub mod options;
 pub mod hunk;
 pub mod magit_blame_mode;
 pub mod magit_branch_mode;
+pub mod magit_cherry_mode;
 pub mod magit_commit_mode;
 pub mod magit_core_mode;
 pub mod magit_diff_mode;
@@ -59,6 +60,7 @@ use lattice_mode::SubsystemBoot;
 
 use magit_blame_mode::MagitBlameMode;
 use magit_branch_mode::MagitBranchMode;
+use magit_cherry_mode::MagitCherryMode;
 use magit_commit_mode::MagitCommitMode;
 use magit_core_mode::MagitCoreMode;
 use magit_diff_mode::MagitDiffMode;
@@ -135,6 +137,11 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     boot.modes_mut()
         .register(MagitNotesMode)
         .expect("magit-notes-mode registers without conflict");
+
+    // MG.40
+    boot.modes_mut()
+        .register(MagitCherryMode)
+        .expect("magit-cherry-mode registers without conflict");
 
     boot.modes_mut()
         .register(MagitSubmoduleMode)
@@ -320,6 +327,10 @@ fn register_buffer_state_services(boot: &mut impl SubsystemBoot) {
     boot.register_service::<magit_notes_mode::NoteStatesHandle>(Arc::new(
         buffer_state::BufferStates::default(),
     ));
+    // MG.40
+    boot.register_service::<magit_cherry_mode::CherryStatesHandle>(Arc::new(
+        buffer_state::BufferStates::default(),
+    ));
     // MG.21i
     boot.register_service::<magit_submodule_mode::SubmoduleStatesHandle>(Arc::new(
         buffer_state::BufferStates::default(),
@@ -378,6 +389,17 @@ fn resolve_dispatch_ids(registry: &CommandRegistry) -> transients::DispatchActio
         note_merge: registry.id_by_name("action:magit-global-note-merge"),
         note_merge_commit: registry.id_by_name("action:magit-global-note-merge-commit"),
         note_merge_abort: registry.id_by_name("action:magit-global-note-merge-abort"),
+        subtree_add: registry.id_by_name("action:magit-global-subtree-add"),
+        subtree_merge: registry.id_by_name("action:magit-global-subtree-merge"),
+        subtree_pull: registry.id_by_name("action:magit-global-subtree-pull"),
+        subtree_push: registry.id_by_name("action:magit-global-subtree-push"),
+        subtree_split: registry.id_by_name("action:magit-global-subtree-split"),
+        am_apply: registry.id_by_name("action:magit-global-am-apply"),
+        am_continue: registry.id_by_name("action:magit-global-am-continue"),
+        am_skip: registry.id_by_name("action:magit-global-am-skip"),
+        am_abort: registry.id_by_name("action:magit-global-am-abort"),
+        format_patch: registry.id_by_name("action:magit-global-format-patch"),
+        cherries: registry.id_by_name("action:magit-global-cherries"),
         view_args: registry.id_by_name("action:magit-view-refresh-args"),
         bisect_start: registry.id_by_name("action:magit-global-bisect-start"),
         bisect_good: registry.id_by_name("action:magit-global-bisect-good"),
@@ -557,6 +579,33 @@ fn find_file_usage() -> Effect {
         text: "magit: usage — :magit-find-file <rev> <path> \
                (or `C-c f v` for the file you are visiting)"
             .to_string(),
+    }
+}
+
+/// MG.39: what `:magit-am` says with no patch to apply.
+fn am_usage() -> Effect {
+    Effect::Echo {
+        level: lattice_grammar::EchoLevel::Error,
+        text: "magit: usage — :magit-am <patch>… [-3]".to_string(),
+    }
+}
+
+/// MG.39: what `:magit-format-patch` says with no range. No default:
+/// `format-patch` with none writes a patch per commit since the root,
+/// which is never what anyone meant.
+fn format_patch_usage() -> Effect {
+    Effect::Echo {
+        level: lattice_grammar::EchoLevel::Error,
+        text: "magit: usage — :magit-format-patch <range>  (e.g. @{upstream}..HEAD)".to_string(),
+    }
+}
+
+/// MG.40: what `:magit-cherries` says with no upstream. "Not upstream
+/// yet" has no meaning without naming the upstream.
+fn cherries_usage() -> Effect {
+    Effect::Echo {
+        level: lattice_grammar::EchoLevel::Error,
+        text: "magit: usage — :magit-cherries <upstream> [<head>]".to_string(),
     }
 }
 
@@ -1155,6 +1204,164 @@ fn register_ex_commands(
                 surface_form: SurfaceForm::Keyword,
             },
         );
+        // MG.38 / MG.39 / MG.40: the scriptable halves. Each takes the
+        // same line the menu's prompt takes, so a user who learned one
+        // surface can use the other without re-learning the argument
+        // order.
+        {
+            let mut mk_subtree = |op: magit_global_mode::SubtreeOp, doc: &'static str| {
+                let notifications = notifications.clone();
+                registry.register_ex_command(
+                    op.ex_command,
+                    doc,
+                    ExCommandSpec {
+                        latency_class: LatencyClass::Reflex,
+                        accepts_bang: false,
+                        accepts_range: false,
+                        parse_args: Arc::new(|line: &str, _bang: bool| {
+                            Ok(Args::String(line.trim().to_string()))
+                        }),
+                        apply: Arc::new(move |ctx| {
+                            let line = match ctx.args {
+                                Args::String(ref l) => l.clone(),
+                                _ => String::new(),
+                            };
+                            Ok(magit_global_mode::spawn_subtree_op(
+                                op,
+                                &line,
+                                notifications.clone(),
+                            ))
+                        }),
+                        args_schema: vec![ArgSpec::required(
+                            "spec",
+                            lattice_grammar::ArgKind::String,
+                            op.usage(),
+                        )],
+                        surface_form: SurfaceForm::Keyword,
+                    },
+                );
+            };
+            mk_subtree(
+                magit_global_mode::SubtreeOp::ADD,
+                "Add a repository as a subtree: `<prefix> <repository> <ref> [--squash]`.",
+            );
+            mk_subtree(
+                magit_global_mode::SubtreeOp::MERGE,
+                "Merge a ref into an existing subtree: `<prefix> <ref>`.",
+            );
+            mk_subtree(
+                magit_global_mode::SubtreeOp::PULL,
+                "Fetch and merge a subtree's upstream: `<prefix> <repository> <ref> [--squash]`.",
+            );
+            mk_subtree(
+                magit_global_mode::SubtreeOp::PUSH,
+                "Push a subtree's history to its own repository: `<prefix> <repository> <ref>`.",
+            );
+            mk_subtree(
+                magit_global_mode::SubtreeOp::SPLIT,
+                "Extract a subtree's history into its own branch: `<prefix>`.",
+            );
+        }
+
+        registry.register_ex_command(
+            "magit-am",
+            "Apply a mailbox of patches: `<patch>… [-3]`.",
+            ExCommandSpec {
+                latency_class: LatencyClass::Reflex,
+                accepts_bang: false,
+                accepts_range: false,
+                parse_args: Arc::new(|line: &str, _bang: bool| {
+                    Ok(Args::String(line.trim().to_string()))
+                }),
+                apply: Arc::new(|ctx| {
+                    let Args::String(ref line) = ctx.args else {
+                        return Ok(am_usage());
+                    };
+                    match magit_global_mode::am_argv(
+                        line,
+                        magit_global_mode::am_wants_three_way(line),
+                    ) {
+                        Some(argv) => Ok(magit_global_mode::spawn_git(argv, "am")),
+                        None => Ok(am_usage()),
+                    }
+                }),
+                args_schema: vec![ArgSpec::required(
+                    "patches",
+                    lattice_grammar::ArgKind::String,
+                    "<patch>… [-3]",
+                )],
+                surface_form: SurfaceForm::Keyword,
+            },
+        );
+        registry.register_ex_command(
+            "magit-format-patch",
+            "Write a commit range out as .patch files in the repository root.",
+            ExCommandSpec {
+                latency_class: LatencyClass::Reflex,
+                accepts_bang: false,
+                accepts_range: false,
+                parse_args: Arc::new(|line: &str, _bang: bool| {
+                    Ok(Args::String(line.trim().to_string()))
+                }),
+                apply: Arc::new(|ctx| {
+                    let Args::String(ref range) = ctx.args else {
+                        return Ok(format_patch_usage());
+                    };
+                    let root = workdir::magit_workdir()
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    match magit_global_mode::format_patch_argv(
+                        range,
+                        (!root.is_empty()).then_some(root.as_str()),
+                    ) {
+                        Some(argv) => Ok(magit_global_mode::spawn_git(argv, "format-patch")),
+                        None => Ok(format_patch_usage()),
+                    }
+                }),
+                args_schema: vec![ArgSpec::required(
+                    "range",
+                    lattice_grammar::ArgKind::String,
+                    "the commit range to turn into patches",
+                )],
+                surface_form: SurfaceForm::Keyword,
+            },
+        );
+        registry.register_ex_command(
+            "magit-cherries",
+            "Show which commits are not upstream yet: `<upstream> [<head>]`.",
+            ExCommandSpec {
+                latency_class: LatencyClass::Reflex,
+                accepts_bang: false,
+                accepts_range: false,
+                parse_args: Arc::new(|line: &str, _bang: bool| {
+                    Ok(Args::String(line.trim().to_string()))
+                }),
+                apply: Arc::new(|ctx| {
+                    let Args::String(ref spec) = ctx.args else {
+                        return Ok(cherries_usage());
+                    };
+                    let spec = spec.trim();
+                    if spec.is_empty() {
+                        return Ok(cherries_usage());
+                    }
+                    let (upstream, head) = match spec.split_once(char::is_whitespace) {
+                        Some((u, h)) if !h.trim().is_empty() => (u, h.trim()),
+                        _ => (spec, "HEAD"),
+                    };
+                    Ok(Effect::OpenSyntheticBuffer {
+                        name: magit_cherry_mode::cherry_buffer_name(upstream, head),
+                        mode_id: "magit-cherry-mode".to_string(),
+                    })
+                }),
+                args_schema: vec![ArgSpec::required(
+                    "spec",
+                    lattice_grammar::ArgKind::String,
+                    "<upstream> [<head>] — what to compare against, and what to compare",
+                )],
+                surface_form: SurfaceForm::Keyword,
+            },
+        );
+
         // MG.37: the scriptable halves of the notes submenu, and what
         // the commit picker routes to when the menu was opened without
         // a commit under the cursor.
@@ -1871,8 +2078,33 @@ fn register_action_commands(registry: &mut CommandRegistry) {
         "Open the Magit refs buffer — every branch, remote-tracking branch and tag",
     );
     // MG.37: magit-notes-mode's own chords.
+    reg(
+        "action:magit-cherry-show",
+        "Show the commit at cursor in the cherry list",
+    );
     reg("action:magit-note-confirm", "Save this note");
     reg("action:magit-note-abort", "Close the note buffer without saving");
+
+    // MG.38 / MG.39 / MG.40.
+    for (name, doc) in [
+        ("action:magit-global-subtree-add", "Add a repository as a subtree"),
+        ("action:magit-global-subtree-merge", "Merge a ref into a subtree"),
+        ("action:magit-global-subtree-pull", "Fetch and merge a subtree's upstream"),
+        ("action:magit-global-subtree-push", "Push a subtree's history to its repository"),
+        ("action:magit-global-subtree-split", "Extract a subtree's history"),
+        ("action:magit-global-subtree-finish", "Run the subtree operation once its arguments are known"),
+        ("action:magit-global-am-apply", "Apply a mailbox of patches"),
+        ("action:magit-global-am-apply-finish", "Run the patch apply once the files are known"),
+        ("action:magit-global-am-continue", "Resume a stopped patch apply"),
+        ("action:magit-global-am-skip", "Skip the patch that would not apply"),
+        ("action:magit-global-am-abort", "Abandon a stopped patch apply"),
+        ("action:magit-global-format-patch", "Write a commit range out as .patch files"),
+        ("action:magit-global-format-patch-finish", "Run format-patch once the range is known"),
+        ("action:magit-global-cherries", "Show which commits are not upstream yet"),
+        ("action:magit-global-cherries-finish", "Open the cherry list once the upstream is known"),
+    ] {
+        reg(name, doc);
+    }
 
     // MG.37: the notes submenu.
     reg(
@@ -2408,6 +2640,7 @@ mod tests {
         collect!(MagitRemoteMode, "magit-remote-mode");
         collect!(MagitRefsMode, "magit-refs-mode");
         collect!(MagitNotesMode, "magit-notes-mode");
+        collect!(MagitCherryMode, "magit-cherry-mode");
         collect!(MagitSubmoduleMode, "magit-submodule-mode");
         collect!(MagitRebaseMode, "magit-rebase-mode");
         collect!(MagitRevisionMode, "magit-revision-mode");
@@ -3127,6 +3360,7 @@ mod tests {
                 transients::DispatchGates {
                     bisect: in_progress,
                     notes_merge: false,
+                    am: false,
                 },
             );
             let item = root
@@ -3180,6 +3414,7 @@ mod tests {
                 transients::DispatchGates {
                     bisect: in_progress,
                     notes_merge: false,
+                    am: false,
                 },
             );
             let item = root
@@ -3232,6 +3467,7 @@ mod tests {
             MagitRemoteMode => "magit-remote-mode",
             MagitRefsMode => "magit-refs-mode",
             MagitNotesMode => "magit-notes-mode",
+            MagitCherryMode => "magit-cherry-mode",
             MagitSubmoduleMode => "magit-submodule-mode",
             MagitStashMode => "magit-stash-mode",
             MagitLogMode => "magit-log-mode",
@@ -3750,6 +3986,7 @@ mod tests {
             MagitRemoteMode => "magit-remote-mode",
             MagitRefsMode => "magit-refs-mode",
             MagitNotesMode => "magit-notes-mode",
+            MagitCherryMode => "magit-cherry-mode",
             MagitSubmoduleMode => "magit-submodule-mode",
             MagitRebaseMode => "magit-rebase-mode",
             MagitRevisionMode => "magit-revision-mode",
@@ -3839,6 +4076,7 @@ mod tests {
             MagitRemoteMode,
             MagitRefsMode,
             MagitNotesMode,
+            MagitCherryMode,
             MagitSubmoduleMode,
             MagitRebaseMode,
             MagitRevisionMode,
@@ -3888,6 +4126,7 @@ mod tests {
             MagitRemoteMode => "magit-remote-mode",
             MagitRefsMode => "magit-refs-mode",
             MagitNotesMode => "magit-notes-mode",
+            MagitCherryMode => "magit-cherry-mode",
             MagitSubmoduleMode => "magit-submodule-mode",
             MagitRebaseMode => "magit-rebase-mode",
             MagitRevisionMode => "magit-revision-mode",
@@ -3913,9 +4152,9 @@ mod tests {
             .filter(|m| m.contains("Magit"))
             .count();
         assert_eq!(
-            installed, 18,
+            installed, 19,
             "`install` registers {installed} magit modes but this guard \
-             checks 18 — a mode registered at boot and absent from the \
+             checks 19 — a mode registered at boot and absent from the \
              lists above has its chords unverified"
         );
 
@@ -4111,6 +4350,7 @@ mod tests {
             ("magit-remote-mode", MagitRemoteMode.action_handlers()),
             ("magit-refs-mode", MagitRefsMode.action_handlers()),
             ("magit-notes-mode", MagitNotesMode.action_handlers()),
+            ("magit-cherry-mode", MagitCherryMode.action_handlers()),
             ("magit-submodule-mode", MagitSubmoduleMode.action_handlers()),
             ("magit-stash-mode", MagitStashMode.action_handlers()),
             ("magit-diff-mode", MagitDiffMode.action_handlers()),
@@ -4247,7 +4487,7 @@ mod tests {
         );
         assert_eq!(
             root.len(),
-            38,
+            46,
             "expected every root-dispatch leaf (incl. both submenus') to \
              report inert, got: {root:?}"
         );
@@ -4261,13 +4501,14 @@ mod tests {
                 transients::DispatchGates {
                     bisect: true,
                     notes_merge: false,
+                    am: false,
                 },
             ),
             "",
         );
         assert_eq!(
             bisecting.len(),
-            41,
+            49,
             "the in-progress bisect menu trades `start` for good/bad/skip/reset: {bisecting:?}"
         );
     }

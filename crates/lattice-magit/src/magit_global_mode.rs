@@ -875,6 +875,184 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         }),
     });
 
+    // MG.38 / MG.39: every one of these needs arguments a menu cannot
+    // guess — a subtree prefix, a mailbox path, a commit range — so each
+    // row opens a prompt seeded with what IS knowable, and the finish
+    // handler reads the operation back out of the prompt buffer's name.
+    // Same wizard shape the clone rows and the branch-create flow use.
+    macro_rules! prompted {
+        ($open:expr, $prompt:expr, $initial:expr, $finish:expr, $buffer:expr) => {
+            contributions.push(ActionHandlerContribution {
+                action_name: $open,
+                handler: Arc::new(|_ctx: &ActionContext<'_>| {
+                    Some(Effect::OpenPrompt {
+                        prompt: $prompt.to_string(),
+                        initial: $initial.to_string(),
+                        on_submit_action: $finish.to_string(),
+                        buffer_name: Some($buffer.to_string()),
+                    })
+                }),
+            });
+        };
+    }
+
+    for op in [
+        SubtreeOp::ADD,
+        SubtreeOp::MERGE,
+        SubtreeOp::PULL,
+        SubtreeOp::PUSH,
+        SubtreeOp::SPLIT,
+    ] {
+        contributions.push(ActionHandlerContribution {
+            action_name: match op.sub {
+                "add" => "action:magit-global-subtree-add",
+                "merge" => "action:magit-global-subtree-merge",
+                "pull" => "action:magit-global-subtree-pull",
+                "push" => "action:magit-global-subtree-push",
+                _ => "action:magit-global-subtree-split",
+            },
+            handler: Arc::new(move |_ctx: &ActionContext<'_>| {
+                Some(Effect::OpenPrompt {
+                    prompt: format!("{} {}: ", op.what, op.usage()),
+                    initial: String::new(),
+                    on_submit_action: "action:magit-global-subtree-finish".to_string(),
+                    // The operation rides in the prompt buffer's name —
+                    // one finish handler for all five, rather than five
+                    // near-identical ones.
+                    buffer_name: Some(format!("*magit:subtree:{}*", op.sub)),
+                })
+            }),
+        });
+    }
+    contributions.push(ActionHandlerContribution {
+        action_name: "action:magit-global-subtree-finish",
+        handler: Arc::new(|ctx: &ActionContext<'_>| {
+            let line = ctx.prompt_value?.trim().to_string();
+            let buffer_id = lattice_core::BufferId(ctx.buffer_id.0 as u32);
+            let sub = ctx
+                .services
+                .get::<BufferStoreHandle>()?
+                .name_for(buffer_id)
+                .and_then(|n| path_from_prompt_buffer_name(&n, "*magit:subtree:"))?;
+            let op = match sub.as_str() {
+                "add" => SubtreeOp::ADD,
+                "merge" => SubtreeOp::MERGE,
+                "pull" => SubtreeOp::PULL,
+                "push" => SubtreeOp::PUSH,
+                "split" => SubtreeOp::SPLIT,
+                _ => return None,
+            };
+            if line.is_empty() {
+                return None;
+            }
+            Some(spawn_subtree_op(
+                op,
+                &line,
+                ctx.services
+                    .get::<lattice_notify::NotificationStoreHandle>()
+                    .map(|outer| (*outer).clone()),
+            ))
+        }),
+    });
+
+    prompted!(
+        "action:magit-global-am-apply",
+        "Apply patches (paths, add -3 for three-way): ",
+        "",
+        "action:magit-global-am-apply-finish",
+        "*magit:am*"
+    );
+    contributions.push(ActionHandlerContribution {
+        action_name: "action:magit-global-am-apply-finish",
+        handler: Arc::new(|ctx: &ActionContext<'_>| {
+            let line = ctx.prompt_value?.trim().to_string();
+            if line.is_empty() {
+                return None;
+            }
+            let Some(argv) = am_argv(&line, am_wants_three_way(&line)) else {
+                return Some(Effect::Echo {
+                    level: lattice_grammar::EchoLevel::Error,
+                    text: "magit: usage — :magit-am <patch>… [-3]".to_string(),
+                });
+            };
+            Some(spawn_git(argv, "am"))
+        }),
+    });
+
+    prompted!(
+        "action:magit-global-format-patch",
+        "Create patches for range: ",
+        "@{upstream}..HEAD",
+        "action:magit-global-format-patch-finish",
+        "*magit:format-patch*"
+    );
+    contributions.push(ActionHandlerContribution {
+        action_name: "action:magit-global-format-patch-finish",
+        handler: Arc::new(|ctx: &ActionContext<'_>| {
+            let range = ctx.prompt_value?.trim().to_string();
+            // Written to the repository root rather than the editor's
+            // process directory: a scatter of `.patch` files somewhere
+            // unexpected is tedious to undo, and the repo root is the
+            // one directory the user can predict from here.
+            let root = crate::workdir::magit_workdir()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let Some(argv) =
+                format_patch_argv(&range, (!root.is_empty()).then_some(root.as_str()))
+            else {
+                return Some(Effect::Echo {
+                    level: lattice_grammar::EchoLevel::Error,
+                    text: "magit: usage — :magit-format-patch <range>".to_string(),
+                });
+            };
+            Some(spawn_git(argv, "format-patch"))
+        }),
+    });
+
+    macro_rules! am_op {
+        ($action_name:expr, $op:expr) => {
+            contributions.push(ActionHandlerContribution {
+                action_name: $action_name,
+                handler: Arc::new(|ctx: &ActionContext<'_>| {
+                    Some(spawn_remote_op(
+                        $op,
+                        &lattice_grammar::Args::None,
+                        ctx.services
+                            .get::<lattice_notify::NotificationStoreHandle>()
+                            .map(|outer| (*outer).clone()),
+                    ))
+                }),
+            });
+        };
+    }
+    am_op!("action:magit-global-am-continue", RemoteOp::AM_CONTINUE);
+    am_op!("action:magit-global-am-skip", RemoteOp::AM_SKIP);
+    am_op!("action:magit-global-am-abort", RemoteOp::AM_ABORT);
+
+    // MG.40: `Y` cherries. The upstream is asked for, seeded with
+    // `@{upstream}` — the answer in the overwhelmingly common case, and
+    // the one thing about this question that IS knowable from here.
+    prompted!(
+        "action:magit-global-cherries",
+        "Cherries against upstream: ",
+        "@{upstream}",
+        "action:magit-global-cherries-finish",
+        "*magit:cherries*"
+    );
+    contributions.push(ActionHandlerContribution {
+        action_name: "action:magit-global-cherries-finish",
+        handler: Arc::new(|ctx: &ActionContext<'_>| {
+            let upstream = ctx.prompt_value?.trim().to_string();
+            if upstream.is_empty() {
+                return None;
+            }
+            Some(Effect::OpenSyntheticBuffer {
+                name: crate::magit_cherry_mode::cherry_buffer_name(&upstream, "HEAD"),
+                mode_id: crate::MagitCherryMode::mode_id().as_str().to_string(),
+            })
+        }),
+    });
+
     // MG.37: the notes submenu's handlers.
     //
     // Edit and remove need a COMMIT, and this menu has no cursor on one
@@ -1613,6 +1791,28 @@ impl RemoteOp {
         flags: &[],
     };
 
+    /// MG.39: the way out of a `git am` that stopped.
+    ///
+    /// `am` stops on a patch that does not apply, exactly as `rebase`
+    /// stops on `edit` — and for the same reason as MG.34's sequencer
+    /// commands, shipping the apply without these would leave the
+    /// repository in a state the editor cannot finish.
+    pub const AM_CONTINUE: Self = Self {
+        what: "am --continue",
+        args: &["am", "--continue"],
+        flags: &[],
+    };
+    pub const AM_SKIP: Self = Self {
+        what: "am --skip",
+        args: &["am", "--skip"],
+        flags: &[],
+    };
+    pub const AM_ABORT: Self = Self {
+        what: "am --abort",
+        args: &["am", "--abort"],
+        flags: &[],
+    };
+
     /// MG.23b: magit's `S` — stage every tracked modification at once.
     ///
     /// `add --update`, matching `magit-stage-modified`: tracked changes
@@ -1815,6 +2015,212 @@ pub fn spawn_git(argv: Vec<String>, what: &str) -> Effect {
     Effect::Echo {
         level: lattice_grammar::EchoLevel::Info,
         text: format!("magit: {shown}"),
+    }
+}
+
+// ── MG.39: `w` am / `W` format-patch ────────────────────────────────
+
+/// `git format-patch <range>` — magit's `W` "Create patches".
+///
+/// Pure. `-o` defaults to the repository root rather than being left to
+/// git's cwd: the editor's process directory is not necessarily where
+/// the user thinks they are, and a scatter of `.patch` files in an
+/// unexpected directory is tedious to undo.
+pub(crate) fn format_patch_argv(range: &str, output_dir: Option<&str>) -> Option<Vec<String>> {
+    let range = range.trim();
+    if range.is_empty() {
+        return None;
+    }
+    let mut argv = vec!["format-patch".to_string()];
+    if let Some(dir) = output_dir {
+        argv.push("-o".to_string());
+        argv.push(dir.to_string());
+    }
+    argv.push(range.to_string());
+    Some(argv)
+}
+
+/// `git am <mbox>…` — magit's `w` "Apply patches".
+///
+/// `--3way` is NOT default. It is magit's `-3` flag, and it changes what
+/// happens on a conflict: git falls back to a three-way merge and leaves
+/// conflict markers rather than refusing. That is a better outcome only
+/// when you expected the patch not to apply cleanly, so it is opt-in —
+/// the same judgement `--force-with-lease`-not-`--force` makes on push.
+pub(crate) fn am_argv(files: &str, three_way: bool) -> Option<Vec<String>> {
+    let files: Vec<&str> = files
+        .split_whitespace()
+        .filter(|f| !f.starts_with("--"))
+        .collect();
+    if files.is_empty() {
+        return None;
+    }
+    let mut argv = vec!["am".to_string()];
+    if three_way {
+        argv.push("--3way".to_string());
+    }
+    argv.extend(files.iter().map(|f| f.to_string()));
+    Some(argv)
+}
+
+/// Does the line ask for a three-way apply? Accepts magit's short flag
+/// and git's long one, anywhere in the line.
+pub(crate) fn am_wants_three_way(line: &str) -> bool {
+    line.split_whitespace()
+        .any(|w| w == "--3way" || w == "-3")
+}
+
+// ── MG.38: `git subtree` ────────────────────────────────────────────
+
+/// One `git subtree` operation.
+///
+/// Peer of [`CommitOp`] / [`RemoteOp`]: the argv template plus what the
+/// operation needs from the user, so the menu row, the ex-command and
+/// the prompt all read one definition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SubtreeOp {
+    /// Verb for the echo and the notification.
+    pub what: &'static str,
+    /// The `git subtree` subcommand.
+    pub sub: &'static str,
+    /// Ex-command name, without the `:`.
+    pub ex_command: &'static str,
+    /// Does it take a `<repository>` as well as a `<ref>`? `merge` and
+    /// `split` do not; `add` / `pull` / `push` do.
+    pub takes_repo: bool,
+    /// Does it take a `<ref>` at all? `split` does not.
+    pub takes_ref: bool,
+}
+
+impl SubtreeOp {
+    pub const ADD: Self = Self {
+        what: "subtree add",
+        sub: "add",
+        ex_command: "magit-subtree-add",
+        takes_repo: true,
+        takes_ref: true,
+    };
+    pub const MERGE: Self = Self {
+        what: "subtree merge",
+        sub: "merge",
+        ex_command: "magit-subtree-merge",
+        takes_repo: false,
+        takes_ref: true,
+    };
+    pub const PULL: Self = Self {
+        what: "subtree pull",
+        sub: "pull",
+        ex_command: "magit-subtree-pull",
+        takes_repo: true,
+        takes_ref: true,
+    };
+    pub const PUSH: Self = Self {
+        what: "subtree push",
+        sub: "push",
+        ex_command: "magit-subtree-push",
+        takes_repo: true,
+        takes_ref: true,
+    };
+    pub const SPLIT: Self = Self {
+        what: "subtree split",
+        sub: "split",
+        ex_command: "magit-subtree-split",
+        takes_repo: false,
+        takes_ref: false,
+    };
+
+    /// What the prompt asks for, in the order the operation reads them.
+    pub fn usage(&self) -> &'static str {
+        match (self.takes_repo, self.takes_ref) {
+            (true, true) => "<prefix> <repository> <ref>",
+            (false, true) => "<prefix> <ref>",
+            _ => "<prefix>",
+        }
+    }
+}
+
+/// Build the argv for `op` from one whitespace-separated line.
+///
+/// Pure, so the flag shape is pinned without running a subtree — and
+/// `--prefix=` in particular, which is the one argument every subtree
+/// operation requires and the one git errors on last, after doing work.
+///
+/// `--squash` is accepted as a trailing word on `add` and `pull`, which
+/// is where magit offers it. Returns `None` when the line does not carry
+/// what the operation needs, so the caller can print `op.usage()`
+/// instead of letting git fail with its own less specific message.
+pub(crate) fn subtree_argv(op: SubtreeOp, line: &str) -> Option<Vec<String>> {
+    let mut words: Vec<&str> = line.split_whitespace().collect();
+    let squash = matches!(words.last(), Some(&"--squash") | Some(&"squash"))
+        && matches!(op.sub, "add" | "pull");
+    if squash {
+        words.pop();
+    }
+    let wanted = 1 + usize::from(op.takes_repo) + usize::from(op.takes_ref);
+    if words.len() != wanted {
+        return None;
+    }
+    let mut argv = vec![
+        "subtree".to_string(),
+        op.sub.to_string(),
+        format!("--prefix={}", words[0]),
+    ];
+    if squash {
+        argv.push("--squash".to_string());
+    }
+    argv.extend(words[1..].iter().map(|w| w.to_string()));
+    Some(argv)
+}
+
+/// Run a subtree operation off the actor thread, reporting completion.
+///
+/// A notification rather than `spawn_git`'s fire-time echo: every
+/// subtree operation rewrites history or touches a remote, so "did it
+/// work" is the question, and an echo written before it starts cannot
+/// answer it.
+pub fn spawn_subtree_op(
+    op: SubtreeOp,
+    line: &str,
+    notify: Option<lattice_notify::NotificationStoreHandle>,
+) -> Effect {
+    let Some(argv) = subtree_argv(op, line) else {
+        return Effect::Echo {
+            level: lattice_grammar::EchoLevel::Error,
+            text: format!("magit: usage — :{} {}", op.ex_command, op.usage()),
+        };
+    };
+    let workdir = crate::workdir::magit_workdir().unwrap_or_default();
+    let what = op.what;
+    let shown = argv.join(" ");
+    tokio::task::spawn(async move {
+        let result = tokio::task::spawn_blocking(move || run_remote_op(&workdir, &argv))
+            .await
+            .unwrap_or_else(|e| Err(e.to_string()));
+        match result {
+            Ok(out) => {
+                tracing::debug!(target: "lattice_magit", "git {shown}: {out}");
+                if let Some(n) = notify {
+                    n.post(
+                        lattice_notify::NotificationLevel::Info,
+                        format!("{what} finished"),
+                    );
+                }
+            }
+            Err(err) => {
+                tracing::error!(target: "lattice_magit", "git {shown} failed: {err}");
+                if let Some(n) = notify {
+                    let first = err.lines().next().unwrap_or("failed").to_string();
+                    n.post(
+                        lattice_notify::NotificationLevel::Error,
+                        format!("{what} failed: {first}"),
+                    );
+                }
+            }
+        }
+    });
+    Effect::Echo {
+        level: lattice_grammar::EchoLevel::Info,
+        text: format!("magit: {what}…"),
     }
 }
 
@@ -2626,6 +3032,115 @@ mod tests {
                 "no prompted operation may request an editor: {argv:?}"
             );
         }
+    }
+
+    // ── MG.38: subtree ──────────────────────────────────────────────
+
+    /// `--prefix=` is the argument every subtree operation requires, and
+    /// the one git checks LAST — after it has already done work. Pinned
+    /// so a refactor cannot drop it silently.
+    #[test]
+    fn every_subtree_op_carries_its_prefix() {
+        for (op, line) in [
+            (SubtreeOp::ADD, "vendor/lib https://host/lib.git main"),
+            (SubtreeOp::MERGE, "vendor/lib main"),
+            (SubtreeOp::PULL, "vendor/lib https://host/lib.git main"),
+            (SubtreeOp::PUSH, "vendor/lib https://host/lib.git main"),
+            (SubtreeOp::SPLIT, "vendor/lib"),
+        ] {
+            let argv = subtree_argv(op, line).expect("well-formed");
+            assert_eq!(argv[0], "subtree");
+            assert_eq!(argv[1], op.sub);
+            assert_eq!(
+                argv[2], "--prefix=vendor/lib",
+                "{} lost its prefix: {argv:?}",
+                op.sub
+            );
+        }
+    }
+
+    /// The wrong number of words is refused rather than passed to git.
+    ///
+    /// `subtree add <prefix> <repo> <ref>` with the ref missing is
+    /// `subtree add <prefix> <repo>` — which git accepts as a DIFFERENT
+    /// form, so a silent pass-through would do something the user did
+    /// not ask for instead of erroring.
+    #[test]
+    fn the_wrong_argument_count_is_refused() {
+        assert_eq!(subtree_argv(SubtreeOp::ADD, "vendor/lib https://host/lib.git"), None);
+        assert_eq!(subtree_argv(SubtreeOp::ADD, "vendor/lib"), None);
+        assert_eq!(subtree_argv(SubtreeOp::SPLIT, "vendor/lib extra"), None);
+        assert_eq!(subtree_argv(SubtreeOp::MERGE, ""), None);
+    }
+
+    /// `--squash` is offered where magit offers it and nowhere else:
+    /// `git subtree push --squash` is not a thing, and accepting it
+    /// would build an argv git rejects.
+    #[test]
+    fn squash_is_accepted_only_where_it_means_something() {
+        let added = subtree_argv(SubtreeOp::ADD, "vendor/lib https://host/lib.git main --squash")
+            .expect("valid");
+        assert!(added.contains(&"--squash".to_string()), "{added:?}");
+        // On push the trailing word is not a flag, so the count check
+        // rejects the line rather than silently dropping the word.
+        assert_eq!(
+            subtree_argv(SubtreeOp::PUSH, "vendor/lib https://host/lib.git main --squash"),
+            None,
+            "push has no --squash; the line must not be silently truncated"
+        );
+    }
+
+    // ── MG.39: am / format-patch ────────────────────────────────────
+
+    /// `--3way` is opt-in. It changes what a failed apply DOES — falling
+    /// back to a three-way merge with conflict markers rather than
+    /// refusing — so it must not be on by default, the same judgement
+    /// `--force-with-lease`-not-`--force` makes on push.
+    #[test]
+    fn three_way_apply_is_opt_in_and_reachable_by_both_spellings() {
+        assert_eq!(
+            am_argv("0001.patch", false),
+            Some(vec!["am".to_string(), "0001.patch".to_string()]),
+            "no flag unless asked"
+        );
+        assert!(am_wants_three_way("0001.patch -3"));
+        assert!(am_wants_three_way("--3way 0001.patch"));
+        assert!(!am_wants_three_way("0001.patch"));
+        let three = am_argv("0001.patch", true).expect("valid");
+        assert_eq!(three[1], "--3way");
+    }
+
+    /// The flag words must not be mistaken for patch files, or `git am`
+    /// would be handed `-3` as a path and fail on a file that does not
+    /// exist.
+    #[test]
+    fn flag_words_are_not_treated_as_patch_files() {
+        assert_eq!(
+            am_argv("--3way a.patch b.patch", true),
+            Some(vec![
+                "am".to_string(),
+                "--3way".to_string(),
+                "a.patch".to_string(),
+                "b.patch".to_string(),
+            ])
+        );
+        assert_eq!(am_argv("--3way", true), None, "flags alone are not patches");
+        assert_eq!(am_argv("", false), None);
+    }
+
+    /// The output directory is explicit. `format-patch` with none writes
+    /// into the process's current directory, which is not necessarily
+    /// where the user thinks they are — and a scatter of `.patch` files
+    /// somewhere unexpected is tedious to undo.
+    #[test]
+    fn format_patch_names_its_output_directory() {
+        let argv = format_patch_argv("@{upstream}..HEAD", Some("/repo")).expect("valid");
+        assert_eq!(argv, vec!["format-patch", "-o", "/repo", "@{upstream}..HEAD"]);
+        assert_eq!(
+            format_patch_argv("HEAD~3..HEAD", None).expect("valid"),
+            vec!["format-patch", "HEAD~3..HEAD"]
+        );
+        assert_eq!(format_patch_argv("  ", Some("/repo")), None, "a range is required");
     }
 
     // ── MG.37: notes ────────────────────────────────────────────────

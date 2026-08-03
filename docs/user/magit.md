@@ -52,6 +52,10 @@ no hidden state.
 | `:magit-note-edit <commit>` | Edit a commit's [note](help:magit-notes-mode) |
 | `:magit-note-remove <commit>` | Remove a commit's note |
 | `:magit-note-merge <ref> [strategy]` | Merge a notes ref into this one |
+| `:magit-cherries <upstream> [<head>]` | Which commits are [not upstream yet](help:magit-cherry-mode) |
+| `:magit-am <patch>… [-3]` | Apply a mailbox of patches |
+| `:magit-format-patch <range>` | Write a commit range out as .patch files |
+| `:magit-subtree-add/-merge/-pull/-push/-split` | `git subtree` operations |
 | `:magit-log-merged <commit>` | Show the merge commit that brought a commit into `HEAD` |
 | `:magit-rebase` | Start interactive rebase |
 | `:magit-rebase-continue` / `-skip` / `-abort` | Leave a [rebase that stopped](help:magit-rebase-mode) |
@@ -216,6 +220,7 @@ exactly like the live file. The row answers that:
 | [`magit-submodule-mode`](help:magit-submodule-mode) | `3 submodules  1 uninitialised` |
 | [`magit-refs-mode`](help:magit-refs-mode) | `12 branches  4 remotes  3 tags` |
 | [`magit-notes-mode`](help:magit-notes-mode) | `editing note  a1b2c3d  Jane Doe  3 days ago  Fix the thing` |
+| [`magit-cherry-mode`](help:magit-cherry-mode) | `HEAD  vs origin/main  3 ahead  1 already upstream` |
 | [`magit-stash-mode`](help:magit-stash-mode) | `3 stashes` |
 | [`magit-stash-show-mode`](help:magit-stash-show-mode) | `stash@{2}  WIP on main: fix the thing` |
 | [`magit-rebase-mode`](help:magit-rebase-mode) | `onto  origin/main  4 commits` — plus `REBASE IN PROGRESS` |
@@ -300,6 +305,7 @@ two-pane diff session.
   [`magit-submodule-mode`](help:magit-submodule-mode),
   [`magit-refs-mode`](help:magit-refs-mode),
   [`magit-notes-mode`](help:magit-notes-mode),
+  [`magit-cherry-mode`](help:magit-cherry-mode),
   [`magit-rebase-mode`](help:magit-rebase-mode)
 - `:help magit-core-mode` — the [shared chords](help:magit-core-mode)
   every magit buffer inherits

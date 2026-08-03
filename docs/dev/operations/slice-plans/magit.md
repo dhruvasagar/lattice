@@ -52,7 +52,7 @@ owns *what* and *why*.
 | MG.21a | Diff line-background tints in magit's diff views | MG.20 | ✅ |
 | MG.22 | `magit-hunk-mode` — the mode owning diff *content* (chords + `<CR>` + options ✅; tree-sitter-diff parser **deferred past v1**) | MG.20 | ⛔ |
 | MG.22b | The options magit-hunk-mode owns — `magit.hunk.context-lines`, `ui.diff.line-backgrounds` | MG.21a, MG.23k | ✅ |
-| MG.23 | magit-dispatch / file-dispatch parity (a–d, f–h, j done; e dropped; i+ open) | MG.17b | 📝 |
+| MG.23 | magit-dispatch / file-dispatch parity — **complete** (e dropped; i+ landed as MG.34–MG.40) | MG.17b | ✅ |
 | MG.28 | `C-c f v` / `V` — a file at a revision, and back to the live file | MG.11 | ✅ |
 | MG.29 | `C-c g b` branch submenu + `Esc` unwinds one submenu level | MG.17b | ✅ |
 | MG.30 | Visual-range `s`/`u` over file entries in magit-status | MG.18 | ✅ |
@@ -1360,14 +1360,14 @@ the buffer you are already in is the actual no-op. See MG.23h's note.
 | NOTIF.1d | magit's remote ops as the first consumer | NOTIF.1b/c | ✅ |
 | NOTIF.1e | Config (`notifications.*`) + the `*messages*` tee | NOTIF.1a | ✅ |
 | NOTIF.1f | Actions, via the `*notifications*` buffer | NOTIF.1e | ✅ |
-| MG.23i+ | The new subsystems, one slice each — **sliced out as MG.35–MG.40 (2026-08-03)** | — | 📝 |
+| MG.23i+ | The new subsystems, one slice each — **all landed as MG.35–MG.40 (2026-08-03)** | — | ✅ |
 | MG.34 | `M` log-merged, `e` edit-line-commit — as file-dispatch rows, no chords | — | ✅ |
 | MG.35 | `y` show-refs — `magit-refs-mode` | — | ✅ |
 | MG.36 | `C` clone — clone only, no switch to the new repo | — | ✅ |
 | MG.37 | `T` notes — `magit-notes-mode` + the `T` submenu | — | ✅ |
-| MG.38 | `O` subtree | — | 📝 |
-| MG.39 | `w` am / `W` format-patch | — | 📝 |
-| MG.40 | `Y` cherries | — | 📝 |
+| MG.38 | subtree — on `"`, not `O` (see below) | — | ✅ |
+| MG.39 | `w` am / `W` format-patch, + the am sequencer | — | ✅ |
+| MG.40 | `Y` cherries — `magit-cherry-mode` | — | ✅ |
 
 #### MG.23a — the file target seam + `:magit-other-file-dispatch` ✅ (2026-07-30)
 
@@ -2971,6 +2971,104 @@ should be:
 process-wide (§MG.21h/i's note), and the 2026-08-03 decision was to
 keep it that way. It is unblocked by reopening that decision, not by
 this tail.
+
+#### MG.38–MG.40 — subtree, patches, cherries ✅ (2026-08-03)
+
+The last three rows of magit-dispatch parity, landed together.
+
+##### MG.38 subtree — and `O` was NOT free
+
+The MG.34–MG.40 scoping note said "`O` is free on the dispatch (reset
+moved to `Os`/`Om`/`Oh` inside a submenu) — confirm before binding". It
+was wrong, and the instruction to confirm is what caught it: `Os`/`Om`/
+`Oh` are the **chords** in `magit-core-mode`; the **dispatch** still has
+`O` for the reset submenu, because evil-collection-magit remaps magit's
+`X` reset onto `O`.
+
+Magit puts subtree on `O` too, so evil-collection had to resolve the
+collision it created, and it did — read from source rather than
+invented:
+
+```elisp
+(magit-dispatch "X" "O" magit-reset)     ; we already do this
+(magit-dispatch "O" "\"" magit-subtree)  ; so subtree takes `"`
+(magit-dispatch "o" "'" magit-submodule)
+```
+
+Subtree therefore takes `"`. That keeps the standing rule intact (the
+reference set is evil-collection-magit, not raw magit) and costs no vim
+grammar, since transient keys do not shadow it.
+
+**One divergence noted, not changed:** we keep submodule on `o` where
+evil-collection moves it to `'` — MG.21i chose that deliberately, and
+re-keying a shipped surface would cost muscle memory already formed for
+no correctness gain.
+
+Rows: `a` add, `m` merge, `f` pull, `p` push, `s` split. Every one
+prompts, because every subtree operation needs `--prefix=<dir>` and most
+need a repository and a ref — none guessable from a menu. `--prefix=` is
+also the argument git validates **last**, after doing work, which is why
+`subtree_argv` is pure and tested.
+
+**The argument count is checked rather than passed through.** `subtree
+add <prefix> <repo>` with the ref missing is a *different valid form* of
+the command, so a silent pass-through would do something the user did
+not ask for instead of erroring.
+
+##### MG.39 patches — one submenu for both of magit's keys
+
+Magit splits these across `w` (am) and `W` (patch). One `w` submenu
+holds both: they are the two halves of one email workflow and there are
+five rows between them.
+
+**The sequencer commands are part of the slice, exactly as in MG.34.**
+`git am` stops on a patch that will not apply, and without `--continue`
+/ `--skip` / `--abort` the repository would be in a state the editor
+cannot leave. Gated on `rebase-apply` in the gitdir — the same marker
+the legacy rebase backend uses, which is why `rebase_in_progress`
+already checks it.
+
+`-3` is opt-in. It changes what a failed apply *does* — three-way merge
+with conflict markers instead of refusing — which is better only when
+you expected the patch not to apply cleanly. Same judgement
+`--force-with-lease`-not-`--force` makes on push.
+
+`format-patch` writes to the **repository root**, not the process cwd. A
+scatter of `.patch` files somewhere unexpected is tedious to undo, and
+the repo root is the one directory the user can predict from here.
+
+##### MG.40 cherries — the `-` rows are the point
+
+`magit-cherry-mode` on `*magit:cherry:<upstream>..<head>*`, from `Y`.
+
+Worth stating because it is the whole reason this is not
+`git log upstream..HEAD`: a commit cherry-picked or rebased upstream
+arrives with a **different SHA**, so a range walk still lists your copy
+as missing and you go to push something already there. `git cherry`
+compares patch-ids and marks it `-`. The two counts stay apart in the
+headerline for the same reason — "3 ahead" and "3 already upstream" call
+for opposite actions.
+
+`A` / `_` / `O` work through `commit_at_cursor`, and `A` is the reason
+the command is named cherry.
+
+##### Shape notes
+
+- **The gates struct earned itself.** MG.37 introduced
+  `DispatchGates { bisect, notes_merge }` to avoid two adjacent bools;
+  MG.39 added a third (`am`) one slice later. Positional bools would
+  have been three-deep by now.
+- **The line→sha index and the spans are built in the render pass**, the
+  shape MG.35 established — the rows are padded, so scraping them back
+  would tie parser to formatter forever.
+- **Tests:** 16 across the three. Six on `subtree_argv` (prefix always
+  present, wrong-count refused, `--squash` only where it exists), four
+  on am/format-patch (opt-in `-3` via both spellings, flag words not
+  mistaken for patch paths, explicit output directory, range required),
+  and six on the cherry renderer (name round-trip, both ends required,
+  index-agrees-with-text, full SHAs behind short display, both marks
+  counted apart, unparseable lines skipped).
+- **No new `Style` variant and no renderer change** in any of the three.
 
 #### MG.37 — `T` notes ✅ (2026-08-03)
 

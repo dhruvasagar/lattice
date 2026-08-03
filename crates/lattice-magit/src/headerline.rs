@@ -696,6 +696,32 @@ pub(crate) fn branch_fields(current: &str, total: usize) -> Vec<Field> {
     fields
 }
 
+/// MG.40 — magit-cherry: what is being compared, and the two counts.
+///
+/// The counts are the answer the buffer exists to give, and they are
+/// kept apart rather than summed: "3 ahead" and "3 already upstream"
+/// call for opposite actions, and a single total would hide which you
+/// are looking at.
+pub(crate) fn cherry_fields(
+    upstream: &str,
+    head: &str,
+    ahead: usize,
+    equivalent: usize,
+) -> Vec<Field> {
+    let mut fields = Vec::new();
+    if !head.is_empty() {
+        fields.push(Field::branch(head.to_string()));
+    }
+    if !upstream.is_empty() {
+        fields.push(Field::git_ref(format!("vs {upstream}")));
+    }
+    fields.push(Field::label(format!("{ahead} ahead")));
+    if equivalent > 0 {
+        fields.push(Field::label(format!("{equivalent} already upstream")));
+    }
+    fields
+}
+
 /// MG.37 — magit-notes: which commit the note belongs to, and whether
 /// there already is one.
 ///

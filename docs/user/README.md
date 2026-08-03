@@ -76,6 +76,7 @@ same surface).
 | magit — rebase todo        | [`magit-rebase-mode`](help:magit-rebase-mode) | ✅      |
 | magit — refs (branches, remotes, tags) | [`magit-refs-mode`](help:magit-refs-mode) | ✅      |
 | magit — commit notes       | [`magit-notes-mode`](help:magit-notes-mode) | ✅      |
+| magit — cherries (not upstream yet) | [`magit-cherry-mode`](help:magit-cherry-mode) | ✅      |
 | magit — shared chords      | [`magit-core-mode`](help:magit-core-mode) | ✅      |
 | magit — hunk chords        | [`magit-hunk-mode`](help:magit-hunk-mode) | ✅      |
 | magit — entry chords       | [`magit-global-mode`](help:magit-global-mode) | ✅      |

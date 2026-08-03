@@ -150,6 +150,21 @@ pub struct DispatchActionIds {
     /// [`notes_transient`].
     pub note_merge_commit: Option<CommandId>,
     pub note_merge_abort: Option<CommandId>,
+    /// MG.38: the `"` subtree submenu's rows.
+    pub subtree_add: Option<CommandId>,
+    pub subtree_merge: Option<CommandId>,
+    pub subtree_pull: Option<CommandId>,
+    pub subtree_push: Option<CommandId>,
+    pub subtree_split: Option<CommandId>,
+    /// MG.39: `w` am / `W` format-patch, and the way out of a stopped
+    /// `am`.
+    pub am_apply: Option<CommandId>,
+    pub am_continue: Option<CommandId>,
+    pub am_skip: Option<CommandId>,
+    pub am_abort: Option<CommandId>,
+    pub format_patch: Option<CommandId>,
+    /// MG.40: `Y` cherries.
+    pub cherries: Option<CommandId>,
     /// MG.21g: `B` — bisect. Start is shown only when none is running;
     /// the marks only when one is.
     pub bisect_start: Option<CommandId>,
@@ -503,6 +518,139 @@ fn notes_transient(ids: &DispatchActionIds, merge_in_progress: bool) -> Transien
     }
 }
 
+/// MG.38: the `"` subtree submenu.
+///
+/// **Magit's key for subtree is `O`, and `O` is not free here** — the
+/// MG.34–MG.40 scoping note said it was, and that was wrong: `O` is the
+/// reset submenu, which is evil-collection-magit's remap of magit's `X`.
+/// evil-collection resolves the collision it created, and this follows
+/// it verbatim: `(magit-dispatch "O" "\"" magit-subtree)`. So subtree
+/// takes `"`, which is the reference set the standing rule names.
+///
+/// Every row prompts, because every subtree operation needs a
+/// `--prefix=<dir>` and most need a repository and a ref too — none of
+/// which a menu can guess.
+fn subtree_transient(ids: &DispatchActionIds) -> TransientSpec {
+    TransientSpec {
+        title: "Subtree".into(),
+        groups: vec![
+            TransientGroup {
+                label: "Import".into(),
+                items: vec![
+                    action_or_placeholder(
+                        ids.subtree_add,
+                        "a",
+                        "add",
+                        "Add a repository as a subtree at a prefix",
+                        "subtree_add_op",
+                    ),
+                    action_or_placeholder(
+                        ids.subtree_merge,
+                        "m",
+                        "merge",
+                        "Merge a ref into an existing subtree",
+                        "subtree_merge_op",
+                    ),
+                    action_or_placeholder(
+                        ids.subtree_pull,
+                        "f",
+                        "pull",
+                        "Fetch and merge a subtree's upstream",
+                        "subtree_pull_op",
+                    ),
+                ],
+            },
+            TransientGroup {
+                label: "Export".into(),
+                items: vec![
+                    action_or_placeholder(
+                        ids.subtree_push,
+                        "p",
+                        "push",
+                        "Push a subtree's history to its own repository",
+                        "subtree_push_op",
+                    ),
+                    action_or_placeholder(
+                        ids.subtree_split,
+                        "s",
+                        "split",
+                        "Extract a subtree's history into its own branch",
+                        "subtree_split_op",
+                    ),
+                ],
+            },
+        ],
+        preview: None,
+        footer: Some("q dismiss  Esc/BS back".into()),
+    }
+}
+
+/// MG.39: the `w` patch submenu, gated on whether a `git am` is stopped.
+///
+/// Magit splits these across `w` (am) and `W` (patch); one submenu holds
+/// both because apply-a-patch and create-a-patch are the two halves of
+/// the same email workflow and there are five rows between them.
+///
+/// **Gated like `B` and `T`:** an `am` stops on a patch that will not
+/// apply, and outside that state `--continue` / `--skip` / `--abort`
+/// error. Inside it, applying more patches is what you must not do.
+fn patch_transient(ids: &DispatchActionIds, am_in_progress: bool) -> TransientSpec {
+    let groups = if am_in_progress {
+        vec![TransientGroup {
+            label: "Patch application stopped".into(),
+            items: vec![
+                action_or_placeholder(
+                    ids.am_continue,
+                    "c",
+                    "continue",
+                    "Resume applying after resolving the conflict",
+                    "am_continue_op",
+                ),
+                action_or_placeholder(
+                    ids.am_skip,
+                    "s",
+                    "skip",
+                    "Skip the patch that would not apply",
+                    "am_skip_op",
+                ),
+                action_or_placeholder(
+                    ids.am_abort,
+                    "a",
+                    "abort",
+                    "Abandon the whole apply, restoring the branch",
+                    "am_abort_op",
+                ),
+            ],
+        }]
+    } else {
+        vec![TransientGroup {
+            label: "Patches".into(),
+            items: vec![
+                action_or_placeholder(
+                    ids.am_apply,
+                    "w",
+                    "apply patches",
+                    "Apply a mailbox of patches (git am)",
+                    "am_apply_op",
+                ),
+                action_or_placeholder(
+                    ids.format_patch,
+                    "W",
+                    "create patches",
+                    "Write a commit range out as .patch files",
+                    "format_patch_op",
+                ),
+            ],
+        }]
+    };
+    TransientSpec {
+        title: "Patches".into(),
+        groups,
+        preview: None,
+        footer: Some("q dismiss  Esc/BS back".into()),
+    }
+}
+
 /// MG.21g: the `B` bisect submenu, gated on whether a bisect is
 /// running.
 ///
@@ -585,6 +733,20 @@ pub fn bisect_in_progress() -> bool {
     crate::workdir::magit_workdir()
         .and_then(|wd| lattice_vcs::Repository::discover(wd).ok())
         .map(|repo| lattice_vcs::Bisect::in_progress(&repo))
+        .unwrap_or(false)
+}
+
+/// MG.39: is a `git am` stopped on a patch that would not apply?
+///
+/// Git records one as a `rebase-apply` directory in the gitdir — the
+/// same marker the legacy rebase backend uses, which is why
+/// `magit_rebase_mode::rebase_in_progress` checks it too. A stopped `am`
+/// therefore also shows the rebase abort as available, which is
+/// correct: `git rebase --abort` is what git itself suggests there.
+pub fn am_in_progress() -> bool {
+    crate::workdir::magit_workdir()
+        .and_then(|wd| lattice_vcs::Repository::discover(wd).ok())
+        .map(|repo| repo.gitdir().join("rebase-apply").exists())
         .unwrap_or(false)
 }
 
@@ -767,6 +929,8 @@ pub struct DispatchGates {
     pub bisect: bool,
     /// MG.37: `git notes merge` stopped on a conflict.
     pub notes_merge: bool,
+    /// MG.39: `git am` stopped on a patch that would not apply.
+    pub am: bool,
 }
 
 impl DispatchGates {
@@ -780,6 +944,7 @@ impl DispatchGates {
         Self {
             bisect: bisect_in_progress(),
             notes_merge: notes_merge_in_progress(),
+            am: am_in_progress(),
         }
     }
 }
@@ -977,6 +1142,15 @@ pub fn dispatch_transient_with(
                         "Manage submodules — add, update, sync, remove",
                         "submodule_op",
                     ),
+                    // MG.40: magit's `Y`. A buffer, like `y` above and
+                    // for the same reason — the answer is a list.
+                    action_or_placeholder(
+                        ids.cherries,
+                        "Y",
+                        "cherries",
+                        "Which commits are not upstream yet, and which already are",
+                        "cherries_op",
+                    ),
                     // MG.35: magit's `y`. A buffer for the same reason
                     // `M` and `o` are — the answer is a list with a
                     // column of object ids, which a menu cannot show.
@@ -1003,6 +1177,23 @@ pub fn dispatch_transient_with(
             TransientGroup {
                 label: "Misc".into(),
                 items: vec![
+                    // MG.38: evil-collection-magit's key for subtree,
+                    // because magit's own `O` is the reset submenu here.
+                    TransientItem {
+                        key: vec!["\"".into()],
+                        label: "subtree".into(),
+                        description: "Add, merge, pull, push or split a subtree".into(),
+                        kind: TransientItemKind::Submenu(Arc::new(subtree_transient(ids))),
+                    },
+                    // MG.39: magit's `w`, holding `W`'s rows too.
+                    TransientItem {
+                        key: vec!["w".into()],
+                        label: "patches".into(),
+                        description: "Apply or create email patches".into(),
+                        kind: TransientItemKind::Submenu(Arc::new(patch_transient(
+                            ids, gates.am,
+                        ))),
+                    },
                     action_or_placeholder(
                         ids.rebase,
                         "r",

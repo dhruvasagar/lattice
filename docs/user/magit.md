@@ -48,6 +48,7 @@ no hidden state.
 | `:magit-remote` | Open the [remote list](help:magit-remote-mode) — add / rename / remove / set-url / prune |
 | `:magit-submodule` | Open the [submodule list](help:magit-submodule-mode) — add / update / sync / remove |
 | `:magit-refs` | Open the [refs buffer](help:magit-refs-mode) — every branch, remote-tracking branch and tag |
+| `:magit-clone <url> [<dest>]` | Clone a repository (does not switch you to it — see [the dispatch](help:magit-transient)) |
 | `:magit-log-merged <commit>` | Show the merge commit that brought a commit into `HEAD` |
 | `:magit-rebase` | Start interactive rebase |
 | `:magit-rebase-continue` / `-skip` / `-abort` | Leave a [rebase that stopped](help:magit-rebase-mode) |

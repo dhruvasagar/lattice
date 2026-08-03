@@ -103,6 +103,7 @@ adds inside one):
 │    [y]  refs            Show every branch,     │
 │                          remote-tracking       │
 │                          branch and tag        │
+│    [C]  clone           Clone a repository     │
 │                                                │
 │  ▸ Misc                                        │
 │    [r]  rebase          Start an interactive   │
@@ -296,6 +297,20 @@ row under the cursor. `M` — like `B` — is a transient key only: both stay un
 inside magit buffers so vim's middle-of-screen and back-WORD motions
 survive, the same reasoning that keeps `V` free. Magit binds both in
 its own buffers; it can, because it is not modal.
+
+**`C` clone, with one thing it deliberately does not do.** It asks for
+a URL, then where to put it — pre-filled with the directory
+`git clone` would have picked, absolute, so you can see where it lands
+before it starts. `:magit-clone <url> [<destination>]` is the
+scriptable form, and with no destination it derives the same name.
+
+What it does **not** do is switch you to the clone. Magit shows the new
+repository's status buffer afterwards; here the magit buffers keep
+showing the repository the editor was opened in, and the completion
+notification says so. Open the editor in the new directory to work in
+it. (This is the same process-wide-working-directory limit that keeps
+`Z` worktree unimplemented — one repository per editor session, for
+now.)
 
 **And `y` show-refs, for the same reason.** It opens
 [`magit-refs-mode`](help:magit-refs-mode): every local branch,

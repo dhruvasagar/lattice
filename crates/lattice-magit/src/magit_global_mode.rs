@@ -875,6 +875,73 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         }),
     });
 
+    // MG.36: magit's `C` clone — a two-step wizard, the same shape the
+    // branch-create wizard uses. URL first, then where to put it.
+    //
+    // Two prompts rather than one line with both, because the second
+    // has a *derived default*: `git clone` picks the directory name off
+    // the URL, and re-typing it is the step everyone skips in a
+    // terminal. Asking separately is what makes offering that default
+    // possible.
+    contributions.push(ActionHandlerContribution {
+        action_name: "action:magit-global-clone",
+        handler: Arc::new(|_ctx: &ActionContext<'_>| {
+            Some(Effect::OpenPrompt {
+                prompt: "Clone repository: ".to_string(),
+                initial: String::new(),
+                on_submit_action: "action:magit-global-clone-dest".to_string(),
+                buffer_name: Some("*magit:clone*".to_string()),
+            })
+        }),
+    });
+    contributions.push(ActionHandlerContribution {
+        action_name: "action:magit-global-clone-dest",
+        handler: Arc::new(|ctx: &ActionContext<'_>| {
+            let url = ctx.prompt_value?.trim().to_string();
+            if url.is_empty() {
+                return None;
+            }
+            // Absolute, so "where did it go" is answered on screen
+            // before the clone runs rather than after it.
+            let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let initial = match default_clone_dest(&url) {
+                name if name.is_empty() => String::new(),
+                name => cwd.join(name).to_string_lossy().into_owned(),
+            };
+            Some(Effect::OpenPrompt {
+                prompt: "Clone into: ".to_string(),
+                initial,
+                on_submit_action: "action:magit-global-clone-finish".to_string(),
+                // The URL rides in the prompt buffer's name — the same
+                // way the branch-create wizard carries its base, and
+                // magit's blame / rebase / revision modes carry theirs.
+                buffer_name: Some(format!("*magit:clone-from:{url}*")),
+            })
+        }),
+    });
+    contributions.push(ActionHandlerContribution {
+        action_name: "action:magit-global-clone-finish",
+        handler: Arc::new(|ctx: &ActionContext<'_>| {
+            let dest = ctx.prompt_value?.trim().to_string();
+            let buffer_id = lattice_core::BufferId(ctx.buffer_id.0 as u32);
+            let url = ctx
+                .services
+                .get::<BufferStoreHandle>()?
+                .name_for(buffer_id)
+                .and_then(|n| path_from_prompt_buffer_name(&n, "*magit:clone-from:"))?;
+            if dest.is_empty() {
+                return None;
+            }
+            Some(spawn_clone(
+                url,
+                dest,
+                ctx.services
+                    .get::<lattice_notify::NotificationStoreHandle>()
+                    .map(|outer| (*outer).clone()),
+            ))
+        }),
+    });
+
     // MG.34: magit's `M` "Merged" — which merge brought a commit into
     // HEAD.
     //
@@ -1608,6 +1675,103 @@ pub fn spawn_git(argv: Vec<String>, what: &str) -> Effect {
     }
 }
 
+// ── MG.36: `C` clone ────────────────────────────────────────────────
+
+/// The argv for cloning `url` into `dest`.
+///
+/// Pure, so the flags are pinned without running a clone — the same
+/// shape `tag_argv` / `merge_argv` / `log_merged_argv` have.
+///
+/// `--` before the operands: a URL or a destination beginning with `-`
+/// would otherwise be read as an option. That is not hypothetical for
+/// the destination, which the user types.
+pub(crate) fn clone_argv(url: &str, dest: &str) -> Vec<String> {
+    vec![
+        "clone".to_string(),
+        "--".to_string(),
+        url.to_string(),
+        dest.to_string(),
+    ]
+}
+
+/// The directory name `git clone <url>` would pick on its own.
+///
+/// Both URL shapes have to work, because both are what people paste:
+/// `https://host/owner/repo.git` splits on `/`, and
+/// `git@host:owner/repo.git` puts the interesting part after a `:`.
+/// Trailing slashes are common in copied URLs and `.git` is usual on
+/// the SSH form; neither belongs in a directory name.
+///
+/// Empty when nothing usable is left — the caller then asks rather than
+/// pre-filling a prompt with a name it invented.
+pub(crate) fn default_clone_dest(url: &str) -> String {
+    let trimmed = url.trim().trim_end_matches('/');
+    let last = trimmed
+        .rsplit(['/', ':'])
+        .next()
+        .unwrap_or_default()
+        .trim();
+    last.strip_suffix(".git").unwrap_or(last).to_string()
+}
+
+/// Clone `url` into `dest`, off the actor thread.
+///
+/// Not [`spawn_git`], which runs in `magit_workdir()` — that would put
+/// the clone *inside* the repository you are already in, which is
+/// almost never what anyone means, and is silent when it happens.
+/// `dest` is resolved against the process's own directory instead, and
+/// the prompt pre-fills it absolute so the answer to "where did it go"
+/// is on screen before the clone starts.
+///
+/// **The notification says what the clone does NOT do.** Magit shows the
+/// new repository's status buffer afterwards; that is not reachable here
+/// (`magit_workdir` is process-wide, and there is no `:cd`), so the
+/// magit buffers keep pointing at the repository the editor was launched
+/// in. Saying so once, at the moment it matters, is the difference
+/// between a documented limit and a user concluding the clone failed.
+pub fn spawn_clone(
+    url: String,
+    dest: String,
+    notify: Option<lattice_notify::NotificationStoreHandle>,
+) -> Effect {
+    let argv = clone_argv(&url, &dest);
+    let shown = dest.clone();
+    tokio::task::spawn(async move {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let result = tokio::task::spawn_blocking(move || run_remote_op(&cwd, &argv))
+            .await
+            .unwrap_or_else(|e| Err(e.to_string()));
+        match result {
+            Ok(out) => {
+                tracing::debug!(target: "lattice_magit", "magit: clone into {shown}: {out}");
+                if let Some(n) = notify {
+                    n.post(
+                        lattice_notify::NotificationLevel::Info,
+                        format!(
+                            "cloned into {shown} — magit still shows the repository \
+                             this editor was opened in"
+                        ),
+                    );
+                }
+            }
+            Err(err) => {
+                tracing::error!(target: "lattice_magit", "magit: clone into {shown} failed: {err}");
+                if let Some(n) = notify {
+                    let first = err.lines().next().unwrap_or("failed").to_string();
+                    n.post(
+                        lattice_notify::NotificationLevel::Error,
+                        format!("clone failed: {first}"),
+                    );
+                }
+            }
+        }
+    });
+    Effect::Echo {
+        level: lattice_grammar::EchoLevel::Info,
+        text: format!("magit: cloning into {dest}…"),
+    }
+}
+
 /// MG.23c1: append `pattern` to the repository's `.gitignore`.
 ///
 /// Not a git command — git has no "add to gitignore" subcommand, so
@@ -2215,6 +2379,63 @@ mod tests {
                 "no prompted operation may request an editor: {argv:?}"
             );
         }
+    }
+
+    // ── MG.36: `C` clone ────────────────────────────────────────────
+
+    /// Both URL shapes people actually paste. The SSH form is the one a
+    /// naive `rsplit('/')` gets wrong for a single-segment path, and
+    /// `.git` is usual on it — a destination directory literally named
+    /// `repo.git` is not what anyone means.
+    #[test]
+    fn the_default_destination_is_the_name_git_would_have_picked() {
+        for (url, expected) in [
+            ("https://github.com/owner/repo.git", "repo"),
+            ("https://github.com/owner/repo", "repo"),
+            ("https://github.com/owner/repo/", "repo"),
+            ("git@github.com:owner/repo.git", "repo"),
+            ("git@github.com:repo.git", "repo"),
+            ("ssh://git@host:22/owner/repo.git", "repo"),
+            ("/srv/git/bare-repo.git", "bare-repo"),
+            ("  https://host/owner/repo.git  ", "repo"),
+        ] {
+            assert_eq!(
+                default_clone_dest(url),
+                expected,
+                "the directory `git clone {url}` would create"
+            );
+        }
+    }
+
+    /// Nothing usable left means the caller must ask rather than invent
+    /// a name — an empty string is the signal, and both the ex-command
+    /// and the prompt check for it.
+    #[test]
+    fn a_url_with_no_usable_last_segment_yields_nothing() {
+        for url in ["", "   ", "/", "https://", ".git"] {
+            assert_eq!(
+                default_clone_dest(url),
+                "",
+                "{url:?} names no directory, so none may be guessed"
+            );
+        }
+    }
+
+    /// `--` before the operands. A destination beginning with `-` is
+    /// something a user can type, and without the separator git would
+    /// read it as an option — silently, and with a different effect.
+    #[test]
+    fn clone_argv_separates_operands_from_options() {
+        assert_eq!(
+            clone_argv("https://host/o/r.git", "/tmp/r"),
+            vec!["clone", "--", "https://host/o/r.git", "/tmp/r"]
+        );
+        let hostile = clone_argv("https://host/o/r.git", "--upload-pack=evil");
+        assert_eq!(
+            hostile.iter().position(|a| a == "--"),
+            Some(1),
+            "the separator must precede both operands: {hostile:?}"
+        );
     }
 
     /// MG.23c1 — the `.gitignore` append, against a real file.

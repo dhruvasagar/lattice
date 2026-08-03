@@ -139,6 +139,8 @@ pub struct DispatchActionIds {
     pub submodule: Option<CommandId>,
     /// MG.35: `y` — the refs buffer, magit's own key.
     pub refs: Option<CommandId>,
+    /// MG.36: `C` — clone a repository, magit's own key.
+    pub clone: Option<CommandId>,
     /// MG.21g: `B` — bisect. Start is shown only when none is running;
     /// the marks only when one is.
     pub bisect_start: Option<CommandId>,
@@ -837,6 +839,17 @@ pub fn dispatch_transient_with(
                         "refs",
                         "Show every branch, remote-tracking branch and tag",
                         "show_refs",
+                    ),
+                    // MG.36: magit's `C`. In the Remotes group because
+                    // that is what a clone reads from — magit files it
+                    // under its own dispatch's ungated set for the same
+                    // reason it needs no repository to be open.
+                    action_or_placeholder(
+                        ids.clone,
+                        "C",
+                        "clone",
+                        "Clone a repository — asks for the URL, then where to put it",
+                        "clone_op",
                     ),
                 ],
             },

@@ -1363,7 +1363,7 @@ the buffer you are already in is the actual no-op. See MG.23h's note.
 | MG.23i+ | The new subsystems, one slice each — **sliced out as MG.35–MG.40 (2026-08-03)** | — | 📝 |
 | MG.34 | `M` log-merged, `e` edit-line-commit — as file-dispatch rows, no chords | — | ✅ |
 | MG.35 | `y` show-refs — `magit-refs-mode` | — | ✅ |
-| MG.36 | `C` clone | — | 📝 |
+| MG.36 | `C` clone — clone only, no switch to the new repo | — | ✅ |
 | MG.37 | `T` notes | — | 📝 |
 | MG.38 | `O` subtree | — | 📝 |
 | MG.39 | `w` am / `W` format-patch | — | 📝 |
@@ -2971,6 +2971,46 @@ should be:
 process-wide (§MG.21h/i's note), and the 2026-08-03 decision was to
 keep it that way. It is unblocked by reopening that decision, not by
 this tail.
+
+#### MG.36 — `C` clone ✅ (2026-08-03)
+
+`C` on the root dispatch (magit's own key) and
+`:magit-clone <url> [<destination>]`. A two-step prompt — URL, then
+where — with the destination pre-filled absolute and defaulted to the
+directory `git clone` would have picked itself.
+
+**Scoped deliberately to clone-only.** Magit's `magit-clone-regular`
+shows the new repository's status buffer afterwards, and that half is
+not reachable: `magit_workdir()` is `Repository::discover(".")`
+(process-wide, keyed on the editor's cwd) and there is no `:cd`
+ex-command anywhere in the workspace. **This is the same blocker `Z`
+worktree is deferred on** — the 2026-08-03 decision to keep magit's
+workdir process-wide.
+
+The cost was put explicitly before building: without the switch, `C-c f`
+on a file inside the new clone resolves through `workdir_for_file` and
+correctly targets the *new* repo, while `C-c g s` shows the *old* one —
+two magit surfaces disagreeing about which repository you are in.
+Options offered were defer-with-`Z`, ship-clone-only, and
+ship-clone-plus-a-new-`:cd` (a workdir slice wearing a clone slice's
+name, which would also unblock `Z`). The call was ship-clone-only.
+
+Within that scope the limit is made **loud rather than silent**: the
+completion notification says "magit still shows the repository this
+editor was opened in", and the user doc says it in the same words and
+points at the `Z` connection. A silent version of this feature is the
+one that reads as a bug.
+
+- **Not `spawn_git`**, which runs in `magit_workdir()` — that would put
+  the clone *inside* the repository you are already in, silently.
+  `spawn_clone` resolves against the process's own directory.
+- **`--` before the operands.** A destination beginning with `-` is
+  something a user can type, and git would otherwise read it as an
+  option.
+- **Tests:** 3, all pure — both URL shapes people paste (`https://…`
+  and `git@host:owner/repo.git`, the one a naive `rsplit('/')` gets
+  wrong), the no-usable-segment cases that must yield nothing rather
+  than a guessed name, and the `--` separator.
 
 #### MG.35 — `y` show-refs ✅ (2026-08-03)
 

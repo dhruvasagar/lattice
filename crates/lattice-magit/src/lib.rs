@@ -360,6 +360,7 @@ fn resolve_dispatch_ids(registry: &CommandRegistry) -> transients::DispatchActio
         remote: registry.id_by_name("action:magit-global-remote"),
         submodule: registry.id_by_name("action:magit-global-submodule"),
         refs: registry.id_by_name("action:magit-global-refs"),
+        clone: registry.id_by_name("action:magit-global-clone"),
         view_args: registry.id_by_name("action:magit-view-refresh-args"),
         bisect_start: registry.id_by_name("action:magit-global-bisect-start"),
         bisect_good: registry.id_by_name("action:magit-global-bisect-good"),
@@ -538,6 +539,18 @@ fn find_file_usage() -> Effect {
         level: lattice_grammar::EchoLevel::Error,
         text: "magit: usage — :magit-find-file <rev> <path> \
                (or `C-c f v` for the file you are visiting)"
+            .to_string(),
+    }
+}
+
+/// MG.36: what `:magit-clone` says with nothing usable. The
+/// destination is optional and derived; the URL is not, and there is no
+/// defensible guess for it.
+fn clone_usage() -> Effect {
+    Effect::Echo {
+        level: lattice_grammar::EchoLevel::Error,
+        text: "magit: usage — :magit-clone <url> [<destination>] \
+               (or `C` in the dispatch)"
             .to_string(),
     }
 }
@@ -1105,6 +1118,58 @@ fn register_ex_commands(
                 surface_form: SurfaceForm::Keyword,
             },
         );
+        // MG.36: the scriptable half of `C`. With both arguments it
+        // clones directly; with one it derives the destination the way
+        // `git clone` itself would, so `:magit-clone <url>` behaves like
+        // the terminal command people already know.
+        registry.register_ex_command(
+            "magit-clone",
+            "Clone a repository: `<url> [<destination>]`.",
+            ExCommandSpec {
+                latency_class: LatencyClass::Reflex,
+                accepts_bang: false,
+                accepts_range: false,
+                parse_args: Arc::new(|line: &str, _bang: bool| {
+                    Ok(Args::String(line.trim().to_string()))
+                }),
+                apply: {
+                    let notifications = notifications.clone();
+                    Arc::new(move |ctx| {
+                        let Args::String(ref spec) = ctx.args else {
+                            return Ok(clone_usage());
+                        };
+                        let spec = spec.trim();
+                        if spec.is_empty() {
+                            return Ok(clone_usage());
+                        }
+                        let (url, dest) = match spec.split_once(char::is_whitespace) {
+                            Some((url, dest)) if !dest.trim().is_empty() => {
+                                (url, dest.trim().to_string())
+                            }
+                            _ => (spec, magit_global_mode::default_clone_dest(spec)),
+                        };
+                        if dest.is_empty() {
+                            // Nothing usable in the URL to name a
+                            // directory after, and git would refuse for
+                            // the same reason — say so here instead.
+                            return Ok(clone_usage());
+                        }
+                        Ok(magit_global_mode::spawn_clone(
+                            url.to_string(),
+                            dest,
+                            notifications.clone(),
+                        ))
+                    })
+                },
+                args_schema: vec![ArgSpec::required(
+                    "spec",
+                    lattice_grammar::ArgKind::String,
+                    "<url> [<destination>] — what to clone, and where",
+                )],
+                surface_form: SurfaceForm::Keyword,
+            },
+        );
+
         // MG.34: magit's `M` "Merged" (magit-file-dispatch, level 7).
         //
         // The commit you name is the *question*, not the answer: the
@@ -1671,6 +1736,16 @@ fn register_action_commands(registry: &mut CommandRegistry) {
     reg(
         "action:magit-global-refs",
         "Open the Magit refs buffer — every branch, remote-tracking branch and tag",
+    );
+    // MG.36: the clone wizard's three steps.
+    reg("action:magit-global-clone", "Clone a repository — asks for the URL");
+    reg(
+        "action:magit-global-clone-dest",
+        "Second step of the clone wizard — asks where to put it",
+    );
+    reg(
+        "action:magit-global-clone-finish",
+        "Run the clone once the URL and destination are known",
     );
 
     reg(
@@ -3977,7 +4052,7 @@ mod tests {
         );
         assert_eq!(
             root.len(),
-            33,
+            34,
             "expected every root-dispatch leaf (incl. both submenus') to \
              report inert, got: {root:?}"
         );
@@ -3990,7 +4065,7 @@ mod tests {
         );
         assert_eq!(
             bisecting.len(),
-            36,
+            37,
             "the in-progress bisect menu trades `start` for good/bad/skip/reset: {bisecting:?}"
         );
     }

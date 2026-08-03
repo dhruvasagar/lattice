@@ -248,6 +248,19 @@ pub(crate) fn branch_styled_spans(text: &str) -> Vec<Vec<StyledSpan>> {
         .collect()
 }
 
+// MG.35 note — magit-refs has no builder here, deliberately.
+//
+// Every other magit buffer's spans are recovered from its rendered text
+// because the layout is unambiguous to scan back. A refs row is not: the
+// tracking summary (`ahead 3, behind 1`) contains spaces, and a row with
+// no summary runs straight from the id into the subject, so "is this run
+// a summary or a subject?" cannot be answered from the line. Any answer
+// is a guess, and a wrong one colours a commit subject as a decoration.
+//
+// `magit_refs_mode::render_refs` therefore emits its spans in the same
+// pass that emits the text, where both offsets are known exactly — the
+// same reasoning that makes it emit its line→ref index there.
+
 /// Color `magit_remote_mode::render_remote_list` output — `  <name>
 /// <padding>  <url>` per remote. The name gets `Style::Keyword` and the
 /// URL `Style::Comment`, the same split `stash_styled_spans` gives

@@ -39,7 +39,7 @@ pub use branch::Branch;
 pub use commit::Commit;
 pub use error::{Result, VcsError};
 pub use index::Index;
-pub use reference::Reference;
+pub use reference::{RefEntry, RefKind, Reference, parse_for_each_ref};
 pub use remote::{Remote, RemoteEntry, parse_remote_v};
 pub use repository::Repository;
 pub use stash::Stash;

@@ -1362,7 +1362,7 @@ the buffer you are already in is the actual no-op. See MG.23h's note.
 | NOTIF.1f | Actions, via the `*notifications*` buffer | NOTIF.1e | ✅ |
 | MG.23i+ | The new subsystems, one slice each — **sliced out as MG.35–MG.40 (2026-08-03)** | — | 📝 |
 | MG.34 | `M` log-merged, `e` edit-line-commit — as file-dispatch rows, no chords | — | ✅ |
-| MG.35 | `y` show-refs | — | 📝 |
+| MG.35 | `y` show-refs — `magit-refs-mode` | — | ✅ |
 | MG.36 | `C` clone | — | 📝 |
 | MG.37 | `T` notes | — | 📝 |
 | MG.38 | `O` subtree | — | 📝 |
@@ -2971,6 +2971,97 @@ should be:
 process-wide (§MG.21h/i's note), and the 2026-08-03 decision was to
 keep it that way. It is unblocked by reopening that decision, not by
 this tail.
+
+#### MG.35 — `y` show-refs ✅ (2026-08-03)
+
+`magit-refs-mode`, on `*magit:refs*`. Local branches, remote-tracking
+branches and tags, grouped, each with its object id, its ahead/behind
+against its upstream, and the commit's subject. Reached by `y` on the
+root dispatch (magit's own key) or `:magit-refs`.
+
+**Not a duplicate of `magit-branch-mode`**, which was the thing to check
+before building it. That buffer lists local branches *so you can act on
+one* — checkout, create, delete, merge — and never mentions tags or
+remote-tracking refs. This one answers "what refs exist and where does
+each point", and the ahead/behind column is the reason to open it. Two
+questions, two buffers; extending the branch list would have meant
+kind-branching inside it (`d` deletes a branch, and does not mean
+anything on a tag).
+
+##### `<CR>` shows, `c` checks out — decided against magit
+
+Magit's refs buffer checks out on `RET`. This one does not, on two
+grounds, and the call was confirmed rather than assumed.
+
+**Paramount #3, our own grammar.** Across magit-log, magit-blame,
+magit-rebase and magit-status's recent commits, `<CR>` already means
+"show the commit detail". `magit-branch-mode`'s checkout-on-`<CR>` is
+the single outlier. Four buffers against one is the convention the user
+has actually learned here.
+
+**And the cost is concrete.** Two of this buffer's three groups — tags
+and remote-tracking branches — have no local branch to move, so
+checking one out detaches HEAD: easy to enter, hard to recognise, hard
+to leave. Putting that on the most reflexive key in a *reading* buffer
+is the wrong default, so `c` carries it and refuses on a non-branch
+with a sentence naming the operation the user probably wanted.
+
+This is the UX-convention rule and paramount-#3 pulling opposite ways,
+and it is worth naming as such: the convention rule says lead with what
+Vim/Helix/Zed/VSCode do on a user-facing surface, and magit is the
+reference here. It loses because the muscle memory it protects is
+*magit's*, while the muscle memory paramount-#3 protects is the one
+this editor has already taught in four other buffers.
+
+##### Where the code lives, and the one deliberate departure
+
+`Reference::list` went into **`lattice-vcs`**, not into magit as a mode
+helper. MG.33 kept its removal walk in `magit_blame_mode` rather than
+inventing a `Blame` module for two functions; this is the opposite case
+— `reference.rs` already exists, `for-each-ref` is generic git plumbing,
+and `Branch::list` is already its neighbour. One `for-each-ref` covers
+the whole buffer: git computes `%(upstream:track)` while it is already
+reading the ref, so the cost does not scale with branch count.
+
+**The spans are built in the mode, not in `highlight.rs`** — the one
+place this slice departs from every other magit buffer. A refs row
+cannot be scanned back from its text: the tracking summary contains
+spaces (`ahead 3, behind 1`), and a row *without* one runs straight from
+the object id into the subject, so "is this run a summary or a subject?"
+has no answer after the fact. A first pass guessed it from the leading
+character, which would have coloured any lowercase-initial commit
+subject as a decoration. `render_refs` emits text, spans and the
+line→ref index together, where every offset is known exactly.
+`highlight.rs` carries a note saying why it has no builder for this one.
+
+**The line→ref index is the same argument.** Actions resolve the ref at
+the cursor through a `Vec<Option<RefEntry>>` parallel to the rendered
+lines, not by re-parsing the row — the columns are padded, so a scraper
+and the formatter would have to agree about padding forever. It is
+replaced before the text on every refresh, so no cursor can resolve a
+new row against an old index.
+
+- **Tests:** 16. Six in `lattice-vcs` — four on the parser (prefix→kind
+  mapping, bracket-stripped tracking summaries including `gone`, a
+  subject carrying tabs and brackets, and unknown/truncated lines
+  skipped rather than fatal) and **two against real repositories**,
+  which is what pins the `--format` string: a typo there yields fields
+  in the wrong order and the parser produces plausible nonsense from it.
+  Ten in the mode, covering the row index agreeing with the rendered
+  text line for line, headings and blanks carrying no ref, empty groups
+  omitted, only HEAD marked, long names never truncated, character-based
+  padding for non-ASCII names, no trailing whitespace on a subject-less
+  row, the empty case, and both span cases (every span covering the
+  field it names; no decoration span when there is no summary).
+- **No new `Style` variant:** `MagitSha`, `MagitBranchCurrent` and
+  `MagitRefDecoration` already existed, so there is no theme element to
+  add and no GPUI/TUI parity work — the cross-renderer audit grep is
+  empty by construction.
+- **Two hardcoded guards moved, both deliberately:** the magit-mode
+  count (16→17) and the root-dispatch inert-leaf counts (32→33, 35→36).
+  Both caught this slice mid-build — the mode guard flagged `<CR>` and
+  `c` as unregistered actions before they were ever pressed, which is
+  exactly the dead-key failure it was written for.
 
 #### MG.34 — log-merged + edit-line-commit ✅ (2026-08-03)
 

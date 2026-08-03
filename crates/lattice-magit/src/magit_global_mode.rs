@@ -191,6 +191,12 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         "*magit:submodule*",
         "magit-submodule-mode"
     );
+    // MG.35: `y` on the root dispatch, magit's own key.
+    open!(
+        "action:magit-global-refs",
+        crate::magit_refs_mode::REFS_BUFFER,
+        "magit-refs-mode"
+    );
     open!(
         "action:magit-global-rebase",
         "*magit:rebase*",

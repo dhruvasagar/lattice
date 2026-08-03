@@ -100,6 +100,9 @@ adds inside one):
 │    [M]  remote          Manage remotes — add,  │
 │                          rename, remove, set   │
 │                          URL, prune            │
+│    [y]  refs            Show every branch,     │
+│                          remote-tracking       │
+│                          branch and tag        │
 │                                                │
 │  ▸ Misc                                        │
 │    [r]  rebase          Start an interactive   │
@@ -293,6 +296,14 @@ row under the cursor. `M` — like `B` — is a transient key only: both stay un
 inside magit buffers so vim's middle-of-screen and back-WORD motions
 survive, the same reasoning that keeps `V` free. Magit binds both in
 its own buffers; it can, because it is not modal.
+
+**And `y` show-refs, for the same reason.** It opens
+[`magit-refs-mode`](help:magit-refs-mode): every local branch,
+remote-tracking branch and tag, with how far each branch is ahead of or
+behind its upstream. That last column is what the buffer is for, and it
+is a column — a menu cannot show it. It is a different question from
+the [branch list](help:magit-branch-mode), which shows local branches so
+you can act on them and never mentions tags or remotes at all.
 
 **Deliberately not coming.** Magit's `Q` runs an arbitrary git or shell
 command and shows its output. Lattice has no row for it and will not

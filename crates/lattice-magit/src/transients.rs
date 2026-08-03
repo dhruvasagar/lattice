@@ -137,6 +137,8 @@ pub struct DispatchActionIds {
     pub view_args: Option<CommandId>,
     /// MG.21i: `o` — the submodule list, magit's own key.
     pub submodule: Option<CommandId>,
+    /// MG.35: `y` — the refs buffer, magit's own key.
+    pub refs: Option<CommandId>,
     /// MG.21g: `B` — bisect. Start is shown only when none is running;
     /// the marks only when one is.
     pub bisect_start: Option<CommandId>,
@@ -825,6 +827,16 @@ pub fn dispatch_transient_with(
                         "submodule",
                         "Manage submodules — add, update, sync, remove",
                         "submodule_op",
+                    ),
+                    // MG.35: magit's `y`. A buffer for the same reason
+                    // `M` and `o` are — the answer is a list with a
+                    // column of object ids, which a menu cannot show.
+                    action_or_placeholder(
+                        ids.refs,
+                        "y",
+                        "refs",
+                        "Show every branch, remote-tracking branch and tag",
+                        "show_refs",
                     ),
                 ],
             },

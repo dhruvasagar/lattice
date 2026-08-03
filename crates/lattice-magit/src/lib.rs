@@ -35,6 +35,7 @@ pub mod magit_global_mode;
 pub mod magit_hunk_mode;
 pub mod magit_log_mode;
 pub mod magit_rebase_mode;
+pub mod magit_refs_mode;
 pub mod magit_remote_mode;
 pub mod magit_revision_mode;
 pub mod magit_stash_mode;
@@ -64,6 +65,7 @@ use magit_file_revision_mode::MagitFileRevisionMode;
 use magit_global_mode::MagitGlobalMode;
 use magit_log_mode::MagitLogMode;
 use magit_rebase_mode::MagitRebaseMode;
+use magit_refs_mode::MagitRefsMode;
 use magit_remote_mode::MagitRemoteMode;
 use magit_revision_mode::MagitRevisionMode;
 use magit_stash_mode::MagitStashMode;
@@ -121,6 +123,11 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     boot.modes_mut()
         .register(MagitRemoteMode)
         .expect("magit-remote-mode registers without conflict");
+
+    // MG.35
+    boot.modes_mut()
+        .register(MagitRefsMode)
+        .expect("magit-refs-mode registers without conflict");
 
     boot.modes_mut()
         .register(MagitSubmoduleMode)
@@ -298,6 +305,10 @@ fn register_buffer_state_services(boot: &mut impl SubsystemBoot) {
     boot.register_service::<magit_remote_mode::RemoteStatesHandle>(Arc::new(
         buffer_state::BufferStates::default(),
     ));
+    // MG.35
+    boot.register_service::<magit_refs_mode::RefsStatesHandle>(Arc::new(
+        buffer_state::BufferStates::default(),
+    ));
     // MG.21i
     boot.register_service::<magit_submodule_mode::SubmoduleStatesHandle>(Arc::new(
         buffer_state::BufferStates::default(),
@@ -348,6 +359,7 @@ fn resolve_dispatch_ids(registry: &CommandRegistry) -> transients::DispatchActio
         branch_delete: registry.id_by_name("action:magit-global-branch-delete"),
         remote: registry.id_by_name("action:magit-global-remote"),
         submodule: registry.id_by_name("action:magit-global-submodule"),
+        refs: registry.id_by_name("action:magit-global-refs"),
         view_args: registry.id_by_name("action:magit-view-refresh-args"),
         bisect_start: registry.id_by_name("action:magit-global-bisect-start"),
         bisect_good: registry.id_by_name("action:magit-global-bisect-good"),
@@ -660,6 +672,14 @@ fn register_ex_commands(
         "Open the Magit submodule list buffer.",
         "*magit:submodule*",
         "magit-submodule-mode",
+    );
+    // MG.35: magit's `y` show-refs. Named for what it lists rather than
+    // for magit's key, per the dashed-namespaced ex-command rule.
+    mk(
+        "magit-refs",
+        "Open the Magit refs buffer — every branch, remote-tracking branch and tag.",
+        magit_refs_mode::REFS_BUFFER,
+        "magit-refs-mode",
     );
     // Drop the mk closure to release mutable borrow
     drop(mk);
@@ -1497,6 +1517,16 @@ fn register_action_commands(registry: &mut CommandRegistry) {
         "Start a rebase that stops on the commit that wrote the line at the cursor",
     );
 
+    // MG.35: magit-refs-mode
+    reg(
+        "action:magit-refs-show",
+        "Show the commit the ref at cursor points at",
+    );
+    reg(
+        "action:magit-refs-checkout",
+        "Check out the ref at cursor (refuses on a tag or remote-tracking branch)",
+    );
+
     // magit-stash-mode
     reg("action:magit-stash-apply", "Apply the stash at cursor");
     reg("action:magit-stash-pop", "Pop the stash at cursor");
@@ -1636,6 +1666,11 @@ fn register_action_commands(registry: &mut CommandRegistry) {
     reg(
         "action:magit-global-submodule",
         "Open the Magit submodule list buffer",
+    );
+    // MG.35
+    reg(
+        "action:magit-global-refs",
+        "Open the Magit refs buffer — every branch, remote-tracking branch and tag",
     );
 
     reg(
@@ -2125,6 +2160,7 @@ mod tests {
         collect!(MagitStashMode, "magit-stash-mode");
         collect!(MagitBranchMode, "magit-branch-mode");
         collect!(MagitRemoteMode, "magit-remote-mode");
+        collect!(MagitRefsMode, "magit-refs-mode");
         collect!(MagitSubmoduleMode, "magit-submodule-mode");
         collect!(MagitRebaseMode, "magit-rebase-mode");
         collect!(MagitRevisionMode, "magit-revision-mode");
@@ -2933,6 +2969,7 @@ mod tests {
             MagitStatusMode => "magit-status-mode",
             MagitBranchMode => "magit-branch-mode",
             MagitRemoteMode => "magit-remote-mode",
+            MagitRefsMode => "magit-refs-mode",
             MagitSubmoduleMode => "magit-submodule-mode",
             MagitStashMode => "magit-stash-mode",
             MagitLogMode => "magit-log-mode",
@@ -3449,6 +3486,7 @@ mod tests {
             MagitStashMode => "magit-stash-mode",
             MagitBranchMode => "magit-branch-mode",
             MagitRemoteMode => "magit-remote-mode",
+            MagitRefsMode => "magit-refs-mode",
             MagitSubmoduleMode => "magit-submodule-mode",
             MagitRebaseMode => "magit-rebase-mode",
             MagitRevisionMode => "magit-revision-mode",
@@ -3536,6 +3574,7 @@ mod tests {
             MagitStashMode,
             MagitBranchMode,
             MagitRemoteMode,
+            MagitRefsMode,
             MagitSubmoduleMode,
             MagitRebaseMode,
             MagitRevisionMode,
@@ -3583,6 +3622,7 @@ mod tests {
             MagitStashMode => "magit-stash-mode",
             MagitBranchMode => "magit-branch-mode",
             MagitRemoteMode => "magit-remote-mode",
+            MagitRefsMode => "magit-refs-mode",
             MagitSubmoduleMode => "magit-submodule-mode",
             MagitRebaseMode => "magit-rebase-mode",
             MagitRevisionMode => "magit-revision-mode",
@@ -3608,9 +3648,9 @@ mod tests {
             .filter(|m| m.contains("Magit"))
             .count();
         assert_eq!(
-            installed, 16,
+            installed, 17,
             "`install` registers {installed} magit modes but this guard \
-             checks 16 — a mode registered at boot and absent from the \
+             checks 17 — a mode registered at boot and absent from the \
              lists above has its chords unverified"
         );
 
@@ -3804,6 +3844,7 @@ mod tests {
         for (label, contributions) in [
             ("magit-branch-mode", MagitBranchMode.action_handlers()),
             ("magit-remote-mode", MagitRemoteMode.action_handlers()),
+            ("magit-refs-mode", MagitRefsMode.action_handlers()),
             ("magit-submodule-mode", MagitSubmoduleMode.action_handlers()),
             ("magit-stash-mode", MagitStashMode.action_handlers()),
             ("magit-diff-mode", MagitDiffMode.action_handlers()),
@@ -3936,7 +3977,7 @@ mod tests {
         );
         assert_eq!(
             root.len(),
-            32,
+            33,
             "expected every root-dispatch leaf (incl. both submenus') to \
              report inert, got: {root:?}"
         );
@@ -3949,7 +3990,7 @@ mod tests {
         );
         assert_eq!(
             bisecting.len(),
-            35,
+            36,
             "the in-progress bisect menu trades `start` for good/bad/skip/reset: {bisecting:?}"
         );
     }

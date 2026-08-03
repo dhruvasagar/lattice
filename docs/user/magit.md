@@ -47,7 +47,10 @@ no hidden state.
 | `:magit-branch` | Open the branch list |
 | `:magit-remote` | Open the [remote list](help:magit-remote-mode) — add / rename / remove / set-url / prune |
 | `:magit-submodule` | Open the [submodule list](help:magit-submodule-mode) — add / update / sync / remove |
+| `:magit-refs` | Open the [refs buffer](help:magit-refs-mode) — every branch, remote-tracking branch and tag |
+| `:magit-log-merged <commit>` | Show the merge commit that brought a commit into `HEAD` |
 | `:magit-rebase` | Start interactive rebase |
+| `:magit-rebase-continue` / `-skip` / `-abort` | Leave a [rebase that stopped](help:magit-rebase-mode) |
 | `:magit-fetch` | Fetch from the default remote (`--all`, `--prune`) |
 | `:magit-pull` | Pull from the upstream branch (fast-forward only) |
 | `:magit-push` | Push the current branch (`--force-with-lease`, `--set-upstream`) |
@@ -207,6 +210,7 @@ exactly like the live file. The row answers that:
 | [`magit-branch-mode`](help:magit-branch-mode) | `main  12 branches` |
 | [`magit-remote-mode`](help:magit-remote-mode) | `2 remotes` |
 | [`magit-submodule-mode`](help:magit-submodule-mode) | `3 submodules  1 uninitialised` |
+| [`magit-refs-mode`](help:magit-refs-mode) | `12 branches  4 remotes  3 tags` |
 | [`magit-stash-mode`](help:magit-stash-mode) | `3 stashes` |
 | [`magit-stash-show-mode`](help:magit-stash-show-mode) | `stash@{2}  WIP on main: fix the thing` |
 | [`magit-rebase-mode`](help:magit-rebase-mode) | `onto  origin/main  4 commits` — plus `REBASE IN PROGRESS` |
@@ -289,6 +293,7 @@ two-pane diff session.
   [`magit-branch-mode`](help:magit-branch-mode),
   [`magit-remote-mode`](help:magit-remote-mode),
   [`magit-submodule-mode`](help:magit-submodule-mode),
+  [`magit-refs-mode`](help:magit-refs-mode),
   [`magit-rebase-mode`](help:magit-rebase-mode)
 - `:help magit-core-mode` — the [shared chords](help:magit-core-mode)
   every magit buffer inherits

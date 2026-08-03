@@ -696,6 +696,31 @@ pub(crate) fn branch_fields(current: &str, total: usize) -> Vec<Field> {
     fields
 }
 
+/// MG.35 — magit-refs: how many of each kind.
+///
+/// Three counts rather than one total, because "47 refs" answers
+/// nothing: the question this buffer is opened with is usually about
+/// one of the three groups, and the row says which are worth scrolling
+/// to. Empty groups are omitted here for the same reason the buffer
+/// omits their headings.
+pub(crate) fn refs_fields(branches: usize, remotes: usize, tags: usize) -> Vec<Field> {
+    let mut fields = Vec::new();
+    for (n, singular, plural) in [
+        (branches, "branch", "branches"),
+        (remotes, "remote", "remotes"),
+        (tags, "tag", "tags"),
+    ] {
+        if n > 0 {
+            let word = if n == 1 { singular } else { plural };
+            fields.push(Field::label(format!("{n} {word}")));
+        }
+    }
+    if fields.is_empty() {
+        fields.push(Field::label("no refs".to_string()));
+    }
+    fields
+}
+
 /// MG.21f — the bisect alert's text.
 ///
 /// Mirrors git's own "Bisecting: N revisions left to test after this

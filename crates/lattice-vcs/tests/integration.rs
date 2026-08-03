@@ -1051,3 +1051,73 @@ fn removing_an_unknown_submodule_is_an_error_not_a_silent_no_op() {
         "the error names the path: {err}"
     );
 }
+
+// ── MG.35: `Reference::list` against a real repository ───────────────
+
+/// The parser is unit-tested against synthetic output; this pins the
+/// *format string* — the half a unit test can never reach. A typo in
+/// `--format` yields fields in the wrong order or missing entirely, and
+/// the parser would happily produce plausible nonsense from it.
+#[test]
+fn listing_refs_reports_branches_remotes_and_tags_with_their_targets() {
+    let (dir, repo) = init_temp_repo();
+    write_file(dir.path(), "a.txt", "one\n");
+    Index::stage_path(&repo, "a.txt").expect("stage");
+    Commit::create(&repo, "first").expect("commit");
+    git(&repo, &["tag", "v1.0.0"]);
+    git(&repo, &["branch", "feature/x"]);
+
+    let refs = lattice_vcs::Reference::list(&repo).expect("list refs");
+
+    let head = refs
+        .iter()
+        .find(|r| r.head)
+        .expect("exactly one ref is the checked-out branch");
+    assert_eq!(head.kind, lattice_vcs::RefKind::Branch);
+    assert!(!head.short_id.is_empty(), "the object id came through");
+
+    let feature = refs
+        .iter()
+        .find(|r| r.name == "feature/x")
+        .expect("the second branch is listed");
+    assert_eq!(feature.kind, lattice_vcs::RefKind::Branch);
+    assert!(!feature.head, "only the checked-out branch is marked");
+
+    let tag = refs
+        .iter()
+        .find(|r| r.name == "v1.0.0")
+        .expect("the tag is listed");
+    assert_eq!(tag.kind, lattice_vcs::RefKind::Tag);
+    assert_eq!(
+        tag.short_id, head.short_id,
+        "the tag points at the same commit HEAD does"
+    );
+    assert_eq!(tag.subject, "first", "the subject field is in the right slot");
+}
+
+/// A branch ahead of its upstream reports so. This is the field the
+/// refs buffer exists to show, and it is also the one most likely to
+/// land in the wrong slot if the format string drifts.
+#[test]
+fn a_branch_ahead_of_its_upstream_reports_the_count() {
+    let (dir, repo) = init_temp_repo();
+    write_file(dir.path(), "a.txt", "one\n");
+    Index::stage_path(&repo, "a.txt").expect("stage");
+    Commit::create(&repo, "first").expect("commit");
+
+    // A local "remote" is enough: `for-each-ref` reads the tracking
+    // config, not the network.
+    git(&repo, &["branch", "upstream-of-main"]);
+    git(&repo, &["branch", "--set-upstream-to=upstream-of-main"]);
+    write_file(dir.path(), "a.txt", "two\n");
+    Index::stage_path(&repo, "a.txt").expect("stage");
+    Commit::create(&repo, "second").expect("commit");
+
+    let refs = lattice_vcs::Reference::list(&repo).expect("list refs");
+    let head = refs.iter().find(|r| r.head).expect("checked-out branch");
+    assert_eq!(head.upstream, "upstream-of-main");
+    assert_eq!(
+        head.track, "ahead 1",
+        "one commit ahead, with git's brackets already stripped"
+    );
+}

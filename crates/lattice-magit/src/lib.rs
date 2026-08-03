@@ -34,6 +34,7 @@ pub mod magit_file_revision_mode;
 pub mod magit_global_mode;
 pub mod magit_hunk_mode;
 pub mod magit_log_mode;
+pub mod magit_notes_mode;
 pub mod magit_rebase_mode;
 pub mod magit_refs_mode;
 pub mod magit_remote_mode;
@@ -64,6 +65,7 @@ use magit_diff_mode::MagitDiffMode;
 use magit_file_revision_mode::MagitFileRevisionMode;
 use magit_global_mode::MagitGlobalMode;
 use magit_log_mode::MagitLogMode;
+use magit_notes_mode::MagitNotesMode;
 use magit_rebase_mode::MagitRebaseMode;
 use magit_refs_mode::MagitRefsMode;
 use magit_remote_mode::MagitRemoteMode;
@@ -128,6 +130,11 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     boot.modes_mut()
         .register(MagitRefsMode)
         .expect("magit-refs-mode registers without conflict");
+
+    // MG.37
+    boot.modes_mut()
+        .register(MagitNotesMode)
+        .expect("magit-notes-mode registers without conflict");
 
     boot.modes_mut()
         .register(MagitSubmoduleMode)
@@ -309,6 +316,10 @@ fn register_buffer_state_services(boot: &mut impl SubsystemBoot) {
     boot.register_service::<magit_refs_mode::RefsStatesHandle>(Arc::new(
         buffer_state::BufferStates::default(),
     ));
+    // MG.37
+    boot.register_service::<magit_notes_mode::NoteStatesHandle>(Arc::new(
+        buffer_state::BufferStates::default(),
+    ));
     // MG.21i
     boot.register_service::<magit_submodule_mode::SubmoduleStatesHandle>(Arc::new(
         buffer_state::BufferStates::default(),
@@ -361,6 +372,12 @@ fn resolve_dispatch_ids(registry: &CommandRegistry) -> transients::DispatchActio
         submodule: registry.id_by_name("action:magit-global-submodule"),
         refs: registry.id_by_name("action:magit-global-refs"),
         clone: registry.id_by_name("action:magit-global-clone"),
+        note_edit: registry.id_by_name("action:magit-global-note-edit"),
+        note_remove: registry.id_by_name("action:magit-global-note-remove"),
+        note_prune: registry.id_by_name("action:magit-global-note-prune"),
+        note_merge: registry.id_by_name("action:magit-global-note-merge"),
+        note_merge_commit: registry.id_by_name("action:magit-global-note-merge-commit"),
+        note_merge_abort: registry.id_by_name("action:magit-global-note-merge-abort"),
         view_args: registry.id_by_name("action:magit-view-refresh-args"),
         bisect_start: registry.id_by_name("action:magit-global-bisect-start"),
         bisect_good: registry.id_by_name("action:magit-global-bisect-good"),
@@ -539,6 +556,26 @@ fn find_file_usage() -> Effect {
         level: lattice_grammar::EchoLevel::Error,
         text: "magit: usage — :magit-find-file <rev> <path> \
                (or `C-c f v` for the file you are visiting)"
+            .to_string(),
+    }
+}
+
+/// MG.37: what the note ex-commands say with no commit. No default —
+/// defaulting to HEAD would edit or remove a note on a commit the user
+/// never named.
+fn note_usage(cmd: &str) -> Effect {
+    Effect::Echo {
+        level: lattice_grammar::EchoLevel::Error,
+        text: format!("magit: usage — :{cmd} <commit>  (or `C-c g T` to pick one)"),
+    }
+}
+
+/// MG.37: merge takes a ref and an optional strategy, not a commit.
+fn note_merge_usage() -> Effect {
+    Effect::Echo {
+        level: lattice_grammar::EchoLevel::Error,
+        text: "magit: usage — :magit-note-merge <notes-ref> \
+               [manual|ours|theirs|union|cat_sort_uniq]"
             .to_string(),
     }
 }
@@ -1118,6 +1155,102 @@ fn register_ex_commands(
                 surface_form: SurfaceForm::Keyword,
             },
         );
+        // MG.37: the scriptable halves of the notes submenu, and what
+        // the commit picker routes to when the menu was opened without
+        // a commit under the cursor.
+        registry.register_ex_command(
+            "magit-note-edit",
+            "Edit the note on a commit — opens an editable buffer.",
+            ExCommandSpec {
+                latency_class: LatencyClass::Reflex,
+                accepts_bang: false,
+                accepts_range: false,
+                parse_args: Arc::new(|line: &str, _bang: bool| {
+                    Ok(Args::String(line.trim().to_string()))
+                }),
+                apply: Arc::new(|ctx| {
+                    let Args::String(ref commit) = ctx.args else {
+                        return Ok(note_usage("magit-note-edit"));
+                    };
+                    let commit = commit.trim();
+                    if commit.is_empty() {
+                        return Ok(note_usage("magit-note-edit"));
+                    }
+                    Ok(Effect::OpenSyntheticBuffer {
+                        name: magit_notes_mode::note_buffer_name(commit),
+                        mode_id: "magit-notes-mode".to_string(),
+                    })
+                }),
+                args_schema: vec![ArgSpec::required(
+                    "commit",
+                    lattice_grammar::ArgKind::String,
+                    "the commit whose note to edit",
+                )],
+                surface_form: SurfaceForm::Keyword,
+            },
+        );
+        registry.register_ex_command(
+            "magit-note-remove",
+            "Remove the note from a commit.",
+            ExCommandSpec {
+                latency_class: LatencyClass::Reflex,
+                accepts_bang: false,
+                accepts_range: false,
+                parse_args: Arc::new(|line: &str, _bang: bool| {
+                    Ok(Args::String(line.trim().to_string()))
+                }),
+                apply: Arc::new(|ctx| {
+                    let Args::String(ref commit) = ctx.args else {
+                        return Ok(note_usage("magit-note-remove"));
+                    };
+                    let commit = commit.trim();
+                    if commit.is_empty() {
+                        return Ok(note_usage("magit-note-remove"));
+                    }
+                    Ok(magit_global_mode::spawn_note_remove(commit.to_string()))
+                }),
+                args_schema: vec![ArgSpec::required(
+                    "commit",
+                    lattice_grammar::ArgKind::String,
+                    "the commit whose note to remove",
+                )],
+                surface_form: SurfaceForm::Keyword,
+            },
+        );
+        registry.register_ex_command(
+            "magit-note-merge",
+            "Merge a notes ref into this one: `<ref> [manual|ours|theirs|union|cat_sort_uniq]`.",
+            ExCommandSpec {
+                latency_class: LatencyClass::Reflex,
+                accepts_bang: false,
+                accepts_range: false,
+                parse_args: Arc::new(|line: &str, _bang: bool| {
+                    Ok(Args::String(line.trim().to_string()))
+                }),
+                apply: {
+                    let notifications = notifications.clone();
+                    Arc::new(move |ctx| {
+                        let Args::String(ref spec) = ctx.args else {
+                            return Ok(note_merge_usage());
+                        };
+                        if spec.trim().is_empty() {
+                            return Ok(note_merge_usage());
+                        }
+                        Ok(magit_global_mode::spawn_note_merge(
+                            spec,
+                            notifications.clone(),
+                        ))
+                    })
+                },
+                args_schema: vec![ArgSpec::required(
+                    "spec",
+                    lattice_grammar::ArgKind::String,
+                    "<notes-ref> [strategy]",
+                )],
+                surface_form: SurfaceForm::Keyword,
+            },
+        );
+
         // MG.36: the scriptable half of `C`. With both arguments it
         // clones directly; with one it derives the destination the way
         // `git clone` itself would, so `:magit-clone <url>` behaves like
@@ -1737,6 +1870,44 @@ fn register_action_commands(registry: &mut CommandRegistry) {
         "action:magit-global-refs",
         "Open the Magit refs buffer — every branch, remote-tracking branch and tag",
     );
+    // MG.37: magit-notes-mode's own chords.
+    reg("action:magit-note-confirm", "Save this note");
+    reg("action:magit-note-abort", "Close the note buffer without saving");
+
+    // MG.37: the notes submenu.
+    reg(
+        "action:magit-global-note-edit",
+        "Edit the note on a commit — opens an editable buffer",
+    );
+    reg(
+        "action:magit-global-note-remove",
+        "Remove the note from a commit",
+    );
+    reg(
+        "action:magit-global-note-prune",
+        "Drop notes whose commit no longer exists (asks first)",
+    );
+    reg(
+        "action:magit-global-note-prune-execute",
+        "Execute the notes prune after confirmation",
+    );
+    reg(
+        "action:magit-global-note-merge",
+        "Merge another notes ref into this one",
+    );
+    reg(
+        "action:magit-global-note-merge-finish",
+        "Run the notes merge once the ref is known",
+    );
+    reg(
+        "action:magit-global-note-merge-commit",
+        "Finish a notes merge that stopped on a conflict",
+    );
+    reg(
+        "action:magit-global-note-merge-abort",
+        "Abandon a notes merge that stopped on a conflict",
+    );
+
     // MG.36: the clone wizard's three steps.
     reg("action:magit-global-clone", "Clone a repository — asks for the URL");
     reg(
@@ -2236,6 +2407,7 @@ mod tests {
         collect!(MagitBranchMode, "magit-branch-mode");
         collect!(MagitRemoteMode, "magit-remote-mode");
         collect!(MagitRefsMode, "magit-refs-mode");
+        collect!(MagitNotesMode, "magit-notes-mode");
         collect!(MagitSubmoduleMode, "magit-submodule-mode");
         collect!(MagitRebaseMode, "magit-rebase-mode");
         collect!(MagitRevisionMode, "magit-revision-mode");
@@ -2949,7 +3121,14 @@ mod tests {
         let ids = resolve_dispatch_ids(&registry);
 
         let bisect_keys = |in_progress: bool| -> Vec<String> {
-            let root = transients::dispatch_transient_with(&ids, &outside_magit(), in_progress);
+            let root = transients::dispatch_transient_with(
+                &ids,
+                &outside_magit(),
+                transients::DispatchGates {
+                    bisect: in_progress,
+                    notes_merge: false,
+                },
+            );
             let item = root
                 .groups
                 .iter()
@@ -2995,7 +3174,14 @@ mod tests {
         let ids = resolve_dispatch_ids(&registry);
 
         for in_progress in [false, true] {
-            let root = transients::dispatch_transient_with(&ids, &outside_magit(), in_progress);
+            let root = transients::dispatch_transient_with(
+                &ids,
+                &outside_magit(),
+                transients::DispatchGates {
+                    bisect: in_progress,
+                    notes_merge: false,
+                },
+            );
             let item = root
                 .groups
                 .iter()
@@ -3045,6 +3231,7 @@ mod tests {
             MagitBranchMode => "magit-branch-mode",
             MagitRemoteMode => "magit-remote-mode",
             MagitRefsMode => "magit-refs-mode",
+            MagitNotesMode => "magit-notes-mode",
             MagitSubmoduleMode => "magit-submodule-mode",
             MagitStashMode => "magit-stash-mode",
             MagitLogMode => "magit-log-mode",
@@ -3562,6 +3749,7 @@ mod tests {
             MagitBranchMode => "magit-branch-mode",
             MagitRemoteMode => "magit-remote-mode",
             MagitRefsMode => "magit-refs-mode",
+            MagitNotesMode => "magit-notes-mode",
             MagitSubmoduleMode => "magit-submodule-mode",
             MagitRebaseMode => "magit-rebase-mode",
             MagitRevisionMode => "magit-revision-mode",
@@ -3650,6 +3838,7 @@ mod tests {
             MagitBranchMode,
             MagitRemoteMode,
             MagitRefsMode,
+            MagitNotesMode,
             MagitSubmoduleMode,
             MagitRebaseMode,
             MagitRevisionMode,
@@ -3698,6 +3887,7 @@ mod tests {
             MagitBranchMode => "magit-branch-mode",
             MagitRemoteMode => "magit-remote-mode",
             MagitRefsMode => "magit-refs-mode",
+            MagitNotesMode => "magit-notes-mode",
             MagitSubmoduleMode => "magit-submodule-mode",
             MagitRebaseMode => "magit-rebase-mode",
             MagitRevisionMode => "magit-revision-mode",
@@ -3723,9 +3913,9 @@ mod tests {
             .filter(|m| m.contains("Magit"))
             .count();
         assert_eq!(
-            installed, 17,
+            installed, 18,
             "`install` registers {installed} magit modes but this guard \
-             checks 17 — a mode registered at boot and absent from the \
+             checks 18 — a mode registered at boot and absent from the \
              lists above has its chords unverified"
         );
 
@@ -3920,6 +4110,7 @@ mod tests {
             ("magit-branch-mode", MagitBranchMode.action_handlers()),
             ("magit-remote-mode", MagitRemoteMode.action_handlers()),
             ("magit-refs-mode", MagitRefsMode.action_handlers()),
+            ("magit-notes-mode", MagitNotesMode.action_handlers()),
             ("magit-submodule-mode", MagitSubmoduleMode.action_handlers()),
             ("magit-stash-mode", MagitStashMode.action_handlers()),
             ("magit-diff-mode", MagitDiffMode.action_handlers()),
@@ -4047,12 +4238,16 @@ mod tests {
         // mid-bisect while the suite runs — a flake, and one that would
         // have looked like a real regression.
         let root = inert_items(
-            &transients::dispatch_transient_with(&Default::default(), &outside_magit(), false),
+            &transients::dispatch_transient_with(
+                &Default::default(),
+                &outside_magit(),
+                transients::DispatchGates::default(),
+            ),
             "",
         );
         assert_eq!(
             root.len(),
-            34,
+            38,
             "expected every root-dispatch leaf (incl. both submenus') to \
              report inert, got: {root:?}"
         );
@@ -4060,12 +4255,19 @@ mod tests {
         // The in-progress branch of the bisect menu is a different set
         // of rows, and an unresolved id there would be just as inert.
         let bisecting = inert_items(
-            &transients::dispatch_transient_with(&Default::default(), &outside_magit(), true),
+            &transients::dispatch_transient_with(
+                &Default::default(),
+                &outside_magit(),
+                transients::DispatchGates {
+                    bisect: true,
+                    notes_merge: false,
+                },
+            ),
             "",
         );
         assert_eq!(
             bisecting.len(),
-            37,
+            41,
             "the in-progress bisect menu trades `start` for good/bad/skip/reset: {bisecting:?}"
         );
     }

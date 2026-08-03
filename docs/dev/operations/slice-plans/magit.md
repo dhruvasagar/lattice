@@ -1364,7 +1364,7 @@ the buffer you are already in is the actual no-op. See MG.23h's note.
 | MG.34 | `M` log-merged, `e` edit-line-commit — as file-dispatch rows, no chords | — | ✅ |
 | MG.35 | `y` show-refs — `magit-refs-mode` | — | ✅ |
 | MG.36 | `C` clone — clone only, no switch to the new repo | — | ✅ |
-| MG.37 | `T` notes | — | 📝 |
+| MG.37 | `T` notes — `magit-notes-mode` + the `T` submenu | — | ✅ |
 | MG.38 | `O` subtree | — | 📝 |
 | MG.39 | `w` am / `W` format-patch | — | 📝 |
 | MG.40 | `Y` cherries | — | 📝 |
@@ -2971,6 +2971,75 @@ should be:
 process-wide (§MG.21h/i's note), and the 2026-08-03 decision was to
 keep it that way. It is unblocked by reopening that decision, not by
 this tail.
+
+#### MG.37 — `T` notes ✅ (2026-08-03)
+
+`magit-notes-mode` on `*magit:note:<sha>*`, plus the `T` submenu on the
+root dispatch — magit's own key, and magit's own keys inside it (`T`
+edit, `r` remove, `m` merge, `p` prune, `c`/`a` while merging).
+
+**The buffer exists because `git notes edit` opens `$EDITOR`.** Inside
+an editor that means a child waiting on a terminal that is not there: it
+would hang holding a blocking-pool thread and never report either way.
+`Note::set` pipes the text to `-F -` instead, which makes this buffer
+the editor — the same reasoning, and the same `run_git_stdin` seam, that
+`Index::apply_patch` uses.
+
+A first version wrote a temp file instead and git answered "could not
+open or read" it. stdin is the better shape regardless (no leak on a
+crash, no race with a concurrent magit in the same repository), so the
+failure pointed at the fix rather than needing one.
+
+**Only editable magit buffer besides magit-commit.** `ReadOnly` is
+deliberately absent from its `options()`.
+
+**No viewer needed.** `git show` prints notes by default, so
+`magit-revision-mode` already displays a commit's note under its
+message. Pinned by a test rather than assumed — a future `--no-notes`
+would silently remove the only place they surface.
+
+##### Decisions worth naming
+
+**`r` does not confirm, `p` does.** Removing one note loses that note
+and it is one `T` away from being retyped; prune drops an unbounded
+number and names none of them. Same bar MG.12 set for `x` discard and
+branch-delete.
+
+**A misspelled merge strategy is refused, not defaulted.** `ours` and
+`theirs` resolve a conflict in opposite directions, so falling back to
+`manual` on a typo would *stop* a merge the user asked to resolve,
+leaving a half-done state with no sign why.
+
+**The gates became a struct.** `dispatch_transient_with` needed a second
+mid-flight flag beside `bisect_in_progress`, and two adjacent same-typed
+`bool`s are exactly the pair that transposes silently — a transposed
+gate shows the wrong menu with no error. `DispatchGates { bisect,
+notes_merge }` makes that unrepresentable. `probe()` reads both; every
+guard still passes them in, for MG.21g's original reason (probing makes
+a test's row count depend on whether the developer's checkout is
+mid-bisect).
+
+**Deferred, with magit's keys left free:** the four configure rows
+(`c`/`d`/`C`/`D`, setting `core.notesRef` / `notes.displayRef`). Those
+are transient *variable rows* — render a config value in the menu, edit
+it in place — which lattice's transients do not have. Same gap MG.21d
+named for remote URLs, and `:customize` is the likelier long-term home
+for per-repo git config than a hand-rolled menu.
+
+- **Tests:** 11. Four in `lattice-vcs` against **real repositories** —
+  the write/read/rewrite round trip (the second edit is the one that
+  catches a missing `--force`), empty-saves-as-remove and its
+  idempotence, the note appearing in `git show`, and `--dry-run` not
+  removing. Three unit tests on the strategy names and their refusal of
+  unknowns, two on the merge argv (default plus the misspelling case),
+  and two on the buffer-name round trip.
+- **No new `Style` variant, no renderer change:** the buffer is plain
+  text and the headerline reuses existing fields, so TUI/GPUI parity
+  holds by construction.
+- **Guard counts moved:** magit modes 17→18, root-dispatch inert leaves
+  34→38 and the bisecting variant 37→41. The mode guard caught
+  `magit-notes-mode`'s `C-c C-c` / `C-c C-k` as unregistered actions
+  before either was ever pressed.
 
 #### MG.36 — `C` clone ✅ (2026-08-03)
 

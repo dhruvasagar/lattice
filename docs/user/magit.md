@@ -49,6 +49,9 @@ no hidden state.
 | `:magit-submodule` | Open the [submodule list](help:magit-submodule-mode) — add / update / sync / remove |
 | `:magit-refs` | Open the [refs buffer](help:magit-refs-mode) — every branch, remote-tracking branch and tag |
 | `:magit-clone <url> [<dest>]` | Clone a repository (does not switch you to it — see [the dispatch](help:magit-transient)) |
+| `:magit-note-edit <commit>` | Edit a commit's [note](help:magit-notes-mode) |
+| `:magit-note-remove <commit>` | Remove a commit's note |
+| `:magit-note-merge <ref> [strategy]` | Merge a notes ref into this one |
 | `:magit-log-merged <commit>` | Show the merge commit that brought a commit into `HEAD` |
 | `:magit-rebase` | Start interactive rebase |
 | `:magit-rebase-continue` / `-skip` / `-abort` | Leave a [rebase that stopped](help:magit-rebase-mode) |
@@ -212,6 +215,7 @@ exactly like the live file. The row answers that:
 | [`magit-remote-mode`](help:magit-remote-mode) | `2 remotes` |
 | [`magit-submodule-mode`](help:magit-submodule-mode) | `3 submodules  1 uninitialised` |
 | [`magit-refs-mode`](help:magit-refs-mode) | `12 branches  4 remotes  3 tags` |
+| [`magit-notes-mode`](help:magit-notes-mode) | `editing note  a1b2c3d  Jane Doe  3 days ago  Fix the thing` |
 | [`magit-stash-mode`](help:magit-stash-mode) | `3 stashes` |
 | [`magit-stash-show-mode`](help:magit-stash-show-mode) | `stash@{2}  WIP on main: fix the thing` |
 | [`magit-rebase-mode`](help:magit-rebase-mode) | `onto  origin/main  4 commits` — plus `REBASE IN PROGRESS` |
@@ -295,6 +299,7 @@ two-pane diff session.
   [`magit-remote-mode`](help:magit-remote-mode),
   [`magit-submodule-mode`](help:magit-submodule-mode),
   [`magit-refs-mode`](help:magit-refs-mode),
+  [`magit-notes-mode`](help:magit-notes-mode),
   [`magit-rebase-mode`](help:magit-rebase-mode)
 - `:help magit-core-mode` — the [shared chords](help:magit-core-mode)
   every magit buffer inherits

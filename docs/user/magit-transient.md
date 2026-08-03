@@ -82,6 +82,8 @@ adds inside one):
 │                          a commit              │
 │    [B]  bisect        ▸ Find the commit that   │
 │                          introduced a bug      │
+│    [T]  notes         ▸ Edit, remove, merge or │
+│                          prune commit notes    │
 │                                                │
 │  ▸ Branches                                    │
 │    [b]  branch        ▸ Checkout, create,      │

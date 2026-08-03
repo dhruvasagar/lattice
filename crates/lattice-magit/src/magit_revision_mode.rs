@@ -292,7 +292,7 @@ impl Mode for MagitRevisionMode {
                 };
                 let shown = shown.unwrap_or_default();
                 let text = run_show(&wd, &shown, context);
-                let meta = run_show_meta(&wd, &shown);
+                let meta = commit_meta(&wd, &shown);
                 (shown, text, meta)
             })
             .await
@@ -332,7 +332,7 @@ impl Mode for MagitRevisionMode {
 /// config-dependent (`log.date`, `i18n.logOutputEncoding`) while
 /// `--format` is not. `-s` suppresses the diff, so this is a
 /// metadata-only read next to the patch `run_show` already fetches.
-fn run_show_meta(workdir: &std::path::Path, sha: &str) -> headerline::RevisionMeta {
+pub(crate) fn commit_meta(workdir: &std::path::Path, sha: &str) -> headerline::RevisionMeta {
     if sha.is_empty() {
         return headerline::RevisionMeta::default();
     }

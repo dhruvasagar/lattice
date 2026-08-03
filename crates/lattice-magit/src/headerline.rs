@@ -696,6 +696,23 @@ pub(crate) fn branch_fields(current: &str, total: usize) -> Vec<Field> {
     fields
 }
 
+/// MG.37 — magit-notes: which commit the note belongs to, and whether
+/// there already is one.
+///
+/// The commit identity matters more here than in most magit buffers:
+/// this buffer is a bare text area with nothing in its *content* naming
+/// what it is attached to, so without the row a note written against
+/// the wrong commit looks identical to one written against the right
+/// one. "new" vs "editing" is the second half of that — it says whether
+/// `C-c C-c` will create or overwrite.
+pub(crate) fn note_fields(meta: &RevisionMeta, has_existing: bool) -> Vec<Field> {
+    let mut fields = vec![Field::label(
+        if has_existing { "editing note" } else { "new note" }.to_string(),
+    )];
+    fields.extend(revision_fields(meta));
+    fields
+}
+
 /// MG.35 — magit-refs: how many of each kind.
 ///
 /// Three counts rather than one total, because "47 refs" answers

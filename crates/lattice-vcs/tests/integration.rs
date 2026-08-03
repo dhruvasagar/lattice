@@ -1121,3 +1121,98 @@ fn a_branch_ahead_of_its_upstream_reports_the_count() {
         "one commit ahead, with git's brackets already stripped"
     );
 }
+
+// ── MG.37: git notes against a real repository ───────────────────────
+
+/// The round trip, and the case that matters most: a SECOND edit.
+///
+/// `git notes add` without `--force` refuses when a note already
+/// exists, so an implementation that omitted it would work exactly once
+/// per commit and then silently stop saving.
+#[test]
+fn a_note_can_be_written_read_back_and_rewritten() {
+    let (dir, repo) = init_temp_repo();
+    write_file(dir.path(), "a.txt", "one\n");
+    Index::stage_path(&repo, "a.txt").expect("stage");
+    Commit::create(&repo, "first").expect("commit");
+    let head = git(&repo, &["rev-parse", "HEAD"]).trim().to_string();
+
+    assert_eq!(
+        lattice_vcs::Note::show(&repo, &head),
+        None,
+        "no note yet — and that is `None`, not an error"
+    );
+
+    lattice_vcs::Note::set(&repo, &head, "first note\n").expect("set");
+    assert_eq!(
+        lattice_vcs::Note::show(&repo, &head).as_deref().map(str::trim),
+        Some("first note")
+    );
+
+    lattice_vcs::Note::set(&repo, &head, "rewritten\n").expect("rewrite");
+    assert_eq!(
+        lattice_vcs::Note::show(&repo, &head).as_deref().map(str::trim),
+        Some("rewritten"),
+        "a second edit must overwrite, not be refused"
+    );
+}
+
+/// Clearing the buffer means "no note". `git notes add -F` errors on
+/// empty input, so this has to translate to a remove — and removing a
+/// note that was never there must not fail either, or clearing an empty
+/// buffer would error.
+#[test]
+fn saving_an_empty_note_removes_it_and_is_safe_when_there_was_none() {
+    let (dir, repo) = init_temp_repo();
+    write_file(dir.path(), "a.txt", "one\n");
+    Index::stage_path(&repo, "a.txt").expect("stage");
+    Commit::create(&repo, "first").expect("commit");
+    let head = git(&repo, &["rev-parse", "HEAD"]).trim().to_string();
+
+    lattice_vcs::Note::set(&repo, &head, "temporary\n").expect("set");
+    assert!(lattice_vcs::Note::show(&repo, &head).is_some());
+
+    lattice_vcs::Note::set(&repo, &head, "   \n").expect("blank clears it");
+    assert_eq!(lattice_vcs::Note::show(&repo, &head), None);
+
+    lattice_vcs::Note::set(&repo, &head, "").expect("clearing an absent note is not an error");
+    lattice_vcs::Note::remove(&repo, &head).expect("explicit remove is idempotent too");
+}
+
+/// `git show` displays notes by default, which is why the revision view
+/// needs no work to show them — pinned so a future `--no-notes` or a
+/// format change does not silently remove the only place they surface.
+#[test]
+fn a_note_appears_in_git_show_output() {
+    let (dir, repo) = init_temp_repo();
+    write_file(dir.path(), "a.txt", "one\n");
+    Index::stage_path(&repo, "a.txt").expect("stage");
+    Commit::create(&repo, "first").expect("commit");
+    let head = git(&repo, &["rev-parse", "HEAD"]).trim().to_string();
+    lattice_vcs::Note::set(&repo, &head, "visible in the revision view\n").expect("set");
+
+    let shown = git(&repo, &["show", "--stat", "-p", &head]);
+    assert!(
+        shown.contains("visible in the revision view"),
+        "the revision view shows notes for free: {shown}"
+    );
+}
+
+/// Prune drops notes whose object is gone. `--dry-run` must report
+/// without removing — it is the only way to review the operation.
+#[test]
+fn prune_dry_run_reports_without_removing() {
+    let (dir, repo) = init_temp_repo();
+    write_file(dir.path(), "a.txt", "one\n");
+    Index::stage_path(&repo, "a.txt").expect("stage");
+    Commit::create(&repo, "first").expect("commit");
+    let head = git(&repo, &["rev-parse", "HEAD"]).trim().to_string();
+    lattice_vcs::Note::set(&repo, &head, "kept\n").expect("set");
+
+    lattice_vcs::Note::prune(&repo, true).expect("dry run");
+    assert_eq!(
+        lattice_vcs::Note::show(&repo, &head).as_deref().map(str::trim),
+        Some("kept"),
+        "a dry run must not remove a reachable commit's note"
+    );
+}

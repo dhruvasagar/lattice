@@ -141,6 +141,15 @@ pub struct DispatchActionIds {
     pub refs: Option<CommandId>,
     /// MG.36: `C` — clone a repository, magit's own key.
     pub clone: Option<CommandId>,
+    /// MG.37: the `T` notes submenu's rows, on magit's own keys.
+    pub note_edit: Option<CommandId>,
+    pub note_remove: Option<CommandId>,
+    pub note_prune: Option<CommandId>,
+    pub note_merge: Option<CommandId>,
+    /// Shown only while a notes merge is stopped on a conflict — see
+    /// [`notes_transient`].
+    pub note_merge_commit: Option<CommandId>,
+    pub note_merge_abort: Option<CommandId>,
     /// MG.21g: `B` — bisect. Start is shown only when none is running;
     /// the marks only when one is.
     pub bisect_start: Option<CommandId>,
@@ -411,6 +420,89 @@ fn branch_transient(ids: &DispatchActionIds) -> TransientSpec {
     }
 }
 
+/// MG.37: the `T` notes submenu, gated on whether a notes merge is
+/// stopped mid-flight.
+///
+/// Keys are magit's own (`magit-notes`): `T` edit, `r` remove, `m`
+/// merge, `p` prune, and — while merging — `c` commit / `a` abort.
+///
+/// **Gated for the same reason `B` bisect is** (MG.21g): outside a
+/// merge, `git notes merge --commit` / `--abort` error, so ungated rows
+/// would look actionable and fail. Inside one, edit / remove / merge /
+/// prune are what you must not be doing, so the menu shows only the two
+/// ways out.
+///
+/// **Deferred, and magit's keys left free for them:** the four
+/// configure rows (`c` / `d` / `C` / `D`, setting `core.notesRef` and
+/// `notes.displayRef`). Those are transient *variable rows* — they
+/// render a config value inside the menu and edit it in place — which
+/// lattice's transients do not have. It is the same gap MG.21d named
+/// for remote URLs, and `:customize` is the likelier long-term home for
+/// per-repo git config than a hand-rolled menu.
+fn notes_transient(ids: &DispatchActionIds, merge_in_progress: bool) -> TransientSpec {
+    let groups = if merge_in_progress {
+        vec![TransientGroup {
+            label: "Notes merge in progress".into(),
+            items: vec![
+                action_or_placeholder(
+                    ids.note_merge_commit,
+                    "c",
+                    "commit merge",
+                    "Finish the notes merge, keeping the resolved notes",
+                    "note_merge_commit_op",
+                ),
+                action_or_placeholder(
+                    ids.note_merge_abort,
+                    "a",
+                    "abort merge",
+                    "Abandon the notes merge, restoring the notes ref",
+                    "note_merge_abort_op",
+                ),
+            ],
+        }]
+    } else {
+        vec![TransientGroup {
+            label: "Notes".into(),
+            items: vec![
+                action_or_placeholder(
+                    ids.note_edit,
+                    "T",
+                    "edit",
+                    "Edit the note on a commit — opens an editable buffer",
+                    "note_edit_op",
+                ),
+                action_or_placeholder(
+                    ids.note_remove,
+                    "r",
+                    "remove",
+                    "Remove the note from a commit",
+                    "note_remove_op",
+                ),
+                action_or_placeholder(
+                    ids.note_merge,
+                    "m",
+                    "merge",
+                    "Merge another notes ref into this one",
+                    "note_merge_op",
+                ),
+                action_or_placeholder(
+                    ids.note_prune,
+                    "p",
+                    "prune",
+                    "Drop notes whose commit no longer exists (asks first)",
+                    "note_prune_op",
+                ),
+            ],
+        }]
+    };
+    TransientSpec {
+        title: "Notes".into(),
+        groups,
+        preview: None,
+        footer: Some("q dismiss  Esc/BS back".into()),
+    }
+}
+
 /// MG.21g: the `B` bisect submenu, gated on whether a bisect is
 /// running.
 ///
@@ -493,6 +585,18 @@ pub fn bisect_in_progress() -> bool {
     crate::workdir::magit_workdir()
         .and_then(|wd| lattice_vcs::Repository::discover(wd).ok())
         .map(|repo| lattice_vcs::Bisect::in_progress(&repo))
+        .unwrap_or(false)
+}
+
+/// MG.37: is a `git notes merge` stopped on a conflict?
+///
+/// Peer of [`bisect_in_progress`], and read the same way — from the
+/// repository, so the menu reflects what git actually has half-done
+/// rather than what the editor last remembered doing.
+pub fn notes_merge_in_progress() -> bool {
+    crate::workdir::magit_workdir()
+        .and_then(|wd| lattice_vcs::Repository::discover(wd).ok())
+        .map(|repo| lattice_vcs::Note::merge_in_progress(repo.gitdir()))
         .unwrap_or(false)
 }
 
@@ -648,16 +752,46 @@ fn jump_transient(ids: &DispatchActionIds) -> TransientSpec {
 /// `s` row's meaning ([`status_row`]) and the section-acting rows
 /// ([`applying_changes_items`]).
 pub fn dispatch_transient(ids: &DispatchActionIds, ctx: &TransientContext) -> TransientSpec {
-    dispatch_transient_with(ids, ctx, bisect_in_progress())
+    dispatch_transient_with(ids, ctx, DispatchGates::probe())
 }
 
-/// [`dispatch_transient`] with the bisect gate supplied rather than
-/// probed — pure, and the form every guard over this menu uses.
+/// The mid-flight git operations the menu gates rows on.
+///
+/// A struct rather than positional `bool`s: they are adjacent, same
+/// type, and both mean "something is half-done" — exactly the pair that
+/// transposes silently, and a transposed gate shows the wrong menu with
+/// no error.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DispatchGates {
+    /// MG.21g: `git bisect` is running.
+    pub bisect: bool,
+    /// MG.37: `git notes merge` stopped on a conflict.
+    pub notes_merge: bool,
+}
+
+impl DispatchGates {
+    /// Read the gates from the repository.
+    ///
+    /// Every *guard* over this menu passes gates in rather than calling
+    /// this, deliberately: probing would make a test's row count depend
+    /// on whether the developer's own checkout happened to be mid-bisect
+    /// while the suite ran — a flake that reads as a real regression.
+    pub fn probe() -> Self {
+        Self {
+            bisect: bisect_in_progress(),
+            notes_merge: notes_merge_in_progress(),
+        }
+    }
+}
+
+/// [`dispatch_transient`] with the gates supplied rather than probed —
+/// pure, and the form every guard over this menu uses.
 pub fn dispatch_transient_with(
     ids: &DispatchActionIds,
     ctx: &TransientContext,
-    bisect_in_progress: bool,
+    gates: DispatchGates,
 ) -> TransientSpec {
+    let bisect_in_progress = gates.bisect;
     TransientSpec {
         title: "Magit dispatch".into(),
         groups: vec![
@@ -742,6 +876,19 @@ pub fn dispatch_transient_with(
                         kind: TransientItemKind::Submenu(Arc::new(bisect_transient(
                             ids,
                             bisect_in_progress,
+                        ))),
+                    },
+                    // MG.37: magit's `T`. A submenu rather than a direct
+                    // action because notes have four operations and two
+                    // more while a merge is stopped — the same shape `B`
+                    // has, and gated the same way.
+                    TransientItem {
+                        key: vec!["T".into()],
+                        label: "notes".into(),
+                        description: "Edit, remove, merge or prune commit notes".into(),
+                        kind: TransientItemKind::Submenu(Arc::new(notes_transient(
+                            ids,
+                            gates.notes_merge,
                         ))),
                     },
                 ],

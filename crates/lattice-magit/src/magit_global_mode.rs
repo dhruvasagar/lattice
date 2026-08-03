@@ -875,6 +875,124 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         }),
     });
 
+    // MG.37: the notes submenu's handlers.
+    //
+    // Edit and remove need a COMMIT, and this menu has no cursor on one
+    // when opened outside a magit buffer — so they answer the same two
+    // ways `A` / `_` / `O` (MG.23j) and `M` (MG.34) do: the commit under
+    // the cursor when there is one, the commit picker when there is not.
+    contributions.push(ActionHandlerContribution {
+        action_name: "action:magit-global-note-edit",
+        handler: Arc::new(|ctx: &ActionContext<'_>| {
+            let at_cursor =
+                crate::buffer_state::view_for(ctx).and_then(|v| v.commit_at_cursor(ctx.cursor));
+            Some(match at_cursor {
+                Some(commit) => Effect::OpenSyntheticBuffer {
+                    name: crate::magit_notes_mode::note_buffer_name(&commit),
+                    mode_id: crate::MagitNotesMode::mode_id().as_str().to_string(),
+                },
+                None => Effect::OpenPicker {
+                    source: crate::picker_sources::COMMIT_PICK_SOURCE.to_string(),
+                    args: vec!["magit-note-edit".to_string()],
+                },
+            })
+        }),
+    });
+    contributions.push(ActionHandlerContribution {
+        action_name: "action:magit-global-note-remove",
+        handler: Arc::new(|ctx: &ActionContext<'_>| {
+            let at_cursor =
+                crate::buffer_state::view_for(ctx).and_then(|v| v.commit_at_cursor(ctx.cursor));
+            Some(match at_cursor {
+                // No confirm: a note is not history, removing one loses
+                // only the note, and it is one `T` away from being
+                // retyped. `prune` DOES ask — it can drop many at once
+                // and names none of them.
+                Some(commit) => spawn_note_remove(commit),
+                None => Effect::OpenPicker {
+                    source: crate::picker_sources::COMMIT_PICK_SOURCE.to_string(),
+                    args: vec!["magit-note-remove".to_string()],
+                },
+            })
+        }),
+    });
+
+    // Prune asks, because it removes an unbounded number of notes and
+    // names none of them — the same bar `x` discard and branch-delete
+    // are held to (MG.12). The ask half performs no git call, so
+    // answering `n` cannot mutate.
+    contributions.push(ActionHandlerContribution {
+        action_name: "action:magit-global-note-prune",
+        handler: Arc::new(|_ctx: &ActionContext<'_>| {
+            Some(crate::confirm::ask(
+                "Drop every note whose commit no longer exists?".to_string(),
+                "action:magit-global-note-prune-execute",
+            ))
+        }),
+    });
+    contributions.push(ActionHandlerContribution {
+        action_name: "action:magit-global-note-prune-execute",
+        handler: Arc::new(|ctx: &ActionContext<'_>| {
+            Some(spawn_note_prune(
+                ctx.services
+                    .get::<lattice_notify::NotificationStoreHandle>()
+                    .map(|outer| (*outer).clone()),
+            ))
+        }),
+    });
+
+    macro_rules! notes_merge_op {
+        ($action_name:expr, $op:expr) => {
+            contributions.push(ActionHandlerContribution {
+                action_name: $action_name,
+                handler: Arc::new(|ctx: &ActionContext<'_>| {
+                    Some(spawn_remote_op(
+                        $op,
+                        &lattice_grammar::Args::None,
+                        ctx.services
+                            .get::<lattice_notify::NotificationStoreHandle>()
+                            .map(|outer| (*outer).clone()),
+                    ))
+                }),
+            });
+        };
+    }
+    notes_merge_op!(
+        "action:magit-global-note-merge-commit",
+        RemoteOp::NOTES_MERGE_COMMIT
+    );
+    notes_merge_op!(
+        "action:magit-global-note-merge-abort",
+        RemoteOp::NOTES_MERGE_ABORT
+    );
+
+    contributions.push(ActionHandlerContribution {
+        action_name: "action:magit-global-note-merge",
+        handler: Arc::new(|_ctx: &ActionContext<'_>| {
+            Some(Effect::OpenPrompt {
+                prompt: "Merge notes ref: ".to_string(),
+                initial: String::new(),
+                on_submit_action: "action:magit-global-note-merge-finish".to_string(),
+                buffer_name: Some("*magit:note-merge*".to_string()),
+            })
+        }),
+    });
+    contributions.push(ActionHandlerContribution {
+        action_name: "action:magit-global-note-merge-finish",
+        handler: Arc::new(|ctx: &ActionContext<'_>| {
+            let spec = ctx.prompt_value?.trim().to_string();
+            if spec.is_empty() {
+                return None;
+            }
+            Some(spawn_note_merge(
+                &spec,
+                ctx.services
+                    .get::<lattice_notify::NotificationStoreHandle>()
+                    .map(|outer| (*outer).clone()),
+            ))
+        }),
+    });
+
     // MG.36: magit's `C` clone — a two-step wizard, the same shape the
     // branch-create wizard uses. URL first, then where to put it.
     //
@@ -1470,6 +1588,31 @@ impl RemoteOp {
         flags: &[],
     };
 
+    /// MG.37: the notes operations with no argument. `spawn_remote_op`'s
+    /// shape — one bounded argv, off-thread, notify — fits them for the
+    /// same reason it fits the rebase sequencer.
+    pub const NOTES_PRUNE: Self = Self {
+        what: "notes prune",
+        args: &["notes", "prune"],
+        flags: &[RemoteFlag {
+            name: "dry-run",
+            arg: "--dry-run",
+            key: "-n",
+            doc: "Report what would be dropped without dropping it",
+            kind: RemoteArgKind::Flag,
+        }],
+    };
+    pub const NOTES_MERGE_COMMIT: Self = Self {
+        what: "notes merge --commit",
+        args: &["notes", "merge", "--commit"],
+        flags: &[],
+    };
+    pub const NOTES_MERGE_ABORT: Self = Self {
+        what: "notes merge --abort",
+        args: &["notes", "merge", "--abort"],
+        flags: &[],
+    };
+
     /// MG.23b: magit's `S` — stage every tracked modification at once.
     ///
     /// `add --update`, matching `magit-stage-modified`: tracked changes
@@ -1672,6 +1815,106 @@ pub fn spawn_git(argv: Vec<String>, what: &str) -> Effect {
     Effect::Echo {
         level: lattice_grammar::EchoLevel::Info,
         text: format!("magit: {shown}"),
+    }
+}
+
+// ── MG.37: the notes operations that are not a buffer ───────────────
+
+/// `git notes merge <ref> [--strategy=<s>]`, parsed from one line.
+///
+/// Pure, so the flag shape is pinned without running a merge — the same
+/// reason `clone_argv` / `tag_argv` / `log_merged_argv` are.
+///
+/// The strategy is optional and trailing (`<ref> ours`). An unrecognised
+/// second word is an ERROR rather than a ref with a typo'd strategy
+/// silently merged manually — `NoteMergeStrategy::parse` refuses, and
+/// this returns `None` so the caller can say so.
+pub(crate) fn note_merge_argv(spec: &str) -> Option<Vec<String>> {
+    let spec = spec.trim();
+    let (git_ref, strategy) = match spec.split_once(char::is_whitespace) {
+        Some((r, s)) => (r, lattice_vcs::NoteMergeStrategy::parse(s)?),
+        None => (spec, lattice_vcs::NoteMergeStrategy::Manual),
+    };
+    if git_ref.is_empty() {
+        return None;
+    }
+    Some(vec![
+        "notes".to_string(),
+        "merge".to_string(),
+        format!("--strategy={}", strategy.as_str()),
+        git_ref.to_string(),
+    ])
+}
+
+/// Remove one commit's note, off the actor thread.
+pub(crate) fn spawn_note_remove(commit: String) -> Effect {
+    spawn_git(
+        vec![
+            "notes".to_string(),
+            "remove".to_string(),
+            "--ignore-missing".to_string(),
+            commit.clone(),
+        ],
+        "notes remove",
+    )
+}
+
+/// Prune unreachable notes, reporting the outcome.
+///
+/// A notification rather than `spawn_git`'s echo: prune's whole result
+/// is *what it removed*, and an echo written at fire time cannot carry
+/// it.
+pub(crate) fn spawn_note_prune(
+    notify: Option<lattice_notify::NotificationStoreHandle>,
+) -> Effect {
+    spawn_remote_op(RemoteOp::NOTES_PRUNE, &lattice_grammar::Args::None, notify)
+}
+
+/// Merge a notes ref into the current one.
+pub(crate) fn spawn_note_merge(
+    spec: &str,
+    notify: Option<lattice_notify::NotificationStoreHandle>,
+) -> Effect {
+    let Some(argv) = note_merge_argv(spec) else {
+        return Effect::Echo {
+            level: lattice_grammar::EchoLevel::Error,
+            text: "magit: usage — <notes-ref> [manual|ours|theirs|union|cat_sort_uniq]"
+                .to_string(),
+        };
+    };
+    let workdir = crate::workdir::magit_workdir().unwrap_or_default();
+    tokio::task::spawn(async move {
+        let result = tokio::task::spawn_blocking(move || run_remote_op(&workdir, &argv))
+            .await
+            .unwrap_or_else(|e| Err(e.to_string()));
+        match result {
+            Ok(out) => {
+                tracing::debug!(target: "lattice_magit", "notes merge: {out}");
+                if let Some(n) = notify {
+                    n.post(
+                        lattice_notify::NotificationLevel::Info,
+                        "notes merge finished".to_string(),
+                    );
+                }
+            }
+            Err(err) => {
+                tracing::error!(target: "lattice_magit", "notes merge failed: {err}");
+                if let Some(n) = notify {
+                    let first = err.lines().next().unwrap_or("failed").to_string();
+                    // A manual-strategy conflict lands here, and it is
+                    // not a failure to dismiss: the merge is now stopped
+                    // and `T` shows the two ways out.
+                    n.post(
+                        lattice_notify::NotificationLevel::Error,
+                        format!("notes merge: {first}"),
+                    );
+                }
+            }
+        }
+    });
+    Effect::Echo {
+        level: lattice_grammar::EchoLevel::Info,
+        text: format!("magit: merging notes from {spec}…"),
     }
 }
 
@@ -2383,6 +2626,50 @@ mod tests {
                 "no prompted operation may request an editor: {argv:?}"
             );
         }
+    }
+
+    // ── MG.37: notes ────────────────────────────────────────────────
+
+    /// A bare ref merges with git's own default strategy, and the
+    /// strategy is a trailing word when given.
+    #[test]
+    fn note_merge_argv_defaults_to_manual_and_accepts_a_strategy() {
+        assert_eq!(
+            note_merge_argv("refs/notes/other"),
+            Some(vec![
+                "notes".to_string(),
+                "merge".to_string(),
+                "--strategy=manual".to_string(),
+                "refs/notes/other".to_string(),
+            ]),
+            "no strategy given ⇒ git's default, stated explicitly"
+        );
+        assert_eq!(
+            note_merge_argv("refs/notes/other theirs")
+                .expect("valid")
+                .get(2)
+                .map(String::as_str),
+            Some("--strategy=theirs")
+        );
+    }
+
+    /// A misspelled strategy is REFUSED, not silently merged manually.
+    ///
+    /// This is the case worth pinning: `ours` and `theirs` resolve a
+    /// conflict in opposite directions, and falling back to `manual` on
+    /// a typo would stop the merge rather than resolve it — leaving the
+    /// user in a state they did not ask for with no sign why.
+    #[test]
+    fn a_misspelled_strategy_is_refused_rather_than_defaulted() {
+        for bad in ["ref our", "ref Theirs", "ref cat-sort-uniq", "ref x y"] {
+            assert_eq!(
+                note_merge_argv(bad),
+                None,
+                "{bad:?} must be refused, not merged with the default"
+            );
+        }
+        assert_eq!(note_merge_argv(""), None, "no ref at all");
+        assert_eq!(note_merge_argv("   "), None);
     }
 
     // ── MG.36: `C` clone ────────────────────────────────────────────

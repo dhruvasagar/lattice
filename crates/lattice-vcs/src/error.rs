@@ -61,6 +61,10 @@ pub enum VcsError {
     #[error("submodule operation failed: {0}")]
     Submodule(String),
 
+    /// Notes operation failed (MG.37).
+    #[error("notes operation failed: {0}")]
+    Note(String),
+
     /// A working-tree status entry could not be parsed.
     #[error("status parse error: {0}")]
     StatusParse(String),

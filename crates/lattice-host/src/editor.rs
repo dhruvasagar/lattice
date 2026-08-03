@@ -1666,6 +1666,12 @@ pub struct Editor {
     /// `diff-mode` deactivation drops its fold sources, and the next
     /// recompute simply finds none.
     pub diff_fold_seen_revisions: std::collections::HashMap<lattice_core::BufferId, u64>,
+    /// Document version each buffer's overlay folds were last computed
+    /// at — see `Editor::refresh_overlay_folds`. Peer of
+    /// `diff_fold_seen_revisions`, keyed on the document rather than a
+    /// diff session so it covers overlays whose buffer is edited out of
+    /// band (magit-status's inline diff toggle).
+    pub overlay_fold_seen_versions: std::collections::HashMap<lattice_core::BufferId, u64>,
     /// S2.1 (2026-05-26): wake signal for the cell-builder worker.
     /// `publish_render_state` fires `notify_one()` after every
     /// dispatch tick. The worker `notified().await`s; permit-style

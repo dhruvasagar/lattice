@@ -14888,6 +14888,20 @@ impl Editor {
         // lands (`:diff` / `:diffsplit`; openDiff seeds them synchronously
         // at open). Revision-gated, so unrelated wakes don't re-fold.
         self.refresh_diff_folds();
+        // Overlay folds whose buffer text changed out of band. A mode
+        // that edits its own buffer through the document handle (magit
+        // -status's `=` inline-diff toggle) never goes through the
+        // Editor's edit path, so nothing recomputed its folds — the
+        // ranges stayed pinned to the text as it was before the diff was
+        // spliced in or out.
+        //
+        // The symptom is not "folds are missing", which would be
+        // obvious. It is `<Tab>` closing the WRONG range:
+        // `fold_to_close_at` picks by containment, so on a row with no
+        // fold of its own a stale outer fold now spanning half the
+        // buffer wins, and pressing `<Tab>` on a file with no diff hides
+        // every file below it. A redraw hid the bug by recomputing.
+        self.refresh_overlay_folds();
         self.drain_pending_selection_range();
         signals.extend(self.drain_pending_picker_init());
         // PH7.4c.2: commit any async plugin-source accept whose outcome landed
@@ -16741,6 +16755,47 @@ impl Editor {
         for (buffer_id, rev) in to_refresh {
             self.recompute_folds_for_buffer(buffer_id);
             self.diff_fold_seen_revisions.insert(buffer_id, rev);
+        }
+    }
+
+    /// Recompute folds for any visible buffer with registered fold
+    /// overlays whose document version moved since the last check.
+    ///
+    /// Generic on purpose. [`Self::refresh_diff_folds`] does the same
+    /// job for diff sessions, keyed on the session's own revision; this
+    /// one keys on the *document version*, which covers every overlay
+    /// whose source reads live buffer state — including any future one,
+    /// without it having to remember to ask.
+    ///
+    /// Revision-gated, so an unrelated wake costs one version compare
+    /// per visible buffer and no recompute (paramount goal #1).
+    fn refresh_overlay_folds(&mut self) {
+        if self
+            .fold_registry
+            .lock()
+            .expect("fold_registry poisoned")
+            .overlays()
+            .count()
+            == 0
+        {
+            return;
+        }
+        let mut to_refresh: Vec<(lattice_core::BufferId, u64)> = Vec::new();
+        for leaf in self.pane_tree.leaves() {
+            let buffer_id = leaf.buffer_id;
+            let Some(handle) = self.buffers.document_handle(buffer_id) else {
+                continue;
+            };
+            let version = handle.snapshot().version;
+            if self.overlay_fold_seen_versions.get(&buffer_id).copied() != Some(version)
+                && !to_refresh.iter().any(|(b, _)| *b == buffer_id)
+            {
+                to_refresh.push((buffer_id, version));
+            }
+        }
+        for (buffer_id, version) in to_refresh {
+            self.recompute_folds_for_buffer(buffer_id);
+            self.overlay_fold_seen_versions.insert(buffer_id, version);
         }
     }
 

@@ -352,6 +352,73 @@ mod expansion_survives_refresh {
         );
     }
 
+    /// Reported from real use (2026-08-03): `<Tab>` on a file with no
+    /// diff hid that file AND every file below it in the section.
+    ///
+    /// `fold_to_close_at` picks by **containment**, so a row with no
+    /// fold of its own closes whichever fold currently spans it. That is
+    /// correct behaviour given a correct fold list — the bug was that
+    /// the list was stale: `=` edits the buffer through the document
+    /// handle, which never goes through the Editor's edit path, so
+    /// nothing recomputed folds and the ranges stayed pinned to the text
+    /// as it was before the diff was spliced in. A leftover range then
+    /// spanned half the buffer.
+    ///
+    /// This pins the half that must hold for the fix to mean anything:
+    /// the ranges the source emits describe the text as it is NOW, and
+    /// an entry with nothing expanded emits NO fold — so once the list
+    /// is fresh there is nothing for `<Tab>` on such a row to close, and
+    /// it says "No fold found" instead of eating the section.
+    ///
+    /// (The trigger half — recomputing when the buffer changes out of
+    /// band — is `Editor::refresh_overlay_folds`, wired into the tick
+    /// beside `refresh_diff_folds`.)
+    #[test]
+    fn an_entry_with_nothing_expanded_contributes_no_fold_range() {
+        let dir = repo_with_an_unstaged_change();
+        let wd = dir.path().to_path_buf();
+
+        // Nothing expanded: the source has no ranges to offer at all,
+        // which is what leaves `<Tab>` on such a row with nothing to
+        // close.
+        let (collapsed_text, _, _, collapsed_expanded) =
+            build_and_format(&wd, &HashSet::new(), 3);
+        assert!(collapsed_expanded.is_empty(), "nothing is expanded");
+
+        // Expanded: exactly one entry gains a range, and it must stop at
+        // that entry's own diff rather than running on into the rows
+        // below — the stale-range shape the report describes.
+        let open: HashSet<String> = [open_key()].into_iter().collect();
+        let (text, _, _, expanded) = build_and_format(&wd, &open, 3);
+        let count = expanded
+            .get(&open_key())
+            .copied()
+            .expect("the open entry records its row count");
+        let added = text.lines().count() - collapsed_text.lines().count();
+        assert_eq!(
+            count, added,
+            "the fold body is exactly the rows the expansion added — a \
+             count larger than that is precisely the range that swallows \
+             the entries below it"
+        );
+
+        // And the body really is this file's diff, not the next entry.
+        let header = text
+            .lines()
+            .position(|l| l.contains("a.txt"))
+            .expect("the entry row");
+        let body: Vec<&str> = text.lines().skip(header + 1).take(count).collect();
+        assert!(
+            body.iter().any(|l| l.starts_with("@@")),
+            "the folded body is the diff:\n{body:#?}"
+        );
+        assert!(
+            !body.iter().any(|l| l.trim_start().starts_with("Untracked")
+                || l.contains("Recent commits")),
+            "and it stops before the next section:\n{body:#?}"
+        );
+    }
+
     /// The entry key the refresh matches on must be the one `=` writes,
     /// or an expansion would silently fail to come back.
     #[test]

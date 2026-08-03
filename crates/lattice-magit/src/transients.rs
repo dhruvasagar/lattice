@@ -102,7 +102,7 @@ fn remote_op_transient(
         title: title.into(),
         groups,
         preview: Some(remote_preview(op)),
-        footer: Some("q dismiss  BS back".into()),
+        footer: Some("q dismiss  Esc/BS back".into()),
     }
 }
 
@@ -122,6 +122,9 @@ pub struct DispatchActionIds {
     pub log: Option<CommandId>,
     pub diff: Option<CommandId>,
     pub branch: Option<CommandId>,
+    /// MG.29: the branch submenu's own rows.
+    pub branch_checkout: Option<CommandId>,
+    pub branch_create: Option<CommandId>,
     /// MG.21d: `M` — remote management, magit's own key.
     pub remote: Option<CommandId>,
     /// MG.23k: `D` — re-run this view with different git arguments.
@@ -282,7 +285,54 @@ fn reset_transient(ids: &DispatchActionIds) -> TransientSpec {
             ],
         }],
         preview: None,
-        footer: Some("q dismiss  BS back".into()),
+        footer: Some("q dismiss  Esc/BS back".into()),
+    }
+}
+
+/// MG.29: the `b` branch submenu.
+///
+/// `b` used to open the branch **list** straight away. That is one of
+/// several things you want from "branches", and it made the other ones
+/// — check one out, start one — reachable only by opening the list
+/// first and then finding the chord. Magit puts them in a submenu; so
+/// does this.
+///
+/// The list is still one keystroke further in (`b l`), not removed.
+///
+/// Both other rows ASK rather than reading a cursor, because a menu
+/// opened from anywhere has none — the same answer MG.23j gave the
+/// commit rows.
+fn branch_transient(ids: &DispatchActionIds) -> TransientSpec {
+    TransientSpec {
+        title: "Branch".into(),
+        groups: vec![TransientGroup {
+            label: "Actions".into(),
+            items: vec![
+                action_or_placeholder(
+                    ids.branch_checkout,
+                    "b",
+                    "checkout",
+                    "Pick a branch and check it out",
+                    "branch_checkout_op",
+                ),
+                action_or_placeholder(
+                    ids.branch_create,
+                    "c",
+                    "create",
+                    "Pick a base, then name a new branch and check it out",
+                    "branch_create_op",
+                ),
+                action_or_placeholder(
+                    ids.branch,
+                    "l",
+                    "list",
+                    "Open the branch list buffer",
+                    "branch_op",
+                ),
+            ],
+        }],
+        preview: None,
+        footer: Some("q dismiss  Esc/BS back".into()),
     }
 }
 
@@ -353,7 +403,7 @@ pub fn view_arguments_transient(ids: &DispatchActionIds, ctx: &TransientContext)
             },
         ],
         preview: None,
-        footer: Some("q dismiss  BS back".into()),
+        footer: Some("q dismiss  Esc/BS back".into()),
     }
 }
 
@@ -424,7 +474,7 @@ fn bisect_transient(ids: &DispatchActionIds, in_progress: bool) -> TransientSpec
             items,
         }],
         preview: None,
-        footer: Some("q dismiss  BS back".into()),
+        footer: Some("q dismiss  Esc/BS back".into()),
     }
 }
 
@@ -502,7 +552,7 @@ fn jump_transient(ids: &DispatchActionIds) -> TransientSpec {
             ],
         }],
         preview: None,
-        footer: Some("q dismiss  BS back".into()),
+        footer: Some("q dismiss  Esc/BS back".into()),
     }
 }
 
@@ -623,13 +673,12 @@ pub fn dispatch_transient_with(
             },
             TransientGroup {
                 label: "Branches".into(),
-                items: vec![action_or_placeholder(
-                    ids.branch,
-                    "b",
-                    "branch",
-                    "Open the branch list",
-                    "branch_op",
-                )],
+                items: vec![TransientItem {
+                    key: vec!["b".into()],
+                    label: "branch".into(),
+                    description: "Checkout, create, or list branches".into(),
+                    kind: TransientItemKind::Submenu(Arc::new(branch_transient(ids))),
+                }],
             },
             TransientGroup {
                 label: "Stashing".into(),
@@ -758,7 +807,7 @@ pub fn dispatch_transient_with(
             },
         ],
         preview: None,
-        footer: Some("q dismiss  BS back".into()),
+        footer: Some("q dismiss  Esc/BS back".into()),
     }
 }
 
@@ -789,7 +838,7 @@ fn commit_transient(ids: &DispatchActionIds) -> TransientSpec {
             ],
         }],
         preview: None,
-        footer: Some("q dismiss  BS back".into()),
+        footer: Some("q dismiss  Esc/BS back".into()),
     }
 }
 
@@ -832,7 +881,7 @@ fn stash_transient(ids: &DispatchActionIds) -> TransientSpec {
         // The preview describes the stash-push the `z` key runs; `l`
         // just opens the list and ignores the flag.
         preview: Some(remote_preview(RemoteOp::STASH)),
-        footer: Some("q dismiss  BS back".into()),
+        footer: Some("q dismiss  Esc/BS back".into()),
     }
 }
 

@@ -488,6 +488,41 @@ impl Picker {
         }
     }
 
+    /// Unwind one level of transient state: a half-typed multi-key row
+    /// first, then one submenu off the stack.
+    ///
+    /// Returns `false` when there was nothing to unwind — the caller
+    /// (`<Esc>` / `BS`) then means "close", because this is the root
+    /// menu with no pending keys.
+    ///
+    /// **The precedence is the point.** A part-typed row (`,` waiting
+    /// for `k`) is what the key most likely means to undo, so it goes
+    /// first; only once nothing is pending does the same key leave the
+    /// menu you are in. Vim gives `<Esc>` the same precedence over a
+    /// partial chord.
+    ///
+    /// Lives here rather than in the host's dispatch arm because `BS`
+    /// and `<Esc>` both need it, and two copies of a precedence rule
+    /// drift.
+    pub fn transient_unwind(&mut self) -> bool {
+        if self.transient.is_none() {
+            return false;
+        }
+        if !self.transient_prefix.is_empty() {
+            self.transient_prefix.clear();
+            return true;
+        }
+        match self.transient_stack.pop() {
+            Some((parent_spec, parent_state, parent_selected)) => {
+                self.transient = Some(parent_spec);
+                self.transient_state = parent_state;
+                self.transient_selected = parent_selected;
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Walk the transient's selection one item forward, wrapping at the
     /// end — the same wrap [`Self::select_next`] gives the candidate
     /// list, and the reason `<C-n>` can no longer overshoot: the index
@@ -1112,10 +1147,83 @@ impl LspLocationRow {
 
 #[cfg(test)]
 mod tests {
+
     #![allow(clippy::unwrap_used, clippy::panic)]
 
     use super::*;
     use lattice_completion::CandidateKind;
+
+    fn unwind_spec(title: &str) -> std::sync::Arc<TransientSpec> {
+        std::sync::Arc::new(TransientSpec {
+            title: title.into(),
+            groups: Vec::new(),
+            preview: None,
+            footer: None,
+        })
+    }
+
+    fn unwind_picker() -> Picker {
+        let mut p = Picker::new("t", PickerSource::Buffers, PickerAction::SwitchToBuffer);
+        p.transient = Some(unwind_spec("child"));
+        p
+    }
+
+    /// MG.29: `<Esc>` in a submenu goes back to its parent, and only
+    /// closes once there is no parent left. Exiting all the way out on
+    /// the first press punishes the ordinary mistake — opening the
+    /// wrong submenu.
+    #[test]
+    fn unwinding_pops_one_level_at_a_time() {
+        let mut p = unwind_picker();
+        p.transient_stack
+            .push((unwind_spec("root"), TransientState::new(), 3));
+
+        assert!(p.transient_unwind(), "there is a parent to go back to");
+        assert_eq!(
+            p.transient.as_ref().map(|s| s.title.clone()),
+            Some("root".into())
+        );
+        assert_eq!(
+            p.transient_selected, 3,
+            "the parent's selection comes back where the user left it"
+        );
+
+        assert!(
+            !p.transient_unwind(),
+            "at the root there is nothing left to unwind — the caller closes"
+        );
+    }
+
+    /// A half-typed multi-key row is what the key most likely means to
+    /// undo, so it goes first — the same precedence vim gives `<Esc>`
+    /// over a partial chord.
+    #[test]
+    fn a_pending_prefix_is_undone_before_the_stack() {
+        let mut p = unwind_picker();
+        p.transient_stack
+            .push((unwind_spec("root"), TransientState::new(), 0));
+        p.transient_prefix = ",".into();
+
+        assert!(p.transient_unwind());
+        assert!(p.transient_prefix.is_empty(), "the prefix cleared");
+        assert_eq!(
+            p.transient.as_ref().map(|s| s.title.clone()),
+            Some("child".into()),
+            "and the submenu is still open — one key, one undo"
+        );
+
+        assert!(p.transient_unwind(), "the next press pops the stack");
+        assert_eq!(
+            p.transient.as_ref().map(|s| s.title.clone()),
+            Some("root".into())
+        );
+    }
+
+    #[test]
+    fn a_picker_with_no_transient_never_claims_to_unwind() {
+        let mut p = Picker::new("t", PickerSource::Buffers, PickerAction::SwitchToBuffer);
+        assert!(!p.transient_unwind());
+    }
 
     /// LSP-picker highlighting: the host highlights the *trimmed* preview
     /// grep-style, so spans are preview-relative; `into_candidate_with_routing`

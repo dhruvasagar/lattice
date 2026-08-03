@@ -667,6 +667,35 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         }),
     });
 
+    // MG.29: the branch submenu's picker-backed rows.
+    //
+    // The branch buffer's own `<CR>` / `c` read a cursor, and a menu
+    // opened from anywhere has none — so these ASK, which is the same
+    // answer MG.23j gave `A` / `_` / `O` and the reason magit puts its
+    // branch commands in an ungated group.
+    contributions.push(ActionHandlerContribution {
+        action_name: "action:magit-global-branch-checkout",
+        handler: Arc::new(|_ctx: &ActionContext<'_>| {
+            Some(Effect::OpenPicker {
+                source: crate::picker_sources::BRANCH_CHECKOUT_SOURCE.to_string(),
+                args: Vec::new(),
+            })
+        }),
+    });
+    contributions.push(ActionHandlerContribution {
+        action_name: "action:magit-global-branch-create",
+        handler: Arc::new(|_ctx: &ActionContext<'_>| {
+            // The same two-step wizard `c` runs in the branch buffer —
+            // pick a base, then name the branch. Ungated: the buffer
+            // version refuses outside a branch list, which is right for
+            // a chord and wrong for a menu row.
+            Some(Effect::OpenPicker {
+                source: "magit-branch-pick-base".to_string(),
+                args: Vec::new(),
+            })
+        }),
+    });
+
     // MG.28: `v` — this file at a revision you name.
     //
     // The gap it fills: `magit-file-revision-mode` has existed since

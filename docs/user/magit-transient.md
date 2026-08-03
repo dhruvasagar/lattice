@@ -42,8 +42,8 @@ module doc) is meant to power future plugin transients too.
 | Single letter / chord | Fire the action, toggle the flag, or open the submenu |
 | `j` / `k` / `C-n` / `C-p` | Move the selection one item, wrapping at either end; the view scrolls to follow when the menu overflows |
 | `<CR>` | Fire the selected item — the same thing its key does |
-| `q` / `Esc` / `C-g` | Dismiss the transient |
 | `BS` / `DEL` | Return to parent transient (if in a nested submenu) |
+| `q` / `Esc` / `C-g` | Return to parent; at the top level, dismiss |
 
 The selected row is marked with a `❯` and a bold label. Pressing an
 item's key is still the primary way to use a transient — the selection
@@ -84,7 +84,8 @@ adds inside one):
 │                          introduced a bug      │
 │                                                │
 │  ▸ Branches                                    │
-│    [b]  branch          Open the branch list   │
+│    [b]  branch        ▸ Checkout, create, or   │
+│                          list branches         │
 │                                                │
 │  ▸ Stashing                                    │
 │    [z]  stash         ▸ Stash operations       │
@@ -318,8 +319,23 @@ them for a modal editor; `magit-core-mode` explains why.)
 ### How submenus work (mechanism)
 
 Pressing a submenu's key pushes the current transient onto a stack and
-opens the submenu; `BS`/`DEL` pops back to the parent; `q`/`Esc`/`C-g`
-dismisses the whole stack.
+opens the submenu.
+
+**`Esc` and `BS` both unwind one level.** From `C-c g` `b` `l`, the
+first `Esc` puts you back in the branch menu and the second back at the
+dispatch; a third closes it. Only at the top, with nothing left to
+unwind, does `Esc` dismiss.
+
+That is deliberate: exiting all the way out on the first press punishes
+the ordinary mistake — you opened `b` and meant `z`, and now you are
+back in the buffer instead of the menu you were in.
+
+A **half-typed multi-key row** is undone first. If you have typed `,`
+of `,k` and press `Esc`, it forgets the `,` and leaves the menu open;
+the next `Esc` goes back a level. Vim gives `<Esc>` the same precedence
+over a partial chord.
+
+`q` still dismisses outright from anywhere.
 
 ---
 

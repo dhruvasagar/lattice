@@ -339,6 +339,8 @@ fn resolve_dispatch_ids(registry: &CommandRegistry) -> transients::DispatchActio
         log: registry.id_by_name("action:magit-global-log"),
         diff: registry.id_by_name("action:magit-global-diff"),
         branch: registry.id_by_name("action:magit-global-branch"),
+        branch_checkout: registry.id_by_name("action:magit-global-branch-checkout"),
+        branch_create: registry.id_by_name("action:magit-global-branch-create"),
         remote: registry.id_by_name("action:magit-global-remote"),
         submodule: registry.id_by_name("action:magit-global-submodule"),
         view_args: registry.id_by_name("action:magit-view-refresh-args"),
@@ -954,6 +956,46 @@ fn register_ex_commands(
         // what reverse blame cannot have. `HEAD` would make the range
         // `HEAD..HEAD`, i.e. empty, and report every line as still
         // present: a plausible-looking answer that says nothing.
+        // MG.29: what the branch-checkout picker invokes. Also the
+        // scriptable form — `:magit-checkout <branch>`.
+        registry.register_ex_command(
+            "magit-checkout",
+            "Check out a branch: `<branch>`.",
+            ExCommandSpec {
+                latency_class: LatencyClass::Reflex,
+                accepts_bang: false,
+                accepts_range: false,
+                parse_args: Arc::new(|line: &str, _bang: bool| {
+                    Ok(Args::String(line.trim().to_string()))
+                }),
+                apply: Arc::new(|ctx| {
+                    let Args::String(ref name) = ctx.args else {
+                        return Ok(Effect::Echo {
+                            level: lattice_grammar::EchoLevel::Error,
+                            text: "magit: usage — :magit-checkout <branch>".to_string(),
+                        });
+                    };
+                    let name = name.trim().to_string();
+                    if name.is_empty() {
+                        return Ok(Effect::Echo {
+                            level: lattice_grammar::EchoLevel::Error,
+                            text: "magit: usage — :magit-checkout <branch>".to_string(),
+                        });
+                    }
+                    Ok(magit_global_mode::spawn_git(
+                        vec!["checkout".to_string(), name],
+                        "checkout",
+                    ))
+                }),
+                args_schema: vec![ArgSpec::required(
+                    "branch",
+                    lattice_grammar::ArgKind::String,
+                    "the branch to check out",
+                )],
+                surface_form: SurfaceForm::Keyword,
+            },
+        );
+
         // MG.28: the explicit form of `C-c f v` — a file you are not
         // visiting. `<rev>` alone shows the file you ARE visiting,
         // which is what the chord does.
@@ -1370,6 +1412,15 @@ fn register_action_commands(registry: &mut CommandRegistry) {
     reg(
         "action:magit-global-remote",
         "Open the Magit remote list buffer",
+    );
+    // MG.29: the branch submenu's picker-backed rows.
+    reg(
+        "action:magit-global-branch-checkout",
+        "Pick a branch and check it out",
+    );
+    reg(
+        "action:magit-global-branch-create",
+        "Pick a base, then name a new branch",
     );
     // MG.21g: bisect. The `-start-good` / `-start-finish` halves are
     // fired by a prompt submit rather than a chord, but must still be
@@ -2310,6 +2361,84 @@ mod tests {
             resolve_file_dispatch_ids(&actions).visit_live,
             "in and out are different actions, not one key guessing"
         );
+    }
+
+    /// MG.29: `b` is a submenu, and the list it used to open directly
+    /// is still reachable inside it.
+    ///
+    /// The regression this guards is a real one to make: moving `b` to
+    /// a submenu and forgetting to carry the list row would silently
+    /// remove the only way to the branch buffer from the menu.
+    #[test]
+    fn the_branch_submenu_keeps_the_list_it_replaced() {
+        use lattice_picker::{TransientItemKind, TransientSpec};
+
+        let mut registry = CommandRegistry::new();
+        register_action_commands(&mut registry);
+        let ids = resolve_dispatch_ids(&registry);
+
+        let item = transients::dispatch_transient(&ids, &outside_magit())
+            .groups
+            .iter()
+            .flat_map(|g| &g.items)
+            .find(|i| i.key.iter().any(|k| k == "b"))
+            .cloned()
+            .expect("`b` must exist on the dispatch");
+        let TransientItemKind::Submenu(spec) = &item.kind else {
+            panic!("`b` must open a submenu, got {:?}", item.label);
+        };
+        let spec: &TransientSpec = spec;
+        let rows: Vec<(String, bool)> = spec
+            .groups
+            .iter()
+            .flat_map(|g| &g.items)
+            .flat_map(|i| {
+                let real = matches!(i.kind, TransientItemKind::Action(_));
+                i.key.iter().map(move |k| (k.clone(), real))
+            })
+            .collect();
+
+        for key in ["b", "c", "l"] {
+            let (_, real) = rows
+                .iter()
+                .find(|(k, _)| k == key)
+                .unwrap_or_else(|| panic!("`b {key}` must exist: {rows:?}"));
+            assert!(real, "`b {key}` must be a real action");
+        }
+        assert_eq!(
+            resolve_dispatch_ids(&registry).branch,
+            registry.id_by_name("action:magit-global-branch"),
+            "`b l` fires the SAME action `b` used to — the list did not move, \
+             it went one level in"
+        );
+    }
+
+    /// Every submenu tells the user `Esc` goes back, now that it does.
+    /// A footer still saying only `BS` would be documenting behaviour
+    /// the editor no longer has.
+    #[test]
+    fn submenu_footers_offer_esc_as_back() {
+        use lattice_picker::{TransientItemKind, TransientSpec};
+
+        let mut registry = CommandRegistry::new();
+        register_action_commands(&mut registry);
+        let ids = resolve_dispatch_ids(&registry);
+        let root = transients::dispatch_transient(&ids, &outside_magit());
+
+        let mut checked = 0;
+        for item in root.groups.iter().flat_map(|g| &g.items) {
+            if let TransientItemKind::Submenu(spec) = &item.kind {
+                let spec: &TransientSpec = spec;
+                let footer = spec.footer.clone().unwrap_or_default();
+                assert!(
+                    footer.contains("Esc"),
+                    "submenu {:?} does not offer Esc as back: {footer:?}",
+                    spec.title
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked >= 4, "expected several submenus, checked {checked}");
     }
 
     /// MG.21i: `o` opens the submodule list, in every context.
@@ -3486,7 +3615,7 @@ mod tests {
         );
         assert_eq!(
             root.len(),
-            26,
+            28,
             "expected every root-dispatch leaf (incl. both submenus') to \
              report inert, got: {root:?}"
         );
@@ -3499,7 +3628,7 @@ mod tests {
         );
         assert_eq!(
             bisecting.len(),
-            29,
+            31,
             "the in-progress bisect menu trades `start` for good/bad/skip/reset: {bisecting:?}"
         );
     }

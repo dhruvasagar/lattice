@@ -2590,15 +2590,8 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
                 // means to undo, so it clears that first and only pops
                 // the submenu stack once nothing is pending — the same
                 // precedence vim gives `<Esc>` over a partial chord.
-                if !picker.transient_prefix.is_empty() {
-                    picker.transient_prefix.clear();
-                } else if let Some((parent_spec, parent_state, parent_selected)) =
-                    picker.transient_stack.pop()
-                {
-                    picker.transient = Some(parent_spec);
-                    picker.transient_state = parent_state;
-                    picker.transient_selected = parent_selected;
-                }
+                // Same unwind `<Esc>` uses — one rule, one place.
+                picker.transient_unwind();
             } else {
                 if let Some(p) = editor.picker.as_mut() {
                     p.backspace_query();
@@ -2898,8 +2891,30 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
             _out.renderer_signals.extend(signals);
         }
         Action::TransientDismiss => {
-            let signals = editor.do_picker_dismiss();
-            _out.renderer_signals.extend(signals);
+            // MG.29: `<Esc>` pops one level of the submenu stack before
+            // it closes anything.
+            //
+            // A stacked menu that exits all the way out on the first
+            // `<Esc>` punishes the ordinary mistake — you opened
+            // `b` (branches), meant `z` (stash), and now you are back
+            // at the buffer instead of the menu you were in. Every
+            // nested UI the user already knows (vim's operator-pending,
+            // a nested picker, emacs transients) unwinds one step.
+            //
+            // Precedence matches `BS` and vim's own `<Esc>`: a
+            // half-typed multi-key row is what the key most likely
+            // means to undo, so it clears that first.
+            let popped = editor
+                .picker
+                .as_mut()
+                .map(|p| p.transient_unwind())
+                .unwrap_or(false);
+            if !popped {
+                // Nothing left to unwind — this is the root menu, so
+                // `<Esc>` means what it always did.
+                let signals = editor.do_picker_dismiss();
+                _out.renderer_signals.extend(signals);
+            }
         }
         Action::CompletionTrigger => editor.do_completion_trigger(),
         Action::CompletionNext => editor.do_completion_next(),

@@ -77,6 +77,73 @@ impl PickerSourceGenerator for BranchPickBaseSource {
     }
 }
 
+/// MG.29: pick a branch and check it out.
+///
+/// The same listing as [`BranchPickBaseSource`] with a different
+/// `accept` — the branch buffer's `<CR>` needs a cursor, and a menu
+/// opened from anywhere has none. Same reasoning MG.23j applied to
+/// `A` / `_` / `O`: the row asks rather than being gated away.
+pub struct BranchCheckoutSource {
+    spec: PickerSourceSpec,
+}
+
+impl BranchCheckoutSource {
+    pub fn new() -> Self {
+        Self {
+            spec: PickerSourceSpec::no_args(
+                BRANCH_CHECKOUT_SOURCE,
+                "Pick a branch and check it out.",
+            ),
+        }
+    }
+}
+
+impl Default for BranchCheckoutSource {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+pub const BRANCH_CHECKOUT_SOURCE: &str = "magit-branch-checkout-pick";
+
+impl PickerSourceGenerator for BranchCheckoutSource {
+    fn spec(&self) -> &PickerSourceSpec {
+        &self.spec
+    }
+
+    fn init(&self, ctx: &PickerContext<'_>, args: &[String]) -> SourceResult<PickerInitResult> {
+        // One listing, one place. A second copy of "enumerate the
+        // branches" would drift from this one the first time either
+        // grows a filter.
+        BranchPickBaseSource::new().init(ctx, args)
+    }
+
+    fn accept(
+        &self,
+        _ctx: &PickerContext<'_>,
+        routing: &RoutingPayload,
+    ) -> SourceResult<PickerAcceptOutcome> {
+        match routing {
+            RoutingPayload::BranchBase { name } => Ok(branch_checkout_outcome(name)),
+            other => Err(format!(
+                "{BRANCH_CHECKOUT_SOURCE}: unexpected routing payload {other:?}"
+            )),
+        }
+    }
+}
+
+/// What accepting a branch in the checkout picker does.
+///
+/// Pure and separate from `accept` for the same reason
+/// [`branch_create_prompt_outcome`] is: `accept`'s signature needs a
+/// `PickerContext` fixture this translation never reads.
+fn branch_checkout_outcome(name: &str) -> PickerAcceptOutcome {
+    PickerAcceptOutcome::InvokeCommand {
+        id: "magit-checkout".to_string(),
+        args: lattice_grammar::Args::String(name.to_string()),
+    }
+}
+
 /// Build the `OpenPrompt` outcome for a picked base branch. Pulled
 /// out of `accept` so it's testable without a full `PickerContext`
 /// fixture (which `accept`'s trait signature requires but this
@@ -98,6 +165,7 @@ fn branch_create_prompt_outcome(base: &str) -> PickerAcceptOutcome {
 /// established shape for a feature crate to contribute a source.
 pub fn register(picker_registry: &mut lattice_picker::PickerRegistry) {
     picker_registry.register_generator(Arc::new(BranchPickBaseSource::new()));
+    picker_registry.register_generator(Arc::new(BranchCheckoutSource::new()));
     picker_registry.register_generator(Arc::new(CommitPickSource::new()));
 }
 

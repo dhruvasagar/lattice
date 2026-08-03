@@ -1150,6 +1150,74 @@ mod tests {
         assert_eq!(app.editor.cursor.byte, 0);
     }
 
+    // ── A picker that resolves an argument must RUN with it ─────────
+    //
+    // Reported from real use: `C-c g b l`, pick a branch, and the editor
+    // lands in command-line mode with the command armed and no argument
+    // — asking the user to type the branch they had just picked.
+    //
+    // `PickerAcceptOutcome::InvokeCommand` carries `{ id, args }`, and
+    // the host's arm destructured `args` away. Any source that resolved
+    // a value through it lost the value; only sources that baked the
+    // value into `id` as a whole ex line worked, and by accident
+    // (`id_by_name` fails on a string with a space, so the arming
+    // declines and the line runs). These tests cover BOTH shapes,
+    // because the fix has to keep the accidental one working.
+
+    /// Structured `args` reach the command. This is the shape magit's
+    /// branch checkout / delete sources use, and the one that was
+    /// silently dropped.
+    #[test]
+    fn a_picker_that_resolved_an_argument_runs_with_it() {
+        let mut app = app_with("hi\n", 5);
+        app.apply_picker_outcome(lattice_picker::PickerAcceptOutcome::InvokeCommand {
+            id: "e".to_string(),
+            args: lattice_grammar::Args::String("picked-target.txt".to_string()),
+        });
+        assert!(
+            !app.editor.command_line_active(),
+            "the command must RUN, not arm the `:` line asking for an \
+             argument the picker already resolved"
+        );
+    }
+
+    /// The pre-existing shape: value baked into `id`. It worked before
+    /// the fix and must keep working — several sources rely on it, and
+    /// two comments in `lattice-magit` describe it as the only route.
+    #[test]
+    fn an_id_that_is_already_a_whole_ex_line_still_runs() {
+        let mut app = app_with("hi\n", 5);
+        app.apply_picker_outcome(lattice_picker::PickerAcceptOutcome::InvokeCommand {
+            id: "e baked-into-the-id.txt".to_string(),
+            args: lattice_grammar::Args::None,
+        });
+        assert!(
+            !app.editor.command_line_active(),
+            "an id carrying its own argument must still execute"
+        );
+    }
+
+    /// And the case arming exists for is preserved: a source that
+    /// resolved NOTHING (the command palette picks a command name, not
+    /// its arguments) still arms the `:` line for the user to finish.
+    #[test]
+    fn a_command_needing_args_still_arms_the_line_when_none_were_resolved() {
+        let mut app = app_with("hi\n", 5);
+        app.apply_picker_outcome(lattice_picker::PickerAcceptOutcome::InvokeCommand {
+            id: "e".to_string(),
+            args: lattice_grammar::Args::None,
+        });
+        assert!(
+            app.editor.command_line_active(),
+            "with no resolved argument the picker must still arm the line"
+        );
+        assert_eq!(
+            app.editor.command_line(),
+            "e ",
+            "armed with the command and a space, awaiting the argument"
+        );
+    }
+
     /// P.10: `:picker snippets` against an empty registry
     /// echoes the source's no-snippets message and leaves
     /// the picker closed (fresh-boot fixture has no snippets

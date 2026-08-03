@@ -541,11 +541,12 @@ mod commit_pick {
         );
     }
 
-    /// The sha must be the full one and it must reach the ex line —
-    /// this is the whole route from a picked candidate to an
-    /// operation, and `RoutingPayload::InvokeCommand`'s `args` field
-    /// is a dead end (the host destructures it away and runs `id` as
-    /// an ex line), so anything not *in* the line is lost.
+    /// The sha must be the full one and it must reach the ex line.
+    ///
+    /// `InvokeCommand`'s `args` field was a dead end when this was
+    /// written — the host destructured it away — so the value had to be
+    /// *in* the line. That is fixed (2026-08-03), but the line form is
+    /// kept: it is the exact text a user would type.
     #[test]
     fn a_picked_commit_becomes_the_ex_line_that_acts_on_it() {
         let rows = parse_commit_rows("abc123def\0abc123d fix the thing\n");

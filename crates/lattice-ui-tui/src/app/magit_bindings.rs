@@ -357,7 +357,7 @@ mod tests {
             "opening must actually take over the active document"
         );
 
-        app.editor.bury_buffer();
+        let _ = app.editor.bury_buffer();
 
         assert_eq!(
             app.editor.pane_tree.active().buffer_id,
@@ -409,12 +409,15 @@ mod tests {
         app.editor
             .open_synthetic_buffer("*magit:status*", "magit-status-mode");
         check(&app, "after opening a full-pane synthetic buffer");
-        app.editor.bury_buffer();
+        let _ = app.editor.bury_buffer();
         check(&app, "after burying it");
 
         // And burying with nothing buried is a no-op, so a mode can
         // bind `q` unconditionally without a guard.
-        assert!(!app.editor.bury_buffer(), "second bury has nothing to do");
+        assert!(
+            !app.editor.bury_buffer().0,
+            "second bury has nothing to do"
+        );
         check(&app, "after a no-op bury");
     }
 
@@ -464,6 +467,55 @@ mod tests {
                 .text()
                 .contains("the original file content"),
             "and the document must hold the file's text"
+        );
+    }
+
+    /// Reported from real use (2026-08-03): `C-c f d` to see a file's
+    /// diff, then `q` to close it — and the file comes back with its
+    /// line numbers gone.
+    ///
+    /// `magit-diff-mode` (like every magit view) contributes
+    /// `Number = false`. Resolution is correctly per-buffer, so the
+    /// FILE's resolved options still say `Number = true`; what was
+    /// stale is `option_cache`, the renderer's hot-path copy, which is
+    /// rebuilt from whichever buffer is active.
+    ///
+    /// The asymmetry is the whole bug. *Opening* a magit view rebuilds
+    /// the cache through mode activation. *Burying* it activates no
+    /// mode, and `bury_buffer` called `activate_buffer` while discarding
+    /// its return value — the bool that means "now run
+    /// `activate_buffer_state()`", which is what recomputes options and
+    /// rebuilds the cache. So the file returned wearing magit's options.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn burying_a_magit_view_restores_the_files_own_options() {
+        let mut app = app_with("the original file content\n", 20);
+        let origin = app.editor.document_buffer_id;
+        assert!(
+            app.editor.option_cache.show_line_numbers,
+            "fixture precondition: the file shows line numbers to begin with"
+        );
+
+        run_ex(&mut app, "magit-status");
+        assert!(
+            settle_mode(&mut app, "magit-core-mode").await,
+            "magit-core-mode must activate — it owns `q`"
+        );
+        assert_ne!(app.editor.document_buffer_id, origin);
+        // Non-vacuous: the magit view really does turn them off, so the
+        // assertion after `q` is measuring a restore and not a value
+        // that never changed.
+        assert!(
+            !app.editor.option_cache.show_line_numbers,
+            "a magit view contributes `Number = false`"
+        );
+
+        press(&mut app, key('q'));
+
+        assert_eq!(app.editor.document_buffer_id, origin, "back on the file");
+        assert!(
+            app.editor.option_cache.show_line_numbers,
+            "the file must come back with ITS options — the magit view's \
+             `Number = false` leaked through the un-rebuilt option cache"
         );
     }
 

@@ -2102,11 +2102,15 @@ pub struct CommitOp {
     /// Load-bearing in two places beyond documentation. It is the
     /// scriptable surface (`:magit-cherry-pick <sha>`), and it is what
     /// the commit picker fires: a picked candidate resolves to the ex
-    /// line `"<ex_command> <sha>"`, which is the only route from a
-    /// picker to an operation that carries a value —
-    /// `RoutingPayload::InvokeCommand` declares an `args` field but the
-    /// host's arm destructures it away (`InvokeCommand { id, .. }`) and
-    /// runs `id` as an ex line, so the value has to be *in* the line.
+    /// line `"<ex_command> <sha>"`.
+    ///
+    /// **That shape was once the ONLY route** — the host's
+    /// `InvokeCommand` arm destructured `args` away, so a value not
+    /// baked into the line was lost. Fixed 2026-08-03: the arm now
+    /// renders `args` onto the line, and both forms work. This one is
+    /// kept because it is also the exact text a user would type, which
+    /// keeps the picker a front-end to the command rather than a second
+    /// way in.
     pub ex_command: &'static str,
     /// argv template; the resolved commit is appended.
     pub args: &'static [&'static str],

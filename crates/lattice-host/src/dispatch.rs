@@ -891,7 +891,17 @@ impl Editor {
                     op_count: self.op_count,
                     macro_recording: self.macro_recording.is_some(),
                     completion_open: self.completion_state.is_some(),
-                    picker_open: self.picker.is_some(),
+                    // A non-live async source is *parked* while its
+                    // future runs: `self.picker` is still `None` and
+                    // only a status echo is on screen. Treating that
+                    // window as "no picker" sent every keystroke to the
+                    // ordinary modal dispatcher — so `<Esc>` did not
+                    // cancel (the picker seated anyway when the future
+                    // landed, looking like it had picked for you), and
+                    // anything else typed while waiting ran as a Normal
+                    // command against the buffer behind. The picker owns
+                    // the keyboard from the moment it is asked for.
+                    picker_open: self.picker.is_some() || self.pending_picker_init.is_some(),
                     chord_capture: self.chord_capture_active(),
                     snippet_active: self.snippet_session.is_active(self.document_buffer_id),
                     popup_focused: self.popup_focused,
@@ -6647,14 +6657,18 @@ impl Editor {
     /// an invariant, and hand-restoring one side of it broke the
     /// cache it keys.
     ///
-    /// Returns `false` when there is nothing buried, so a mode can
-    /// bind `q` to this unconditionally.
-    pub fn bury_buffer(&mut self) -> bool {
+    /// Returns `(buried, signals)`. `buried` is `false` when there was
+    /// nothing to return to, so a mode can bind `q` to this
+    /// unconditionally. `signals` carries the mode-lifecycle / LSP-attach
+    /// cascade from re-activating the destination and must be routed to
+    /// the renderer — the same contract [`Self::dismiss_file_tree`] has,
+    /// and the reason this does not simply drop them.
+    pub fn bury_buffer(&mut self) -> (bool, Vec<RendererSignal>) {
         let Some(prev) = self.prev_pane_for_popup.take() else {
-            return false;
+            return (false, Vec::new());
         };
         // Full swap first — this is what moves `Editor::document`.
-        self.activate_buffer(prev.buffer_id);
+        let needs_state = self.activate_buffer(prev.buffer_id);
         // Then the view state the pane had when it was displaced.
         // After `activate_buffer`, not before: activation resets the
         // cursor/scroll for the destination.
@@ -6665,7 +6679,31 @@ impl Editor {
         pane.buffer_id = prev.buffer_id;
         self.active_buffer = prev.buffer;
         self.modal = prev.modal;
-        true
+        // `activate_buffer`'s bool means "now run
+        // `activate_buffer_state()`", and this discarded it — so the
+        // buried view's options stayed in `option_cache` and the file
+        // came back wearing them. Reported as "`C-c f d` then `q` and my
+        // line numbers are gone": every magit view contributes
+        // `Number = false`.
+        //
+        // Resolution itself was never wrong — `resolved_options` is
+        // per-buffer and the file's entry still said `Number = true`.
+        // What was stale is the renderer's hot-path copy, which only
+        // rebuilds for the active buffer.
+        //
+        // The asymmetry that hid it: OPENING a view rebuilds the cache
+        // through mode activation, so magit's options applied correctly
+        // on the way in. Burying activates no mode, so nothing rebuilt
+        // on the way out.
+        //
+        // Runs last, after the pane fields above are restored, because
+        // `activate_buffer_state` reads the active pane's buffer id.
+        let signals = if needs_state {
+            self.activate_buffer_state()
+        } else {
+            Vec::new()
+        };
+        (true, signals)
     }
 
     pub fn dismiss_popup(&mut self) {
@@ -21421,6 +21459,58 @@ fn is_word_char_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
 
+/// Render a picker's `InvokeCommand { id, args }` as the ex line that
+/// runs it.
+///
+/// `id` may already be a whole line (`"magit-cherry-pick abc123"` — the
+/// shape sources used while `args` was being dropped); in that case
+/// `args` is `None` and the id passes through untouched, so both forms
+/// keep working and neither source style has to change.
+///
+/// Values are appended in `args_schema` order, space-separated — the
+/// same text the user would have typed on the `:` line, which is the
+/// point: the picker is a front-end to the command, not a second way to
+/// invoke it.
+fn ex_line_with_args(id: &str, args: &lattice_grammar::Args) -> String {
+    use lattice_grammar::args::{ArgValue, Args};
+    let mut line = id.to_string();
+    let mut push = |s: String| {
+        if !s.is_empty() {
+            line.push(' ');
+            line.push_str(&s);
+        }
+    };
+    match args {
+        Args::None => {}
+        Args::Char(c) => push(c.to_string()),
+        Args::String(s) => push(s.clone()),
+        // Not representable as ex-line text. No caller produces it for a
+        // picker today; rendering it as lossy debug output would run a
+        // command with garbage arguments, so it is dropped and the bare
+        // command runs — the same thing that happened before this
+        // function existed.
+        Args::Bytes(_) => {}
+        Args::List(vals) => {
+            for v in vals {
+                match v {
+                    ArgValue::String(s)
+                    | ArgValue::Pattern(s)
+                    | ArgValue::Chord(s)
+                    | ArgValue::Raw(s) => push(s.clone()),
+                    ArgValue::Char(c) => push(c.to_string()),
+                    ArgValue::Int(i) => push(i.to_string()),
+                    ArgValue::Bool(b) => push(b.to_string()),
+                    // A nested invocation is a command, not a word. No
+                    // picker source produces one; flattening it to text
+                    // would be a guess at the original syntax.
+                    ArgValue::Invocation(_) => {}
+                }
+            }
+        }
+    }
+    line
+}
+
 /// Make pasted text safe for a **one-row** readline surface.
 ///
 /// A copied line almost always carries its terminator, and a paste from
@@ -24697,17 +24787,35 @@ impl Editor {
             JumpToMark { name } => {
                 self.do_jump_mark(name, true);
             }
-            InvokeCommand { id, .. } => {
-                // Use `arm_picker_prompt` (not `arm_missing_arg_prompt`):
-                // the picker arms the cmdline for any command with
-                // args_schema entries, so the user can provide optional
-                // args or press <CR> to accept the default. Commands with
-                // no args_schema (`:q`, `:bn`, …) execute immediately.
-                if !self.arm_picker_prompt(&id) {
-                    let mut inner = DispatchOutcome::default();
-                    self.execute_ex_line(&id, &mut inner);
-                    out.merge(inner);
+            InvokeCommand { id, args } => {
+                // A source that already resolved a value passes it in
+                // `args`. Run it.
+                //
+                // **This arm used to destructure `args` away** — the
+                // field was declared, populated, and silently dropped.
+                // Every source that used it (branch checkout, branch
+                // delete) picked a branch and then armed the `:` line
+                // asking the user to type the branch they had just
+                // picked; the picked value was gone. Only sources that
+                // baked the value into `id` as a whole ex line (the
+                // commit picker's `"magit-cherry-pick <sha>"`) worked,
+                // and they worked by accident: `id_by_name` fails on a
+                // string with a space, so `arm_picker_prompt` declines
+                // and the line executes. Two comments in `lattice-magit`
+                // recorded the field as "a dead end" rather than fixing
+                // it here, which is why later sources kept walking into
+                // it.
+                //
+                // Arming is still right when the source resolved
+                // *nothing* — the command palette picks a command name
+                // and the user supplies its arguments.
+                let line = ex_line_with_args(&id, &args);
+                if args.is_none() && self.arm_picker_prompt(&id) {
+                    return out;
                 }
+                let mut inner = DispatchOutcome::default();
+                self.execute_ex_line(&line, &mut inner);
+                out.merge(inner);
             }
             LoadCommandLine { text } => {
                 // MB.3: load the picked history entry into the `:` line
@@ -27612,6 +27720,18 @@ impl Editor {
             && let Some(inflight) = state.inflight
         {
             inflight.cancel.cancel();
+        }
+        // A non-live async source that has not seated yet. Without this
+        // the dismiss was simply lost: `self.picker` is `None` while the
+        // future runs, so the early return below fired and
+        // `drain_pending_picker_init` seated the picker afterwards — the
+        // user pressed `<Esc>`, waited, and got the picker they had just
+        // cancelled, with its first row selected.
+        if let Some(pending) = self.pending_picker_init.take() {
+            pending.cancel.cancel();
+            // The `... (loading)` echo is the only thing on screen for a
+            // parked picker, so it has to go with it.
+            self.set_message(EchoLevel::Info, String::new());
         }
         self.pending_tag_origin = None;
         // T.12a: if the colorscheme picker live-previewed a theme,

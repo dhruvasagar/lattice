@@ -1335,9 +1335,10 @@ impl GpuiApp {
                 // `activate_buffer`. Dismissing a popup would leave the
                 // active document pointing at the buried buffer and
                 // paint it over the file.
-                self.mutate_editor(|e| {
-                    e.bury_buffer();
-                });
+                let signals = self.mutate_editor_with(|e| e.bury_buffer().1);
+                for signal in signals {
+                    self.handle_renderer_signal(signal);
+                }
             }
             Effect::OpenPopup {
                 name,

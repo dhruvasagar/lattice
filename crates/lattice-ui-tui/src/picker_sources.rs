@@ -854,6 +854,58 @@ mod tests {
         assert_eq!(p.source_id.as_deref(), Some("delayed-test"));
     }
 
+    /// Reported from real use: `<Esc>` on a picker that was still
+    /// loading did nothing, and the picker then appeared anyway with its
+    /// first row selected — indistinguishable from having picked for
+    /// you.
+    ///
+    /// A non-live async source is *parked*: `editor.picker` stays `None`
+    /// while the future runs, so `picker_open` was false and the key
+    /// went to the ordinary modal dispatcher instead of the picker
+    /// router. `do_picker_dismiss` also never cleared
+    /// `pending_picker_init`, so the dismiss was lost twice over.
+    #[test]
+    fn esc_cancels_a_picker_that_has_not_finished_loading() {
+        use std::time::Duration;
+
+        let mut app = app_with("hi\n", 5);
+        let mut reg = lattice_picker::PickerRegistry::new();
+        let source: Arc<dyn PickerSourceGenerator> = Arc::new(DelayedFutureSource::new());
+        reg.register_generator(source);
+        app.editor.picker_registry.store(Arc::new(reg));
+
+        app.open_picker("delayed-test".into(), Vec::new());
+        assert!(app.editor.picker.is_none(), "parked, not seated");
+        assert!(app.editor.pending_picker_init.is_some(), "future in flight");
+        // The picker owns the keyboard from the moment it is asked for,
+        // not from the moment it seats — otherwise keys typed while
+        // waiting run as Normal-mode commands against the buffer behind.
+        assert!(
+            app.ad().picker_open,
+            "a parked picker must still report open, or `<Esc>` never \
+             reaches the picker router at all"
+        );
+
+        app.apply(crate::Action::PickerDismiss);
+        assert!(
+            app.editor.pending_picker_init.is_none(),
+            "dismiss must cancel the in-flight init"
+        );
+
+        // And it must STAY cancelled: drain for as long as the seating
+        // test waits for a successful seat, so this cannot pass merely
+        // by being checked too early.
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while std::time::Instant::now() < deadline {
+            app.drain_pending_picker_init();
+            assert!(
+                app.editor.picker.is_none(),
+                "a cancelled picker must never seat"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
     /// P.9: outline source returns `Err` when the active
     /// buffer has no tree-sitter symbols (plain text, or a
     /// language without a `symbols.scm` query).

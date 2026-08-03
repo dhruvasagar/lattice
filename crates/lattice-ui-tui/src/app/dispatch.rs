@@ -1085,9 +1085,10 @@ impl App {
             Effect::OpenHover { markdown } => self.do_open_hover(&markdown),
             Effect::DismissPopup => self.do_dismiss_popup(),
             Effect::BuryBuffer => {
-                self.mutate_editor(|e| {
-                    e.bury_buffer();
-                });
+                let signals = self.mutate_editor_with(|e| e.bury_buffer().1);
+                for signal in signals {
+                    self.handle_renderer_signal(signal);
+                }
             }
             Effect::OpenPopup {
                 name,

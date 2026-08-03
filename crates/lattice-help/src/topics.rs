@@ -437,6 +437,53 @@ mod tests {
         );
     }
 
+    #[test]
+    fn every_user_doc_is_linked_from_the_index() {
+        // Registration and *discoverability* are different properties,
+        // and only the first was guarded. A doc that ships and
+        // registers is reachable by `:help <exact-name>` — which helps
+        // only the reader who already knows the name. The reader who
+        // does not opens `:help` with no argument, gets README, and
+        // finds the feature simply absent.
+        //
+        // That is the failure this guards: not a broken link, but a
+        // silently unlisted one. It cannot be caught by reading the
+        // index (an absent row looks like nothing) and it grows by one
+        // every time a doc lands without an index row — which is the
+        // normal way to add a doc.
+        let docs_user = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/user");
+        let index = std::fs::read_to_string(docs_user.join("README.md")).expect("README readable");
+        let mut missing: Vec<String> = Vec::new();
+        for entry in std::fs::read_dir(&docs_user).expect("docs/user readable") {
+            let path = entry.expect("dir entry").path();
+            if path.extension().and_then(|s| s.to_str()) != Some("md") {
+                continue;
+            }
+            let stem = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .expect("md filename");
+            // README is the index; it does not link itself.
+            if stem == "README" {
+                continue;
+            }
+            if !index.contains(&format!("help:{stem})")) {
+                missing.push(stem.to_string());
+            }
+        }
+        missing.sort();
+        assert!(
+            missing.is_empty(),
+            "user docs registered as `:help` topics but absent from the \
+             index — a reader who does not already know the name cannot \
+             find them. Add a row to the topic table in \
+             `docs/user/README.md` linking `[{}](help:{})` for each:\n  {}",
+            missing.first().map(String::as_str).unwrap_or("name"),
+            missing.first().map(String::as_str).unwrap_or("name"),
+            missing.join("\n  "),
+        );
+    }
+
     /// Blank out fenced blocks and inline code spans so the link
     /// scanners below see only *live* links.
     ///

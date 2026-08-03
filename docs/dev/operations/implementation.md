@@ -4262,7 +4262,8 @@ Installs through `SubsystemBoot` seam. Inverted out of
   transient-item path carries it too, without which a region `x` would
   ask about the selection and discard the whole hunk. **MG.18 (hunk
   staging) is complete.**
-- **MG.19, MG.21, MG.22 and the tail of MG.23 remain open** —
+- **As of 2026-08-03 the open magit work is MG.23i+, MG.31 and the two
+  blocked `M`/`e` rows; MG.22's parser is deferred past v1** —
   per-slice status and sequencing live in
   [`slice-plans/magit.md`](slice-plans/magit.md), which is
   authoritative for this subsystem. (The 2026-07-26 audit found
@@ -4281,7 +4282,11 @@ Installs through `SubsystemBoot` seam. Inverted out of
   dispatch). **MG.21 is complete.** It surfaced one architectural gap
   worth naming: magit's working directory is process-wide, so a
   submodule's own status buffer cannot be opened, and per-buffer
-  workdir is a prerequisite for worktree support too.
+  workdir is a prerequisite for worktree support too. As of 2026-08-02
+  **MG.19 is complete** too (side-by-side + `do`/`dp`), and as of
+  2026-08-03 **MG.22's `tree-sitter-diff` parser is deferred past v1**
+  — the mode itself (chords, `<CR>`, options) is done, and the slice
+  keeps ⛔ so the plan stays out of `archive/`.
 
 ## multibuffer-views (in design, 2026-05-28)
 

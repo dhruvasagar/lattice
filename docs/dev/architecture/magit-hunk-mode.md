@@ -1,9 +1,11 @@
 # magit-hunk-mode — the mode that owns diff *content*
 
-**Status:** designed 2026-07-29; **partly implemented**. The mode
-exists and owns the hunk chords, `]c`/`[c` and `<CR>` (MG.24a +
-MG.22's seam, 2026-08-01), and its options landed in MG.22b
-(2026-08-02). Still open: `tree-sitter-diff` parsing. Slice plan:
+**Status:** designed 2026-07-29; **implemented except the parser**. The
+mode exists and owns the hunk chords, `]c`/`[c`, `]f`/`[f` and `<CR>`
+(MG.24a + MG.22's seam, 2026-08-01), and its options landed in MG.22b
+(2026-08-02). `tree-sitter-diff` parsing is **deferred past v1**
+(2026-08-03) — see "Parsing" below, which records what the 2026-08-03
+scoping pass established and where this document was wrong. Slice plan:
 [`../operations/slice-plans/magit.md`](../operations/slice-plans/magit.md)
 §MG.22.
 
@@ -218,18 +220,58 @@ hunk is determined by a filename several lines above, which tree-sitter
 injections cannot express. Language-aware hunk content is a separate
 problem — see "Open" below.
 
-### The wrinkle: a minor supplying a parser
+### Deferred past v1 (2026-08-03), and what the scoping pass settled
 
-Lattice attaches parsers through the **major** (`Lang` →
-`major_mode_id_for_lang` → `DocumentSyntax` buffer-local). A magit
-buffer's major is `magit-*`, not a language mode, so `magit-hunk-mode`
-cannot get a parser the usual way.
+MG.21a already gave these diffs their background tints, so what the
+parser adds is narrow: renames, `index` lines, mode changes and binary
+markers style as context rather than as metadata. Not worth a new
+workspace grammar dependency and a `Lang` variant before v1. Four
+findings, three of which correct this document:
 
-Resolve before implementing. The likely answer is that the mode
-registers `"diff"` in the `LangRegistry` and sets the buffer's
-`DocumentSyntax` local itself on activation — the same slot
-`activate_document` writes — but this needs checking against the
-syntax worker's assumptions about who owns that local.
+**The wrinkle below dissolves — it was the wrong question.** Lattice
+attaches parsers through the **major** (`Lang` →
+`major_mode_id_for_lang` → `DocumentSyntax` buffer-local), and a magit
+buffer's major is `magit-*`. This document guessed the mode should
+write `DocumentSyntax` itself. It must not: magit's synthetic buffers
+publish through `PendingSyntheticHighlights`, never through a live
+`SyntaxHandle`, and `lattice_syntax::oneshot_highlight_lines`
+(`oneshot.rs`) is already the exact primitive — parse once, return
+`Vec<Vec<StyledSpan>>`, hand it to the channel the eight span sites
+already use. `DocumentSyntax` is never touched, and the syntax worker's
+ownership of that local is never in question. MG.26c set the precedent
+for the blob buffer. Nothing incremental is lost: these buffers are
+read-only and replaced wholesale on refresh.
+
+**"Delete `diff_styled_spans`" is too strong.** Its
+`classify_diff_line` / `DiffLineClass` have a second consumer —
+`hunk.rs:482-528`, MG.18's hunk-boundary and ordinal machinery. Only
+the *styler* goes; the ladder stays as the structural classifier. Two
+diff readers then coexist, which is tolerable because they answer
+different questions and the ladder is stateless and line-local, but it
+is not the clean deletion described above.
+
+**The grammar's own highlight query is unusable, and the mapping is
+load-bearing beyond colour.** `tree-sitter-diff 0.1.0` (crates.io, ABI
+14, compatible with tree-sitter 0.26) covers every construct the table
+above claims, but `queries/highlights.scm` opens with *"These scopes
+are arbitrary and line up with good colors for the `tree-sitter
+highlight` command"* — `addition` → `@string`, `deletion` →
+`@keyword`. We ship our own `queries/diff/highlights.scm`, as markdown
+already does. Critically `(addition)` **must** map to `Style::DiffAdd`
+and `(deletion)` to `Style::DiffRemove`: MG.21a's
+`Editor::diff_signs_from_spans` finds the row tint by looking for those
+two styles on the row, so any other mapping silently removes the
+background tint from every magit diff — the very thing MG.21a added.
+
+**Scope, when it is picked up.** Syntax install is
+`Lang::detect_from_path`-driven, not major-mode-driven
+(`dispatch.rs:5766`), so adding `.diff` / `.patch` detection lights up
+ordinary patch files with no major-mode work;
+`major_mode_id_for_lang(Diff) → None` is the honest arm. A `diff-mode`
+major was considered and rejected — it would own no keymap, lifecycle
+or options, an abstraction ahead of its requirement. And the parse must
+move *inside* each site's `spawn_blocking`: all eight style after the
+await today, which is fine for a prefix ladder and not for a parse.
 
 ## Why the current output looked flat — fixed by MG.21a
 
@@ -284,7 +326,7 @@ MG.22b registered the first options `lattice-magit` has ever had; before it, the
 | Option | Type | Purpose | State |
 |---|---|---|---|
 | `magit.hunk.context-lines` | int | `-U<n>` for the diffs magit generates | ✅ MG.22b, default 3 |
-| `magit.hunk.syntax-highlight` | bool | language-aware hunk content, once it exists | ⛔ **not registered** — the feature does not exist, and an option that changes nothing is a menu row that does nothing with a quieter failure mode (`:set` reports success). Lands with the feature. |
+| `magit.hunk.syntax-highlight` | bool | language-aware hunk content, once it exists | ⛔ **not registered** — the feature does not exist, and an option that changes nothing is a menu row that does nothing with a quieter failure mode (`:set` reports success). Lands with the feature, which is now itself deferred past v1. |
 | ~~`magit.hunk.line-backgrounds`~~ | bool | opt *out* of the `diff.*.line` tints | ✅ MG.22b, but as **`ui.diff.line-backgrounds`** in `lattice-diff`. MG.21a found the mechanism generic — `Editor::diff_signs_from_spans` derives the tint from any mode's spans — so naming it for magit would understate what it turns off. |
 
 ## Open

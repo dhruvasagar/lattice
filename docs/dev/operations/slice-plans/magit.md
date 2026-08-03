@@ -50,12 +50,14 @@ owns *what* and *why*.
 | MG.21i | `magit-submodule-mode` + `o` on the root dispatch | MG.21h | ✅ |
 | MG.23k | `D` — re-run a diff/log view with different git arguments | MG.17a | ✅ |
 | MG.21a | Diff line-background tints in magit's diff views | MG.20 | ✅ |
-| MG.22 | `magit-hunk-mode` — the mode owning diff *content* (chords + `<CR>` + options ✅; tree-sitter-diff parser open) | MG.20 | 🚧 |
+| MG.22 | `magit-hunk-mode` — the mode owning diff *content* (chords + `<CR>` + options ✅; tree-sitter-diff parser **deferred past v1**) | MG.20 | ⛔ |
 | MG.22b | The options magit-hunk-mode owns — `magit.hunk.context-lines`, `ui.diff.line-backgrounds` | MG.21a, MG.23k | ✅ |
 | MG.23 | magit-dispatch / file-dispatch parity (a–d, f–h, j done; e dropped; i+ open) | MG.17b | 📝 |
 | MG.28 | `C-c f v` / `V` — a file at a revision, and back to the live file | MG.11 | ✅ |
 | MG.29 | `C-c g b` branch submenu + `Esc` unwinds one submenu level | MG.17b | ✅ |
 | MG.30 | Visual-range `s`/`u` over file entries in magit-status | MG.18 | ✅ |
+| MG.31 | `=` in magit-status ran `git` on the actor thread — relocated | — | ✅ |
+| MG.32 | The branch submenu against magit's own transient — `l`/`b` corrected, four rows added | MG.29 | ✅ |
 
 **2026-07-26 audit correction:** this table (last synced when MG.1-3 landed) had
 drifted from `implementation.md`'s per-slice status, which had marked MG.4-10 all
@@ -1335,7 +1337,7 @@ the buffer you are already in is the actual no-op. See MG.23h's note.
 | NOTIF.1d | magit's remote ops as the first consumer | NOTIF.1b/c | ✅ |
 | NOTIF.1e | Config (`notifications.*`) + the `*messages*` tee | NOTIF.1a | ✅ |
 | NOTIF.1f | Actions, via the `*notifications*` buffer | NOTIF.1e | ✅ |
-| MG.23i+ | The new subsystems, one slice each, prioritised by daily use — the same set MG.21 still names | — | 📝 |
+| MG.23i+ | The new subsystems, one slice each, prioritised by daily use — `O` subtree, `T` notes, `w`/`W` am + format-patch, `y` show-refs, `Y` cherries, `C` clone (`Z` worktree is blocked, see below) | — | 📝 |
 
 #### MG.23a — the file target seam + `:magit-other-file-dispatch` ✅ (2026-07-30)
 
@@ -2845,7 +2847,17 @@ and cannot: `workdir::magit_workdir` discovers from the process CWD, so
 every magit buffer is bound to one repository. The chord is absent
 rather than lying. Per-buffer workdir is its own slice and is also what
 magit's `Z` worktree rows will need — a shared prerequisite, not a
-submodule detail. **Worth filing before worktree work starts.**
+submodule detail.
+
+> **Decided 2026-08-03: process-wide CWD stays, for now.** Per-buffer
+> workdir is deliberately NOT being taken on before v1 — the current
+> working directory is the model, and magit is scoped to the repository
+> the editor was started in. Two consequences follow and are accepted
+> rather than worked around: a submodule's own status buffer stays
+> unreachable (`<CR>` remains absent rather than lying), and magit's
+> `Z` worktree rows cannot land until this is revisited. Anything that
+> would need a second repository live in one process is blocked on this
+> decision being reopened, not on a missing implementation.
 
 **No bench:** git runs on `spawn_blocking` behind a detached task; the
 render is O(submodules).
@@ -2903,7 +2915,198 @@ a refresh that drops the diff, and splice alignment.
 **Not shipped:** `magit.hunk.line-backgrounds` to opt out — the option
 lands with MG.22, which is where magit's options get an owner.
 
-### MG.22 — `magit-hunk-mode` 🚧
+### MG.32 — the branch submenu, inventoried ✅ (2026-08-03)
+
+MG.29 built the `b` submenu **without the entry-by-entry inventory
+MG.23 established**, and two of its three keys were wrong as a result.
+This slice did the inventory and acted on it.
+
+**The source, not memory** — MG.23's policy #1 requires that. Magit's
+`magit-branch` transient came from `magit/lisp/magit-branch.el`, and
+the remaps from `evil-collection-magit`'s
+`evil-collection-magit-popup-changes`, read verbatim:
+`(magit-branch "x" "X" magit-branch-reset)` and
+`(magit-branch "k" "x" magit-branch-delete)` — delete moves off `k`
+because `k` is a motion in a modal editor, and reset vacates `x` for it.
+
+| Key | Magit | Before MG.32 | After |
+|---|---|---|---|
+| `b` | checkout branch/**revision** | local-branch picker | revision prompt |
+| `l` | checkout **local** branch | *the list buffer* | the MG.29 picker |
+| `c` | new branch and checkout | ✅ | unchanged |
+| `n` | new branch, no checkout | — | ✅ |
+| `m` | rename | — | ✅ |
+| `x` | delete (magit's `k`) | — | ✅ |
+| `L` | *(magit has no such row)* | — | the list buffer |
+| `s` `S` `C` `X` | spin-off/out, configure, reset | — | ⛔ deferred, keys held free |
+
+**Two bugs, and both were "the row exists under the wrong letter"** —
+which is why the MG.29 presence test passed throughout and caught
+neither:
+
+1. **`l` was the list.** Magit's `l` is checkout-local-branch. The list
+   buffer is a lattice concept — magit's branch transient has no
+   list row at all — so it had squatted on an occupied key.
+2. **`b` was the local-branch picker.** Verified against source rather
+   than inferred: `BranchCheckoutSource` delegates to
+   `BranchPickBaseSource::init`, which calls `Branch::list` — local
+   branches only. Magit's `b` takes any revision (tag, remote ref, raw
+   SHA), which a list of local branches cannot express. **What MG.29
+   built was magit's `l`, bound to magit's `b`**, so the fix was not
+   just vacating a key: the MG.29 row moved to `l` and `b` became the
+   revision prompt it always meant.
+
+**`L` for the list**, because magit claims no key for it: free in
+magit's transient, and capital-as-variant matches magit's own `d`/`D`,
+`l`/`L`, `b`/`B` pairs in file-dispatch.
+
+**What each row needed.** `n` needed nothing new —
+`Branch::create(repo, name, checkout, from)` already took the flag, so
+`c` and `n` differ by one boolean. `m` needed `Branch::rename`, added
+with `-m` and **deliberately not `-M`**: the lowercase form refuses when
+the target name exists, the uppercase one overwrites it, and overwriting
+destroys whatever it pointed at silently. `x` reuses `Branch::delete`.
+
+**`x` routes through an ex-command, and that is forced rather than
+chosen.** Deletion must ask (MG.12), and a picker's `accept` cannot
+raise an `Effect::Confirm` — it can only reach an operation through
+`InvokeCommand`, which dispatches ex-commands. So the picker routes to
+`:magit-branch-delete <name>`, which raises the confirm; the git call
+lives only in the execute half. Same constraint that shaped MG.23j.
+
+It needed a **separate** ask/execute pair from the branch buffer's `d`,
+which looks like duplication and is not: one `CommandId` maps to one
+handler, and the buffer chord's handler reads the branch under the
+cursor — correct there, unreachable from a menu that opens anywhere.
+The new pair takes its target from the carried slot only, with no
+cursor fallback, because there is no cursor to fall back to.
+
+**`m` does not ask.** Renaming discards nothing and `-m` refuses rather
+than clobbers, so it acts directly like checkout and merge. Submitting
+the prompt unchanged (it is pre-filled with the current name, the
+likeliest accident) reports "unchanged" instead of letting git error.
+
+**One parser, not three.** `base_branch_from_prompt_buffer_name` became
+`branch_from_prompt_buffer_name(name, prefix)`, and all three prompt
+prefixes are `pub(crate)` constants shared by the writer
+(`picker_sources`) and the readers (the finish handlers). Three
+near-identical strip-prefix parsers spelled in two modules is the MG.15
+writer/reader drift class, and it fails silently: the prompt opens, you
+type a name, nothing happens.
+
+- **Tests:** 10 (3 `lattice-vcs` integration on `Branch::rename`
+  covering the not-checked-out case, HEAD following a rename of the
+  current branch, and the refusal to clobber; 7 in `lattice-magit`).
+- **The key-mapping test is verified non-vacuous by measurement:**
+  swapping `b` and `l` back to MG.29's assignment fails both
+  `the_branch_submenu_keys_mean_what_magit_means_by_them` and
+  `the_branch_submenu_keeps_the_list_it_replaced`. It also closes a
+  vacuity hole it would otherwise have — both sides of its comparisons
+  are `Option<CommandId>`, so an unregistered action and an absent row
+  would agree as `None == None`; the ids are asserted `is_some()` first.
+- **A guard on the deferred keys** (`s`/`S`/`C`/`X` stay unclaimed), so
+  a later slice cannot quietly take a slot magit's muscle memory owns.
+- **A prefix-ambiguity test:** `*magit:branch-create-from:` and
+  `*magit:branch-create-nocheckout-from:` are one hyphen apart, and a
+  different spelling would have let the create parser match the
+  no-checkout name and silently check the branch out.
+- **Two existing count guards were bumped** (28→32, 31→35) — the
+  no-inert-rows tripwire, working as designed.
+- **Docs corrected, not just extended:** `magit-transient.md` told
+  users to reach branch-merge with "`b` then `m`", which MG.29 had
+  already made stale and MG.32 makes actively wrong — `b m` is now
+  *rename*. It now says `b L` then `m`, and the submenu itself is
+  documented (it never was).
+- **No renderer change in either peer**; transients are spec-driven, so
+  the TUI/GPUI parity rule is satisfied by construction.
+
+### MG.31 — `=` ran `git` on the actor thread ✅ (found + fixed 2026-08-03)
+
+Found while scoping MG.22's parser; **independent of it, and it
+survived the deferral.**
+
+`actions.rs::toggle_expand` is a synchronous action handler
+(`-> Option<Effect>`), so it runs on the actor thread — and on the
+expand branch it calls `run_show` (`actions.rs:200`,
+`std::process::Command::new("git")`) *inline*, before the `rt.spawn`
+that applies the edit. Pressing `=` on a file entry in magit-status
+blocks the actor thread for the duration of a `git diff` subprocess:
+process spawn, fork/exec, and the diff itself.
+
+A paramount-#1 violation by the "no I/O on the actor thread" rule, and
+the standing rule says the first slice is **architectural relocation**:
+the `run_show` call moves inside the `rt.spawn`'s own
+`spawn_blocking`, with the styling that follows it. The
+`expanded`-bookkeeping order (recorded only *after* the insert lands,
+guarding the rapid-double-toggle race the two long comments in
+`toggle_expand` describe) has to survive the move unchanged — that
+ordering is load-bearing and the comments say why.
+
+Every other magit view already does this correctly: `magit_diff_mode`,
+`magit_revision_mode` and `magit_stash_show_mode` all run their git
+call inside `spawn_blocking`. This one site was missed.
+
+Scope check: the collapse branch is fine (no git call). Only the
+expand branch moves.
+
+#### As built
+
+**The claim was verified before it was fixed**, because "handler runs
+on the actor thread" is the kind of thing that is easy to assert and
+easy to be wrong about:
+
+- `editor_actor.rs:555-568` — the editor gets its own `lattice-editor`
+  thread running a **`current_thread`** runtime under `rt.block_on`,
+  and `run_actor`'s own comment says it "processes commands one at a
+  time; the `Editor` is owned exclusively by this task".
+- Handlers are invoked as a plain synchronous `handler(&ctx)` from
+  `&mut self` `Editor` methods (`dispatch.rs:7674`, `:27698`), so a
+  handler body *is* the actor loop for its duration.
+- A sweep of all ~138 `spawn_blocking` / `Command::new("git")` /
+  `Repository::discover` sites in `lattice-magit` found **every other
+  production git call already inside `spawn_blocking`** — including
+  `run_show`'s two other callers. This was the sole outlier, not a
+  house style being overturned.
+
+`actions::expand_payload` is the new seam: an `async fn` whose whole
+body is one `spawn_blocking` returning `(text, line_count, spans)`.
+The styling moved with the git call deliberately — it is `O(lines)`
+over the diff and belongs on the same side of the boundary as the call
+that produced it. `toggle_expand`'s expand branch is now
+`rt.spawn(async move { … expand_payload(…).await … })`, and the
+post-insert bookkeeping order (record `expanded` only *after* the edit
+lands) survives unchanged; that ordering guards the rapid-double-toggle
+race the two long comments in `toggle_expand` describe.
+
+- **Tests:** 3. Two behavioural (the payload's text / line count / one
+  span row per line, and that an entry with no diff declines rather
+  than inserting a blank expansion — the old `!trim().is_empty()`
+  guard), plus the regression probe.
+- **The probe is the M.6.X pattern** from
+  `lattice-multibuffer/tests/ui_responsive_during_scan.rs`: a
+  `current_thread` runtime matching the actor's, a 5 ms sleep loop,
+  assert the realised gap stays under 50 ms.
+- **Verified non-vacuous by measurement, not by argument.** Removing
+  the `spawn_blocking` puts the measured gap at **263 ms** vs the 50 ms
+  threshold — 5×, so neither CI jitter nor a fast machine flips it. The
+  fixture is sized (200k lines, all changed) to buy that margin: at 40k
+  the pre-fix gap was only 74 ms, close enough that the test could have
+  passed against the broken code on a quicker machine.
+- **No bench:** the work is unchanged in amount, only in which thread
+  runs it; there is nothing new to measure per frame or per keystroke.
+- **No renderer change in either peer**, so the TUI/GPUI parity rule is
+  satisfied by construction.
+
+**Two lesser adjacent cases, deliberately not folded in.**
+`transients.rs:419` `bisect_in_progress()` stats the repo on the actor
+thread every time `C-c g` builds the menu (its own comment calls it
+"the one impure part of building this menu"), and
+`magit_rebase_mode.rs:272` does a `Repository::discover` in an
+activation path. Both are directory-walk / stat rather than a
+subprocess, so they are a different order of cost — noted, not
+equated, and not fixed here.
+
+### MG.22 — `magit-hunk-mode` ⛔ (parser deferred past v1)
 
 > **Status corrected 2026-08-01** (verified against source, not icons).
 > The mode **exists** and owns its chords — MG.24a built it, moving
@@ -2914,17 +3117,69 @@ lands with MG.22, which is where magit's options get an owner.
 > | Owns | State |
 > |---|---|
 > | chords that act on a hunk (`s`/`u`/`x`, `a`/`-`) | ✅ MG.24a |
-> | navigation within diff content (`]c`/`[c`) | ✅ MG.24a |
-> | structural highlighting (`tree-sitter-diff`) | 📝 — `diff_styled_spans` still hand-rolled |
+> | navigation within diff content (`]c`/`[c`, `]f`/`[f`) | ✅ MG.24a |
 > | `<CR>` via the `diff_target` seam | ✅ 2026-08-01 |
-> | `magit.hunk.*` options | 📝 — no occurrences in source |
+> | `magit.hunk.*` options | ✅ MG.22b (2026-08-02) |
+> | structural highlighting (`tree-sitter-diff`) | ⛔ **deferred past v1** (2026-08-03) |
 >
 > The drift this corrects was self-inflicted: half of MG.22 landed
 > under a different slice id (MG.24a, from the duplication audit)
 > without reconciling the parent, so a slice that was 40% done still
-> read 📝. The remaining three items need no chord work and are
-> independent of each other; the parser one still carries the open
-> question below about a *minor* supplying a parser.
+> read 📝. Four of the five items are now done; the fifth is deferred.
+
+#### The parser, deferred (2026-08-03)
+
+**Deferred, not dropped.** MG.21a already gave magit's diffs their
+background tints, so the visible gap the parser closes is narrow —
+renames, `index` lines, mode changes and binary markers style as
+context instead of as metadata. That is not worth a new workspace
+grammar dependency and a `Lang` variant before v1. The slice keeps ⛔
+so this plan stays out of `archive/`.
+
+**Findings from the 2026-08-03 scoping pass, recorded so they are not
+re-derived.** Three of them contradict what the design fragment says:
+
+1. **The "a minor cannot supply a parser" wrinkle dissolves.** The
+   fragment guesses the mode must write `DocumentSyntax` itself. It
+   must not — magit's synthetic buffers publish through
+   `PendingSyntheticHighlights`, never through a live `SyntaxHandle`,
+   and `lattice_syntax::oneshot_highlight_lines` (`oneshot.rs`) is
+   already the exact primitive: parse once, return
+   `Vec<Vec<StyledSpan>>`, hand it to the channel the eight span sites
+   already use. `DocumentSyntax` is never touched. MG.26c set this
+   precedent for the blob buffer. Incremental reparse buys nothing:
+   these buffers are read-only and replaced wholesale on refresh.
+2. **`diff_styled_spans` cannot be deleted wholesale.** The fragment
+   says to delete it. Its `classify_diff_line` / `DiffLineClass` have a
+   *second* consumer — `hunk.rs:482-528`, MG.18's hunk-boundary and
+   ordinal machinery. Only the **styler** goes; the ladder stays as the
+   structural classifier. Two diff readers then coexist, which is
+   acceptable because they answer different questions and the ladder is
+   stateless and line-local — but it is not the clean deletion the
+   fragment describes.
+3. **The grammar's bundled highlight query is unusable, and the
+   mapping is load-bearing beyond colour.** `tree-sitter-diff 0.1.0`
+   (crates.io, ABI 14, compatible with our tree-sitter 0.26) covers
+   every construct the fragment claims, but its `queries/highlights.scm`
+   opens with *"These scopes are arbitrary and line up with good colors
+   for the `tree-sitter highlight` command"* — `addition` → `@string`,
+   `deletion` → `@keyword`. We would ship our own
+   `queries/diff/highlights.scm`, as markdown already does. Critically,
+   `(addition)` **must** map to `Style::DiffAdd` and `(deletion)` to
+   `Style::DiffRemove`: MG.21a's `Editor::diff_signs_from_spans`
+   derives the row background tint by finding those styles on the row,
+   so any other mapping silently removes the tint from every magit diff.
+4. **Scope, if it is picked up.** Syntax install is
+   `Lang::detect_from_path`-driven, not major-mode-driven
+   (`dispatch.rs:5766`), so adding `.diff` / `.patch` detection lights
+   up ordinary patch files with no major-mode work —
+   `major_mode_id_for_lang(Diff) → None` is honest. A `diff-mode` major
+   was considered and rejected: it would own no keymap, lifecycle or
+   options, i.e. an abstraction ahead of its requirement.
+5. **The parse must move off the actor thread when it lands.** All
+   eight sites style *after* their `spawn_blocking` awaits — cheap for
+   a prefix ladder, not for a tree-sitter parse. Each call moves
+   *inside* its `spawn_blocking` (MG.26c's shape).
 
 
 Design fragment:

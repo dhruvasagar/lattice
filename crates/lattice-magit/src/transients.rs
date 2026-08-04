@@ -15,6 +15,313 @@ use lattice_protocol::ids::CommandId;
 
 use crate::magit_global_mode::RemoteOp;
 
+/// MG.41a: every registered magit action, keyed by its registered name.
+///
+/// Replaces the per-row `Option<CommandId>` struct field. Adding a
+/// transient row used to mean editing four places that had to stay in
+/// sync — `register_action_commands`, a struct field, a
+/// `resolve_dispatch_ids` line, and the builder — none of which failed
+/// to compile when they drifted; the row just silently rendered as a
+/// disabled placeholder. With rows naming their command directly, two
+/// of those four disappear.
+///
+/// **Resolution is automatic.** `resolve` scans the registry for every
+/// `action:magit-` name rather than reading a hand-kept list, so there
+/// is no third enumeration hiding here either: registering an action is
+/// the only step, and a row referencing it works immediately.
+///
+/// The cost is losing compile-time field checking. Mitigated the way
+/// this repo already mitigates it for the `<C-h>` help prefix: a test
+/// asserts every name any row references actually resolves, so drift
+/// fails loudly instead of rendering a placeholder.
+#[derive(Debug, Clone, Default)]
+pub struct MagitActionIds {
+    by_name: std::collections::HashMap<String, CommandId>,
+}
+
+impl MagitActionIds {
+    /// Prefix every magit action shares. Anything registered under it
+    /// is reachable from a transient row without further bookkeeping.
+    const PREFIX: &'static str = "action:magit-";
+
+    pub fn resolve(registry: &lattice_grammar::CommandRegistry) -> Self {
+        let names: Vec<String> = registry
+            .names()
+            .filter(|n| n.starts_with(Self::PREFIX))
+            .map(str::to_string)
+            .collect();
+        let by_name = names
+            .into_iter()
+            .filter_map(|n| registry.id_by_name(&n).map(|id| (n, id)))
+            .collect();
+        Self { by_name }
+    }
+
+    pub fn get(&self, name: &str) -> Option<CommandId> {
+        self.by_name.get(name).copied()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.by_name.is_empty()
+    }
+}
+
+/// MG.41a: one transient row, as data.
+///
+/// `action` is the registered command name — the single place a row's
+/// behaviour is identified. `placeholder` is the disabled-row marker
+/// shown when the action is missing, kept per-row so an unresolved row
+/// is still visually distinct from its neighbours.
+pub struct TransientRow {
+    pub key: &'static str,
+    pub label: &'static str,
+    pub doc: &'static str,
+    pub action: &'static str,
+    pub placeholder: &'static str,
+}
+
+/// Build a row from the table entry, degrading to a disabled
+/// placeholder when its action is not registered.
+fn row_item(ids: &MagitActionIds, row: &TransientRow) -> TransientItem {
+    action_or_placeholder(
+        ids.get(row.action),
+        row.key,
+        row.label,
+        row.doc,
+        row.placeholder,
+    )
+}
+
+/// Build a whole group from a static table — the shape every
+/// non-gated transient group now uses.
+fn row_group(label: &str, ids: &MagitActionIds, rows: &'static [TransientRow]) -> TransientGroup {
+    TransientGroup {
+        label: label.into(),
+        items: rows.iter().map(|r| row_item(ids, r)).collect(),
+    }
+}
+
+/// Every static row table in this module, for the drift tests.
+///
+/// A table not listed here is not covered by
+/// `every_row_action_is_registered`, so new tables must be added — the
+/// one piece of bookkeeping this design keeps, and the test below
+/// makes forgetting it visible by counting.
+pub(crate) fn all_row_tables() -> &'static [(&'static str, &'static [TransientRow])] {
+    &[
+        ("branch/checkout", BRANCH_CHECKOUT_ROWS),
+        ("branch/create", BRANCH_CREATE_ROWS),
+        ("branch/do", BRANCH_DO_ROWS),
+        ("reset", RESET_ROWS),
+        ("commit", COMMIT_ROWS),
+        ("stash", STASH_ROWS),
+        ("subtree", SUBTREE_ROWS),
+        ("jump", JUMP_ROWS),
+    ]
+}
+
+
+// ---- MG.41a: static row tables ----
+//
+// One entry per row. Keys are magit's own — inside a transient the menu
+// owns every keystroke, so there is no vim-grammar conflict to dodge
+// (see the slice plan's scoping note).
+
+const BRANCH_CHECKOUT_ROWS: &[TransientRow] = &[
+    TransientRow {
+        key: "b",
+        label: "branch/revision",
+        doc: "Check out anything git can: a branch, tag, remote ref or SHA",
+        action: "action:magit-global-branch-checkout-rev",
+        placeholder: "branch_checkout_rev_op",
+    },
+    TransientRow {
+        key: "l",
+        label: "local branch",
+        doc: "Pick a local branch and check it out",
+        action: "action:magit-global-branch-checkout",
+        placeholder: "branch_checkout_op",
+    },
+];
+
+const BRANCH_CREATE_ROWS: &[TransientRow] = &[
+    TransientRow {
+        key: "c",
+        label: "new branch and checkout",
+        doc: "Pick a base, then name a new branch and check it out",
+        action: "action:magit-global-branch-create",
+        placeholder: "branch_create_op",
+    },
+    TransientRow {
+        key: "n",
+        label: "new branch",
+        doc: "Pick a base, then name a new branch — without checking it out",
+        action: "action:magit-global-branch-create-no-checkout",
+        placeholder: "branch_create_no_checkout_op",
+    },
+];
+
+const BRANCH_DO_ROWS: &[TransientRow] = &[
+    TransientRow {
+        key: "m",
+        label: "rename",
+        doc: "Pick a branch, then type its new name",
+        action: "action:magit-global-branch-rename",
+        placeholder: "branch_rename_op",
+    },
+    // MG.41a: magit's own keys. `k` deletes; `x` is reset (MG.41d adds
+    // it). Before this, `x` deleted — putting the destructive
+    // operation where a magit user expects reset.
+    TransientRow {
+        key: "k",
+        label: "delete",
+        doc: "Pick a branch to delete — asks first",
+        action: "action:magit-global-branch-delete",
+        placeholder: "branch_delete_op",
+    },
+    TransientRow {
+        key: "L",
+        label: "list",
+        doc: "Open the branch list buffer",
+        action: "action:magit-global-branch",
+        placeholder: "branch_op",
+    },
+];
+
+const RESET_ROWS: &[TransientRow] = &[
+    TransientRow {
+        key: "s",
+        label: "soft",
+        doc: "Move HEAD, keep the index and working tree",
+        action: "action:magit-reset-soft",
+        placeholder: "reset_soft_op",
+    },
+    TransientRow {
+        key: "m",
+        label: "mixed",
+        doc: "Move HEAD and reset the index, keep the working tree",
+        action: "action:magit-reset-mixed",
+        placeholder: "reset_mixed_op",
+    },
+    TransientRow {
+        key: "h",
+        label: "hard",
+        doc: "Move HEAD and discard index + working-tree changes",
+        action: "action:magit-reset-hard",
+        placeholder: "reset_hard_op",
+    },
+];
+
+const COMMIT_ROWS: &[TransientRow] = &[
+    TransientRow {
+        key: "c",
+        label: "commit",
+        doc: "Commit the staged changes",
+        action: "action:magit-global-commit",
+        placeholder: "commit_op",
+    },
+    TransientRow {
+        key: "a",
+        label: "amend",
+        doc: "Amend the previous commit",
+        action: "action:magit-global-amend",
+        placeholder: "amend_op",
+    },
+];
+
+const STASH_ROWS: &[TransientRow] = &[
+    TransientRow {
+        key: "z",
+        label: "stash",
+        doc: "Stash the working tree and index",
+        action: "action:magit-global-stash-create",
+        placeholder: "stash_create_op",
+    },
+    TransientRow {
+        key: "l",
+        label: "list",
+        doc: "Open the stash list buffer",
+        action: "action:magit-global-stash",
+        placeholder: "stash_op",
+    },
+];
+
+const SUBTREE_ROWS: &[TransientRow] = &[
+    TransientRow {
+        key: "a",
+        label: "add",
+        doc: "Add a repository as a subtree at a prefix",
+        action: "action:magit-global-subtree-add",
+        placeholder: "subtree_add_op",
+    },
+    TransientRow {
+        key: "m",
+        label: "merge",
+        doc: "Merge a repository into an existing subtree prefix",
+        action: "action:magit-global-subtree-merge",
+        placeholder: "subtree_merge_op",
+    },
+    TransientRow {
+        key: "f",
+        label: "pull",
+        doc: "Fetch and merge upstream changes into a subtree prefix",
+        action: "action:magit-global-subtree-pull",
+        placeholder: "subtree_pull_op",
+    },
+    TransientRow {
+        key: "p",
+        label: "push",
+        doc: "Push a subtree prefix to its upstream repository",
+        action: "action:magit-global-subtree-push",
+        placeholder: "subtree_push_op",
+    },
+    TransientRow {
+        key: "s",
+        label: "split",
+        doc: "Split a prefix into its own synthetic history",
+        action: "action:magit-global-subtree-split",
+        placeholder: "subtree_split_op",
+    },
+];
+
+const JUMP_ROWS: &[TransientRow] = &[
+    TransientRow {
+        key: "s",
+        label: "staged",
+        doc: "Jump to the staged-changes section",
+        action: "action:magit-jump-staged",
+        placeholder: "jump_staged_op",
+    },
+    TransientRow {
+        key: "u",
+        label: "unstaged",
+        doc: "Jump to the unstaged-changes section",
+        action: "action:magit-jump-unstaged",
+        placeholder: "jump_unstaged_op",
+    },
+    TransientRow {
+        key: "n",
+        label: "untracked",
+        doc: "Jump to the untracked-files section",
+        action: "action:magit-jump-untracked",
+        placeholder: "jump_untracked_op",
+    },
+    TransientRow {
+        key: "z",
+        label: "stashes",
+        doc: "Jump to the stashes section",
+        action: "action:magit-jump-stashes",
+        placeholder: "jump_stashes_op",
+    },
+    TransientRow {
+        key: "c",
+        label: "commits",
+        doc: "Jump to the recent-commits section",
+        action: "action:magit-jump-commits",
+        placeholder: "jump_commits_op",
+    },
+];
+
 /// MG.17a: the `Flag` items for a [`RemoteOp`], built from the op's own
 /// flag table so the menu can't offer a toggle the argv builder ignores.
 fn flag_items(op: RemoteOp) -> Vec<TransientItem> {
@@ -239,25 +546,25 @@ fn action_or_placeholder(
 /// MG.23h: the "Applying changes" rows, gated per magit's own
 /// `:if-derived magit-mode` — see the call site for the reasoning and
 /// for why `s` / `u` are not among them.
-fn applying_changes_items(ids: &DispatchActionIds, ctx: &TransientContext) -> Vec<TransientItem> {
+fn applying_changes_items(ids: &MagitActionIds, ctx: &TransientContext) -> Vec<TransientItem> {
     let mut items = Vec::new();
     if ctx.has_minor(crate::MagitCoreMode::mode_id().as_str()) {
         items.push(action_or_placeholder(
-            ids.apply_hunk,
+            ids.get("action:magit-apply-hunk"),
             "a",
             "apply",
             "Apply the hunk at cursor to the working tree",
             "apply_hunk",
         ));
         items.push(action_or_placeholder(
-            ids.reverse_hunk,
+            ids.get("action:magit-reverse-hunk"),
             "-",
             "reverse",
             "Reverse the hunk at cursor out of the working tree",
             "reverse_hunk",
         ));
         items.push(action_or_placeholder(
-            ids.discard,
+            ids.get("action:magit-discard"),
             "x",
             "discard",
             "Discard the hunk or file at cursor (asks first)",
@@ -265,14 +572,14 @@ fn applying_changes_items(ids: &DispatchActionIds, ctx: &TransientContext) -> Ve
         ));
     }
     items.push(action_or_placeholder(
-        ids.stage_all,
+        ids.get("action:magit-global-stage-all"),
         "S",
         "stage all",
         "Stage every tracked modification (git add --update)",
         "stage_all_op",
     ));
     items.push(action_or_placeholder(
-        ids.unstage_all,
+        ids.get("action:magit-global-unstage-all"),
         "U",
         "unstage all",
         "Unstage everything, keeping your working tree (git reset)",
@@ -289,35 +596,10 @@ fn applying_changes_items(ids: &DispatchActionIds, ctx: &TransientContext) -> Ve
 /// to sit next to the two that are not — seeing `--soft` and `--mixed`
 /// beside it is what makes "keeps your changes" legible at the moment
 /// of choosing.
-fn reset_transient(ids: &DispatchActionIds) -> TransientSpec {
+fn reset_transient(ids: &MagitActionIds) -> TransientSpec {
     TransientSpec {
         title: "Reset".into(),
-        groups: vec![TransientGroup {
-            label: "Reset to a commit".into(),
-            items: vec![
-                action_or_placeholder(
-                    ids.reset_soft,
-                    "s",
-                    "soft",
-                    "Keep the index and the working tree",
-                    "reset_soft_op",
-                ),
-                action_or_placeholder(
-                    ids.reset_mixed,
-                    "m",
-                    "mixed",
-                    "Keep the working tree, reset the index",
-                    "reset_mixed_op",
-                ),
-                action_or_placeholder(
-                    ids.reset_hard,
-                    "h",
-                    "hard",
-                    "Discard everything uncommitted (asks first)",
-                    "reset_hard_op",
-                ),
-            ],
-        }],
+        groups: vec![row_group("Reset", ids, RESET_ROWS)],
         preview: None,
         footer: Some("q dismiss  Esc/BS back".into()),
     }
@@ -361,74 +643,13 @@ fn reset_transient(ids: &DispatchActionIds) -> TransientSpec {
 /// spin-off/spin-out, `C` configure (a sub-transient over
 /// `branch.<name>.*` that likely belongs to `:customize`, not a
 /// hand-rolled menu), `X` reset (wants MG.23j's commit picker).
-fn branch_transient(ids: &DispatchActionIds) -> TransientSpec {
+fn branch_transient(ids: &MagitActionIds) -> TransientSpec {
     TransientSpec {
         title: "Branch".into(),
         groups: vec![
-            TransientGroup {
-                label: "Checkout".into(),
-                items: vec![
-                    action_or_placeholder(
-                        ids.branch_checkout_rev,
-                        "b",
-                        "branch/revision",
-                        "Check out anything git can: a branch, tag, remote ref or SHA",
-                        "branch_checkout_rev_op",
-                    ),
-                    action_or_placeholder(
-                        ids.branch_checkout,
-                        "l",
-                        "local branch",
-                        "Pick a local branch and check it out",
-                        "branch_checkout_op",
-                    ),
-                ],
-            },
-            TransientGroup {
-                label: "Create".into(),
-                items: vec![
-                    action_or_placeholder(
-                        ids.branch_create,
-                        "c",
-                        "new branch and checkout",
-                        "Pick a base, then name a new branch and check it out",
-                        "branch_create_op",
-                    ),
-                    action_or_placeholder(
-                        ids.branch_create_no_checkout,
-                        "n",
-                        "new branch",
-                        "Pick a base, then name a new branch — without checking it out",
-                        "branch_create_no_checkout_op",
-                    ),
-                ],
-            },
-            TransientGroup {
-                label: "Do".into(),
-                items: vec![
-                    action_or_placeholder(
-                        ids.branch_rename,
-                        "m",
-                        "rename",
-                        "Pick a branch, then type its new name",
-                        "branch_rename_op",
-                    ),
-                    action_or_placeholder(
-                        ids.branch_delete,
-                        "x",
-                        "delete",
-                        "Pick a branch to delete — asks first",
-                        "branch_delete_op",
-                    ),
-                    action_or_placeholder(
-                        ids.branch,
-                        "L",
-                        "list",
-                        "Open the branch list buffer",
-                        "branch_op",
-                    ),
-                ],
-            },
+            row_group("Checkout", ids, BRANCH_CHECKOUT_ROWS),
+            row_group("Create", ids, BRANCH_CREATE_ROWS),
+            row_group("Do", ids, BRANCH_DO_ROWS),
         ],
         preview: None,
         footer: Some("q dismiss  Esc/BS back".into()),
@@ -454,20 +675,20 @@ fn branch_transient(ids: &DispatchActionIds) -> TransientSpec {
 /// lattice's transients do not have. It is the same gap MG.21d named
 /// for remote URLs, and `:customize` is the likelier long-term home for
 /// per-repo git config than a hand-rolled menu.
-fn notes_transient(ids: &DispatchActionIds, merge_in_progress: bool) -> TransientSpec {
+fn notes_transient(ids: &MagitActionIds, merge_in_progress: bool) -> TransientSpec {
     let groups = if merge_in_progress {
         vec![TransientGroup {
             label: "Notes merge in progress".into(),
             items: vec![
                 action_or_placeholder(
-                    ids.note_merge_commit,
+                    ids.get("action:magit-global-note-merge-commit"),
                     "c",
                     "commit merge",
                     "Finish the notes merge, keeping the resolved notes",
                     "note_merge_commit_op",
                 ),
                 action_or_placeholder(
-                    ids.note_merge_abort,
+                    ids.get("action:magit-global-note-merge-abort"),
                     "a",
                     "abort merge",
                     "Abandon the notes merge, restoring the notes ref",
@@ -480,28 +701,28 @@ fn notes_transient(ids: &DispatchActionIds, merge_in_progress: bool) -> Transien
             label: "Notes".into(),
             items: vec![
                 action_or_placeholder(
-                    ids.note_edit,
+                    ids.get("action:magit-global-note-edit"),
                     "T",
                     "edit",
                     "Edit the note on a commit — opens an editable buffer",
                     "note_edit_op",
                 ),
                 action_or_placeholder(
-                    ids.note_remove,
+                    ids.get("action:magit-global-note-remove"),
                     "r",
                     "remove",
                     "Remove the note from a commit",
                     "note_remove_op",
                 ),
                 action_or_placeholder(
-                    ids.note_merge,
+                    ids.get("action:magit-global-note-merge"),
                     "m",
                     "merge",
                     "Merge another notes ref into this one",
                     "note_merge_op",
                 ),
                 action_or_placeholder(
-                    ids.note_prune,
+                    ids.get("action:magit-global-note-prune"),
                     "p",
                     "prune",
                     "Drop notes whose commit no longer exists (asks first)",
@@ -530,56 +751,10 @@ fn notes_transient(ids: &DispatchActionIds, merge_in_progress: bool) -> Transien
 /// Every row prompts, because every subtree operation needs a
 /// `--prefix=<dir>` and most need a repository and a ref too — none of
 /// which a menu can guess.
-fn subtree_transient(ids: &DispatchActionIds) -> TransientSpec {
+fn subtree_transient(ids: &MagitActionIds) -> TransientSpec {
     TransientSpec {
         title: "Subtree".into(),
-        groups: vec![
-            TransientGroup {
-                label: "Import".into(),
-                items: vec![
-                    action_or_placeholder(
-                        ids.subtree_add,
-                        "a",
-                        "add",
-                        "Add a repository as a subtree at a prefix",
-                        "subtree_add_op",
-                    ),
-                    action_or_placeholder(
-                        ids.subtree_merge,
-                        "m",
-                        "merge",
-                        "Merge a ref into an existing subtree",
-                        "subtree_merge_op",
-                    ),
-                    action_or_placeholder(
-                        ids.subtree_pull,
-                        "f",
-                        "pull",
-                        "Fetch and merge a subtree's upstream",
-                        "subtree_pull_op",
-                    ),
-                ],
-            },
-            TransientGroup {
-                label: "Export".into(),
-                items: vec![
-                    action_or_placeholder(
-                        ids.subtree_push,
-                        "p",
-                        "push",
-                        "Push a subtree's history to its own repository",
-                        "subtree_push_op",
-                    ),
-                    action_or_placeholder(
-                        ids.subtree_split,
-                        "s",
-                        "split",
-                        "Extract a subtree's history into its own branch",
-                        "subtree_split_op",
-                    ),
-                ],
-            },
-        ],
+        groups: vec![row_group("Actions", ids, SUBTREE_ROWS)],
         preview: None,
         footer: Some("q dismiss  Esc/BS back".into()),
     }
@@ -594,27 +769,27 @@ fn subtree_transient(ids: &DispatchActionIds) -> TransientSpec {
 /// **Gated like `B` and `T`:** an `am` stops on a patch that will not
 /// apply, and outside that state `--continue` / `--skip` / `--abort`
 /// error. Inside it, applying more patches is what you must not do.
-fn patch_transient(ids: &DispatchActionIds, am_in_progress: bool) -> TransientSpec {
+fn patch_transient(ids: &MagitActionIds, am_in_progress: bool) -> TransientSpec {
     let groups = if am_in_progress {
         vec![TransientGroup {
             label: "Patch application stopped".into(),
             items: vec![
                 action_or_placeholder(
-                    ids.am_continue,
+                    ids.get("action:magit-global-am-continue"),
                     "c",
                     "continue",
                     "Resume applying after resolving the conflict",
                     "am_continue_op",
                 ),
                 action_or_placeholder(
-                    ids.am_skip,
+                    ids.get("action:magit-global-am-skip"),
                     "s",
                     "skip",
                     "Skip the patch that would not apply",
                     "am_skip_op",
                 ),
                 action_or_placeholder(
-                    ids.am_abort,
+                    ids.get("action:magit-global-am-abort"),
                     "a",
                     "abort",
                     "Abandon the whole apply, restoring the branch",
@@ -627,14 +802,14 @@ fn patch_transient(ids: &DispatchActionIds, am_in_progress: bool) -> TransientSp
             label: "Patches".into(),
             items: vec![
                 action_or_placeholder(
-                    ids.am_apply,
+                    ids.get("action:magit-global-am-apply"),
                     "w",
                     "apply patches",
                     "Apply a mailbox of patches (git am)",
                     "am_apply_op",
                 ),
                 action_or_placeholder(
-                    ids.format_patch,
+                    ids.get("action:magit-global-format-patch"),
                     "W",
                     "create patches",
                     "Write a commit range out as .patch files",
@@ -678,7 +853,7 @@ fn patch_transient(ids: &DispatchActionIds, am_in_progress: bool) -> TransientSp
 /// A buffer with no arguments gets a menu that says so rather than an
 /// empty one: the chord is bound on `magit-core-mode`, so it fires in
 /// every magit buffer, and silence would read as a broken key.
-pub fn view_arguments_transient(ids: &DispatchActionIds, ctx: &TransientContext) -> TransientSpec {
+pub fn view_arguments_transient(ids: &MagitActionIds, ctx: &TransientContext) -> TransientSpec {
     let (title, flags) = if ctx.is_major(crate::MagitDiffMode::mode_id().as_str()) {
         ("Diff arguments", crate::magit_diff_mode::DIFF_ARGS)
     } else if ctx.is_major(crate::MagitLogMode::mode_id().as_str()) {
@@ -709,7 +884,7 @@ pub fn view_arguments_transient(ids: &DispatchActionIds, ctx: &TransientContext)
             TransientGroup {
                 label: "Actions".into(),
                 items: vec![action_or_placeholder(
-                    ids.view_args,
+                    ids.get("action:magit-view-refresh-args"),
                     "g",
                     "refresh",
                     "Re-run with these arguments",
@@ -762,32 +937,32 @@ pub fn notes_merge_in_progress() -> bool {
         .unwrap_or(false)
 }
 
-fn bisect_transient(ids: &DispatchActionIds, in_progress: bool) -> TransientSpec {
+fn bisect_transient(ids: &MagitActionIds, in_progress: bool) -> TransientSpec {
     let items = if in_progress {
         vec![
             action_or_placeholder(
-                ids.bisect_good,
+                ids.get("action:magit-global-bisect-good"),
                 "g",
                 "good",
                 "Mark the revision git checked out as good",
                 "bisect_good_op",
             ),
             action_or_placeholder(
-                ids.bisect_bad,
+                ids.get("action:magit-global-bisect-bad"),
                 "b",
                 "bad",
                 "Mark the revision git checked out as bad",
                 "bisect_bad_op",
             ),
             action_or_placeholder(
-                ids.bisect_skip,
+                ids.get("action:magit-global-bisect-skip"),
                 "k",
                 "skip",
                 "Skip this revision — it cannot be tested",
                 "bisect_skip_op",
             ),
             action_or_placeholder(
-                ids.bisect_reset,
+                ids.get("action:magit-global-bisect-reset"),
                 "r",
                 "reset",
                 "End the bisect and return to where it started",
@@ -796,7 +971,7 @@ fn bisect_transient(ids: &DispatchActionIds, in_progress: bool) -> TransientSpec
         ]
     } else {
         vec![action_or_placeholder(
-            ids.bisect_start,
+            ids.get("action:magit-global-bisect-start"),
             "B",
             "start",
             "Start a bisect — asks for a bad then a good revision",
@@ -831,7 +1006,7 @@ fn bisect_transient(ids: &DispatchActionIds, in_progress: bool) -> TransientSpec
 /// and `magit-status-quick :if-not-mode magit-status-mode`. Ours keeps
 /// the key on `s` (magit leaves `s` empty at this level, so there is
 /// nothing to collide with) and swaps the meaning the same way.
-fn status_row(ids: &DispatchActionIds, ctx: &TransientContext) -> TransientItem {
+fn status_row(ids: &MagitActionIds, ctx: &TransientContext) -> TransientItem {
     if ctx.is_major(crate::MagitStatusMode::mode_id().as_str()) {
         return TransientItem {
             key: vec!["s".into()],
@@ -841,7 +1016,7 @@ fn status_row(ids: &DispatchActionIds, ctx: &TransientContext) -> TransientItem 
         };
     }
     action_or_placeholder(
-        ids.status,
+        ids.get("action:magit-global-status"),
         "s",
         "status",
         "Open the status buffer",
@@ -855,43 +1030,10 @@ fn status_row(ids: &DispatchActionIds, ctx: &TransientContext) -> TransientItem 
 /// unstaged, `n` untracked, `z` stashes). Recent commits has no magit
 /// counterpart — its status buffer reaches unpushed/unpulled instead —
 /// so `c` is ours, free at this level and mnemonic.
-fn jump_transient(ids: &DispatchActionIds) -> TransientSpec {
+fn jump_transient(ids: &MagitActionIds) -> TransientSpec {
     TransientSpec {
         title: "Jump to section".into(),
-        groups: vec![TransientGroup {
-            label: "Jump to".into(),
-            items: vec![
-                action_or_placeholder(
-                    ids.jump_staged,
-                    "s",
-                    "staged",
-                    "Staged changes",
-                    "jump_staged",
-                ),
-                action_or_placeholder(
-                    ids.jump_unstaged,
-                    "u",
-                    "unstaged",
-                    "Unstaged changes",
-                    "jump_unstaged",
-                ),
-                action_or_placeholder(
-                    ids.jump_untracked,
-                    "n",
-                    "untracked",
-                    "Untracked files",
-                    "jump_untracked",
-                ),
-                action_or_placeholder(ids.jump_stashes, "z", "stashes", "Stashes", "jump_stashes"),
-                action_or_placeholder(
-                    ids.jump_commits,
-                    "c",
-                    "commits",
-                    "Recent commits",
-                    "jump_commits",
-                ),
-            ],
-        }],
+        groups: vec![row_group("Sections", ids, JUMP_ROWS)],
         preview: None,
         footer: Some("q dismiss  Esc/BS back".into()),
     }
@@ -913,7 +1055,7 @@ fn jump_transient(ids: &DispatchActionIds) -> TransientSpec {
 /// it, both mirroring a predicate magit puts on its own dispatch — the
 /// `s` row's meaning ([`status_row`]) and the section-acting rows
 /// ([`applying_changes_items`]).
-pub fn dispatch_transient(ids: &DispatchActionIds, ctx: &TransientContext) -> TransientSpec {
+pub fn dispatch_transient(ids: &MagitActionIds, ctx: &TransientContext) -> TransientSpec {
     dispatch_transient_with(ids, ctx, DispatchGates::probe())
 }
 
@@ -952,7 +1094,7 @@ impl DispatchGates {
 /// [`dispatch_transient`] with the gates supplied rather than probed —
 /// pure, and the form every guard over this menu uses.
 pub fn dispatch_transient_with(
-    ids: &DispatchActionIds,
+    ids: &MagitActionIds,
     ctx: &TransientContext,
     gates: DispatchGates,
 ) -> TransientSpec {
@@ -965,7 +1107,7 @@ pub fn dispatch_transient_with(
                 items: vec![
                     status_row(ids, ctx),
                     action_or_placeholder(
-                        ids.diff,
+                        ids.get("action:magit-global-diff"),
                         "d",
                         "diff",
                         "Diff the working tree against HEAD",
@@ -1000,7 +1142,7 @@ pub fn dispatch_transient_with(
             TransientGroup {
                 label: "History".into(),
                 items: vec![
-                    action_or_placeholder(ids.log, "l", "log", "Show commit history", "show_log"),
+                    action_or_placeholder(ids.get("action:magit-global-log"), "l", "log", "Show commit history", "show_log"),
                     // MG.23j: magit's own keys, in magit's own ungated
                     // group. They need a commit and this menu has no
                     // cursor on one — so the action they fire asks,
@@ -1012,14 +1154,14 @@ pub fn dispatch_transient_with(
                     // everywhere else they open the commit picker. One
                     // action, both surfaces.
                     action_or_placeholder(
-                        ids.cherry_pick,
+                        ids.get("action:magit-cherry-pick"),
                         "A",
                         "cherry-pick",
                         "Cherry-pick a commit onto this branch",
                         "cherry_pick_op",
                     ),
                     action_or_placeholder(
-                        ids.revert,
+                        ids.get("action:magit-revert"),
                         "_",
                         "revert",
                         "Revert a commit",
@@ -1087,7 +1229,7 @@ pub fn dispatch_transient_with(
                             "Fetch",
                             RemoteOp::FETCH,
                             "f",
-                            ids.fetch,
+                            ids.get("action:magit-global-fetch"),
                             "fetch",
                             "Run the fetch",
                             "fetch_op",
@@ -1099,7 +1241,7 @@ pub fn dispatch_transient_with(
                     // it stays a direct action rather than gaining a
                     // submenu with nothing in it.
                     action_or_placeholder(
-                        ids.pull,
+                        ids.get("action:magit-global-pull"),
                         "F",
                         "pull",
                         "Fetch + fast-forward merge from the remote",
@@ -1113,7 +1255,7 @@ pub fn dispatch_transient_with(
                             "Push",
                             RemoteOp::PUSH,
                             "P",
-                            ids.push,
+                            ids.get("action:magit-global-push"),
                             "push",
                             "Run the push",
                             "push_op",
@@ -1126,7 +1268,7 @@ pub fn dispatch_transient_with(
                     // the vim grammar, which is also why `M` stays
                     // unbound as a chord inside magit buffers.
                     action_or_placeholder(
-                        ids.remote,
+                        ids.get("action:magit-global-remote"),
                         "M",
                         "remote",
                         "Manage remotes — add, rename, remove, set URL, prune",
@@ -1136,7 +1278,7 @@ pub fn dispatch_transient_with(
                     // than a submenu — and here magit agrees, since
                     // `magit-list-submodules` is a buffer there too.
                     action_or_placeholder(
-                        ids.submodule,
+                        ids.get("action:magit-global-submodule"),
                         "o",
                         "submodule",
                         "Manage submodules — add, update, sync, remove",
@@ -1145,7 +1287,7 @@ pub fn dispatch_transient_with(
                     // MG.40: magit's `Y`. A buffer, like `y` above and
                     // for the same reason — the answer is a list.
                     action_or_placeholder(
-                        ids.cherries,
+                        ids.get("action:magit-global-cherries"),
                         "Y",
                         "cherries",
                         "Which commits are not upstream yet, and which already are",
@@ -1155,7 +1297,7 @@ pub fn dispatch_transient_with(
                     // `M` and `o` are — the answer is a list with a
                     // column of object ids, which a menu cannot show.
                     action_or_placeholder(
-                        ids.refs,
+                        ids.get("action:magit-global-refs"),
                         "y",
                         "refs",
                         "Show every branch, remote-tracking branch and tag",
@@ -1166,7 +1308,7 @@ pub fn dispatch_transient_with(
                     // under its own dispatch's ungated set for the same
                     // reason it needs no repository to be open.
                     action_or_placeholder(
-                        ids.clone,
+                        ids.get("action:magit-global-clone"),
                         "C",
                         "clone",
                         "Clone a repository — asks for the URL, then where to put it",
@@ -1195,7 +1337,7 @@ pub fn dispatch_transient_with(
                         ))),
                     },
                     action_or_placeholder(
-                        ids.rebase,
+                        ids.get("action:magit-global-rebase"),
                         "r",
                         "rebase",
                         "Start an interactive rebase",
@@ -1206,14 +1348,14 @@ pub fn dispatch_transient_with(
                     // is nothing at a cursor to read from a menu opened
                     // anywhere.
                     action_or_placeholder(
-                        ids.tag,
+                        ids.get("action:magit-global-tag"),
                         "t",
                         "tag",
                         "Tag HEAD with a name you type",
                         "tag_op",
                     ),
                     action_or_placeholder(
-                        ids.gitignore,
+                        ids.get("action:magit-global-gitignore"),
                         "i",
                         "gitignore",
                         "Add a pattern to .gitignore",
@@ -1224,14 +1366,14 @@ pub fn dispatch_transient_with(
                     // list is already served one level down, by `m` in
                     // the branch buffer.
                     action_or_placeholder(
-                        ids.merge,
+                        ids.get("action:magit-global-merge"),
                         "m",
                         "merge",
                         "Merge a branch you name into the current one",
                         "merge_op",
                     ),
                     action_or_placeholder(
-                        ids.init,
+                        ids.get("action:magit-global-init"),
                         "I",
                         "init",
                         "Initialize a git repository",
@@ -1249,28 +1391,10 @@ pub fn dispatch_transient_with(
 /// own `cc` / `ca` chords exactly, so the same two keystrokes commit
 /// and amend whether you're inside the status buffer or reaching for
 /// the dispatch menu from an ordinary file.
-fn commit_transient(ids: &DispatchActionIds) -> TransientSpec {
+fn commit_transient(ids: &MagitActionIds) -> TransientSpec {
     TransientSpec {
         title: "Commit".into(),
-        groups: vec![TransientGroup {
-            label: "Actions".into(),
-            items: vec![
-                action_or_placeholder(
-                    ids.commit,
-                    "c",
-                    "commit",
-                    "Open the commit buffer",
-                    "do_commit",
-                ),
-                action_or_placeholder(
-                    ids.amend,
-                    "a",
-                    "amend",
-                    "Amend the previous commit",
-                    "do_amend",
-                ),
-            ],
-        }],
+        groups: vec![row_group("Actions", ids, COMMIT_ROWS)],
         preview: None,
         footer: Some("q dismiss  Esc/BS back".into()),
     }
@@ -1281,7 +1405,7 @@ fn commit_transient(ids: &DispatchActionIds) -> TransientSpec {
 /// drop live as `a`/`p`/`d` chords inside the stash-list buffer
 /// itself rather than being duplicated here (they need a stash
 /// selected, which only the list view provides).
-fn stash_transient(ids: &DispatchActionIds) -> TransientSpec {
+fn stash_transient(ids: &MagitActionIds) -> TransientSpec {
     TransientSpec {
         title: "Stash".into(),
         groups: vec![
@@ -1292,28 +1416,8 @@ fn stash_transient(ids: &DispatchActionIds) -> TransientSpec {
                 label: "Arguments".into(),
                 items: flag_items(RemoteOp::STASH),
             },
-            TransientGroup {
-                label: "Actions".into(),
-                items: vec![
-                    action_or_placeholder(
-                        ids.stash_create,
-                        "z",
-                        "stash",
-                        "Stash the working tree (git stash push)",
-                        "stash_push",
-                    ),
-                    action_or_placeholder(
-                        ids.stash,
-                        "l",
-                        "list",
-                        "Open the stash list",
-                        "stash_op",
-                    ),
-                ],
-            },
+            row_group("Actions", ids, STASH_ROWS),
         ],
-        // The preview describes the stash-push the `z` key runs; `l`
-        // just opens the list and ignores the flag.
         preview: Some(remote_preview(RemoteOp::STASH)),
         footer: Some("q dismiss  Esc/BS back".into()),
     }
@@ -1394,7 +1498,7 @@ pub struct FileDispatchActionIds {
 /// deleting another's changes. IX.1 made the confirm carry its target
 /// and IX.2 made the execute half read it, so the dialog replacing this
 /// menu no longer matters.
-pub fn other_file_dispatch_transient(ids: &FileDispatchActionIds) -> TransientSpec {
+pub fn other_file_dispatch_transient(ids: &MagitActionIds) -> TransientSpec {
     TransientSpec {
         title: "File dispatch (other file)".into(),
         groups: vec![
@@ -1415,14 +1519,14 @@ pub fn other_file_dispatch_transient(ids: &FileDispatchActionIds) -> TransientSp
                 label: "Stage".into(),
                 items: vec![
                     action_or_placeholder(
-                        ids.stage,
+                        ids.get("action:magit-global-file-stage"),
                         "s",
                         "stage",
                         "Stage the target file",
                         "stage_other_file",
                     ),
                     action_or_placeholder(
-                        ids.unstage,
+                        ids.get("action:magit-global-file-unstage"),
                         "u",
                         "unstage",
                         "Unstage the target file",
@@ -1435,7 +1539,7 @@ pub fn other_file_dispatch_transient(ids: &FileDispatchActionIds) -> TransientSp
                     // the visited file and acted on something the prompt
                     // never named.
                     action_or_placeholder(
-                        ids.discard,
+                        ids.get("action:magit-global-file-discard"),
                         "x",
                         "discard",
                         "Discard the target file's changes (asks first)",
@@ -1447,21 +1551,21 @@ pub fn other_file_dispatch_transient(ids: &FileDispatchActionIds) -> TransientSp
                 label: "Inspect".into(),
                 items: vec![
                     action_or_placeholder(
-                        ids.diff,
+                        ids.get("action:magit-global-file-diff"),
                         "d",
                         "diff",
                         "Show the target file's diff",
                         "diff_other_file",
                     ),
                     action_or_placeholder(
-                        ids.log,
+                        ids.get("action:magit-global-file-log"),
                         "l",
                         "log",
                         "Show the target file's history",
                         "log_other_file",
                     ),
                     action_or_placeholder(
-                        ids.blame,
+                        ids.get("action:magit-global-file-blame"),
                         "b",
                         "blame",
                         "Blame the target file",
@@ -1485,23 +1589,23 @@ pub fn other_file_dispatch_transient(ids: &FileDispatchActionIds) -> TransientSp
     }
 }
 
-pub fn file_dispatch_transient(ids: &FileDispatchActionIds) -> TransientSpec {
+pub fn file_dispatch_transient(ids: &MagitActionIds) -> TransientSpec {
     TransientSpec {
         title: "File dispatch".into(),
         groups: vec![
             TransientGroup {
                 label: "Stage".into(),
                 items: vec![
-                    action_or_placeholder(ids.stage, "s", "stage", "Stage this file", "stage_file"),
+                    action_or_placeholder(ids.get("action:magit-global-file-stage"), "s", "stage", "Stage this file", "stage_file"),
                     action_or_placeholder(
-                        ids.unstage,
+                        ids.get("action:magit-global-file-unstage"),
                         "u",
                         "unstage",
                         "Unstage this file",
                         "unstage_file",
                     ),
                     action_or_placeholder(
-                        ids.discard,
+                        ids.get("action:magit-global-file-discard"),
                         "x",
                         "discard",
                         "Discard this file's working-tree changes (asks first)",
@@ -1519,28 +1623,28 @@ pub fn file_dispatch_transient(ids: &FileDispatchActionIds) -> TransientSpec {
                 label: "File".into(),
                 items: vec![
                     action_or_placeholder(
-                        ids.untrack,
+                        ids.get("action:magit-global-file-untrack"),
                         ",x",
                         "untrack",
                         "Stop tracking this file, keeping it on disk",
                         "untrack_file",
                     ),
                     action_or_placeholder(
-                        ids.rename,
+                        ids.get("action:magit-global-file-rename"),
                         ",r",
                         "rename",
                         "Rename this file (asks for the new name)",
                         "rename_file",
                     ),
                     action_or_placeholder(
-                        ids.delete,
+                        ids.get("action:magit-global-file-delete"),
                         ",k",
                         "delete",
                         "Delete this file (asks first)",
                         "delete_file",
                     ),
                     action_or_placeholder(
-                        ids.checkout,
+                        ids.get("action:magit-global-file-checkout"),
                         ",c",
                         "checkout",
                         "Replace this file with its content at a revision (asks, then confirms)",
@@ -1552,20 +1656,20 @@ pub fn file_dispatch_transient(ids: &FileDispatchActionIds) -> TransientSpec {
                 label: "Inspect".into(),
                 items: vec![
                     action_or_placeholder(
-                        ids.diff,
+                        ids.get("action:magit-global-file-diff"),
                         "d",
                         "diff",
                         "Show diff for this file",
                         "diff_file",
                     ),
                     action_or_placeholder(
-                        ids.log,
+                        ids.get("action:magit-global-file-log"),
                         "l",
                         "log",
                         "Show commit history for this file",
                         "log_file",
                     ),
-                    action_or_placeholder(ids.blame, "b", "blame", "Blame this file", "blame_file"),
+                    action_or_placeholder(ids.get("action:magit-global-file-blame"), "b", "blame", "Blame this file", "blame_file"),
                     // MG.23f2, on magit's own key for it (`f`
                     // "...reverse" in magit-file-dispatch's Blame
                     // group). Only meaningful from a blob buffer; the
@@ -1574,21 +1678,21 @@ pub fn file_dispatch_transient(ids: &FileDispatchActionIds) -> TransientSpec {
                     // (MG.23h).
                     // MG.28: magit's own key for this.
                     action_or_placeholder(
-                        ids.at_revision,
+                        ids.get("action:magit-global-file-at-revision"),
                         "v",
                         "view at revision",
                         "Open this file as it was at a revision you name",
                         "file_at_revision",
                     ),
                     action_or_placeholder(
-                        ids.visit_live,
+                        ids.get("action:magit-global-file-visit-live"),
                         "V",
                         "back to the live file",
                         "From a file-at-revision, open the working-tree copy at the same line",
                         "file_visit_live",
                     ),
                     action_or_placeholder(
-                        ids.blame_reverse,
+                        ids.get("action:magit-global-file-blame-reverse"),
                         "f",
                         "reverse blame",
                         "For each line of this revision, the last commit it existed in",
@@ -1599,7 +1703,7 @@ pub fn file_dispatch_transient(ids: &FileDispatchActionIds) -> TransientSpec {
                     // `M` and `gM` are both vim motions, and magit binds
                     // this as a transient suffix anyway.
                     action_or_placeholder(
-                        ids.log_merged,
+                        ids.get("action:magit-global-log-merged"),
                         "M",
                         "merged",
                         "Show the merge commit that brought a commit into HEAD",
@@ -1611,7 +1715,7 @@ pub fn file_dispatch_transient(ids: &FileDispatchActionIds) -> TransientSpec {
             TransientGroup {
                 label: "More actions".into(),
                 items: vec![action_or_placeholder(
-                    ids.edit_line_commit,
+                    ids.get("action:magit-global-edit-line-commit"),
                     "e",
                     "edit line",
                     "Start a rebase to amend the commit that wrote the line at the cursor",
@@ -1621,5 +1725,100 @@ pub fn file_dispatch_transient(ids: &FileDispatchActionIds) -> TransientSpec {
         ],
         preview: None,
         footer: Some("q dismiss".into()),
+    }
+}
+
+#[cfg(test)]
+mod row_table_tests {
+    use super::*;
+
+    /// A `CommandRegistry` with magit's actions registered, as `install`
+    /// leaves it.
+    fn registry() -> lattice_grammar::CommandRegistry {
+        let mut r = lattice_grammar::CommandRegistry::new();
+        let _ = lattice_grammar::builtins::populate(&mut r);
+        let _ = lattice_grammar::ex_commands::populate(&mut r);
+        crate::register_action_commands_for_test(&mut r);
+        r
+    }
+
+    /// MG.41a: THE test that replaces compile-time field checking.
+    ///
+    /// Rows name their command as a string, so a typo or a renamed
+    /// action no longer fails to compile — it renders a disabled
+    /// placeholder the user reads as "not implemented yet". This is the
+    /// same guard `help_prefix_chord_table_resolves_all_commands` gives
+    /// the `<C-h>` map, and it is why the string-keyed design is safe.
+    #[test]
+    fn every_row_action_is_registered() {
+        let reg = registry();
+        let ids = MagitActionIds::resolve(&reg);
+        assert!(!ids.is_empty(), "no magit actions resolved at all");
+        for (table, rows) in all_row_tables() {
+            for row in *rows {
+                assert!(
+                    ids.get(row.action).is_some(),
+                    "{table} row `{}` ({}) references unregistered `{}`",
+                    row.key,
+                    row.label,
+                    row.action,
+                );
+            }
+        }
+    }
+
+    /// Two rows in one group cannot share a key — the second would be
+    /// unreachable, and silently so.
+    #[test]
+    fn no_duplicate_keys_within_a_table() {
+        for (table, rows) in all_row_tables() {
+            let mut seen = std::collections::HashSet::new();
+            for row in *rows {
+                assert!(
+                    seen.insert(row.key),
+                    "{table} binds `{}` twice; the second row is unreachable",
+                    row.key,
+                );
+            }
+        }
+    }
+
+    /// Every row carries a non-empty label and doc — the transient
+    /// renders both, and a blank one reads as a rendering bug.
+    #[test]
+    fn rows_are_fully_described() {
+        for (table, rows) in all_row_tables() {
+            for row in *rows {
+                assert!(!row.key.is_empty(), "{table}: empty key");
+                assert!(!row.label.is_empty(), "{table} `{}`: empty label", row.key);
+                assert!(!row.doc.is_empty(), "{table} `{}`: empty doc", row.key);
+                assert!(
+                    row.action.starts_with(MagitActionIds::PREFIX),
+                    "{table} `{}`: `{}` is outside the `{}` namespace, so \
+                     `MagitActionIds::resolve` will never find it",
+                    row.key,
+                    row.action,
+                    MagitActionIds::PREFIX,
+                );
+            }
+        }
+    }
+
+    /// The resolver picks up magit actions automatically — the property
+    /// that removes the third enumeration. If this regresses to a
+    /// hand-kept list, adding an action would silently not be reachable.
+    #[test]
+    fn resolver_finds_actions_without_a_hand_kept_list() {
+        let reg = registry();
+        let ids = MagitActionIds::resolve(&reg);
+        let registered = reg
+            .names()
+            .filter(|n| n.starts_with(MagitActionIds::PREFIX))
+            .count();
+        assert_eq!(
+            ids.by_name.len(),
+            registered,
+            "resolve() must pick up EVERY registered magit action",
+        );
     }
 }

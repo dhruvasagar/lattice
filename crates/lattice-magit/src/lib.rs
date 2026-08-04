@@ -206,9 +206,16 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     // `Effect::OpenTransient` can only carry a name, not a
     // `TransientSpec`), so this is captured by value rather than
     // looked up again on every press.
-    let dispatch_ids = resolve_dispatch_ids(boot.commands_mut());
-    let file_dispatch_ids = resolve_file_dispatch_ids(boot.commands_mut());
-    let other_file_dispatch_ids = resolve_file_dispatch_ids(boot.commands_mut());
+    // MG.41a: ONE resolver for every transient. It scans the registry
+    // for `action:magit-` names rather than reading a hand-kept struct,
+    // so registering an action is the only step needed before a row can
+    // reference it — the four-place enumeration this replaces
+    // (`reg` / struct field / `id_by_name` line / builder) is down to
+    // two, and neither of the removed two can drift silently.
+    let dispatch_ids = transients::MagitActionIds::resolve(boot.commands_mut());
+    let file_dispatch_ids = dispatch_ids.clone();
+    let other_file_dispatch_ids = dispatch_ids.clone();
+    let view_args_ids_src = dispatch_ids.clone();
     let transient_registry = lattice_picker::TransientSourceRegistry::new();
     // MG.23h: the root dispatch varies with where it was opened — see
     // `transients::dispatch_transient`. The file dispatch does not: its
@@ -230,7 +237,7 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     // MG.23k: `D`. The rows depend on which magit view you are in, so
     // this is the second context-varying source after the root
     // dispatch — the builder reads `ctx.major_mode`.
-    let view_args_ids = resolve_dispatch_ids(boot.commands_mut());
+    let view_args_ids = view_args_ids_src;
     transient_registry.register("magit-view-arguments", move |ctx| {
         transients::view_arguments_transient(&view_args_ids, ctx)
     });
@@ -358,85 +365,6 @@ fn register_buffer_state_services(boot: &mut impl SubsystemBoot) {
     ));
 }
 
-/// Resolve the root dispatch transient's action ids. Factored out of
-/// [`install`] so the regression tests below exercise the SAME
-/// resolution `install` performs — a test that re-listed the field
-/// assignments by hand would silently stop covering any field added
-/// afterwards, which is exactly the class of bug (an item silently
-/// downgrading to an inert `Flag`) these tests exist to catch.
-fn resolve_dispatch_ids(registry: &CommandRegistry) -> transients::DispatchActionIds {
-    transients::DispatchActionIds {
-        status: registry.id_by_name("action:magit-global-status"),
-        commit: registry.id_by_name("action:magit-global-commit"),
-        amend: registry.id_by_name("action:magit-global-amend"),
-        log: registry.id_by_name("action:magit-global-log"),
-        diff: registry.id_by_name("action:magit-global-diff"),
-        branch: registry.id_by_name("action:magit-global-branch"),
-        branch_checkout: registry.id_by_name("action:magit-global-branch-checkout"),
-        branch_create: registry.id_by_name("action:magit-global-branch-create"),
-        branch_checkout_rev: registry.id_by_name("action:magit-global-branch-checkout-rev"),
-        branch_create_no_checkout: registry
-            .id_by_name("action:magit-global-branch-create-no-checkout"),
-        branch_rename: registry.id_by_name("action:magit-global-branch-rename"),
-        branch_delete: registry.id_by_name("action:magit-global-branch-delete"),
-        remote: registry.id_by_name("action:magit-global-remote"),
-        submodule: registry.id_by_name("action:magit-global-submodule"),
-        refs: registry.id_by_name("action:magit-global-refs"),
-        clone: registry.id_by_name("action:magit-global-clone"),
-        note_edit: registry.id_by_name("action:magit-global-note-edit"),
-        note_remove: registry.id_by_name("action:magit-global-note-remove"),
-        note_prune: registry.id_by_name("action:magit-global-note-prune"),
-        note_merge: registry.id_by_name("action:magit-global-note-merge"),
-        note_merge_commit: registry.id_by_name("action:magit-global-note-merge-commit"),
-        note_merge_abort: registry.id_by_name("action:magit-global-note-merge-abort"),
-        subtree_add: registry.id_by_name("action:magit-global-subtree-add"),
-        subtree_merge: registry.id_by_name("action:magit-global-subtree-merge"),
-        subtree_pull: registry.id_by_name("action:magit-global-subtree-pull"),
-        subtree_push: registry.id_by_name("action:magit-global-subtree-push"),
-        subtree_split: registry.id_by_name("action:magit-global-subtree-split"),
-        am_apply: registry.id_by_name("action:magit-global-am-apply"),
-        am_continue: registry.id_by_name("action:magit-global-am-continue"),
-        am_skip: registry.id_by_name("action:magit-global-am-skip"),
-        am_abort: registry.id_by_name("action:magit-global-am-abort"),
-        format_patch: registry.id_by_name("action:magit-global-format-patch"),
-        cherries: registry.id_by_name("action:magit-global-cherries"),
-        view_args: registry.id_by_name("action:magit-view-refresh-args"),
-        bisect_start: registry.id_by_name("action:magit-global-bisect-start"),
-        bisect_good: registry.id_by_name("action:magit-global-bisect-good"),
-        bisect_bad: registry.id_by_name("action:magit-global-bisect-bad"),
-        bisect_skip: registry.id_by_name("action:magit-global-bisect-skip"),
-        bisect_reset: registry.id_by_name("action:magit-global-bisect-reset"),
-        stash: registry.id_by_name("action:magit-global-stash"),
-        stash_create: registry.id_by_name("action:magit-global-stash-create"),
-        rebase: registry.id_by_name("action:magit-global-rebase"),
-        stage_all: registry.id_by_name("action:magit-global-stage-all"),
-        tag: registry.id_by_name("action:magit-global-tag"),
-        gitignore: registry.id_by_name("action:magit-global-gitignore"),
-        init: registry.id_by_name("action:magit-global-init"),
-        merge: registry.id_by_name("action:magit-global-merge"),
-        unstage_all: registry.id_by_name("action:magit-global-unstage-all"),
-        fetch: registry.id_by_name("action:magit-global-fetch"),
-        pull: registry.id_by_name("action:magit-global-pull"),
-        push: registry.id_by_name("action:magit-global-push"),
-        // MG.23h: the section-acting rows reuse the chords' own
-        // actions rather than declaring menu-only twins — a second
-        // action for "discard the thing at cursor" is a second place
-        // for its confirm contract to drift.
-        apply_hunk: registry.id_by_name("action:magit-apply-hunk"),
-        reverse_hunk: registry.id_by_name("action:magit-reverse-hunk"),
-        discard: registry.id_by_name("action:magit-discard"),
-        cherry_pick: registry.id_by_name("action:magit-cherry-pick"),
-        revert: registry.id_by_name("action:magit-revert"),
-        reset_soft: registry.id_by_name("action:magit-reset-soft"),
-        reset_mixed: registry.id_by_name("action:magit-reset-mixed"),
-        reset_hard: registry.id_by_name("action:magit-reset-hard"),
-        jump_staged: registry.id_by_name("action:magit-jump-staged"),
-        jump_unstaged: registry.id_by_name("action:magit-jump-unstaged"),
-        jump_untracked: registry.id_by_name("action:magit-jump-untracked"),
-        jump_stashes: registry.id_by_name("action:magit-jump-stashes"),
-        jump_commits: registry.id_by_name("action:magit-jump-commits"),
-    }
-}
 
 /// IX.2: the execute half of each destructive pair, and the slots its
 /// confirmation carries.
@@ -663,27 +591,6 @@ fn reverse_blame_usage() -> Effect {
     }
 }
 
-/// Resolve the file dispatch transient's action ids — same
-/// shared-with-tests rationale as [`resolve_dispatch_ids`].
-fn resolve_file_dispatch_ids(registry: &CommandRegistry) -> transients::FileDispatchActionIds {
-    transients::FileDispatchActionIds {
-        stage: registry.id_by_name("action:magit-global-file-stage"),
-        unstage: registry.id_by_name("action:magit-global-file-unstage"),
-        discard: registry.id_by_name("action:magit-global-file-discard"),
-        diff: registry.id_by_name("action:magit-global-file-diff"),
-        log: registry.id_by_name("action:magit-global-file-log"),
-        blame: registry.id_by_name("action:magit-global-file-blame"),
-        blame_reverse: registry.id_by_name("action:magit-global-file-blame-reverse"),
-        at_revision: registry.id_by_name("action:magit-global-file-at-revision"),
-        visit_live: registry.id_by_name("action:magit-global-file-visit-live"),
-        untrack: registry.id_by_name("action:magit-global-file-untrack"),
-        delete: registry.id_by_name("action:magit-global-file-delete"),
-        rename: registry.id_by_name("action:magit-global-file-rename"),
-        checkout: registry.id_by_name("action:magit-global-file-checkout"),
-        log_merged: registry.id_by_name("action:magit-global-log-merged"),
-        edit_line_commit: registry.id_by_name("action:magit-global-edit-line-commit"),
-    }
-}
 
 /// Register all magit ex-commands in the command registry.
 /// MG.26b: `blame_requests` is threaded in rather than looked up,
@@ -1757,6 +1664,14 @@ fn register_ex_commands(
 /// entries resolve against the registry. Each action is a dead
 /// marker returning `Effect::None` — the real handler is registered
 /// per-buffer via `ActionHandlerRegistry` in `on_activate`.
+/// MG.41a: test-only door onto [`register_action_commands`], so the
+/// row-table drift tests can build the same registry `install` does
+/// without standing up a whole boot.
+#[cfg(test)]
+pub(crate) fn register_action_commands_for_test(registry: &mut CommandRegistry) {
+    register_action_commands(registry);
+}
+
 fn register_action_commands(registry: &mut CommandRegistry) {
     let none = Some(Arc::new(
         |_: &lattice_grammar::ActionContext| -> GrammarResult<Effect> { Ok(Effect::None) },
@@ -2726,7 +2641,7 @@ mod tests {
     fn the_section_acting_rows_appear_only_inside_a_magit_buffer() {
         let mut registry = CommandRegistry::new();
         register_action_commands(&mut registry);
-        let ids = resolve_dispatch_ids(&registry);
+        let ids = transients::MagitActionIds::resolve(&registry);
 
         for ctx in [in_magit_status(), in_magit_log()] {
             let keys = top_level_keys(&transients::dispatch_transient(&ids, &ctx));
@@ -2768,7 +2683,7 @@ mod tests {
 
         let mut registry = CommandRegistry::new();
         register_action_commands(&mut registry);
-        let ids = resolve_dispatch_ids(&registry);
+        let ids = transients::MagitActionIds::resolve(&registry);
 
         for ctx in [in_magit_status(), in_magit_log(), outside_magit()] {
             let item = transients::dispatch_transient(&ids, &ctx)
@@ -2897,7 +2812,7 @@ mod tests {
     fn the_argument_menu_follows_the_view_it_was_opened_in() {
         let mut registry = CommandRegistry::new();
         register_action_commands(&mut registry);
-        let ids = resolve_dispatch_ids(&registry);
+        let ids = transients::MagitActionIds::resolve(&registry);
 
         let keys = |ctx: &lattice_picker::TransientContext| -> Vec<String> {
             transients::view_arguments_transient(&ids, ctx)
@@ -3003,7 +2918,7 @@ mod tests {
 
         let mut actions = CommandRegistry::new();
         register_action_commands(&mut actions);
-        let ids = resolve_file_dispatch_ids(&actions);
+        let ids = transients::MagitActionIds::resolve(&actions);
         let row = transients::file_dispatch_transient(&ids)
             .groups
             .iter()
@@ -3041,7 +2956,7 @@ mod tests {
 
         let mut actions = CommandRegistry::new();
         register_action_commands(&mut actions);
-        let ids = resolve_file_dispatch_ids(&actions);
+        let ids = transients::MagitActionIds::resolve(&actions);
         let spec = transients::file_dispatch_transient(&ids);
 
         let row = |key: &str| {
@@ -3059,8 +2974,8 @@ mod tests {
             );
         }
         assert_ne!(
-            resolve_file_dispatch_ids(&actions).at_revision,
-            resolve_file_dispatch_ids(&actions).visit_live,
+            transients::MagitActionIds::resolve(&actions).get("action:magit-global-file-at-revision"),
+            transients::MagitActionIds::resolve(&actions).get("action:magit-global-file-visit-live"),
             "in and out are different actions, not one key guessing"
         );
     }
@@ -3077,7 +2992,7 @@ mod tests {
 
         let mut registry = CommandRegistry::new();
         register_action_commands(&mut registry);
-        let ids = resolve_dispatch_ids(&registry);
+        let ids = transients::MagitActionIds::resolve(&registry);
 
         let item = transients::dispatch_transient(&ids, &outside_magit())
             .groups
@@ -3101,16 +3016,26 @@ mod tests {
             .collect();
 
         // MG.32: the full set magit's own branch transient shows, minus
-        // the four still deferred (`s`/`S`/`C`/`X`).
-        for key in ["b", "l", "c", "n", "m", "x", "L"] {
+        // the still-deferred `s` / `S` / `C`.
+        //
+        // MG.41a moved delete from `x` to magit's own `k`. Inside a
+        // transient the menu owns every keystroke, so there is no vim
+        // grammar to dodge and no reason to diverge — and the old `x`
+        // put DELETE where a magit user reaches for reset. `x` is left
+        // free for reset, which MG.41d adds.
+        for key in ["b", "l", "c", "n", "m", "k", "L"] {
             let (_, real) = rows
                 .iter()
                 .find(|(k, _)| k == key)
                 .unwrap_or_else(|| panic!("`b {key}` must exist: {rows:?}"));
             assert!(real, "`b {key}` must be a real action");
         }
+        assert!(
+            !rows.iter().any(|(k, _)| k == "x"),
+            "`x` must stay free for reset (magit's own key); delete is `k`: {rows:?}",
+        );
         assert_eq!(
-            resolve_dispatch_ids(&registry).branch,
+            transients::MagitActionIds::resolve(&registry).get("action:magit-global-branch"),
             registry.id_by_name("action:magit-global-branch"),
             "`b L` fires the SAME action `b` used to — the list did not \
              disappear when MG.32 moved it off `l`"
@@ -3141,7 +3066,7 @@ mod tests {
 
         let mut registry = CommandRegistry::new();
         register_action_commands(&mut registry);
-        let ids = resolve_dispatch_ids(&registry);
+        let ids = transients::MagitActionIds::resolve(&registry);
 
         let item = transients::dispatch_transient(&ids, &outside_magit())
             .groups
@@ -3217,7 +3142,7 @@ mod tests {
 
         let mut registry = CommandRegistry::new();
         register_action_commands(&mut registry);
-        let ids = resolve_dispatch_ids(&registry);
+        let ids = transients::MagitActionIds::resolve(&registry);
 
         let item = transients::dispatch_transient(&ids, &outside_magit())
             .groups
@@ -3258,7 +3183,7 @@ mod tests {
 
         let mut registry = CommandRegistry::new();
         register_action_commands(&mut registry);
-        let ids = resolve_dispatch_ids(&registry);
+        let ids = transients::MagitActionIds::resolve(&registry);
         let root = transients::dispatch_transient(&ids, &outside_magit());
 
         let mut checked = 0;
@@ -3288,7 +3213,7 @@ mod tests {
 
         let mut registry = CommandRegistry::new();
         register_action_commands(&mut registry);
-        let ids = resolve_dispatch_ids(&registry);
+        let ids = transients::MagitActionIds::resolve(&registry);
 
         for ctx in [in_magit_status(), in_magit_log(), outside_magit()] {
             let item = transients::dispatch_transient(&ids, &ctx)
@@ -3351,7 +3276,7 @@ mod tests {
 
         let mut registry = CommandRegistry::new();
         register_action_commands(&mut registry);
-        let ids = resolve_dispatch_ids(&registry);
+        let ids = transients::MagitActionIds::resolve(&registry);
 
         let bisect_keys = |in_progress: bool| -> Vec<String> {
             let root = transients::dispatch_transient_with(
@@ -3405,7 +3330,7 @@ mod tests {
 
         let mut registry = CommandRegistry::new();
         register_action_commands(&mut registry);
-        let ids = resolve_dispatch_ids(&registry);
+        let ids = transients::MagitActionIds::resolve(&registry);
 
         for in_progress in [false, true] {
             let root = transients::dispatch_transient_with(
@@ -3489,7 +3414,7 @@ mod tests {
     fn the_status_row_becomes_a_section_jump_only_in_the_status_buffer() {
         let mut registry = CommandRegistry::new();
         register_action_commands(&mut registry);
-        let ids = resolve_dispatch_ids(&registry);
+        let ids = transients::MagitActionIds::resolve(&registry);
 
         let row = |ctx: &lattice_picker::TransientContext| {
             transients::dispatch_transient(&ids, ctx)
@@ -3532,7 +3457,7 @@ mod tests {
     fn no_context_produces_a_duplicate_key_in_the_dispatch() {
         let mut registry = CommandRegistry::new();
         register_action_commands(&mut registry);
-        let ids = resolve_dispatch_ids(&registry);
+        let ids = transients::MagitActionIds::resolve(&registry);
         for ctx in [in_magit_status(), in_magit_log(), outside_magit()] {
             let keys = top_level_keys(&transients::dispatch_transient(&ids, &ctx));
             let mut seen = std::collections::HashSet::new();
@@ -3551,7 +3476,7 @@ mod tests {
     fn the_jump_submenu_covers_every_section_we_render() {
         let mut registry = CommandRegistry::new();
         register_action_commands(&mut registry);
-        let ids = resolve_dispatch_ids(&registry);
+        let ids = transients::MagitActionIds::resolve(&registry);
         let spec = transients::dispatch_transient(&ids, &in_magit_status());
         let jump = spec
             .groups
@@ -3701,20 +3626,32 @@ mod tests {
     /// confirm contract.
     #[test]
     fn the_commit_rows_reuse_the_chords_actions() {
+        // MG.41a: this property is now STRUCTURAL. Rows name their
+        // command directly, so a row cannot drift onto a twin handler —
+        // there is no second place to keep in sync. What is still worth
+        // asserting is that the tables reference the *chord* actions
+        // (`action:magit-reset-soft`) and not invented `-global-`
+        // variants; getting exactly that wrong is what
+        // `every_row_action_is_registered` caught while this slice was
+        // being written.
         let mut registry = CommandRegistry::new();
         register_action_commands(&mut registry);
-        let ids = resolve_dispatch_ids(&registry);
-        for (row, action) in [
-            (ids.cherry_pick, "action:magit-cherry-pick"),
-            (ids.revert, "action:magit-revert"),
-            (ids.reset_soft, "action:magit-reset-soft"),
-            (ids.reset_mixed, "action:magit-reset-mixed"),
-            (ids.reset_hard, "action:magit-reset-hard"),
+        let ids = transients::MagitActionIds::resolve(&registry);
+        for action in [
+            "action:magit-cherry-pick",
+            "action:magit-revert",
+            "action:magit-reset-soft",
+            "action:magit-reset-mixed",
+            "action:magit-reset-hard",
         ] {
             assert_eq!(
-                row,
+                ids.get(action),
                 registry.id_by_name(action),
                 "the `{action}` row must fire that action, not a twin"
+            );
+            assert!(
+                ids.get(action).is_some(),
+                "`{action}` must stay registered — a row references it"
             );
         }
     }
@@ -4380,7 +4317,7 @@ mod tests {
         // Resolved through the SAME function `install` uses, so a
         // field added later is covered automatically rather than
         // needing this test to be remembered and updated.
-        let ids = resolve_dispatch_ids(&registry);
+        let ids = transients::MagitActionIds::resolve(&registry);
         // MG.23h: BOTH shapes the menu can take. The gated rows only
         // exist in the magit-buffer one, so checking a single context
         // would leave whichever rows the other adds unverified.
@@ -4393,7 +4330,7 @@ mod tests {
     fn file_dispatch_items_resolve_to_real_actions() {
         let mut registry = CommandRegistry::new();
         register_action_commands(&mut registry);
-        let ids = resolve_file_dispatch_ids(&registry);
+        let ids = transients::MagitActionIds::resolve(&registry);
         let spec = transients::file_dispatch_transient(&ids);
         assert_no_inert_items(&spec);
     }
@@ -4428,11 +4365,11 @@ mod tests {
         let mut registry = CommandRegistry::new();
         register_action_commands(&mut registry);
         check(
-            &transients::dispatch_transient(&resolve_dispatch_ids(&registry), &in_magit_status()),
+            &transients::dispatch_transient(&transients::MagitActionIds::resolve(&registry), &in_magit_status()),
             "dispatch",
         );
         check(
-            &transients::file_dispatch_transient(&resolve_file_dispatch_ids(&registry)),
+            &transients::file_dispatch_transient(&transients::MagitActionIds::resolve(&registry)),
             "file-dispatch",
         );
     }

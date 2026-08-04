@@ -233,5 +233,8 @@ is independently foldable within it.
 - [`magit`](help:magit) — the subsystem overview and entry points.
 - [`magit-global-mode`](help:magit-global-mode) — the chords that open
   magit from anywhere (`C-x g`, `C-c g`, `C-c f`).
-- `:describe-mode magit-core-mode` — the live keymap for the buffer
-  you're in.
+- `<C-h> m` — the live mode stack for the buffer you're in. In a magit
+  buffer that means the magit major *and* this mode, so the shared
+  chords documented above show up next to the major's own.
+- `:describe-mode magit-core-mode` — this mode's own metadata (kind,
+  contributed options, capabilities), whether or not it is active.

@@ -354,12 +354,23 @@ The third column carries provenance: `Built-in` means the
 binding ships with the editor; a mode name means the mode
 contributed it; `User (path:line)` means your `init` did.
 
-### `:describe-mode`
+### `:describe-active-modes` and `:describe-mode`
 
-`:describe-mode <name>` shows everything a mode contributes —
-options, keybindings, subscriptions, decorations — in one
-view. Use it to answer "what does activating
-`multibuffer-mode` actually do to my buffer."
+`:describe-active-modes` (`<C-h> m`) answers "what is this
+buffer, and what can I press in it": the major mode, then
+every active minor, each with the chords it contributes.
+
+It lists minors alongside the major deliberately. Behaviour
+shared by several major modes belongs in a
+[minor mode](#minor-modes) rather than being copied into each
+one — magit's `gr` / `q` / `]]` live on `magit-core-mode`, not
+on each magit major — so a major-only view would hide exactly
+the chords that convention centralised.
+
+`:describe-mode <name>` (`<C-h> M`) instead shows everything
+one *named* mode contributes — options, capabilities,
+provenance — whether or not it is active. Use it to answer
+"what would activating `multibuffer-mode` do to my buffer."
 
 ### Why this matters
 

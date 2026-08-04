@@ -17,8 +17,11 @@ them.
 
 The tree routes through the same buffer registry as documents, so
 `:b *`, `<C-^>`, the buffer picker, and split commands all work
-uniformly. Press `<C-h> m` (or `:describe-mode file-tree-mode`) inside
-one for the live keymap.
+uniformly. Press `<C-h> m` inside one to see its live mode stack and
+the chords each mode contributes, or `<C-h> K` for every chord that
+fires there. `:describe-mode file-tree-mode` describes the mode
+itself — its options and capabilities — whether or not you are in a
+tree buffer.
 
 ## Opening
 

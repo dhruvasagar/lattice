@@ -102,9 +102,10 @@ the keymap equivalents.
 
 | Command              | Action                                              |
 |----------------------|-----------------------------------------------------|
-| `:<mode-name>`       | Toggle a registered mode (e.g. `:lsp-mode`)         |
-| `:list-modes`        | List every registered mode                          |
-| `:describe-mode N`   | Show one mode's metadata                            |
+| `:<mode-name>`          | Toggle a registered mode (e.g. `:lsp-mode`)      |
+| `:describe-active-modes` | The mode stack live on this buffer, with chords |
+| `:list-modes`           | List every registered mode                       |
+| `:describe-mode N`      | Show one mode's metadata                         |
 
 ### LSP
 
@@ -140,14 +141,16 @@ See [`lsp`](help:lsp) for the full inventory. Most-used:
 | `:help [TOPIC]`               | Open help for TOPIC; no arg → topic index                  |
 | `:describe-command NAME`      | Show one command's metadata                                |
 | `:list-commands`              | List every registered command, grouped by source (built-in / plugin / user) |
-| `:describe-mode [NAME]`       | Show a mode's metadata (keymap, options, source)           |
+| `:describe-active-modes`      | The mode stack live on this buffer: major + minors, each with its chords (`<C-h>m`) |
+| `:describe-mode NAME`         | Show one named mode's metadata (kind, options, capabilities) (`<C-h>M`) |
 | `:list-modes`                 | List every registered mode + its `:<mode-name>` toggle     |
 | `:describe-buffer`            | Show active buffer's state summary                         |
 | `:describe-key CHORD`         | Show what CHORD does (in every mode it's bound)            |
+| `:describe-bindings`          | Only the chords that can fire on this buffer (`<C-h>K`)    |
 | `:describe-events`            | List every typed event                                     |
 | `:describe-event NAME`        | Show one event's descriptor                                |
 | `:apropos PATTERN`            | Search commands + options + events for PATTERN             |
-| `:keymap`                     | List every default chord binding                           |
+| `:keymap`                     | Every default chord binding in every mode (the exhaustive reference) |
 
 ### State / scratch
 

@@ -46,8 +46,19 @@ Major and minor modes contribute:
 To see the active mode stack for the current buffer:
 
 ```
-:describe-mode        (or <C-h> m)
-:describe-mode rust-mode
+:describe-active-modes    (or <C-h> m)
+```
+
+That lists the major mode and every active minor mode, each with the
+chords it contributes. It shows minors as well as the major on
+purpose: behaviour shared by several major modes lives in a minor
+mode rather than being copied into each one, so a major-only view
+would hide those shared chords.
+
+To read about one *named* mode instead — active or not:
+
+```
+:describe-mode rust-mode  (or <C-h> M, which prompts for the name)
 ```
 
 **Exercise:** Open a Rust file with `:e src/main.rs` (or any file) and
@@ -66,20 +77,31 @@ documentation you need. Lattice adopts the same convention.
 The `<C-h>` prefix is available in Normal mode:
 
 ```
-<C-h> k   :describe-key     — what does this chord do?
-<C-h> c   :describe-command — documentation for a command
-<C-h> o   :describe-option  — option description + current value
-<C-h> e   :describe-event   — event payload + who subscribes
-<C-h> m   :describe-mode    — the active mode stack
-<C-h> b   :describe-buffer  — buffer metadata and flags
-<C-h> a   :apropos          — search across all of the above
-<C-h> K   :keymap           — full chord table for current state
-<C-h> ?   :help-for-help    — this reference
+<C-h> k   :describe-key          — what does this chord do?
+<C-h> c   :describe-command      — documentation for a command
+<C-h> o   :describe-option       — option description + current value
+<C-h> e   :describe-event        — event payload + who subscribes
+<C-h> m   :describe-active-modes — the mode stack live here, with chords
+<C-h> M   :describe-mode         — prompt for one mode by name
+<C-h> b   :describe-buffer       — buffer metadata and flags
+<C-h> a   :apropos               — search across all of the above
+<C-h> K   :describe-bindings     — chords that fire on this buffer
+<C-h> ?   :help-for-help         — this reference
 ```
+
+Note the lowercase/uppercase pairs. Lowercase is the common case:
+`<C-h> m` answers "what is this buffer" without asking you anything,
+and `<C-h> K` shows only the chords that actually apply here. The
+exhaustive chord table for every mode is still `:keymap`.
 
 **Exercise 1:** Press `<C-h> k J` to see what `J` does.
 
 ---> Press <C-h> k J  to see what J does.
+
+**Exercise 1b:** Press `<C-h> m` to see what modes are live in this
+buffer, then `<C-h> K` to see what you can press in it.
+
+---> Press <C-h> m  to see this buffer's active modes.
 
 **Exercise 2:** Run `:describe-key n_J` to confirm the Normal-mode binding
 (the `n_` prefix scopes the lookup to Normal mode specifically).
@@ -268,11 +290,15 @@ Content mode:     Major mode (file-type identity) + Minor modes (features)
 <C-h> c   :describe-command
 <C-h> o   :describe-option
 <C-h> e   :describe-event
-<C-h> m   :describe-mode
+<C-h> m   :describe-active-modes   (this buffer's mode stack)
+<C-h> M   :describe-mode           (one mode by name)
+<C-h> b   :describe-buffer
 <C-h> a   :apropos
-<C-h> K   :keymap
+<C-h> K   :describe-bindings       (chords that fire here)
 <C-h> ?   :help-for-help
 ```
+
+`:keymap` remains the exhaustive chord table for every mode.
 
 ```
 :options        interactive option customize buffer  (like emacs M-x customize)

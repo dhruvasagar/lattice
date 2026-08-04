@@ -313,5 +313,15 @@ two-pane diff session.
   (`C-x g`, `C-c g`, `C-c f`)
 - `:magit-<Tab>` — list all magit ex-commands
 - `:describe-key` then press any magit chord to see its bound action
-- `:describe-mode` in a magit buffer to see the active mode's full keymap
-- `g?` — (future Lattice-wide convention) opens a help buffer for the current buffer's major mode
+- `<C-h> m` in any magit buffer — the live mode stack *and* the chords
+  each mode contributes. This is the view worth reaching for in magit:
+  a status buffer's chords come from `magit-status-mode` **and**
+  `magit-core-mode`, and only a major+minor view shows both.
+- `<C-h> K` — every chord that fires in the buffer you're in
+- `:describe-mode magit-status-mode` — one named mode's metadata
+
+> Earlier drafts of this page promised `g?` as a future Lattice-wide
+> "help for this buffer's major mode" chord. That shipped as
+> `<C-h> m` instead — the emacs help-prefix slot, which costs no vim
+> key (vim's `g?` is the rot13 operator) — and it shows major *plus*
+> minors rather than the major alone.

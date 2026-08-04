@@ -136,7 +136,9 @@ learn it:
 | `:help <topic>`     | Opens a specific topic (e.g. `:help folding`) |
 | `:describe-key`     | "What does *this* key do?" — then press it |
 | `:describe-command` | What a `:command` does, with cross-links   |
-| `:keymap`           | Every active key binding                   |
+| `:describe-bindings` | Every key binding that works *here* (`<C-h>K`) |
+| `:keymap`           | Every default binding in every mode        |
+| `:describe-active-modes` | What modes are live in this buffer (`<C-h>m`) |
 | `:apropos <word>`   | Search commands, options, and topics by keyword |
 
 `:help <Tab>` lists every registered topic. When in doubt,

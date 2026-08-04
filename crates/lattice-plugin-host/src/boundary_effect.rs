@@ -767,6 +767,8 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
         NativeEffect::DescribeEvent { name } => WitEffect::DescribeEvent(name.clone()),
         NativeEffect::ListModes => WitEffect::ListModes,
         NativeEffect::DescribeMode { name } => WitEffect::DescribeMode(name.clone()),
+        NativeEffect::DescribeActiveModes => WitEffect::DescribeActiveModes,
+        NativeEffect::DescribeActiveBindings => WitEffect::DescribeActiveBindings,
         NativeEffect::DescribeOptionResolution { name } => {
             WitEffect::DescribeOptionResolution(name.clone())
         }
@@ -1052,6 +1054,8 @@ fn effect_from_wit(w: WitEffect) -> Result<NativeEffect, String> {
         WitEffect::DescribeEvent(name) => NativeEffect::DescribeEvent { name },
         WitEffect::ListModes => NativeEffect::ListModes,
         WitEffect::DescribeMode(name) => NativeEffect::DescribeMode { name },
+        WitEffect::DescribeActiveModes => NativeEffect::DescribeActiveModes,
+        WitEffect::DescribeActiveBindings => NativeEffect::DescribeActiveBindings,
         WitEffect::DescribeOptionResolution(name) => {
             NativeEffect::DescribeOptionResolution { name }
         }

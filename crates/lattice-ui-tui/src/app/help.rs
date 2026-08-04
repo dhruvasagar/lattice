@@ -1458,6 +1458,146 @@ mod tests {
         );
     }
 
+    // ---- DAM.2: :describe-active-modes ----
+
+    #[test]
+    fn describe_active_modes_lists_major_and_minors_without_prompting() {
+        // The behaviour `<C-h>m` claimed for two months but never had.
+        // No argument, no prompt — the view reads the active buffer.
+        let mut a = app_with("hi", 5);
+        a.toggle_mode_by_name("lsp-mode");
+        a.editor.set_command_line_text("describe-active-modes");
+        a.editor.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+
+        // No prompt was armed — the overlay is the answer itself.
+        assert!(
+            a.editor.completion_state.is_none(),
+            "describe-active-modes must never open an arg popup",
+        );
+        let h = a.popup_help().expect("describe-active-modes opens help");
+        let body = h.content.as_string();
+        assert!(body.contains("# modes ::"), "missing heading\n{body}");
+        assert!(body.contains("## major"), "missing major section\n{body}");
+        assert!(body.contains("## minors"), "missing minors section\n{body}");
+        assert!(
+            body.contains("text-mode"),
+            "the active major must appear\n{body}",
+        );
+        assert!(
+            body.contains("lsp-mode"),
+            "an active minor must appear — major-only would under-report\n{body}",
+        );
+    }
+
+    #[test]
+    fn describe_active_modes_omits_inactive_modes() {
+        // The distinction from `:list-modes`: this view is scoped to
+        // what is live on THIS buffer, not the registry.
+        let mut a = app_with("hi", 5);
+        a.editor.set_command_line_text("describe-active-modes");
+        a.editor.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let h = a.popup_help().expect("describe-active-modes opens help");
+        let body = h.content.as_string();
+        assert!(
+            !body.contains("help-mode"),
+            "an inactive mode must not be listed\n{body}",
+        );
+    }
+
+    #[test]
+    fn describe_active_modes_shows_contributed_chords() {
+        // Rows carry the chords each mode binds — the "what can I
+        // press here" half of the question. `lsp-mode` contributes
+        // `gd` / `gr` / `K` via `keymap_entry!`, so docs are present.
+        let mut a = app_with("hi", 5);
+        a.toggle_mode_by_name("lsp-mode");
+        a.editor.set_command_line_text("describe-active-modes");
+        a.editor.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let h = a.popup_help().expect("describe-active-modes opens help");
+        let body = h.content.as_string();
+        assert!(
+            body.contains("gd"),
+            "lsp-mode's `gd` chord should be listed\n{body}",
+        );
+    }
+
+    #[test]
+    fn describe_active_modes_links_each_mode_to_its_help_topic() {
+        // Rows are `[id](help:id)` so `<CR>` reaches the prose doc
+        // through the existing help-link machinery.
+        let mut a = app_with("hi", 5);
+        a.editor.set_command_line_text("describe-active-modes");
+        a.editor.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let links = a.popup_help_links().expect("help links seeded");
+        assert!(
+            links.iter().any(|l| matches!(
+                &l.target,
+                crate::help::HelpLinkTarget::Topic(t) if t == "text-mode"
+            )),
+            "expected a `help:` topic link to the active major; links: {links:?}",
+        );
+    }
+
+    // ---- DAM.6: :describe-bindings ----
+
+    #[test]
+    fn describe_bindings_lists_builtin_and_active_mode_chords() {
+        let mut a = app_with("hi", 5);
+        a.toggle_mode_by_name("lsp-mode");
+        a.editor.set_command_line_text("describe-bindings");
+        a.editor.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let h = a.popup_help().expect("describe-bindings opens help");
+        let body = h.content.as_string();
+        assert!(body.contains("## builtin"), "missing builtin section\n{body}");
+        assert!(body.contains("## modes"), "missing modes section\n{body}");
+        // A builtin Normal-mode chord and an active mode's chord both
+        // appear — the union is the point.
+        assert!(body.contains("gg"), "builtin chord missing\n{body}");
+        assert!(body.contains("lsp-mode"), "active mode missing\n{body}");
+    }
+
+    #[test]
+    fn describe_bindings_omits_inactive_mode_chords() {
+        // The distinction from `:keymap`: chords from a mode that is
+        // not active on this buffer must not be listed.
+        let mut a = app_with("hi", 5);
+        a.editor.set_command_line_text("describe-bindings");
+        a.editor.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let h = a.popup_help().expect("describe-bindings opens help");
+        let body = h.content.as_string();
+        assert!(
+            !body.contains("lsp-mode"),
+            "lsp-mode is not active here and must not be listed\n{body}",
+        );
+    }
+
+    #[test]
+    fn keymap_still_lists_the_full_catalog() {
+        // DAM.6 regression: `:keymap` keeps its exhaustive-reference
+        // role. It must still show bindings for modes the current
+        // buffer is not in (Insert, Visual, …).
+        let mut a = app_with("hi", 5);
+        a.editor.set_command_line_text("keymap");
+        a.editor.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let h = a.popup_help().expect("keymap opens help");
+        let body = h.content.as_string();
+        assert!(
+            body.contains("Default keymap:"),
+            "keymap should still render the catalog header\n{body}",
+        );
+        assert!(
+            body.contains("[Insert]"),
+            "keymap must still list modes the buffer isn't currently in\n{body}",
+        );
+    }
+
     #[test]
     fn describe_mode_unknown_emits_error_no_overlay() {
         let mut a = app_with("xx", 10);

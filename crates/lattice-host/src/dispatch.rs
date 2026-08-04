@@ -3743,6 +3743,32 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
                     )));
             }
         }
+        Effect::DescribeActiveBindings => {
+            // DAM.6: `:describe-bindings` (`<C-h>K`). Infallible —
+            // every buffer has at least the builtin bindings for its
+            // binding-mode.
+            let content = editor.build_describe_active_bindings_content();
+            out.renderer_signals
+                .push(RendererSignal::DisplayBuffer(Box::new(
+                    DisplayBufferRequest {
+                        content,
+                        category: lattice_core::ui::display::BufferDisplayCategory::HelpList,
+                    },
+                )));
+        }
+        Effect::DescribeActiveModes => {
+            // DAM.3: `:describe-active-modes` (`<C-h>m`). Infallible —
+            // a buffer with no major mode still renders (minors, or an
+            // explicit `(none)`), so there is no skip-the-signal arm.
+            let content = editor.build_describe_active_modes_content();
+            out.renderer_signals
+                .push(RendererSignal::DisplayBuffer(Box::new(
+                    DisplayBufferRequest {
+                        content,
+                        category: lattice_core::ui::display::BufferDisplayCategory::HelpDescribe,
+                    },
+                )));
+        }
         Effect::ListDiagnostics => {
             // 5.5.F.7: `:diagnostics` -- open every published
             // diagnostic in a picker. The picker lives on `Editor`
@@ -9384,8 +9410,48 @@ impl Editor {
     pub fn open_completion_popup(&mut self) {
         match self.compute_completion_state() {
             Ok(state) => {
-                if self.completion_auto_insert_single() && state.candidates.len() == 1 {
-                    let chosen_text = state.candidates[0].raw.text.clone();
+                // DAM.1: on the command-name slot, a literal prefix
+                // beats a fuzzy subsequence.
+                //
+                // Candidate matching is fuzzy, so `describe-mode` also
+                // matches `describe-active-modes` (the typed text is a
+                // subsequence of it). Without this, adding *any*
+                // command whose name fuzzily contains an existing one
+                // silently breaks the shorter command's `<Tab>`: two
+                // candidates means the single-candidate branch below
+                // never fires, and `:describe-mode<Tab>` stops
+                // stepping into its arg slot — the exact bug
+                // `tab_on_complete_command_name_steps_into_the_arg_slot`
+                // was written to fix.
+                //
+                // Scoped to `replace_start == 0` (the command word
+                // starts at offset 0 on the `:` line) so file and
+                // free-arg slots keep full fuzzy behaviour, where
+                // fuzzy is the point. Command names are a closed,
+                // known vocabulary — prefix semantics is the
+                // vim/readline convention users carry in.
+                let effective_single = if state.candidates.len() == 1 {
+                    Some(0)
+                } else if state.replace_start == 0 {
+                    let line = self.command_line();
+                    let slot_prefix = line[state.replace_start..].to_string();
+                    let mut prefixed = state
+                        .candidates
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, c)| c.raw.text.starts_with(&slot_prefix));
+                    match (prefixed.next(), prefixed.next()) {
+                        (Some((i, _)), None) if !slot_prefix.is_empty() => Some(i),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+
+                if let Some(chosen) = effective_single
+                    && self.completion_auto_insert_single()
+                {
+                    let chosen_text = state.candidates[chosen].raw.text.clone();
                     let mut line = self.command_line();
                     line.replace_range(state.replace_start..line.len(), &chosen_text);
                     self.set_command_line_text(&line);
@@ -32193,7 +32259,12 @@ impl Editor {
                 .map(|d| ((d.type_id)(), d.name))
                 .collect();
 
-        let buffer_id = self.document_buffer_id;
+        // DAM.2: `active_buffer_id()`, NOT `document_buffer_id`. The
+        // latter is the underlying Document even when the focused
+        // buffer is a magit / file-tree / oil / help buffer, so
+        // "active on current buffer" reported the wrong buffer's mode
+        // stack for every non-document kind.
+        let buffer_id = self.active_buffer_id();
         let active = self.active_modes.get(&buffer_id);
         let is_active = match mode.kind() {
             lattice_mode::ModeKind::Major => active.and_then(|a| a.major()) == Some(mode_id),
@@ -32262,6 +32333,292 @@ impl Editor {
             format!("describe-mode {name}"),
             lines,
         ))
+    }
+
+    /// DAM.2: `:describe-active-modes` (`<C-h>m`) content builder —
+    /// the mode stack live on the *active* buffer, major first, then
+    /// every minor, each with the chords it contributes.
+    ///
+    /// Deliberately major **+ minors**, not major alone. The
+    /// minor-mode convention pushes chords shared across majors out
+    /// into a minor (magit's `gr` / `q` / `]]` live on
+    /// `magit-core-mode`, not on each magit major), so a major-only
+    /// view would omit exactly the half that convention centralised.
+    ///
+    /// Infallible — a buffer with no major mode is an ordinary state
+    /// (synthetic buffers routinely carry minors and no major), so it
+    /// renders `(none)` rather than erroring.
+    pub fn build_describe_active_modes_content(&self) -> lattice_help::HelpContent {
+        let buffer_id = self.active_buffer_id();
+        // Synthetic buffers (magit, `*messages*`, …) carry a registry
+        // name. Fall back to the document's path ONLY when the focused
+        // buffer really is the document — `self.document` stays the
+        // underlying Document even while a file-tree / oil / magit
+        // buffer is focused, so using its path unconditionally would
+        // label one buffer with another's name. Same confusion as the
+        // `document_buffer_id` bug fixed above.
+        let label = self
+            .buffers
+            .name_of(buffer_id)
+            .or_else(|| {
+                (buffer_id == self.document_buffer_id)
+                    .then(|| {
+                        self.document
+                            .snapshot()
+                            .path()
+                            .map(|p| p.display().to_string())
+                    })
+                    .flatten()
+            })
+            .unwrap_or_else(|| format!("buffer {}", buffer_id.0));
+
+        let active = self.active_modes.get(&buffer_id);
+        let major = active.and_then(|a| a.major());
+        let minors: Vec<lattice_mode::ModeId> =
+            active.map(|a| a.minors().to_vec()).unwrap_or_default();
+
+        let mut lines: Vec<String> = Vec::new();
+        lines.push(format!("# modes :: {label}"));
+        lines.push(String::new());
+
+        lines.push("## major".into());
+        match major {
+            Some(id) => self.push_active_mode_rows(&mut lines, id, "◆"),
+            None => {
+                lines.push("(none)".into());
+                lines.push(String::new());
+            }
+        }
+
+        lines.push(format!("## minors ({})", minors.len()));
+        if minors.is_empty() {
+            lines.push("(none)".into());
+            lines.push(String::new());
+        } else {
+            for id in minors {
+                self.push_active_mode_rows(&mut lines, id, "◇");
+            }
+        }
+
+        lines.push(
+            "`:keymap` lists every default binding · \
+             `:describe-mode <name>` shows one mode's options + capabilities."
+                .into(),
+        );
+
+        lattice_help::HelpContent::from_lines("describe-active-modes", lines)
+    }
+
+    /// One mode's block for [`Self::build_describe_active_modes_content`]:
+    /// a `[id](help:id)` link row, the help-topic summary when the mode
+    /// has a prose doc, then its contributed chords.
+    ///
+    /// A mode id that no longer resolves in the registry is skipped with
+    /// a `debug!` rather than panicking — mode registration and buffer
+    /// activation are separately mutable, so a stale id is a reachable
+    /// (if rare) state, not an invariant violation.
+    fn push_active_mode_rows(
+        &self,
+        lines: &mut Vec<String>,
+        mode_id: lattice_mode::ModeId,
+        icon: &str,
+    ) {
+        let Some(mode) = self.mode_registry.load().get(mode_id) else {
+            tracing::debug!(
+                mode = %mode_id,
+                "describe-active-modes: active mode id not in registry; skipping row",
+            );
+            return;
+        };
+
+        lines.push(format!("{icon} [{mode_id}](help:{mode_id})"));
+        if let Some(topic) = self.help_topics.lookup(mode_id.as_str()) {
+            lines.push(format!("    {}", topic.summary));
+        }
+
+        let rows = self.mode_chord_rows(&mode);
+        if rows.is_empty() {
+            lines.push("    (contributes no chords)".into());
+        } else {
+            // Pad the chord column so docs line up within a mode block.
+            let width = rows.iter().map(|(c, _)| c.chars().count()).max().unwrap_or(0);
+            for (chord, doc) in rows {
+                let pad = " ".repeat(width.saturating_sub(chord.chars().count()));
+                lines.push(format!("    {chord}{pad}  {doc}"));
+            }
+        }
+        lines.push(String::new());
+    }
+
+    /// DAM.6: `:describe-bindings` (`<C-h>K`) content builder — the
+    /// chords that can actually fire on the active buffer.
+    ///
+    /// The buffer-scoped peer of [`Self::build_list_keymap_content`]
+    /// (`:keymap`), which renders the entire static catalog for every
+    /// binding-mode regardless of what is active. Both views are
+    /// wanted: `:keymap` is the reference, this is the answer to
+    /// "what can I press here". Two sources are unioned:
+    ///
+    /// 1. builtin catalog entries live in the buffer's *current*
+    ///    binding-mode, and
+    /// 2. every active mode's contributions (major + minors), via the
+    ///    same walk [`Self::build_describe_active_modes_content`] uses.
+    pub fn build_describe_active_bindings_content(&self) -> lattice_help::HelpContent {
+        use crate::keymap::entries;
+
+        let buffer_id = self.active_buffer_id();
+        // The minibuffer states (`Command` / `Search` / `Prompt`) are
+        // how the user *typed* `:describe-bindings`; they are already
+        // back in Normal by the time the view is on screen, so
+        // reporting cmdline bindings would answer a question nobody
+        // asked. `<C-h>K` is Normal-only anyway (the help prefix is),
+        // so Normal is the honest default for both entry points.
+        let binding_mode = match self.modal {
+            lattice_grammar::ModalState::Insert => crate::keymap::BindingMode::Insert,
+            lattice_grammar::ModalState::Visual(_) | lattice_grammar::ModalState::Select(_) => {
+                crate::keymap::BindingMode::Visual
+            }
+            lattice_grammar::ModalState::OperatorPending => {
+                crate::keymap::BindingMode::OperatorPending
+            }
+            lattice_grammar::ModalState::Replace => crate::keymap::BindingMode::Replace,
+            lattice_grammar::ModalState::Normal
+            | lattice_grammar::ModalState::Command
+            | lattice_grammar::ModalState::Search(_)
+            | lattice_grammar::ModalState::Prompt => crate::keymap::BindingMode::Normal,
+        };
+
+        let mut lines: Vec<String> = Vec::new();
+        lines.push(format!("# bindings :: {} mode", binding_mode.label()));
+        lines.push(String::new());
+
+        // 1. Builtin catalog, filtered to the live binding-mode. The
+        //    static catalog is mode-tagged per row, so this is the
+        //    same filter `:keymap` applies per group — just narrowed
+        //    to one mode instead of rendering all of them.
+        let builtin: Vec<&crate::keymap::KeymapEntry> = entries()
+            .iter()
+            .filter(|e| e.modes.contains(&binding_mode))
+            .collect();
+        lines.push(format!("## builtin ({})", builtin.len()));
+        if builtin.is_empty() {
+            lines.push("(none)".into());
+        } else {
+            let width = builtin.iter().map(|e| e.chord.len()).max().unwrap_or(0);
+            for entry in builtin {
+                let pad = " ".repeat(width.saturating_sub(entry.chord.len()));
+                lines.push(format!(
+                    "  {}{pad}  {}",
+                    lattice_help::key_link(entry.chord),
+                    entry.doc,
+                ));
+            }
+        }
+        lines.push(String::new());
+
+        // 2. Active modes. Ordered major-first, then minors, matching
+        //    `:describe-active-modes` so the two views read the same
+        //    way.
+        let active = self.active_modes.get(&buffer_id);
+        let mode_ids: Vec<lattice_mode::ModeId> = active
+            .map(|a| {
+                let mut v: Vec<lattice_mode::ModeId> = a.major().into_iter().collect();
+                v.extend_from_slice(a.minors());
+                v
+            })
+            .unwrap_or_default();
+
+        if mode_ids.is_empty() {
+            lines.push("## modes (0)".into());
+            lines.push("(no modes active on this buffer)".into());
+        } else {
+            lines.push(format!("## modes ({})", mode_ids.len()));
+            lines.push(String::new());
+            for mode_id in mode_ids {
+                let Some(mode) = self.mode_registry.load().get(mode_id) else {
+                    tracing::debug!(
+                        mode = %mode_id,
+                        "describe-bindings: active mode id not in registry; skipping",
+                    );
+                    continue;
+                };
+                let rows = self.mode_chord_rows(&mode);
+                lines.push(format!("[{mode_id}](help:{mode_id})"));
+                if rows.is_empty() {
+                    lines.push("  (contributes no chords)".into());
+                } else {
+                    let width = rows.iter().map(|(c, _)| c.chars().count()).max().unwrap_or(0);
+                    for (chord, doc) in rows {
+                        let pad = " ".repeat(width.saturating_sub(chord.chars().count()));
+                        // A `CharLiteral` slot renders as the `{char}`
+                        // placeholder, which is not parseable chord
+                        // notation — `key_link`ing it would produce a
+                        // link whose `:describe-key` target can never
+                        // resolve. Show those rows as plain text.
+                        let cell = if chord.contains('{') {
+                            chord.clone()
+                        } else {
+                            lattice_help::key_link(&chord)
+                        };
+                        lines.push(format!("  {cell}{pad}  {doc}"));
+                    }
+                }
+                lines.push(String::new());
+            }
+        }
+
+        lines.push("`:keymap` lists every default binding in every mode.".into());
+
+        lattice_help::HelpContent::from_lines("describe-bindings", lines)
+    }
+
+    /// `(chord, doc)` rows a mode contributes, from **both**
+    /// [`Keymap`] population paths.
+    ///
+    /// `Keymap::entries` is the `keymap_entry!` catalog form (every
+    /// row carries a `doc`); `Keymap::bindings` is the terse
+    /// `bind` / `bind_chord` chain form, whose `doc` is `Option` and
+    /// is `None` unless the binding was translated from an entry.
+    /// Walking only `entries` would silently under-report every
+    /// chain-form mode — the same invisible-gap failure the
+    /// minor-mode rule exists to prevent.
+    ///
+    /// Where the doc is absent the resolved command name is shown
+    /// rather than inventing prose. That is a quality signal, not
+    /// just a fallback: a mode whose rows read as bare command names
+    /// is a mode that wants moving to the `keymap_entry!` form.
+    fn mode_chord_rows(&self, mode: &Arc<dyn lattice_mode::DynMode>) -> Vec<(String, String)> {
+        let keymap = mode.keymap();
+        let reg = self.registry.load();
+        let mut rows: Vec<(String, String)> = Vec::new();
+
+        for entry in &keymap.entries {
+            rows.push((entry.chord.to_string(), entry.doc.to_string()));
+        }
+
+        for binding in &keymap.bindings {
+            let chord = binding
+                .chords
+                .iter()
+                .map(|c| match c {
+                    lattice_protocol::chord::ChordPattern::Literal(kc) => kc.to_string(),
+                    lattice_protocol::chord::ChordPattern::CharLiteral => "{char}".to_string(),
+                })
+                .collect::<String>();
+            let doc = binding.doc.map(str::to_string).unwrap_or_else(|| {
+                reg.lookup(binding.command.command)
+                    .map(|spec| spec.name.clone())
+                    .unwrap_or_else(|| "(unnamed command)".to_string())
+            });
+            rows.push((chord, doc));
+        }
+
+        // Stable output: the two population paths have no inherent
+        // order relative to each other, and a help view that reshuffles
+        // between invocations reads as a bug.
+        rows.sort();
+        rows.dedup();
+        rows
     }
 
     /// 5.5.F.6: `:customize` (no args) (M.9.0) content builder —
@@ -33374,6 +33731,8 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         | Effect::PrevHunk
         | Effect::ListModes
         | Effect::DescribeMode { .. }
+        | Effect::DescribeActiveModes
+        | Effect::DescribeActiveBindings
         | Effect::DescribeOptionResolution { .. }
         | Effect::Customize { .. }
         | Effect::Tutor { .. }
@@ -33516,6 +33875,8 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         | Effect::PrevHunk
         | Effect::ListModes
         | Effect::DescribeMode { .. }
+        | Effect::DescribeActiveModes
+        | Effect::DescribeActiveBindings
         | Effect::DescribeOptionResolution { .. }
         | Effect::Customize { .. }
         | Effect::Tutor { .. }

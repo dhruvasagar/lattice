@@ -490,6 +490,11 @@ static ALIAS_TABLE: &[(&str, &str)] = &[
     // directly (the multibuffer pattern). No host `ex:diff*` shim remains.
     ("list-modes", "ex:list-modes"),
     ("describe-mode", "ex:describe-mode"),
+    // DAM.1: `describe-active-modes`, deliberately NOT
+    // `describe-modes` — the shorter name is a prefix-sibling of
+    // `describe-mode` and would break its `<Tab>` completion.
+    ("describe-active-modes", "ex:describe-active-modes"),
+    ("describe-bindings", "ex:describe-bindings"),
     (
         "describe-option-resolution",
         "ex:describe-option-resolution",

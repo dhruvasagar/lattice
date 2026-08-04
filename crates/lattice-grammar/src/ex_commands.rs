@@ -1316,6 +1316,47 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             surface_form: SurfaceForm::Keyword,
         },
     );
+    // `:describe-active-modes`, deliberately NOT `:describe-modes`.
+    // The shorter name is a prefix-sibling of `:describe-mode`, which
+    // would push `:describe-mode<Tab>` off the single-candidate
+    // completion branch and reintroduce the bug
+    // `tab_on_complete_command_name_steps_into_the_arg_slot` guards.
+    // Name-resolved at the `:` line and by `keymap_help.rs`; no
+    // struct field needed (see the CR.6 note on `ExCommands`).
+    let _describe_active_modes = registry.register_ex_command(
+        "ex:describe-active-modes",
+        "Show the mode stack live on the current buffer \
+         (`:describe-active-modes`, `<C-h>m`): the major plus every \
+         minor, each with the chords it contributes.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| Ok(Effect::DescribeActiveModes)),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    // DAM.6: the buffer-scoped peer of `:keymap`. `:keymap` renders
+    // the whole static catalog (the exhaustive reference); this one
+    // answers "what can I press *here*".
+    let _describe_bindings = registry.register_ex_command(
+        "ex:describe-bindings",
+        "List the chords that can fire on the current buffer \
+         (`:describe-bindings`, `<C-h>K`): builtin bindings live in \
+         the current binding-mode plus every active mode's \
+         contributions. `:keymap` lists the full default catalog.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| Ok(Effect::DescribeActiveBindings)),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
     let describe_mode = registry.register_ex_command(
         "ex:describe-mode",
         "Open the help view for a registered mode \
@@ -2814,6 +2855,81 @@ mod tests {
             }
             other => panic!("unexpected effect: {other:?}"),
         }
+    }
+
+    #[test]
+    fn describe_active_modes_is_registered_and_takes_no_args() {
+        // DAM.1: `:describe-active-modes` resolves by name (no
+        // `ExCommands` field) and yields `Effect::DescribeActiveModes`
+        // with no argument — the whole point is that it reads the
+        // active buffer rather than prompting, which is what
+        // `<C-h>m` did wrong for two months.
+        let (registry, _ex, mut doc) = fixture();
+        let id = registry
+            .id_by_name("ex:describe-active-modes")
+            .expect("ex:describe-active-modes must be registered");
+        let eff = execute(
+            &registry,
+            &mut doc,
+            lattice_core::BufferId(0),
+            Position::ZERO,
+            CommandInvocation::of(id),
+            &CancellationToken::never(),
+        )
+        .unwrap();
+        assert!(matches!(eff, Effect::DescribeActiveModes), "got {eff:?}");
+    }
+
+    #[test]
+    fn describe_active_modes_has_an_empty_args_schema() {
+        // Guards the interactive-arg-spec path: a non-empty
+        // `args_schema` with a Required default is exactly what makes
+        // `:describe-mode` prompt. This command must never prompt.
+        let (registry, _ex, _doc) = fixture();
+        let spec = registry
+            .lookup_by_name("ex:describe-active-modes")
+            .expect("registered");
+        assert!(
+            spec.args_schema.is_empty(),
+            "an arg schema would re-arm the prompt this command exists to remove: {:?}",
+            spec.args_schema,
+        );
+    }
+
+    #[test]
+    fn describe_active_modes_does_not_shadow_describe_mode() {
+        // DAM.1 naming lock-in. `:describe-modes` would have been a
+        // prefix-sibling of `:describe-mode`, pushing
+        // `:describe-mode<Tab>` off the single-candidate completion
+        // branch that
+        // `tab_on_complete_command_name_steps_into_the_arg_slot`
+        // (lattice-ui-tui) exists to guard. Assert no registered
+        // ex-command name has `ex:describe-mode` as a strict prefix.
+        let (registry, _ex, _doc) = fixture();
+        assert!(
+            registry.id_by_name("ex:describe-mode").is_some(),
+            "ex:describe-mode must still be registered and untouched",
+        );
+        assert!(
+            registry.id_by_name("ex:describe-modes").is_none(),
+            "`:describe-modes` must not exist — it would shadow `:describe-mode` completion",
+        );
+    }
+
+    #[test]
+    fn describe_mode_still_requires_its_argument() {
+        // DAM.1 is additive: `:describe-mode` keeps the required arg
+        // (and therefore the `gen:modes` prompt) so `<C-h>M` can
+        // preserve the browse-any-mode path.
+        assert!(matches!(
+            parse_required_string("", false),
+            Err(CommandError::BadArgs(_))
+        ));
+        let (registry, _ex, _doc) = fixture();
+        let spec = registry
+            .lookup_by_name("ex:describe-mode")
+            .expect("registered");
+        assert_eq!(spec.args_schema.len(), 1, "describe-mode keeps its one arg");
     }
 
     #[test]

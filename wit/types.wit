@@ -614,6 +614,8 @@ interface types {
         describe-event(string),
         list-modes,
         describe-mode(string),
+        describe-active-modes,
+        describe-active-bindings,
         describe-option-resolution(string),
         customize(option<string>),
         tutor(option<u32>),

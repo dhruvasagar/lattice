@@ -1200,6 +1200,8 @@ impl GpuiApp {
             | Effect::BufferDelete { .. }
             | Effect::ListModes
             | Effect::DescribeMode { .. }
+            | Effect::DescribeActiveModes
+            | Effect::DescribeActiveBindings
             | Effect::Customize { .. }
             | Effect::ListDiagnostics
             | Effect::ListErrors

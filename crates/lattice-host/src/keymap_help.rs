@@ -13,10 +13,27 @@
 //! | `<C-h> o` | `:describe-option` | Prompt for option name. |
 //! | `<C-h> e` | `:describe-event` | Prompt for typed-event name. |
 //! | `<C-h> f` | `:describe-element` | Prompt for theme element / face name. |
-//! | `<C-h> m` | `:describe-mode` | Active majors + minors on the current buffer. |
+//! | `<C-h> m` | `:describe-active-modes` | Active major + minors on this buffer, with their chords. |
+//! | `<C-h> M` | `:describe-mode` | Prompt for a mode name; show that mode's metadata. |
 //! | `<C-h> b` | `:describe-buffer` | Buffer metadata (kind, flags, modes, …). |
 //! | `<C-h> a` | `:apropos` | Cross-cutting search. |
-//! | `<C-h> K` | `:keymap` | Keymap listing for the current state. |
+//! | `<C-h> K` | `:describe-bindings` | Chords that can fire on this buffer. `:keymap` remains the full catalog. |
+//!
+//! ## DAM.4 correction (2026-08-04)
+//!
+//! K.3.2 bound `<C-h>m` to `:describe-mode`, whose `name` arg is
+//! `ArgDefault::Required` — so the no-arg invocation armed the
+//! interactive `mode:` prompt and asked which mode to describe. It
+//! never showed the active modes, though this table, the
+//! `HelpPrefixEntry` doc, and keymap-architecture §12.1 all said it
+//! did. `<C-h>m` now routes to `:describe-active-modes`; `<C-h>M`
+//! keeps the prompt-for-any-mode path that `<C-h>m` was accidentally
+//! providing, so nothing is lost.
+//!
+//! The `m` / `M` pair reads listing-then-specific while the older
+//! `k` / `K` pair reads specific-then-listing. Deliberate: lowercase
+//! is the common case in both, and `C-h m` = *active* modes is the
+//! emacs muscle memory worth preserving.
 //!
 //! ## Design choices (per K.3 slice plan)
 //!
@@ -183,6 +200,16 @@ fn help_prefix_table() -> &'static [HelpPrefixEntry] {
             mods: KeyMods::NONE,
         }),
     ];
+    const C_H_CAP_M: &[ChordPattern; 2] = &[
+        ChordPattern::Literal(KeyChord {
+            key: KeyKind::Char('h'),
+            mods: KeyMods::CTRL,
+        }),
+        ChordPattern::Literal(KeyChord {
+            key: KeyKind::Char('M'),
+            mods: KeyMods::NONE,
+        }),
+    ];
     const C_H_B: &[ChordPattern; 2] = &[
         ChordPattern::Literal(KeyChord {
             key: KeyKind::Char('h'),
@@ -252,8 +279,13 @@ fn help_prefix_table() -> &'static [HelpPrefixEntry] {
         },
         HelpPrefixEntry {
             chord: C_H_M,
+            command: "ex:describe-active-modes",
+            doc: "Show the active major + minor modes on the current buffer, with their chords.",
+        },
+        HelpPrefixEntry {
+            chord: C_H_CAP_M,
             command: "ex:describe-mode",
-            doc: "Show the active major + minor modes on the current buffer.",
+            doc: "Prompt for a mode name and show that mode's metadata.",
         },
         HelpPrefixEntry {
             chord: C_H_B,
@@ -267,8 +299,8 @@ fn help_prefix_table() -> &'static [HelpPrefixEntry] {
         },
         HelpPrefixEntry {
             chord: C_H_CAP_K,
-            command: "ex:keymap",
-            doc: "List the keymap for the current state.",
+            command: "ex:describe-bindings",
+            doc: "List the chords that can fire on the current buffer.",
         },
     ]
 }
@@ -346,6 +378,136 @@ mod tests {
                 assert_eq!(command.command.command, expected);
             }
             other => panic!("expected Bound on <C-h>k, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ctrl_h_m_shows_active_modes_without_prompting() {
+        // DAM.4, the whole point of the arc. `<C-h>m` must route to
+        // `:describe-active-modes` — a no-arg command — not to
+        // `:describe-mode`, whose required arg armed the `mode:`
+        // prompt and made the chord ask a question instead of
+        // answering one.
+        let handle = KeymapHandle::new();
+        let registry = registry_with_help_commands();
+        register_help_prefix_bindings(&handle, &registry);
+
+        let expected = registry
+            .id_by_name("ex:describe-active-modes")
+            .expect("ex:describe-active-modes registered");
+        match lookup_normal(&handle, &[KeyChord::ctrl('h'), KeyChord::char('m')]) {
+            LookupResult::Bound { command, .. } => {
+                assert_eq!(command.command.command, expected);
+                assert_eq!(command.layer, KeymapLayer::Builtin);
+            }
+            other => panic!("expected Bound on <C-h>m, got {other:?}"),
+        }
+
+        // And it takes no args, so the interactive prompt cannot arm.
+        let spec = registry
+            .lookup_by_name("ex:describe-active-modes")
+            .expect("registered");
+        assert!(
+            spec.args_schema.is_empty(),
+            "<C-h>m must not be able to prompt",
+        );
+    }
+
+    #[test]
+    fn ctrl_h_capital_m_keeps_the_prompt_for_any_mode_path() {
+        // The prompt `<C-h>m` was accidentally providing is preserved
+        // on `<C-h>M` rather than removed — `:describe-mode` still
+        // has its required arg + `gen:modes` completion.
+        let handle = KeymapHandle::new();
+        let registry = registry_with_help_commands();
+        register_help_prefix_bindings(&handle, &registry);
+
+        let expected = registry
+            .id_by_name("ex:describe-mode")
+            .expect("ex:describe-mode registered");
+        match lookup_normal(&handle, &[KeyChord::ctrl('h'), KeyChord::char('M')]) {
+            LookupResult::Bound { command, .. } => {
+                assert_eq!(command.command.command, expected);
+            }
+            other => panic!("expected Bound on <C-h>M, got {other:?}"),
+        }
+
+        let spec = registry.lookup_by_name("ex:describe-mode").expect("registered");
+        assert_eq!(
+            spec.args_schema.len(),
+            1,
+            "<C-h>M must still prompt for a mode name",
+        );
+    }
+
+    #[test]
+    fn ctrl_h_m_and_capital_m_are_distinct_bindings() {
+        // Case matters in the trie: a regression that folded `M` into
+        // `m` would silently restore the old prompting behaviour on
+        // the chord users reach for most.
+        let handle = KeymapHandle::new();
+        let registry = registry_with_help_commands();
+        register_help_prefix_bindings(&handle, &registry);
+
+        let lower = match lookup_normal(&handle, &[KeyChord::ctrl('h'), KeyChord::char('m')]) {
+            LookupResult::Bound { command, .. } => command.command.command,
+            other => panic!("expected Bound on <C-h>m, got {other:?}"),
+        };
+        let upper = match lookup_normal(&handle, &[KeyChord::ctrl('h'), KeyChord::char('M')]) {
+            LookupResult::Bound { command, .. } => command.command.command,
+            other => panic!("expected Bound on <C-h>M, got {other:?}"),
+        };
+        assert_ne!(lower, upper, "<C-h>m and <C-h>M must not collapse");
+    }
+
+    #[test]
+    fn capital_m_help_prefix_does_not_fire_outside_normal() {
+        // Same mode-scope guarantee the rest of the map has — the new
+        // row must not leak into Insert/Visual/etc.
+        let handle = help_prefix_handle_for_mode_scope_tests();
+        for mode in [
+            BindingMode::Insert,
+            BindingMode::Visual,
+            BindingMode::OperatorPending,
+            BindingMode::Command,
+            BindingMode::Search,
+            BindingMode::Replace,
+        ] {
+            let result = handle.lookup_with_context(
+                mode,
+                &[KeyChord::ctrl('h'), KeyChord::char('M')],
+                &[],
+            );
+            assert!(
+                matches!(result, LookupResult::Unbound),
+                "<C-h>M leaked into {mode:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn ctrl_h_capital_k_scopes_bindings_to_the_buffer() {
+        // DAM.6: `<C-h>K` answers "what can I press here", so it
+        // routes to `:describe-bindings`, not `:keymap`. `:keymap`
+        // stays reachable as the exhaustive static catalog — it is
+        // just no longer what the chord opens.
+        let handle = KeymapHandle::new();
+        let registry = registry_with_help_commands();
+        register_help_prefix_bindings(&handle, &registry);
+
+        let expected = registry
+            .id_by_name("ex:describe-bindings")
+            .expect("ex:describe-bindings registered");
+        let keymap_id = registry.id_by_name("ex:keymap").expect("ex:keymap still registered");
+        match lookup_normal(&handle, &[KeyChord::ctrl('h'), KeyChord::char('K')]) {
+            LookupResult::Bound { command, .. } => {
+                assert_eq!(command.command.command, expected);
+                assert_ne!(
+                    command.command.command, keymap_id,
+                    "<C-h>K must no longer open the full catalog",
+                );
+            }
+            other => panic!("expected Bound on <C-h>K, got {other:?}"),
         }
     }
 

@@ -992,6 +992,8 @@ impl App {
             | Effect::BufferDelete { .. }
             | Effect::ListModes
             | Effect::DescribeMode { .. }
+            | Effect::DescribeActiveModes
+            | Effect::DescribeActiveBindings
             | Effect::Customize { .. }
             | Effect::ListDiagnostics
             | Effect::ListErrors
@@ -1415,6 +1417,8 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::PrevHunk
         | Effect::ListModes
         | Effect::DescribeMode { .. }
+        | Effect::DescribeActiveModes
+        | Effect::DescribeActiveBindings
         | Effect::DescribeOptionResolution { .. }
         | Effect::Customize { .. }
         | Effect::Tutor { .. }
@@ -1557,6 +1561,8 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::PrevHunk
         | Effect::ListModes
         | Effect::DescribeMode { .. }
+        | Effect::DescribeActiveModes
+        | Effect::DescribeActiveBindings
         | Effect::DescribeOptionResolution { .. }
         | Effect::Customize { .. }
         | Effect::Tutor { .. }

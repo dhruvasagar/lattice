@@ -5981,18 +5981,32 @@ parsers (Phase 7 plugin host).
 
 ---
 
-## `:describe-active-modes` — buffer mode stack (📝 planned)
+## `:describe-active-modes` — buffer mode stack (✅ 2026-08-04)
 
-`<C-h>m` has been bound since K.3.2 but routes to `:describe-mode`,
-whose arg is required — so it prompts for a mode name instead of
+`<C-h>m` had been bound since K.3.2 but routed to `:describe-mode`,
+whose arg is required — so it prompted for a mode name instead of
 showing the buffer's active modes, which is what its own doc table,
-its `HelpPrefixEntry` doc, and keymap-architecture §12.1 all claimed.
-DAM.1–DAM.5 make the documented behaviour real (new additive
-`:describe-active-modes` + `Effect::DescribeActiveModes`, a
-major + minors view with each mode's contributed chords read from
-`DynMode::keymap()`); `<C-h>M` keeps the prompt-for-any-mode path.
-DAM.6 then repoints `<C-h>K` to a new `:describe-bindings` scoped to
-the current buffer, leaving `:keymap` as the exhaustive reference.
+its `HelpPrefixEntry` doc, keymap-architecture §12.1, **and**
+`docs/user/help.md` all claimed. Four documents describing behaviour
+that never shipped.
+
+DAM.1–DAM.5 made the documented behaviour real: an additive
+`:describe-active-modes` + `Effect::DescribeActiveModes` (additive
+rather than widening `describe-mode(string)` in `wit/types.wit`,
+which would break a published plugin API), rendering major + minors
+with each mode's contributed chords read from `DynMode::keymap()`.
+`<C-h>M` keeps the prompt-for-any-mode path. DAM.6 repointed
+`<C-h>K` to a new `:describe-bindings` scoped to the current buffer,
+leaving `:keymap` as the exhaustive reference.
+
+**Turned up mid-build:** `:` line candidate matching is *fuzzy
+subsequence*, so `describe-mode` also matches
+`describe-active-modes` — which broke `:describe-mode<Tab>` no
+matter what the new command was named. Fixed generally: on the
+command-name slot a literal prefix beats a fuzzy subsequence
+(arg/file slots keep full fuzzy matching). Also fixed in passing:
+`build_describe_mode_content` computed "active on current buffer"
+from `document_buffer_id`, wrong for every non-document buffer.
 
 Design: [`../architecture/keymap-architecture.md`](../architecture/keymap-architecture.md)
 §12.5–§12.6. Slice plan:

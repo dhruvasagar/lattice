@@ -1608,7 +1608,7 @@ in the host's ex-command alias table.
 | `<C-h> M` | `:describe-mode` | Prompts for a mode name (`gen:modes` completion); shows that mode's registry metadata. |
 | `<C-h> b` | `:describe-buffer` | Buffer metadata (kind, flags, mode stack, ...). |
 | `<C-h> a` | `:apropos` | Cross-cutting search across commands / options / events. |
-| `<C-h> K` | `:keymap` | Keymap listing for the current state. Capital K because lowercase `k` is `:describe-key`. |
+| `<C-h> K` | `:describe-bindings` | Chords that can fire on this buffer (§12.6). Capital K because lowercase `k` is `:describe-key`. `:keymap` remains the full catalog, reachable by name. |
 
 **No bare `<C-h>` leaf binding** — see §12.3 for the rationale.
 
@@ -1792,14 +1792,41 @@ variant instead. Paramount goal #2 over a smaller diff —
 heuristic #1 cuts the other way here only if you weigh diff
 size, which it explicitly forbids.
 
-**Naming.** `:describe-active-modes`, not `:describe-modes`.
-The shorter name is a prefix-sibling of `:describe-mode`,
-which would push `:describe-mode<Tab>` off the
-single-candidate branch that
+**Naming, and why the name alone was not enough.**
+`:describe-active-modes`, not `:describe-modes` — the shorter
+name is a literal prefix-sibling of `:describe-mode`.
+
+That was necessary but **not sufficient**. Candidate matching
+on the `:` line is *fuzzy subsequence*, not prefix, so
+`describe-mode` also matches `describe-active-modes`
+(d-e-s-c-r-i-b-e-`-`-m-o-d-e is a subsequence of it). Two
+candidates meant `open_completion_popup`'s
+`candidates.len() == 1` branch stopped firing and
+`:describe-mode<Tab>` no longer stepped into its arg slot —
+exactly the bug
 `tab_on_complete_command_name_steps_into_the_arg_slot`
-(`crates/lattice-ui-tui/src/app/cmdline.rs`) exists to guard
-— reintroducing a fixed bug. Dashed and inside the
-`describe-*` family, per the ex-command naming rule.
+guards, reintroduced from a direction the name choice could
+not prevent. **Every name in the `describe-*` family that
+mentions modes hits this**, so no rename avoids it.
+
+The fix is a rule, not a workaround: **on the command-name
+slot, a literal prefix beats a fuzzy subsequence.** If exactly
+one candidate has the typed text as a literal prefix, it is
+treated as the single candidate. Scoped to
+`replace_start == 0` (the command word starts at offset 0),
+so file and free-arg slots keep full fuzzy behaviour, where
+fuzzy is the point. Command names are a closed, known
+vocabulary — prefix semantics is the vim/readline convention
+users carry in (UX-convention rule).
+
+The rule deliberately requires a *prefix*, not merely a
+unique fuzzy hit: `dscrbmode` matches `describe-mode` and
+nothing else, but still opens the popup rather than rewriting
+the line. Fuzzy matching asks for confirmation; only prefixes
+auto-commit.
+
+This generalises — any future command whose name fuzzily
+contains an existing one would have hit the same wall.
 
 **Buffer resolution.** The builder reads
 `Editor::active_buffer_id()`. Note that the sibling
@@ -1839,6 +1866,29 @@ active-mode walk, which is why the two land in that order.
 `<C-h>b` stays `:describe-buffer` — in Lattice `b` is
 buffer-metadata, and the bindings listing hangs off `K`
 alongside the other keymap surface.
+
+**Which `BindingMode` the view reports.** There is no
+`ModalState → BindingMode` helper in the tree: the dispatcher
+branches on `ModalState` and each per-mode dispatcher hard-codes
+its own. `:describe-bindings` therefore maps them locally, and
+folds the three minibuffer states (`Command`, `Search`,
+`Prompt`) onto `Normal` rather than reporting cmdline bindings.
+
+That is not a shortcut. Those states are how the user *typed*
+`:describe-bindings`; by the time the view is on screen they
+are back in Normal, so reporting the `:`-line's own bindings
+would answer a question nobody asked. `<C-h>K` is Normal-only
+regardless (the help prefix is), so Normal is the honest
+answer for both entry points. `Insert` / `Visual` / `Select` /
+`OperatorPending` / `Replace` map through unchanged, since a
+mapping bound there is genuinely what would fire.
+
+**Dead-link guard.** Chord cells are `key_link`ed so `<CR>`
+runs `:describe-key`, *except* rows whose chord contains a
+`CharLiteral` slot — those render as the `{char}` placeholder,
+which is not parseable chord notation, so linking them would
+produce a target that can never resolve. Those rows stay
+plain text.
 
 - K.3.0 ✅ trie audit + Option 2 decision (this section).
 - K.3.1 ✅ `:help-for-help` ex-command alias

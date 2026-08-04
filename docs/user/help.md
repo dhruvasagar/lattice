@@ -1,6 +1,6 @@
 ---
 summary: "Help system: :describe-*, :apropos, :keymap, the <C-h> prefix map, and mode-prefix syntax for :describe-key."
-related: [describe-key, describe-command, describe-mode, describe-buffer, describe-option, describe-event, apropos, keymap, help-for-help, list-modes, options, customize]
+related: [describe-key, describe-command, describe-mode, describe-active-modes, describe-bindings, describe-buffer, describe-option, describe-event, apropos, keymap, help-for-help, list-modes, options, customize]
 ---
 
 # Help system
@@ -20,10 +20,11 @@ answer is in the editor.
 | `<C-h> c`                  | `:describe-command` — metadata for a named command    |
 | `<C-h> o`                  | `:describe-option` — description + current value      |
 | `<C-h> e`                  | `:describe-event` — event payload + who subscribes    |
-| `<C-h> m`                  | `:describe-mode` — active modes on the current buffer |
+| `<C-h> m`                  | `:describe-active-modes` — what is live on this buffer |
+| `<C-h> M`                  | `:describe-mode` — prompt for a mode name             |
 | `<C-h> b`                  | `:describe-buffer` — buffer kind, flags, mode stack   |
 | `<C-h> a`                  | `:apropos` — cross-cutting search                     |
-| `<C-h> K`                  | `:keymap` — full chord table for the current state    |
+| `<C-h> K`                  | `:describe-bindings` — chords that fire on this buffer |
 | `<C-h> <C-h>` or `<C-h> ?` | `:help-for-help` — this index                         |
 | `:help [topic]`            | Open a topic by name (`:help modal-editing`, etc.)    |
 | `:help`                    | Open the topic index                                  |
@@ -165,20 +166,37 @@ Via `<C-h>`: `<C-h> e`.
 
 ---
 
-## `:describe-mode` — the active mode stack
+## `:describe-active-modes` / `:describe-mode` — the mode stack
 
 ```
-:describe-mode [NAME]
+:describe-active-modes
+:describe-mode NAME
 ```
 
-Without an argument: shows the major mode and all active minor modes
-on the current buffer — name, version, brief description, contributed
-keybindings, and whether each minor mode is currently active.
+`:describe-active-modes` shows what is live on **this** buffer: the
+major mode, then every active minor mode, each with its one-line
+summary and the chords it contributes. Press `<CR>` on any mode's
+name to open its full documentation.
 
-With a name: describes that mode whether or not it is active on the
-current buffer.
+This is major **plus** minors on purpose. Behaviour shared across
+several major modes lives in a minor mode rather than being copied
+into each major — magit's `gr` (refresh), `q` (bury), and `]]` / `[[`
+(next / previous section) come from `magit-core-mode`, not from
+`magit-status-mode` or `magit-refs-mode`. A major-only view would
+hide exactly those shared chords.
 
-Via `<C-h>`: `<C-h> m`.
+`:describe-mode NAME` describes one *named* mode — its kind,
+contributed options, required capabilities, and whether it is active
+here — whether or not it is active. Use it to read about a mode you
+have not switched on.
+
+Via `<C-h>`: `<C-h> m` for the active modes, `<C-h> M` to be prompted
+for a mode name.
+
+> **Changed 2026-08-04.** `<C-h>m` previously ran `:describe-mode`,
+> which requires a mode name, so it prompted instead of showing the
+> active modes this page described. `<C-h>m` now does what it always
+> claimed; the prompt moved to `<C-h>M`.
 
 ---
 
@@ -219,6 +237,24 @@ Examples:
 
 ---
 
+## `:describe-bindings` — what fires on *this* buffer
+
+```
+:describe-bindings
+```
+
+Lists only the chords that can actually fire where you are: the
+built-in bindings live in your current mode, then each active mode's
+contributions. Nothing from a mode that is not switched on here.
+
+Use this when you want to know what a buffer can do — a magit status
+buffer, a terminal, a file tree — without reading past hundreds of
+bindings that are not in play.
+
+Via `<C-h>`: `<C-h> K` (capital K — lowercase `k` is `:describe-key`).
+
+---
+
 ## `:keymap` — the full chord table
 
 ```
@@ -230,7 +266,13 @@ state, or for the specified mode. Grouped by layer: Built-in, User
 config, each active major/minor mode contribution. Each row links to
 its source via `<CR>`.
 
-Via `<C-h>`: `<C-h> K` (capital K — lowercase `k` is `:describe-key`).
+This is the exhaustive reference — every default binding in every
+mode, whether or not it applies to the current buffer. For the
+filtered view, use `:describe-bindings`.
+
+> **Changed 2026-08-04.** `<C-h>K` used to open `:keymap`. It now
+> opens `:describe-bindings`; `:keymap` is unchanged and still
+> reachable by name.
 
 ---
 

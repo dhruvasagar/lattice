@@ -1,6 +1,6 @@
 # `:describe-active-modes` — buffer mode stack + buffer-scoped bindings
 
-**Status:** planned. Design fragment:
+**Status:** ✅ landed (2026-08-04, DAM.1–DAM.6). Design fragment:
 [keymap-architecture.md §12.5–§12.6](../../architecture/keymap-architecture.md).
 
 ## Why
@@ -20,7 +20,7 @@ prompt-for-any-mode path on `<C-h>M`.
 
 ## Slices
 
-### DAM.1 — `:describe-active-modes` command + effect 📝
+### DAM.1 — `:describe-active-modes` command + effect ✅
 
 Additive only; `ex:describe-mode` is not touched.
 
@@ -33,12 +33,34 @@ Additive only; `ex:describe-mode` is not touched.
   `ex:describe-active-modes`, `parse_no_args`,
   `LatencyClass::Display`, empty `args_schema`.
 
-**Tests.** Command resolves by name; no-arg parse; boundary
-round-trip; `:describe-mode<Tab>` still steps into its arg slot
-(regression guard for the naming decision — this is the whole
-reason the command is not called `:describe-modes`).
+- `crates/lattice-host/src/excommand.rs`: an `ALIAS_TABLE` entry.
+  Ex-commands register as `ex:<name>`; the bare `:` name is an
+  explicit alias, **not** derived — omitting it makes the command
+  silently unreachable from the `:` line.
 
-### DAM.2 — content builder 📝
+**Tests.** Command resolves by name; no-arg parse; empty
+`args_schema` (a Required arg is exactly what makes
+`:describe-mode` prompt); `:describe-modes` must NOT exist;
+`:describe-mode` keeps its required arg.
+
+**Unplanned work this slice turned up — the completion prefix
+rule.** The naming decision was necessary but *insufficient*. `:`
+line candidate matching is **fuzzy subsequence**, so
+`describe-mode` also matches `describe-active-modes`. Two
+candidates skipped `open_completion_popup`'s
+`candidates.len() == 1` branch and broke `:describe-mode<Tab>`
+anyway — the same bug, from a direction the name choice could not
+prevent. Every `describe-*` name that mentions modes hits this, so
+no rename avoids it.
+
+Fixed with a rule, not a workaround: on the command-name slot
+(`replace_start == 0`) a literal prefix beats a fuzzy subsequence;
+arg and file slots keep full fuzzy matching. It requires a
+*prefix*, not merely a unique fuzzy hit — `dscrbmode` still opens
+the popup rather than rewriting the line. Pinned by four tests in
+`crates/lattice-host/tests/command_line_completion.rs`.
+
+### DAM.2 — content builder ✅
 
 `Editor::build_describe_active_modes_content()` in
 `crates/lattice-host/src/dispatch.rs`, alongside
@@ -70,7 +92,7 @@ its command name where the doc is `None`; `active_buffer_id`
 regression test asserting `:describe-mode <name>` reports
 "active: yes" for a mode live on a *non-document* buffer.
 
-### DAM.3 — host dispatch + renderer parity 📝
+### DAM.3 — host dispatch + renderer parity ✅
 
 - `crates/lattice-host/src/dispatch.rs`: `Effect::DescribeActiveModes`
   arm → `DisplayBufferRequest` with
@@ -88,7 +110,7 @@ regression test asserting `:describe-mode <name>` reports
 `grep -rn "DescribeActiveModes" crates/lattice-ui-gpui/ --include="*.rs"`
 — empty grep means GPUI was missed.
 
-### DAM.4 — rebind `<C-h>m`, add `<C-h>M` 📝
+### DAM.4 — rebind `<C-h>m`, add `<C-h>M` ✅
 
 `crates/lattice-host/src/keymap_help.rs`: `C_H_M` →
 `ex:describe-active-modes`; new `C_H_CAP_M` → `ex:describe-mode`.
@@ -100,7 +122,7 @@ to `ex:describe-mode`; the existing mode-scope negatives
 cover `<C-h>M`; `help_prefix_chord_table_resolves_all_commands`
 covers the new row automatically.
 
-### DAM.5 — user docs 📝
+### DAM.5 — user docs ✅
 
 - `docs/user/help.md` — the `<C-h>` map table.
 - `docs/user/modes.md` — how to see what is live on a buffer.
@@ -110,7 +132,7 @@ covers the new row automatically.
 Docs under `docs/user/**` auto-register as help topics via
 `build.rs`, so no registration step.
 
-### DAM.6 — `<C-h>K` → `:describe-bindings` 📝
+### DAM.6 — `<C-h>K` → `:describe-bindings` ✅
 
 Depends on DAM.2 (reuses the active-mode walk).
 
@@ -122,8 +144,20 @@ Depends on DAM.2 (reuses the active-mode walk).
 - `<C-h>K` repoints; `<C-h>b` stays `:describe-buffer`.
 
 **Tests.** A chord bound only by an inactive mode does not appear;
-a chord from an active minor does; `:keymap` output unchanged
-(regression).
+a chord from an active minor does; `:keymap` still renders the
+full catalog including modes the buffer is not in (regression);
+`<C-h>K` resolves to `ex:describe-bindings` and *not* `ex:keymap`.
+
+**Decisions made during implementation** (recorded in §12.6):
+
+- No `ModalState → BindingMode` helper exists in the tree, so the
+  builder maps locally. `Command` / `Search` / `Prompt` fold onto
+  `Normal` — those states are how the user *typed* the command and
+  they are back in Normal by the time the view renders.
+- Chord cells are `key_link`ed except rows containing a
+  `CharLiteral` (`{char}`) slot, which is not parseable chord
+  notation and would produce an unresolvable `:describe-key`
+  target.
 
 ## Not doing
 

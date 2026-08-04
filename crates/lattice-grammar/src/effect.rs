@@ -976,6 +976,37 @@ pub enum Effect {
     DescribeMode {
         name: String,
     },
+    /// `:describe-active-modes` (`<C-h>m`) -- render the mode
+    /// stack live on the *active* buffer: the major plus every
+    /// minor, each with the chords it contributes.
+    ///
+    /// Distinct from [`Effect::DescribeMode`], which describes
+    /// one *named* mode whether or not it is active, and from
+    /// [`Effect::ListModes`], which lists every *registered*
+    /// mode. This one answers "what is this buffer, and what
+    /// can I press in it".
+    ///
+    /// Major-only would under-report by construction: the
+    /// minor-mode convention deliberately pushes chords shared
+    /// across majors out into a minor (magit's `gr` / `q` /
+    /// `]]` live on `magit-core-mode`, not on each magit
+    /// major), so the view is major + minors.
+    ///
+    /// An additive variant rather than widening
+    /// `DescribeMode`'s `name` to `Option<String>` — the WIT
+    /// declaration is `describe-mode(string)` and widening it
+    /// would break a published plugin API.
+    DescribeActiveModes,
+    /// `:describe-bindings` (`<C-h>K`) -- the chords that can
+    /// actually fire on the *active* buffer: builtin entries live in
+    /// the current binding-mode, plus every active mode's
+    /// contributions.
+    ///
+    /// Distinct from [`Effect::ListKeymap`] (`:keymap`), which
+    /// renders the whole static catalog regardless of what is
+    /// active. `:keymap` stays the exhaustive reference; this one
+    /// answers "what can I press *here*".
+    DescribeActiveBindings,
     /// `:describe-option-resolution <name>` -- show which
     /// resolver layer (modal / buffer-local / mode
     /// contribution / typed-option / default) provides the

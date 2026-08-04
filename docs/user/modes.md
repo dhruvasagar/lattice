@@ -40,6 +40,7 @@ also subscribe to events (`MajorEntered`, `BufferOpened`,
 |------------------------------------|-----------------------------------------------------------------|
 | `:<mode-name>`                     | Toggle a registered mode on the active buffer                   |
 | `:list-modes`                      | List every registered mode, marking the active ones with `*`    |
+| `:describe-active-modes`           | Show the major + minors live on this buffer, with their chords  |
 | `:describe-mode <name>`            | Show one mode's metadata (kind, contributed options, caps)      |
 | `:describe-option-resolution NAME` | Show which layer provides the resolved value for `NAME`         |
 | `:customize <name>`                | Open the customize buffer for a group or mode                   |
@@ -276,10 +277,11 @@ press `<C-h>` followed by one of these keys:
 | `<C-h>c` | `:describe-command` (prompt for name) |
 | `<C-h>o` | `:describe-option` (prompt for name) |
 | `<C-h>e` | `:describe-event` (prompt for name) |
-| `<C-h>m` | `:describe-mode` (active modes here) |
+| `<C-h>m` | `:describe-active-modes` (what's live here, with chords) |
+| `<C-h>M` | `:describe-mode` (prompt for a mode name) |
 | `<C-h>b` | `:describe-buffer` (this buffer's metadata) |
 | `<C-h>a` | `:apropos` (cross-cutting search) |
-| `<C-h>K` | `:keymap` (full keymap listing) |
+| `<C-h>K` | `:describe-bindings` (what fires on this buffer) |
 
 The prefix is Normal-mode only. In Insert mode `<C-h>`
 remains backspace; in the `:` cmdline / `/` `?` search line

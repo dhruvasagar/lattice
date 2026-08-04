@@ -144,7 +144,32 @@ with junk" is the obvious way this feature goes wrong.
 
 The **cursor/scroll captured** is the pane's *outgoing* position: on
 leaving buffer A for B, the current entry (A) is updated with where
-the cursor was, then B is pushed.
+the cursor was, then B is pushed. The newly pushed entry's own
+position is a placeholder until something leaves it — one rule,
+"record where you were before moving", shared by the recording path
+and the walk, rather than trying to guess where activation will land
+the cursor before it has happened.
+
+### What does and does not enter a trail
+
+- **In-pane synthetic buffers do** — `:help`, `:lsp-log`, a file tree,
+  an oil buffer. They route through `activate_buffer_only` like any
+  other buffer, and under "everything is a buffer" there is no reason
+  to special-case them out. Walking back to the help page you were
+  reading is a feature, not a leak.
+- **Floating popups do not.** The focus-steal path sets
+  `active_buffer` / `popup_focused` and stashes `prev_pane_for_popup`,
+  but never reassigns the pane's `buffer_id` — so an overlay cannot
+  reach the chokepoint. `dismiss_popup`'s direct
+  `pane.buffer_id = prev.buffer_id` restore is a no-op in that case;
+  the sibling restore path that *does* change buffers calls
+  `activate_buffer` first and is therefore recorded, correctly, as a
+  real navigation.
+
+Both fall out of existing structure rather than a filter this feature
+adds — worth stating because the two direct `pane.buffer_id = …`
+assignments in `dispatch.rs` look like chokepoint bypasses until you
+check what they do.
 
 ---
 

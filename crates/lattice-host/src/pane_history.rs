@@ -26,6 +26,14 @@
 use lattice_core::BufferId;
 use lattice_protocol::Position;
 
+/// Default bound on one pane's trail.
+///
+/// PBH.4 replaces this constant with the typed, customizable
+/// `pane.buffer-history-size` option; until then it is the single
+/// place the cap is spelled, so the swap is one edit rather than a
+/// hunt through call sites.
+pub const DEFAULT_PANE_BUFFER_HISTORY_SIZE: usize = 100;
+
 /// One stop on a pane's trail: a buffer plus where the cursor was in it
 /// **in this pane**.
 ///

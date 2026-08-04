@@ -20286,6 +20286,45 @@ impl Editor {
             })
     }
 
+    /// PBH.2: record that the active pane is leaving its current buffer
+    /// for `id`.
+    ///
+    /// `outgoing` is where the cursor was in the buffer being left —
+    /// captured onto the *current* entry before the new one is pushed,
+    /// so walking back returns the user to where they actually were
+    /// rather than to the top of the file.
+    ///
+    /// The newly pushed entry's own position is a placeholder; it is
+    /// filled in by the next call that leaves it (this one, or the walk
+    /// in [`Self::capture_outgoing_pane_position`]). Capturing on
+    /// *departure* is what keeps a single rule — "always record where
+    /// you were before moving" — instead of trying to guess where
+    /// activation will land the cursor before it has happened.
+    fn record_pane_history_visit(
+        &mut self,
+        id: BufferId,
+        outgoing: lattice_protocol::position::Position,
+    ) {
+        let scroll = self.scroll;
+        let cap = crate::pane_history::DEFAULT_PANE_BUFFER_HISTORY_SIZE;
+        let history = self.active_pane_history_mut();
+        history.update_current_position(outgoing, scroll);
+        history.push(crate::pane_history::PaneHistoryEntry::at_origin(id), cap);
+    }
+
+    /// PBH.2: stamp the pane's live cursor/scroll onto the current
+    /// history entry without moving the trail.
+    ///
+    /// Used before a walk leaves an entry (PBH.3) so the position the
+    /// user is leaving is preserved on the way out — the same rule the
+    /// recording path applies, just without a push.
+    pub fn capture_outgoing_pane_position(&mut self) {
+        let cursor = self.active_cursor();
+        let scroll = self.scroll;
+        self.active_pane_history_mut()
+            .update_current_position(cursor, scroll);
+    }
+
     pub fn set_preview_override(
         &mut self,
         pane: lattice_core::ui::pane::PaneId,
@@ -31723,6 +31762,13 @@ impl Editor {
         if id != self.active_pane_buffer_id() {
             let cur = self.active_cursor();
             self.push_position_history(cur, PositionSource::AutoJump);
+            // PBH.2: the same guard that gates position history gates the
+            // pane's buffer trail — this is the single funnel for "this
+            // pane now shows a different buffer". Previews never reach
+            // here (they go through `set_preview_override` and leave the
+            // pane's committed `buffer_id` alone), so scrolling a picker
+            // cannot pollute the trail.
+            self.record_pane_history_visit(id, cur);
         }
         match kind {
             // Messages buffers share Document storage and the

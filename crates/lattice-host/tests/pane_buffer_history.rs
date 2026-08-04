@@ -173,3 +173,145 @@ fn reconcile_is_a_no_op_when_every_pane_is_live() {
     e.reconcile_pane_history();
     assert_eq!(e.pane_buffer_history.len(), before);
 }
+
+// ---- PBH.2: recording at the activation chokepoint ----
+
+use lattice_core::{BufferFlags, BufferId};
+use lattice_host::buffer_registry::{BufferData, BufferEntry, DocumentEntry};
+use std::sync::Arc;
+
+/// Add a real registry Document WITHOUT activating it.
+fn add_document(editor: &mut Editor, raw_id: u32, text: &str, name: &str) -> BufferId {
+    let bid = BufferId(raw_id);
+    let handle =
+        lattice_runtime::spawn_document(bid, CoreDocument::from_text(text), editor.registry.clone());
+    let arc: Arc<dyn lattice_runtime::Document> = Arc::new(handle);
+    editor.buffers.insert(BufferEntry {
+        id: bid,
+        flags: BufferFlags {
+            listed: true,
+            hidden: false,
+            ephemeral: false,
+        },
+        data: BufferData::Document(DocumentEntry {
+            id: bid,
+            handle: Arc::clone(&arc),
+        }),
+        name: Some(name.to_string()),
+    });
+    bid
+}
+
+fn active_trail(e: &mut Editor) -> Vec<u32> {
+    buffers_of(e.active_pane_history_mut())
+}
+
+/// A real buffer switch is recorded on the pane's trail.
+#[test]
+fn activating_a_buffer_records_it() {
+    let mut e = boot();
+    let origin = e.pane_tree.active().committed_id();
+    let b = add_document(&mut e, 900, "b\n", "*B*");
+
+    e.activate_buffer(b);
+
+    assert_eq!(
+        active_trail(&mut e),
+        vec![origin.0, b.0],
+        "the origin buffer and the newly activated one both appear",
+    );
+}
+
+/// Re-activating the buffer the pane already shows is not a visit.
+/// Guarded twice on purpose — at the chokepoint and inside `push` — so
+/// neither alone is load-bearing.
+#[test]
+fn reactivating_the_same_buffer_does_not_record() {
+    let mut e = boot();
+    let b = add_document(&mut e, 901, "b\n", "*B*");
+    e.activate_buffer(b);
+    let before = active_trail(&mut e);
+
+    e.activate_buffer(b);
+    e.activate_buffer(b);
+
+    assert_eq!(active_trail(&mut e), before, "no duplicate entries");
+}
+
+/// Several switches build a trail in visit order, including a return to
+/// a buffer already visited (which is a distinct third stop, not a
+/// dedup).
+#[test]
+fn a_trail_records_visit_order_including_returns() {
+    let mut e = boot();
+    let origin = e.pane_tree.active().committed_id();
+    let b = add_document(&mut e, 902, "b\n", "*B*");
+    let c = add_document(&mut e, 903, "c\n", "*C*");
+
+    e.activate_buffer(b);
+    e.activate_buffer(c);
+    e.activate_buffer(b);
+
+    assert_eq!(active_trail(&mut e), vec![origin.0, b.0, c.0, b.0]);
+}
+
+/// The cursor is captured onto the entry being LEFT, so walking back
+/// returns to where the user actually was rather than the top of file.
+#[test]
+fn leaving_a_buffer_captures_its_outgoing_cursor() {
+    let mut e = boot();
+    let b = add_document(&mut e, 904, "b0\nb1\nb2\n", "*B*");
+
+    e.cursor = lattice_protocol::position::Position::new(2, 1);
+    e.activate_buffer(b);
+
+    let h = e.active_pane_history_mut();
+    let origin_entry = h.entries()[0];
+    assert_eq!(
+        origin_entry.cursor,
+        lattice_protocol::position::Position::new(2, 1),
+        "the position we left the origin buffer at is stored on its entry",
+    );
+}
+
+/// LOAD-BEARING: previews must not pollute the trail.
+///
+/// Picker previews route through `set_preview_override`, which leaves
+/// the pane's committed `buffer_id` untouched and is projected only into
+/// the published render state — so they never reach
+/// `activate_buffer_only` and cannot be recorded. That is a property of
+/// the existing preview-isolation architecture rather than a filter this
+/// feature adds, which is exactly why it deserves a pin: a future
+/// refactor that routed preview through activation would silently fill
+/// every user's history with junk from scrolling a picker.
+#[test]
+fn previewing_buffers_does_not_record_history() {
+    use lattice_host::preview::PreviewOverride;
+
+    let mut e = boot();
+    let pane = e.pane_tree.active().id;
+    let b = add_document(&mut e, 905, "b\n", "*B*");
+    let c = add_document(&mut e, 906, "c\n", "*C*");
+
+    let before = active_trail(&mut e);
+
+    // Scroll a picker across two candidates.
+    for id in [b, c] {
+        e.set_preview_override(
+            pane,
+            PreviewOverride {
+                buffer_id: id,
+                buffer: lattice_core::BufferKind::Document,
+                cursor: lattice_protocol::position::Position::ZERO,
+                scroll: 0,
+            },
+        );
+    }
+    e.clear_preview_override(pane);
+
+    assert_eq!(
+        active_trail(&mut e),
+        before,
+        "previewing must leave the pane's buffer trail untouched",
+    );
+}

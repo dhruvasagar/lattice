@@ -10,7 +10,7 @@ fresh trail.
 | Slice | Status | What |
 |---|---|---|
 | PBH.1 | ✅ | Data model + side table + GC reconciliation |
-| PBH.2 | 📝 | Recording at the activation chokepoint |
+| PBH.2 | ✅ | Recording at the activation chokepoint |
 | PBH.3 | 📝 | Walk back / forward + the `<C-6>` / `<C-7>` chords |
 | PBH.4 | 📝 | `pane.buffer-history-size` option + eviction |
 | PBH.5 | 📝 | `:history pane-buffers` picker source |
@@ -64,7 +64,7 @@ pane's entry can never be read, and any navigation in a surviving
 pane clears it. An entry only exists if its pane navigated, so the
 worst case is "panes navigated-then-closed since the last navigation".
 
-## PBH.2 — Recording 📝
+## PBH.2 — Recording ✅
 
 Push in `Editor::activate_buffer_only`
 (`crates/lattice-host/src/dispatch.rs`), alongside the existing
@@ -84,6 +84,25 @@ several buffers, cancel — assert the pane's history is unchanged.
 Previews route through `set_preview_override` and never reach this
 chokepoint (design §5), so this test pins an existing architectural
 property that a future refactor could silently break.
+
+**Landed as:** `Editor::record_pane_history_visit` (called from the
+existing `if id != self.active_pane_buffer_id()` guard in
+`activate_buffer_only`, beside `push_position_history`) and
+`Editor::capture_outgoing_pane_position` (the no-push variant PBH.3's
+walk uses). 5 further tests in
+`crates/lattice-host/tests/pane_buffer_history.rs` (11 total).
+
+**Capture-on-departure.** The new entry's own cursor/scroll is a
+placeholder; the real position is stamped onto an entry when something
+*leaves* it. That keeps one rule — "record where you were before
+moving" — shared by the recording path and the walk, instead of trying
+to guess where activation will land the cursor before it has happened.
+PBH.3's walk must call `capture_outgoing_pane_position` before moving,
+or a walked-past entry keeps a stale position.
+
+**Cap.** Uses `pane_history::DEFAULT_PANE_BUFFER_HISTORY_SIZE` (100),
+the single place the bound is spelled, so PBH.4's swap to the typed
+option is one edit rather than a hunt.
 
 ## PBH.3 — Walk + chords 📝
 

@@ -976,6 +976,28 @@ pub struct Editor {
     /// so the published projection rebuilds when an override changes —
     /// the override lives outside `pane_tree.version()`.
     pub preview_overrides_version: u64,
+    /// PBH.1: per-pane buffer history — the trail of buffers each pane
+    /// has shown, walked with `<C-6>` / `<C-7>`.
+    ///
+    /// A **side table keyed by `PaneId`**, deliberately not a field on
+    /// `PaneState`: that type is `Copy` and `PaneTree::split_active`
+    /// copies it field-wise (`PaneState { id: PaneId::next(),
+    /// ..new_state }`), so a history field there would be inherited by
+    /// the split — the one behaviour this feature must not have.
+    /// `PaneId::next()` is process-monotonic and never reuses ids, so
+    /// a freshly split pane has no entry here and therefore starts with
+    /// a fresh trail **by construction**, with nothing to remember to
+    /// reset. Keeping it out of `PaneState` also keeps that type `Copy`,
+    /// so split / close / layout stay allocation-free.
+    ///
+    /// Reaped by [`crate::dispatch::Editor::reconcile_pane_history`],
+    /// which retains only ids still present in the tree rather than
+    /// hooking each pane-removal site. See
+    /// `docs/dev/architecture/pane-buffer-history.md` §4.
+    pub pane_buffer_history: std::collections::HashMap<
+        lattice_core::ui::pane::PaneId,
+        crate::pane_history::PaneBufferHistory,
+    >,
     /// Shared typed-options registry (DESIGN.md §5.12).
     /// Every option's *current value* lives in here behind
     /// an `ArcSwap<T>`; `:set` parses against it; the

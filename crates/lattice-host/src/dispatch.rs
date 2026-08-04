@@ -20231,6 +20231,61 @@ impl Editor {
     /// show `override_`'s buffer with its preview cursor / scroll until the
     /// override is cleared. Bumps the override version so the next
     /// `build_render_state` republishes the pane-tree projection.
+    /// PBH.1: reap `pane_buffer_history` entries for panes that no
+    /// longer exist, and hand back the active pane's history (creating
+    /// it, seeded with the pane's current buffer, if absent).
+    ///
+    /// **Reconciles against the tree rather than hooking removals.**
+    /// Panes disappear through more than one path — `close_active` and
+    /// `collapse_to_active` today, and any future one — so an
+    /// enumeration of removal sites goes stale silently. Retaining only
+    /// live ids cannot miss a caller. Same shape as
+    /// `refresh_autoread_watcher`'s desired-set diff.
+    ///
+    /// O(panes); panes are single-digit in practice and this runs on a
+    /// pane/buffer transition, never per frame or per char.
+    pub fn reconcile_pane_history(&mut self) {
+        let live: std::collections::HashSet<lattice_core::ui::pane::PaneId> =
+            self.pane_tree.leaves().iter().map(|l| l.id).collect();
+        self.pane_buffer_history.retain(|id, _| live.contains(id));
+    }
+
+    /// PBH.1: the active pane's history, created and seeded with the
+    /// pane's current buffer when the pane has none.
+    ///
+    /// Seeding matters: without an entry for the buffer the pane is
+    /// already showing, the first `<C-6>` after one switch would have a
+    /// single-entry trail and nothing to go back *from*.
+    ///
+    /// Reconciles first. There are ~10 `close_active` /
+    /// `collapse_to_active` / `split_active` call sites in this file and
+    /// hooking each is the stale-enumeration failure the design rejects;
+    /// reconciling here instead puts the reap on the one path that
+    /// actually reads history, so it cannot be missed. A closed pane's
+    /// entry lingers until the next history operation, which is bounded
+    /// and harmless: the map is keyed by `PaneId`, so a dead pane's
+    /// entry can never be *read*, and any navigation in a surviving pane
+    /// clears it.
+    pub fn active_pane_history_mut(&mut self) -> &mut crate::pane_history::PaneBufferHistory {
+        self.reconcile_pane_history();
+        let leaf = self.pane_tree.active();
+        let pane_id = leaf.id;
+        // The pane's *committed* buffer — a preview projection never
+        // reaches here (previews go through `set_preview_override`), but
+        // reading the committed id keeps that true by construction
+        // rather than by coincidence.
+        let seed = leaf.committed_id();
+        let cursor = leaf.cursor;
+        let scroll = leaf.scroll;
+        self.pane_buffer_history
+            .entry(pane_id)
+            .or_insert_with(|| {
+                crate::pane_history::PaneBufferHistory::seeded(
+                    crate::pane_history::PaneHistoryEntry::new(seed, cursor, scroll),
+                )
+            })
+    }
+
     pub fn set_preview_override(
         &mut self,
         pane: lattice_core::ui::pane::PaneId,

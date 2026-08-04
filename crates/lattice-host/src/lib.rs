@@ -163,6 +163,9 @@ pub mod modeline;
 pub mod modes;
 pub mod oil;
 pub mod pane;
+// PBH.1: per-pane buffer history (`<C-6>` / `<C-7>`). Design:
+// docs/dev/architecture/pane-buffer-history.md
+pub mod pane_history;
 pub mod pane_render;
 pub mod popup;
 pub mod preview;

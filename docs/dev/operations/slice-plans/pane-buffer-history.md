@@ -9,7 +9,7 @@ fresh trail.
 
 | Slice | Status | What |
 |---|---|---|
-| PBH.1 | 📝 | Data model + side table + GC reconciliation |
+| PBH.1 | ✅ | Data model + side table + GC reconciliation |
 | PBH.2 | 📝 | Recording at the activation chokepoint |
 | PBH.3 | 📝 | Walk back / forward + the `<C-6>` / `<C-7>` chords |
 | PBH.4 | 📝 | `pane.buffer-history-size` option + eviction |
@@ -18,7 +18,7 @@ fresh trail.
 
 ---
 
-## PBH.1 — Data model, side table, GC 📝
+## PBH.1 — Data model, side table, GC ✅
 
 `PaneHistoryEntry` / `PaneBufferHistory` and the
 `pane_buffer_history: HashMap<PaneId, PaneBufferHistory>` field on
@@ -43,6 +43,26 @@ is covered too — it is the removal path most likely to be missed.
 **The acceptance test for the headline requirement:** split a pane
 with a non-trivial history, assert the new pane's history has exactly
 one entry (its current buffer) and the original's is untouched.
+
+**Landed as:** `crates/lattice-host/src/pane_history.rs` (18 pure unit
+tests) + `crates/lattice-host/tests/pane_buffer_history.rs` (6
+integration tests). `Editor::pane_buffer_history` side table,
+`Editor::reconcile_pane_history`, `Editor::active_pane_history_mut`.
+
+**Decision made during the slice — where `reconcile` is called.** The
+plan said "after a tree-mutating operation", but there are ~10
+`close_active` / `collapse_to_active` / `split_active` call sites in
+`dispatch.rs`, and hooking each is the stale-enumeration failure this
+design already rejects for GC itself. Reconcile therefore runs at the
+top of `active_pane_history_mut` — the one path that *reads* history,
+so it cannot be missed and costs O(panes) only when history is
+actually touched rather than per keystroke.
+
+A closed pane's entry lingers until the next history operation. That
+is bounded and harmless: the map is keyed by `PaneId`, so a dead
+pane's entry can never be read, and any navigation in a surviving
+pane clears it. An entry only exists if its pane navigated, so the
+worst case is "panes navigated-then-closed since the last navigation".
 
 ## PBH.2 — Recording 📝
 

@@ -101,11 +101,23 @@ Panes disappear through more than one path — `close_active` and
 `collapse_to_active` today, and any future one. Hooking each removal
 site is the kind of enumeration that goes stale silently.
 
-Instead the map is **reconciled against the tree**: after a
-tree-mutating operation, retain only keys still present in
-`PaneTree::leaves`. Same shape as `refresh_autoread_watcher`'s
-desired-set diff — one function that cannot miss a caller, rather
-than N call sites that can.
+Instead the map is **reconciled against the tree**: retain only keys
+still present in `PaneTree::leaves`. Same shape as
+`refresh_autoread_watcher`'s desired-set diff — one function that
+cannot miss a caller, rather than N call sites that can.
+
+The reconcile runs at the top of `active_pane_history_mut`, the one
+path that *reads* history. Calling it from each pane-mutation site
+would reintroduce the enumeration this avoids (there are ~10 in
+`dispatch.rs`), and calling it per tick would spend O(panes) on every
+keystroke for staleness nobody can observe.
+
+A closed pane's entry therefore lingers until the next history
+operation. Bounded and harmless: the map is keyed by `PaneId`, so a
+dead pane's entry can never be *read*, and any navigation in a
+surviving pane clears it. An entry only exists if its pane navigated,
+so the worst case is "panes navigated-then-closed since the last
+navigation" — single digits in practice.
 
 ---
 

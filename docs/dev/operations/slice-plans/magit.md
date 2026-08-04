@@ -2967,6 +2967,16 @@ should be:
 | MG.39 | `w` am / `W` format-patch | email-patch workflow; two ops, one slice |
 | MG.40 | `Y` cherries | rarest; last |
 
+**MG.41 — transient completeness.** The MG.34–MG.40 arc filled in
+*entry points*; an audit (2026-08-04) found the menus behind them are
+thin. 10 of 25 dispatch rows are submenus; push exposes one action
+where magit has seven destinations; pull is not a submenu at all;
+commit has 2 of ~9 rows and stash 2 of ~14. Carved separately because
+it starts with a mechanism change — rows become data, retiring the
+four-place enumeration (`reg` / struct field / `id_by_name` / builder)
+that would otherwise cost ~240 synchronised edits. See
+[`magit-transient-completeness.md`](magit-transient-completeness.md).
+
 `Z` worktree stays **blocked**, and not on work: magit's workdir is
 process-wide (§MG.21h/i's note), and the 2026-08-03 decision was to
 keep it that way. It is unblocked by reopening that decision, not by

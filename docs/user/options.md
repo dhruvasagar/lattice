@@ -107,6 +107,10 @@ Options are organized into **groups** for navigation and
   (`lsp-completion-mode`, `lsp-diagnostics-mode`, ...).
   `:customize lsp` will show the union sectioned by owning mode.
 - **`picker`** — file finder / command palette / symbol search.
+- **`pane`** — per-pane behaviour. Today:
+  `pane.buffer-history-size` (default `100`), how many buffers each
+  pane remembers in the trail `<C-6>` / `<C-7>` walk — see
+  [buffers](help:buffers).
 - **`filetree`** / **`oil`** / **`help`** — mode-specific
   options for those buffer kinds.
 - **`appearance`** — theming, sprite icons, font rendering.

@@ -1,6 +1,6 @@
 # Pane buffer history
 
-**Status:** design. Slice plan:
+**Status:** ✅ implemented (PBH.1–PBH.6). Slice plan:
 [`slice-plans/pane-buffer-history.md`](../operations/slice-plans/pane-buffer-history.md).
 
 Per-pane back/forward navigation over the buffers a pane has shown.
@@ -121,17 +121,37 @@ navigation" — single digits in practice.
 
 ---
 
-## 5. Recording — one chokepoint, preview-safe by construction
+## 5. Recording — two chokepoints, preview-safe by construction
 
-Recording happens in `Editor::activate_buffer_only`
-(`lattice-host/src/dispatch.rs`). It is already the single funnel for
-"this pane now shows a different buffer", already guarded by
+Recording happens in `Editor::activate_buffer_only` **and** in
+`Editor::activate_document` (`lattice-host/src/dispatch.rs`), both
+guarded by
 
 	if id != self.active_pane_buffer_id()
 
-so a re-activation of the current buffer is not recorded, and it is
-already where position history is pushed. The new push sits alongside
-that one.
+so a re-activation of the current buffer is not recorded. The
+`activate_buffer_only` push sits alongside the position-history one.
+
+**Why two.** The first draft of this section claimed
+`activate_buffer_only` was *the* single funnel for "this pane now shows
+a different buffer". It is not. Two callers reach `activate_document`
+directly and bypass it:
+
+- `do_edit`'s already-open branch — so `:e <already-open-file>` changed
+  the displayed buffer without recording;
+- the `<C-o>` position-history walk, when it lands in another buffer.
+
+Both are legitimate call sites, so the fix is to record where the
+document swap actually happens rather than to enumerate callers. The
+overlap is a **no-op by construction**: whichever fires first moves the
+trail's current entry to `id`, and `PaneBufferHistory::push` ignores a
+visit to the buffer already current. Non-document kinds never reach
+`activate_document`, which is why the `activate_buffer_only` call
+stays.
+
+The general lesson is worth keeping: "this is the single funnel" is a
+claim to verify by grepping the inner function's callers, not to assert
+from the outer function's doc comment.
 
 **Previews cannot pollute history.** A picker preview goes through
 `Editor::set_preview_override`, which leaves the pane's committed
@@ -216,6 +236,13 @@ than by overloading a directional key with hidden state.
   prune every in-pane synthetic buffer — precisely the entries the
   section above says belong in a trail. The two rules have to agree,
   and it is easy to write the narrow one by reflex.
+
+  `:bd` additionally purges **eagerly, across every pane**
+  (`purge_buffer_from_pane_histories`). Deletion is global but only the
+  *walking* pane prunes lazily, so without it a walk in another pane
+  would step onto an entry whose buffer no longer exists. Both
+  mechanisms stay: the lazy prune still covers the other paths that
+  drop buffers, so neither is load-bearing alone.
 - **Empty / single-entry history** — `<C-6>` echoes and does nothing.
 - **Pane never navigated** — the map entry is created lazily on first
   buffer change, seeded with the pane's current buffer as entry 0, so

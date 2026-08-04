@@ -1,6 +1,6 @@
 # Pane buffer history — slice plan
 
-**Status:** 📝 planned. Design fragment:
+**Status:** ✅ landed (2026-08-04, PBH.1–PBH.6). Design fragment:
 [`../../architecture/pane-buffer-history.md`](../../architecture/pane-buffer-history.md).
 
 Per-pane back/forward over visited buffers: `<C-6>` back, `<C-7>`
@@ -14,7 +14,7 @@ fresh trail.
 | PBH.3 | ✅ | Walk back / forward + the `<C-6>` / `<C-7>` chords |
 | PBH.4 | ✅ | `pane.buffer-history-size` option + eviction |
 | PBH.5 | ✅ | `:history pane-buffers` picker source |
-| PBH.6 | 📝 | Docs + cross-renderer parity |
+| PBH.6 | ✅ | Docs + cross-renderer parity |
 
 ---
 
@@ -244,7 +244,7 @@ isolation.
 cursor rather than appending; the picker reflects the *active* pane's
 history, not a global one.
 
-## PBH.6 — Docs + parity 📝
+## PBH.6 — Docs + parity ✅
 
 - `docs/user/buffers.md` — a "Walking a pane's buffer history"
   section; this is where users look for `<C-6>`.
@@ -255,9 +255,24 @@ history, not a global one.
   `KeyChord`s. GPUI delivers key `"6"` + ctrl modifier rather than a
   control byte, so the TUI path does not prove it.
 
-**End-of-slice audit:**
-`grep -rn "pane_history\|PaneBufferHistory" crates/lattice-ui-gpui/ --include="*.rs"`
-— empty grep means GPUI was missed.
+**Landed as:** `docs/user/buffers.md` (a "Walking a pane's buffer
+history" section + quick-reference rows), `ex-commands.md` (the
+`:history` row + a pane-buffer-history subsection),
+`options.md` (the new `pane` group), and two GPUI parity tests.
+
+**GPUI parity turned out to need a test, not a fix.** GPUI reports the
+key string `"6"` with a control modifier, which the existing
+printable-char path already folds to `Char('6') + CTRL` — the same
+chord crossterm produces from the 0x1E control byte. So the peers
+already agreed; what was missing was anything *proving* it, since only
+the TUI path was exercised when the chords landed.
+`ctrl_digits_match_the_tui_chord` pins it, with
+`bare_digits_carry_no_modifiers` as its counterpart.
+
+**`modal-editing.md` deliberately skipped.** The plan listed it, but
+that doc does not document `<C-o>` / `<C-i>` either — jump-style chords
+live in `buffers.md`. Adding these two there alone would have been
+off-topic.
 
 ---
 

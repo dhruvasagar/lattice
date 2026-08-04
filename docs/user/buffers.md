@@ -27,6 +27,8 @@ into; you arrange them with vim-style window splits.
 | `:ls`                       | List every open buffer as static text; `%` marks the active one.|
 | `:buffers` / `:b`           | Open the fuzzy buffer switcher (picker) — type to filter.       |
 | `:bd[elete][!]`             | Close the active buffer. `!` discards unsaved document changes. |
+| `<C-6>` / `<C-7>`           | Walk this pane's buffer history back / forward.                 |
+| `:history pane-buffers`     | Open this pane's buffer history as a picker.                    |
 | `:TreeClose`                | Close the active pane's tree (alternative to `:bd`).            |
 
 ### Pane commands (vim's `<C-w>` family)
@@ -47,6 +49,45 @@ into; you arrange them with vim-style window splits.
 `<C-o>` / `<C-i>` walk the unified position-history ring across
 buffer boundaries -- so `<C-o>` from inside a help or tree pane
 returns to the document spot you came from.
+
+### Walking a pane's buffer history
+
+Each pane remembers the buffers it has shown, and you walk that trail
+without leaving the pane:
+
+| Chord                   | Effect                                              |
+|-------------------------|-----------------------------------------------------|
+| `<C-6>`                 | Back one buffer in *this pane's* history.           |
+| `<C-7>`                 | Forward one buffer.                                 |
+| `:history pane-buffers` | Open the trail as a picker (`<CR>` walks to a stop). |
+
+You land back at the cursor position you left, not the top of the file.
+
+**Per pane, and splits start fresh.** Two panes each keep their own
+trail. Splitting gives the new pane a trail containing only the buffer
+it is showing — a split is a new place to work, not a copy of where you
+have been.
+
+**Back/forward like a browser.** Walking back then opening a new buffer
+drops what was ahead of you:
+
+```
+open A → B → C          trail: A B C   (on C)
+<C-6>                   trail: A B C   (on B)
+<C-6>                   trail: A B C   (on A)
+<C-7>                   trail: A B C   (on B)
+open D                  trail: A B D   (C is gone)
+```
+
+At either end you get a message rather than wrapping around. Deleting a
+buffer with `:bd` removes it from every pane's trail.
+
+This is not vim's `<C-^>`, which toggles between two files — pressing
+`<C-6>` twice here goes back *two* buffers. The pair is a genuine
+back/forward, which a toggle cannot be half of.
+
+`pane.buffer-history-size` (default 100) bounds each trail; oldest
+entries are dropped past it.
 
 ## Semantics
 

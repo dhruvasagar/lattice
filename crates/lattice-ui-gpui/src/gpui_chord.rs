@@ -387,4 +387,38 @@ mod tests {
         let chord = from_keystroke("<", false, false, false, false).unwrap();
         assert_eq!(chord.key, KeyKind::Char('<'));
     }
+    /// PBH.6 cross-renderer parity: `<C-6>` / `<C-7>` (the pane
+    /// buffer-history walk) must produce the SAME `KeyChord` in GPUI as
+    /// in the TUI.
+    ///
+    /// The two peers arrive at it by different routes. The terminal
+    /// sends control bytes 0x1E / 0x1F, which crossterm maps back to
+    /// `Char('6'..'7') + CONTROL`; GPUI reports the key string `"6"`
+    /// with a control modifier. Only the TUI path was exercised when
+    /// the chords landed, so this pins the GPUI half rather than
+    /// assuming the printable-char fallback happens to agree.
+    #[test]
+    fn ctrl_digits_match_the_tui_chord() {
+        for (key, ch) in [("6", '6'), ("7", '7')] {
+            let chord = from_keystroke(key, true, false, false, false)
+                .unwrap_or_else(|| panic!("<C-{ch}> must translate"));
+            assert_eq!(chord.key, KeyKind::Char(ch));
+            assert!(chord.mods.ctrl(), "<C-{ch}> must carry CTRL");
+            assert!(
+                !chord.mods.shift() && !chord.mods.alt() && !chord.mods.super_(),
+                "<C-{ch}> must carry CTRL only, got {:?}",
+                chord.mods,
+            );
+        }
+    }
+
+    /// The bare digits stay counts in GPUI too — the peer of the
+    /// `input.rs` guard that stops `<C-6>` being eaten as a count.
+    #[test]
+    fn bare_digits_carry_no_modifiers() {
+        let chord = from_keystroke("6", false, false, false, false).expect("digit translates");
+        assert_eq!(chord.key, KeyKind::Char('6'));
+        assert!(chord.mods.is_empty(), "a bare digit must be modifier-free");
+    }
+
 }

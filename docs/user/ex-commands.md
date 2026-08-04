@@ -46,7 +46,7 @@ shows full metadata.
 | `:b N`                 | Switch to buffer #N                                          |
 | `:b PATTERN`           | Switch to buffer matching PATTERN                            |
 | `:buffers` / `:b`      | Open the fuzzy buffer switcher (picker)                     |
-| `:history [commands\|searches]` | Fuzzy picker over history. `commands` (default): command line (`q:`). `searches`: search line (`q/` / `q?`). `<CR>` loads into the prompt, does not run |
+| `:history [commands\|searches\|pane-buffers]` | Fuzzy picker over history. `commands` (default): command line (`q:`). `searches`: search line (`q/` / `q?`). `pane-buffers`: this pane's buffer trail (`<C-6>` / `<C-7>`). `<CR>` loads into the prompt / walks to the stop; does not run |
 | `:bd` / `:bdelete`     | Close active buffer                                          |
 | `:bd!`                 | Close even if dirty                                          |
 | `:ls`                  | List every open buffer as static text                       |
@@ -253,9 +253,20 @@ replacement for vim's command-line window:
 - Like `q:`, these are exact-path bindings that don't interfere with
   macro recording (`/` and `?` are not valid register names).
 
-Both pickers are trait-driven via `CommandHistorySource` /
-`SearchHistorySource` in `lattice-picker`, accessible through
-`:picker history` / `:picker search-history` as well.
+**Pane buffer history** (per pane, not global):
+
+- **`:history pane-buffers`** opens a picker over the buffers the
+  *active pane* has shown, newest first, marking where you currently
+  are in the trail. Accept **walks** to that stop — it moves your place
+  in the history rather than recording a new visit, so everything ahead
+  of it stays reachable with `<C-7>`.
+- The same trail is stepped one at a time with `<C-6>` (back) and
+  `<C-7>` (forward). See [buffers](help:buffers).
+
+All three pickers are trait-driven via `CommandHistorySource` /
+`SearchHistorySource` / `PaneBufferHistorySource` in `lattice-picker`,
+accessible through `:picker history` / `:picker search-history` /
+`:picker pane-buffer-history` as well.
 
 ---
 

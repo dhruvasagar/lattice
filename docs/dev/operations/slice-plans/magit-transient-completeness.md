@@ -216,6 +216,77 @@ arguments (`-D` decorate, `-g` graph, `-n` limit, `--stat`, `-p` patch,
 exactly this for a *rendered* view, so this is largely wiring existing
 machinery to the dispatch rather than new mechanism.
 
+### MG.41g — completion notifications, via the event bus
+
+Every long-running action should tell the user when it finishes. Half
+of magit's already do; the other half silently do not:
+
+| Spawner | Notifies |
+|---|---|
+| `spawn_remote_op` (push / pull / fetch / stash-create) | ✅ Info on success, Error on failure |
+| `spawn_subtree_op`, `spawn_note_prune`, `spawn_note_merge`, `spawn_clone` | ✅ |
+| **`spawn_git`** (the generic one) | ❌ |
+| `spawn_bisect`, `spawn_commit_op`, `spawn_note_remove`, `spawn_gitignore` | ❌ |
+
+The reason is structural: notification is **opt-in per spawner** — each
+takes an `Option<NotificationStoreHandle>` and remembers, or doesn't, to
+fire it in both arms. `spawn_git` not notifying means anything built on
+it inherits the silence.
+
+**The fix is the event bus, not a required parameter.** Threading the
+notification handle into every spawner would make it unforgettable but
+would also hard-wire *magit* to the *notification* subsystem, and repeat
+that wiring for the next subsystem with async work. Instead the op
+publishes a typed event and the notification layer subscribes:
+
+	/// A long-running background operation finished.
+	BackgroundTaskFinished {
+		/// Subsystem that ran it — "magit", "lsp", a plugin id.
+		source: Arc<str>,
+		/// What finished, in the user's words: "push", "clone …".
+		label: Arc<str>,
+		outcome: TaskOutcome,   // Succeeded { summary } | Failed { message }
+	}
+
+- **magit publishes; it never mentions notifications.** The
+  `NotificationStoreHandle` plumbing currently threaded through
+  `spawn_*` comes out entirely.
+- **One generic subscriber** maps the event to a notification, so the
+  policy (which levels, whether to notify at all, rate limiting) lives
+  in one place and is configurable later without touching any producer.
+- **Any subsystem gets it free** — LSP, compilation, a plugin's async
+  work — by publishing the same event. That is the point of the
+  decoupling, and it is what a per-spawner handle cannot give.
+
+> **Paramount goals:** #2 (a plugin's async op gets completion
+> notifications with no host change), #4 (async work reports back
+> without a keypress — the event bus already wakes the editor), and UX
+> (a push that silently succeeds or fails is the worst case of the
+> async-invisibility class).
+> **Heuristic #1:** the per-caller `Option` is not merely untidy — it is
+> already wrong in five places, which is the evidence the opt-in shape
+> does not hold. The event bus is the genuinely-better long-term fit,
+> not the smaller change.
+> **Heuristic #2:** anchored on design.md §5.10 (hooks ≡ autocmds ≡
+> typed event subscriptions — one bus, typed payloads), not on "events
+> are nicer".
+> **Mode ownership:** the producer side stays in `lattice-magit`; the
+> subscriber is generic host/notify wiring that no subsystem owns.
+
+Publishing still has to be unforgettable on magit's side, so it moves
+into the shared spawn helper's completion arms rather than each
+caller's — the same "bake it into the primitive" move as the autoread
+wake, one layer down.
+
+**Lands before MG.41c and MG.41e**, so the ~15 new async actions those
+slices add inherit completion reporting rather than each remembering.
+
+**Tests.** Each spawner publishes on success and on failure; the
+subscriber turns a `Failed` outcome into an Error-level notification and
+a `Succeeded` into Info; a subsystem that publishes the event with no
+magit involvement still notifies (proves the decoupling); the existing
+`spawn_remote_op` notifications keep working end to end.
+
 ---
 
 ## Out of scope, and what stays partial because of it
@@ -251,9 +322,10 @@ omission.
 |---|---|---|
 | MG.41a rows-as-data | — | Every later slice is a table edit only if this lands first. |
 | MG.41b height option | — | Independent; lands early so the larger menus are reviewable. |
-| MG.41c push/pull/fetch | 41a | The reported gap; also proves the `RemoteTarget` shape. |
+| MG.41g notifications | — | Independent, and must precede 41c/41e so their new async ops inherit it. |
+| MG.41c push/pull/fetch | 41a, 41g | The reported gap; also proves the `RemoteTarget` shape. |
 | MG.41d thin submenus | 41a | Pure table growth once 41a lands. |
-| MG.41e new submenus | 41a, 41d | Needs handlers + gating; the biggest slice, carve per menu. |
+| MG.41e new submenus | 41a, 41d, 41g | Needs handlers + gating; the biggest slice, carve per menu. |
 | MG.41f diff/log args | 41a | Reuses MG.23k machinery; least urgent. |
 
 Each slice lands green on its own; MG.41e sub-slices per menu

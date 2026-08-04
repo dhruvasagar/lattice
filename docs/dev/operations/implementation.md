@@ -5981,6 +5981,25 @@ parsers (Phase 7 plugin host).
 
 ---
 
+## `:describe-active-modes` — buffer mode stack (📝 planned)
+
+`<C-h>m` has been bound since K.3.2 but routes to `:describe-mode`,
+whose arg is required — so it prompts for a mode name instead of
+showing the buffer's active modes, which is what its own doc table,
+its `HelpPrefixEntry` doc, and keymap-architecture §12.1 all claimed.
+DAM.1–DAM.5 make the documented behaviour real (new additive
+`:describe-active-modes` + `Effect::DescribeActiveModes`, a
+major + minors view with each mode's contributed chords read from
+`DynMode::keymap()`); `<C-h>M` keeps the prompt-for-any-mode path.
+DAM.6 then repoints `<C-h>K` to a new `:describe-bindings` scoped to
+the current buffer, leaving `:keymap` as the exhaustive reference.
+
+Design: [`../architecture/keymap-architecture.md`](../architecture/keymap-architecture.md)
+§12.5–§12.6. Slice plan:
+[`slice-plans/describe-active-modes.md`](slice-plans/describe-active-modes.md).
+
+---
+
 ## Conventions for updating this doc
 
 - Update the **Phase status** table whenever a phase advances.

@@ -1604,12 +1604,30 @@ in the host's ex-command alias table.
 | `<C-h> c` | `:describe-command` | Letter `c` chosen over emacs's `f` (function) -- matches Lattice vocab. |
 | `<C-h> o` | `:describe-option` | Letter `o` chosen over emacs's `v` (variable) -- matches Lattice vocab. |
 | `<C-h> e` | `:describe-event` | Lattice-native; emacs has no first-class event introspection. |
-| `<C-h> m` | `:describe-mode` | Active majors + minors on the current buffer. |
+| `<C-h> m` | `:describe-active-modes` | Active major + minors on the current buffer, with the chords each contributes. See §12.5. |
+| `<C-h> M` | `:describe-mode` | Prompts for a mode name (`gen:modes` completion); shows that mode's registry metadata. |
 | `<C-h> b` | `:describe-buffer` | Buffer metadata (kind, flags, mode stack, ...). |
 | `<C-h> a` | `:apropos` | Cross-cutting search across commands / options / events. |
 | `<C-h> K` | `:keymap` | Keymap listing for the current state. Capital K because lowercase `k` is `:describe-key`. |
 
 **No bare `<C-h>` leaf binding** — see §12.3 for the rationale.
+
+> **Correction (2026-08-04).** K.3.2 bound `<C-h>m` to
+> `:describe-mode`, whose `chord` arg is `ArgDefault::Required`.
+> A no-arg invocation therefore armed the interactive arg prompt
+> and asked for a mode name — it never showed the active modes.
+> The row above, its twin in `keymap_help.rs`, and the
+> `HelpPrefixEntry` doc string all described the *intended*
+> behaviour rather than the shipped one for ~2 months. §12.5
+> closes the gap; `<C-h>M` preserves the prompt-for-any-mode
+> path that `<C-h>m` was accidentally providing.
+
+The `m` / `M` pair reads listing-then-specific, while the
+older `k` / `K` pair reads specific-then-listing. The
+asymmetry is deliberate: lowercase is the common case in
+both, and `C-h m` = *active* modes is the emacs muscle memory
+worth preserving (UX-convention rule — muscle memory is the
+dominant cost on user-facing surfaces).
 
 ### 12.2 Out-of-scope binding modes
 
@@ -1678,6 +1696,149 @@ K.3 was gated on K.2 landing (it did, commit `0938572` closing
 the K.2 arc) and shipped as a thin slice on top: substrate
 unchanged, just the new bindings + Option-2 design lock-in +
 mode-scope tests + docs.
+
+### 12.5 `:describe-active-modes` — the buffer's own mode stack
+
+> Sequencing, slice IDs and status live in
+> [slice plan: describe-active-modes](../operations/slice-plans/describe-active-modes.md).
+
+**The question it answers.** "What is this buffer, and what
+can I press in it?" Distinct from the three neighbours that
+already exist and stay unchanged:
+
+| Surface | Question |
+|---|---|
+| `:describe-mode <name>` | What is *this named mode* — options, capabilities, active-here? |
+| `:help <mode-id>` | What is this mode *for* — prose, workflows, worked examples. |
+| `:keymap` | What is the *entire* default catalog, by binding-mode. |
+| `:describe-active-modes` | What is live on *this buffer*, and what does each part bind? |
+
+**Why the major mode alone is not the answer.** Asking for
+"help for the major mode" under-reports by construction,
+because the standing minor-mode rule (shared behaviour is a
+minor mode, never a copied keymap) deliberately pushes
+cross-major chords *out* of the major. A `magit-refs` buffer
+gets `b` / `x` / `<CR>` from `magit-refs-mode` but `gr` / `q`
+/ `]]` / `[[` / `a` / `-` from `magit-core-mode`. A
+major-only view would omit the half that the architecture
+just finished centralising. The view is therefore
+major + minors, not major.
+
+**Content model.** Rows are `[mode-id](help:mode-id)` links,
+so `<CR>` reaches the prose doc through the existing
+help-link machinery — no new navigation. Each row carries the
+mode's help-topic summary when one exists, and the chords the
+mode contributes, read live:
+
+	# modes :: magit-refs
+
+	## major
+	◆ [magit-refs-mode](help:magit-refs-mode)
+	    b   checkout branch
+	    x   delete reference
+	    RET visit reference
+
+	## minors (3)
+	◇ [magit-core-mode](help:magit-core-mode)
+	    gr    refresh      q   bury buffer
+	    ]]/[[ next/prev    a/- stage/unstage
+	◇ [line-numbers-mode](help:line-numbers-mode)
+	◇ [wrap-mode](help:wrap-mode)
+
+The `◆` / `◇` major/minor glyphs match
+`build_describe_mode_content`, and are BMP-block characters
+per the icon-degradation rule — no Nerd Font required.
+
+**No new keymap machinery.** The chords come from
+`DynMode::keymap()`, already on the trait and already
+reachable via `mode_registry.load().get(mode_id)`. A
+trie-side reverse lookup (`KeymapLayer` → contributing mode)
+was considered and is *not* needed; the mode object already
+owns the list it contributed. This is the difference between
+this view and §12.6, which does need the live trie.
+
+**Both population paths, and the doc-string gap.** `Keymap`
+carries bindings in two slots and the builder must walk
+*both*: `entries: Vec<&'static KeymapEntry>` (the
+`keymap_entry!` catalog form — every entry has a `doc`) and
+`bindings: Vec<KeymapBinding>` (the terse chain form,
+`bind`/`bind_chord`). Walking only `entries` would silently
+under-report every mode that uses the chain form, which is
+the same class of invisible gap the minor-mode rule exists to
+prevent.
+
+`KeymapBinding.doc` is `Option<String>` and is `None` for
+chain-form and `KeymapBinding::new` bindings — the docs only
+exist when the binding originated from a `keymap_entry!`.
+Rows with no doc render the resolved command name instead of
+inventing prose:
+
+	gr    refresh              ← doc present
+	<C-c>gbb  magit-branch     ← doc absent, command name shown
+
+This is a real quality signal, not just a fallback: a mode
+whose rows read as bare command names is a mode that should
+move to the `keymap_entry!` form. The view makes that
+visible, which is a reason to prefer it over silently
+omitting undocumented chords.
+
+**Additive at the plugin boundary.** `Effect::DescribeMode`
+is declared in `wit/types.wit` as `describe-mode(string)`.
+Widening it to `option<string>` to carry the no-arg case
+would be a breaking change to a published plugin API, so the
+no-arg case gets its own additive
+`Effect::DescribeActiveModes` / `describe-active-modes()`
+variant instead. Paramount goal #2 over a smaller diff —
+heuristic #1 cuts the other way here only if you weigh diff
+size, which it explicitly forbids.
+
+**Naming.** `:describe-active-modes`, not `:describe-modes`.
+The shorter name is a prefix-sibling of `:describe-mode`,
+which would push `:describe-mode<Tab>` off the
+single-candidate branch that
+`tab_on_complete_command_name_steps_into_the_arg_slot`
+(`crates/lattice-ui-tui/src/app/cmdline.rs`) exists to guard
+— reintroducing a fixed bug. Dashed and inside the
+`describe-*` family, per the ex-command naming rule.
+
+**Buffer resolution.** The builder reads
+`Editor::active_buffer_id()`. Note that the sibling
+`build_describe_mode_content` currently reads
+`self.document_buffer_id` for its "active on current buffer"
+line, which is wrong for any non-document buffer (magit,
+file-tree, help). Corrected in the same slice — it is
+directly in the path being changed.
+
+**Degradation.** A buffer with no major mode renders the
+major section as `(none)` and still lists minors; a mode id
+that fails to resolve in the registry is skipped with a
+`tracing::debug!`, never a panic. Both are reachable states,
+not defensive padding: synthetic buffers routinely carry
+minors with no major.
+
+**No benchmark.** `LatencyClass::Display`, built on demand,
+O(active modes) ≈ 5 with no I/O or parsing. The
+four-artefact rule is satisfied by docs + tests + graceful
+degradation; a bench here would measure scheduler noise.
+Recorded as a deliberate omission rather than an oversight.
+
+### 12.6 `<C-h>K` — buffer-scoped bindings (follow-up)
+
+`:keymap` today renders the **static** `entries()` catalog
+(`build_list_keymap_content`), so it lists every documented
+builtin binding regardless of what the current buffer can
+actually fire. That is the right behaviour for a reference
+dump and `:keymap` keeps it.
+
+`<C-h>K` repoints to a new `:describe-bindings` (emacs `C-h
+b` semantics) that shows only what is live on this buffer,
+unioning builtin entries valid in the current `BindingMode`
+with each active mode's `keymap()`. It reuses §12.5's
+active-mode walk, which is why the two land in that order.
+
+`<C-h>b` stays `:describe-buffer` — in Lattice `b` is
+buffer-metadata, and the bindings listing hangs off `K`
+alongside the other keymap surface.
 
 - K.3.0 ✅ trie audit + Option 2 decision (this section).
 - K.3.1 ✅ `:help-for-help` ex-command alias

@@ -149,6 +149,18 @@ buffer — vim's `autoread`, **on by default**:
 - **File deleted on disk** → the buffer is kept (never wiped); you get
   a warning.
 
+The reload lands on its own — you do not have to press a key to bring
+it in. Changes to buffers you are *not* currently in are remembered and
+applied when you switch to them, which is vim's
+checktime-on-`BufEnter` behaviour.
+
+That last point is worth knowing when driving git from
+[magit](help:magit): a `b b` checkout rewrites working-tree files while
+the *magit* buffer is the one you are in, so a file open in another
+split keeps showing its old contents until you focus it. Focusing it
+reloads it. Nothing is lost either way — a file with unsaved edits goes
+through the diff resolver rather than being overwritten.
+
 Turn it off globally with `:set noautoread`, or per buffer with
 `:setlocal noautoread`. Detection is a lightweight filesystem watch on
 the directories of your **open** files only — a huge project with a few

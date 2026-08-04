@@ -6864,7 +6864,7 @@ impl Editor {
             return;
         }
         if self.autoread_watcher.is_none() {
-            match crate::autoread::spawn_autoread_watcher_task() {
+            match crate::autoread::spawn_autoread_watcher_task(self.async_landed.clone()) {
                 Ok((handle, rx)) => {
                     self.autoread_watcher = Some(handle);
                     self.autoread_changes = Some(rx);

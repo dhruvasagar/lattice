@@ -212,6 +212,44 @@ this: *"…resolve in the diff (`:e!` to discard local)"*.
   non-blocking `cmd_tx` send (fingerprint/registration-gated, mirroring
   `refresh_lsp_file_watcher`).
 
+### The wake — why the change channel is an `InboundBus` (fixed 2026-08-04)
+
+`drain_autoread_changes` runs inside `run_tick_pending`, which in
+production is reached exactly two ways: the tail of `App::apply` (the
+next **keystroke**) and the actor's `async_landed` select arm. The
+watcher originally emitted into a plain
+`mpsc::UnboundedSender<AutoreadChange>` and fired neither, so an
+external change — a `git checkout` driven from magit, a `git pull` in
+another terminal — sat in the channel until the user happened to press
+a key. Classic "it works, but only after I hit something": it reads as
+a rendering bug when it is a missing wake.
+
+`spawn_autoread_watcher_task` now takes the editor's `async_landed`
+`Arc<Notify>` as a **required parameter** and builds its channel with
+[`lattice_mode::inbound::make_inbound_raw`], so the wake is baked into
+every `send` and cannot be forgotten (paramount goal #4 —
+async-correct by construction, not by discipline).
+
+`make_inbound_raw` rather than `make_inbound`: the per-item work is
+irreducibly `&mut Editor` (the reload rewrites buffer contents,
+cursor and scroll), which a `FnMut(T) -> Vec<Effect>` handler cannot
+capture. That is precisely the case that constructor exists for, so
+the host keeps the receiver and drains it from its own tick.
+
+**Testing it the way it fails.** Asserting on `rx.recv()` does *not*
+catch a missing wake — the change is in the channel either way. The
+regression test (`watcher_wakes_the_editor_on_external_write`) awaits
+the `Notify` and deliberately never touches the receiver, since
+draining would mask the very thing under test.
+
+**Still deliberate: background buffers wait.** `drain_autoread_changes`
+records a pending change for *every* affected buffer, but
+`apply_pending_autoread_for_active` applies only the active one;
+others wait for activation. That is vim's checktime-on-`BufEnter`
+semantics and is intended. Consequence worth knowing: during a magit
+operation the *magit* buffer is active, so a changed file shown in
+another split stays stale until it is focused.
+
 ### Deferred enhancements
 
 - **Auto-reload on the `Accept` verdict** — hold the completion oneshot (instead of

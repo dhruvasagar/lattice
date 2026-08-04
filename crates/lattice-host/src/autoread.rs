@@ -198,7 +198,24 @@ impl AutoreadWatcherHandle {
 /// Spawn the autoread watcher task on the LSP runtime. Returns the handle
 /// `Editor` keeps plus the change receiver the host drains (AR.4). `Err` only
 /// if `notify` itself fails to construct the OS watcher.
-pub fn spawn_autoread_watcher_task() -> Result<
+///
+/// `wake` is the editor's `async_landed` notifier. It is a **required
+/// parameter, not an option**: the change channel is drained by
+/// `run_tick_pending`, which in production runs on the next keystroke or on
+/// an `async_landed` wake. Without the wake an external change (a `git
+/// checkout` from magit, a `git pull` in another terminal) sits in the
+/// channel until the user happens to press a key. Threading it through
+/// [`lattice_mode::inbound::make_inbound_raw`] bakes the wake into every
+/// `send`, so it cannot be forgotten (paramount goal #4 — async-correct by
+/// construction, not by discipline).
+///
+/// `make_inbound_raw` rather than `make_inbound` because the per-item work is
+/// irreducibly `&mut Editor` (the reload rewrites buffer contents, cursor and
+/// scroll), which a `FnMut(T) -> Vec<Effect>` handler cannot capture — the
+/// case that constructor documents.
+pub fn spawn_autoread_watcher_task(
+    wake: std::sync::Arc<tokio::sync::Notify>,
+) -> Result<
     (
         AutoreadWatcherHandle,
         mpsc::UnboundedReceiver<AutoreadChange>,
@@ -207,7 +224,8 @@ pub fn spawn_autoread_watcher_task() -> Result<
 > {
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<AutoreadWatcherCommand>();
     let (event_tx, event_rx) = mpsc::unbounded_channel::<NotifyEvent>();
-    let (change_tx, change_rx) = mpsc::unbounded_channel::<AutoreadChange>();
+    let (change_tx, change_rx) =
+        lattice_mode::inbound::make_inbound_raw::<AutoreadChange>(wake);
     // The callback runs on notify's own worker thread; forward every event to
     // the tokio channel and filter inside the task (which holds the map).
     let watcher = RecommendedWatcher::new(
@@ -239,7 +257,9 @@ struct AutoreadWatcherTask {
     /// dir → the basenames in that dir the editor cares about (the event
     /// filter).
     watches: HashMap<PathBuf, HashSet<String>>,
-    change_tx: mpsc::UnboundedSender<AutoreadChange>,
+    /// Wake-baked sender: every `send` notifies the editor's `async_landed`,
+    /// so a change reaches the screen without a keystroke.
+    change_tx: lattice_mode::inbound::InboundBus<AutoreadChange>,
 }
 
 impl AutoreadWatcherTask {
@@ -464,7 +484,9 @@ mod tests {
         let file = dir.join("watched.txt");
         std::fs::write(&file, "v1\n").unwrap();
 
-        let (handle, mut rx) = spawn_autoread_watcher_task().expect("spawn watcher");
+        let (handle, mut rx) =
+            spawn_autoread_watcher_task(std::sync::Arc::new(tokio::sync::Notify::new()))
+                .expect("spawn watcher");
         let mut names = HashSet::new();
         names.insert("watched.txt".to_string());
         let mut watches = HashMap::new();
@@ -486,5 +508,52 @@ mod tests {
             .expect("change channel open");
         assert_eq!(change.path, file);
         assert_eq!(change.kind, AutoreadChangeKind::Modified);
+    }
+
+    /// An external write must **wake the editor**, not merely queue a change.
+    ///
+    /// `drain_autoread_changes` runs inside `run_tick_pending`, which in
+    /// production is reached two ways: the tail of `App::apply` (i.e. the
+    /// next keystroke) and the actor's `async_landed` select arm. Before
+    /// this test the watcher fired neither, so a `git checkout` (or any
+    /// external edit) sat in the channel until the user happened to press
+    /// a key — the "it works, but only after I hit something" failure mode.
+    ///
+    /// Asserting on `rx.recv()` alone does NOT catch that: the change is
+    /// genuinely in the channel either way. The wake is the thing under
+    /// test, so the wake is what this asserts — and it deliberately does
+    /// not touch the receiver, since draining would mask a missing wake.
+    #[test]
+    fn watcher_wakes_the_editor_on_external_write() {
+        use std::time::Duration;
+        let dir = temp_path("watch-wake");
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = std::fs::canonicalize(&dir).unwrap();
+        let file = dir.join("watched.txt");
+        std::fs::write(&file, "v1\n").unwrap();
+
+        let wake = std::sync::Arc::new(tokio::sync::Notify::new());
+        let (handle, _rx) = spawn_autoread_watcher_task(std::sync::Arc::clone(&wake))
+            .expect("spawn watcher");
+        let mut names = HashSet::new();
+        names.insert("watched.txt".to_string());
+        let mut watches = HashMap::new();
+        watches.insert(dir.clone(), names);
+        handle.sync(watches);
+
+        std::thread::sleep(Duration::from_millis(300));
+        std::fs::write(&file, "v2-changed\n").unwrap();
+
+        let woke = lattice_runtime::block_on(async move {
+            tokio::time::timeout(Duration::from_secs(5), wake.notified()).await
+        });
+        handle.shutdown();
+        std::fs::remove_dir_all(&dir).ok();
+
+        assert!(
+            woke.is_ok(),
+            "external write must wake the editor; without it the reload \
+             waits for the next keystroke",
+        );
     }
 }

@@ -244,6 +244,29 @@ nothing shifts down and back up while git answers.
 
 ---
 
+## When magit changes files on disk
+
+Plenty of magit actions rewrite your working tree: checking out a
+branch, popping a stash, resetting, rebasing, discarding a hunk. Magit
+runs `git` as a subprocess, so those are ordinary external writes —
+and [`autoread`](help:buffers) picks them up. You do not need to
+reload anything by hand.
+
+Two details worth knowing:
+
+- **Open buffers refresh on their own.** No keypress required. A file
+  with no unsaved edits reloads silently, cursor and scroll preserved.
+- **A file you're not currently in waits until you focus it.** During a
+  magit action the *magit* buffer is the one you're in, so a file
+  showing in another split keeps its old contents until you switch to
+  it. This is vim's checktime-on-`BufEnter` behaviour, not a bug.
+
+If a file has **unsaved edits** when git rewrites it, magit never
+clobbers them — autoread opens the diff resolver and you reconcile hunk
+by hunk. See [External file changes](help:buffers) for the full policy.
+
+---
+
 ## Options
 
 `git.auto-head-diff` is registered through the typed-options system

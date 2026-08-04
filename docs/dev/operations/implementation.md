@@ -6014,6 +6014,36 @@ Design: [`../architecture/keymap-architecture.md`](../architecture/keymap-archit
 
 ---
 
+## Pane buffer history (📝 planned)
+
+Per-pane back/forward over the buffers a pane has shown: `<C-6>` back,
+`<C-7>` forward, `:history pane-buffers` picker. Splitting a pane starts
+a fresh trail rather than cloning one.
+
+The load-bearing decision is storage. `PaneState` is `Copy` and
+`split_active` copies it field-wise, so a `history` field there would be
+inherited by the new pane — the one behaviour the feature must not have.
+A `HashMap<PaneId, PaneBufferHistory>` side table on `Editor` makes the
+requirement hold by construction instead: `PaneId::next()` is
+process-monotonic, so a freshly split pane has no entry and cannot
+inherit anything. GC reconciles the map against `PaneTree::leaves`
+rather than hooking each removal path.
+
+Rejected: filtering the existing position-history ring per §5.1.1.
+`PositionEntry` carries no `pane_id`, and the ring records every
+`AutoJump` — so scrolling inside one file would evict the record of
+which buffers a pane visited. Functional loss, not stylistic.
+
+Chords are `<C-6>` / `<C-7>` because terminals send 0x1E / 0x1F and
+crossterm maps that range to `Char('4'..'7') + CONTROL`; a `<C-^>`
+binding would never fire.
+
+Design: [`../architecture/pane-buffer-history.md`](../architecture/pane-buffer-history.md).
+Slice plan: [`slice-plans/pane-buffer-history.md`](slice-plans/pane-buffer-history.md)
+(PBH.1–PBH.6).
+
+---
+
 ## Conventions for updating this doc
 
 - Update the **Phase status** table whenever a phase advances.

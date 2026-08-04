@@ -1,0 +1,152 @@
+# Pane buffer history — slice plan
+
+**Status:** 📝 planned. Design fragment:
+[`../../architecture/pane-buffer-history.md`](../../architecture/pane-buffer-history.md).
+
+Per-pane back/forward over visited buffers: `<C-6>` back, `<C-7>`
+forward, `:history pane-buffers` picker. Splitting a pane starts a
+fresh trail.
+
+| Slice | Status | What |
+|---|---|---|
+| PBH.1 | 📝 | Data model + side table + GC reconciliation |
+| PBH.2 | 📝 | Recording at the activation chokepoint |
+| PBH.3 | 📝 | Walk back / forward + the `<C-6>` / `<C-7>` chords |
+| PBH.4 | 📝 | `pane.buffer-history-size` option + eviction |
+| PBH.5 | 📝 | `:history pane-buffers` picker source |
+| PBH.6 | 📝 | Docs + cross-renderer parity |
+
+---
+
+## PBH.1 — Data model, side table, GC 📝
+
+`PaneHistoryEntry` / `PaneBufferHistory` and the
+`pane_buffer_history: HashMap<PaneId, PaneBufferHistory>` field on
+`Editor`.
+
+- New module `crates/lattice-host/src/pane_history.rs` — the structure
+  plus its pure operations (`push`, `back`, `forward`, `truncate`,
+  `evict`). Pure and unit-testable without an `Editor`.
+- `Editor::reconcile_pane_history()` — retain only keys present in
+  `PaneTree::leaves`. Called after tree-mutating operations.
+
+**Do NOT** add a field to `PaneState`: it is `Copy` and
+`split_active` copies it field-wise, so history would be inherited by
+the new pane — the one behaviour this feature must not have. See
+design §4.
+
+**Tests.** Push/back/forward/truncate on the bare structure; a fresh
+`PaneId` has no entry; `reconcile` drops closed panes and keeps live
+ones; `collapse_to_active` (which drops *siblings*, not the active)
+is covered too — it is the removal path most likely to be missed.
+
+**The acceptance test for the headline requirement:** split a pane
+with a non-trivial history, assert the new pane's history has exactly
+one entry (its current buffer) and the original's is untouched.
+
+## PBH.2 — Recording 📝
+
+Push in `Editor::activate_buffer_only`
+(`crates/lattice-host/src/dispatch.rs`), alongside the existing
+`push_position_history` call and under the same
+`if id != self.active_pane_buffer_id()` guard.
+
+- On leaving a buffer, update the *current* entry's `cursor`/`scroll`
+  from the pane, then push the new buffer.
+- Lazily seed the map entry with the pane's current buffer when the
+  pane has none, so the first `<C-6>` has an origin.
+
+**Tests.** A buffer switch records; re-activating the same buffer does
+not; the outgoing cursor is captured on the entry being left.
+
+**Preview regression test (load-bearing).** Open a picker, preview
+several buffers, cancel — assert the pane's history is unchanged.
+Previews route through `set_preview_override` and never reach this
+chokepoint (design §5), so this test pins an existing architectural
+property that a future refactor could silently break.
+
+## PBH.3 — Walk + chords 📝
+
+`Editor::pane_history_back()` / `pane_history_forward()`, bound to
+`<C-6>` / `<C-7>` at `KeymapLayer::Builtin`, `BindingMode::Normal`
+(no owning mode — universal pane machinery).
+
+- The walk switches buffers **without recording** — otherwise forward
+  is unreachable. Route through a path that bypasses PBH.2's push, or
+  set an explicit in-walk suppression flag.
+- Restore the entry's `cursor` + `scroll`.
+- At either end: echo, no wrap.
+- Entries whose buffer left the registry are skipped and dropped as
+  the walk passes them.
+
+**Chord note.** `<C-6>` / `<C-7>` are the only spellings that match in
+the TUI: terminals send 0x1E / 0x1F and crossterm 0.28.1 maps
+`b'\x1C'..=b'\x1F'` to `Char('4'..'7') + CONTROL`, so a `<C-^>`
+binding would never fire. See design §7.
+
+**Tests.** back/forward round-trip; walking then opening a new buffer
+truncates the forward tail; walk does not itself record; cursor is
+restored; both ends echo rather than wrap; a deleted buffer is skipped.
+Test the chords with `press()`, not by calling the handler — a
+`BindingMode` arm that swallows the key is invisible to a
+handler-level test (see `modal-states-need-a-dispatch-arm`).
+
+## PBH.4 — Size option 📝
+
+`pane.buffer-history-size`, typed `usize`, default 100, customizable
+through `:set` / `:customize`.
+
+- Evict oldest past the cap; shift `cursor` down with the entries so
+  the current position does not drift onto a different buffer.
+
+**Tests.** Eviction at the cap; `cursor` still points at the same
+logical entry after eviction; `:set pane.buffer-history-size` takes
+effect on the next push.
+
+## PBH.5 — `:history pane-buffers` 📝
+
+- `PaneBufferHistorySource` in `crates/lattice-picker/src/picker_sources.rs`,
+  modelled on `CommandHistorySource`; newest-first; current entry
+  marked.
+- `pane_buffer_history` on `PickerContext` (owned vec, built per
+  picker-open like `position_history`).
+- `:history` arg mapping `pane-buffers` → `pane-buffer-history`, and
+  `pane-buffers` added to the `gen:history-kinds` completion source
+  (`crates/lattice-host/src/editor_boot.rs`).
+- Accept **moves `cursor`** to the chosen entry rather than pushing —
+  random-access walk, not a new visit.
+
+**Tests.** `:history pane-buffers` opens with the pane's entries;
+`:history <Tab>` offers `pane-buffers`; accepting an entry moves the
+cursor rather than appending; the picker reflects the *active* pane's
+history, not a global one.
+
+## PBH.6 — Docs + parity 📝
+
+- `docs/user/buffers.md` — a "Walking a pane's buffer history"
+  section; this is where users look for `<C-6>`.
+- `docs/user/help.md` / `ex-commands.md` — `:history pane-buffers`.
+- `docs/user/modal-editing.md` — the two chords in the Normal-mode
+  reference.
+- **GPUI parity in the same patch**: map Ctrl+6 / Ctrl+7 to the same
+  `KeyChord`s. GPUI delivers key `"6"` + ctrl modifier rather than a
+  control byte, so the TUI path does not prove it.
+
+**End-of-slice audit:**
+`grep -rn "pane_history\|PaneBufferHistory" crates/lattice-ui-gpui/ --include="*.rs"`
+— empty grep means GPUI was missed.
+
+---
+
+## Not doing
+
+- **No benchmark.** Every operation is O(1) amortised on a ≤100-entry
+  `Vec` behind a keystroke; `reconcile` is O(panes). Nothing here is
+  on a per-frame or per-char path. Deliberate omission under the
+  four-artefact rule, not an oversight.
+- **No vim `<C-^>` alternate-file toggle.** A toggle cannot be half of
+  a back/forward pair. Nothing is lost — no `:b#` exists today. If
+  wanted later it lands as its own named command rather than
+  overloading a directional key with hidden state.
+- **No cross-pane or persisted history.** Per-pane and in-memory only;
+  history dies with its pane.

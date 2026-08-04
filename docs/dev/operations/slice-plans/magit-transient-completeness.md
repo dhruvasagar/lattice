@@ -182,7 +182,7 @@ resolution**, not seven handlers. Model it as data:
 One action per op taking the target as an argument, so push gains six
 rows and one new handler rather than six.
 
-### MG.41c — push / pull / fetch destinations
+### MG.41c — push / pull / fetch destinations 🚧
 
 Push `p u e o r T t` + the three missing flags; Pull promoted to a
 submenu with `p u e` + `-r -a`; Fetch `p u e o r a m` + `-t`.
@@ -191,6 +191,30 @@ submenu with `p u e` + `-r -a`; Fetch `p u e o r a m` + `-t`.
 the run share `RemoteOp::preview`, so the preview assertion covers
 both); `-f` + `-F` are mutually exclusive; pull is reachable as a
 submenu from the dispatch.
+
+**Landed so far (🚧 — mechanism, not yet the rows).** `RemoteTarget`
+(`Configured` / `Upstream` / `AllRemotes` / `AllTags` / `Prompted`) with
+`argv`, `resolve_upstream`, and `spawn_remote_op_to`. 5 argv tests.
+
+Two decisions worth keeping:
+
+- **`p` and `u` are genuinely different.** `Configured` passes no
+  destination and lets git resolve `pushRemote` →
+  `remote.pushDefault` → `branch.<n>.remote`; `Upstream` resolves
+  `@{upstream}` with a `rev-parse` and expands to a **two-token**
+  `remote branch` pair. `git push origin/main` would be read as one
+  refspec and fail, so the split matters. They diverge exactly in the
+  triangular-workflow case the two rows exist to separate.
+- **An unresolvable destination aborts; it never falls back to a bare
+  push.** Falling back would silently send refs somewhere the user did
+  not choose — the one failure this row must not have. Pinned by
+  `an_unresolved_destination_contributes_no_argument`.
+
+**Still to do:** register one action per (op, target), add the rows to
+`PUSH_ROWS` / `PULL_ROWS` / `FETCH_ROWS`, promote Pull from a plain
+dispatch row to a submenu, and add the missing flags (`-F`, `-h`, `-n`
+on push; `-r`, `-a` on pull; `-t` on fetch). The `Prompted` rows reuse
+MG.17b's existing prompt-then-return-to-menu machinery.
 
 ### MG.41d — thin existing submenus
 

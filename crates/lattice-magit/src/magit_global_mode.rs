@@ -1652,6 +1652,88 @@ pub struct RemoteFlag {
 /// of the slice IS the `args_schema` order, which is what lets a
 /// transient toggle and a `--force` on the `:` line resolve to the
 /// same `Args::List` slot.
+/// MG.41c: where a remote operation sends or takes its refs.
+///
+/// Magit's push / pull / fetch menus are **one operation with several
+/// destinations**, not several operations — which is why a single
+/// unlabelled "push" row was the wrong shape. Modelling the
+/// destination as data means push gains six rows and one handler
+/// rather than six handlers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoteTarget {
+    /// Whatever git itself resolves with no destination argument:
+    /// `branch.<name>.pushRemote`, then `remote.pushDefault`, then
+    /// `branch.<name>.remote`. Magit's `p`.
+    Configured,
+    /// The branch's `@{upstream}`, resolved explicitly. Magit's `u`.
+    ///
+    /// Distinct from [`Self::Configured`] whenever `pushRemote` and
+    /// the upstream differ — the triangular-workflow case the two rows
+    /// exist to separate. Git has no single-token spelling for it, so
+    /// this is resolved with a `rev-parse` at run time.
+    Upstream,
+    /// Every configured remote (`--all`). Magit's `a`, fetch only.
+    AllRemotes,
+    /// Every tag (`--tags`). Magit's `t`, push only.
+    AllTags,
+    /// A destination the user types — a remote, a branch, a refspec, a
+    /// tag. Magit's `e` / `o` / `r` / `T`, which differ only in what
+    /// they prompt for.
+    Prompted,
+}
+
+impl RemoteTarget {
+    /// Extra argv this target contributes, appended after the flags.
+    ///
+    /// `resolved` carries the value a [`Self::Prompted`] target asked
+    /// for, or the `remote branch` pair a [`Self::Upstream`] lookup
+    /// produced. Returning a `Vec` rather than an `Option<String>` is
+    /// what lets `Upstream` expand to two tokens.
+    pub fn argv(self, resolved: Option<&str>) -> Vec<String> {
+        match self {
+            Self::Configured => Vec::new(),
+            Self::AllRemotes => vec!["--all".to_string()],
+            Self::AllTags => vec!["--tags".to_string()],
+            // Both carry a caller-resolved value; an empty one
+            // contributes nothing rather than an empty argument git
+            // would read as a real (empty) ref.
+            Self::Upstream | Self::Prompted => resolved
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(|v| v.split_whitespace().map(str::to_string).collect())
+                .unwrap_or_default(),
+        }
+    }
+}
+
+/// MG.41c: resolve `@{upstream}` into the `remote branch` pair a push
+/// destination needs.
+///
+/// `git push` has no `@{upstream}` spelling, so magit computes it and
+/// so must this. Returns `None` when the branch has no upstream — the
+/// caller reports that rather than pushing somewhere unintended, which
+/// is the whole risk this row carries.
+pub fn resolve_upstream(workdir: &std::path::Path) -> Option<String> {
+    let full = run_remote_op(
+        workdir,
+        &[
+            "rev-parse".to_string(),
+            "--abbrev-ref".to_string(),
+            "--symbolic-full-name".to_string(),
+            "@{upstream}".to_string(),
+        ],
+    )
+    .ok()?;
+    // `origin/main` -> `origin main`. A remote name cannot contain `/`,
+    // but a BRANCH can (`origin/feature/x`), so split once from the
+    // left and keep the remainder whole.
+    let (remote, branch) = full.trim().split_once('/')?;
+    if remote.is_empty() || branch.is_empty() {
+        return None;
+    }
+    Some(format!("{remote} {branch}"))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RemoteOp {
     /// Verb for the echo + logs, in `-ing` form ("pull" → "pulling…").
@@ -2630,6 +2712,59 @@ pub(crate) fn gitignore_append(existing: &str, pattern: &str) -> Option<String> 
 /// no synchronous path exists back to the echo area from a task that
 /// outlives the call, so success and failure are logged rather than
 /// silently dropped (never both silent AND absent).
+/// MG.41c: run a remote op against an explicit [`RemoteTarget`].
+///
+/// One handler for every destination row. `Upstream` resolves
+/// `@{upstream}` on the blocking pool before running — it needs a git
+/// call, and doing it here rather than at menu-build time keeps the
+/// menu free of I/O.
+///
+/// A destination that cannot be resolved **aborts rather than falling
+/// back** to a bare push. Falling back would silently send refs
+/// somewhere the user did not choose, which is the one failure this
+/// row must not have.
+pub fn spawn_remote_op_to(
+    op: RemoteOp,
+    args: &lattice_grammar::Args,
+    target: RemoteTarget,
+    prompted: Option<String>,
+) -> Effect {
+    let workdir = crate::workdir::magit_workdir().unwrap_or_default();
+    let base = op.argv(args);
+    let what = op.what;
+    let shown = base.join(" ");
+    tokio::task::spawn(async move {
+        let result = tokio::task::spawn_blocking(move || {
+            let resolved = match target {
+                RemoteTarget::Upstream => match resolve_upstream(&workdir) {
+                    Some(v) => Some(v),
+                    None => {
+                        return Err(
+                            "no upstream configured for this branch — set one,                              or pick a destination explicitly"
+                                .to_string(),
+                        );
+                    }
+                },
+                RemoteTarget::Prompted => match prompted.as_deref() {
+                    Some(v) if !v.trim().is_empty() => Some(v.to_string()),
+                    _ => return Err("no destination given".to_string()),
+                },
+                _ => None,
+            };
+            let mut argv = base;
+            argv.extend(target.argv(resolved.as_deref()));
+            run_remote_op(&workdir, &argv)
+        })
+        .await
+        .unwrap_or_else(|e| Err(e.to_string()));
+        finish_task(what, result);
+    });
+    Effect::Echo {
+        level: lattice_grammar::EchoLevel::Info,
+        text: format!("magit: {shown}"),
+    }
+}
+
 pub fn spawn_remote_op(
     op: RemoteOp,
     args: &lattice_grammar::Args,

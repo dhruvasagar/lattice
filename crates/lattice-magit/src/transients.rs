@@ -1884,3 +1884,58 @@ mod background_task_tests {
         assert!(checked >= 8, "expected to inspect every spawner, saw {checked}");
     }
 }
+
+#[cfg(test)]
+mod remote_target_tests {
+    use crate::magit_global_mode::RemoteTarget;
+
+    /// MG.41c: `p` — no destination argument, so git resolves
+    /// `pushRemote` / `remote.pushDefault` itself. This is what the
+    /// single unlabelled "push" row did; it is now named.
+    #[test]
+    fn configured_adds_nothing() {
+        assert!(RemoteTarget::Configured.argv(None).is_empty());
+        // A stray resolved value cannot leak in.
+        assert!(RemoteTarget::Configured.argv(Some("origin main")).is_empty());
+    }
+
+    #[test]
+    fn all_remotes_and_all_tags_are_flags() {
+        assert_eq!(RemoteTarget::AllRemotes.argv(None), vec!["--all"]);
+        assert_eq!(RemoteTarget::AllTags.argv(None), vec!["--tags"]);
+    }
+
+    /// The upstream pair expands to TWO tokens — `origin main`, not
+    /// `origin/main`. `git push origin/main` would be read as a single
+    /// refspec and fail, which is the bug this splitting avoids.
+    #[test]
+    fn upstream_expands_to_remote_and_branch() {
+        assert_eq!(
+            RemoteTarget::Upstream.argv(Some("origin main")),
+            vec!["origin", "main"],
+        );
+    }
+
+    /// An unresolved destination contributes NOTHING rather than an
+    /// empty argument. `git push ""` is not a no-op — git reads it as a
+    /// real (empty) refspec and errors.
+    #[test]
+    fn an_unresolved_destination_contributes_no_argument() {
+        for t in [RemoteTarget::Upstream, RemoteTarget::Prompted] {
+            assert!(t.argv(None).is_empty(), "{t:?} with None");
+            assert!(t.argv(Some("")).is_empty(), "{t:?} with empty");
+            assert!(t.argv(Some("   ")).is_empty(), "{t:?} with blank");
+        }
+    }
+
+    /// A prompted destination may be several tokens (`origin my-branch`)
+    /// or one (`v1.2.0`); both pass through verbatim.
+    #[test]
+    fn prompted_destinations_pass_through() {
+        assert_eq!(RemoteTarget::Prompted.argv(Some("v1.2.0")), vec!["v1.2.0"]);
+        assert_eq!(
+            RemoteTarget::Prompted.argv(Some("origin feature/x")),
+            vec!["origin", "feature/x"],
+        );
+    }
+}

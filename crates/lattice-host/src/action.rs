@@ -347,6 +347,13 @@ pub enum Action {
     JumpHistoryBack,
     /// Vim's `Ctrl-I` (Tab) -- step forward.
     JumpHistoryForward,
+    /// PBH.3: `<C-6>` -- step back through the ACTIVE PANE's buffer
+    /// trail. Per-pane and buffer-granular, unlike the global,
+    /// position-granular `JumpHistoryBack`.
+    PaneHistoryBack,
+    /// PBH.3: `<C-7>` -- step forward through the active pane's
+    /// buffer trail.
+    PaneHistoryForward,
     /// Vim's `Ctrl-L` -- force a full redraw. Reparses the syntax
     /// tree, recomputes folds, clears the visible-highlight cache,
     /// and tells the runtime to clear the terminal screen on the

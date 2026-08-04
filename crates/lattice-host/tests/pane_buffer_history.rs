@@ -315,3 +315,176 @@ fn previewing_buffers_does_not_record_history() {
         "previewing must leave the pane's buffer trail untouched",
     );
 }
+
+// ---- PBH.3: walking the trail ----
+
+/// Back then forward returns you to where you started.
+#[test]
+fn walking_back_and_forward_round_trips() {
+    let mut e = boot();
+    let origin = e.pane_tree.active().committed_id();
+    let b = add_document(&mut e, 910, "b\n", "*B*");
+    let c = add_document(&mut e, 911, "c\n", "*C*");
+    e.activate_buffer(b);
+    e.activate_buffer(c);
+
+    e.do_pane_history(-1);
+    assert_eq!(e.pane_tree.active().committed_id(), b);
+    e.do_pane_history(-1);
+    assert_eq!(e.pane_tree.active().committed_id(), origin);
+    e.do_pane_history(1);
+    assert_eq!(e.pane_tree.active().committed_id(), b);
+    e.do_pane_history(1);
+    assert_eq!(e.pane_tree.active().committed_id(), c);
+}
+
+/// THE invariant that makes forward reachable: a walk must not record.
+///
+/// If the step back pushed an entry it would truncate the very tail it
+/// was moving into, and `<C-7>` could never return anything.
+#[test]
+fn walking_does_not_record_new_entries() {
+    let mut e = boot();
+    let b = add_document(&mut e, 912, "b\n", "*B*");
+    let c = add_document(&mut e, 913, "c\n", "*C*");
+    e.activate_buffer(b);
+    e.activate_buffer(c);
+    let before = active_trail(&mut e);
+
+    e.do_pane_history(-1);
+    e.do_pane_history(-1);
+    e.do_pane_history(1);
+
+    assert_eq!(
+        active_trail(&mut e),
+        before,
+        "walking must move the cursor, never append",
+    );
+}
+
+/// Walking back then opening a new buffer drops the forward tail —
+/// browser semantics, end to end.
+#[test]
+fn visiting_after_walking_back_truncates_the_tail() {
+    let mut e = boot();
+    let origin = e.pane_tree.active().committed_id();
+    let b = add_document(&mut e, 914, "b\n", "*B*");
+    let c = add_document(&mut e, 915, "c\n", "*C*");
+    let d = add_document(&mut e, 916, "d\n", "*D*");
+    e.activate_buffer(b);
+    e.activate_buffer(c);
+
+    e.do_pane_history(-1); // back to B
+    e.activate_buffer(d); // C's tail is dropped
+
+    assert_eq!(active_trail(&mut e), vec![origin.0, b.0, d.0]);
+}
+
+/// The cursor you left a buffer at is restored when you walk back to it.
+#[test]
+fn walking_back_restores_the_cursor_you_left() {
+    let mut e = boot();
+    let b = add_document(&mut e, 917, "b0\nb1\nb2\n", "*B*");
+
+    e.cursor = lattice_protocol::position::Position::new(2, 0);
+    e.activate_buffer(b);
+    e.do_pane_history(-1);
+
+    assert_eq!(
+        e.cursor,
+        lattice_protocol::position::Position::new(2, 0),
+        "walking back should land where the user actually was",
+    );
+}
+
+/// Both ends echo rather than wrapping — a directional key that cycles
+/// is a worse key.
+#[test]
+fn walking_past_either_end_echoes_and_does_not_wrap() {
+    let mut e = boot();
+    let origin = e.pane_tree.active().committed_id();
+    let b = add_document(&mut e, 918, "b\n", "*B*");
+    e.activate_buffer(b);
+
+    e.do_pane_history(-1);
+    assert_eq!(e.pane_tree.active().committed_id(), origin);
+    e.do_pane_history(-1);
+    assert_eq!(
+        e.pane_tree.active().committed_id(),
+        origin,
+        "must not wrap around to the newest entry",
+    );
+    let msg = e.last_message.as_ref().expect("an echo at the end");
+    assert!(msg.text.contains("oldest"), "got {:?}", msg.text);
+
+    e.do_pane_history(1);
+    e.do_pane_history(1);
+    assert_eq!(e.pane_tree.active().committed_id(), b);
+    let msg = e.last_message.as_ref().expect("an echo at the end");
+    assert!(msg.text.contains("newest"), "got {:?}", msg.text);
+}
+
+/// Each pane walks its own trail — the whole point of per-pane history.
+#[test]
+fn panes_walk_independent_trails() {
+    let mut e = boot();
+    let origin = e.pane_tree.active().committed_id();
+    let b = add_document(&mut e, 919, "b\n", "*B*");
+    let c = add_document(&mut e, 920, "c\n", "*C*");
+
+    // Pane 1 visits B.
+    e.activate_buffer(b);
+
+    // Split; the new pane visits C and walks back.
+    let new_idx = e.pane_tree.split_active(SplitOrientation::Vertical);
+    e.pane_tree.set_active(new_idx);
+    e.activate_buffer(c);
+    e.do_pane_history(-1);
+    assert_eq!(
+        e.pane_tree.active().committed_id(),
+        b,
+        "the split pane's trail starts at what it was showing (B), not pane 1's origin",
+    );
+
+    // Pane 1's own trail is untouched by any of that.
+    let first_idx = e
+        .pane_tree
+        .leaves()
+        .iter()
+        .position(|l| l.id != e.pane_tree.active().id)
+        .expect("two panes");
+    e.pane_tree.set_active(first_idx);
+    assert_eq!(active_trail(&mut e), vec![origin.0, b.0]);
+}
+
+/// A buffer removed from the registry (`:bd`) is pruned from the trail
+/// as the walk passes it, rather than failing the switch.
+///
+/// Liveness is registry presence, not document-ness: in-pane synthetic
+/// buffers (help, oil, file tree) legitimately appear in a trail, so a
+/// `document_ids_sorted`-based check here would silently prune all of
+/// them.
+#[test]
+fn walking_skips_a_buffer_that_left_the_registry() {
+    let mut e = boot();
+    let origin = e.pane_tree.active().committed_id();
+    let b = add_document(&mut e, 921, "b\n", "*B*");
+    let c = add_document(&mut e, 922, "c\n", "*C*");
+    e.activate_buffer(b);
+    e.activate_buffer(c);
+
+    // B goes away while we're sitting on C.
+    e.buffers.remove(b);
+
+    e.do_pane_history(-1);
+
+    assert_eq!(
+        e.pane_tree.active().committed_id(),
+        origin,
+        "the walk should skip the deleted buffer and land on the one before it",
+    );
+    assert!(
+        !active_trail(&mut e).contains(&b.0),
+        "the dead entry should be dropped, not retained",
+    );
+}

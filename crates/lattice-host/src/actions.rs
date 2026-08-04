@@ -64,6 +64,9 @@ pub struct ActionIds {
     /// CM.7 (2026-07-22): Builtin `[qf` — first entry of the previous file.
     pub error_prev_file: CommandId,
     pub jump_history_back: CommandId,
+    /// PBH.3: `<C-6>` / `<C-7>` -- walk the active pane's buffer trail.
+    pub pane_history_back: CommandId,
+    pub pane_history_forward: CommandId,
     pub jump_history_forward: CommandId,
     pub walk_mark_history_back: CommandId,
     pub walk_mark_history_forward: CommandId,
@@ -426,6 +429,18 @@ pub fn populate(registry: &mut CommandRegistry, builtins: &Builtins) -> ActionId
             AppEffect::ErrorNav {
                 target: lattice_grammar::ErrorTarget::PrevFile,
             },
+        ),
+        pane_history_back: register_simple(
+            registry,
+            "action:pane-history-back",
+            "`<C-6>`: step back through the active pane's buffer history.",
+            AppEffect::PaneHistoryBack,
+        ),
+        pane_history_forward: register_simple(
+            registry,
+            "action:pane-history-forward",
+            "`<C-7>`: step forward through the active pane's buffer history.",
+            AppEffect::PaneHistoryForward,
         ),
         jump_history_back: register_simple(
             registry,

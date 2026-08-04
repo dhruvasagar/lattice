@@ -3513,6 +3513,45 @@ mod tests {
         }
     }
 
+    /// PBH.3 regression: a CTRL-bearing digit is a chord, not a count.
+    ///
+    /// The count-prefix check used to test `chord.key` alone, so
+    /// `Char('6') + CTRL` matched `to_digit` and was consumed as a count
+    /// before the trie was consulted — making every `<C-digit>` binding
+    /// in Normal mode silently unreachable. `<C-6>` / `<C-7>` (the pane
+    /// buffer history walk) were the first bindings to notice.
+    ///
+    /// Asserting "not PushDigit" rather than a specific action keeps
+    /// this a test of the guard, not of what happens to be bound.
+    #[test]
+    fn ctrl_digit_is_a_chord_not_a_count() {
+        let (_, b) = fixture();
+        for digit in 0u8..=9 {
+            let c = char::from_digit(digit as u32, 10).unwrap();
+            let action = translate(
+                ctx(ModalState::Normal, &b),
+                crossterm::event::KeyEvent::new(
+                    KeyCode::Char(c),
+                    crossterm::event::KeyModifiers::CONTROL,
+                ),
+            );
+            assert!(
+                !matches!(action, Action::PushDigit(_)),
+                "<C-{c}> must not be swallowed as a count digit, got {action:?}",
+            );
+        }
+    }
+
+    /// The same guard must not break counts: an UNMODIFIED digit still
+    /// accumulates. Paired with the test above so neither direction can
+    /// regress alone.
+    #[test]
+    fn plain_digit_is_still_a_count() {
+        let (_, b) = fixture();
+        let action = translate(ctx(ModalState::Normal, &b), key(KeyCode::Char('6')));
+        assert!(matches!(action, Action::PushDigit(6)));
+    }
+
     #[test]
     fn zero_with_no_count_invokes_line_start() {
         let (_, b) = fixture();

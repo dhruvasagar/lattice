@@ -209,6 +209,13 @@ than by overloading a directional key with hidden state.
   no longer in the registry are skipped and dropped as the walk passes
   them, rather than eagerly purged on delete. Lazy keeps `:bd` off the
   hook for a data structure it should not know about.
+
+  Liveness is **registry presence, kind-agnostic**
+  (`buffers.kind_of(id).is_some()`), not `document_ids_sorted()`. The
+  latter filters to `BufferData::Document(_)`, so it would silently
+  prune every in-pane synthetic buffer — precisely the entries the
+  section above says belong in a trail. The two rules have to agree,
+  and it is easy to write the narrow one by reflex.
 - **Empty / single-entry history** — `<C-6>` echoes and does nothing.
 - **Pane never navigated** — the map entry is created lazily on first
   buffer change, seeded with the pane's current buffer as entry 0, so
@@ -235,6 +242,31 @@ codes, so neither needs the kitty keyboard protocol.
 `KeymapLayer::Builtin`, `BindingMode::Normal`. This is universal pane
 machinery with no owning mode, so the builtin layer is correct and
 there is no mode-ownership surface to split.
+
+### The count-prefix hole these chords exposed
+
+Binding them was not enough: the chords arrived and vanished. The
+count-prefix branch in `lattice-host/src/input.rs` tested the key
+alone —
+
+	if !prefix_resolves_chord
+		&& let KeyKind::Char(c) = chord.key
+		&& let Some(digit) = c.to_digit(10)
+
+— so `Char('6') + CTRL` matched `to_digit` and was consumed as a count
+*before the trie was ever consulted*. That made **every `<C-digit>`
+chord unreachable in Normal mode**, not merely these two. Emacs-keys'
+`<C-x>2` / `<C-x>3` escaped only through the `prefix_resolves_chord`
+exception above it, which is why the hole had gone unnoticed.
+
+Fixed by requiring `chord.mods.is_empty()`: a count digit is typed
+without modifiers. `is_empty()` rather than "no ctrl" because
+shift-digit produces a symbol (`^`, `&`), not `Char('6')`, so no
+legitimate count arrives with any modifier set.
+
+This is why the chords are tested with `press()` rather than by
+calling the handler — a handler-level test passes on a completely
+unroutable chord, and this bug is exactly that failure mode.
 
 **GPUI peer** must map Ctrl+6 / Ctrl+7 to the same `KeyChord`s. GPUI
 delivers a keystroke with key `"6"` and a ctrl modifier rather than a

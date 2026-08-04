@@ -420,6 +420,10 @@ impl App {
             | Action::JumpToMarkExact(_)
             | Action::JumpHistoryBack
             | Action::JumpHistoryForward
+            // PBH.3: the per-pane buffer trail (`<C-6>` / `<C-7>`).
+            // Pure-editor like its position-ring siblings above.
+            | Action::PaneHistoryBack
+            | Action::PaneHistoryForward
             // SN.2b (2026-06-12): `<Tab>` / `<S-Tab>` placeholder
             // navigation is mode-owned (`active-snippet-mode`'s
             // `ActionHandlerRegistry` closures); the
@@ -2070,6 +2074,79 @@ mod tests {
         a.apply(Action::EnterMode(ModalState::Insert));
         assert_eq!(a.editor.modal, ModalState::Insert);
         assert_eq!(a.editor.cursor, before);
+    }
+
+    // ---- PBH.3: `<C-6>` / `<C-7>` pane buffer history ----
+
+    /// The chord must actually DISPATCH, not be swallowed.
+    ///
+    /// Driven with `press()` rather than `apply(Action::…)` on purpose:
+    /// a `BindingMode` arm that never routes the key is invisible to a
+    /// handler-level test, which would pass on a completely unbound
+    /// chord. The echo is the proof the action ran — a swallowed key
+    /// produces no message at all.
+    ///
+    /// `<C-6>` is the spelling terminals actually deliver: they send
+    /// 0x1E, and crossterm maps `b'\x1C'..=b'\x1F'` to
+    /// `Char('4'..'7') + CONTROL`.
+    #[test]
+    fn ctrl_6_dispatches_pane_history_back() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut a = app_with("hello\n", 5);
+        press(
+            &mut a,
+            KeyEvent::new(KeyCode::Char('6'), KeyModifiers::CONTROL),
+        );
+        let msg = a
+            .editor
+            .last_message
+            .as_ref()
+            .expect("<C-6> must reach the action; no echo means the key was swallowed");
+        assert!(
+            msg.text.contains("oldest"),
+            "expected the at-the-end echo, got {:?}",
+            msg.text,
+        );
+    }
+
+    /// Same for the forward chord (0x1F → `Char('7') + CONTROL`).
+    #[test]
+    fn ctrl_7_dispatches_pane_history_forward() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut a = app_with("hello\n", 5);
+        press(
+            &mut a,
+            KeyEvent::new(KeyCode::Char('7'), KeyModifiers::CONTROL),
+        );
+        let msg = a
+            .editor
+            .last_message
+            .as_ref()
+            .expect("<C-7> must reach the action");
+        assert!(
+            msg.text.contains("newest"),
+            "expected the at-the-end echo, got {:?}",
+            msg.text,
+        );
+    }
+
+    /// The two chords are distinct actions — a regression that folded
+    /// them together would make the pair useless while still echoing.
+    #[test]
+    fn ctrl_6_and_ctrl_7_are_distinct() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut a = app_with("hello\n", 5);
+        press(
+            &mut a,
+            KeyEvent::new(KeyCode::Char('6'), KeyModifiers::CONTROL),
+        );
+        let back = a.editor.last_message.as_ref().expect("echo").text.clone();
+        press(
+            &mut a,
+            KeyEvent::new(KeyCode::Char('7'), KeyModifiers::CONTROL),
+        );
+        let fwd = a.editor.last_message.as_ref().expect("echo").text.clone();
+        assert_ne!(back, fwd, "<C-6> and <C-7> must not collapse");
     }
 
     #[test]

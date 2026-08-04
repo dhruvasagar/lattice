@@ -683,6 +683,8 @@ interface types {
         search-previous,
         jump-history-back,
         jump-history-forward,
+        pane-history-back,
+        pane-history-forward,
         walk-mark-history-back,
         walk-mark-history-forward,
         tag-stack-pop,

@@ -11,7 +11,7 @@ fresh trail.
 |---|---|---|
 | PBH.1 | ✅ | Data model + side table + GC reconciliation |
 | PBH.2 | ✅ | Recording at the activation chokepoint |
-| PBH.3 | 📝 | Walk back / forward + the `<C-6>` / `<C-7>` chords |
+| PBH.3 | ✅ | Walk back / forward + the `<C-6>` / `<C-7>` chords |
 | PBH.4 | 📝 | `pane.buffer-history-size` option + eviction |
 | PBH.5 | 📝 | `:history pane-buffers` picker source |
 | PBH.6 | 📝 | Docs + cross-renderer parity |
@@ -104,7 +104,7 @@ or a walked-past entry keeps a stale position.
 the single place the bound is spelled, so PBH.4's swap to the typed
 option is one edit rather than a hunt.
 
-## PBH.3 — Walk + chords 📝
+## PBH.3 — Walk + chords ✅
 
 `Editor::pane_history_back()` / `pane_history_forward()`, bound to
 `<C-6>` / `<C-7>` at `KeymapLayer::Builtin`, `BindingMode::Normal`
@@ -125,10 +125,39 @@ binding would never fire. See design §7.
 
 **Tests.** back/forward round-trip; walking then opening a new buffer
 truncates the forward tail; walk does not itself record; cursor is
-restored; both ends echo rather than wrap; a deleted buffer is skipped.
-Test the chords with `press()`, not by calling the handler — a
-`BindingMode` arm that swallows the key is invisible to a
-handler-level test (see `modal-states-need-a-dispatch-arm`).
+restored; both ends echo rather than wrap; a deleted buffer is skipped;
+panes walk independent trails. Test the chords with `press()`, not by
+calling the handler — a `BindingMode` arm that swallows the key is
+invisible to a handler-level test (see
+`modal-states-need-a-dispatch-arm`).
+
+**Landed as:** `AppEffect::PaneHistoryBack`/`Forward` (+ WIT variants
+and boundary mappings), `Action::PaneHistoryBack`/`Forward`,
+`action:pane-history-back`/`-forward`, `Editor::do_pane_history`, the
+`walking_pane_history` suppression flag, bindings in `keymap_normal.rs`
+beside `<C-o>`/`<C-i>`, and catalog rows so `:keymap` documents them.
+6 walk tests (17 in the integration file) + 3 chord-dispatch tests.
+
+**A pre-existing bug this slice uncovered — `<C-digit>` was
+unreachable.** The chords bound correctly and still did nothing. The
+count-prefix branch in `lattice-host/src/input.rs` tested `chord.key`
+alone, so `Char('6') + CTRL` matched `to_digit` and was swallowed as a
+count *before the trie was consulted*. That broke **every `<C-digit>`
+chord in Normal mode**, not just these; emacs-keys' `<C-x>2` survived
+only via the `prefix_resolves_chord` exception, which is why nobody had
+hit it. Fixed by adding `chord.mods.is_empty()` to the guard, pinned by
+`ctrl_digit_is_a_chord_not_a_count` and its paired
+`plain_digit_is_still_a_count` so neither direction regresses alone.
+The `press()`-not-handler rule is what caught it: a handler-level test
+would have passed throughout.
+
+**Second correction, caught in self-review.** The walk's liveness prune
+first used `buffers.document_ids_sorted()`, which filters to
+`BufferData::Document(_)` — so it would have silently dropped every
+in-pane synthetic buffer (help, oil, file tree) from a trail, directly
+contradicting PBH.2's rule that those legitimately belong there. Now
+`buffers.kind_of(id).is_some()`, kind-agnostic. The two rules have to
+agree and the narrow one is the reflex spelling.
 
 ## PBH.4 — Size option 📝
 

@@ -603,8 +603,20 @@ fn compute_normal_action(
     // not `None`), the digit is the chord's literal second key, not a
     // count, so the trie wins. This is mode-agnostic: any layer binding a
     // `[prefix, digit]` chord (emacs-keys `<C-x>2` / `<C-x>3`) benefits.
+    // PBH.3 fix: a count digit is typed WITHOUT modifiers. Before this
+    // guard the check was on `chord.key` alone, so `Char('6') + CTRL`
+    // matched `to_digit` and `<C-6>` was consumed as a count before the
+    // trie was ever consulted — making **every `<C-digit>` chord
+    // unreachable in Normal mode**, not just this feature's. (Emacs-keys
+    // `<C-x>2` / `<C-x>3` escaped only via the `prefix_resolves_chord`
+    // exception above, which is why the hole went unnoticed.)
+    //
+    // `is_empty()` rather than "no ctrl": shift-digit yields a symbol
+    // (`^`, `&`), not `Char('6')`, so no legitimate count arrives with
+    // any modifier set.
     let prefix_resolves_chord = matches!(prefix_action, Some(ref a) if !matches!(a, Action::None));
     if !prefix_resolves_chord
+        && chord.mods.is_empty()
         && let KeyKind::Char(c) = chord.key
         && let Some(digit) = c.to_digit(10)
         && (digit > 0 || pending_count > 0)

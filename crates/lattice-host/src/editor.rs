@@ -998,6 +998,13 @@ pub struct Editor {
         lattice_core::ui::pane::PaneId,
         crate::pane_history::PaneBufferHistory,
     >,
+    /// PBH.3: set for the duration of a `<C-6>` / `<C-7>` walk so the
+    /// buffer switch it performs is not recorded as a new visit.
+    ///
+    /// Without this the step back would push an entry, truncate the
+    /// forward tail it was moving into, and make `<C-7>` permanently
+    /// unreachable — the walk would eat its own future.
+    pub(crate) walking_pane_history: bool,
     /// Shared typed-options registry (DESIGN.md §5.12).
     /// Every option's *current value* lives in here behind
     /// an `ArcSwap<T>`; `:set` parses against it; the

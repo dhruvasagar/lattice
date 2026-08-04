@@ -2476,6 +2476,8 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         Action::JumpToMarkLine(name) => editor.do_jump_mark(name, false),
         Action::JumpToMarkExact(name) => editor.do_jump_mark(name, true),
         Action::JumpHistoryBack => editor.do_jump_history(-1),
+        Action::PaneHistoryBack => editor.do_pane_history(-1),
+        Action::PaneHistoryForward => editor.do_pane_history(1),
         Action::JumpHistoryForward => editor.do_jump_history(1),
         // SN.2b (2026-06-12): `<Tab>` / `<S-Tab>` placeholder
         // navigation is mode-owned (`active-snippet-mode`'s
@@ -8089,6 +8091,8 @@ impl Editor {
             AppEffect::SearchNext => out.next_actions.push(Action::SearchNext),
             AppEffect::SearchPrevious => out.next_actions.push(Action::SearchPrevious),
             AppEffect::JumpHistoryBack => out.next_actions.push(Action::JumpHistoryBack),
+            AppEffect::PaneHistoryBack => out.next_actions.push(Action::PaneHistoryBack),
+            AppEffect::PaneHistoryForward => out.next_actions.push(Action::PaneHistoryForward),
             AppEffect::JumpHistoryForward => out.next_actions.push(Action::JumpHistoryForward),
             AppEffect::WalkMarkHistoryBack => out.next_actions.push(Action::WalkMarkHistoryBack),
             AppEffect::WalkMarkHistoryForward => {
@@ -20305,11 +20309,102 @@ impl Editor {
         id: BufferId,
         outgoing: lattice_protocol::position::Position,
     ) {
+        // PBH.3: a walk moves along the trail; it is not a new visit.
+        // Recording here would push an entry, truncate the very tail
+        // the walk is moving into, and make `<C-7>` unreachable.
+        if self.walking_pane_history {
+            return;
+        }
         let scroll = self.scroll;
         let cap = crate::pane_history::DEFAULT_PANE_BUFFER_HISTORY_SIZE;
         let history = self.active_pane_history_mut();
         history.update_current_position(outgoing, scroll);
         history.push(crate::pane_history::PaneHistoryEntry::at_origin(id), cap);
+    }
+
+    /// PBH.3: walk the active pane's buffer trail. `-1` = back
+    /// (`<C-6>`), `+1` = forward (`<C-7>`).
+    ///
+    /// Three things make this correct, and all three are load-bearing:
+    ///
+    /// 1. **The outgoing position is captured first.** Otherwise the
+    ///    entry being left keeps whatever position it had when it was
+    ///    pushed, and walking back to it a second time lands in the
+    ///    wrong place.
+    /// 2. **The walk does not record.** `walking_pane_history` gates
+    ///    the push in [`Self::record_pane_history_visit`]; without it
+    ///    the step back would push a new entry, truncate its own
+    ///    forward tail, and make `<C-7>` permanently unreachable.
+    /// 3. **Dead buffers are pruned before stepping**, so a `:bd`'d
+    ///    entry is skipped rather than failing the switch.
+    ///
+    /// No wrap at either end — a directional key that cycles is a
+    /// worse key. Echoes instead.
+    pub fn do_pane_history(&mut self, delta: i32) {
+        // Where we are now, onto the entry we are about to leave.
+        self.capture_outgoing_pane_position();
+
+        // Prune entries whose buffer left the registry. Lazy, here,
+        // rather than eagerly on `:bd` — that keeps buffer deletion
+        // from having to know about a structure it should not know
+        // about.
+        //
+        // Liveness is "still in the registry", NOT "is a Document":
+        // in-pane synthetic buffers (`:help`, `:lsp-log`, a file tree,
+        // an oil buffer) route through `activate_buffer_only` like
+        // anything else and so legitimately appear in a trail. Testing
+        // `document_ids_sorted` here would silently prune every one of
+        // them as dead. Computed before the `&mut` borrow below.
+        let pane_id = self.pane_tree.active().id;
+        let dead: std::collections::HashSet<BufferId> = self
+            .pane_buffer_history
+            .get(&pane_id)
+            .map(|h| {
+                h.entries()
+                    .iter()
+                    .map(|e| e.buffer)
+                    .filter(|id| self.buffers.kind_of(*id).is_none())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let history = self.active_pane_history_mut();
+        history.retain_live(|b| !dead.contains(&b));
+
+        let target = if delta < 0 {
+            history.back()
+        } else {
+            history.forward()
+        };
+        let Some(entry) = target else {
+            let edge = if delta < 0 { "oldest" } else { "newest" };
+            self.set_message(
+                EchoLevel::Info,
+                format!("already at the {edge} buffer in this pane's history"),
+            );
+            return;
+        };
+
+        // Switch WITHOUT recording: this is a move along the trail, not
+        // a new visit.
+        self.walking_pane_history = true;
+        let switched = self.activate_buffer(entry.buffer);
+        self.walking_pane_history = false;
+
+        if !switched {
+            // `activate_buffer` echoes its own error. The cursor has
+            // already moved on the trail; leaving it there is right —
+            // the entry is gone, and the next walk continues past it.
+            tracing::debug!(
+                buffer = entry.buffer.0,
+                "pane-history: walk target failed to activate",
+            );
+            return;
+        }
+
+        // Restore where the user was in this buffer, in this pane.
+        self.cursor = entry.cursor;
+        self.scroll = entry.scroll;
+        self.snapshot_active_pane();
     }
 
     /// PBH.2: stamp the pane's live cursor/scroll onto the current

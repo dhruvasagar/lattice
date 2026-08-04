@@ -1229,6 +1229,25 @@ pub fn register_normal_bindings(
         CommandInvocation::of(actions.jump_history_forward),
         source(),
     );
+    // PBH.3: the per-pane buffer trail, beside the global position ring
+    // it parallels. `<C-6>` / `<C-7>` rather than `<C-^>` / `<C-_>`:
+    // terminals send 0x1E / 0x1F and crossterm maps `b'\x1C'..=b'\x1F'`
+    // to `Char('4'..'7') + CONTROL`, so these are the only spellings
+    // that ever match. See docs/dev/architecture/pane-buffer-history.md §7.
+    handle.bind(
+        layer,
+        mode,
+        &[lit(KeyChord::ctrl('6'))],
+        CommandInvocation::of(actions.pane_history_back),
+        source(),
+    );
+    handle.bind(
+        layer,
+        mode,
+        &[lit(KeyChord::ctrl('7'))],
+        CommandInvocation::of(actions.pane_history_forward),
+        source(),
+    );
     handle.bind(
         layer,
         mode,

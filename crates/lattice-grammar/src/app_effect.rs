@@ -190,6 +190,17 @@ pub enum AppEffect {
     /// position history. Promoted from `Action::JumpHistoryForward`
     /// in slice 8.i.1.b.
     JumpHistoryForward,
+    /// PBH.3: `<C-6>`. Walk one step **back** through the *active
+    /// pane's* buffer trail — the buffers this pane has shown.
+    ///
+    /// Distinct from [`Self::JumpHistoryBack`] (`<C-o>`), which walks
+    /// the global position ring at *position* granularity. This one is
+    /// per-pane and moves whole buffers. See
+    /// `docs/dev/architecture/pane-buffer-history.md`.
+    PaneHistoryBack,
+    /// PBH.3: `<C-7>`. Walk one step **forward** through the active
+    /// pane's buffer trail.
+    PaneHistoryForward,
     /// Vim's `g;`. Walk one step backward through the
     /// mark history (oldest -> newest cursor positions in this
     /// buffer). Promoted from `Action::WalkMarkHistoryBack` in

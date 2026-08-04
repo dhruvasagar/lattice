@@ -313,6 +313,8 @@ fn build_default_keymap() -> Vec<KeymapEntry> {
         keymap_entry! { mode: Normal, chord: ".", doc: "Repeat last change (dot-repeat)" },
         keymap_entry! { mode: Normal, chord: "<C-o>", doc: "Jump-list back (previous AutoJump position)" },
         keymap_entry! { mode: Normal, chord: "<C-i>", doc: "Jump-list forward" },
+        keymap_entry! { mode: Normal, chord: "<C-6>", doc: "Back through this pane's buffer history (restores the cursor you left)", cmd: "action:pane-history-back" },
+        keymap_entry! { mode: Normal, chord: "<C-7>", doc: "Forward through this pane's buffer history", cmd: "action:pane-history-forward" },
         keymap_entry! { mode: Normal, chord: "<Tab>", doc: "Jump-list forward (terminal alias for Ctrl-I)" },
         keymap_entry! { mode: Normal, chord: "<C-l>", doc: "Force redraw (clear terminal, reparse syntax, reset highlight cache)" },
         // ---- Normal: pending-key prefixes ----

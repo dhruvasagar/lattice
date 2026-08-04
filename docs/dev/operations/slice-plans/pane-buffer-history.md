@@ -260,6 +260,30 @@ history" section + quick-reference rows), `ex-commands.md` (the
 `:history` row + a pane-buffer-history subsection),
 `options.md` (the new `pane` group), and two GPUI parity tests.
 
+**Two real bugs the picker test exposed — after PBH.5 was already
+committed.** The first version of the TUI picker test only asserted the
+command did not report "unknown picker source", which passes even if no
+picker opens. Rewriting it to assert on `picker.candidates` failed
+immediately with an empty trail, and unwound two defects:
+
+1. **`open_fresh_into_active_slot` recorded nothing.** It swaps
+   `document_buffer_id` / `document` by hand, bypassing both existing
+   recording sites — and it is the path behind opening any
+   not-yet-open file, the commonest buffer switch there is. Now records
+   on `Open` and *repoints* the current entry on `Reload` (`:e!` keeps
+   the same file with a fresh actor, so pushing would duplicate it).
+2. **`editing_an_already_open_file_is_recorded` passed for the wrong
+   reason.** Its helper read the trail through
+   `active_pane_history_mut`, which *seeds* a missing history with the
+   current buffer — so "the trail contains the file we just opened"
+   held off the seed even though nothing was recorded. Tests that
+   assert recording HAPPENED now use `active_trail_unseeded`.
+
+Also closed in the same pass: `:bd` was only tested by calling
+`purge_buffer_from_pane_histories` directly, never through
+`do_buffer_delete`, so the wiring was unverified. Plus new coverage for
+"a buffer created but never visited is not in the trail".
+
 **GPUI parity turned out to need a test, not a fix.** GPUI reports the
 key string `"6"` with a control modifier, which the existing
 printable-char path already folds to `Char('6') + CTRL` — the same

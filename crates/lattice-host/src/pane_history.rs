@@ -117,6 +117,20 @@ impl PaneBufferHistory {
         }
     }
 
+    /// Point the current entry at a different buffer id without moving
+    /// the trail.
+    ///
+    /// For `:e!` — a reload replaces the buffer *actor* (new
+    /// `BufferId`) while the pane keeps showing the same file. Pushing
+    /// would put the same path in the trail twice for what the user
+    /// experiences as a refresh; leaving it alone would strand the
+    /// entry on a dead id.
+    pub fn repoint_current(&mut self, buffer: BufferId) {
+        if let Some(entry) = self.entries.get_mut(self.cursor) {
+            entry.buffer = buffer;
+        }
+    }
+
     /// Record a visit to `entry`, truncating any forward tail.
     ///
     /// `cap` bounds the ring (`pane.buffer-history-size`); the oldest

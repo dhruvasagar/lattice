@@ -121,37 +121,52 @@ navigation" — single digits in practice.
 
 ---
 
-## 5. Recording — two chokepoints, preview-safe by construction
+## 5. Recording — three call sites, preview-safe by construction
 
-Recording happens in `Editor::activate_buffer_only` **and** in
-`Editor::activate_document` (`lattice-host/src/dispatch.rs`), both
-guarded by
+Recording happens at **three** places in
+`lattice-host/src/dispatch.rs`, each guarded by
 
 	if id != self.active_pane_buffer_id()
 
-so a re-activation of the current buffer is not recorded. The
-`activate_buffer_only` push sits alongside the position-history one.
+so a re-activation of the current buffer is not recorded.
 
-**Why two.** The first draft of this section claimed
-`activate_buffer_only` was *the* single funnel for "this pane now shows
-a different buffer". It is not. Two callers reach `activate_document`
-directly and bypass it:
+| Site | Covers |
+|---|---|
+| `activate_buffer_only` | Non-document kinds — help, oil, file tree. Sits alongside the position-history push. |
+| `activate_document` | `do_edit`'s already-open branch; the `<C-o>` walk landing in another buffer. |
+| `open_fresh_into_active_slot` | Opening a not-yet-open file — the commonest switch of all. |
 
-- `do_edit`'s already-open branch — so `:e <already-open-file>` changed
-  the displayed buffer without recording;
-- the `<C-o>` position-history walk, when it lands in another buffer.
+**Why three, and how the design got this wrong twice.** The first draft
+asserted `activate_buffer_only` was *the* single funnel for "this pane
+now shows a different buffer", on the strength of its own doc comment.
+It is not. Two further paths change the displayed buffer, and each was
+found by a failing test rather than by reading:
 
-Both are legitimate call sites, so the fix is to record where the
-document swap actually happens rather than to enumerate callers. The
-overlap is a **no-op by construction**: whichever fires first moves the
-trail's current entry to `id`, and `PaneBufferHistory::push` ignores a
-visit to the buffer already current. Non-document kinds never reach
-`activate_document`, which is why the `activate_buffer_only` call
-stays.
+- `activate_document` is reached directly by `do_edit`'s already-open
+  branch and by the position-history walk, so `:e <already-open-file>`
+  recorded nothing.
+- `open_fresh_into_active_slot` assigns `document_buffer_id` and
+  `document` **by hand**, bypassing both. It is the path a user hits
+  most — opening a file that is not already open — and it recorded
+  nothing until PBH.6's picker test failed with an empty trail.
 
-The general lesson is worth keeping: "this is the single funnel" is a
+Each is a legitimate call site, so the fix is to record where the swap
+actually happens rather than to enumerate callers. The overlap is a
+**no-op by construction**: whichever fires first moves the trail's
+current entry to `id`, and `PaneBufferHistory::push` ignores a visit to
+the buffer already current.
+
+**`:e!` repoints rather than pushes.** A reload replaces the buffer
+*actor* (new `BufferId`) while the pane keeps showing the same file, so
+`repoint_current` updates the current entry's id. Pushing would put the
+same path in the trail twice for what the user experiences as a
+refresh; doing nothing would strand the entry on a dead id.
+
+The general lesson, twice-earned: **"this is the single funnel" is a
 claim to verify by grepping the inner function's callers, not to assert
-from the outer function's doc comment.
+from the outer function's doc comment** — and the test that proves
+recording happened must not read through a code path that *seeds* the
+thing it is checking for.
 
 **Previews cannot pollute history.** A picker preview goes through
 `Editor::set_preview_override`, which leaves the pane's committed

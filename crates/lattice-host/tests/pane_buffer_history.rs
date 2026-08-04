@@ -206,6 +206,23 @@ fn active_trail(e: &mut Editor) -> Vec<u32> {
     buffers_of(e.active_pane_history_mut())
 }
 
+/// Read the active pane's trail WITHOUT seeding it.
+///
+/// `active_trail` goes through `active_pane_history_mut`, which creates
+/// and seeds a missing entry — so an assertion like "the trail contains
+/// the buffer we just opened" passes trivially off the seed even when
+/// nothing was recorded. That is exactly how
+/// `editing_an_already_open_file_is_recorded` passed while
+/// `open_fresh_into_active_slot` recorded nothing at all. Tests about
+/// whether recording HAPPENED must use this.
+fn active_trail_unseeded(e: &Editor) -> Vec<u32> {
+    let pane = e.pane_tree.active().id;
+    e.pane_buffer_history
+        .get(&pane)
+        .map(|h| h.entries().iter().map(|x| x.buffer.0).collect())
+        .unwrap_or_default()
+}
+
 /// A real buffer switch is recorded on the pane's trail.
 #[test]
 fn activating_a_buffer_records_it() {
@@ -491,32 +508,67 @@ fn walking_skips_a_buffer_that_left_the_registry() {
 
 // ---- PBH.4: option, :bd purge, and the chokepoint-bypass fixes ----
 
-/// `:e <already-open-file>` must be recorded.
+/// `:e <new-file>` must be recorded, with the ORIGIN still in the trail.
 ///
-/// `do_edit`'s already-open branch calls `activate_document` directly
-/// rather than `activate_buffer`, so it bypassed the
-/// `activate_buffer_only` guard. Recording moved into
-/// `activate_document` to cover it — the claim that
-/// `activate_buffer_only` was the "single funnel" was wrong.
+/// `open_fresh_into_active_slot` swaps `document_buffer_id` by hand
+/// rather than going through `activate_document`, so opening a
+/// not-yet-open file — the commonest buffer switch there is — recorded
+/// nothing. Asserting the *origin* survives is what catches it: a
+/// seeded-but-unrecorded trail contains only the new buffer.
 #[test]
-fn editing_an_already_open_file_is_recorded() {
-    let dir = std::env::temp_dir().join(format!("pbh-edit-{}", std::process::id()));
+fn opening_a_new_file_records_both_the_origin_and_the_target() {
+    let dir = std::env::temp_dir().join(format!("pbh-open-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("already-open.txt");
+    let path = dir.join("fresh.txt");
     std::fs::write(&path, "x\n").unwrap();
 
     let mut e = boot();
     let origin = e.pane_tree.active().committed_id();
-    // Open it once (creates the buffer), then go back to the origin.
     e.do_edit(Some(path.clone()), false);
     let opened = e.pane_tree.active().committed_id();
     assert_ne!(opened, origin, "sanity: :e opened a different buffer");
 
-    let trail = active_trail(&mut e);
+    let trail = active_trail_unseeded(&e);
     std::fs::remove_dir_all(&dir).ok();
-    assert!(
-        trail.contains(&opened.0),
-        "opening a file must land on the pane's trail: {trail:?}",
+    assert_eq!(
+        trail,
+        vec![origin.0, opened.0],
+        "the origin AND the opened file must both be on the trail",
+    );
+}
+
+/// `:e <already-open-file>` must be recorded too — that branch calls
+/// `activate_document` directly, a different bypass from the one above.
+#[test]
+fn editing_an_already_open_file_is_recorded() {
+    let mut e = boot();
+    let origin = e.pane_tree.active().committed_id();
+    let b = add_document(&mut e, 950, "b\n", "*B*");
+    e.activate_buffer(b);
+    e.activate_buffer(origin);
+
+    assert_eq!(
+        active_trail_unseeded(&e),
+        vec![origin.0, b.0, origin.0],
+        "switching back is a third stop, and every hop is recorded",
+    );
+}
+
+/// A buffer that exists in the registry but has never been shown in
+/// this pane must NOT be in its trail. History records visits, not
+/// buffer creation.
+#[test]
+fn an_unvisited_buffer_is_not_in_the_trail() {
+    let mut e = boot();
+    let origin = e.pane_tree.active().committed_id();
+    let _never_visited = add_document(&mut e, 951, "n\n", "*N*");
+    let b = add_document(&mut e, 952, "b\n", "*B*");
+    e.activate_buffer(b);
+
+    assert_eq!(
+        active_trail_unseeded(&e),
+        vec![origin.0, b.0],
+        "only visited buffers appear",
     );
 }
 
@@ -617,4 +669,61 @@ fn picker_accept_out_of_range_is_reported() {
     e.do_pane_history_jump(99);
     let msg = e.last_message.as_ref().expect("an error echo");
     assert!(msg.text.contains("no entry"), "got {:?}", msg.text);
+}
+
+/// `:bd` end-to-end must purge the trail — not just the helper.
+///
+/// The earlier test called `purge_buffer_from_pane_histories` directly,
+/// which proves the helper works but not that `do_buffer_delete` calls
+/// it. Same class of hole as testing a handler instead of the chord.
+#[test]
+fn bd_command_purges_the_deleted_buffer_from_the_trail() {
+    let mut e = boot();
+    let origin = e.pane_tree.active().committed_id();
+    let b = add_document(&mut e, 960, "b\n", "*B*");
+    e.activate_buffer(b);
+    assert!(active_trail_unseeded(&e).contains(&b.0), "sanity: B recorded");
+
+    // `:bd` on B (it is the active buffer).
+    assert!(e.do_buffer_delete(false), ":bd should succeed on a clean buffer");
+
+    let trail = active_trail_unseeded(&e);
+    assert!(
+        !trail.contains(&b.0),
+        "`:bd` must drop the deleted buffer from the trail: {trail:?}",
+    );
+    assert!(
+        trail.contains(&origin.0),
+        "the surviving buffer must remain: {trail:?}",
+    );
+}
+
+/// `:e!` (reload) repoints the current entry rather than appending —
+/// the pane still shows the same file, it just gets a fresh actor.
+#[test]
+fn reloading_repoints_the_entry_instead_of_appending() {
+    let dir = std::env::temp_dir().join(format!("pbh-reload-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("reload.txt");
+    std::fs::write(&path, "v1\n").unwrap();
+
+    let mut e = boot();
+    e.do_edit(Some(path.clone()), false);
+    let before = active_trail_unseeded(&e);
+
+    std::fs::write(&path, "v2\n").unwrap();
+    e.do_edit(Some(path.clone()), true); // `:e!` — reload
+    let after = active_trail_unseeded(&e);
+    std::fs::remove_dir_all(&dir).ok();
+
+    assert_eq!(
+        after.len(),
+        before.len(),
+        "a reload must not lengthen the trail: {before:?} -> {after:?}",
+    );
+    let current = e.pane_tree.active().committed_id();
+    assert!(
+        after.contains(&current.0),
+        "the repointed entry must track the new buffer id: {after:?} (current {current:?})",
+    );
 }

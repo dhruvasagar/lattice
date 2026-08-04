@@ -2021,30 +2021,76 @@ mod tests {
             "q on magit-status must restore the buffer that was active before it opened"
         );
     }
-    /// PBH.5: `:history pane-buffers` reaches the pane-buffer-history
-    /// source end to end (alias → command → picker source id).
+    /// PBH.5: `:history pane-buffers` opens a REAL picker with a row
+    /// per stop in this pane's trail.
     ///
+    /// The first version of this test only asserted the command did not
+    /// report "unknown picker source" — which would have passed even if
+    /// the picker never opened. Asserting on `picker.candidates` is
+    /// what actually proves the source produces rows.
+    #[test]
+    fn history_pane_buffers_opens_a_picker_with_the_trail() {
+        let mut a = app_with("hello\n", 5);
+        // Give the pane a trail: open a second buffer in it.
+        let tmp = std::env::temp_dir().join(format!("lattice-pbh-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let file = tmp.join("second.txt");
+        std::fs::write(&file, "second\n").unwrap();
+        let target = file.clone();
+        a.mutate_editor_with(move |e| {
+            e.do_edit(Some(target), false);
+        });
+
+        a.editor.set_command_line_text("history pane-buffers");
+        a.editor.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+
+        let p = a
+            .editor
+            .picker
+            .as_ref()
+            .expect("`:history pane-buffers` must open a picker");
+        assert!(
+            p.candidates.len() >= 2,
+            "expected a row per stop in the trail, got {:?}",
+            p.candidates.iter().map(|c| &c.raw.text).collect::<Vec<_>>(),
+        );
+        // The entry the walk cursor sits on is marked.
+        assert!(
+            p.candidates.iter().any(|c| c.raw.text.starts_with('*')),
+            "the current stop must be marked: {:?}",
+            p.candidates.iter().map(|c| &c.raw.text).collect::<Vec<_>>(),
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
     /// A pane that has never navigated has no trail, so the source
     /// reports that rather than opening an empty picker — and
-    /// deliberately does NOT seed one as a side effect of opening a
-    /// picker (`pane_history_rows` takes `&self`).
+    /// deliberately does NOT seed one as a side effect
+    /// (`pane_history_rows` takes `&self`).
     #[test]
-    fn history_pane_buffers_reaches_the_source() {
+    fn history_pane_buffers_on_a_fresh_pane_reports_no_history() {
         let mut a = app_with("hello\n", 5);
         a.editor.set_command_line_text("history pane-buffers");
         a.editor.modal = ModalState::Command;
         a.apply(Action::CommandLineSubmit);
 
-        // Either the picker opened on this pane's trail, or the source
-        // reported an empty trail — both prove the routing resolved.
-        // What must NOT happen is "unknown picker source".
-        if let Some(msg) = a.editor.last_message.as_ref() {
-            assert!(
-                !msg.text.contains("unknown"),
-                "`:history pane-buffers` did not resolve to a source: {:?}",
-                msg.text,
-            );
-        }
+        assert!(
+            a.editor.picker.is_none(),
+            "a pane with no trail must not open an empty picker",
+        );
+        let msg = a.editor.last_message.as_ref().expect("an echo");
+        assert!(
+            !msg.text.contains("unknown"),
+            "must resolve to the source, not fail routing: {:?}",
+            msg.text,
+        );
+        assert!(
+            msg.text.contains("no buffer history"),
+            "expected the empty-trail message, got {:?}",
+            msg.text,
+        );
     }
 
 }

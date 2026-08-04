@@ -12654,6 +12654,27 @@ impl Editor {
         // read text. This is the baseline the autoread watcher (AR.2)
         // compares later filesystem events to.
         self.stamp_on_disk_fingerprint(new_id, &target, &initial_text);
+        // PBH.2 (corrected again): this function swaps the document BY
+        // HAND — `document_buffer_id` / `document` are assigned directly
+        // rather than through `activate_document` — so it is a third
+        // path that changes what the pane shows. It is also the most
+        // common one: opening a not-yet-open file is the primary way a
+        // user changes buffers, and it was recording nothing.
+        //
+        // `Open` is a real navigation and pushes. `Reload` (`:e!`) is
+        // not: the pane still shows the same *file*, it just gets a
+        // fresh actor and a new id, so the current entry is repointed
+        // instead. Pushing there would put the same path in the trail
+        // twice for what the user experiences as a refresh.
+        match action {
+            DoEditOpenAction::Open => {
+                let outgoing = self.active_cursor();
+                self.record_pane_history_visit(new_id, outgoing);
+            }
+            DoEditOpenAction::Reload => {
+                self.active_pane_history_mut().repoint_current(new_id);
+            }
+        }
         self.snapshot_active_pane();
         self.snapshot_active_document();
         self.active_buffer = lattice_core::BufferKind::Document;

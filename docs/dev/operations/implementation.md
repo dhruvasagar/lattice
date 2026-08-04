@@ -6014,29 +6014,55 @@ Design: [`../architecture/keymap-architecture.md`](../architecture/keymap-archit
 
 ---
 
-## Pane buffer history (📝 planned)
+## Pane buffer history (✅ 2026-08-04, PBH.1–PBH.6)
 
 Per-pane back/forward over the buffers a pane has shown: `<C-6>` back,
-`<C-7>` forward, `:history pane-buffers` picker. Splitting a pane starts
+`<C-7>` forward, `:history pane-buffers` picker, and a typed
+`pane.buffer-history-size` bound (default 100). Splitting a pane starts
 a fresh trail rather than cloning one.
 
-The load-bearing decision is storage. `PaneState` is `Copy` and
-`split_active` copies it field-wise, so a `history` field there would be
-inherited by the new pane — the one behaviour the feature must not have.
-A `HashMap<PaneId, PaneBufferHistory>` side table on `Editor` makes the
-requirement hold by construction instead: `PaneId::next()` is
-process-monotonic, so a freshly split pane has no entry and cannot
-inherit anything. GC reconciles the map against `PaneTree::leaves`
-rather than hooking each removal path.
+Storage is a `HashMap<PaneId, PaneBufferHistory>` side table on
+`Editor`, deliberately **not** a field on `PaneState`: that type is
+`Copy` and `split_active` copies it field-wise, so a history field
+there would be inherited by the split — the one behaviour the feature
+must not have. Keyed by a process-monotonic `PaneId`, a fresh pane
+simply has no entry, so the requirement holds by construction. GC
+reconciles against `PaneTree::leaves` rather than hooking removal
+sites.
 
 Rejected: filtering the existing position-history ring per §5.1.1.
 `PositionEntry` carries no `pane_id`, and the ring records every
 `AutoJump` — so scrolling inside one file would evict the record of
-which buffers a pane visited. Functional loss, not stylistic.
+which buffers a pane visited.
+
+**Recording has three call sites, not one.** The first design claimed
+`activate_buffer_only` was the single funnel for "this pane now shows a
+different buffer". It is not, and each correction was found by a test
+rather than by reading:
+
+1. `activate_document` — reached directly by `do_edit`'s already-open
+   branch and by the `<C-o>` walk.
+2. `open_fresh_into_active_slot` — swaps `document_buffer_id` by hand,
+   and is the commonest switch of all (opening a not-yet-open file). It
+   recorded nothing until PBH.6's picker test exposed it. `:e!` reloads
+   *repoint* the current entry instead of pushing, since the pane still
+   shows the same file with a fresh actor.
+3. `activate_buffer_only` — still needed for non-document kinds (help,
+   oil, file tree), which never reach the other two.
+
+Overlap between them is a no-op by construction: `push` ignores a visit
+to the buffer already current.
+
+Previews cannot pollute a trail — they route through
+`set_preview_override` and never touch the pane's committed
+`buffer_id`. `:bd` purges eagerly across every pane; the walk also
+prunes lazily for the other buffer-dropping paths.
 
 Chords are `<C-6>` / `<C-7>` because terminals send 0x1E / 0x1F and
 crossterm maps that range to `Char('4'..'7') + CONTROL`; a `<C-^>`
-binding would never fire.
+binding would never fire. Landing them exposed a pre-existing bug where
+the count-prefix path swallowed **every** `<C-digit>` chord in Normal
+mode.
 
 Design: [`../architecture/pane-buffer-history.md`](../architecture/pane-buffer-history.md).
 Slice plan: [`slice-plans/pane-buffer-history.md`](slice-plans/pane-buffer-history.md)

@@ -79,8 +79,39 @@ open A → B → C          trail: A B C   (on C)
 open D                  trail: A B D   (C is gone)
 ```
 
-At either end you get a message rather than wrapping around. Deleting a
-buffer with `:bd` removes it from every pane's trail.
+At either end you get a message rather than wrapping around.
+
+### What goes into a trail
+
+| Event | Effect on the pane's trail |
+|---|---|
+| Open a file (`:e`, picker, file tree) | Appended as a new stop. |
+| Switch to an already-open buffer (`:b`, `:bn`, `<C-^>`-style hops) | Appended — returning to a buffer is a genuine third stop, not a dedup. |
+| A buffer merely *created* but never shown here | Not recorded. History tracks visits, not buffers. |
+| `:e!` (reload) | The current stop is repointed, not duplicated — same file, fresh contents. |
+| `:bd` | Removed from **every** pane's trail. |
+| Preview in a picker | Not recorded. Scrolling candidates never pollutes history. |
+| Split the pane | The new pane starts with one stop: what it is showing. |
+| Close a pane | Its trail is discarded with it. |
+| Help / oil / file-tree buffers shown *in the pane* | Recorded like any other buffer — walking back to the help page you were reading works. |
+| Floating popups | Not recorded; they never take over the pane. |
+
+### The picker
+
+`:history pane-buffers` opens a real fuzzy picker over the trail —
+newest first, with `*` marking where you currently are:
+
+```
+* second.txt:1
+  main.rs:42
+  README.md:1
+```
+
+`<CR>` **walks** to the chosen stop rather than recording a new visit,
+so everything ahead of it stays reachable with `<C-7>` — picking an
+older entry behaves exactly like pressing `<C-6>` several times. A pane
+that has not navigated yet reports that it has no history rather than
+opening an empty picker.
 
 This is not vim's `<C-^>`, which toggles between two files — pressing
 `<C-6>` twice here goes back *two* buffers. The pair is a genuine

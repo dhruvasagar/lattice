@@ -3315,6 +3315,10 @@ impl Render for EditorView {
         // substate. Bind the Arc so the `as_deref()` borrow lives
         // for the closure.
         let picker_substate = self.app.render_state.load().picker.clone();
+        // MG.41b: resolved once per frame, shared by the layout
+        // reservation below and both transient builders — the TUI peer
+        // reads the same `ui.transient.max-rows`.
+        let transient_max_rows = transient_max_rows_gpui(&self.app);
         // Slice 3c.gpui-cmdline-completion: cmdline-completion strip
         // shares the same screen area as the picker minibuffer and
         // honors the same `picker.display` setting. The two are
@@ -3338,7 +3342,7 @@ impl Render for EditorView {
                             let total_items: usize =
                                 spec.groups.iter().map(|g| g.items.len()).sum();
                             let row_count = total_items + spec.groups.len();
-                            1 + row_count.min(TRANSIENT_MAX_VISIBLE_ROWS) as i32
+                            1 + row_count.min(transient_max_rows) as i32
                         }
                         None => 1 + p.candidates.len().min(10) as i32, // 1 prompt + up to 10 cands
                     }
@@ -3999,7 +4003,12 @@ impl Render for EditorView {
             .flatten()
             .and_then(|p| p.transient.as_ref())
             .map(|spec| {
-                build_transient_gpui(spec, picker_substate.state.as_deref().unwrap(), &theme)
+                build_transient_gpui(
+                    spec,
+                    picker_substate.state.as_deref().unwrap(),
+                    &theme,
+                    transient_max_rows,
+                )
             });
 
         let picker_overlay: Option<gpui::Div> = if transient_overlay.is_some() {
@@ -4234,7 +4243,7 @@ impl Render for EditorView {
             .then(|| picker_substate.state.as_deref())
             .flatten()
             .and_then(|p| p.transient.as_deref().map(|spec| (p, spec)))
-            .map(|(p, spec)| build_transient_minibuffer_gpui(spec, p, &theme));
+            .map(|(p, spec)| build_transient_minibuffer_gpui(spec, p, &theme, transient_max_rows));
 
         // Slice 3c.gpui-cmdline-completion: cmdline-completion
         // minibuffer strip. Mirrors the picker minibuffer's shape
@@ -5136,7 +5145,26 @@ pub fn document_from_path(path: &std::path::Path) -> Result<Document> {
 /// parity is that BOTH peers stop rendering once a bounded number of
 /// rows is reached and window on the same selection — not that the
 /// exact row count matches to the pixel.
-const TRANSIENT_MAX_VISIBLE_ROWS: usize = 24;
+const TRANSIENT_MAX_VISIBLE_ROWS_DEFAULT: usize = 20;
+
+/// MG.41b: the transient row budget, from `ui.transient.max-rows` —
+/// the SAME option the TUI peer reads, so the two renderers stay in
+/// step when a user widens it.
+///
+/// GPUI still cannot measure "how many rows fit" cheaply at these call
+/// sites (see the note above), so this remains a budget rather than a
+/// derived height. What changed is that the budget is no longer a
+/// private constant each peer picked independently — it was 24 here
+/// and 10 in the TUI, which is exactly the divergence the
+/// cross-renderer rule exists to prevent.
+fn transient_max_rows_gpui(app: &GpuiApp) -> usize {
+    app.options()
+        .config
+        .get_typed::<lattice_config::TransientMaxRows>()
+        .map(|arc| *arc)
+        .unwrap_or(TRANSIENT_MAX_VISIBLE_ROWS_DEFAULT as i64)
+        .max(1) as usize
+}
 
 /// The scroll-windowed group/item rows a transient renders — the
 /// ONE place that walks `spec.groups`, applies the offset
@@ -5156,20 +5184,21 @@ fn transient_rows_gpui(
     spec: &lattice_picker::TransientSpec,
     picker: &lattice_picker::Picker,
     theme: &GpuiTheme,
+    max_rows: usize,
 ) -> Vec<gpui::Div> {
     // Derived from the selection every frame rather than from a stored
     // offset — the shared `scroll_for` on `TransientSpec` also counts
     // the per-group header and separator, which both peers previously
     // did by hand and both got wrong the same way.
     let selected = picker.transient_selected;
-    let scroll = spec.scroll_for(selected, TRANSIENT_MAX_VISIBLE_ROWS);
+    let scroll = spec.scroll_for(selected, max_rows);
     let mut ln: usize = 0;
     let mut rendered: usize = 0;
     let mut item_index: usize = 0;
     let mut rows: Vec<gpui::Div> = Vec::new();
 
     for group in &spec.groups {
-        if ln >= scroll && rendered < TRANSIENT_MAX_VISIBLE_ROWS {
+        if ln >= scroll && rendered < max_rows {
             rows.push(
                 div()
                     .font_weight(gpui::FontWeight::BOLD)
@@ -5180,7 +5209,7 @@ fn transient_rows_gpui(
         ln += 1;
 
         for item in &group.items {
-            let show = ln >= scroll && rendered < TRANSIENT_MAX_VISIBLE_ROWS;
+            let show = ln >= scroll && rendered < max_rows;
             let is_selected = item_index == selected;
             ln += 1;
             item_index += 1;
@@ -5253,7 +5282,7 @@ fn transient_rows_gpui(
 
         // Blank line between groups — windowed like any other row, or
         // scrolling drifts against the TUI peer, which counts it.
-        if ln >= scroll && rendered < TRANSIENT_MAX_VISIBLE_ROWS {
+        if ln >= scroll && rendered < max_rows {
             rows.push(div().h_1());
             rendered += 1;
         }
@@ -5266,6 +5295,7 @@ fn build_transient_gpui(
     spec: &lattice_picker::TransientSpec,
     picker: &lattice_picker::Picker,
     theme: &GpuiTheme,
+    max_rows: usize,
 ) -> gpui::Div {
     let mut container = div()
         .flex()
@@ -5293,7 +5323,7 @@ fn build_transient_gpui(
             .child(format!(" {} ", spec.title)),
     );
 
-    container = container.children(transient_rows_gpui(spec, picker, theme));
+    container = container.children(transient_rows_gpui(spec, picker, theme, max_rows));
 
     // Preview
     if let Some(ref preview_fn) = spec.preview {
@@ -5336,6 +5366,7 @@ fn build_transient_minibuffer_gpui(
     spec: &lattice_picker::TransientSpec,
     picker: &lattice_picker::Picker,
     theme: &GpuiTheme,
+    max_rows: usize,
 ) -> gpui::Div {
     let title_row = div()
         .px_2()
@@ -5349,7 +5380,7 @@ fn build_transient_minibuffer_gpui(
             .flex()
             .flex_col()
             .bg(rgb(theme.background))
-            .children(transient_rows_gpui(spec, picker, theme)),
+            .children(transient_rows_gpui(spec, picker, theme, max_rows)),
     )
 }
 

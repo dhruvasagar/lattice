@@ -78,7 +78,7 @@ added**, so the content slices are one-line-per-row data changes.
 > `lattice-magit`. The acid test holds — this plan adds **zero**
 > `Editor::` methods and **zero** host `Action` variants.
 
-### MG.41a — rows become data
+### MG.41a — rows become data ✅
 
 Replace `DispatchActionIds` / `FileDispatchActionIds` with a
 name-keyed resolver plus static row tables.
@@ -110,7 +110,7 @@ transient; every registered `action:magit-global-*` is referenced by
 some row (catches orphans in the other direction); the existing
 transient snapshot tests still pass unchanged.
 
-### MG.41b — transient height is configurable
+### MG.41b — transient height is configurable ✅
 
 `render.rs:551` caps every popup at a hard-coded 10 rows:
 
@@ -141,6 +141,20 @@ raising the shared constant.
 band; a transient shorter than the cap still claims only its own rows
 (the cap is a maximum, not a minimum); the picker band is unchanged at
 10.
+
+**Landed.** `ui.transient.max-rows` (Display group, default 20),
+`popup_height_capped` + `transient_max_rows`, and the same option read
+by the **GPUI peer**: it had its own private `TRANSIENT_MAX_VISIBLE_ROWS
+= 24` against the TUI's 10, which is exactly the silent divergence the
+cross-renderer rule exists to prevent. Both now read one option.
+
+Threading it through GPUI needed the `--features window` build — a
+plain `cargo build -p lattice-ui-gpui` does not compile `window.rs` at
+all, so the first "clean" build was a no-op. That build is **broken on
+clean HEAD** for unrelated reasons (`GpuiTheme` has no
+`diff_change_line_bg` / `diff_remove_line_bg`, used by notification
+theming); verified by stashing. Not fixed here — out of scope for this
+slice, but worth knowing the gpui feature build is currently red.
 
 ---
 

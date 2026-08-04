@@ -548,9 +548,39 @@ fn draw_tabline(frame: &mut Frame, area: Rect, app: &App) {
 /// Total rows the popup occupies (no borders -- vertico-style;
 /// matches the picker's candidate-list shape) capped so it
 /// never dominates the screen.
+/// The picker / completion candidate-band budget.
+///
+/// A picker is *filtered* — you type to narrow — so ten rows is
+/// plenty. Transients are different (see [`transient_popup_height`]).
+const PICKER_MAX_ROWS: usize = 10;
+
 fn popup_height(candidate_count: usize) -> usize {
-    const MAX_ROWS: usize = 10;
-    candidate_count.min(MAX_ROWS).max(1)
+    popup_height_capped(candidate_count, PICKER_MAX_ROWS)
+}
+
+/// MG.41b: the same clamp with a caller-supplied maximum.
+fn popup_height_capped(candidate_count: usize, max_rows: usize) -> usize {
+    candidate_count.min(max_rows.max(1)).max(1)
+}
+
+/// MG.41b: a transient's row budget, from `ui.transient.max-rows`.
+///
+/// Transients are *browsed*, not filtered: you read the menu to find
+/// the key, so the picker's ten-row budget showed under half of the
+/// 25-row magit dispatch. Falls back to the compiled default when the
+/// registry is unpopulated (boot-before-linkme and test fixtures,
+/// mirroring `command_line_expand_height`).
+fn transient_max_rows(app: &App) -> usize {
+    // Published options sub-state — a wait-free Arc clone, no actor
+    // round-trip, same as `picker_display_is_minibuffer`. This runs in
+    // the per-frame layout path, so an actor hop here would be a
+    // paramount-#1 violation.
+    app.options()
+        .config
+        .get_typed::<lattice_config::TransientMaxRows>()
+        .map(|arc| *arc)
+        .unwrap_or(20)
+        .max(1) as usize
 }
 
 /// Rows outside the buffer area: the tabline (0/1) and the picker/
@@ -600,7 +630,9 @@ pub(crate) fn chrome_rows(app: &App) -> ChromeRows {
                 // Using the candidate count here meant the minibuffer
                 // band claimed only 1 row for a transient, regardless
                 // of how many items it actually had.
-                Some(spec) => popup_height(transient_row_count(spec)),
+                Some(spec) => {
+                    popup_height_capped(transient_row_count(spec), transient_max_rows(app))
+                }
                 None => popup_height(p.candidates.len().max(1)),
             })
             .unwrap_or(0)
@@ -7380,6 +7412,44 @@ mod tests {
 
     /// `chrome_rows` is the single source of truth the runtime loop and
     /// `draw_frame` both read; verify it actually reflects tabline
+    /// MG.41b: a transient's band is bounded by
+    /// `ui.transient.max-rows`, not the picker's 10.
+    ///
+    /// The magit dispatch is 25 rows plus group headers, so the shared
+    /// picker cap showed under half of it — the reported complaint.
+    #[test]
+    fn transient_band_uses_its_own_row_budget() {
+        let a = app_with("x\n", 10);
+        // Default: 20, not the picker's 10.
+        assert_eq!(transient_max_rows(&a), 20);
+        // The cap is a MAXIMUM — a short menu still claims only its own
+        // rows, so a two-item transient does not paint an 18-row hole.
+        assert_eq!(popup_height_capped(3, 20), 3);
+        assert_eq!(popup_height_capped(25, 20), 20);
+        // Zero/negative clamp to 1 rather than producing an empty band.
+        assert_eq!(popup_height_capped(25, 0), 1);
+    }
+
+    /// The picker's own budget is untouched by the transient option —
+    /// they were sharing one constant before this slice.
+    #[test]
+    fn picker_band_is_unchanged_at_ten() {
+        assert_eq!(popup_height(25), PICKER_MAX_ROWS);
+        assert_eq!(popup_height(4), 4);
+    }
+
+    /// `:set ui.transient.max-rows` is honoured live.
+    #[test]
+    fn transient_row_budget_is_configurable() {
+        let mut a = app_with("x\n", 10);
+        a.editor
+            .config
+            .parse_and_set_command("ui.transient.max-rows=40")
+            .expect("option is settable");
+        a.editor.publish_render_state();
+        assert_eq!(transient_max_rows(&a), 40);
+    }
+
     /// visibility (Auto mode: visible iff more than one tab is open).
     #[test]
     fn chrome_rows_reflects_tabline_visibility() {

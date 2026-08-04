@@ -450,6 +450,20 @@ crate::options! {
 crate::options! {
     group = crate::Display;
 
+    /// MG.41b: how many rows a **transient** menu may claim before it
+    /// scrolls.
+    ///
+    /// Separate from the picker's own 10-row budget on purpose: a
+    /// picker is *filtered* (you type to narrow, so ten is plenty),
+    /// while a transient is *browsed* — you read the menu to find the
+    /// key. The magit dispatch alone is 25 rows plus group headers, so
+    /// the shared picker cap showed under half of it.
+    ///
+    /// A menu shorter than this claims only its own rows; the value is
+    /// a maximum, not a minimum. Values below 1 clamp to 1.
+    #[name("ui.transient.max-rows")]
+    pub TransientMaxRows: i64 = 20;
+
     /// Where `:lsp-status` opens.
     #[name("lsp.status.display")]
     pub LspStatusDisplay: lattice_core::ui::display::BufferDisplayPreference =

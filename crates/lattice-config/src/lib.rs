@@ -134,6 +134,7 @@ pub use core_options::{
     ModelinePadding, ModelineRight, ModelineSeparator, NoFile, Number, PickerResultDisplay,
     ReadOnly, RelativeNumber, Scrollbind, Scrolloff, Sidescroll, Sidescrolloff, SignColumnOption,
     SignatureDisplay, TablineShowOption, Tabstop, TerminalEscExits, TerminalScrollbackLines,
+    TransientMaxRows,
     Whitespace, WhitespaceEol, WhitespaceLeading, WhitespaceSpace, WhitespaceTab,
     WhitespaceTrailing, Wrap,
 };

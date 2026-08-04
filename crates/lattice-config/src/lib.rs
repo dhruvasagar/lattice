@@ -77,6 +77,7 @@ pub mod loader;
 mod modeline_zone;
 mod plugin_options;
 mod signcolumn;
+mod pane_options;
 mod window_options;
 // `option` is `pub` so the proc macros' generated code can name
 // `::lattice_config::option::Option<T>` for runtime spec
@@ -139,8 +140,8 @@ pub use core_options::{
 pub use erased::ErasedOption;
 pub use group::{
     Ai, Appearance, Completion, Diagnostics, Display, Editing, Editor, Filetree, GROUP_DECLS, Help,
-    Lsp, Magit, Messages, Modeline, Notifications, Oil, OptionGroup, OptionGroupMetadata, Picker,
-    Plugin, Search, Snippet, Tabline, Terminal, Window, ends_with_mode_suffix,
+    Lsp, Magit, Messages, Modeline, Notifications, Oil, OptionGroup, OptionGroupMetadata, Pane,
+    Picker, Plugin, Search, Snippet, Tabline, Terminal, Window, ends_with_mode_suffix,
 };
 pub use loader::{
     LoadMessage, LoadMessageLevel, LoadOutcome, config_home, default_user_config_path,
@@ -166,6 +167,7 @@ pub use expand_height::ExpandHeight;
 pub use decorations::Decorations;
 // W.2: the `ui.window.*` decl types — GPUI peer window chrome +
 // maximize-on-launch. Value type (`Decorations`) re-exported above.
+pub use pane_options::PaneBufferHistorySize;
 pub use window_options::{StartMaximized, WindowDecorationsOption};
 // M.2.0c: `Option<T>`, `OptionBuilder<T>`, `OptionHandle<T>`
 // remain `pub` from the `option` module so the macros' generated

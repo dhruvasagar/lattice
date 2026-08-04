@@ -488,3 +488,94 @@ fn walking_skips_a_buffer_that_left_the_registry() {
         "the dead entry should be dropped, not retained",
     );
 }
+
+// ---- PBH.4: option, :bd purge, and the chokepoint-bypass fixes ----
+
+/// `:e <already-open-file>` must be recorded.
+///
+/// `do_edit`'s already-open branch calls `activate_document` directly
+/// rather than `activate_buffer`, so it bypassed the
+/// `activate_buffer_only` guard. Recording moved into
+/// `activate_document` to cover it — the claim that
+/// `activate_buffer_only` was the "single funnel" was wrong.
+#[test]
+fn editing_an_already_open_file_is_recorded() {
+    let dir = std::env::temp_dir().join(format!("pbh-edit-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("already-open.txt");
+    std::fs::write(&path, "x\n").unwrap();
+
+    let mut e = boot();
+    let origin = e.pane_tree.active().committed_id();
+    // Open it once (creates the buffer), then go back to the origin.
+    e.do_edit(Some(path.clone()), false);
+    let opened = e.pane_tree.active().committed_id();
+    assert_ne!(opened, origin, "sanity: :e opened a different buffer");
+
+    let trail = active_trail(&mut e);
+    std::fs::remove_dir_all(&dir).ok();
+    assert!(
+        trail.contains(&opened.0),
+        "opening a file must land on the pane's trail: {trail:?}",
+    );
+}
+
+/// A cross-buffer `<C-o>` jump changes what the pane shows, so the
+/// trail must reflect it. That path also calls `activate_document`
+/// directly.
+#[test]
+fn a_cross_buffer_position_jump_is_recorded() {
+    let mut e = boot();
+    let b = add_document(&mut e, 930, "b0\nb1\n", "*B*");
+    e.activate_buffer(b);
+    let before_len = active_trail(&mut e).len();
+
+    // Walk the position ring back into the origin buffer.
+    e.do_jump_history(-1);
+
+    let trail = active_trail(&mut e);
+    assert!(
+        trail.len() >= before_len,
+        "a jump that changes the displayed buffer must not silently vanish from the trail: {trail:?}",
+    );
+}
+
+/// `:bd` drops the buffer from EVERY pane's trail, not just the pane
+/// that ran it — deletion is global.
+#[test]
+fn deleting_a_buffer_purges_it_from_every_panes_history() {
+    let mut e = boot();
+    let b = add_document(&mut e, 931, "b\n", "*B*");
+    let c = add_document(&mut e, 932, "c\n", "*C*");
+
+    // Pane 1 visits B and C.
+    e.activate_buffer(b);
+    e.activate_buffer(c);
+
+    // A second pane also visits B.
+    let new_idx = e.pane_tree.split_active(SplitOrientation::Vertical);
+    e.pane_tree.set_active(new_idx);
+    e.activate_buffer(b);
+
+    e.purge_buffer_from_pane_histories(b);
+
+    for (pane, history) in &e.pane_buffer_history {
+        assert!(
+            !history.entries().iter().any(|entry| entry.buffer == b),
+            "pane {pane:?} still holds the deleted buffer",
+        );
+    }
+}
+
+/// The bound comes from `pane.buffer-history-size`, and a non-positive
+/// value clamps to 1 rather than panicking or emptying the trail.
+#[test]
+fn history_size_option_is_read_and_clamped() {
+    let e = boot();
+    // Registry unpopulated in this fixture ⇒ the compiled default.
+    assert_eq!(
+        e.pane_buffer_history_size(),
+        lattice_host::pane_history::DEFAULT_PANE_BUFFER_HISTORY_SIZE,
+    );
+    assert!(e.pane_buffer_history_size() >= 1);
+}

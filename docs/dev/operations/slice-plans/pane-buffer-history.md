@@ -12,7 +12,7 @@ fresh trail.
 | PBH.1 | ✅ | Data model + side table + GC reconciliation |
 | PBH.2 | ✅ | Recording at the activation chokepoint |
 | PBH.3 | ✅ | Walk back / forward + the `<C-6>` / `<C-7>` chords |
-| PBH.4 | 📝 | `pane.buffer-history-size` option + eviction |
+| PBH.4 | ✅ | `pane.buffer-history-size` option + eviction |
 | PBH.5 | 📝 | `:history pane-buffers` picker source |
 | PBH.6 | 📝 | Docs + cross-renderer parity |
 
@@ -159,13 +159,42 @@ contradicting PBH.2's rule that those legitimately belong there. Now
 `buffers.kind_of(id).is_some()`, kind-agnostic. The two rules have to
 agree and the narrow one is the reflex spelling.
 
-## PBH.4 — Size option 📝
+## PBH.4 — Size option ✅
 
 `pane.buffer-history-size`, typed `usize`, default 100, customizable
 through `:set` / `:customize`.
 
 - Evict oldest past the cap; shift `cursor` down with the entries so
   the current position does not drift onto a different buffer.
+
+**Landed as:** a new `Pane` option group + `pane_options.rs`
+(`pane.buffer-history-size`, `i64`, default 100), read through
+`Editor::pane_buffer_history_size()` with a clamp to ≥1.
+
+**Two corrections this slice forced, both raised by the user.**
+
+1. **`activate_buffer_only` was NOT the single funnel** PBH.2 claimed.
+   `do_edit`'s already-open branch and the `<C-o>` position-history
+   walk both call `activate_document` directly, so
+   `:e <already-open-file>` and cross-buffer jumps changed what the
+   pane showed without being recorded. Fixed by recording inside
+   `activate_document` as well; the overlap is a no-op by construction
+   because `push` ignores a visit to the buffer already current. The
+   `activate_buffer_only` call stays for non-document kinds, which
+   never reach `activate_document`.
+2. **`:bd` now purges eagerly** across *every* pane's trail, not just
+   the active one — deletion is global, and only the walking pane
+   prunes lazily. The lazy prune stays as the net for other
+   buffer-dropping paths.
+
+   Considered routing this through the `DocumentClosed` event instead
+   (the bus has that variant). Rejected: the delete path already reaps
+   its sibling side tables inline (`on_disk_fingerprints`,
+   `autoread_pending`, …), so an async subscriber would be the odd one
+   out and would leave a window where a walk could hit a dead entry.
+   The bus has no buffer-*switch* event at all, so recording could not
+   move there regardless — and it would be async relative to the
+   cursor state capture-on-departure needs synchronously.
 
 **Tests.** Eviction at the cap; `cursor` still points at the same
 logical entry after eviction; `:set pane.buffer-history-size` takes

@@ -20316,7 +20316,7 @@ impl Editor {
             return;
         }
         let scroll = self.scroll;
-        let cap = crate::pane_history::DEFAULT_PANE_BUFFER_HISTORY_SIZE;
+        let cap = self.pane_buffer_history_size();
         let history = self.active_pane_history_mut();
         history.update_current_position(outgoing, scroll);
         history.push(crate::pane_history::PaneHistoryEntry::at_origin(id), cap);
@@ -20405,6 +20405,38 @@ impl Editor {
         self.cursor = entry.cursor;
         self.scroll = entry.scroll;
         self.snapshot_active_pane();
+    }
+
+    /// PBH.4: drop `id` from every pane's trail.
+    ///
+    /// Called when a buffer leaves the registry (`:bd`). Eager rather
+    /// than only lazy because the deletion is global: a walk in a
+    /// *different* pane would otherwise step onto an entry whose buffer
+    /// no longer exists, and only the walking pane prunes lazily.
+    ///
+    /// The lazy prune in [`Self::do_pane_history`] stays as the safety
+    /// net for the other paths that drop buffers (`:e`'s replace of an
+    /// unreferenced buffer, for one), so neither mechanism is
+    /// load-bearing alone.
+    pub fn purge_buffer_from_pane_histories(&mut self, id: BufferId) {
+        for history in self.pane_buffer_history.values_mut() {
+            history.retain_live(|b| b != id);
+        }
+    }
+
+    /// PBH.4: the resolved `pane.buffer-history-size` bound.
+    ///
+    /// Falls back to the compiled default when the registry has not been
+    /// populated (boot-before-linkme and test fixtures, mirroring
+    /// `command_line_expand_height`). Non-positive values clamp to 1 —
+    /// a zero-length trail has nowhere to hold the buffer the pane is
+    /// currently showing.
+    pub fn pane_buffer_history_size(&self) -> usize {
+        self.config
+            .get_typed::<lattice_config::PaneBufferHistorySize>()
+            .map(|arc| *arc)
+            .unwrap_or(crate::pane_history::DEFAULT_PANE_BUFFER_HISTORY_SIZE as i64)
+            .max(1) as usize
     }
 
     /// PBH.2: stamp the pane's live cursor/scroll onto the current
@@ -31931,6 +31963,25 @@ impl Editor {
             self.set_message(EchoLevel::Error, format!("buffer #{} not a document", id.0));
             return false;
         }
+        // PBH.2 (corrected): record here as well as at
+        // `activate_buffer_only`. That guard is NOT the only funnel it
+        // was claimed to be — `do_edit`'s already-open branch and the
+        // `<C-o>` position-history walk both call `activate_document`
+        // directly, so `:e <already-open-file>` and a cross-buffer jump
+        // were changing what the pane shows without being recorded.
+        //
+        // Both call sites are legitimate; the fix is to record where the
+        // document swap actually happens rather than to enumerate
+        // callers. The overlap with `activate_buffer_only` is a no-op by
+        // construction: that call already moved the trail's current
+        // entry to `id`, and `PaneBufferHistory::push` ignores a visit
+        // to the buffer already current. Non-document kinds (help, oil,
+        // file tree) never reach here, which is why the
+        // `activate_buffer_only` call stays.
+        if id != self.active_pane_buffer_id() {
+            let outgoing = self.active_cursor();
+            self.record_pane_history_visit(id, outgoing);
+        }
         self.snapshot_active_pane();
         // Same-document fast path: returning to the document
         // buffer that `self.document` still points at (e.g. from
@@ -32210,6 +32261,10 @@ impl Editor {
         self.on_disk_fingerprints.remove(&to_remove);
         self.autoread_pending.remove(&to_remove);
         self.autoread_conflict_open.remove(&to_remove);
+        // PBH.4: drop the deleted buffer from EVERY pane's trail, not
+        // just the active one — `:bd` removes it globally, so a walk in
+        // any other pane would otherwise step onto a dead entry.
+        self.purge_buffer_from_pane_histories(to_remove);
         // Re-point any pane still referencing the removed buffer.
         let new_id = self.active_pane_buffer_id();
         let new_kind = self.active_buffer;

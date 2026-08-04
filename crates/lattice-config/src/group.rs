@@ -288,6 +288,15 @@ impl OptionGroup for Diagnostics {
         "Diagnostics presentation: inline end-of-line summary scope + min-severity.";
 }
 
+/// Per-pane behaviour options. PBH.4: `pane.buffer-history-size`, the
+/// bound on each pane's buffer trail (`<C-6>` / `<C-7>`).
+pub struct Pane;
+impl OptionGroup for Pane {
+    const NAME: &'static str = "pane";
+    const DOC: &'static str =
+        "Per-pane behaviour: the bound on each pane's buffer history trail.";
+}
+
 /// Plugin observability options: `plugin.trace-level` (the global default
 /// boundary-trace verbosity the host's `PluginTracer` gates on). PO.4.3.
 pub struct Plugin;

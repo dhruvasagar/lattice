@@ -107,6 +107,7 @@ fn row_group(label: &str, ids: &MagitActionIds, rows: &'static [TransientRow]) -
 /// `every_row_action_is_registered`, so new tables must be added — the
 /// one piece of bookkeeping this design keeps, and the test below
 /// makes forgetting it visible by counting.
+#[cfg(test)]
 pub(crate) fn all_row_tables() -> &'static [(&'static str, &'static [TransientRow])] {
     &[
         ("branch/checkout", BRANCH_CHECKOUT_ROWS),
@@ -1820,5 +1821,66 @@ mod row_table_tests {
             registered,
             "resolve() must pick up EVERY registered magit action",
         );
+    }
+}
+
+#[cfg(test)]
+mod background_task_tests {
+    /// MG.41g: magit publishes completion; it does not post
+    /// notifications.
+    ///
+    /// The decoupling is the point of the slice, so it is worth
+    /// asserting structurally rather than trusting a grep at review
+    /// time: if a future spawner reaches for `lattice_notify` again,
+    /// the coupling this removed is back.
+    #[test]
+    fn magit_does_not_depend_on_the_notification_crate() {
+        let manifest = include_str!("../Cargo.toml");
+        assert!(
+            !manifest.contains("lattice-notify"),
+            "magit must not depend on lattice-notify — completion is \
+             reported by publishing `BackgroundTaskFinished`, which the \
+             notification layer subscribes to",
+        );
+    }
+
+    /// Every git-spawning helper reports completion through
+    /// `finish_task`, which logs AND publishes in one call.
+    ///
+    /// Five of ten spawners previously reported nothing at all — the
+    /// gap that motivated this slice — and the reason was that
+    /// notification was an opt-in parameter each one could forget.
+    #[test]
+    fn every_spawner_reports_completion() {
+        let src = include_str!("magit_global_mode.rs");
+        // Spawners that delegate to another spawner inherit its
+        // reporting; the rest must call `finish_task` themselves.
+        let delegating = ["spawn_note_remove", "spawn_note_prune"];
+        let mut checked = 0;
+        for (idx, _) in src.match_indices("fn spawn_") {
+            let name: String = src[idx + 3..]
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            let body_end = src[idx..]
+                .find("\nfn ")
+                .map(|e| idx + e)
+                .unwrap_or(src.len());
+            let body = &src[idx..body_end];
+            if delegating.contains(&name.as_str()) {
+                assert!(
+                    body.contains("spawn_git(") || body.contains("spawn_remote_op("),
+                    "{name} is listed as delegating but calls neither spawner",
+                );
+            } else {
+                assert!(
+                    body.contains("finish_task"),
+                    "{name} does not report completion — a background op that \
+                     finishes invisibly is the bug MG.41g fixed",
+                );
+            }
+            checked += 1;
+        }
+        assert!(checked >= 8, "expected to inspect every spawner, saw {checked}");
     }
 }

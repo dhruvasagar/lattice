@@ -210,6 +210,41 @@ pub enum Event {
         mode: String,
         enabled: bool,
     },
+    /// MG.41g: a long-running background operation finished.
+    ///
+    /// The decoupling seam between *producers* of async work (magit's
+    /// git invocations, LSP requests, a plugin's task) and whatever
+    /// *reports* completion. Producers publish this and never mention
+    /// notifications; the notification layer is one subscriber, so the
+    /// policy — which levels surface, whether to notify at all, rate
+    /// limiting — lives in one place and is configurable later without
+    /// touching a single producer.
+    ///
+    /// Replaces threading a `NotificationStoreHandle` into every
+    /// spawner, which was opt-in and therefore already forgotten in
+    /// five of magit's ten (`spawn_git`, the generic one, among them).
+    BackgroundTaskFinished {
+        /// Subsystem that ran it — `"magit"`, `"lsp"`, a plugin id.
+        /// Lets a subscriber filter without parsing `label`.
+        source: String,
+        /// What finished, in the user's words: `"push"`, `"clone …"`.
+        label: String,
+        outcome: TaskOutcome,
+    },
+}
+
+/// MG.41g: how a [`Event::BackgroundTaskFinished`] ended.
+///
+/// Deliberately two variants rather than a `Result<String, String>`:
+/// the payload crosses the plugin boundary, where a typed variant
+/// mirrors cleanly and a `Result` does not.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TaskOutcome {
+    /// Finished cleanly. `summary` is a short human line — the full
+    /// output belongs in a log, not a notification.
+    Succeeded { summary: String },
+    /// Failed. `message` is the reason, already truncated for display.
+    Failed { message: String },
 }
 
 // M.5.3.b: `LspLogPushed`, `LspBufferAttached`, and
@@ -244,6 +279,7 @@ impl Event {
             Event::PluginLoaded { .. } => EventKind::PluginLoaded,
             Event::PluginUnloaded { .. } => EventKind::PluginUnloaded,
             Event::ModeEnablementRequested { .. } => EventKind::ModeEnablementRequested,
+            Event::BackgroundTaskFinished { .. } => EventKind::BackgroundTaskFinished,
         }
     }
 }
@@ -283,6 +319,8 @@ pub enum EventKind {
     /// Discriminator for [`Event::ModeEnablementRequested`] (CI.4) — the
     /// host-internal enable/disable-minor-mode bridge the Editor handles.
     ModeEnablementRequested,
+    /// Discriminator for [`Event::BackgroundTaskFinished`] (MG.41g).
+    BackgroundTaskFinished,
 }
 
 /// An edit as actually applied to the buffer (the original `Edit` plus the

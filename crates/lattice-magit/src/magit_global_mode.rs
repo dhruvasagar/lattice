@@ -234,15 +234,10 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
             contributions.push(ActionHandlerContribution {
                 action_name: $action_name,
                 handler: Arc::new(|ctx: &ActionContext<'_>| {
-                    Some(spawn_remote_op(
-                        $op,
-                        &ctx.args,
-                        // `get::<Arc<X>>` yields `Arc<Arc<X>>`; unwrap
-                        // one layer per the ServiceRegistry convention.
-                        ctx.services
-                            .get::<lattice_notify::NotificationStoreHandle>()
-                            .map(|outer| (*outer).clone()),
-                    ))
+                    // MG.41g: no notification handle. The op publishes
+                    // `BackgroundTaskFinished`; the notification layer
+                    // subscribes. magit does not depend on it.
+                    Some(spawn_remote_op($op, &ctx.args))
                 }),
             });
         };
@@ -947,10 +942,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
             }
             Some(spawn_subtree_op(
                 op,
-                &line,
-                ctx.services
-                    .get::<lattice_notify::NotificationStoreHandle>()
-                    .map(|outer| (*outer).clone()),
+                &line
             ))
         }),
     });
@@ -1013,13 +1005,10 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         ($action_name:expr, $op:expr) => {
             contributions.push(ActionHandlerContribution {
                 action_name: $action_name,
-                handler: Arc::new(|ctx: &ActionContext<'_>| {
+                handler: Arc::new(|_ctx: &ActionContext<'_>| {
                     Some(spawn_remote_op(
                         $op,
-                        &lattice_grammar::Args::None,
-                        ctx.services
-                            .get::<lattice_notify::NotificationStoreHandle>()
-                            .map(|outer| (*outer).clone()),
+                        &lattice_grammar::Args::None
                     ))
                 }),
             });
@@ -1110,11 +1099,8 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
     });
     contributions.push(ActionHandlerContribution {
         action_name: "action:magit-global-note-prune-execute",
-        handler: Arc::new(|ctx: &ActionContext<'_>| {
+        handler: Arc::new(|_ctx: &ActionContext<'_>| {
             Some(spawn_note_prune(
-                ctx.services
-                    .get::<lattice_notify::NotificationStoreHandle>()
-                    .map(|outer| (*outer).clone()),
             ))
         }),
     });
@@ -1123,13 +1109,10 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         ($action_name:expr, $op:expr) => {
             contributions.push(ActionHandlerContribution {
                 action_name: $action_name,
-                handler: Arc::new(|ctx: &ActionContext<'_>| {
+                handler: Arc::new(|_ctx: &ActionContext<'_>| {
                     Some(spawn_remote_op(
                         $op,
-                        &lattice_grammar::Args::None,
-                        ctx.services
-                            .get::<lattice_notify::NotificationStoreHandle>()
-                            .map(|outer| (*outer).clone()),
+                        &lattice_grammar::Args::None
                     ))
                 }),
             });
@@ -1163,10 +1146,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
                 return None;
             }
             Some(spawn_note_merge(
-                &spec,
-                ctx.services
-                    .get::<lattice_notify::NotificationStoreHandle>()
-                    .map(|outer| (*outer).clone()),
+                &spec
             ))
         }),
     });
@@ -1230,10 +1210,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
             }
             Some(spawn_clone(
                 url,
-                dest,
-                ctx.services
-                    .get::<lattice_notify::NotificationStoreHandle>()
-                    .map(|outer| (*outer).clone()),
+                dest
             ))
         }),
     });
@@ -1996,6 +1973,66 @@ fn prompt_seeded(prompt: &str, finish_action: &str, initial: String) -> Effect {
 /// is static. Same discipline: the echo returns synchronously and the
 /// real outcome lands in `*messages*` via `tracing`, because there is
 /// no synchronous path back from a detached task.
+/// MG.41g: the event bus, captured at install so a spawned task can
+/// report completion without a handle threaded through every caller.
+///
+/// A `OnceLock` rather than a parameter deliberately. `spawn_git` has
+/// no `ActionContext` to thread anything through, which is precisely
+/// why the previous `Option<NotificationStoreHandle>` parameter was
+/// forgotten in five of ten spawners. Set once, at install.
+static EVENT_BUS: std::sync::OnceLock<std::sync::Arc<lattice_runtime::EventBus>> =
+    std::sync::OnceLock::new();
+
+pub(crate) fn set_event_bus(bus: std::sync::Arc<lattice_runtime::EventBus>) {
+    let _ = EVENT_BUS.set(bus);
+}
+
+/// MG.41g: report a finished background operation — log **and**
+/// publish, in one call.
+///
+/// The two are deliberately not separable: a spawner that logged but
+/// did not publish is exactly the silent-completion bug this replaces,
+/// and making them one call means the failure mode requires actively
+/// skipping the helper rather than merely forgetting an argument.
+///
+/// magit never mentions notifications. The notification layer is one
+/// subscriber on `BackgroundTaskFinished`; LSP, compilation, or a
+/// plugin get the same treatment by publishing the same event.
+pub(crate) fn finish_task(label: &str, result: Result<String, String>) {
+    use lattice_protocol::event::{Event, TaskOutcome};
+    let outcome = match &result {
+        Ok(out) => {
+            // `debug!`, not `info!`: the notification tees itself to
+            // `*messages*`, and two lines saying the same thing is the
+            // flooding the diagnostic-logging rule warns about.
+            tracing::debug!(target: "lattice_magit", "magit: {label} succeeded: {out}");
+            TaskOutcome::Succeeded {
+                summary: first_line(out),
+            }
+        }
+        Err(err) => {
+            // `error!` keeps git's FULL stderr; the published message
+            // is the truncated one-liner a notification can show.
+            tracing::error!(target: "lattice_magit", "magit: {label} failed: {err}");
+            TaskOutcome::Failed {
+                message: first_line(err),
+            }
+        }
+    };
+    if let Some(bus) = EVENT_BUS.get() {
+        bus.publish(Event::BackgroundTaskFinished {
+            source: "magit".to_string(),
+            label: label.to_string(),
+            outcome,
+        });
+    }
+}
+
+/// Git output is often many lines; a notification shows one.
+fn first_line(text: &str) -> String {
+    text.lines().next().unwrap_or_default().trim().to_string()
+}
+
 pub fn spawn_git(argv: Vec<String>, what: &str) -> Effect {
     let workdir = crate::workdir::magit_workdir().unwrap_or_default();
     let shown = format!("git {}", argv.join(" "));
@@ -2005,12 +2042,10 @@ pub fn spawn_git(argv: Vec<String>, what: &str) -> Effect {
         let result = tokio::task::spawn_blocking(move || run_remote_op(&workdir, &argv))
             .await
             .unwrap_or_else(|e| Err(e.to_string()));
-        match result {
-            Ok(out) => {
-                tracing::info!(target: "lattice_magit", "magit: {logged} succeeded: {out}")
-            }
-            Err(err) => tracing::error!(target: "lattice_magit", "magit: {what} failed: {err}"),
-        }
+        // MG.41g: was log-only, so every `spawn_git` caller finished
+        // invisibly.
+        let _ = logged;
+        finish_task(&what, result);
     });
     Effect::Echo {
         level: lattice_grammar::EchoLevel::Info,
@@ -2181,7 +2216,6 @@ pub(crate) fn subtree_argv(op: SubtreeOp, line: &str) -> Option<Vec<String>> {
 pub fn spawn_subtree_op(
     op: SubtreeOp,
     line: &str,
-    notify: Option<lattice_notify::NotificationStoreHandle>,
 ) -> Effect {
     let Some(argv) = subtree_argv(op, line) else {
         return Effect::Echo {
@@ -2196,27 +2230,9 @@ pub fn spawn_subtree_op(
         let result = tokio::task::spawn_blocking(move || run_remote_op(&workdir, &argv))
             .await
             .unwrap_or_else(|e| Err(e.to_string()));
-        match result {
-            Ok(out) => {
-                tracing::debug!(target: "lattice_magit", "git {shown}: {out}");
-                if let Some(n) = notify {
-                    n.post(
-                        lattice_notify::NotificationLevel::Info,
-                        format!("{what} finished"),
-                    );
-                }
-            }
-            Err(err) => {
-                tracing::error!(target: "lattice_magit", "git {shown} failed: {err}");
-                if let Some(n) = notify {
-                    let first = err.lines().next().unwrap_or("failed").to_string();
-                    n.post(
-                        lattice_notify::NotificationLevel::Error,
-                        format!("{what} failed: {first}"),
-                    );
-                }
-            }
-        }
+        // MG.41g: publish rather than hold a notification handle.
+        let _ = shown;
+        finish_task(what, result);
     });
     Effect::Echo {
         level: lattice_grammar::EchoLevel::Info,
@@ -2271,15 +2287,13 @@ pub(crate) fn spawn_note_remove(commit: String) -> Effect {
 /// is *what it removed*, and an echo written at fire time cannot carry
 /// it.
 pub(crate) fn spawn_note_prune(
-    notify: Option<lattice_notify::NotificationStoreHandle>,
 ) -> Effect {
-    spawn_remote_op(RemoteOp::NOTES_PRUNE, &lattice_grammar::Args::None, notify)
+    spawn_remote_op(RemoteOp::NOTES_PRUNE, &lattice_grammar::Args::None)
 }
 
 /// Merge a notes ref into the current one.
 pub(crate) fn spawn_note_merge(
     spec: &str,
-    notify: Option<lattice_notify::NotificationStoreHandle>,
 ) -> Effect {
     let Some(argv) = note_merge_argv(spec) else {
         return Effect::Echo {
@@ -2293,30 +2307,8 @@ pub(crate) fn spawn_note_merge(
         let result = tokio::task::spawn_blocking(move || run_remote_op(&workdir, &argv))
             .await
             .unwrap_or_else(|e| Err(e.to_string()));
-        match result {
-            Ok(out) => {
-                tracing::debug!(target: "lattice_magit", "notes merge: {out}");
-                if let Some(n) = notify {
-                    n.post(
-                        lattice_notify::NotificationLevel::Info,
-                        "notes merge finished".to_string(),
-                    );
-                }
-            }
-            Err(err) => {
-                tracing::error!(target: "lattice_magit", "notes merge failed: {err}");
-                if let Some(n) = notify {
-                    let first = err.lines().next().unwrap_or("failed").to_string();
-                    // A manual-strategy conflict lands here, and it is
-                    // not a failure to dismiss: the merge is now stopped
-                    // and `T` shows the two ways out.
-                    n.post(
-                        lattice_notify::NotificationLevel::Error,
-                        format!("notes merge: {first}"),
-                    );
-                }
-            }
-        }
+        // MG.41g: publish rather than post.
+        finish_task("notes merge", result);
     });
     Effect::Echo {
         level: lattice_grammar::EchoLevel::Info,
@@ -2381,39 +2373,16 @@ pub(crate) fn default_clone_dest(url: &str) -> String {
 pub fn spawn_clone(
     url: String,
     dest: String,
-    notify: Option<lattice_notify::NotificationStoreHandle>,
 ) -> Effect {
     let argv = clone_argv(&url, &dest);
-    let shown = dest.clone();
+    let _shown = dest.clone();
     tokio::task::spawn(async move {
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         let result = tokio::task::spawn_blocking(move || run_remote_op(&cwd, &argv))
             .await
             .unwrap_or_else(|e| Err(e.to_string()));
-        match result {
-            Ok(out) => {
-                tracing::debug!(target: "lattice_magit", "magit: clone into {shown}: {out}");
-                if let Some(n) = notify {
-                    n.post(
-                        lattice_notify::NotificationLevel::Info,
-                        format!(
-                            "cloned into {shown} — magit still shows the repository \
-                             this editor was opened in"
-                        ),
-                    );
-                }
-            }
-            Err(err) => {
-                tracing::error!(target: "lattice_magit", "magit: clone into {shown} failed: {err}");
-                if let Some(n) = notify {
-                    let first = err.lines().next().unwrap_or("failed").to_string();
-                    n.post(
-                        lattice_notify::NotificationLevel::Error,
-                        format!("clone failed: {first}"),
-                    );
-                }
-            }
-        }
+        // MG.41g: publish rather than post.
+        finish_task("clone", result);
     });
     Effect::Echo {
         level: lattice_grammar::EchoLevel::Info,
@@ -2448,12 +2417,8 @@ pub fn spawn_gitignore(pattern: String) -> Effect {
         })
         .await
         .unwrap_or_else(|e| Err(e.to_string()));
-        match result {
-            Ok(out) => tracing::info!(target: "lattice_magit", "magit: {out}"),
-            Err(err) => {
-                tracing::error!(target: "lattice_magit", "magit: could not update .gitignore: {err}")
-            }
-        }
+        // MG.41g: was log-only.
+        finish_task("update .gitignore", result);
     });
     Effect::Echo {
         level: lattice_grammar::EchoLevel::Info,
@@ -2560,9 +2525,11 @@ fn spawn_bisect(
             })
             .await;
         match outcome {
-            Ok(Ok(())) => tracing::info!("magit-bisect: {what}"),
-            Ok(Err(e)) => tracing::error!("magit-bisect: {what} failed: {e}"),
-            Err(e) => tracing::error!("magit-bisect: {what} panicked: {e}"),
+            // MG.41g: bisect marks check out a different commit — a
+            // completion the user very much wants to see.
+            Ok(Ok(())) => finish_task(&format!("bisect {what}"), Ok(String::new())),
+            Ok(Err(e)) => finish_task(&format!("bisect {what}"), Err(e.to_string())),
+            Err(e) => finish_task(&format!("bisect {what}"), Err(format!("panicked: {e}"))),
         }
         for view in views.all() {
             let _ = view.refresh();
@@ -2666,7 +2633,6 @@ pub(crate) fn gitignore_append(existing: &str, pattern: &str) -> Option<String> 
 pub fn spawn_remote_op(
     op: RemoteOp,
     args: &lattice_grammar::Args,
-    notify: Option<lattice_notify::NotificationStoreHandle>,
 ) -> Effect {
     let workdir = crate::workdir::magit_workdir().unwrap_or_default();
     let argv = op.argv(args);
@@ -2677,54 +2643,18 @@ pub fn spawn_remote_op(
         let result = tokio::task::spawn_blocking(move || run_remote_op(&workdir, &argv))
             .await
             .unwrap_or_else(|e| Err(e.to_string()));
-        // NOTIF.1d: the completion the echo could never carry. The echo
-        // is written at *fire* time, so before this the operation
-        // succeeded invisibly and failed only into `*messages*` — the
-        // case that opened the notification gate.
-        match result {
-            Ok(out) => {
-                // `debug!`, not `info!`: the notification below tees
-                // itself to `*messages*`, and two lines saying the same
-                // thing is the flooding `feedback_diagnostic_logs_go_to_debug`
-                // warns about. The failure arm keeps `error!` because
-                // it carries git's FULL stderr, which the one-line
-                // notification deliberately truncates.
-                tracing::debug!(
-                    target: "lattice_magit",
-                    "magit: git {logged} succeeded: {out}"
-                );
-                if let Some(n) = notify {
-                    n.post(
-                        lattice_notify::NotificationLevel::Info,
-                        format!("{what} finished"),
-                    );
-                }
-            }
-            Err(err) => {
-                tracing::error!(
-                    target: "lattice_magit",
-                    "magit: git {logged} failed: {err}"
-                );
-                if let Some(n) = notify {
-                    // The first line only: a notification is one line,
-                    // and git's full stderr is already in `*messages*`,
-                    // which is the surface for detail.
-                    let first = err.lines().next().unwrap_or("failed").to_string();
-                    // No action row. It said "show output in
-                    // `*messages*`", and the output is ALREADY there
-                    // unconditionally — the `error!` above puts git's
-                    // full stderr in, and NOTIF.1e tees every
-                    // notification besides. So the row bought a
-                    // keystroke over `:messages` and nothing else, and
-                    // by that standard every notification would carry
-                    // "go look at the thing", which is noise.
-                    n.post(
-                        lattice_notify::NotificationLevel::Error,
-                        format!("{what} failed: {first}"),
-                    );
-                }
-            }
-        }
+        // NOTIF.1d / MG.41g: the completion the echo could never
+        // carry — the echo is written at *fire* time, so before this
+        // the operation succeeded invisibly and failed only into
+        // `*messages*`.
+        //
+        // Publishes rather than posting: magit no longer knows the
+        // notification subsystem exists, and `finish_task` keeps the
+        // `debug!`-on-success / `error!`-on-failure split (the failure
+        // log carries git's FULL stderr; the published message is the
+        // one line a notification can show).
+        let _ = logged;
+        finish_task(what, result);
     });
     Effect::Echo {
         level: lattice_grammar::EchoLevel::Info,
@@ -2828,14 +2758,8 @@ pub fn spawn_commit_op(op: CommitOp, workdir: std::path::PathBuf, commit: &str) 
         let result = tokio::task::spawn_blocking(move || run_remote_op(&workdir, &argv))
             .await
             .unwrap_or_else(|e| Err(e.to_string()));
-        match result {
-            Ok(out) => tracing::info!(
-                target: "lattice_magit", "magit: git {logged} succeeded: {out}"
-            ),
-            Err(err) => tracing::error!(
-                target: "lattice_magit", "magit: git {logged} failed: {err}"
-            ),
-        }
+        // MG.41g: was log-only.
+        finish_task(&logged, result);
     });
     Effect::Echo {
         level: lattice_grammar::EchoLevel::Info,

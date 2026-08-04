@@ -567,6 +567,55 @@ pub fn notification_at(rows: &[Option<NotificationId>], line: u32) -> Option<Not
 ///
 /// **The expiry path is the reason this is not just a store.** A
 /// notification that vanishes only when the user next presses a key is
+/// MG.41g: turn `Event::BackgroundTaskFinished` into a notification.
+///
+/// The decoupling seam. Producers of async work — magit's git
+/// invocations today, LSP or a plugin's task tomorrow — publish the
+/// event and never mention notifications; this is the single place
+/// that decides a completion becomes a visible notification, and at
+/// which level.
+///
+/// Before this the notification handle was threaded into each spawner
+/// as an `Option`, which is opt-in and therefore already forgotten in
+/// five of magit's ten spawners. Moving the decision here means a new
+/// async producer gets completion reporting by publishing one event,
+/// with no host change and no dependency on this crate.
+fn install_background_task_subscriber(
+    boot: &mut impl lattice_mode::SubsystemBoot,
+    store: NotificationStoreHandle,
+) {
+    use lattice_protocol::event::{Event, EventKind, TaskOutcome};
+    use lattice_runtime::{EventFilter, SubscriptionTarget};
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
+    boot.event_bus().subscribe(
+        EventFilter::kind(EventKind::BackgroundTaskFinished),
+        SubscriptionTarget::Channel(tx),
+    );
+    boot.runtime_handle().spawn(async move {
+        while let Some(event) = rx.recv().await {
+            let Event::BackgroundTaskFinished { label, outcome, .. } = event else {
+                continue;
+            };
+            // `post` wakes the editor itself, so the notification
+            // reaches the screen without a keypress.
+            match outcome {
+                TaskOutcome::Succeeded { summary } => {
+                    let text = if summary.is_empty() {
+                        format!("{label} finished")
+                    } else {
+                        format!("{label}: {summary}")
+                    };
+                    store.post(NotificationLevel::Info, text);
+                }
+                TaskOutcome::Failed { message } => {
+                    store.post(NotificationLevel::Error, format!("{label} failed: {message}"));
+                }
+            }
+        }
+    });
+}
+
 /// worse than one that never vanishes — it reads as a rendering bug.
 /// `InboundBus::send` bakes the wake in, so the drain runs
 /// off-keystroke and the layer repaints on its own.
@@ -577,6 +626,7 @@ pub fn notification_at(rows: &[Option<NotificationId>], line: u32) -> Option<Not
 pub fn install(boot: &mut impl lattice_mode::SubsystemBoot) {
     let store: NotificationStoreHandle = Arc::new(NotificationStore::new());
     boot.register_service::<NotificationStoreHandle>(store.clone());
+    install_background_task_subscriber(boot, store.clone());
 
     if let Some(config) = boot.service::<Arc<lattice_config::ConfigRegistry>>() {
         store.set_config((*config).clone());

@@ -721,7 +721,10 @@ fn event_path(event: &Event) -> Option<&Path> {
         | Event::PluginLoaded { .. }
         | Event::PluginUnloaded { .. }
         // The enablement request carries a mode name, not a path (CI.4).
-        | Event::ModeEnablementRequested { .. } => None,
+        | Event::ModeEnablementRequested { .. }
+        // MG.41g: no path, and no major mode — a background task is
+        // not buffer-scoped.
+        | Event::BackgroundTaskFinished { .. } => None,
     }
 }
 
@@ -759,7 +762,10 @@ fn event_major_mode(event: &Event) -> Option<&str> {
         | Event::PluginLoaded { .. }
         | Event::PluginUnloaded { .. }
         // The enablement request is not tied to a buffer's major mode (CI.4).
-        | Event::ModeEnablementRequested { .. } => None,
+        | Event::ModeEnablementRequested { .. }
+        // MG.41g: no path, and no major mode — a background task is
+        // not buffer-scoped.
+        | Event::BackgroundTaskFinished { .. } => None,
     }
 }
 

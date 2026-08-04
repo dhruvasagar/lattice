@@ -153,7 +153,7 @@ mod tests {
     fn every_confirm_pair_resolves_in_the_command_registry() {
         let mut registry = CommandRegistry::new();
         crate::register_action_commands(&mut registry);
-        crate::register_ex_commands(&mut registry, Default::default(), None);
+        crate::register_ex_commands(&mut registry, Default::default());
         for (ask_name, execute_name) in DESTRUCTIVE_ACTIONS {
             assert!(
                 registry.id_by_name(ask_name).is_some(),

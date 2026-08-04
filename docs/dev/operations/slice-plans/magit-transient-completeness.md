@@ -230,7 +230,7 @@ arguments (`-D` decorate, `-g` graph, `-n` limit, `--stat`, `-p` patch,
 exactly this for a *rendered* view, so this is largely wiring existing
 machinery to the dispatch rather than new mechanism.
 
-### MG.41g — completion notifications, via the event bus
+### MG.41g — completion notifications, via the event bus ✅
 
 Every long-running action should tell the user when it finishes. Half
 of magit's already do; the other half silently do not:
@@ -295,11 +295,33 @@ wake, one layer down.
 **Lands before MG.41c and MG.41e**, so the ~15 new async actions those
 slices add inherit completion reporting rather than each remembering.
 
-**Tests.** Each spawner publishes on success and on failure; the
-subscriber turns a `Failed` outcome into an Error-level notification and
-a `Succeeded` into Info; a subsystem that publishes the event with no
-magit involvement still notifies (proves the decoupling); the existing
-`spawn_remote_op` notifications keep working end to end.
+**Tests.** `magit_does_not_depend_on_the_notification_crate` (asserts
+the manifest, so a future spawner reaching for `lattice_notify` fails
+loudly) and `every_spawner_reports_completion` (walks every `spawn_*`
+in the module and requires `finish_task`, allowing only the two that
+delegate to another spawner).
+
+**Landed.** `Event::BackgroundTaskFinished { source, label, outcome }`
++ `TaskOutcome` in `lattice-protocol`; a subscriber in `lattice-notify`
+that maps it to Info / Error notifications; `finish_task` in magit,
+which logs **and** publishes in one call so a spawner cannot do one
+without the other.
+
+**The dependency is gone.** `lattice-magit` no longer references
+`lattice_notify` in any source file and the `Cargo.toml` dependency has
+been removed — the decoupling is proven at the crate boundary, not just
+by grep. All ten spawners now report: eight call `finish_task`, and
+`spawn_note_remove` / `spawn_note_prune` inherit it by delegating to
+`spawn_git` / `spawn_remote_op`. Fixing the generic `spawn_git` fixed
+its delegates for free, which was the argument for putting the
+reporting in the primitive.
+
+**Deferred, and named rather than silently skipped:** the event is
+**not yet mirrored in WIT**, so it is host-internal for now — the
+plugin boundary returns a typed error rather than dropping it. The
+design intends plugins to publish and receive it (a plugin's async work
+should get completion reporting for free); that needs a WIT variant and
+payload mirror and is additive when it lands.
 
 ---
 

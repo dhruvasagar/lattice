@@ -108,6 +108,18 @@ impl WitBoundary for NativeEventKind {
                         .to_string(),
                 );
             }
+            // MG.41g: host-internal FOR NOW. The design intends plugins
+            // to both publish and receive this (a plugin's async work
+            // should get completion reporting for free), which needs a
+            // WIT variant + payload mirror. Additive when it lands;
+            // erroring here keeps the boundary honest until then rather
+            // than silently dropping the event.
+            NativeEventKind::BackgroundTaskFinished => {
+                return Err(
+                    "event-kind `background-task-finished` is not yet mirrored in WIT"
+                        .to_string(),
+                );
+            }
         })
     }
 
@@ -241,6 +253,12 @@ impl WitBoundary for NativeEvent {
                 return Err(
                     "event `mode-enablement-requested` is host-internal, not deliverable to plugins"
                         .to_string(),
+                );
+            }
+            // MG.41g: see the `EventKind` arm above.
+            NativeEvent::BackgroundTaskFinished { .. } => {
+                return Err(
+                    "event `background-task-finished` is not yet mirrored in WIT".to_string(),
                 );
             }
         })

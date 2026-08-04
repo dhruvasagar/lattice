@@ -80,6 +80,11 @@ use magit_submodule_mode::MagitSubmoduleMode;
 /// `SubsystemBoot` seam. Called once from `editor_boot.rs` during
 /// the Phase-B subsystem install pass.
 pub fn install(boot: &mut impl SubsystemBoot) {
+    // MG.41g: capture the bus so spawned git tasks can report
+    // completion. magit publishes `BackgroundTaskFinished`; the
+    // notification layer subscribes. No dependency either way.
+    magit_global_mode::set_event_bus(boot.event_bus().clone());
+
     // ── Modes ──────────────────────────────────────────────
 
     boot.modes_mut()
@@ -185,12 +190,10 @@ pub fn install(boot: &mut impl SubsystemBoot) {
         Arc::new(magit_blame_mode::BlameRequests::default());
     boot.register_service::<magit_blame_mode::BlameRequestsHandle>(blame_requests.clone());
     // NOTIF.1d: the same handle the action handlers get as a service —
-    // an ex-command's `apply` receives the grammar's `ActionContext`,
-    // which has no registry, so it is captured rather than looked up.
-    let notifications = boot
-        .service::<lattice_notify::NotificationStoreHandle>()
-        .map(|outer| (*outer).clone());
-    register_ex_commands(boot.commands_mut(), blame_requests, notifications);
+    // MG.41g: no notification handle is captured any more — the git
+    // ops publish `BackgroundTaskFinished` and the notification layer
+    // subscribes, so magit has no dependency on it at all.
+    register_ex_commands(boot.commands_mut(), blame_requests);
 
     // ── Action commands (keymap resolution targets) ──────
 
@@ -602,7 +605,6 @@ fn reverse_blame_usage() -> Effect {
 fn register_ex_commands(
     registry: &mut CommandRegistry,
     blame_requests: magit_blame_mode::BlameRequestsHandle,
-    notifications: Option<lattice_notify::NotificationStoreHandle>,
 ) {
     let mut mk = |name: &'static str,
                   doc: &'static str,
@@ -759,12 +761,10 @@ fn register_ex_commands(
                     Ok(parse_remote_flags(op, line))
                 }),
                 apply: {
-                    let notifications = notifications.clone();
                     Arc::new(move |ctx| {
                         Ok(magit_global_mode::spawn_remote_op(
                             op,
-                            &ctx.args,
-                            notifications.clone(),
+                            &ctx.args
                         ))
                     })
                 },
@@ -1117,7 +1117,6 @@ fn register_ex_commands(
         // order.
         {
             let mut mk_subtree = |op: magit_global_mode::SubtreeOp, doc: &'static str| {
-                let notifications = notifications.clone();
                 registry.register_ex_command(
                     op.ex_command,
                     doc,
@@ -1135,8 +1134,7 @@ fn register_ex_commands(
                             };
                             Ok(magit_global_mode::spawn_subtree_op(
                                 op,
-                                &line,
-                                notifications.clone(),
+                                &line
                             ))
                         }),
                         args_schema: vec![ArgSpec::required(
@@ -1342,7 +1340,6 @@ fn register_ex_commands(
                     Ok(Args::String(line.trim().to_string()))
                 }),
                 apply: {
-                    let notifications = notifications.clone();
                     Arc::new(move |ctx| {
                         let Args::String(ref spec) = ctx.args else {
                             return Ok(note_merge_usage());
@@ -1351,8 +1348,7 @@ fn register_ex_commands(
                             return Ok(note_merge_usage());
                         }
                         Ok(magit_global_mode::spawn_note_merge(
-                            spec,
-                            notifications.clone(),
+                            spec
                         ))
                     })
                 },
@@ -1380,7 +1376,6 @@ fn register_ex_commands(
                     Ok(Args::String(line.trim().to_string()))
                 }),
                 apply: {
-                    let notifications = notifications.clone();
                     Arc::new(move |ctx| {
                         let Args::String(ref spec) = ctx.args else {
                             return Ok(clone_usage());
@@ -1403,8 +1398,7 @@ fn register_ex_commands(
                         }
                         Ok(magit_global_mode::spawn_clone(
                             url.to_string(),
-                            dest,
-                            notifications.clone(),
+                            dest
                         ))
                     })
                 },
@@ -2933,7 +2927,7 @@ mod tests {
         );
 
         let mut ex = CommandRegistry::new();
-        register_ex_commands(&mut ex, Default::default(), None);
+        register_ex_commands(&mut ex, Default::default());
         let id = ex
             .id_by_name("magit-find-file")
             .expect("`:magit-find-file` must exist");
@@ -3237,7 +3231,7 @@ mod tests {
     #[test]
     fn the_submodule_buffer_is_reachable_by_ex_command_and_by_action() {
         let mut registry = CommandRegistry::new();
-        register_ex_commands(&mut registry, Default::default(), None);
+        register_ex_commands(&mut registry, Default::default());
         let id = registry
             .id_by_name("magit-submodule")
             .expect("`:magit-submodule` must exist");
@@ -3563,7 +3557,7 @@ mod tests {
     #[test]
     fn every_commit_ops_ex_command_is_registered() {
         let mut registry = CommandRegistry::new();
-        register_ex_commands(&mut registry, Default::default(), None);
+        register_ex_commands(&mut registry, Default::default());
         for op in [
             magit_global_mode::CommitOp::CHERRY_PICK,
             magit_global_mode::CommitOp::REVERT,
@@ -3596,7 +3590,7 @@ mod tests {
     #[test]
     fn the_remote_buffer_is_reachable_by_ex_command_and_by_action() {
         let mut registry = CommandRegistry::new();
-        register_ex_commands(&mut registry, Default::default(), None);
+        register_ex_commands(&mut registry, Default::default());
         let id = registry
             .id_by_name("magit-remote")
             .expect("`:magit-remote` must exist");
@@ -4180,7 +4174,7 @@ mod tests {
         use lattice_mode::Mode;
 
         let mut registry = CommandRegistry::new();
-        register_ex_commands(&mut registry, Default::default(), None);
+        register_ex_commands(&mut registry, Default::default());
         register_action_commands(&mut registry);
         let handlers = MagitGlobalMode.action_handlers();
 
@@ -4244,7 +4238,7 @@ mod tests {
     #[test]
     fn magit_stash_and_magit_stash_list_are_distinct_commands() {
         let mut registry = CommandRegistry::new();
-        register_ex_commands(&mut registry, Default::default(), None);
+        register_ex_commands(&mut registry, Default::default());
         let create = registry
             .lookup_by_name("magit-stash")
             .expect("`:magit-stash` registered");

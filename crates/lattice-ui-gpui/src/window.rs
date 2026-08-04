@@ -4827,8 +4827,8 @@ impl Render for EditorView {
                 for item in &n.visible {
                     let colour = match item.level {
                         lattice_notify::NotificationLevel::Info => theme.cursor_background,
-                        lattice_notify::NotificationLevel::Warn => theme.diff_change_line_bg,
-                        lattice_notify::NotificationLevel::Error => theme.diff_remove_line_bg,
+                        lattice_notify::NotificationLevel::Warn => theme.notification_warn,
+                        lattice_notify::NotificationLevel::Error => theme.notification_error,
                     };
                     stack = stack.child(div().text_color(rgb(colour)).child(item.text.clone()));
                 }

@@ -210,6 +210,18 @@ pub struct GpuiTheme {
     pub popup_title: u32,
     /// Popup header HINT colour (dim) — `ui.popup.hint`.
     pub popup_hint: u32,
+    /// Notification-severity colours, sourced from the
+    /// `diagnostic.{warning,error}` theme elements.
+    ///
+    /// The notification overlay referenced `diff_change_line_bg` /
+    /// `diff_remove_line_bg` here — fields that never existed on this
+    /// struct, so the `window`-feature build did not compile. Diff
+    /// line backgrounds were the wrong source anyway: these tint
+    /// notification *text* by severity, which is what
+    /// `diagnostic.warning` / `diagnostic.error` already mean, and
+    /// they recolour with `:colorscheme` like every other element.
+    pub notification_warn: u32,
+    pub notification_error: u32,
     /// Issue #35 (2026-05-22): picker match-range highlight
     /// color. Painted on the substring of each candidate that
     /// matched the query. Catppuccin Mocha peach by default —
@@ -250,6 +262,10 @@ impl Default for GpuiTheme {
             popup_title: 0x89b4fa,
             // Catppuccin Mocha overlay — dim popup hint (`ui.popup.hint`).
             popup_hint: 0x6c7086,
+            // Catppuccin-ish peach / red, matching the diagnostic
+            // defaults elsewhere; overridden by the resolved elements.
+            notification_warn: 0xfab387,
+            notification_error: 0xf38ba8,
             // Issue #35: Catppuccin Mocha peach — bright accent
             // distinct from `foreground` (text). Highly
             // visible against both light and dark backgrounds.
@@ -919,6 +935,12 @@ impl GpuiApp {
         // (shared with the TUI peer so the accent is themeable + identical).
         if let Some(fg) = resolved.get(ids.ui_popup_title).fg {
             self.theme.popup_title = fg.to_rgb_u32(defaults.popup_title);
+        }
+        if let Some(fg) = resolved.get(ids.diagnostic_warning).fg {
+            self.theme.notification_warn = fg.to_rgb_u32(defaults.notification_warn);
+        }
+        if let Some(fg) = resolved.get(ids.diagnostic_error).fg {
+            self.theme.notification_error = fg.to_rgb_u32(defaults.notification_error);
         }
         if let Some(fg) = resolved.get(ids.ui_popup_hint).fg {
             self.theme.popup_hint = fg.to_rgb_u32(defaults.popup_hint);

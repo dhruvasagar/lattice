@@ -1029,7 +1029,7 @@ impl Editor {
         // MB.5: `gen:history-kinds` — valid args for `:history <Tab>`.
         completion_registry.register_generator(
             "gen:history-kinds",
-            "Valid history kind arguments (`commands`, `searches`); used by `:history <Tab>`.",
+            "Valid history kind arguments (`commands`, `searches`, `pane-buffers`); used by `:history <Tab>`.",
             crate::host_generators::HistoryKindsGenerator,
         );
 

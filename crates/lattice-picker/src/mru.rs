@@ -415,6 +415,11 @@ pub fn routing_identity(payload: &RoutingPayload) -> Option<String> {
         | RoutingPayload::LoadCommandLine { .. }
         // MB.5: search history ring, same as command history above.
         | RoutingPayload::LoadSearchLine { .. }
+        // PBH.5: trail indices are per-pane and shift on every push or
+        // eviction, so they are not a stable identity. The trail is
+        // already ordered by recency anyway, exactly like the command
+        // and search rings above.
+        | RoutingPayload::PaneHistoryEntry { .. }
         | RoutingPayload::AcceptShowMessageAction { .. } => None,
     }
 }

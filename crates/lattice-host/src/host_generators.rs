@@ -350,7 +350,7 @@ pub struct HistoryKindsGenerator;
 
 impl CandidateGenerator for HistoryKindsGenerator {
     fn generate(&self, _ctx: &GenerateContext<'_>) -> Vec<RawCandidate> {
-        vec!["commands", "searches"]
+        vec!["commands", "searches", "pane-buffers"]
             .into_iter()
             .map(|s| RawCandidate {
                 text: s.to_string(),

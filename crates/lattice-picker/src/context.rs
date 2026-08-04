@@ -72,6 +72,33 @@ pub struct PickerContext<'a> {
     /// (newest first) and `<CR>` loads the chosen entry into the `/`
     /// search line without executing.
     pub search_history: Vec<String>,
+    /// PBH.5: the ACTIVE pane's buffer trail, oldest-first, as
+    /// `(label, is_current)` per entry. The `pane-buffer-history`
+    /// source (`:history pane-buffers`) walks this reversed so the most
+    /// recent stop is on top, and marks the entry the walk cursor is
+    /// currently on.
+    ///
+    /// Per-pane by construction: the host snapshots only the active
+    /// pane's trail, so the picker cannot accidentally show a global
+    /// or cross-pane view.
+    pub pane_buffer_history: Vec<PaneHistoryRow>,
+}
+
+/// PBH.5: one row of the active pane's buffer trail, flattened for the
+/// picker.
+///
+/// Carries the trail **index** rather than a buffer id: the same buffer
+/// can appear at several points in a trail, and accepting the third
+/// stop must land on the third stop, not the first occurrence.
+pub struct PaneHistoryRow {
+    /// Position in the trail, oldest-first. The accept payload.
+    pub index: u32,
+    /// Display label — the buffer's name or path.
+    pub label: String,
+    /// Line the trail recorded for this stop (1-based for display).
+    pub line: u32,
+    /// Whether the walk cursor currently sits on this entry.
+    pub is_current: bool,
 }
 
 /// Snapshot of the active document buffer at the moment the

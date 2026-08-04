@@ -11740,6 +11740,74 @@ impl Editor {
             // MB.5: snapshot the search-line history ring so the
             // `search-history` picker source can walk it (newest-first).
             search_history: self.search_history.clone(),
+            // PBH.5: snapshot the ACTIVE pane's buffer trail. Only the
+            // active pane's, so the picker cannot accidentally present a
+            // global or cross-pane view of what is a per-pane structure.
+            pane_buffer_history: self.pane_history_rows(),
+        }
+    }
+
+    /// PBH.5: flatten the active pane's trail into picker rows.
+    ///
+    /// Read-only: takes `&self`, so it cannot seed a missing history the
+    /// way `active_pane_history_mut` does. A pane that has never
+    /// navigated yields an empty vec and the source reports "no history
+    /// yet" rather than inventing a one-entry trail as a side effect of
+    /// opening a picker.
+    fn pane_history_rows(&self) -> Vec<lattice_picker::PaneHistoryRow> {
+        let pane_id = self.pane_tree.active().id;
+        let Some(history) = self.pane_buffer_history.get(&pane_id) else {
+            return Vec::new();
+        };
+        let cursor = history.cursor();
+        history
+            .entries()
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| {
+                let label = self
+                    .buffers
+                    .name_of(entry.buffer)
+                    .or_else(|| {
+                        self.buffers
+                            .document_path(entry.buffer)
+                            .map(|p| p.display().to_string())
+                    })
+                    .unwrap_or_else(|| format!("buffer {}", entry.buffer.0));
+                lattice_picker::PaneHistoryRow {
+                    index: index as u32,
+                    label,
+                    line: entry.cursor.line + 1,
+                    is_current: index == cursor,
+                }
+            })
+            .collect()
+    }
+
+    /// PBH.5: accept from the `pane-buffer-history` picker — move the
+    /// walk cursor to `index` and show that buffer.
+    ///
+    /// Deliberately NOT a new visit: this is random access over the
+    /// trail `<C-6>` / `<C-7>` step through. It reuses the walk's
+    /// suppression flag, so the switch does not push and the forward
+    /// tail survives — picking an older stop leaves everything after it
+    /// reachable, exactly as walking back would.
+    pub fn do_pane_history_jump(&mut self, index: u32) {
+        self.capture_outgoing_pane_position();
+        let Some(entry) = self.active_pane_history_mut().jump_to(index as usize) else {
+            self.set_message(
+                EchoLevel::Error,
+                format!("pane history has no entry {index}"),
+            );
+            return;
+        };
+        self.walking_pane_history = true;
+        let switched = self.activate_buffer(entry.buffer);
+        self.walking_pane_history = false;
+        if switched {
+            self.cursor = entry.cursor;
+            self.scroll = entry.scroll;
+            self.snapshot_active_pane();
         }
     }
 
@@ -28626,6 +28694,10 @@ impl Editor {
                         .extend(self.prepare_open_target_pane(target));
                     let _ = self.activate_buffer(id);
                 }
+            }
+            lattice_picker::RoutingPayload::PaneHistoryEntry { index } => {
+                // PBH.5: a walk, not a visit — see `do_pane_history_jump`.
+                self.do_pane_history_jump(index);
             }
             lattice_picker::RoutingPayload::LspInstance { server_id, .. } => {
                 match picker.on_accept {

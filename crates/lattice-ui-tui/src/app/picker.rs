@@ -1083,6 +1083,8 @@ mod tests {
             "registers",
             // MB.5: `q/` / `q?` / `:history search`.
             "search-history",
+            // PBH.5: `:history pane-buffers` — this pane's buffer trail.
+            "pane-buffer-history",
         ] {
             assert!(
                 ids.iter().any(|id| id == built_in),
@@ -2019,4 +2021,30 @@ mod tests {
             "q on magit-status must restore the buffer that was active before it opened"
         );
     }
+    /// PBH.5: `:history pane-buffers` reaches the pane-buffer-history
+    /// source end to end (alias → command → picker source id).
+    ///
+    /// A pane that has never navigated has no trail, so the source
+    /// reports that rather than opening an empty picker — and
+    /// deliberately does NOT seed one as a side effect of opening a
+    /// picker (`pane_history_rows` takes `&self`).
+    #[test]
+    fn history_pane_buffers_reaches_the_source() {
+        let mut a = app_with("hello\n", 5);
+        a.editor.set_command_line_text("history pane-buffers");
+        a.editor.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+
+        // Either the picker opened on this pane's trail, or the source
+        // reported an empty trail — both prove the routing resolved.
+        // What must NOT happen is "unknown picker source".
+        if let Some(msg) = a.editor.last_message.as_ref() {
+            assert!(
+                !msg.text.contains("unknown"),
+                "`:history pane-buffers` did not resolve to a source: {:?}",
+                msg.text,
+            );
+        }
+    }
+
 }

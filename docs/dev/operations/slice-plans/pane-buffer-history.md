@@ -13,7 +13,7 @@ fresh trail.
 | PBH.2 | ✅ | Recording at the activation chokepoint |
 | PBH.3 | ✅ | Walk back / forward + the `<C-6>` / `<C-7>` chords |
 | PBH.4 | ✅ | `pane.buffer-history-size` option + eviction |
-| PBH.5 | 📝 | `:history pane-buffers` picker source |
+| PBH.5 | ✅ | `:history pane-buffers` picker source |
 | PBH.6 | 📝 | Docs + cross-renderer parity |
 
 ---
@@ -200,7 +200,7 @@ through `:set` / `:customize`.
 logical entry after eviction; `:set pane.buffer-history-size` takes
 effect on the next push.
 
-## PBH.5 — `:history pane-buffers` 📝
+## PBH.5 — `:history pane-buffers` ✅
 
 - `PaneBufferHistorySource` in `crates/lattice-picker/src/picker_sources.rs`,
   modelled on `CommandHistorySource`; newest-first; current entry
@@ -212,6 +212,32 @@ effect on the next push.
   (`crates/lattice-host/src/editor_boot.rs`).
 - Accept **moves `cursor`** to the chosen entry rather than pushing —
   random-access walk, not a new visit.
+
+**Landed as:** `PaneBufferHistorySource`, `PaneHistoryRow` +
+`PickerContext::pane_buffer_history`, `RoutingPayload::PaneHistoryEntry`
+(+ WIT variant, boundary mappings, and a `routing_identity` arm),
+`Editor::pane_history_rows` / `do_pane_history_jump`, and the
+`pane-buffers` arg on `:history` + `gen:history-kinds`.
+
+**Routing by index, not buffer id.** The same buffer can appear at
+several stops in one trail, so picking the third must land on the
+third. `RoutingPayload::Buffer { id }` could not express that.
+
+**Accept returns `NoOp`.** The host performs the cursor move in
+`do_pane_history_jump`; letting the generic accept path also switch the
+buffer would double-activate and record a visit.
+
+**`pane_history_rows` takes `&self` deliberately** — it cannot seed a
+missing trail the way `active_pane_history_mut` does. Opening a picker
+on a pane that has never navigated reports "no history yet" instead of
+inventing a one-entry trail as a side effect.
+
+**A gap the test caught:** `:history`'s accepted-kind set lives in
+BOTH `parse_history_args` and the `apply` mapping. Adding
+`pane-buffers` to only the mapping left the parser rejecting it with
+"unknown history kind" — the end-to-end TUI test is what surfaced it,
+since neither the source registration nor the mapping looked wrong in
+isolation.
 
 **Tests.** `:history pane-buffers` opens with the pane's entries;
 `:history <Tab>` offers `pane-buffers`; accepting an entry moves the

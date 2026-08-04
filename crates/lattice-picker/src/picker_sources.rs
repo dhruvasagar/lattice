@@ -1188,6 +1188,86 @@ impl PickerSourceGenerator for CommandHistorySource {
     }
 }
 
+/// PBH.5: `:picker pane-buffer-history` — also reached via
+/// `:history pane-buffers`. Walks the ACTIVE pane's buffer trail
+/// (`ctx.pane_buffer_history`, oldest-first as stored) and emits one
+/// row per stop, **newest first**, marking the entry the walk cursor
+/// currently sits on.
+///
+/// `<CR>` **moves the walk cursor** to the chosen stop rather than
+/// recording a new visit — the picker is random access over the trail
+/// that `<C-6>` / `<C-7>` step through, not a fresh navigation. Pushing
+/// instead would append a duplicate and make forward unreachable,
+/// exactly as an unsuppressed walk would.
+///
+/// Rows route by trail **index**, not buffer id: the same buffer can
+/// appear at several stops, and picking the third must land on the
+/// third.
+pub struct PaneBufferHistorySource {
+    pub spec: PickerSourceSpec,
+}
+
+impl PaneBufferHistorySource {
+    pub fn new() -> Self {
+        Self {
+            spec: PickerSourceSpec::no_args(
+                "pane-buffer-history",
+                "This pane's buffer history. `<CR>` walks to the chosen entry (does not record a new visit).",
+            ),
+        }
+    }
+}
+
+impl Default for PaneBufferHistorySource {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PickerSourceGenerator for PaneBufferHistorySource {
+    fn spec(&self) -> &PickerSourceSpec {
+        &self.spec
+    }
+
+    fn init(&self, ctx: &PickerContext<'_>, _args: &[String]) -> SourceResult<PickerInitResult> {
+        if ctx.pane_buffer_history.is_empty() {
+            return Err("pane-buffers: this pane has no buffer history yet".into());
+        }
+        // Newest-first: the trail is stored oldest-first, so walk it
+        // reversed. Matches the command/search history sources, and puts
+        // the stop you most recently left on top.
+        let pairs = ctx
+            .pane_buffer_history
+            .iter()
+            .rev()
+            .map(|row| {
+                let marker = if row.is_current { "*" } else { " " };
+                let text = format!("{marker} {}:{}", row.label, row.line);
+                let cand = RawCandidate::plain(text, CandidateKind::Buffer);
+                (cand, RoutingPayload::PaneHistoryEntry { index: row.index })
+            })
+            .collect();
+        Ok(PickerInitResult::Inline(pairs))
+    }
+
+    fn accept(
+        &self,
+        _ctx: &PickerContext<'_>,
+        routing: &RoutingPayload,
+    ) -> SourceResult<PickerAcceptOutcome> {
+        match routing {
+            // The host performs the cursor move; see
+            // `Editor::do_pane_history_jump`. Returning `NoOp` here keeps
+            // the generic accept path from ALSO switching the buffer,
+            // which would double-activate and record a visit.
+            RoutingPayload::PaneHistoryEntry { .. } => Ok(PickerAcceptOutcome::NoOp),
+            other => Err(format!(
+                "pane-buffer-history: unexpected routing payload {other:?}"
+            )),
+        }
+    }
+}
+
 /// MB.5: `:picker search-history` — also reached via the `q/` / `q?`
 /// Normal chords and `:history search`. Walks `ctx.search_history`
 /// (the App's search-line history ring, stored oldest-first) and
@@ -2022,6 +2102,7 @@ pub fn first_party_generators(
         Arc::new(CommandsSource::new(command_registry, keybinding_reverse)),
         Arc::new(CommandHistorySource::new()),
         Arc::new(SearchHistorySource::new()),
+        Arc::new(PaneBufferHistorySource::new()),
         Arc::new(RegistersSource::new()),
         Arc::new(MarksSource::new()),
         Arc::new(GrepSource::new(config, grep_highlighter)),

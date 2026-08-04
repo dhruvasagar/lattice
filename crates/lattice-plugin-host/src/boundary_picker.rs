@@ -372,6 +372,9 @@ impl WitBoundary for NativeRoutingPayload {
     fn to_wit(&self) -> Result<WitRoutingPayload, String> {
         Ok(match self {
             NativeRoutingPayload::Buffer { id } => WitRoutingPayload::Buffer(*id),
+            NativeRoutingPayload::PaneHistoryEntry { index } => {
+                WitRoutingPayload::PaneHistoryEntry(*index)
+            }
             NativeRoutingPayload::ResolveDiff { primary, accept } => {
                 WitRoutingPayload::ResolveDiff(WitResolveDiffPayload {
                     primary: *primary,
@@ -473,6 +476,9 @@ impl WitBoundary for NativeRoutingPayload {
     fn from_wit(wit: WitRoutingPayload) -> Result<Self, String> {
         Ok(match wit {
             WitRoutingPayload::Buffer(id) => NativeRoutingPayload::Buffer { id },
+            WitRoutingPayload::PaneHistoryEntry(index) => {
+                NativeRoutingPayload::PaneHistoryEntry { index }
+            }
             WitRoutingPayload::ResolveDiff(p) => NativeRoutingPayload::ResolveDiff {
                 primary: p.primary,
                 accept: p.accept,

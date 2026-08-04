@@ -904,6 +904,7 @@ interface types {
         color-presentation(u32),
         colorscheme(string),
         ai-session(ai-session-payload),
+        pane-history-entry(u32),
     }
 
     /// Mirrors `lattice_picker::RoutingPayload::AiSession` — the

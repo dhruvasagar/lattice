@@ -54,7 +54,7 @@ pub mod source;
 pub mod transient;
 
 pub use context::{
-    ActiveBufferSnapshot, BufferEntry, PickerContext, PositionEntry, PositionSource,
+    ActiveBufferSnapshot, BufferEntry, PaneHistoryRow, PickerContext, PositionEntry, PositionSource,
 };
 pub use mru::{
     DEFAULT_CAP_PER_NAMESPACE, DEFAULT_HALF_LIFE, MruEntry, MruKey, MruPersistError,
@@ -110,6 +110,16 @@ pub enum RoutingPayload {
     /// (newtype-wrapped `u32` host-side; we hold the raw value
     /// to keep the picker module renderer-agnostic).
     Buffer { id: u32 },
+    /// PBH.5: one entry in the ACTIVE pane's buffer trail, identified by
+    /// its **index** rather than its buffer id — the same buffer can
+    /// appear at several points in a trail, and picking the third stop
+    /// must land on the third stop.
+    ///
+    /// Accepting moves the walk cursor rather than pushing a visit: the
+    /// picker is random access over the existing trail, not a new
+    /// navigation. Pushing would append a duplicate and make `<C-7>`
+    /// unreachable, exactly as an unsuppressed walk would.
+    PaneHistoryEntry { index: u32 },
     /// Resolve a specific pending diff review by its primary buffer id with
     /// Accept (`accept = true`) or Reject. Emitted by the diff-review picker
     /// (`:diff-accept` / `:diff-reject` with >1 pending review) so the user

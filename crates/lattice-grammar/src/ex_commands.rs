@@ -921,9 +921,10 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
     // default when no arg is given) opens the command-line history.
     let _history_picker = registry.register_ex_command(
         "ex:history",
-        "Open a history picker (`:history [commands|searches]`). \
+        "Open a history picker (`:history [commands|searches|pane-buffers]`). \
          `commands`: command-line history picker (default, also `q:`). \
          `searches`: search-line history picker (`q/` / `q?`). \
+         `pane-buffers`: this pane's buffer history (`<C-6>` / `<C-7>`). \
          `<CR>` loads the chosen entry into the `:` / `/` line (does not execute).",
         ExCommandSpec {
             latency_class: LatencyClass::Display,
@@ -936,6 +937,8 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
                 {
                     match values[0].as_str() {
                         Some("searches") => "search-history",
+                        // PBH.5: this pane's buffer trail.
+                        Some("pane-buffers") => "pane-buffer-history",
                         _ => "history",
                     }
                 } else {
@@ -949,9 +952,9 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             args_schema: vec![ArgSpec {
                 name: "kind".into(),
                 kind: ArgKind::String,
-                prompt: "history kind (`commands` or `searches`)".into(),
+                prompt: "history kind (`commands`, `searches`, or `pane-buffers`)".into(),
                 default: ArgDefault::None,
-                doc: "`commands` (default) or `searches`.".into(),
+                doc: "`commands` (default), `searches`, or `pane-buffers`.".into(),
                 completion: Some("gen:history-kinds".into()),
             }],
             surface_form: SurfaceForm::Keyword,
@@ -2419,9 +2422,14 @@ fn parse_history_args(rest: &str, _bang: bool) -> GrammarResult<Args> {
     }
     let lower = trimmed.to_lowercase();
     match lower.as_str() {
-        "commands" | "searches" => Ok(Args::List(vec![ArgValue::String(lower)])),
+        // PBH.5: the accepted set lives here AND in the `apply` mapping
+        // above; both must list a kind for it to be reachable. Adding it
+        // to only one is the failure this arm's test catches.
+        "commands" | "searches" | "pane-buffers" => {
+            Ok(Args::List(vec![ArgValue::String(lower)]))
+        }
         other => Err(CommandError::BadArgs(format!(
-            "unknown history kind `{other}`; expected `commands` or `searches`"
+            "unknown history kind `{other}`; expected `commands`, `searches`, or `pane-buffers`"
         ))),
     }
 }

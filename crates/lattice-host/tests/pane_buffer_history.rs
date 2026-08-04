@@ -579,3 +579,42 @@ fn history_size_option_is_read_and_clamped() {
     );
     assert!(e.pane_buffer_history_size() >= 1);
 }
+
+// ---- PBH.5: :history pane-buffers ----
+
+/// Accepting a picker row is a WALK, not a new visit: the cursor moves
+/// and the forward tail survives. Pushing instead would append a
+/// duplicate and make `<C-7>` unreachable.
+#[test]
+fn picker_accept_moves_the_cursor_without_recording() {
+    let mut e = boot();
+    let origin = e.pane_tree.active().committed_id();
+    let b = add_document(&mut e, 940, "b\n", "*B*");
+    let c = add_document(&mut e, 941, "c\n", "*C*");
+    e.activate_buffer(b);
+    e.activate_buffer(c);
+    let before = active_trail(&mut e);
+
+    // Jump to the oldest stop.
+    e.do_pane_history_jump(0);
+
+    assert_eq!(e.pane_tree.active().committed_id(), origin);
+    assert_eq!(
+        active_trail(&mut e),
+        before,
+        "a picker accept must not append to the trail",
+    );
+    // The tail is still reachable — the whole point of moving vs pushing.
+    e.do_pane_history(1);
+    assert_eq!(e.pane_tree.active().committed_id(), b);
+}
+
+/// An out-of-range index echoes rather than panicking.
+#[test]
+fn picker_accept_out_of_range_is_reported() {
+    let mut e = boot();
+    let _ = active_trail(&mut e);
+    e.do_pane_history_jump(99);
+    let msg = e.last_message.as_ref().expect("an error echo");
+    assert!(msg.text.contains("no entry"), "got {:?}", msg.text);
+}

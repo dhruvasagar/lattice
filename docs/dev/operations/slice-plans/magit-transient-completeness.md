@@ -241,7 +241,7 @@ at another toggle.
 and every menu's `C` configure row (needs transient variable rows —
 see "Out of scope").
 
-### MG.41d — thin existing submenus
+### MG.41d — thin existing submenus 🚧
 
 | Menu | Today | Adds |
 |---|---|---|
@@ -249,6 +249,33 @@ see "Out of scope").
 | **Stash** `z` | `z l` | `i` index, `w` worktree, `x` keeping index, `Z`/`I`/`W` snapshots, `a` apply, `p` pop, `k` drop, `b` branch, `v` show |
 | **Reset** `O` | `s m h` | `k` keep, `i` index, `w` worktree, `f` a file |
 | **Branch** `b` | `b l c n m x L` | `s` spin-off, `S` spin-out; **`x` becomes reset, `k` becomes delete** |
+
+**Landed so far (🚧).** Reset gains `k` keep and `i` index; commit
+gains `f` fixup and `s` squash. `CommitOp` grew a `trailing` field so
+`git reset <commit> --` can put its `--` AFTER the commit — that
+position is what makes it index-only rather than also moving HEAD, so
+it is pinned by a test.
+
+**Still open, and why each is not just another row:**
+
+- **Commit `e` extend** — `git commit --amend --no-edit` takes no
+  commit, so it does not fit `CommitOp`'s commit-taking shape. Needs a
+  small argument-free op.
+- **Commit `w` reword, `F` / `S` instant fixup/squash** — all need an
+  editor or an immediate autosquash rebase. `run_remote_op` sets
+  `GIT_EDITOR=true` (it must, or a child blocks forever), which would
+  silently accept the message unchanged rather than letting the user
+  write one. Wants the message-buffer path the commit flow already
+  has, not a spawn.
+- **Reset `w` worktree** — magit implements it with a `checkout-index`
+  dance, not a `reset` mode.
+- **Reset `f` a file** — needs a second input (commit AND path), which
+  `CommitOp` has no slot for.
+- **Stash** — the largest gap (2 of ~14) and untouched here: the
+  `i`/`w`/`x` variants, the three snapshots, and
+  `a`/`p`/`k`/`b`/`v`.
+- **Branch `s` / `S` spin-off / spin-out** — multi-step operations
+  (create, move commits, reset the original), not single git calls.
 
 ### MG.41e — dispatch rows that should be submenus
 

@@ -1009,6 +1009,25 @@ impl Mode for MagitCoreMode {
                 "action:magit-reset-hard",
                 crate::magit_global_mode::CommitOp::RESET_HARD,
             ),
+            // MG.41d: the rest of magit's reset modes plus the
+            // autosquash pair. Same handler, different argv — the
+            // whole reason `CommitOp` is data.
+            commit_op(
+                "action:magit-reset-keep",
+                crate::magit_global_mode::CommitOp::RESET_KEEP,
+            ),
+            commit_op(
+                "action:magit-reset-index",
+                crate::magit_global_mode::CommitOp::RESET_INDEX,
+            ),
+            commit_op(
+                "action:magit-commit-fixup",
+                crate::magit_global_mode::CommitOp::COMMIT_FIXUP,
+            ),
+            commit_op(
+                "action:magit-commit-squash",
+                crate::magit_global_mode::CommitOp::COMMIT_SQUASH,
+            ),
             // The execute half of reset --hard, reached only through
             // its confirm. Re-resolves the commit at the cursor rather
             // than carrying it through the prompt: the confirm

@@ -242,6 +242,21 @@ const RESET_ROWS: &[TransientRow] = &[
         action: "action:magit-reset-hard",
         placeholder: "reset_hard_op",
     },
+    // MG.41d: magit's own keys for the rest of the modes.
+    TransientRow {
+        key: "k",
+        label: "keep",
+        doc: "Move HEAD but refuse if that would discard uncommitted work",
+        action: "action:magit-reset-keep",
+        placeholder: "reset_keep_op",
+    },
+    TransientRow {
+        key: "i",
+        label: "index",
+        doc: "Set the index to a commit without moving HEAD or touching the working tree",
+        action: "action:magit-reset-index",
+        placeholder: "reset_index_op",
+    },
 ];
 
 const COMMIT_ROWS: &[TransientRow] = &[
@@ -258,6 +273,23 @@ const COMMIT_ROWS: &[TransientRow] = &[
         doc: "Amend the previous commit",
         action: "action:magit-global-amend",
         placeholder: "amend_op",
+    },
+    // MG.41d: the autosquash pair, on magit's own keys. Both record a
+    // marker commit a later `rebase --autosquash` folds in — `fixup`
+    // discards its message, `squash` keeps it for editing.
+    TransientRow {
+        key: "f",
+        label: "fixup",
+        doc: "Record a fixup! commit for a commit you pick",
+        action: "action:magit-commit-fixup",
+        placeholder: "commit_fixup_op",
+    },
+    TransientRow {
+        key: "s",
+        label: "squash",
+        doc: "Record a squash! commit for a commit you pick",
+        action: "action:magit-commit-squash",
+        placeholder: "commit_squash_op",
     },
 ];
 
@@ -2050,5 +2082,53 @@ mod remote_flag_tests {
         for expected in ["tags", "prune", "all"] {
             assert!(names.contains(&expected), "fetch missing `{expected}`: {names:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod commit_op_argv_tests {
+    use crate::magit_global_mode::CommitOp;
+
+    /// MG.41d: `git reset <commit> --` resets the INDEX without moving
+    /// HEAD. Drop the trailing `--` and it moves HEAD too — a very
+    /// different operation, which is why the position is pinned.
+    #[test]
+    fn reset_index_puts_the_dashes_after_the_commit() {
+        assert_eq!(
+            CommitOp::RESET_INDEX.argv("abc123"),
+            vec!["reset", "abc123", "--"],
+        );
+    }
+
+    /// `--keep` refuses rather than discarding, so unlike `--hard` it
+    /// carries no confirm step.
+    #[test]
+    fn reset_keep_needs_no_confirmation() {
+        assert_eq!(CommitOp::RESET_KEEP.argv("abc123"), vec!["reset", "--keep", "abc123"]);
+        assert!(CommitOp::RESET_KEEP.confirm_action.is_none());
+        // The destructive sibling still does.
+        assert!(CommitOp::RESET_HARD.confirm_action.is_some());
+    }
+
+    /// fixup / squash take the target commit LAST, which is what git's
+    /// `--fixup <commit>` spelling expects.
+    #[test]
+    fn fixup_and_squash_target_the_commit() {
+        assert_eq!(
+            CommitOp::COMMIT_FIXUP.argv("abc123"),
+            vec!["commit", "--no-edit", "--fixup", "abc123"],
+        );
+        assert_eq!(
+            CommitOp::COMMIT_SQUASH.argv("abc123"),
+            vec!["commit", "--no-edit", "--squash", "abc123"],
+        );
+    }
+
+    /// Ops with no trailing tokens are unchanged by the new field —
+    /// the shape every pre-MG.41d op relies on.
+    #[test]
+    fn ops_without_trailing_tokens_are_unaffected() {
+        assert_eq!(CommitOp::RESET_SOFT.argv("abc"), vec!["reset", "--soft", "abc"]);
+        assert!(CommitOp::RESET_SOFT.trailing.is_empty());
     }
 }

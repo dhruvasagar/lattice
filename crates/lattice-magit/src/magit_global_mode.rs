@@ -2995,6 +2995,9 @@ pub fn spawn_remote_op(
 pub struct CommitOp {
     /// Verb for the echo + logs.
     pub what: &'static str,
+    /// MG.41d: tokens appended AFTER the commit (see [`Self::argv`]).
+    /// Empty for every op that takes none.
+    pub trailing: &'static [&'static str],
     /// MG.23j: this op's ex-command name, without the `:`.
     ///
     /// Load-bearing in two places beyond documentation. It is the
@@ -3022,6 +3025,7 @@ pub struct CommitOp {
 impl CommitOp {
     pub const REVERT: Self = Self {
         what: "revert",
+        trailing: &[],
         ex_command: "magit-revert",
         // `--no-edit` keeps the generated message: lattice has no
         // commit-message UI wired into this path, so opening $EDITOR
@@ -3032,34 +3036,83 @@ impl CommitOp {
     };
     pub const CHERRY_PICK: Self = Self {
         what: "cherry-pick",
+        trailing: &[],
         ex_command: "magit-cherry-pick",
         args: &["cherry-pick"],
         confirm_action: None,
     };
     pub const RESET_SOFT: Self = Self {
         what: "reset --soft",
+        trailing: &[],
         ex_command: "magit-reset-soft",
         args: &["reset", "--soft"],
         confirm_action: None,
     };
     pub const RESET_MIXED: Self = Self {
         what: "reset --mixed",
+        trailing: &[],
         ex_command: "magit-reset-mixed",
         args: &["reset", "--mixed"],
         confirm_action: None,
     };
     pub const RESET_HARD: Self = Self {
         what: "reset --hard",
+        trailing: &[],
         ex_command: "magit-reset-hard",
         args: &["reset", "--hard"],
         // The only one that destroys uncommitted work.
         confirm_action: Some("action:magit-reset-hard-execute"),
     };
 
+    /// MG.41d: magit's `k` — move HEAD but refuse if that would
+    /// discard uncommitted work, unlike `--hard` which discards it
+    /// silently. No confirm precisely because git itself declines
+    /// rather than destroying anything.
+    pub const RESET_KEEP: Self = Self {
+        what: "reset --keep",
+        trailing: &[],
+        ex_command: "magit-reset-keep",
+        args: &["reset", "--keep"],
+        confirm_action: None,
+    };
+    /// MG.41d: magit's `i` — set the index to `commit` WITHOUT moving
+    /// HEAD. The trailing `--` is what makes it index-only; the same
+    /// command without it moves HEAD too.
+    pub const RESET_INDEX: Self = Self {
+        what: "reset index",
+        trailing: &["--"],
+        ex_command: "magit-reset-index",
+        args: &["reset"],
+        confirm_action: None,
+    };
+    /// MG.41d: magit's `f` fixup — record a `fixup!` commit that a
+    /// later `rebase --autosquash` folds into `commit`.
+    pub const COMMIT_FIXUP: Self = Self {
+        what: "commit --fixup",
+        trailing: &[],
+        ex_command: "magit-commit-fixup",
+        args: &["commit", "--no-edit", "--fixup"],
+        confirm_action: None,
+    };
+    /// MG.41d: magit's `s` squash — like fixup, but the message is
+    /// kept for editing when the autosquash runs.
+    pub const COMMIT_SQUASH: Self = Self {
+        what: "commit --squash",
+        trailing: &[],
+        ex_command: "magit-commit-squash",
+        args: &["commit", "--no-edit", "--squash"],
+        confirm_action: None,
+    };
+
     /// Full argv for `commit`.
     pub fn argv(&self, commit: &str) -> Vec<String> {
         let mut argv: Vec<String> = self.args.iter().map(|s| (*s).to_string()).collect();
         argv.push(commit.to_string());
+        // MG.41d: tokens that must follow the commit. `git reset
+        // <commit> --` resets the index WITHOUT moving HEAD; the same
+        // words before the commit mean something else entirely, so the
+        // position is load-bearing rather than cosmetic.
+        argv.extend(self.trailing.iter().map(|s| (*s).to_string()));
         argv
     }
 }

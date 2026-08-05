@@ -971,6 +971,12 @@ fn register_ex_commands(
             magit_global_mode::CommitOp::RESET_SOFT,
             magit_global_mode::CommitOp::RESET_MIXED,
             magit_global_mode::CommitOp::RESET_HARD,
+            // MG.41d: magit's remaining reset modes + the autosquash
+            // pair. Each is data — same handler, different argv.
+            magit_global_mode::CommitOp::RESET_KEEP,
+            magit_global_mode::CommitOp::RESET_INDEX,
+            magit_global_mode::CommitOp::COMMIT_FIXUP,
+            magit_global_mode::CommitOp::COMMIT_SQUASH,
         ] {
             registry.register_ex_command(
                 op.ex_command,
@@ -1880,6 +1886,22 @@ fn register_action_commands(registry: &mut CommandRegistry) {
     reg(
         "action:magit-reset-hard",
         "Reset --hard to the commit at cursor (DISCARDS working tree; asks first)",
+    );
+    reg(
+        "action:magit-reset-keep",
+        "Reset --keep to the commit at cursor (refuses rather than discarding your work)",
+    );
+    reg(
+        "action:magit-reset-index",
+        "Reset the index to the commit at cursor, leaving HEAD and the working tree alone",
+    );
+    reg(
+        "action:magit-commit-fixup",
+        "Record a fixup! commit for the commit at cursor (folded by rebase --autosquash)",
+    );
+    reg(
+        "action:magit-commit-squash",
+        "Record a squash! commit for the commit at cursor (folded by rebase --autosquash)",
     );
     reg(
         "action:magit-reset-hard-execute",
@@ -3599,6 +3621,12 @@ mod tests {
             magit_global_mode::CommitOp::RESET_SOFT,
             magit_global_mode::CommitOp::RESET_MIXED,
             magit_global_mode::CommitOp::RESET_HARD,
+            // MG.41d: magit's remaining reset modes + the autosquash
+            // pair. Each is data — same handler, different argv.
+            magit_global_mode::CommitOp::RESET_KEEP,
+            magit_global_mode::CommitOp::RESET_INDEX,
+            magit_global_mode::CommitOp::COMMIT_FIXUP,
+            magit_global_mode::CommitOp::COMMIT_SQUASH,
         ] {
             let id = registry.id_by_name(op.ex_command).unwrap_or_else(|| {
                 panic!(
@@ -4473,8 +4501,9 @@ mod tests {
         assert_eq!(
             root.len(),
             // MG.41c: push/pull/fetch each replaced ONE run row with
-            // destination rows — 7, 3 and 6 — so 46 + 6 + 2 + 5.
-            59,
+            // destination rows — 7, 3 and 6 — so 46 + 6 + 2 + 5 = 59.
+            // MG.41d: +2 reset modes, +2 commit autosquash rows.
+            63,
             "expected every root-dispatch leaf (incl. both submenus') to \
              report inert, got: {root:?}"
         );
@@ -4495,8 +4524,8 @@ mod tests {
         );
         assert_eq!(
             bisecting.len(),
-            // MG.41c: +13, the same destination rows as above.
-            62,
+            // MG.41c: +13 destination rows; MG.41d: +4 more.
+            66,
             "the in-progress bisect menu trades `start` for good/bad/skip/reset: {bisecting:?}"
         );
     }

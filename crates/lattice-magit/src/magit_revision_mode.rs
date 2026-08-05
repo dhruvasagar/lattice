@@ -84,7 +84,11 @@ impl crate::buffer_state::MagitView for RevisionView {
     }
 
     /// MG.22: this commit's version of the file.
-    fn diff_target(&self, path: &std::path::Path) -> Option<Effect> {
+    fn diff_target(
+        &self,
+        path: &std::path::Path,
+        _cursor: lattice_protocol::position::Position,
+    ) -> Option<Effect> {
         let sha = self.0.lock().ok()?.sha.clone();
         (!sha.is_empty()).then(|| Effect::OpenSyntheticBuffer {
             name: crate::magit_file_revision_mode::blob_buffer_name(&sha, path),

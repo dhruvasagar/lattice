@@ -205,7 +205,11 @@ impl crate::buffer_state::MagitView for CommitView {
     }
 
     /// The index's blob — this buffer's diff is the index.
-    fn diff_target(&self, path: &std::path::Path) -> Option<Effect> {
+    fn diff_target(
+        &self,
+        path: &std::path::Path,
+        _cursor: lattice_protocol::position::Position,
+    ) -> Option<Effect> {
         Some(Effect::OpenSyntheticBuffer {
             name: crate::magit_file_revision_mode::blob_buffer_name("staged", path),
             mode_id: "magit-file-revision-mode".to_string(),

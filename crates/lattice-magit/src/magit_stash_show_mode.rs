@@ -102,7 +102,11 @@ impl crate::buffer_state::MagitView for StashShowView {
     /// stash@{n}:<path>` is a real revspec, so the existing
     /// `magit-file-revision-mode` opens it with no new machinery — the
     /// ref simply is not a sha.
-    fn diff_target(&self, path: &std::path::Path) -> Option<Effect> {
+    fn diff_target(
+        &self,
+        path: &std::path::Path,
+        _cursor: lattice_protocol::position::Position,
+    ) -> Option<Effect> {
         let idx = self.0.lock().ok()?.index?;
         Some(Effect::OpenSyntheticBuffer {
             name: crate::magit_file_revision_mode::blob_buffer_name(

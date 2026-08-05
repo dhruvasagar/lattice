@@ -836,6 +836,18 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
                 mode_id: mode_id.clone(),
             })
         }
+        // MG.50: no WIT mirror yet. Native-only, like `Global` /
+        // `AppAction` — magit is the only emitter and it is a native
+        // crate. A plugin that wants "open a synthetic buffer at a
+        // line" gets a typed error naming the gap rather than a silently
+        // dropped position, which is the failure mode the mirror-less
+        // variants are deliberately loud about.
+        NativeEffect::OpenSyntheticBufferAt { .. } => {
+            return Err("Effect::OpenSyntheticBufferAt has no WIT mirror yet \
+                        (native emitters only; add a payload to wit/types.wit \
+                        when a plugin needs it)"
+                .to_string());
+        }
         NativeEffect::Many(_) => {
             return Err(
                 "Effect::Many is flattened to list<effect> at the boundary and must not \

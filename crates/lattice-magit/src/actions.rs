@@ -1108,6 +1108,64 @@ impl crate::buffer_state::MagitView for StatusView {
     /// Stashes and commits expand patches too, and those belong to
     /// neither the index nor the worktree; `None` refuses hunk staging
     /// there rather than applying a commit's diff to the index.
+    /// MG.50: `<CR>` inside an inline diff.
+    ///
+    /// This was the one view with no answer — `<CR>` in a magit-status
+    /// hunk fell to the trait default and did nothing at all, while the
+    /// same key in magit-diff or a revision opened the file.
+    ///
+    /// Which version to open is the SECTION's question, not the
+    /// buffer's: a status buffer holds staged and unstaged diffs at
+    /// once, and they describe different content. `diff_source` already
+    /// answers it from the header above the cursor — the same seam
+    /// `s` / `u` / `x` use to decide which tree a hunk applies to, so
+    /// the version `<CR>` shows and the tree a hunk stages to can never
+    /// disagree.
+    fn diff_target(&self, path: &std::path::Path, cursor: Position) -> Option<Effect> {
+        match self.diff_source(cursor)? {
+            // Staged: the index blob, which is what the diff describes.
+            // The working-tree file may have moved on since.
+            DiffSource::Staged => Some(Effect::OpenSyntheticBuffer {
+                name: crate::magit_file_revision_mode::blob_buffer_name("staged", path),
+                mode_id: "magit-file-revision-mode".to_string(),
+            }),
+            // Unstaged (and untracked): the diff IS against the working
+            // tree, so that file is the thing being described.
+            DiffSource::Unstaged => {
+                let full = self.0.lock().ok()?.workdir.join(path);
+                full.exists().then_some(Effect::OpenBuffer {
+                    path: Some(full),
+                    force: false,
+                })
+            }
+            // A commit's patch, expanded inline under its Recent-commits
+            // row. THAT row names the revision, and it is the only place
+            // the sha exists — the patch text below it does not repeat
+            // it. So walk up to the entry this content was expanded
+            // under, exactly as the fold source does to find an
+            // expansion's extent.
+            //
+            // A stash's patch resolves to no sha and declines rather
+            // than guessing a revision.
+            DiffSource::Committed => {
+                let g = self.0.lock().ok()?;
+                let sha = (0..=cursor.line).rev().find_map(|l| {
+                    match classify_line(&g, l) {
+                        Some(StatusLine::Commit { sha }) => Some(sha),
+                        // Any other classified entry means the walk left
+                        // this patch without finding a commit.
+                        Some(_) => None,
+                        None => None,
+                    }
+                })?;
+                Some(Effect::OpenSyntheticBuffer {
+                    name: crate::magit_file_revision_mode::blob_buffer_name(&sha, path),
+                    mode_id: "magit-file-revision-mode".to_string(),
+                })
+            }
+        }
+    }
+
     fn diff_source(&self, cursor: Position) -> Option<DiffSource> {
         let g = self.0.lock().ok()?;
         diff_source_for_header(&section_header_above(&g, cursor.line)?)

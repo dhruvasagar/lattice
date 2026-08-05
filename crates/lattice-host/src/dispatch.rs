@@ -34042,6 +34042,7 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         | Effect::OpenLspLog { .. }
         | Effect::OpenAiLog { .. }
         | Effect::OpenSyntheticBuffer { .. }
+        | Effect::OpenSyntheticBufferAt { .. }
         | Effect::OpenMessages
         | Effect::OpenDashboard
         | Effect::ToggleLspTrace { .. }
@@ -34186,6 +34187,7 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         | Effect::OpenLspLog { .. }
         | Effect::OpenAiLog { .. }
         | Effect::OpenSyntheticBuffer { .. }
+        | Effect::OpenSyntheticBufferAt { .. }
         | Effect::OpenMessages
         | Effect::OpenDashboard
         | Effect::ToggleLspTrace { .. }

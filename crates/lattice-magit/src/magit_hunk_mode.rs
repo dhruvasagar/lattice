@@ -146,11 +146,48 @@ fn visit_diff_target(ctx: &lattice_mode::ActionContext<'_>) -> Option<lattice_gr
     let store = ctx.services.get::<lattice_mode::BufferStoreHandle>()?;
     let handle = store.handle_for(lattice_core::BufferId(ctx.buffer_id.0 as u32))?;
     let snap = handle.snapshot();
-    let path = crate::hunk::path_at_cursor(
-        |i| u32::try_from(i).ok().and_then(|l| snap.buffer.line(l)),
-        ctx.cursor.line as usize,
-    )?;
-    view.diff_target(&path)
+    let read = |i: usize| u32::try_from(i).ok().and_then(|l| snap.buffer.line(l));
+    let path = crate::hunk::path_at_cursor(&read, ctx.cursor.line as usize)?;
+    let target = view.diff_target(&path, ctx.cursor)?;
+
+    // MG.50: land on the line the code under the cursor lives on.
+    //
+    // `None` here is the ordinary case, not a failure — a file entry row
+    // is not inside a hunk, and emacs opens those at the top too. The
+    // target opens unpositioned.
+    match crate::hunk::source_line_at(&read, ctx.cursor.line as usize) {
+        Some(line) => Some(at_line(target, line)),
+        None => Some(target),
+    }
+}
+
+/// MG.50: re-express an "open this" effect as "open this AT `line`".
+///
+/// Positioning has to be part of the SAME effect rather than a
+/// following `CursorMove`: the opens are peer-applied (the TUI/GPUI
+/// `do_edit` path) while a cursor effect runs host-side against
+/// whatever buffer is active at that moment, so the two cannot be
+/// ordered to land the caret on a buffer that does not exist yet. This
+/// is the reason `Effect::OpenBufferAt` exists at all — see its doc,
+/// which records the same bug for search `<CR>`.
+///
+/// Effects with nothing to position (an echo, a refusal) pass through.
+fn at_line(effect: lattice_grammar::Effect, line: u32) -> lattice_grammar::Effect {
+    use lattice_grammar::Effect;
+    let position = lattice_protocol::position::Position::new(line, 0);
+    match effect {
+        Effect::OpenBuffer { path, force } => Effect::OpenBufferAt {
+            path,
+            position,
+            force,
+        },
+        Effect::OpenSyntheticBuffer { name, mode_id } => Effect::OpenSyntheticBufferAt {
+            name,
+            mode_id,
+            position,
+        },
+        other => other,
+    }
 }
 
 /// MG.19: `dv` — the file at cursor, side by side against its baseline.
@@ -666,5 +703,58 @@ mod tests {
              a diff path — the other order opens the wrong file in \
              magit-status whenever an earlier entry is expanded"
         );
+    }
+}
+
+#[cfg(test)]
+mod at_line_tests {
+    use super::at_line;
+    use lattice_grammar::Effect;
+
+    /// MG.50: an open becomes an open-AT.
+    ///
+    /// Both shapes matter: a working-tree file (`OpenBuffer`) and a blob
+    /// (`OpenSyntheticBuffer`) are the two things `diff_target` returns,
+    /// and magit-status produces one of each depending on which section
+    /// the cursor sits under.
+    #[test]
+    fn both_open_shapes_carry_the_line() {
+        let line = 41;
+        match at_line(
+            Effect::OpenBuffer {
+                path: Some("/repo/src/main.rs".into()),
+                force: false,
+            },
+            line,
+        ) {
+            Effect::OpenBufferAt { position, .. } => assert_eq!(position.line, line),
+            other => panic!("a working-tree open must position: {other:?}"),
+        }
+        match at_line(
+            Effect::OpenSyntheticBuffer {
+                name: "*magit:file:staged:src/main.rs*".into(),
+                mode_id: "magit-file-revision-mode".into(),
+            },
+            line,
+        ) {
+            Effect::OpenSyntheticBufferAt {
+                position, mode_id, ..
+            } => {
+                assert_eq!(position.line, line);
+                assert_eq!(mode_id, "magit-file-revision-mode");
+            }
+            other => panic!("a blob open must position: {other:?}"),
+        }
+    }
+
+    /// An effect with nothing to position passes through untouched —
+    /// a refusal must not be silently turned into an open.
+    #[test]
+    fn an_effect_with_nothing_to_position_is_unchanged() {
+        let echo = Effect::Echo {
+            level: lattice_grammar::EchoLevel::Warn,
+            text: "no working-tree copy".into(),
+        };
+        assert!(matches!(at_line(echo, 7), Effect::Echo { .. }));
     }
 }

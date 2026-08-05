@@ -592,7 +592,11 @@ impl MagitView for DiffView {
     /// live file otherwise. The `Head` scope combines both sides, so
     /// the working-tree copy is the only version that is definitely
     /// what the user is looking at.
-    fn diff_target(&self, path: &std::path::Path) -> Option<Effect> {
+    fn diff_target(
+        &self,
+        path: &std::path::Path,
+        _cursor: lattice_protocol::position::Position,
+    ) -> Option<Effect> {
         let g = self.0.lock().ok()?;
         match g.scope {
             DiffScope::Staged => Some(Effect::OpenSyntheticBuffer {

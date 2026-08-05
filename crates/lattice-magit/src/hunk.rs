@@ -1534,3 +1534,183 @@ mod git_round_trip {
         }
     }
 }
+
+/// MG.50: the SOURCE line the cursor is looking at, inside a diff.
+///
+/// `<CR>` in emacs magit opens the file *at the line the code under the
+/// cursor lives on*, not at the top. The diff already carries the
+/// answer: a hunk's `@@` header names where its body starts in the new
+/// file, so the target is that start plus however many new-side rows
+/// precede the cursor within the hunk.
+///
+/// **Which rows count.** Only those that exist on the NEW side — context
+/// (` `) and additions (`+`). A deletion (`-`) is not in the file being
+/// opened, so it advances nothing; a cursor sitting on one resolves to
+/// the position where the deleted text *was*, which is where a reader
+/// looking at it wants to land. `\ No newline at end of file` belongs to
+/// neither side.
+///
+/// Returns a 0-based buffer row, ready for
+/// [`lattice_protocol::position::Position`]. `None` when the cursor is
+/// not inside a hunk (a file entry, a section header, a `diff --git`
+/// line) — the caller then opens at the top, which is what emacs does
+/// for a file entry too.
+pub fn source_line_at(read: impl Fn(usize) -> Option<String>, cursor: usize) -> Option<u32> {
+    let header_line = enclosing_hunk_header(&read, cursor)?;
+    let header_text = read(header_line)?;
+    let header = header_text.trim_end();
+    let start = parse_hunk_starts(header)?.new;
+    let counts = parse_hunk_counts(header)?;
+
+    // On the `@@` row itself: the hunk's first new-side line.
+    if cursor == header_line {
+        return u32::try_from(start.saturating_sub(1)).ok();
+    }
+
+    // Walk the body under the header's DECLARED counts rather than
+    // until something stops looking like diff content — the same reason
+    // `hunk_at_with` does, and the same trap the fold source hit: in
+    // magit-status the row after a hunk is `"  modified src/foo.rs"`,
+    // which begins with a space and is indistinguishable from a context
+    // line by prefix alone. The counts end the hunk exactly.
+    let (mut old_left, mut new_left) = (counts.old, counts.new);
+    let mut advanced = 0usize;
+    let mut row = header_line + 1;
+    while old_left > 0 || new_left > 0 {
+        // Tested INSIDE the loop, so it can only match while the hunk
+        // still has body left. Testing it in the loop condition would
+        // also match the row one PAST the last body line — which in
+        // magit-status is the next file's entry row, and would hand back
+        // a line number inside a file the cursor is not in.
+        if row == cursor {
+            return u32::try_from(start.saturating_sub(1) + advanced).ok();
+        }
+        let text = read(row)?;
+        match text.chars().next() {
+            // Context: present on both sides.
+            None | Some(' ') => {
+                old_left = old_left.checked_sub(1)?;
+                new_left = new_left.checked_sub(1)?;
+                advanced += 1;
+            }
+            // An addition exists only in the file being opened.
+            Some('+') => {
+                new_left = new_left.checked_sub(1)?;
+                advanced += 1;
+            }
+            // A deletion is not in that file, so it advances nothing —
+            // a cursor on one resolves to the position it occupied.
+            Some('-') => old_left = old_left.checked_sub(1)?,
+            // `\ No newline at end of file` belongs to neither side.
+            Some('\\') => {}
+            _ => return None,
+        }
+        row += 1;
+    }
+    // Counts exhausted without reaching the cursor: it sits past this
+    // hunk's last body line, so there is no line in this file to name.
+    None
+}
+
+#[cfg(test)]
+mod source_line_tests {
+    use super::source_line_at;
+
+    const DIFF: &[&str] = &[
+        "diff --git a/src/main.rs b/src/main.rs", // 0
+        "index 111..222 100644",                  // 1
+        "--- a/src/main.rs",                      // 2
+        "+++ b/src/main.rs",                      // 3
+        "@@ -10,3 +20,3 @@ fn main() {",          // 4  -> new starts at 20
+        " context one",                           // 5  -> line 20
+        "-deleted",                               // 6  -> not in the new file
+        "+added",                                 // 7  -> line 21
+        " context two",                           // 8  -> line 22
+    ];
+
+    fn read(i: usize) -> Option<String> {
+        DIFF.get(i).map(|s| s.to_string())
+    }
+
+    /// The first body row is the header's own new-side start.
+    #[test]
+    fn the_first_body_row_is_the_hunks_start() {
+        // `@@ +20` is 1-based; row 5 is buffer line 19.
+        assert_eq!(source_line_at(read, 5), Some(19));
+    }
+
+    /// A deletion advances nothing — it is not in the file being opened.
+    #[test]
+    fn a_deletion_does_not_advance_the_source_line() {
+        // Row 6 is the `-` itself. The deleted text is not in the file
+        // being opened, so it resolves to the position it occupied —
+        // just after `context one`, which is new line 21 (0-based 20).
+        // That is where a reader looking at the deletion wants to land.
+        assert_eq!(source_line_at(read, 6), Some(20));
+        // Row 7 (`+added`) follows one context row and one deletion, so
+        // only the context advanced: line 21 (0-based 20).
+        assert_eq!(source_line_at(read, 7), Some(20));
+    }
+
+    /// Context after an addition keeps counting.
+    #[test]
+    fn context_after_an_addition_keeps_counting() {
+        assert_eq!(source_line_at(read, 8), Some(21));
+    }
+
+    /// On the `@@` row, the hunk's start.
+    #[test]
+    fn the_header_row_resolves_to_the_hunk_start() {
+        assert_eq!(source_line_at(read, 4), Some(19));
+    }
+
+    /// Outside a hunk there is no line to name — the caller opens at the
+    /// top, which is what emacs does for a file entry.
+    #[test]
+    fn a_row_outside_any_hunk_has_no_source_line() {
+        assert_eq!(source_line_at(read, 0), None);
+        assert_eq!(source_line_at(read, 3), None);
+    }
+
+    /// The magit-status shape: a hunk with an ENTRY ROW under it.
+    ///
+    /// `"  modified src/other.rs"` starts with a space, so by prefix
+    /// alone it is a context line. Walking until something stops looking
+    /// like diff content would count it and hand back a line number
+    /// inside a file the cursor is not in — the same trap that let a
+    /// fold swallow the rest of the status buffer. The declared counts
+    /// end the hunk exactly.
+    #[test]
+    fn an_entry_row_below_the_hunk_is_not_counted_as_context() {
+        const STATUS: &[&str] = &[
+            "diff --git a/a.rs b/a.rs", // 0
+            "--- a/a.rs",               // 1
+            "+++ b/a.rs",               // 2
+            "@@ -1,1 +5,2 @@",          // 3
+            " ctx",                     // 4  -> line 5
+            "+added",                   // 5  -> line 6
+            "  modified src/other.rs",  // 6  <- an entry row, not context
+            "  modified src/third.rs",  // 7
+        ];
+        let r = |i: usize| STATUS.get(i).map(|s| s.to_string());
+        assert_eq!(source_line_at(r, 4), Some(4), "` ctx` is new line 5");
+        assert_eq!(source_line_at(r, 5), Some(5), "`+added` is new line 6");
+        // Past the hunk's declared end: not inside it, so no line.
+        assert_eq!(
+            source_line_at(r, 6),
+            None,
+            "an entry row below the hunk must not resolve to a line \
+             inside the hunk's file",
+        );
+        assert_eq!(source_line_at(r, 7), None);
+    }
+
+    /// A header with no comma (`@@ -1 +7 @@`) is a one-line range and
+    /// still parses.
+    #[test]
+    fn a_single_line_range_parses() {
+        const ONE: &[&str] = &["@@ -1 +7 @@", " ctx"];
+        let r = |i: usize| ONE.get(i).map(|s| s.to_string());
+        assert_eq!(source_line_at(r, 1), Some(6));
+    }
+}

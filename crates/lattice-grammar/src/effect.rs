@@ -647,6 +647,20 @@ pub enum Effect {
         name: String,
         mode_id: String,
     },
+    /// MG.50: [`Effect::OpenSyntheticBuffer`] + cursor placement, in one
+    /// step.
+    ///
+    /// The synthetic peer of [`Effect::OpenBufferAt`], and it exists for
+    /// exactly the same reason: the open is peer-applied while a cursor
+    /// effect runs host-side against whatever buffer is active at that
+    /// moment, so `Many([open, move])` cannot land the caret on a buffer
+    /// that does not exist yet. Emitted by magit's `<CR>`, which opens a
+    /// staged blob at the line the cursor was reading in the diff.
+    OpenSyntheticBufferAt {
+        name: String,
+        mode_id: String,
+        position: lattice_protocol::position::Position,
+    },
     /// `:messages` -- open the `*messages*` buffer (the emacs
     /// `*Messages*` analogue). Renders a chronological view
     /// of every echo / minibuffer notification; live-tails as

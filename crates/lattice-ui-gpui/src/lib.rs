@@ -1315,6 +1315,19 @@ impl GpuiApp {
             Effect::OpenSyntheticBuffer { name, mode_id } => {
                 self.mutate_editor(move |e| e.open_synthetic_buffer(&name, &mode_id));
             }
+            // MG.50: peer of `OpenBufferAt` for synthetic buffers — open
+            // then position, in one arm, so the caret lands on the buffer
+            // that was just opened rather than on whatever preceded it.
+            Effect::OpenSyntheticBufferAt {
+                name,
+                mode_id,
+                position,
+            } => {
+                self.mutate_editor(move |e| {
+                    e.open_synthetic_buffer(&name, &mode_id);
+                    e.set_cursor(position);
+                });
+            }
             Effect::OpenLspTraceLog { server_id } => {
                 self.mutate_editor(move |e| e.do_open_lsp_trace_log(server_id.as_deref()));
             }

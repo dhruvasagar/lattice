@@ -314,8 +314,17 @@ pub trait MagitView: Send + Sync + 'static {
     /// caller says so rather than guessing at a version — opening the
     /// working-tree copy when the user asked for a historical one is
     /// the mistake `magit-file-revision-mode` exists to prevent.
-    fn diff_target(&self, path: &std::path::Path) -> Option<lattice_grammar::Effect> {
-        let _ = path;
+    /// MG.50: `cursor` came with this in MG.50 because magit-status
+    /// needs it — which version of a file its inline diff describes is a
+    /// property of the SECTION the cursor sits under (Staged vs
+    /// Unstaged), not of the buffer. The views whose whole buffer has
+    /// one scope ignore it.
+    fn diff_target(
+        &self,
+        path: &std::path::Path,
+        cursor: lattice_protocol::position::Position,
+    ) -> Option<lattice_grammar::Effect> {
+        let _ = (path, cursor);
         None
     }
 

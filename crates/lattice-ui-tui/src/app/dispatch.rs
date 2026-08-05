@@ -1122,6 +1122,20 @@ impl App {
             Effect::OpenSyntheticBuffer { name, mode_id } => {
                 self.open_synthetic_buffer(&name, &mode_id)
             }
+            // MG.50: the synthetic peer of `OpenBufferAt`, and the same
+            // two writes in the same order — open, THEN position against
+            // the now-active buffer. Splitting them into two effects
+            // would place the caret against whatever was active before.
+            Effect::OpenSyntheticBufferAt {
+                name,
+                mode_id,
+                position,
+            } => {
+                self.open_synthetic_buffer(&name, &mode_id);
+                self.mutate_editor_with(move |e| {
+                    e.set_cursor(position);
+                });
+            }
             // PI.2b: dump the plugin-API catalog into a savable buffer.
             Effect::ExportPluginApi { format } => {
                 self.mutate_editor(move |e| e.do_export_plugin_api(format.as_deref()))
@@ -1373,6 +1387,7 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::OpenLspLog { .. }
         | Effect::OpenAiLog { .. }
         | Effect::OpenSyntheticBuffer { .. }
+        | Effect::OpenSyntheticBufferAt { .. }
         | Effect::OpenMessages
         | Effect::ToggleLspTrace { .. }
         | Effect::OpenLspTraceLog { .. }
@@ -1517,6 +1532,7 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::OpenLspLog { .. }
         | Effect::OpenAiLog { .. }
         | Effect::OpenSyntheticBuffer { .. }
+        | Effect::OpenSyntheticBufferAt { .. }
         | Effect::OpenMessages
         | Effect::ToggleLspTrace { .. }
         | Effect::OpenLspTraceLog { .. }

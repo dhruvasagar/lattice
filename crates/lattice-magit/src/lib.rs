@@ -2261,6 +2261,10 @@ fn register_action_commands(registry: &mut CommandRegistry) {
         "Snapshot the working tree without disturbing the index",
     );
     reg(
+        "action:magit-global-reword",
+        "Reword the last commit — its message only, leaving the index alone",
+    );
+    reg(
         "action:magit-global-reset-file",
         "Restore one file from a commit (asks for the commit, then the path)",
     );
@@ -4637,7 +4641,7 @@ mod tests {
             // MG.41c: push/pull/fetch each replaced ONE run row with
             // destination rows — 7, 3 and 6 — so 46 + 6 + 2 + 5 = 59.
             // MG.41d: +2 reset modes, +2 commit autosquash rows.
-            80,
+            81,
             "expected every root-dispatch leaf (incl. both submenus') to \
              report inert, got: {root:?}"
         );
@@ -4662,7 +4666,7 @@ mod tests {
         assert_eq!(
             bisecting.len(),
             // MG.41c: +13 destination rows; MG.41d: +4 more.
-            83,
+            84,
             "the in-progress bisect menu trades `start` for good/bad/skip/reset: {bisecting:?}"
         );
     }

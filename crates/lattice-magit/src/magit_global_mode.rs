@@ -207,6 +207,13 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         "*magit:amend*",
         "magit-commit-mode"
     );
+    // MG.42-E1: magit's `w`. Same compose buffer, different intent —
+    // the name selects it (see `CommitIntent::from_buffer_name`).
+    open!(
+        "action:magit-global-reword",
+        "*magit:reword*",
+        "magit-commit-mode"
+    );
     open!(
         "action:magit-global-diff",
         "*magit:diff*",

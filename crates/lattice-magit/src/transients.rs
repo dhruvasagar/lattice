@@ -307,6 +307,16 @@ const COMMIT_ROWS: &[TransientRow] = &[
         action: "action:magit-commit-squash",
         placeholder: "commit_squash_op",
     },
+    // MG.42-E1: reword — message only. Deliberately NOT amend: a
+    // reword that swept in staged changes would be a content change
+    // nobody asked for.
+    TransientRow {
+        key: "w",
+        label: "reword",
+        doc: "Change the last commit's message, leaving the index alone",
+        action: "action:magit-global-reword",
+        placeholder: "commit_reword_op",
+    },
     // MG.42-E2: magit's instant variants — record AND fold in.
     TransientRow {
         key: "F",
@@ -2822,5 +2832,49 @@ mod two_input_argv_tests {
             stash_branch_argv("recover", "stash@{0}"),
             vec!["stash", "branch", "recover", "stash@{0}"],
         );
+    }
+}
+
+#[cfg(test)]
+mod commit_intent_tests {
+    use crate::magit_commit_mode::CommitIntent;
+
+    /// MG.42-E1: the buffer name selects the intent in ONE place.
+    ///
+    /// `reword` is tested before `amend` on purpose — order is the
+    /// difference between the two mapping correctly and one shadowing
+    /// the other if a name ever changes.
+    #[test]
+    fn buffer_names_map_to_intents() {
+        assert_eq!(
+            CommitIntent::from_buffer_name("*magit:reword*"),
+            CommitIntent::Reword
+        );
+        assert_eq!(
+            CommitIntent::from_buffer_name("*magit:amend*"),
+            CommitIntent::Amend
+        );
+        assert_eq!(
+            CommitIntent::from_buffer_name("*magit:commit*"),
+            CommitIntent::Create
+        );
+    }
+
+    /// Both replacing intents open pre-filled; a fresh commit does not.
+    #[test]
+    fn replacing_intents_seed_the_prior_message() {
+        assert!(CommitIntent::Amend.seeds_prior_message());
+        assert!(CommitIntent::Reword.seeds_prior_message());
+        assert!(!CommitIntent::Create.seeds_prior_message());
+    }
+
+    /// Reword and amend are NOT the same operation.
+    ///
+    /// `amend` sweeps in whatever is staged; `reword` passes `--only`
+    /// and touches the message alone. Collapsing them would make a row
+    /// labelled "reword" silently commit staged content.
+    #[test]
+    fn reword_is_distinct_from_amend() {
+        assert_ne!(CommitIntent::Reword, CommitIntent::Amend);
     }
 }

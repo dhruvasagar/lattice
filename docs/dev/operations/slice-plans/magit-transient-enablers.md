@@ -1,6 +1,6 @@
 # MG.42 — the four enablers behind MG.41d / MG.41e
 
-**Status:** 🚧 E4 landed (2026-08-05). Parent:
+**Status:** ✅ all four enablers landed (2026-08-05). Parent:
 [`magit-transient-completeness.md`](magit-transient-completeness.md)
 (MG.41). Design fragment:
 [`../../architecture/magit.md`](../../architecture/magit.md).
@@ -200,7 +200,7 @@ Rebase `p`/`u`/`e` remain: they need `RemoteTarget` resolution wired to
 the rebase op rather than a second prompt, so they belong with a
 rebase-onto slice rather than here.
 
-## E1 — message-composing operations
+## E1 — message-composing operations ✅
 
 The only piece that changes existing behaviour, so it lands last.
 
@@ -222,6 +222,25 @@ the existing message; a renamed buffer does not change behaviour (the
 regression the enum prevents).
 
 **Unblocks:** commit `w` reword, `A` augment, merge `e` edit.
+
+**Landed.** `CommitIntent` (`Create` / `Amend` / `Reword`) replaces the
+`amend: bool`, `Commit::reword` in `lattice-vcs`, and the `w` row.
+
+**Reword is `--amend --only`, not `--amend`** — and that single flag is
+the whole point of the row. Without `--only`, anything currently staged
+is swept into the commit being reworded: a content change the user did
+not ask for and would not expect from a row labelled "reword". The two
+intents are deliberately not collapsed, and a test asserts they differ.
+
+The name still selects the intent, but once, explicitly, in
+`from_buffer_name` — and `reword` is matched before `amend` so a future
+rename cannot make one shadow the other. What is gone is the *implicit*
+coupling: behaviour no longer depends on a substring test scattered at
+the point of use.
+
+`A` augment and merge `e` edit are now unblocked but not built — both
+are a further intent plus a seeded message, which is one more variant
+of the pattern this slice established.
 
 ---
 

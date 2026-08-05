@@ -47,11 +47,53 @@ fn magit_commit_keymap_entries() -> &'static [KeymapEntry] {
     })
 }
 
+/// MG.42-E1: what the compose buffer is FOR.
+///
+/// Replaces an `amend: bool` that was derived by sniffing the buffer
+/// name. A bool cannot express a third intent, and the sniff coupled a
+/// buffer's *name* to its *behaviour* — rename the buffer and the
+/// operation silently changes. The name still selects the intent, but
+/// it does so once, explicitly, at open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommitIntent {
+    /// A new commit from what is staged.
+    Create,
+    /// Replace the last commit, sweeping in anything staged.
+    Amend,
+    /// Replace the last commit's MESSAGE only, leaving the index
+    /// alone. Distinct from `Amend` precisely because a reword that
+    /// quietly absorbed staged changes would be a content change the
+    /// user never asked for.
+    Reword,
+}
+
+impl CommitIntent {
+    /// Map a compose buffer's name to its intent.
+    ///
+    /// Order matters: `*magit:reword*` must be tested before the
+    /// `amend` substring, or a future rename could make one shadow the
+    /// other. Kept in ONE place so the mapping is auditable.
+    pub fn from_buffer_name(name: &str) -> Self {
+        if name.contains("reword") {
+            Self::Reword
+        } else if name.contains("amend") {
+            Self::Amend
+        } else {
+            Self::Create
+        }
+    }
+
+    /// Does the buffer open pre-filled with the previous message?
+    pub fn seeds_prior_message(self) -> bool {
+        matches!(self, Self::Amend | Self::Reword)
+    }
+}
+
 pub struct CommitState {
     buffer_id: lattice_core::BufferId,
     store: Arc<BufferStoreHandle>,
     workdir: std::path::PathBuf,
-    amend: bool,
+    intent: CommitIntent,
     /// Line of `DIFF_MARKER` — the boundary between the editable
     /// message above and the read-only staged diff below. `<CR>`'s
     /// file-visit handler only fires BELOW it, so pressing it while
@@ -166,7 +208,7 @@ impl Mode for MagitCommitMode {
                 action_name: "action:magit-commit-confirm",
                 handler: Arc::new(|ctx: &ActionContext<'_>| {
                     let s = state(ctx)?;
-                    let (message, workdir, amend) = {
+                    let (message, workdir, intent) = {
                         let g = s.lock().ok()?;
                         let handle = g.store.handle_for(g.buffer_id)?;
                         let snap = handle.snapshot();
@@ -189,7 +231,7 @@ impl Mode for MagitCommitMode {
                                 message.push('\n');
                             }
                         }
-                        (message, g.workdir.clone(), g.amend)
+                        (message, g.workdir.clone(), g.intent)
                     };
                     if message.trim().is_empty() {
                         // Fail loud instead of silently doing nothing —
@@ -214,10 +256,10 @@ impl Mode for MagitCommitMode {
                             tracing::error!(target: "lattice_magit", "commit: repo discover failed");
                             return;
                         };
-                        let result = if amend {
-                            Commit::amend(&repo, message.trim())
-                        } else {
-                            Commit::create(&repo, message.trim())
+                        let result = match intent {
+                            CommitIntent::Amend => Commit::amend(&repo, message.trim()),
+                            CommitIntent::Reword => Commit::reword(&repo, message.trim()),
+                            CommitIntent::Create => Commit::create(&repo, message.trim()),
                         };
                         if let Err(e) = result {
                             tracing::error!(target: "lattice_magit", "commit failed: {e}");
@@ -261,11 +303,12 @@ impl Mode for MagitCommitMode {
 
             let workdir = crate::workdir::magit_workdir().unwrap_or_default();
 
-            // Detect amend: opened via `ca` → buffer name is "*magit:amend*"
-            let amend = store
+            // MG.42-E1: the name selects the intent ONCE, here.
+            let intent = store
                 .name_for(buffer_id)
-                .map(|n| n.contains("amend"))
-                .unwrap_or(false);
+                .map(|n| CommitIntent::from_buffer_name(&n))
+                .unwrap_or(CommitIntent::Create);
+            let amend = intent.seeds_prior_message();
 
             // MG.14: what is staged is not knowable until the diff
             // below lands, so the header fills in with it. `AMEND` is
@@ -292,7 +335,7 @@ impl Mode for MagitCommitMode {
                     buffer_id,
                     store: store.clone(),
                     workdir: workdir.clone(),
-                    amend,
+                    intent,
                     diff_start_line: u32::MAX,
                 },
             );
@@ -329,7 +372,7 @@ impl Mode for MagitCommitMode {
             })
             .await
             .unwrap_or_default();
-            headerline::publish(&hl, headerline::commit_fields(&branch, &staged, amend));
+            headerline::publish(&hl, headerline::commit_fields(&branch, &staged, intent != CommitIntent::Create));
             // Message first (line 0 for a fresh commit, so the cursor
             // opens where you type), then the marker, then the diff.
             let initial = format!(

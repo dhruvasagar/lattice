@@ -560,6 +560,47 @@ mod tests {
         );
     }
 
+    /// **Reported from real use (2026-08-05): `<C-h>b` in magit-status
+    /// opens the describe-buffer help, and `<Esc>` will not close it.**
+    ///
+    /// `<Esc>` reaches `Action::DismissPopup` only when the translate
+    /// layer sees `active_buffer == BufferKind::Help`, so this asserts
+    /// the whole path: the help opens, Esc dismisses it, and the pane
+    /// lands back on the magit buffer rather than anywhere else.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn esc_closes_the_describe_buffer_help_opened_from_magit() {
+        use crossterm::event::KeyCode;
+
+        let mut app = app_with("ORIGINFILECONTENT\n", 20);
+        run_ex(&mut app, "magit-status");
+        assert!(settle_mode(&mut app, "magit-core-mode").await);
+        let magit = app.editor.document_buffer_id;
+
+        run_ex(&mut app, "describe-buffer");
+        assert!(
+            app.editor.popup_buffer.is_some(),
+            "`:describe-buffer` must open a help popup to begin with"
+        );
+        assert_eq!(
+            app.ad().buffer_kind,
+            crate::buffers::BufferKind::Help,
+            "the help must take focus, or `<Esc>` never routes to \
+             DismissPopup and the popup cannot be closed"
+        );
+
+        press(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+        assert!(
+            app.editor.popup_buffer.is_none(),
+            "`<Esc>` must close the help popup"
+        );
+        assert_eq!(
+            app.editor.pane_tree.active().buffer_id,
+            magit,
+            "and must land back on the magit buffer it was opened from"
+        );
+    }
+
     /// Reported from real use (2026-08-03): `C-c f d` to see a file's
     /// diff, then `q` to close it — and the file comes back with its
     /// line numbers gone.

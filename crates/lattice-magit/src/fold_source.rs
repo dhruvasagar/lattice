@@ -80,6 +80,21 @@ fn fold_identity(namespace: &str, key: &str, discriminator: usize) -> u64 {
     h.finish()
 }
 
+/// The stable key for a section fold.
+///
+/// The rendered header carries a count (`Unstaged changes (3)`) that
+/// changes whenever the working tree does, so the KEY is the fixed
+/// prefix, never the row's text. Identity is what carries closed-state
+/// across a recompute — keying on the text would reopen a collapsed
+/// section on exactly the `gr` that had something to report, which is
+/// the bug `fold_identity` was written to prevent.
+fn section_key(text: &str) -> Option<&'static str> {
+    crate::sections::SECTION_HEADER_PREFIXES
+        .iter()
+        .copied()
+        .find(|prefix| text.starts_with(prefix))
+}
+
 impl FoldSource for MagitStatusFoldSource {
     fn id(&self) -> ProviderId {
         self.id
@@ -89,15 +104,64 @@ impl FoldSource for MagitStatusFoldSource {
         let Ok(g) = self.state.lock() else {
             return Vec::new();
         };
-        if g.expanded.is_empty() {
-            return Vec::new();
-        }
         let Some(handle) = g.store.handle_for(g.buffer_id) else {
             return Vec::new();
         };
         let snap = handle.snapshot();
         let total = snap.buffer.line_count();
         let mut folds = Vec::new();
+
+        // MG.48: the SECTION level.
+        //
+        // magit-status's sections are the buffer's top-level structure,
+        // and only magit-status knows what a section is — the same
+        // reason this source owns the entry level.
+        //
+        // Declared here because MG.46 pinned `foldmethod=manual` on
+        // every magit buffer that renders a diff, so no primary
+        // provider fabricates code-level folds inside hunk text.
+        // Section collapsing used to fall out of the `indent` primary
+        // as a side effect of the rows being indented under their
+        // header — something magit never declared, and which therefore
+        // vanished the moment the primary was turned off. A structure
+        // this mode depends on should not have been borrowed from a
+        // generic provider's incidental behaviour.
+        //
+        // Computed regardless of `expanded`: a section is foldable
+        // whether or not any entry inside it has been opened.
+        let starts: Vec<(u32, &'static str)> = (0..total)
+            .filter_map(|line| {
+                let text = snap.buffer.line(line)?;
+                section_key(text.trim()).map(|key| (line, key))
+            })
+            .collect();
+        for (n, &(start, key)) in starts.iter().enumerate() {
+            let limit = starts.get(n + 1).map(|&(l, _)| l).unwrap_or(total);
+            // Trim trailing blanks so a collapsed section does not
+            // swallow the blank row that delimits it from the next.
+            let mut end = limit.saturating_sub(1);
+            while end > start
+                && snap
+                    .buffer
+                    .line(end)
+                    .map(|l| l.trim().is_empty())
+                    .unwrap_or(false)
+            {
+                end -= 1;
+            }
+            if end > start {
+                folds.push(Fold {
+                    start_line: start,
+                    end_line: end,
+                    closed: false,
+                    identity: Some(fold_identity("magit:section", key, 0)),
+                });
+            }
+        }
+
+        if g.expanded.is_empty() {
+            return folds;
+        }
         let mut line = 0u32;
         while line < total {
             let Some(text) = snap.buffer.line(line) else {
@@ -143,6 +207,62 @@ impl FoldSource for MagitStatusFoldSource {
             line += 1;
         }
         folds
+    }
+}
+
+#[cfg(test)]
+mod section_key_tests {
+    use super::section_key;
+
+    /// MG.48: **a section's key must not carry its count.**
+    ///
+    /// The header renders as `Unstaged changes (3)`, and the count
+    /// changes whenever the working tree does. Keying identity on the
+    /// row's text would reopen a collapsed section on exactly the `gr`
+    /// that had something to report — the same failure `fold_identity`
+    /// exists to prevent, one level up.
+    #[test]
+    fn a_sections_key_ignores_its_changing_count() {
+        assert_eq!(
+            section_key("Unstaged changes (3)"),
+            section_key("Unstaged changes (11)"),
+            "the same section before and after a change must key alike",
+        );
+        assert_eq!(
+            section_key("Unstaged changes (3)"),
+            Some("Unstaged changes")
+        );
+    }
+
+    /// Every rendered section is foldable, and nothing else is.
+    #[test]
+    fn every_section_header_keys_and_ordinary_rows_do_not() {
+        for prefix in crate::sections::SECTION_HEADER_PREFIXES {
+            assert_eq!(
+                section_key(&format!("{prefix} (2)")),
+                Some(prefix),
+                "`{prefix}` is a section header and must fold",
+            );
+        }
+        assert_eq!(section_key("  modified   src/a.rs"), None);
+        assert_eq!(section_key("diff --git a/x b/x"), None);
+        assert_eq!(section_key(""), None);
+    }
+
+    /// Distinct sections must not collide, or collapsing one would
+    /// collapse another.
+    #[test]
+    fn distinct_sections_have_distinct_identities() {
+        use super::fold_identity;
+        let id = |k: &str| fold_identity("magit:section", k, 0);
+        assert_ne!(id("Staged changes"), id("Unstaged changes"));
+        assert_ne!(id("Recent commits"), id("Stashes"));
+        // ...and a section must not collide with an entry that happens
+        // to share its key, since the two nest.
+        assert_ne!(
+            fold_identity("magit:section", "Staged changes", 0),
+            fold_identity("magit:entry", "Staged changes", 0),
+        );
     }
 }
 

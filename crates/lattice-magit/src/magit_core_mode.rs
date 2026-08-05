@@ -103,13 +103,67 @@ fn magit_core_keymap_entries() -> &'static [KeymapEntry] {
             // (The same commit also mis-attributed `O` to magit, which
             // uses `X`. `O` is evil-magit's remap — the binding was
             // right, the reason was not.)
-            keymap_entry! { mode: Normal, chord: "A", doc: "Cherry-pick the commit at cursor", cmd: "action:magit-cherry-pick" },
-            keymap_entry! { mode: Normal, chord: "_", doc: "Revert the commit at cursor", cmd: "action:magit-revert" },
-            keymap_entry! { mode: Normal, chord: "Os", doc: "Reset --soft to the commit at cursor", cmd: "action:magit-reset-soft" },
-            keymap_entry! { mode: Normal, chord: "Om", doc: "Reset --mixed to the commit at cursor", cmd: "action:magit-reset-mixed" },
-            keymap_entry! { mode: Normal, chord: "Oh", doc: "Reset --hard to the commit at cursor (asks first)", cmd: "action:magit-reset-hard" },
+            // MG.49: `A` / `_` / `O` are the ROOT MENUS now — see the
+            // block below. The direct actions they used to fire did not
+            // go anywhere: `A` is `A A`, `_` is `_ V`, and the three
+            // resets are `O s` / `O m` / `O h`, because each menu's own
+            // keys were already chosen to match the chord it replaced
+            // (`reset_transient`'s doc says so in as many words).
+            //
+            // They had to move: the trie checks a node's own binding
+            // BEFORE its children, so binding `O` would have made
+            // `Os` / `Om` / `Oh` unreachable rather than merely
+            // redundant.
         ]
+        .into_iter()
+        .chain(root_menu_entries())
+        .collect()
     })
+}
+
+/// MG.49: one keymap entry per root menu.
+///
+/// Emacs binds these on `magit-mode-map` — the parent keymap every
+/// magit-derived mode inherits — so `z` opens stash from a log buffer
+/// and a diff buffer as much as from status. `magit-core-mode` is that
+/// same surface here, which is why they live on this mode and not on
+/// `magit-status-mode`.
+///
+/// Generated from [`crate::transients::ROOT_MENUS`], which also drives
+/// the source registrations in `install` and the dispatch's own nested
+/// rows. One table, three consumers, no way for a menu to exist with no
+/// chord or a chord with no menu.
+/// MG.49: one handler per root menu — each opens the SAME transient
+/// source the dispatch nests, by name.
+///
+/// Not gated on a view. The keymap layer already scopes these to
+/// buffers where `magit-core-mode` is active (K.1.c's per-keystroke
+/// filter), and a menu like stash or pull answers a repo-level question
+/// that does not need a cursor on anything — gating would make `z` dead
+/// in the magit buffers whose major registers no view state.
+fn root_menu_handlers() -> Vec<lattice_mode::ActionHandlerContribution> {
+    crate::transients::ROOT_MENUS
+        .iter()
+        .filter(|m| m.chord.is_some())
+        .map(|m| lattice_mode::ActionHandlerContribution {
+            action_name: m.action,
+            handler: Arc::new(move |_ctx: &ActionContext<'_>| {
+                Some(Effect::OpenTransient {
+                    source: m.source.to_string(),
+                })
+            }),
+        })
+        .collect()
+}
+
+fn root_menu_entries() -> Vec<KeymapEntry> {
+    crate::transients::ROOT_MENUS
+        .iter()
+        .filter_map(|m| {
+            let chord = m.chord?;
+            Some(keymap_entry! { mode: Normal, chord: chord, doc: m.doc, cmd: Some(m.action) })
+        })
+        .collect()
 }
 
 /// MG.20: build the handler for a commit operation.
@@ -1326,6 +1380,9 @@ impl Mode for MagitCoreMode {
                 }),
             },
         ]
+        .into_iter()
+        .chain(root_menu_handlers())
+        .collect()
     }
 
     /// MG.13: nothing to do per activation — every chord this mode

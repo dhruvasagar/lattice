@@ -641,7 +641,7 @@ fn view_open_transient(
     title: &str,
     ids: &MagitActionIds,
     flags: &'static [crate::magit_global_mode::RemoteFlag],
-    row: &'static TransientRow,
+    rows: &'static [TransientRow],
 ) -> TransientSpec {
     let mut groups = Vec::new();
     if !flags.is_empty() {
@@ -652,7 +652,7 @@ fn view_open_transient(
     }
     groups.push(TransientGroup {
         label: "Show".into(),
-        items: vec![row_item(ids, row)],
+        items: rows.iter().map(|r| row_item(ids, r)).collect(),
     });
     TransientSpec {
         title: title.into(),
@@ -662,21 +662,45 @@ fn view_open_transient(
     }
 }
 
-const DIFF_SHOW_ROW: TransientRow = TransientRow {
-    key: "d",
-    label: "diff",
-    doc: "Diff the working tree against HEAD",
-    action: "action:magit-global-diff",
-    placeholder: "diff_op",
-};
+/// MG.49: the Diff menu's targets.
+///
+/// `f` and `v` are here because binding `d` to this menu takes their
+/// chords: the trie checks a node's own binding before its children, so
+/// a bound `d` makes `dv` unreachable, and `d` itself was
+/// `magit-diff-file` on magit-status. Both keep working through the
+/// menu instead of being silently lost — which is the whole reason the
+/// rows moved rather than the chords being dropped.
+const DIFF_SHOW_ROWS: &[TransientRow] = &[
+    TransientRow {
+        key: "d",
+        label: "diff",
+        doc: "Diff the working tree against HEAD",
+        action: "action:magit-global-diff",
+        placeholder: "diff_op",
+    },
+    TransientRow {
+        key: "f",
+        label: "file",
+        doc: "Diff the file at cursor in a dedicated buffer",
+        action: "action:magit-diff-file",
+        placeholder: "diff_file",
+    },
+    TransientRow {
+        key: "v",
+        label: "side-by-side",
+        doc: "Open the file at cursor side-by-side against its baseline",
+        action: "action:magit-diff-side-by-side",
+        placeholder: "diff_side_by_side",
+    },
+];
 
-const LOG_SHOW_ROW: TransientRow = TransientRow {
+const LOG_SHOW_ROWS: &[TransientRow] = &[TransientRow {
     key: "l",
     label: "log",
     doc: "Show commit history",
     action: "action:magit-global-log",
     placeholder: "show_log",
-};
+}];
 
 // MG.42-E4: cherry-pick / revert, idle and stopped.
 //
@@ -1405,6 +1429,18 @@ fn applying_changes_items(ids: &MagitActionIds, ctx: &TransientContext) -> Vec<T
             "discard_at_cursor",
         ));
     }
+    if ctx.has_minor(crate::MagitCoreMode::mode_id().as_str()) {
+        // MG.49: interactive staging, which lost its `p` chord to push
+        // (evil-collection puts magit's `P` there). Gated with the other
+        // cursor-dependent rows — it stages the hunk under the cursor.
+        items.push(action_or_placeholder(
+            ids.get("action:magit-stage-patch"),
+            "P",
+            "stage patch",
+            "Stage the hunk at cursor interactively",
+            "stage_patch_op",
+        ));
+    }
     items.push(action_or_placeholder(
         ids.get("action:magit-global-stage-all"),
         "S",
@@ -2067,12 +2103,224 @@ impl DispatchGates {
 
 /// [`dispatch_transient`] with the gates supplied rather than probed —
 /// pure, and the form every guard over this menu uses.
+/// MG.49: one root menu — reachable from the dispatch **and** from its
+/// own chord.
+///
+/// Emacs binds these on `magit-mode-map`, the parent keymap every
+/// magit-derived mode inherits, so `z` opens stash from the log buffer
+/// and the diff buffer as much as from status. `magit-core-mode` is the
+/// same shape here, which is why the chords live there rather than on
+/// `magit-status-mode`.
+///
+/// Chords follow **evil-collection-magit**, the reference this crate
+/// already uses for `gr` / `O` / `x` — so push is `p`, not magit's `P`
+/// (`p` is free in a read-only buffer; `P` is not, being paste).
+pub struct RootMenu {
+    /// Registered `TransientSourceRegistry` name, and the string the
+    /// chord's `Effect::OpenTransient` names.
+    pub source: &'static str,
+    /// The chord `magit-core-mode` binds, or `None` when the key is a
+    /// live vim chord in a read-only buffer and the menu is reachable
+    /// only through the dispatch.
+    ///
+    /// **This is the constraint emacs does not have.** Magit binds all
+    /// seventeen on `magit-mode-map` because emacs is not modal. Here a
+    /// minor-mode layer beats the builtin vim layer, so binding `f`
+    /// would take find-char away inside every magit buffer — and a
+    /// magit buffer is text you navigate. Vim's grammar IS the public
+    /// command API (paramount goal #3), so it wins: only keys whose vim
+    /// meaning is an *editing operator* — inert where nothing is
+    /// editable — are free to take.
+    pub chord: Option<&'static str>,
+    /// The action the chord fires.
+    pub action: &'static str,
+    /// Keymap documentation.
+    pub doc: &'static str,
+}
+
+/// The seventeen root menus, in dispatch order.
+///
+/// A table rather than seventeen hand-written registrations + seventeen
+/// keymap entries + seventeen handlers: those three lists have to agree,
+/// and three parallel lists that must agree are exactly where a gap goes
+/// unnoticed — the failure `magit-hunk-mode` was created to end.
+pub const ROOT_MENUS: &[RootMenu] = &[
+    RootMenu {
+        source: "magit-menu-diff",
+        chord: Some("d"),
+        action: "action:magit-menu-diff",
+        doc: "Diff menu",
+    },
+    RootMenu {
+        source: "magit-menu-commit",
+        chord: Some("c"),
+        action: "action:magit-menu-commit",
+        doc: "Commit menu",
+    },
+    RootMenu {
+        source: "magit-menu-log",
+        // `l`: right-motion — dispatch only.
+        chord: None,
+        action: "action:magit-menu-log",
+        doc: "Log menu",
+    },
+    RootMenu {
+        source: "magit-menu-cherry-pick",
+        // `A`: append-EOL operator — inert; was already this mode's chord.
+        chord: Some("A"),
+        action: "action:magit-menu-cherry-pick",
+        doc: "Cherry-pick menu",
+    },
+    RootMenu {
+        source: "magit-menu-revert",
+        // `_`: documented free by MG.20; was already this mode's chord.
+        chord: Some("_"),
+        action: "action:magit-menu-revert",
+        doc: "Revert menu",
+    },
+    RootMenu {
+        source: "magit-menu-reset",
+        // `O`: open-line-above operator — inert; was already this mode's chord.
+        chord: Some("O"),
+        action: "action:magit-menu-reset",
+        doc: "Reset menu",
+    },
+    RootMenu {
+        source: "magit-menu-bisect",
+        // `B`: back-WORD motion (also test-enforced) — dispatch only.
+        chord: None,
+        action: "action:magit-menu-bisect",
+        doc: "Bisect menu",
+    },
+    RootMenu {
+        source: "magit-menu-notes",
+        // `T`: till-back motion — dispatch only.
+        chord: None,
+        action: "action:magit-menu-notes",
+        doc: "Notes menu",
+    },
+    RootMenu {
+        source: "magit-menu-branch",
+        // `b`: back-word motion — dispatch only.
+        chord: None,
+        action: "action:magit-menu-branch",
+        doc: "Branch menu",
+    },
+    RootMenu {
+        source: "magit-menu-stash",
+        // `z`: vim fold prefix (`zf` / `za` / `zo`) — dispatch only.
+        chord: None,
+        action: "action:magit-menu-stash",
+        doc: "Stash menu",
+    },
+    RootMenu {
+        source: "magit-menu-fetch",
+        // `f`: find-char motion — dispatch only.
+        chord: None,
+        action: "action:magit-menu-fetch",
+        doc: "Fetch menu",
+    },
+    RootMenu {
+        source: "magit-menu-pull",
+        // `F`: find-char-back motion — dispatch only.
+        chord: None,
+        action: "action:magit-menu-pull",
+        doc: "Pull menu",
+    },
+    // evil-collection-magit moves magit's `P` here; `P` is paste.
+    RootMenu {
+        source: "magit-menu-push",
+        // `p`: paste — inert in a read-only buffer, and the key
+        // evil-collection-magit itself moves push to. `magit-blame-mode`
+        // overrides it on blob buffers, which the layer order expresses:
+        // blame activates after the major cascade, so its layer wins.
+        chord: Some("p"),
+        action: "action:magit-menu-push",
+        doc: "Push menu",
+    },
+    RootMenu {
+        source: "magit-menu-patches",
+        // `w`: word motion — dispatch only.
+        chord: None,
+        action: "action:magit-menu-patches",
+        doc: "Patch (am / format-patch) menu",
+    },
+    RootMenu {
+        source: "magit-menu-rebase",
+        chord: Some("r"),
+        action: "action:magit-menu-rebase",
+        doc: "Rebase menu",
+    },
+    RootMenu {
+        source: "magit-menu-tag",
+        // `t`: till motion — dispatch only.
+        chord: None,
+        action: "action:magit-menu-tag",
+        doc: "Tag menu",
+    },
+    RootMenu {
+        source: "magit-menu-merge",
+        // `m`: set-mark — dispatch only.
+        chord: None,
+        action: "action:magit-menu-merge",
+        doc: "Merge menu",
+    },
+];
+
+/// Build one root menu by name — the SAME spec the dispatch nests, so a
+/// chord and the menu path to it can never disagree.
+///
+/// `None` for an unknown name; the caller then leaves the transient
+/// unopened rather than showing an empty menu.
+pub fn root_menu_spec(
+    source: &str,
+    ids: &MagitActionIds,
+    ctx: &TransientContext,
+    gates: DispatchGates,
+) -> Option<TransientSpec> {
+    let spec = match source {
+        "magit-menu-diff" => view_open_transient(
+            "Diff",
+            ids,
+            crate::magit_diff_mode::DIFF_ARGS,
+            DIFF_SHOW_ROWS,
+        ),
+        "magit-menu-commit" => commit_transient(ids),
+        "magit-menu-log" => {
+            view_open_transient("Log", ids, crate::magit_log_mode::LOG_ARGS, LOG_SHOW_ROWS)
+        }
+        "magit-menu-cherry-pick" => cherry_pick_transient(ids, gates.cherry_pick),
+        "magit-menu-revert" => revert_transient(ids, gates.revert),
+        "magit-menu-reset" => reset_transient(ids),
+        "magit-menu-bisect" => bisect_transient(ids, gates.bisect),
+        "magit-menu-notes" => notes_transient(ids, gates.notes_merge),
+        "magit-menu-branch" => branch_transient(ids),
+        "magit-menu-stash" => stash_transient(ids),
+        "magit-menu-fetch" => {
+            remote_op_transient("Fetch", RemoteOp::FETCH, ids, FETCH_ROWS, FETCH_CONFIG_ROWS)
+        }
+        "magit-menu-pull" => {
+            remote_op_transient("Pull", RemoteOp::PULL, ids, PULL_ROWS, PULL_CONFIG_ROWS)
+        }
+        "magit-menu-push" => {
+            remote_op_transient("Push", RemoteOp::PUSH, ids, PUSH_ROWS, PUSH_CONFIG_ROWS)
+        }
+        "magit-menu-patches" => patch_transient(ids, gates.am),
+        "magit-menu-rebase" => rebase_transient(ids, gates.rebase),
+        "magit-menu-tag" => tag_transient(ids),
+        "magit-menu-merge" => merge_transient(ids),
+        _ => return None,
+    };
+    let _ = ctx;
+    Some(spec)
+}
+
 pub fn dispatch_transient_with(
     ids: &MagitActionIds,
     ctx: &TransientContext,
     gates: DispatchGates,
 ) -> TransientSpec {
-    let bisect_in_progress = gates.bisect;
+    let _bisect_in_progress = gates.bisect;
     TransientSpec {
         title: "Magit dispatch".into(),
         groups: vec![
@@ -2088,18 +2336,19 @@ pub fn dispatch_transient_with(
                         key: vec!["d".into()],
                         label: "diff".into(),
                         description: "Diff the working tree against HEAD".into(),
-                        kind: TransientItemKind::Submenu(Arc::new(view_open_transient(
-                            "Diff",
-                            ids,
-                            crate::magit_diff_mode::DIFF_ARGS,
-                            &DIFF_SHOW_ROW,
-                        ))),
+                        kind: TransientItemKind::Submenu(Arc::new(
+                            root_menu_spec("magit-menu-diff", ids, ctx, gates)
+                                .expect("`magit-menu-diff` is in ROOT_MENUS"),
+                        )),
                     },
                     TransientItem {
                         key: vec!["c".into()],
                         label: "commit".into(),
                         description: "Commit changes".into(),
-                        kind: TransientItemKind::Submenu(Arc::new(commit_transient(ids))),
+                        kind: TransientItemKind::Submenu(Arc::new(
+                            root_menu_spec("magit-menu-commit", ids, ctx, gates)
+                                .expect("`magit-menu-commit` is in ROOT_MENUS"),
+                        )),
                     },
                 ],
             },
@@ -2129,12 +2378,10 @@ pub fn dispatch_transient_with(
                         key: vec!["l".into()],
                         label: "log".into(),
                         description: "Show commit history".into(),
-                        kind: TransientItemKind::Submenu(Arc::new(view_open_transient(
-                            "Log",
-                            ids,
-                            crate::magit_log_mode::LOG_ARGS,
-                            &LOG_SHOW_ROW,
-                        ))),
+                        kind: TransientItemKind::Submenu(Arc::new(
+                            root_menu_spec("magit-menu-log", ids, ctx, gates)
+                                .expect("`magit-menu-log` is in ROOT_MENUS"),
+                        )),
                     },
                     // MG.23j: magit's own keys, in magit's own ungated
                     // group. They need a commit and this menu has no
@@ -2154,25 +2401,28 @@ pub fn dispatch_transient_with(
                         key: vec!["A".into()],
                         label: "cherry-pick".into(),
                         description: "Cherry-pick, or drive a stopped one".into(),
-                        kind: TransientItemKind::Submenu(Arc::new(cherry_pick_transient(
-                            ids,
-                            gates.cherry_pick,
-                        ))),
+                        kind: TransientItemKind::Submenu(Arc::new(
+                            root_menu_spec("magit-menu-cherry-pick", ids, ctx, gates)
+                                .expect("`magit-menu-cherry-pick` is in ROOT_MENUS"),
+                        )),
                     },
                     TransientItem {
                         key: vec!["_".into()],
                         label: "revert".into(),
                         description: "Revert, or drive a stopped one".into(),
-                        kind: TransientItemKind::Submenu(Arc::new(revert_transient(
-                            ids,
-                            gates.revert,
-                        ))),
+                        kind: TransientItemKind::Submenu(Arc::new(
+                            root_menu_spec("magit-menu-revert", ids, ctx, gates)
+                                .expect("`magit-menu-revert` is in ROOT_MENUS"),
+                        )),
                     },
                     TransientItem {
                         key: vec!["O".into()],
                         label: "reset".into(),
                         description: "Reset this branch to a commit".into(),
-                        kind: TransientItemKind::Submenu(Arc::new(reset_transient(ids))),
+                        kind: TransientItemKind::Submenu(Arc::new(
+                            root_menu_spec("magit-menu-reset", ids, ctx, gates)
+                                .expect("`magit-menu-reset` is in ROOT_MENUS"),
+                        )),
                     },
                     // MG.21g: magit's own key, in magit's own group.
                     // The submenu's contents depend on whether a
@@ -2181,10 +2431,10 @@ pub fn dispatch_transient_with(
                         key: vec!["B".into()],
                         label: "bisect".into(),
                         description: "Find the commit that introduced a bug".into(),
-                        kind: TransientItemKind::Submenu(Arc::new(bisect_transient(
-                            ids,
-                            bisect_in_progress,
-                        ))),
+                        kind: TransientItemKind::Submenu(Arc::new(
+                            root_menu_spec("magit-menu-bisect", ids, ctx, gates)
+                                .expect("`magit-menu-bisect` is in ROOT_MENUS"),
+                        )),
                     },
                     // MG.37: magit's `T`. A submenu rather than a direct
                     // action because notes have four operations and two
@@ -2194,10 +2444,10 @@ pub fn dispatch_transient_with(
                         key: vec!["T".into()],
                         label: "notes".into(),
                         description: "Edit, remove, merge or prune commit notes".into(),
-                        kind: TransientItemKind::Submenu(Arc::new(notes_transient(
-                            ids,
-                            gates.notes_merge,
-                        ))),
+                        kind: TransientItemKind::Submenu(Arc::new(
+                            root_menu_spec("magit-menu-notes", ids, ctx, gates)
+                                .expect("`magit-menu-notes` is in ROOT_MENUS"),
+                        )),
                     },
                 ],
             },
@@ -2207,7 +2457,10 @@ pub fn dispatch_transient_with(
                     key: vec!["b".into()],
                     label: "branch".into(),
                     description: "Checkout, create, or list branches".into(),
-                    kind: TransientItemKind::Submenu(Arc::new(branch_transient(ids))),
+                    kind: TransientItemKind::Submenu(Arc::new(
+                        root_menu_spec("magit-menu-branch", ids, ctx, gates)
+                            .expect("`magit-menu-branch` is in ROOT_MENUS"),
+                    )),
                 }],
             },
             TransientGroup {
@@ -2216,7 +2469,10 @@ pub fn dispatch_transient_with(
                     key: vec!["z".into()],
                     label: "stash".into(),
                     description: "Stash operations".into(),
-                    kind: TransientItemKind::Submenu(Arc::new(stash_transient(ids))),
+                    kind: TransientItemKind::Submenu(Arc::new(
+                        root_menu_spec("magit-menu-stash", ids, ctx, gates)
+                            .expect("`magit-menu-stash` is in ROOT_MENUS"),
+                    )),
                 }],
             },
             TransientGroup {
@@ -2226,13 +2482,10 @@ pub fn dispatch_transient_with(
                         key: vec!["f".into()],
                         label: "fetch".into(),
                         description: "Fetch from the remote without merging".into(),
-                        kind: TransientItemKind::Submenu(Arc::new(remote_op_transient(
-                            "Fetch",
-                            RemoteOp::FETCH,
-                            ids,
-                            FETCH_ROWS,
-                            FETCH_CONFIG_ROWS,
-                        ))),
+                        kind: TransientItemKind::Submenu(Arc::new(
+                            root_menu_spec("magit-menu-fetch", ids, ctx, gates)
+                                .expect("`magit-menu-fetch` is in ROOT_MENUS"),
+                        )),
                     },
                     // MG.41c: pull IS a submenu now. It was a plain row
                     // because `--ff-only` was not optional and there was
@@ -2242,25 +2495,19 @@ pub fn dispatch_transient_with(
                         key: vec!["F".into()],
                         label: "pull".into(),
                         description: "Fetch + integrate from the remote".into(),
-                        kind: TransientItemKind::Submenu(Arc::new(remote_op_transient(
-                            "Pull",
-                            RemoteOp::PULL,
-                            ids,
-                            PULL_ROWS,
-                            PULL_CONFIG_ROWS,
-                        ))),
+                        kind: TransientItemKind::Submenu(Arc::new(
+                            root_menu_spec("magit-menu-pull", ids, ctx, gates)
+                                .expect("`magit-menu-pull` is in ROOT_MENUS"),
+                        )),
                     },
                     TransientItem {
-                        key: vec!["P".into()],
+                        key: vec!["p".into()],
                         label: "push".into(),
                         description: "Push to the remote".into(),
-                        kind: TransientItemKind::Submenu(Arc::new(remote_op_transient(
-                            "Push",
-                            RemoteOp::PUSH,
-                            ids,
-                            PUSH_ROWS,
-                            PUSH_CONFIG_ROWS,
-                        ))),
+                        kind: TransientItemKind::Submenu(Arc::new(
+                            root_menu_spec("magit-menu-push", ids, ctx, gates)
+                                .expect("`magit-menu-push` is in ROOT_MENUS"),
+                        )),
                     },
                     // MG.21d: magit's `M`. Not a submenu — the row
                     // opens the remote list buffer, because the URLs
@@ -2333,7 +2580,10 @@ pub fn dispatch_transient_with(
                         key: vec!["w".into()],
                         label: "patches".into(),
                         description: "Apply or create email patches".into(),
-                        kind: TransientItemKind::Submenu(Arc::new(patch_transient(ids, gates.am))),
+                        kind: TransientItemKind::Submenu(Arc::new(
+                            root_menu_spec("magit-menu-patches", ids, ctx, gates)
+                                .expect("`magit-menu-patches` is in ROOT_MENUS"),
+                        )),
                     },
                     // MG.41e: a submenu now, gated like bisect / am.
                     // A stopped rebase needs continue / skip / abort,
@@ -2343,10 +2593,10 @@ pub fn dispatch_transient_with(
                         key: vec!["r".into()],
                         label: "rebase".into(),
                         description: "Rebase, or drive a stopped one".into(),
-                        kind: TransientItemKind::Submenu(Arc::new(rebase_transient(
-                            ids,
-                            gates.rebase,
-                        ))),
+                        kind: TransientItemKind::Submenu(Arc::new(
+                            root_menu_spec("magit-menu-rebase", ids, ctx, gates)
+                                .expect("`magit-menu-rebase` is in ROOT_MENUS"),
+                        )),
                     },
                     // MG.23c1: magit's own keys. Both ask for their one
                     // value rather than taking it from context — there
@@ -2356,7 +2606,10 @@ pub fn dispatch_transient_with(
                         key: vec!["t".into()],
                         label: "tag".into(),
                         description: "Create or delete a tag".into(),
-                        kind: TransientItemKind::Submenu(Arc::new(tag_transient(ids))),
+                        kind: TransientItemKind::Submenu(Arc::new(
+                            root_menu_spec("magit-menu-tag", ids, ctx, gates)
+                                .expect("`magit-menu-tag` is in ROOT_MENUS"),
+                        )),
                     },
                     action_or_placeholder(
                         ids.get("action:magit-global-gitignore"),
@@ -2373,7 +2626,10 @@ pub fn dispatch_transient_with(
                         key: vec!["m".into()],
                         label: "merge".into(),
                         description: "Merge a branch into the current one".into(),
-                        kind: TransientItemKind::Submenu(Arc::new(merge_transient(ids))),
+                        kind: TransientItemKind::Submenu(Arc::new(
+                            root_menu_spec("magit-menu-merge", ids, ctx, gates)
+                                .expect("`magit-menu-merge` is in ROOT_MENUS"),
+                        )),
                     },
                     action_or_placeholder(
                         ids.get("action:magit-global-init"),
@@ -3938,5 +4194,98 @@ mod commit_intent_tests {
             }
             .seeds_prior_message()
         );
+    }
+}
+
+#[cfg(test)]
+mod root_menu_chord_tests {
+    use super::*;
+
+    /// MG.49: **the keys vim needs stay vim's.**
+    ///
+    /// Emacs binds all seventeen root menus on `magit-mode-map` because
+    /// emacs is not modal. Here `magit-core-mode` is a MINOR layer,
+    /// which beats the builtin vim layer — so binding `f` would take
+    /// find-char away inside every magit buffer, and a magit buffer is
+    /// text you navigate.
+    ///
+    /// Vim's grammar IS the public command API (paramount goal #3), so
+    /// it wins. The rule that falls out: a root menu may take a key
+    /// whose vim meaning is an *editing operator* (inert where nothing
+    /// is editable) and may NOT take one whose meaning is a motion.
+    ///
+    /// This is a deny-list rather than a "not in the builtin keymap"
+    /// check, because the keys we DO take (`d`, `c`, `r`, `A`, `O`) are
+    /// in the builtin keymap too — as operators. Membership is not the
+    /// question; what the key MEANS is.
+    #[test]
+    fn no_root_menu_takes_a_key_vim_uses_as_a_motion() {
+        // Motion or prefix in Normal mode, and therefore load-bearing
+        // in a read-only buffer.
+        const VIM_MOTIONS: &[(&str, &str)] = &[
+            ("l", "right"),
+            ("b", "back-word"),
+            ("B", "back-WORD"),
+            ("w", "word"),
+            ("f", "find-char"),
+            ("F", "find-char-back"),
+            ("t", "till"),
+            ("T", "till-back"),
+            ("m", "set-mark"),
+            ("z", "fold prefix (`zf` / `za` / `zo`)"),
+        ];
+        for menu in ROOT_MENUS {
+            let Some(chord) = menu.chord else { continue };
+            if let Some((_, meaning)) = VIM_MOTIONS.iter().find(|(k, _)| *k == chord) {
+                panic!(
+                    "`{}` binds `{chord}`, which is vim's {meaning} — a minor \
+                     layer shadows the builtin one, so this would remove the \
+                     motion from every magit buffer. Leave it `None`; the menu \
+                     stays reachable through the dispatch.",
+                    menu.source,
+                );
+            }
+        }
+    }
+
+    /// The other direction, so the rule above cannot be satisfied by
+    /// binding nothing at all: the operator keys that ARE safe stay
+    /// bound, including the three this mode carried before MG.49.
+    #[test]
+    fn the_operator_keys_are_actually_taken() {
+        for (chord, source) in [
+            ("d", "magit-menu-diff"),
+            ("c", "magit-menu-commit"),
+            ("r", "magit-menu-rebase"),
+            ("A", "magit-menu-cherry-pick"),
+            ("_", "magit-menu-revert"),
+            ("O", "magit-menu-reset"),
+        ] {
+            let menu = ROOT_MENUS
+                .iter()
+                .find(|m| m.source == source)
+                .unwrap_or_else(|| panic!("{source} is in ROOT_MENUS"));
+            assert_eq!(
+                menu.chord,
+                Some(chord),
+                "`{chord}` is a vim editing operator — inert in a read-only \
+                 magit buffer — so {source} is free to take it",
+            );
+        }
+    }
+
+    /// Every entry resolves to a spec, or a chord would open nothing.
+    #[test]
+    fn every_root_menu_builds() {
+        let ids = MagitActionIds::default();
+        let ctx = TransientContext::default();
+        for menu in ROOT_MENUS {
+            assert!(
+                root_menu_spec(menu.source, &ids, &ctx, DispatchGates::default()).is_some(),
+                "{} has no spec — its chord and its dispatch row would both \
+                 open nothing",
+                menu.source,
+            );
+        }
     }
 }

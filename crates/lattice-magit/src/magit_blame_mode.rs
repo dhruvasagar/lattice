@@ -1006,7 +1006,17 @@ mod tests {
             .iter()
             .map(|e| e.chord)
             .collect();
-        for c in &chords {
+        // MG.49: `p` is a DELIBERATE override — see the INTENTIONAL list
+        // in `lib.rs`'s `the_blame_minor_shares_no_chord_with_magit_core`,
+        // which is the single place such overrides are declared. Layer
+        // order makes it a contract rather than a coincidence: minors
+        // merge in activation order and blame activates after the major's
+        // cascade, so blame's `p` wins on a blob buffer.
+        //
+        // The rest of the claim stands — `q` in particular must stay
+        // `gq`, because nobody INTENDED that one and the buffer-close it
+        // would shadow is the more important of the two.
+        for c in chords.iter().filter(|c| **c != "p") {
             assert!(
                 !core.contains(c),
                 "`{c}` is bound by both magit-blame-mode and magit-core-mode"

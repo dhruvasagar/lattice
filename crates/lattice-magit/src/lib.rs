@@ -227,7 +227,28 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     let file_dispatch_ids = dispatch_ids.clone();
     let other_file_dispatch_ids = dispatch_ids.clone();
     let view_args_ids_src = dispatch_ids.clone();
+    let root_menu_ids = dispatch_ids.clone();
     let transient_registry = lattice_picker::TransientSourceRegistry::new();
+    // MG.49: each root menu is reachable BOTH from the dispatch and from
+    // its own chord, and both go through `root_menu_spec` — so the menu
+    // `C-c g z` nests and the menu `z` opens are the same object, not two
+    // that have to be kept in step.
+    //
+    // Registered from `ROOT_MENUS` rather than seventeen hand-written
+    // lines, for the same reason `magit-hunk-mode` exists: a set that has
+    // to be enumerated in more than one place grows a silent gap.
+    for menu in transients::ROOT_MENUS {
+        let ids = root_menu_ids.clone();
+        let source = menu.source;
+        transient_registry.register(source, move |ctx| {
+            // Gates are probed per open, exactly as the dispatch does:
+            // whether a rebase / bisect / cherry-pick is stopped decides
+            // which rows the menu should show, and that can change
+            // between two presses of the same chord.
+            transients::root_menu_spec(source, &ids, ctx, transients::DispatchGates::probe())
+                .expect("every ROOT_MENUS source has a spec")
+        });
+    }
     // MG.23h: the root dispatch varies with where it was opened — see
     // `transients::dispatch_transient`. The file dispatch does not: its
     // rows all act on the visited file, which is the same question
@@ -2323,6 +2344,19 @@ fn register_action_commands(registry: &mut CommandRegistry) {
         "action:magit-view-arguments",
         "Re-run this view with different git arguments",
     );
+    // MG.49: one action per root menu — ALL of them, not only the three
+    // that get a default chord.
+    //
+    // The chord set is constrained by vim, not by the menus: `f` / `t` /
+    // `b` / `w` / `m` / `z` are live motions inside a read-only magit
+    // buffer and a minor-mode layer would shadow them. The actions
+    // themselves are unambiguous, so they are registered regardless —
+    // which is what lets a user bind `<leader>z` to the stash menu in
+    // their own config. Registering only the bound three would make the
+    // other fourteen unreachable by name as well as by key.
+    for menu in transients::ROOT_MENUS {
+        reg(menu.action, menu.doc);
+    }
     // MG.19: `dv`. The session it opens is `lattice-diff`'s, so
     // `do` / `dp` / `]c` / `[c` and the scroll binding are that
     // subsystem's — nothing is reimplemented here.
@@ -3623,6 +3657,31 @@ mod tests {
     #[test]
     fn the_blame_minor_shares_no_chord_with_magit_core() {
         use lattice_mode::Mode;
+
+        // MG.49: an overlap is no longer forbidden outright — it must be
+        // DECLARED.
+        //
+        // MG.26b read the overlap as "resolves by registration order,
+        // which is not a contract". It is one: `ActiveModes::minors` is
+        // activation-ordered, `keymap_gated_ids` yields major-then-minors
+        // in that order, and `lookup_with_context` folds them in that
+        // order, so a later-activated minor wins. That is what the layers
+        // are FOR — a specific minor overriding a general one is the
+        // mechanism, not an accident.
+        //
+        // What the guard is actually worth keeping for is the case that
+        // prompted it: `q` bound by both because nobody noticed, where
+        // neither author intended to override the other. So the rule
+        // becomes "an overlap must appear here with a reason", which an
+        // accidental one never will.
+        const INTENTIONAL: &[(&str, &str)] = &[(
+            "p",
+            "blame's parent-navigation overrides the push menu: on a blob \
+             buffer `p` walking back through revisions is the whole point \
+             of being in blame, and blame activates AFTER the major's \
+             cascade brought in magit-core-mode, so its layer wins",
+        )];
+
         let core: Vec<&str> = MagitCoreMode
             .keymap()
             .entries
@@ -3630,12 +3689,35 @@ mod tests {
             .map(|e| e.chord)
             .collect();
         for entry in MagitBlameMode.keymap().entries {
+            if INTENTIONAL.iter().any(|(c, _)| *c == entry.chord) {
+                continue;
+            }
             assert!(
                 !core.contains(&entry.chord),
-                "`{}` is bound by BOTH magit-blame-mode and magit-core-mode, and \
-                 both are active on a blob buffer — which one wins is registration \
-                 order, not a contract",
+                "`{}` is bound by BOTH magit-blame-mode and magit-core-mode, \
+                 and both are active on a blob buffer. If blame is meant to \
+                 override, add it to INTENTIONAL with the reason; if not, \
+                 this is the `q` collision again",
                 entry.chord
+            );
+        }
+
+        // ...and the declared overrides must still be real overlaps, or
+        // the list rots into stale entries that excuse a future accident.
+        for (chord, _) in INTENTIONAL {
+            assert!(
+                MagitBlameMode
+                    .keymap()
+                    .entries
+                    .iter()
+                    .any(|e| e.chord == *chord),
+                "`{chord}` is listed as an intentional blame override but \
+                 blame does not bind it"
+            );
+            assert!(
+                core.contains(chord),
+                "`{chord}` is listed as an intentional blame override but \
+                 magit-core-mode does not bind it — nothing to override"
             );
         }
     }
@@ -5282,7 +5364,12 @@ mod tests {
             // row replaces the old direct row 1:1, and their argument
             // toggles are declared (so not inert).
             // MG.43d: +4 cherry-move rows, +2 branch spin rows.
-            113,
+            // MG.49: +2 diff rows (`f` file, `v` side-by-side). Binding
+            // `d` to the Diff menu takes both chords — the trie checks a
+            // node's own binding before its children, so a bound `d`
+            // makes `dv` unreachable and `d` itself was `diff-file`.
+            // The rows are where those two keep working.
+            115,
             "expected every root-dispatch leaf (incl. both submenus') to \
              report inert, got: {root:?}"
         );
@@ -5310,7 +5397,8 @@ mod tests {
             // MG.42-E1: +2 (augment, merge-edit); MG.43a: +4;
             // MG.43b: +5; MG.43c: +3; MG.43g: +6; MG.43e: +4;
             // MG.43f: +2; MG.43h: none; MG.43d: +6.
-            116,
+            // MG.49: +2, the same two Diff rows as the guard above.
+            118,
             "the in-progress bisect menu trades `start` for good/bad/skip/reset: {bisecting:?}"
         );
     }

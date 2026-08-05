@@ -827,6 +827,33 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         "stash branch"
     );
 
+    // MG.42-E1: merge `e` — prompt for the branch, then compose the
+    // merge message in a buffer. Genuinely different from the `n`
+    // don't-commit row: this completes the merge in one step with an
+    // authored message, rather than leaving a staged merge behind.
+    contributions.push(ActionHandlerContribution {
+        action_name: "action:magit-global-merge-edit",
+        handler: Arc::new(|_ctx: &ActionContext<'_>| {
+            Some(prompt_for(
+                "Merge branch (edit message): ",
+                "action:magit-global-merge-edit-finish",
+            ))
+        }),
+    });
+    contributions.push(ActionHandlerContribution {
+        action_name: "action:magit-global-merge-edit-finish",
+        handler: Arc::new(|ctx: &ActionContext<'_>| {
+            let branch = ctx.prompt_value?.trim();
+            if branch.is_empty() {
+                return None;
+            }
+            Some(Effect::OpenSyntheticBuffer {
+                name: crate::magit_commit_mode::CommitIntent::merge_edit_buffer_name(branch),
+                mode_id: "magit-commit-mode".to_string(),
+            })
+        }),
+    });
+
     prompted_op!(
         "action:magit-global-tag-delete",
         "Delete tag: ",

@@ -317,6 +317,14 @@ const COMMIT_ROWS: &[TransientRow] = &[
         action: "action:magit-global-reword",
         placeholder: "commit_reword_op",
     },
+    // MG.42-E1: augment — a squash marker you annotate.
+    TransientRow {
+        key: "A",
+        label: "augment",
+        doc: "Record a squash! for a commit, with a note you write",
+        action: "action:magit-commit-augment",
+        placeholder: "commit_augment_op",
+    },
     // MG.42-E2: magit's instant variants — record AND fold in.
     TransientRow {
         key: "F",
@@ -622,6 +630,14 @@ const MERGE_ROWS: &[TransientRow] = &[
         doc: "Take the branch's changes as one staged change, with no merge commit",
         action: "action:magit-global-merge-squash",
         placeholder: "merge_squash_op",
+    },
+    // MG.42-E1: merge with an authored message.
+    TransientRow {
+        key: "e",
+        label: "merge and edit message",
+        doc: "Merge a branch, writing the merge message yourself",
+        action: "action:magit-global-merge-edit",
+        placeholder: "merge_edit_op",
     },
     // MG.42-E2: merge then delete, as one operation.
     TransientRow {
@@ -2876,5 +2892,84 @@ mod commit_intent_tests {
     #[test]
     fn reword_is_distinct_from_amend() {
         assert_ne!(CommitIntent::Reword, CommitIntent::Amend);
+    }
+
+    /// MG.42-E1: the targeted intents carry their target IN the name.
+    ///
+    /// Augment and merge-edit act on something the user picked, and
+    /// the compose buffer is opened long before the commit runs. The
+    /// name is the carrier so there is no side-channel to go stale
+    /// between opening the buffer and confirming it.
+    #[test]
+    fn targeted_intents_round_trip_through_the_buffer_name() {
+        let name = CommitIntent::augment_buffer_name("abc123");
+        assert_eq!(
+            CommitIntent::from_buffer_name(&name),
+            CommitIntent::Augment {
+                target: "abc123".to_string()
+            }
+        );
+
+        let name = CommitIntent::merge_edit_buffer_name("feature/x");
+        assert_eq!(
+            CommitIntent::from_buffer_name(&name),
+            CommitIntent::MergeEdit {
+                branch: "feature/x".to_string()
+            }
+        );
+    }
+
+    /// A target that is empty or absent must NOT produce a targeted
+    /// intent.
+    ///
+    /// `git commit --squash= -m msg` is not a no-op — it is an error
+    /// git reports at the point the user expected a commit. Falling
+    /// back to `Create` is wrong too, so the name simply does not
+    /// match and the buffer composes an ordinary commit.
+    #[test]
+    fn an_empty_target_does_not_produce_a_targeted_intent() {
+        assert_eq!(
+            CommitIntent::from_buffer_name("*magit:augment:*"),
+            CommitIntent::Create
+        );
+        assert_eq!(
+            CommitIntent::from_buffer_name("*magit:merge-edit:*"),
+            CommitIntent::Create
+        );
+    }
+
+    /// The targeted intents are checked BEFORE the substring tests.
+    ///
+    /// The name is matched by substring, so a target containing
+    /// "amend" or "reword" is entirely legal — `amend-fixes` is an
+    /// ordinary branch name. Order is what stops it selecting the
+    /// wrong intent, and the two are opposite operations: merge-edit
+    /// records a new merge commit, amend rewrites the last one.
+    #[test]
+    fn a_target_containing_amend_stays_targeted() {
+        assert_eq!(
+            CommitIntent::from_buffer_name(&CommitIntent::merge_edit_buffer_name("amend-fixes")),
+            CommitIntent::MergeEdit {
+                branch: "amend-fixes".to_string()
+            }
+        );
+    }
+
+    /// Neither targeted intent pre-fills the buffer.
+    ///
+    /// Augment's note is the user's own addition BELOW the generated
+    /// `squash!` line, and a merge message is written fresh — seeding
+    /// either with a prior message would put text there the user then
+    /// has to delete.
+    #[test]
+    fn targeted_intents_do_not_seed_a_prior_message() {
+        assert!(!CommitIntent::Augment {
+            target: "abc123".to_string()
+        }
+        .seeds_prior_message());
+        assert!(!CommitIntent::MergeEdit {
+            branch: "main".to_string()
+        }
+        .seeds_prior_message());
     }
 }

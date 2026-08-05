@@ -311,6 +311,83 @@ fn commit_amend() {
     assert_eq!(count.trim(), "1");
 }
 
+/// MG.42-E1: augment records a `squash!` marker that CARRIES a note.
+///
+/// The whole reason augment is not just "fixup with extra steps" is
+/// that `--squash` and `-m` compose: git writes `squash! <subject>` as
+/// the first line and appends the user's message below it. If they did
+/// not compose, the note the user typed would be silently discarded —
+/// which is why this asserts on the body, not just the subject.
+#[test]
+fn commit_augment_records_a_squash_marker_carrying_the_note() {
+    let (_dir, repo) = init_temp_repo();
+    let workdir = repo.workdir().unwrap();
+    write_file(workdir, "a.txt", "a\n");
+    Index::stage_path(&repo, "a.txt").unwrap();
+    Commit::create(&repo, "first").unwrap();
+    let target = git(&repo, &["rev-parse", "HEAD"]).trim().to_string();
+
+    write_file(workdir, "b.txt", "b\n");
+    Index::stage_path(&repo, "b.txt").unwrap();
+    Commit::augment(&repo, &target, "why this change").unwrap();
+
+    // The subject is git's generated marker, naming the target's
+    // subject — that is what makes `--autosquash` fold it in later.
+    let subject = git(&repo, &["log", "-1", "--format=%s"]);
+    assert_eq!(subject.trim(), "squash! first");
+
+    // And the note survived. A `--squash` that dropped `-m` would pass
+    // this test's subject assertion and lose the user's text.
+    let body = git(&repo, &["log", "-1", "--format=%b"]);
+    assert!(
+        body.contains("why this change"),
+        "the note the user wrote must reach the commit, got: {body:?}"
+    );
+
+    // Augment adds a commit; it does not rewrite the target.
+    let count = git(&repo, &["rev-list", "--count", "HEAD"]);
+    assert_eq!(count.trim(), "2");
+}
+
+/// MG.42-E1: merge-edit completes the merge with an authored message.
+///
+/// Distinct from the `n` don't-commit row, which deliberately leaves a
+/// staged merge behind. If this silently behaved like `--no-commit`,
+/// the user would write a message and end up with nothing committed.
+#[test]
+fn merge_with_message_completes_the_merge_in_one_step() {
+    let (_dir, repo) = init_temp_repo();
+    let workdir = repo.workdir().unwrap();
+    write_file(workdir, "a.txt", "a\n");
+    git_add(&repo, "a.txt");
+    git_commit(&repo, "initial");
+
+    git(&repo, &["checkout", "-b", "feature"]);
+    write_file(workdir, "b.txt", "b\n");
+    git_add(&repo, "b.txt");
+    git_commit(&repo, "feature work");
+    git(&repo, &["checkout", "main"]);
+
+    // A second commit on main forces a real merge commit rather than a
+    // fast-forward, which would take no message at all.
+    write_file(workdir, "c.txt", "c\n");
+    git_add(&repo, "c.txt");
+    git_commit(&repo, "main work");
+
+    Commit::merge_with_message(&repo, "feature", "merge feature into main").unwrap();
+
+    let subject = git(&repo, &["log", "-1", "--format=%s"]);
+    assert_eq!(subject.trim(), "merge feature into main");
+
+    // Two parents: the merge actually happened and was committed.
+    let parents = git(&repo, &["log", "-1", "--format=%P"]);
+    assert_eq!(
+        parents.trim().split_whitespace().count(),
+        2,
+        "merge-edit must produce a merge commit, not a staged merge"
+    );
+}
+
 #[test]
 fn branch_list_and_create() {
     let (_dir, repo) = init_temp_repo();

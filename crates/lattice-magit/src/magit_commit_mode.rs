@@ -54,7 +54,7 @@ fn magit_commit_keymap_entries() -> &'static [KeymapEntry] {
 /// buffer's *name* to its *behaviour* — rename the buffer and the
 /// operation silently changes. The name still selects the intent, but
 /// it does so once, explicitly, at open.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommitIntent {
     /// A new commit from what is staged.
     Create,
@@ -65,6 +65,12 @@ pub enum CommitIntent {
     /// quietly absorbed staged changes would be a content change the
     /// user never asked for.
     Reword,
+    /// Record a `squash!` marker for `target`, carrying the note the
+    /// user writes in the buffer. Magit's `A`.
+    Augment { target: String },
+    /// Complete a merge of `branch` with an authored message. Magit's
+    /// merge `e`.
+    MergeEdit { branch: String },
 }
 
 impl CommitIntent {
@@ -74,6 +80,15 @@ impl CommitIntent {
     /// `amend` substring, or a future rename could make one shadow the
     /// other. Kept in ONE place so the mapping is auditable.
     pub fn from_buffer_name(name: &str) -> Self {
+        // Targeted intents carry their target IN the name
+        // (`*magit:augment:<sha>*`), so the compose buffer needs no
+        // side-channel and `:ls` shows what it is about to act on.
+        if let Some(target) = Self::suffix_after(name, "augment:") {
+            return Self::Augment { target };
+        }
+        if let Some(branch) = Self::suffix_after(name, "merge-edit:") {
+            return Self::MergeEdit { branch };
+        }
         if name.contains("reword") {
             Self::Reword
         } else if name.contains("amend") {
@@ -83,8 +98,24 @@ impl CommitIntent {
         }
     }
 
+    /// The value between `<marker>` and the buffer name's trailing `*`.
+    fn suffix_after(name: &str, marker: &str) -> Option<String> {
+        let rest = name.split_once(marker)?.1;
+        let value = rest.trim_end_matches('*').trim();
+        (!value.is_empty()).then(|| value.to_string())
+    }
+
+    /// The buffer name that selects this intent.
+    pub fn augment_buffer_name(target: &str) -> String {
+        format!("*magit:augment:{target}*")
+    }
+
+    pub fn merge_edit_buffer_name(branch: &str) -> String {
+        format!("*magit:merge-edit:{branch}*")
+    }
+
     /// Does the buffer open pre-filled with the previous message?
-    pub fn seeds_prior_message(self) -> bool {
+    pub fn seeds_prior_message(&self) -> bool {
         matches!(self, Self::Amend | Self::Reword)
     }
 }
@@ -231,7 +262,7 @@ impl Mode for MagitCommitMode {
                                 message.push('\n');
                             }
                         }
-                        (message, g.workdir.clone(), g.intent)
+                        (message, g.workdir.clone(), g.intent.clone())
                     };
                     if message.trim().is_empty() {
                         // Fail loud instead of silently doing nothing —
@@ -256,9 +287,15 @@ impl Mode for MagitCommitMode {
                             tracing::error!(target: "lattice_magit", "commit: repo discover failed");
                             return;
                         };
-                        let result = match intent {
+                        let result = match &intent {
                             CommitIntent::Amend => Commit::amend(&repo, message.trim()),
                             CommitIntent::Reword => Commit::reword(&repo, message.trim()),
+                            CommitIntent::Augment { target } => {
+                                Commit::augment(&repo, target, message.trim())
+                            }
+                            CommitIntent::MergeEdit { branch } => {
+                                Commit::merge_with_message(&repo, branch, message.trim())
+                            }
                             CommitIntent::Create => Commit::create(&repo, message.trim()),
                         };
                         if let Err(e) = result {
@@ -335,7 +372,7 @@ impl Mode for MagitCommitMode {
                     buffer_id,
                     store: store.clone(),
                     workdir: workdir.clone(),
-                    intent,
+                    intent: intent.clone(),
                     diff_start_line: u32::MAX,
                 },
             );

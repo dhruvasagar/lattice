@@ -26,6 +26,31 @@ impl Commit {
             .map_err(|e| VcsError::Index(format!("commit amend: {}", e)))
     }
 
+    /// MG.42-E1: record a `squash!` marker for `target` carrying the
+    /// user's own note — magit's `A` augment.
+    ///
+    /// `--squash` with `-m` is additive, not conflicting: git writes
+    /// `squash! <subject>` as the first line and appends the message
+    /// below it. That is precisely augment's semantics — a squash the
+    /// author annotated — so no second commit step is needed.
+    pub fn augment(repo: &Repository, target: &str, message: &str) -> Result<()> {
+        repo.run_git(["commit", &format!("--squash={target}"), "-m", message])
+            .map(|_| ())
+            .map_err(|e| VcsError::Index(format!("commit augment: {}", e)))
+    }
+
+    /// MG.42-E1: merge `branch` with a message the user wrote — magit's
+    /// merge `e` edit.
+    ///
+    /// Genuinely different from the `n` don't-commit row: this
+    /// completes the merge in one step with an authored message, rather
+    /// than leaving a staged merge for a separate commit.
+    pub fn merge_with_message(repo: &Repository, branch: &str, message: &str) -> Result<()> {
+        repo.run_git(["merge", "-m", message, branch])
+            .map(|_| ())
+            .map_err(|e| VcsError::Index(format!("merge: {}", e)))
+    }
+
     /// MG.42-E1: replace the last commit's MESSAGE ONLY, leaving the
     /// index alone — magit's `w` reword.
     ///

@@ -1058,6 +1058,26 @@ impl Mode for MagitCoreMode {
                 "action:magit-commit-squash",
                 crate::magit_global_mode::CommitOp::COMMIT_SQUASH,
             ),
+            // MG.42-E1: magit's `A` augment — a squash marker carrying
+            // the user's own note, so it opens the compose buffer with
+            // the target encoded in the name.
+            lattice_mode::ActionHandlerContribution {
+                action_name: "action:magit-commit-augment",
+                handler: Arc::new(move |ctx: &ActionContext<'_>| {
+                    let resolved = crate::buffer_state::view_for(ctx)
+                        .and_then(|view| view.commit_at_cursor(ctx.cursor));
+                    let Some(commit) = resolved else {
+                        return Some(Effect::OpenPicker {
+                            source: crate::picker_sources::COMMIT_PICK_SOURCE.to_string(),
+                            args: vec!["magit-augment".to_string()],
+                        });
+                    };
+                    Some(Effect::OpenSyntheticBuffer {
+                        name: crate::magit_commit_mode::CommitIntent::augment_buffer_name(&commit),
+                        mode_id: "magit-commit-mode".to_string(),
+                    })
+                }),
+            },
             // MG.42-E2: magit's `F` / `S` — record the marker commit
             // AND fold it in, as one operation.
             commit_sequence_op(

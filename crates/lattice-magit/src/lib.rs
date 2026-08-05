@@ -1071,6 +1071,46 @@ fn register_ex_commands(
         }
     }
     {
+        // MG.42-E1: augment's scriptable half — and the target of its
+        // picker fallback, which invokes `<ex-command> <sha>`. The
+        // commit rides IN the compose buffer's name, so the buffer
+        // itself records which commit it is about to squash into.
+        registry.register_ex_command(
+            "magit-augment",
+            "Record a squash! for the named commit, with a note you write. \
+             With no argument: pick one.",
+            ExCommandSpec {
+                latency_class: LatencyClass::Reflex,
+                accepts_bang: false,
+                accepts_range: false,
+                parse_args: Arc::new(|line: &str, _bang: bool| {
+                    Ok(Args::String(line.trim().to_string()))
+                }),
+                apply: Arc::new(move |ctx| {
+                    let commit = match ctx.args {
+                        Args::String(ref s) if !s.trim().is_empty() => s.trim().to_string(),
+                        _ => {
+                            return Ok(Effect::OpenPicker {
+                                source: picker_sources::COMMIT_PICK_SOURCE.to_string(),
+                                args: vec!["magit-augment".to_string()],
+                            });
+                        }
+                    };
+                    Ok(Effect::OpenSyntheticBuffer {
+                        name: magit_commit_mode::CommitIntent::augment_buffer_name(&commit),
+                        mode_id: "magit-commit-mode".to_string(),
+                    })
+                }),
+                args_schema: vec![ArgSpec::optional(
+                    "commit",
+                    lattice_grammar::ArgKind::String,
+                    "commit to augment; omit to pick one",
+                )],
+                surface_form: SurfaceForm::Keyword,
+            },
+        );
+    }
+    {
         // MG.23f2: the scriptable half of reverse blame. `C-c f`'s `f`
         // takes both arguments from the blob buffer it is pressed in;
         // this one is told them, which is also the only way to reverse
@@ -2261,6 +2301,14 @@ fn register_action_commands(registry: &mut CommandRegistry) {
         "Snapshot the working tree without disturbing the index",
     );
     reg(
+        "action:magit-commit-augment",
+        "Record a squash! for a commit, carrying a note you write",
+    );
+    reg(
+        "action:magit-global-merge-edit",
+        "Merge a branch with a message you write (asks which)",
+    );
+    reg(
         "action:magit-global-reword",
         "Reword the last commit — its message only, leaving the index alone",
     );
@@ -2773,6 +2821,50 @@ mod tests {
                 declared, expected,
                 "`{name}`'s schema must match the slots its confirm carries, \
                  in order — the host projects positionally into these names"
+            );
+        }
+    }
+
+    /// MG.42-E1: **every ex-command a commit-picker is opened WITH is
+    /// actually registered.**
+    ///
+    /// `COMMIT_PICK_SOURCE` builds `"<arg> <sha>"` and invokes it as a
+    /// command id. The arg is a plain string, so nothing catches a
+    /// typo or a rename at compile time — and the failure mode is the
+    /// worst kind: the picker opens, lists commits, the user chooses
+    /// one, and *nothing happens*. It reads as a broken commit rather
+    /// than a missing command.
+    ///
+    /// This asserts the other direction from
+    /// `each_op_declares_its_own_ex_command`: that one pins the names
+    /// the ops carry, this one pins that those names resolve.
+    #[test]
+    fn every_commit_picker_arg_names_a_registered_ex_command() {
+        let mut registry = CommandRegistry::new();
+        register_ex_commands(&mut registry, Default::default());
+
+        // Every ex-command any handler passes as the commit picker's
+        // single arg. Kept explicit rather than scraped: a scrape that
+        // found nothing would pass vacuously.
+        let picker_args = [
+            magit_global_mode::CommitOp::CHERRY_PICK.ex_command,
+            magit_global_mode::CommitOp::REVERT.ex_command,
+            magit_global_mode::CommitOp::RESET_SOFT.ex_command,
+            magit_global_mode::CommitOp::RESET_MIXED.ex_command,
+            magit_global_mode::CommitOp::RESET_HARD.ex_command,
+            magit_global_mode::CommitOp::RESET_KEEP.ex_command,
+            magit_global_mode::CommitOp::RESET_INDEX.ex_command,
+            magit_global_mode::CommitOp::COMMIT_FIXUP.ex_command,
+            magit_global_mode::CommitOp::COMMIT_SQUASH.ex_command,
+            // MG.42-E1: augment's fallback, which is a bare string in
+            // both its action handler and its own ex-command.
+            "magit-augment",
+        ];
+
+        for name in picker_args {
+            assert!(
+                registry.lookup_by_name(name).is_some(),
+                "`{name}` is opened as a commit-picker arg but is not a                  registered ex-command — picking a commit would do nothing"
             );
         }
     }
@@ -4641,7 +4733,8 @@ mod tests {
             // MG.41c: push/pull/fetch each replaced ONE run row with
             // destination rows — 7, 3 and 6 — so 46 + 6 + 2 + 5 = 59.
             // MG.41d: +2 reset modes, +2 commit autosquash rows.
-            81,
+            // MG.42-E1: +commit `A` augment, +merge `e` edit.
+            83,
             "expected every root-dispatch leaf (incl. both submenus') to \
              report inert, got: {root:?}"
         );
@@ -4665,8 +4758,9 @@ mod tests {
         );
         assert_eq!(
             bisecting.len(),
-            // MG.41c: +13 destination rows; MG.41d: +4 more.
-            84,
+            // MG.41c: +13 destination rows; MG.41d: +4 more;
+            // MG.42-E1: +2 (augment, merge-edit).
+            86,
             "the in-progress bisect menu trades `start` for good/bad/skip/reset: {bisecting:?}"
         );
     }

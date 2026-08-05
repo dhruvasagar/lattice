@@ -221,10 +221,13 @@ silently if a name ever changes.
 the existing message; a renamed buffer does not change behaviour (the
 regression the enum prevents).
 
-**Unblocks:** commit `w` reword, `A` augment, merge `e` edit.
+**Unblocks:** commit `w` reword, `A` augment, merge `e` edit — all
+three now landed.
 
-**Landed.** `CommitIntent` (`Create` / `Amend` / `Reword`) replaces the
-`amend: bool`, `Commit::reword` in `lattice-vcs`, and the `w` row.
+**Landed.** `CommitIntent` (`Create` / `Amend` / `Reword` / `Augment` /
+`MergeEdit`) replaces the `amend: bool`, `Commit::reword` /
+`Commit::augment` / `Commit::merge_with_message` in `lattice-vcs`, and
+the commit `w` / `A` and merge `e` rows.
 
 **Reword is `--amend --only`, not `--amend`** — and that single flag is
 the whole point of the row. Without `--only`, anything currently staged
@@ -238,9 +241,36 @@ rename cannot make one shadow the other. What is gone is the *implicit*
 coupling: behaviour no longer depends on a substring test scattered at
 the point of use.
 
-`A` augment and merge `e` edit are now unblocked but not built — both
-are a further intent plus a seeded message, which is one more variant
-of the pattern this slice established.
+**The two targeted intents carry their target IN the buffer name**
+(`*magit:augment:<sha>*`, `*magit:merge-edit:<branch>*`). The
+alternative — a side-channel map keyed by buffer — is a second thing
+that can go out of step with the buffer the user is looking at, and it
+would go out of step silently: the compose buffer is opened long before
+the commit runs. The name is already the intent selector, so extending
+it costs nothing new, and `:ls` shows which commit the buffer is about
+to squash into.
+
+**Augment's `--squash` and `-m` compose rather than conflict.** Git
+writes `squash! <subject>` as the first line and appends the message
+below it — which is exactly augment's semantics, a squash the author
+annotated. This is verified against real git rather than assumed:
+without it the obvious implementation is two steps (commit, then
+rewrite the message), and the note the user typed would be dropped by
+the one-step version with no error.
+
+**Neither targeted intent seeds a prior message.** Augment's note is
+the user's own addition *below* a generated marker line, and a merge
+message is written fresh; seeding either would put text there the user
+then has to delete.
+
+**Augment needs a real ex-command, not just an action.** Its picker
+fallback opens `COMMIT_PICK_SOURCE`, which invokes `"<arg> <sha>"` as a
+command id — so the arg must name a *registered ex-command*
+(`:magit-augment`), not the action. That string is unchecked at compile
+time and its failure mode is the quiet kind: the picker opens, lists
+commits, the user picks one, and nothing happens.
+`every_commit_picker_arg_names_a_registered_ex_command` pins every such
+arg against the real registry.
 
 ---
 

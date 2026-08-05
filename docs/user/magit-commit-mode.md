@@ -69,13 +69,44 @@ which may already differ from a copy you've edited since.
 
 
 
-## Amend
+## What the buffer will do when you confirm
 
-Opened via `ca` from magit-status (buffer name `*magit:amend*`), the
-previous commit's message is pre-populated so you're editing it rather
-than retyping it. `C-c C-c` amends; the commit count doesn't change,
-and the headerline carries `AMEND` throughout so you can't mistake
-which one you're in.
+The same compose buffer backs several operations. Which one `C-c C-c`
+runs is decided by the buffer's **name**, so `:ls` always shows what
+you are about to do — there is no hidden state to get out of step with
+the text on screen.
+
+| Buffer | Opened by | `C-c C-c` runs | Pre-filled? |
+|---|---|---|---|
+| `*magit:commit*` | `cc`, `:magit-commit` | `git commit` | no |
+| `*magit:amend*` | `ca` | `git commit --amend` | previous message |
+| `*magit:reword*` | commit menu `w` | `git commit --amend --only` | previous message |
+| `*magit:augment:<sha>*` | commit menu `A`, `:magit-augment` | `git commit --squash=<sha>` | no |
+| `*magit:merge-edit:<branch>*` | merge menu `e` | `git merge <branch>` | no |
+
+**Amend and reword are not the same.** Amend sweeps in whatever you
+have staged; reword passes `--only` and changes the message alone. If
+you have staged work you are not ready to commit, reword is the one
+that leaves it staged. The headerline carries `AMEND` for both, so
+check the buffer name when it matters.
+
+**Augment writes a note onto a squash marker.** It records a *new*
+commit whose subject git generates as `squash! <target's subject>`,
+with whatever you type appended below it. Nothing is rewritten yet —
+the fold-in happens the next time you rebase with `--autosquash`. What
+you write here is a note to yourself for that moment, which is why the
+buffer starts empty rather than seeded with the target's message.
+
+**Merge-edit finishes the merge.** It is the merge menu's `e`, and it
+differs from that menu's `n` (don't commit) precisely in that it
+*does* commit, using the message you write. If the branches merge
+cleanly you end up with a merge commit; a conflict leaves you in the
+usual conflicted state and your message is not used.
+
+Both targeted forms carry their target in the buffer name because the
+buffer is opened well before the commit runs. A sha or branch that
+lives only in the name cannot drift out of sync with the buffer you
+are looking at.
 
 ## Behaviour worth knowing
 

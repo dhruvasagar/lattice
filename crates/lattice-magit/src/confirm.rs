@@ -49,6 +49,12 @@ pub(crate) const DESTRUCTIVE_ACTIONS: &[(&str, &str)] = &[
         "action:magit-branch-delete",
         "action:magit-branch-delete-execute",
     ),
+    // MG.43f: reset `w`. Overwrites uncommitted working-tree changes,
+    // so it is held to `--hard`'s bar.
+    (
+        "action:magit-reset-worktree",
+        "action:magit-reset-worktree-execute",
+    ),
     // MG.43a: the branch submenu's `x` reset. Destructive in the same
     // way `reset --hard` is — it discards uncommitted work — so it is
     // held to the same bar.

@@ -253,6 +253,14 @@ const FETCH_ROWS: &[TransientRow] = &[
         action: "action:magit-global-fetch-all-remotes",
         placeholder: "fetch_all_op",
     },
+    // MG.43f: magit's `m` — fetch submodules alongside the superproject.
+    TransientRow {
+        key: "m",
+        label: "submodules",
+        doc: "Fetch the superproject and its submodules",
+        action: "action:magit-global-fetch-submodules",
+        placeholder: "fetch_submodules_op",
+    },
 ];
 
 // ---- MG.41a: static row tables ----
@@ -366,6 +374,15 @@ const RESET_ROWS: &[TransientRow] = &[
         doc: "Set the index to a commit without moving HEAD or touching the working tree",
         action: "action:magit-reset-index",
         placeholder: "reset_index_op",
+    },
+    // MG.43f: magit's `w` — the working tree only; HEAD and the index
+    // are left alone.
+    TransientRow {
+        key: "w",
+        label: "worktree",
+        doc: "Reset the working tree to a commit, keeping HEAD and the index",
+        action: "action:magit-reset-worktree",
+        placeholder: "reset_worktree_op",
     },
     // MG.42-E3: two inputs — the commit, then the path.
     TransientRow {
@@ -3344,6 +3361,36 @@ mod commit_op_argv_tests {
                 "no editor is opened when nothing is committed: {argv:?}",
             );
         }
+    }
+
+    /// MG.43f: **reset `w` restores the WORKING TREE only.**
+    ///
+    /// `git restore --source <commit> --worktree -- .` leaves HEAD and
+    /// the index alone. The two obvious alternatives both do more:
+    /// `reset` moves HEAD, and `checkout <commit> -- .` writes the
+    /// index too — so a file the user had staged would silently be
+    /// restaged to the commit's version. Verified against real git.
+    #[test]
+    fn reset_worktree_leaves_head_and_the_index_alone() {
+        let argv = CommitOp::RESET_WORKTREE.argv("abc123");
+        assert_eq!(
+            argv,
+            vec!["restore", "--source", "abc123", "--worktree", "--", "."],
+        );
+        assert!(
+            !argv.iter().any(|a| a == "reset" || a == "checkout"),
+            "neither `reset` nor `checkout`: both touch more than the worktree",
+        );
+        // `--worktree` without `--staged` is the whole point; adding
+        // `--staged` would make it write the index too.
+        assert!(!argv.iter().any(|a| a == "--staged"), "{argv:?}");
+    }
+
+    /// It overwrites uncommitted work, so it asks — the same bar
+    /// `--hard` is held to.
+    #[test]
+    fn reset_worktree_asks_first() {
+        assert!(CommitOp::RESET_WORKTREE.confirm_action.is_some());
     }
 
     /// fixup / squash take the target commit LAST, which is what git's

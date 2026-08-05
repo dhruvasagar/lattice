@@ -1106,6 +1106,11 @@ impl Mode for MagitCoreMode {
                 "action:magit-cherry-pick-apply",
                 crate::magit_global_mode::CommitOp::CHERRY_PICK_APPLY,
             ),
+            // MG.43f: magit's reset `w`.
+            commit_op(
+                "action:magit-reset-worktree",
+                crate::magit_global_mode::CommitOp::RESET_WORKTREE,
+            ),
             commit_op(
                 "action:magit-reset-soft",
                 crate::magit_global_mode::CommitOp::RESET_SOFT,

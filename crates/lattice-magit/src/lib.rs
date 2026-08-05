@@ -423,6 +423,11 @@ const CONFIRM_TARGET_ACTIONS: &[(&str, &str, &[(&str, &str)])] = &[
     // below it, the menu opens from anywhere, so the carried ref is
     // the only source of the target.
     (
+        "action:magit-reset-worktree-execute",
+        "Reset the working tree after confirmation",
+        &[("commit", "Commit the prompt named")],
+    ),
+    (
         "action:magit-global-branch-reset-execute",
         "Reset the current branch after confirmation",
         &[("ref", "Ref the prompt named")],
@@ -1030,6 +1035,8 @@ fn register_ex_commands(
             // MG.43a: revert `v` and cherry-pick `a`.
             magit_global_mode::CommitOp::REVERT_CHANGES,
             magit_global_mode::CommitOp::CHERRY_PICK_APPLY,
+            // MG.43f: reset `w`.
+            magit_global_mode::CommitOp::RESET_WORKTREE,
         ] {
             registry.register_ex_command(
                 op.ex_command,
@@ -2452,6 +2459,15 @@ fn register_action_commands(registry: &mut CommandRegistry) {
     reg(
         "action:magit-global-branch-reset-finish",
         "Ask before resetting the current branch to the named ref",
+    );
+    // MG.43f: reset the worktree, fetch submodules.
+    reg(
+        "action:magit-reset-worktree",
+        "Reset the working tree to the commit at cursor, keeping HEAD and the index",
+    );
+    reg(
+        "action:magit-global-fetch-submodules",
+        "Fetch the superproject and its submodules",
     );
     // MG.43e: merge preview / merge-into, tag release / prune.
     reg(
@@ -5080,8 +5096,9 @@ mod tests {
             // MG.43a: +commit `e`, +revert `v`, +cherry-pick `a`,
             // +branch `x` reset. MG.43b: +5 rebase onto-target rows;
             // MG.43c: +3 todo-rewriting rows; MG.43g: +6 `C` rows;
-            // MG.43e: +merge `p`/`i`, +tag `r`/`p`.
-            105,
+            // MG.43e: +merge `p`/`i`, +tag `r`/`p`;
+            // MG.43f: +reset `w`, +fetch `m`.
+            107,
             "expected every root-dispatch leaf (incl. both submenus') to \
              report inert, got: {root:?}"
         );
@@ -5107,8 +5124,9 @@ mod tests {
             bisecting.len(),
             // MG.41c: +13 destination rows; MG.41d: +4 more;
             // MG.42-E1: +2 (augment, merge-edit); MG.43a: +4;
-            // MG.43b: +5; MG.43c: +3; MG.43g: +6; MG.43e: +4.
-            108,
+            // MG.43b: +5; MG.43c: +3; MG.43g: +6; MG.43e: +4;
+            // MG.43f: +2.
+            110,
             "the in-progress bisect menu trades `start` for good/bad/skip/reset: {bisecting:?}"
         );
     }

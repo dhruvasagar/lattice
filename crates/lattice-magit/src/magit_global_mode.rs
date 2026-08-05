@@ -788,6 +788,20 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         merge_squash_argv,
         "merge --squash"
     );
+    // MG.43f: magit's fetch `m` — fetch submodules too.
+    contributions.push(ActionHandlerContribution {
+        action_name: "action:magit-global-fetch-submodules",
+        handler: Arc::new(|_ctx: &ActionContext<'_>| {
+            Some(spawn_git(
+                ["fetch", "--recurse-submodules"]
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect(),
+                "fetch --recurse-submodules",
+            ))
+        }),
+    });
+
     // MG.43e: merge `p` preview — a read-only diff of what merging
     // would bring in. Opens a buffer rather than running anything.
     prompted_op_open!(
@@ -3888,6 +3902,27 @@ impl CommitOp {
         args: &["cherry-pick"],
         confirm_action: None,
     };
+    /// MG.43f: magit's reset `w` — reset the WORKING TREE to a
+    /// commit, leaving HEAD and the index alone.
+    ///
+    /// `git restore --source <commit> --worktree` is exactly this, and
+    /// is why the row needs no plumbing: `reset` moves HEAD, and
+    /// `checkout <commit> -- .` writes the index too. Verified against
+    /// real git — a file staged before the restore is still staged
+    /// after it.
+    ///
+    /// The commit sits between `--source` and the rest, which is what
+    /// `trailing` is for.
+    pub const RESET_WORKTREE: Self = Self {
+        what: "restore worktree",
+        trailing: &["--worktree", "--", "."],
+        ex_command: "magit-reset-worktree",
+        args: &["restore", "--source"],
+        // Overwrites uncommitted working-tree changes, the same bar
+        // `--hard` is held to.
+        confirm_action: Some("action:magit-reset-worktree-execute"),
+    };
+
     /// MG.43a: magit's revert `v` — apply the inverse to the working
     /// tree and index WITHOUT committing.
     ///

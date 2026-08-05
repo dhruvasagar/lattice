@@ -15,7 +15,7 @@ use lattice_mode::{
     ActionContext, ActionHandlerContribution, BufferStoreHandle, PendingSyntheticHighlights,
 };
 use lattice_protocol::edit::Edit;
-use lattice_protocol::position::{Position, Range};
+use lattice_protocol::position::Position;
 use lattice_vcs::{Index, Repository};
 
 use crate::buffer_state::DiffSource;

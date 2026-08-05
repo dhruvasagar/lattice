@@ -242,6 +242,117 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
             });
         };
     }
+    // MG.41c: one handler per destination. The op is the same; only
+    // the target differs, which is why seven push rows cost one macro
+    // rather than seven functions.
+    macro_rules! remote_op_to {
+        ($action_name:expr, $op:expr, $target:expr) => {
+            contributions.push(ActionHandlerContribution {
+                action_name: $action_name,
+                handler: Arc::new(|ctx: &ActionContext<'_>| {
+                    // A `Prompted` target's value rides in as the
+                    // `dest` arg the transient filled in; the others
+                    // ignore it.
+                    let prompted = ctx
+                        .args
+                        .as_list()
+                        .and_then(|l| l.last())
+                        .and_then(|v| match v {
+                            lattice_grammar::ArgValue::String(s) => Some(s.clone()),
+                            _ => None,
+                        });
+                    Some(spawn_remote_op_to($op, &ctx.args, $target, prompted))
+                }),
+            });
+        };
+    }
+
+    // Push — magit's seven destinations.
+    remote_op_to!(
+        "action:magit-global-push-configured",
+        RemoteOp::PUSH,
+        RemoteTarget::Configured
+    );
+    remote_op_to!(
+        "action:magit-global-push-upstream",
+        RemoteOp::PUSH,
+        RemoteTarget::Upstream
+    );
+    remote_op_to!(
+        "action:magit-global-push-elsewhere",
+        RemoteOp::PUSH,
+        RemoteTarget::Prompted
+    );
+    remote_op_to!(
+        "action:magit-global-push-other-branch",
+        RemoteOp::PUSH,
+        RemoteTarget::Prompted
+    );
+    remote_op_to!(
+        "action:magit-global-push-refspecs",
+        RemoteOp::PUSH,
+        RemoteTarget::Prompted
+    );
+    remote_op_to!(
+        "action:magit-global-push-tag",
+        RemoteOp::PUSH,
+        RemoteTarget::Prompted
+    );
+    remote_op_to!(
+        "action:magit-global-push-all-tags",
+        RemoteOp::PUSH,
+        RemoteTarget::AllTags
+    );
+
+    // Pull — magit's three.
+    remote_op_to!(
+        "action:magit-global-pull-configured",
+        RemoteOp::PULL,
+        RemoteTarget::Configured
+    );
+    remote_op_to!(
+        "action:magit-global-pull-upstream",
+        RemoteOp::PULL,
+        RemoteTarget::Upstream
+    );
+    remote_op_to!(
+        "action:magit-global-pull-elsewhere",
+        RemoteOp::PULL,
+        RemoteTarget::Prompted
+    );
+
+    // Fetch — magit's six (submodules is deferred; see the slice plan).
+    remote_op_to!(
+        "action:magit-global-fetch-configured",
+        RemoteOp::FETCH,
+        RemoteTarget::Configured
+    );
+    remote_op_to!(
+        "action:magit-global-fetch-upstream",
+        RemoteOp::FETCH,
+        RemoteTarget::Upstream
+    );
+    remote_op_to!(
+        "action:magit-global-fetch-elsewhere",
+        RemoteOp::FETCH,
+        RemoteTarget::Prompted
+    );
+    remote_op_to!(
+        "action:magit-global-fetch-other-branch",
+        RemoteOp::FETCH,
+        RemoteTarget::Prompted
+    );
+    remote_op_to!(
+        "action:magit-global-fetch-refspecs",
+        RemoteOp::FETCH,
+        RemoteTarget::Prompted
+    );
+    remote_op_to!(
+        "action:magit-global-fetch-all-remotes",
+        RemoteOp::FETCH,
+        RemoteTarget::AllRemotes
+    );
+
     remote_op!("action:magit-global-pull", RemoteOp::PULL);
     remote_op!("action:magit-global-push", RemoteOp::PUSH);
     // Fetch is the non-merging half of pull — magit gives it its own
@@ -1747,8 +1858,27 @@ pub struct RemoteOp {
 impl RemoteOp {
     pub const PULL: Self = Self {
         what: "pull",
+        // `--ff-only` stays the default: a pull that can create a merge
+        // commit behind your back is the wrong default. `--rebase`
+        // REPLACES it (see `argv`) — it solves the same problem a
+        // different way, and git rejects the two together.
         args: &["pull", "--ff-only"],
-        flags: &[],
+        flags: &[
+            RemoteFlag {
+                name: "rebase",
+                arg: "--rebase",
+                key: "-r",
+                doc: "Rebase local commits onto the fetched head instead of merging",
+                kind: RemoteArgKind::Flag,
+            },
+            RemoteFlag {
+                name: "autostash",
+                arg: "--autostash",
+                key: "-a",
+                doc: "Stash local changes for the pull and reapply them after",
+                kind: RemoteArgKind::Flag,
+            },
+        ],
     };
     pub const PUSH: Self = Self {
         what: "push",
@@ -1772,6 +1902,30 @@ impl RemoteOp {
                 doc: "Set the pushed branch's upstream to the remote branch",
                 kind: RemoteArgKind::Flag,
             },
+            // MG.41c: magit offers bare `--force` on `-F`. Lattice
+            // deliberately does NOT, and that predates this slice —
+            // `force_push_uses_force_with_lease` pins its absence
+            // because the difference is whether a colleague's commits
+            // survive when the remote moved under you.
+            // `--force-with-lease` refuses in exactly that case, so the
+            // menu is strictly safer and loses nothing a user cannot
+            // still do from a shell. Matching magit key-for-key does
+            // not extend to re-adding a footgun someone removed on
+            // purpose.
+            RemoteFlag {
+                name: "no-verify",
+                arg: "--no-verify",
+                key: "-h",
+                doc: "Skip the pre-push hook",
+                kind: RemoteArgKind::Flag,
+            },
+            RemoteFlag {
+                name: "dry-run",
+                arg: "--dry-run",
+                key: "-n",
+                doc: "Show what would be pushed without sending anything",
+                kind: RemoteArgKind::Flag,
+            },
         ],
     };
     pub const FETCH: Self = Self {
@@ -1790,6 +1944,17 @@ impl RemoteOp {
                 arg: "--prune",
                 key: "-p",
                 doc: "Delete local refs whose remote branch is gone",
+                kind: RemoteArgKind::Flag,
+            },
+            // MG.41c: APPENDED, not inserted. The slice order IS the
+            // `args_schema` order, so adding a flag mid-table shifts
+            // every later slot and silently re-points existing `:`-line
+            // positional args at the wrong toggle.
+            RemoteFlag {
+                name: "tags",
+                arg: "--tags",
+                key: "-t",
+                doc: "Fetch all tags as well as the branches being fetched",
                 kind: RemoteArgKind::Flag,
             },
         ],
@@ -1929,6 +2094,15 @@ impl RemoteOp {
     /// [`RemoteOp::flags`].
     pub fn argv(&self, args: &lattice_grammar::Args) -> Vec<String> {
         let mut argv: Vec<String> = self.args.iter().map(|s| (*s).to_string()).collect();
+        // MG.41c: `--rebase` REPLACES the default `--ff-only` rather
+        // than joining it — git rejects the pair outright, so leaving
+        // both in would make the `-r` row fail every time instead of
+        // doing the obvious thing. Rebase serves the same purpose the
+        // default was protecting (no surprise merge commit), so
+        // dropping it here loses no safety.
+        if self.rebase_selected(args) {
+            argv.retain(|a| a != "--ff-only");
+        }
         for (i, flag) in self.flags.iter().enumerate() {
             let slot = args.as_list().and_then(|l| l.get(i));
             match flag.kind {
@@ -1960,6 +2134,16 @@ impl RemoteOp {
             }
         }
         argv
+    }
+
+    /// Is the `--rebase` toggle on? Looked up by NAME rather than by
+    /// slot index so it stays correct if the flag table is reordered.
+    fn rebase_selected(&self, args: &lattice_grammar::Args) -> bool {
+        self.flags
+            .iter()
+            .position(|f| f.name == "rebase")
+            .and_then(|i| args.as_list().and_then(|l| l.get(i)))
+            .is_some_and(|v| matches!(v, lattice_grammar::ArgValue::Bool(true)))
     }
 
     /// The command line this run would execute, for the transient's

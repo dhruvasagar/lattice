@@ -2141,6 +2141,41 @@ fn register_action_commands(registry: &mut CommandRegistry) {
     );
     reg("action:magit-global-push", "Push to the remote");
 
+    // MG.41c: magit's destination rows. The op is the same each time —
+    // only where it sends or takes refs differs — so these share one
+    // handler shape (`spawn_remote_op_to`) rather than one function
+    // each.
+    reg(
+        "action:magit-global-push-configured",
+        "Push to the configured push-remote (git resolves pushRemote / pushDefault)",
+    );
+    reg(
+        "action:magit-global-push-upstream",
+        "Push to this branch's @{upstream} — differs from the push-remote in a triangular workflow",
+    );
+    reg("action:magit-global-push-elsewhere", "Push to a remote you name");
+    reg("action:magit-global-push-other-branch", "Push a branch other than HEAD");
+    reg("action:magit-global-push-refspecs", "Push explicit refspecs");
+    reg("action:magit-global-push-tag", "Push a single tag");
+    reg("action:magit-global-push-all-tags", "Push every tag");
+
+    reg(
+        "action:magit-global-pull-configured",
+        "Pull from the configured remote",
+    );
+    reg("action:magit-global-pull-upstream", "Pull from this branch's @{upstream}");
+    reg("action:magit-global-pull-elsewhere", "Pull from a remote you name");
+
+    reg(
+        "action:magit-global-fetch-configured",
+        "Fetch from the configured remote",
+    );
+    reg("action:magit-global-fetch-upstream", "Fetch this branch's @{upstream}");
+    reg("action:magit-global-fetch-elsewhere", "Fetch from a remote you name");
+    reg("action:magit-global-fetch-other-branch", "Fetch a branch you name");
+    reg("action:magit-global-fetch-refspecs", "Fetch explicit refspecs");
+    reg("action:magit-global-fetch-all-remotes", "Fetch from every configured remote");
+
     // MG.23a: the six file-dispatch actions declare an optional
     // `file` argument. `C-c f` leaves it unset and they act on the
     // visited file; `:magit-other-file-dispatch` sets it, which is how
@@ -4148,18 +4183,37 @@ mod tests {
         use magit_global_mode::RemoteOp;
         assert_eq!(
             parse_remote_flags(RemoteOp::PUSH, "--frce-with-lease --set-upstream"),
-            Args::List(vec![ArgValue::Bool(false), ArgValue::Bool(true)]),
+            // One slot per flag, in table order. MG.41c appended
+            // `--no-verify` / `--dry-run`, so the list grew — built
+            // from the table rather than hard-coded so the next
+            // addition does not fail this test for the wrong reason.
+            Args::List(
+                RemoteOp::PUSH
+                    .flags
+                    .iter()
+                    .map(|f| ArgValue::Bool(f.name == "set-upstream"))
+                    .collect()
+            ),
             "the typo drops out; the flag that parsed still applies"
         );
     }
 
     /// An operation with no flags keeps `Args::None`, so its handler
     /// sees exactly what it saw before MG.17a.
+    ///
+    /// MG.41c: this used `PULL`, which now carries `-r` / `-a`. The
+    /// property is about flagless ops, not about pull, so it moves to
+    /// one that still is — asserted rather than assumed, so the test
+    /// cannot quietly stop testing anything if that op gains flags too.
     #[test]
     fn a_flagless_operation_parses_to_no_args() {
         use lattice_grammar::Args;
         use magit_global_mode::RemoteOp;
-        assert_eq!(parse_remote_flags(RemoteOp::PULL, "--force"), Args::None);
+        assert!(
+            RemoteOp::REBASE_CONTINUE.flags.is_empty(),
+            "this test needs a genuinely flagless op",
+        );
+        assert_eq!(parse_remote_flags(RemoteOp::REBASE_CONTINUE, "--force"), Args::None);
     }
 
     /// MG.16 — the remote/stash operations exist on both surfaces.
@@ -4418,7 +4472,9 @@ mod tests {
         );
         assert_eq!(
             root.len(),
-            46,
+            // MG.41c: push/pull/fetch each replaced ONE run row with
+            // destination rows — 7, 3 and 6 — so 46 + 6 + 2 + 5.
+            59,
             "expected every root-dispatch leaf (incl. both submenus') to \
              report inert, got: {root:?}"
         );
@@ -4439,7 +4495,8 @@ mod tests {
         );
         assert_eq!(
             bisecting.len(),
-            49,
+            // MG.41c: +13, the same destination rows as above.
+            62,
             "the in-progress bisect menu trades `start` for good/bad/skip/reset: {bisecting:?}"
         );
     }

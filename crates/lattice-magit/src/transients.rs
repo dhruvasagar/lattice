@@ -118,9 +118,40 @@ pub(crate) fn all_row_tables() -> &'static [(&'static str, &'static [TransientRo
         ("stash", STASH_ROWS),
         ("subtree", SUBTREE_ROWS),
         ("jump", JUMP_ROWS),
+        ("push", PUSH_ROWS),
+        ("pull", PULL_ROWS),
+        ("fetch", FETCH_ROWS),
     ]
 }
 
+
+
+// MG.41c: magit's destination rows. Keys are magit's own.
+
+const PUSH_ROWS: &[TransientRow] = &[
+    TransientRow { key: "p", label: "pushRemote", doc: "Push to the configured push-remote", action: "action:magit-global-push-configured", placeholder: "push_configured_op" },
+    TransientRow { key: "u", label: "@{upstream}", doc: "Push to this branch's upstream — differs from pushRemote in a triangular workflow", action: "action:magit-global-push-upstream", placeholder: "push_upstream_op" },
+    TransientRow { key: "e", label: "elsewhere", doc: "Push to a remote you name", action: "action:magit-global-push-elsewhere", placeholder: "push_elsewhere_op" },
+    TransientRow { key: "o", label: "another branch", doc: "Push a branch other than HEAD", action: "action:magit-global-push-other-branch", placeholder: "push_other_op" },
+    TransientRow { key: "r", label: "refspecs", doc: "Push explicit refspecs", action: "action:magit-global-push-refspecs", placeholder: "push_refspecs_op" },
+    TransientRow { key: "T", label: "a tag", doc: "Push a single tag", action: "action:magit-global-push-tag", placeholder: "push_tag_op" },
+    TransientRow { key: "t", label: "all tags", doc: "Push every tag", action: "action:magit-global-push-all-tags", placeholder: "push_all_tags_op" },
+];
+
+const PULL_ROWS: &[TransientRow] = &[
+    TransientRow { key: "p", label: "pushRemote", doc: "Pull from the configured remote", action: "action:magit-global-pull-configured", placeholder: "pull_configured_op" },
+    TransientRow { key: "u", label: "@{upstream}", doc: "Pull from this branch's upstream", action: "action:magit-global-pull-upstream", placeholder: "pull_upstream_op" },
+    TransientRow { key: "e", label: "elsewhere", doc: "Pull from a remote you name", action: "action:magit-global-pull-elsewhere", placeholder: "pull_elsewhere_op" },
+];
+
+const FETCH_ROWS: &[TransientRow] = &[
+    TransientRow { key: "p", label: "pushRemote", doc: "Fetch from the configured remote", action: "action:magit-global-fetch-configured", placeholder: "fetch_configured_op" },
+    TransientRow { key: "u", label: "@{upstream}", doc: "Fetch this branch's upstream", action: "action:magit-global-fetch-upstream", placeholder: "fetch_upstream_op" },
+    TransientRow { key: "e", label: "elsewhere", doc: "Fetch from a remote you name", action: "action:magit-global-fetch-elsewhere", placeholder: "fetch_elsewhere_op" },
+    TransientRow { key: "o", label: "another branch", doc: "Fetch a branch you name", action: "action:magit-global-fetch-other-branch", placeholder: "fetch_other_op" },
+    TransientRow { key: "r", label: "refspecs", doc: "Fetch explicit refspecs", action: "action:magit-global-fetch-refspecs", placeholder: "fetch_refspecs_op" },
+    TransientRow { key: "a", label: "all remotes", doc: "Fetch from every configured remote", action: "action:magit-global-fetch-all-remotes", placeholder: "fetch_all_op" },
+];
 
 // ---- MG.41a: static row tables ----
 //
@@ -382,11 +413,8 @@ fn remote_preview(op: RemoteOp) -> Box<dyn Fn(&TransientState) -> String + Send 
 fn remote_op_transient(
     title: &str,
     op: RemoteOp,
-    run_key: &str,
-    run_id: Option<CommandId>,
-    run_label: &str,
-    run_doc: &str,
-    placeholder: &str,
+    ids: &MagitActionIds,
+    rows: &'static [TransientRow],
 ) -> TransientSpec {
     let mut groups = Vec::new();
     let flags = flag_items(op);
@@ -396,16 +424,9 @@ fn remote_op_transient(
             items: flags,
         });
     }
-    groups.push(TransientGroup {
-        label: "Actions".into(),
-        items: vec![action_or_placeholder(
-            run_id,
-            run_key,
-            run_label,
-            run_doc,
-            placeholder,
-        )],
-    });
+    // MG.41c: several destinations, not one unlabelled run. Magit's
+    // push menu offers seven; lattice offered `P`.
+    groups.push(row_group("Destination", ids, rows));
     TransientSpec {
         title: title.into(),
         groups,
@@ -1229,25 +1250,25 @@ pub fn dispatch_transient_with(
                         kind: TransientItemKind::Submenu(Arc::new(remote_op_transient(
                             "Fetch",
                             RemoteOp::FETCH,
-                            "f",
-                            ids.get("action:magit-global-fetch"),
-                            "fetch",
-                            "Run the fetch",
-                            "fetch_op",
+                            ids,
+                            FETCH_ROWS,
                         ))),
                     },
-                    // Pull has no flags today (`--ff-only` is not
-                    // optional — a magit pull that could create a merge
-                    // commit behind your back is the wrong default), so
-                    // it stays a direct action rather than gaining a
-                    // submenu with nothing in it.
-                    action_or_placeholder(
-                        ids.get("action:magit-global-pull"),
-                        "F",
-                        "pull",
-                        "Fetch + fast-forward merge from the remote",
-                        "pull_op",
-                    ),
+                    // MG.41c: pull IS a submenu now. It was a plain row
+                    // because `--ff-only` was not optional and there was
+                    // nothing else to show — but magit's pull has three
+                    // destinations, and `-r` / `-a` are real toggles.
+                    TransientItem {
+                        key: vec!["F".into()],
+                        label: "pull".into(),
+                        description: "Fetch + integrate from the remote".into(),
+                        kind: TransientItemKind::Submenu(Arc::new(remote_op_transient(
+                            "Pull",
+                            RemoteOp::PULL,
+                            ids,
+                            PULL_ROWS,
+                        ))),
+                    },
                     TransientItem {
                         key: vec!["P".into()],
                         label: "push".into(),
@@ -1255,11 +1276,8 @@ pub fn dispatch_transient_with(
                         kind: TransientItemKind::Submenu(Arc::new(remote_op_transient(
                             "Push",
                             RemoteOp::PUSH,
-                            "P",
-                            ids.get("action:magit-global-push"),
-                            "push",
-                            "Run the push",
-                            "push_op",
+                            ids,
+                            PUSH_ROWS,
                         ))),
                     },
                     // MG.21d: magit's `M`. Not a submenu — the row
@@ -1937,5 +1955,100 @@ mod remote_target_tests {
             RemoteTarget::Prompted.argv(Some("origin feature/x")),
             vec!["origin", "feature/x"],
         );
+    }
+}
+
+#[cfg(test)]
+mod remote_flag_tests {
+    use crate::magit_global_mode::RemoteOp;
+    use lattice_grammar::{ArgValue, Args};
+
+    fn flags(op: RemoteOp, on: &[&str]) -> Vec<String> {
+        let list: Vec<ArgValue> = op
+            .flags
+            .iter()
+            .map(|f| ArgValue::Bool(on.contains(&f.name)))
+            .collect();
+        op.argv(&Args::List(list))
+    }
+
+    /// MG.41c: `--rebase` REPLACES `--ff-only`. Git rejects the pair,
+    /// so emitting both would make magit's `-r` row fail every time.
+    #[test]
+    fn pull_rebase_replaces_ff_only() {
+        let argv = flags(RemoteOp::PULL, &["rebase"]);
+        assert!(argv.contains(&"--rebase".to_string()), "{argv:?}");
+        assert!(
+            !argv.contains(&"--ff-only".to_string()),
+            "--ff-only must be dropped when rebasing: {argv:?}",
+        );
+    }
+
+    /// Without `-r`, the safe default stands: a pull cannot create a
+    /// merge commit behind your back.
+    #[test]
+    fn pull_defaults_to_ff_only() {
+        let argv = flags(RemoteOp::PULL, &[]);
+        assert!(argv.contains(&"--ff-only".to_string()), "{argv:?}");
+        assert!(!argv.contains(&"--rebase".to_string()), "{argv:?}");
+    }
+
+    /// `--autostash` is orthogonal — it must survive alongside either.
+    #[test]
+    fn pull_autostash_is_independent_of_rebase() {
+        let with_rebase = flags(RemoteOp::PULL, &["rebase", "autostash"]);
+        assert!(with_rebase.contains(&"--autostash".to_string()));
+        assert!(!with_rebase.contains(&"--ff-only".to_string()));
+        let without = flags(RemoteOp::PULL, &["autostash"]);
+        assert!(without.contains(&"--autostash".to_string()));
+        assert!(without.contains(&"--ff-only".to_string()));
+    }
+
+    /// The flag table is looked up by NAME, so reordering it cannot
+    /// silently point `--rebase` at another toggle's slot.
+    #[test]
+    fn rebase_lookup_survives_table_order() {
+        let idx = RemoteOp::PULL
+            .flags
+            .iter()
+            .position(|f| f.name == "rebase")
+            .expect("pull has a rebase flag");
+        // Only that slot turns it on.
+        let mut list: Vec<ArgValue> = RemoteOp::PULL
+            .flags
+            .iter()
+            .map(|_| ArgValue::Bool(false))
+            .collect();
+        list[idx] = ArgValue::Bool(true);
+        let argv = RemoteOp::PULL.argv(&Args::List(list));
+        assert!(!argv.contains(&"--ff-only".to_string()), "{argv:?}");
+    }
+
+    /// MG.41c added magit's remaining push flags — except bare
+    /// `--force`, which lattice deliberately does not offer.
+    ///
+    /// That divergence predates this slice and is pinned separately by
+    /// `force_push_uses_force_with_lease`: `--force-with-lease` refuses
+    /// exactly when a bare force would destroy commits you never
+    /// fetched. "Match magit" governs KEYS inside a transient; it does
+    /// not extend to re-adding a footgun someone removed on purpose.
+    #[test]
+    fn push_offers_magits_flag_set_minus_the_footgun() {
+        let names: Vec<&str> = RemoteOp::PUSH.flags.iter().map(|f| f.name).collect();
+        for expected in ["force-with-lease", "set-upstream", "no-verify", "dry-run"] {
+            assert!(names.contains(&expected), "push missing `{expected}`: {names:?}");
+        }
+        assert!(
+            !names.contains(&"force"),
+            "bare --force stays out; see force_push_uses_force_with_lease",
+        );
+    }
+
+    #[test]
+    fn fetch_offers_tags_and_prune() {
+        let names: Vec<&str> = RemoteOp::FETCH.flags.iter().map(|f| f.name).collect();
+        for expected in ["tags", "prune", "all"] {
+            assert!(names.contains(&expected), "fetch missing `{expected}`: {names:?}");
+        }
     }
 }

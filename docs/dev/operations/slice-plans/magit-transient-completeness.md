@@ -182,7 +182,7 @@ resolution**, not seven handlers. Model it as data:
 One action per op taking the target as an argument, so push gains six
 rows and one new handler rather than six.
 
-### MG.41c — push / pull / fetch destinations 🚧
+### MG.41c — push / pull / fetch destinations ✅
 
 Push `p u e o r T t` + the three missing flags; Pull promoted to a
 submenu with `p u e` + `-r -a`; Fetch `p u e o r a m` + `-t`.
@@ -210,11 +210,36 @@ Two decisions worth keeping:
   not choose — the one failure this row must not have. Pinned by
   `an_unresolved_destination_contributes_no_argument`.
 
-**Still to do:** register one action per (op, target), add the rows to
-`PUSH_ROWS` / `PULL_ROWS` / `FETCH_ROWS`, promote Pull from a plain
-dispatch row to a submenu, and add the missing flags (`-F`, `-h`, `-n`
-on push; `-r`, `-a` on pull; `-t` on fetch). The `Prompted` rows reuse
-MG.17b's existing prompt-then-return-to-menu machinery.
+**Part 2 landed.** 16 destination actions (one macro, not one function
+each), `PUSH_ROWS` / `PULL_ROWS` / `FETCH_ROWS`, Pull promoted from a
+plain dispatch row to a submenu, and the flags. Push went from 1 row to
+7, pull 1 → 3, fetch 1 → 6.
+
+**Two corrections the existing tests forced, both worth keeping:**
+
+- **Bare `--force` is NOT added**, though magit offers it on `-F`.
+  `force_push_uses_force_with_lease` pins its absence as deliberate
+  policy: `--force-with-lease` refuses in exactly the case where a bare
+  force destroys commits you never fetched. "Match magit" governs
+  **keys inside a transient**; it does not extend to re-adding a
+  footgun someone removed on purpose. Push therefore gets `-h` and
+  `-n`, not `-F`.
+- **`--tags` is appended to fetch's flag table, not inserted.** The
+  slice order IS the `args_schema` order, so a mid-table insertion
+  shifts every later slot and silently re-points existing `:`-line
+  positional args at the wrong toggle. Caught by
+  `the_preview_string_matches_the_argv_that_will_run`.
+
+**`--rebase` replaces `--ff-only`** rather than joining it — git
+rejects the pair, so emitting both would make magit's `-r` row fail
+every time. Rebase serves the same purpose the default was protecting
+(no surprise merge commit), so nothing is lost. The lookup is by flag
+NAME, not slot index, so reordering the table cannot silently point it
+at another toggle.
+
+**Deferred:** fetch's `m` submodules row (needs submodule enumeration)
+and every menu's `C` configure row (needs transient variable rows —
+see "Out of scope").
 
 ### MG.41d — thin existing submenus
 

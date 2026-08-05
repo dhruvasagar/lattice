@@ -103,6 +103,26 @@ fn magit_core_keymap_entries() -> &'static [KeymapEntry] {
             // (The same commit also mis-attributed `O` to magit, which
             // uses `X`. `O` is evil-magit's remap — the binding was
             // right, the reason was not.)
+            // MG.49b: ONE key for the whole menu tree.
+            //
+            // The first cut gave each root menu its own chord. That put
+            // `c` / `d` / `p` / `r` on this mode — and this mode is a
+            // MINOR, which beats a major, so it silently ate
+            // `magit-branch`'s `c`/`d`, `magit-remote`'s `d`/`p`/`r`,
+            // `magit-stash`'s `d`/`p` and `magit-submodule`'s `d`. Nine
+            // bindings, every one a core operation.
+            //
+            // A single key has no such surface: it cannot collide with
+            // nine majors' vocabularies because it does not reach into
+            // them. The menus are all still there, one keystroke deeper.
+            //
+            // `h` is what emacs magit binds (`magit-mode-map` has both
+            // `h` and `?`) and what evil-collection-magit KEEPS by
+            // default — its `want-horizontal-movement` defcustom, off by
+            // default, is what would trade `h` back for left-motion. In a
+            // read-only list buffer whose actions are all row-based,
+            // left-motion is the cheapest key on the board.
+            keymap_entry! { mode: Normal, chord: "h", doc: "Open the magit dispatch menu", cmd: "magit-dispatch" },
             // MG.49: `A` / `_` / `O` are the ROOT MENUS now — see the
             // block below. The direct actions they used to fire did not
             // go anywhere: `A` is `A A`, `_` is `_ V`, and the three

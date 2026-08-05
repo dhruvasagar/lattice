@@ -107,12 +107,7 @@ fn magit_hunk_keymap_entries() -> &'static [KeymapEntry] {
             // (`do` / `dp` / `d2o`). `dv` is not an operator+motion —
             // `v` forces characterwise on a `d` that never completes —
             // so it is inert in a read-only magit buffer.
-            // MG.49: `dv` retired. `magit-core-mode` binds `d` to the
-            // Diff menu, and the trie checks a node's own binding before
-            // its children — a bound `d` makes `dv` unreachable, not
-            // merely shadowed. The action moved into that menu as `v`,
-            // so the side-by-side view is `d v`: the same two keystrokes,
-            // with the menu naming them.
+            keymap_entry! { mode: Normal, chord: "dv", doc: "Open the file at cursor side-by-side against its baseline", cmd: "action:magit-diff-side-by-side" },
         ]
     })
 }
@@ -529,31 +524,22 @@ mod tests {
         }
     }
 
-    /// MG.49: `dv` is gone — `magit-core-mode` binds `d` to the Diff
-    /// menu, and the trie checks a node's own binding before its
-    /// children, so a bound `d` makes any `d?` chord unreachable rather
-    /// than merely shadowed. The action moved into that menu as `v`.
+    /// `dv` is bound, and in the `d`-prefixed family `diff-mode`
+    /// already owns — so it cannot collide with `do` / `dp`, which the
+    /// same buffer gets once the session is live.
     ///
-    /// The rest of the claim still holds and is what this guards: magit
-    /// must not take `do` / `dp`, which `diff-mode` owns on the same
-    /// buffer once a session is live.
+    /// MG.49b: this survived the root-menu work. The first cut bound `d`
+    /// on `magit-core-mode`, which would have made `dv` unreachable (the
+    /// trie checks a node's own binding before its children); that cut
+    /// was reverted in favour of one `h` for the dispatch, so `d` is a
+    /// free prefix again.
     #[test]
-    fn no_d_prefixed_chord_shadows_the_diff_mode_chords() {
+    fn dv_is_bound_and_does_not_shadow_the_diff_mode_chords() {
         let chords: Vec<&str> = magit_hunk_keymap_entries()
             .iter()
             .map(|e| e.chord)
             .collect();
-        assert!(
-            !chords.contains(&"dv"),
-            "`dv` must be retired — `d` opens the Diff menu now, which \
-             would make `dv` dead rather than bound: {chords:?}"
-        );
-        assert!(
-            crate::transients::ROOT_MENUS
-                .iter()
-                .any(|m| m.chord == Some("d")),
-            "…and that is only true while `d` actually opens the menu"
-        );
+        assert!(chords.contains(&"dv"), "{chords:?}");
         for owned_by_diff_mode in ["do", "dp"] {
             assert!(
                 !chords.contains(&owned_by_diff_mode),

@@ -37,25 +37,19 @@ fn magit_status_keymap_entries() -> &'static [KeymapEntry] {
             // In an editable buffer Visual `s` would be substitute and
             // `x` delete; a magit buffer is read-only, so both slots are
             // free and the muscle memory transfers from Normal mode.
+            keymap_entry! { mode: Normal, chord: "cc", doc: "Open commit buffer", cmd: "action:magit-commit" },
+            keymap_entry! { mode: Normal, chord: "ca", doc: "Amend previous commit", cmd: "action:magit-commit-amend" },
             keymap_entry! { mode: Normal, chord: "=", doc: "Toggle inline diff at cursor", cmd: "action:magit-toggle-diff" },
-            // MG.49: `cc` / `ca` / `d` / `p` moved.
+            keymap_entry! { mode: Normal, chord: "d", doc: "Open file diff in a dedicated buffer", cmd: "action:magit-diff-file" },
+            keymap_entry! { mode: Normal, chord: "p", doc: "Stage hunk interactively", cmd: "action:magit-stage-patch" },
+            // MG.49b: these are back. The first cut of MG.49 removed them
+            // because `magit-core-mode` had taken `c` / `d` / `p` for root
+            // menus and the trie checks a node's own binding before its
+            // children — a bound `c` makes `cc` unreachable, not shadowed.
             //
-            // `magit-core-mode` now binds emacs's root keys, and the trie
-            // checks a node's own binding before its children — so a bound
-            // `c` makes `cc` / `ca` unreachable rather than redundant, and
-            // the same for `d`.
-            //
-            // Nothing became unreachable: the Commit menu's own keys are
-            // `c` and `a`, so `cc` and `ca` are the same two keystrokes
-            // through the menu, and the Diff menu carries `f` for the
-            // file diff `d` used to open directly.
-            //
-            // `p` is the exception — it is magit's PUSH key under
-            // evil-collection (magit's `P`; `p` is free because paste is
-            // inert in a read-only buffer). Interactive staging keeps its
-            // action and moves into the dispatch's "Applying changes"
-            // group, alongside the region staging (`s` over a Visual
-            // selection) that already covers the same intent.
+            // That cut is reverted: one chord (`h`) opens the dispatch
+            // instead, so these prefixes are free again and the status
+            // buffer keeps the chords it always had.
         ]
     })
 }

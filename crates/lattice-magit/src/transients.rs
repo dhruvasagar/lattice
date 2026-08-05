@@ -1429,18 +1429,6 @@ fn applying_changes_items(ids: &MagitActionIds, ctx: &TransientContext) -> Vec<T
             "discard_at_cursor",
         ));
     }
-    if ctx.has_minor(crate::MagitCoreMode::mode_id().as_str()) {
-        // MG.49: interactive staging, which lost its `p` chord to push
-        // (evil-collection puts magit's `P` there). Gated with the other
-        // cursor-dependent rows — it stages the hunk under the cursor.
-        items.push(action_or_placeholder(
-            ids.get("action:magit-stage-patch"),
-            "P",
-            "stage patch",
-            "Stage the hunk at cursor interactively",
-            "stage_patch_op",
-        ));
-    }
     items.push(action_or_placeholder(
         ids.get("action:magit-global-stage-all"),
         "S",
@@ -2147,13 +2135,22 @@ pub struct RootMenu {
 pub const ROOT_MENUS: &[RootMenu] = &[
     RootMenu {
         source: "magit-menu-diff",
-        chord: Some("d"),
+        // `d`: delete operator, but `magit-branch` / `-remote` / `-stash` /
+        // `-submodule` majors bind `d` for delete-this-row, and a minor
+        // shadows a major.
+
+        // Reachable via the dispatch, which `h` opens.
+        chord: None,
         action: "action:magit-menu-diff",
         doc: "Diff menu",
     },
     RootMenu {
         source: "magit-menu-commit",
-        chord: Some("c"),
+        // `c`: change operator, but `magit-branch` binds `c` (create) and
+        // `magit-refs` binds `c` (checkout).
+
+        // Reachable via the dispatch, which `h` opens.
+        chord: None,
         action: "action:magit-menu-commit",
         doc: "Commit menu",
     },
@@ -2234,7 +2231,11 @@ pub const ROOT_MENUS: &[RootMenu] = &[
         // evil-collection-magit itself moves push to. `magit-blame-mode`
         // overrides it on blob buffers, which the layer order expresses:
         // blame activates after the major cascade, so its layer wins.
-        chord: Some("p"),
+        // `p`: paste is inert, but `magit-remote` (prune) and `magit-stash`
+        // (pop) bind `p`.
+
+        // Reachable via the dispatch, which `h` opens.
+        chord: None,
         action: "action:magit-menu-push",
         doc: "Push menu",
     },
@@ -2247,7 +2248,10 @@ pub const ROOT_MENUS: &[RootMenu] = &[
     },
     RootMenu {
         source: "magit-menu-rebase",
-        chord: Some("r"),
+        // `r`: replace operator, but `magit-remote` binds `r` (rename).
+
+        // Reachable via the dispatch, which `h` opens.
+        chord: None,
         action: "action:magit-menu-rebase",
         doc: "Rebase menu",
     },
@@ -4254,9 +4258,6 @@ mod root_menu_chord_tests {
     #[test]
     fn the_operator_keys_are_actually_taken() {
         for (chord, source) in [
-            ("d", "magit-menu-diff"),
-            ("c", "magit-menu-commit"),
-            ("r", "magit-menu-rebase"),
             ("A", "magit-menu-cherry-pick"),
             ("_", "magit-menu-revert"),
             ("O", "magit-menu-reset"),

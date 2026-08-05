@@ -3658,30 +3658,17 @@ mod tests {
     fn the_blame_minor_shares_no_chord_with_magit_core() {
         use lattice_mode::Mode;
 
-        // MG.49: an overlap is no longer forbidden outright — it must be
-        // DECLARED.
+        // MG.49b: the overlap is gone again. `magit-core-mode` no longer
+        // binds `p` — one chord (`h`) opens the dispatch instead of
+        // seventeen chords opening seventeen menus — so blame keeps `p`
+        // outright and there is nothing to declare.
         //
-        // MG.26b read the overlap as "resolves by registration order,
-        // which is not a contract". It is one: `ActiveModes::minors` is
-        // activation-ordered, `keymap_gated_ids` yields major-then-minors
-        // in that order, and `lookup_with_context` folds them in that
-        // order, so a later-activated minor wins. That is what the layers
-        // are FOR — a specific minor overriding a general one is the
-        // mechanism, not an accident.
-        //
-        // What the guard is actually worth keeping for is the case that
-        // prompted it: `q` bound by both because nobody noticed, where
-        // neither author intended to override the other. So the rule
-        // becomes "an overlap must appear here with a reason", which an
-        // accidental one never will.
-        const INTENTIONAL: &[(&str, &str)] = &[(
-            "p",
-            "blame's parent-navigation overrides the push menu: on a blob \
-             buffer `p` walking back through revisions is the whole point \
-             of being in blame, and blame activates AFTER the major's \
-             cascade brought in magit-core-mode, so its layer wins",
-        )];
-
+        // Worth recording why the strict form is right after all: a
+        // later-activated minor DOES win deterministically
+        // (`ActiveModes::minors` is activation-ordered and
+        // `lookup_with_context` folds in that order), so an override is
+        // expressible. But relying on it means the reader of either mode
+        // has to know the other exists. Not overlapping is cheaper.
         let core: Vec<&str> = MagitCoreMode
             .keymap()
             .entries
@@ -3689,35 +3676,11 @@ mod tests {
             .map(|e| e.chord)
             .collect();
         for entry in MagitBlameMode.keymap().entries {
-            if INTENTIONAL.iter().any(|(c, _)| *c == entry.chord) {
-                continue;
-            }
             assert!(
                 !core.contains(&entry.chord),
                 "`{}` is bound by BOTH magit-blame-mode and magit-core-mode, \
-                 and both are active on a blob buffer. If blame is meant to \
-                 override, add it to INTENTIONAL with the reason; if not, \
-                 this is the `q` collision again",
+                 and both are active on a blob buffer",
                 entry.chord
-            );
-        }
-
-        // ...and the declared overrides must still be real overlaps, or
-        // the list rots into stale entries that excuse a future accident.
-        for (chord, _) in INTENTIONAL {
-            assert!(
-                MagitBlameMode
-                    .keymap()
-                    .entries
-                    .iter()
-                    .any(|e| e.chord == *chord),
-                "`{chord}` is listed as an intentional blame override but \
-                 blame does not bind it"
-            );
-            assert!(
-                core.contains(chord),
-                "`{chord}` is listed as an intentional blame override but \
-                 magit-core-mode does not bind it — nothing to override"
             );
         }
     }

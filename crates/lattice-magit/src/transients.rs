@@ -121,6 +121,10 @@ pub(crate) fn all_row_tables() -> &'static [(&'static str, &'static [TransientRo
         ("push", PUSH_ROWS),
         ("pull", PULL_ROWS),
         ("fetch", FETCH_ROWS),
+        ("cherry-pick", CHERRY_PICK_ROWS),
+        ("cherry-pick/sequence", CHERRY_PICK_SEQUENCE_ROWS),
+        ("revert", REVERT_ROWS),
+        ("revert/sequence", REVERT_SEQUENCE_ROWS),
         ("merge", MERGE_ROWS),
         ("tag", TAG_ROWS),
         ("rebase/start", REBASE_START_ROWS),
@@ -461,6 +465,76 @@ const LOG_SHOW_ROW: TransientRow = TransientRow {
     action: "action:magit-global-log",
     placeholder: "show_log",
 };
+
+// MG.42-E4: cherry-pick / revert, idle and stopped.
+//
+// The ways OUT are identical in shape but NOT interchangeable:
+// `git revert --continue` errors during a cherry-pick and vice versa,
+// which is why each sequence has its own rows rather than a shared set.
+
+const CHERRY_PICK_ROWS: &[TransientRow] = &[TransientRow {
+    key: "A",
+    label: "pick",
+    doc: "Cherry-pick a commit onto this branch",
+    action: "action:magit-cherry-pick",
+    placeholder: "cherry_pick_op",
+}];
+
+const CHERRY_PICK_SEQUENCE_ROWS: &[TransientRow] = &[
+    TransientRow {
+        key: "A",
+        label: "continue",
+        doc: "Resume the cherry-pick after resolving the conflict",
+        action: "action:magit-global-cherry-pick-continue",
+        placeholder: "cherry_pick_continue_op",
+    },
+    TransientRow {
+        key: "s",
+        label: "skip",
+        doc: "Skip the commit the cherry-pick stopped on",
+        action: "action:magit-global-cherry-pick-skip",
+        placeholder: "cherry_pick_skip_op",
+    },
+    TransientRow {
+        key: "a",
+        label: "abort",
+        doc: "Abandon the cherry-pick, restoring the branch",
+        action: "action:magit-global-cherry-pick-abort",
+        placeholder: "cherry_pick_abort_op",
+    },
+];
+
+const REVERT_ROWS: &[TransientRow] = &[TransientRow {
+    key: "V",
+    label: "revert commit",
+    doc: "Revert a commit, creating an inverse commit",
+    action: "action:magit-revert",
+    placeholder: "revert_op",
+}];
+
+const REVERT_SEQUENCE_ROWS: &[TransientRow] = &[
+    TransientRow {
+        key: "V",
+        label: "continue",
+        doc: "Resume the revert after resolving the conflict",
+        action: "action:magit-global-revert-continue",
+        placeholder: "revert_continue_op",
+    },
+    TransientRow {
+        key: "s",
+        label: "skip",
+        doc: "Skip the commit the revert stopped on",
+        action: "action:magit-global-revert-skip",
+        placeholder: "revert_skip_op",
+    },
+    TransientRow {
+        key: "a",
+        label: "abort",
+        doc: "Abandon the revert, restoring the branch",
+        action: "action:magit-global-revert-abort",
+        placeholder: "revert_abort_op",
+    },
+];
 
 /// MG.41e: magit's `m` merge submenu.
 const MERGE_ROWS: &[TransientRow] = &[
@@ -1169,6 +1243,32 @@ pub fn bisect_in_progress() -> bool {
 /// `magit_rebase_mode::rebase_in_progress` checks it too. A stopped `am`
 /// therefore also shows the rebase abort as available, which is
 /// correct: `git rebase --abort` is what git itself suggests there.
+/// MG.42-E4: is a cherry-pick sequence stopped on a conflict?
+///
+/// Git drops `CHERRY_PICK_HEAD` in the gitdir while one is in flight
+/// and removes it on `--continue` / `--abort`, so the file's presence
+/// IS the state — no parsing, and it cannot go stale behind our back
+/// the way a cached flag would.
+pub fn cherry_pick_in_progress() -> bool {
+    sequencer_head_exists("CHERRY_PICK_HEAD")
+}
+
+/// MG.42-E4: is a revert sequence stopped on a conflict?
+///
+/// Peer of [`cherry_pick_in_progress`]. Separate rather than one
+/// "sequencer running" flag because the two menus offer different ways
+/// IN — pick vs. revert — even though their ways OUT are identical.
+pub fn revert_in_progress() -> bool {
+    sequencer_head_exists("REVERT_HEAD")
+}
+
+fn sequencer_head_exists(marker: &str) -> bool {
+    crate::workdir::magit_workdir()
+        .and_then(|wd| lattice_vcs::Repository::discover(wd).ok())
+        .map(|repo| repo.gitdir().join(marker).exists())
+        .unwrap_or(false)
+}
+
 /// MG.41e: is a rebase stopped, mid-conflict or at an `edit` stop?
 ///
 /// Read from the repository like its peers. Git uses two directories
@@ -1304,6 +1404,36 @@ fn status_row(ids: &MagitActionIds, ctx: &TransientContext) -> TransientItem {
 /// counterpart — its status buffer reaches unpushed/unpulled instead —
 /// so `c` is ours, free at this level and mnemonic.
 /// MG.41e: the `r` submenu, gated on whether a rebase is stopped.
+/// MG.42-E4: `A`, gated on whether a cherry-pick is stopped.
+fn cherry_pick_transient(ids: &MagitActionIds, in_progress: bool) -> TransientSpec {
+    let groups = if in_progress {
+        vec![row_group("Cherry-pick in progress", ids, CHERRY_PICK_SEQUENCE_ROWS)]
+    } else {
+        vec![row_group("Cherry-pick", ids, CHERRY_PICK_ROWS)]
+    };
+    TransientSpec {
+        title: "Cherry-pick".into(),
+        groups,
+        preview: None,
+        footer: Some("q dismiss  Esc/BS back".into()),
+    }
+}
+
+/// MG.42-E4: `_`, gated the same way.
+fn revert_transient(ids: &MagitActionIds, in_progress: bool) -> TransientSpec {
+    let groups = if in_progress {
+        vec![row_group("Revert in progress", ids, REVERT_SEQUENCE_ROWS)]
+    } else {
+        vec![row_group("Revert", ids, REVERT_ROWS)]
+    };
+    TransientSpec {
+        title: "Revert".into(),
+        groups,
+        preview: None,
+        footer: Some("q dismiss  Esc/BS back".into()),
+    }
+}
+
 fn merge_transient(ids: &MagitActionIds) -> TransientSpec {
     TransientSpec {
         title: "Merge".into(),
@@ -1381,6 +1511,10 @@ pub struct DispatchGates {
     pub am: bool,
     /// MG.41e: a rebase is stopped — mid-conflict or at an `edit` stop.
     pub rebase: bool,
+    /// MG.42-E4: a cherry-pick sequence stopped on a conflict.
+    pub cherry_pick: bool,
+    /// MG.42-E4: a revert sequence stopped on a conflict.
+    pub revert: bool,
 }
 
 impl DispatchGates {
@@ -1396,6 +1530,8 @@ impl DispatchGates {
             notes_merge: notes_merge_in_progress(),
             am: am_in_progress(),
             rebase: rebase_in_progress(),
+            cherry_pick: cherry_pick_in_progress(),
+            revert: revert_in_progress(),
         }
     }
 }
@@ -1465,20 +1601,28 @@ pub fn dispatch_transient_with(
                     // buffer they take the commit under the cursor, and
                     // everywhere else they open the commit picker. One
                     // action, both surfaces.
-                    action_or_placeholder(
-                        ids.get("action:magit-cherry-pick"),
-                        "A",
-                        "cherry-pick",
-                        "Cherry-pick a commit onto this branch",
-                        "cherry_pick_op",
-                    ),
-                    action_or_placeholder(
-                        ids.get("action:magit-revert"),
-                        "_",
-                        "revert",
-                        "Revert a commit",
-                        "revert_op",
-                    ),
+                    // MG.42-E4: gated submenus. A stopped sequence
+                    // needs continue / skip / abort, and offering
+                    // "pick another commit" mid-conflict is the wrong
+                    // menu entirely.
+                    TransientItem {
+                        key: vec!["A".into()],
+                        label: "cherry-pick".into(),
+                        description: "Cherry-pick, or drive a stopped one".into(),
+                        kind: TransientItemKind::Submenu(Arc::new(cherry_pick_transient(
+                            ids,
+                            gates.cherry_pick,
+                        ))),
+                    },
+                    TransientItem {
+                        key: vec!["_".into()],
+                        label: "revert".into(),
+                        description: "Revert, or drive a stopped one".into(),
+                        kind: TransientItemKind::Submenu(Arc::new(revert_transient(
+                            ids,
+                            gates.revert,
+                        ))),
+                    },
                     TransientItem {
                         key: vec!["O".into()],
                         label: "reset".into(),
@@ -2438,5 +2582,66 @@ mod rebase_gate_tests {
     fn the_gate_is_part_of_the_probe() {
         let gates = DispatchGates::default();
         assert!(!gates.rebase, "default gates report nothing in progress");
+    }
+}
+
+#[cfg(test)]
+mod sequencer_gate_tests {
+    use super::*;
+
+    fn keys(spec: &TransientSpec) -> Vec<String> {
+        spec.groups
+            .iter()
+            .flat_map(|g| &g.items)
+            .flat_map(|i| i.key.clone())
+            .collect()
+    }
+
+    /// MG.42-E4: idle offers the way IN only. `--continue` / `--skip`
+    /// / `--abort` error when no sequence is running, so ungated rows
+    /// would look actionable and fail.
+    #[test]
+    fn idle_sequencers_offer_only_the_way_in() {
+        let ids = MagitActionIds::default();
+        assert_eq!(keys(&cherry_pick_transient(&ids, false)), vec!["A"]);
+        assert_eq!(keys(&revert_transient(&ids, false)), vec!["V"]);
+    }
+
+    /// Stopped offers the ways OUT only — starting another pick while
+    /// one is mid-conflict is the wrong menu entirely.
+    #[test]
+    fn stopped_sequencers_offer_only_the_ways_out() {
+        let ids = MagitActionIds::default();
+        let cp = keys(&cherry_pick_transient(&ids, true));
+        assert_eq!(cp, vec!["A", "s", "a"]);
+        let rv = keys(&revert_transient(&ids, true));
+        assert_eq!(rv, vec!["V", "s", "a"]);
+    }
+
+    /// The two sequences do NOT share their sequencer rows.
+    ///
+    /// `git revert --continue` errors during a cherry-pick and vice
+    /// versa, so a shared row set would fire the wrong command in one
+    /// of the two menus — the reason these are separate consts rather
+    /// than one "sequencer" table.
+    #[test]
+    fn each_sequence_fires_its_own_commands() {
+        let cp: Vec<&str> = CHERRY_PICK_SEQUENCE_ROWS.iter().map(|r| r.action).collect();
+        let rv: Vec<&str> = REVERT_SEQUENCE_ROWS.iter().map(|r| r.action).collect();
+        assert!(cp.iter().all(|a| a.contains("cherry-pick")), "{cp:?}");
+        assert!(rv.iter().all(|a| a.contains("revert")), "{rv:?}");
+        assert!(
+            cp.iter().all(|a| !rv.contains(a)),
+            "the two sequences must not share an action: {cp:?} vs {rv:?}",
+        );
+    }
+
+    /// The gates default to "nothing running", so a developer's own
+    /// half-finished cherry-pick cannot change a test's row count —
+    /// the reason `probe()` is separate from the pure builder.
+    #[test]
+    fn gates_default_to_nothing_in_progress() {
+        let g = DispatchGates::default();
+        assert!(!g.cherry_pick && !g.revert && !g.rebase);
     }
 }

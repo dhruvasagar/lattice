@@ -18,7 +18,7 @@ offers three destinations.
 | MG.41g | ✅ | Completion notifications via the event bus |
 | MG.41c | ✅ | push 1→7 rows, pull 1→3 (+ promoted to a submenu), fetch 1→6 |
 | MG.41d | 🚧 | reset +2, commit +2, stash 2→8; editor-dependent rows still out |
-| MG.41e | 🚧 | rebase (gated), merge, tag submenus; cherry-pick / revert still out |
+| MG.41e | 🚧 | rebase, cherry-pick, revert (all gated), merge, tag submenus |
 | MG.41f | ⛔ | Blocked — needs the diff/log actions to accept arguments |
 
 MG.41d and MG.41e stop where rows stop being rows. Their remaining

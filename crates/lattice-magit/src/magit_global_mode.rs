@@ -370,6 +370,22 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
     );
     remote_op!("action:magit-global-rebase-skip", RemoteOp::REBASE_SKIP);
     remote_op!("action:magit-global-rebase-abort", RemoteOp::REBASE_ABORT);
+    // MG.42-E4: the sequencer controls.
+    remote_op!(
+        "action:magit-global-cherry-pick-continue",
+        RemoteOp::CHERRY_PICK_CONTINUE
+    );
+    remote_op!(
+        "action:magit-global-cherry-pick-skip",
+        RemoteOp::CHERRY_PICK_SKIP
+    );
+    remote_op!(
+        "action:magit-global-cherry-pick-abort",
+        RemoteOp::CHERRY_PICK_ABORT
+    );
+    remote_op!("action:magit-global-revert-continue", RemoteOp::REVERT_CONTINUE);
+    remote_op!("action:magit-global-revert-skip", RemoteOp::REVERT_SKIP);
+    remote_op!("action:magit-global-revert-abort", RemoteOp::REVERT_ABORT);
     // MG.41d: magit's `x` / `i` stash variants — same spawner, different
     // argv, so they cost a line each rather than a handler each.
     remote_op!(
@@ -2027,6 +2043,41 @@ impl RemoteOp {
     /// same reason `run_rebase` does it: `--continue` opens the commit
     /// message in `$EDITOR`, and an editor we cannot drive would hang
     /// the task forever.
+    // MG.42-E4: the cherry-pick / revert sequencer controls. Both
+    // sequences stop on conflict and need the same three ways out;
+    // they are separate consts rather than one shared set because
+    // `git cherry-pick --continue` and `git revert --continue` are
+    // different commands and each errors during the other's sequence.
+    pub const CHERRY_PICK_CONTINUE: Self = Self {
+        what: "cherry-pick --continue",
+        args: &["cherry-pick", "--continue"],
+        flags: &[],
+    };
+    pub const CHERRY_PICK_SKIP: Self = Self {
+        what: "cherry-pick --skip",
+        args: &["cherry-pick", "--skip"],
+        flags: &[],
+    };
+    pub const CHERRY_PICK_ABORT: Self = Self {
+        what: "cherry-pick --abort",
+        args: &["cherry-pick", "--abort"],
+        flags: &[],
+    };
+    pub const REVERT_CONTINUE: Self = Self {
+        what: "revert --continue",
+        args: &["revert", "--continue"],
+        flags: &[],
+    };
+    pub const REVERT_SKIP: Self = Self {
+        what: "revert --skip",
+        args: &["revert", "--skip"],
+        flags: &[],
+    };
+    pub const REVERT_ABORT: Self = Self {
+        what: "revert --abort",
+        args: &["revert", "--abort"],
+        flags: &[],
+    };
     pub const REBASE_CONTINUE: Self = Self {
         what: "rebase --continue",
         args: &["rebase", "--continue"],

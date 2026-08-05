@@ -1,6 +1,6 @@
 # MG.42 — the four enablers behind MG.41d / MG.41e
 
-**Status:** 📝 planned. Parent:
+**Status:** 🚧 E4 landed (2026-08-05). Parent:
 [`magit-transient-completeness.md`](magit-transient-completeness.md)
 (MG.41). Design fragment:
 [`../../architecture/magit.md`](../../architecture/magit.md).
@@ -56,7 +56,7 @@ What is actually missing is smaller and is E1.
 
 ---
 
-## E4 — sequencer gates for cherry-pick and revert
+## E4 — sequencer gates for cherry-pick and revert ✅
 
 **Cheapest, and lands first.** Exactly the shape MG.41e's rebase gate
 already established.
@@ -82,6 +82,21 @@ own half-finished cherry-pick cannot flake the suite (the reason
 `DispatchGates::probe` is separate from the pure builder).
 
 **Unblocks:** MG.41e's `A` and `_`.
+
+**Landed.** `cherry_pick_in_progress` / `revert_in_progress` read
+`CHERRY_PICK_HEAD` / `REVERT_HEAD` through a shared
+`sequencer_head_exists`; two `DispatchGates` fields; six `RemoteOp`
+consts; `cherry_pick_transient` / `revert_transient`. 4 tests.
+
+**The two sequences deliberately do NOT share their sequencer rows.**
+`git revert --continue` errors during a cherry-pick and vice versa, so
+one shared "sequencer" table would fire the wrong command in one of
+the two menus. `each_sequence_fires_its_own_commands` asserts no action
+appears in both — the tempting refactor is the bug.
+
+The file's *presence* is the state, so there is nothing to parse and
+nothing to cache: the probe cannot go stale behind git's back the way a
+remembered flag would.
 
 ## E2 — a multi-step runner
 

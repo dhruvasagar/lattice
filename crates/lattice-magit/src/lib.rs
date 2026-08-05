@@ -2206,6 +2206,30 @@ fn register_action_commands(registry: &mut CommandRegistry) {
         "Skip the commit a stopped rebase is sitting on",
     );
     reg(
+        "action:magit-global-cherry-pick-continue",
+        "Resume a cherry-pick that stopped on a conflict",
+    );
+    reg(
+        "action:magit-global-cherry-pick-skip",
+        "Skip the commit a stopped cherry-pick is sitting on",
+    );
+    reg(
+        "action:magit-global-cherry-pick-abort",
+        "Abandon a cherry-pick in progress, restoring the branch",
+    );
+    reg(
+        "action:magit-global-revert-continue",
+        "Resume a revert that stopped on a conflict",
+    );
+    reg(
+        "action:magit-global-revert-skip",
+        "Skip the commit a stopped revert is sitting on",
+    );
+    reg(
+        "action:magit-global-revert-abort",
+        "Abandon a revert in progress, restoring the branch",
+    );
+    reg(
         "action:magit-global-rebase-abort",
         "Abandon a rebase in progress, restoring the branch to where it started",
     );
@@ -3409,6 +3433,8 @@ mod tests {
                     notes_merge: false,
                     am: false,
                     rebase: false,
+                    cherry_pick: false,
+                    revert: false,
                 },
             );
             let item = root
@@ -3464,6 +3490,8 @@ mod tests {
                     notes_merge: false,
                     am: false,
                     rebase: false,
+                    cherry_pick: false,
+                    revert: false,
                 },
             );
             let item = root
@@ -4592,6 +4620,8 @@ mod tests {
                     notes_merge: false,
                     am: false,
                     rebase: false,
+                    cherry_pick: false,
+                    revert: false,
                 },
             ),
             "",

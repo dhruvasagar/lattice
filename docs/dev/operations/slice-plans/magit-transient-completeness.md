@@ -1,6 +1,8 @@
 # MG.41 — magit transient completeness
 
-**Status:** 🚧 six of seven slices landed (2026-08-05). Parent plan:
+**Status:** ✅ complete (2026-08-05). MG.41f was closed by
+[MG.43h](magit-transient-completion.md); the rows MG.41d / MG.41e left
+open were closed by [MG.43](magit-transient-completion.md). Parent plan:
 [`magit.md`](magit.md) (MG.1–MG.40). Design fragment:
 [`../../architecture/magit.md`](../../architecture/magit.md).
 
@@ -19,7 +21,7 @@ offers three destinations.
 | MG.41c | ✅ | push 1→7 rows, pull 1→3 (+ promoted to a submenu), fetch 1→6 |
 | MG.41d | ✅ | reset 3→6, commit 2→7, stash 2→12, via MG.42's enablers |
 | MG.41e | ✅ | rebase, cherry-pick, revert (gated), merge, tag — every row magit gives a transient |
-| MG.41f | ⛔ | Blocked — needs the diff/log actions to accept arguments |
+| MG.41f | ✅ | Closed by [MG.43h](magit-transient-completion.md) — the diagnosis below was wrong |
 
 MG.41d and MG.41e stop where rows stop being rows. Their remaining
 entries each need a capability that does not exist yet, and those
@@ -260,7 +262,7 @@ at another toggle.
 and every menu's `C` configure row (needs transient variable rows —
 see "Out of scope").
 
-### MG.41d — thin existing submenus 🚧
+### MG.41d — thin existing submenus ✅ (completed by MG.43)
 
 | Menu | Today | Adds |
 |---|---|---|
@@ -275,7 +277,10 @@ gains `f` fixup and `s` squash. `CommitOp` grew a `trailing` field so
 position is what makes it index-only rather than also moving HEAD, so
 it is pinned by a test.
 
-**Still open, and why each is not just another row:**
+**Open at the time, and why each was not just another row.**
+All of these landed in [MG.42](magit-transient-enablers.md) and
+[MG.43](magit-transient-completion.md) except stash `w`, which was
+dropped from v1 (git has no flag for it):
 
 - **Commit `e` extend** — `git commit --amend --no-edit` takes no
   commit, so it does not fit `CommitOp`'s commit-taking shape. Needs a
@@ -299,7 +304,7 @@ it is pinned by a test.
 - **Branch `s` / `S` spin-off / spin-out** — multi-step operations
   (create, move commits, reset the original), not single git calls.
 
-### MG.41e — dispatch rows that should be submenus 🚧
+### MG.41e — dispatch rows that should be submenus ✅ (completed by MG.43)
 
 Each is a direct action today where magit has a full transient:
 
@@ -343,13 +348,14 @@ is an argv builder plus two handler lines.
 committed, so git never opens an editor and the hang that flag exists
 to prevent cannot occur.
 
-Still to do here: `A` cherry-pick, `_` revert, merge's `e`/`a`/`p`/`i`
-rows, tag's `r` release / `p` prune, and
-rebase's own non-sequence rows (`p`/`u`/`e` onto a target, `s` subset,
-`m` edit a commit, `w` reword, `k` remove, `f` autosquash) — those need
-new operations rather than menu structure.
+Open at the time: `A` cherry-pick, `_` revert, merge's `e`/`a`/`p`/`i`,
+tag's `r`/`p`, and rebase's non-sequence rows. Those needed new
+operations rather than menu structure, which is what
+[MG.42](magit-transient-enablers.md) built and
+[MG.43](magit-transient-completion.md) spent. **All of them have
+landed.**
 
-### MG.41f — diff / log argument menus ⛔ blocked
+### MG.41f — diff / log argument menus ✅ (closed by MG.43h)
 
 `d` and `l` are direct actions; magit gives each a transient of
 arguments. `view_arguments_transient` (MG.23k) already does this for a
@@ -368,9 +374,13 @@ RemoteOp declares — nothing will consume its value"*. The submenus were
 reverted rather than shipped; `view_open_transient` stays in the tree,
 unwired and `#[allow(dead_code)]`, carrying the reason.
 
-**Unblocking it** means teaching the diff/log open actions to accept
-arguments — an operation change, not a menu change. That is the whole
-slice, and it should be scoped as one.
+**That conclusion was wrong, and MG.43h corrected it.** Teaching the
+open actions to "accept arguments" was not an operation change: MG.17a's
+projection was already generic, and only the empty `args_schema` was
+missing. What it actually needed was that schema (the *union*, since
+`view_argv` indexes by position in it) plus somewhere to leave the
+values for a buffer that does not exist yet. See
+[MG.43h](magit-transient-completion.md).
 
 ### MG.41g — completion notifications, via the event bus ✅
 
@@ -476,11 +486,14 @@ transients have `Flag`, `Argument` and `Submenu` item kinds but no
 variable kind, so this needs a new `TransientItemKind` plus git-config
 read/write plumbing.
 
-Named rather than silently omitted, because it is why these stay
-incomplete after MG.41: **push, pull, fetch, branch, tag, and notes all
-keep their `C` row missing.** MG.37 already flagged the same gap for
-notes' four configure rows and left magit's keys free for them; MG.41
-extends that convention to the rest rather than inventing substitutes.
+Named rather than silently omitted, because it is why these stayed
+incomplete after MG.41: push, pull, fetch, branch, tag and notes all
+kept their `C` row missing.
+
+**[MG.43g](magit-transient-completion.md) built it.**
+`TransientItemKind::Variable` exists now, values are prefetched
+off-thread so the menu still builds without I/O, and all six `C` rows
+have landed.
 
 `:customize` is the likelier long-term home for per-repo git config
 than a hand-rolled menu, so the design question is not just "add a row

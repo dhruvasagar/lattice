@@ -196,9 +196,11 @@ and the failure would look like the command silently doing nothing.
 The `--` placement is separately pinned, because a file named like a
 branch would otherwise be read as a revision.
 
-Rebase `p`/`u`/`e` remain: they need `RemoteTarget` resolution wired to
-the rebase op rather than a second prompt, so they belong with a
-rebase-onto slice rather than here.
+Rebase `p`/`u`/`e` were left for a rebase-onto slice.
+[MG.43b](magit-transient-completion.md) landed them, and found they
+need no `RemoteTarget` resolution at all: `@{push}` and `@{upstream}`
+are revisions git resolves natively, and rebase takes ONE of them where
+push wants a two-token pair.
 
 ## E1 — message-composing operations ✅
 
@@ -289,15 +291,18 @@ Then MG.41d / MG.41e close with their remaining rows as **rows**.
 
 ## Deliberately not doing
 
-- **cherry-pick `h` harvest, `d` donate, `n` spinout** — multi-step
-  *and* multi-input, and the least-used rows in the menu. E2 + E3
-  make them possible later; they do not justify their own scoping now.
-- **tag `p` prune** — needs local/remote tag comparison, which is a
-  fetch-and-diff, not a git call.
-- **merge `p` preview, `i` dissolve** — preview wants a diff view of a
-  merge that has not happened; dissolve is a rarely-used inverse.
-- **Every menu's `C` configure row** — still blocked on transient
-  variable rows, exactly as MG.41 recorded. Unchanged here.
+Every one of these was picked up by
+[MG.43](magit-transient-completion.md):
+
+- **cherry-pick `h` / `d` / `n` / `s`** — MG.43d, ported from magit's
+  `magit--cherry-move` rather than from its docstrings.
+- **tag `p` prune** — MG.43e. It is `fetch --prune --prune-tags`, not
+  the fetch-and-diff assumed here.
+- **merge `p` preview, `i` merge-into** — MG.43e. Preview is a
+  three-dot diff; `i` is absorb's mirror.
+- **Every menu's `C` configure row** — MG.43g, once
+  `TransientItemKind::Variable` existed and its values were
+  prefetched off-thread.
 
 No benchmarks: every one of these is `LatencyClass::Display` menu work
 or a spawned git call already off the actor thread. Recorded as a

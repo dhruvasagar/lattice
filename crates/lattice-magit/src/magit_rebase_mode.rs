@@ -652,6 +652,19 @@ pub(crate) fn rebase_one_commit(
     verb: &str,
     message: Option<&str>,
 ) -> Result<(), String> {
+    // A commit that begins with `-` would be parsed as an OPTION by
+    // every `git` call below, not as a revision — `git log -1
+    // --format=%h --output=/tmp/x` writes a file rather than reporting
+    // a sha. The picker only ever supplies real shas, but this is also
+    // reachable from `:magit-rebase-edit-commit <arg>`, where the value
+    // is whatever was typed or pasted.
+    //
+    // Refused rather than escaped: no revision legitimately starts with
+    // `-`, so there is nothing to lose by declining, and `--` does not
+    // help for the calls that take the revision in option position.
+    if commit.starts_with('-') {
+        return Err(format!("`{commit}` is not a revision"));
+    }
     let repo = Repository::discover(workdir).map_err(|e| e.to_string())?;
     let upstream = parent_or_root(&repo, commit);
     let range = if upstream == ROOT {
@@ -896,6 +909,27 @@ mod tests {
     #[test]
     fn a_commit_not_in_range_is_refused() {
         assert_eq!(mark_edit("pick aaaaaaa only", "bbbbbbb"), None);
+    }
+
+    /// MG.43c: a value that would be read as an option is refused.
+    ///
+    /// The commit reaches `git log -1 --format=%h <commit>` in option
+    /// position, so `--output=/tmp/x` would write a file instead of
+    /// reporting a sha. The picker only supplies real shas, but
+    /// `:magit-rebase-edit-commit <arg>` takes whatever was typed.
+    #[test]
+    fn an_option_looking_commit_is_refused() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for bad in ["--output=/tmp/lattice-should-not-exist", "-n", "--help"] {
+            assert!(
+                rebase_one_commit(dir.path(), bad, "edit", None).is_err(),
+                "`{bad}` must be refused rather than passed to git",
+            );
+        }
+        assert!(
+            !std::path::Path::new("/tmp/lattice-should-not-exist").exists(),
+            "the refused value must not have reached git",
+        );
     }
 
     /// MG.43c: the verb is the operation, and only the named row's

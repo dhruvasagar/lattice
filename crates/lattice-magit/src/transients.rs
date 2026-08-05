@@ -202,6 +202,14 @@ const BRANCH_CREATE_ROWS: &[TransientRow] = &[
 ];
 
 const BRANCH_DO_ROWS: &[TransientRow] = &[
+    // MG.43a: magit's `x` — reset this branch to another ref.
+    TransientRow {
+        key: "x",
+        label: "reset",
+        doc: "Reset the current branch to another ref (asks first)",
+        action: "action:magit-global-branch-reset",
+        placeholder: "branch_reset_op",
+    },
     TransientRow {
         key: "m",
         label: "rename",
@@ -316,6 +324,14 @@ const COMMIT_ROWS: &[TransientRow] = &[
         doc: "Change the last commit's message, leaving the index alone",
         action: "action:magit-global-reword",
         placeholder: "commit_reword_op",
+    },
+    // MG.43a: magit's `e` — the one commit row that takes no target.
+    TransientRow {
+        key: "e",
+        label: "extend",
+        doc: "Add staged changes to the last commit, keeping its message",
+        action: "action:magit-global-commit-extend",
+        placeholder: "commit_extend_op",
     },
     // MG.42-E1: augment — a squash marker you annotate.
     TransientRow {
@@ -544,13 +560,24 @@ const LOG_SHOW_ROW: TransientRow = TransientRow {
 // `git revert --continue` errors during a cherry-pick and vice versa,
 // which is why each sequence has its own rows rather than a shared set.
 
-const CHERRY_PICK_ROWS: &[TransientRow] = &[TransientRow {
-    key: "A",
-    label: "pick",
-    doc: "Cherry-pick a commit onto this branch",
-    action: "action:magit-cherry-pick",
-    placeholder: "cherry_pick_op",
-}];
+const CHERRY_PICK_ROWS: &[TransientRow] = &[
+    TransientRow {
+        key: "A",
+        label: "pick",
+        doc: "Cherry-pick a commit onto this branch",
+        action: "action:magit-cherry-pick",
+        placeholder: "cherry_pick_op",
+    },
+    // MG.43a: magit's `a` — apply the change WITHOUT recording a
+    // commit, so it can be edited or split before committing.
+    TransientRow {
+        key: "a",
+        label: "apply",
+        doc: "Apply a commit's changes without committing",
+        action: "action:magit-cherry-pick-apply",
+        placeholder: "cherry_pick_apply_op",
+    },
+];
 
 const CHERRY_PICK_SEQUENCE_ROWS: &[TransientRow] = &[
     TransientRow {
@@ -576,13 +603,23 @@ const CHERRY_PICK_SEQUENCE_ROWS: &[TransientRow] = &[
     },
 ];
 
-const REVERT_ROWS: &[TransientRow] = &[TransientRow {
-    key: "V",
-    label: "revert commit",
-    doc: "Revert a commit, creating an inverse commit",
-    action: "action:magit-revert",
-    placeholder: "revert_op",
-}];
+const REVERT_ROWS: &[TransientRow] = &[
+    TransientRow {
+        key: "V",
+        label: "revert commit",
+        doc: "Revert a commit, creating an inverse commit",
+        action: "action:magit-revert",
+        placeholder: "revert_op",
+    },
+    // MG.43a: magit's `v` — stage the reversal WITHOUT committing it.
+    TransientRow {
+        key: "v",
+        label: "revert changes",
+        doc: "Apply the inverse of a commit without committing",
+        action: "action:magit-revert-changes",
+        placeholder: "revert_changes_op",
+    },
+];
 
 const REVERT_SEQUENCE_ROWS: &[TransientRow] = &[
     TransientRow {
@@ -2604,6 +2641,61 @@ mod commit_op_argv_tests {
         assert!(CommitOp::RESET_HARD.confirm_action.is_some());
     }
 
+    /// MG.43a: the `--no-commit` halves stage the change instead of
+    /// recording it.
+    ///
+    /// That single flag is each row's entire reason to exist: `V`/`A`
+    /// commit, `v`/`a` leave the result staged so it can be edited,
+    /// split, or combined first. Losing the flag would silently
+    /// collapse each pair into its sibling.
+    #[test]
+    fn the_no_commit_halves_stage_rather_than_commit() {
+        assert_eq!(
+            CommitOp::REVERT_CHANGES.argv("abc123"),
+            vec!["revert", "--no-commit", "abc123"],
+        );
+        assert_eq!(
+            CommitOp::CHERRY_PICK_APPLY.argv("abc123"),
+            vec!["cherry-pick", "--no-commit", "abc123"],
+        );
+    }
+
+    /// The committing halves and their `--no-commit` peers are NOT the
+    /// same operation, and neither pair may collapse into the other.
+    #[test]
+    fn each_no_commit_half_differs_from_its_committing_sibling() {
+        assert_ne!(
+            CommitOp::REVERT.argv("abc123"),
+            CommitOp::REVERT_CHANGES.argv("abc123"),
+        );
+        assert_ne!(
+            CommitOp::CHERRY_PICK.argv("abc123"),
+            CommitOp::CHERRY_PICK_APPLY.argv("abc123"),
+        );
+    }
+
+    /// `--no-commit` carries no `--no-edit`.
+    ///
+    /// `--no-edit` exists on the committing halves to stop git opening
+    /// `$EDITOR` in a context that cannot answer it. Nothing is
+    /// committed here, so there is no editor to suppress. Git accepts
+    /// the pair (verified — it exits 0 rather than erroring), so this
+    /// is not guarding against a failure; it pins that the flag stays
+    /// off, because a `--no-edit` here would read as though this row
+    /// commits something.
+    #[test]
+    fn the_no_commit_halves_carry_no_edit_flag() {
+        for argv in [
+            CommitOp::REVERT_CHANGES.argv("abc123"),
+            CommitOp::CHERRY_PICK_APPLY.argv("abc123"),
+        ] {
+            assert!(
+                !argv.iter().any(|a| a == "--no-edit"),
+                "no editor is opened when nothing is committed: {argv:?}",
+            );
+        }
+    }
+
     /// fixup / squash take the target commit LAST, which is what git's
     /// `--fixup <commit>` spelling expects.
     #[test]
@@ -2691,8 +2783,67 @@ mod sequencer_gate_tests {
     #[test]
     fn idle_sequencers_offer_only_the_way_in() {
         let ids = MagitActionIds::default();
-        assert_eq!(keys(&cherry_pick_transient(&ids, false)), vec!["A"]);
-        assert_eq!(keys(&revert_transient(&ids, false)), vec!["V"]);
+        // MG.43a added the `--no-commit` halves; both are ways IN, so
+        // both belong to the idle set.
+        assert_eq!(keys(&cherry_pick_transient(&ids, false)), vec!["A", "a"]);
+        assert_eq!(keys(&revert_transient(&ids, false)), vec!["V", "v"]);
+    }
+
+    /// MG.43a: **keys are overloaded across the two states, and the
+    /// gate is the only thing that makes that safe.**
+    ///
+    /// `A` is *pick* when idle and *continue* when stopped; `a` is
+    /// *apply* when idle and *abort* when stopped. Every one of those
+    /// is magit's own key, and the pairs are only safe because the two
+    /// sets are mutually exclusive — a menu showing both would put
+    /// "apply this commit" one row from "throw the sequence away".
+    ///
+    /// So rather than assert particular keys, this asserts the
+    /// property that makes the overload safe: any key appearing in
+    /// BOTH states must resolve to a different row in each. A future
+    /// row that reused a key for the *same* operation in both states
+    /// would be a gate that stopped doing its job.
+    #[test]
+    fn overloaded_keys_resolve_to_different_rows_in_each_state() {
+        let ids = MagitActionIds::default();
+        for (name, idle, stopped) in [
+            (
+                "cherry-pick",
+                cherry_pick_transient(&ids, false),
+                cherry_pick_transient(&ids, true),
+            ),
+            (
+                "revert",
+                revert_transient(&ids, false),
+                revert_transient(&ids, true),
+            ),
+        ] {
+            let label_for = |spec: &TransientSpec, key: &str| {
+                spec.groups
+                    .iter()
+                    .flat_map(|g| &g.items)
+                    .find(|i| i.key.iter().any(|k| k == key))
+                    .map(|i| i.label.clone())
+            };
+            let shared: Vec<String> = keys(&idle)
+                .into_iter()
+                .filter(|k| keys(&stopped).contains(k))
+                .collect();
+            // Vacuity guard: these menus DO overload keys, and a
+            // refactor that stopped sharing any would silently make
+            // the loop below assert nothing.
+            assert!(
+                !shared.is_empty(),
+                "{name}: expected the two states to share at least one key",
+            );
+            for key in shared {
+                assert_ne!(
+                    label_for(&idle, &key),
+                    label_for(&stopped, &key),
+                    "{name}: `{key}` resolves to the same row in both states —                      the gate is no longer distinguishing them",
+                );
+            }
+        }
     }
 
     /// Stopped offers the ways OUT only — starting another pick while

@@ -49,6 +49,13 @@ pub(crate) const DESTRUCTIVE_ACTIONS: &[(&str, &str)] = &[
         "action:magit-branch-delete",
         "action:magit-branch-delete-execute",
     ),
+    // MG.43a: the branch submenu's `x` reset. Destructive in the same
+    // way `reset --hard` is — it discards uncommitted work — so it is
+    // held to the same bar.
+    (
+        "action:magit-global-branch-reset-finish",
+        "action:magit-global-branch-reset-execute",
+    ),
     // MG.32: the branch submenu's `x`. A SEPARATE pair from the buffer
     // chord above, and it has to be: one `CommandId` maps to one
     // handler, and that one reads the branch under the cursor —

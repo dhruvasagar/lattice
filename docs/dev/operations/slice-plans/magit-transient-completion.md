@@ -1,0 +1,141 @@
+# MG.43 — closing MG.41 / MG.42
+
+**Status:** 🚧 in progress (2026-08-05). Closes the open items in
+[`magit-transient-completeness.md`](magit-transient-completeness.md)
+(MG.41d / MG.41e / MG.41f) and the deferred list in
+[`magit-transient-enablers.md`](magit-transient-enablers.md) (MG.42).
+Design fragment: [`../../architecture/magit.md`](../../architecture/magit.md).
+
+MG.41 built the menu structure and MG.42 built the shared enablers.
+What is left is the tail: ~30 rows across 11 menus, plus the two items
+each plan recorded as blocked.
+
+The inventory below is verified against `transients.rs`'s row tables,
+not against either plan's status prose — MG.41's "still open" lists had
+already drifted (several rows it names as missing landed in MG.42).
+
+| Menu | Missing vs magit |
+|---|---|
+| Commit `c` | `e` extend |
+| Reset `O` | `w` worktree |
+| Stash `z` | `w` worktree-only |
+| Branch `b` | `x` reset, `s` spin-off, `S` spin-out |
+| Merge `m` | `p` preview, `i` dissolve |
+| Tag `t` | `r` release, `p` prune |
+| Rebase `r` | `p`/`u`/`e` onto, `s` subset, `m` edit, `w` reword, `k` remove, `f` autosquash |
+| Cherry-pick `A` | `a` apply, `h` harvest, `m` squash, `d` donate, `n` spinout, `s` spinoff |
+| Revert `_` | `v` changes |
+| Fetch `f` | `m` submodules |
+| Dispatch `d`/`l` | argument transients (MG.41f) |
+| **All menus** | `C` configure |
+
+---
+
+## MG.41f was never blocked
+
+MG.41 recorded diff/log argument menus as ⛔ "needs the diff/log actions
+to accept arguments", inferring an operation change.
+
+**The mechanism was already there.** MG.17a projects a transient's
+toggled state onto the action's declared `args_schema` positionally —
+that is what makes one handler body serve both the `:` line and a
+transient. `magit_diff_mode` separately already has `refresh_with_args`
+writing `extra_args` onto its mode state.
+
+The actual gap is narrow: the *open* actions declare an empty
+`args_schema`, so the projection has nothing to land in. That is a
+schema plus a hand-off, not a new capability.
+
+The blocked note was right about the symptom it caught — the flags
+would have rendered and been discarded — and
+`every_root_dispatch_item_resolves_to_a_real_action_not_a_flag_fallback`
+was right to reject the first attempt. It was wrong about the cause.
+
+---
+
+## Slices
+
+| Slice | Status | What |
+|---|---|---|
+| MG.43a | ✅ | Single-argv rows: commit `e`, revert `v`, cherry-pick `a`, branch `x` |
+| MG.43b | 📝 | Rebase's non-sequence rows |
+| MG.43c | 📝 | Cherry-pick + branch commit-moving rows |
+| MG.43d | 📝 | Merge `p`/`i`, tag `r`/`p` |
+| MG.43e | 📝 | Reset `w`, stash `w`, fetch `m` |
+| MG.43f | 📝 | MG.41f — diff / log argument transients |
+| MG.43g | 📝 | `C` configure — variable rows with async prefetch |
+
+Each lands green on its own; the row-heavy slices are table edits plus
+one op each, because MG.41a and MG.42 already paid for the machinery.
+
+### MG.43a — landed
+
+Commit `e` extend (`commit --amend --no-edit`), revert `v` and
+cherry-pick `a` as `CommitOp` variants, branch `x` reset.
+
+**`x` was being held free FOR reset**, and landing it turned a
+reservation into a binding: `the_branch_submenu_keeps_the_list_it_replaced`
+now asserts `x` = reset and `k` = delete rather than "`x` is absent".
+That pair is why the keys moved at all — a user reaching for magit's
+reset must never hit delete.
+
+**Keys are overloaded across the gated states.** `A` is *pick* idle and
+*continue* stopped; `a` is *apply* idle and *abort* stopped. The gate
+is the only thing making that safe, so the test asserts the property —
+any key in both states resolves to a different row — rather than
+hard-coding keys, and carries a vacuity guard so a refactor that
+stopped sharing keys cannot make it assert nothing.
+
+**Branch reset carries its ref to the execute half** (IX.1) rather than
+re-deriving: a background refresh while the confirm is open must not
+change what gets reset.
+
+### MG.43g — variable rows, and why the prefetch is the design
+
+Magit renders a git-config value *inside* the menu (`pull.rebase
+= true`) and edits it in place. Lattice's transients have `Flag`,
+`Argument` and `Submenu` but no variable kind.
+
+> **UX (higher court):** the inline value is the row's whole point —
+> `C` that opens something else breaks the muscle memory the row
+> exists to serve. Convention governs here (the UX-convention rule):
+> magit users carry this across editors.
+> **Paramount goals:** protects #2 — a variable row is a generic
+> transient capability, not a magit one, so the next subsystem with
+> config-backed toggles gets it free. The risk is to #1, and it is
+> the entire design question: a synchronous `git config --get` per
+> row would put I/O in a path opened by a keystroke.
+> **Heuristic #1 (long-term fit, on merit):** the row kind is the
+> better long-term design; the *synchronous read* is the part that is
+> wrong. Relocating the I/O is what makes the good design admissible,
+> rather than a reason to reject it.
+> **Heuristic #3 (third option):** the rejected pair are (b) read
+> synchronously — matches magit and violates #1 outright — and (c) a
+> config buffer, which protects #1 and #3 but loses the inline value.
+> The prefetch is the option that keeps both.
+> **Mode ownership:** `TransientItemKind::Variable` is generic and
+> lands in `lattice-picker`; the git-config reader, the key tables and
+> every `C` row stay in `lattice-magit`.
+
+Values are fetched off-thread when the **parent** menu opens and
+rendered from cache, so building the menu reads a map and never the
+filesystem.
+
+**The cache must be able to say "unknown".** A variable row whose
+value has not arrived yet renders as pending rather than as unset —
+showing `pull.rebase = false` for "we have not looked" would be a
+confident lie about the user's config, and the row exists precisely to
+report the current value.
+
+---
+
+## Still deliberately out
+
+**`:customize` as the long-term home for per-repo git config.** MG.43g
+adds the row kind and magit's own `C` rows; it does not make every git
+config key reachable. That remains its own arc.
+
+**No new benchmarks.** Every row here is `LatencyClass::Display` menu
+work or a spawned git call already off the actor thread; MG.43g's
+prefetch is explicitly designed to keep it that way. Recorded as a
+deliberate omission, as MG.41 and MG.42 both did.

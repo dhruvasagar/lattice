@@ -1027,6 +1027,17 @@ impl Mode for MagitCoreMode {
                 "action:magit-revert",
                 crate::magit_global_mode::CommitOp::REVERT,
             ),
+            // MG.43a: the `--no-commit` halves. Same resolution, same
+            // shape — only the argv differs, which is the point of
+            // `CommitOp` being data.
+            commit_op(
+                "action:magit-revert-changes",
+                crate::magit_global_mode::CommitOp::REVERT_CHANGES,
+            ),
+            commit_op(
+                "action:magit-cherry-pick-apply",
+                crate::magit_global_mode::CommitOp::CHERRY_PICK_APPLY,
+            ),
             commit_op(
                 "action:magit-reset-soft",
                 crate::magit_global_mode::CommitOp::RESET_SOFT,

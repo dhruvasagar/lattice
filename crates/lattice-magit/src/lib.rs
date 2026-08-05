@@ -409,6 +409,14 @@ const CONFIRM_TARGET_ACTIONS: &[(&str, &str, &[(&str, &str)])] = &[
         "Delete the branch after confirmation",
         &[("branch", "Branch the prompt named")],
     ),
+    // MG.43a: the branch submenu's `x` reset. Like the delete pair
+    // below it, the menu opens from anywhere, so the carried ref is
+    // the only source of the target.
+    (
+        "action:magit-global-branch-reset-execute",
+        "Reset the current branch after confirmation",
+        &[("ref", "Ref the prompt named")],
+    ),
     // MG.32: the branch submenu's `x`. Unlike the chord's execute half
     // above there is NO cursor to fall back on — the menu opens from
     // anywhere — so the carried slot is the only source of the target.
@@ -1018,6 +1026,9 @@ fn register_ex_commands(
             magit_global_mode::CommitOp::RESET_INDEX,
             magit_global_mode::CommitOp::COMMIT_FIXUP,
             magit_global_mode::CommitOp::COMMIT_SQUASH,
+            // MG.43a: revert `v` and cherry-pick `a`.
+            magit_global_mode::CommitOp::REVERT_CHANGES,
+            magit_global_mode::CommitOp::CHERRY_PICK_APPLY,
         ] {
             registry.register_ex_command(
                 op.ex_command,
@@ -1956,6 +1967,16 @@ fn register_action_commands(registry: &mut CommandRegistry) {
         "action:magit-revert",
         "Revert the commit at cursor (creates an inverse commit)",
     );
+    // MG.43a: the `--no-commit` halves — stage the change without
+    // recording it, so it can be edited before committing.
+    reg(
+        "action:magit-revert-changes",
+        "Apply the inverse of the commit at cursor without committing",
+    );
+    reg(
+        "action:magit-cherry-pick-apply",
+        "Apply the commit at cursor's changes without committing",
+    );
     reg(
         "action:magit-reset-soft",
         "Reset --soft to the commit at cursor (keeps index + working tree)",
@@ -2299,6 +2320,18 @@ fn register_action_commands(registry: &mut CommandRegistry) {
     reg(
         "action:magit-global-stash-snapshot-worktree",
         "Snapshot the working tree without disturbing the index",
+    );
+    reg(
+        "action:magit-global-branch-reset-finish",
+        "Ask before resetting the current branch to the named ref",
+    );
+    reg(
+        "action:magit-global-commit-extend",
+        "Add staged changes to the last commit, keeping its message",
+    );
+    reg(
+        "action:magit-global-branch-reset",
+        "Reset the current branch to another ref (asks first)",
     );
     reg(
         "action:magit-commit-augment",
@@ -3296,18 +3329,39 @@ mod tests {
         // MG.41a moved delete from `x` to magit's own `k`. Inside a
         // transient the menu owns every keystroke, so there is no vim
         // grammar to dodge and no reason to diverge — and the old `x`
-        // put DELETE where a magit user reaches for reset. `x` is left
-        // free for reset, which MG.41d adds.
-        for key in ["b", "l", "c", "n", "m", "k", "L"] {
+        // put DELETE where a magit user reaches for reset.
+        //
+        // MG.43a landed reset on the `x` that move freed up, so the
+        // reservation below became a binding: `x` is reset, `k` is
+        // delete, and the two must not swap back. That pair is the
+        // whole reason the keys moved — a user reaching for magit's
+        // reset must never hit delete.
+        for key in ["b", "l", "c", "n", "m", "k", "L", "x"] {
             let (_, real) = rows
                 .iter()
                 .find(|(k, _)| k == key)
                 .unwrap_or_else(|| panic!("`b {key}` must exist: {rows:?}"));
             assert!(real, "`b {key}` must be a real action");
         }
-        assert!(
-            !rows.iter().any(|(k, _)| k == "x"),
-            "`x` must stay free for reset (magit's own key); delete is `k`: {rows:?}",
+        let key_for = |action: &str| {
+            spec.groups
+                .iter()
+                .flat_map(|g| &g.items)
+                .find(|i| {
+                    matches!(&i.kind, TransientItemKind::Action(id)
+                        if Some(*id) == registry.id_by_name(action))
+                })
+                .and_then(|i| i.key.first().cloned())
+        };
+        assert_eq!(
+            key_for("action:magit-global-branch-reset").as_deref(),
+            Some("x"),
+            "reset must be on magit's `x`: {rows:?}"
+        );
+        assert_eq!(
+            key_for("action:magit-global-branch-delete").as_deref(),
+            Some("k"),
+            "delete must be on magit's `k`, NOT the `x` reset now owns: {rows:?}"
         );
         assert_eq!(
             transients::MagitActionIds::resolve(&registry).get("action:magit-global-branch"),
@@ -4734,7 +4788,9 @@ mod tests {
             // destination rows — 7, 3 and 6 — so 46 + 6 + 2 + 5 = 59.
             // MG.41d: +2 reset modes, +2 commit autosquash rows.
             // MG.42-E1: +commit `A` augment, +merge `e` edit.
-            83,
+            // MG.43a: +commit `e`, +revert `v`, +cherry-pick `a`,
+            // +branch `x` reset.
+            87,
             "expected every root-dispatch leaf (incl. both submenus') to \
              report inert, got: {root:?}"
         );
@@ -4759,8 +4815,8 @@ mod tests {
         assert_eq!(
             bisecting.len(),
             // MG.41c: +13 destination rows; MG.41d: +4 more;
-            // MG.42-E1: +2 (augment, merge-edit).
-            86,
+            // MG.42-E1: +2 (augment, merge-edit); MG.43a: +4.
+            90,
             "the in-progress bisect menu trades `start` for good/bad/skip/reset: {bisecting:?}"
         );
     }

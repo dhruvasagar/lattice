@@ -827,6 +827,71 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         "stash branch"
     );
 
+    // MG.43a: magit's commit `e` — add what is staged to the last
+    // commit, keeping its message.
+    //
+    // The one commit row that takes NO argument: it always acts on
+    // HEAD, so there is nothing to resolve and no prompt to answer.
+    // `--no-edit` is what makes it "extend" rather than "amend" — the
+    // message is deliberately left alone.
+    contributions.push(ActionHandlerContribution {
+        action_name: "action:magit-global-commit-extend",
+        handler: Arc::new(|_ctx: &ActionContext<'_>| {
+            Some(spawn_git(
+                ["commit", "--amend", "--no-edit"]
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect(),
+                "commit --amend --no-edit",
+            ))
+        }),
+    });
+
+    // MG.43a: magit's branch `x` — reset the current branch to another
+    // ref.
+    //
+    // Destructive in the same way `reset --hard` is, so it asks, and
+    // the ref the prompt named is CARRIED to the execute half rather
+    // than re-derived (IX.1) — a background refresh while the dialog
+    // is open must not change what gets reset.
+    contributions.push(ActionHandlerContribution {
+        action_name: "action:magit-global-branch-reset",
+        handler: Arc::new(|_ctx: &ActionContext<'_>| {
+            Some(prompt_for(
+                "Reset current branch to: ",
+                "action:magit-global-branch-reset-finish",
+            ))
+        }),
+    });
+    contributions.push(ActionHandlerContribution {
+        action_name: "action:magit-global-branch-reset-finish",
+        handler: Arc::new(|ctx: &ActionContext<'_>| {
+            let target = ctx.prompt_value?.trim();
+            if target.is_empty() {
+                return None;
+            }
+            Some(crate::confirm::ask_target(
+                format!("git reset --hard {target} — discard uncommitted changes?"),
+                "action:magit-global-branch-reset-execute",
+                target.to_string(),
+            ))
+        }),
+    });
+    contributions.push(ActionHandlerContribution {
+        action_name: "action:magit-global-branch-reset-execute",
+        handler: Arc::new(|ctx: &ActionContext<'_>| {
+            let target = crate::confirm::carried_target(ctx)?;
+            Some(spawn_git(
+                vec![
+                    "reset".to_string(),
+                    "--hard".to_string(),
+                    target.clone(),
+                ],
+                "branch reset",
+            ))
+        }),
+    });
+
     // MG.42-E1: merge `e` — prompt for the branch, then compose the
     // merge message in a buffer. Genuinely different from the `n`
     // don't-commit row: this completes the merge in one step with an
@@ -3497,6 +3562,29 @@ impl CommitOp {
         trailing: &[],
         ex_command: "magit-cherry-pick",
         args: &["cherry-pick"],
+        confirm_action: None,
+    };
+    /// MG.43a: magit's revert `v` — apply the inverse to the working
+    /// tree and index WITHOUT committing.
+    ///
+    /// `--no-commit` is the whole row: `V` records a revert commit,
+    /// `v` leaves the reversal staged so it can be edited, split, or
+    /// combined before committing. No `--no-edit` here because nothing
+    /// is committed, so git never opens an editor to hang on.
+    pub const REVERT_CHANGES: Self = Self {
+        what: "revert --no-commit",
+        trailing: &[],
+        ex_command: "magit-revert-changes",
+        args: &["revert", "--no-commit"],
+        confirm_action: None,
+    };
+    /// MG.43a: magit's cherry-pick `a` — apply the commit's changes
+    /// without recording a commit. Peer of [`Self::REVERT_CHANGES`].
+    pub const CHERRY_PICK_APPLY: Self = Self {
+        what: "cherry-pick --no-commit",
+        trailing: &[],
+        ex_command: "magit-cherry-pick-apply",
+        args: &["cherry-pick", "--no-commit"],
         confirm_action: None,
     };
     pub const RESET_SOFT: Self = Self {

@@ -733,6 +733,29 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
             });
         };
     }
+    // MG.43e: a prompt whose answer names a BUFFER rather than an
+    // argv — for rows that show something instead of changing it.
+    macro_rules! prompted_op_open {
+        ($entry:expr, $prompt:expr, $finish:expr, $name:expr, $mode_id:expr) => {
+            contributions.push(ActionHandlerContribution {
+                action_name: $entry,
+                handler: Arc::new(|_ctx: &ActionContext<'_>| Some(prompt_for($prompt, $finish))),
+            });
+            contributions.push(ActionHandlerContribution {
+                action_name: $finish,
+                handler: Arc::new(|ctx: &ActionContext<'_>| {
+                    let value = ctx.prompt_value?.trim();
+                    if value.is_empty() {
+                        return None;
+                    }
+                    Some(Effect::OpenSyntheticBuffer {
+                        name: ($name)(value),
+                        mode_id: $mode_id.to_string(),
+                    })
+                }),
+            });
+        };
+    }
     macro_rules! prompted_op {
         ($entry:expr, $prompt:expr, $finish:expr, $argv:expr, $what:expr) => {
             contributions.push(ActionHandlerContribution {
@@ -765,6 +788,65 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         merge_squash_argv,
         "merge --squash"
     );
+    // MG.43e: merge `p` preview — a read-only diff of what merging
+    // would bring in. Opens a buffer rather than running anything.
+    prompted_op_open!(
+        "action:magit-global-merge-preview",
+        "Preview merge with branch: ",
+        "action:magit-global-merge-preview-finish",
+        |branch: &str| format!("*magit:diff:merge-preview:{branch}*"),
+        "magit-diff-mode"
+    );
+
+    // MG.43e: merge `i` — merge THIS branch into another and delete
+    // this one. The mirror of `a` absorb; the direction is the whole
+    // difference, and it deletes a different branch.
+    contributions.push(ActionHandlerContribution {
+        action_name: "action:magit-global-merge-into",
+        handler: Arc::new(|_ctx: &ActionContext<'_>| {
+            Some(prompt_for(
+                "Merge this branch into: ",
+                "action:magit-global-merge-into-finish",
+            ))
+        }),
+    });
+    contributions.push(ActionHandlerContribution {
+        action_name: "action:magit-global-merge-into-finish",
+        handler: Arc::new(|ctx: &ActionContext<'_>| {
+            let target = ctx.prompt_value?.trim().to_string();
+            if target.is_empty() {
+                return None;
+            }
+            // Detached HEAD has no branch to merge or delete, so this
+            // declines rather than acting on `HEAD`.
+            let Some(current) = current_branch() else {
+                return Some(Effect::Echo {
+                    level: lattice_grammar::EchoLevel::Error,
+                    text: "magit: not on a branch".to_string(),
+                });
+            };
+            if current == target {
+                return Some(Effect::Echo {
+                    level: lattice_grammar::EchoLevel::Error,
+                    text: "magit: cannot merge a branch into itself".to_string(),
+                });
+            }
+            Some(spawn_git_sequence(
+                "merge into",
+                merge_into_steps(&current, &target),
+            ))
+        }),
+    });
+
+    // MG.43e: tag `p` prune.
+    prompted_op!(
+        "action:magit-global-tag-prune",
+        "Prune tags gone from remote: ",
+        "action:magit-global-tag-prune-finish",
+        tag_prune_argv,
+        "fetch --prune-tags"
+    );
+
     // MG.43b: rebase `e` elsewhere, and `f` autosquash.
     prompted_op!(
         "action:magit-global-rebase-onto-elsewhere",
@@ -845,6 +927,16 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         "action:magit-global-rebase-subset-finish",
         rebase_subset_argv,
         "rebase --onto"
+    );
+    // MG.43e: tag `r` release — annotated, so two inputs.
+    two_input_op!(
+        "action:magit-global-tag-release",
+        "Release tag name: ",
+        "action:magit-global-tag-release-message",
+        "Tag message: ",
+        "action:magit-global-tag-release-finish",
+        tag_release_argv,
+        "tag -a"
     );
     two_input_op!(
         "action:magit-global-stash-branch",
@@ -3374,6 +3466,82 @@ pub(crate) fn reset_file_argv(commit: &str, path: &str) -> Vec<String> {
         "--".into(),
         path.to_string(),
     ]
+}
+
+/// MG.43e: magit's tag `r` — an ANNOTATED release tag.
+///
+/// `-a` (with `-m`) is what separates this from the plain `t` row: a
+/// release tag carries a tagger, a date and a message, and is a real
+/// object rather than a pointer. Dropping `-a` would silently produce
+/// a lightweight tag that most release tooling ignores.
+pub(crate) fn tag_release_argv(name: &str, message: &str) -> Vec<String> {
+    vec![
+        "tag".into(),
+        "-a".into(),
+        name.to_string(),
+        "-m".into(),
+        message.to_string(),
+    ]
+}
+
+/// MG.43e: magit's tag `p` — drop local tags that are gone from the
+/// remote.
+///
+/// `--prune-tags` implies nothing on its own: it needs `--prune` AND a
+/// remote, or git prunes nothing and reports success. Both are
+/// therefore explicit here rather than left to config.
+pub(crate) fn tag_prune_argv(remote: &str) -> Vec<String> {
+    vec![
+        "fetch".into(),
+        "--prune".into(),
+        "--prune-tags".into(),
+        remote.to_string(),
+    ]
+}
+
+/// MG.43e: magit's merge `i` — merge the CURRENT branch into another,
+/// then delete the current one.
+///
+/// The mirror of `a` absorb, which merges another branch into this one
+/// and deletes that one. The direction is the whole difference, and
+/// getting it backwards deletes the wrong branch — so the steps are
+/// spelled out rather than shared with absorb's builder.
+///
+/// Deletes with `-d`, never `-D`, for absorb's reason: git refuses
+/// `-d` on a branch that is not fully merged, so a failed merge leaves
+/// the branch intact.
+pub(crate) fn merge_into_steps(current: &str, target: &str) -> Vec<GitStep> {
+    vec![
+        GitStep {
+            name: "checkout the target branch",
+            argv: vec!["checkout".into(), target.to_string()],
+        },
+        GitStep {
+            name: "merge",
+            argv: merge_argv(current),
+        },
+        GitStep {
+            name: "delete the merged branch",
+            argv: vec!["branch".into(), "-d".into(), current.to_string()],
+        },
+    ]
+}
+
+/// The branch `HEAD` is on, for operations that act on "this branch".
+pub(crate) fn current_branch() -> Option<String> {
+    let workdir = crate::workdir::magit_workdir()?;
+    let out = std::process::Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .current_dir(&workdir)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let branch = String::from_utf8(out.stdout).ok()?.trim().to_string();
+    // Detached HEAD reports `HEAD`, which is not a branch anyone can
+    // merge or delete — the caller must decline rather than act on it.
+    (!branch.is_empty() && branch != "HEAD").then_some(branch)
 }
 
 /// MG.43b: magit's rebase `p` / `u` / `e` — rebase onto a ref.

@@ -770,6 +770,25 @@ const MERGE_ROWS: &[TransientRow] = &[
         action: "action:magit-global-merge-edit",
         placeholder: "merge_edit_op",
     },
+    // MG.43e: preview — shows what merging would bring in, without
+    // merging. Read-only, so it sits with the acting rows but changes
+    // nothing.
+    TransientRow {
+        key: "p",
+        label: "preview",
+        doc: "Show what merging a branch would bring in",
+        action: "action:magit-global-merge-preview",
+        placeholder: "merge_preview_op",
+    },
+    // MG.43e: the mirror of `a` absorb — merge THIS branch into
+    // another and delete this one.
+    TransientRow {
+        key: "i",
+        label: "merge into",
+        doc: "Merge this branch into another, then delete this one",
+        action: "action:magit-global-merge-into",
+        placeholder: "merge_into_op",
+    },
     // MG.42-E2: merge then delete, as one operation.
     TransientRow {
         key: "a",
@@ -782,6 +801,23 @@ const MERGE_ROWS: &[TransientRow] = &[
 
 /// MG.41e: magit's `t` tag submenu.
 const TAG_ROWS: &[TransientRow] = &[
+    // MG.43e: magit's `r` — an annotated release tag, which is a real
+    // object rather than a pointer.
+    TransientRow {
+        key: "r",
+        label: "release",
+        doc: "Create an annotated release tag (asks name and message)",
+        action: "action:magit-global-tag-release",
+        placeholder: "tag_release_op",
+    },
+    // MG.43e: magit's `p` — drop local tags gone from the remote.
+    TransientRow {
+        key: "p",
+        label: "prune",
+        doc: "Drop local tags that no longer exist on the remote",
+        action: "action:magit-global-tag-prune",
+        placeholder: "tag_prune_op",
+    },
     TransientRow {
         key: "t",
         label: "tag",
@@ -3040,6 +3076,118 @@ mod config_row_tests {
         assert_eq!(TransientItemKind::variable_display(None), "…");
         assert_eq!(TransientItemKind::variable_display(Some("")), "unset");
         assert_eq!(TransientItemKind::variable_display(Some("true")), "");
+    }
+}
+
+#[cfg(test)]
+mod merge_and_tag_argv_tests {
+    use crate::magit_global_mode::{
+        merge_absorb_steps, merge_into_steps, tag_prune_argv, tag_release_argv,
+    };
+
+    /// MG.43e: **`i` merge-into and `a` absorb delete DIFFERENT
+    /// branches.**
+    ///
+    /// They are mirrors: absorb merges another branch into this one
+    /// and deletes that one; merge-into merges this one into another
+    /// and deletes this one. Getting the direction backwards deletes
+    /// the branch the user is standing on and keeps the one they meant
+    /// to fold in — and both forms are perfectly valid git.
+    #[test]
+    fn merge_into_deletes_this_branch_and_absorb_deletes_the_other() {
+        let into = merge_into_steps("feature", "main");
+        let deleted = into
+            .iter()
+            .find(|s| s.argv.first().map(String::as_str) == Some("branch"))
+            .expect("merge-into deletes a branch");
+        assert!(
+            deleted.argv.contains(&"feature".to_string()),
+            "merge-into deletes the CURRENT branch: {:?}",
+            deleted.argv,
+        );
+
+        let absorb = merge_absorb_steps("feature");
+        let deleted = absorb
+            .iter()
+            .find(|s| s.argv.first().map(String::as_str) == Some("branch"))
+            .expect("absorb deletes a branch");
+        assert!(
+            deleted.argv.contains(&"feature".to_string()),
+            "absorb deletes the OTHER branch: {:?}",
+            deleted.argv,
+        );
+    }
+
+    /// Merge-into checks the target out FIRST, then merges. Merging
+    /// before checking out would merge into the wrong branch.
+    #[test]
+    fn merge_into_checks_out_before_merging() {
+        let steps = merge_into_steps("feature", "main");
+        assert_eq!(steps[0].argv, vec!["checkout", "main"]);
+        assert_eq!(steps[1].argv.first().map(String::as_str), Some("merge"));
+    }
+
+    /// Both delete with `-d`, never `-D`: git refuses `-d` on a branch
+    /// that is not fully merged, so a failed merge leaves it intact.
+    /// `-D` would destroy it precisely when the merge did not take.
+    #[test]
+    fn neither_direction_force_deletes() {
+        for steps in [
+            merge_into_steps("feature", "main"),
+            merge_absorb_steps("feature"),
+        ] {
+            for step in steps {
+                assert!(
+                    !step.argv.iter().any(|a| a == "-D"),
+                    "a force delete would destroy the branch on a failed merge: {:?}",
+                    step.argv,
+                );
+            }
+        }
+    }
+
+    /// A release tag is ANNOTATED. Without `-a` git makes a
+    /// lightweight tag — a bare pointer with no tagger, date or
+    /// message, which most release tooling ignores.
+    #[test]
+    fn a_release_tag_is_annotated() {
+        let argv = tag_release_argv("v1.0.0", "first release");
+        assert_eq!(argv, vec!["tag", "-a", "v1.0.0", "-m", "first release"],);
+    }
+
+    /// `--prune-tags` needs `--prune` AND a remote. Alone it prunes
+    /// nothing and still reports success, so the row would look like
+    /// it worked.
+    #[test]
+    fn pruning_tags_carries_prune_and_a_remote() {
+        let argv = tag_prune_argv("origin");
+        assert!(argv.contains(&"--prune".to_string()), "{argv:?}");
+        assert!(argv.contains(&"--prune-tags".to_string()), "{argv:?}");
+        assert_eq!(argv.last().map(String::as_str), Some("origin"), "{argv:?}");
+    }
+}
+
+#[cfg(test)]
+mod merge_preview_tests {
+    /// MG.43e: **preview uses THREE dots, not two.**
+    ///
+    /// `HEAD...<branch>` shows what the branch added since the two
+    /// diverged — what a merge would bring in. `HEAD..<branch>` would
+    /// additionally report everything HEAD gained in the meantime as
+    /// though the merge were removing it, which is the opposite of
+    /// what a preview is for, and both forms are valid git.
+    #[test]
+    fn the_preview_range_is_symmetric_difference() {
+        let argv = crate::magit_diff_mode::merge_preview_argv_for_test("feature");
+        let range = argv
+            .iter()
+            .find(|a| a.contains("HEAD"))
+            .expect("the range names HEAD");
+        assert_eq!(range, "HEAD...feature");
+        assert!(
+            !range.contains("HEAD..feature"),
+            "two dots would invert what the preview reports",
+        );
     }
 }
 

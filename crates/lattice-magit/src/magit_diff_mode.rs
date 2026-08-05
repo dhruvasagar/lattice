@@ -62,7 +62,7 @@ fn magit_diff_keymap_entries() -> &'static [KeymapEntry] {
 /// `:magit-diff` (against HEAD, combining staged+unstaged), and the
 /// status buffer's per-section `d` binding (against the index, for
 /// exactly one side of the working tree).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum DiffScope {
     /// `git diff HEAD` — staged + unstaged changes combined.
     Head,
@@ -70,17 +70,27 @@ enum DiffScope {
     Staged,
     /// `git diff` — working tree vs index (the Unstaged section).
     Unstaged,
+    /// MG.43e: magit's merge `p` — what merging `branch` would bring
+    /// in, without merging it.
+    ///
+    /// `git diff HEAD...<branch>` (THREE dots) is the right question:
+    /// it shows what `branch` added since the two diverged. The
+    /// two-dot form would also report everything HEAD gained in the
+    /// meantime as though the merge were removing it, which is the
+    /// opposite of what a preview is for.
+    MergePreview(String),
 }
 
 impl DiffScope {
     /// MG.14: how this scope reads in the headerline. The same three
     /// words `parse_buffer_name` accepts, so the header echoes the
     /// buffer name rather than inventing a second vocabulary.
-    fn header_label(self) -> &'static str {
+    fn header_label(&self) -> &'static str {
         match self {
             DiffScope::Head => "HEAD",
             DiffScope::Staged => "staged",
             DiffScope::Unstaged => "unstaged",
+            DiffScope::MergePreview(_) => "merge preview",
         }
     }
 }
@@ -124,6 +134,17 @@ fn context_lines(config: &Option<std::sync::Arc<lattice_config::ConfigRegistry>>
 /// `"*magit:diff:"` prefix, since that prefix is itself a substring
 /// of both scoped forms.
 fn parse_buffer_name(name: &str) -> (DiffScope, Option<PathBuf>) {
+    // MG.43e: checked FIRST. The generic `*magit:diff:` arm below
+    // would otherwise match `merge-preview:<branch>` and read the
+    // whole thing as a PATH, silently diffing a file that does not
+    // exist instead of previewing a merge.
+    if let Some(s) = name
+        .strip_prefix("*magit:diff:merge-preview:")
+        .and_then(|s| s.strip_suffix('*'))
+        && !s.is_empty()
+    {
+        return (DiffScope::MergePreview(s.to_string()), None);
+    }
     if let Some(s) = name
         .strip_prefix("*magit:diff:staged:")
         .and_then(|s| s.strip_suffix('*'))
@@ -245,7 +266,7 @@ impl Mode for MagitDiffMode {
                     buffer_id,
                     store: store.clone(),
                     workdir: workdir.clone(),
-                    scope,
+                    scope: scope.clone(),
                     path: path.clone(),
                     pending_highlights: pending_highlights.clone(),
                     cursor_bus: ctx
@@ -271,7 +292,7 @@ impl Mode for MagitDiffMode {
                     .map(|outer| (*outer).clone()),
             );
             let text = tokio::task::spawn_blocking(move || {
-                run_diff(&wd, scope, path_for_task.as_deref(), &[], context)
+                run_diff(&wd, &scope, path_for_task.as_deref(), &[], context)
             })
             .await
             .unwrap_or_default();
@@ -307,7 +328,7 @@ fn refresh_with(
         (
             g.store.handle_for(g.buffer_id)?,
             g.workdir.clone(),
-            g.scope,
+            g.scope.clone(),
             g.path.clone(),
             g.pending_highlights.clone(),
             g.buffer_id,
@@ -318,7 +339,7 @@ fn refresh_with(
     };
     tokio::task::spawn(async move {
         let text = tokio::task::spawn_blocking(move || {
-            run_diff(&wd, scope, path.as_deref(), &extra, context)
+            run_diff(&wd, &scope, path.as_deref(), &extra, context)
         })
         .await
         .unwrap_or_default();
@@ -344,7 +365,7 @@ fn spawn_mutation_and_refresh(
         (
             g.store.handle_for(g.buffer_id)?,
             g.workdir.clone(),
-            g.scope,
+            g.scope.clone(),
             g.path.clone(),
             g.pending_highlights.clone(),
             g.buffer_id,
@@ -355,7 +376,7 @@ fn spawn_mutation_and_refresh(
     tokio::task::spawn(async move {
         let _ = tokio::task::spawn_blocking(mutate).await;
         let text = tokio::task::spawn_blocking(move || {
-            run_diff(&wd, scope, path.as_deref(), &extra, context)
+            run_diff(&wd, &scope, path.as_deref(), &extra, context)
         })
         .await
         .unwrap_or_default();
@@ -425,7 +446,7 @@ pub(crate) const DIFF_ARGS: &[crate::magit_global_mode::RemoteFlag] = &[
 /// are the part worth testing, and reaching them through the runner
 /// would mean every test needed a repository.
 fn run_diff_argv(
-    scope: DiffScope,
+    scope: &DiffScope,
     path: Option<&Path>,
     extra: &[String],
     context: i64,
@@ -437,6 +458,7 @@ fn run_diff_argv(
         // `git diff` with no ref compares the working tree against
         // the index — exactly the Unstaged section's semantics.
         DiffScope::Unstaged => {}
+        DiffScope::MergePreview(branch) => args.push(format!("HEAD...{branch}")),
     }
     // MG.22b: `magit.hunk.context-lines` is the DEFAULT, so it only
     // applies when `D` did not set one — the same precedence
@@ -456,14 +478,22 @@ fn run_diff_argv(
     args
 }
 
+/// MG.43e: the merge-preview argv, for the assertion that its range
+/// uses three dots. Exposed rather than reconstructed in the test so
+/// the test cannot drift from what actually runs.
+#[cfg(test)]
+pub(crate) fn merge_preview_argv_for_test(branch: &str) -> Vec<String> {
+    run_diff_argv(&DiffScope::MergePreview(branch.to_string()), None, &[], 3)
+}
+
 fn run_diff(
     workdir: &Path,
-    scope: DiffScope,
+    scope: &DiffScope,
     path: Option<&Path>,
     extra: &[String],
     context: i64,
 ) -> String {
-    let args = run_diff_argv(scope, path, extra, context);
+    let args = run_diff_argv(&scope, path, extra, context);
     let output = std::process::Command::new("git")
         .args(&args)
         .current_dir(workdir)
@@ -476,6 +506,9 @@ fn run_diff(
                     DiffScope::Head => "No changes against HEAD.\n".to_string(),
                     DiffScope::Staged => "No staged changes.\n".to_string(),
                     DiffScope::Unstaged => "No unstaged changes.\n".to_string(),
+                    DiffScope::MergePreview(b) => {
+                        format!("Merging {b} would bring in no changes.\n")
+                    }
                 }
             } else {
                 text
@@ -489,11 +522,15 @@ fn run_diff(
 ///
 /// Split from [`MagitView::diff_source`] so the mapping is testable
 /// without a live buffer and a spawned document actor.
-fn source_for_scope(scope: DiffScope) -> Option<DiffSource> {
+fn source_for_scope(scope: &DiffScope) -> Option<DiffSource> {
     match scope {
         DiffScope::Staged => Some(DiffSource::Staged),
         DiffScope::Unstaged => Some(DiffSource::Unstaged),
-        DiffScope::Head => None,
+        // MG.43e: a merge preview describes a merge that has NOT
+        // happened, so there is no tree to stage a hunk into. Applying
+        // one would write changes the branch has not been merged for —
+        // `s` / `u` / `x` correctly decline here.
+        DiffScope::Head | DiffScope::MergePreview(_) => None,
     }
 }
 
@@ -526,7 +563,7 @@ impl MagitView for DiffView {
                 name: crate::magit_file_revision_mode::blob_buffer_name("staged", path),
                 mode_id: "magit-file-revision-mode".to_string(),
             }),
-            DiffScope::Head | DiffScope::Unstaged => {
+            DiffScope::Head | DiffScope::Unstaged | DiffScope::MergePreview(_) => {
                 let full = g.workdir.join(path);
                 full.exists().then_some(Effect::OpenBuffer {
                     path: Some(full),
@@ -563,7 +600,7 @@ impl MagitView for DiffView {
     /// would be guesswork. `d s` / `d u` from magit-status open the
     /// scoped views where the question has an answer.
     fn diff_source(&self, _cursor: Position) -> Option<DiffSource> {
-        source_for_scope(self.0.lock().ok()?.scope)
+        source_for_scope(&self.0.lock().ok()?.scope)
     }
 
     /// MG.18d: a diff buffer's landmark is the `diff --git` header —
@@ -616,13 +653,13 @@ mod tests {
     /// cannot tell which one applies.
     #[test]
     fn the_context_option_yields_to_the_menus_override() {
-        let with_default = run_diff_argv(DiffScope::Unstaged, None, &[], 7);
+        let with_default = run_diff_argv(&DiffScope::Unstaged, None, &[], 7);
         assert!(
             with_default.contains(&"--unified=7".to_string()),
             "the option supplies the context when the menu did not: {with_default:?}"
         );
 
-        let overridden = run_diff_argv(DiffScope::Unstaged, None, &["--unified=1".to_string()], 7);
+        let overridden = run_diff_argv(&DiffScope::Unstaged, None, &["--unified=1".to_string()], 7);
         assert!(
             overridden.contains(&"--unified=1".to_string()),
             "the menu's value must be there: {overridden:?}"
@@ -642,7 +679,7 @@ mod tests {
     #[test]
     fn every_argument_precedes_the_path_separator() {
         let argv = run_diff_argv(
-            DiffScope::Staged,
+            &DiffScope::Staged,
             Some(std::path::Path::new("src/main.rs")),
             &["-w".to_string()],
             3,
@@ -666,15 +703,15 @@ mod tests {
     #[test]
     fn only_the_scoped_views_can_stage_a_hunk() {
         assert_eq!(
-            source_for_scope(DiffScope::Staged),
+            source_for_scope(&DiffScope::Staged),
             Some(DiffSource::Staged)
         );
         assert_eq!(
-            source_for_scope(DiffScope::Unstaged),
+            source_for_scope(&DiffScope::Unstaged),
             Some(DiffSource::Unstaged)
         );
         assert_eq!(
-            source_for_scope(DiffScope::Head),
+            source_for_scope(&DiffScope::Head),
             None,
             "a HEAD diff mixes both sides in one hunk"
         );

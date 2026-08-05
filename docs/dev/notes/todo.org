@@ -199,6 +199,7 @@
 - [X] `dw` on the last word in a line deletes the whole line (probably something to do with consuming the new line)
 - [X] cursor movements within popup are off, cursor not in sync with cursorline and jumps lines
 - [X] folding still gets messed up when opening a file in vertical split.
+- [ ] `zj` should go to the next visible fold, right now it goes to the next fold and if that fold is nested within the current fold, the cursor remains on that line. `zk` should also follow same concept.
 
 * Documentation
 - [X] lattice-tutor

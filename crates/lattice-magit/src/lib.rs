@@ -2453,6 +2453,23 @@ fn register_action_commands(registry: &mut CommandRegistry) {
         "action:magit-global-branch-reset-finish",
         "Ask before resetting the current branch to the named ref",
     );
+    // MG.43e: merge preview / merge-into, tag release / prune.
+    reg(
+        "action:magit-global-merge-preview",
+        "Show what merging a branch would bring in (asks which)",
+    );
+    reg(
+        "action:magit-global-merge-into",
+        "Merge this branch into another, then delete this one (asks which)",
+    );
+    reg(
+        "action:magit-global-tag-release",
+        "Create an annotated release tag (asks name and message)",
+    );
+    reg(
+        "action:magit-global-tag-prune",
+        "Drop local tags that no longer exist on the remote (asks the remote)",
+    );
     // MG.43g: the `C` configure rows' actions, one pair per key.
     for (name, doc) in [
         (
@@ -5062,8 +5079,9 @@ mod tests {
             // MG.42-E1: +commit `A` augment, +merge `e` edit.
             // MG.43a: +commit `e`, +revert `v`, +cherry-pick `a`,
             // +branch `x` reset. MG.43b: +5 rebase onto-target rows;
-            // MG.43c: +3 todo-rewriting rows; MG.43g: +6 `C` rows.
-            101,
+            // MG.43c: +3 todo-rewriting rows; MG.43g: +6 `C` rows;
+            // MG.43e: +merge `p`/`i`, +tag `r`/`p`.
+            105,
             "expected every root-dispatch leaf (incl. both submenus') to \
              report inert, got: {root:?}"
         );
@@ -5089,8 +5107,8 @@ mod tests {
             bisecting.len(),
             // MG.41c: +13 destination rows; MG.41d: +4 more;
             // MG.42-E1: +2 (augment, merge-edit); MG.43a: +4;
-            // MG.43b: +5; MG.43c: +3; MG.43g: +6.
-            104,
+            // MG.43b: +5; MG.43c: +3; MG.43g: +6; MG.43e: +4.
+            108,
             "the in-progress bisect menu trades `start` for good/bad/skip/reset: {bisecting:?}"
         );
     }

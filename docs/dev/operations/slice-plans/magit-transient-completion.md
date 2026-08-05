@@ -294,7 +294,7 @@ copy `A` already does.
 
 ---
 
-## Deferred, and why
+## Dropped from scope
 
 **Stash `w` worktree-only — not in v1.** Git has no flag for it; magit
 implements it with `git stash create` plus tree plumbing, and every

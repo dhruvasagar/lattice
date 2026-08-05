@@ -213,7 +213,7 @@ the run share `RemoteOp::preview`, so the preview assertion covers
 both); `-f` + `-F` are mutually exclusive; pull is reachable as a
 submenu from the dispatch.
 
-**Landed so far (🚧 — mechanism, not yet the rows).** `RemoteTarget`
+**Part 1 — the mechanism.** `RemoteTarget`
 (`Configured` / `Upstream` / `AllRemotes` / `AllTags` / `Prompted`) with
 `argv`, `resolve_upstream`, and `spawn_remote_op_to`. 5 argv tests.
 
@@ -271,7 +271,7 @@ see "Out of scope").
 | **Reset** `O` | `s m h` | `k` keep, `i` index, `w` worktree, `f` a file |
 | **Branch** `b` | `b l c n m x L` | `s` spin-off, `S` spin-out; **`x` becomes reset, `k` becomes delete** |
 
-**Landed so far (🚧).** Reset gains `k` keep and `i` index; commit
+**Landed in MG.41d itself.** Reset gains `k` keep and `i` index; commit
 gains `f` fixup and `s` squash. `CommitOp` grew a `trailing` field so
 `git reset <commit> --` can put its `--` AFTER the commit — that
 position is what makes it index-only rather than also moving HEAD, so
@@ -325,7 +325,7 @@ bools (the MG.38–MG.40 retro already recorded that).
 Suggested order: `r` rebase and `m` merge first (most used, and they
 exercise the gating), then `A`, `t`, `_`.
 
-**`r` rebase landed (🚧 for the slice).** It is now a gated submenu:
+**`r` rebase.** It is now a gated submenu:
 `i` interactively when nothing is running, `r`/`s`/`a`
 continue/skip/abort when a rebase is stopped — never both, because
 each set errors in the other state.

@@ -736,6 +736,29 @@ const REBASE_START_ROWS: &[TransientRow] = &[
         action: "action:magit-global-rebase-subset",
         placeholder: "rebase_subset_op",
     },
+    // MG.43c: the todo-rewriting rows. Each names a commit and changes
+    // its verb; the verb IS the operation.
+    TransientRow {
+        key: "m",
+        label: "edit a commit",
+        doc: "Replay history, stopping at a commit so you can change it",
+        action: "action:magit-rebase-edit-commit",
+        placeholder: "rebase_edit_commit_op",
+    },
+    TransientRow {
+        key: "w",
+        label: "reword a commit",
+        doc: "Change an older commit's message",
+        action: "action:magit-rebase-reword-commit",
+        placeholder: "rebase_reword_commit_op",
+    },
+    TransientRow {
+        key: "k",
+        label: "remove a commit",
+        doc: "Replay history without a commit",
+        action: "action:magit-rebase-remove-commit",
+        placeholder: "rebase_remove_commit_op",
+    },
     TransientRow {
         key: "f",
         label: "autosquash",
@@ -2845,7 +2868,7 @@ mod rebase_gate_tests {
         let spec = rebase_transient(&MagitActionIds::default(), false);
         // MG.43b added magit's onto-a-target rows; every one is a way
         // IN, so all belong to the idle set.
-        assert_eq!(keys(&spec), vec!["p", "u", "e", "s", "f", "i"]);
+        assert_eq!(keys(&spec), vec!["p", "u", "e", "s", "m", "w", "k", "f", "i"]);
     }
 
     /// Inside one the menu offers only the ways OUT — starting another
@@ -3212,6 +3235,42 @@ mod commit_intent_tests {
                 branch: "amend-fixes".to_string()
             }
         );
+    }
+
+    /// MG.43c: reword-a-commit is checked BEFORE the bare `reword`
+    /// test, and the two are different operations.
+    ///
+    /// `*magit:reword-commit:<sha>*` contains the substring `reword`,
+    /// so an ordering slip would make it amend HEAD — rewriting the
+    /// wrong commit's message, and one the user can see is wrong only
+    /// after it has happened.
+    #[test]
+    fn reword_a_commit_is_not_reword_head() {
+        let name = CommitIntent::reword_commit_buffer_name("abc123");
+        assert_eq!(
+            CommitIntent::from_buffer_name(&name),
+            CommitIntent::RewordCommit {
+                target: "abc123".to_string()
+            },
+        );
+        assert_ne!(CommitIntent::from_buffer_name(&name), CommitIntent::Reword);
+    }
+
+    /// It seeds from the commit it NAMES, not from HEAD.
+    ///
+    /// The buffer's text is what gets written back, so seeding from
+    /// HEAD would show the wrong message and then apply it to the
+    /// target — replacing one commit's message with another's.
+    #[test]
+    fn reword_a_commit_seeds_from_its_own_target() {
+        let intent = CommitIntent::RewordCommit {
+            target: "abc123".to_string(),
+        };
+        assert!(intent.seeds_prior_message());
+        assert_eq!(intent.seed_source(), Some("abc123"));
+        // The HEAD-acting intents name no source and fall back to HEAD.
+        assert_eq!(CommitIntent::Reword.seed_source(), None);
+        assert_eq!(CommitIntent::Amend.seed_source(), None);
     }
 
     /// Neither targeted intent pre-fills the buffer.

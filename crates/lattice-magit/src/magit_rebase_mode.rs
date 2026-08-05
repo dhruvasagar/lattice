@@ -15,10 +15,17 @@
 //! sequence editor as `<editor> <path-to-generated-todo>`, so
 //! setting it to `cp <our-file>` replaces git's todo with ours in
 //! one step. `GIT_EDITOR=true` avoids hanging on a `reword` step's
-//! commit-message prompt (accepts the original message unchanged —
-//! there's no message-editing UI wired up here yet, a known
-//! limitation, not a silent failure: the commit simply keeps its
-//! original message).
+//! commit-message prompt by accepting the original message unchanged.
+//!
+//! MG.43c lifted that limitation for the rebase `w` row, using the
+//! same trick one level down: the message is collected in a compose
+//! buffer FIRST, then `GIT_EDITOR` is pointed at `cp <message-file>`
+//! so git's reword step writes it. `GIT_EDITOR=true` remains the
+//! default for `edit` and `drop`, neither of which opens an editor.
+//!
+//! The todo buffer itself still keeps the original message on a
+//! hand-typed `reword` line — it has no message-editing UI. That
+//! remains a known limitation rather than a silent failure.
 
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -547,6 +554,10 @@ fn build_rebase_buffer(workdir: &Path, target: &RebaseTarget) -> (String, String
 /// travels through `RebaseState::upstream` and `run_rebase` unchanged.
 const ROOT: &str = "--root";
 
+/// Makes each rebase's scratch files unique. See
+/// `run_rebase_with_message` for the collision this prevents.
+static REBASE_TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// `<sha>^`, or [`ROOT`] when `sha` is a root commit and has no parent.
 ///
 /// Asked as "how many parents does it have" rather than "does `<sha>^`
@@ -597,13 +608,28 @@ fn blame_line_commit(repo: &Repository, line: u32, path: &str) -> Result<String,
 /// Rewrite the `pick` on the row naming `short` to `edit`. `None` when
 /// no row names it.
 fn mark_edit(log: &str, short: &str) -> Option<String> {
+    mark_verb(log, short, "edit")
+}
+
+/// MG.43c: rewrite the `pick` on the row naming `short` to `verb`.
+///
+/// Generalises [`mark_edit`], which MG.34 needed only for `edit`.
+/// Magit's rebase `m` / `w` / `k` are the same operation with `edit`,
+/// `reword` and `drop` — the verb is the only thing that differs, so
+/// it is a parameter rather than three near-identical walks.
+///
+/// Matched by sha rather than "the first row", for the reason MG.34
+/// recorded: with a merge in range, `--reverse` can put a side
+/// branch's older commits ahead of the named one, and marking the
+/// wrong row is shape-identical to marking the right one.
+pub(crate) fn mark_verb(log: &str, short: &str, verb: &str) -> Option<String> {
     let mut found = false;
     let marked = log
         .lines()
         .map(|l| match l.strip_prefix("pick ") {
             Some(rest) if !found && rest.split_whitespace().next() == Some(short) => {
                 found = true;
-                format!("edit {rest}")
+                format!("{verb} {rest}")
             }
             _ => l.to_string(),
         })
@@ -612,21 +638,109 @@ fn mark_edit(log: &str, short: &str) -> Option<String> {
     found.then_some(marked)
 }
 
+/// MG.43c: run an interactive rebase that acts on ONE commit.
+///
+/// Builds the todo for `<commit>^..HEAD`, rewrites that commit's row
+/// to `verb`, and runs it. `message`, when given, is what git's
+/// `reword` step writes — see [`run_rebase_with_message`] for why that
+/// is what makes `w` work at all.
+///
+/// Returns the label-worthy error text on failure.
+pub(crate) fn rebase_one_commit(
+    workdir: &Path,
+    commit: &str,
+    verb: &str,
+    message: Option<&str>,
+) -> Result<(), String> {
+    let repo = Repository::discover(workdir).map_err(|e| e.to_string())?;
+    let upstream = parent_or_root(&repo, commit);
+    let range = if upstream == ROOT {
+        "HEAD".to_string()
+    } else {
+        format!("{upstream}..HEAD")
+    };
+    let log = repo
+        .run_git_str(["log", "--reverse", "--format=pick %h %s", &range])
+        .map_err(|e| e.to_string())?;
+    let short = repo
+        .run_git_str(["log", "-1", "--format=%h", commit])
+        .map_err(|e| e.to_string())?
+        .trim()
+        .to_string();
+    // A commit outside the range would otherwise produce an all-`pick`
+    // todo: a rebase that replays history and changes nothing, which
+    // looks like success and is not what the row promised.
+    let todo = mark_verb(&log, &short, verb)
+        .ok_or_else(|| format!("{short} is not in the range being rebased"))?;
+    run_rebase_with_message(workdir, &upstream, &todo, message)
+}
+
 fn run_rebase(workdir: &Path, upstream: &str, todo: &str) -> Result<(), String> {
+    run_rebase_with_message(workdir, upstream, todo, None)
+}
+
+/// MG.43c: `run_rebase`, plus the message a `reword` step will take.
+///
+/// **This is what makes rebase `w` possible.** `GIT_EDITOR=true`
+/// accepts a reword's message unchanged, which turns the operation
+/// into a no-op that reports success — the limitation this module's
+/// header records. Pointing `GIT_EDITOR` at `cp <file>` instead hands
+/// git a message we collected up front, exactly the way
+/// `GIT_SEQUENCE_EDITOR` already hands it a todo list.
+///
+/// With no message the old behaviour is unchanged: `true` accepts
+/// whatever git generated, which is correct for `edit` and `drop`
+/// because neither opens an editor.
+fn run_rebase_with_message(
+    workdir: &Path,
+    upstream: &str,
+    todo: &str,
+    message: Option<&str>,
+) -> Result<(), String> {
+    // Process id + upstream is NOT unique: two rebases can be in
+    // flight at once, and when they share an upstream they share the
+    // path — one overwrites the other's todo and git replays the wrong
+    // list. A monotonic counter makes each call's file its own.
+    //
+    // Found by two tests colliding: identical fixture repos built in
+    // the same second produce identical shas, so both named the same
+    // upstream. The tests exposed it; the race is real without them.
+    let seq = REBASE_TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let tmp = std::env::temp_dir().join(format!(
-        "lattice-rebase-todo-{}-{}",
+        "lattice-rebase-todo-{}-{seq}-{}",
         std::process::id(),
         upstream.replace(['/', ' '], "_")
     ));
     std::fs::write(&tmp, todo).map_err(|e| e.to_string())?;
     let editor_cmd = format!("cp {}", tmp.display());
+    // Kept alive for the whole call: dropping it would remove the file
+    // before git's reword step reads it.
+    let msg_tmp = match message {
+        Some(m) => {
+            let path = std::env::temp_dir().join(format!(
+                "lattice-rebase-msg-{}-{seq}-{}",
+                std::process::id(),
+                upstream.replace(['/', ' '], "_")
+            ));
+            std::fs::write(&path, m).map_err(|e| e.to_string())?;
+            Some(path)
+        }
+        None => None,
+    };
+    let git_editor = match &msg_tmp {
+        Some(path) => format!("cp {}", path.display()),
+        None => "true".to_string(),
+    };
     let result = std::process::Command::new("git")
         .args(["rebase", "-i", upstream])
         .env("GIT_SEQUENCE_EDITOR", &editor_cmd)
-        .env("GIT_EDITOR", "true")
+        .env("GIT_EDITOR", &git_editor)
         .current_dir(workdir)
         .output();
     let _ = std::fs::remove_file(&tmp);
+    if let Some(path) = &msg_tmp {
+        let _ = std::fs::remove_file(path);
+    }
     match result {
         Ok(o) if o.status.success() => Ok(()),
         Ok(o) => Err(String::from_utf8_lossy(&o.stderr).trim().to_string()),
@@ -782,6 +896,101 @@ mod tests {
     #[test]
     fn a_commit_not_in_range_is_refused() {
         assert_eq!(mark_edit("pick aaaaaaa only", "bbbbbbb"), None);
+    }
+
+    /// MG.43c: the verb is the operation, and only the named row's
+    /// verb changes.
+    #[test]
+    fn mark_verb_rewrites_only_the_named_row() {
+        let log = "pick aaaaaaa one\npick bbbbbbb two\npick ccccccc three";
+        for verb in ["edit", "reword", "drop"] {
+            let marked = mark_verb(log, "bbbbbbb", verb).expect("in range");
+            assert_eq!(
+                marked,
+                format!("pick aaaaaaa one\n{verb} bbbbbbb two\npick ccccccc three"),
+            );
+        }
+    }
+
+    /// MG.43c: **`m` really does stop the rebase at the named commit.**
+    ///
+    /// The failure this guards is the quiet one: a todo whose verb
+    /// never took would replay history unchanged and report success,
+    /// so the row would look like it worked and do nothing.
+    #[test]
+    fn editing_a_commit_stops_the_rebase_there() {
+        let (dir, shas) = repo_with_a_line_per_commit();
+        let p = dir.path();
+        rebase_one_commit(p, &shas[1], "edit", None).expect("rebase runs");
+        assert!(
+            rebase_in_progress(&p.join(".git")),
+            "an `edit` verb must leave the rebase stopped",
+        );
+        assert_eq!(
+            git(p, &["rev-parse", "HEAD"]),
+            shas[1],
+            "it must stop ON the named commit, not before or after it",
+        );
+        git(p, &["rebase", "--abort"]);
+    }
+
+    /// MG.43c: `k` removes the named commit and keeps the rest.
+    ///
+    /// Each commit touches its OWN file. The shared-file fixture the
+    /// other tests use would conflict here, and legitimately so —
+    /// dropping a commit a later one builds on is a real conflict git
+    /// stops on, not something this row should paper over.
+    #[test]
+    fn removing_a_commit_drops_only_that_one() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let p = dir.path();
+        git(p, &["init", "-b", "main"]);
+        git(p, &["config", "user.email", "t@lattice.dev"]);
+        git(p, &["config", "user.name", "lattice-test"]);
+        for (n, file) in [("one", "a.txt"), ("two", "b.txt"), ("three", "c.txt")] {
+            std::fs::write(p.join(file), format!("{n}\n")).expect("write");
+            git(p, &["add", file]);
+            git(p, &["commit", "-m", n]);
+        }
+        let middle = git(p, &["rev-parse", "HEAD~1"]);
+        rebase_one_commit(p, &middle, "drop", None).expect("rebase runs");
+        let subjects = git(p, &["log", "--format=%s"]);
+        assert!(!subjects.contains("two"), "`two` must be gone: {subjects:?}");
+        assert!(subjects.contains("one"), "`one` must survive: {subjects:?}");
+        assert!(
+            subjects.contains("three"),
+            "`three` must survive: {subjects:?}"
+        );
+    }
+
+    /// MG.43c: **`w` actually applies the message — the whole reason
+    /// `GIT_EDITOR` is pointed at `cp <file>` instead of `true`.**
+    ///
+    /// With `GIT_EDITOR=true` git accepts a reword's message
+    /// unchanged, so the operation succeeds and changes nothing. That
+    /// is precisely the limitation this module's header used to
+    /// record, and it is invisible from the outside: the command exits
+    /// 0 either way. Asserting on the resulting message is the only
+    /// thing that tells the two apart.
+    #[test]
+    fn rewording_a_commit_applies_the_new_message() {
+        let (dir, _) = repo_with_a_line_per_commit();
+        let p = dir.path();
+        let middle = git(p, &["rev-parse", "HEAD~1"]);
+        rebase_one_commit(p, &middle, "reword", Some("a better subject")).expect("rebase runs");
+
+        let subjects = git(p, &["log", "--format=%s"]);
+        assert!(
+            subjects.contains("a better subject"),
+            "the new message must reach the commit: {subjects:?}",
+        );
+        assert!(
+            !subjects.contains("two"),
+            "the old message must be gone: {subjects:?}",
+        );
+        // The other commits keep theirs — a reword rewrites one
+        // message, not the branch's.
+        assert!(subjects.contains("one") && subjects.contains("three"), "{subjects:?}");
     }
 
     /// Blame resolves the commit that wrote *that* line, not HEAD.

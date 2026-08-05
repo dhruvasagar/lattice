@@ -71,6 +71,14 @@ pub enum CommitIntent {
     /// Complete a merge of `branch` with an authored message. Magit's
     /// merge `e`.
     MergeEdit { branch: String },
+    /// MG.43c: reword a commit that is NOT HEAD, via an interactive
+    /// rebase. Magit's rebase `w`.
+    ///
+    /// Distinct from [`Self::Reword`], which amends HEAD directly. A
+    /// commit further back cannot be amended, so this replays history
+    /// with that commit's todo verb set to `reword` and hands git the
+    /// message through `GIT_EDITOR`.
+    RewordCommit { target: String },
 }
 
 impl CommitIntent {
@@ -88,6 +96,12 @@ impl CommitIntent {
         }
         if let Some(branch) = Self::suffix_after(name, "merge-edit:") {
             return Self::MergeEdit { branch };
+        }
+        // Checked before the bare `reword` test below: this name
+        // contains "reword" too, and the two are different operations
+        // (amend HEAD vs. replay history).
+        if let Some(target) = Self::suffix_after(name, "reword-commit:") {
+            return Self::RewordCommit { target };
         }
         if name.contains("reword") {
             Self::Reword
@@ -114,9 +128,23 @@ impl CommitIntent {
         format!("*magit:merge-edit:{branch}*")
     }
 
+    pub fn reword_commit_buffer_name(target: &str) -> String {
+        format!("*magit:reword-commit:{target}*")
+    }
+
     /// Does the buffer open pre-filled with the previous message?
     pub fn seeds_prior_message(&self) -> bool {
-        matches!(self, Self::Amend | Self::Reword)
+        // `RewordCommit` seeds too — a reword starts from the message
+        // being replaced, whichever commit it is on.
+        matches!(self, Self::Amend | Self::Reword | Self::RewordCommit { .. })
+    }
+
+    /// The commit whose message seeds the buffer, when it is not HEAD.
+    pub fn seed_source(&self) -> Option<&str> {
+        match self {
+            Self::RewordCommit { target } => Some(target.as_str()),
+            _ => None,
+        }
     }
 }
 
@@ -296,6 +324,20 @@ impl Mode for MagitCommitMode {
                             CommitIntent::MergeEdit { branch } => {
                                 Commit::merge_with_message(&repo, branch, message.trim())
                             }
+                            // MG.43c: not an amend — a commit further
+                            // back cannot be amended, so this replays
+                            // history with that commit's todo verb set
+                            // to `reword` and hands git the message
+                            // through `GIT_EDITOR`.
+                            CommitIntent::RewordCommit { target } => {
+                                crate::magit_rebase_mode::rebase_one_commit(
+                                    &workdir,
+                                    target,
+                                    "reword",
+                                    Some(message.trim()),
+                                )
+                                .map_err(lattice_vcs::VcsError::Index)
+                            }
                             CommitIntent::Create => Commit::create(&repo, message.trim()),
                         };
                         if let Err(e) = result {
@@ -346,6 +388,12 @@ impl Mode for MagitCommitMode {
                 .map(|n| CommitIntent::from_buffer_name(&n))
                 .unwrap_or(CommitIntent::Create);
             let amend = intent.seeds_prior_message();
+            // MG.43c: a reword-a-commit buffer seeds from the commit it
+            // names, not from HEAD. Seeding from HEAD would put the
+            // WRONG message in front of the user and, since the buffer
+            // is what gets written back, silently overwrite the target's
+            // message with a different commit's.
+            let seed_rev = intent.seed_source().unwrap_or("HEAD").to_string();
 
             // MG.14: what is staged is not knowable until the diff
             // below lands, so the header fills in with it. `AMEND` is
@@ -393,7 +441,7 @@ impl Mode for MagitCommitMode {
             let (staged, prior_message, branch) = tokio::task::spawn_blocking(move || {
                 let staged = run_staged_diff(&wd);
                 let prior = if amend {
-                    run_prior_commit_message(&wd)
+                    run_commit_message(&wd, &seed_rev)
                 } else {
                     String::new()
                 };
@@ -463,14 +511,19 @@ fn run_staged_diff(workdir: &std::path::Path) -> String {
         .unwrap_or_default()
 }
 
-/// `git log -1 --format=%B` — the current HEAD commit's full message,
-/// used to pre-populate the amend buffer instead of leaving it blank.
-fn run_prior_commit_message(workdir: &std::path::Path) -> String {
+/// `git log -1 --format=%B <rev>` — that commit's full message, used
+/// to pre-populate a replacing buffer instead of leaving it blank.
+///
+/// MG.43c made the revision a parameter. Amend and reword act on HEAD;
+/// rebase `w` acts on a commit further back, and seeding it from HEAD
+/// would show the wrong message and then write it onto the target.
+fn run_commit_message(workdir: &std::path::Path, rev: &str) -> String {
     std::process::Command::new("git")
-        .args(["log", "-1", "--format=%B"])
+        .args(["log", "-1", "--format=%B", rev])
         .current_dir(workdir)
         .output()
         .ok()
+        .filter(|o| o.status.success())
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .unwrap_or_default()
 }

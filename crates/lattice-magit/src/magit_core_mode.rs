@@ -169,6 +169,39 @@ fn commit_op(
     }
 }
 
+/// MG.43c: magit's rebase `m` / `w` / `k` — act on ONE commit by
+/// rewriting its verb in the todo list.
+///
+/// Same cursor-then-picker resolution as [`commit_op`]. `verb` is the
+/// only difference between the three rows, which is why they share a
+/// builder rather than getting three near-identical handlers.
+///
+/// `reword` is NOT here: it needs a message, so it opens the compose
+/// buffer instead (see `CommitIntent::RewordCommit`).
+fn rebase_verb_op(
+    action_name: &'static str,
+    verb: &'static str,
+    label: &'static str,
+    ex_command: &'static str,
+) -> lattice_mode::ActionHandlerContribution {
+    lattice_mode::ActionHandlerContribution {
+        action_name,
+        handler: Arc::new(move |ctx: &ActionContext<'_>| {
+            let resolved = crate::buffer_state::view_for(ctx)
+                .and_then(|view| view.commit_at_cursor(ctx.cursor));
+            let Some(commit) = resolved else {
+                return Some(Effect::OpenPicker {
+                    source: crate::picker_sources::COMMIT_PICK_SOURCE.to_string(),
+                    args: vec![ex_command.to_string()],
+                });
+            };
+            Some(crate::magit_global_mode::spawn_rebase_verb(
+                label, verb, &commit,
+            ))
+        }),
+    }
+}
+
 /// MG.42-E2: a [`commit_op`] whose work is a SEQUENCE.
 ///
 /// Same cursor-then-picker resolution as `commit_op` — the row can be
@@ -1027,6 +1060,41 @@ impl Mode for MagitCoreMode {
                 "action:magit-revert",
                 crate::magit_global_mode::CommitOp::REVERT,
             ),
+            // MG.43c: rebase's todo-rewriting rows. One builder, three
+            // verbs — the verb IS the operation.
+            rebase_verb_op(
+                "action:magit-rebase-edit-commit",
+                "edit",
+                "rebase edit a commit",
+                "magit-rebase-edit-commit",
+            ),
+            rebase_verb_op(
+                "action:magit-rebase-remove-commit",
+                "drop",
+                "rebase remove a commit",
+                "magit-rebase-remove-commit",
+            ),
+            // MG.43c: `w` needs a message, so it opens the compose
+            // buffer with the target in the name rather than spawning.
+            lattice_mode::ActionHandlerContribution {
+                action_name: "action:magit-rebase-reword-commit",
+                handler: Arc::new(move |ctx: &ActionContext<'_>| {
+                    let resolved = crate::buffer_state::view_for(ctx)
+                        .and_then(|view| view.commit_at_cursor(ctx.cursor));
+                    let Some(commit) = resolved else {
+                        return Some(Effect::OpenPicker {
+                            source: crate::picker_sources::COMMIT_PICK_SOURCE.to_string(),
+                            args: vec!["magit-rebase-reword-commit".to_string()],
+                        });
+                    };
+                    Some(Effect::OpenSyntheticBuffer {
+                        name: crate::magit_commit_mode::CommitIntent::reword_commit_buffer_name(
+                            &commit,
+                        ),
+                        mode_id: "magit-commit-mode".to_string(),
+                    })
+                }),
+            },
             // MG.43a: the `--no-commit` halves. Same resolution, same
             // shape — only the argv differs, which is the point of
             // `CommitOp` being data.

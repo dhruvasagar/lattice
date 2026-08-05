@@ -1082,6 +1082,90 @@ fn register_ex_commands(
         }
     }
     {
+        // MG.43c: the rebase todo rows' scriptable halves, and the
+        // targets of their picker fallbacks (`<ex-command> <sha>`).
+        for (name, verb, label, doc) in [
+            (
+                "magit-rebase-edit-commit",
+                "edit",
+                "rebase edit a commit",
+                "Replay history, stopping at the named commit. With no argument: pick one.",
+            ),
+            (
+                "magit-rebase-remove-commit",
+                "drop",
+                "rebase remove a commit",
+                "Replay history without the named commit. With no argument: pick one.",
+            ),
+        ] {
+            registry.register_ex_command(
+                name,
+                doc,
+                ExCommandSpec {
+                    latency_class: LatencyClass::Reflex,
+                    accepts_bang: false,
+                    accepts_range: false,
+                    parse_args: Arc::new(|line: &str, _bang: bool| {
+                        Ok(Args::String(line.trim().to_string()))
+                    }),
+                    apply: Arc::new(move |ctx| {
+                        let commit = match ctx.args {
+                            Args::String(ref s) if !s.trim().is_empty() => s.trim().to_string(),
+                            _ => {
+                                return Ok(Effect::OpenPicker {
+                                    source: picker_sources::COMMIT_PICK_SOURCE.to_string(),
+                                    args: vec![name.to_string()],
+                                });
+                            }
+                        };
+                        Ok(magit_global_mode::spawn_rebase_verb(label, verb, &commit))
+                    }),
+                    args_schema: vec![ArgSpec::optional(
+                        "commit",
+                        lattice_grammar::ArgKind::String,
+                        "commit to act on; omit to pick one",
+                    )],
+                    surface_form: SurfaceForm::Keyword,
+                },
+            );
+        }
+        // `w` reword opens the compose buffer rather than spawning —
+        // it needs a message before anything runs.
+        registry.register_ex_command(
+            "magit-rebase-reword-commit",
+            "Change the named commit's message. With no argument: pick one.",
+            ExCommandSpec {
+                latency_class: LatencyClass::Reflex,
+                accepts_bang: false,
+                accepts_range: false,
+                parse_args: Arc::new(|line: &str, _bang: bool| {
+                    Ok(Args::String(line.trim().to_string()))
+                }),
+                apply: Arc::new(move |ctx| {
+                    let commit = match ctx.args {
+                        Args::String(ref s) if !s.trim().is_empty() => s.trim().to_string(),
+                        _ => {
+                            return Ok(Effect::OpenPicker {
+                                source: picker_sources::COMMIT_PICK_SOURCE.to_string(),
+                                args: vec!["magit-rebase-reword-commit".to_string()],
+                            });
+                        }
+                    };
+                    Ok(Effect::OpenSyntheticBuffer {
+                        name: magit_commit_mode::CommitIntent::reword_commit_buffer_name(&commit),
+                        mode_id: "magit-commit-mode".to_string(),
+                    })
+                }),
+                args_schema: vec![ArgSpec::optional(
+                    "commit",
+                    lattice_grammar::ArgKind::String,
+                    "commit to reword; omit to pick one",
+                )],
+                surface_form: SurfaceForm::Keyword,
+            },
+        );
+    }
+    {
         // MG.42-E1: augment's scriptable half — and the target of its
         // picker fallback, which invokes `<ex-command> <sha>`. The
         // commit rides IN the compose buffer's name, so the buffer
@@ -2325,6 +2409,19 @@ fn register_action_commands(registry: &mut CommandRegistry) {
         "action:magit-global-branch-reset-finish",
         "Ask before resetting the current branch to the named ref",
     );
+    // MG.43c: rebase's todo-rewriting rows.
+    reg(
+        "action:magit-rebase-edit-commit",
+        "Replay history, stopping at a commit so you can change it",
+    );
+    reg(
+        "action:magit-rebase-reword-commit",
+        "Change an older commit's message",
+    );
+    reg(
+        "action:magit-rebase-remove-commit",
+        "Replay history without a commit",
+    );
     // MG.43b: rebase's onto-a-target rows.
     reg(
         "action:magit-global-rebase-onto-push",
@@ -2913,6 +3010,10 @@ mod tests {
             // MG.42-E1: augment's fallback, which is a bare string in
             // both its action handler and its own ex-command.
             "magit-augment",
+            // MG.43c: the rebase todo rows' fallbacks.
+            "magit-rebase-edit-commit",
+            "magit-rebase-remove-commit",
+            "magit-rebase-reword-commit",
         ];
 
         for name in picker_args {
@@ -4810,8 +4911,9 @@ mod tests {
             // MG.41d: +2 reset modes, +2 commit autosquash rows.
             // MG.42-E1: +commit `A` augment, +merge `e` edit.
             // MG.43a: +commit `e`, +revert `v`, +cherry-pick `a`,
-            // +branch `x` reset. MG.43b: +5 rebase onto-target rows.
-            92,
+            // +branch `x` reset. MG.43b: +5 rebase onto-target rows;
+            // MG.43c: +3 todo-rewriting rows.
+            95,
             "expected every root-dispatch leaf (incl. both submenus') to \
              report inert, got: {root:?}"
         );
@@ -4837,8 +4939,8 @@ mod tests {
             bisecting.len(),
             // MG.41c: +13 destination rows; MG.41d: +4 more;
             // MG.42-E1: +2 (augment, merge-edit); MG.43a: +4;
-            // MG.43b: +5.
-            95,
+            // MG.43b: +5; MG.43c: +3.
+            98,
             "the in-progress bisect menu trades `start` for good/bad/skip/reset: {bisecting:?}"
         );
     }

@@ -2746,6 +2746,43 @@ pub fn spawn_git_sequence(label: &'static str, steps: Vec<GitStep>) -> Effect {
     }
 }
 
+/// MG.43c: run a one-commit interactive rebase off the actor thread.
+///
+/// `message` is `Some` only for `reword`, where it is what git's
+/// reword step writes — see `run_rebase_with_message`.
+pub fn spawn_rebase_verb(label: &'static str, verb: &'static str, commit: &str) -> Effect {
+    spawn_rebase_verb_with(label, verb, commit, None)
+}
+
+pub fn spawn_rebase_verb_with(
+    label: &'static str,
+    verb: &'static str,
+    commit: &str,
+    message: Option<String>,
+) -> Effect {
+    let workdir = crate::workdir::magit_workdir().unwrap_or_default();
+    let commit = commit.to_string();
+    let shown = format!("git rebase ({verb} {commit})");
+    tokio::task::spawn(async move {
+        let result = tokio::task::spawn_blocking(move || {
+            crate::magit_rebase_mode::rebase_one_commit(
+                &workdir,
+                &commit,
+                verb,
+                message.as_deref(),
+            )
+            .map(|()| String::new())
+        })
+        .await
+        .unwrap_or_else(|e| Err(e.to_string()));
+        finish_task(label, result);
+    });
+    Effect::Echo {
+        level: lattice_grammar::EchoLevel::Info,
+        text: format!("magit: {shown}"),
+    }
+}
+
 pub fn spawn_git(argv: Vec<String>, what: &str) -> Effect {
     let workdir = crate::workdir::magit_workdir().unwrap_or_default();
     let shown = format!("git {}", argv.join(" "));

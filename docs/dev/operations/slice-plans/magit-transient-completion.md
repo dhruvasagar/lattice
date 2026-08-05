@@ -59,10 +59,11 @@ was right to reject the first attempt. It was wrong about the cause.
 |---|---|---|
 | MG.43a | ✅ | Single-argv rows: commit `e`, revert `v`, cherry-pick `a`, branch `x` |
 | MG.43b | ✅ | Rebase's onto-a-target rows (`p`/`u`/`e`/`s`/`f`) |
-| MG.43c | 📝 | Rebase todo rows (`m`/`w`/`k`) + cherry-pick / branch commit-moving |
-| MG.43d | 📝 | Merge `p`/`i`, tag `r`/`p` |
-| MG.43e | 📝 | Reset `w`, stash `w`, fetch `m` |
-| MG.43f | 📝 | MG.41f — diff / log argument transients |
+| MG.43c | ✅ | Rebase todo rows (`m`/`w`/`k`) |
+| MG.43d | 📝 | Cherry-pick + branch commit-moving rows |
+| MG.43e | 📝 | Merge `p`/`i`, tag `r`/`p` |
+| MG.43f | 📝 | Reset `w`, stash `w`, fetch `m` |
+| MG.43h | 📝 | MG.41f — diff / log argument transients |
 | MG.43g | 📝 | `C` configure — variable rows with async prefetch |
 
 Each lands green on its own; the row-heavy slices are table edits plus
@@ -110,6 +111,39 @@ look like it worked.
 
 Rebase `m` / `w` / `k` are NOT here — they rewrite the todo list rather
 than name a base, so they belong with MG.43c's commit-moving rows.
+
+### MG.43c — landed, and it lifted a documented limitation
+
+Rebase `m` edit a commit, `w` reword a commit, `k` remove a commit.
+One builder, three verbs — the verb IS the operation.
+
+**`w` was the interesting one.** `run_rebase` set `GIT_EDITOR=true`,
+which accepts a reword's message unchanged: the rebase exits 0 and the
+message does not change. That is the limitation this module's header
+recorded, and it is invisible from outside — success either way.
+
+The fix is the trick the module already used one level up. The message
+is collected in a compose buffer FIRST, then `GIT_EDITOR` points at
+`cp <message-file>`, exactly as `GIT_SEQUENCE_EDITOR` already points at
+`cp <todo-file>`. `edit` and `drop` keep `true`, because neither opens
+an editor.
+
+`rewording_a_commit_applies_the_new_message` asserts on the resulting
+message rather than the exit status, which is the only thing that
+distinguishes the fixed version from the broken one.
+
+**A real race surfaced, and it was not a test artefact.** The rebase
+scratch file was named `<pid>-<upstream>`, which is not unique: two
+rebases in flight sharing an upstream share the path, and one
+overwrites the other's todo. Two tests collided because identical
+fixture repos built in the same second produce identical shas. Fixed
+with a monotonic counter — the same shape
+`tempdir-helpers-need-a-counter` records.
+
+**`k` conflicts when a later commit builds on the dropped one**, and
+should: that is a real conflict git stops on, not something the row
+papers over. The test uses independent files precisely so it asserts
+the drop, not the conflict.
 
 ### MG.43g — variable rows, and why the prefetch is the design
 

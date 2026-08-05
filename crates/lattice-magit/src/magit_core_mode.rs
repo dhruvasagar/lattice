@@ -1248,8 +1248,12 @@ impl Mode for MagitCoreMode {
             // per `MagitStatusFoldSource`'s nested ranges).
             lattice_mode::ActionHandlerContribution {
                 action_name: "action:magit-toggle-fold",
-                handler: Arc::new(|_ctx: &ActionContext<'_>| {
-                    Some(Effect::AppAction(AppEffect::ToggleFoldAtCursor))
+                // MG.44: on a status file line this expands the diff
+                // (first press) or folds it (after), so `<Tab>` and
+                // `=` agree. Everywhere else it is the plain fold
+                // toggle it has always been.
+                handler: Arc::new(|ctx: &ActionContext<'_>| {
+                    crate::actions::toggle_diff_or_fold(ctx)
                 }),
             },
             // S-TAB — cycle overview / all-headings / everything-shown,

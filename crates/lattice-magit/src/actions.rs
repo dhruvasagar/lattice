@@ -234,48 +234,78 @@ pub(crate) fn run_show(workdir: &Path, sl: &StatusLine, context: i64) -> Option<
     }
 }
 
-/// The delete range that collapses an inline expansion inserted at
-/// `cursor_line + 1` occupying exactly `count` rows.
-///
-/// The end position must land at COLUMN 0 of the row following the
-/// diff, not at the end of that row's own text — the diff occupies
-/// exactly `count` rows (`cursor_line+1 ..= cursor_line+count`);
-/// anything at or past `cursor_line+1+count` belongs to the next
-/// real entry and must survive the collapse untouched. Anchoring the
-/// end column on that row's text length instead (the bug this
-/// replaces) deletes the next entry's content too, leaving a blank
-/// line in its place and shifting every subsequent row — which
-/// desyncs previously-applied syntax-highlight spans from their
-/// rows, producing exactly the "corrupts subsequent files'
-/// highlighting" symptom this was reported as.
-///
-/// `total_lines`/`last_line_len` describe the buffer's current
-/// shape: when the diff is the last content in the buffer (no
-/// following row to anchor on), the range instead ends at the end of
-/// the diff's own last line.
-fn collapse_range(
-    cursor_line: u32,
-    count: u32,
-    total_lines: u32,
-    last_line_len: u32,
-) -> (Position, Position) {
-    let start = Position::new(cursor_line + 1, 0);
-    let target_end_line = cursor_line + 1 + count;
-    let end = if target_end_line < total_lines {
-        Position::new(target_end_line, 0)
-    } else {
-        let last = total_lines.saturating_sub(1);
-        Position::new(last, last_line_len)
-    };
-    (start, end)
-}
-
 /// Toggle the inline expansion of `sl` at `cursor_line`: collapse it
 /// if already expanded (removing exactly the number of lines recorded
 /// in `StatusBufferState::expanded` — not a re-scanned guess), or
 /// insert its `git show`/`git diff` output and record the inserted
 /// line count if collapsed. Shared by `=` (files) and `<CR>`
 /// (stashes/commits).
+/// MG.44: what a press on an already-classified file line should do.
+///
+/// Pulled out as a pure decision because it is the whole behavioural
+/// change: before, an expanded entry was DELETED from the buffer and
+/// the next press re-ran `git diff`. Now it folds, so the fetched rows
+/// survive. Keeping the decision separate from the effect is what
+/// makes that assertable without a `BufferStoreHandle`.
+#[derive(Debug, PartialEq, Eq)]
+enum DiffToggle {
+    /// Nothing fetched yet — run `git diff` and insert it.
+    Fetch,
+    /// Rows are present — hide/show them, keeping the text.
+    Fold,
+    /// Recorded as expanded but occupying no rows, so there is
+    /// nothing to fold; forget it instead.
+    Drop,
+}
+
+impl DiffToggle {
+    fn for_state(existing_count: Option<usize>) -> Self {
+        match existing_count {
+            None => Self::Fetch,
+            Some(0) => Self::Drop,
+            Some(_) => Self::Fold,
+        }
+    }
+}
+
+/// MG.44: the body BOTH `=` and `<Tab>` run on a status file line.
+///
+/// One operation with three states — not fetched, shown, hidden:
+///
+/// - not fetched -> run `git diff` and insert it
+/// - shown       -> fold it shut (the rows stay)
+/// - hidden      -> unfold
+///
+/// `=` and `<Tab>` were previously different operations on the same
+/// line: one spliced text in and out, the other folded whatever was
+/// already there. Sharing the body is what makes them agree, and it
+/// has to be shared rather than duplicated because `<Tab>` is owned by
+/// `magit-core-mode` (a MINOR mode, which outranks the status major in
+/// the layer order) while `=` is the status major's own chord — two
+/// copies would drift and only one of them would ever be reachable.
+///
+/// Off a file line there is nothing magit-specific to do, so the
+/// generic fold toggle stands: `<Tab>` keeps working on section
+/// headers and hunks exactly as before.
+pub(crate) fn toggle_diff_or_fold(ctx: &ActionContext<'_>) -> Option<Effect> {
+    let fold = || {
+        Some(Effect::AppAction(
+            lattice_grammar::AppEffect::ToggleFoldAtCursor,
+        ))
+    };
+    let Some(s) = status_state(ctx) else {
+        return fold();
+    };
+    let sl = {
+        let Ok(g) = s.lock() else { return fold() };
+        classify_line(&g, ctx.cursor.line)
+    };
+    let Some(sl @ StatusLine::File { .. }) = sl else {
+        return fold();
+    };
+    toggle_expand(&s, sl, ctx.cursor.line)
+}
+
 fn toggle_expand(
     s: &Arc<Mutex<StatusBufferState>>,
     sl: StatusLine,
@@ -297,69 +327,60 @@ fn toggle_expand(
         )
     };
 
-    if let Some(count) = existing_count {
-        if count > 0 {
-            let snap = handle.snapshot();
-            let total = snap.buffer.line_count() as u32;
-            let last_line_len = snap
-                .buffer
-                .line(total.saturating_sub(1))
-                .map(|t| t.len() as u32)
-                .unwrap_or(0);
-            let (start, end) = collapse_range(cursor_line, count as u32, total, last_line_len);
+    match DiffToggle::for_state(existing_count) {
+        DiffToggle::Fold => {
+            // MG.44: **hide it, do not delete it.**
+            //
+            // This branch used to splice the diff out of the buffer, so
+            // re-showing it re-ran `git diff` — throwing away work
+            // already done and paying I/O for a keystroke that shows
+            // text the buffer had a moment ago. A fold hides the rows
+            // and keeps them, which is what emacs magit does and what
+            // the buffer model already provides.
+            //
+            // Nothing is removed from `expanded` either: the entry IS
+            // still expanded, it is merely folded shut. Clearing it
+            // would make the next press re-fetch, which is the very
+            // thing this removed — and would desync the fold ranges
+            // `MagitStatusFoldSource` derives from that map.
+            return Some(Effect::AppAction(
+                lattice_grammar::AppEffect::ToggleFoldAtCursor,
+            ));
+        }
+        DiffToggle::Drop => {
+            // A zero-line expansion has no rows to fold, so there is
+            // nothing to hide and the entry is dropped as before.
+            if let Ok(mut g) = s.lock() {
+                g.expanded.remove(&key);
+            }
+        }
+        DiffToggle::Fetch => {
+            let pos = Position::new(cursor_line + 1, 0);
             let start_line = cursor_line + 1;
             let s = s.clone();
             rt.spawn(async move {
+                // MG.31: the git call happens HERE, inside the spawned
+                // task, not above on the actor thread. See
+                // [`expand_payload`].
+                let Some((text, line_count, spans)) = expand_payload(wd, sl, context).await else {
+                    return;
+                };
                 let _ = handle
-                    .apply_edit_batch(vec![Edit::replace(Range::new(start, end), String::new())])
+                    .apply_edit_batch(vec![Edit::insert(pos, format!("{}\n", text))])
                     .await;
-                // Only now that the collapse has actually landed is it
-                // safe to forget this entry's expansion — clearing it
-                // earlier let a rapid second toggle race ahead of the
-                // edit and compute a delete range against rows that
-                // didn't contain the diff yet (see the insert-branch
-                // comment below for the mirrored insert-side hazard).
+                // Recorded only after the insert lands — see the
+                // collapse-branch comment above. Recording it
+                // beforehand let a rapid second `=`/`<CR>` press see
+                // "already expanded" and race the collapse branch
+                // against rows the insert hadn't populated yet.
                 if let Ok(mut g) = s.lock() {
-                    g.expanded.remove(&key);
+                    g.expanded.insert(key, line_count);
                 }
                 if let Some(ref ph) = pending {
-                    // Mirror the insert branch's `insert_at_and_wake`:
-                    // the diff's `count` highlight-span rows must be
-                    // spliced OUT (not just left in place) or every
-                    // line after them stays shifted-and-mispainted
-                    // forever, surviving even a full collapse.
-                    ph.remove_at_and_wake(bid, start_line, count);
+                    ph.insert_at_and_wake(bid, start_line, spans);
                 }
             });
-        } else if let Ok(mut g) = s.lock() {
-            g.expanded.remove(&key);
         }
-    } else {
-        let pos = Position::new(cursor_line + 1, 0);
-        let start_line = cursor_line + 1;
-        let s = s.clone();
-        rt.spawn(async move {
-            // MG.31: the git call happens HERE, inside the spawned
-            // task, not above on the actor thread. See
-            // [`expand_payload`].
-            let Some((text, line_count, spans)) = expand_payload(wd, sl, context).await else {
-                return;
-            };
-            let _ = handle
-                .apply_edit_batch(vec![Edit::insert(pos, format!("{}\n", text))])
-                .await;
-            // Recorded only after the insert lands — see the
-            // collapse-branch comment above. Recording it
-            // beforehand let a rapid second `=`/`<CR>` press see
-            // "already expanded" and race the collapse branch
-            // against rows the insert hadn't populated yet.
-            if let Ok(mut g) = s.lock() {
-                g.expanded.insert(key, line_count);
-            }
-            if let Some(ref ph) = pending {
-                ph.insert_at_and_wake(bid, start_line, spans);
-            }
-        });
     }
     None
 }
@@ -412,7 +433,7 @@ pub type StatusStatesHandle = Arc<crate::buffer_state::BufferStates<StatusBuffer
 /// Resolve the status buffer's state for the buffer an action fired
 /// in. `None` means this is not a live magit-status buffer, so the
 /// handler declines — the same outcome as before, minus the race.
-fn status_state(ctx: &ActionContext<'_>) -> Option<Arc<Mutex<StatusBufferState>>> {
+pub(crate) fn status_state(ctx: &ActionContext<'_>) -> Option<Arc<Mutex<StatusBufferState>>> {
     crate::buffer_state::state_for::<StatusBufferState>(ctx)
 }
 
@@ -730,18 +751,12 @@ fn status_action_handlers_rest(contributions: &mut Vec<ActionHandlerContribution
 
     // ── toggle diff (=) ───────────────────────────────
     {
+        // MG.44: `=` and `<Tab>` are the same operation now — see
+        // `toggle_diff_or_fold`.
         handler!("action:magit-toggle-diff", move |ctx: &ActionContext<
             '_,
         >| {
-            let s = status_state(ctx)?;
-            let sl = {
-                let g = s.lock().ok()?;
-                classify_line(&g, ctx.cursor.line)?
-            };
-            if !matches!(sl, StatusLine::File { .. }) {
-                return None;
-            }
-            toggle_expand(&s, sl, ctx.cursor.line)
+            toggle_diff_or_fold(ctx)
         });
     }
 
@@ -1179,6 +1194,38 @@ impl crate::buffer_state::MagitView for StatusView {
 }
 
 #[cfg(test)]
+mod diff_toggle_tests {
+    use super::DiffToggle;
+
+    /// **An entry that has rows folds; it never re-fetches.**
+    ///
+    /// This is the regression the slice exists to prevent. The old
+    /// behaviour spliced the diff out of the buffer, so pressing `=`
+    /// twice meant two `git diff` runs and threw away text the buffer
+    /// already had. Any future change that maps a present expansion
+    /// back to `Fetch` reintroduces exactly that.
+    #[test]
+    fn an_expanded_entry_folds_rather_than_refetching() {
+        assert_eq!(DiffToggle::for_state(Some(12)), DiffToggle::Fold);
+        assert_eq!(DiffToggle::for_state(Some(1)), DiffToggle::Fold);
+    }
+
+    /// Nothing fetched yet is the only state that runs git.
+    #[test]
+    fn only_an_unfetched_entry_runs_git() {
+        assert_eq!(DiffToggle::for_state(None), DiffToggle::Fetch);
+    }
+
+    /// A zero-row expansion has nothing to hide, so folding it would
+    /// be a no-op the user reads as a dead key. It is forgotten
+    /// instead, which lets the next press fetch again.
+    #[test]
+    fn a_zero_row_expansion_is_dropped_not_folded() {
+        assert_eq!(DiffToggle::for_state(Some(0)), DiffToggle::Drop);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1292,41 +1339,6 @@ mod tests {
     }
 
     // ── audit fix: collapse deleted the following entry's text ──
-
-    #[test]
-    fn collapse_range_ends_at_next_row_column_zero_not_its_text_length() {
-        // File header at line 5; a 3-line diff was inserted at 6..=8;
-        // line 9 is the next real entry ("  modified  other.rs", 21
-        // bytes). Collapsing must end at (9, 0), not (9, 21) — ending
-        // at the row's text length is exactly the bug that deleted
-        // the next entry's content and left a blank line behind.
-        let (start, end) = collapse_range(5, 3, 20, 21);
-        assert_eq!(start, Position::new(6, 0));
-        assert_eq!(
-            end,
-            Position::new(9, 0),
-            "must not consume the next row's text"
-        );
-    }
-
-    #[test]
-    fn collapse_range_at_buffer_end_falls_back_to_the_diffs_own_last_line() {
-        // Diff inserted at 6..=8 with nothing after it (total_lines
-        // == 9, so target_end_line == 9 == total_lines, out of
-        // range) — there's no following row to anchor on, so the end
-        // must land at the end of the diff's own last line (8, 12).
-        let (start, end) = collapse_range(5, 3, 9, 12);
-        assert_eq!(start, Position::new(6, 0));
-        assert_eq!(end, Position::new(8, 12));
-    }
-
-    #[test]
-    fn collapse_range_single_line_diff() {
-        let (start, end) = collapse_range(0, 1, 10, 0);
-        assert_eq!(start, Position::new(1, 0));
-        assert_eq!(end, Position::new(2, 0));
-    }
-
     // ── audit fix: the "new file" (two-word) label bug ──────────
 
     #[test]

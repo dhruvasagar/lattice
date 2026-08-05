@@ -131,11 +131,21 @@ impl Mode for MagitLogMode {
             // "*magit:log:<path>*" scopes the history to one file
             // (mirrors magit-blame/magit-diff's file-in-buffer-name
             // pattern); bare "*magit:log*" stays repo-wide.
-            let path: Option<std::path::PathBuf> = store.name_for(buffer_id).and_then(|name| {
-                let s = name.strip_prefix("*magit:log:")?;
-                let s = s.strip_suffix('*')?;
-                (!s.is_empty()).then(|| std::path::PathBuf::from(s))
-            });
+            let buffer_name = store.name_for(buffer_id).unwrap_or_default();
+            let path: Option<std::path::PathBuf> = {
+                let s = buffer_name
+                    .strip_prefix("*magit:log:")
+                    .and_then(|s| s.strip_suffix('*'));
+                s.filter(|s| !s.is_empty())
+                    .map(std::path::PathBuf::from)
+            };
+
+            // MG.43h: arguments the `l` dispatch row collected before
+            // this buffer existed — see `ViewArgsRequests`.
+            let requested_args = ctx
+                .service::<crate::magit_diff_mode::ViewArgsRequestsHandle>()
+                .and_then(|r| r.take(&buffer_name))
+                .unwrap_or_default();
 
             let pending_highlights = ctx.service::<lattice_mode::PendingSyntheticHighlights>();
 
@@ -163,7 +173,7 @@ impl Mode for MagitLogMode {
                     workdir: workdir.clone(),
                     pending_highlights: pending_highlights.clone(),
                     headerline: hl.clone(),
-                    extra_args: Vec::new(),
+                    extra_args: requested_args.clone(),
                 },
             );
             let mut guard = BufferStateGuard::new((*states).clone(), buffer_id)

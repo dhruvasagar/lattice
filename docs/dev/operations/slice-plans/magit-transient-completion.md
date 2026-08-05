@@ -61,9 +61,9 @@ was right to reject the first attempt. It was wrong about the cause.
 | MG.43b | ✅ | Rebase's onto-a-target rows (`p`/`u`/`e`/`s`/`f`) |
 | MG.43c | ✅ | Rebase todo rows (`m`/`w`/`k`) |
 | MG.43d | 📝 | Cherry-pick + branch commit-moving rows |
-| MG.43e | 📝 | Merge `p`/`i`, tag `r`/`p` |
-| MG.43f | 📝 | Reset `w`, stash `w`, fetch `m` |
-| MG.43h | 📝 | MG.41f — diff / log argument transients |
+| MG.43e | ✅ | Merge `p`/`i`, tag `r`/`p` |
+| MG.43f | 🚧 | Reset `w`, fetch `m` (stash `w` deferred — see below) |
+| MG.43h | ✅ | MG.41f — diff / log argument transients |
 | MG.43g | ✅ | `C` configure — variable rows with async prefetch |
 
 Each lands green on its own; the row-heavy slices are table edits plus
@@ -218,6 +218,52 @@ wrong:
 `C` and `X` both left the branch menu's "deliberately free" list this
 arc — each landed in the slot that was being held for it, and the
 tests that asserted absence now assert what occupies them.
+
+---
+
+### MG.43h — landed, and MG.41f's diagnosis corrected
+
+The blocked note said the fix was "teach the diff/log open actions to
+accept arguments", i.e. an operation change. It was narrower:
+MG.17a's projection was already generic, and only the empty
+`args_schema` was missing.
+
+Two things it did need, neither of them an operation change:
+
+- **A place to leave the values for a buffer that does not exist yet.**
+  The toggles are answered before the view opens, so `ViewArgsRequests`
+  holds them under the buffer's name and the mode takes them on
+  activation — the shape `BlameRequests` already established. Taken,
+  not read, so a later plain `:magit-diff` does not inherit them.
+- **The UNION schema, not each view's own table.** `view_argv` resolves
+  a flag by its position in `VIEW_ARG_TABLES`. An own-table schema
+  works for diff by coincidence (it is first) and breaks log silently:
+  `slot_of` returns an index past the end of log's own argument list,
+  so every log toggle is collected and then read as unset. I wrote the
+  own-table version first; `a_log_toggle_survives_the_round_trip_to_argv`
+  is the test that exists because of it.
+
+`declared_flag_names` now whitelists the view tables. That is not a
+loosening of the guard that caught MG.41f — the open actions genuinely
+declare those names — and
+`the_view_open_actions_declare_the_union_their_menus_project_onto`
+pins the premise so the whitelist cannot go stale into vacuity.
+
+---
+
+## Deferred, and why
+
+**Stash `w` worktree-only.** Git has no flag for it. Magit implements
+it with `git stash create` plus tree plumbing, and every composable
+approximation is wrong in a different way — `--keep-index` stashes the
+staged changes too, so popping re-applies them. Shipping one of those
+would give a row that matches magit's label and stashes different
+content.
+
+**Cherry-pick `h`/`d`/`n`/`s` and branch `s`/`S`.** These move or
+delete commits, and magit's spinoff-vs-spinout semantics need to be
+read from its source rather than recalled. A wrong guess here destroys
+work.
 
 ---
 

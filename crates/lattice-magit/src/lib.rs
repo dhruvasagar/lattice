@@ -190,6 +190,11 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     let blame_requests: magit_blame_mode::BlameRequestsHandle =
         Arc::new(magit_blame_mode::BlameRequests::default());
     boot.register_service::<magit_blame_mode::BlameRequestsHandle>(blame_requests.clone());
+    // MG.43h: where the `d` / `l` argument menus leave their toggles
+    // for the view they are about to open.
+    boot.register_service::<magit_diff_mode::ViewArgsRequestsHandle>(
+        magit_diff_mode::ViewArgsRequestsHandle::default(),
+    );
     // NOTIF.1d: the same handle the action handlers get as a service —
     // MG.41g: no notification handle is captured any more — the git
     // ops publish `BackgroundTaskFinished` and the notification layer
@@ -2857,6 +2862,53 @@ fn register_action_commands(registry: &mut CommandRegistry) {
         },
     );
 
+    // MG.43h: the dispatch `d` / `l` rows became argument menus, so
+    // their OPEN actions must declare a schema for the toggles to
+    // project onto. MG.41f called this blocked and inferred an
+    // operation change; the projection was already generic and only
+    // the empty schema was missing.
+    //
+    // The schema is the UNION, as `-refresh-args` uses, because
+    // `view_argv` resolves each flag by its position there. Declaring
+    // only a view's OWN table works for diff by coincidence (it is
+    // first) and breaks log silently: `slot_of` would return an index
+    // past the end of log's own argument list, so every log toggle
+    // would be collected and then read as unset.
+    //
+    // A diff still cannot be handed a log flag — that comes from
+    // `view_argv(DIFF_ARGS, ..)` iterating only DIFF_ARGS.
+    for (name, doc) in [
+        (
+            "action:magit-global-diff",
+            "Open the diff view, with the chosen git arguments",
+        ),
+        (
+            "action:magit-global-log",
+            "Open the log view, with the chosen git arguments",
+        ),
+    ] {
+        registry.register_action(
+            name,
+            doc,
+            ActionSpec {
+                apply: none.clone().unwrap(),
+                args_schema: magit_core_mode::VIEW_ARG_TABLES
+                    .iter()
+                    .flat_map(|t| t.iter())
+                    .map(|f| {
+                        let kind = match f.kind {
+                            magit_global_mode::RemoteArgKind::Flag => {
+                                lattice_grammar::ArgKind::Bool
+                            }
+                            _ => lattice_grammar::ArgKind::String,
+                        };
+                        lattice_grammar::ArgSpec::optional(f.name, kind, f.doc)
+                    })
+                    .collect(),
+            },
+        );
+    }
+
     // MG.23a: the six file-dispatch actions gain an optional `file`
     // argument, re-registered here (rather than at their `reg` above)
     // because `reg` holds `registry` for its own lifetime and two
@@ -2944,6 +2996,16 @@ mod tests {
         ]
         .iter()
         .flat_map(|op| op.flags.iter().map(|f| f.name))
+        .chain(
+            // MG.43h: NOT a loosening. The diff / log open actions now
+            // declare these names, which is what makes the toggles
+            // consumed rather than discarded — the condition MG.41f
+            // found missing. The test below pins that premise so this
+            // list cannot go stale into vacuity.
+            magit_core_mode::VIEW_ARG_TABLES
+                .iter()
+                .flat_map(|t| t.iter().map(|f| f.name)),
+        )
         .collect()
     }
 
@@ -3177,6 +3239,74 @@ mod tests {
                 "`{name}` is opened as a commit-picker arg but is not a                  registered ex-command — picking a commit would do nothing"
             );
         }
+    }
+
+    /// MG.43h: **the premise behind whitelisting the view flags.**
+    ///
+    /// `declared_flag_names` treats a diff/log flag as consumed. That
+    /// holds only because each open action declares a schema those
+    /// names project onto — remove it and they go back to being
+    /// silently discarded, the bug MG.41f caught and reverted for.
+    ///
+    /// The schema must be the UNION in union order, because
+    /// `view_argv` resolves each flag by its position there.
+    #[test]
+    fn the_view_open_actions_declare_the_union_their_menus_project_onto() {
+        let mut registry = CommandRegistry::new();
+        register_action_commands(&mut registry);
+        let union: Vec<&str> = magit_core_mode::VIEW_ARG_TABLES
+            .iter()
+            .flat_map(|t| t.iter().map(|f| f.name))
+            .collect();
+        for action in ["action:magit-global-diff", "action:magit-global-log"] {
+            let id = registry
+                .id_by_name(action)
+                .unwrap_or_else(|| panic!("`{action}` is registered"));
+            let spec = registry.lookup(id).expect("spec");
+            let declared: Vec<&str> = spec.args_schema.iter().map(|a| a.name.as_ref()).collect();
+            assert_eq!(
+                declared, union,
+                "`{action}` must declare the union, in union order — \
+                 `view_argv` indexes by position in it",
+            );
+        }
+    }
+
+    /// MG.43h: **a log toggle actually reaches the log argv.**
+    ///
+    /// The end-to-end check the schema assertion cannot make alone. An
+    /// own-table schema would put `count` at index 0 while `view_argv`
+    /// looks for it at its union position, past the end of the list —
+    /// so every log toggle would read as unset. Total, and silent.
+    #[test]
+    fn a_log_toggle_survives_the_round_trip_to_argv() {
+        use lattice_grammar::{ArgValue, Args};
+        let union: Vec<&str> = magit_core_mode::VIEW_ARG_TABLES
+            .iter()
+            .flat_map(|t| t.iter().map(|f| f.name))
+            .collect();
+        let slot = union
+            .iter()
+            .position(|n| *n == "count")
+            .expect("the log table offers `-n`");
+
+        // The positional list the projection produces for the union.
+        let mut list = vec![ArgValue::Bool(false); union.len()];
+        list[slot] = ArgValue::String("5".to_string());
+        let args = Args::List(list);
+
+        let argv = magit_core_mode::view_argv(magit_log_mode::LOG_ARGS, &args);
+        assert!(
+            argv.iter().any(|a| a == "5"),
+            "the log's `-n 5` must reach the argv, got {argv:?}",
+        );
+        // The diff view, handed the same args, emits nothing: the flag
+        // belongs to the other table.
+        let diff_argv = magit_core_mode::view_argv(magit_diff_mode::DIFF_ARGS, &args);
+        assert!(
+            !diff_argv.iter().any(|a| a == "5"),
+            "a log flag must not reach a diff argv: {diff_argv:?}",
+        );
     }
 
     /// Every execute half in the destructive table is one, and every

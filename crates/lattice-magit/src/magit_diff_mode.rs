@@ -169,6 +169,36 @@ fn parse_buffer_name(name: &str) -> (DiffScope, Option<PathBuf>) {
     (DiffScope::Head, None)
 }
 
+/// MG.43h: arguments a dispatch row collected for a view it is about
+/// to open.
+///
+/// The `d` / `l` rows became argument transients, but the toggles are
+/// answered BEFORE the buffer exists — there is nothing yet to hold
+/// them. This is the same shape [`crate::magit_blame_mode::BlameRequests`]
+/// uses for a reverse-blame request: the opener leaves the values under
+/// the buffer's name, and the mode takes them when it activates.
+#[derive(Default)]
+pub struct ViewArgsRequests {
+    map: std::sync::Mutex<std::collections::HashMap<String, Vec<String>>>,
+}
+
+impl ViewArgsRequests {
+    pub fn put(&self, buffer_name: String, args: Vec<String>) {
+        if let Ok(mut m) = self.map.lock() {
+            m.insert(buffer_name, args);
+        }
+    }
+
+    /// Read and remove — a request is for one activation. Leaving it
+    /// would make the next plain `:magit-diff` on the same name
+    /// silently inherit the previous menu's toggles.
+    pub fn take(&self, buffer_name: &str) -> Option<Vec<String>> {
+        self.map.lock().ok()?.remove(buffer_name)
+    }
+}
+
+pub type ViewArgsRequestsHandle = Arc<ViewArgsRequests>;
+
 /// MG.13: service alias for this mode's per-buffer state
 /// (`feedback_servicesregistry_arc_typeid`).
 pub type DiffStatesHandle = Arc<BufferStates<DiffState>>;
@@ -233,10 +263,16 @@ impl Mode for MagitDiffMode {
             // magit-blame's file-in-buffer-name pattern); bare
             // "*magit:diff*" (from `:magit-diff`) stays unscoped
             // against HEAD.
-            let (scope, path) = store
-                .name_for(buffer_id)
-                .map(|name| parse_buffer_name(&name))
-                .unwrap_or((DiffScope::Head, None));
+            let buffer_name = store.name_for(buffer_id).unwrap_or_default();
+            let (scope, path) = parse_buffer_name(&buffer_name);
+
+            // MG.43h: arguments the `d` dispatch row collected before
+            // this buffer existed. Taken (not read), so a later plain
+            // `:magit-diff` on the same name does not inherit them.
+            let requested_args = ctx
+                .service::<ViewArgsRequestsHandle>()
+                .and_then(|r| r.take(&buffer_name))
+                .unwrap_or_default();
 
             let pending_highlights = ctx.service::<lattice_mode::PendingSyntheticHighlights>();
 
@@ -272,7 +308,7 @@ impl Mode for MagitDiffMode {
                     cursor_bus: ctx
                         .service::<crate::cursor_restore::CursorBusHandle>()
                         .map(|outer| (*outer).clone()),
-                    extra_args: Vec::new(),
+                    extra_args: requested_args.clone(),
                     config: ctx
                         .service::<std::sync::Arc<lattice_config::ConfigRegistry>>()
                         .map(|outer| (*outer).clone()),

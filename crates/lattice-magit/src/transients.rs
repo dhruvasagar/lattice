@@ -603,25 +603,24 @@ const SUBTREE_ROWS: &[TransientRow] = &[
     },
 ];
 
-/// MG.41f: **not wired, deliberately.** Kept with the reason.
+/// MG.43h: the `d` / `l` argument menus.
 ///
-/// Magit gives `d` and `l` a transient of arguments rather than a bare
-/// "open it" row, and the flag tables already exist (`DIFF_ARGS` /
-/// `LOG_ARGS`, backing MG.23k's `D` re-run menu). Wiring them to the
-/// dispatch looked like pure menu structure.
+/// MG.41f built this, found the toggles would render and be silently
+/// discarded, and reverted the wiring — correctly, because
+/// `action:magit-global-diff` declared no `args_schema` for them to
+/// project onto. It concluded the fix was "teach the open actions to
+/// accept arguments", i.e. an operation change.
 ///
-/// It is not. `D` works because it re-runs an **open** buffer, whose
-/// mode reads the toggles. `action:magit-global-diff` takes no
-/// arguments, so from the dispatch the toggles would render, accept
-/// keystrokes, and be silently discarded — a menu that lies about what
-/// it does.
+/// It was narrower than that. MG.17a's projection was already
+/// generic; only the empty schema was missing. Declaring each open
+/// action's own flag table, plus a place to leave the values for a
+/// buffer that does not exist yet (`ViewArgsRequests`), is the whole
+/// of it.
 ///
-/// `every_root_dispatch_item_resolves_to_a_real_action_not_a_flag_fallback`
-/// caught exactly that: "is an Argument named 'unified' that no
-/// RemoteOp declares — nothing will consume its value". Finishing this
-/// means teaching the diff/log open actions to accept arguments, which
-/// is an operation change, not a menu change.
-#[allow(dead_code)]
+/// Each view declares its OWN table rather than the union
+/// `action:magit-view-refresh-args` uses — that one action serves both
+/// views, whereas these are two, and a diff must never be handed a log
+/// flag.
 fn view_open_transient(
     title: &str,
     ids: &MagitActionIds,
@@ -647,7 +646,6 @@ fn view_open_transient(
     }
 }
 
-#[allow(dead_code)]
 const DIFF_SHOW_ROW: TransientRow = TransientRow {
     key: "d",
     label: "diff",
@@ -656,7 +654,6 @@ const DIFF_SHOW_ROW: TransientRow = TransientRow {
     placeholder: "diff_op",
 };
 
-#[allow(dead_code)]
 const LOG_SHOW_ROW: TransientRow = TransientRow {
     key: "l",
     label: "log",
@@ -2037,16 +2034,21 @@ pub fn dispatch_transient_with(
                 label: "Working tree".into(),
                 items: vec![
                     status_row(ids, ctx),
-                    // MG.41f: NOT a submenu. See `view_open_transient`
-                    // for why offering the argument toggles here would
-                    // be a lie.
-                    action_or_placeholder(
-                        ids.get("action:magit-global-diff"),
-                        "d",
-                        "diff",
-                        "Diff the working tree against HEAD",
-                        "diff_op",
-                    ),
+                    // MG.43h: a submenu now. The toggles are consumed
+                    // — `action:magit-global-diff` declares the schema
+                    // they project onto, and the values ride to the
+                    // opened buffer via `ViewArgsRequests`.
+                    TransientItem {
+                        key: vec!["d".into()],
+                        label: "diff".into(),
+                        description: "Diff the working tree against HEAD".into(),
+                        kind: TransientItemKind::Submenu(Arc::new(view_open_transient(
+                            "Diff",
+                            ids,
+                            crate::magit_diff_mode::DIFF_ARGS,
+                            &DIFF_SHOW_ROW,
+                        ))),
+                    },
                     TransientItem {
                         key: vec!["c".into()],
                         label: "commit".into(),
@@ -2076,13 +2078,18 @@ pub fn dispatch_transient_with(
             TransientGroup {
                 label: "History".into(),
                 items: vec![
-                    action_or_placeholder(
-                        ids.get("action:magit-global-log"),
-                        "l",
-                        "log",
-                        "Show commit history",
-                        "show_log",
-                    ),
+                    // MG.43h: the log's peer, same mechanism.
+                    TransientItem {
+                        key: vec!["l".into()],
+                        label: "log".into(),
+                        description: "Show commit history".into(),
+                        kind: TransientItemKind::Submenu(Arc::new(view_open_transient(
+                            "Log",
+                            ids,
+                            crate::magit_log_mode::LOG_ARGS,
+                            &LOG_SHOW_ROW,
+                        ))),
+                    },
                     // MG.23j: magit's own keys, in magit's own ungated
                     // group. They need a commit and this menu has no
                     // cursor on one — so the action they fire asks,

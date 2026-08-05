@@ -165,7 +165,37 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         "*magit:commit*",
         "magit-commit-mode"
     );
-    open!("action:magit-global-log", "*magit:log*", "magit-log-mode");
+    // MG.43h: `d` / `l` carry the argument menu's toggles into the
+    // view they open. The values are left under the buffer's name for
+    // the mode to take on activation (`ViewArgsRequests`) — the buffer
+    // does not exist yet, so there is nothing else to hold them.
+    macro_rules! open_view_with_args {
+        ($action_name:expr, $buffer_name:expr, $mode_id:expr, $flags:expr) => {
+            contributions.push(ActionHandlerContribution {
+                action_name: $action_name,
+                handler: Arc::new(|ctx: &ActionContext<'_>| {
+                    let extra = crate::magit_core_mode::view_argv($flags, &ctx.args);
+                    if !extra.is_empty()
+                        && let Some(reqs) = ctx
+                            .services
+                            .get::<crate::magit_diff_mode::ViewArgsRequestsHandle>()
+                    {
+                        reqs.put($buffer_name.to_string(), extra);
+                    }
+                    Some(Effect::OpenSyntheticBuffer {
+                        name: $buffer_name.to_string(),
+                        mode_id: $mode_id.to_string(),
+                    })
+                }),
+            });
+        };
+    }
+    open_view_with_args!(
+        "action:magit-global-log",
+        "*magit:log*",
+        "magit-log-mode",
+        crate::magit_log_mode::LOG_ARGS
+    );
     open!(
         "action:magit-global-branch",
         "*magit:branch*",
@@ -214,10 +244,11 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         "*magit:reword*",
         "magit-commit-mode"
     );
-    open!(
+    open_view_with_args!(
         "action:magit-global-diff",
         "*magit:diff*",
-        "magit-diff-mode"
+        "magit-diff-mode",
+        crate::magit_diff_mode::DIFF_ARGS
     );
 
     // pull/push — real git operations, run off the actor thread.

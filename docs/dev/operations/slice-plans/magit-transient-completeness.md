@@ -314,7 +314,18 @@ so the two are told apart by the `applying` marker file — which is why
 `am_in_progress` looks at the same path and would otherwise report a
 stopped rebase as a stopped `am`.
 
-Still to do here: `m` merge, `A` cherry-pick, `t` tag, `_` revert, and
+**`m` merge and `t` tag landed too.** Merge gains `n` don't-commit and
+`s` squash; tag gains `k` delete (local only — deleting the remote copy
+is `push --delete`, which magit also keeps separate for good reason).
+Both reuse the existing prompt-then-finish pair shape, so each variant
+is an argv builder plus two handler lines.
+
+`merge --no-commit` deliberately drops `--no-edit`: nothing is
+committed, so git never opens an editor and the hang that flag exists
+to prevent cannot occur.
+
+Still to do here: `A` cherry-pick, `_` revert, merge's `e`/`a`/`p`/`i`
+rows, tag's `r` release / `p` prune, and
 rebase's own non-sequence rows (`p`/`u`/`e` onto a target, `s` subset,
 `m` edit a commit, `w` reword, `k` remove, `f` autosquash) — those need
 new operations rather than menu structure.

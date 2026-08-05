@@ -121,6 +121,8 @@ pub(crate) fn all_row_tables() -> &'static [(&'static str, &'static [TransientRo
         ("push", PUSH_ROWS),
         ("pull", PULL_ROWS),
         ("fetch", FETCH_ROWS),
+        ("merge", MERGE_ROWS),
+        ("tag", TAG_ROWS),
         ("rebase/start", REBASE_START_ROWS),
         ("rebase/sequence", REBASE_SEQUENCE_ROWS),
     ]
@@ -395,6 +397,49 @@ const SUBTREE_ROWS: &[TransientRow] = &[
         doc: "Split a prefix into its own synthetic history",
         action: "action:magit-global-subtree-split",
         placeholder: "subtree_split_op",
+    },
+];
+
+/// MG.41e: magit's `m` merge submenu.
+const MERGE_ROWS: &[TransientRow] = &[
+    TransientRow {
+        key: "m",
+        label: "merge",
+        doc: "Merge a branch into the current one",
+        action: "action:magit-global-merge",
+        placeholder: "merge_op",
+    },
+    TransientRow {
+        key: "n",
+        label: "merge, don't commit",
+        doc: "Merge but stop before committing, so the result can be inspected first",
+        action: "action:magit-global-merge-no-commit",
+        placeholder: "merge_no_commit_op",
+    },
+    TransientRow {
+        key: "s",
+        label: "squash",
+        doc: "Take the branch's changes as one staged change, with no merge commit",
+        action: "action:magit-global-merge-squash",
+        placeholder: "merge_squash_op",
+    },
+];
+
+/// MG.41e: magit's `t` tag submenu.
+const TAG_ROWS: &[TransientRow] = &[
+    TransientRow {
+        key: "t",
+        label: "tag",
+        doc: "Tag HEAD with a name you type",
+        action: "action:magit-global-tag",
+        placeholder: "tag_op",
+    },
+    TransientRow {
+        key: "k",
+        label: "delete",
+        doc: "Delete a local tag — the remote copy is untouched",
+        action: "action:magit-global-tag-delete",
+        placeholder: "tag_delete_op",
     },
 ];
 
@@ -1197,6 +1242,24 @@ fn status_row(ids: &MagitActionIds, ctx: &TransientContext) -> TransientItem {
 /// counterpart — its status buffer reaches unpushed/unpulled instead —
 /// so `c` is ours, free at this level and mnemonic.
 /// MG.41e: the `r` submenu, gated on whether a rebase is stopped.
+fn merge_transient(ids: &MagitActionIds) -> TransientSpec {
+    TransientSpec {
+        title: "Merge".into(),
+        groups: vec![row_group("Merge", ids, MERGE_ROWS)],
+        preview: None,
+        footer: Some("q dismiss  Esc/BS back".into()),
+    }
+}
+
+fn tag_transient(ids: &MagitActionIds) -> TransientSpec {
+    TransientSpec {
+        title: "Tag".into(),
+        groups: vec![row_group("Tag", ids, TAG_ROWS)],
+        preview: None,
+        footer: Some("q dismiss  Esc/BS back".into()),
+    }
+}
+
 fn rebase_transient(ids: &MagitActionIds, in_progress: bool) -> TransientSpec {
     let groups = if in_progress {
         vec![row_group("Rebase in progress", ids, REBASE_SEQUENCE_ROWS)]
@@ -1534,13 +1597,12 @@ pub fn dispatch_transient_with(
                     // value rather than taking it from context — there
                     // is nothing at a cursor to read from a menu opened
                     // anywhere.
-                    action_or_placeholder(
-                        ids.get("action:magit-global-tag"),
-                        "t",
-                        "tag",
-                        "Tag HEAD with a name you type",
-                        "tag_op",
-                    ),
+                    TransientItem {
+                        key: vec!["t".into()],
+                        label: "tag".into(),
+                        description: "Create or delete a tag".into(),
+                        kind: TransientItemKind::Submenu(Arc::new(tag_transient(ids))),
+                    },
                     action_or_placeholder(
                         ids.get("action:magit-global-gitignore"),
                         "i",
@@ -1552,13 +1614,12 @@ pub fn dispatch_transient_with(
                     // when you know the branch name; picking from a
                     // list is already served one level down, by `m` in
                     // the branch buffer.
-                    action_or_placeholder(
-                        ids.get("action:magit-global-merge"),
-                        "m",
-                        "merge",
-                        "Merge a branch you name into the current one",
-                        "merge_op",
-                    ),
+                    TransientItem {
+                        key: vec!["m".into()],
+                        label: "merge".into(),
+                        description: "Merge a branch into the current one".into(),
+                        kind: TransientItemKind::Submenu(Arc::new(merge_transient(ids))),
+                    },
                     action_or_placeholder(
                         ids.get("action:magit-global-init"),
                         "I",

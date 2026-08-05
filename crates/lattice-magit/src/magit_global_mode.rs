@@ -665,6 +665,47 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
             ))
         }),
     });
+    // MG.41e: merge / tag variants. Each is the same prompt-then-finish
+    // pair as its sibling; only the argv the finish half builds differs.
+    macro_rules! prompted_op {
+        ($entry:expr, $prompt:expr, $finish:expr, $argv:expr, $what:expr) => {
+            contributions.push(ActionHandlerContribution {
+                action_name: $entry,
+                handler: Arc::new(|_ctx: &ActionContext<'_>| Some(prompt_for($prompt, $finish))),
+            });
+            contributions.push(ActionHandlerContribution {
+                action_name: $finish,
+                handler: Arc::new(|ctx: &ActionContext<'_>| {
+                    let value = ctx.prompt_value?.trim();
+                    if value.is_empty() {
+                        return None;
+                    }
+                    Some(spawn_git($argv(value), $what))
+                }),
+            });
+        };
+    }
+    prompted_op!(
+        "action:magit-global-merge-no-commit",
+        "Merge branch (no commit): ",
+        "action:magit-global-merge-no-commit-finish",
+        merge_no_commit_argv,
+        "merge --no-commit"
+    );
+    prompted_op!(
+        "action:magit-global-merge-squash",
+        "Squash branch: ",
+        "action:magit-global-merge-squash-finish",
+        merge_squash_argv,
+        "merge --squash"
+    );
+    prompted_op!(
+        "action:magit-global-tag-delete",
+        "Delete tag: ",
+        "action:magit-global-tag-delete-finish",
+        tag_delete_argv,
+        "tag -d"
+    );
     contributions.push(ActionHandlerContribution {
         action_name: "action:magit-global-merge-finish",
         handler: Arc::new(|ctx: &ActionContext<'_>| {
@@ -2859,6 +2900,30 @@ pub(crate) fn init_argv(dir: &str) -> Vec<String> {
 /// recover from.
 pub(crate) fn merge_argv(branch: &str) -> Vec<String> {
     vec!["merge".into(), "--no-edit".into(), branch.to_string()]
+}
+
+/// MG.41e: magit's `n` — merge but stop before committing, so the
+/// result can be inspected or amended first.
+///
+/// No `--no-edit`: nothing is committed, so git never opens an editor
+/// and the hang that flag exists to avoid cannot happen here.
+pub(crate) fn merge_no_commit_argv(branch: &str) -> Vec<String> {
+    vec!["merge".into(), "--no-commit".into(), branch.to_string()]
+}
+
+/// MG.41e: magit's `s` — take the branch's changes as ONE staged
+/// change with no merge commit and no second parent.
+pub(crate) fn merge_squash_argv(branch: &str) -> Vec<String> {
+    vec!["merge".into(), "--squash".into(), branch.to_string()]
+}
+
+/// MG.41e: magit's `k` — delete a tag.
+///
+/// Local only. Deleting the remote copy is `push --delete`, a
+/// different and far more consequential operation that magit also
+/// keeps separate.
+pub(crate) fn tag_delete_argv(name: &str) -> Vec<String> {
+    vec!["tag".into(), "-d".into(), name.to_string()]
 }
 
 /// MG.23c: every prompt-backed operation, as (row, finish) pairs.

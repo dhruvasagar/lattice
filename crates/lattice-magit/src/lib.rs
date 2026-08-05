@@ -888,6 +888,47 @@ fn register_ex_commands(
             "action:magit-global-merge-finish",
             |branch| magit_global_mode::spawn_git(magit_global_mode::merge_argv(&branch), "merge"),
         );
+        // MG.41e: merge / tag variants. Same prompt-then-finish shape
+        // as their siblings above; only the argv differs.
+        mk_prompted(
+            "magit-merge-no-commit",
+            "Merge a branch but stop before committing. With arg: the branch; without, asks.",
+            "branch",
+            "Merge branch (no commit)",
+            "action:magit-global-merge-no-commit-finish",
+            |branch| {
+                magit_global_mode::spawn_git(
+                    magit_global_mode::merge_no_commit_argv(&branch),
+                    "merge --no-commit",
+                )
+            },
+        );
+        mk_prompted(
+            "magit-merge-squash",
+            "Squash a branch's changes into the index. With arg: the branch; without, asks.",
+            "branch",
+            "Squash branch",
+            "action:magit-global-merge-squash-finish",
+            |branch| {
+                magit_global_mode::spawn_git(
+                    magit_global_mode::merge_squash_argv(&branch),
+                    "merge --squash",
+                )
+            },
+        );
+        mk_prompted(
+            "magit-tag-delete",
+            "Delete a local tag. With arg: the tag; without, asks.",
+            "name",
+            "Delete tag",
+            "action:magit-global-tag-delete-finish",
+            |name| {
+                magit_global_mode::spawn_git(
+                    magit_global_mode::tag_delete_argv(&name),
+                    "tag -d",
+                )
+            },
+        );
         mk_prompted(
             "magit-init",
             "Initialize a git repository. With arg: the directory; without, asks.",
@@ -2282,6 +2323,16 @@ fn register_action_commands(registry: &mut CommandRegistry) {
         "Run git init in the typed directory",
     );
     reg("action:magit-global-merge", "Merge a branch (asks which)");
+    // MG.41e: the merge / tag submenu rows.
+    reg(
+        "action:magit-global-merge-no-commit",
+        "Merge a branch but stop before committing (asks which)",
+    );
+    reg(
+        "action:magit-global-merge-squash",
+        "Squash a branch's changes into the index without a merge commit (asks which)",
+    );
+    reg("action:magit-global-tag-delete", "Delete a local tag (asks which)");
     reg(
         "action:magit-global-merge-finish",
         "Merge the typed branch into the current one",
@@ -4525,7 +4576,7 @@ mod tests {
             // MG.41c: push/pull/fetch each replaced ONE run row with
             // destination rows — 7, 3 and 6 — so 46 + 6 + 2 + 5 = 59.
             // MG.41d: +2 reset modes, +2 commit autosquash rows.
-            69,
+            72,
             "expected every root-dispatch leaf (incl. both submenus') to \
              report inert, got: {root:?}"
         );
@@ -4548,7 +4599,7 @@ mod tests {
         assert_eq!(
             bisecting.len(),
             // MG.41c: +13 destination rows; MG.41d: +4 more.
-            72,
+            75,
             "the in-progress bisect menu trades `start` for good/bad/skip/reset: {bisecting:?}"
         );
     }

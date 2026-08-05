@@ -706,6 +706,43 @@ const TAG_ROWS: &[TransientRow] = &[
 
 /// MG.41e: the rebase submenu, shown when NO rebase is running.
 const REBASE_START_ROWS: &[TransientRow] = &[
+    // MG.43b: magit's onto-a-target rows. `p` and `u` need no prompt —
+    // git resolves `@{push}` / `@{upstream}` itself.
+    TransientRow {
+        key: "p",
+        label: "onto pushRemote",
+        doc: "Rebase this branch onto its push target",
+        action: "action:magit-global-rebase-onto-push",
+        placeholder: "rebase_onto_push_op",
+    },
+    TransientRow {
+        key: "u",
+        label: "onto @{upstream}",
+        doc: "Rebase this branch onto its upstream",
+        action: "action:magit-global-rebase-onto-upstream",
+        placeholder: "rebase_onto_upstream_op",
+    },
+    TransientRow {
+        key: "e",
+        label: "onto elsewhere",
+        doc: "Rebase this branch onto a ref you name",
+        action: "action:magit-global-rebase-onto-elsewhere",
+        placeholder: "rebase_onto_elsewhere_op",
+    },
+    TransientRow {
+        key: "s",
+        label: "a subset",
+        doc: "Replay the commits after one ref onto another",
+        action: "action:magit-global-rebase-subset",
+        placeholder: "rebase_subset_op",
+    },
+    TransientRow {
+        key: "f",
+        label: "autosquash",
+        doc: "Replay, folding in fixup! and squash! markers",
+        action: "action:magit-global-rebase-autosquash",
+        placeholder: "rebase_autosquash_op",
+    },
     TransientRow {
         key: "i",
         label: "interactively",
@@ -2617,6 +2654,75 @@ mod remote_flag_tests {
 }
 
 #[cfg(test)]
+mod rebase_argv_tests {
+    use crate::magit_global_mode::{
+        rebase_autosquash_argv, rebase_onto_argv, rebase_subset_argv, resolve_upstream,
+    };
+
+    /// MG.43b: **rebase takes ONE revision, and that is why these rows
+    /// do not reuse push/pull's upstream resolution.**
+    ///
+    /// `resolve_upstream` deliberately produces a two-token
+    /// `"<remote> <branch>"` pair, because `git push` wants them
+    /// separate. `git rebase origin main` is not an error — git reads
+    /// `origin` as the upstream and `main` as the branch to rebase,
+    /// silently replaying a different range than the row promised.
+    ///
+    /// So the rows pass git's own revision syntax straight through.
+    #[test]
+    fn rebase_targets_are_a_single_revision() {
+        assert_eq!(rebase_onto_argv("@{upstream}"), vec!["rebase", "@{upstream}"]);
+        assert_eq!(rebase_onto_argv("@{push}"), vec!["rebase", "@{push}"]);
+        for target in ["@{upstream}", "@{push}", "origin/main"] {
+            assert_eq!(
+                rebase_onto_argv(target).len(),
+                2,
+                "`{target}` must contribute exactly one token after `rebase`",
+            );
+        }
+    }
+
+    /// The push-side resolution really does produce two tokens, so the
+    /// test above is guarding against something real rather than a
+    /// hypothetical.
+    ///
+    /// Run in a temp dir with no upstream: the function returns `None`
+    /// rather than a bare token, which is itself the property that
+    /// stops an unresolved destination becoming a bare `git push`.
+    #[test]
+    fn the_push_side_resolution_is_not_a_single_token() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        assert_eq!(
+            resolve_upstream(dir.path()),
+            None,
+            "no upstream configured must resolve to nothing, never a partial ref",
+        );
+    }
+
+    /// `--onto <newbase> <upstream>` — the order is not
+    /// interchangeable, and git will happily run the swapped form,
+    /// replaying the wrong range onto the wrong base.
+    #[test]
+    fn subset_puts_the_new_base_before_the_upstream() {
+        assert_eq!(
+            rebase_subset_argv("main", "feature~3"),
+            vec!["rebase", "--onto", "main", "feature~3"],
+        );
+    }
+
+    /// `--autosquash` needs `-i`: it only affects the generated todo
+    /// list, which is an interactive-rebase concept. Without `-i` git
+    /// accepts the flag and does nothing with it, so the row would
+    /// look like it worked and fold in nothing.
+    #[test]
+    fn autosquash_is_interactive() {
+        let argv = rebase_autosquash_argv("main");
+        assert_eq!(argv, vec!["rebase", "-i", "--autosquash", "main"]);
+        assert!(argv.iter().any(|a| a == "-i"));
+    }
+}
+
+#[cfg(test)]
 mod commit_op_argv_tests {
     use crate::magit_global_mode::CommitOp;
 
@@ -2737,7 +2843,9 @@ mod rebase_gate_tests {
     #[test]
     fn no_rebase_running_offers_only_the_way_in() {
         let spec = rebase_transient(&MagitActionIds::default(), false);
-        assert_eq!(keys(&spec), vec!["i"]);
+        // MG.43b added magit's onto-a-target rows; every one is a way
+        // IN, so all belong to the idle set.
+        assert_eq!(keys(&spec), vec!["p", "u", "e", "s", "f", "i"]);
     }
 
     /// Inside one the menu offers only the ways OUT — starting another

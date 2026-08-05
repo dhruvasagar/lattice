@@ -2325,6 +2325,27 @@ fn register_action_commands(registry: &mut CommandRegistry) {
         "action:magit-global-branch-reset-finish",
         "Ask before resetting the current branch to the named ref",
     );
+    // MG.43b: rebase's onto-a-target rows.
+    reg(
+        "action:magit-global-rebase-onto-push",
+        "Rebase this branch onto its push target",
+    );
+    reg(
+        "action:magit-global-rebase-onto-upstream",
+        "Rebase this branch onto its upstream",
+    );
+    reg(
+        "action:magit-global-rebase-onto-elsewhere",
+        "Rebase this branch onto a ref you name (asks which)",
+    );
+    reg(
+        "action:magit-global-rebase-subset",
+        "Replay the commits after one ref onto another (asks both)",
+    );
+    reg(
+        "action:magit-global-rebase-autosquash",
+        "Replay, folding in fixup! and squash! markers (asks the base)",
+    );
     reg(
         "action:magit-global-commit-extend",
         "Add staged changes to the last commit, keeping its message",
@@ -4789,8 +4810,8 @@ mod tests {
             // MG.41d: +2 reset modes, +2 commit autosquash rows.
             // MG.42-E1: +commit `A` augment, +merge `e` edit.
             // MG.43a: +commit `e`, +revert `v`, +cherry-pick `a`,
-            // +branch `x` reset.
-            87,
+            // +branch `x` reset. MG.43b: +5 rebase onto-target rows.
+            92,
             "expected every root-dispatch leaf (incl. both submenus') to \
              report inert, got: {root:?}"
         );
@@ -4815,8 +4836,9 @@ mod tests {
         assert_eq!(
             bisecting.len(),
             // MG.41c: +13 destination rows; MG.41d: +4 more;
-            // MG.42-E1: +2 (augment, merge-edit); MG.43a: +4.
-            90,
+            // MG.42-E1: +2 (augment, merge-edit); MG.43a: +4;
+            // MG.43b: +5.
+            95,
             "the in-progress bisect menu trades `start` for good/bad/skip/reset: {bisecting:?}"
         );
     }

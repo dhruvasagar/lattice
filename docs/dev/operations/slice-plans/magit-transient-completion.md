@@ -58,8 +58,8 @@ was right to reject the first attempt. It was wrong about the cause.
 | Slice | Status | What |
 |---|---|---|
 | MG.43a | ✅ | Single-argv rows: commit `e`, revert `v`, cherry-pick `a`, branch `x` |
-| MG.43b | 📝 | Rebase's non-sequence rows |
-| MG.43c | 📝 | Cherry-pick + branch commit-moving rows |
+| MG.43b | ✅ | Rebase's onto-a-target rows (`p`/`u`/`e`/`s`/`f`) |
+| MG.43c | 📝 | Rebase todo rows (`m`/`w`/`k`) + cherry-pick / branch commit-moving |
 | MG.43d | 📝 | Merge `p`/`i`, tag `r`/`p` |
 | MG.43e | 📝 | Reset `w`, stash `w`, fetch `m` |
 | MG.43f | 📝 | MG.41f — diff / log argument transients |
@@ -89,6 +89,27 @@ stopped sharing keys cannot make it assert nothing.
 **Branch reset carries its ref to the execute half** (IX.1) rather than
 re-deriving: a background refresh while the confirm is open must not
 change what gets reset.
+
+### MG.43b — landed
+
+Rebase `p` onto pushRemote, `u` onto upstream, `e` elsewhere, `s` a
+subset, `f` autosquash.
+
+**These do NOT reuse push/pull's upstream resolution, and that is the
+slice's one real decision.** `resolve_upstream` produces a two-token
+`"<remote> <branch>"` pair because `git push` wants them separate.
+Git's own synopsis is `git rebase [<upstream> [<branch>]]`, so
+`git rebase origin main` is not an error — it reads `origin` as the
+upstream and `main` as the branch, silently replaying a different range
+than the row promised. `@{upstream}` and `@{push}` are revisions git
+resolves natively, so the rows pass them straight through.
+
+`--autosquash` requires `-i`: it only affects the generated todo list.
+Without it git accepts the flag and folds in nothing, so the row would
+look like it worked.
+
+Rebase `m` / `w` / `k` are NOT here — they rewrite the todo list rather
+than name a base, so they belong with MG.43c's commit-moving rows.
 
 ### MG.43g — variable rows, and why the prefetch is the design
 

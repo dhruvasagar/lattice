@@ -762,6 +762,21 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         merge_squash_argv,
         "merge --squash"
     );
+    // MG.43b: rebase `e` elsewhere, and `f` autosquash.
+    prompted_op!(
+        "action:magit-global-rebase-onto-elsewhere",
+        "Rebase onto: ",
+        "action:magit-global-rebase-onto-elsewhere-finish",
+        rebase_onto_argv,
+        "rebase"
+    );
+    prompted_op!(
+        "action:magit-global-rebase-autosquash",
+        "Autosquash onto: ",
+        "action:magit-global-rebase-autosquash-finish",
+        rebase_autosquash_argv,
+        "rebase --autosquash"
+    );
     // MG.42-E2: absorb — merge then delete, as one operation.
     prompted_op_seq!(
         "action:magit-global-merge-absorb",
@@ -817,6 +832,17 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         reset_file_argv,
         "reset a file"
     );
+    // MG.43b: rebase `s` — a subset onto a new base. Two refs, and
+    // the order is load-bearing (see `rebase_subset_argv`).
+    two_input_op!(
+        "action:magit-global-rebase-subset",
+        "Rebase onto (new base): ",
+        "action:magit-global-rebase-subset-upstream",
+        "Commits after (upstream): ",
+        "action:magit-global-rebase-subset-finish",
+        rebase_subset_argv,
+        "rebase --onto"
+    );
     two_input_op!(
         "action:magit-global-stash-branch",
         "New branch name: ",
@@ -825,6 +851,30 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
         "action:magit-global-stash-branch-finish",
         stash_branch_argv,
         "stash branch"
+    );
+
+    // MG.43b: magit's rebase `p` / `u` — onto the configured push
+    // target or the upstream. Both are plain revisions to git, so
+    // neither needs the `RemoteTarget` resolution push/pull use.
+    macro_rules! rebase_onto {
+        ($action_name:expr, $target:expr, $what:expr) => {
+            contributions.push(ActionHandlerContribution {
+                action_name: $action_name,
+                handler: Arc::new(|_ctx: &ActionContext<'_>| {
+                    Some(spawn_git(rebase_onto_argv($target), $what))
+                }),
+            });
+        };
+    }
+    rebase_onto!(
+        "action:magit-global-rebase-onto-push",
+        "@{push}",
+        "rebase onto @{push}"
+    );
+    rebase_onto!(
+        "action:magit-global-rebase-onto-upstream",
+        "@{upstream}",
+        "rebase onto @{upstream}"
     );
 
     // MG.43a: magit's commit `e` — add what is staged to the last
@@ -3259,6 +3309,51 @@ pub(crate) fn reset_file_argv(commit: &str, path: &str) -> Vec<String> {
         commit.to_string(),
         "--".into(),
         path.to_string(),
+    ]
+}
+
+/// MG.43b: magit's rebase `p` / `u` / `e` — rebase onto a ref.
+///
+/// **The target is a single revision, not a `remote branch` pair.**
+/// `RemoteTarget::Upstream` expands `@{upstream}` to two tokens
+/// because `git push` wants `<remote> <branch>`; `git rebase` wants
+/// one revision, and would read a second token as the *upstream*
+/// argument — silently rebasing a different range. Git resolves
+/// `@{upstream}` and `@{push}` natively as revisions, so these rows
+/// pass them through untouched rather than reusing that resolution.
+pub(crate) fn rebase_onto_argv(target: &str) -> Vec<String> {
+    vec!["rebase".into(), target.to_string()]
+}
+
+/// MG.43b: magit's rebase `s` — rebase a SUBSET of commits elsewhere.
+///
+/// `--onto <newbase> <upstream>` replays the commits after `upstream`
+/// onto `newbase`. Both arguments are required and the order is not
+/// interchangeable: swapping them replays the wrong range onto the
+/// wrong base, and git will happily do it.
+pub(crate) fn rebase_subset_argv(newbase: &str, upstream: &str) -> Vec<String> {
+    vec![
+        "rebase".into(),
+        "--onto".into(),
+        newbase.to_string(),
+        upstream.to_string(),
+    ]
+}
+
+/// MG.43b: magit's rebase `f` — replay, folding in `fixup!` /
+/// `squash!` markers.
+///
+/// `-i` is required even though nothing is edited interactively:
+/// `--autosquash` only applies to the generated todo list, which is an
+/// interactive-rebase concept. `run_remote_op`'s
+/// `GIT_SEQUENCE_EDITOR=true` accepts that list unchanged, which IS
+/// autosquash — git has already ordered the lines.
+pub(crate) fn rebase_autosquash_argv(upstream: &str) -> Vec<String> {
+    vec![
+        "rebase".into(),
+        "-i".into(),
+        "--autosquash".into(),
+        upstream.to_string(),
     ]
 }
 

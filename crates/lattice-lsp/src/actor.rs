@@ -705,7 +705,6 @@ pub fn uri_from_path(p: &std::path::Path) -> Uri {
 }
 
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 async fn actor_main<R, W>(
     reader: LspReader<R>,
     writer: LspWriter<W>,

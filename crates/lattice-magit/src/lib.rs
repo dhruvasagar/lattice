@@ -718,8 +718,6 @@ fn register_ex_commands(
         magit_refs_mode::REFS_BUFFER,
         "magit-refs-mode",
     );
-    // Drop the mk closure to release mutable borrow
-    drop(mk);
     // Fold audit fix: `magit-dispatch` / `magit-file-dispatch` open
     // their OWN named transients (registered into
     // `TransientSourceRegistry` by `install`, below) instead of
@@ -760,7 +758,6 @@ fn register_ex_commands(
          rather than the one you are visiting.",
         "magit-other-file-dispatch",
     );
-    drop(mk_transient);
 
     // MG.16: the remote/stash operations were reachable from `C-c g`
     // and nowhere else. Ex-commands are the scriptable surface and the
@@ -844,7 +841,6 @@ fn register_ex_commands(
         "Abandon a rebase in progress, restoring the branch to where it started.",
         magit_global_mode::RemoteOp::REBASE_ABORT,
     );
-    drop(mk_op);
     // MG.23c1: the scriptable half of the prompt-backed operations.
     // With an argument they act directly; without one they open the
     // same prompt the menu row does, so `:magit-tag` and `C-c g t` are
@@ -2878,7 +2874,6 @@ fn register_action_commands(registry: &mut CommandRegistry) {
         "action:magit-global-branch-delete",
         "Delete a branch — asks first",
     );
-    drop(reg);
 
     // MG.23k: `D` — re-run the current view with different git
     // arguments. ONE action for both flag tables: the schema is their

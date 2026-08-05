@@ -945,7 +945,7 @@ mod tests {
         let buffer = Buffer::from_text("for i in iter {}");
         let group = TabstopGroup {
             index: 1,
-            ranges: vec![9..13],
+            ranges: Vec::from([9..13]),
             has_default: true,
             is_choice: false,
         };
@@ -978,7 +978,7 @@ mod tests {
         let buffer = Buffer::from_text("for i in iter {}");
         let group = TabstopGroup {
             index: 1,
-            ranges: vec![4..4],
+            ranges: Vec::from([4..4]),
             has_default: false,
             is_choice: false,
         };

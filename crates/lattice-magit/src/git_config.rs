@@ -123,13 +123,14 @@ fn read_config(workdir: &std::path::Path) -> Option<HashMap<String, String>> {
 pub(crate) fn parse_config_z(text: &str) -> HashMap<String, String> {
     text.split('\0')
         .filter(|entry| !entry.is_empty())
-        .filter_map(|entry| {
+        .map(|entry| {
             // A key with no newline is a *valueless* key (`[section]
             // key` with nothing after it), which git reports as the key
-            // alone. That is set-but-empty, not absent.
+            // alone. That is set-but-empty, not absent — so every entry
+            // yields a pair and none is filtered out.
             match entry.split_once('\n') {
-                Some((k, v)) => Some((k.to_string(), v.to_string())),
-                None => Some((entry.to_string(), String::new())),
+                Some((k, v)) => (k.to_string(), v.to_string()),
+                None => (entry.to_string(), String::new()),
             }
         })
         .collect()

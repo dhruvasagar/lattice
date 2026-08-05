@@ -514,10 +514,11 @@ impl Mode for ProjectSearchMode {
             let (progress_tx, mut progress_rx) =
                 mpsc::unbounded_channel::<ProjectSearchProgressUpdated>();
 
-            let mut subs = Vec::new();
-            subs.push(bus.subscribe_typed::<ProjectSearchBatchReady>(batch_tx));
-            subs.push(bus.subscribe_typed::<ProjectSearchCompleted>(done_tx));
-            subs.push(bus.subscribe_typed::<ProjectSearchProgressUpdated>(progress_tx));
+            let subs = vec![
+                bus.subscribe_typed::<ProjectSearchBatchReady>(batch_tx),
+                bus.subscribe_typed::<ProjectSearchCompleted>(done_tx),
+                bus.subscribe_typed::<ProjectSearchProgressUpdated>(progress_tx),
+            ];
 
             // Pull the search service so the forwarder can record
             // source-path mappings as it loads files. Provider-

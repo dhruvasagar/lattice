@@ -10295,7 +10295,7 @@ mod tests {
                 lattice_completion::CandidateKind::Plain,
             ),
             score: lattice_completion::MatchScore::PERFECT,
-            match_ranges: vec![0..2],
+            match_ranges: Vec::from([0..2]),
         };
         let mut c = lattice_completion::RenderedCandidate::from_scored(scored);
         c.raw.display_spans = vec![lattice_completion::DisplaySpan {

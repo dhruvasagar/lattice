@@ -174,7 +174,9 @@ pub(crate) fn cherry_move(
     let tip = rev(workdir, src);
     let moved = rev(workdir, commit);
 
-    if tip.is_some() && tip == moved {
+    if let Some(tip_sha) = tip.as_deref()
+        && tip == moved
+    {
         // The commit was at `src`'s tip, so `src` just moves back one.
         //
         // The THREE-argument `update-ref` is a compare-and-swap: it
@@ -184,7 +186,6 @@ pub(crate) fn cherry_move(
         // and this is the branch that loses commits.
         let keep_sha = rev(workdir, &keep)
             .ok_or_else(|| format!("{commit} has no parent to reset {src} to"))?;
-        let tip_sha = tip.expect("checked above");
         git(
             workdir,
             &[
@@ -193,7 +194,7 @@ pub(crate) fn cherry_move(
                 &format!("reset: moving to {keep}"),
                 &format!("refs/heads/{src}"),
                 &keep_sha,
-                &tip_sha,
+                tip_sha,
             ],
         )?;
         if !checkout_dst {

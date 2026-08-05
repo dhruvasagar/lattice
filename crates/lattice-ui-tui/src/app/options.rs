@@ -197,13 +197,10 @@ impl App {
     /// Phase 5.5.E.6 moved the body host-side; this wrapper keeps the
     /// existing hot-path call sites (`app.show_line_numbers_for` etc.)
     /// compiling against `&App` without a per-site rewrite.
-    pub fn resolved_option<D: lattice_config::OptionDecl>(
-        &self,
-        buffer: crate::buffers::BufferId,
-    ) -> std::sync::Arc<D::Value>
+    pub fn resolved_option<D>(&self, buffer: crate::buffers::BufferId) -> std::sync::Arc<D::Value>
     where
+        D: lattice_config::OptionDecl + 'static,
         D::Value: Clone + Send + Sync + 'static,
-        D: 'static,
     {
         // Slice 3c.final.E.5i: route through `read_editor`. `D` is
         // a marker type-parameter (no per-instance state) and

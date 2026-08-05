@@ -818,7 +818,7 @@ mod tests {
                 display_spans: Vec::new(),
             },
             score: MatchScore::PREFIX,
-            match_ranges: vec![0..5],
+            match_ranges: Vec::from([0..5]),
             annotations: vec![],
         }];
         prefer_aliases_for_command_candidates(&mut candidates, "next-");

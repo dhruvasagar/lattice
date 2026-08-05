@@ -1485,7 +1485,6 @@ impl Editor {
             compilation_severity: self.compilation_severity.clone(),
             compilation_location_lines: self.compilation_location_lines.clone(),
             compilation_theme_colors: self.compilation_theme_colors.clone(),
-            ..RenderState::default()
         }
     }
 
